@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "attribute_name": {
+      "type": "string",
+      "description": "name of the attribute_def to write"
+    },
+    "card_id": {
+      "type": "integer",
+      "description": "id of the card whose attribute is being updated"
+    },
+    "value": {
+      "description": "new JSON value; literal null requests removal"
+    }
+  },
+  "required": [
+    "card_id",
+    "attribute_name",
+    "value"
+  ]
+}

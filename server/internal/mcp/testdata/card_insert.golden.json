@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "properties": {
+    "attributes": {
+      "type": "object",
+      "description": "optional map of additional attribute name to JSON value",
+      "additionalProperties": true
+    },
+    "card_type_name": {
+      "type": "string",
+      "description": "name of the card_type to create (e.g. project, task)"
+    },
+    "parent_card_id": {
+      "type": "integer",
+      "description": "parent card id; nil for top-level project cards"
+    },
+    "title": {
+      "type": "string",
+      "description": "value for the built-in title attribute"
+    }
+  },
+  "required": [
+    "card_type_name",
+    "title"
+  ]
+}

@@ -1,0 +1,44 @@
+issuer: http://localhost:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+# A single static OIDC client representing the kitp web bundle. Public
+# client (no secret) — PKCE-only.
+staticClients:
+  - id: kitp-web
+    name: 'kitp web client'
+    public: true
+    redirectURIs:
+      - 'http://localhost:18080/auth/callback'
+
+# Static users so dev-mode OIDC tests don't need an external IdP.
+# Passwords are bcrypt of "password" (insecure, dev only).
+staticPasswords:
+  - email: 'admin@example.invalid'
+    hash: '$2a$10$2b2cu2JHqjP1.bp5o0d5WuQxEWGxbP/V9NQR1RBmI6m6IOABivOme'
+    username: 'admin'
+    userID: '00000000-0000-0000-0000-000000000001'
+  - email: 'alice@example.invalid'
+    hash: '$2a$10$2b2cu2JHqjP1.bp5o0d5WuQxEWGxbP/V9NQR1RBmI6m6IOABivOme'
+    username: 'alice'
+    userID: '00000000-0000-0000-0000-000000000002'
+  - email: 'bob@example.invalid'
+    hash: '$2a$10$2b2cu2JHqjP1.bp5o0d5WuQxEWGxbP/V9NQR1RBmI6m6IOABivOme'
+    username: 'bob'
+    userID: '00000000-0000-0000-0000-000000000003'
+
+# In-memory connector that emits the static-passwords above. The `groups`
+# claim is what kitp's role_mapping table keys off of.
+enablePasswordDB: true
+
+connectors: []
+
+# Map static users to groups so role_mapping can pick them up. dex doesn't
+# have first-class group membership for staticPasswords; instead we expose
+# groups via OIDC claims, mapped here:
+oauth2:
+  skipApprovalScreen: true

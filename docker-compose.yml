@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kitp-pg
+    environment:
+      POSTGRES_USER: kitp
+      POSTGRES_PASSWORD: kitp
+      POSTGRES_DB: kitp
+    ports:
+      - "127.0.0.1:5544:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kitp", "-d", "kitp"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - kitp-pgdata:/var/lib/postgresql/data
+
+  # dex is the dev-only OIDC OP we run for AUTH_MODE=oidc smoke tests.
+  # Static config in dev/dex/config.yaml; static users alice/bob/admin
+  # (passwords all "password"); groups kitp.worker / kitp.manager / kitp.admin.
+  dex:
+    image: dexidp/dex:v2.41.1
+    container_name: kitp-dex
+    ports:
+      - "127.0.0.1:5556:5556"
+    volumes:
+      - ./dev/dex/config.yaml:/etc/dex/config.yaml:ro
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    profiles: ["oidc"]
+
+volumes:
+  kitp-pgdata:

@@ -1,0 +1,6 @@
+/server/kitpd
+/server/bin/
+/.idea/
+/.vscode/
+*.log
+docs/screenshots

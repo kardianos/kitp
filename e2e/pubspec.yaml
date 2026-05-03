@@ -1,0 +1,10 @@
+name: kitp_e2e
+description: kitp end-to-end Chrome test (Phase 22).
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.4.0
+
+dependencies:
+  webdriver: ^3.0.4
