@@ -214,6 +214,119 @@ func TestInsertAndBindLifecycle(t *testing.T) {
 	}
 }
 
+// TestSelect_IncludesEnumOptions verifies migration 0012 seeded the
+// `status` def with value_type='enum' and four ordered option rows that
+// surface on attribute_def.select.
+func TestSelect_IncludesEnumOptions(t *testing.T) {
+	srv, _ := setup(t, "kitp_test_ad_enum_opts")
+	ctx := context.Background()
+
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "attribute_def", Action: "select"},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("select: %+v", resp.Subresponses[0])
+	}
+	var out attributedef.SelectOutput
+	buf, _ := json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &out)
+
+	var status *attributedef.SelectRow
+	for i, r := range out.Rows {
+		if r.Name == "status" {
+			status = &out.Rows[i]
+			break
+		}
+	}
+	if status == nil {
+		t.Fatalf("status def missing; rows=%+v", out.Rows)
+	}
+	if status.ValueType != "enum" {
+		t.Errorf("status value_type = %q, want enum", status.ValueType)
+	}
+	wantValues := []string{"todo", "doing", "review", "done"}
+	wantLabels := []string{"Todo", "Doing", "Review", "Done"}
+	if len(status.Options) != 4 {
+		t.Fatalf("status options len = %d, want 4: %+v", len(status.Options), status.Options)
+	}
+	for i, opt := range status.Options {
+		if opt.Value != wantValues[i] {
+			t.Errorf("status options[%d].value = %q, want %q", i, opt.Value, wantValues[i])
+		}
+		if opt.Label != wantLabels[i] {
+			t.Errorf("status options[%d].label = %q, want %q", i, opt.Label, wantLabels[i])
+		}
+		if int(opt.Ordering) != i {
+			t.Errorf("status options[%d].ordering = %d, want %d", i, opt.Ordering, i)
+		}
+	}
+}
+
+// TestSelect_OmitsOptions_ForNonEnum confirms text/bool/etc defs return
+// an empty options slice (which json-marshals as omitted via omitempty).
+func TestSelect_OmitsOptions_ForNonEnum(t *testing.T) {
+	srv, _ := setup(t, "kitp_test_ad_nonenum_opts")
+	ctx := context.Background()
+
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "attribute_def", Action: "select"},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("select: %+v", resp.Subresponses[0])
+	}
+	var out attributedef.SelectOutput
+	buf, _ := json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &out)
+
+	// Spot-check a known non-enum def: 'title' is text, 'is_active' is bool.
+	checked := 0
+	for _, r := range out.Rows {
+		if r.Name == "title" || r.Name == "is_active" {
+			if len(r.Options) != 0 {
+				t.Errorf("def %q (value_type=%s): options non-empty: %+v", r.Name, r.ValueType, r.Options)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatalf("did not find title or is_active in select output")
+	}
+
+	// Also verify the wire shape: when options is empty it must be
+	// omitted from the JSON, not serialized as `"options": null` or `[]`.
+	// Round-trip through json to confirm.
+	rerendered, _ := json.Marshal(out)
+	for _, r := range out.Rows {
+		if r.Name == "title" || r.Name == "is_active" {
+			needle := fmt.Sprintf(`"name":%q`, r.Name)
+			if !bytesContains(rerendered, []byte(needle)) {
+				t.Fatalf("could not locate %s in rendered json", r.Name)
+			}
+		}
+	}
+}
+
+// bytesContains is a tiny helper to keep the test file from importing
+// "bytes" just for this single call site.
+func bytesContains(haystack, needle []byte) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		match := true
+		for j := range needle {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
 // TestEdgeDeleteRefusesBuiltIn protects migration-installed edges.
 func TestEdgeDeleteRefusesBuiltIn(t *testing.T) {
 	srv, sp := setup(t, "kitp_test_ad_builtin")

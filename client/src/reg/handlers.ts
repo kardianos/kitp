@@ -1,0 +1,734 @@
+/**
+ * Hand-written encode/decode functions for every (endpoint, action) the
+ * client knows about. Mirrors `client/lib/reg/handlers.dart`.
+ *
+ * Conventions:
+ *   - Field names match the server's JSON exactly (snake_case).
+ *   - Optional fields are OMITTED from encode output when undefined — never
+ *     set to `null`. The server's `pointer-or-nil` decoders rely on this.
+ *   - Numeric ID fields use `Number(j.x)` (not `(x as number) | 0`) so values
+ *     up to 2^53-1 survive the round-trip.
+ *   - Decoders are total: they always produce a value (or default for
+ *     missing optional fields). Hard type errors throw, mirroring the Dart
+ *     `as` casts that throw on shape mismatch.
+ */
+
+import type { HandlerSpec } from './handler_registry.js';
+import { HandlerRegistry } from './handler_registry.js';
+import { registerAdminHandlers } from './handlers_admin.js';
+import type {
+  ActivityRow,
+  ActivitySelectInput,
+  ActivitySelectOutput,
+  AttributeDefBindEntry,
+  AttributeDefBoundCardType,
+  AttributeDefInsertInput,
+  AttributeDefInsertOutput,
+  AttributeDefOptionRow,
+  AttributeDefRow,
+  AttributeDefSelectInput,
+  AttributeDefSelectOutput,
+  AttributeUpdateInput,
+  AttributeUpdateOutput,
+  CardDeleteInput,
+  CardDeleteOutput,
+  CardInsertInput,
+  CardInsertOutput,
+  CardOrderClause,
+  CardRow,
+  CardSelectInput,
+  CardSelectOutput,
+  CardSelectWithAttributesInput,
+  CardSelectWithAttributesOutput,
+  CardTypeRow,
+  CardTypeSelectInput,
+  CardTypeSelectOutput,
+  CardWherePredicate,
+  CardWithAttrs,
+  CommentInsertInput,
+  CommentInsertOutput,
+  EchoPingInput,
+  EchoPingOutput,
+  EdgeDeleteInput,
+  EdgeDeleteOutput,
+  EdgeInsertInput,
+  EdgeInsertOutput,
+  InboxRow,
+  InboxSelectInput,
+  InboxSelectOutput,
+  TagApplyInput,
+  TagApplyOutput,
+  TagRemoveInput,
+  TagRemoveOutput,
+  UserCardSortSetInput,
+  UserCardSortSetOutput,
+  UserRow,
+  UserSelectInput,
+  UserSelectOutput,
+} from './types.js';
+
+// ----------------------------------------------------------------------------
+// Decode helpers
+// ----------------------------------------------------------------------------
+
+/** Coerce a value the server returned to a Record<string, unknown>. */
+function asObj(v: unknown): Record<string, unknown> {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+    throw new Error('decode_error: expected object');
+  }
+  return v as Record<string, unknown>;
+}
+
+/** Coerce to an array; null/undefined become an empty array (matches Dart). */
+function asArray(v: unknown): unknown[] {
+  if (v === null || v === undefined) return [];
+  if (!Array.isArray(v)) throw new Error('decode_error: expected array');
+  return v;
+}
+
+/** Coerce a JSON number to a JS number; throws on non-number. */
+function asNum(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) {
+    throw new Error('decode_error: expected number');
+  }
+  return v;
+}
+
+/** Optional number; returns undefined for null/undefined. */
+function asNumOpt(v: unknown): number | undefined {
+  if (v === null || v === undefined) return undefined;
+  return asNum(v);
+}
+
+/** Coerce a JSON string to a JS string; throws on non-string. */
+function asStr(v: unknown): string {
+  if (typeof v !== 'string') {
+    throw new Error('decode_error: expected string');
+  }
+  return v;
+}
+
+/** Optional string; null/undefined become undefined. */
+function asStrOpt(v: unknown): string | undefined {
+  if (v === null || v === undefined) return undefined;
+  return asStr(v);
+}
+
+/** String with default ''; mirrors `(j['x'] as String?) ?? ''` in Dart. */
+function asStrOrEmpty(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  return asStr(v);
+}
+
+/** Coerce to bool with default false; mirrors `(j['x'] as bool?) ?? false`. */
+function asBoolOrFalse(v: unknown): boolean {
+  if (v === null || v === undefined) return false;
+  if (typeof v !== 'boolean') throw new Error('decode_error: expected bool');
+  return v;
+}
+
+/** Coerce to number with default 0; mirrors `(j['x'] as num?)?.toInt() ?? 0`. */
+function asNumOrZero(v: unknown): number {
+  if (v === null || v === undefined) return 0;
+  return asNum(v);
+}
+
+/** Coerce to Record<string, unknown>; null/undefined become empty record. */
+function asObjOrEmpty(v: unknown): Record<string, unknown> {
+  if (v === null || v === undefined) return {};
+  return asObj(v);
+}
+
+// ----------------------------------------------------------------------------
+// Predicate / order encode helpers (card.select_with_attributes)
+// ----------------------------------------------------------------------------
+
+function encodeCardWherePredicate(p: CardWherePredicate): Record<string, unknown> {
+  if (p.and !== undefined) {
+    return { and: p.and.map(encodeCardWherePredicate) };
+  }
+  const m: Record<string, unknown> = {
+    attr: p.attr ?? '',
+    op: p.op ?? '',
+  };
+  if (p.value !== undefined && p.value !== null) m.value = p.value;
+  if (p.values !== undefined) m.values = p.values;
+  return m;
+}
+
+function encodeCardOrderClause(o: CardOrderClause): Record<string, unknown> {
+  const m: Record<string, unknown> = { field: o.field };
+  if (o.direction !== undefined) m.direction = o.direction;
+  return m;
+}
+
+// ============================================================================
+// echo.ping
+// ============================================================================
+
+const echoPing: HandlerSpec<EchoPingInput, EchoPingOutput> = {
+  endpoint: 'echo',
+  action: 'ping',
+  encode: (i) => ({ x: i.x, message: i.message }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      x: asNum(j.x),
+      message: asStrOrEmpty(j.message),
+    };
+  },
+};
+
+// ============================================================================
+// card_type.select
+// ============================================================================
+
+function decodeCardTypeRow(j: Record<string, unknown>): CardTypeRow {
+  const out: CardTypeRow = {
+    id: asNum(j.id),
+    name: asStr(j.name),
+    allow_self_parent: asBoolOrFalse(j.allow_self_parent),
+    is_built_in: asBoolOrFalse(j.is_built_in),
+  };
+  const parent = asNumOpt(j.parent_card_type_id);
+  if (parent !== undefined) out.parent_card_type_id = parent;
+  return out;
+}
+
+const cardTypeSelect: HandlerSpec<CardTypeSelectInput, CardTypeSelectOutput> = {
+  endpoint: 'card_type',
+  action: 'select',
+  encode: () => ({}),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeCardTypeRow(asObj(r))),
+    };
+  },
+};
+
+// ============================================================================
+// card.insert
+// ============================================================================
+
+const cardInsert: HandlerSpec<CardInsertInput, CardInsertOutput> = {
+  endpoint: 'card',
+  action: 'insert',
+  encode: (i) => {
+    const m: Record<string, unknown> = {
+      card_type_name: i.cardTypeName,
+      title: i.title,
+    };
+    if (i.parentCardId !== undefined) m.parent_card_id = i.parentCardId;
+    if (i.attributes !== undefined && Object.keys(i.attributes).length > 0) {
+      m.attributes = i.attributes;
+    }
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { id: asNum(j.id) };
+  },
+};
+
+// ============================================================================
+// card.select
+// ============================================================================
+
+function decodeCardRow(j: Record<string, unknown>): CardRow {
+  const out: CardRow = {
+    id: asNum(j.id),
+    card_type_id: asNum(j.card_type_id),
+    card_type_name: asStr(j.card_type_name),
+  };
+  const parent = asNumOpt(j.parent_card_id);
+  if (parent !== undefined) out.parent_card_id = parent;
+  const title = asStrOpt(j.title);
+  if (title !== undefined) out.title = title;
+  return out;
+}
+
+const cardSelect: HandlerSpec<CardSelectInput, CardSelectOutput> = {
+  endpoint: 'card',
+  action: 'select',
+  encode: (i) => {
+    const m: Record<string, unknown> = {};
+    if (i.parentCardId !== undefined) m.parent_card_id = i.parentCardId;
+    if (i.cardTypeName !== undefined) m.card_type_name = i.cardTypeName;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeCardRow(asObj(r))),
+    };
+  },
+};
+
+// ============================================================================
+// card.select_with_attributes
+// ============================================================================
+
+function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
+  const out: CardWithAttrs = {
+    id: asNum(j.id),
+    card_type_id: asNum(j.card_type_id),
+    card_type_name: asStrOrEmpty(j.card_type_name),
+    attributes: asObjOrEmpty(j.attributes),
+  };
+  const parent = asNumOpt(j.parent_card_id);
+  if (parent !== undefined) out.parent_card_id = parent;
+  const deletedAt = asStrOpt(j.deleted_at);
+  if (deletedAt !== undefined) out.deleted_at = deletedAt;
+  return out;
+}
+
+const cardSelectWithAttributes: HandlerSpec<
+  CardSelectWithAttributesInput,
+  CardSelectWithAttributesOutput
+> = {
+  endpoint: 'card',
+  action: 'select_with_attributes',
+  encode: (i) => {
+    const m: Record<string, unknown> = {};
+    if (i.parentCardId !== undefined) m.parent_card_id = i.parentCardId;
+    if (i.cardTypeName !== undefined) m.card_type_name = i.cardTypeName;
+    if (i.where !== undefined && i.where.length > 0) {
+      m.where = i.where.map(encodeCardWherePredicate);
+    }
+    if (i.tree !== undefined) m.tree = i.tree;
+    if (i.order !== undefined && i.order.length > 0) {
+      m.order = i.order.map(encodeCardOrderClause);
+    }
+    if (i.limit !== undefined) m.limit = i.limit;
+    if (i.offset !== undefined) m.offset = i.offset;
+    if (i.includeDeleted !== undefined) m.include_deleted = i.includeDeleted;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeCardWithAttrs(asObj(r))),
+    };
+  },
+};
+
+// ============================================================================
+// card.delete
+// ============================================================================
+
+const cardDelete: HandlerSpec<CardDeleteInput, CardDeleteOutput> = {
+  endpoint: 'card',
+  action: 'delete',
+  encode: (i) => ({ card_id: i.cardId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: asBoolOrFalse(j.ok),
+      activity_id: asNumOrZero(j.activity_id),
+    };
+  },
+};
+
+// ============================================================================
+// attribute.update
+// ============================================================================
+
+const attributeUpdate: HandlerSpec<AttributeUpdateInput, AttributeUpdateOutput> = {
+  endpoint: 'attribute',
+  action: 'update',
+  encode: (i) => ({
+    card_id: i.cardId,
+    attribute_name: i.attributeName,
+    // Note: `value` is intentionally always present (even if `null`) — the
+    // server distinguishes "missing key" (no-op) from "null" (clear-attr).
+    value: i.value === undefined ? null : i.value,
+  }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    const out: AttributeUpdateOutput = {
+      ok: asBoolOrFalse(j.ok),
+      activity_id: asNumOrZero(j.activity_id),
+    };
+    if (j.prev_value !== undefined && j.prev_value !== null) {
+      out.prev_value = j.prev_value;
+    }
+    return out;
+  },
+};
+
+// ============================================================================
+// attribute_def.select
+// ============================================================================
+
+function decodeAttributeDefBoundCardType(
+  j: Record<string, unknown>,
+): AttributeDefBoundCardType {
+  return {
+    card_type_id: asNum(j.card_type_id),
+    card_type_name: asStrOrEmpty(j.card_type_name),
+    is_required: asBoolOrFalse(j.is_required),
+    is_built_in: asBoolOrFalse(j.is_built_in),
+    ordering: asNumOrZero(j.ordering),
+  };
+}
+
+function decodeAttributeDefOptionRow(
+  j: Record<string, unknown>,
+): AttributeDefOptionRow {
+  return {
+    value: asStrOrEmpty(j.value),
+    label: asStrOrEmpty(j.label),
+    ordering: asNumOrZero(j.ordering),
+  };
+}
+
+function decodeAttributeDefRow(j: Record<string, unknown>): AttributeDefRow {
+  const boundRaw = asArray(j.bound_to);
+  const out: AttributeDefRow = {
+    id: asNum(j.id),
+    name: asStr(j.name),
+    value_type: asStrOrEmpty(j.value_type),
+    is_built_in: asBoolOrFalse(j.is_built_in),
+    bound_to: boundRaw.map((r) => decodeAttributeDefBoundCardType(asObj(r))),
+  };
+  // Forward-compat (migration 0012): server starts returning `options[]` for
+  // enum-typed defs. Until then the field is absent and we leave it unset.
+  if (j.options !== undefined && j.options !== null) {
+    out.options = asArray(j.options).map((r) =>
+      decodeAttributeDefOptionRow(asObj(r)),
+    );
+  }
+  return out;
+}
+
+const attributeDefSelect: HandlerSpec<
+  AttributeDefSelectInput,
+  AttributeDefSelectOutput
+> = {
+  endpoint: 'attribute_def',
+  action: 'select',
+  encode: () => ({}),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeAttributeDefRow(asObj(r))),
+    };
+  },
+};
+
+// ============================================================================
+// attribute_def.insert
+// ============================================================================
+
+function encodeAttributeDefBindEntry(
+  b: AttributeDefBindEntry,
+): Record<string, unknown> {
+  const m: Record<string, unknown> = { card_type_id: b.cardTypeId };
+  // Mirror Dart: only emit `is_required` / `ordering` when truthy. The Dart
+  // code uses `if (isRequired) ...` and `if (ordering != 0) ...`.
+  if (b.isRequired === true) m.is_required = true;
+  if (b.ordering !== undefined && b.ordering !== 0) m.ordering = b.ordering;
+  return m;
+}
+
+const attributeDefInsert: HandlerSpec<
+  AttributeDefInsertInput,
+  AttributeDefInsertOutput
+> = {
+  endpoint: 'attribute_def',
+  action: 'insert',
+  encode: (i) => {
+    const m: Record<string, unknown> = {
+      name: i.name,
+      value_type: i.valueType,
+    };
+    if (i.bindTo !== undefined && i.bindTo.length > 0) {
+      m.bind_to = i.bindTo.map(encodeAttributeDefBindEntry);
+    }
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { id: asNum(j.id) };
+  },
+};
+
+// ============================================================================
+// activity.select
+// ============================================================================
+
+function decodeActivityRow(j: Record<string, unknown>): ActivityRow {
+  const out: ActivityRow = {
+    id: asNum(j.id),
+    card_id: asNumOrZero(j.card_id),
+    kind: asStr(j.kind),
+    actor_id: asNumOrZero(j.actor_id),
+    created_at: asStrOrEmpty(j.created_at),
+  };
+  const attrName = asStrOpt(j.attribute_name);
+  if (attrName !== undefined) out.attribute_name = attrName;
+  if (j.value_old !== undefined && j.value_old !== null) {
+    out.value_old = j.value_old;
+  }
+  if (j.value_new !== undefined && j.value_new !== null) {
+    out.value_new = j.value_new;
+  }
+  const commentBody = asStrOpt(j.comment_body);
+  if (commentBody !== undefined) out.comment_body = commentBody;
+  return out;
+}
+
+const activitySelect: HandlerSpec<ActivitySelectInput, ActivitySelectOutput> = {
+  endpoint: 'activity',
+  action: 'select',
+  encode: (i) => {
+    const m: Record<string, unknown> = {};
+    if (i.cardId !== undefined) m.card_id = i.cardId;
+    if (i.limit !== undefined) m.limit = i.limit;
+    if (i.beforeActivityId !== undefined) m.before_activity_id = i.beforeActivityId;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeActivityRow(asObj(r))),
+    };
+  },
+};
+
+// ============================================================================
+// comment.insert
+// ============================================================================
+
+const commentInsert: HandlerSpec<CommentInsertInput, CommentInsertOutput> = {
+  endpoint: 'comment',
+  action: 'insert',
+  encode: (i) => ({ card_id: i.cardId, body: i.body }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: asBoolOrFalse(j.ok),
+      activity_id: asNumOrZero(j.activity_id),
+      comment_body_id: asNumOrZero(j.comment_body_id),
+    };
+  },
+};
+
+// ============================================================================
+// user.select
+// ============================================================================
+
+function decodeUserRow(j: Record<string, unknown>): UserRow {
+  return {
+    id: asNum(j.id),
+    display_name: asStr(j.display_name),
+  };
+}
+
+const userSelect: HandlerSpec<UserSelectInput, UserSelectOutput> = {
+  endpoint: 'user',
+  action: 'select',
+  encode: () => ({}),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeUserRow(asObj(r))),
+    };
+  },
+};
+
+// ============================================================================
+// tag.apply / tag.remove
+// ============================================================================
+
+const tagApply: HandlerSpec<TagApplyInput, TagApplyOutput> = {
+  endpoint: 'tag',
+  action: 'apply',
+  encode: (i) => ({
+    target_card_id: i.targetCardId,
+    tag_card_id: i.tagCardId,
+  }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: asBoolOrFalse(j.ok),
+      activity_id: asNumOrZero(j.activity_id),
+      removed_tag_ids: asArray(j.removed_tag_ids).map((r) => asNum(r)),
+    };
+  },
+};
+
+const tagRemove: HandlerSpec<TagRemoveInput, TagRemoveOutput> = {
+  endpoint: 'tag',
+  action: 'remove',
+  encode: (i) => ({
+    target_card_id: i.targetCardId,
+    tag_card_id: i.tagCardId,
+  }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: asBoolOrFalse(j.ok),
+      activity_id: asNumOrZero(j.activity_id),
+    };
+  },
+};
+
+// ============================================================================
+// inbox.select
+// ============================================================================
+
+function decodeInboxRow(j: Record<string, unknown>): InboxRow {
+  const out: InboxRow = {
+    id: asNum(j.id),
+    card_type_id: asNum(j.card_type_id),
+    attributes: asObjOrEmpty(j.attributes),
+  };
+  const parent = asNumOpt(j.parent_card_id);
+  if (parent !== undefined) out.parent_card_id = parent;
+  const sort = asNumOpt(j.personal_sort_order);
+  if (sort !== undefined) out.personal_sort_order = sort;
+  return out;
+}
+
+const inboxSelect: HandlerSpec<InboxSelectInput, InboxSelectOutput> = {
+  endpoint: 'inbox',
+  action: 'select',
+  encode: (i) => {
+    const m: Record<string, unknown> = {};
+    if (i.userId !== undefined) m.user_id = i.userId;
+    if (i.tree !== undefined) m.tree = i.tree;
+    if (i.limit !== undefined) m.limit = i.limit;
+    if (i.offset !== undefined) m.offset = i.offset;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeInboxRow(asObj(r))),
+    };
+  },
+};
+
+// ============================================================================
+// user_card_sort.set
+// ============================================================================
+
+const userCardSortSet: HandlerSpec<UserCardSortSetInput, UserCardSortSetOutput> = {
+  endpoint: 'user_card_sort',
+  action: 'set',
+  encode: (i) => ({ card_id: i.cardId, sort_order: i.sortOrder }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { ok: asBoolOrFalse(j.ok) };
+  },
+};
+
+// ============================================================================
+// edge.insert / edge.delete
+// ============================================================================
+
+const edgeInsert: HandlerSpec<EdgeInsertInput, EdgeInsertOutput> = {
+  endpoint: 'edge',
+  action: 'insert',
+  encode: (i) => {
+    const m: Record<string, unknown> = {
+      attribute_def_id: i.attributeDefId,
+      card_type_id: i.cardTypeId,
+    };
+    if (i.isRequired === true) m.is_required = true;
+    if (i.ordering !== undefined && i.ordering !== 0) m.ordering = i.ordering;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { ok: asBoolOrFalse(j.ok) };
+  },
+};
+
+const edgeDelete: HandlerSpec<EdgeDeleteInput, EdgeDeleteOutput> = {
+  endpoint: 'edge',
+  action: 'delete',
+  encode: (i) => ({
+    attribute_def_id: i.attributeDefId,
+    card_type_id: i.cardTypeId,
+  }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: asBoolOrFalse(j.ok),
+      usage_count: asNumOrZero(j.usage_count),
+    };
+  },
+};
+
+// ============================================================================
+// Re-exports for use by tests / dispatch / screens
+// ============================================================================
+
+export {
+  // tiny helpers (intentionally exported so screens can build manual rows
+  // without re-implementing the casts)
+  asObj,
+  asArray,
+  asNum,
+  asNumOpt,
+  asStr,
+  asStrOpt,
+  asStrOrEmpty,
+  asBoolOrFalse,
+  asNumOrZero,
+  asObjOrEmpty,
+  encodeCardWherePredicate,
+  encodeCardOrderClause,
+  // specs
+  echoPing,
+  cardTypeSelect,
+  cardInsert,
+  cardSelect,
+  cardSelectWithAttributes,
+  cardDelete,
+  attributeUpdate,
+  attributeDefSelect,
+  attributeDefInsert,
+  activitySelect,
+  commentInsert,
+  userSelect,
+  tagApply,
+  tagRemove,
+  inboxSelect,
+  userCardSortSet,
+  edgeInsert,
+  edgeDelete,
+};
+
+// ============================================================================
+// Public registration helper
+// ============================================================================
+
+/**
+ * Register every handler this client currently understands. Invoked once
+ * at startup from `main.ts` and once per test setup.
+ */
+export function registerBuiltInHandlers(r: HandlerRegistry): void {
+  r.register(echoPing);
+  r.register(cardTypeSelect);
+  r.register(cardInsert);
+  r.register(cardSelect);
+  r.register(cardSelectWithAttributes);
+  r.register(cardDelete);
+  r.register(attributeUpdate);
+  r.register(attributeDefSelect);
+  r.register(attributeDefInsert);
+  r.register(activitySelect);
+  r.register(commentInsert);
+  r.register(userSelect);
+  r.register(tagApply);
+  r.register(tagRemove);
+  r.register(inboxSelect);
+  r.register(userCardSortSet);
+  r.register(edgeInsert);
+  r.register(edgeDelete);
+  registerAdminHandlers(r);
+}

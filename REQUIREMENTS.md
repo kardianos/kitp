@@ -2,8 +2,8 @@
 
 A task tracker built around a small, uniform domain model (CARD / ACTIVITY /
 PROCESS / EDGE / ATTRIBUTE / ROLE) with a single batched API endpoint, a Go
-server, and a Flutter client. The same type-registration pattern that drives
-the API also auto-publishes an MCP surface.
+server, and a Svelte 5 + TypeScript client. The same type-registration
+pattern that drives the API also auto-publishes an MCP surface.
 
 ## 1. Glossary
 
@@ -34,7 +34,7 @@ the API also auto-publishes an MCP surface.
 - Real-time push (WebSocket/SSE). Refresh is poll-on-action; live sync is a later phase.
 - Multi-tenant isolation beyond ROLE-based access.
 - Full-text search, attachments, time tracking, or notifications.
-- Mobile-native packaging. Flutter targets the web build only in v1.
+- Mobile-native packaging. The Svelte SPA targets the web only in v1.
 
 ## 3. Functional Requirements
 
@@ -84,7 +84,7 @@ the API also auto-publishes an MCP surface.
 - `tag` — parented to `project` or globally rooted (TBD in design phase).
 - `comment_body` — the storage for free-text comment bodies. Created only as part of a comment ACTIVITY.
 
-### 3.4 UI Surfaces (Flutter web)
+### 3.4 UI Surfaces (Svelte web)
 - F-UI-1: **Project list** — list, create, open a project.
 - F-UI-2: **Project detail** — list child cards, create a task under it, open a task.
 - F-UI-3: **Task detail** — view/edit attributes, view activity stream, post comment.
@@ -131,15 +131,15 @@ the API also auto-publishes an MCP surface.
 - N-SRV-5: Reads use `LATERAL` joins to fetch each card's current attribute set without N+1.
 
 ### 4.3 Type Registration
-- N-REG-1: On both server (Go) and client (Dart), handlers are registered into a central registry keyed by `(endpoint, action)`.
+- N-REG-1: On both server (Go) and client (TypeScript), handlers are registered into a central registry keyed by `(endpoint, action)`.
 - N-REG-2: A Go handler registration carries `reflect.Type` for both Input and Output.
-- N-REG-3: A Dart handler registration carries the Dart `Type` for both Input and Output (with codegen for JSON ser/de via `freezed`/`json_serializable` or hand-written equivalents).
+- N-REG-3: A TypeScript handler registration carries TS types for both Input and Output (encoded as discriminated unions / generic envelopes; see `client/src/reg/`). Historical: in the Flutter era this used `freezed` / `json_serializable`.
 - N-REG-4: The server's batch dispatcher uses the registry to (a) decode each sub-request into the handler's Input type, (b) authorize, (c) execute, and (d) encode the Output.
 - N-REG-5: Struct field tags carry MCP descriptions and required-flags. Tag schema is documented and stable.
 
 ### 4.4 Client Data Dispatcher
 - N-CLI-1: Widgets do not call HTTP directly. They submit data requests to a central dispatcher.
-- N-CLI-2: All data requests submitted within the same Flutter render frame are coalesced into one batch.
+- N-CLI-2: All data requests submitted within the same animation frame (microtask flush) are coalesced into one batch.
 - N-CLI-3: Sub-responses are routed back to the originating subscribers via the client-supplied `id`.
 - N-CLI-4: Resource cache invalidation is driven by sub-response metadata, not by hard-coded knowledge in widgets.
 
@@ -165,7 +165,7 @@ the API also auto-publishes an MCP surface.
 ## 5. Constraints
 - C-1: Server: Go (latest stable). HTTP via `net/http` + a thin router.
 - C-2: Database: PostgreSQL (latest stable). Migrations versioned and forward-only in v1.
-- C-3: Client: Flutter (Dart, latest stable), web build target in v1.
+- C-3: Client: Svelte 5 + TypeScript on Vite, web build target in v1.
 - C-4: No ORM. Hand-written SQL with `pgx`. JSON-array-in / row-out is the canonical write shape.
 - C-5: Dev-mode default is OIDC-off / System User on, to keep the early loop tight.
 
@@ -229,7 +229,7 @@ RETURNING card_id, attribute_def_id, value;
 ## 7. Acceptance Criteria (v1)
 
 A v1 release is complete when:
-1. The Flutter web client can register/log in via the configured OIDC OP with PKCE and reach the app shell.
+1. The Svelte web client can register/log in via the configured OIDC OP with PKCE and reach the app shell.
 2. A user can create a project, create tasks under it, set built-in attributes (title, status, assignee), and post comments.
 3. The user's inbox shows their open tasks across all projects.
 4. A grid view and a Kanban view both render and accept edits, with all writes going through the batch endpoint.

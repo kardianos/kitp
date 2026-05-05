@@ -225,6 +225,95 @@ func TestEdgeViolationPreTx(t *testing.T) {
 	}
 }
 
+// TestUpdate_RejectsInvalidEnumValue confirms attribute.update against an
+// enum-typed attribute_def (status — promoted to enum by migration 0012)
+// rejects a value that is not in attribute_def_option, with code
+// 'invalid_enum_value'.
+func TestUpdate_RejectsInvalidEnumValue(t *testing.T) {
+	srv, _ := setup(t, "kitp_test_attr_enum_bad")
+	ctx := context.Background()
+
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			`{"card_type_name":"project","title":"P"}`)},
+	}})
+	mustOK(t, resp.Subresponses[0])
+	var pOut card.InsertOutput
+	raw(t, resp.Subresponses[0], &pOut)
+
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+	}})
+	mustOK(t, resp.Subresponses[0])
+	var tOut card.InsertOutput
+	raw(t, resp.Subresponses[0], &tOut)
+
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"nonsense"}`, tOut.ID))},
+	}})
+	if resp.Subresponses[0].OK {
+		t.Fatalf("expected invalid_enum_value; got OK")
+	}
+	if resp.Subresponses[0].Error == nil || resp.Subresponses[0].Error.Code != "invalid_enum_value" {
+		t.Fatalf("expected invalid_enum_value error code; got %+v", resp.Subresponses[0].Error)
+	}
+	// The error message should mention the offending value, the attribute
+	// name, and the allowed list — useful for clients that surface it raw.
+	msg := resp.Subresponses[0].Error.Message
+	for _, want := range []string{"nonsense", "status", "todo", "doing", "review", "done"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message missing %q; got %q", want, msg)
+		}
+	}
+}
+
+// TestUpdate_AcceptsValidEnumValue confirms a value that IS in the option
+// set succeeds and writes a row to attribute_value.
+func TestUpdate_AcceptsValidEnumValue(t *testing.T) {
+	srv, _ := setup(t, "kitp_test_attr_enum_ok")
+	ctx := context.Background()
+
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			`{"card_type_name":"project","title":"P"}`)},
+	}})
+	mustOK(t, resp.Subresponses[0])
+	var pOut card.InsertOutput
+	raw(t, resp.Subresponses[0], &pOut)
+
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+	}})
+	mustOK(t, resp.Subresponses[0])
+	var tOut card.InsertOutput
+	raw(t, resp.Subresponses[0], &tOut)
+
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"doing"}`, tOut.ID))},
+	}})
+	mustOK(t, resp.Subresponses[0])
+
+	// Read it back.
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "g", Endpoint: "card", Action: "select_with_attributes", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d}`, pOut.ID))},
+	}})
+	mustOK(t, resp.Subresponses[0])
+	var gOut card.SelectWithAttributesOutput
+	raw(t, resp.Subresponses[0], &gOut)
+	if len(gOut.Rows) != 1 {
+		t.Fatalf("rows: %+v", gOut.Rows)
+	}
+	got := strings.TrimSpace(string(gOut.Rows[0].Attributes["status"]))
+	if got != `"doing"` {
+		t.Errorf("status: %q, want \"doing\"", got)
+	}
+}
+
 // BenchmarkBatch100AttrUpdates is the N-PERF-1 acceptance benchmark for
 // Phase 21: 100 attribute.update sub-requests in one batch must issue
 // at most 3 writer statement-groups (the per-Run cap: pre-tx validation

@@ -2,21 +2,21 @@
 
 A small task tracker built around a uniform domain model — CARD,
 ACTIVITY, ATTRIBUTE, EDGE, PROCESS, ROLE — with a single batched API
-endpoint, a Go server backed by Postgres, and a Flutter web client. The
-type-registration pattern that drives the API surface also auto-publishes
-an MCP tool surface, and every state change is event-sourced through
-the activity log.
+endpoint, a Go server backed by Postgres, and a Svelte 5 + TypeScript
+web client. The type-registration pattern that drives the API surface
+also auto-publishes an MCP tool surface, and every state change is
+event-sourced through the activity log.
 
 ## Quickstart
 
 Prerequisites:
 
 - Go 1.26 (`/home/d/bin/go` in this repo's dev image)
-- Flutter 3.29+ (`/home/d/bin/flutter`)
+- Node 20+ and pnpm (the client uses Vite + vitest + selenium-webdriver)
 - Docker (Postgres 16 runs in the `kitp-pg` container via
   `docker-compose.yml`)
-- Google Chrome 147 + matching ChromeDriver 147 (only required for the
-  e2e target)
+- Google Chrome + matching ChromeDriver (only required for the e2e
+  target)
 
 Bring everything up from a clean clone:
 
@@ -24,19 +24,22 @@ Bring everything up from a clean clone:
 make up           # docker-compose: brings up kitp-pg on 127.0.0.1:5544
 make migrate      # runs every .sql in db/migrations once
 make seed         # no-op (seed data ships inside the migration set)
-make web          # flutter build web → client/build/web/
+make web          # vite build → client/dist/
 make run          # one process: API + UI on http://localhost:18080
 ```
 
-Open http://localhost:18080/ in Chrome. kitpd serves both the Flutter
+Open http://localhost:18080/ in Chrome. kitpd serves both the Svelte
 bundle (with SPA-fallback for client routes like `/project/42`) and the
-batch API endpoint on the same port.
+batch API endpoint on the same port. Vite builds finish in a couple of
+seconds, so `make web` is now fast enough to run on every change — but
+`make web-dev` (Vite dev server with HMR) is the preferred inner loop.
 
 Useful single-step targets while developing:
 
 ```sh
 make test         # go test ./... (server)
-make web-test     # flutter test (client widget tests)
+make web-test     # vitest (client unit + widget tests)
+make web-dev      # vite dev server with HMR (preferred dev loop)
 make run          # kitpd on :18080 — API + UI together
                   # override port:        make run LISTEN_ADDR=:8080
                   # serve API only (no UI): make run WEB_DIR=
@@ -46,10 +49,11 @@ make e2e          # full Chrome end-to-end: server + client + DB
 ```
 
 The e2e target resets the Postgres `public` schema, re-runs migrations,
-boots a fresh kitpd on `:18080`, serves the Flutter bundle on `:18091`,
-opens Chrome via webdriver, walks the user journey, captures one PNG
-per step into `docs/screenshots/e2e/`, and verifies post-state via
-direct API calls. Exit code reports pass/fail.
+boots a fresh kitpd on `:18080`, drives Chrome via selenium-webdriver,
+walks the user journey, captures one PNG per step into
+`docs/screenshots/e2e/`, and verifies post-state via direct API calls.
+Exit code reports pass/fail. The harness is implemented in Node at
+`client/test/e2e/run.ts`.
 
 ## Layout
 
@@ -62,13 +66,24 @@ server/         Go server (net/http + pgx)
   internal/store/ pgx wrappers; one .sql file per write group
   internal/mcp/   MCP server (Phase 19)
   internal/obs/   logging, request id, idempotency, pgx tracer
-client/         Flutter web app (Material 3, go_router)
-  lib/dispatch/   central data dispatcher (per-frame batching)
-  lib/reg/        handler registry / typed envelopes
-  lib/ui/         screens & widgets
+client/         Svelte 5 + TypeScript SPA (Vite)
+  src/dispatch/    per-frame batched POST /api/v1/batch
+  src/reg/         handler registry / typed envelopes
+  src/auth/        OIDC PKCE
+  src/routing/     path-based router + guards
+  src/shell/       AppShell + sidebar
+  src/keys/        global keyboard shortcut system
+  src/filter/      Predicate AST + FilterBar + presets
+  src/dnd/         fat-placeholder drag/drop
+  src/quick_entry/ multi-task quick-create overlay
+  src/ui/          primitives (Button, Combobox, DatePicker, ...)
+  src/screens/     one Svelte component per screen
+  test/unit/       vitest
+  test/e2e/        node + selenium-webdriver + chromedriver
 db/migrations/  forward-only SQL migrations, numbered
 docs/           screenshots, traceability matrix
-e2e/            Chrome end-to-end Dart program (Phase 22)
+e2e/            legacy Dart e2e harness (retired by the Svelte cutover;
+                kept in tree for archive — not wired into any make target)
 scripts/        thin shell wrappers around make targets
 ```
 
@@ -87,7 +102,7 @@ the actor is for a given HTTP request.
   every request via the OP's JWKS, auto-provisions a `user_account` row
   on first sight of a `sub`, and applies role mappings from the
   `role_mapping` table to the configured claim (default `groups`). On
-  the client, the Flutter bundle drives Authorization Code + PKCE: the
+  the client, the Svelte bundle drives Authorization Code + PKCE: the
   verifier lives in `sessionStorage` for the same-tab redirect only;
   tokens stay in memory. **Production refuses to start in this mode if
   `OIDC_ISSUER` is empty.**
@@ -111,9 +126,10 @@ against `(card_type, process)` plus the scope rule.
 
 ```sh
 make dex-up           # docker compose --profile oidc up -d dex
-make web-build-oidc   # flutter build web with KITP_OIDC_* dart-defines
+make web-build-oidc   # vite build with VITE_KITP_OIDC_* env vars baked in
 make run-oidc         # kitpd with AUTH_MODE=oidc OIDC_ISSUER=...
-make e2e-oidc         # full role-aware Chrome e2e (dex + kitpd)
+make e2e-oidc         # currently a stub: the OIDC variant of the Node
+                      # e2e harness has not been ported yet (see Makefile)
 ```
 
 The dex config (`dev/dex/config.yaml`) registers a public `kitp-web`

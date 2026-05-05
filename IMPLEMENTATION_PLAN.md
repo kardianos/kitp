@@ -17,18 +17,24 @@ every request as the System User. OIDC is wired in at phase 20.
     internal/dom/   domain handlers (card, activity, attribute, tag, …)
     internal/store/ pgx wrappers; one .sql file per write group
     internal/mcp/   MCP server (phase 19)
-  client/        Flutter web app
-    lib/dispatch/   central data dispatcher
-    lib/reg/        handler registry / typed envelopes
-    lib/ui/         screens & widgets
-    lib/auth/       PKCE OIDC client (phase 20)
+  client/        Svelte 5 + TypeScript SPA (Vite)
+                 (was: Flutter web app, retired by phase P7 of the
+                  Svelte migration; see SVELTE_MIGRATION_PLAN.md)
+    src/dispatch/   central data dispatcher
+    src/reg/        handler registry / typed envelopes
+    src/screens/    screens (one Svelte component each)
+    src/ui/         widget primitives
+    src/auth/       PKCE OIDC client (phase 20)
+    test/unit/      vitest
+    test/e2e/       node + selenium-webdriver + chromedriver
   db/migrations/ forward-only SQL migrations, numbered
   docs/screenshots/<phase>/  one PNG per new screen / state
   scripts/       make-style helpers (`up`, `test`, `e2e`, `screenshot`)
   ```
 - **Testing**
   - Server: `go test ./...` + a Postgres service container. No DB mocking.
-  - Client: `flutter test` (widget) + `flutter test integration_test/` (E2E with `webdriver`).
+  - Client: `pnpm test` (vitest unit + widget) + `pnpm e2e` (Node +
+    selenium-webdriver, replaces the legacy `flutter test integration_test/`).
   - Lifecycle tests live next to the handler they exercise; the cross-cutting "happy path" lives in `e2e/`.
   - Screenshots are produced from integration tests (`takeScreenshot()`) and committed.
 - **Definition of done for every phase**

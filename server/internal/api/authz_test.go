@@ -117,7 +117,7 @@ func TestSystemUserKeepsEveryGrant(t *testing.T) {
 	ctx := context.Background()
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"open"}`, taskID))},
+			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("system user attribute.update should succeed: %+v", resp.Subresponses[0])
@@ -139,7 +139,7 @@ func TestViewerDeniedEveryWrite(t *testing.T) {
 		sub  api.SubRequest
 	}{
 		{"attribute.update", api.SubRequest{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"open"}`, taskID))}},
+			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskID))}},
 		{"card.update process", api.SubRequest{ID: "u", Endpoint: "card", Action: "update", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"done"}`, taskID))}},
 		{"comment.post", api.SubRequest{ID: "c", Endpoint: "comment", Action: "insert", Data: json.RawMessage(
@@ -170,7 +170,7 @@ func TestWorkerCanUpdateTaskNotInsertProject(t *testing.T) {
 	// Allowed: attribute.update on a task.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"open"}`, taskID))},
+			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("worker attribute.update should succeed: %+v", resp.Subresponses[0])
@@ -204,7 +204,7 @@ func TestManagerScopedAllowVsDeny(t *testing.T) {
 	// Allowed: edit task in project A.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"open"}`, taskA))},
+			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskA))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("mgr in A should edit A: %+v", resp.Subresponses[0])
@@ -213,7 +213,7 @@ func TestManagerScopedAllowVsDeny(t *testing.T) {
 	// Denied: edit task in project B (outside scope).
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"open"}`, taskB))},
+			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskB))},
 	}})
 	if resp.Subresponses[0].OK {
 		t.Errorf("mgr scoped to A should NOT edit B: %+v", resp.Subresponses[0])
@@ -235,7 +235,7 @@ func TestAdminGlobalCanDoEverything(t *testing.T) {
 	// Edit existing task.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"open"}`, taskA))},
+			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskA))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("admin should edit task: %+v", resp.Subresponses[0])
@@ -266,9 +266,9 @@ func TestBatchMixedAllowedAndDeniedAborts(t *testing.T) {
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "ok", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"open"}`, taskA))},
+			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskA))},
 		{ID: "no", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"open"}`, taskB))},
+			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskB))},
 	}})
 	if resp.Subresponses[0].OK {
 		t.Errorf("slot 0 should be aborted: %+v", resp.Subresponses[0])

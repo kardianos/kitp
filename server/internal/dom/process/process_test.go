@@ -62,7 +62,7 @@ func TestUpdateWithCommentProcess(t *testing.T) {
 	// Invoke process: data is the union of attribute.update + comment.insert inputs.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "uwc", Endpoint: "task", Action: "update_with_comment", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"open","body":"setting status"}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo","body":"setting status"}`, tOut.ID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("process: %+v", resp.Subresponses[0])
@@ -195,7 +195,7 @@ func TestAuthDeny(t *testing.T) {
 	// Try attribute.update on the task — should fail with unauthorized.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"open"}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, tOut.ID))},
 	}})
 	if resp.Subresponses[0].OK {
 		t.Fatalf("expected unauthorized, got %+v", resp.Subresponses[0])

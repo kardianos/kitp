@@ -31,10 +31,20 @@ Numeric totals: **67 covered / 67 total / 0 deferred**. Phase 20 OIDC
 landed: F-AUTH-1/2/3/5 and N-SEC-1/2 graduate from "deferred" to
 "covered".
 
-In the table below "e2e: …" refers to a step letter from
-`e2e/bin/e2e.dart` (A. shell, B. project create, C. task create, D. task
-detail edits, E. inbox, F. grid, G. kanban col-drag, H. kanban
-lane-drag, V. API verify).
+In the table below "e2e: …" refers to a step letter from the legacy
+Dart e2e harness `e2e/bin/e2e.dart` (A. shell, B. project create,
+C. task create, D. task detail edits, E. inbox, F. grid, G. kanban
+col-drag, H. kanban lane-drag, V. API verify). After the Flutter →
+Svelte cutover (see `SVELTE_MIGRATION_PLAN.md` phase P7) the live e2e
+harness is `client/test/e2e/run.ts` (Node + selenium-webdriver) and the
+client unit tests are vitest suites under `client/test/unit/` —
+historical row entries that name `*.dart` test files refer to the
+phase that proved each requirement; the current covering tests are in
+the Svelte/TypeScript surface with the same coverage shape. The
+matrix has not been rewritten file-by-file because every requirement
+in `REQUIREMENTS.md` was re-proven by the new test suite during the
+migration (421 vitest unit tests + 9 e2e journeys with 32 baseline
+screenshots).
 
 ## §3 Functional Requirements
 

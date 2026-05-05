@@ -58,7 +58,11 @@ func cardTypeFromCardID(ctx context.Context, pool reg.ValidationPool, raw any) (
 //   - the card must exist;
 //   - the (card_type, attribute_def) edge must exist;
 //   - removal of a required attribute is rejected (we treat a JSON null
-//     payload as removal).
+//     payload as removal);
+//   - if the attribute_def has value_type='enum', the supplied value
+//     must be one of the rows in attribute_def_option (migration 0012).
+//     The check uses a single SELECT, builds a Go set, and rejects
+//     unknown values with code 'invalid_enum_value'.
 func validateUpdate(ctx context.Context, pool reg.ValidationPool, raw any) error {
 	in := raw.(UpdateInput)
 	if in.CardID == 0 {
@@ -80,16 +84,18 @@ func validateUpdate(ctx context.Context, pool reg.ValidationPool, raw any) error
 		return fmt.Errorf("attribute.update: validate card lookup: %w", err)
 	}
 
-	// Look up the edge directly (cheap, single query).
+	// Look up the edge directly (cheap, single query). We also pull
+	// value_type so we can apply enum validation in the same pass.
 	var attrDefID int32
 	var isRequired bool
+	var valueType string
 	row = pool.QueryRow(ctx, `
-		SELECT ad.id, e.is_required
+		SELECT ad.id, e.is_required, ad.value_type
 		FROM attribute_def ad
 		JOIN edge e ON e.attribute_def_id = ad.id
 		WHERE ad.name = $1 AND e.card_type_id = $2
 	`, in.AttributeName, cardTypeID)
-	if err := row.Scan(&attrDefID, &isRequired); err != nil {
+	if err := row.Scan(&attrDefID, &isRequired, &valueType); err != nil {
 		if err == pgx.ErrNoRows {
 			return &reg.HandlerError{Code: "edge_violation",
 				Message: fmt.Sprintf("attribute.update: attribute %q is not allowed on this card type",
@@ -99,10 +105,61 @@ func validateUpdate(ctx context.Context, pool reg.ValidationPool, raw any) error
 	}
 
 	// Treat literal JSON null as a removal request.
-	if isJSONNull(in.Value) && isRequired {
-		return &reg.HandlerError{Code: "edge_violation",
-			Message: fmt.Sprintf("attribute.update: attribute %q is required and cannot be removed",
-				in.AttributeName)}
+	if isJSONNull(in.Value) {
+		if isRequired {
+			return &reg.HandlerError{Code: "edge_violation",
+				Message: fmt.Sprintf("attribute.update: attribute %q is required and cannot be removed",
+					in.AttributeName)}
+		}
+		// Removal of an enum-typed attribute is not a membership check.
+		return nil
+	}
+
+	// Enum membership: only meaningful when value_type='enum'. Decode the
+	// JSON payload, accept only string values (the only enum shape we
+	// support today — see migration 0012 which seeds plain text values),
+	// and look the value up in attribute_def_option.
+	if valueType == "enum" {
+		var decoded any
+		if err := json.Unmarshal(in.Value, &decoded); err != nil {
+			return &reg.HandlerError{Code: "invalid_enum_value",
+				Message: fmt.Sprintf("attribute.update: value for enum attribute %q is not valid JSON: %v",
+					in.AttributeName, err)}
+		}
+		s, ok := decoded.(string)
+		if !ok {
+			return &reg.HandlerError{Code: "invalid_enum_value",
+				Message: fmt.Sprintf("attribute.update: value for enum attribute %q must be a string; got %T",
+					in.AttributeName, decoded)}
+		}
+		allowed := map[string]struct{}{}
+		var allowedList []string
+		rows, err := pool.Query(ctx, `
+			SELECT value FROM attribute_def_option
+			WHERE attribute_def_id = $1
+			ORDER BY ordering, value
+		`, attrDefID)
+		if err != nil {
+			return fmt.Errorf("attribute.update: validate enum options: %w", err)
+		}
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				rows.Close()
+				return fmt.Errorf("attribute.update: validate enum scan: %w", err)
+			}
+			allowed[v] = struct{}{}
+			allowedList = append(allowedList, v)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("attribute.update: validate enum rows: %w", err)
+		}
+		if _, ok := allowed[s]; !ok {
+			return &reg.HandlerError{Code: "invalid_enum_value",
+				Message: fmt.Sprintf("attribute.update: value %q is not allowed for enum attribute %q; allowed: %v",
+					s, in.AttributeName, allowedList)}
+		}
 	}
 	return nil
 }

@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme tokens. Light by default; dark via [data-theme="dark"] on <html>. */
+:root {
+  --color-bg: #ffffff;
+  --color-fg: #0f172a;
+  --color-muted: #64748b;
+  --color-surface: #f8fafc;
+  --color-border: #e2e8f0;
+  --color-accent: #2563eb;
+  --color-accent-fg: #ffffff;
+  --color-danger: #dc2626;
+}
+
+[data-theme='dark'] {
+  --color-bg: #0b1220;
+  --color-fg: #e2e8f0;
+  --color-muted: #94a3b8;
+  --color-surface: #111827;
+  --color-border: #1f2937;
+  --color-accent: #60a5fa;
+  --color-accent-fg: #0b1220;
+  --color-danger: #f87171;
+}
+
+html,
+body {
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+}

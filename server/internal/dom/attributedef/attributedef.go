@@ -46,13 +46,24 @@ type BoundCardType struct {
 	Ordering     int32  `json:"ordering" mcp:"desc=display ordering for the edge"`
 }
 
+// AttributeDefOptionRow is one allowed option for an enum-typed
+// attribute_def. Options come from the attribute_def_option table (see
+// migration 0012). Only enum-typed defs ever populate this list; for all
+// other value_types the field is empty/omitted.
+type AttributeDefOptionRow struct {
+	Value    string `json:"value" mcp:"desc=stored JSON value (the literal jsonb the server accepts)"`
+	Label    string `json:"label" mcp:"desc=display label for the option"`
+	Ordering int32  `json:"ordering" mcp:"desc=display ordering (ascending)"`
+}
+
 // SelectRow is one attribute_def row plus its bindings.
 type SelectRow struct {
-	ID         int32           `json:"id" mcp:"desc=attribute_def id"`
-	Name       string          `json:"name" mcp:"desc=attribute_def name"`
-	ValueType  string          `json:"value_type" mcp:"desc=value type label (text, bool, card_ref, …)"`
-	IsBuiltIn  bool            `json:"is_built_in" mcp:"desc=true if installed by a migration"`
-	BoundTo    []BoundCardType `json:"bound_to" mcp:"desc=card_types the attribute is bound to via edge"`
+	ID        int32                   `json:"id" mcp:"desc=attribute_def id"`
+	Name      string                  `json:"name" mcp:"desc=attribute_def name"`
+	ValueType string                  `json:"value_type" mcp:"desc=value type label (text, bool, card_ref, …)"`
+	IsBuiltIn bool                    `json:"is_built_in" mcp:"desc=true if installed by a migration"`
+	BoundTo   []BoundCardType         `json:"bound_to" mcp:"desc=card_types the attribute is bound to via edge"`
+	Options   []AttributeDefOptionRow `json:"options,omitempty" mcp:"desc=allowed options for enum-typed attributes (sorted by ordering); empty for non-enum defs"`
 }
 
 // SelectOutput wraps the rows.
@@ -168,9 +179,10 @@ func authzAdmin(ctx context.Context, _ any) error {
 	return nil
 }
 
-// runSelect issues two queries (defs + edges) and stitches them in Go. We
-// choose two reads over a jsonb LATERAL to keep the SQL small and the
-// per-row scan trivial; in practice attribute_def has well under 100 rows.
+// runSelect issues three queries (defs + edges + options) and stitches
+// them in Go. We choose follow-up reads over a jsonb LATERAL to keep the
+// SQL small and the per-row scan trivial; in practice attribute_def has
+// well under 100 rows and only a handful are enum-typed.
 func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 		defRows, err := tx.Query(ctx, `
@@ -220,6 +232,34 @@ func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 		}
 		edgeRows.Close()
 		if err := edgeRows.Err(); err != nil {
+			return nil, err
+		}
+
+		// Options for enum-typed defs (migration 0012). We follow the same
+		// pattern as the edges query: one read, bucket by attribute_def_id
+		// in Go. ORDER BY ordering ASC so the client can render options
+		// in the canonical sequence without sorting.
+		optRows, err := tx.Query(ctx, `
+			SELECT attribute_def_id, value, label, ordering
+			FROM attribute_def_option
+			ORDER BY attribute_def_id, ordering, value
+		`)
+		if err != nil {
+			return nil, fmt.Errorf("attribute_def.select: options: %w", err)
+		}
+		for optRows.Next() {
+			var defID int32
+			var o AttributeDefOptionRow
+			if err := optRows.Scan(&defID, &o.Value, &o.Label, &o.Ordering); err != nil {
+				optRows.Close()
+				return nil, err
+			}
+			if i, ok := idx[defID]; ok {
+				out[i].Options = append(out[i].Options, o)
+			}
+		}
+		optRows.Close()
+		if err := optRows.Err(); err != nil {
 			return nil, err
 		}
 
