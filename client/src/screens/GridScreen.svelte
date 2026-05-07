@@ -33,7 +33,14 @@
     SubRequestError,
   } from '../dispatch/errors.js';
   import FilterBar from '../filter/FilterBar.svelte';
-  import type { FilterAttribute } from '../filter/attribute_schema.svelte.js';
+  import {
+    AttributeSchemaCache,
+    type FilterAttribute,
+  } from '../filter/attribute_schema.svelte';
+  import {
+    buildTaskFilterPalette,
+    resolveAttributeLabel,
+  } from '../filter/task_palette';
   import {
     eq,
     in_,
@@ -47,24 +54,23 @@
   } from '../filter/quick_chips.js';
   import ValueInput from '../filter/ValueInput.svelte';
   import { setActiveScope, useShortcut } from '../keys/shortcut.js';
+  import { projectScope } from '../shell/project_scope.svelte';
   import { useQuickEntry } from '../quick_entry/use_quick_entry.svelte.js';
   import QuickEntryOverlay from '../quick_entry/QuickEntryOverlay.svelte';
   import {
-    attributeDefSelect,
     cardSelectWithAttributes,
     userSelect,
   } from '../reg/handlers.js';
   import type {
-    AttributeDefRow,
-    AttributeDefSelectInput,
-    AttributeDefSelectOutput,
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
     CardWithAttrs,
+    UserRow,
     UserSelectInput,
     UserSelectOutput,
   } from '../reg/types.js';
   import { navigate } from '../routing/router.svelte.js';
+  import { setTaskNavList } from '../routing/task_nav_list.svelte.js';
   import Button from '../ui/Button.svelte';
   import Combobox from '../ui/Combobox.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
@@ -92,13 +98,18 @@
 
   let { projectId, params = {} }: Props = $props();
 
-  // Allow either explicit projectId prop or a `:id` route param.
+  // Resolution order: explicit prop > `:id` route param > global project
+  // scope picked from the sidebar. The global scope is the everyday case
+  // (Inbox / Grid / Kanban share it); the prop / param paths cover deep
+  // links like `/project/42/grid` that should ignore the sidebar choice.
   const scopedProjectId = $derived.by((): number | undefined => {
     if (projectId !== undefined) return projectId;
     const v = params.id;
-    if (typeof v !== 'string' || v === '') return undefined;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : undefined;
+    if (typeof v === 'string' && v !== '') {
+      const n = Number(v);
+      if (Number.isFinite(n)) return n;
+    }
+    return projectScope.projectId ?? undefined;
   });
 
   /* ----------------------------------------------------------------- columns */
@@ -153,17 +164,41 @@
   /* ------------------------------------------------------------------ state */
 
   const dispatcher = getDispatcher();
+  const schemaCache = new AttributeSchemaCache(dispatcher);
   setActiveScope('grid');
 
   let rows = $state<CardWithAttrs[]>([]);
-  let userNames = $state<Record<number, string>>({});
-  let cardTitles = $state<Record<number, string>>({});
-  let tagPaths = $state<Record<number, string>>({});
-  let attrDefs = $state<AttributeDefRow[]>([]);
   let milestoneRows = $state<CardWithAttrs[]>([]);
   let componentRows = $state<CardWithAttrs[]>([]);
   let tagRows = $state<CardWithAttrs[]>([]);
-  let userRows = $state<{ id: number; display_name: string }[]>([]);
+  let userRows = $state<UserRow[]>([]);
+
+  /** Derived lookup tables fed to TaskRow / inline cells. */
+  const userNames = $derived.by((): Record<number, string> => {
+    const out: Record<number, string> = {};
+    for (const u of userRows) out[u.id] = u.display_name;
+    return out;
+  });
+  const cardTitles = $derived.by((): Record<number, string> => {
+    const out: Record<number, string> = {};
+    for (const r of milestoneRows) {
+      const t = r.attributes['title'] ?? r.attributes['name'];
+      if (typeof t === 'string') out[r.id] = t;
+    }
+    for (const r of componentRows) {
+      const t = r.attributes['title'] ?? r.attributes['name'];
+      if (typeof t === 'string') out[r.id] = t;
+    }
+    return out;
+  });
+  const tagPaths = $derived.by((): Record<number, string> => {
+    const out: Record<number, string> = {};
+    for (const r of tagRows) {
+      const p = r.attributes['path'];
+      if (typeof p === 'string') out[r.id] = p;
+    }
+    return out;
+  });
   let loading = $state(true);
   let loadingMore = $state(false);
   let exhausted = $state(false);
@@ -236,46 +271,24 @@
       action: cardSelectWithAttributes.action,
       data: { cardTypeName: 'tag' },
     });
-    const fAttrDefs = dispatcher.request<
-      AttributeDefSelectInput,
-      AttributeDefSelectOutput
-    >({
-      endpoint: attributeDefSelect.endpoint,
-      action: attributeDefSelect.action,
-    });
+    // `AttributeSchemaCache.load()` issues `attribute_def.select` on the
+    // same tick (and short-circuits on subsequent screen mounts).
+    const fSchema = schemaCache.load();
 
     try {
-      const [tOut, uOut, mOut, cOut, tagOut, defsOut] = await Promise.all([
+      const [tOut, uOut, mOut, cOut, tagOut] = await Promise.all([
         fTasks,
         fUsers,
         fMilestones,
         fComponents,
         fTags,
-        fAttrDefs,
+        fSchema,
       ]);
       rows = tOut.rows;
       userRows = uOut.rows;
       milestoneRows = mOut.rows;
       componentRows = cOut.rows;
       tagRows = tagOut.rows;
-      attrDefs = defsOut.rows;
-      userNames = Object.fromEntries(uOut.rows.map((u) => [u.id, u.display_name]));
-      const titles: Record<number, string> = {};
-      for (const m of mOut.rows) {
-        const t = m.attributes['title'] ?? m.attributes['name'];
-        if (typeof t === 'string') titles[m.id] = t;
-      }
-      for (const c of cOut.rows) {
-        const t = c.attributes['title'] ?? c.attributes['name'];
-        if (typeof t === 'string') titles[c.id] = t;
-      }
-      cardTitles = titles;
-      const paths: Record<number, string> = {};
-      for (const t of tagOut.rows) {
-        const p = t.attributes['path'];
-        if (typeof p === 'string') paths[t.id] = p;
-      }
-      tagPaths = paths;
       exhausted = tOut.rows.length < PAGE_LIMIT;
       // Reset selection inside bounds.
       if (selectedIndex >= rows.length) {
@@ -386,68 +399,24 @@
     return [];
   }
 
-  /** Build {@link FilterAttribute} for [name] off the live attribute_def cache. */
-  function filterAttributeFor(name: string): FilterAttribute | null {
-    const def = attrDefs.find((d) => d.name === name);
-    if (def === undefined) {
-      // Fallback so the FilterBar still renders before the schema arrives.
-      // Status / assignee / refs are well-known.
-      if (name === 'status') {
-        return {
-          name: 'status',
-          label: 'Status',
-          valueType: 'enum',
-          options: [
-            { value: 'todo', label: 'todo' },
-            { value: 'doing', label: 'doing' },
-            { value: 'review', label: 'review' },
-            { value: 'done', label: 'done' },
-          ],
-          ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
-        };
-      }
-      if (name === 'assignee') {
-        return {
-          name: 'assignee',
-          label: 'Assignee',
-          valueType: 'ref:user',
-          options: resolveOptionsFor('assignee'),
-          ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
-        };
-      }
-      return null;
-    }
-    const fa: FilterAttribute = {
-      name: def.name,
-      label: def.name,
-      valueType: def.value_type,
-      ops:
-        def.value_type === 'bool'
-          ? ['eq', 'ne', 'exists', 'notExists']
-          : def.value_type === 'enum' || def.value_type.startsWith('ref:')
-            ? ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists']
-            : ['eq', 'ne', 'exists', 'notExists'],
-    };
-    if (def.value_type === 'enum') {
-      const opts = def.options ?? [];
-      if (opts.length > 0) {
-        fa.options = opts.map((o) => ({ value: o.value, label: o.label }));
-      }
-    } else if (def.value_type.startsWith('ref:')) {
-      const resolved = resolveOptionsFor(def.name);
-      if (resolved.length > 0) fa.options = resolved;
-    }
-    return fa;
-  }
+  /**
+   * FilterBar palette. Single source of truth: `filter/task_palette.ts`.
+   * Same names / labels / option lists as Inbox, Kanban, ProjectDetail.
+   */
+  const filterAttributes = $derived<FilterAttribute[]>(
+    buildTaskFilterPalette({
+      schema: schemaCache,
+      users: userRows,
+      milestones: milestoneRows,
+      components: componentRows,
+      tags: tagRows,
+    }),
+  );
 
-  const filterAttributes = $derived.by((): FilterAttribute[] => {
-    const out: FilterAttribute[] = [];
-    for (const name of ['status', 'assignee', 'milestone_ref', 'component_ref']) {
-      const fa = filterAttributeFor(name);
-      if (fa !== null) out.push(fa);
-    }
-    return out;
-  });
+  /** Look up a `FilterAttribute` from the active palette by name. */
+  function filterAttributeFor(name: string): FilterAttribute | null {
+    return filterAttributes.find((a) => a.name === name) ?? null;
+  }
 
   const quickChips = $derived.by((): QuickChip[] => {
     const chips: QuickChip[] = [];
@@ -528,7 +497,13 @@
         middleware: [offset(4), flip()],
       }).then(({ x, y }) => {
         if (!colFilterPopup) return;
-        Object.assign(colFilterPopup.style, { left: `${x}px`, top: `${y}px` });
+        // Reveal only once positioned — see Combobox.svelte for the
+        // rationale (avoids the (0,0) flash before computePosition).
+        Object.assign(colFilterPopup.style, {
+          left: `${x}px`,
+          top: `${y}px`,
+          visibility: 'visible',
+        });
       });
     });
   }
@@ -593,7 +568,10 @@
     if (!t) return;
     if (colFilterPopup?.contains(t)) return;
     if (colFilterAnchor?.contains(t)) return;
-    closeColumnFilter();
+    // Click outside acts as "apply" rather than "discard": if the user has
+    // touched any values, commit them; otherwise just close. This avoids the
+    // surprising case where the user picks options and looks away to lose them.
+    commitColumnFilter();
   }
 
   $effect(() => {
@@ -644,14 +622,23 @@
     }
   }
 
+  /** Capture the current grid order as the task nav-list and navigate. */
+  function openTaskById(id: number): void {
+    setTaskNavList({
+      label: scopedProjectId === undefined ? 'Grid' : `Grid — project ${scopedProjectId}`,
+      ids: rows.map((r) => r.id),
+    });
+    navigate(`/task/${id}`);
+  }
+
   function openSelected(): void {
     const r = rows[selectedIndex];
     if (r === undefined) return;
-    navigate(`/task/${r.id}`);
+    openTaskById(r.id);
   }
 
   function openRow(row: CardWithAttrs): void {
-    navigate(`/task/${row.id}`);
+    openTaskById(row.id);
   }
 
   /* ------------------------------------------------------------- shortcuts */
@@ -664,8 +651,8 @@
     },
   });
 
-  useShortcut('grid', 'j', () => selectAt(selectedIndex + 1), 'Move selection down');
-  useShortcut('grid', 'k', () => selectAt(selectedIndex - 1), 'Move selection up');
+  useShortcut('grid', ['j', 'ArrowDown'], () => selectAt(selectedIndex + 1), 'Down');
+  useShortcut('grid', ['k', 'ArrowUp'], () => selectAt(selectedIndex - 1), 'Up');
   useShortcut('grid', 'Enter', openSelected, 'Open selected task');
   useShortcut(
     'grid',
@@ -712,7 +699,12 @@
 
   function statusOf(row: CardWithAttrs): string | undefined {
     const v = row.attributes['status'];
-    return typeof v === 'string' ? v : undefined;
+    if (typeof v !== 'string') return undefined;
+    // Resolve through the palette so the cell renders the enum option's
+    // label ("To do") instead of the raw wire value ("todo") — agrees
+    // with the FilterBar status chip and the TaskRow status chip.
+    const fa = filterAttributeFor('status');
+    return resolveAttributeLabel(fa ?? undefined, v);
   }
 
   function assigneeOf(row: CardWithAttrs): string | undefined {
@@ -1062,7 +1054,7 @@
     role="dialog"
     aria-label="Filter {fa.label}"
     tabindex="-1"
-    style="position: fixed; left: 0; top: 0;"
+    style="position: fixed; left: 0; top: 0; visibility: hidden;"
     onkeydown={(e) => {
       if (e.key === 'Escape') {
         e.preventDefault();

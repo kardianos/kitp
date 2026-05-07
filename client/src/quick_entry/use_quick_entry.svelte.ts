@@ -48,7 +48,13 @@ export interface UseQuickEntryProps {
 }
 
 export interface UseQuickEntry {
-  open: () => void;
+  /**
+   * Open the overlay. Accepts an optional one-shot prefill that overrides
+   * the controller-level default — used by Kanban "+ Add" buttons that
+   * want a column-specific prefill without rebuilding the controller.
+   * The override is cleared on close.
+   */
+  open: (override?: QuickEntryPrefill) => void;
   close: () => void;
   isOpen: () => boolean;
   /** Spread onto `<QuickEntryOverlay>`. */
@@ -57,17 +63,20 @@ export interface UseQuickEntry {
 
 export function useQuickEntry(opts: UseQuickEntryOptions): UseQuickEntry {
   let isOpen = $state(false);
+  let override = $state<QuickEntryPrefill | null>(null);
 
-  function openOverlay(): void {
+  function openOverlay(next?: QuickEntryPrefill): void {
+    override = next ?? null;
     isOpen = true;
   }
 
   function closeOverlay(): void {
     isOpen = false;
+    override = null;
   }
 
   // Bind `n` to open the overlay at the given scope.
-  useShortcut(opts.scope, 'n', openOverlay, `New ${opts.defaultCardType}`);
+  useShortcut(opts.scope, 'n', () => openOverlay(), `New ${opts.defaultCardType}`);
 
   return {
     open: openOverlay,
@@ -80,7 +89,8 @@ export function useQuickEntry(opts: UseQuickEntryOptions): UseQuickEntry {
         onClose: closeOverlay,
       };
       if (opts.parentCardId !== undefined) p.parentCardId = opts.parentCardId;
-      if (opts.prefill !== undefined) p.prefill = opts.prefill;
+      const effective = override ?? opts.prefill;
+      if (effective !== undefined) p.prefill = effective;
       if (opts.assigneeOptions !== undefined) p.assigneeOptions = opts.assigneeOptions;
       if (opts.onCreated !== undefined) p.onCreated = opts.onCreated;
       return p;

@@ -34,7 +34,7 @@ import { startDriver } from './driver.ts';
 import { BASELINE_DIR, REPO_ROOT } from './screenshots.ts';
 import { diffPng } from './visual_diff.ts';
 
-const CLIENT_DIR = join(REPO_ROOT, 'client-svelte');
+const CLIENT_DIR = join(REPO_ROOT, 'client');
 const DIST_DIR = join(CLIENT_DIR, 'dist');
 const LOG_DIR = join(CLIENT_DIR, 'test', 'e2e', '.logs');
 const JOURNEYS_DIR = join(CLIENT_DIR, 'test', 'e2e', 'journeys');

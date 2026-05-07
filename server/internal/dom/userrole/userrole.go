@@ -51,22 +51,24 @@ type RevokeOutput struct {
 // Register installs both handlers.
 func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
-		Endpoint:   "user_role",
-		Action:     "set",
-		Doc:        "Admin-only: grant a role to a user, optionally scoped to a project. Coalesces N inputs into one upsert statement.",
-		InputType:  reflect.TypeFor[SetInput](),
-		OutputType: reflect.TypeFor[SetOutput](),
-		Authz:      authzAdmin,
-		Run:        runSet(p),
+		Endpoint:     "user_role",
+		Action:       "set",
+		Doc:          "Admin-only: grant a role to a user, optionally scoped to a project. Coalesces N inputs into one upsert statement.",
+		InputType:    reflect.TypeFor[SetInput](),
+		OutputType:   reflect.TypeFor[SetOutput](),
+		AllowedRoles: []string{"admin"},
+		Authz:        authzAdmin,
+		Run:          runSet(p),
 	})
 	reg.Register(reg.Handler{
-		Endpoint:   "user_role",
-		Action:     "revoke",
-		Doc:        "Admin-only: revoke a role from a user (with matching scope).",
-		InputType:  reflect.TypeFor[RevokeInput](),
-		OutputType: reflect.TypeFor[RevokeOutput](),
-		Authz:      authzAdmin,
-		Run:        runRevoke(p),
+		Endpoint:     "user_role",
+		Action:       "revoke",
+		Doc:          "Admin-only: revoke a role from a user (with matching scope).",
+		InputType:    reflect.TypeFor[RevokeInput](),
+		OutputType:   reflect.TypeFor[RevokeOutput](),
+		AllowedRoles: []string{"admin"},
+		Authz:        authzAdmin,
+		Run:          runRevoke(p),
 	})
 }
 

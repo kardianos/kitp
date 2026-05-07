@@ -19,18 +19,22 @@
   Ports `client/lib/ui/screens/task_detail_screen.dart` (759 LOC).
 -->
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { getDispatcher } from '../dispatch/context';
   import { setActiveScope, useShortcut } from '../keys/shortcut';
-  import { navigate } from '../routing/router.svelte';
+  import { goBackOrFallback, navigate } from '../routing/router.svelte';
+  import { taskNavList } from '../routing/task_nav_list.svelte';
   import { notify } from '../ui/toast.svelte';
   import Button from '../ui/Button.svelte';
   import IconButton from '../ui/IconButton.svelte';
+  import Markdown from '../ui/Markdown.svelte';
   import Spinner from '../ui/Spinner.svelte';
   import Combobox from '../ui/Combobox.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
   import ActivityRowView from '../ui/widgets/ActivityRow.svelte';
   import TagChip from '../ui/widgets/TagChip.svelte';
+  import AttachmentsSection from '../ui/widgets/AttachmentsSection.svelte';
+  import AttachmentsPreviewStrip from '../ui/widgets/AttachmentsPreviewStrip.svelte';
   import AttributeSidePanel from '../ui/widgets/AttributeSidePanel.svelte';
   import { AttributeSchemaCache } from '../filter/attribute_schema.svelte';
   import type { FilterAttribute } from '../filter/attribute_schema.svelte';
@@ -40,6 +44,8 @@
     ActivitySelectOutput,
     AttributeUpdateInput,
     AttributeUpdateOutput,
+    CardSearchInput,
+    CardSearchOutput,
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
     CardWithAttrs,
@@ -57,8 +63,8 @@
     activitySelect,
     appliedTagIds,
     applyTagPayload,
-    attributeDefSelect,
     attributeUpdate,
+    cardSearch,
     cardSelectWithAttributes,
     cardTitleMap,
     commentInsert,
@@ -124,6 +130,10 @@
   let commentEl: HTMLTextAreaElement | null = $state(null);
   let postingComment = $state(false);
 
+  // Bumped each time the right-rail AttachmentsSection commits an upload
+  // or delete; the preview strip listens to it via a $effect to refetch.
+  let attachmentsVersion = $state(0);
+
   // Tag picker (Combobox toggled by `t` shortcut and the "+ Add tag" btn).
   let tagPickerOpen = $state(false);
   let tagPickerValue = $state<number | null>(null);
@@ -158,11 +168,11 @@
       ) {
         continue;
       }
-      // Only show defs bound to the `task` card type (or unbound, which
-      // server-side means "applies everywhere").
-      const boundToTask =
-        def.bound_to.length === 0 ||
-        def.bound_to.some((b) => b.card_type_name === 'task');
+      // Only show defs explicitly bound to the `task` card type. The server's
+      // attribute.update validator inner-joins `edge`, so unbound defs reject
+      // every write with `edge_violation` — surfacing them here just leads to
+      // failed saves.
+      const boundToTask = def.bound_to.some((b) => b.card_type_name === 'task');
       if (!boundToTask) continue;
       const fa = schemaCache.toFilterAttribute(def.name);
       if (fa !== null) out.push(fa);
@@ -170,7 +180,12 @@
     return out;
   });
 
-  /** refOptions for the side panel — pre-resolved Combobox option lists. */
+  /**
+   * refOptions for the side panel — these populate the trigger button's
+   * label for currently-set values. For the three eagerly-loaded built-ins
+   * we pass the full list; the dropdown's open-time options come from
+   * `refLoaders` below.
+   */
   const refOptions = $derived.by((): Record<string, { value: unknown; label: string }[]> => {
     const out: Record<string, { value: unknown; label: string }[]> = {};
     out['assignee'] = users.map((u) => ({ value: u.id, label: u.display_name }));
@@ -188,6 +203,50 @@
           ? (c.attributes['title'] as string)
           : `#${c.id}`,
     }));
+    return out;
+  });
+
+  /**
+   * Async loaders for every ref:* attribute in the schema.
+   *
+   *   - `ref:user` is served from the eagerly-loaded `users` list by
+   *     filtering in memory — no extra round-trip needed for the user
+   *     count this app has, and the picker still feels "live".
+   *   - Every other `ref:<card_type>` (built-ins like milestone_ref /
+   *     component_ref AND any custom ref a project admin has wired up)
+   *     calls `card.search` so the picker scales beyond what we'd want
+   *     to load up front.
+   */
+  const refLoaders = $derived.by(() => {
+    const out: Record<
+      string,
+      (q: string) => Promise<{ value: unknown; label: string }[]>
+    > = {};
+    for (const fa of schema) {
+      if (!fa.valueType.startsWith('ref:')) continue;
+      const cardType = fa.valueType.slice('ref:'.length);
+      if (cardType === 'user') {
+        out[fa.name] = async (q: string) => {
+          const needle = q.trim().toLowerCase();
+          const matched = needle === ''
+            ? users
+            : users.filter((u) => u.display_name.toLowerCase().includes(needle));
+          return matched.slice(0, 50).map((u) => ({
+            value: u.id,
+            label: u.display_name,
+          }));
+        };
+      } else {
+        out[fa.name] = async (q: string) => {
+          const res = await dispatcher.request<CardSearchInput, CardSearchOutput>({
+            endpoint: cardSearch.endpoint,
+            action: cardSearch.action,
+            data: { cardTypeName: cardType, query: q, limit: 50 },
+          });
+          return res.rows.map((r) => ({ value: r.id, label: r.title }));
+        };
+      }
+    }
     return out;
   });
 
@@ -302,8 +361,20 @@
     }
   }
 
-  onMount(() => {
-    void refresh(true);
+  // Refetch whenever `taskId` changes — covers both the initial mount
+  // and prev/next navigation (the Router reuses the same screen instance
+  // when only the route param flips, so onMount alone would never fire
+  // for a flip from /task/10 to /task/20).
+  //
+  // `refresh(true)` reseeds the inline-edit drafts (title / description)
+  // for the new task. Wrapped in untrack() so the side effects inside
+  // refresh() don't pull every piece of mutated state into the
+  // effect's tracked deps — only `taskId` is a real trigger.
+  $effect(() => {
+    void taskId;
+    untrack(() => {
+      void refresh(true);
+    });
   });
 
   /* -------------------------------------------------------------------- */
@@ -513,8 +584,18 @@
     }
   }
 
-  function toggleTags(): void {
-    tagPickerOpen = !tagPickerOpen;
+  async function toggleTags(): Promise<void> {
+    const next = !tagPickerOpen;
+    tagPickerOpen = next;
+    if (next) {
+      // Pop the dropdown immediately so a single click on "+ Add tag" reveals
+      // the picker — no second click on the trigger needed.
+      await tick();
+      const trigger = document.querySelector<HTMLButtonElement>(
+        '[data-testid="task-tag-picker"] button[role="combobox"]',
+      );
+      trigger?.click();
+    }
   }
 
   function onTagPickerChange(v: number | number[] | null): void {
@@ -528,20 +609,81 @@
   /* -------------------------------------------------------------------- */
 
   function goBack(): void {
-    if (task !== null && typeof task.parent_card_id === 'number') {
-      navigate(`/project/${task.parent_card_id}`);
-    } else {
-      navigate('/projects');
-    }
+    // Prefer the in-app screen the user came from (Kanban / Grid / Inbox /
+    // Project detail) so any filter state encoded in the query string is
+    // preserved. Cold-loaded into the detail (no prior path) → fall back to
+    // the parent project, or the projects list as a last resort.
+    const fallback =
+      task !== null && typeof task.parent_card_id === 'number'
+        ? `/project/${task.parent_card_id}`
+        : '/projects';
+    goBackOrFallback(fallback);
+  }
+
+  /* -------------------------------------------------------------------- */
+  /* Prev/next-in-list navigation                                         */
+  /* -------------------------------------------------------------------- */
+  //
+  // The list screen the user came from (Inbox / Grid / Project / a single
+  // Kanban column) pushes its filtered, ordered task ids into
+  // `taskNavList` immediately before navigate(). We find the current id
+  // in that list and expose `<<` / `>>` controls plus j/k/[/] shortcuts
+  // for stepping to the neighbour task.
+  //
+  // Stepping uses `replace: true` so the back-button still returns to the
+  // original list — without that, walking through twenty issues would
+  // need twenty Back presses to escape.
+  //
+  // When the user cold-loads /task/123 (no list seeded), `navIndex` is
+  // -1 and the controls hide cleanly.
+
+  const navIndex = $derived(taskNavList.ids.indexOf(taskId));
+  const navTotal = $derived(taskNavList.ids.length);
+  const hasPrev = $derived(navIndex > 0);
+  const hasNext = $derived(navIndex >= 0 && navIndex < navTotal - 1);
+
+  function goPrev(): void {
+    if (!hasPrev) return;
+    const id = taskNavList.ids[navIndex - 1];
+    if (id === undefined) return;
+    navigate(`/task/${id}`, { replace: true });
+  }
+
+  function goNext(): void {
+    if (!hasNext) return;
+    const id = taskNavList.ids[navIndex + 1];
+    if (id === undefined) return;
+    navigate(`/task/${id}`, { replace: true });
   }
 
   /* -------------------------------------------------------------------- */
   /* Keyboard shortcuts                                                   */
   /* -------------------------------------------------------------------- */
 
-  useShortcut('task_detail', 'e', () => void focusTitleEdit(), 'Edit title');
-  useShortcut('task_detail', 'c', () => void focusComment(), 'Focus comment');
+  // Edit-prefix chords: `e` opens a chord buffer (1.2 s timeout from
+  // the shortcut dispatcher) and the second key picks the field. We
+  // namespace the editing actions under one prefix instead of consuming
+  // single letters so attribute panels (incl. user-defined attributes)
+  // can claim their own `e <key>` without colliding with screen-wide
+  // shortcuts like `t` (tag picker) or `j` / `k` (prev/next).
+  useShortcut('task_detail', 'e t', () => void focusTitleEdit(), 'Edit title');
+  useShortcut('task_detail', 'e d', () => void focusDescriptionEdit(), 'Edit description');
+  useShortcut('task_detail', 'e c', () => void focusComment(), 'Edit a comment');
   useShortcut('task_detail', 't', toggleTags, 'Toggle tag picker');
+  // List-walking shortcuts. j/k mirror the list-screen convention
+  // (j = down/next, k = up/previous); ] / [ are a bracket alternative
+  // for either hand. Each useShortcut call registers both bindings and
+  // the help overlay collapses them into one row.
+  useShortcut('task_detail', ['j', ']'], goNext, 'Next task in list');
+  useShortcut('task_detail', ['k', '['], goPrev, 'Previous task in list');
+  // Esc / q both return to the previous screen — same effect as the
+  // back chevron on the left. `fireInInputs: false` overrides the
+  // dispatcher's default-true behaviour for Esc so the title /
+  // description / comment editors retain their own Esc-to-cancel
+  // handling without also bouncing the user out of the screen.
+  useShortcut('task_detail', ['Esc', 'q'], goBack, 'Back to previous screen', {
+    fireInInputs: false,
+  });
 
   /* -------------------------------------------------------------------- */
   /* Display helpers                                                      */
@@ -561,7 +703,7 @@
 </script>
 
 <div
-  class="grid h-full grid-cols-1 gap-6 p-6 md:grid-cols-[minmax(0,1fr)_280px]"
+  class="task-detail grid h-full grid-cols-1 gap-3 p-3 md:grid-cols-[minmax(0,1fr)_320px]"
   data-testid="task-detail"
 >
   {#if loading && task === null}
@@ -586,9 +728,9 @@
     </div>
   {:else}
     <!-- Main column ----------------------------------------------------- -->
-    <main class="flex min-w-0 flex-col gap-6">
+    <main class="flex min-w-0 flex-col gap-2 border border-fg/70 bg-bg">
       <!-- Header: back arrow + title (read-only / editing) -->
-      <header class="flex items-start gap-2">
+      <header class="flex items-start gap-2 border-b border-fg/70 bg-surface/40 px-3 py-2">
         <IconButton
           aria-label="Back"
           onclick={goBack}
@@ -614,7 +756,7 @@
               bind:value={titleDraft}
               type="text"
               data-testid="task-title-input"
-              class="w-full rounded-md border border-border bg-bg px-3 py-2 text-2xl font-semibold text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="w-full border border-fg/70 bg-bg px-2 py-1 text-lg font-semibold text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
               onkeydown={onTitleKeydown}
               onblur={() => void commitTitle()}
             />
@@ -624,20 +766,80 @@
             <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
             <h1
               data-testid="task-title"
-              class="cursor-text truncate rounded-md px-1 py-0.5 text-2xl font-semibold text-fg hover:bg-surface"
+              class="cursor-text truncate px-1 text-lg font-semibold text-fg hover:bg-surface/60"
               title="Click to edit (or press e)"
               onclick={() => void focusTitleEdit()}
             >
               {displayTitle}
             </h1>
           {/if}
-          <p class="mt-1 px-1 font-mono text-xs text-muted">#{taskId}</p>
+          <p class="mt-0.5 px-1 font-mono text-[11px] text-muted">#{taskId}</p>
         </div>
+        {#if navTotal > 0 && navIndex >= 0}
+          <!-- Top-right prev/next chevrons. Hidden on cold-load (navIndex
+               < 0); rendered with a position counter so the user knows
+               where they are in the source list. -->
+          <div
+            class="ml-auto flex shrink-0 items-center gap-1 self-start pt-0.5"
+            data-testid="task-nav-chevrons"
+          >
+            <span class="hidden text-[11px] text-muted sm:inline" title={taskNavList.label}>
+              {navIndex + 1} / {navTotal}
+            </span>
+            <span data-testid="task-nav-prev">
+              <IconButton
+                aria-label="Previous task in {taskNavList.label}"
+                title="Previous (k or [)"
+                size="sm"
+                disabled={!hasPrev}
+                onclick={goPrev}
+              >
+                {#snippet children()}
+                  <svg viewBox="0 0 16 16" class="h-4 w-4" aria-hidden="true">
+                    <path
+                      d="M11 3 L7 8 L11 13 M7 3 L3 8 L7 13"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      fill="none"
+                    />
+                  </svg>
+                {/snippet}
+              </IconButton>
+            </span>
+            <span data-testid="task-nav-next">
+              <IconButton
+                aria-label="Next task in {taskNavList.label}"
+                title="Next (j or ])"
+                size="sm"
+                disabled={!hasNext}
+                onclick={goNext}
+              >
+                {#snippet children()}
+                  <svg viewBox="0 0 16 16" class="h-4 w-4" aria-hidden="true">
+                    <path
+                      d="M5 3 L9 8 L5 13 M9 3 L13 8 L9 13"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      fill="none"
+                    />
+                  </svg>
+                {/snippet}
+              </IconButton>
+            </span>
+          </div>
+        {/if}
       </header>
 
       <!-- Description -->
-      <section aria-labelledby="desc-heading">
-        <h2 id="desc-heading" class="mb-2 text-sm font-semibold text-muted">
+      <section aria-labelledby="desc-heading" class="border-t border-fg/70">
+        <h2
+          id="desc-heading"
+          class="border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
+        >
           Description
         </h2>
         {#if editingDescription}
@@ -646,7 +848,7 @@
             bind:value={descDraft}
             data-testid="task-description-input"
             rows="6"
-            class="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            class="block w-full bg-bg px-3 py-2 text-sm text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
             placeholder="Write a description… (Mod+Enter to save, Esc to cancel)"
             onkeydown={onDescriptionKeydown}
             onblur={() => void commitDescription()}
@@ -656,33 +858,45 @@
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             data-testid="task-description"
-            class="min-h-[3rem] cursor-text whitespace-pre-wrap rounded-md border border-transparent px-3 py-2 text-sm text-fg hover:border-border hover:bg-surface/50"
+            class="min-h-[3rem] cursor-text px-3 py-2 text-sm text-fg hover:bg-surface/40"
             title="Click to edit"
             onclick={() => void focusDescriptionEdit()}
           >
             {#if displayDescription === ''}
               <span class="text-muted">Click to add a description…</span>
             {:else}
-              {displayDescription}
+              <!-- View mode renders the description as markdown (sanitized
+                   server-side… well, client-side via DOMPurify in the
+                   Markdown component). Edit mode above is a plain
+                   textarea so the user keeps source-level control. -->
+              <Markdown source={displayDescription} />
             {/if}
           </div>
         {/if}
       </section>
 
+      <!-- Image / PDF preview strip — sits between Description and Activity
+           per spec. Filters its own list to known-previewable kinds; if the
+           card has no image / PDF attachments the section renders nothing. -->
+      <AttachmentsPreviewStrip cardId={taskId} version={attachmentsVersion} />
+
       <!-- Activity stream -->
-      <section aria-labelledby="activity-heading" class="flex flex-col gap-1">
-        <h2 id="activity-heading" class="mb-1 text-sm font-semibold text-muted">
+      <section aria-labelledby="activity-heading" class="flex flex-col border-t border-fg/70">
+        <h2
+          id="activity-heading"
+          class="border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
+        >
           Activity ({orderedActivity.length})
         </h2>
         {#if orderedActivity.length === 0}
-          <p class="text-sm text-muted">No activity yet.</p>
+          <p class="px-3 py-2 text-sm text-muted">No activity yet.</p>
         {:else}
           <ul
             data-testid="task-activity-list"
-            class="flex max-h-[40vh] flex-col gap-0 overflow-y-auto rounded-md border border-border bg-bg p-2"
+            class="flex max-h-[40vh] flex-col gap-0 divide-y divide-fg/15 overflow-y-auto bg-bg"
           >
             {#each orderedActivity as row (row.id)}
-              <li>
+              <li class="px-3 py-1">
                 <ActivityRowView
                   {row}
                   userNames={userNames}
@@ -696,99 +910,120 @@
       </section>
 
       <!-- Comment composer -->
-      <section
-        aria-labelledby="comment-heading"
-        class="flex flex-col gap-2 rounded-md border border-border bg-bg p-3"
-      >
-        <h2 id="comment-heading" class="text-sm font-semibold text-muted">
+      <section aria-labelledby="comment-heading" class="flex flex-col border-t border-fg/70">
+        <h2
+          id="comment-heading"
+          class="border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
+        >
           Comment
         </h2>
-        <textarea
-          bind:this={commentEl}
-          bind:value={commentDraft}
-          data-testid="task-comment-input"
-          rows="3"
-          class="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          placeholder="Add a comment… (Mod+Enter to post)"
-          disabled={postingComment}
-          onkeydown={onCommentKeydown}
-        ></textarea>
-        <div class="flex justify-end">
-          <Button
-            variant="primary"
-            size="sm"
-            loading={postingComment}
-            disabled={commentDraft.trim() === ''}
-            onclick={() => void postComment()}
-          >
-            {#snippet children()}Comment{/snippet}
-          </Button>
+        <div class="flex flex-col gap-2 px-3 py-2">
+          <textarea
+            bind:this={commentEl}
+            bind:value={commentDraft}
+            data-testid="task-comment-input"
+            rows="3"
+            class="w-full border border-fg/40 bg-bg px-2 py-1 text-sm text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            placeholder="Add a comment… (Mod+Enter to post)"
+            disabled={postingComment}
+            onkeydown={onCommentKeydown}
+          ></textarea>
+          <div class="flex justify-end">
+            <Button
+              variant="primary"
+              size="sm"
+              loading={postingComment}
+              disabled={commentDraft.trim() === ''}
+              onclick={() => void postComment()}
+            >
+              {#snippet children()}Comment{/snippet}
+            </Button>
+          </div>
         </div>
       </section>
     </main>
 
     <!-- Right rail ------------------------------------------------------- -->
-    <aside class="flex flex-col gap-4">
+    <aside class="flex flex-col gap-2">
       <AttributeSidePanel
         cardId={taskId}
         attributes={task.attributes}
         {schema}
         {refOptions}
+        {refLoaders}
         onChanged={onAttributeChanged}
+      />
+
+      <AttachmentsSection
+        cardId={taskId}
+        onChanged={() => {
+          // Bump the strip's version so it refetches its filtered list,
+          // and refresh the activity stream so the attachment_create /
+          // attachment_delete row shows up.
+          attachmentsVersion += 1;
+          void refresh();
+        }}
       />
 
       <!-- Tags section -->
       <section
         aria-labelledby="tags-heading"
-        class="flex flex-col gap-2 rounded-md border border-border bg-bg p-3"
+        class="flex flex-col border border-fg/70 bg-bg"
       >
-        <h2 id="tags-heading" class="text-sm font-semibold text-fg">Tags</h2>
-        {#if appliedTags.length === 0}
-          <p class="text-xs text-muted">No tags applied.</p>
-        {:else}
-          <div data-testid="task-tag-row" class="flex flex-wrap gap-1.5">
-            {#each appliedTags as tid (tid)}
-              {@const path = tagPaths[tid] ?? `#${tid}`}
-              <TagChip
-                label={path}
-                removable
-                onRemove={() => void removeTag(tid)}
-              />
-            {/each}
-          </div>
-        {/if}
-
-        {#if tagPickerOpen}
-          <div data-testid="task-tag-picker">
-            <Combobox
-              options={tagPickerOptions}
-              value={tagPickerValue}
-              placeholder="Pick a tag…"
-              aria-label="Add tag"
-              onchange={onTagPickerChange}
-            />
-            <div class="mt-1 flex justify-end">
-              <Button
-                variant="ghost"
-                size="sm"
-                onclick={() => {
-                  tagPickerOpen = false;
-                }}
-              >
-                {#snippet children()}Cancel{/snippet}
-              </Button>
+        <h2
+          id="tags-heading"
+          class="border-b border-fg/40 bg-surface/40 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
+        >
+          Tags
+        </h2>
+        <div class="flex flex-col gap-1.5 px-2 py-1.5">
+          {#if appliedTags.length === 0}
+            <p class="text-xs text-muted">No tags applied.</p>
+          {:else}
+            <div data-testid="task-tag-row" class="flex flex-wrap gap-1">
+              {#each appliedTags as tid (tid)}
+                {@const path = tagPaths[tid] ?? `#${tid}`}
+                <TagChip
+                  label={path}
+                  removable
+                  onRemove={() => void removeTag(tid)}
+                />
+              {/each}
             </div>
-          </div>
-        {:else}
-          <Button
-            variant="secondary"
-            size="sm"
-            onclick={toggleTags}
-            class="self-start"
-          >
-            {#snippet children()}+ Add tag{/snippet}
-          </Button>
-        {/if}
+          {/if}
+
+          {#if tagPickerOpen}
+            <div data-testid="task-tag-picker">
+              <Combobox
+                options={tagPickerOptions}
+                value={tagPickerValue}
+                placeholder="Pick a tag…"
+                aria-label="Add tag"
+                onchange={onTagPickerChange}
+              />
+              <div class="mt-1 flex justify-end">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onclick={() => {
+                    tagPickerOpen = false;
+                  }}
+                >
+                  {#snippet children()}Cancel{/snippet}
+                </Button>
+              </div>
+            </div>
+          {:else}
+            <Button
+              variant="secondary"
+              size="sm"
+              onclick={toggleTags}
+              class="self-start"
+            >
+              {#snippet children()}+ Add tag{/snippet}
+            </Button>
+          {/if}
+        </div>
       </section>
     </aside>
   {/if}

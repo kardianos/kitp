@@ -72,31 +72,39 @@ type jsonInsertRow struct {
 // writers note one statement-group per Run for the write counter.
 func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
-		Endpoint:    "card",
-		Action:      "insert",
-		Doc:         "Insert a new card with the given card_type, optional parent, and initial title plus attributes.",
-		InputType:   reflect.TypeFor[InsertInput](),
-		OutputType:  reflect.TypeFor[InsertOutput](),
-		ProcessName: "card.create",
-		CardTypeID:  cardTypeFromName,
-		Run:         runInsert(p),
+		Endpoint:   "card",
+		Action:     "insert",
+		Doc:        "Insert a new card with the given card_type, optional parent, and initial title plus attributes.",
+		InputType:  reflect.TypeFor[InsertInput](),
+		OutputType: reflect.TypeFor[InsertOutput](),
+		// Worker can insert tasks; manager/admin can insert any card type.
+		// The handler / scope authz enforces card-type-specific limits;
+		// this list is the broadest set of roles that may reach the
+		// handler at all.
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		ProcessName:  "card.create",
+		CardTypeID:   cardTypeFromName,
+		Run:          runInsert(p),
 	})
 	reg.Register(reg.Handler{
-		Endpoint:   "card",
-		Action:     "select",
-		Doc:        "List cards filtered by optional parent and card_type; soft-deleted rows are excluded.",
-		InputType:  reflect.TypeFor[SelectInput](),
-		OutputType: reflect.TypeFor[SelectOutput](),
-		Run:        runSelect(p),
+		Endpoint:     "card",
+		Action:       "select",
+		Doc:          "List cards filtered by optional parent and card_type; soft-deleted rows are excluded.",
+		InputType:    reflect.TypeFor[SelectInput](),
+		OutputType:   reflect.TypeFor[SelectOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		Run:          runSelect(p),
 	})
 	reg.Register(reg.Handler{
-		Endpoint:   "card",
-		Action:     "select_with_attributes",
-		Doc:        "Select cards plus their full attribute set in one round-trip; supports filters and ordering for grids and kanbans.",
-		InputType:  reflect.TypeFor[SelectWithAttributesInput](),
-		OutputType: reflect.TypeFor[SelectWithAttributesOutput](),
-		Run:        runSelectWithAttributes(p),
+		Endpoint:     "card",
+		Action:       "select_with_attributes",
+		Doc:          "Select cards plus their full attribute set in one round-trip; supports filters and ordering for grids and kanbans.",
+		InputType:    reflect.TypeFor[SelectWithAttributesInput](),
+		OutputType:   reflect.TypeFor[SelectWithAttributesOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		Run:          runSelectWithAttributes(p),
 	})
+	RegisterSearch(p)
 	RegisterMoveDelete(p)
 }
 

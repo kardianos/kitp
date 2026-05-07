@@ -36,15 +36,16 @@ type UpdateOutput struct {
 // Register installs the handler.
 func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
-		Endpoint:    "attribute",
-		Action:      "update",
-		Doc:         "Set an attribute value on a card; emits one activity row and one upsert per write.",
-		InputType:   reflect.TypeFor[UpdateInput](),
-		OutputType:  reflect.TypeFor[UpdateOutput](),
-		Validate:    validateUpdate,
-		ProcessName: "card.update",
-		CardTypeID:  cardTypeFromCardID,
-		Run:         runUpdate(p),
+		Endpoint:     "attribute",
+		Action:       "update",
+		Doc:          "Set an attribute value on a card; emits one activity row and one upsert per write.",
+		InputType:    reflect.TypeFor[UpdateInput](),
+		OutputType:   reflect.TypeFor[UpdateOutput](),
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		Validate:     validateUpdate,
+		ProcessName:  "card.update",
+		CardTypeID:   cardTypeFromCardID,
+		Run:          runUpdate(p),
 	})
 }
 

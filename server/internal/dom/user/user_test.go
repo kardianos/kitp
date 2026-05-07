@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/user"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
@@ -25,7 +26,7 @@ func setup(t *testing.T, schema string) *api.Server {
 // are visible through user.select, and that they sort by display_name.
 func TestUserSelect(t *testing.T) {
 	srv := setup(t, "kitp_test_user_select")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "user", Action: "select", Data: json.RawMessage(`{}`)},
@@ -58,7 +59,7 @@ func TestUserSelect(t *testing.T) {
 // role globally; everyone else has no roles in the freshly-migrated DB.
 func TestUserListWithRoles(t *testing.T) {
 	srv := setup(t, "kitp_test_user_lwr")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "user", Action: "list_with_roles", Data: json.RawMessage(`{}`)},
 	}})

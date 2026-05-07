@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/activity"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/card"
@@ -42,7 +43,7 @@ func mustOK(t *testing.T, sr api.SubResponse) {
 // cards, sorted newest-first. Each row carries its own card_id.
 func TestSelectCrossCard(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_activity_xcard")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	// One project, two tasks under it. Each task's insert + title write +
 	// status write produces several activity rows; comments add more.
@@ -133,7 +134,7 @@ func TestSelectCrossCard(t *testing.T) {
 // only contains the requested card's rows.
 func TestSelectPerCardUnchanged(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_activity_percard")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(

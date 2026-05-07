@@ -23,6 +23,14 @@ export interface QuickEntryPrefill {
   statusValue?: string;
   /** Kanban swim-lane prefill; arbitrary attribute name + value. */
   laneAttribute?: { name: string; value: unknown };
+  /**
+   * Arbitrary additional attribute presets — used when the kanban
+   * column "+" button needs to set BOTH a column and lane attribute and
+   * the well-known assignee/status/laneAttribute slots aren't enough.
+   * Kept distinct from the named slots so existing callers are
+   * unaffected.
+   */
+  extraAttributes?: { name: string; value: unknown }[];
 }
 
 /** Inputs a screen / overlay collects from the user and from its prefill. */
@@ -32,6 +40,53 @@ export interface QuickEntrySubmitInput {
   title: string;
   description: string;
   prefill?: QuickEntryPrefill;
+}
+
+/** Card types that the schema makes top-level (no parent_card_id required). */
+const PARENT_OPTIONAL_CARD_TYPES = new Set<string>(['project']);
+
+/**
+ * Result of {@link resolveParentForInsert}. `parentCardId === null` means
+ * "no parent, but that's OK" (top-level project). `error` is a user-facing
+ * string when the inputs can't satisfy the server's parent requirement.
+ */
+export interface ParentResolution {
+  parentCardId: number | null;
+  error: string | null;
+}
+
+/**
+ * Decide which parent_card_id we should send for a fresh `card.insert`.
+ *
+ * The server rule (see `card.go`'s `requires a parent` branch): every card
+ * type whose `card_type.parent_card_type_id` is non-null needs a parent at
+ * insert time. In practice that's everything except `project`. The quick
+ * entry surfaces today don't require the user to pick a parent — the
+ * sidebar's project scope should fill that in. Top-level project inserts
+ * still skip the requirement.
+ *
+ * Returns either a usable parentCardId, `null` (no parent needed for this
+ * card_type), or a non-null `error` message that the caller should surface
+ * inline before issuing the request.
+ */
+export function resolveParentForInsert(
+  cardTypeName: string,
+  explicitParent: number | undefined,
+  scopeProjectId: number | null,
+): ParentResolution {
+  if (explicitParent !== undefined) {
+    return { parentCardId: explicitParent, error: null };
+  }
+  if (PARENT_OPTIONAL_CARD_TYPES.has(cardTypeName)) {
+    return { parentCardId: null, error: null };
+  }
+  if (scopeProjectId !== null) {
+    return { parentCardId: scopeProjectId, error: null };
+  }
+  return {
+    parentCardId: null,
+    error: `Pick a project in the sidebar before adding a ${cardTypeName}.`,
+  };
 }
 
 /**
@@ -124,6 +179,21 @@ export async function submitQuickEntry(
           },
         }),
       );
+    }
+    if (pf?.extraAttributes !== undefined) {
+      for (const a of pf.extraAttributes) {
+        ps.push(
+          dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
+            endpoint: 'attribute',
+            action: 'update',
+            data: {
+              cardId: newCardId,
+              attributeName: a.name,
+              value: a.value,
+            },
+          }),
+        );
+      }
     }
     if (ps.length === 0) return newCardId;
     return Promise.all(ps).then(() => newCardId);

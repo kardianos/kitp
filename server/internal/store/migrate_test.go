@@ -21,12 +21,14 @@ func TestMigrateUpFromClean(t *testing.T) {
 	cases := []row{
 		{`SELECT count(*) FROM card_type`, 6},
 		// 0002: 5 built-ins (title/status/assignee/milestone_ref/component_ref) +
-		// 0003: 3 (path/root_exclusive_at/tags) + 0008: 2 (description/sort_order).
-		{`SELECT count(*) FROM attribute_def`, 10},
+		// 0003: 3 (path/root_exclusive_at/tags) + 0008: 2 (description/sort_order) +
+		// 0011: 1 (is_active).
+		{`SELECT count(*) FROM attribute_def`, 11},
 		// 9 edges from 0002 (5 title-required, 4 task-allowed) +
 		// 6 from 0003 (1 tag.path required, 1 tag.root_exclusive_at, 4 *.tags allowed) +
-		// 3 from 0008 (description on task+project, sort_order on task).
-		{`SELECT count(*) FROM edge`, 18},
+		// 3 from 0008 (description on task+project, sort_order on task) +
+		// 3 from 0011 (is_active on milestone/component/tag).
+		{`SELECT count(*) FROM edge`, 21},
 		// 1 System User from 0002 + 5 team members from 0004.
 		{`SELECT count(*) FROM user_account`, 6},
 		// 0002 seeds 'system' + 0010 adds viewer/worker/manager/admin = 5.
@@ -37,7 +39,8 @@ func TestMigrateUpFromClean(t *testing.T) {
 		{`SELECT count(*) FROM process`, 6},
 		// 0003 seeds 6 + 0010 adds 1 = 7.
 		{`SELECT count(*) FROM process_step`, 7},
-		{`SELECT count(*) FROM _migration`, 10},
+		// 0001..0016 inclusive = 16 forward-only migrations.
+		{`SELECT count(*) FROM _migration`, 16},
 		// 0005 demo seed: 1 default project + 3 milestones + 5 components + 8 tags = 17 cards.
 		// 0007 dense seed: + 25 tasks. Total = 42.
 		{`SELECT count(*) FROM card`, 42},
@@ -89,7 +92,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM _migration`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 10 {
-		t.Errorf("_migration count after re-run: got %d, want 10", n)
+	if n != 16 {
+		t.Errorf("_migration count after re-run: got %d, want 16", n)
 	}
 }

@@ -7,6 +7,7 @@
  *   - computeNewSortOrder(rows, dropIndex)
  *   - predicateToggleStatus(currentStatus)
  *   - move(visibleLen, current, delta)
+ *   - planReorder(rows, movedID, insertAt)
  */
 
 import { describe, expect, it } from 'vitest';
@@ -15,6 +16,7 @@ import type { InboxRow } from '../../src/reg/types.js';
 import {
   computeNewSortOrder,
   move,
+  planReorder,
   predicateToggleStatus,
   SORT_ORDER_STEP,
 } from '../../src/screens/inbox_helpers.js';
@@ -172,6 +174,102 @@ describe('move', () => {
   it('handles a single-row list', () => {
     expect(move(1, 0, 1)).toBe(0);
     expect(move(1, 0, -1)).toBe(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* planReorder                                                                */
+/* -------------------------------------------------------------------------- */
+
+describe('planReorder', () => {
+  it('move-down on an all-NULL list renumbers every affected row', () => {
+    // The bug this fixes: with NULLS LAST sort, a single-row sort_order
+    // write doesn't visibly move the top row down, because every
+    // sibling NULL still ranks AFTER the new numeric value.
+    //
+    // Plan must rewrite EVERY row in the new order so the moved row's
+    // predecessors carry sort_orders less than its own.
+    const rs = [row(1, undefined), row(2, undefined), row(3, undefined)];
+    // Move row 1 (origIdx 0) to slot 1 in `without` (between row 2 and
+    // row 3). New order: [row 2, row 1, row 3].
+    const updates = planReorder(rs, 1, 1);
+    expect(updates).toEqual([
+      { cardId: 2, sortOrder: 100 },
+      { cardId: 1, sortOrder: 200 },
+      { cardId: 3, sortOrder: 300 },
+    ]);
+  });
+
+  it('move-up on an all-NULL list also renumbers from index 0', () => {
+    const rs = [row(1, undefined), row(2, undefined), row(3, undefined)];
+    // Move row 2 (origIdx 1) to slot 0. New order: [row 2, row 1, row 3].
+    const updates = planReorder(rs, 2, 0);
+    expect(updates).toEqual([
+      { cardId: 2, sortOrder: 100 },
+      { cardId: 1, sortOrder: 200 },
+      { cardId: 3, sortOrder: 300 },
+    ]);
+  });
+
+  it('steady state where sort_orders already match new positions writes nothing', () => {
+    // Every row already at its desired sort_order, no shuffle.
+    const rs = [row(1, 100), row(2, 200), row(3, 300)];
+    const updates = planReorder(rs, 1, 0);
+    expect(updates).toEqual([]);
+  });
+
+  it('swap of two adjacent rows in steady state writes only the swapped pair', () => {
+    const rs = [row(1, 100), row(2, 200), row(3, 300)];
+    // Move row 1 to slot 1 in `without`. New order: [row 2, row 1, row 3].
+    const updates = planReorder(rs, 1, 1);
+    // Only the two swapped rows differ from desired; row 3 stays at 300.
+    expect(updates).toEqual([
+      { cardId: 2, sortOrder: 100 },
+      { cardId: 1, sortOrder: 200 },
+    ]);
+  });
+
+  it('move to tail rewrites only the moved row when others already line up', () => {
+    const rs = [row(1, 100), row(2, 200), row(3, 300)];
+    // Move row 1 to the bottom. New order: [row 2, row 3, row 1].
+    const updates = planReorder(rs, 1, 2);
+    expect(updates).toEqual([
+      { cardId: 2, sortOrder: 100 },
+      { cardId: 3, sortOrder: 200 },
+      { cardId: 1, sortOrder: 300 },
+    ]);
+  });
+
+  it('returns [] when movedID is not in the list', () => {
+    const rs = [row(1, 100), row(2, 200)];
+    expect(planReorder(rs, 99, 0)).toEqual([]);
+  });
+
+  it('clamps insertAt outside [0, len] gracefully', () => {
+    const rs = [row(1, undefined), row(2, undefined)];
+    // insertAt = 99 → clamped to 1 (without.length); moved row goes to tail.
+    const updates = planReorder(rs, 1, 99);
+    expect(updates).toEqual([
+      { cardId: 2, sortOrder: 100 },
+      { cardId: 1, sortOrder: 200 },
+    ]);
+    // insertAt = -3 → clamped to 0; moved row goes to head, no-op since
+    // it's already there.
+    expect(planReorder(rs, 1, -3)).toEqual([
+      { cardId: 1, sortOrder: 100 },
+      { cardId: 2, sortOrder: 200 },
+    ]);
+  });
+
+  it('mixed null/non-null state renumbers the rows whose values disagree', () => {
+    // row 1 has the wrong sort_order for position 0; row 2 is null.
+    const rs = [row(1, 999), row(2, undefined)];
+    const updates = planReorder(rs, 2, 0);
+    // New order: [row 2, row 1]. Both need updating.
+    expect(updates).toEqual([
+      { cardId: 2, sortOrder: 100 },
+      { cardId: 1, sortOrder: 200 },
+    ]);
   });
 });
 

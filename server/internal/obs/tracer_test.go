@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/activity"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/card"
@@ -79,7 +80,7 @@ func TestPGTracer_Coalesce100AttrUpdates(t *testing.T) {
 	srv := api.NewServer(sp)
 	srv.Logger = obs.NewLoggerTo("warn", io.Discard)
 
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	// Seed: project + 100 tasks.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{

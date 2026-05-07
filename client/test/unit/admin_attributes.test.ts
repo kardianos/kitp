@@ -221,29 +221,10 @@ describe('validateNewAttr', () => {
     expect(r.errors).toEqual({});
   });
 
-  it('rejects enum without options', () => {
+  it('accepts enum without options (options are added post-creation)', () => {
     const r = validateNewAttr({ name: 'sev', valueType: 'enum' });
-    expect(r.ok).toBe(false);
-    expect(r.errors.options).toBeDefined();
-  });
-
-  it('rejects enum where every option has a blank value', () => {
-    const r = validateNewAttr({
-      name: 'sev',
-      valueType: 'enum',
-      options: [{ value: '   ', label: 'high' }],
-    });
-    expect(r.ok).toBe(false);
-    expect(r.errors.options).toBeDefined();
-  });
-
-  it('accepts enum with at least one non-blank option value', () => {
-    const r = validateNewAttr({
-      name: 'sev',
-      valueType: 'enum',
-      options: [{ value: 'high', label: 'high' }],
-    });
     expect(r.ok).toBe(true);
+    expect(r.errors).toEqual({});
   });
 
   it('rejects ref:* without a refCardType', () => {
@@ -268,10 +249,10 @@ describe('validateNewAttr', () => {
   });
 
   it('aggregates multiple errors at once', () => {
-    const r = validateNewAttr({ name: '', valueType: 'enum' });
+    const r = validateNewAttr({ name: '', valueType: 'ref:' });
     expect(r.ok).toBe(false);
     expect(r.errors.name).toBeDefined();
-    expect(r.errors.options).toBeDefined();
+    expect(r.errors.refCardType).toBeDefined();
   });
 });
 

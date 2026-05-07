@@ -22,8 +22,8 @@ import (
 	"github.com/kitp/kitp/server/internal/reg"
 )
 
-// Tool is the public per-handler descriptor; it doubles as both the
-// list_handlers payload and the tools/list element.
+// Tool is the public per-handler descriptor; it doubles as both a
+// proc.search row and the tools/list element.
 type Tool struct {
 	Name         string  `json:"name"`
 	Description  string  `json:"description,omitempty"`
@@ -31,16 +31,64 @@ type Tool struct {
 	OutputSchema *Schema `json:"output_schema,omitempty"`
 }
 
-// Tools returns one Tool per registered handler, sorted by tool name.
-// Includes the synthetic list_handlers tool.
+// Toolset selects which handlers `tools/list` advertises. Some MCP
+// clients (notably LLMs) cap the number of tools they'll accept at
+// session start; ToolsetMinimal exposes only `proc__search` so the
+// model discovers + calls everything else on demand. ToolsetFull is
+// the legacy "every endpoint is a tool" surface.
+//
+// Note: tools/call works for any registered handler regardless of
+// the active toolset — the filter only narrows what's listed.
+type Toolset string
+
+const (
+	ToolsetMinimal Toolset = "minimal"
+	ToolsetFull    Toolset = "full"
+)
+
+// activeToolset is the package-level choice the server reads at
+// tools/list time. Set by main.go before serving.
+var activeToolset Toolset = ToolsetMinimal
+
+// SetToolset chooses the tools/list filter. Safe to call once at
+// startup; not thread-safe afterward (no real reason to flip it
+// mid-stream, and tests use SetToolset in their setup helper).
+func SetToolset(t Toolset) {
+	switch t {
+	case ToolsetFull, ToolsetMinimal:
+		activeToolset = t
+	default:
+		activeToolset = ToolsetMinimal
+	}
+}
+
+// Tools returns one Tool per registered handler, filtered by the
+// active toolset. With ToolsetMinimal the result is just the
+// proc__search descriptor — the model discovers + calls everything
+// else on demand. With ToolsetFull every registered handler is
+// listed.
 func Tools() []Tool {
 	hs := reg.All()
-	out := make([]Tool, 0, len(hs)+1)
-	for _, h := range hs {
-		out = append(out, toolFromHandler(h))
+	switch activeToolset {
+	case ToolsetMinimal:
+		for _, h := range hs {
+			if h.Endpoint == "proc" && h.Action == "search" {
+				return []Tool{toolFromHandler(h)}
+			}
+		}
+		// Fallback: if proc.search wasn't registered (a misconfigured
+		// init in a test), surface the whole catalogue rather than an
+		// empty list — an empty list would silently strand the client.
+		fallthrough
+	case ToolsetFull:
+		fallthrough
+	default:
+		out := make([]Tool, 0, len(hs))
+		for _, h := range hs {
+			out = append(out, toolFromHandler(h))
+		}
+		return out
 	}
-	out = append(out, listHandlersTool())
-	return out
 }
 
 func toolFromHandler(h reg.Handler) Tool {
@@ -49,27 +97,6 @@ func toolFromHandler(h reg.Handler) Tool {
 		Description:  h.Doc,
 		InputSchema:  SchemaForType(h.InputType, true),
 		OutputSchema: SchemaForType(h.OutputType, false),
-	}
-}
-
-func listHandlersTool() Tool {
-	return Tool{
-		Name:        "list_handlers",
-		Description: "Return every registered API handler as {name, description, input_schema, output_schema}.",
-		InputSchema: &Schema{
-			Type:                 "object",
-			AdditionalProperties: false,
-			Description:          "list_handlers takes no arguments.",
-		},
-		OutputSchema: &Schema{
-			Type: "object",
-			Properties: map[string]*Schema{
-				"handlers": {
-					Type:  "array",
-					Items: &Schema{Type: "object", AdditionalProperties: true},
-				},
-			},
-		},
 	}
 }
 
@@ -221,11 +248,6 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonrpcRequest) {
 		return
 	}
 
-	if p.Name == "list_handlers" {
-		s.writeListHandlers(req.ID)
-		return
-	}
-
 	endpoint, action, ok := splitToolName(p.Name)
 	if !ok {
 		s.writeError(req.ID, -32602, "tool name must be <endpoint>__<action>: "+p.Name, nil)
@@ -291,37 +313,6 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonrpcRequest) {
 			map[string]any{"type": "text", "text": string(dataBuf)},
 		},
 		"data": json.RawMessage(dataBuf),
-	})
-}
-
-func (s *Server) writeListHandlers(id json.RawMessage) {
-	tools := Tools()
-	type item struct {
-		Name         string  `json:"name"`
-		Description  string  `json:"description"`
-		InputSchema  *Schema `json:"input_schema"`
-		OutputSchema *Schema `json:"output_schema"`
-	}
-	items := make([]item, 0, len(tools))
-	for _, t := range tools {
-		items = append(items, item{
-			Name:         t.Name,
-			Description:  t.Description,
-			InputSchema:  t.InputSchema,
-			OutputSchema: t.OutputSchema,
-		})
-	}
-	body, err := json.Marshal(map[string]any{"handlers": items})
-	if err != nil {
-		s.writeError(id, -32603, "internal: marshal: "+err.Error(), nil)
-		return
-	}
-	s.writeResult(id, map[string]any{
-		"isError": false,
-		"content": []any{
-			map[string]any{"type": "text", "text": string(body)},
-		},
-		"data": json.RawMessage(body),
 	})
 }
 

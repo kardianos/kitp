@@ -403,11 +403,15 @@ function parseHandleParam(param: unknown): ParsedHandle {
 /* -------------------------------------------------------------------------- */
 
 export const dropZone: Action<HTMLElement, DropZoneOptions> = (node, opts) => {
-  const id = opts.id;
   let current: DropZoneOptions = opts;
+  // Track the live id so update() can re-register the zone when keyed reuse
+  // shifts a component's slot index (kanban: card insertion changes the id of
+  // every trailing DropZone). The registry indexes by id, so we must move the
+  // entry instead of leaking the old key.
+  let registeredId = opts.id;
 
   const reg: ZoneRegistration = {
-    id,
+    id: registeredId,
     rect: () => node.getBoundingClientRect(),
     padding: opts.padding ?? DEFAULT_PADDING_PX,
     accepts: (p) => (current.accepts ? current.accepts(p as never) : true),
@@ -428,24 +432,40 @@ export const dropZone: Action<HTMLElement, DropZoneOptions> = (node, opts) => {
     },
   };
 
-  if (dnd.zones.has(id)) {
-    // Defensive: replacing a stale registration is allowed (HMR), but warn.
-    if (typeof console !== 'undefined') {
-      console.warn(`[dnd] dropZone id "${id}" already registered; replacing.`);
+  function register(id: string): void {
+    const existing = dnd.zones.get(id);
+    if (existing !== undefined && existing !== reg) {
+      // Genuine collision: two distinct nodes claim the same id. Warn so it
+      // surfaces during development, then replace.
+      if (typeof console !== 'undefined') {
+        console.warn(`[dnd] dropZone id "${id}" already registered; replacing.`);
+      }
     }
+    dnd.zones.set(id, reg);
+    registeredId = id;
+    reg.id = id;
   }
-  dnd.zones.set(id, reg);
+
+  register(registeredId);
   attachGlobalListeners();
 
   return {
     update(next: DropZoneOptions) {
       current = next;
-      // Re-bind padding if it changed.
       reg.padding = next.padding ?? DEFAULT_PADDING_PX;
-      // id changes are unsupported (would require re-registering); ignore.
+      if (next.id !== registeredId) {
+        // Move the registration without warning: keyed reuse legitimately
+        // re-targets the zone when neighbours shift.
+        if (dnd.zones.get(registeredId) === reg) {
+          dnd.zones.delete(registeredId);
+        }
+        register(next.id);
+      }
     },
     destroy() {
-      dnd.zones.delete(id);
+      if (dnd.zones.get(registeredId) === reg) {
+        dnd.zones.delete(registeredId);
+      }
       if (dnd.zones.size === 0 && !dnd.active) detachGlobalListeners();
     },
   };

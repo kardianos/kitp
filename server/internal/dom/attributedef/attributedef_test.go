@@ -49,7 +49,7 @@ func adminCtx(t *testing.T, sp *store.Pool) context.Context {
 // is_active def bound to milestone, component, and tag.
 func TestSelectIncludesIsActiveBindings(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_ad_select")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "s", Endpoint: "attribute_def", Action: "select"},
@@ -219,7 +219,7 @@ func TestInsertAndBindLifecycle(t *testing.T) {
 // surface on attribute_def.select.
 func TestSelect_IncludesEnumOptions(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_ad_enum_opts")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "s", Endpoint: "attribute_def", Action: "select"},
@@ -266,7 +266,7 @@ func TestSelect_IncludesEnumOptions(t *testing.T) {
 // an empty options slice (which json-marshals as omitted via omitempty).
 func TestSelect_OmitsOptions_ForNonEnum(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_ad_nonenum_opts")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "s", Endpoint: "attribute_def", Action: "select"},
@@ -325,6 +325,138 @@ func bytesContains(haystack, needle []byte) bool {
 		}
 	}
 	return false
+}
+
+// TestOptionUpsertBumpsHigherOrderings asserts the user-visible "no
+// collision" rule: when an option is upserted at an ordering already held
+// by a different value, every option at >= that ordering is bumped up by
+// one. The user picks ordering=0 for "urgent" and the existing 0..3 chain
+// becomes 1..4.
+func TestOptionUpsertBumpsHigherOrderings(t *testing.T) {
+	srv, sp := setup(t, "kitp_test_ad_opt_bump")
+	ctx := adminCtx(t, sp)
+
+	var statusID int32
+	if err := sp.P.QueryRow(context.Background(), `SELECT id FROM attribute_def WHERE name='status'`).Scan(&statusID); err != nil {
+		t.Fatalf("status id: %v", err)
+	}
+
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "u", Endpoint: "attribute_def_option", Action: "upsert", Data: json.RawMessage(
+			fmt.Sprintf(`{"attribute_def_id":%d,"value":"urgent","label":"Urgent","ordering":0}`, statusID))},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("upsert: %+v", resp.Subresponses[0])
+	}
+
+	// Read back: urgent at 0; todo/doing/review/done at 1..4.
+	type row struct {
+		value    string
+		ordering int32
+	}
+	got := map[string]int32{}
+	rows, err := sp.P.Query(context.Background(),
+		`SELECT value, ordering FROM attribute_def_option WHERE attribute_def_id=$1 ORDER BY ordering`,
+		statusID)
+	if err != nil {
+		t.Fatalf("read-back: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.value, &r.ordering); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[r.value] = r.ordering
+	}
+	want := map[string]int32{"urgent": 0, "todo": 1, "doing": 2, "review": 3, "done": 4}
+	for v, ord := range want {
+		if got[v] != ord {
+			t.Errorf("option %q: ordering = %d, want %d (full map: %+v)", v, got[v], ord, got)
+		}
+	}
+}
+
+// TestOptionUpsertResaveSameOrderingNoBump pins the idempotent path. Saving
+// an option at its existing (value, ordering) must not shift its
+// neighbours — important because the admin UI commits label edits at the
+// same ordering on every blur.
+func TestOptionUpsertResaveSameOrderingNoBump(t *testing.T) {
+	srv, sp := setup(t, "kitp_test_ad_opt_idem")
+	ctx := adminCtx(t, sp)
+
+	var statusID int32
+	if err := sp.P.QueryRow(context.Background(), `SELECT id FROM attribute_def WHERE name='status'`).Scan(&statusID); err != nil {
+		t.Fatalf("status id: %v", err)
+	}
+
+	// Re-save 'doing' at its own ordering=1 with a new label.
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "u", Endpoint: "attribute_def_option", Action: "upsert", Data: json.RawMessage(
+			fmt.Sprintf(`{"attribute_def_id":%d,"value":"doing","label":"In Flight","ordering":1}`, statusID))},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("upsert: %+v", resp.Subresponses[0])
+	}
+
+	got := map[string]int32{}
+	gotLabel := map[string]string{}
+	rows, err := sp.P.Query(context.Background(),
+		`SELECT value, label, ordering FROM attribute_def_option WHERE attribute_def_id=$1`,
+		statusID)
+	if err != nil {
+		t.Fatalf("read-back: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v, l string
+		var o int32
+		if err := rows.Scan(&v, &l, &o); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[v] = o
+		gotLabel[v] = l
+	}
+	want := map[string]int32{"todo": 0, "doing": 1, "review": 2, "done": 3}
+	for v, ord := range want {
+		if got[v] != ord {
+			t.Errorf("option %q: ordering = %d, want %d (idempotent re-save must not shift)", v, got[v], ord)
+		}
+	}
+	if gotLabel["doing"] != "In Flight" {
+		t.Errorf("doing label = %q, want In Flight (label-only edit must apply)", gotLabel["doing"])
+	}
+}
+
+// TestOptionDeleteRefusesInUse mirrors the edge.delete usage guard so an
+// admin can't strand cards on a value that no longer has an option entry.
+func TestOptionDeleteRefusesInUse(t *testing.T) {
+	srv, sp := setup(t, "kitp_test_ad_opt_inuse")
+	ctx := adminCtx(t, sp)
+
+	// 0007_dense_demo seeds tasks with status='todo'; deleting that option
+	// should be refused with usage_count > 0.
+	var statusID int32
+	if err := sp.P.QueryRow(context.Background(), `SELECT id FROM attribute_def WHERE name='status'`).Scan(&statusID); err != nil {
+		t.Fatalf("status id: %v", err)
+	}
+
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "d", Endpoint: "attribute_def_option", Action: "delete", Data: json.RawMessage(
+			fmt.Sprintf(`{"attribute_def_id":%d,"value":"todo"}`, statusID))},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("delete: %+v", resp.Subresponses[0])
+	}
+	var out attributedef.OptionDeleteOutput
+	buf, _ := json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &out)
+	if out.OK {
+		t.Errorf("delete should have been refused (cards still reference 'todo')")
+	}
+	if out.UsageCount == 0 {
+		t.Errorf("usage_count should be > 0 (seed leaves 'todo' tasks)")
+	}
 }
 
 // TestEdgeDeleteRefusesBuiltIn protects migration-installed edges.

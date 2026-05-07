@@ -142,9 +142,24 @@ export function formatActivityText(
       const newS = formatAttrValue(name, row.value_new, userNames, cardTitles, tagPaths);
       return `${actor} changed ${label} from ${oldS} to ${newS}`;
     }
+    case 'attachment_create': {
+      const fn = readFilename(row.value_new);
+      return fn !== '' ? `${actor} attached ${fn}` : `${actor} added an attachment.`;
+    }
+    case 'attachment_delete': {
+      const fn = readFilename(row.value_old);
+      return fn !== '' ? `${actor} removed ${fn}` : `${actor} removed an attachment.`;
+    }
     default:
       return `${actor}: ${row.kind}`;
   }
+}
+
+/** Pull the `filename` field out of an activity payload, if any. */
+function readFilename(v: unknown): string {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return '';
+  const fn = (v as Record<string, unknown>)['filename'];
+  return typeof fn === 'string' ? fn : '';
 }
 
 /** Status to color hint used by TaskRow's status chip. */

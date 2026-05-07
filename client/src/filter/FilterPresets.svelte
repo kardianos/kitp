@@ -132,7 +132,13 @@
         middleware: [offset(4), flip()],
       }).then(({ x, y }) => {
         if (!popupEl) return;
-        Object.assign(popupEl.style, { left: `${x}px`, top: `${y}px` });
+        // Reveal only once positioned — see Combobox.svelte for the
+        // rationale (avoids the (0,0) flash before computePosition).
+        Object.assign(popupEl.style, {
+          left: `${x}px`,
+          top: `${y}px`,
+          visibility: 'visible',
+        });
       });
     });
   }
@@ -230,7 +236,7 @@
       bind:this={popupEl}
       class="z-50 flex w-64 flex-col overflow-hidden rounded-md border border-border bg-bg shadow-lg"
       role="menu"
-      style="position: fixed; left: 0; top: 0;"
+      style="position: fixed; left: 0; top: 0; visibility: hidden;"
     >
       <ul class="max-h-64 overflow-auto py-1 text-sm">
         {#if presets.length === 0}

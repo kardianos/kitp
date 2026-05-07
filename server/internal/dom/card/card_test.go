@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/dom/cardtype"
 	"github.com/kitp/kitp/server/internal/dom/echo"
@@ -65,7 +66,7 @@ func rowsOf(t *testing.T, sr api.SubResponse) []card.CardRow {
 // create project, list projects, create task under project, list tasks.
 func TestCardLifecycle(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_card_life")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{
 		Subrequests: []api.SubRequest{
@@ -109,7 +110,7 @@ func TestCardLifecycle(t *testing.T) {
 // structured error, and the rest of the batch must show as aborted.
 func TestEdgeViolationRejected(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_card_edge")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	// Project to host a tag.
 	resp := srv.Dispatch(ctx, api.BatchRequest{
@@ -170,7 +171,7 @@ func TestEdgeViolationRejected(t *testing.T) {
 // across sub-requests.
 func TestTwoInsertsCoalesceToOneStatement(t *testing.T) {
 	srv, sp := setup(t, "kitp_test_card_coalesce")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	sp.ResetWrites()
 	resp := srv.Dispatch(ctx, api.BatchRequest{
@@ -192,7 +193,7 @@ func TestTwoInsertsCoalesceToOneStatement(t *testing.T) {
 // TestTaskUnderTaskAllowed verifies allow_self_parent on the task type.
 func TestTaskUnderTaskAllowed(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_card_subtask")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(

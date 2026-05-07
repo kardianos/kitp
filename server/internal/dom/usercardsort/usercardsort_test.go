@@ -65,7 +65,7 @@ func withAlice(ctx context.Context) context.Context {
 // per-user write/read paths.
 func makeCards(t *testing.T, srv *api.Server, n int) []int64 {
 	t.Helper()
-	sysCtx := context.Background()
+	sysCtx := auth.WithSystemUser(context.Background())
 	resp := srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			`{"card_type_name":"project","title":"P"}`)},

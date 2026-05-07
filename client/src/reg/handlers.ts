@@ -35,7 +35,21 @@ import type {
   CardInsertInput,
   CardInsertOutput,
   CardOrderClause,
+  AttachmentCreateInput,
+  AttachmentCreateOutput,
+  AttachmentDeleteInput,
+  AttachmentDeleteOutput,
+  AttachmentListInput,
+  AttachmentListOutput,
+  FileCreateInput,
+  FileCreateOutput,
+  MissingChunksInput,
+  MissingChunksOutput,
   CardRow,
+  CardSearchInput,
+  CardSearchOutput,
+  ConfigGetInput,
+  ConfigGetOutput,
   CardSelectInput,
   CardSelectOutput,
   CardSelectWithAttributesInput,
@@ -49,6 +63,10 @@ import type {
   CommentInsertOutput,
   EchoPingInput,
   EchoPingOutput,
+  AttributeDefOptionDeleteInput,
+  AttributeDefOptionDeleteOutput,
+  AttributeDefOptionUpsertInput,
+  AttributeDefOptionUpsertOutput,
   EdgeDeleteInput,
   EdgeDeleteOutput,
   EdgeInsertInput,
@@ -310,6 +328,154 @@ const cardSelectWithAttributes: HandlerSpec<
     return {
       rows: asArray(j.rows).map((r) => decodeCardWithAttrs(asObj(r))),
     };
+  },
+};
+
+// ============================================================================
+// card.search — typeahead read for ref:* picker dropdowns. Returns only
+// (id, title) so it stays cheap as the picker fires per keystroke.
+// ============================================================================
+
+const cardSearch: HandlerSpec<CardSearchInput, CardSearchOutput> = {
+  endpoint: 'card',
+  action: 'search',
+  encode: (i) => {
+    const m: Record<string, unknown> = { card_type_name: i.cardTypeName };
+    if (i.query !== undefined && i.query !== '') m.query = i.query;
+    if (i.ids !== undefined && i.ids.length > 0) m.ids = i.ids;
+    if (i.limit !== undefined) m.limit = i.limit;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => {
+        const o = asObj(r);
+        return { id: asNumOrZero(o.id), title: asStrOrEmpty(o.title) };
+      }),
+    };
+  },
+};
+
+// ============================================================================
+// config.get — fetch server-driven configuration knobs (e.g. attachment cap).
+// ============================================================================
+
+const configGet: HandlerSpec<ConfigGetInput, ConfigGetOutput> = {
+  endpoint: 'config',
+  action: 'get',
+  encode: () => ({}),
+  decode: (raw) => {
+    const j = asObj(raw);
+    const cfg = asObj(j.config);
+    return {
+      config: {
+        attachment_max_bytes: asNumOrZero(cfg.attachment_max_bytes),
+        chunk_max_bytes: asNumOrZero(cfg.chunk_max_bytes),
+      },
+    };
+  },
+};
+
+const casMissingChunks: HandlerSpec<MissingChunksInput, MissingChunksOutput> = {
+  endpoint: 'cas',
+  action: 'missing_chunks',
+  encode: (i) => ({ addresses: i.addresses }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      missing: asArray(j.missing).map((v) => (typeof v === 'string' ? v : '')),
+    };
+  },
+};
+
+const fileCreate: HandlerSpec<FileCreateInput, FileCreateOutput> = {
+  endpoint: 'file',
+  action: 'create',
+  encode: (i) => {
+    const m: Record<string, unknown> = {
+      filename: i.filename,
+      chunks: i.chunks,
+    };
+    if (i.mimeType !== undefined && i.mimeType !== '') m.mime_type = i.mimeType;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      id: asNumOrZero(j.id),
+      filename: asStrOrEmpty(j.filename),
+      mime_type: asStrOrEmpty(j.mime_type),
+      size_bytes: asNumOrZero(j.size_bytes),
+    };
+  },
+};
+
+// ============================================================================
+// attachment.list / attachment.delete — JSON sides of the attachments API.
+// Upload + download go through dedicated HTTP routes (see
+// `client/src/attachments/upload.ts`).
+// ============================================================================
+
+/** Coerce the server's `kind` string into the AttachmentKind union with a
+ *  defensive fallback to 'other'. The server is authoritative; this just
+ *  guards against an old-schema response or a typo. */
+function asAttachmentKind(v: unknown): 'image' | 'pdf' | 'other' {
+  if (v === 'image' || v === 'pdf') return v;
+  return 'other';
+}
+
+const attachmentList: HandlerSpec<AttachmentListInput, AttachmentListOutput> = {
+  endpoint: 'attachment',
+  action: 'list',
+  encode: (i) => ({ card_id: i.cardId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => {
+        const o = asObj(r);
+        return {
+          id: asNumOrZero(o.id),
+          card_id: asNumOrZero(o.card_id),
+          file_id: asNumOrZero(o.file_id),
+          filename: asStrOrEmpty(o.filename),
+          mime_type: asStrOrEmpty(o.mime_type),
+          size_bytes: asNumOrZero(o.size_bytes),
+          created_at: asStrOrEmpty(o.created_at),
+          thumb_file_id: asNumOrZero(o.thumb_file_id),
+          kind: asAttachmentKind(o.kind),
+        };
+      }),
+    };
+  },
+};
+
+const attachmentCreate: HandlerSpec<AttachmentCreateInput, AttachmentCreateOutput> = {
+  endpoint: 'attachment',
+  action: 'create',
+  encode: (i) => ({ card_id: i.cardId, file_id: i.fileId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      id: asNumOrZero(j.id),
+      card_id: asNumOrZero(j.card_id),
+      file_id: asNumOrZero(j.file_id),
+      filename: asStrOrEmpty(j.filename),
+      mime_type: asStrOrEmpty(j.mime_type),
+      size_bytes: asNumOrZero(j.size_bytes),
+      thumb_file_id: asNumOrZero(j.thumb_file_id),
+      kind: asAttachmentKind(j.kind),
+    };
+  },
+};
+
+const attachmentDelete: HandlerSpec<AttachmentDeleteInput, AttachmentDeleteOutput> = {
+  endpoint: 'attachment',
+  action: 'delete',
+  encode: (i) => ({ id: i.id }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { ok: asBoolOrFalse(j.ok) };
   },
 };
 
@@ -664,6 +830,44 @@ const edgeDelete: HandlerSpec<EdgeDeleteInput, EdgeDeleteOutput> = {
 };
 
 // ============================================================================
+// attribute_def_option.upsert / .delete
+// ============================================================================
+
+const attributeDefOptionUpsert: HandlerSpec<
+  AttributeDefOptionUpsertInput,
+  AttributeDefOptionUpsertOutput
+> = {
+  endpoint: 'attribute_def_option',
+  action: 'upsert',
+  encode: (i) => ({
+    attribute_def_id: i.attributeDefId,
+    value: i.value,
+    label: i.label,
+    ordering: i.ordering ?? 0,
+  }),
+  decode: (raw) => ({ ok: asBoolOrFalse(asObj(raw).ok) }),
+};
+
+const attributeDefOptionDelete: HandlerSpec<
+  AttributeDefOptionDeleteInput,
+  AttributeDefOptionDeleteOutput
+> = {
+  endpoint: 'attribute_def_option',
+  action: 'delete',
+  encode: (i) => ({
+    attribute_def_id: i.attributeDefId,
+    value: i.value,
+  }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: asBoolOrFalse(j.ok),
+      usage_count: asNumOrZero(j.usage_count),
+    };
+  },
+};
+
+// ============================================================================
 // Re-exports for use by tests / dispatch / screens
 // ============================================================================
 
@@ -688,7 +892,14 @@ export {
   cardInsert,
   cardSelect,
   cardSelectWithAttributes,
+  cardSearch,
   cardDelete,
+  configGet,
+  casMissingChunks,
+  fileCreate,
+  attachmentList,
+  attachmentCreate,
+  attachmentDelete,
   attributeUpdate,
   attributeDefSelect,
   attributeDefInsert,
@@ -701,6 +912,8 @@ export {
   userCardSortSet,
   edgeInsert,
   edgeDelete,
+  attributeDefOptionUpsert,
+  attributeDefOptionDelete,
 };
 
 // ============================================================================
@@ -717,7 +930,14 @@ export function registerBuiltInHandlers(r: HandlerRegistry): void {
   r.register(cardInsert);
   r.register(cardSelect);
   r.register(cardSelectWithAttributes);
+  r.register(cardSearch);
   r.register(cardDelete);
+  r.register(configGet);
+  r.register(casMissingChunks);
+  r.register(fileCreate);
+  r.register(attachmentList);
+  r.register(attachmentCreate);
+  r.register(attachmentDelete);
   r.register(attributeUpdate);
   r.register(attributeDefSelect);
   r.register(attributeDefInsert);
@@ -730,5 +950,7 @@ export function registerBuiltInHandlers(r: HandlerRegistry): void {
   r.register(userCardSortSet);
   r.register(edgeInsert);
   r.register(edgeDelete);
+  r.register(attributeDefOptionUpsert);
+  r.register(attributeDefOptionDelete);
   registerAdminHandlers(r);
 }

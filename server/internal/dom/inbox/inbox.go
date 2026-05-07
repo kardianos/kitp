@@ -40,8 +40,20 @@ import (
 type SelectInput struct {
 	UserID *int64               `json:"user_id,omitempty" mcp:"desc=optional user override (defaults to caller)"`
 	Tree   *card.CardWhereGroup `json:"tree,omitempty" mcp:"desc=optional v2 predicate-tree to layer on top of the inbox predicate"`
-	Limit  *int32               `json:"limit,omitempty" mcp:"desc=row cap"`
-	Offset *int32               `json:"offset,omitempty" mcp:"desc=offset"`
+	// ParentCardID scopes the inbox to direct children of this project (or any
+	// other parent card). Omit / null = "all assigned tasks across every
+	// project". Direct-parent semantics deliberately match the kanban / grid
+	// scope helper today; sub-task ancestry is a follow-up once a project-aware
+	// scope walker lands client-side.
+	ParentCardID *int64 `json:"parent_card_id,omitempty" mcp:"desc=optional project scope; only return tasks whose parent_card_id matches"`
+	// Scope toggles the assignee filter. Default ("mine") is the historical
+	// inbox behavior — only tasks assigned to the calling actor. "all" drops
+	// the assignee filter so the user can see every open task in scope (still
+	// limited to status != done). User-id override + scope=all is rejected to
+	// keep dev-mode impersonation honest.
+	Scope  *string `json:"scope,omitempty" mcp:"desc=mine|all (default mine)"`
+	Limit  *int32  `json:"limit,omitempty" mcp:"desc=row cap"`
+	Offset *int32  `json:"offset,omitempty" mcp:"desc=offset"`
 }
 
 // Row mirrors the per-card shape of card.select_with_attributes so the
@@ -65,13 +77,14 @@ type SelectOutput struct {
 // Register installs the handler.
 func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
-		Endpoint:   "inbox",
-		Action:     "select",
-		Doc:        "List the calling user's open inbox tasks, ordered by their personal sort_order with a created_at fallback.",
-		InputType:  reflect.TypeFor[SelectInput](),
-		OutputType: reflect.TypeFor[SelectOutput](),
-		Authz:      authzSelect,
-		Run:        runSelect(p),
+		Endpoint:     "inbox",
+		Action:       "select",
+		Doc:          "List the calling user's open inbox tasks, ordered by their personal sort_order with a created_at fallback.",
+		InputType:    reflect.TypeFor[SelectInput](),
+		OutputType:   reflect.TypeFor[SelectOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		Authz:        authzSelect,
+		Run:          runSelect(p),
 	})
 }
 
@@ -133,6 +146,26 @@ func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 				}
 				treeSQL = " AND (" + s + ")"
 			}
+			parentSQL := ""
+			if in.ParentCardID != nil {
+				parentSQL = " AND c.parent_card_id = " + addArg(*in.ParentCardID) + "::bigint"
+			}
+			// "Mine" (default) keeps the assignee filter; "all" drops it so the
+			// inbox screen can double as a project-wide open-tasks list.
+			scopeAll := false
+			if in.Scope != nil && *in.Scope == "all" {
+				scopeAll = true
+			}
+			assigneeSQL := ""
+			if !scopeAll {
+				assigneeSQL = `
+				  AND EXISTS (
+					  SELECT 1 FROM attribute_value av
+					  JOIN attribute_def ad ON ad.id = av.attribute_def_id
+					  WHERE av.card_id = c.id AND ad.name = 'assignee'
+					    AND av.value = to_jsonb($1::bigint)
+				  )`
+			}
 			q := fmt.Sprintf(`
 				SELECT
 					c.id,
@@ -151,21 +184,15 @@ func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 				LEFT JOIN user_card_sort ucs
 					ON ucs.user_id = $1::bigint AND ucs.card_id = c.id
 				WHERE c.deleted_at IS NULL
-				  AND ct.name = 'task'
-				  AND EXISTS (
-					  SELECT 1 FROM attribute_value av
-					  JOIN attribute_def ad ON ad.id = av.attribute_def_id
-					  WHERE av.card_id = c.id AND ad.name = 'assignee'
-					    AND av.value = to_jsonb($1::bigint)
-				  )
+				  AND ct.name = 'task'%s
 				  AND NOT EXISTS (
 					  SELECT 1 FROM attribute_value av
 					  JOIN attribute_def ad ON ad.id = av.attribute_def_id
 					  WHERE av.card_id = c.id AND ad.name = 'status'
 					    AND av.value = '"done"'::jsonb
-				  )%s
+				  )%s%s
 				ORDER BY ucs.sort_order ASC NULLS LAST, c.created_at DESC, c.id ASC
-			`, treeSQL)
+			`, assigneeSQL, parentSQL, treeSQL)
 			if in.Limit != nil {
 				q += fmt.Sprintf(" LIMIT $%d", len(args)+1)
 				args = append(args, *in.Limit)

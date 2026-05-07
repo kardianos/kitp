@@ -20,6 +20,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  resolveParentForInsert,
   submitQuickEntry,
   type QuickEntrySubmitInput,
 } from '../../src/quick_entry/submission.js';
@@ -428,6 +429,57 @@ describe('QuickEntryOverlay: keyboard handler is Tab-friendly', () => {
     expect(onDescriptionKeydown(tab)).toEqual({ prevented: false, stopped: false });
     expect(onDescriptionKeydown(plainEnter)).toEqual({ prevented: false, stopped: false });
     expect(onDescriptionKeydown(ctrlEnter)).toEqual({ prevented: true, stopped: true });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 4b. resolveParentForInsert — the parent-fallback contract                 */
+/* -------------------------------------------------------------------------- */
+
+describe('resolveParentForInsert', () => {
+  // These tests were added after a regression where the kanban / grid
+  // "+ New task" buttons issued card.insert without parentCardId, hitting
+  // the server's `card_type "task" requires a parent` validation. The
+  // helper centralises the fallback so screens can't forget again.
+
+  it('passes through an explicit parent unchanged for any card type', () => {
+    expect(resolveParentForInsert('task', 7, null)).toEqual({
+      parentCardId: 7,
+      error: null,
+    });
+    expect(resolveParentForInsert('project', 7, 99)).toEqual({
+      parentCardId: 7,
+      error: null,
+    });
+  });
+
+  it('lets project inserts go through with no parent + no scope', () => {
+    expect(resolveParentForInsert('project', undefined, null)).toEqual({
+      parentCardId: null,
+      error: null,
+    });
+  });
+
+  it('falls back to the active project scope for non-project card types', () => {
+    expect(resolveParentForInsert('task', undefined, 42)).toEqual({
+      parentCardId: 42,
+      error: null,
+    });
+    expect(resolveParentForInsert('milestone', undefined, 42)).toEqual({
+      parentCardId: 42,
+      error: null,
+    });
+    expect(resolveParentForInsert('component', undefined, 42)).toEqual({
+      parentCardId: 42,
+      error: null,
+    });
+  });
+
+  it("returns a user-facing error when no parent and no scope are available", () => {
+    const r = resolveParentForInsert('task', undefined, null);
+    expect(r.parentCardId).toBeNull();
+    expect(r.error).toMatch(/project/i);
+    expect(r.error).toMatch(/task/);
   });
 });
 

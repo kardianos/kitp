@@ -140,6 +140,26 @@ export interface CardSelectWithAttributesOutput {
 }
 
 // ============================================================================
+// card.search — typeahead read for ref:* picker dropdowns.
+// ============================================================================
+
+export interface CardSearchInput {
+  cardTypeName: string;
+  query?: string;
+  ids?: number[];
+  limit?: number;
+}
+
+export interface CardSearchHit {
+  id: number;
+  title: string;
+}
+
+export interface CardSearchOutput {
+  rows: CardSearchHit[];
+}
+
+// ============================================================================
 // card.delete
 // ============================================================================
 
@@ -150,6 +170,120 @@ export interface CardDeleteInput {
 export interface CardDeleteOutput {
   ok: boolean;
   activity_id: number;
+}
+
+// ============================================================================
+// file.create / attachment.list / attachment.delete / attachment.create —
+// JSON sides of the chunked-attachments API.
+//
+// Upload flow:
+//   1. Client slices the file into ~1 MB chunks.
+//   2. POST each chunk to /api/v1/cas/chunk (HTTP, multipart). The
+//      server returns {address, size_bytes}.
+//   3. Client calls file.create with the chunk list — server inserts
+//      the `file` row and the ordered chunk list, returns file id.
+//   4. Client calls attachment.create with {card_id, file_id} — server
+//      inserts the attachment row and an attachment_create activity.
+//
+// Download is /api/v1/attachment/{id}/download (binary stream).
+// ============================================================================
+
+export interface FileCreateChunk {
+  address: string;
+  size_bytes: number;
+}
+
+export interface FileCreateInput {
+  filename: string;
+  mimeType?: string;
+  chunks: FileCreateChunk[];
+}
+
+export interface FileCreateOutput {
+  id: number;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+}
+
+export interface AttachmentListInput {
+  cardId: number;
+}
+
+export interface AttachmentRow {
+  id: number;
+  card_id: number;
+  file_id: number;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  created_at: string;
+  /** 0 when no thumb is available (non-image attachment, or thumb gen failed). */
+  thumb_file_id: number;
+  /** Display bucket the server has classified this attachment into. */
+  kind: AttachmentKind;
+}
+
+export type AttachmentKind = 'image' | 'pdf' | 'other';
+
+export interface AttachmentListOutput {
+  rows: AttachmentRow[];
+}
+
+export interface AttachmentDeleteInput {
+  id: number;
+}
+
+export interface AttachmentDeleteOutput {
+  ok: boolean;
+}
+
+export interface AttachmentCreateInput {
+  cardId: number;
+  fileId: number;
+}
+
+export interface AttachmentCreateOutput {
+  id: number;
+  card_id: number;
+  file_id: number;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  thumb_file_id: number;
+  kind: AttachmentKind;
+}
+
+// ============================================================================
+// cas.missing_chunks — pre-flight before chunk upload. Client sends every
+// chunk's address; server returns the subset it doesn't already have, so
+// we skip the network bytes for any chunk that's already on disk.
+// ============================================================================
+
+export interface MissingChunksInput {
+  addresses: string[];
+}
+
+export interface MissingChunksOutput {
+  missing: string[];
+}
+
+// ============================================================================
+// config.get — server-driven configuration values the client needs to know
+// about up front (e.g. the attachment size cap so the UI can refuse oversize
+// files before sending bytes).
+// ============================================================================
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface ConfigGetInput {}
+
+export interface ServerConfig {
+  attachment_max_bytes: number;
+  chunk_max_bytes: number;
+}
+
+export interface ConfigGetOutput {
+  config: ServerConfig;
 }
 
 // ============================================================================
@@ -252,6 +386,31 @@ export interface EdgeDeleteOutput {
 }
 
 // ============================================================================
+// attribute_def_option.upsert / .delete
+// ============================================================================
+
+export interface AttributeDefOptionUpsertInput {
+  attributeDefId: number;
+  value: string;
+  label: string;
+  ordering?: number;
+}
+
+export interface AttributeDefOptionUpsertOutput {
+  ok: boolean;
+}
+
+export interface AttributeDefOptionDeleteInput {
+  attributeDefId: number;
+  value: string;
+}
+
+export interface AttributeDefOptionDeleteOutput {
+  ok: boolean;
+  usage_count: number;
+}
+
+// ============================================================================
 // activity.select
 // ============================================================================
 
@@ -345,6 +504,10 @@ export interface InboxSelectInput {
   userId?: number;
   /** v2 predicate-tree, AND-joined onto the built-in inbox predicate. */
   tree?: CardWhereTree;
+  /** Project scope — when set, only tasks whose `parent_card_id` matches. */
+  parentCardId?: number;
+  /** "mine" (default) keeps the assignee filter; "all" drops it. */
+  scope?: 'mine' | 'all';
   limit?: number;
   offset?: number;
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/activity"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/card"
@@ -35,7 +36,7 @@ func setup(t *testing.T, schema string) (*api.Server, *store.Pool) {
 // makeTag creates a tag CARD with the given path and exclusion root.
 func makeTag(t *testing.T, srv *api.Server, projectID int64, path, root string) int64 {
 	t.Helper()
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 	rootJSON := "null"
 	if root != "" {
 		rootJSON = fmt.Sprintf("%q", root)
@@ -59,7 +60,7 @@ func makeTag(t *testing.T, srv *api.Server, projectID int64, path, root string) 
 // one task leaves only priority/low; activity shows the removal.
 func TestApplyMutualExclusion(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_tag_mutex")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	// Project + task + 2 mutually-exclusive tags.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
@@ -147,7 +148,7 @@ func TestApplyMutualExclusion(t *testing.T) {
 // TestApplyNonExclusive: two tags with no shared exclusion root both stay.
 func TestApplyNonExclusive(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_tag_nonexcl")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -201,7 +202,7 @@ func TestApplyNonExclusive(t *testing.T) {
 // statement group (LastWrites == 1) regardless of N.
 func TestApplyCoalesces(t *testing.T) {
 	srv, sp := setup(t, "kitp_test_tag_coal")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(

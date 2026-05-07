@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -40,6 +41,16 @@ func FromContext(ctx context.Context) (*UserCtx, bool) {
 // the HTTP middleware.
 func WithUser(ctx context.Context, u *UserCtx) context.Context {
 	return context.WithValue(ctx, ctxKey{}, u)
+}
+
+// WithSystemUser returns a derived context carrying a synthetic System
+// User identity (id=1, name="System"). Mirrors what auth.Middleware
+// installs in dev mode (AUTH_MODE=off) so tests that drive the
+// dispatcher directly — bypassing HTTP — start from the same actor the
+// production code would see. Use this in any test that calls
+// `srv.Dispatch(...)` without going through the auth middleware.
+func WithSystemUser(ctx context.Context) context.Context {
+	return WithUser(ctx, &UserCtx{ID: SystemUserID, DisplayName: "System"})
 }
 
 // ProductionRefusalError is returned by NewSystemUser when the dev-mode
@@ -80,6 +91,42 @@ func NewSystemUser(ctx context.Context, pool *pgxpool.Pool, env string, mode Mod
 // Domain handlers use it as the actor when no user has been attached to
 // ctx — the dev-mode contract until OIDC lands in phase 20.
 const SystemUserID int64 = 1
+
+// RolesPool is the read-only surface LoadUserRoles needs. *pgxpool.Pool
+// satisfies it naturally; tests can pass mocks. Mirrors reg.ValidationPool
+// without importing reg (which would import auth — cycle).
+type RolesPool interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// LoadUserRoles returns the role names assigned to userID via the
+// `user_role` table, joined to `role.name`. Returns an empty slice if
+// the user has no roles. The dispatcher calls this once per HTTP
+// request as part of the AllowedRoles gate.
+func LoadUserRoles(ctx context.Context, pool RolesPool, userID int64) ([]string, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT r.name
+		FROM user_role ur
+		JOIN role r ON r.id = ur.role_id
+		WHERE ur.user_id = $1
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("auth: load user roles: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 // ActorOrSystem returns the user id from ctx, falling back to the System
 // User when ctx has no user attached.

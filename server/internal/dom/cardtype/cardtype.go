@@ -34,11 +34,12 @@ type SelectOutput struct {
 // Register installs the handler.
 func Register() {
 	reg.Register(reg.Handler{
-		Endpoint:   "card_type",
-		Action:     "select",
-		Doc:        "List every card_type row known to the server (built-in types are seeded via migration).",
-		InputType:  reflect.TypeFor[SelectInput](),
-		OutputType: reflect.TypeFor[SelectOutput](),
+		Endpoint:     "card_type",
+		Action:       "select",
+		Doc:          "List every card_type row known to the server (built-in types are seeded via migration).",
+		InputType:    reflect.TypeFor[SelectInput](),
+		OutputType:   reflect.TypeFor[SelectOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
 		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 			rows, err := tx.Query(ctx, `
 				SELECT id, name, parent_card_type_id, allow_self_parent, is_built_in

@@ -14,6 +14,7 @@
   import { getContext } from 'svelte';
   import { routerState, linkAction } from '../routing/router.svelte';
   import { cx } from '../util/class_names';
+  import ProjectSelector from './ProjectSelector.svelte';
   import UserMenu from './UserMenu.svelte';
   import type { AuthState } from '../auth/auth_state.svelte';
 
@@ -66,6 +67,12 @@
       <span aria-hidden="true">{collapsed ? '›' : '‹'}</span>
     </button>
   </div>
+
+  {#if !collapsed}
+    <div class="border-b border-border px-3 py-2">
+      <ProjectSelector />
+    </div>
+  {/if}
 
   <!-- Top-level nav -->
   <nav class="flex-1 overflow-y-auto p-2" aria-label="Sections">

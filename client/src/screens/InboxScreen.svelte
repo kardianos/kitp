@@ -24,7 +24,6 @@
   import type { AuthState } from '../auth/auth_state.svelte';
   import { getDispatcher } from '../dispatch/context';
   import {
-    attributeDefSelect,
     cardSelectWithAttributes,
     inboxSelect,
     userCardSortSet,
@@ -32,8 +31,6 @@
     attributeUpdate,
   } from '../reg/handlers';
   import type {
-    AttributeDefSelectInput,
-    AttributeDefSelectOutput,
     AttributeUpdateInput,
     AttributeUpdateOutput,
     CardSelectWithAttributesInput,
@@ -45,14 +42,15 @@
     InboxSelectOutput,
     UserCardSortSetInput,
     UserCardSortSetOutput,
+    UserRow,
     UserSelectInput,
     UserSelectOutput,
   } from '../reg/types';
 
   import FilterBar from '../filter/FilterBar.svelte';
   import {
+    AttributeSchemaCache,
     type FilterAttribute,
-    type FilterAttributeOption,
   } from '../filter/attribute_schema.svelte';
   import {
     isFlatAndOfLeaves,
@@ -60,24 +58,33 @@
     type Predicate,
   } from '../filter/predicate';
   import { defaultQuickChipsFor, type QuickChip } from '../filter/quick_chips';
+  import { buildTaskFilterPalette } from '../filter/task_palette';
 
   import DragHandle from '../dnd/DragHandle.svelte';
   import DropZone from '../dnd/DropZone.svelte';
 
   import { setActiveScope, useShortcut } from '../keys/shortcut';
+  import { projectScope } from '../shell/project_scope.svelte';
 
   import { useQuickEntry } from '../quick_entry/use_quick_entry.svelte';
   import QuickEntryOverlay from '../quick_entry/QuickEntryOverlay.svelte';
 
   import { navigate } from '../routing/router.svelte';
+  import { setTaskNavList } from '../routing/task_nav_list.svelte';
 
   import Button from '../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
   import Spinner from '../ui/Spinner.svelte';
   import { notify } from '../ui/toast.svelte';
   import TaskRow from '../ui/widgets/TaskRow.svelte';
+  import { cx } from '../util/class_names';
 
-  import { computeNewSortOrder, move, predicateToggleStatus } from './inbox_helpers';
+  import {
+    move,
+    planReorder,
+    predicateToggleStatus,
+    SORT_ORDER_STEP,
+  } from './inbox_helpers';
 
   /* ------------------------------------------------------------------ scope */
   setActiveScope('inbox');
@@ -85,6 +92,7 @@
   /* ------------------------------------------------------------- dependencies */
   const dispatcher = getDispatcher();
   const authState = getContext<AuthState | undefined>('authState');
+  const schemaCache = new AttributeSchemaCache(dispatcher);
 
   /**
    * TEMPORARY: System User has no assigned tasks; until OIDC-driven user
@@ -107,73 +115,68 @@
   /* ------------------------------------------------------------------- state */
 
   let rows = $state<InboxRow[]>([]);
-  let userNames = $state<Record<number, string>>({});
-  let cardTitles = $state<Record<number, string>>({});
-  let tagPaths = $state<Record<number, string>>({});
-  let schemaDefs = $state<FilterAttribute[]>([]);
+  let users = $state<UserRow[]>([]);
+  let milestones = $state<CardWithAttrs[]>([]);
+  let components = $state<CardWithAttrs[]>([]);
+  let tagsRows = $state<CardWithAttrs[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let predicate = $state<Predicate | null>(null);
   let selectedIndex = $state(0);
 
+  /** Derived lookup tables for `<TaskRow>` props. */
+  const userNames = $derived.by((): Record<number, string> => {
+    const out: Record<number, string> = {};
+    for (const u of users) out[u.id] = u.display_name;
+    return out;
+  });
+  const cardTitles = $derived.by((): Record<number, string> => {
+    const out: Record<number, string> = {};
+    for (const r of milestones) {
+      const t = r.attributes['title'];
+      if (typeof t === 'string') out[r.id] = t;
+    }
+    for (const r of components) {
+      const t = r.attributes['title'];
+      if (typeof t === 'string') out[r.id] = t;
+    }
+    return out;
+  });
+  const tagPaths = $derived.by((): Record<number, string> => {
+    const out: Record<number, string> = {};
+    for (const r of tagsRows) {
+      const p = r.attributes['path'];
+      if (typeof p === 'string') out[r.id] = p;
+    }
+    return out;
+  });
+  /** "mine" (default) shows only tasks assigned to the actor; "all" drops
+   *  the assignee filter so the inbox doubles as a project-wide open-tasks
+   *  list. Lives in component state — not persisted across visits because
+   *  "all" + a wide project scope can flood the screen. */
+  let viewMode = $state<'mine' | 'all'>('mine');
+
   /* ----------------------------------------------------- computed filter UI */
 
-  /** FilterBar `attributes` list. Mirrors the Dart `_filterAttributes`. */
-  const filterAttributes = $derived.by((): FilterAttribute[] => {
-    const assigneeOpts: FilterAttributeOption[] = Object.entries(userNames).map(
-      ([id, name]) => ({ value: Number(id), label: name }),
-    );
-    const milestoneOpts: FilterAttributeOption[] = [];
-    const componentOpts: FilterAttributeOption[] = [];
-    for (const [id, title] of Object.entries(cardTitles)) {
-      // We can't distinguish milestone/component by id alone here without
-      // tracking type — but `cardTitles` already pools both. The picker just
-      // shows titles; the wire op is the same regardless.
-      milestoneOpts.push({ value: Number(id), label: title });
-      componentOpts.push({ value: Number(id), label: title });
-    }
-
-    // Status: derive options from attribute_def cache when available; fall
-    // back to the canonical set the Dart screen hardcoded.
-    const statusDef = schemaDefs.find((d) => d.name === 'status');
-    const statusOpts: FilterAttributeOption[] = statusDef?.options ?? [
-      { value: 'todo', label: 'todo' },
-      { value: 'doing', label: 'doing' },
-      { value: 'review', label: 'review' },
-      { value: 'done', label: 'done' },
-    ];
-
-    return [
-      {
-        name: 'status',
-        label: 'Status',
-        valueType: 'enum',
-        options: statusOpts,
-        ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
-      },
-      {
-        name: 'assignee',
-        label: 'Assignee',
-        valueType: 'ref:user',
-        options: assigneeOpts,
-        ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
-      },
-      {
-        name: 'milestone_ref',
-        label: 'Milestone',
-        valueType: 'ref:milestone',
-        options: milestoneOpts,
-        ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
-      },
-      {
-        name: 'component_ref',
-        label: 'Component',
-        valueType: 'ref:component',
-        options: componentOpts,
-        ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
-      },
-    ];
-  });
+  /**
+   * FilterBar palette. One source of truth lives in `task_palette.ts` so
+   * the same names / labels / option lists render across Inbox, Grid,
+   * Kanban, and ProjectDetail.
+   */
+  const filterAttributes = $derived<FilterAttribute[]>(
+    buildTaskFilterPalette({
+      schema: schemaCache,
+      users,
+      milestones,
+      components,
+      tags: tagsRows,
+    }),
+  );
+  /** Status attribute pulled from the palette, for label resolution in
+   *  list rows so the row chip and the FilterBar chip stay in sync. */
+  const statusAttribute = $derived(
+    filterAttributes.find((a) => a.name === 'status'),
+  );
 
   /** Quick chips: status enum chips + Mine + (auto) milestone/component chips. */
   const quickChips = $derived.by((): QuickChip[] => {
@@ -223,8 +226,10 @@
     error = null;
 
     const treeArg = buildTree();
-    const inboxData: InboxSelectInput = { userId: meId, limit: 200 };
+    const inboxData: InboxSelectInput = { userId: meId, limit: 200, scope: viewMode };
     if (treeArg !== undefined) inboxData.tree = treeArg;
+    const scoped = projectScope.projectId;
+    if (scoped !== null) inboxData.parentCardId = scoped;
 
     // Issue every sub-request synchronously this tick so the dispatcher folds
     // them into ONE POST /api/v1/batch.
@@ -262,17 +267,12 @@
       action: cardSelectWithAttributes.action,
       data: { cardTypeName: 'tag' },
     });
-    const fSchema = dispatcher.request<
-      AttributeDefSelectInput,
-      AttributeDefSelectOutput
-    >({
-      endpoint: attributeDefSelect.endpoint,
-      action: attributeDefSelect.action,
-      data: {},
-    });
+    // `AttributeSchemaCache.load()` issues `attribute_def.select` on the
+    // same tick (and short-circuits on subsequent screen mounts).
+    const fSchema = schemaCache.load();
 
     try {
-      const [inboxOut, userOut, mOut, cOut, tagOut, schemaOut] = await Promise.all([
+      const [inboxOut, userOut, mOut, cOut, tagOut] = await Promise.all([
         fInbox,
         fUsers,
         fMilestones,
@@ -282,44 +282,10 @@
       ]);
 
       rows = inboxOut.rows;
-
-      const nextUserNames: Record<number, string> = {};
-      for (const u of userOut.rows) nextUserNames[u.id] = u.display_name;
-      userNames = nextUserNames;
-
-      const nextCardTitles: Record<number, string> = {};
-      const merge = (out: CardSelectWithAttributesOutput): void => {
-        for (const r of out.rows) {
-          const t = r.attributes['title'];
-          if (typeof t === 'string' && t.length > 0) nextCardTitles[r.id] = t;
-        }
-      };
-      merge(mOut);
-      merge(cOut);
-      cardTitles = nextCardTitles;
-
-      const nextTagPaths: Record<number, string> = {};
-      for (const r of tagOut.rows) {
-        const p = r.attributes['path'];
-        if (typeof p === 'string') nextTagPaths[r.id] = p;
-      }
-      tagPaths = nextTagPaths;
-
-      // Build a slim FilterAttribute view from attribute_def rows so the
-      // chip generator can find the status enum's options.
-      const nextSchema: FilterAttribute[] = schemaOut.rows.map((d) => {
-        const fa: FilterAttribute = {
-          name: d.name,
-          label: d.name,
-          valueType: d.value_type,
-          ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
-        };
-        if (d.options !== undefined && d.options.length > 0) {
-          fa.options = d.options.map((o) => ({ value: o.value, label: o.label }));
-        }
-        return fa;
-      });
-      schemaDefs = nextSchema;
+      users = userOut.rows;
+      milestones = mOut.rows;
+      components = cOut.rows;
+      tagsRows = tagOut.rows;
 
       // Keep the row selection in range.
       if (selectedIndex >= rows.length) {
@@ -332,9 +298,13 @@
     }
   }
 
-  // Initial fetch — fire once on mount. Use $effect with untrack so we don't
-  // re-run when the rune dependencies referenced in `refresh` change shape.
+  // Initial fetch + refetch whenever the project scope or view mode flips.
+  // We deliberately enumerate the tracked deps so unrelated state mutations
+  // don't trigger a refetch storm. Other re-fetches go through explicit
+  // handlers (`onFilterChange`, reorder).
   $effect(() => {
+    void projectScope.projectId;
+    void viewMode;
     untrack(() => {
       void refresh();
     });
@@ -364,34 +334,51 @@
   /* -------------------------------------------------------------- reorder */
 
   /**
-   * Move `row` to slot `slot`. Issues ONE `user_card_sort.set`. Optimistic
-   * UI; on error we snap back and toast the message.
+   * Move `row` to slot `slot`. The plan may issue multiple
+   * `user_card_sort.set` writes (see {@link planReorder} for why); they
+   * fly in one render tick and the dispatcher coalesces them into a
+   * single batch. Optimistic UI; on error we snap back and toast.
    */
   async function reorderToSlot(row: InboxRow, slot: number): Promise<void> {
-    // Compute the destination list as it WOULD look post-move so the
-    // sort_order math doesn't include the dragged row itself.
-    const without = rows.filter((r) => r.id !== row.id);
+    // Convert the slot index (0..N, where N == rows.length means "tail")
+    // into the equivalent position in the destination list (where the
+    // moved row has been removed first). insertAt counts BEFORE row[i],
+    // so an in-place move that crosses the moved row's old slot gets a
+    // -1 correction.
     let insertAt = slot;
     const origIdx = rows.findIndex((r) => r.id === row.id);
     if (origIdx >= 0 && origIdx < slot) insertAt -= 1;
-    if (insertAt < 0) insertAt = 0;
-    if (insertAt > without.length) insertAt = without.length;
 
-    const newSort = computeNewSortOrder(without, insertAt);
+    const updates = planReorder(rows, row.id, insertAt);
+    if (updates.length === 0) return; // no-op move (slot equals current position)
 
+    // Optimistic update: replace `rows` with the new order, applying the
+    // synthetic sort_orders so the visible list matches the commit
+    // before the server round-trip resolves.
     const original = rows.slice();
-    const moved: InboxRow = { ...row, personal_sort_order: newSort };
+    const without = rows.filter((r) => r.id !== row.id);
+    let target = insertAt;
+    if (target < 0) target = 0;
+    if (target > without.length) target = without.length;
     const next = without.slice();
-    next.splice(insertAt, 0, moved);
-    rows = next;
+    next.splice(target, 0, row);
+    rows = next.map((r, i) => ({
+      ...r,
+      personal_sort_order: (i + 1) * SORT_ORDER_STEP,
+    }));
 
     try {
-      await dispatcher.request<UserCardSortSetInput, UserCardSortSetOutput>({
-        endpoint: userCardSortSet.endpoint,
-        action: userCardSortSet.action,
-        data: { cardId: row.id, sortOrder: newSort },
-      });
-      // Refresh from the server so we pick up any normalisation it did.
+      await Promise.all(
+        updates.map((u) =>
+          dispatcher.request<UserCardSortSetInput, UserCardSortSetOutput>({
+            endpoint: userCardSortSet.endpoint,
+            action: userCardSortSet.action,
+            data: u,
+          }),
+        ),
+      );
+      // Refresh from the server so we pick up any normalisation it did
+      // (e.g. clamped sort_orders, post-move filter changes).
       await refresh();
     } catch (e) {
       rows = original;
@@ -437,10 +424,22 @@
 
   /* ---------------------------------------------------- keyboard shortcuts */
 
+  /** Capture the rendered inbox order into the task nav-list store and
+   *  navigate to the chosen task. Both keyboard `Enter` and a row click
+   *  funnel through here so the prev/next chevrons on the detail screen
+   *  see the same list either way. */
+  function openTaskById(id: number): void {
+    setTaskNavList({
+      label: viewMode === 'mine' ? 'Inbox' : 'Inbox (all open)',
+      ids: rows.map((r) => r.id),
+    });
+    navigate(`/task/${id}`);
+  }
+
   function openSelected(): void {
     const r = rows[selectedIndex];
     if (r === undefined) return;
-    navigate(`/task/${r.id}`);
+    openTaskById(r.id);
   }
 
   async function toggleSelectedDone(): Promise<void> {
@@ -464,13 +463,15 @@
     }
   }
 
-  useShortcut('inbox', 'j', () => {
+  // Plain navigation: j/k or arrow keys. The pair lets vim-style users
+  // and arrow-key users coexist without remapping anything.
+  useShortcut('inbox', ['j', 'ArrowDown'], () => {
     selectedIndex = move(rows.length, selectedIndex, 1);
-  }, 'Move selection down');
+  }, 'Down');
 
-  useShortcut('inbox', 'k', () => {
+  useShortcut('inbox', ['k', 'ArrowUp'], () => {
     selectedIndex = move(rows.length, selectedIndex, -1);
-  }, 'Move selection up');
+  }, 'Up');
 
   useShortcut('inbox', 'Enter', () => {
     openSelected();
@@ -480,13 +481,17 @@
     void toggleSelectedDone();
   }, 'Toggle done on selected');
 
-  useShortcut('inbox', 'Mod+ArrowDown', () => {
+  // Reorder: Shift modifier on the same nav keys (or Shift+arrow) moves
+  // the row itself rather than just the cursor. Replaces the older
+  // Mod+ArrowUp/Down pair which Chrome on some Linux setups intercepts
+  // for tab/page nav, so the binding never reached the dispatcher.
+  useShortcut('inbox', ['Shift+j', 'Shift+ArrowDown'], () => {
     void reorderSelected(1);
-  }, 'Move selected row down');
+  }, 'Move row down');
 
-  useShortcut('inbox', 'Mod+ArrowUp', () => {
+  useShortcut('inbox', ['Shift+k', 'Shift+ArrowUp'], () => {
     void reorderSelected(-1);
-  }, 'Move selected row up');
+  }, 'Move row up');
 
   /* ------------------------------------------------------------- helpers */
 
@@ -499,9 +504,43 @@
 
 <div class="flex h-full flex-col">
   <header class="flex items-center justify-between gap-3 px-4 py-3" data-testid="inbox-header">
-    <h1 class="text-base font-semibold">
-      Inbox — {rows.length} open task{rows.length === 1 ? '' : 's'}
-    </h1>
+    <div class="flex items-center gap-3">
+      <h1 class="text-base font-semibold">
+        Inbox — {rows.length} open task{rows.length === 1 ? '' : 's'}
+      </h1>
+      <div
+        class="inline-flex overflow-hidden rounded-md border border-border text-xs"
+        role="group"
+        aria-label="Inbox scope"
+      >
+        <button
+          type="button"
+          class={cx(
+            'px-2 py-1 transition-colors',
+            viewMode === 'mine'
+              ? 'bg-accent text-accent-fg'
+              : 'bg-bg text-fg hover:bg-surface',
+          )}
+          aria-pressed={viewMode === 'mine'}
+          onclick={() => {
+            viewMode = 'mine';
+          }}
+        >Mine</button>
+        <button
+          type="button"
+          class={cx(
+            'border-l border-border px-2 py-1 transition-colors',
+            viewMode === 'all'
+              ? 'bg-accent text-accent-fg'
+              : 'bg-bg text-fg hover:bg-surface',
+          )}
+          aria-pressed={viewMode === 'all'}
+          onclick={() => {
+            viewMode = 'all';
+          }}
+        >All open</button>
+      </div>
+    </div>
     <Button size="sm" variant="secondary" onclick={() => qe.open()}>
       {#snippet children()}New task{/snippet}
     </Button>
@@ -537,28 +576,40 @@
     <div class="flex-1 overflow-auto px-4 py-2" data-testid="inbox-list">
       {#each rows as row, i (row.id)}
         <DropZone
-          id={`inbox-slot-${i}`}
+          id={`inbox-before-${row.id}`}
           onDrop={onSlotDrop(i)}
           accepts={acceptsInboxRow}
         />
-        <DragHandle payload={row} previewLabel={previewLabelFor(row)}>
-          <div class="my-1" data-row-id={row.id}>
+        <div class="my-1 flex items-stretch gap-1" data-row-id={row.id}>
+          <DragHandle
+            payload={row}
+            previewLabel={previewLabelFor(row)}
+            class="row-grip"
+          >
+            <span
+              aria-label="Drag to reorder"
+              title="Drag to reorder"
+              class="row-grip-glyph flex h-full w-4 cursor-grab select-none items-center justify-center rounded-sm border border-transparent text-muted hover:border-border hover:bg-surface"
+            >⋮⋮</span>
+          </DragHandle>
+          <div class="min-w-0 flex-1">
             <TaskRow
               card={rowToCard(row)}
               selected={i === selectedIndex}
               onSelect={() => {
                 selectedIndex = i;
               }}
-              onOpen={() => navigate(`/task/${row.id}`)}
+              onOpen={() => openTaskById(row.id)}
               userNames={userNames}
               cardTitles={cardTitles}
               tagPaths={tagPaths}
+              statusOptions={statusAttribute?.options}
             />
           </div>
-        </DragHandle>
+        </div>
       {/each}
       <DropZone
-        id={`inbox-slot-${rows.length}`}
+        id="inbox-tail"
         onDrop={onSlotDrop(rows.length)}
         accepts={acceptsInboxRow}
       />

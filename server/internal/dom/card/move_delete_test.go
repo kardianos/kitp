@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/activity"
 	"github.com/kitp/kitp/server/internal/dom/card"
 )
@@ -14,7 +15,7 @@ import (
 // TestDeleteUndelete checks the soft-delete + activity log lifecycle.
 func TestDeleteUndelete(t *testing.T) {
 	srv, _ := setupAttr(t, "kitp_test_card_del")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -100,7 +101,7 @@ func TestDeleteUndelete(t *testing.T) {
 // TestMoveValidatesParentType: moving a task under a tag is rejected.
 func TestMoveValidatesParentType(t *testing.T) {
 	srv, _ := setupAttr(t, "kitp_test_card_move")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(

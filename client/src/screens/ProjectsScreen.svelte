@@ -48,7 +48,9 @@
   import { navigate } from '../routing/router.svelte';
   import Button from '../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
+  import IconButton from '../ui/IconButton.svelte';
   import Spinner from '../ui/Spinner.svelte';
+  import ProjectPropertiesPanel from '../ui/widgets/ProjectPropertiesPanel.svelte';
   import { cx } from '../util/class_names';
   import { searchAndFilter, move } from './projects_helpers';
 
@@ -67,6 +69,16 @@
   let predicate = $state<Predicate | null>(null);
   let selectedIndex = $state(0);
   let searchEl: HTMLInputElement | null = $state(null);
+
+  // Slide-out editor for the project's own properties (title, description,
+  // attributes). Opening it sets `editingProjectId` so the panel knows which
+  // card to load; closing nulls it back out.
+  let editingProjectId = $state<number | null>(null);
+  let editorOpen = $state(false);
+  function editProject(id: number): void {
+    editingProjectId = id;
+    editorOpen = true;
+  }
 
   const qe = useQuickEntry({
     scope: 'projects',
@@ -271,13 +283,17 @@
     <ul class="flex flex-1 flex-col divide-y divide-border overflow-y-auto rounded-md border border-border">
       {#each visible as project, i (project.id)}
         {@const desc = descriptionFor(project)}
-        <li>
+        <li
+          class={cx(
+            'flex items-center gap-1 hover:bg-surface',
+            i === selectedIndex && 'bg-surface',
+          )}
+        >
           <a
             href={`/project/${project.id}`}
             class={cx(
-              'flex flex-col gap-1 px-3 py-2 text-sm hover:bg-surface',
+              'flex min-w-0 flex-1 flex-col gap-1 px-3 py-2 text-sm',
               'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              i === selectedIndex && 'bg-surface',
             )}
             data-id={project.id}
             onclick={(e) => {
@@ -297,6 +313,24 @@
               open tasks: —
             </span>
           </a>
+          <IconButton
+            aria-label={`Edit project "${titleFor(project)}"`}
+            title="Edit project properties"
+            class="mr-2 shrink-0"
+            onclick={() => editProject(project.id)}
+          >
+            {#snippet children()}
+              <svg viewBox="0 0 16 16" class="h-4 w-4" aria-hidden="true">
+                <path
+                  d="M11 2 L14 5 L5 14 L2 14 L2 11 Z"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linejoin="round"
+                  fill="none"
+                />
+              </svg>
+            {/snippet}
+          </IconButton>
         </li>
       {/each}
     </ul>
@@ -304,6 +338,12 @@
 </div>
 
 <QuickEntryOverlay {...qe.props} />
+
+<ProjectPropertiesPanel
+  bind:open={editorOpen}
+  cardId={editingProjectId}
+  onSaved={() => void refresh()}
+/>
 
 <style>
   /* Fallback line-clamp utility for environments where the Tailwind

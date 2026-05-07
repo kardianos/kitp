@@ -265,6 +265,14 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 		prepped = append(prepped, expanded...)
 	}
 
+	// Pass 1.5: declarative role gate (Handler.AllowedRoles). Requires a
+	// valid login (unless the leaf is reg.RolePublic) and at least one
+	// of the listed roles. Runs before Pass 2 because it's strictly
+	// cheaper: one role lookup per HTTP request, no card-graph walk.
+	if err := s.runRoleGate(ctx, prepped, out.Subresponses); err != nil {
+		return out
+	}
+
 	// Pass 2: scope-aware authorization. Loads the actor's grants once, then
 	// resolves each leaf's target project (single batched card lookup) and
 	// matches grants. On deny, abort the whole batch.

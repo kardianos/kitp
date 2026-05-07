@@ -3,7 +3,7 @@
 
   Layout:
     +-----------------+--------------------------------------------+
-    |                 | Header (48px): breadcrumbs + search + help |
+    |                 | Header (48px): breadcrumbs + help          |
     |  Sidebar (220)  +--------------------------------------------+
     |  collapsible    |                                            |
     |                 |  Outlet (children) padded 24px             |
@@ -18,8 +18,30 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import NavSidebar from './NavSidebar.svelte';
-  import { routerState } from '../routing/router.svelte';
+  import { shortcuts } from '../keys/registry.svelte';
+  import { useShortcut } from '../keys/shortcut';
+  import { navigate, routerState } from '../routing/router.svelte';
   import { cx } from '../util/class_names';
+
+  /**
+   * Top-level navigation chord shortcuts. Mirrors the labels rendered
+   * next to each link in NavSidebar — keep this list and the sidebar's
+   * `navItems` in sync. Registered with `scope: 'global'` because
+   * AppShell wraps every signed-in screen, so the chords are valid
+   * everywhere except the standalone Login/Auth callback screens
+   * (which don't mount AppShell at all and so won't see these
+   * registrations).
+   */
+  const NAV_CHORDS: Array<{ chord: string; path: string; label: string }> = [
+    { chord: 'g p', path: '/projects', label: 'Go to Projects' },
+    { chord: 'g i', path: '/inbox', label: 'Go to Inbox' },
+    { chord: 'g g', path: '/grid', label: 'Go to Grid' },
+    { chord: 'g k', path: '/kanban', label: 'Go to Kanban' },
+    { chord: 'g a', path: '/activity', label: 'Go to Activity' },
+  ];
+  for (const { chord, path, label } of NAV_CHORDS) {
+    useShortcut('global', chord, () => navigate(path), label);
+  }
 
   interface Props {
     children?: Snippet;
@@ -95,12 +117,8 @@
     return out;
   });
 
-  // Mod+K placeholder: focus the search input. The real command palette
-  // ships in a later task — for now `Mod+K` opens nothing global; the
-  // input itself surfaces an autofocus when the icon button is clicked.
-  let searchInputEl: HTMLInputElement | null = $state(null);
-  function focusSearch(): void {
-    searchInputEl?.focus();
+  function toggleHelp(): void {
+    shortcuts.helpOpen = !shortcuts.helpOpen;
   }
 </script>
 
@@ -165,22 +183,13 @@
 
       <div class="flex-1"></div>
 
-      <!-- Search input (placeholder for command palette) -->
-      <input
-        bind:this={searchInputEl}
-        type="search"
-        placeholder="Search…  Mod+K"
-        class="hidden h-8 w-64 rounded border border-border bg-bg px-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:block"
-        aria-label="Search"
-      />
-
       <!-- Help icon (opens shortcut help via the registry's helpOpen flag) -->
       <button
         type="button"
         class="rounded p-1 text-muted hover:bg-border/40"
         title="Keyboard shortcuts (?)"
         aria-label="Show keyboard shortcuts"
-        onclick={focusSearch}
+        onclick={toggleHelp}
       >
         <span aria-hidden="true">?</span>
       </button>

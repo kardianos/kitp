@@ -61,30 +61,33 @@ type DeleteOutput struct {
 func Register(p *store.Pool) {
 	authzPool = p
 	reg.Register(reg.Handler{
-		Endpoint:   "role_mapping",
-		Action:     "list",
-		Doc:        "List every role_mapping row (claim value -> role).",
-		InputType:  reflect.TypeFor[ListInput](),
-		OutputType: reflect.TypeFor[ListOutput](),
-		Run:        runList(p),
+		Endpoint:     "role_mapping",
+		Action:       "list",
+		Doc:          "List every role_mapping row (claim value -> role).",
+		InputType:    reflect.TypeFor[ListInput](),
+		OutputType:   reflect.TypeFor[ListOutput](),
+		AllowedRoles: []string{"admin"},
+		Run:          runList(p),
 	})
 	reg.Register(reg.Handler{
-		Endpoint:   "role_mapping",
-		Action:     "set",
-		Doc:        "Admin-only: upsert one role_mapping row.",
-		InputType:  reflect.TypeFor[SetInput](),
-		OutputType: reflect.TypeFor[SetOutput](),
-		Authz:      authzAdmin,
-		Run:        runSet(p),
+		Endpoint:     "role_mapping",
+		Action:       "set",
+		Doc:          "Admin-only: upsert one role_mapping row.",
+		InputType:    reflect.TypeFor[SetInput](),
+		OutputType:   reflect.TypeFor[SetOutput](),
+		AllowedRoles: []string{"admin"},
+		Authz:        authzAdmin,
+		Run:          runSet(p),
 	})
 	reg.Register(reg.Handler{
-		Endpoint:   "role_mapping",
-		Action:     "delete",
-		Doc:        "Admin-only: delete one role_mapping row by claim_value.",
-		InputType:  reflect.TypeFor[DeleteInput](),
-		OutputType: reflect.TypeFor[DeleteOutput](),
-		Authz:      authzAdmin,
-		Run:        runDelete(p),
+		Endpoint:     "role_mapping",
+		Action:       "delete",
+		Doc:          "Admin-only: delete one role_mapping row by claim_value.",
+		InputType:    reflect.TypeFor[DeleteInput](),
+		OutputType:   reflect.TypeFor[DeleteOutput](),
+		AllowedRoles: []string{"admin"},
+		Authz:        authzAdmin,
+		Run:          runDelete(p),
 	})
 }
 

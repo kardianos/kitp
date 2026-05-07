@@ -33,15 +33,16 @@ type InsertOutput struct {
 // Register installs comment.insert.
 func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
-		Endpoint:    "comment",
-		Action:      "insert",
-		Doc:         "Post a comment on a card; writes one comment_body row and one activity row of kind=comment.",
-		InputType:   reflect.TypeFor[InsertInput](),
-		OutputType:  reflect.TypeFor[InsertOutput](),
-		Validate:    validateInsert,
-		ProcessName: "comment.post",
-		CardTypeID:  cardTypeFromInput,
-		Run:         runInsert(p),
+		Endpoint:     "comment",
+		Action:       "insert",
+		Doc:          "Post a comment on a card; writes one comment_body row and one activity row of kind=comment.",
+		InputType:    reflect.TypeFor[InsertInput](),
+		OutputType:   reflect.TypeFor[InsertOutput](),
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		Validate:     validateInsert,
+		ProcessName:  "comment.post",
+		CardTypeID:   cardTypeFromInput,
+		Run:          runInsert(p),
 	})
 }
 

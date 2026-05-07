@@ -26,6 +26,16 @@
     value: unknown;
     multiple?: boolean;
     onchange?: (v: unknown) => void;
+    /**
+     * Async loader for combobox-backed types. Defined for ref:* attrs whose
+     * option lists are too large to preload — see card.search on the server.
+     * Passed straight through to the Combobox; when set, the dropdown
+     * consults the server on open and per keystroke instead of substring-
+     * filtering a static `options` list.
+     */
+    loadOptions?:
+      | ((query: string) => Promise<{ value: unknown; label: string }[]>)
+      | undefined;
   }
 
   let {
@@ -33,6 +43,7 @@
     value = $bindable(),
     multiple = false,
     onchange,
+    loadOptions,
   }: Props = $props();
 
   function emit(v: unknown) {
@@ -121,6 +132,7 @@
     options={comboOptions}
     value={comboValue}
     {multiple}
+    {loadOptions}
     onchange={(v) => emit(v)}
   />
 {:else}

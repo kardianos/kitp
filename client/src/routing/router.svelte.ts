@@ -28,7 +28,9 @@ import { matchRoute, type RouteMatch } from './routes';
 
 function readInitialPath(): string {
   if (typeof window === 'undefined') return '/';
-  return window.location.pathname || '/';
+  const p = window.location.pathname || '/';
+  const s = window.location.search || '';
+  return p + s;
 }
 
 /**
@@ -37,6 +39,15 @@ function readInitialPath(): string {
  */
 class RouterState {
   path = $state<string>(readInitialPath());
+  /**
+   * Most recent in-app path the user occupied before `path`. Used by
+   * "Back" buttons inside detail screens (e.g. TaskDetail) so the user
+   * lands back on whichever list view — Inbox, Kanban, Grid — they came
+   * from, with whatever query string filters that view had encoded. Reset
+   * when the user makes a fresh nav to a screen that isn't a detail
+   * descendant.
+   */
+  previousPath = $state<string | null>(null);
 
   /** Currently matched route (or null if 404). */
   get match(): RouteMatch | null {
@@ -49,7 +60,9 @@ export const routerState = new RouterState();
 /** Replace `currentPath` from the live URL. Used by `popstate`. */
 function syncFromLocation(): void {
   if (typeof window === 'undefined') return;
-  routerState.path = window.location.pathname || '/';
+  const p = window.location.pathname || '/';
+  const s = window.location.search || '';
+  routerState.path = p + s;
 }
 
 /**
@@ -62,10 +75,18 @@ export function navigate(path: string, opts?: { replace?: boolean }): void {
     routerState.path = path;
     return;
   }
-  if (path === window.location.pathname) {
+  const here = (window.location.pathname || '/') + (window.location.search || '');
+  if (path === here) {
     // Same page; still ensure rune fires (defensive — it should be
     // identity-equal already, so no-op is fine).
     return;
+  }
+  if (opts?.replace !== true) {
+    // Track the prior path so detail screens can "go back" to the list view
+    // the user came from, including its query-string filters. We skip this
+    // when the prior path is itself a transient detail screen so backing out
+    // of two nested details doesn't ping-pong.
+    routerState.previousPath = here;
   }
   if (opts?.replace === true) {
     window.history.replaceState({}, '', path);
@@ -73,6 +94,19 @@ export function navigate(path: string, opts?: { replace?: boolean }): void {
     window.history.pushState({}, '', path);
   }
   routerState.path = path;
+}
+
+/**
+ * Walk back to the previous in-app path remembered by `navigate()`. If we
+ * have no record (cold-load on a deep link), fall back to `defaultPath`.
+ */
+export function goBackOrFallback(defaultPath: string): void {
+  const prev = routerState.previousPath;
+  if (prev !== null && prev !== '' && prev !== routerState.path) {
+    navigate(prev);
+    return;
+  }
+  navigate(defaultPath);
 }
 
 /**

@@ -68,6 +68,43 @@ function defaultOpsForType(valueType: string): Op[] {
   return ['eq', 'ne', 'exists', 'notExists'];
 }
 
+/**
+ * Translate the server's legacy value_type tokens (`user_ref`, `card_ref`)
+ * into the client's `ref:<card_type>` shape that {@link FilterAttribute}
+ * consumers (notably ValueInput) expect. `card_ref` is ambiguous on its own;
+ * we infer the target card type from a `<name>_ref` attribute name when we
+ * can, and fall back to the generic `ref:card` so the Combobox renderer at
+ * least kicks in.
+ */
+function normalizeValueType(rawType: string, name: string): string {
+  if (rawType === 'user_ref') return 'ref:user';
+  if (rawType === 'card_ref') {
+    if (name.endsWith('_ref')) {
+      const target = name.slice(0, -'_ref'.length);
+      if (target.length > 0) return `ref:${target}`;
+    }
+    return 'ref:card';
+  }
+  return rawType;
+}
+
+/**
+ * Build a user-facing label from a raw attribute name. Strips a trailing
+ * `_ref` (since the affordance — Combobox vs. text — already conveys "this
+ * is a reference"), splits on underscores, and title-cases each token. So
+ * `milestone_ref` → `Milestone`, `created_at` → `Created At`.
+ */
+export function friendlyLabel(name: string): string {
+  let n = name;
+  if (n.endsWith('_ref')) n = n.slice(0, -'_ref'.length);
+  if (n === '') return name;
+  return n
+    .split('_')
+    .filter((p) => p.length > 0)
+    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+    .join(' ');
+}
+
 /* -------------------------------------------------------------------------- */
 /* AttributeSchemaCache (rune store)                                          */
 /* -------------------------------------------------------------------------- */
@@ -136,11 +173,10 @@ export class AttributeSchemaCache {
     const def = this.defByName(name);
     if (def === undefined) return null;
 
-    const valueType = def.value_type;
+    const valueType = normalizeValueType(def.value_type, def.name);
     const fa: FilterAttribute = {
       name: def.name,
-      label: def.name, // server-side `attribute_def` has no label column today;
-      // screens override via a local map until that lands.
+      label: friendlyLabel(def.name),
       valueType,
       ops: defaultOpsForType(valueType),
     };

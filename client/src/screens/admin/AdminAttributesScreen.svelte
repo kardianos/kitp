@@ -50,8 +50,11 @@
   import DragHandle from '../../dnd/DragHandle.svelte';
   import DropZone from '../../dnd/DropZone.svelte';
   import { setActiveScope, useShortcut } from '../../keys/shortcut';
+  import { projectScope } from '../../shell/project_scope.svelte';
   import {
     attributeDefInsert,
+    attributeDefOptionDelete,
+    attributeDefOptionUpsert,
     attributeDefSelect,
     attributeUpdate,
     cardDelete,
@@ -63,9 +66,12 @@
     userCardSortSet,
   } from '../../reg/handlers';
   import type {
-    AttributeDefBindEntry,
     AttributeDefInsertInput,
     AttributeDefInsertOutput,
+    AttributeDefOptionDeleteInput,
+    AttributeDefOptionDeleteOutput,
+    AttributeDefOptionUpsertInput,
+    AttributeDefOptionUpsertOutput,
     AttributeDefRow,
     AttributeDefSelectInput,
     AttributeDefSelectOutput,
@@ -135,7 +141,6 @@
     return {
       name: '',
       valueType: 'text',
-      options: [],
     };
   }
 
@@ -156,7 +161,9 @@
   );
 
   const selectedRefCardType = $derived<string | null>(
-    selectedDef === null ? null : parseRefCardType(selectedDef.value_type),
+    selectedDef === null
+      ? null
+      : parseRefCardType(selectedDef.value_type, selectedDef.name),
   );
 
   const matrix = $derived<MatrixRow[]>(
@@ -314,10 +321,6 @@
         name: draft.name.trim(),
         valueType,
       };
-      // Server has no options-on-insert path today; options must come from a
-      // migration. We dispatch the insert without them and surface a notice.
-      const seed: AttributeDefBindEntry[] = [];
-      if (seed.length > 0) data.bindTo = seed;
 
       await dispatcher.request<
         AttributeDefInsertInput,
@@ -327,16 +330,7 @@
         action: attributeDefInsert.action,
         data,
       });
-      if (valueType === 'enum' && (draft.options ?? []).length > 0) {
-        notify({
-          type: 'info',
-          message:
-            'Attribute created. Enum options must be added via a database migration.',
-          durationMs: 7000,
-        });
-      } else {
-        notify({ type: 'success', message: `Attribute "${draft.name}" created.` });
-      }
+      notify({ type: 'success', message: `Attribute "${draft.name}" created.` });
       creating = false;
       draft = blankDraft();
       draftErrors = {};
@@ -463,11 +457,129 @@
 
   let newValueTitle = $state('');
 
+  /* ---------------------------------------------- enum option editing */
+
+  let newOptionValue = $state('');
+  let newOptionLabel = $state('');
+  let newOptionOrder = $state<string>('');
+
+  async function addEnumOption(defId: number): Promise<void> {
+    const v = newOptionValue.trim();
+    if (v === '') return;
+    const label = newOptionLabel.trim() === '' ? v : newOptionLabel.trim();
+    // Default the ordering to "max + 1" so blanks append cleanly. The server
+    // will still bump higher rows up when the user picks a specific
+    // ordering that already exists (collision repair).
+    let ordering = Number.parseInt(newOptionOrder, 10);
+    if (!Number.isFinite(ordering)) {
+      const def = defs.find((d) => d.id === defId);
+      const opts = def?.options ?? [];
+      ordering = opts.reduce((m, o) => Math.max(m, o.ordering + 1), 0);
+    }
+    try {
+      const data: AttributeDefOptionUpsertInput = {
+        attributeDefId: defId,
+        value: v,
+        label,
+        ordering,
+      };
+      await dispatcher.request<
+        AttributeDefOptionUpsertInput,
+        AttributeDefOptionUpsertOutput
+      >({
+        endpoint: attributeDefOptionUpsert.endpoint,
+        action: attributeDefOptionUpsert.action,
+        data,
+      });
+      newOptionValue = '';
+      newOptionLabel = '';
+      newOptionOrder = '';
+      await refreshDefs();
+      notify({ type: 'success', message: `Option "${v}" added.` });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: `Add option failed: ${msg}` });
+    }
+  }
+
+  async function renameEnumOption(
+    defId: number,
+    value: string,
+    label: string,
+    ordering: number,
+  ): Promise<void> {
+    try {
+      const data: AttributeDefOptionUpsertInput = {
+        attributeDefId: defId,
+        value,
+        label,
+        ordering,
+      };
+      await dispatcher.request<
+        AttributeDefOptionUpsertInput,
+        AttributeDefOptionUpsertOutput
+      >({
+        endpoint: attributeDefOptionUpsert.endpoint,
+        action: attributeDefOptionUpsert.action,
+        data,
+      });
+      await refreshDefs();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: `Update option failed: ${msg}` });
+    }
+  }
+
+  async function deleteEnumOption(defId: number, value: string): Promise<void> {
+    try {
+      const out = await dispatcher.request<
+        AttributeDefOptionDeleteInput,
+        AttributeDefOptionDeleteOutput
+      >({
+        endpoint: attributeDefOptionDelete.endpoint,
+        action: attributeDefOptionDelete.action,
+        data: { attributeDefId: defId, value },
+      });
+      if (!out.ok) {
+        notify({
+          type: 'error',
+          message:
+            out.usage_count > 0
+              ? `In use by ${out.usage_count} card(s); reassign them first.`
+              : 'Delete refused.',
+        });
+        return;
+      }
+      await refreshDefs();
+      notify({ type: 'success', message: `Option "${value}" removed.` });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: `Delete option failed: ${msg}` });
+    }
+  }
+
   async function addValueCard(cardTypeName: string): Promise<void> {
     const t = newValueTitle.trim();
     if (t === '') return;
+    // milestone / component / tag all have parent_card_type_id = project, so
+    // the server requires a parent_card_id at insert time. Use whichever
+    // project the sidebar's ProjectSelector has pinned; if the user is in
+    // "(All projects)" mode we surface a helpful error instead of letting
+    // the wire failure leak through.
+    const parent = projectScope.projectId;
+    if (parent === null) {
+      notify({
+        type: 'error',
+        message: `Pick a project in the sidebar before adding a ${cardTypeName}.`,
+      });
+      return;
+    }
     try {
-      const data: CardInsertInput = { cardTypeName, title: t };
+      const data: CardInsertInput = {
+        cardTypeName,
+        title: t,
+        parentCardId: parent,
+      };
       await dispatcher.request<CardInsertInput, CardInsertOutput>({
         endpoint: cardInsert.endpoint,
         action: cardInsert.action,
@@ -525,6 +637,39 @@
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       notify({ type: 'error', message: `Delete failed: ${msg}` });
+    }
+  }
+
+  /**
+   * Flip a value card's `is_active` attribute (migration 0011 bool flag) so
+   * the card stays in the dataset for activity-history / referential
+   * integrity but disappears from picker dropdowns. Soft-archive — the
+   * `card.delete` button is still the way to fully remove an unused card.
+   */
+  async function setValueCardActive(
+    card: CardWithAttrs,
+    cardTypeName: string,
+    nextActive: boolean,
+  ): Promise<void> {
+    try {
+      const data: AttributeUpdateInput = {
+        cardId: card.id,
+        attributeName: 'is_active',
+        value: nextActive,
+      };
+      await dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
+        endpoint: attributeUpdate.endpoint,
+        action: attributeUpdate.action,
+        data,
+      });
+      await loadValueCards(cardTypeName);
+      notify({
+        type: 'success',
+        message: nextActive ? 'Restored.' : 'Archived.',
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: `Update failed: ${msg}` });
     }
   }
 
@@ -599,31 +744,6 @@
     'Save (create mode)',
     { fireInInputs: false },
   );
-
-  /* ------------------------------------------------------ option editor */
-
-  function addOption(): void {
-    const opts = draft.options ?? [];
-    draft = { ...draft, options: [...opts, { value: '', label: '' }] };
-  }
-
-  function removeOption(i: number): void {
-    const opts = (draft.options ?? []).slice();
-    opts.splice(i, 1);
-    draft = { ...draft, options: opts };
-  }
-
-  function updateOption(
-    i: number,
-    field: 'value' | 'label',
-    next: string,
-  ): void {
-    const opts = (draft.options ?? []).slice();
-    const cur = opts[i];
-    if (cur === undefined) return;
-    opts[i] = { ...cur, [field]: next };
-    draft = { ...draft, options: opts };
-  }
 
   /* ------------------------------------------------------------- mount */
 
@@ -828,47 +948,9 @@
             {/if}
 
             {#if draft.valueType === 'enum'}
-              <fieldset class="flex flex-col gap-2 rounded-md border border-border p-2">
-                <legend class="px-1 text-xs font-semibold text-muted">Options</legend>
-                {#each (draft.options ?? []) as opt, i (i)}
-                  <div class="flex items-center gap-2">
-                    <input
-                      type="text"
-                      placeholder="value"
-                      value={opt.value}
-                      oninput={(e) =>
-                        updateOption(i, 'value', (e.target as HTMLInputElement).value)}
-                      class="flex-1 rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
-                    />
-                    <input
-                      type="text"
-                      placeholder="label"
-                      value={opt.label}
-                      oninput={(e) =>
-                        updateOption(i, 'label', (e.target as HTMLInputElement).value)}
-                      class="flex-1 rounded border border-border bg-bg px-2 py-1 text-sm text-fg"
-                    />
-                    <IconButton
-                      aria-label="Remove option"
-                      size="sm"
-                      variant="ghost"
-                      onclick={() => removeOption(i)}
-                    >
-                      {#snippet children()}×{/snippet}
-                    </IconButton>
-                  </div>
-                {/each}
-                <Button variant="secondary" size="sm" onclick={addOption}>
-                  {#snippet children()}+ Add option{/snippet}
-                </Button>
-                {#if draftErrors.options}
-                  <span class="text-xs text-danger">{draftErrors.options}</span>
-                {/if}
-                <p class="text-xs text-muted">
-                  Note: enum options are seeded at insert time and cannot be
-                  edited via this UI later. Use a database migration to change them.
-                </p>
-              </fieldset>
+              <p class="text-xs text-muted">
+                Save the attribute first, then add enum options below.
+              </p>
             {/if}
 
             {#if draftErrors._form}
@@ -958,20 +1040,87 @@
                   <ul class="flex flex-col gap-1">
                     {#each def.options ?? [] as opt (opt.value)}
                       <li
-                        class="flex items-center justify-between gap-2 rounded bg-surface px-2 py-1 text-sm"
+                        data-testid={`enum-opt-${def.id}-${opt.value}`}
+                        class="flex items-center gap-2 rounded bg-surface px-2 py-1 text-sm"
                       >
-                        <span class="truncate font-mono text-xs text-muted">{opt.value}</span>
-                        <span class="truncate">{opt.label}</span>
+                        <span
+                          class="w-24 shrink-0 truncate font-mono text-xs text-muted"
+                          title={`Stored value (immutable; rename creates a new option): ${opt.value}`}
+                        >{opt.value}</span>
+                        <input
+                          type="text"
+                          aria-label={`Label for ${opt.value}`}
+                          value={opt.label}
+                          class="flex-1 rounded border border-transparent bg-bg px-1 py-0.5 text-sm hover:border-border focus:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                          onblur={(e) => {
+                            const next = (e.target as HTMLInputElement).value;
+                            if (next.trim() !== '' && next !== opt.label) {
+                              void renameEnumOption(def.id, opt.value, next, opt.ordering);
+                            }
+                          }}
+                          onkeydown={(e) => {
+                            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                            else if (e.key === 'Escape') {
+                              (e.target as HTMLInputElement).value = opt.label;
+                              (e.target as HTMLInputElement).blur();
+                            }
+                          }}
+                        />
+                        <input
+                          type="number"
+                          aria-label={`Ordering for ${opt.value}`}
+                          value={opt.ordering}
+                          class="w-14 rounded border border-border bg-bg px-1 py-0.5 text-sm"
+                          onchange={(e) => {
+                            const n = Number((e.target as HTMLInputElement).value);
+                            if (Number.isFinite(n) && n !== opt.ordering) {
+                              void renameEnumOption(def.id, opt.value, opt.label, n);
+                            }
+                          }}
+                        />
+                        <IconButton
+                          aria-label={`Delete option ${opt.value}`}
+                          size="sm"
+                          variant="danger"
+                          onclick={() => void deleteEnumOption(def.id, opt.value)}
+                        >
+                          {#snippet children()}×{/snippet}
+                        </IconButton>
                       </li>
                     {/each}
                   </ul>
                 {/if}
-                <p
-                  class="text-xs text-muted"
-                  title="Server has no add/remove options endpoint today. Use a database migration to change them."
-                >
-                  Read-only · options come from migration 0012.
-                </p>
+                <div class="flex items-center gap-2 pt-1">
+                  <input
+                    type="text"
+                    bind:value={newOptionValue}
+                    placeholder="value (e.g. urgent)"
+                    aria-label="New option value"
+                    class="w-32 rounded border border-border bg-bg px-2 py-1 text-sm"
+                  />
+                  <input
+                    type="text"
+                    bind:value={newOptionLabel}
+                    placeholder="label (defaults to value)"
+                    aria-label="New option label"
+                    class="flex-1 rounded border border-border bg-bg px-2 py-1 text-sm"
+                  />
+                  <input
+                    type="number"
+                    bind:value={newOptionOrder}
+                    placeholder="order"
+                    title="Position in the list. Leave blank to append. If you pick an order that an existing option holds, every option at or above that order is bumped up by one so nothing collides."
+                    aria-label="New option order"
+                    class="w-16 rounded border border-border bg-bg px-2 py-1 text-sm"
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onclick={() => void addEnumOption(def.id)}
+                  >
+                    {#snippet children()}+ Add option{/snippet}
+                  </Button>
+                </div>
               </fieldset>
             {/if}
 
@@ -1097,6 +1246,7 @@
                   typeof c.attributes['title'] === 'string'
                     ? (c.attributes['title'] as string)
                     : `#${c.id}`}
+                {@const isActive = c.attributes['is_active'] !== false}
                 <DropZone
                   id={`vc-zone-${refType}-${c.id}`}
                   onDrop={(p) =>
@@ -1104,7 +1254,10 @@
                 >
                   <li
                     data-testid={`value-card-${c.id}`}
-                    class="flex items-center gap-2 border-b border-border px-3 py-1.5 text-sm"
+                    class={cx(
+                      'flex items-center gap-2 border-b border-border px-3 py-1.5 text-sm',
+                      !isActive && 'opacity-60',
+                    )}
                   >
                     <DragHandle payload={{ id: c.id }} previewLabel={titleStr}>
                       <span class="cursor-grab select-none text-muted" aria-hidden="true">
@@ -1114,14 +1267,37 @@
                     <input
                       type="text"
                       value={titleStr}
+                      placeholder="Title"
                       class="flex-1 rounded border border-transparent bg-bg px-1 py-0.5 text-sm hover:border-border focus:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                      onkeydown={(e) => {
-                        if (e.key === 'Enter') {
-                          const v = (e.target as HTMLInputElement).value;
+                      onblur={(e) => {
+                        const v = (e.target as HTMLInputElement).value;
+                        if (v.trim() !== '' && v.trim() !== titleStr) {
                           void renameValueCard(c, refType, v);
                         }
                       }}
+                      onkeydown={(e) => {
+                        if (e.key === 'Enter') {
+                          (e.target as HTMLInputElement).blur();
+                        } else if (e.key === 'Escape') {
+                          (e.target as HTMLInputElement).value = titleStr;
+                          (e.target as HTMLInputElement).blur();
+                        }
+                      }}
                     />
+                    {#if !isActive}
+                      <span
+                        class="rounded border border-border px-1 text-[10px] uppercase tracking-wide text-muted"
+                      >archived</span>
+                    {/if}
+                    <IconButton
+                      aria-label={isActive ? `Archive ${titleStr}` : `Restore ${titleStr}`}
+                      title={isActive ? 'Archive (hide from pickers)' : 'Restore'}
+                      size="sm"
+                      variant="ghost"
+                      onclick={() => void setValueCardActive(c, refType, !isActive)}
+                    >
+                      {#snippet children()}{isActive ? '🗄' : '↺'}{/snippet}
+                    </IconButton>
                     <IconButton
                       aria-label={`Delete ${titleStr}`}
                       size="sm"

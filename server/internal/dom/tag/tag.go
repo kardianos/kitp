@@ -51,20 +51,22 @@ type RemoveOutput struct {
 // Register installs tag.apply and tag.remove.
 func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
-		Endpoint:   "tag",
-		Action:     "apply",
-		Doc:        "Apply a tag card to a target card; mutually-exclusive sibling tags at the same root are removed atomically.",
-		InputType:  reflect.TypeFor[ApplyInput](),
-		OutputType: reflect.TypeFor[ApplyOutput](),
-		Run:        runApply(p),
+		Endpoint:     "tag",
+		Action:       "apply",
+		Doc:          "Apply a tag card to a target card; mutually-exclusive sibling tags at the same root are removed atomically.",
+		InputType:    reflect.TypeFor[ApplyInput](),
+		OutputType:   reflect.TypeFor[ApplyOutput](),
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		Run:          runApply(p),
 	})
 	reg.Register(reg.Handler{
-		Endpoint:   "tag",
-		Action:     "remove",
-		Doc:        "Remove a tag card from a target card.",
-		InputType:  reflect.TypeFor[RemoveInput](),
-		OutputType: reflect.TypeFor[RemoveOutput](),
-		Run:        runRemove(p),
+		Endpoint:     "tag",
+		Action:       "remove",
+		Doc:          "Remove a tag card from a target card.",
+		InputType:    reflect.TypeFor[RemoveInput](),
+		OutputType:   reflect.TypeFor[RemoveOutput](),
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		Run:          runRemove(p),
 	})
 }
 

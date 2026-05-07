@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "@floating-ui/dom": "^1.7.6",
+    "dompurify": "^3.4.2",
+    "marked": "^18.0.3",
     "uuid": "^10.0.0"
   },
   "devDependencies": {

@@ -36,6 +36,11 @@ func TestMCPSubprocess_Initialize_ToolsList_ToolsCall(t *testing.T) {
 		"ENV=dev",
 		"LOG_LEVEL=warn",
 		"MIGRATIONS_DIR="+filepath.Join(repoRoot(t), "db", "migrations"),
+		// Force the legacy "every endpoint is a tool" surface so the
+		// asserts below can find echo__ping / card__insert in the
+		// listing. The default (minimal) is exercised by
+		// TestMCPSubprocess_MinimalToolsetExposesProcSearchOnly.
+		"MCP_TOOLSET=full",
 	)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -129,8 +134,10 @@ func TestMCPSubprocess_Initialize_ToolsList_ToolsCall(t *testing.T) {
 		if got.Error != nil {
 			t.Fatalf("tools/list error: %v", got.Error)
 		}
-		// Must include echo__ping and list_handlers and card__insert.
-		want := []string{"echo__ping", "list_handlers", "card__insert", "attribute__update"}
+		// Must include echo__ping, proc__search, and a representative
+		// write handler (card__insert / attribute__update) so we know
+		// the full toolset is wired correctly.
+		want := []string{"echo__ping", "proc__search", "card__insert", "attribute__update"}
 		gotNames := make(map[string]bool, len(got.Result.Tools))
 		for _, tt := range got.Result.Tools {
 			gotNames[tt.Name] = true
@@ -173,6 +180,116 @@ func TestMCPSubprocess_Initialize_ToolsList_ToolsCall(t *testing.T) {
 		if data.X != 42 || data.Message != "hello" {
 			t.Fatalf("tools/call data: %+v", data)
 		}
+	}
+}
+
+// TestMCPSubprocess_MinimalToolsetExposesProcSearchOnly: with
+// MCP_TOOLSET unset (defaults to minimal) the server lists exactly
+// one tool (proc__search) but tools/call still works for any
+// registered handler. That's the contract tight-budget MCP clients
+// rely on.
+func TestMCPSubprocess_MinimalToolsetExposesProcSearchOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess test in -short")
+	}
+	pool := store.TestPool(t, "kitp_test_mcp_minimal")
+	dsn := poolDSN(t, pool)
+
+	bin := buildKitpd(t)
+
+	cmd := exec.Command(bin, "mcp")
+	cmd.Env = append(os.Environ(),
+		"DATABASE_URL="+dsn,
+		"AUTH_MODE=off",
+		"ENV=dev",
+		"LOG_LEVEL=warn",
+		"MIGRATIONS_DIR="+filepath.Join(repoRoot(t), "db", "migrations"),
+		// MCP_TOOLSET intentionally unset: minimal is the default.
+	)
+	stdin, _ := cmd.StdinPipe()
+	stdout, _ := cmd.StdoutPipe()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+
+	rd := bufio.NewReader(stdout)
+	send := func(method string, id any, params any) []byte {
+		t.Helper()
+		req := map[string]any{"jsonrpc": "2.0", "id": id, "method": method}
+		if params != nil {
+			req["params"] = params
+		}
+		buf, _ := json.Marshal(req)
+		buf = append(buf, '\n')
+		if _, err := stdin.Write(buf); err != nil {
+			t.Fatalf("write %s: %v", method, err)
+		}
+		line, err := readLineWithTimeout(rd, 10*time.Second)
+		if err != nil {
+			t.Fatalf("read %s: %v (stderr: %s)", method, err, stderr.String())
+		}
+		return line
+	}
+
+	// initialize so the server is ready.
+	send("initialize", 1, map[string]any{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "minimal-driver", "version": "0"},
+	})
+
+	// tools/list — must contain ONLY proc__search.
+	resp := send("tools/list", 2, map[string]any{})
+	var listed struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(resp, &listed); err != nil {
+		t.Fatalf("tools/list decode: %v: %s", err, resp)
+	}
+	if len(listed.Result.Tools) != 1 || listed.Result.Tools[0].Name != "proc__search" {
+		t.Fatalf("minimal toolset should list exactly proc__search, got %+v", listed.Result.Tools)
+	}
+
+	// tools/call still works for any handler — discoverability via
+	// proc.search doesn't gate invocation.
+	resp = send("tools/call", 3, map[string]any{
+		"name": "echo__ping",
+		"arguments": map[string]any{
+			"x":       11,
+			"message": "still callable",
+		},
+	})
+	var called struct {
+		Result map[string]any `json:"result"`
+		Error  any            `json:"error"`
+	}
+	if err := json.Unmarshal(resp, &called); err != nil {
+		t.Fatalf("tools/call decode: %v: %s", err, resp)
+	}
+	if called.Error != nil {
+		t.Fatalf("tools/call should succeed under minimal toolset: %v", called.Error)
+	}
+	dataRaw, _ := json.Marshal(called.Result["data"])
+	var data struct {
+		X       int    `json:"x"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(dataRaw, &data); err != nil {
+		t.Fatalf("data decode: %v: %s", err, dataRaw)
+	}
+	if data.X != 11 || data.Message != "still callable" {
+		t.Fatalf("data round-trip: %+v", data)
 	}
 }
 

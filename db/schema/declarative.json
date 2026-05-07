@@ -1,0 +1,50 @@
+{
+  "_doc": "Declarative DB-schema document. The generator at server/cmd/schema-gen reads this file and emits CREATE TABLE / CREATE INDEX statements. A parity test in server/internal/schema/declarative ensures the generated schema matches what the migrations produce, table-for-table. Scope is intentionally limited in v1 to a handful of simple tables — role, role_mapping, comment_body, process, process_step — until the document grows enough coverage to displace the migration chain. See task #18.",
+  "tables": [
+    {
+      "name": "role",
+      "doc": "Application role; user_role assigns these to user_account rows, role_grant lists what (card_type, process) pairs each role may invoke. Doc column was added in migration 0010.",
+      "columns": [
+        {"name": "id", "type": "serial", "primary_key": true},
+        {"name": "name", "type": "text", "nullable": false, "unique": true},
+        {"name": "doc", "type": "text", "nullable": true}
+      ]
+    },
+    {
+      "name": "process",
+      "doc": "Logical workflow name (e.g. card.create). process_step rows declare the ordered handler chain.",
+      "columns": [
+        {"name": "id", "type": "serial", "primary_key": true},
+        {"name": "name", "type": "text", "nullable": false, "unique": true}
+      ]
+    },
+    {
+      "name": "process_step",
+      "doc": "One step of a process — a (endpoint, action) tuple targeted in ordinal order.",
+      "columns": [
+        {"name": "process_id", "type": "int", "nullable": false, "references": {"table": "process", "column": "id"}},
+        {"name": "ordinal", "type": "int", "nullable": false},
+        {"name": "endpoint", "type": "text", "nullable": false},
+        {"name": "action", "type": "text", "nullable": false}
+      ],
+      "primary_key": ["process_id", "ordinal"]
+    },
+    {
+      "name": "comment_body",
+      "doc": "Comment text attached to a card via an activity row of kind=comment.",
+      "columns": [
+        {"name": "id", "type": "bigserial", "primary_key": true},
+        {"name": "body", "type": "text", "nullable": false},
+        {"name": "created_at", "type": "timestamptz", "nullable": false, "default": "now()"}
+      ]
+    },
+    {
+      "name": "role_mapping",
+      "doc": "OIDC group claim → role mapping. Added in migration 0010.",
+      "columns": [
+        {"name": "claim_value", "type": "text", "primary_key": true},
+        {"name": "role_id", "type": "int", "nullable": false, "references": {"table": "role", "column": "id"}}
+      ]
+    }
+  ]
+}

@@ -18,6 +18,16 @@
     placeholder?: string;
     disabled?: boolean;
     onchange?: (v: T | T[] | null) => void;
+    /**
+     * Async loader. When set the dropdown switches to async mode: the
+     * server is consulted on open (with `''`) and on every keystroke
+     * (debounced). The local substring filter is bypassed — the loader
+     * is the single source of truth for visible options. `options` is
+     * still consulted for the trigger's label rendering, so callers
+     * should pass at least the entries needed to label the current
+     * value(s).
+     */
+    loadOptions?: ((query: string) => Promise<Option[]>) | undefined;
     class?: string;
     id?: string;
     'aria-label'?: string;
@@ -31,10 +41,22 @@
     placeholder = 'Select…',
     disabled = false,
     onchange,
+    loadOptions,
     class: klass = '',
     id,
     'aria-label': ariaLabel,
   }: Props = $props();
+
+  const isAsync = $derived(loadOptions !== undefined);
+
+  /** Async-mode: the most recent server result. Cleared on close. */
+  let asyncOptions = $state<Option[]>([]);
+  /** Async-mode: true while a load is in flight. */
+  let asyncLoading = $state(false);
+  /** Monotonic load-request counter so stale responses can be discarded. */
+  let loadSeq = 0;
+  /** Debounce timer for keystroke-driven loads. */
+  let debounceHandle: ReturnType<typeof setTimeout> | null = null;
 
   let open = $state(false);
   let query = $state('');
@@ -64,6 +86,9 @@
   }
 
   const filtered = $derived.by((): Option[] => {
+    // Async mode: the server is the source of truth — render whatever
+    // the loader returned, no client-side narrowing.
+    if (isAsync) return asyncOptions;
     if (!searchable || query.trim() === '') return options;
     const q = query.toLowerCase();
     return options.filter((o) => o.label.toLowerCase().includes(q));
@@ -94,9 +119,14 @@
       // Keep open for multi.
       void tick().then(() => searchEl?.focus());
     } else {
-      emit(opt.value);
+      // Close before emitting. The onchange handler can synchronously kick
+      // off a re-render storm (FilterBar mutates the editor; ProjectSelector
+      // refetches list screens) — running closeMenu first guarantees the
+      // listbox hides regardless of how the parent reorganises its tree.
       closeMenu();
-      triggerEl?.focus();
+      const t = triggerEl;
+      emit(opt.value);
+      t?.focus();
     }
   }
 
@@ -110,6 +140,14 @@
     open = true;
     highlightIdx = 0;
     query = '';
+    if (isAsync) {
+      // Don't carry stale results across opens — the empty-query reload
+      // below will repopulate. We still want the spinner to show
+      // immediately, so flip the flag here rather than waiting for the
+      // $effect to schedule the call.
+      asyncOptions = [];
+      asyncLoading = true;
+    }
     await tick();
     if (searchable) searchEl?.focus();
     setupFloating();
@@ -118,7 +156,49 @@
     open = false;
     cleanupFloat?.();
     cleanupFloat = null;
+    if (debounceHandle !== null) {
+      clearTimeout(debounceHandle);
+      debounceHandle = null;
+    }
+    // Bump the sequence so any in-flight load resolves into a no-op.
+    loadSeq++;
+    asyncLoading = false;
   }
+
+  /**
+   * Dispatch one async load. Guarded by `loadSeq` so a slower previous
+   * request can't clobber a fresher result. Errors are swallowed (the
+   * loader's caller is expected to surface them via toast / its own UI).
+   */
+  async function runLoad(q: string): Promise<void> {
+    if (loadOptions === undefined) return;
+    const seq = ++loadSeq;
+    asyncLoading = true;
+    try {
+      const r = await loadOptions(q);
+      if (seq !== loadSeq) return;
+      asyncOptions = r;
+    } catch {
+      if (seq !== loadSeq) return;
+      asyncOptions = [];
+    } finally {
+      if (seq === loadSeq) asyncLoading = false;
+    }
+  }
+
+  // Drive async loads from `query`. Empty query (the just-opened state)
+  // fires immediately; non-empty (the user typed) debounces 180ms.
+  $effect(() => {
+    if (!isAsync) return;
+    if (!open) return;
+    const q = query;
+    if (debounceHandle !== null) clearTimeout(debounceHandle);
+    const delay = q === '' ? 0 : 180;
+    debounceHandle = setTimeout(() => {
+      debounceHandle = null;
+      void runLoad(q);
+    }, delay);
+  });
 
   function setupFloating() {
     if (!triggerEl || !popupEl) return;
@@ -141,7 +221,18 @@
         ],
       }).then(({ x, y }) => {
         if (!popupEl) return;
-        Object.assign(popupEl.style, { left: `${x}px`, top: `${y}px` });
+        // Reveal the popup only after the first position resolves —
+        // otherwise it briefly renders at the (0,0) initial style and
+        // the user sees a flash to the top-left of the screen. We use
+        // opacity (not `visibility: hidden`) because the latter makes the
+        // search input non-focusable, which would silently break the
+        // openMenu auto-focus on `searchEl`.
+        Object.assign(popupEl.style, {
+          left: `${x}px`,
+          top: `${y}px`,
+          opacity: '1',
+          pointerEvents: 'auto',
+        });
       });
     });
   }
@@ -270,6 +361,12 @@
         {/if}
       {:else if selectedSingle !== null && singleLabel !== ''}
         <span class="truncate">{singleLabel}</span>
+      {:else if selectedSingle !== null}
+        <!-- A value is set but its label hasn't been resolved (typical
+             for async ref:* loaders before the dropdown has opened). Show
+             a stable id-style fallback so the row reads as "set" rather
+             than "empty". -->
+        <span class="truncate text-muted">#{String(selectedSingle)}</span>
       {:else}
         <span class="text-muted">{placeholder}</span>
       {/if}
@@ -290,7 +387,7 @@
     <div
       bind:this={popupEl}
       class="z-50 flex flex-col overflow-hidden rounded-md border border-border bg-bg shadow-lg"
-      style="position: fixed; left: 0; top: 0;"
+      style="position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none;"
     >
       {#if searchable}
         <div class="border-b border-border p-1.5">
@@ -313,7 +410,13 @@
         tabindex={searchable ? -1 : 0}
       >
         {#if filtered.length === 0}
-          <li class="px-3 py-2 text-muted">No matches</li>
+          <li class="px-3 py-2 text-muted">
+            {#if isAsync && asyncLoading}
+              Loading…
+            {:else}
+              No matches
+            {/if}
+          </li>
         {:else}
           {#each filtered as opt, i (opt.value)}
             <!-- svelte-ignore a11y_click_events_have_key_events -->

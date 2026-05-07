@@ -39,9 +39,13 @@ func Register() {
 	reg.Register(reg.Handler{
 		Endpoint:   "role",
 		Action:     "list",
-		Doc:        "List every role and its granted (card_type, process) pairs. Open to all callers; the admin UI uses this to populate the role picker.",
+		Doc:        "List every role and its granted (card_type, process) pairs. The admin UI uses this to populate the role picker.",
 		InputType:  reflect.TypeFor[SelectInput](),
 		OutputType: reflect.TypeFor[SelectOutput](),
+		// Available to every signed-in user — the role list is what the
+		// client needs to render any role-selection UI; it's not
+		// sensitive (just names + docs).
+		AllowedRoles: []string{reg.RoleAuthenticated},
 		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 			rows, err := tx.Query(ctx, `
 				SELECT r.id, r.name, COALESCE(r.doc, '')

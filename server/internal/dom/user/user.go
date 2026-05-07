@@ -63,11 +63,12 @@ type ListWithRolesOutput struct {
 // Register installs the handler.
 func Register() {
 	reg.Register(reg.Handler{
-		Endpoint:   "user",
-		Action:     "select",
-		Doc:        "List every user_account row sorted by display_name.",
-		InputType:  reflect.TypeFor[SelectInput](),
-		OutputType: reflect.TypeFor[SelectOutput](),
+		Endpoint:     "user",
+		Action:       "select",
+		Doc:          "List every user_account row sorted by display_name.",
+		InputType:    reflect.TypeFor[SelectInput](),
+		OutputType:   reflect.TypeFor[SelectOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
 		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 			rows, err := tx.Query(ctx, `
 				SELECT id, display_name
@@ -97,12 +98,13 @@ func Register() {
 		},
 	})
 	reg.Register(reg.Handler{
-		Endpoint:   "user",
-		Action:     "list_with_roles",
-		Doc:        "List every user_account row with role assignments and resolved project titles for scoped grants. Used by the admin UI.",
-		InputType:  reflect.TypeFor[ListWithRolesInput](),
-		OutputType: reflect.TypeFor[ListWithRolesOutput](),
-		Run:        runListWithRoles,
+		Endpoint:     "user",
+		Action:       "list_with_roles",
+		Doc:          "List every user_account row with role assignments and resolved project titles for scoped grants. Used by the admin UI.",
+		InputType:    reflect.TypeFor[ListWithRolesInput](),
+		OutputType:   reflect.TypeFor[ListWithRolesOutput](),
+		AllowedRoles: []string{"admin"},
+		Run:          runListWithRoles,
 	})
 }
 

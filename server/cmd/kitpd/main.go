@@ -3,14 +3,18 @@
 // server over stdin/stdout (Phase 19).
 //
 // Configuration is environment-driven:
-//   DATABASE_URL   — pgx connection string (required)
-//   LISTEN_ADDR    — listen address, default ":8080"
-//   AUTH_MODE      — "off" (System User) or "oidc"; default "off"
-//   ENV            — "dev" or "production"; default "dev"
-//   MIGRATIONS_DIR — path to db/migrations, default "./db/migrations"
-//   LOG_LEVEL      — debug|info|warn|error; default info (Phase 21)
-//   PG_TRACE       — non-empty enables pgx query tracing (dev) (Phase 21)
-//   CORS           — on|off override; default on in dev, off in production (Phase 22)
+//   DATABASE_URL              — pgx connection string (required)
+//   LISTEN_ADDR               — listen address, default ":8080"
+//   AUTH_MODE                 — "off" (System User) or "oidc"; default "off"
+//   ENV                       — "dev" or "production"; default "dev"
+//   MIGRATIONS_DIR            — path to db/migrations, default "./db/migrations"
+//   LOG_LEVEL                 — debug|info|warn|error; default info (Phase 21)
+//   PG_TRACE                  — non-empty enables pgx query tracing (dev) (Phase 21)
+//   CORS                      — on|off override; default on in dev, off in production (Phase 22)
+//   ATTACHMENT_MAX_MB         — whole-file upload cap in megabytes; default 250
+//   ATTACHMENT_CHUNK_MAX_MB   — per-chunk cap on /api/v1/cas/chunk; default 8
+//   CAS_REAPER_INTERVAL_SEC   — reaper sweep cadence in seconds; default 3600
+//   CAS_REAPER_GRACE_SEC      — orphan grace period in seconds; default 3600
 //
 // In production the server refuses to start if AUTH_MODE=off (N-SEC-5).
 package main
@@ -25,6 +29,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -33,18 +38,24 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/auth/oidc"
+	"github.com/kitp/kitp/server/internal/cas"
 	"github.com/kitp/kitp/server/internal/dom/activity"
+	"github.com/kitp/kitp/server/internal/dom/attachment"
+	domcas "github.com/kitp/kitp/server/internal/dom/cas"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/attributedef"
 	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/dom/cardtype"
 	"github.com/kitp/kitp/server/internal/dom/comment"
+	domconfig "github.com/kitp/kitp/server/internal/dom/config"
 	"github.com/kitp/kitp/server/internal/dom/echo"
+	"github.com/kitp/kitp/server/internal/dom/file"
 	"github.com/kitp/kitp/server/internal/dom/inbox"
 	"github.com/kitp/kitp/server/internal/dom/process"
 	domrole "github.com/kitp/kitp/server/internal/dom/role"
 	"github.com/kitp/kitp/server/internal/dom/rolemapping"
 	"github.com/kitp/kitp/server/internal/dom/tag"
+	"github.com/kitp/kitp/server/internal/dom/proc"
 	domuser "github.com/kitp/kitp/server/internal/dom/user"
 	"github.com/kitp/kitp/server/internal/dom/usercardsort"
 	"github.com/kitp/kitp/server/internal/dom/userrole"
@@ -60,6 +71,22 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// envInt reads an integer-valued env var. Returns fallback when the var is
+// unset, empty, or fails to parse — invalid values log a warning and fall
+// through (silent fall-through hides typos).
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		log.Printf("warning: %s=%q is not a valid integer; using default %d", key, v, fallback)
+		return fallback
+	}
+	return n
+}
+
 // registerHandlers installs every domain handler into the registry.
 // Called by both the HTTP and MCP entrypoints — must only fire once
 // per process (reg.Register panics on duplicates).
@@ -70,9 +97,14 @@ func registerHandlers(pool *store.Pool) {
 	attribute.Register(pool)
 	attributedef.Register(pool)
 	activity.Register(pool)
+	attachment.Register(pool)
+	domcas.Register(pool)
 	comment.Register(pool)
+	domconfig.Register()
+	file.Register(pool)
 	tag.Register(pool)
 	process.Register(pool)
+	proc.Register(pool)
 	domuser.Register()
 	usercardsort.Register(pool)
 	inbox.Register(pool)
@@ -166,6 +198,58 @@ func runHTTP() error {
 		}
 	}
 	srv.Mount(mux, webDir)
+
+	// CAS storage + chunked-upload + attachment download routes.
+	//
+	//   - The pg backend is the only configured backend in v1; future
+	//     S3 / GCS backends prepend onto the chain.
+	//   - cas.RegisterHTTP mounts POST /api/v1/cas/chunk for the per-
+	//     chunk multipart upload (cap = ATTACHMENT_CHUNK_MAX_MB).
+	//   - attachment.RegisterHTTP mounts GET /api/v1/attachment/{id}/
+	//     download which streams the chunks back in order.
+	//   - file.create / attachment.create / attachment.list /
+	//     attachment.delete go through the JSON batch dispatcher (see
+	//     registerHandlers).
+	maxAttachMB := envInt("ATTACHMENT_MAX_MB", 250)
+	maxAttachBytes := int64(maxAttachMB) * 1024 * 1024
+	chunkMaxMB := envInt("ATTACHMENT_CHUNK_MAX_MB", 8)
+	chunkMaxBytes := int64(chunkMaxMB) * 1024 * 1024
+	storage := cas.New(cas.NewPgBackend(pgPool))
+	cas.RegisterHTTP(mux, cas.HTTPConfig{
+		Pool:     pool,
+		Storage:  storage,
+		MaxBytes: chunkMaxBytes,
+		Logger:   logger,
+	})
+	attachment.RegisterHTTP(mux, attachment.Config{
+		Pool:    pool,
+		Storage: storage,
+		Logger:  logger,
+	})
+	// Hand the dispatcher's attachment.create handler the CAS storage so
+	// it can build a thumbnail server-side for image attachments. Wiring
+	// is optional — leaving thumbDeps unset (e.g. in tests) just skips
+	// thumb generation; the upload still completes.
+	attachment.SetThumbDeps(storage, logger)
+	// Publish the live caps so the client can read them via config.get.
+	// AttachmentMaxBytes is the whole-file cap the UI enforces before
+	// chunking; ChunkMaxBytes is what the server's chunk route accepts.
+	domconfig.SetSnapshot(domconfig.Snapshot{
+		AttachmentMaxBytes: maxAttachBytes,
+		ChunkMaxBytes:      chunkMaxBytes,
+	})
+
+	// CAS reaper. Sweeps at the configured cadence, dropping cas_blob
+	// (and bytes via every backend) for orphans older than the grace
+	// period. Stops when ctx is cancelled.
+	reaper := &cas.Reaper{
+		Pool:        pgPool,
+		Storage:     storage,
+		Interval:    time.Duration(envInt("CAS_REAPER_INTERVAL_SEC", 3600)) * time.Second,
+		GracePeriod: time.Duration(envInt("CAS_REAPER_GRACE_SEC", 3600)) * time.Second,
+		Logger:      logger,
+	}
+	reaper.Start(ctx)
 
 	idem := obs.NewIdempotencyStore(pgPool, logger)
 	idem.StartCleanup(ctx)
@@ -264,6 +348,19 @@ func runMCP() error {
 
 	srv := api.NewServer(pool)
 	srv.Logger = logger
+
+	// Pick the MCP tool surface. `minimal` (default) lists only
+	// proc.search so clients with tight per-conversation tool budgets
+	// can discover + call other handlers on demand. `full` surfaces
+	// every registered handler — set MCP_TOOLSET=full when the client
+	// has no per-tool cap and wants the auto-completion ergonomic of
+	// every endpoint visible up front.
+	switch envOr("MCP_TOOLSET", "minimal") {
+	case "full":
+		mcp.SetToolset(mcp.ToolsetFull)
+	default:
+		mcp.SetToolset(mcp.ToolsetMinimal)
+	}
 
 	// Inject the System User into ctx so dispatcher Run calls run as them.
 	mcpCtx := auth.WithUser(ctx, user)

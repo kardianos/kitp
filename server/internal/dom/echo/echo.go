@@ -29,11 +29,12 @@ type PingOutput struct {
 // gets it via the import in cmd/kitpd.
 func Register() {
 	reg.Register(reg.Handler{
-		Endpoint:   "echo",
-		Action:     "ping",
-		Doc:        "Echo the input back unchanged; used to smoke-test the dispatcher.",
-		InputType:  reflect.TypeFor[PingInput](),
-		OutputType: reflect.TypeFor[PingOutput](),
+		Endpoint:     "echo",
+		Action:       "ping",
+		Doc:          "Echo the input back unchanged; used to smoke-test the dispatcher.",
+		InputType:    reflect.TypeFor[PingInput](),
+		OutputType:   reflect.TypeFor[PingOutput](),
+		AllowedRoles: []string{reg.RolePublic},
 		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 			outs := make([]any, len(ins))
 			for i, raw := range ins {

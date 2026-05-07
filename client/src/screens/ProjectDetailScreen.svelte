@@ -26,13 +26,14 @@
   Ports `client/lib/ui/screens/project_detail_screen.dart` (516 LOC).
 -->
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount } from 'svelte';
   import { getDispatcher } from '../dispatch/context';
   import { BatchAbortedError, SubRequestError } from '../dispatch/errors';
   import {
     AttributeSchemaCache,
     type FilterAttribute,
   } from '../filter/attribute_schema.svelte';
+  import { buildTaskFilterPalette } from '../filter/task_palette';
   import FilterBar from '../filter/FilterBar.svelte';
   import {
     predicateToJson,
@@ -46,13 +47,10 @@
   import { useQuickEntry } from '../quick_entry/use_quick_entry.svelte';
   import QuickEntryOverlay from '../quick_entry/QuickEntryOverlay.svelte';
   import {
-    attributeUpdate,
     cardSelectWithAttributes,
     userSelect,
   } from '../reg/handlers';
   import type {
-    AttributeUpdateInput,
-    AttributeUpdateOutput,
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
     CardWhereTree,
@@ -62,13 +60,15 @@
     UserSelectOutput,
   } from '../reg/types';
   import { navigate } from '../routing/router.svelte';
+  import { setTaskNavList } from '../routing/task_nav_list.svelte';
+  import { projectScope } from '../shell/project_scope.svelte';
   import Button from '../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
   import Spinner from '../ui/Spinner.svelte';
-  import { notify } from '../ui/toast.svelte';
+  import ProjectPropertiesPanel from '../ui/widgets/ProjectPropertiesPanel.svelte';
   import TaskRow from '../ui/widgets/TaskRow.svelte';
   import { cx } from '../util/class_names';
-  import { applyPredicateAndSort, editingPayload } from './project_detail_helpers';
+  import { applyPredicateAndSort } from './project_detail_helpers';
 
   /* ----------------------------------------------------------------- props */
 
@@ -83,6 +83,11 @@
   // svelte-ignore state_referenced_locally
   const projectId = Number(params['id'] ?? 0);
 
+  // Mirror the route into the nav-sidebar project picker. Visiting a
+  // project detail (by click, deep link, or keyboard "Enter") should
+  // pin the global scope so list screens land scoped to this project.
+  if (projectId > 0) projectScope.setProject(projectId);
+
   setActiveScope('project_detail');
   const dispatcher = getDispatcher();
   const schemaCache = new AttributeSchemaCache(dispatcher);
@@ -91,25 +96,44 @@
 
   let project = $state<CardWithAttrs | null>(null);
   let tasks = $state<CardWithAttrs[]>([]);
-  let userNames = $state<Record<number, string>>({});
-  let cardTitles = $state<Record<number, string>>({});
-  let tagPaths = $state<Record<number, string>>({});
   let users = $state<UserRow[]>([]);
+  let milestones = $state<CardWithAttrs[]>([]);
+  let components = $state<CardWithAttrs[]>([]);
+  let tagsRows = $state<CardWithAttrs[]>([]);
   let predicate = $state<Predicate | null>(null);
+
+  /** Derived lookup tables fed to TaskRow. */
+  const userNames = $derived.by((): Record<number, string> => {
+    const out: Record<number, string> = {};
+    for (const u of users) out[u.id] = u.display_name;
+    return out;
+  });
+  const cardTitles = $derived.by((): Record<number, string> => {
+    const out: Record<number, string> = {};
+    for (const r of milestones) {
+      const t = r.attributes['title'];
+      if (typeof t === 'string') out[r.id] = t;
+    }
+    for (const r of components) {
+      const t = r.attributes['title'];
+      if (typeof t === 'string') out[r.id] = t;
+    }
+    return out;
+  });
+  const tagPaths = $derived.by((): Record<number, string> => {
+    const out: Record<number, string> = {};
+    for (const r of tagsRows) {
+      const p = r.attributes['path'];
+      if (typeof p === 'string') out[r.id] = p;
+    }
+    return out;
+  });
   let loading = $state(true);
   let error = $state<string | null>(null);
   let selectedIndex = $state(0);
 
-  // Inline-edit ephemera. Only one of {title,description} can be active
-  // at a time; opening one closes the other.
-  let editingTitle = $state(false);
-  let editingDescription = $state(false);
-  let titleDraft = $state('');
-  let descDraft = $state('');
-  let titleSaving = $state(false);
-  let descSaving = $state(false);
-  let titleInputEl: HTMLInputElement | null = $state(null);
-  let descInputEl: HTMLTextAreaElement | null = $state(null);
+  // Properties slide-out (title / description / project-bound attributes).
+  let propsOpen = $state(false);
 
   const qe = useQuickEntry({
     scope: 'project_detail',
@@ -204,25 +228,9 @@
       project = proj;
       tasks = tasksOut.rows;
       users = usersOut.rows;
-      const namesNext: Record<number, string> = {};
-      for (const u of usersOut.rows) namesNext[u.id] = u.display_name;
-      userNames = namesNext;
-      const titlesNext: Record<number, string> = {};
-      for (const m of milestonesOut.rows) {
-        const t = m.attributes['title'];
-        if (typeof t === 'string') titlesNext[m.id] = t;
-      }
-      for (const c of componentsOut.rows) {
-        const t = c.attributes['title'];
-        if (typeof t === 'string') titlesNext[c.id] = t;
-      }
-      cardTitles = titlesNext;
-      const tagsNext: Record<number, string> = {};
-      for (const t of tagsOut.rows) {
-        const p = t.attributes['path'];
-        if (typeof p === 'string') tagsNext[t.id] = p;
-      }
-      tagPaths = tagsNext;
+      milestones = milestonesOut.rows;
+      components = componentsOut.rows;
+      tagsRows = tagsOut.rows;
       loading = false;
       // Reset selection if the new visible range shrank.
       selectedIndex = 0;
@@ -241,40 +249,23 @@
   /* ----------------------------------------------------- derived: visible */
 
   /**
-   * FilterBar attribute palette. Built from the schema cache once it
-   * loads; per-attribute ref-options resolve via the in-memory tables we
-   * just fetched (assignee, milestone_ref, component_ref, tags).
+   * FilterBar palette. Single source of truth: `filter/task_palette.ts`.
+   * Same names / labels / option lists as Inbox, Grid, Kanban.
    */
-  const filterAttributes = $derived.by((): FilterAttribute[] => {
-    if (!schemaCache.loaded) return [];
-    // Surface a stable subset that the server-side seed schema actually
-    // populates on `task` cards. Other attribute types still flow through
-    // the advanced editor.
-    const wanted = ['status', 'assignee', 'milestone_ref', 'component_ref', 'tags'];
-    const out: FilterAttribute[] = [];
-    for (const name of wanted) {
-      const fa = schemaCache.toFilterAttribute(name, (cardTypeName) => {
-        if (cardTypeName === 'milestone' || cardTypeName === 'component') {
-          return Object.entries(cardTitles).map(([id, label]) => ({
-            value: Number(id),
-            label,
-          }));
-        }
-        if (cardTypeName === 'tag') {
-          return Object.entries(tagPaths).map(([id, label]) => ({
-            value: Number(id),
-            label,
-          }));
-        }
-        if (cardTypeName === 'user') {
-          return users.map((u) => ({ value: u.id, label: u.display_name }));
-        }
-        return [];
-      });
-      if (fa !== null) out.push(fa);
-    }
-    return out;
-  });
+  const filterAttributes = $derived<FilterAttribute[]>(
+    buildTaskFilterPalette({
+      schema: schemaCache,
+      users,
+      milestones,
+      components,
+      tags: tagsRows,
+    }),
+  );
+  /** Status palette entry, surfaced so TaskRow can resolve the status
+   *  enum label and render the same text as the FilterBar chip. */
+  const statusAttribute = $derived(
+    filterAttributes.find((a) => a.name === 'status'),
+  );
 
   /** Quick chips: derived per-attribute (enum → one chip per option). */
   const quickChips = $derived<QuickChip[]>(
@@ -300,130 +291,6 @@
     return '';
   });
 
-  /* ------------------------------------------------------ inline editing */
-
-  async function startEditTitle(): Promise<void> {
-    if (project === null) return;
-    if (editingTitle) return;
-    editingDescription = false;
-    titleDraft = titleText;
-    editingTitle = true;
-    await tick();
-    titleInputEl?.focus();
-    titleInputEl?.select();
-  }
-
-  function cancelEditTitle(): void {
-    editingTitle = false;
-    titleDraft = '';
-  }
-
-  async function commitTitle(): Promise<void> {
-    if (project === null) return;
-    if (titleSaving) return;
-    const r = editingPayload(project.id, 'title', titleText, titleDraft);
-    if (!r.changed) {
-      cancelEditTitle();
-      return;
-    }
-    titleSaving = true;
-    try {
-      await dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
-        endpoint: attributeUpdate.endpoint,
-        action: attributeUpdate.action,
-        data: r.payload,
-      });
-      editingTitle = false;
-      titleDraft = '';
-      await refresh();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      notify({ type: 'error', message: `Failed to save title: ${msg}` });
-    } finally {
-      titleSaving = false;
-    }
-  }
-
-  async function startEditDescription(): Promise<void> {
-    if (project === null) return;
-    if (editingDescription) return;
-    editingTitle = false;
-    descDraft = descriptionText;
-    editingDescription = true;
-    await tick();
-    descInputEl?.focus();
-  }
-
-  function cancelEditDescription(): void {
-    editingDescription = false;
-    descDraft = '';
-  }
-
-  async function commitDescription(): Promise<void> {
-    if (project === null) return;
-    if (descSaving) return;
-    const r = editingPayload(
-      project.id,
-      'description',
-      descriptionText,
-      descDraft,
-    );
-    if (!r.changed) {
-      cancelEditDescription();
-      return;
-    }
-    descSaving = true;
-    try {
-      await dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
-        endpoint: attributeUpdate.endpoint,
-        action: attributeUpdate.action,
-        data: r.payload,
-      });
-      editingDescription = false;
-      descDraft = '';
-      await refresh();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      notify({ type: 'error', message: `Failed to save description: ${msg}` });
-    } finally {
-      descSaving = false;
-    }
-  }
-
-  function onTitleInputKey(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      cancelEditTitle();
-      return;
-    }
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      e.stopPropagation();
-      void commitTitle();
-      return;
-    }
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      e.stopPropagation();
-      void commitTitle();
-    }
-  }
-
-  function onDescInputKey(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      cancelEditDescription();
-      return;
-    }
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      e.stopPropagation();
-      void commitDescription();
-    }
-  }
-
   /* ----------------------------------------------------- keyboard helpers */
 
   function moveSelection(delta: number): void {
@@ -437,15 +304,24 @@
     else selectedIndex = next;
   }
 
+  /** Capture the current visible task order as the nav-list and navigate. */
+  function openTaskById(id: number): void {
+    setTaskNavList({
+      label: titleText,
+      ids: visible.map((c) => c.id),
+    });
+    navigate(`/task/${id}`);
+  }
+
   function openSelected(): void {
     const sel = visible[selectedIndex];
     if (sel === undefined) return;
-    navigate(`/task/${sel.id}`);
+    openTaskById(sel.id);
   }
 
   // `n` is bound by useQuickEntry. Bind the rest here.
-  useShortcut('project_detail', 'j', () => moveSelection(+1), 'Next task');
-  useShortcut('project_detail', 'k', () => moveSelection(-1), 'Previous task');
+  useShortcut('project_detail', ['j', 'ArrowDown'], () => moveSelection(+1), 'Down');
+  useShortcut('project_detail', ['k', 'ArrowUp'], () => moveSelection(-1), 'Up');
   useShortcut('project_detail', 'Enter', openSelected, 'Open selected', {
     fireInInputs: false,
   });
@@ -453,9 +329,9 @@
     'project_detail',
     'e',
     () => {
-      void startEditTitle();
+      propsOpen = true;
     },
-    'Edit project title',
+    'Edit project properties',
     { fireInInputs: false },
   );
 
@@ -496,70 +372,28 @@
     <!-- ----------------------------------------------------- header -->
     <header class="flex flex-col gap-2 border-b border-border pb-3">
       <div class="flex items-start justify-between gap-3">
-        <div class="flex min-w-0 flex-1 flex-col gap-1">
-          {#if editingTitle}
-            <input
-              bind:this={titleInputEl}
-              bind:value={titleDraft}
-              type="text"
-              disabled={titleSaving}
-              aria-label="Project title"
-              class={cx(
-                'w-full rounded-md border border-accent bg-bg px-2 py-1 text-xl font-semibold text-fg',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              )}
-              onkeydown={onTitleInputKey}
-              onblur={() => void commitTitle()}
-            />
+        <div class="flex min-w-0 flex-1 flex-col gap-1 px-2 py-1">
+          <h1 class="truncate text-xl font-semibold text-fg">{titleText}</h1>
+          {#if descriptionText.length === 0}
+            <p class="text-sm italic text-muted">No description.</p>
           {:else}
-            <button
-              type="button"
-              class={cx(
-                'w-full rounded-md px-2 py-1 text-left text-xl font-semibold text-fg',
-                'hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              )}
-              title="Click or press 'e' to edit title"
-              onclick={() => void startEditTitle()}
-            >
-              {titleText}
-            </button>
-          {/if}
-
-          {#if editingDescription}
-            <textarea
-              bind:this={descInputEl}
-              bind:value={descDraft}
-              rows="3"
-              disabled={descSaving}
-              aria-label="Project description"
-              class={cx(
-                'w-full resize-y rounded-md border border-accent bg-bg px-2 py-1 text-sm text-fg',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              )}
-              onkeydown={onDescInputKey}
-              onblur={() => void commitDescription()}
-            ></textarea>
-          {:else}
-            <button
-              type="button"
-              class={cx(
-                'w-full rounded-md px-2 py-1 text-left text-sm',
-                descriptionText.length === 0
-                  ? 'italic text-muted'
-                  : 'whitespace-pre-wrap text-fg',
-                'hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              )}
-              title="Click to edit description"
-              onclick={() => void startEditDescription()}
-            >
-              {descriptionText.length === 0 ? 'Add a description…' : descriptionText}
-            </button>
+            <p class="whitespace-pre-wrap text-sm text-fg">{descriptionText}</p>
           {/if}
         </div>
-
-        <Button variant="primary" size="md" onclick={() => qe.open()}>
-          {#snippet children()}+ New task{/snippet}
-        </Button>
+        <div class="flex shrink-0 items-center gap-2">
+          <Button
+            variant="secondary"
+            size="md"
+            onclick={() => {
+              propsOpen = true;
+            }}
+          >
+            {#snippet children()}Edit properties{/snippet}
+          </Button>
+          <Button variant="primary" size="md" onclick={() => qe.open()}>
+            {#snippet children()}+ New task{/snippet}
+          </Button>
+        </div>
       </div>
     </header>
 
@@ -613,10 +447,11 @@
               {userNames}
               {cardTitles}
               {tagPaths}
+              statusOptions={statusAttribute?.options}
               onSelect={() => {
                 selectedIndex = i;
               }}
-              onOpen={() => navigate(`/task/${task.id}`)}
+              onOpen={() => openTaskById(task.id)}
             />
           </li>
         {/each}
@@ -626,3 +461,9 @@
 </div>
 
 <QuickEntryOverlay {...qe.props} />
+
+<ProjectPropertiesPanel
+  bind:open={propsOpen}
+  cardId={projectId}
+  onSaved={() => void refresh()}
+/>

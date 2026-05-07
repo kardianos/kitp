@@ -23,10 +23,12 @@
    */
   import { tick } from 'svelte';
   import { getDispatcher } from '../dispatch/context.js';
+  import { projectScope } from '../shell/project_scope.svelte';
   import Combobox from '../ui/Combobox.svelte';
   import { notify } from '../ui/toast.svelte.js';
   import { cx } from '../util/class_names.js';
   import {
+    resolveParentForInsert,
     submitQuickEntry,
     type QuickEntryPrefill,
     type QuickEntrySubmitInput,
@@ -234,13 +236,31 @@
       effectivePrefill.assigneeUserId = assigneeId;
     }
 
+    // Card-type ↔ parent matrix today: project is top-level (no parent
+    // required); everything else (task, milestone, component, tag) is
+    // parented under a project. When the caller didn't supply a parent
+    // we pick the sidebar's active project scope. Surface a clear inline
+    // error rather than letting the wire `requires a parent` reach the
+    // user. Logic lives in `resolveParentForInsert` so the unit tests
+    // can pin the behaviour without mounting the overlay.
+    const resolution = resolveParentForInsert(
+      defaultCardType,
+      parentCardId,
+      projectScope.projectId,
+    );
+    if (resolution.error !== null) {
+      submitting = false;
+      errorMessage = resolution.error;
+      return;
+    }
+
     const args: QuickEntrySubmitInput = {
       cardTypeName: defaultCardType,
       title,
       description,
       prefill: effectivePrefill,
     };
-    if (parentCardId !== undefined) args.parentCardId = parentCardId;
+    if (resolution.parentCardId !== null) args.parentCardId = resolution.parentCardId;
 
     try {
       const newCardId = await submitQuickEntry(dispatcher, args);
@@ -261,8 +281,13 @@
         open = false;
         onClose?.();
       } else {
+        // Re-enable inputs BEFORE focusing — focus() on a disabled input is a
+        // browser no-op, so leaving submitting=true here would silently drop
+        // focus and the user couldn't immediately type the next title.
+        submitting = false;
         await tick();
         titleEl?.focus();
+        return;
       }
     } catch (e) {
       errorMessage = e instanceof Error ? e.message : String(e);

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/cardtype"
 	"github.com/kitp/kitp/server/internal/dom/echo"
 	"github.com/kitp/kitp/server/internal/dom/role"
@@ -27,7 +28,7 @@ func setup(t *testing.T, schema string) *api.Server {
 
 func TestRoleListIncludesAllSeeded(t *testing.T) {
 	srv := setup(t, "kitp_test_role_list")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "r", Endpoint: "role", Action: "list"},
 	}})

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/activity"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/card"
@@ -38,7 +39,7 @@ func setup(t *testing.T, schema string) (*api.Server, *store.Pool) {
 // comment.insert) inside one tx.
 func TestUpdateWithCommentProcess(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_proc_uwc")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -92,7 +93,7 @@ func TestUpdateWithCommentProcess(t *testing.T) {
 // TestProcessRollback: a 3-step process where step 2 fails rolls back step 1.
 func TestProcessRollback(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_proc_roll")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	// Custom process for the test: 3 steps — card.insert + attribute.update + attribute.update.
 	// We add it directly to the DB.
@@ -163,7 +164,7 @@ func TestProcessRollback(t *testing.T) {
 // an "unauthorized" code.
 func TestAuthDeny(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_proc_auth")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 	pgxPool := srv.Pool.P
 
 	// Project + task.

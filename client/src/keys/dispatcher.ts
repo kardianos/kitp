@@ -155,15 +155,18 @@ function hasChordWithPrefix(prefix: string): boolean {
 
 /**
  * Match an entry whose binding equals `binding` and whose scope is
- * either the active scope or `'global'`. Global wins ties: returns the
- * first match found (registration order).
+ * either the active scope or `'global'`. The active-scope binding wins
+ * over a colliding global one (so a screen can override defaults like
+ * `Esc` without having to unregister the global handler first).
  */
 function findMatch(binding: string): ShortcutEntry | undefined {
-  return shortcuts.entries.find(
-    (e) =>
-      e.binding === binding &&
-      (e.scope === 'global' || e.scope === shortcuts.activeScope),
-  );
+  let globalHit: ShortcutEntry | undefined;
+  for (const e of shortcuts.entries) {
+    if (e.binding !== binding) continue;
+    if (e.scope === shortcuts.activeScope) return e;
+    if (e.scope === 'global' && globalHit === undefined) globalHit = e;
+  }
+  return globalHit;
 }
 
 /**

@@ -31,6 +31,12 @@
     cardTitles?: Record<number, string>;
     /** tag id -> path */
     tagPaths?: Record<number, string>;
+    /**
+     * Enum option set for the `status` attribute (`attribute_def.options`).
+     * Used to render the chip label — `'todo'` becomes `'To do'` so the
+     * row matches what the FilterBar status chip shows.
+     */
+    statusOptions?: { value: unknown; label: string }[] | undefined;
     class?: string;
   }
 
@@ -42,6 +48,7 @@
     userNames,
     cardTitles,
     tagPaths,
+    statusOptions,
     class: klass = '',
   }: Props = $props();
 
@@ -52,7 +59,12 @@
   });
 
   const status = $derived(card.attributes['status']);
-  const statusText = $derived(typeof status === 'string' ? status : '');
+  const statusRaw = $derived(typeof status === 'string' ? status : '');
+  const statusText = $derived.by((): string => {
+    if (statusRaw === '') return '';
+    const opt = statusOptions?.find((o) => o.value === status);
+    return opt?.label ?? statusRaw;
+  });
   const statusHint = $derived(statusColor(status));
 
   const assigneeId = $derived.by(() => {

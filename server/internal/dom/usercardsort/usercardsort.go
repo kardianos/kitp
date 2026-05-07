@@ -46,14 +46,15 @@ type SetOutput struct {
 // Register installs the handler.
 func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
-		Endpoint:    "user_card_sort",
-		Action:      "set",
-		Doc:         "Upsert the calling user's personal sort_order for one card. Used by the inbox drag-drop reorder; per-user ordering is independent of the global sort_order attribute.",
-		InputType:   reflect.TypeFor[SetInput](),
-		OutputType:  reflect.TypeFor[SetOutput](),
-		ProcessName: "user_card_sort.set",
-		CardTypeID:  cardTypeFromInput,
-		Run:         runSet(p),
+		Endpoint:     "user_card_sort",
+		Action:       "set",
+		Doc:          "Upsert the calling user's personal sort_order for one card. Used by the inbox drag-drop reorder; per-user ordering is independent of the global sort_order attribute.",
+		InputType:    reflect.TypeFor[SetInput](),
+		OutputType:   reflect.TypeFor[SetOutput](),
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		ProcessName:  "user_card_sort.set",
+		CardTypeID:   cardTypeFromInput,
+		Run:          runSet(p),
 	})
 }
 

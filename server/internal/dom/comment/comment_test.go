@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/activity"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/card"
@@ -35,7 +36,7 @@ func setup(t *testing.T, schema string) (*api.Server, *store.Pool) {
 // (card_create + 3 comments) in order, comments include body text.
 func TestCommentLifecycle(t *testing.T) {
 	srv, sp := setup(t, "kitp_test_comment_life")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(

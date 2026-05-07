@@ -33,6 +33,7 @@
   import {
     flattenLeaves,
     isFlatAndOfLeaves,
+    OP_TO_WIRE,
     opArity,
     predicateFromLeaves,
     toText,
@@ -164,7 +165,14 @@
         middleware: [offset(4), flip()],
       }).then(({ x, y }) => {
         if (!popupEl) return;
-        Object.assign(popupEl.style, { left: `${x}px`, top: `${y}px` });
+        // Reveal only once positioned — the template's initial
+        // `left: 0; top: 0` would otherwise flash at the top-left of
+        // the screen between mount and first computePosition resolve.
+        Object.assign(popupEl.style, {
+          left: `${x}px`,
+          top: `${y}px`,
+          visibility: 'visible',
+        });
       });
     });
   }
@@ -189,6 +197,29 @@
     closeEditor();
   }
 
+  /**
+   * After the user picks a value, auto-commit + close when the editor is in a
+   * "ready" shape: an op that wants no value, or an op that wants a single
+   * scalar value backed by a combobox-style attribute (enum / ref:*). Free-text
+   * and multi-select inputs still require the explicit Add/Save button so the
+   * user can finish typing or pick more options.
+   */
+  function maybeAutoCommit() {
+    if (editor === null) return;
+    const arity = opArity(editor.op);
+    if (arity === 'none') {
+      commitEditor();
+      return;
+    }
+    if (arity !== 'single') return;
+    if (editor.values.length === 0) return;
+    const a = attrFor(editor.attr);
+    if (a === undefined) return;
+    if (a.valueType === 'enum' || a.valueType.startsWith('ref:') || a.valueType === 'date' || a.valueType === 'bool') {
+      commitEditor();
+    }
+  }
+
   function onEditorAttrChange(name: string) {
     if (editor === null) return;
     const attr = attributes.find((a) => a.name === name);
@@ -204,6 +235,8 @@
     const newArity = opArity(op);
     if (newArity === 'none') {
       editor.values = [];
+      maybeAutoCommit();
+      return;
     } else if (newArity === 'multi' && prevArity !== 'multi') {
       const v = editor.values[0];
       editor.values = v === undefined ? [] : [v];
@@ -215,14 +248,18 @@
 
   function onEditorValueChange(v: unknown) {
     if (editor === null) return;
-    const arity = opArity(editor.op);
+    const cur = editor;
+    const arity = opArity(cur.op);
     if (arity === 'multi') {
-      editor.values = Array.isArray(v) ? v.slice() : [];
-    } else if (v === null || v === undefined) {
-      editor.values = [];
-    } else {
-      editor.values = [v];
+      editor = { ...cur, values: Array.isArray(v) ? v.slice() : [] };
+      return;
     }
+    if (v === null || v === undefined) {
+      editor = { ...cur, values: [] };
+      return;
+    }
+    editor = { ...cur, values: [v] };
+    maybeAutoCommit();
   }
 
   function onEditorKeydown(e: KeyboardEvent) {
@@ -287,18 +324,35 @@
   }
 
   /**
-   * Per-leaf chip text. Uses `toText` on a synthetic leaf so the wire
-   * op string is consistent across the bar and the read-only preview.
+   * Per-leaf chip text. Uses {@link toText} for the wire op string, then
+   * substitutes (a) the attribute label for the wire name and (b) any enum /
+   * ref:* values with their option labels (e.g. `milestone = M1` instead of
+   * `milestone = 3`). Falls back to the raw value when no matching option is
+   * registered (e.g. an option list still loading).
    */
   function chipText(leaf: PredicateLeaf): string {
     const a = attrFor(leaf.attr);
     if (a === undefined) return toText(leaf);
-    // Replace the attribute name with its label for nicer chips.
-    const txt = toText(leaf);
-    if (txt.startsWith(`${leaf.attr} `)) {
-      return `${a.label}${txt.slice(leaf.attr.length)}`;
+    const opTxt = OP_TO_WIRE[leaf.op];
+    const arity = opArity(leaf.op);
+    const label = a.label;
+
+    const opts = a.options ?? [];
+    const renderOne = (v: unknown): string => {
+      if (v === null || v === undefined) return 'null';
+      const found = opts.find((o) => o.value === v);
+      if (found !== undefined) return found.label;
+      if (typeof v === 'string') return v;
+      return String(v);
+    };
+
+    if (arity === 'none') return `${label} ${opTxt}`;
+    const vs = leaf.values ?? [];
+    if (arity === 'single') {
+      const v = vs.length === 0 ? 'null' : renderOne(vs[0]);
+      return `${label} ${opTxt} ${v}`;
     }
-    return txt;
+    return `${label} ${opTxt} (${vs.map(renderOne).join(', ')})`;
   }
 </script>
 
@@ -397,11 +451,16 @@
     role="dialog"
     aria-label="Edit filter"
     tabindex="-1"
-    style="position: fixed; left: 0; top: 0;"
+    style="position: fixed; left: 0; top: 0; visibility: hidden;"
     onkeydown={onEditorKeydown}
   >
-    <label class="flex flex-col gap-1 text-xs text-muted">
-      Attribute
+    <!--
+      Use <div>, not <label>: clicking a Combobox option bubbles to the
+      label, which forwards a synthetic click to the trigger button and
+      re-opens the menu. Combobox already supplies aria-label.
+    -->
+    <div class="flex flex-col gap-1 text-xs text-muted">
+      <span>Attribute</span>
       <Combobox
         aria-label="Attribute"
         options={attributes.map((a) => ({ value: a.name, label: a.label }))}
@@ -410,10 +469,10 @@
           if (typeof v === 'string') onEditorAttrChange(v);
         }}
       />
-    </label>
+    </div>
 
-    <label class="flex flex-col gap-1 text-xs text-muted">
-      Operator
+    <div class="flex flex-col gap-1 text-xs text-muted">
+      <span>Operator</span>
       <Combobox
         aria-label="Operator"
         options={(editorAttr?.ops ?? (['eq', 'ne'] as Op[])).map((o) => ({
@@ -426,18 +485,18 @@
           if (typeof v === 'string') onEditorOpChange(v as Op);
         }}
       />
-    </label>
+    </div>
 
     {#if editorAttr && editorArity !== 'none'}
-      <label class="flex flex-col gap-1 text-xs text-muted">
-        Value
+      <div class="flex flex-col gap-1 text-xs text-muted">
+        <span>Value</span>
         <ValueInput
           attribute={editorAttr}
           value={editorArity === 'multi' ? editor.values : editor.values[0]}
           multiple={editorArity === 'multi'}
           onchange={onEditorValueChange}
         />
-      </label>
+      </div>
     {/if}
 
     <div class="mt-1 flex justify-end gap-2">

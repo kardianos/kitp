@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/activity"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/card"
@@ -34,7 +35,7 @@ func setupAttr(t *testing.T, schema string) (*api.Server, *store.Pool) {
 // TestSelectWithAttributes_Predicate covers the where translation.
 func TestSelectWithAttributes_Predicate(t *testing.T) {
 	srv, _ := setupAttr(t, "kitp_test_card_lat_pred")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	// Project + 3 tasks with different statuses.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
@@ -80,7 +81,7 @@ func TestSelectWithAttributes_Predicate(t *testing.T) {
 // `assignee = <me> AND status != "done"`.
 func TestSelectWithAttributes_AndPredicate(t *testing.T) {
 	srv, _ := setupAttr(t, "kitp_test_card_lat_and")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	// Project + 4 tasks. assignee=42 status=open / open / closed / done.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
@@ -157,7 +158,7 @@ func TestSelectWithAttributes_AndPredicate(t *testing.T) {
 // TestSelectWithAttributes_Order_Limit checks order/limit/offset paths.
 func TestSelectWithAttributes_Order_Limit(t *testing.T) {
 	srv, _ := setupAttr(t, "kitp_test_card_lat_order")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -204,7 +205,7 @@ func TestSelectWithAttributes_Order_Limit(t *testing.T) {
 // further ORDER BY c.id as a tie-breaker via the LATERAL alias.
 func TestSelectWithAttributes_OrderBySortOrder(t *testing.T) {
 	srv, _ := setupAttr(t, "kitp_test_card_lat_sort")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -264,7 +265,7 @@ func TestSelectWithAttributes_OrderBySortOrder(t *testing.T) {
 // duration each iteration.
 func BenchmarkGrid1000Cards(b *testing.B) {
 	srv, sp := setupAttrBench(b, "kitp_test_card_grid_bench")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -340,7 +341,7 @@ func TestSelectWithAttributes_Bench(t *testing.T) {
 		t.Skip("skipping bench in -short mode")
 	}
 	srv, sp := setupAttr(t, "kitp_test_card_lat_bench")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(

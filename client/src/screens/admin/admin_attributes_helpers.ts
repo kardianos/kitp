@@ -9,8 +9,10 @@
  *   - `boundMatrix`         derive the right-pane "Bound to" rows: for each
  *                           card_type, surface (bound, ordering, required).
  *   - `validateNewAttr`     validate the create-mode draft: name + value_type
- *                           required; enum requires >=1 option; ref:* requires
- *                           a referenced card type.
+ *                           required; ref:* requires a referenced card type.
+ *                           (Enum options are added post-creation through the
+ *                           edit pane — the server has no options-on-insert
+ *                           path, so the create form has no place for them.)
  *   - `parseRefCardType`    strip the `ref:` prefix from a value_type label.
  */
 
@@ -104,7 +106,6 @@ export function boundMatrix(
 export interface NewAttrDraft {
   name: string;
   valueType: string;
-  options?: { value: string; label: string }[];
   refCardType?: string;
 }
 
@@ -115,11 +116,10 @@ export interface ValidationResult {
 
 /**
  * Validate the create-mode draft. Returns `{ ok, errors }` where `errors` is
- * keyed by field name (`name`, `valueType`, `options`, `refCardType`).
+ * keyed by field name (`name`, `valueType`, `refCardType`).
  *
  *   - `name`:        non-empty after trim
  *   - `valueType`:   non-empty after trim
- *   - `enum`:        >=1 option, each with non-empty `value`
  *   - `ref:<type>`:  refCardType non-empty (matching what's after the colon)
  */
 export function validateNewAttr(draft: NewAttrDraft): ValidationResult {
@@ -130,13 +130,6 @@ export function validateNewAttr(draft: NewAttrDraft): ValidationResult {
   const vt = draft.valueType.trim();
   if (vt === '') {
     errors.valueType = 'Value type is required';
-  }
-  if (vt === 'enum') {
-    const opts = draft.options ?? [];
-    const realOpts = opts.filter((o) => o.value.trim() !== '');
-    if (realOpts.length === 0) {
-      errors.options = 'Enum needs at least one option';
-    }
   }
   if (vt.startsWith('ref:')) {
     const inline = vt.slice(4).trim();
@@ -152,14 +145,29 @@ export function validateNewAttr(draft: NewAttrDraft): ValidationResult {
  * Strip the `ref:` prefix from a value_type label, returning just the
  * card_type name. Returns `null` for non-ref types.
  *
- *   parseRefCardType('ref:milestone') -> 'milestone'
- *   parseRefCardType('text')          -> null
- *   parseRefCardType('ref:')          -> null   (empty target)
+ *   parseRefCardType('ref:milestone')                    -> 'milestone'
+ *   parseRefCardType('text')                             -> null
+ *   parseRefCardType('ref:')                             -> null   (empty target)
+ *   parseRefCardType('card_ref', 'milestone_ref')        -> 'milestone' (legacy)
+ *   parseRefCardType('user_ref')                         -> null (not a card type)
+ *
+ * Server seed uses the legacy `card_ref` / `user_ref` tokens; the optional
+ * `attrName` lets callers infer the target card type from a `<name>_ref`
+ * convention so the admin Value-cards pane lights up for built-ins.
  */
-export function parseRefCardType(valueType: string): string | null {
-  if (!valueType.startsWith('ref:')) return null;
-  const t = valueType.slice(4).trim();
-  return t === '' ? null : t;
+export function parseRefCardType(
+  valueType: string,
+  attrName?: string,
+): string | null {
+  if (valueType.startsWith('ref:')) {
+    const t = valueType.slice(4).trim();
+    return t === '' ? null : t;
+  }
+  if (valueType === 'card_ref' && attrName !== undefined && attrName.endsWith('_ref')) {
+    const target = attrName.slice(0, -'_ref'.length).trim();
+    return target === '' ? null : target;
+  }
+  return null;
 }
 
 /** True if any card under `cards` has a non-null value for `attrName`. Used

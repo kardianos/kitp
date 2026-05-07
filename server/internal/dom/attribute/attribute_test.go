@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/activity"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/card"
@@ -58,7 +59,7 @@ func raw(t *testing.T, sr api.SubResponse, dst any) {
 //   - attribute_value.title = Baz
 func TestLifecycleTitleUpdate(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_attr_life")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	// 1. Insert project, then task with title=Foo.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
@@ -150,7 +151,7 @@ func TestLifecycleTitleUpdate(t *testing.T) {
 // accommodate compound writers in future, mirroring the bench guard.
 func TestCoalesceUpdate100(t *testing.T) {
 	srv, sp := setup(t, "kitp_test_attr_coal100")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			`{"card_type_name":"project","title":"P"}`)},
@@ -203,7 +204,7 @@ func TestCoalesceUpdate100(t *testing.T) {
 // (where the edge does not exist) is rejected at decode time, before the tx.
 func TestEdgeViolationPreTx(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_attr_edge")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -231,7 +232,7 @@ func TestEdgeViolationPreTx(t *testing.T) {
 // 'invalid_enum_value'.
 func TestUpdate_RejectsInvalidEnumValue(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_attr_enum_bad")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -273,7 +274,7 @@ func TestUpdate_RejectsInvalidEnumValue(t *testing.T) {
 // set succeeds and writes a row to attribute_value.
 func TestUpdate_AcceptsValidEnumValue(t *testing.T) {
 	srv, _ := setup(t, "kitp_test_attr_enum_ok")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -324,7 +325,7 @@ func TestUpdate_AcceptsValidEnumValue(t *testing.T) {
 // keeps using the new name across the codebase.
 func BenchmarkBatch100AttrUpdates(b *testing.B) {
 	srv, sp := setupB(b, "kitp_test_attr_bench")
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	// Seed: project + 100 tasks.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{

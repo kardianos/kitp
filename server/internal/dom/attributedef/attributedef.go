@@ -115,45 +115,101 @@ type EdgeDeleteOutput struct {
 	UsageCount int  `json:"usage_count,omitempty" mcp:"desc=number of attribute_value rows that block the delete"`
 }
 
+// OptionUpsertInput adds or rewrites one row in attribute_def_option. The
+// (def_id, value) pair is the natural key — sending the same value twice is
+// an UPDATE of label / ordering, not a duplicate. Admin-only because the
+// option list is the schema's source of truth for what's an acceptable
+// jsonb literal on cards.
+type OptionUpsertInput struct {
+	AttributeDefID int32  `json:"attribute_def_id" mcp:"required,desc=enum-typed attribute_def to add the option to"`
+	Value          string `json:"value" mcp:"required,desc=stored value (the literal jsonb the server accepts on attribute.update)"`
+	Label          string `json:"label" mcp:"required,desc=display label"`
+	Ordering       int32  `json:"ordering,omitempty" mcp:"desc=display ordering (ascending; default 0)"`
+}
+
+// OptionUpsertOutput acks the upsert.
+type OptionUpsertOutput struct {
+	OK bool `json:"ok" mcp:"desc=true on successful upsert"`
+}
+
+// OptionDeleteInput removes one option from an enum-typed attribute_def.
+// Refuses with usage_count > 0 if any attribute_value still references the
+// value, so the admin must clear or migrate references first.
+type OptionDeleteInput struct {
+	AttributeDefID int32  `json:"attribute_def_id" mcp:"required,desc=enum-typed attribute_def"`
+	Value          string `json:"value" mcp:"required,desc=stored value to remove"`
+}
+
+// OptionDeleteOutput surfaces the same usage-count guard as edge.delete so
+// the admin UI can render a "in use by N cards" warning.
+type OptionDeleteOutput struct {
+	OK         bool `json:"ok" mcp:"desc=true if the option was deleted"`
+	UsageCount int  `json:"usage_count,omitempty" mcp:"desc=number of attribute_value rows blocking the delete"`
+}
+
 var authzPool *store.Pool
 
 // Register installs every endpoint.
 func Register(p *store.Pool) {
 	authzPool = p
 	reg.Register(reg.Handler{
-		Endpoint:   "attribute_def",
-		Action:     "select",
-		Doc:        "List every attribute_def with the card_types it is bound to via edge.",
-		InputType:  reflect.TypeFor[SelectInput](),
-		OutputType: reflect.TypeFor[SelectOutput](),
-		Run:        runSelect(p),
+		Endpoint:     "attribute_def",
+		Action:       "select",
+		Doc:          "List every attribute_def with the card_types it is bound to via edge.",
+		InputType:    reflect.TypeFor[SelectInput](),
+		OutputType:   reflect.TypeFor[SelectOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		Run:          runSelect(p),
 	})
 	reg.Register(reg.Handler{
-		Endpoint:   "attribute_def",
-		Action:     "insert",
-		Doc:        "Admin-only: insert a new attribute_def with optional initial edges, in one tx.",
-		InputType:  reflect.TypeFor[InsertInput](),
-		OutputType: reflect.TypeFor[InsertOutput](),
-		Authz:      authzAdmin,
-		Run:        runInsert(p),
+		Endpoint:     "attribute_def",
+		Action:       "insert",
+		Doc:          "Admin-only: insert a new attribute_def with optional initial edges, in one tx.",
+		InputType:    reflect.TypeFor[InsertInput](),
+		OutputType:   reflect.TypeFor[InsertOutput](),
+		AllowedRoles: []string{"admin"},
+		Authz:        authzAdmin,
+		Run:          runInsert(p),
 	})
 	reg.Register(reg.Handler{
-		Endpoint:   "edge",
-		Action:     "insert",
-		Doc:        "Admin-only: bind an existing attribute_def to a card_type. Idempotent (re-binding is a no-op).",
-		InputType:  reflect.TypeFor[EdgeInsertInput](),
-		OutputType: reflect.TypeFor[EdgeInsertOutput](),
-		Authz:      authzAdmin,
-		Run:        runEdgeInsert(p),
+		Endpoint:     "edge",
+		Action:       "insert",
+		Doc:          "Admin-only: bind an existing attribute_def to a card_type. Idempotent (re-binding is a no-op).",
+		InputType:    reflect.TypeFor[EdgeInsertInput](),
+		OutputType:   reflect.TypeFor[EdgeInsertOutput](),
+		AllowedRoles: []string{"admin"},
+		Authz:        authzAdmin,
+		Run:          runEdgeInsert(p),
 	})
 	reg.Register(reg.Handler{
-		Endpoint:   "edge",
-		Action:     "delete",
-		Doc:        "Admin-only: unbind an attribute_def from a card_type. Refuses with usage_count if any attribute_value rows reference it.",
-		InputType:  reflect.TypeFor[EdgeDeleteInput](),
-		OutputType: reflect.TypeFor[EdgeDeleteOutput](),
-		Authz:      authzAdmin,
-		Run:        runEdgeDelete(p),
+		Endpoint:     "edge",
+		Action:       "delete",
+		Doc:          "Admin-only: unbind an attribute_def from a card_type. Refuses with usage_count if any attribute_value rows reference it.",
+		InputType:    reflect.TypeFor[EdgeDeleteInput](),
+		OutputType:   reflect.TypeFor[EdgeDeleteOutput](),
+		AllowedRoles: []string{"admin"},
+		Authz:        authzAdmin,
+		Run:          runEdgeDelete(p),
+	})
+	reg.Register(reg.Handler{
+		Endpoint:     "attribute_def_option",
+		Action:       "upsert",
+		Doc:          "Admin-only: add or update one allowed option on an enum-typed attribute_def.",
+		InputType:    reflect.TypeFor[OptionUpsertInput](),
+		OutputType:   reflect.TypeFor[OptionUpsertOutput](),
+		AllowedRoles: []string{"admin"},
+		Authz:        authzAdmin,
+		Run:          runOptionUpsert(p),
+	})
+	reg.Register(reg.Handler{
+		Endpoint:     "attribute_def_option",
+		Action:       "delete",
+		Doc:          "Admin-only: remove one option from an enum-typed attribute_def. Refuses with usage_count when any attribute_value still references the value.",
+		InputType:    reflect.TypeFor[OptionDeleteInput](),
+		OutputType:   reflect.TypeFor[OptionDeleteOutput](),
+		AllowedRoles: []string{"admin"},
+		Authz:        authzAdmin,
+		Run:          runOptionDelete(p),
 	})
 }
 
@@ -460,6 +516,139 @@ func runEdgeInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any
 		outs := make([]any, len(ins))
 		for i := range ins {
 			outs[i] = EdgeInsertOutput{OK: true}
+		}
+		return outs, nil
+	}
+}
+
+// runOptionUpsert handles per-input upserts with ordering-collision repair.
+//
+// Each row is processed in turn:
+//  1. Validate that the target def is enum-typed (a guard that catches admins
+//     pointing the option editor at a text/number/ref def).
+//  2. If another option on the same def is already sitting at the requested
+//     ordering, bump every other option whose ordering is >= the requested
+//     value up by one. The dragged-in option then slots in cleanly without
+//     two rows colliding at the same ordinal. Re-saving an option at its
+//     current (value, ordering) is a no-op for the bump step.
+//  3. UPSERT (value is the natural key; label/ordering refresh on conflict).
+//
+// arrayPath — the per-row pattern is needed because each row's bump SQL
+// references parameters we don't want to multiplex.
+func runOptionUpsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		outs := make([]any, len(ins))
+		for i, raw := range ins {
+			in := raw.(OptionUpsertInput)
+			if in.AttributeDefID == 0 || in.Value == "" {
+				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+					Message: "attribute_def_option.upsert: attribute_def_id and value are required"}
+			}
+			label := in.Label
+			if label == "" {
+				label = in.Value
+			}
+
+			// Guard: must point at an enum-typed def. Cheap point query;
+			// runs once per input rather than batched so a bad row in a
+			// mixed batch is reported with the matching InputIndex.
+			var vt string
+			if err := tx.QueryRow(ctx, `
+				SELECT value_type FROM attribute_def WHERE id = $1
+			`, in.AttributeDefID).Scan(&vt); err != nil {
+				if err == pgx.ErrNoRows {
+					return nil, &reg.HandlerError{InputIndex: i, Code: "not_found",
+						Message: fmt.Sprintf("attribute_def_option.upsert: attribute_def %d not found", in.AttributeDefID)}
+				}
+				return nil, fmt.Errorf("attribute_def_option.upsert: guard: %w", err)
+			}
+			if vt != "enum" {
+				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+					Message: "attribute_def_option.upsert: target attribute_def is not enum-typed"}
+			}
+
+			// Bump if a *different* row already sits at this ordering.
+			// Re-saving the same row at the same ordering doesn't shift
+			// anything (idempotent label-only edits stay no-ops).
+			var conflict int
+			if err := tx.QueryRow(ctx, `
+				SELECT count(*) FROM attribute_def_option
+				WHERE attribute_def_id = $1
+				  AND ordering = $2
+				  AND value <> $3
+			`, in.AttributeDefID, in.Ordering, in.Value).Scan(&conflict); err != nil {
+				return nil, fmt.Errorf("attribute_def_option.upsert: collision check: %w", err)
+			}
+			if conflict > 0 {
+				if _, err := tx.Exec(ctx, `
+					UPDATE attribute_def_option
+					SET ordering = ordering + 1
+					WHERE attribute_def_id = $1
+					  AND ordering >= $2
+					  AND value <> $3
+				`, in.AttributeDefID, in.Ordering, in.Value); err != nil {
+					return nil, fmt.Errorf("attribute_def_option.upsert: bump: %w", err)
+				}
+			}
+
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO attribute_def_option (attribute_def_id, value, label, ordering)
+				VALUES ($1, $2, $3, $4)
+				ON CONFLICT (attribute_def_id, value) DO UPDATE
+					SET label = EXCLUDED.label,
+					    ordering = EXCLUDED.ordering
+			`, in.AttributeDefID, in.Value, label, in.Ordering); err != nil {
+				return nil, fmt.Errorf("attribute_def_option.upsert: %w", err)
+			}
+			outs[i] = OptionUpsertOutput{OK: true}
+		}
+		if p != nil {
+			p.NoteWrite()
+		}
+		return outs, nil
+	}
+}
+
+// runOptionDelete deletes one option per input, refusing with usage_count
+// when any attribute_value rows still reference the value (mirrors
+// runEdgeDelete's safety check). Per-input loop keeps the implementation
+// small; option lists are short.
+func runOptionDelete(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		outs := make([]any, len(ins))
+		for i, raw := range ins {
+			in := raw.(OptionDeleteInput)
+			if in.AttributeDefID == 0 || in.Value == "" {
+				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+					Message: "attribute_def_option.delete: attribute_def_id and value are required"}
+			}
+			// usage = number of attribute_value rows on this def whose stored
+			// jsonb literal equals the option's value. We compare via the
+			// to_jsonb wrapping the server uses on writes — anything else
+			// would miss strict-typed values.
+			var usage int
+			row := tx.QueryRow(ctx, `
+				SELECT count(*) FROM attribute_value
+				WHERE attribute_def_id = $1 AND value = to_jsonb($2::text)
+			`, in.AttributeDefID, in.Value)
+			if err := row.Scan(&usage); err != nil {
+				return nil, fmt.Errorf("attribute_def_option.delete: usage: %w", err)
+			}
+			if usage > 0 {
+				outs[i] = OptionDeleteOutput{OK: false, UsageCount: usage}
+				continue
+			}
+			ct, err := tx.Exec(ctx, `
+				DELETE FROM attribute_def_option
+				WHERE attribute_def_id = $1 AND value = $2
+			`, in.AttributeDefID, in.Value)
+			if err != nil {
+				return nil, fmt.Errorf("attribute_def_option.delete: %w", err)
+			}
+			outs[i] = OptionDeleteOutput{OK: ct.RowsAffected() > 0}
+		}
+		if p != nil {
+			p.NoteWrite()
 		}
 		return outs, nil
 	}

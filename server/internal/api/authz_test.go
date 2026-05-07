@@ -46,7 +46,7 @@ func setupAuthz(t *testing.T, schema string) (*api.Server, *store.Pool) {
 // under it) we can probe in subsequent role-aware calls.
 func makeProjectAndTask(t *testing.T, srv *api.Server, title string) (projectID int64, taskID int64) {
 	t.Helper()
-	sysCtx := context.Background()
+	sysCtx := auth.WithSystemUser(context.Background())
 	resp := srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_type_name":"project","title":%q}`, title))},
@@ -76,7 +76,7 @@ func makeProjectAndTask(t *testing.T, srv *api.Server, title string) (projectID 
 // scope_card_id. Returns the user's id.
 func grantRole(t *testing.T, sp *store.Pool, displayName, roleName string, scope *int64) int64 {
 	t.Helper()
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 	var userID int64
 	row := sp.P.QueryRow(ctx, `SELECT id FROM user_account WHERE display_name = $1`, displayName)
 	if err := row.Scan(&userID); err != nil {
@@ -114,7 +114,7 @@ func TestSystemUserKeepsEveryGrant(t *testing.T) {
 	projID, taskID := makeProjectAndTask(t, srv, "P-sys")
 	_ = projID
 
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskID))},

@@ -6,30 +6,41 @@ import { shortcuts } from './registry.svelte';
  * Register a keyboard shortcut for the lifetime of the calling
  * component. Must be called during component initialization (it uses
  * `onMount` / `onDestroy` from Svelte).
+ *
+ * Pass an array for `binding` to register multiple aliases that share a
+ * single label and handler — e.g. `['j', ']']` for "Next task". The
+ * help overlay groups aliased entries onto one row ("j, ]") when it
+ * sees the same `label` + `handler` reference under one scope, so all
+ * the caller has to do is pass the array.
  */
 export function useShortcut(
   scope: ShortcutScope,
-  binding: string,
+  binding: string | readonly string[],
   handler: () => void,
   label: string,
   opts?: { fireInInputs?: boolean },
 ): void {
-  let id: number | null = null;
+  const ids: number[] = [];
+  const bindings = typeof binding === 'string' ? [binding] : Array.from(binding);
   onMount(() => {
-    const entry: Omit<import('./registry.svelte').ShortcutEntry, 'id'> = {
-      scope,
-      binding,
-      handler,
-      label,
-      ...(opts?.fireInInputs !== undefined ? { fireInInputs: opts.fireInInputs } : {}),
-    };
-    id = shortcuts.register(entry);
+    for (const b of bindings) {
+      const entry: Omit<import('./registry.svelte').ShortcutEntry, 'id'> = {
+        scope,
+        binding: b,
+        handler,
+        label,
+        ...(opts?.fireInInputs !== undefined
+          ? { fireInInputs: opts.fireInInputs }
+          : {}),
+      };
+      ids.push(shortcuts.register(entry));
+    }
   });
   onDestroy(() => {
-    if (id !== null) {
+    for (const id of ids) {
       shortcuts.unregister(id);
-      id = null;
     }
+    ids.length = 0;
   });
 }
 

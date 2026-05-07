@@ -75,7 +75,7 @@ func withTester(ctx context.Context, id int64) context.Context {
 // insertion order. Inbox tests then switch ctx to userID to read.
 func seedTasksForUser(t *testing.T, srv *api.Server, userID int64, n int) []int64 {
 	t.Helper()
-	sysCtx := context.Background()
+	sysCtx := auth.WithSystemUser(context.Background())
 	resp := srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			`{"card_type_name":"project","title":"P"}`)},
@@ -176,7 +176,7 @@ func TestSelectPersonalOrdering(t *testing.T) {
 // TestSelectExcludesDone: only status != 'done' rows surface.
 func TestSelectExcludesDone(t *testing.T) {
 	srv, _, testerID := setup(t, "kitp_test_inbox_done")
-	sysCtx := context.Background()
+	sysCtx := auth.WithSystemUser(context.Background())
 	resp := srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			`{"card_type_name":"project","title":"P"}`)},

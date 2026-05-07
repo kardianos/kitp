@@ -20,12 +20,13 @@
   Options come from any enum-typed attribute_def or any `ref:*` def.
 
   Keyboard:
-    - `n`                      open quick-entry overlay (via useQuickEntry)
-    - `j` / `k`                move selection within a column
-    - `h` / `l`                move selection across columns
-    - `Mod+ArrowLeft/Right`    move selected card to prev/next column
-    - `Mod+Shift+Up/Down`      move selected card up/down within column
-    - `Enter`                  open selected → /task/<id>
+    - `n`                          open quick-entry overlay (via useQuickEntry)
+    - `j`/`k` (or arrows)          move selection within a column
+    - `h`/`l` (or arrows)          move selection across columns
+    - `Shift+J`/`Shift+K`          move card up/down within column
+    - `Shift+H`/`Shift+L`          move card to prev/next column
+    - `Alt+J`/`Alt+K`              move selection across swim lanes
+    - `Enter`                      open selected → /task/<id>
 
   Ports `client/lib/ui/screens/kanban_screen.dart` (973 LOC).
 -->
@@ -35,8 +36,13 @@
   import { BatchAbortedError, SubRequestError } from '../dispatch/errors';
   import {
     AttributeSchemaCache,
+    friendlyLabel,
     type FilterAttribute,
   } from '../filter/attribute_schema.svelte';
+  import {
+    buildTaskFilterPalette,
+    resolveAttributeLabel,
+  } from '../filter/task_palette';
   import FilterBar from '../filter/FilterBar.svelte';
   import {
     isFlatAndOfLeaves,
@@ -47,6 +53,7 @@
   import DragHandle from '../dnd/DragHandle.svelte';
   import DropZone from '../dnd/DropZone.svelte';
   import { setActiveScope, useShortcut } from '../keys/shortcut';
+  import { projectScope } from '../shell/project_scope.svelte';
   import { useQuickEntry } from '../quick_entry/use_quick_entry.svelte';
   import QuickEntryOverlay from '../quick_entry/QuickEntryOverlay.svelte';
   import {
@@ -65,8 +72,8 @@
     UserSelectOutput,
   } from '../reg/types';
   import { navigate } from '../routing/router.svelte';
+  import { setTaskNavList } from '../routing/task_nav_list.svelte';
   import Combobox from '../ui/Combobox.svelte';
-  import EmptyState from '../ui/EmptyState.svelte';
   import Spinner from '../ui/Spinner.svelte';
   import { notify } from '../ui/toast.svelte';
   import { cx } from '../util/class_names';
@@ -97,10 +104,31 @@
 
   let tasks = $state<CardWithAttrs[]>([]);
   let users = $state<UserRow[]>([]);
+  let milestones = $state<CardWithAttrs[]>([]);
+  let components = $state<CardWithAttrs[]>([]);
+  let tagsRows = $state<CardWithAttrs[]>([]);
   /** card-id → display title for milestone / component refs. */
-  let cardTitles = $state<Record<number, string>>({});
+  const cardTitles = $derived.by((): Record<number, string> => {
+    const out: Record<number, string> = {};
+    for (const r of milestones) {
+      const t = r.attributes['title'];
+      if (typeof t === 'string') out[r.id] = t;
+    }
+    for (const r of components) {
+      const t = r.attributes['title'];
+      if (typeof t === 'string') out[r.id] = t;
+    }
+    return out;
+  });
   /** tag-id → path string. */
-  let tagPaths = $state<Record<number, string>>({});
+  const tagPaths = $derived.by((): Record<number, string> => {
+    const out: Record<number, string> = {};
+    for (const r of tagsRows) {
+      const p = r.attributes['path'];
+      if (typeof p === 'string') out[r.id] = p;
+    }
+    return out;
+  });
 
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -127,9 +155,10 @@
 
   /**
    * Build the ordered list of column keys for [attr]. For `status` we
-   * use the canonical four-step order (plus an UNSET sentinel); for any
-   * other attribute we walk every task to enumerate distinct values, then
-   * append UNSET as the trailing column.
+   * use the canonical four-step order (plus an UNSET sentinel). For other
+   * attributes we seed the keys from the schema's option list (so an empty
+   * project still renders every known column / lane), then merge in any
+   * extra keys observed on the loaded tasks before appending UNSET.
    */
   function columnKeysForAttr(attr: string): string[] {
     if (attr === 'status') {
@@ -137,6 +166,15 @@
     }
     const seen = new Set<string>();
     const keys: string[] = [];
+    const fa = filterAttributes.find((a) => a.name === attr);
+    for (const opt of fa?.options ?? []) {
+      const k = keyOf(opt.value);
+      if (k === '' || k === UNSET_KEY) continue;
+      if (!seen.has(k)) {
+        seen.add(k);
+        keys.push(k);
+      }
+    }
     for (const t of tasks) {
       const k = keyOf(t.attributes[attr]);
       if (k === '' || k === UNSET_KEY) continue;
@@ -179,19 +217,14 @@
   /** Human label for a column / lane bucket. */
   function labelFor(attr: string, key: string): string {
     if (key === UNSET_KEY || key === '') return '(unset)';
-    if (attr === 'status') return key;
-    if (attr === 'assignee') {
-      const id = Number(key);
-      if (Number.isFinite(id)) {
-        return userNames[id] ?? `user#${id}`;
-      }
-      return key;
-    }
-    const id = Number(key);
-    if (Number.isFinite(id)) {
-      return cardTitles[id] ?? `card#${id}`;
-    }
-    return key;
+    // Look the attribute up in the active palette and resolve `key`
+    // through its options. Enums get their `attribute_def.options[].label`
+    // ("To do" instead of "todo"); ref:* attrs get the resolved card
+    // title (or display name for users) — same data path as the filter
+    // chip, so the column header and the FilterBar agree.
+    const fa = filterAttributes.find((a) => a.name === attr);
+    const value = valueForKey(attr, key);
+    return resolveAttributeLabel(fa, value);
   }
 
   /* --------------------------------------------------------- group cells --- */
@@ -236,13 +269,15 @@
    */
   const groupOptions = $derived.by((): { value: string; label: string }[] => {
     const seen = new Map<string, string>();
-    seen.set('status', 'Status');
-    seen.set('assignee', 'Assignee');
-    seen.set('milestone_ref', 'Milestone');
-    seen.set('component_ref', 'Component');
+    // Built-ins are always offered so the picker is non-empty before
+    // schema arrives. `friendlyLabel` produces "Milestone" not
+    // "milestone_ref".
+    for (const n of ['status', 'assignee', 'milestone_ref', 'component_ref']) {
+      seen.set(n, friendlyLabel(n));
+    }
     for (const def of schema.defs) {
       if (def.value_type === 'enum' || def.value_type.startsWith('ref:')) {
-        if (!seen.has(def.name)) seen.set(def.name, def.name);
+        if (!seen.has(def.name)) seen.set(def.name, friendlyLabel(def.name));
       }
     }
     return Array.from(seen.entries()).map(([value, label]) => ({ value, label }));
@@ -255,38 +290,20 @@
 
   /* ------------------------------------------------------------ filter --- */
 
-  /** FilterBar attribute palette derived from the schema cache. */
-  const filterAttributes = $derived.by((): FilterAttribute[] => {
-    const out: FilterAttribute[] = [];
-    // status — hard-coded enum until migration 0011 lands the server-side def.
-    out.push({
-      name: 'status',
-      label: 'Status',
-      valueType: 'enum',
-      ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
-      options: STATUS_COLUMN_ORDER.map((s) => ({ value: s, label: s })),
-    });
-    out.push({
-      name: 'assignee',
-      label: 'Assignee',
-      valueType: 'enum',
-      ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
-      options: users.map((u) => ({ value: u.id, label: u.display_name })),
-    });
-    out.push({
-      name: 'milestone_ref',
-      label: 'Milestone',
-      valueType: 'ref:milestone',
-      ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
-    });
-    out.push({
-      name: 'component_ref',
-      label: 'Component',
-      valueType: 'ref:component',
-      ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
-    });
-    return out;
-  });
+  /**
+   * FilterBar palette. Single source of truth: see `filter/task_palette.ts`.
+   * Same names / labels / option lists across Inbox, Grid, Kanban,
+   * ProjectDetail.
+   */
+  const filterAttributes = $derived<FilterAttribute[]>(
+    buildTaskFilterPalette({
+      schema,
+      users,
+      milestones,
+      components,
+      tags: tagsRows,
+    }),
+  );
 
   const quickChips = $derived<QuickChip[]>(
     filterAttributes.flatMap((a) => defaultQuickChipsFor(a)),
@@ -323,6 +340,8 @@
       };
       const tree = buildTree();
       if (tree !== undefined) tasksData.tree = tree;
+      const scoped = projectScope.projectId;
+      if (scoped !== null) tasksData.parentCardId = scoped;
 
       const tasksP = dispatcher.request<
         CardSelectWithAttributesInput,
@@ -373,24 +392,9 @@
 
       tasks = tOut.rows;
       users = uOut.rows;
-
-      const titles: Record<number, string> = {};
-      for (const m of mOut.rows) {
-        const t = m.attributes['title'];
-        if (typeof t === 'string') titles[m.id] = t;
-      }
-      for (const c of cOut.rows) {
-        const t = c.attributes['title'];
-        if (typeof t === 'string') titles[c.id] = t;
-      }
-      cardTitles = titles;
-
-      const paths: Record<number, string> = {};
-      for (const g of gOut.rows) {
-        const p = g.attributes['path'];
-        if (typeof p === 'string') paths[g.id] = p;
-      }
-      tagPaths = paths;
+      milestones = mOut.rows;
+      components = cOut.rows;
+      tagsRows = gOut.rows;
 
       // Reset selection if it falls outside the new visible range.
       focused = { columnIdx: 0, rowIdxWithinColumn: 0, laneIdx: 0 };
@@ -565,43 +569,85 @@
     focused = { ...focused, rowIdxWithinColumn: nextRow };
   }
 
+  /** Push the (laneKey, columnKey) cell as the nav-list and navigate.
+   *  Kanban deliberately scopes prev/next to the column the user clicked
+   *  out of: walking through "Doing" should not silently jump to "Done"
+   *  because the cards happened to come right after each other in the
+   *  flat task list. */
+  function openTaskInCell(card: CardWithAttrs, columnKey: string, laneKey: string): void {
+    const stack = cells[laneKey]?.[columnKey] ?? [];
+    const colLabel = labelFor(columnAttr, columnKey);
+    const laneSuffix = laneAttr === NO_LANE ? '' : ` / ${labelFor(laneAttr, laneKey)}`;
+    setTaskNavList({
+      label: `Kanban: ${colLabel}${laneSuffix}`,
+      ids: stack.map((c) => c.id),
+    });
+    navigate(`/task/${card.id}`);
+  }
+
   function openSelected(): void {
     const card = focusedCard();
     if (card === undefined) return;
-    navigate(`/task/${card.id}`);
+    const ck = columnKeys[focused.columnIdx];
+    const lk = laneKeys[focused.laneIdx] ?? laneKeys[0] ?? NO_LANE;
+    if (ck === undefined) return;
+    openTaskInCell(card, ck, lk);
   }
 
   /* ----------------------------------------------------------- shortcuts */
 
   // `n` is bound by useQuickEntry; everything else here.
-  useShortcut('kanban', 'j', () => moveFocusInColumn(+1), 'Next card');
-  useShortcut('kanban', 'k', () => moveFocusInColumn(-1), 'Previous card');
-  useShortcut('kanban', 'l', () => moveFocusAcrossColumns(+1), 'Next column');
-  useShortcut('kanban', 'h', () => moveFocusAcrossColumns(-1), 'Previous column');
+  // Plain navigation: hjkl or arrow keys.
+  useShortcut('kanban', ['j', 'ArrowDown'], () => moveFocusInColumn(+1), 'Down');
+  useShortcut('kanban', ['k', 'ArrowUp'], () => moveFocusInColumn(-1), 'Up');
+  useShortcut('kanban', ['l', 'ArrowRight'], () => moveFocusAcrossColumns(+1), 'Next column');
+  useShortcut('kanban', ['h', 'ArrowLeft'], () => moveFocusAcrossColumns(-1), 'Previous column');
+
+  // Move card: Shift on the same nav keys re-orders the focused card.
+  // Same hand position, no Chord/Mod gymnastics. Vertical Shift+J/K
+  // moves within the column; horizontal Shift+H/L hops the card to the
+  // adjacent column. Shift+Arrow alternates for arrow-only users.
   useShortcut(
     'kanban',
-    'Mod+ArrowRight',
-    () => moveSelectedToColumn(+1),
-    'Move card to next column',
-  );
-  useShortcut(
-    'kanban',
-    'Mod+ArrowLeft',
-    () => moveSelectedToColumn(-1),
-    'Move card to previous column',
-  );
-  useShortcut(
-    'kanban',
-    'Mod+Shift+ArrowDown',
+    ['Shift+j', 'Shift+ArrowDown'],
     () => moveSelectedWithinColumn(+1),
     'Move card down',
   );
   useShortcut(
     'kanban',
-    'Mod+Shift+ArrowUp',
+    ['Shift+k', 'Shift+ArrowUp'],
     () => moveSelectedWithinColumn(-1),
     'Move card up',
   );
+  useShortcut(
+    'kanban',
+    ['Shift+l', 'Shift+ArrowRight'],
+    () => moveSelectedToColumn(+1),
+    'Move card to next column',
+  );
+  useShortcut(
+    'kanban',
+    ['Shift+h', 'Shift+ArrowLeft'],
+    () => moveSelectedToColumn(-1),
+    'Move card to previous column',
+  );
+
+  // Swim-lane navigation lives on Alt+J/K to free Shift+J/K for the
+  // primary "move card" semantics above. Plain swim-lanes are rare
+  // enough that Alt doesn't materially worsen the ergonomics.
+  useShortcut(
+    'kanban',
+    'Alt+j',
+    () => moveFocusAcrossLanes(+1),
+    'Next swim lane',
+  );
+  useShortcut(
+    'kanban',
+    'Alt+k',
+    () => moveFocusAcrossLanes(-1),
+    'Previous swim lane',
+  );
+
   useShortcut('kanban', 'Enter', openSelected, 'Open selected card', {
     fireInInputs: false,
   });
@@ -655,6 +701,42 @@
     },
   });
 
+  /**
+   * Open the quick-entry overlay with a one-shot prefill that targets a
+   * specific (column, lane) cell. Built so the per-column "+" buttons drop
+   * the new task into exactly the bucket the user clicked, regardless of
+   * where keyboard focus happens to be.
+   *
+   * Both axes are honored: status uses the dedicated `statusValue` slot,
+   * non-status axes route through `laneAttribute` (single) and the
+   * fallback `extraAttributes` list (when both axes are non-status).
+   */
+  function openColumnAdd(columnKey: string, laneKey: string): void {
+    const prefill: {
+      statusValue?: string;
+      laneAttribute?: { name: string; value: unknown };
+      extraAttributes?: { name: string; value: unknown }[];
+    } = {};
+    const setAxis = (attr: string, key: string): void => {
+      if (key === UNSET_KEY || key === '') return;
+      if (attr === 'status' && prefill.statusValue === undefined) {
+        prefill.statusValue = key;
+        return;
+      }
+      const a = { name: attr, value: valueForKey(attr, key) };
+      if (prefill.laneAttribute === undefined) {
+        prefill.laneAttribute = a;
+        return;
+      }
+      const arr = prefill.extraAttributes ?? [];
+      arr.push(a);
+      prefill.extraAttributes = arr;
+    };
+    setAxis(columnAttr, columnKey);
+    if (laneAttr !== NO_LANE) setAxis(laneAttr, laneKey);
+    qe.open(prefill);
+  }
+
   /* ----------------------------------------------------------- card body */
 
   function titleFor(c: CardWithAttrs): string {
@@ -684,7 +766,9 @@
 
   /* ----------------------------------------------------------- mount */
 
-  onMount(() => {
+  // Initial fetch + refetch when the global project scope flips.
+  $effect(() => {
+    void projectScope.projectId; // tracked dep
     void refresh();
   });
 
@@ -694,29 +778,19 @@
     void refresh();
   }
 
-  /** User-facing label for a group attribute (used by the lane header). */
-  function labelForAttr(attr: string): string {
-    switch (attr) {
-      case 'status':
-        return 'Status';
-      case 'assignee':
-        return 'Assignee';
-      case 'milestone_ref':
-        return 'Milestone';
-      case 'component_ref':
-        return 'Component';
-      default:
-        return attr;
-    }
-  }
 </script>
 
 <div class="flex h-full flex-col gap-3 p-4">
   <header class="flex flex-wrap items-center gap-3">
     <h1 class="text-xl font-semibold">Kanban</h1>
 
-    <label class="flex items-center gap-2 text-sm text-muted">
-      Columns by:
+    <!--
+      Use <div>, not <label>: clicking a Combobox option bubbles to the
+      label, which forwards a synthetic click to the trigger button and
+      re-opens the menu. Combobox already supplies aria-label.
+    -->
+    <div class="flex items-center gap-2 text-sm text-muted">
+      <span>Columns by:</span>
       <span class="w-44">
         <Combobox
           aria-label="Columns by"
@@ -728,10 +802,10 @@
           }}
         />
       </span>
-    </label>
+    </div>
 
-    <label class="flex items-center gap-2 text-sm text-muted">
-      Swim lanes by:
+    <div class="flex items-center gap-2 text-sm text-muted">
+      <span>Swim lanes by:</span>
       <span class="w-44">
         <Combobox
           aria-label="Swim lanes by"
@@ -743,7 +817,7 @@
           }}
         />
       </span>
-    </label>
+    </div>
 
     <span class="ml-auto text-sm text-muted">
       {tasks.length} task{tasks.length === 1 ? '' : 's'}
@@ -776,14 +850,6 @@
         Retry
       </button>
     </div>
-  {:else if tasks.length === 0}
-    <div class="flex flex-1 items-center justify-center">
-      <EmptyState
-        title="No tasks yet"
-        description="Create your first task with the n shortcut."
-        action={{ label: 'Create task', onClick: () => qe.open() }}
-      />
-    </div>
   {:else}
     <div class="flex flex-1 flex-col gap-4 overflow-auto">
       {#each laneKeys as laneKey, laneIdx (laneKey)}
@@ -792,7 +858,7 @@
             class="sticky left-0 inline-flex items-center gap-2 rounded bg-surface px-3 py-1.5 text-sm font-medium"
             data-lane={laneKey}
           >
-            <span class="text-muted">{labelForAttr(laneAttr)}:</span>
+            <span class="text-muted">{friendlyLabel(laneAttr)}:</span>
             <span>{labelFor(laneAttr, laneKey)}</span>
           </div>
         {/if}
@@ -806,10 +872,20 @@
               data-lane={laneKey}
             >
               <header
-                class="flex items-center justify-between border-b border-border px-3 py-2 text-sm font-semibold"
+                class="flex items-center justify-between gap-2 border-b border-border px-3 py-2 text-sm font-semibold"
               >
-                <span>{labelFor(columnAttr, columnKey)}</span>
-                <span class="text-xs font-normal text-muted">{stack.length}</span>
+                <span class="truncate">{labelFor(columnAttr, columnKey)}</span>
+                <span class="flex items-center gap-1">
+                  <span class="text-xs font-normal text-muted">{stack.length}</span>
+                  <button
+                    type="button"
+                    class="inline-flex h-5 w-5 items-center justify-center rounded text-muted hover:bg-border/40 hover:text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                    aria-label={`Add task to ${labelFor(columnAttr, columnKey)}${laneAttr === NO_LANE ? '' : ` / ${labelFor(laneAttr, laneKey)}`}`}
+                    title="Add card here"
+                    onclick={() =>
+                      openColumnAdd(columnKey, laneKey)}
+                  >+</button>
+                </span>
               </header>
               <div
                 class={cx(
@@ -818,7 +894,7 @@
                 )}
               >
                 <DropZone
-                  id={`col:${columnAttr}:${columnKey}:lane:${laneAttr}:${laneKey}:slot:0`}
+                  id={`col:${columnAttr}:${columnKey}:lane:${laneAttr}:${laneKey}:top`}
                   onDrop={(payload) => onZoneDrop(payload, columnKey, laneKey, 0)}
                   padding={24}
                 />
@@ -827,50 +903,59 @@
                     focused.columnIdx === columnIdx &&
                     focused.laneIdx === laneIdx &&
                     focused.rowIdxWithinColumn === slot}
-                  <DragHandle
-                    payload={card}
-                    previewLabel={titleFor(card)}
+                  <!-- svelte-ignore a11y_click_events_have_key_events -->
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+                  <div
+                    class={cx(
+                      'flex items-stretch gap-1 rounded-md border border-border bg-bg p-1 text-sm shadow-sm',
+                      'focus-within:ring-2 focus-within:ring-accent',
+                      isFocused && 'ring-2 ring-accent',
+                    )}
+                    data-card-id={card.id}
+                    data-focused={isFocused ? 'true' : undefined}
                   >
-                    {#snippet children()}
-                      <!-- svelte-ignore a11y_click_events_have_key_events -->
-                      <!-- svelte-ignore a11y_no_static_element_interactions -->
-                      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-                      <div
-                        class={cx(
-                          'flex flex-col gap-1 rounded-md border border-border bg-bg p-2 text-sm shadow-sm',
-                          'cursor-grab focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-                          isFocused && 'ring-2 ring-accent',
-                        )}
-                        data-card-id={card.id}
-                        data-focused={isFocused ? 'true' : undefined}
-                        tabindex="0"
-                        onclick={(e) => {
-                          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-                          navigate(`/task/${card.id}`);
-                        }}
-                        onfocus={() => {
-                          focused = {
-                            columnIdx,
-                            laneIdx,
-                            rowIdxWithinColumn: slot,
-                          };
-                        }}
-                      >
-                        <span class="font-medium text-fg">{titleFor(card)}</span>
-                        <div class="flex flex-wrap items-center gap-1 text-xs text-muted">
-                          <span class="font-mono">#{card.id}</span>
-                          {#if assigneeForCard(card) !== undefined}
-                            <span>· {assigneeForCard(card)}</span>
-                          {/if}
-                          {#each tagsForCard(card) as path (path)}
-                            <span class="rounded bg-surface px-1">{path}</span>
-                          {/each}
-                        </div>
+                    <DragHandle
+                      payload={card}
+                      previewLabel={titleFor(card)}
+                      class="kanban-grip"
+                    >
+                      <span
+                        aria-label="Drag to move"
+                        title="Drag to move"
+                        class="flex h-full w-4 cursor-grab select-none items-center justify-center rounded-sm border border-transparent text-muted hover:border-border hover:bg-surface"
+                      >⋮⋮</span>
+                    </DragHandle>
+                    <button
+                      type="button"
+                      class="flex min-w-0 flex-1 flex-col gap-1 rounded-sm px-1 py-0.5 text-left focus:outline-none"
+                      tabindex="0"
+                      onclick={(e) => {
+                        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                        openTaskInCell(card, columnKey, laneKey);
+                      }}
+                      onfocus={() => {
+                        focused = {
+                          columnIdx,
+                          laneIdx,
+                          rowIdxWithinColumn: slot,
+                        };
+                      }}
+                    >
+                      <span class="truncate font-medium text-fg">{titleFor(card)}</span>
+                      <div class="flex flex-wrap items-center gap-1 text-xs text-muted">
+                        <span class="font-mono">#{card.id}</span>
+                        {#if assigneeForCard(card) !== undefined}
+                          <span>· {assigneeForCard(card)}</span>
+                        {/if}
+                        {#each tagsForCard(card) as path (path)}
+                          <span class="rounded bg-surface px-1">{path}</span>
+                        {/each}
                       </div>
-                    {/snippet}
-                  </DragHandle>
+                    </button>
+                  </div>
                   <DropZone
-                    id={`col:${columnAttr}:${columnKey}:lane:${laneAttr}:${laneKey}:slot:${slot + 1}`}
+                    id={`col:${columnAttr}:${columnKey}:lane:${laneAttr}:${laneKey}:after:${card.id}`}
                     onDrop={(payload) =>
                       onZoneDrop(payload, columnKey, laneKey, slot + 1)}
                     padding={24}
@@ -878,7 +963,7 @@
                 {/each}
                 {#if stack.length === 0}
                   <DropZone
-                    id={`col:${columnAttr}:${columnKey}:lane:${laneAttr}:${laneKey}:slot:end`}
+                    id={`col:${columnAttr}:${columnKey}:lane:${laneAttr}:${laneKey}:empty`}
                     onDrop={(payload) => onZoneDrop(payload, columnKey, laneKey, 0)}
                     padding={24}
                     class="min-h-[200px]"

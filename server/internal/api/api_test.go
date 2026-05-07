@@ -50,10 +50,11 @@ type otherOutput struct {
 func registerCoalescingHandlers(t *testing.T, log *runCallLog) {
 	t.Helper()
 	reg.Register(reg.Handler{
-		Endpoint:   "echo",
-		Action:     "count",
-		InputType:  reflect.TypeFor[echoCountingInput](),
-		OutputType: reflect.TypeFor[echoCountingOutput](),
+		Endpoint:     "echo",
+		Action:       "count",
+		InputType:    reflect.TypeFor[echoCountingInput](),
+		OutputType:   reflect.TypeFor[echoCountingOutput](),
+		AllowedRoles: []string{reg.RolePublic},
 		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 			log.Note(len(ins))
 			outs := make([]any, len(ins))
@@ -64,10 +65,11 @@ func registerCoalescingHandlers(t *testing.T, log *runCallLog) {
 		},
 	})
 	reg.Register(reg.Handler{
-		Endpoint:   "other",
-		Action:     "count",
-		InputType:  reflect.TypeFor[otherInput](),
-		OutputType: reflect.TypeFor[otherOutput](),
+		Endpoint:     "other",
+		Action:       "count",
+		InputType:    reflect.TypeFor[otherInput](),
+		OutputType:   reflect.TypeFor[otherOutput](),
+		AllowedRoles: []string{reg.RolePublic},
 		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 			log.Note(-len(ins)) // negative so we can tell which handler ran
 			outs := make([]any, len(ins))

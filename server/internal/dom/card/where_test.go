@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/card"
 )
 
@@ -20,7 +21,7 @@ import (
 // of inserted task ids in the same order as `specs`.
 func seedTasks(t *testing.T, srv *api.Server, specs []map[string]any) (int64, []int64) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -57,7 +58,7 @@ func seedTasks(t *testing.T, srv *api.Server, specs []map[string]any) (int64, []
 // and returns the matched rows.
 func queryTree(t *testing.T, srv *api.Server, parent int64, tree string) []card.CardWithAttrs {
 	t.Helper()
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 	body := fmt.Sprintf(
 		`{"parent_card_id":%d,"card_type_name":"task","tree":%s}`, parent, tree)
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
@@ -224,7 +225,7 @@ func TestTree_BackwardCompatFlat(t *testing.T) {
 		{"status": "open"},
 		{"status": "done"},
 	})
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 	body := fmt.Sprintf(
 		`{"parent_card_id":%d,"card_type_name":"task","where":[{"attr":"status","op":"=","value":"open"}]}`,
 		parentOf(t, srv, ids[0]))
@@ -248,7 +249,7 @@ func TestTree_BackwardCompatFlat(t *testing.T) {
 // project id through return value chains.
 func parentOf(t *testing.T, srv *api.Server, taskID int64) int64 {
 	t.Helper()
-	ctx := context.Background()
+	ctx := auth.WithSystemUser(context.Background())
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "g", Endpoint: "card", Action: "select_with_attributes",
 			Data: json.RawMessage(`{"card_type_name":"task"}`)},
