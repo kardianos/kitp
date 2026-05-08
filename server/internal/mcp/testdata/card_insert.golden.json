@@ -14,6 +14,10 @@
       "type": "integer",
       "description": "parent card id; nil for top-level project cards"
     },
+    "project_type_id": {
+      "type": "integer",
+      "description": "project_type to bind a new project to (project card_type only); defaults to the is_default row when omitted"
+    },
     "title": {
       "type": "string",
       "description": "value for the built-in title attribute"

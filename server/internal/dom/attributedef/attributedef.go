@@ -32,8 +32,19 @@ import (
 	"github.com/kitp/kitp/server/internal/store"
 )
 
-// SelectInput is empty.
-type SelectInput struct{}
+// SelectInput optionally narrows the option list returned for enum-typed
+// attribute_defs to those visible inside a given project / project_type
+// scope.
+//
+// Resolution: an option whose project_type_id matches projectTypeID OR
+// whose project_card_id matches projectCardID is in scope; options with
+// both NULL (global) are always in scope. Sending the input empty (both
+// nil) returns global options only — preserving the legacy behaviour
+// from before migration 0020.
+type SelectInput struct {
+	ProjectTypeID *int32 `json:"project_type_id,omitempty" mcp:"desc=narrow enum options to those visible in this project_type (omit for global only)"`
+	ProjectCardID *int64 `json:"project_card_id,omitempty" mcp:"desc=narrow enum options to those visible in this specific project (omit for global only)"`
+}
 
 // BoundCardType is one (card_type_id, name, is_required) tuple in the bound
 // list of a def. Edges may include built-in card types; the client decides
@@ -50,10 +61,16 @@ type BoundCardType struct {
 // attribute_def. Options come from the attribute_def_option table (see
 // migration 0012). Only enum-typed defs ever populate this list; for all
 // other value_types the field is empty/omitted.
+//
+// ProjectTypeID and ProjectCardID identify the option's scope: at most
+// one is set; both nil means a global option. See migration 0020 and
+// PROJECT_SCOPED_SCHEMA_PLAN.md.
 type AttributeDefOptionRow struct {
-	Value    string `json:"value" mcp:"desc=stored JSON value (the literal jsonb the server accepts)"`
-	Label    string `json:"label" mcp:"desc=display label for the option"`
-	Ordering int32  `json:"ordering" mcp:"desc=display ordering (ascending)"`
+	Value         string `json:"value" mcp:"desc=stored JSON value (the literal jsonb the server accepts)"`
+	Label         string `json:"label" mcp:"desc=display label for the option"`
+	Ordering      int32  `json:"ordering" mcp:"desc=display ordering (ascending)"`
+	ProjectTypeID *int32 `json:"project_type_id,omitempty" mcp:"desc=if set, option is visible only inside projects of this project_type"`
+	ProjectCardID *int64 `json:"project_card_id,omitempty" mcp:"desc=if set, option is visible only inside this specific project"`
 }
 
 // SelectRow is one attribute_def row plus its bindings.
@@ -116,15 +133,21 @@ type EdgeDeleteOutput struct {
 }
 
 // OptionUpsertInput adds or rewrites one row in attribute_def_option. The
-// (def_id, value) pair is the natural key — sending the same value twice is
-// an UPDATE of label / ordering, not a duplicate. Admin-only because the
-// option list is the schema's source of truth for what's an acceptable
-// jsonb literal on cards.
+// (def_id, value, project_type_id, project_card_id) tuple is the natural
+// key — sending the same value at the same scope twice is an UPDATE of
+// label / ordering, not a duplicate. Admin-only because the option list
+// is the schema's source of truth for what's an acceptable jsonb literal
+// on cards.
+//
+// At most one of ProjectTypeID and ProjectCardID may be set; both nil
+// means "global" (visible inside every project).
 type OptionUpsertInput struct {
 	AttributeDefID int32  `json:"attribute_def_id" mcp:"required,desc=enum-typed attribute_def to add the option to"`
 	Value          string `json:"value" mcp:"required,desc=stored value (the literal jsonb the server accepts on attribute.update)"`
 	Label          string `json:"label" mcp:"required,desc=display label"`
 	Ordering       int32  `json:"ordering,omitempty" mcp:"desc=display ordering (ascending; default 0)"`
+	ProjectTypeID  *int32 `json:"project_type_id,omitempty" mcp:"desc=optional project_type scope; mutually exclusive with project_card_id"`
+	ProjectCardID  *int64 `json:"project_card_id,omitempty" mcp:"desc=optional project scope; mutually exclusive with project_type_id"`
 }
 
 // OptionUpsertOutput acks the upsert.
@@ -135,9 +158,15 @@ type OptionUpsertOutput struct {
 // OptionDeleteInput removes one option from an enum-typed attribute_def.
 // Refuses with usage_count > 0 if any attribute_value still references the
 // value, so the admin must clear or migrate references first.
+//
+// Scope is part of the natural key — deleting the global ('high') option
+// does not touch project-typed ('high') options at the same value. Pass
+// the same scope used at upsert time.
 type OptionDeleteInput struct {
 	AttributeDefID int32  `json:"attribute_def_id" mcp:"required,desc=enum-typed attribute_def"`
 	Value          string `json:"value" mcp:"required,desc=stored value to remove"`
+	ProjectTypeID  *int32 `json:"project_type_id,omitempty" mcp:"desc=optional project_type scope (same as used at upsert)"`
+	ProjectCardID  *int64 `json:"project_card_id,omitempty" mcp:"desc=optional project scope (same as used at upsert)"`
 }
 
 // OptionDeleteOutput surfaces the same usage-count guard as edge.delete so
@@ -239,8 +268,16 @@ func authzAdmin(ctx context.Context, _ any) error {
 // them in Go. We choose follow-up reads over a jsonb LATERAL to keep the
 // SQL small and the per-row scan trivial; in practice attribute_def has
 // well under 100 rows and only a handful are enum-typed.
+//
+// The options query filters by scope: an option is visible if it is
+// global (both project_type_id and project_card_id NULL) OR matches the
+// requested project_type_id OR matches the requested project_card_id.
+// Per-input scope means the per-call snapshot is itself scoped — but
+// reads of attribute_def in a batch typically share scope, so the
+// dispatcher's coalescing still flushes them as one group.
 func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		// Defs and edges are scope-independent — read once, share across inputs.
 		defRows, err := tx.Query(ctx, `
 			SELECT id, name, value_type, is_built_in
 			FROM attribute_def
@@ -249,7 +286,7 @@ func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 		if err != nil {
 			return nil, fmt.Errorf("attribute_def.select: defs: %w", err)
 		}
-		var out []SelectRow
+		baseRows := []SelectRow{}
 		idx := map[int32]int{}
 		for defRows.Next() {
 			var r SelectRow
@@ -257,8 +294,8 @@ func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 				defRows.Close()
 				return nil, err
 			}
-			idx[r.ID] = len(out)
-			out = append(out, r)
+			idx[r.ID] = len(baseRows)
+			baseRows = append(baseRows, r)
 		}
 		defRows.Close()
 		if err := defRows.Err(); err != nil {
@@ -283,7 +320,7 @@ func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 				return nil, err
 			}
 			if i, ok := idx[defID]; ok {
-				out[i].BoundTo = append(out[i].BoundTo, b)
+				baseRows[i].BoundTo = append(baseRows[i].BoundTo, b)
 			}
 		}
 		edgeRows.Close()
@@ -291,40 +328,47 @@ func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 			return nil, err
 		}
 
-		// Options for enum-typed defs (migration 0012). We follow the same
-		// pattern as the edges query: one read, bucket by attribute_def_id
-		// in Go. ORDER BY ordering ASC so the client can render options
-		// in the canonical sequence without sorting.
-		optRows, err := tx.Query(ctx, `
-			SELECT attribute_def_id, value, label, ordering
-			FROM attribute_def_option
-			ORDER BY attribute_def_id, ordering, value
-		`)
-		if err != nil {
-			return nil, fmt.Errorf("attribute_def.select: options: %w", err)
-		}
-		for optRows.Next() {
-			var defID int32
-			var o AttributeDefOptionRow
-			if err := optRows.Scan(&defID, &o.Value, &o.Label, &o.Ordering); err != nil {
-				optRows.Close()
-				return nil, err
-			}
-			if i, ok := idx[defID]; ok {
-				out[i].Options = append(out[i].Options, o)
-			}
-		}
-		optRows.Close()
-		if err := optRows.Err(); err != nil {
-			return nil, err
-		}
-
 		if p != nil {
 			p.NoteRead()
 		}
+
 		outs := make([]any, len(ins))
-		for i := range ins {
-			outs[i] = SelectOutput{Rows: out}
+		for i, raw := range ins {
+			in := raw.(SelectInput)
+			// Per-input options query, scoped.
+			optRows, err := tx.Query(ctx, `
+				SELECT attribute_def_id, value, label, ordering, project_type_id, project_card_id
+				FROM attribute_def_option
+				WHERE (project_type_id IS NULL  AND project_card_id IS NULL)
+				   OR ($1::int    IS NOT NULL AND project_type_id = $1::int)
+				   OR ($2::bigint IS NOT NULL AND project_card_id = $2::bigint)
+				ORDER BY attribute_def_id, ordering, value
+			`, in.ProjectTypeID, in.ProjectCardID)
+			if err != nil {
+				return nil, fmt.Errorf("attribute_def.select: options: %w", err)
+			}
+			perOptions := map[int32][]AttributeDefOptionRow{}
+			for optRows.Next() {
+				var defID int32
+				var o AttributeDefOptionRow
+				if err := optRows.Scan(&defID, &o.Value, &o.Label, &o.Ordering, &o.ProjectTypeID, &o.ProjectCardID); err != nil {
+					optRows.Close()
+					return nil, err
+				}
+				perOptions[defID] = append(perOptions[defID], o)
+			}
+			optRows.Close()
+			if err := optRows.Err(); err != nil {
+				return nil, err
+			}
+
+			// Materialize per-input rows by copying baseRows + scoped options.
+			rows := make([]SelectRow, len(baseRows))
+			copy(rows, baseRows)
+			for j := range rows {
+				rows[j].Options = perOptions[rows[j].ID]
+			}
+			outs[i] = SelectOutput{Rows: rows}
 		}
 		return outs, nil
 	}
@@ -458,7 +502,7 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 				SELECT card_type_id, attribute_def_id, is_required, ordering
 				FROM jsonb_to_recordset($1::jsonb)
 				AS x(card_type_id int, attribute_def_id int, is_required boolean, ordering int)
-				ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING
+				ON CONFLICT (card_type_id, attribute_def_id, COALESCE(project_type_id, 0)) DO NOTHING
 			`
 			if _, err := tx.Exec(ctx, edgeQ, buf); err != nil {
 				return nil, fmt.Errorf("attribute_def.insert: edges: %w", err)
@@ -505,7 +549,7 @@ func runEdgeInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any
 			SELECT card_type_id, attribute_def_id, is_required, ordering
 			FROM jsonb_to_recordset($1::jsonb)
 			AS x(card_type_id int, attribute_def_id int, is_required boolean, ordering int)
-			ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING
+			ON CONFLICT (card_type_id, attribute_def_id, COALESCE(project_type_id, 0)) DO NOTHING
 		`
 		if _, err := tx.Exec(ctx, q, buf); err != nil {
 			return nil, fmt.Errorf("edge.insert: %w", err)
@@ -567,16 +611,23 @@ func runOptionUpsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []a
 					Message: "attribute_def_option.upsert: target attribute_def is not enum-typed"}
 			}
 
-			// Bump if a *different* row already sits at this ordering.
-			// Re-saving the same row at the same ordering doesn't shift
-			// anything (idempotent label-only edits stay no-ops).
+			if in.ProjectTypeID != nil && in.ProjectCardID != nil {
+				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+					Message: "attribute_def_option.upsert: at most one of project_type_id and project_card_id may be set"}
+			}
+
+			// Bump if a *different* row already sits at this ordering inside
+			// the same scope. Re-saving the same row at the same ordering
+			// doesn't shift anything (idempotent label-only edits stay no-ops).
 			var conflict int
 			if err := tx.QueryRow(ctx, `
 				SELECT count(*) FROM attribute_def_option
 				WHERE attribute_def_id = $1
 				  AND ordering = $2
 				  AND value <> $3
-			`, in.AttributeDefID, in.Ordering, in.Value).Scan(&conflict); err != nil {
+				  AND COALESCE(project_type_id, 0) = COALESCE($4::int, 0)
+				  AND COALESCE(project_card_id, 0) = COALESCE($5::bigint, 0)
+			`, in.AttributeDefID, in.Ordering, in.Value, in.ProjectTypeID, in.ProjectCardID).Scan(&conflict); err != nil {
 				return nil, fmt.Errorf("attribute_def_option.upsert: collision check: %w", err)
 			}
 			if conflict > 0 {
@@ -586,19 +637,45 @@ func runOptionUpsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []a
 					WHERE attribute_def_id = $1
 					  AND ordering >= $2
 					  AND value <> $3
-				`, in.AttributeDefID, in.Ordering, in.Value); err != nil {
+					  AND COALESCE(project_type_id, 0) = COALESCE($4::int, 0)
+					  AND COALESCE(project_card_id, 0) = COALESCE($5::bigint, 0)
+				`, in.AttributeDefID, in.Ordering, in.Value, in.ProjectTypeID, in.ProjectCardID); err != nil {
 					return nil, fmt.Errorf("attribute_def_option.upsert: bump: %w", err)
 				}
 			}
 
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO attribute_def_option (attribute_def_id, value, label, ordering)
-				VALUES ($1, $2, $3, $4)
-				ON CONFLICT (attribute_def_id, value) DO UPDATE
-					SET label = EXCLUDED.label,
-					    ordering = EXCLUDED.ordering
-			`, in.AttributeDefID, in.Value, label, in.Ordering); err != nil {
-				return nil, fmt.Errorf("attribute_def_option.upsert: %w", err)
+			// Upsert keyed on the four-tuple natural key (see migration 0020).
+			// We emulate ON CONFLICT against an expression-index by checking
+			// existence first; the UPDATE/INSERT split keeps the SQL portable.
+			var existingValue string
+			err := tx.QueryRow(ctx, `
+				SELECT value FROM attribute_def_option
+				WHERE attribute_def_id = $1
+				  AND value = $2
+				  AND COALESCE(project_type_id, 0) = COALESCE($3::int, 0)
+				  AND COALESCE(project_card_id, 0) = COALESCE($4::bigint, 0)
+			`, in.AttributeDefID, in.Value, in.ProjectTypeID, in.ProjectCardID).Scan(&existingValue)
+			if err != nil && err != pgx.ErrNoRows {
+				return nil, fmt.Errorf("attribute_def_option.upsert: existence: %w", err)
+			}
+			if err == pgx.ErrNoRows {
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO attribute_def_option (attribute_def_id, value, label, ordering, project_type_id, project_card_id)
+					VALUES ($1, $2, $3, $4, $5, $6)
+				`, in.AttributeDefID, in.Value, label, in.Ordering, in.ProjectTypeID, in.ProjectCardID); err != nil {
+					return nil, fmt.Errorf("attribute_def_option.upsert: insert: %w", err)
+				}
+			} else {
+				if _, err := tx.Exec(ctx, `
+					UPDATE attribute_def_option
+					SET label = $3, ordering = $4
+					WHERE attribute_def_id = $1
+					  AND value = $2
+					  AND COALESCE(project_type_id, 0) = COALESCE($5::int, 0)
+					  AND COALESCE(project_card_id, 0) = COALESCE($6::bigint, 0)
+				`, in.AttributeDefID, in.Value, label, in.Ordering, in.ProjectTypeID, in.ProjectCardID); err != nil {
+					return nil, fmt.Errorf("attribute_def_option.upsert: update: %w", err)
+				}
 			}
 			outs[i] = OptionUpsertOutput{OK: true}
 		}
@@ -625,7 +702,9 @@ func runOptionDelete(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []a
 			// usage = number of attribute_value rows on this def whose stored
 			// jsonb literal equals the option's value. We compare via the
 			// to_jsonb wrapping the server uses on writes — anything else
-			// would miss strict-typed values.
+			// would miss strict-typed values. Usage is scope-agnostic: a
+			// "high" attribute_value blocks deleting any "high" option
+			// regardless of scope (the value is still in use somewhere).
 			var usage int
 			row := tx.QueryRow(ctx, `
 				SELECT count(*) FROM attribute_value
@@ -640,8 +719,11 @@ func runOptionDelete(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []a
 			}
 			ct, err := tx.Exec(ctx, `
 				DELETE FROM attribute_def_option
-				WHERE attribute_def_id = $1 AND value = $2
-			`, in.AttributeDefID, in.Value)
+				WHERE attribute_def_id = $1
+				  AND value = $2
+				  AND COALESCE(project_type_id, 0) = COALESCE($3::int, 0)
+				  AND COALESCE(project_card_id, 0) = COALESCE($4::bigint, 0)
+			`, in.AttributeDefID, in.Value, in.ProjectTypeID, in.ProjectCardID)
 			if err != nil {
 				return nil, fmt.Errorf("attribute_def_option.delete: %w", err)
 			}

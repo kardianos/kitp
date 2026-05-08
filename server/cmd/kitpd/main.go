@@ -52,6 +52,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/file"
 	"github.com/kitp/kitp/server/internal/dom/inbox"
 	"github.com/kitp/kitp/server/internal/dom/process"
+	"github.com/kitp/kitp/server/internal/dom/projecttype"
 	domrole "github.com/kitp/kitp/server/internal/dom/role"
 	"github.com/kitp/kitp/server/internal/dom/rolemapping"
 	"github.com/kitp/kitp/server/internal/dom/tag"
@@ -105,6 +106,7 @@ func registerHandlers(pool *store.Pool) {
 	tag.Register(pool)
 	process.Register(pool)
 	proc.Register(pool)
+	projecttype.Register(pool)
 	domuser.Register()
 	usercardsort.Register(pool)
 	inbox.Register(pool)

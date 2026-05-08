@@ -27,11 +27,17 @@ import (
 // same insert; together with Title they go through the
 // attribute_value+activity pipeline so the activity stream shows
 // kind='card_create' plus one kind='attr_update' per initial attribute.
+//
+// ProjectTypeID is honoured only when card_type='project'. If unset, the
+// row defaults to the migration-seeded `is_default` project_type. For
+// non-project card types the field is ignored — descendant cards derive
+// their effective project_type by walking parent_card_id at read time.
 type InsertInput struct {
-	CardTypeName string                     `json:"card_type_name" mcp:"required,desc=name of the card_type to create (e.g. project, task)"`
-	ParentCardID *int64                     `json:"parent_card_id,omitempty" mcp:"desc=parent card id; nil for top-level project cards"`
-	Title        string                     `json:"title" mcp:"required,desc=value for the built-in title attribute"`
-	Attributes   map[string]json.RawMessage `json:"attributes,omitempty" mcp:"desc=optional map of additional attribute name to JSON value"`
+	CardTypeName  string                     `json:"card_type_name" mcp:"required,desc=name of the card_type to create (e.g. project, task)"`
+	ParentCardID  *int64                     `json:"parent_card_id,omitempty" mcp:"desc=parent card id; nil for top-level project cards"`
+	Title         string                     `json:"title" mcp:"required,desc=value for the built-in title attribute"`
+	Attributes    map[string]json.RawMessage `json:"attributes,omitempty" mcp:"desc=optional map of additional attribute name to JSON value"`
+	ProjectTypeID *int32                     `json:"project_type_id,omitempty" mcp:"desc=project_type to bind a new project to (project card_type only); defaults to the is_default row when omitted"`
 }
 
 // InsertOutput carries the new row id.
@@ -64,8 +70,9 @@ type SelectOutput struct {
 // We resolve names to ids in Go (to give clean error messages) but the
 // actual INSERT still uses the array path.
 type jsonInsertRow struct {
-	CardTypeID   int32  `json:"card_type_id"`
-	ParentCardID *int64 `json:"parent_card_id,omitempty"`
+	CardTypeID    int32  `json:"card_type_id"`
+	ParentCardID  *int64 `json:"parent_card_id,omitempty"`
+	ProjectTypeID *int32 `json:"project_type_id,omitempty"`
 }
 
 // Register installs every card.* handler. The pool reference lets the
@@ -132,6 +139,19 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 		snap, err := schema.Load(ctx, tx)
 		if err != nil {
 			return nil, err
+		}
+
+		// Resolve the migration-seeded default project_type once; we'll need
+		// it whenever a project card is inserted without an explicit type.
+		var defaultProjectTypeID *int32
+		{
+			var id int32
+			err := tx.QueryRow(ctx, `SELECT id FROM project_type WHERE is_default`).Scan(&id)
+			if err == nil {
+				defaultProjectTypeID = &id
+			} else if err != pgx.ErrNoRows {
+				return nil, fmt.Errorf("card.insert: default project_type lookup: %w", err)
+			}
 		}
 
 		// Pre-collect parent ids so we can validate parent-type rules.
@@ -205,7 +225,26 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 							in.CardTypeName, parentName)}
 				}
 			}
-			payload[i] = jsonInsertRow{CardTypeID: ct.ID, ParentCardID: in.ParentCardID}
+			pt := in.ProjectTypeID
+			if in.CardTypeName == "project" {
+				if pt == nil {
+					pt = defaultProjectTypeID
+				} else {
+					// Validate the supplied project_type exists.
+					var n int
+					if err := tx.QueryRow(ctx, `SELECT count(*) FROM project_type WHERE id = $1`, *pt).Scan(&n); err != nil {
+						return nil, fmt.Errorf("card.insert: project_type lookup: %w", err)
+					}
+					if n == 0 {
+						return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+							Message: fmt.Sprintf("card.insert: project_type_id %d does not exist", *pt)}
+					}
+				}
+			} else {
+				// project_type_id is meaningful only on project rows.
+				pt = nil
+			}
+			payload[i] = jsonInsertRow{CardTypeID: ct.ID, ParentCardID: in.ParentCardID, ProjectTypeID: pt}
 
 			// Validate + collect title and any additional initial attributes.
 			titleEdge, _, ok := snap.EdgeFor(ct.ID, "title")
@@ -254,10 +293,10 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 			WITH input AS (
 				SELECT row_number() OVER () AS ord, *
 				FROM jsonb_to_recordset($1::jsonb)
-				AS x(card_type_id int, parent_card_id bigint)
+				AS x(card_type_id int, parent_card_id bigint, project_type_id int)
 			)
-			INSERT INTO card (card_type_id, parent_card_id)
-			SELECT card_type_id, parent_card_id FROM input ORDER BY ord
+			INSERT INTO card (card_type_id, parent_card_id, project_type_id)
+			SELECT card_type_id, parent_card_id, project_type_id FROM input ORDER BY ord
 			RETURNING id
 		`
 		rows, err := tx.Query(ctx, insertSQL, buf)
