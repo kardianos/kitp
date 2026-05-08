@@ -672,6 +672,53 @@ export interface ProjectTypeDeleteOutput {
 }
 
 // ============================================================================
+// workflow_transition.* + card.classify
+// ============================================================================
+
+export interface WorkflowTransitionRow {
+  workflow_def_id: number;
+  from_state: string;
+  to_state: string;
+  process_id?: number;
+  aggregate_guard?: unknown;
+}
+
+export interface WorkflowTransitionListInput {
+  workflowDefId: number;
+}
+
+export interface WorkflowTransitionListOutput {
+  rows: WorkflowTransitionRow[];
+}
+
+export interface WorkflowTransitionSetEntry {
+  fromState: string;
+  toState: string;
+  processId?: number;
+  aggregateGuard?: unknown;
+}
+
+export interface WorkflowTransitionSetInput {
+  workflowDefId: number;
+  transitions: WorkflowTransitionSetEntry[];
+}
+
+export interface WorkflowTransitionSetOutput {
+  ok: boolean;
+  count: number;
+}
+
+export interface CardClassifyInput {
+  cardId: number;
+  workflowDefId: number;
+}
+
+export interface CardClassifyOutput {
+  ok: boolean;
+  initial_state: string;
+}
+
+// ============================================================================
 // role_mapping.*  (admin)
 // ============================================================================
 

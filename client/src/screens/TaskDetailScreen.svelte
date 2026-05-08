@@ -36,6 +36,7 @@
   import AttachmentsSection from '../ui/widgets/AttachmentsSection.svelte';
   import AttachmentsPreviewStrip from '../ui/widgets/AttachmentsPreviewStrip.svelte';
   import AttributeSidePanel from '../ui/widgets/AttributeSidePanel.svelte';
+  import ClassifyDialog from '../ui/widgets/ClassifyDialog.svelte';
   import { AttributeSchemaCache } from '../filter/attribute_schema.svelte';
   import type { FilterAttribute } from '../filter/attribute_schema.svelte';
   import type {
@@ -105,6 +106,7 @@
   /* -------------------------------------------------------------------- */
 
   let task = $state<CardWithAttrs | null>(null);
+  let classifyOpen = $state(false);
   let activity = $state<readonly ActivityRow[]>([]);
   let milestones = $state<readonly CardWithAttrs[]>([]);
   let components = $state<readonly CardWithAttrs[]>([]);
@@ -775,6 +777,11 @@
           {/if}
           <p class="mt-0.5 px-1 font-mono text-[11px] text-muted">#{taskId}</p>
         </div>
+        <span class="ml-2 mt-0.5 self-start" data-testid="classify-button-wrap">
+          <Button variant="secondary" onclick={() => (classifyOpen = true)}>
+            Classify…
+          </Button>
+        </span>
         {#if navTotal > 0 && navIndex >= 0}
           <!-- Top-right prev/next chevrons. Hidden on cold-load (navIndex
                < 0); rendered with a position counter so the user knows
@@ -1028,3 +1035,9 @@
     </aside>
   {/if}
 </div>
+
+<ClassifyDialog
+  bind:open={classifyOpen}
+  cardId={taskId}
+  onClassified={() => void refresh()}
+/>

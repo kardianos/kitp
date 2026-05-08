@@ -134,6 +134,13 @@ export const routes: Route[] = [
     scope: 'admin_project_types',
   },
   {
+    path: '/admin/workflows',
+    component: () => import('../screens/admin/AdminWorkflowsScreen.svelte'),
+    guard: 'requireAdmin',
+    shell: true,
+    scope: 'admin_workflows',
+  },
+  {
     path: '/_dev/components',
     component: () => import('../screens/_dev/Components.svelte'),
     shell: false,

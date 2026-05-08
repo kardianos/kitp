@@ -38,6 +38,7 @@
     { href: '/admin/users', label: 'Users' },
     { href: '/admin/attributes', label: 'Attributes' },
     { href: '/admin/project-types', label: 'Project Types' },
+    { href: '/admin/workflows', label: 'Workflows' },
   ];
 
   function isActive(href: string): boolean {

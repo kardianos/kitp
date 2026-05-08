@@ -18,6 +18,8 @@ import {
 import type { HandlerSpec } from './handler_registry.js';
 import { HandlerRegistry } from './handler_registry.js';
 import type {
+  CardClassifyInput,
+  CardClassifyOutput,
   ProjectTypeDeleteInput,
   ProjectTypeDeleteOutput,
   ProjectTypeInsertInput,
@@ -46,6 +48,11 @@ import type {
   UserRoleRevokeOutput,
   UserRoleSetInput,
   UserRoleSetOutput,
+  WorkflowTransitionListInput,
+  WorkflowTransitionListOutput,
+  WorkflowTransitionRow,
+  WorkflowTransitionSetInput,
+  WorkflowTransitionSetOutput,
 } from './types.js';
 
 // ============================================================================
@@ -300,10 +307,83 @@ const projectTypeDelete: HandlerSpec<
 };
 
 // ============================================================================
+// workflow_transition.* + card.classify
+// ============================================================================
+
+function decodeWorkflowTransitionRow(
+  j: Record<string, unknown>,
+): WorkflowTransitionRow {
+  const out: WorkflowTransitionRow = {
+    workflow_def_id: asNum(j.workflow_def_id),
+    from_state: asStr(j.from_state),
+    to_state: asStr(j.to_state),
+  };
+  const proc = asNumOpt(j.process_id);
+  if (proc !== undefined) out.process_id = proc;
+  if (j.aggregate_guard !== undefined && j.aggregate_guard !== null) {
+    out.aggregate_guard = j.aggregate_guard;
+  }
+  return out;
+}
+
+const workflowTransitionList: HandlerSpec<
+  WorkflowTransitionListInput,
+  WorkflowTransitionListOutput
+> = {
+  endpoint: 'workflow_transition',
+  action: 'list',
+  encode: (i) => ({ workflow_def_id: i.workflowDefId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeWorkflowTransitionRow(asObj(r))),
+    };
+  },
+};
+
+const workflowTransitionSet: HandlerSpec<
+  WorkflowTransitionSetInput,
+  WorkflowTransitionSetOutput
+> = {
+  endpoint: 'workflow_transition',
+  action: 'set',
+  encode: (i) => ({
+    workflow_def_id: i.workflowDefId,
+    transitions: i.transitions.map((t) => {
+      const m: Record<string, unknown> = {
+        from_state: t.fromState,
+        to_state: t.toState,
+      };
+      if (t.processId !== undefined) m.process_id = t.processId;
+      if (t.aggregateGuard !== undefined) m.aggregate_guard = t.aggregateGuard;
+      return m;
+    }),
+  }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { ok: asBoolOrFalse(j.ok), count: asNumOrZero(j.count) };
+  },
+};
+
+const cardClassify: HandlerSpec<CardClassifyInput, CardClassifyOutput> = {
+  endpoint: 'card',
+  action: 'classify',
+  encode: (i) => ({ card_id: i.cardId, workflow_def_id: i.workflowDefId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: asBoolOrFalse(j.ok),
+      initial_state: asStrOrEmpty(j.initial_state),
+    };
+  },
+};
+
+// ============================================================================
 // Re-exports + registration helper
 // ============================================================================
 
 export {
+  cardClassify,
   projectTypeDelete,
   projectTypeInsert,
   projectTypeSelect,
@@ -315,6 +395,8 @@ export {
   userListWithRoles,
   userRoleRevoke,
   userRoleSet,
+  workflowTransitionList,
+  workflowTransitionSet,
 };
 
 /** Register the admin handlers on top of the v1 set. */
@@ -330,4 +412,7 @@ export function registerAdminHandlers(r: HandlerRegistry): void {
   r.register(projectTypeInsert);
   r.register(projectTypeUpdate);
   r.register(projectTypeDelete);
+  r.register(workflowTransitionList);
+  r.register(workflowTransitionSet);
+  r.register(cardClassify);
 }
