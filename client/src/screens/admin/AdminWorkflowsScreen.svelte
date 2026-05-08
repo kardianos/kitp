@@ -49,6 +49,7 @@
     WorkflowTransitionSetInput,
     WorkflowTransitionSetOutput,
   } from '../../reg/types';
+  import AggregateGuardEditor from '../../ui/widgets/AggregateGuardEditor.svelte';
   import Button from '../../ui/Button.svelte';
   import Spinner from '../../ui/Spinner.svelte';
   import { notify } from '../../ui/toast.svelte';
@@ -68,7 +69,9 @@
   // Local edit buffers; sync from selection.
   let editStates = $state('');
   let editInitial = $state('');
-  let editTransitions = $state<{ from: string; to: string; guard: string }[]>([]);
+  let editTransitions = $state<
+    { from: string; to: string; guard: unknown | undefined }[]
+  >([]);
   let saving = $state(false);
 
   // New-workflow form state.
@@ -258,10 +261,7 @@
       editTransitions = out.rows.map((r) => ({
         from: r.from_state,
         to: r.to_state,
-        guard:
-          r.aggregate_guard !== undefined && r.aggregate_guard !== null
-            ? JSON.stringify(r.aggregate_guard, null, 2)
-            : '',
+        guard: r.aggregate_guard ?? undefined,
       }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -270,17 +270,16 @@
   }
 
   function addTransition(): void {
-    editTransitions = [...editTransitions, { from: '', to: '', guard: '' }];
+    editTransitions = [
+      ...editTransitions,
+      { from: '', to: '', guard: undefined },
+    ];
   }
 
-  function parseGuard(s: string): unknown | undefined {
-    const trimmed = s.trim();
-    if (trimmed === '') return undefined;
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      throw new Error(`Invalid JSON in aggregate guard: ${trimmed.slice(0, 80)}…`);
-    }
+  function setRowGuard(idx: number, g: unknown | undefined): void {
+    editTransitions = editTransitions.map((row, i) =>
+      i === idx ? { ...row, guard: g } : row,
+    );
   }
 
   function removeTransition(idx: number): void {
@@ -328,12 +327,11 @@
           transitions: editTransitions
             .filter((t) => t.from !== '' && t.to !== '')
             .map((t) => {
-              const guard = parseGuard(t.guard);
               const m: { fromState: string; toState: string; aggregateGuard?: unknown } = {
                 fromState: t.from,
                 toState: t.to,
               };
-              if (guard !== undefined) m.aggregateGuard = guard;
+              if (t.guard !== undefined) m.aggregateGuard = t.guard;
               return m;
             }),
         },
@@ -599,14 +597,11 @@
                         data-testid="transition-to"
                       />
                     </td>
-                    <td>
-                      <textarea
-                        bind:value={t.guard}
-                        rows={2}
-                        placeholder={'{"scope":{"card_type":"test_case"},"match":"all","where":{"result":{"in":["passed","n_a"]}}}'}
-                        class="w-full rounded border border-border bg-bg px-2 py-1 font-mono text-[11px]"
-                        data-testid="transition-guard"
-                      ></textarea>
+                    <td data-testid="transition-guard">
+                      <AggregateGuardEditor
+                        initial={t.guard}
+                        onchange={(g) => setRowGuard(i, g)}
+                      />
                     </td>
                     <td>
                       <button
