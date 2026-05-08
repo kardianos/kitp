@@ -24,6 +24,7 @@
   import { setActiveScope } from '../../keys/shortcut';
   import {
     attributeUpdate,
+    cardDelete,
     cardInsert,
     cardSelectWithAttributes,
   } from '../../reg/handlers';
@@ -35,6 +36,8 @@
   import type {
     AttributeUpdateInput,
     AttributeUpdateOutput,
+    CardDeleteInput,
+    CardDeleteOutput,
     CardInsertInput,
     CardInsertOutput,
     CardSelectWithAttributesInput,
@@ -58,6 +61,7 @@
   let workflows = $state<CardWithAttrs[]>([]);
   let selectedId = $state<number | null>(null);
   let transitions = $state<WorkflowTransitionRow[]>([]);
+  let gateTemplates = $state<CardWithAttrs[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
 
@@ -91,9 +95,19 @@
   });
 
   $effect(() => {
-    if (selectedId === null) return;
+    if (selectedId === null) {
+      gateTemplates = [];
+      return;
+    }
     void loadTransitions(selectedId);
+    void loadGateTemplates(selectedId);
   });
+
+  // New gate-template form state.
+  let gtTitle = $state('');
+  let gtKind = $state('signoff');
+  let gtRequiredIn = $state('');
+  let gtCreating = $state(false);
 
   function decodeText(v: unknown): string {
     if (typeof v === 'string') return v;
@@ -141,6 +155,92 @@
       error = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
+    }
+  }
+
+  async function loadGateTemplates(workflowId: number): Promise<void> {
+    try {
+      const out = await dispatcher.request<
+        CardSelectWithAttributesInput,
+        CardSelectWithAttributesOutput
+      >({
+        endpoint: cardSelectWithAttributes.endpoint,
+        action: cardSelectWithAttributes.action,
+        data: { cardTypeName: 'gate_template', parentCardId: workflowId },
+      });
+      gateTemplates = out.rows;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: `Load gate templates failed: ${msg}` });
+    }
+  }
+
+  function decodeRequiredInStates(v: unknown): string {
+    if (typeof v !== 'string') return '';
+    try {
+      const arr = JSON.parse(v);
+      if (Array.isArray(arr)) return arr.join(', ');
+    } catch {
+      /* fall through */
+    }
+    return v;
+  }
+
+  function encodeRequiredInStates(s: string): string {
+    const parts = s
+      .split(',')
+      .map((p) => p.trim())
+      .filter((p) => p !== '');
+    return JSON.stringify(parts);
+  }
+
+  async function addGateTemplate(): Promise<void> {
+    if (selectedWorkflow === null) return;
+    if (gtTitle.trim() === '') {
+      notify({ type: 'error', message: 'Gate title is required' });
+      return;
+    }
+    gtCreating = true;
+    try {
+      await dispatcher.request<CardInsertInput, CardInsertOutput>({
+        endpoint: cardInsert.endpoint,
+        action: cardInsert.action,
+        data: {
+          cardTypeName: 'gate_template',
+          parentCardId: selectedWorkflow.id,
+          title: gtTitle.trim(),
+          attributes: {
+            gate_kind: gtKind.trim() || 'signoff',
+            required_in_states: encodeRequiredInStates(gtRequiredIn),
+          },
+        },
+      });
+      notify({ type: 'success', message: `Gate "${gtTitle.trim()}" added` });
+      gtTitle = '';
+      gtRequiredIn = '';
+      await loadGateTemplates(selectedWorkflow.id);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: `Add failed: ${msg}` });
+    } finally {
+      gtCreating = false;
+    }
+  }
+
+  async function deleteGateTemplate(t: CardWithAttrs): Promise<void> {
+    const title = decodeText(t.attributes['title']) || `Gate ${t.id}`;
+    if (!confirm(`Delete gate template "${title}"?`)) return;
+    try {
+      await dispatcher.request<CardDeleteInput, CardDeleteOutput>({
+        endpoint: cardDelete.endpoint,
+        action: cardDelete.action,
+        data: { cardId: t.id },
+      });
+      notify({ type: 'success', message: `Deleted "${title}"` });
+      if (selectedId !== null) await loadGateTemplates(selectedId);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: `Delete failed: ${msg}` });
     }
   }
 
@@ -535,6 +635,103 @@
                 {saving ? 'Saving…' : 'Save workflow'}
               </Button>
             </span>
+          </div>
+
+          <div class="flex flex-col gap-2 pt-6 border-t border-border">
+            <span class="text-xs font-medium text-muted">
+              Gate templates (spawned as runtime gates when a card binds to this workflow)
+            </span>
+            <table
+              class="w-full max-w-2xl text-sm"
+              data-testid="workflow-gate-templates"
+            >
+              <thead>
+                <tr>
+                  <th class="text-left font-medium">Title</th>
+                  <th class="text-left font-medium">Kind</th>
+                  <th class="text-left font-medium">Required in states</th>
+                  <th class="w-8"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each gateTemplates as t (t.id)}
+                  <tr data-testid="gate-template-row" data-template-id={t.id}>
+                    <td>{decodeText(t.attributes['title']) || `#${t.id}`}</td>
+                    <td>{decodeText(t.attributes['gate_kind']) || '—'}</td>
+                    <td>{decodeRequiredInStates(t.attributes['required_in_states']) || '—'}</td>
+                    <td>
+                      <button
+                        type="button"
+                        class="text-muted hover:text-danger"
+                        onclick={() => void deleteGateTemplate(t)}
+                        aria-label="Delete gate template"
+                        data-testid="gate-template-delete"
+                      >
+                        ×
+                      </button>
+                    </td>
+                  </tr>
+                {:else}
+                  <tr>
+                    <td colspan="4" class="text-sm text-muted py-2">
+                      No gate templates yet.
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+
+            <div
+              class="flex flex-wrap items-end gap-3 rounded border border-border bg-surface-2 p-3"
+              data-testid="new-gate-template-form"
+            >
+              <label class="flex flex-col gap-1 text-sm">
+                <span class="text-xs font-medium text-muted">Title</span>
+                <input
+                  type="text"
+                  bind:value={gtTitle}
+                  placeholder="e.g. QA sign-off"
+                  data-testid="new-gate-template-title"
+                  class={cx(
+                    'w-56 rounded-md border border-border bg-bg px-2 py-1 text-sm',
+                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                  )}
+                />
+              </label>
+              <label class="flex flex-col gap-1 text-sm">
+                <span class="text-xs font-medium text-muted">Kind</span>
+                <input
+                  type="text"
+                  bind:value={gtKind}
+                  placeholder="signoff / test_plan / review"
+                  data-testid="new-gate-template-kind"
+                  class={cx(
+                    'w-48 rounded-md border border-border bg-bg px-2 py-1 text-sm',
+                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                  )}
+                />
+              </label>
+              <label class="flex flex-col gap-1 text-sm">
+                <span class="text-xs font-medium text-muted">
+                  Required in states (comma-separated)
+                </span>
+                <input
+                  type="text"
+                  bind:value={gtRequiredIn}
+                  placeholder="e.g. ready_qa, done"
+                  data-testid="new-gate-template-required"
+                  class={cx(
+                    'w-72 rounded-md border border-border bg-bg px-2 py-1 text-sm',
+                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                  )}
+                />
+              </label>
+              <span data-testid="add-gate-template-wrap">
+                <Button onclick={() => void addGateTemplate()} disabled={gtCreating}>
+                  {gtCreating ? 'Adding…' : '+ Add gate'}
+                </Button>
+              </span>
+            </div>
           </div>
         {/if}
       </section>
