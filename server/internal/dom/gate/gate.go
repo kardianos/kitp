@@ -341,9 +341,9 @@ func EffectiveGatesFor(ctx context.Context, tx pgx.Tx, parentCardID int64) ([]Ef
 			  AND jsonb_typeof(av.value) = 'number'
 		)
 		SELECT g.id,
-		       COALESCE((SELECT value FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=g.id AND ad.name='title'), to_jsonb('')),
-		       COALESCE((SELECT value FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=g.id AND ad.name='gate_status'), to_jsonb('pending')),
-		       COALESCE((SELECT value FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=g.id AND ad.name='required_in_states'), to_jsonb('')),
+		       COALESCE((SELECT value FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=g.id AND ad.name='title'), to_jsonb(''::text)),
+		       COALESCE((SELECT value FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=g.id AND ad.name='gate_status'), to_jsonb('pending'::text)),
+		       COALESCE((SELECT value FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=g.id AND ad.name='required_in_states'), to_jsonb(''::text)),
 		       o.source,
 		       g.parent_card_id
 		FROM owners o
