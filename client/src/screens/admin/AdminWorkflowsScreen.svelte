@@ -22,14 +22,21 @@
 
   import { getDispatcher } from '../../dispatch/context';
   import { setActiveScope } from '../../keys/shortcut';
-  import { attributeUpdate, cardSelectWithAttributes } from '../../reg/handlers';
+  import {
+    attributeUpdate,
+    cardInsert,
+    cardSelectWithAttributes,
+  } from '../../reg/handlers';
   import {
     workflowTransitionList,
     workflowTransitionSet,
   } from '../../reg/handlers_admin';
+  import { projectScope } from '../../shell/project_scope.svelte';
   import type {
     AttributeUpdateInput,
     AttributeUpdateOutput,
+    CardInsertInput,
+    CardInsertOutput,
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
     CardWithAttrs,
@@ -59,6 +66,13 @@
   let editInitial = $state('');
   let editTransitions = $state<{ from: string; to: string; guard: string }[]>([]);
   let saving = $state(false);
+
+  // New-workflow form state.
+  let creatingOpen = $state(false);
+  let newTitle = $state('');
+  let newStates = $state('triaged, in_review, done');
+  let newInitial = $state('triaged');
+  let creating = $state(false);
 
   const selectedWorkflow = $derived(
     workflows.find((w) => w.id === selectedId) ?? null,
@@ -236,6 +250,61 @@
     }
   }
 
+  async function createWorkflow(): Promise<void> {
+    if (newTitle.trim() === '') {
+      notify({ type: 'error', message: 'Title is required' });
+      return;
+    }
+    if (projectScope.projectId === null || projectScope.projectId === undefined) {
+      notify({
+        type: 'error',
+        message: 'Pick a project in the sidebar before creating a workflow',
+      });
+      return;
+    }
+    const states = newStates
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== '');
+    if (states.length === 0) {
+      notify({ type: 'error', message: 'Add at least one state' });
+      return;
+    }
+    const initial = newInitial.trim() === '' ? states[0]! : newInitial.trim();
+    if (!states.includes(initial)) {
+      notify({ type: 'error', message: `initial_state "${initial}" is not in the states list` });
+      return;
+    }
+    creating = true;
+    try {
+      const out = await dispatcher.request<CardInsertInput, CardInsertOutput>({
+        endpoint: cardInsert.endpoint,
+        action: cardInsert.action,
+        data: {
+          cardTypeName: 'workflow_def',
+          parentCardId: projectScope.projectId,
+          title: newTitle.trim(),
+          attributes: {
+            states: JSON.stringify(states),
+            initial_state: initial,
+          },
+        },
+      });
+      notify({ type: 'success', message: `Created workflow "${newTitle.trim()}"` });
+      newTitle = '';
+      newStates = 'triaged, in_review, done';
+      newInitial = 'triaged';
+      creatingOpen = false;
+      await refresh();
+      selectedId = out.id;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: `Create failed: ${msg}` });
+    } finally {
+      creating = false;
+    }
+  }
+
   onMount(() => {
     void refresh();
   });
@@ -244,7 +313,69 @@
 <div class="flex h-full flex-col" data-testid="admin-workflows">
   <header class="flex items-center justify-between border-b border-border px-4 py-3">
     <h1 class="text-xl font-semibold">Admin · Workflows</h1>
+    <span data-testid="new-workflow-button-wrap">
+      <Button onclick={() => (creatingOpen = !creatingOpen)}>
+        {creatingOpen ? 'Cancel' : '+ New workflow'}
+      </Button>
+    </span>
   </header>
+
+  {#if creatingOpen}
+    <div
+      class="border-b border-border bg-surface-2 px-4 py-3"
+      data-testid="new-workflow-form"
+    >
+      {#if projectScope.projectId === null || projectScope.projectId === undefined}
+        <p class="mb-2 text-sm text-warn">
+          Pick a project in the sidebar to scope the workflow to.
+        </p>
+      {/if}
+      <div class="flex flex-wrap items-end gap-3">
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-xs font-medium text-muted">Title</span>
+          <input
+            type="text"
+            bind:value={newTitle}
+            placeholder="e.g. Bug Lifecycle"
+            data-testid="new-workflow-title"
+            class={cx(
+              'w-56 rounded-md border border-border bg-bg px-3 py-1.5 text-sm',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+            )}
+          />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-xs font-medium text-muted">States (comma-separated)</span>
+          <input
+            type="text"
+            bind:value={newStates}
+            data-testid="new-workflow-states"
+            class={cx(
+              'w-72 rounded-md border border-border bg-bg px-3 py-1.5 text-sm',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+            )}
+          />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-xs font-medium text-muted">Initial state</span>
+          <input
+            type="text"
+            bind:value={newInitial}
+            data-testid="new-workflow-initial"
+            class={cx(
+              'w-44 rounded-md border border-border bg-bg px-3 py-1.5 text-sm',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+            )}
+          />
+        </label>
+        <span data-testid="new-workflow-save-wrap">
+          <Button onclick={() => void createWorkflow()} disabled={creating}>
+            {creating ? 'Creating…' : 'Create'}
+          </Button>
+        </span>
+      </div>
+    </div>
+  {/if}
 
   {#if loading && workflows.length === 0}
     <div class="flex flex-1 items-center justify-center">
