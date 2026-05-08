@@ -31,7 +31,7 @@
   Ports `client/lib/ui/screens/kanban_screen.dart` (973 LOC).
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { getDispatcher } from '../dispatch/context';
   import { BatchAbortedError, SubRequestError } from '../dispatch/errors';
   import {
@@ -73,6 +73,7 @@
   } from '../reg/types';
   import { navigate } from '../routing/router.svelte';
   import { setTaskNavList } from '../routing/task_nav_list.svelte';
+  import { getFilter, setFilter } from './filter_state.svelte';
   import Combobox from '../ui/Combobox.svelte';
   import Spinner from '../ui/Spinner.svelte';
   import { notify } from '../ui/toast.svelte';
@@ -133,7 +134,9 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
 
-  let predicate = $state<Predicate | null>(null);
+  let predicate = $state<Predicate | null>(
+    untrack(() => getFilter('kanban', projectScope.projectId)),
+  );
   let columnAttr = $state<string>('status');
   let laneAttr = $state<string>(NO_LANE);
 
@@ -770,6 +773,19 @@
   $effect(() => {
     void projectScope.projectId; // tracked dep
     void refresh();
+  });
+
+  // Filter persistence (see filter_state.svelte.ts). Hydrate from the
+  // cache when the project scope flips; persist on every predicate
+  // change so the next visit (or sibling tab navigation) restores it.
+  $effect(() => {
+    const pid = projectScope.projectId;
+    untrack(() => {
+      predicate = getFilter('kanban', pid);
+    });
+  });
+  $effect(() => {
+    setFilter('kanban', projectScope.projectId, predicate);
   });
 
   /* re-fetch when the filter changes. */

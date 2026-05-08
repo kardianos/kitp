@@ -19,7 +19,7 @@
    * node-only runner.
    */
 
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import {
     autoUpdate,
     computePosition,
@@ -71,6 +71,7 @@
   } from '../reg/types.js';
   import { navigate } from '../routing/router.svelte.js';
   import { setTaskNavList } from '../routing/task_nav_list.svelte.js';
+  import { getFilter, setFilter } from './filter_state.svelte.js';
   import Button from '../ui/Button.svelte';
   import Combobox from '../ui/Combobox.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
@@ -204,8 +205,17 @@
   let exhausted = $state(false);
   let error = $state<string | null>(null);
   let sort = $state<SortState | null>(null);
+  // The Grid default predicate keeps the canonical four task states
+  // visible. We read the cache first; only fall back to the default
+  // when the user has never touched this scope/project. Read inside
+  // untrack() so the persistence effect below isn't part of the
+  // initial-state evaluation.
   let predicate = $state<Predicate | null>(
-    in_('status', ['todo', 'doing', 'review', 'done']),
+    untrack(
+      () =>
+        getFilter('grid', projectScope.projectId) ??
+        in_('status', ['todo', 'doing', 'review', 'done']),
+    ),
   );
   let selectedIndex = $state(0);
   let focusedColumn = $state<string | null>(null);
@@ -356,6 +366,19 @@
     void sort;
     void scopedProjectId;
     void refresh();
+  });
+
+  // Filter persistence (see filter_state.svelte.ts). Hydrate when the
+  // project scope flips; persist on every predicate change.
+  $effect(() => {
+    const pid = projectScope.projectId;
+    untrack(() => {
+      const cached = getFilter('grid', pid);
+      if (cached !== null) predicate = cached;
+    });
+  });
+  $effect(() => {
+    setFilter('grid', projectScope.projectId, predicate);
   });
 
   /* ----------------------------------------------------- filter attributes */

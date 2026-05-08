@@ -26,7 +26,7 @@
   Ports `client/lib/ui/screens/project_detail_screen.dart` (516 LOC).
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { getDispatcher } from '../dispatch/context';
   import { BatchAbortedError, SubRequestError } from '../dispatch/errors';
   import {
@@ -61,6 +61,7 @@
   } from '../reg/types';
   import { navigate } from '../routing/router.svelte';
   import { setTaskNavList } from '../routing/task_nav_list.svelte';
+  import { getFilter, setFilter } from './filter_state.svelte';
   import { projectScope } from '../shell/project_scope.svelte';
   import Button from '../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
@@ -100,7 +101,15 @@
   let milestones = $state<CardWithAttrs[]>([]);
   let components = $state<CardWithAttrs[]>([]);
   let tagsRows = $state<CardWithAttrs[]>([]);
-  let predicate = $state<Predicate | null>(null);
+  // ProjectDetailScreen's projectId is fixed for the lifetime of this
+  // component (the route remounts when :id changes), so a single read
+  // at init is enough — no projectId-change effect needed.
+  let predicate = $state<Predicate | null>(
+    untrack(() => getFilter('project_detail', projectId)),
+  );
+  $effect(() => {
+    setFilter('project_detail', projectId, predicate);
+  });
 
   /** Derived lookup tables fed to TaskRow. */
   const userNames = $derived.by((): Record<number, string> => {

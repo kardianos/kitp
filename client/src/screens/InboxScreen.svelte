@@ -71,6 +71,7 @@
 
   import { navigate } from '../routing/router.svelte';
   import { setTaskNavList } from '../routing/task_nav_list.svelte';
+  import { getFilter, setFilter } from './filter_state.svelte';
 
   import Button from '../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
@@ -121,7 +122,14 @@
   let tagsRows = $state<CardWithAttrs[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let predicate = $state<Predicate | null>(null);
+  // Hydrated from filter_state on mount + every time the project scope
+  // flips; persisted on every change via the second $effect below.
+  // Reading inside untrack() so the effect doesn't re-fire when the
+  // cache rune itself updates (which would be a feedback loop with
+  // the persistence effect).
+  let predicate = $state<Predicate | null>(
+    untrack(() => getFilter('inbox', projectScope.projectId)),
+  );
   let selectedIndex = $state(0);
 
   /** Derived lookup tables for `<TaskRow>` props. */
@@ -308,6 +316,24 @@
     untrack(() => {
       void refresh();
     });
+  });
+
+  // Filter persistence. Hydrate effect re-reads the cache when the
+  // project scope flips (so leaving Project A and coming back to
+  // Project A restores Project A's filter, not Project B's). Cache
+  // reads go through untrack() so a write here doesn't kick off a
+  // re-hydrate loop with the persist effect below.
+  $effect(() => {
+    const pid = projectScope.projectId;
+    untrack(() => {
+      predicate = getFilter('inbox', pid);
+    });
+  });
+  // Persist on every predicate change. The setFilter helper treats
+  // `null` as "clear" (drops the entry) so an explicit Reset doesn't
+  // leave a stale value behind for the next visit.
+  $effect(() => {
+    setFilter('inbox', projectScope.projectId, predicate);
   });
 
   /* ----------------------------------------------------- filter changes */
