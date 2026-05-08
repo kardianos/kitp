@@ -144,14 +144,28 @@ export async function pressChord(driver: WebDriver, chord: string): Promise<void
  * translates the resulting `KeyboardEvent.key === '?'` correctly.
  */
 export async function openShortcutHelp(driver: WebDriver): Promise<void> {
-  // Dispatch a synthetic KeyboardEvent for `?`. Some screens leave
-  // focus on an interactive element that swallows native keystrokes
-  // before the global dispatcher gets to look at them; a synthetic
-  // event on `window` reliably reaches `installGlobalKeydown`'s
-  // listener.
+  // Two paths in order: synthetic event on window (always reaches the
+  // global dispatcher) → fallback to Selenium action chain. The
+  // synthetic path is more reliable on screens where focus lands on
+  // an interactive element; the action-chain fallback covers the
+  // (rare) case where some other listener prevents the synthetic
+  // event from triggering Svelte's effect tick.
   await driver.executeScript(
-    `window.dispatchEvent(new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true }));`,
+    `window.dispatchEvent(new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true, cancelable: true }));`,
   );
+  try {
+    await waitFor(driver, '[role="dialog"][aria-label="Keyboard shortcuts"]', 2_500);
+    return;
+  } catch {
+    // fallthrough
+  }
+  await driver
+    .actions({ async: true })
+    .keyDown(Key.SHIFT)
+    .keyDown('/')
+    .keyUp('/')
+    .keyUp(Key.SHIFT)
+    .perform();
   await waitFor(driver, '[role="dialog"][aria-label="Keyboard shortcuts"]', 5_000);
 }
 

@@ -83,7 +83,11 @@ export async function run(driver: WebDriver): Promise<void> {
       // Screen failed to render; continue to the next so we don't lose
       // every later capture for one bad path.
     }
-    await sleep(driver, 400);
+    // task_detail's mount fires a 7-subrequest batch that takes a beat
+    // longer than the lighter list screens — sleep more aggressively so
+    // installGlobalKeydown's listener is reliably attached before we
+    // dispatch the help shortcut.
+    await sleep(driver, screen.name === 'task_detail' ? 800 : 400);
 
     // Open the help overlay and capture.
     await openShortcutHelp(driver);
