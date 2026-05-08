@@ -161,12 +161,25 @@ function hasChordWithPrefix(prefix: string): boolean {
  * either the active scope or `'global'`. The active-scope binding wins
  * over a colliding global one (so a screen can override defaults like
  * `Esc` without having to unregister the global handler first).
+ *
+ * Exception: while the help overlay is open, `Esc` resolves to the
+ * global handler (which closes the overlay) regardless of the active
+ * scope. Otherwise a screen-level Esc binding (e.g. TaskDetailScreen's
+ * `Esc → goBack`) would shadow the help-close binding and trap the
+ * user inside the open dialog.
  */
 function findMatch(binding: string): ShortcutEntry | undefined {
   let globalHit: ShortcutEntry | undefined;
   for (const e of shortcuts.entries) {
     if (e.binding !== binding) continue;
-    if (e.scope === shortcuts.activeScope) return e;
+    if (e.scope === shortcuts.activeScope) {
+      if (binding === 'Esc' && shortcuts.helpOpen) {
+        // Defer to the global Esc handler — captured in globalHit on
+        // a later iteration. Don't return early.
+        continue;
+      }
+      return e;
+    }
     if (e.scope === 'global' && globalHit === undefined) globalHit = e;
   }
   return globalHit;

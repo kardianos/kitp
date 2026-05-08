@@ -144,6 +144,14 @@ export async function pressChord(driver: WebDriver, chord: string): Promise<void
  * translates the resulting `KeyboardEvent.key === '?'` correctly.
  */
 export async function openShortcutHelp(driver: WebDriver): Promise<void> {
+  // If the dialog is already open (a previous closeShortcutHelp Esc may
+  // not have fired through), bail early — dispatching while open
+  // toggles it closed and the subsequent waitFor would time out.
+  const alreadyOpen = await driver.executeScript<boolean>(
+    `return !!document.querySelector('[role="dialog"][aria-label="Keyboard shortcuts"]');`,
+  );
+  if (alreadyOpen) return;
+
   // Two paths in order: synthetic event on window (always reaches the
   // global dispatcher) → fallback to Selenium action chain. The
   // synthetic path is more reliable on screens where focus lands on
@@ -174,7 +182,10 @@ export async function openShortcutHelp(driver: WebDriver): Promise<void> {
  * disappears.
  */
 export async function closeShortcutHelp(driver: WebDriver): Promise<void> {
-  // Synthetic Esc — same rationale as openShortcutHelp.
+  // Synthetic Esc — same rationale as openShortcutHelp. The dispatcher
+  // routes the global Esc handler (closes the dialog) ahead of any
+  // active-scope Esc binding while the dialog is open, so this
+  // works on every screen.
   await driver.executeScript(
     `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));`,
   );

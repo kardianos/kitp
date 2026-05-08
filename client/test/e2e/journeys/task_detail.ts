@@ -44,8 +44,13 @@ export async function run(driver: WebDriver): Promise<void> {
   await sleep(driver, 500);
   await captureScreenshot(driver, journeyName, 'read');
 
-  // 4. Press `e` to enter title edit. Wait for the input to appear.
+  // 4. Press `e t` (chord) to enter title edit. Wait for the input to
+  //    appear. The shortcut was a bare `e` historically; commit 0901d52
+  //    moved the edit shortcuts behind the `e` chord prefix
+  //    (`e t`/`e d`/`e c`).
   await pressKey(driver, 'e');
+  await sleep(driver, 50);
+  await pressKey(driver, 't');
   const titleInput = await waitFor(driver, '[data-testid="task-title-input"]', 5_000);
   // Append " (edited)" to the existing title; the input is auto-selected
   // after focus, so type END first to deselect, then append.
@@ -65,7 +70,10 @@ export async function run(driver: WebDriver): Promise<void> {
   await sleep(driver, 600);
   await captureScreenshot(driver, journeyName, 'title_edited');
 
-  // 6. Press `c` to focus comment composer; type a comment; commit.
+  // 6. Press `e c` (chord) to focus comment composer; type a comment;
+  //    commit. Same chord-prefix migration as title above.
+  await pressKey(driver, 'e');
+  await sleep(driver, 50);
   await pressKey(driver, 'c');
   const commentEl = await waitFor(driver, '[data-testid="task-comment-input"]', 5_000);
   // The shortcut focuses the textarea via tick(); confirm focus landed.
