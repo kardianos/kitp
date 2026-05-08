@@ -17,6 +17,8 @@
  * is not a big enough win to justify the complexity.
  */
 
+import { untrack } from 'svelte';
+
 import type { Predicate } from '../filter/predicate';
 
 /**
@@ -69,15 +71,21 @@ export function setFilter(
   predicate: Predicate | null,
 ): void {
   const k = makeKey(scope, projectId);
-  if (predicate === null) {
-    if (k in cache.byKey) {
-      const next = { ...cache.byKey };
-      delete next[k];
-      cache.byKey = next;
+  // Read inside untrack so callers running in a $effect aren't
+  // re-triggered by the subsequent write — cache.byKey is both read
+  // (the spread) and written here, which without untrack creates an
+  // effect_update_depth_exceeded loop.
+  untrack(() => {
+    if (predicate === null) {
+      if (k in cache.byKey) {
+        const next = { ...cache.byKey };
+        delete next[k];
+        cache.byKey = next;
+      }
+      return;
     }
-    return;
-  }
-  cache.byKey = { ...cache.byKey, [k]: predicate };
+    cache.byKey = { ...cache.byKey, [k]: predicate };
+  });
 }
 
 /** Drop every cached predicate. Test-only; call sites in app code
