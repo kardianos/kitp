@@ -107,6 +107,23 @@ func guardStatusTransition(ctx context.Context, tx pgx.Tx, cardID int64, newStat
 					g.Title, g.Status, newState)}
 		}
 	}
+	// Aggregate guard. If the transition row carries one, evaluate the
+	// predicate against direct children of the parent.
+	guardJSON, err := workflowtransition.AggregateGuardFor(ctx, tx, *workflowDefID, current, newState)
+	if err != nil {
+		return err
+	}
+	if len(guardJSON) > 0 {
+		ok, msg, err := workflowtransition.EvaluateGuard(ctx, tx, cardID, guardJSON)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return &reg.HandlerError{Code: "aggregate_guard_failed",
+				Message: fmt.Sprintf("attribute.update: aggregate guard rejected %q → %q: %s",
+					current, newState, msg)}
+		}
+	}
 	return nil
 }
 

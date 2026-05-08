@@ -207,8 +207,8 @@ func normalizeJSON(j json.RawMessage) any {
 }
 
 // Reachable returns true if `to` is reachable from `from` for the
-// given workflow_def. The optional process_id is returned alongside.
-// Used by the status-update guard.
+// given workflow_def. The optional process_id and aggregate_guard are
+// returned alongside. Used by the status-update guard.
 func Reachable(ctx context.Context, tx pgx.Tx, workflowDefID int64, from, to string) (bool, *int32, error) {
 	var procID *int32
 	err := tx.QueryRow(ctx, `
@@ -222,4 +222,22 @@ func Reachable(ctx context.Context, tx pgx.Tx, workflowDefID int64, from, to str
 		return false, nil, fmt.Errorf("workflow_transition.Reachable: %w", err)
 	}
 	return true, procID, nil
+}
+
+// AggregateGuardFor returns the aggregate_guard JSON for a transition
+// row, or nil if no guard is configured. Returns (nil, nil) for an
+// unreachable transition.
+func AggregateGuardFor(ctx context.Context, tx pgx.Tx, workflowDefID int64, from, to string) (json.RawMessage, error) {
+	var raw json.RawMessage
+	err := tx.QueryRow(ctx, `
+		SELECT aggregate_guard FROM workflow_transition
+		WHERE workflow_def_id = $1 AND from_state = $2 AND to_state = $3
+	`, workflowDefID, from, to).Scan(&raw)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("workflow_transition.AggregateGuardFor: %w", err)
+	}
+	return raw, nil
 }
