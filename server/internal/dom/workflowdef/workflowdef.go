@@ -8,6 +8,9 @@
 // This package contributes:
 //   - card.classify — atomic write: set workflow_def_ref + status to the
 //     workflow's initial_state + emit a `classified` activity row.
+//   - card.blockers — read-only diagnostic: for each outgoing transition
+//     from the card's current state, report whether each guard would
+//     pass. Drives the "What's blocking me" UI.
 package workflowdef
 
 import (
@@ -19,10 +22,34 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/dom/gate"
+	"github.com/kitp/kitp/server/internal/dom/workflowtransition"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
 )
+
+// BlockersInput selects a card whose outgoing-transition diagnostics
+// should be returned.
+type BlockersInput struct {
+	CardID int64 `json:"card_id" mcp:"required,desc=card to evaluate blockers for"`
+}
+
+// TransitionBlockers reports the diagnostic for one outgoing transition.
+type TransitionBlockers struct {
+	ToState        string   `json:"to_state"`
+	OK             bool     `json:"ok"`
+	GatesBlocking  []string `json:"gates_blocking,omitempty"`
+	AggregateMsg   string   `json:"aggregate_msg,omitempty"`
+	AggregateOK    bool     `json:"aggregate_ok"`
+}
+
+// BlockersOutput is the per-call snapshot.
+type BlockersOutput struct {
+	WorkflowBound bool                 `json:"workflow_bound"`
+	CurrentState  string               `json:"current_state"`
+	Transitions   []TransitionBlockers `json:"transitions"`
+}
 
 // ClassifyInput binds a card to a workflow. The dispatcher writes
 // workflow_def_ref + status (to the workflow's initial_state) and emits
@@ -56,6 +83,128 @@ func Register(p *store.Pool) {
 		CardTypeID:   cardTypeFromInput,
 		Run:          runClassify(p),
 	})
+	reg.Register(reg.Handler{
+		Endpoint:     "card",
+		Action:       "blockers",
+		Doc:          "Read-only diagnostic: for each outgoing transition from a card's current state, report which guards would block it.",
+		InputType:    reflect.TypeFor[BlockersInput](),
+		OutputType:   reflect.TypeFor[BlockersOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		Run:          runBlockers(p),
+	})
+}
+
+func runBlockers(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		outs := make([]any, len(ins))
+		for i, raw := range ins {
+			in := raw.(BlockersInput)
+			out := BlockersOutput{Transitions: []TransitionBlockers{}}
+
+			// Read workflow_def_ref + status off the card.
+			var wfRefRaw, statusRaw []byte
+			err := tx.QueryRow(ctx, `
+				SELECT
+				    (SELECT av.value FROM attribute_value av
+				       JOIN attribute_def ad ON ad.id = av.attribute_def_id
+				       WHERE av.card_id = $1 AND ad.name = 'workflow_def_ref'),
+				    (SELECT av.value FROM attribute_value av
+				       JOIN attribute_def ad ON ad.id = av.attribute_def_id
+				       WHERE av.card_id = $1 AND ad.name = 'status')
+			`, in.CardID).Scan(&wfRefRaw, &statusRaw)
+			if err != nil {
+				return nil, fmt.Errorf("card.blockers: lookup: %w", err)
+			}
+			if len(wfRefRaw) == 0 || string(wfRefRaw) == "null" {
+				outs[i] = out
+				continue
+			}
+			out.WorkflowBound = true
+			var wfID int64
+			if err := json.Unmarshal(wfRefRaw, &wfID); err != nil {
+				outs[i] = out
+				continue
+			}
+			var current string
+			_ = json.Unmarshal(statusRaw, &current)
+			out.CurrentState = current
+
+			// Effective gates for the card.
+			gates, err := gate.EffectiveGatesFor(ctx, tx, in.CardID)
+			if err != nil {
+				return nil, err
+			}
+			// Outgoing transitions from current state.
+			rows, err := tx.Query(ctx, `
+				SELECT to_state, aggregate_guard
+				FROM workflow_transition
+				WHERE workflow_def_id = $1 AND from_state = $2
+				ORDER BY to_state
+			`, wfID, current)
+			if err != nil {
+				return nil, fmt.Errorf("card.blockers: transitions: %w", err)
+			}
+			type pending struct {
+				to    string
+				guard json.RawMessage
+			}
+			var trans []pending
+			for rows.Next() {
+				var p pending
+				var raw json.RawMessage
+				if err := rows.Scan(&p.to, &raw); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				p.guard = raw
+				trans = append(trans, p)
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				return nil, err
+			}
+
+			for _, t := range trans {
+				blockers := []string{}
+				for _, g := range gates {
+					required := false
+					for _, s := range g.RequiredInStates {
+						if s == t.to {
+							required = true
+							break
+						}
+					}
+					if required && g.Status != "approved" && g.Status != "n_a" {
+						blockers = append(blockers, fmt.Sprintf("%s (%s)", g.Title, g.Status))
+					}
+				}
+				aggOK := true
+				aggMsg := ""
+				if len(t.guard) > 0 && string(t.guard) != "null" {
+					ok, msg, err := workflowtransition.EvaluateGuard(ctx, tx, in.CardID, t.guard)
+					if err != nil {
+						aggOK = false
+						aggMsg = err.Error()
+					} else {
+						aggOK = ok
+						aggMsg = msg
+					}
+				}
+				out.Transitions = append(out.Transitions, TransitionBlockers{
+					ToState:       t.to,
+					OK:            len(blockers) == 0 && aggOK,
+					GatesBlocking: blockers,
+					AggregateMsg:  aggMsg,
+					AggregateOK:   aggOK,
+				})
+			}
+			outs[i] = out
+		}
+		if p != nil {
+			p.NoteRead()
+		}
+		return outs, nil
+	}
 }
 
 func cardTypeFromInput(ctx context.Context, pool reg.ValidationPool, raw any) (int32, error) {

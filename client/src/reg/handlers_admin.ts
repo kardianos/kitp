@@ -18,6 +18,8 @@ import {
 import type { HandlerSpec } from './handler_registry.js';
 import { HandlerRegistry } from './handler_registry.js';
 import type {
+  CardBlockersInput,
+  CardBlockersOutput,
   CardClassifyInput,
   CardClassifyOutput,
   EffectiveGateRow,
@@ -25,6 +27,7 @@ import type {
   GateListEffectiveOutput,
   GateSpawnInput,
   GateSpawnOutput,
+  TransitionBlockers,
   ProjectTypeDeleteInput,
   ProjectTypeDeleteOutput,
   ProjectTypeInsertInput,
@@ -394,6 +397,35 @@ const gateSpawn: HandlerSpec<GateSpawnInput, GateSpawnOutput> = {
   decode: (raw) => ({ spawned: asNumOrZero(asObj(raw).spawned) }),
 };
 
+function decodeTransitionBlockers(j: Record<string, unknown>): TransitionBlockers {
+  const gatesRaw = j.gates_blocking;
+  return {
+    to_state: asStrOrEmpty(j.to_state),
+    ok: asBoolOrFalse(j.ok),
+    gates_blocking: Array.isArray(gatesRaw)
+      ? gatesRaw.map((x) => String(x))
+      : [],
+    aggregate_msg: asStrOrEmpty(j.aggregate_msg),
+    aggregate_ok: asBoolOrFalse(j.aggregate_ok),
+  };
+}
+
+const cardBlockers: HandlerSpec<CardBlockersInput, CardBlockersOutput> = {
+  endpoint: 'card',
+  action: 'blockers',
+  encode: (i) => ({ card_id: i.cardId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      workflow_bound: asBoolOrFalse(j.workflow_bound),
+      current_state: asStrOrEmpty(j.current_state),
+      transitions: asArray(j.transitions).map((r) =>
+        decodeTransitionBlockers(asObj(r)),
+      ),
+    };
+  },
+};
+
 function decodeEffectiveGateRow(j: Record<string, unknown>): EffectiveGateRow {
   const reqRaw = j.required_in_states;
   const req = Array.isArray(reqRaw) ? reqRaw.map((x) => String(x)) : [];
@@ -428,6 +460,7 @@ const gateListEffective: HandlerSpec<
 // ============================================================================
 
 export {
+  cardBlockers,
   cardClassify,
   gateListEffective,
   gateSpawn,
@@ -464,4 +497,5 @@ export function registerAdminHandlers(r: HandlerRegistry): void {
   r.register(cardClassify);
   r.register(gateSpawn);
   r.register(gateListEffective);
+  r.register(cardBlockers);
 }

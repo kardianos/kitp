@@ -37,6 +37,7 @@
   import AttachmentsSection from '../ui/widgets/AttachmentsSection.svelte';
   import AttachmentsPreviewStrip from '../ui/widgets/AttachmentsPreviewStrip.svelte';
   import AttributeSidePanel from '../ui/widgets/AttributeSidePanel.svelte';
+  import BlockersPanel from '../ui/widgets/BlockersPanel.svelte';
   import ClassifyDialog from '../ui/widgets/ClassifyDialog.svelte';
   import GateStrip from '../ui/widgets/GateStrip.svelte';
   import { AttributeSchemaCache } from '../filter/attribute_schema.svelte';
@@ -116,6 +117,8 @@
   // Transitions for the current task's workflow_def_ref. Loaded on mount
   // (and on refresh) so the status picker can hide unreachable options.
   let workflowTransitions = $state<WorkflowTransitionRow[]>([]);
+  // Bumped after every refresh so BlockersPanel re-evaluates.
+  let blockersVersion = $state(0);
   let activity = $state<readonly ActivityRow[]>([]);
   let milestones = $state<readonly CardWithAttrs[]>([]);
   let components = $state<readonly CardWithAttrs[]>([]);
@@ -414,6 +417,7 @@
         const d = found.attributes['description'];
         descDraft = typeof d === 'string' ? d : '';
       }
+      blockersVersion += 1;
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : String(e);
       loading = false;
@@ -835,6 +839,7 @@
           <p class="mt-0.5 px-1 font-mono text-[11px] text-muted">#{taskId}</p>
         </div>
         <GateStrip parentCardId={taskId} onChanged={() => void refresh()} />
+        <BlockersPanel cardId={taskId} version={blockersVersion} />
         <span class="ml-2 mt-0.5 self-start" data-testid="classify-button-wrap">
           <Button variant="secondary" onclick={() => (classifyOpen = true)}>
             Classify…

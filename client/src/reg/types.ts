@@ -725,6 +725,28 @@ export interface CardClassifyOutput {
 }
 
 // ============================================================================
+// card.blockers — diagnostic for "What's blocking me"
+// ============================================================================
+
+export interface CardBlockersInput {
+  cardId: number;
+}
+
+export interface TransitionBlockers {
+  to_state: string;
+  ok: boolean;
+  gates_blocking: string[];
+  aggregate_msg: string;
+  aggregate_ok: boolean;
+}
+
+export interface CardBlockersOutput {
+  workflow_bound: boolean;
+  current_state: string;
+  transitions: TransitionBlockers[];
+}
+
+// ============================================================================
 // gate.spawn
 // ============================================================================
 
