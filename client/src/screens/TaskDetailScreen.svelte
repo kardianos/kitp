@@ -61,7 +61,11 @@
     UserRow,
     UserSelectInput,
     UserSelectOutput,
+    WorkflowTransitionListInput,
+    WorkflowTransitionListOutput,
+    WorkflowTransitionRow,
   } from '../reg/types';
+  import { workflowTransitionList } from '../reg/handlers_admin';
   import {
     activitySelect,
     appliedTagIds,
@@ -109,6 +113,9 @@
 
   let task = $state<CardWithAttrs | null>(null);
   let classifyOpen = $state(false);
+  // Transitions for the current task's workflow_def_ref. Loaded on mount
+  // (and on refresh) so the status picker can hide unreachable options.
+  let workflowTransitions = $state<WorkflowTransitionRow[]>([]);
   let activity = $state<readonly ActivityRow[]>([]);
   let milestones = $state<readonly CardWithAttrs[]>([]);
   let components = $state<readonly CardWithAttrs[]>([]);
@@ -207,6 +214,27 @@
           ? (c.attributes['title'] as string)
           : `#${c.id}`,
     }));
+    // Workflow-aware status picker: when the task is bound to a workflow
+    // we restrict options to (current state) ∪ (states reachable from
+    // current via workflow_transition). This narrows the picker to the
+    // actually-allowed set; the server still rejects an out-of-graph
+    // value, but the UX shouldn't have offered it in the first place.
+    if (task !== null && workflowTransitions.length > 0) {
+      const statusAttr = schema.find((s) => s.name === 'status');
+      if (statusAttr?.options !== undefined) {
+        const cur =
+          typeof task.attributes['status'] === 'string'
+            ? task.attributes['status']
+            : '';
+        const reachable = new Set<string>([cur]);
+        for (const t of workflowTransitions) {
+          if (t.from_state === cur) reachable.add(t.to_state);
+        }
+        out['status'] = statusAttr.options.filter((opt) =>
+          reachable.has(String(opt.value)),
+        );
+      }
+    }
     return out;
   });
 
@@ -358,6 +386,27 @@
       tagCards = tagOut.rows;
       users = uOut.rows;
       loading = false;
+
+      // If the task is bound to a workflow, fetch its transitions so the
+      // status picker can constrain options. Skip if no workflow_def_ref.
+      const wfRef = found?.attributes['workflow_def_ref'];
+      if (typeof wfRef === 'number' && wfRef > 0) {
+        try {
+          const wOut = await dispatcher.request<
+            WorkflowTransitionListInput,
+            WorkflowTransitionListOutput
+          >({
+            endpoint: workflowTransitionList.endpoint,
+            action: workflowTransitionList.action,
+            data: { workflowDefId: wfRef },
+          });
+          workflowTransitions = wOut.rows;
+        } catch {
+          workflowTransitions = [];
+        }
+      } else {
+        workflowTransitions = [];
+      }
 
       if (initial && found !== null) {
         const t = found.attributes['title'];
