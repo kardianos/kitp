@@ -731,6 +731,23 @@ export interface GateSpawnOutput {
   spawned: number;
 }
 
+export interface GateListEffectiveInput {
+  cardId: number;
+}
+
+export interface EffectiveGateRow {
+  id: number;
+  title: string;
+  status: string;
+  required_in_states: string[];
+  source: 'private' | 'inherited';
+  source_card_id: number;
+}
+
+export interface GateListEffectiveOutput {
+  rows: EffectiveGateRow[];
+}
+
 // ============================================================================
 // role_mapping.*  (admin)
 // ============================================================================

@@ -23,6 +23,27 @@ import (
 	"github.com/kitp/kitp/server/internal/store"
 )
 
+// ListEffectiveInput selects every effective gate for a parent card,
+// including inherited gates from propagating attributes.
+type ListEffectiveInput struct {
+	CardID int64 `json:"card_id" mcp:"required,desc=parent card to list effective gates for"`
+}
+
+// EffectiveGateRow is one effective gate.
+type EffectiveGateRow struct {
+	ID               int64    `json:"id"`
+	Title            string   `json:"title"`
+	Status           string   `json:"status"`
+	RequiredInStates []string `json:"required_in_states"`
+	Source           string   `json:"source"`
+	SourceCardID     int64    `json:"source_card_id"`
+}
+
+// ListEffectiveOutput is per-input snapshot.
+type ListEffectiveOutput struct {
+	Rows []EffectiveGateRow `json:"rows"`
+}
+
 // SpawnInput tells the dispatcher which parent to spawn gates under.
 // The classify process passes the parent's card_id; standalone callers
 // supply both card_id and workflow_def_id (for re-bind).
@@ -36,7 +57,7 @@ type SpawnOutput struct {
 	Spawned int `json:"spawned" mcp:"desc=number of new gate cards inserted; existing rows are not duplicated"`
 }
 
-// Register installs the spawn handler.
+// Register installs the gate handlers.
 func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "gate",
@@ -49,6 +70,44 @@ func Register(p *store.Pool) {
 		CardTypeID:   cardTypeFromInput,
 		Run:          runSpawn(p),
 	})
+	reg.Register(reg.Handler{
+		Endpoint:     "gate",
+		Action:       "list_effective",
+		Doc:          "List effective gates on a parent: private sub-cards plus gates inherited via propagating card_ref attributes.",
+		InputType:    reflect.TypeFor[ListEffectiveInput](),
+		OutputType:   reflect.TypeFor[ListEffectiveOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		Run:          runListEffective(p),
+	})
+}
+
+func runListEffective(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		outs := make([]any, len(ins))
+		for i, raw := range ins {
+			in := raw.(ListEffectiveInput)
+			gates, err := EffectiveGatesFor(ctx, tx, in.CardID)
+			if err != nil {
+				return nil, err
+			}
+			rows := make([]EffectiveGateRow, len(gates))
+			for j, g := range gates {
+				rows[j] = EffectiveGateRow{
+					ID:               g.ID,
+					Title:            g.Title,
+					Status:           g.Status,
+					RequiredInStates: g.RequiredInStates,
+					Source:           g.Source,
+					SourceCardID:     g.SourceCardID,
+				}
+			}
+			outs[i] = ListEffectiveOutput{Rows: rows}
+		}
+		if p != nil {
+			p.NoteRead()
+		}
+		return outs, nil
+	}
 }
 
 func cardTypeFromInput(ctx context.Context, pool reg.ValidationPool, raw any) (int32, error) {
@@ -264,21 +323,36 @@ type EffectiveGate struct {
 	SourceCardID       int64
 }
 
-// EffectiveGatesFor returns every gate effective on the parent. For
-// Phase 3 this is just direct sub-cards; Phase 4 wires inherited gates.
+// EffectiveGatesFor returns every gate effective on the parent: the
+// union of direct gate sub-cards (private) and gates inherited from
+// cards referenced via attributes flagged propagates_gates (one-hop
+// only, see WORKFLOW_SHARED_GATES_PLAN.md).
 func EffectiveGatesFor(ctx context.Context, tx pgx.Tx, parentCardID int64) ([]EffectiveGate, error) {
-	rows, err := tx.Query(ctx, `
+	const q = `
+		WITH owners AS (
+			SELECT $1::bigint AS owner_id, 'private'::text AS source
+			UNION
+			SELECT (av.value::text)::bigint AS owner_id, 'inherited'::text AS source
+			FROM attribute_value av
+			JOIN attribute_def ad ON ad.id = av.attribute_def_id
+			WHERE av.card_id = $1
+			  AND ad.propagates_gates = true
+			  AND ad.value_type = 'card_ref'
+			  AND jsonb_typeof(av.value) = 'number'
+		)
 		SELECT g.id,
-		       COALESCE((SELECT (value)::text::text FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=g.id AND ad.name='title'), to_jsonb('')::text),
-		       COALESCE((SELECT (value)::text::text FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=g.id AND ad.name='status'), to_jsonb('pending')::text),
-		       COALESCE((SELECT (value)::text::text FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=g.id AND ad.name='required_in_states'), to_jsonb('')::text),
+		       COALESCE((SELECT value FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=g.id AND ad.name='title'), to_jsonb('')),
+		       COALESCE((SELECT value FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=g.id AND ad.name='gate_status'), to_jsonb('pending')),
+		       COALESCE((SELECT value FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=g.id AND ad.name='required_in_states'), to_jsonb('')),
+		       o.source,
 		       g.parent_card_id
-		FROM card g
+		FROM owners o
+		JOIN card g ON g.parent_card_id = o.owner_id
 		JOIN card_type ct ON ct.id = g.card_type_id
 		WHERE ct.name = 'gate'
-		  AND g.parent_card_id = $1
 		  AND g.deleted_at IS NULL
-	`, parentCardID)
+	`
+	rows, err := tx.Query(ctx, q, parentCardID)
 	if err != nil {
 		return nil, fmt.Errorf("gate.EffectiveGatesFor: %w", err)
 	}
@@ -287,19 +361,20 @@ func EffectiveGatesFor(ctx context.Context, tx pgx.Tx, parentCardID int64) ([]Ef
 	for rows.Next() {
 		var (
 			id        int64
-			titleRaw  string
-			statusRaw string
-			reqRaw    string
+			titleRaw  []byte
+			statusRaw []byte
+			reqRaw    []byte
+			source    string
 			parentID  int64
 		)
-		if err := rows.Scan(&id, &titleRaw, &statusRaw, &reqRaw, &parentID); err != nil {
+		if err := rows.Scan(&id, &titleRaw, &statusRaw, &reqRaw, &source, &parentID); err != nil {
 			return nil, err
 		}
 		var title, status string
-		_ = json.Unmarshal([]byte(titleRaw), &title)
-		_ = json.Unmarshal([]byte(statusRaw), &status)
+		_ = json.Unmarshal(titleRaw, &title)
+		_ = json.Unmarshal(statusRaw, &status)
 		var reqStr string
-		_ = json.Unmarshal([]byte(reqRaw), &reqStr)
+		_ = json.Unmarshal(reqRaw, &reqStr)
 		var req []string
 		if reqStr != "" {
 			_ = json.Unmarshal([]byte(reqStr), &req)
@@ -309,7 +384,7 @@ func EffectiveGatesFor(ctx context.Context, tx pgx.Tx, parentCardID int64) ([]Ef
 			Title:            title,
 			Status:           status,
 			RequiredInStates: req,
-			Source:           "private",
+			Source:           source,
 			SourceCardID:     parentID,
 		})
 	}

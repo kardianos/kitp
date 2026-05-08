@@ -20,6 +20,9 @@ import { HandlerRegistry } from './handler_registry.js';
 import type {
   CardClassifyInput,
   CardClassifyOutput,
+  EffectiveGateRow,
+  GateListEffectiveInput,
+  GateListEffectiveOutput,
   GateSpawnInput,
   GateSpawnOutput,
   ProjectTypeDeleteInput,
@@ -391,12 +394,42 @@ const gateSpawn: HandlerSpec<GateSpawnInput, GateSpawnOutput> = {
   decode: (raw) => ({ spawned: asNumOrZero(asObj(raw).spawned) }),
 };
 
+function decodeEffectiveGateRow(j: Record<string, unknown>): EffectiveGateRow {
+  const reqRaw = j.required_in_states;
+  const req = Array.isArray(reqRaw) ? reqRaw.map((x) => String(x)) : [];
+  const src = asStrOrEmpty(j.source) === 'inherited' ? 'inherited' : 'private';
+  return {
+    id: asNum(j.id),
+    title: asStrOrEmpty(j.title),
+    status: asStrOrEmpty(j.status) || 'pending',
+    required_in_states: req,
+    source: src,
+    source_card_id: asNumOrZero(j.source_card_id),
+  };
+}
+
+const gateListEffective: HandlerSpec<
+  GateListEffectiveInput,
+  GateListEffectiveOutput
+> = {
+  endpoint: 'gate',
+  action: 'list_effective',
+  encode: (i) => ({ card_id: i.cardId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeEffectiveGateRow(asObj(r))),
+    };
+  },
+};
+
 // ============================================================================
 // Re-exports + registration helper
 // ============================================================================
 
 export {
   cardClassify,
+  gateListEffective,
   gateSpawn,
   projectTypeDelete,
   projectTypeInsert,
@@ -430,4 +463,5 @@ export function registerAdminHandlers(r: HandlerRegistry): void {
   r.register(workflowTransitionSet);
   r.register(cardClassify);
   r.register(gateSpawn);
+  r.register(gateListEffective);
 }

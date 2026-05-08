@@ -1,22 +1,26 @@
 <!--
   GateStrip.
 
-  Renders the gate sub-cards under a parent (the task currently open).
-  Each gate shows its title, status, and a quick approve/reject control.
-  Clicking the title navigates to the gate's own card view.
+  Shows the *effective* gates on a parent card: private (sub-cards
+  under the parent) plus inherited (gates on cards referenced via
+  propagating attributes such as milestone_ref). Server returns the
+  union via gate.list_effective; this widget renders both populations
+  with a visual cue distinguishing them.
 
-  Loads via card.select_with_attributes filtered to card_type=gate and
-  parent_card_id=<task>. Updates via attribute.update on gate_status.
+  Approving an inherited gate flips it for every referrer; the click
+  handler surfaces a confirm via the source-card link rather than
+  approving in place.
 -->
 <script lang="ts">
   import { getDispatcher } from '../../dispatch/context';
-  import { attributeUpdate, cardSelectWithAttributes } from '../../reg/handlers';
+  import { attributeUpdate } from '../../reg/handlers';
+  import { gateListEffective } from '../../reg/handlers_admin';
   import type {
     AttributeUpdateInput,
     AttributeUpdateOutput,
-    CardSelectWithAttributesInput,
-    CardSelectWithAttributesOutput,
-    CardWithAttrs,
+    EffectiveGateRow,
+    GateListEffectiveInput,
+    GateListEffectiveOutput,
   } from '../../reg/types';
   import { notify } from '../toast.svelte';
   import { cx } from '../../util/class_names';
@@ -28,7 +32,7 @@
 
   const dispatcher = getDispatcher();
 
-  let gates = $state<CardWithAttrs[]>([]);
+  let gates = $state<EffectiveGateRow[]>([]);
   let loading = $state(false);
 
   $effect(() => {
@@ -39,12 +43,12 @@
     loading = true;
     try {
       const out = await dispatcher.request<
-        CardSelectWithAttributesInput,
-        CardSelectWithAttributesOutput
+        GateListEffectiveInput,
+        GateListEffectiveOutput
       >({
-        endpoint: cardSelectWithAttributes.endpoint,
-        action: cardSelectWithAttributes.action,
-        data: { cardTypeName: 'gate', parentCardId },
+        endpoint: gateListEffective.endpoint,
+        action: gateListEffective.action,
+        data: { cardId: parentCardId },
       });
       gates = out.rows;
     } catch (e) {
@@ -55,16 +59,13 @@
     }
   }
 
-  function gateTitle(g: CardWithAttrs): string {
-    const t = g.attributes['title'];
-    return typeof t === 'string' ? t : `Gate ${g.id}`;
-  }
-  function gateStatus(g: CardWithAttrs): string {
-    const s = g.attributes['gate_status'];
-    return typeof s === 'string' ? s : 'pending';
-  }
-
-  async function setStatus(g: CardWithAttrs, status: string): Promise<void> {
+  async function setStatus(g: EffectiveGateRow, status: string): Promise<void> {
+    if (g.source === 'inherited') {
+      const ok = confirm(
+        `Approving "${g.title}" will affect every card that inherits it. Continue?`,
+      );
+      if (!ok) return;
+    }
     try {
       await dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
         endpoint: attributeUpdate.endpoint,
@@ -75,7 +76,7 @@
           value: JSON.stringify(status),
         },
       });
-      notify({ type: 'success', message: `Gate "${gateTitle(g)}" → ${status}` });
+      notify({ type: 'success', message: `Gate "${g.title}" → ${status}` });
       await load();
       onChanged?.();
     } catch (e) {
@@ -110,14 +111,23 @@
       <div
         class={cx(
           'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs',
-          statusColour(gateStatus(g)),
+          statusColour(g.status),
         )}
         data-testid="gate-chip"
         data-gate-id={g.id}
+        data-gate-source={g.source}
       >
-        <span class="font-medium">{gateTitle(g)}</span>
-        <span class="opacity-70">· {gateStatus(g)}</span>
-        {#if gateStatus(g) === 'pending'}
+        <span class="font-medium">{g.title}</span>
+        {#if g.source === 'inherited'}
+          <span
+            class="rounded bg-bg/30 px-1 text-[10px] uppercase tracking-wide opacity-80"
+            title="Inherited from card #{g.source_card_id}"
+          >
+            ↳ shared
+          </span>
+        {/if}
+        <span class="opacity-70">· {g.status}</span>
+        {#if g.status === 'pending'}
           <button
             type="button"
             class="ml-1 rounded px-1 hover:bg-emerald-500/20"
