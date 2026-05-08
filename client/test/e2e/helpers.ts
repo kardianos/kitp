@@ -144,27 +144,14 @@ export async function pressChord(driver: WebDriver, chord: string): Promise<void
  * translates the resulting `KeyboardEvent.key === '?'` correctly.
  */
 export async function openShortcutHelp(driver: WebDriver): Promise<void> {
-  // Try Shift+/ first — that is how `?` is keyed on a US layout.
-  await driver
-    .actions({ async: true })
-    .keyDown(Key.SHIFT)
-    .keyDown('/')
-    .keyUp('/')
-    .keyUp(Key.SHIFT)
-    .perform();
-  try {
-    await waitFor(driver, '[role="dialog"][aria-label="Keyboard shortcuts"]', 2_500);
-    return;
-  } catch {
-    // Fallback to Mod+/ (Ctrl+/ on Linux).
-  }
-  await driver
-    .actions({ async: true })
-    .keyDown(Key.CONTROL)
-    .keyDown('/')
-    .keyUp('/')
-    .keyUp(Key.CONTROL)
-    .perform();
+  // Dispatch a synthetic KeyboardEvent for `?`. Some screens leave
+  // focus on an interactive element that swallows native keystrokes
+  // before the global dispatcher gets to look at them; a synthetic
+  // event on `window` reliably reaches `installGlobalKeydown`'s
+  // listener.
+  await driver.executeScript(
+    `window.dispatchEvent(new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true }));`,
+  );
   await waitFor(driver, '[role="dialog"][aria-label="Keyboard shortcuts"]', 5_000);
 }
 
@@ -173,7 +160,10 @@ export async function openShortcutHelp(driver: WebDriver): Promise<void> {
  * disappears.
  */
 export async function closeShortcutHelp(driver: WebDriver): Promise<void> {
-  await driver.actions({ async: true }).keyDown(Key.ESCAPE).keyUp(Key.ESCAPE).perform();
+  // Synthetic Esc — same rationale as openShortcutHelp.
+  await driver.executeScript(
+    `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));`,
+  );
   await driver.wait(async () => {
     const els = await driver.findElements(
       By.css('[role="dialog"][aria-label="Keyboard shortcuts"]'),

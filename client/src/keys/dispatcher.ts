@@ -57,7 +57,10 @@ export function canonicalKey(e: KeyEventLike): string {
   const mod = detectMac() ? e.metaKey : e.ctrlKey;
   const parts: string[] = [];
   if (mod) parts.push('Mod');
-  if (e.shiftKey) parts.push('Shift');
+  // `?` is inherently a shifted key on US layouts (Shift+/). Suppress
+  // the Shift modifier so the canonical form matches the registered
+  // binding `?` rather than `Shift+?`.
+  if (e.shiftKey && e.key !== '?') parts.push('Shift');
   if (e.altKey) parts.push('Alt');
 
   let key = e.key;
