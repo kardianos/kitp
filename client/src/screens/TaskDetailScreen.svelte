@@ -24,6 +24,7 @@
   import { setActiveScope, useShortcut } from '../keys/shortcut';
   import { goBackOrFallback, navigate } from '../routing/router.svelte';
   import { taskNavList } from '../routing/task_nav_list.svelte';
+  import { projectScope } from '../shell/project_scope.svelte';
   import { notify } from '../ui/toast.svelte';
   import Button from '../ui/Button.svelte';
   import IconButton from '../ui/IconButton.svelte';
@@ -330,7 +331,13 @@
     // result. `load()` already short-circuits when the cache is hot — but
     // the first call still issues a real request; that request goes onto
     // the same render tick as the others, so the batch contract is met.
-    const fSchema = schemaCache.load();
+    // Pass the active project as projectCardId so per-project enum
+    // options surface in pickers (migration 0020).
+    const fSchema = schemaCache.load(
+      projectScope.projectId !== null && projectScope.projectId !== undefined
+        ? { projectCardId: projectScope.projectId }
+        : undefined,
+    );
 
     try {
       const [tOut, aOut, mOut, cOut, tagOut, uOut] = await Promise.all([

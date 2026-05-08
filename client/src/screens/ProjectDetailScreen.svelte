@@ -220,7 +220,11 @@
         action: cardSelectWithAttributes.action,
         data: { cardTypeName: 'tag' },
       });
-      const schemaP = schemaCache.load();
+      // The current project IS the scope; pass it as projectCardId so
+      // per-project enum options surface in pickers (migration 0020).
+      const schemaP = schemaCache.load(
+        projectId > 0 ? { projectCardId: projectId } : undefined,
+      );
 
       const [projOut, tasksOut, usersOut, milestonesOut, componentsOut, tagsOut] =
         await Promise.all([

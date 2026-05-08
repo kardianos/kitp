@@ -110,10 +110,28 @@ export function friendlyLabel(name: string): string {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Optional scope passed to `AttributeSchemaCache.load()`. Either field
+ * (or both) narrows the enum-option list returned with each
+ * attribute_def: server unions global options ∪ project_type-scoped ∪
+ * project-scoped. Callers running inside a project should pass either
+ * `projectTypeId` (most common — pinned via the sidebar) or
+ * `projectCardId` (rare — when an option set is unique to one project).
+ */
+export interface SchemaScope {
+  projectTypeId?: number;
+  projectCardId?: number;
+}
+
+function scopeKey(s: SchemaScope | undefined): string {
+  return `pt=${s?.projectTypeId ?? '_'}|pc=${s?.projectCardId ?? '_'}`;
+}
+
+/**
  * Server-driven cache of `attribute_def` rows. One instance is created at
  * the App root and provided via Svelte context. The first `load()` call
  * triggers a single batched `attribute_def.select` request; subsequent
- * calls are no-ops once `loaded` is true.
+ * calls with the same scope short-circuit, calls with a different scope
+ * re-fetch.
  *
  * Components observe `defs` / `loaded` reactively (the `$state` runes
  * already implement fine-grained subscription).
@@ -123,26 +141,36 @@ export class AttributeSchemaCache {
   defs = $state<AttributeDefRow[]>([]);
   /** `true` once a successful load has completed. */
   loaded = $state(false);
+  /** The scope used on the most recent successful load. */
+  private cachedScopeKey = '';
   /** Single in-flight load promise; deduped so concurrent callers share it. */
   private loading: Promise<void> | null = null;
 
   constructor(private readonly dispatcher: Dispatcher) {}
 
   /**
-   * Fetch the attribute_def list once. Calls after the first resolve
-   * short-circuit. Concurrent callers share the same in-flight promise.
+   * Fetch the attribute_def list. The first call (or any call whose
+   * scope differs from the previous) issues a request; same-scope calls
+   * after the first resolve short-circuit. Concurrent callers share the
+   * same in-flight promise.
    */
-  async load(): Promise<void> {
-    if (this.loaded) return;
+  async load(scope?: SchemaScope): Promise<void> {
+    const key = scopeKey(scope);
+    if (this.loaded && this.cachedScopeKey === key) return;
     if (this.loading !== null) return this.loading;
+    const data: AttributeDefSelectInput = {};
+    if (scope?.projectTypeId !== undefined) data.projectTypeId = scope.projectTypeId;
+    if (scope?.projectCardId !== undefined) data.projectCardId = scope.projectCardId;
     const p = this.dispatcher
       .request<AttributeDefSelectInput, AttributeDefSelectOutput>({
         endpoint: attributeDefSelect.endpoint,
         action: attributeDefSelect.action,
+        data,
       })
       .then((out) => {
         this.defs = out.rows;
         this.loaded = true;
+        this.cachedScopeKey = key;
       })
       .finally(() => {
         this.loading = null;

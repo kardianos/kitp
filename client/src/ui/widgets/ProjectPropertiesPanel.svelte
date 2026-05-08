@@ -145,7 +145,11 @@
       action: userSelect.action,
       data: {},
     });
-    const fSchema = schemaCache.load();
+    // The card being edited IS the project — pass it as projectCardId
+    // so per-project enum options are visible in pickers (migration 0020).
+    const fSchema = schemaCache.load(
+      cardId > 0 ? { projectCardId: cardId } : undefined,
+    );
     try {
       const [pOut, uOut] = await Promise.all([fProj, fUsers]);
       await fSchema;

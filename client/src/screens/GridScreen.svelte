@@ -283,7 +283,11 @@
     });
     // `AttributeSchemaCache.load()` issues `attribute_def.select` on the
     // same tick (and short-circuits on subsequent screen mounts).
-    const fSchema = schemaCache.load();
+    // Pass the active project as projectCardId so per-project enum
+    // options surface in pickers — see migration 0020.
+    const fSchema = schemaCache.load(
+      scopedProjectId !== undefined ? { projectCardId: scopedProjectId } : undefined,
+    );
 
     try {
       const [tOut, uOut, mOut, cOut, tagOut] = await Promise.all([

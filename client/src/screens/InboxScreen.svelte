@@ -276,8 +276,13 @@
       data: { cardTypeName: 'tag' },
     });
     // `AttributeSchemaCache.load()` issues `attribute_def.select` on the
-    // same tick (and short-circuits on subsequent screen mounts).
-    const fSchema = schemaCache.load();
+    // same tick. Pass the active project as projectCardId so per-project
+    // enum options surface in pickers (migration 0020).
+    const fSchema = schemaCache.load(
+      projectScope.projectId !== null && projectScope.projectId !== undefined
+        ? { projectCardId: projectScope.projectId }
+        : undefined,
+    );
 
     try {
       const [inboxOut, userOut, mOut, cOut, tagOut] = await Promise.all([
