@@ -127,6 +127,13 @@ export const routes: Route[] = [
     scope: 'admin_attributes',
   },
   {
+    path: '/admin/project-types',
+    component: () => import('../screens/admin/AdminProjectTypesScreen.svelte'),
+    guard: 'requireAdmin',
+    shell: true,
+    scope: 'admin_project_types',
+  },
+  {
     path: '/_dev/components',
     component: () => import('../screens/_dev/Components.svelte'),
     shell: false,

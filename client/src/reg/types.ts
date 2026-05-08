@@ -308,7 +308,10 @@ export interface AttributeUpdateOutput {
 // ============================================================================
 
 export interface AttributeDefSelectInput {
-  _empty?: never;
+  /** Narrow enum options to those visible inside this project_type. */
+  projectTypeId?: number;
+  /** Narrow enum options to those visible inside this specific project. */
+  projectCardId?: number;
 }
 
 export interface AttributeDefBoundCardType {
@@ -327,6 +330,10 @@ export interface AttributeDefOptionRow {
   value: string;
   label: string;
   ordering: number;
+  /** Set when the option is scoped to a project_type. */
+  project_type_id?: number;
+  /** Set when the option is scoped to a single project card. */
+  project_card_id?: number;
 }
 
 export interface AttributeDefRow {
@@ -612,6 +619,56 @@ export interface UserRoleRevokeInput {
 export interface UserRoleRevokeOutput {
   ok: boolean;
   deleted: number;
+}
+
+// ============================================================================
+// project_type.* (admin)
+// ============================================================================
+
+export interface ProjectTypeRow {
+  id: number;
+  name: string;
+  doc?: string;
+  is_built_in: boolean;
+  is_default: boolean;
+}
+
+export interface ProjectTypeSelectInput {
+  _empty?: never;
+}
+
+export interface ProjectTypeSelectOutput {
+  rows: ProjectTypeRow[];
+}
+
+export interface ProjectTypeInsertInput {
+  name: string;
+  doc?: string;
+  isDefault?: boolean;
+}
+
+export interface ProjectTypeInsertOutput {
+  id: number;
+}
+
+export interface ProjectTypeUpdateInput {
+  id: number;
+  name?: string;
+  doc?: string;
+  isDefault?: boolean;
+}
+
+export interface ProjectTypeUpdateOutput {
+  ok: boolean;
+}
+
+export interface ProjectTypeDeleteInput {
+  id: number;
+}
+
+export interface ProjectTypeDeleteOutput {
+  ok: boolean;
+  usage_count?: number;
 }
 
 // ============================================================================

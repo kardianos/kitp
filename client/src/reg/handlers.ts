@@ -542,11 +542,16 @@ function decodeAttributeDefBoundCardType(
 function decodeAttributeDefOptionRow(
   j: Record<string, unknown>,
 ): AttributeDefOptionRow {
-  return {
+  const out: AttributeDefOptionRow = {
     value: asStrOrEmpty(j.value),
     label: asStrOrEmpty(j.label),
     ordering: asNumOrZero(j.ordering),
   };
+  const pt = asNumOpt(j.project_type_id);
+  if (pt !== undefined) out.project_type_id = pt;
+  const pc = asNumOpt(j.project_card_id);
+  if (pc !== undefined) out.project_card_id = pc;
+  return out;
 }
 
 function decodeAttributeDefRow(j: Record<string, unknown>): AttributeDefRow {
@@ -574,7 +579,12 @@ const attributeDefSelect: HandlerSpec<
 > = {
   endpoint: 'attribute_def',
   action: 'select',
-  encode: () => ({}),
+  encode: (i) => {
+    const m: Record<string, unknown> = {};
+    if (i?.projectTypeId !== undefined) m.project_type_id = i.projectTypeId;
+    if (i?.projectCardId !== undefined) m.project_card_id = i.projectCardId;
+    return m;
+  },
   decode: (raw) => {
     const j = asObj(raw);
     return {

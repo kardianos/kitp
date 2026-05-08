@@ -37,6 +37,7 @@
   const adminItems: Array<{ href: string; label: string }> = [
     { href: '/admin/users', label: 'Users' },
     { href: '/admin/attributes', label: 'Attributes' },
+    { href: '/admin/project-types', label: 'Project Types' },
   ];
 
   function isActive(href: string): boolean {

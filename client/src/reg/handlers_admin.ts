@@ -18,6 +18,15 @@ import {
 import type { HandlerSpec } from './handler_registry.js';
 import { HandlerRegistry } from './handler_registry.js';
 import type {
+  ProjectTypeDeleteInput,
+  ProjectTypeDeleteOutput,
+  ProjectTypeInsertInput,
+  ProjectTypeInsertOutput,
+  ProjectTypeRow,
+  ProjectTypeSelectInput,
+  ProjectTypeSelectOutput,
+  ProjectTypeUpdateInput,
+  ProjectTypeUpdateOutput,
   RoleAssignmentRow,
   RoleGrantRow,
   RoleListInput,
@@ -213,17 +222,99 @@ const roleMappingDelete: HandlerSpec<
 };
 
 // ============================================================================
+// project_type.* (admin)
+// ============================================================================
+
+function decodeProjectTypeRow(j: Record<string, unknown>): ProjectTypeRow {
+  const out: ProjectTypeRow = {
+    id: asNum(j.id),
+    name: asStr(j.name),
+    is_built_in: asBoolOrFalse(j.is_built_in),
+    is_default: asBoolOrFalse(j.is_default),
+  };
+  const doc = asStrOpt(j.doc);
+  if (doc !== undefined) out.doc = doc;
+  return out;
+}
+
+const projectTypeSelect: HandlerSpec<
+  ProjectTypeSelectInput,
+  ProjectTypeSelectOutput
+> = {
+  endpoint: 'project_type',
+  action: 'select',
+  encode: () => ({}),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeProjectTypeRow(asObj(r))),
+    };
+  },
+};
+
+const projectTypeInsert: HandlerSpec<
+  ProjectTypeInsertInput,
+  ProjectTypeInsertOutput
+> = {
+  endpoint: 'project_type',
+  action: 'insert',
+  encode: (i) => {
+    const m: Record<string, unknown> = { name: i.name };
+    if (i.doc !== undefined && i.doc !== '') m.doc = i.doc;
+    if (i.isDefault === true) m.is_default = true;
+    return m;
+  },
+  decode: (raw) => ({ id: asNum(asObj(raw).id) }),
+};
+
+const projectTypeUpdate: HandlerSpec<
+  ProjectTypeUpdateInput,
+  ProjectTypeUpdateOutput
+> = {
+  endpoint: 'project_type',
+  action: 'update',
+  encode: (i) => {
+    const m: Record<string, unknown> = { id: i.id };
+    if (i.name !== undefined) m.name = i.name;
+    if (i.doc !== undefined) m.doc = i.doc;
+    if (i.isDefault !== undefined) m.is_default = i.isDefault;
+    return m;
+  },
+  decode: (raw) => ({ ok: asBoolOrFalse(asObj(raw).ok) }),
+};
+
+const projectTypeDelete: HandlerSpec<
+  ProjectTypeDeleteInput,
+  ProjectTypeDeleteOutput
+> = {
+  endpoint: 'project_type',
+  action: 'delete',
+  encode: (i) => ({ id: i.id }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    const out: ProjectTypeDeleteOutput = { ok: asBoolOrFalse(j.ok) };
+    const usage = asNumOpt(j.usage_count);
+    if (usage !== undefined) out.usage_count = usage;
+    return out;
+  },
+};
+
+// ============================================================================
 // Re-exports + registration helper
 // ============================================================================
 
 export {
-  userListWithRoles,
+  projectTypeDelete,
+  projectTypeInsert,
+  projectTypeSelect,
+  projectTypeUpdate,
   roleList,
-  userRoleSet,
-  userRoleRevoke,
+  roleMappingDelete,
   roleMappingList,
   roleMappingSet,
-  roleMappingDelete,
+  userListWithRoles,
+  userRoleRevoke,
+  userRoleSet,
 };
 
 /** Register the admin handlers on top of the v1 set. */
@@ -235,4 +326,8 @@ export function registerAdminHandlers(r: HandlerRegistry): void {
   r.register(roleMappingList);
   r.register(roleMappingSet);
   r.register(roleMappingDelete);
+  r.register(projectTypeSelect);
+  r.register(projectTypeInsert);
+  r.register(projectTypeUpdate);
+  r.register(projectTypeDelete);
 }
