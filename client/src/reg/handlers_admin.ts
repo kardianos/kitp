@@ -20,6 +20,8 @@ import { HandlerRegistry } from './handler_registry.js';
 import type {
   CardClassifyInput,
   CardClassifyOutput,
+  GateSpawnInput,
+  GateSpawnOutput,
   ProjectTypeDeleteInput,
   ProjectTypeDeleteOutput,
   ProjectTypeInsertInput,
@@ -378,12 +380,24 @@ const cardClassify: HandlerSpec<CardClassifyInput, CardClassifyOutput> = {
   },
 };
 
+const gateSpawn: HandlerSpec<GateSpawnInput, GateSpawnOutput> = {
+  endpoint: 'gate',
+  action: 'spawn',
+  encode: (i) => {
+    const m: Record<string, unknown> = { card_id: i.cardId };
+    if (i.workflowDefId !== undefined) m.workflow_def_id = i.workflowDefId;
+    return m;
+  },
+  decode: (raw) => ({ spawned: asNumOrZero(asObj(raw).spawned) }),
+};
+
 // ============================================================================
 // Re-exports + registration helper
 // ============================================================================
 
 export {
   cardClassify,
+  gateSpawn,
   projectTypeDelete,
   projectTypeInsert,
   projectTypeSelect,
@@ -415,4 +429,5 @@ export function registerAdminHandlers(r: HandlerRegistry): void {
   r.register(workflowTransitionList);
   r.register(workflowTransitionSet);
   r.register(cardClassify);
+  r.register(gateSpawn);
 }

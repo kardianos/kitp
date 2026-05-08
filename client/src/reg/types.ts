@@ -719,6 +719,19 @@ export interface CardClassifyOutput {
 }
 
 // ============================================================================
+// gate.spawn
+// ============================================================================
+
+export interface GateSpawnInput {
+  cardId: number;
+  workflowDefId?: number;
+}
+
+export interface GateSpawnOutput {
+  spawned: number;
+}
+
+// ============================================================================
 // role_mapping.*  (admin)
 // ============================================================================
 

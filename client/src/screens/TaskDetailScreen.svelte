@@ -37,6 +37,7 @@
   import AttachmentsPreviewStrip from '../ui/widgets/AttachmentsPreviewStrip.svelte';
   import AttributeSidePanel from '../ui/widgets/AttributeSidePanel.svelte';
   import ClassifyDialog from '../ui/widgets/ClassifyDialog.svelte';
+  import GateStrip from '../ui/widgets/GateStrip.svelte';
   import { AttributeSchemaCache } from '../filter/attribute_schema.svelte';
   import type { FilterAttribute } from '../filter/attribute_schema.svelte';
   import type {
@@ -777,6 +778,7 @@
           {/if}
           <p class="mt-0.5 px-1 font-mono text-[11px] text-muted">#{taskId}</p>
         </div>
+        <GateStrip parentCardId={taskId} onChanged={() => void refresh()} />
         <span class="ml-2 mt-0.5 self-start" data-testid="classify-button-wrap">
           <Button variant="secondary" onclick={() => (classifyOpen = true)}>
             Classify…

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/dom/gate"
 	"github.com/kitp/kitp/server/internal/dom/workflowtransition"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
@@ -82,6 +83,29 @@ func guardStatusTransition(ctx context.Context, tx pgx.Tx, cardID int64, newStat
 		return &reg.HandlerError{Code: "transition_unreachable",
 			Message: fmt.Sprintf("attribute.update: transition %q → %q not reachable on workflow %d",
 				current, newState, *workflowDefID)}
+	}
+	// Gate guard. For every effective gate whose required_in_states
+	// includes the target state, status must be approved or n_a.
+	gates, err := gate.EffectiveGatesFor(ctx, tx, cardID)
+	if err != nil {
+		return err
+	}
+	for _, g := range gates {
+		required := false
+		for _, s := range g.RequiredInStates {
+			if s == newState {
+				required = true
+				break
+			}
+		}
+		if !required {
+			continue
+		}
+		if g.Status != "approved" && g.Status != "n_a" {
+			return &reg.HandlerError{Code: "gate_pending",
+				Message: fmt.Sprintf("attribute.update: gate %q is %s; must be approved before transitioning to %q",
+					g.Title, g.Status, newState)}
+		}
 	}
 	return nil
 }

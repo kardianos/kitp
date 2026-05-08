@@ -50,6 +50,7 @@ import (
 	domconfig "github.com/kitp/kitp/server/internal/dom/config"
 	"github.com/kitp/kitp/server/internal/dom/echo"
 	"github.com/kitp/kitp/server/internal/dom/file"
+	"github.com/kitp/kitp/server/internal/dom/gate"
 	"github.com/kitp/kitp/server/internal/dom/inbox"
 	"github.com/kitp/kitp/server/internal/dom/process"
 	"github.com/kitp/kitp/server/internal/dom/projecttype"
@@ -111,6 +112,7 @@ func registerHandlers(pool *store.Pool) {
 	projecttype.Register(pool)
 	workflowtransition.Register(pool)
 	workflowdef.Register(pool)
+	gate.Register(pool)
 	domuser.Register()
 	usercardsort.Register(pool)
 	inbox.Register(pool)
