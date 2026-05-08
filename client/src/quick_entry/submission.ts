@@ -31,6 +31,12 @@ export interface QuickEntryPrefill {
    * unaffected.
    */
   extraAttributes?: { name: string; value: unknown }[];
+  /**
+   * project_type for new project rows. Honoured only when the overlay's
+   * card_type is 'project'; ignored otherwise. The server falls back to
+   * the migration-seeded default when this is unset.
+   */
+  projectTypeId?: number;
 }
 
 /** Inputs a screen / overlay collects from the user and from its prefill. */
@@ -108,6 +114,12 @@ export async function submitQuickEntry(
   };
   if (input.parentCardId !== undefined) {
     insertData.parentCardId = input.parentCardId;
+  }
+  if (
+    input.cardTypeName === 'project' &&
+    input.prefill?.projectTypeId !== undefined
+  ) {
+    insertData.projectTypeId = input.prefill.projectTypeId;
   }
 
   const insertP = dispatcher.request<CardInsertInput, CardInsertOutput>({

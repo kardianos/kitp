@@ -58,6 +58,12 @@ export interface CardInsertInput {
    * Forwarded to the server's `data.attributes` jsonb field unchanged.
    */
   attributes?: Record<string, unknown>;
+  /**
+   * project_type to bind a new project to (project card_type only).
+   * Defaults server-side to the migration-seeded `is_default` row when
+   * omitted. Ignored on non-project card types.
+   */
+  projectTypeId?: number;
 }
 
 export interface CardInsertOutput {

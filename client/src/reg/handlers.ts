@@ -241,6 +241,7 @@ const cardInsert: HandlerSpec<CardInsertInput, CardInsertOutput> = {
     if (i.attributes !== undefined && Object.keys(i.attributes).length > 0) {
       m.attributes = i.attributes;
     }
+    if (i.projectTypeId !== undefined) m.project_type_id = i.projectTypeId;
     return m;
   },
   decode: (raw) => {

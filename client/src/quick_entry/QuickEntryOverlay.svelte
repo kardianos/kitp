@@ -33,9 +33,13 @@
     type QuickEntryPrefill,
     type QuickEntrySubmitInput,
   } from './submission.js';
+  import { projectTypeSelect } from '../reg/handlers_admin.js';
   import type {
     CardDeleteInput,
     CardDeleteOutput,
+    ProjectTypeRow,
+    ProjectTypeSelectInput,
+    ProjectTypeSelectOutput,
   } from '../reg/types.js';
 
   interface AssigneeOption {
@@ -75,6 +79,8 @@
   let title = $state('');
   let description = $state('');
   let assigneeId = $state<number | null>(null);
+  let projectTypeId = $state<number | null>(null);
+  let projectTypes = $state<ProjectTypeRow[]>([]);
   let submitting = $state(false);
   let errorMessage = $state<string | null>(null);
 
@@ -88,6 +94,16 @@
     return defaultCardType === 'task' && assigneeOptions.length > 0;
   });
 
+  /** Render the project_type combobox only for project create flows. */
+  const showProjectType = $derived(defaultCardType === 'project');
+
+  const projectTypeOptions = $derived(
+    projectTypes.map((p) => ({
+      value: p.id,
+      label: p.is_default ? `${p.name} (default)` : p.name,
+    })),
+  );
+
   /* ----------------------------------------------- focus + open/close fx --- */
 
   $effect(() => {
@@ -98,6 +114,34 @@
       // Seed assignee from prefill when the overlay opens.
       if (prefill?.assigneeUserId !== undefined && assigneeId === null) {
         assigneeId = prefill.assigneeUserId;
+      }
+      // Lazy-load project_types when opening for a project create. Pick
+      // the prefill or the default row as the initial selection.
+      if (showProjectType && projectTypes.length === 0) {
+        void (async () => {
+          try {
+            const out = await dispatcher.request<
+              ProjectTypeSelectInput,
+              ProjectTypeSelectOutput
+            >({
+              endpoint: projectTypeSelect.endpoint,
+              action: projectTypeSelect.action,
+              data: {},
+            });
+            projectTypes = out.rows;
+            if (projectTypeId === null) {
+              if (prefill?.projectTypeId !== undefined) {
+                projectTypeId = prefill.projectTypeId;
+              } else {
+                const def = out.rows.find((r) => r.is_default);
+                projectTypeId = def?.id ?? out.rows[0]?.id ?? null;
+              }
+            }
+          } catch {
+            // If the load fails the combobox stays empty; the server
+            // falls back to the default row anyway.
+          }
+        })();
       }
       void tick().then(() => titleEl?.focus());
     } else {
@@ -234,6 +278,9 @@
     const effectivePrefill: QuickEntryPrefill = { ...(prefill ?? {}) };
     if (assigneeId !== null) {
       effectivePrefill.assigneeUserId = assigneeId;
+    }
+    if (showProjectType && projectTypeId !== null) {
+      effectivePrefill.projectTypeId = projectTypeId;
     }
 
     // Card-type ↔ parent matrix today: project is top-level (no parent
@@ -406,6 +453,22 @@
               placeholder="Select assignee…"
               disabled={submitting}
               aria-label="Assignee"
+            />
+          </div>
+        {/if}
+
+        {#if showProjectType}
+          <label class="mb-2 block text-xs font-medium text-muted" for="qe-project-type">
+            Project type
+          </label>
+          <div class="mb-3" data-testid="qe-project-type">
+            <Combobox
+              id="qe-project-type"
+              bind:value={projectTypeId}
+              options={projectTypeOptions}
+              placeholder="Select type…"
+              disabled={submitting || projectTypes.length === 0}
+              aria-label="Project type"
             />
           </div>
         {/if}
