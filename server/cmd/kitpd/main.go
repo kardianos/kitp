@@ -55,6 +55,8 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/projecttype"
 	domrole "github.com/kitp/kitp/server/internal/dom/role"
 	"github.com/kitp/kitp/server/internal/dom/rolemapping"
+	"github.com/kitp/kitp/server/internal/dom/workflowdef"
+	"github.com/kitp/kitp/server/internal/dom/workflowtransition"
 	"github.com/kitp/kitp/server/internal/dom/tag"
 	"github.com/kitp/kitp/server/internal/dom/proc"
 	domuser "github.com/kitp/kitp/server/internal/dom/user"
@@ -107,6 +109,8 @@ func registerHandlers(pool *store.Pool) {
 	process.Register(pool)
 	proc.Register(pool)
 	projecttype.Register(pool)
+	workflowtransition.Register(pool)
+	workflowdef.Register(pool)
 	domuser.Register()
 	usercardsort.Register(pool)
 	inbox.Register(pool)

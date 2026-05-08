@@ -13,10 +13,78 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/dom/workflowtransition"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
 )
+
+// guardStatusTransition consults workflow_transition for cards bound to
+// a workflow_def. Returns nil when the card has no workflow binding
+// (legacy behaviour) or when the transition is reachable.
+func guardStatusTransition(ctx context.Context, tx pgx.Tx, cardID int64, newState string) error {
+	// Look up the workflow_def_ref attribute_def id once per call.
+	var workflowDefID *int64
+	if err := tx.QueryRow(ctx, `
+		SELECT (av.value)::text::bigint
+		FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE av.card_id = $1 AND ad.name = 'workflow_def_ref'
+	`, cardID).Scan(&workflowDefID); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if workflowDefID == nil {
+		return nil
+	}
+	// Read the current status (may be null on a freshly classified card).
+	var currentRaw []byte
+	if err := tx.QueryRow(ctx, `
+		SELECT av.value
+		FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE av.card_id = $1 AND ad.name = 'status'
+	`, cardID).Scan(&currentRaw); err != nil {
+		if err == pgx.ErrNoRows {
+			// No prior status — treat as match against initial_state on
+			// the workflow_def.
+			var initRaw []byte
+			if err := tx.QueryRow(ctx, `
+				SELECT av.value
+				FROM attribute_value av
+				JOIN attribute_def ad ON ad.id = av.attribute_def_id
+				WHERE av.card_id = $1 AND ad.name = 'initial_state'
+			`, *workflowDefID).Scan(&initRaw); err != nil {
+				return nil // can't check; let the write proceed
+			}
+			var initial string
+			_ = json.Unmarshal(initRaw, &initial)
+			if initial == newState {
+				return nil // setting to initial is always allowed
+			}
+			currentRaw = initRaw
+		} else {
+			return err
+		}
+	}
+	var current string
+	_ = json.Unmarshal(currentRaw, &current)
+	if current == newState {
+		return nil // no-op transition is allowed
+	}
+	ok, _, err := workflowtransition.Reachable(ctx, tx, *workflowDefID, current, newState)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return &reg.HandlerError{Code: "transition_unreachable",
+			Message: fmt.Sprintf("attribute.update: transition %q → %q not reachable on workflow %d",
+				current, newState, *workflowDefID)}
+	}
+	return nil
+}
 
 
 // UpdateInput is one row of attribute.update.
@@ -190,6 +258,29 @@ func runUpdate(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 				AttributeName: in.AttributeName,
 				Value:         value,
 				Ord:           i,
+			}
+		}
+
+		// Pre-write transition guard. If the attribute being written is
+		// `status` and the card has a workflow_def_ref, consult
+		// workflow_transition for reachability. We collect every (card,
+		// status) update in this batch and validate before opening the
+		// write CTE so a rejected transition aborts cleanly.
+		for i, raw := range ins {
+			in := raw.(UpdateInput)
+			if in.AttributeName != "status" {
+				continue
+			}
+			var newState string
+			if err := json.Unmarshal(in.Value, &newState); err != nil {
+				continue // leave to the existing validator to surface
+			}
+			if err := guardStatusTransition(ctx, tx, in.CardID, newState); err != nil {
+				if hErr, ok := err.(*reg.HandlerError); ok {
+					hErr.InputIndex = i
+					return nil, hErr
+				}
+				return nil, fmt.Errorf("attribute.update: status guard: %w", err)
 			}
 		}
 

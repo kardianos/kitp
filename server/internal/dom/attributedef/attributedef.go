@@ -502,7 +502,7 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 				SELECT card_type_id, attribute_def_id, is_required, ordering
 				FROM jsonb_to_recordset($1::jsonb)
 				AS x(card_type_id int, attribute_def_id int, is_required boolean, ordering int)
-				ON CONFLICT (card_type_id, attribute_def_id, COALESCE(project_type_id, 0)) DO NOTHING
+				ON CONFLICT (card_type_id, attribute_def_id, COALESCE(project_type_id, 0), COALESCE(workflow_def_id, 0)) DO NOTHING
 			`
 			if _, err := tx.Exec(ctx, edgeQ, buf); err != nil {
 				return nil, fmt.Errorf("attribute_def.insert: edges: %w", err)
@@ -549,7 +549,7 @@ func runEdgeInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any
 			SELECT card_type_id, attribute_def_id, is_required, ordering
 			FROM jsonb_to_recordset($1::jsonb)
 			AS x(card_type_id int, attribute_def_id int, is_required boolean, ordering int)
-			ON CONFLICT (card_type_id, attribute_def_id, COALESCE(project_type_id, 0)) DO NOTHING
+			ON CONFLICT (card_type_id, attribute_def_id, COALESCE(project_type_id, 0), COALESCE(workflow_def_id, 0)) DO NOTHING
 		`
 		if _, err := tx.Exec(ctx, q, buf); err != nil {
 			return nil, fmt.Errorf("edge.insert: %w", err)
