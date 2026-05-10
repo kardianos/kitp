@@ -357,6 +357,14 @@ func runClassify(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) 
 				return nil, fmt.Errorf("card.classify: classified activity: %w", err)
 			}
 
+			// Materialise the workflow's gate sub-cards on the classified card
+			// in the same tx. SpawnFor is idempotent so a reclassify call
+			// won't duplicate gates already present.
+			wfID := in.WorkflowDefID
+			if _, err := gate.SpawnFor(ctx, tx, in.CardID, &wfID); err != nil {
+				return nil, fmt.Errorf("card.classify: spawn gates: %w", err)
+			}
+
 			// Suppress unused-variable warnings.
 			_ = targetCardTypeID
 			_ = wfCardTypeID

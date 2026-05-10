@@ -119,28 +119,6 @@ func cardTypeFromInput(ctx context.Context, pool reg.ValidationPool, raw any) (i
 // arrayPath
 func runSpawn(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-		snap, err := schema.Load(ctx, tx)
-		if err != nil {
-			return nil, err
-		}
-		gateCT, ok := snap.CardTypeByName["gate"]
-		if !ok {
-			return nil, fmt.Errorf("gate.spawn: gate card_type missing (migration 0025 not applied?)")
-		}
-		gateTemplateCT, ok := snap.CardTypeByName["gate_template"]
-		if !ok {
-			return nil, fmt.Errorf("gate.spawn: gate_template card_type missing")
-		}
-		titleAttr := snap.AttrByName["title"]
-		gateKindAttr := snap.AttrByName["gate_kind"]
-		requiredAttr := snap.AttrByName["required_in_states"]
-		statusAttr := snap.AttrByName["gate_status"]
-		gateTemplateRefAttr := snap.AttrByName["gate_template_ref"]
-		assigneeAttr := snap.AttrByName["assignee"]
-		defaultAssigneeAttr := snap.AttrByName["default_assignee"]
-		workflowRefAttr := snap.AttrByName["workflow_def_ref"]
-
 		outs := make([]any, len(ins))
 		for i, raw := range ins {
 			in := raw.(SpawnInput)
@@ -148,159 +126,9 @@ func runSpawn(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]
 				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
 					Message: "gate.spawn: card_id is required"}
 			}
-			workflowID := in.WorkflowDefID
-			if workflowID == nil {
-				// Default to the card's workflow_def_ref.
-				var refRaw []byte
-				err := tx.QueryRow(ctx, `
-					SELECT value FROM attribute_value
-					WHERE card_id = $1 AND attribute_def_id = $2
-				`, in.CardID, workflowRefAttr.ID).Scan(&refRaw)
-				if err == pgx.ErrNoRows {
-					outs[i] = SpawnOutput{Spawned: 0}
-					continue
-				}
-				if err != nil {
-					return nil, fmt.Errorf("gate.spawn: workflow_def_ref read: %w", err)
-				}
-				var ref int64
-				if err := json.Unmarshal(refRaw, &ref); err != nil {
-					return nil, fmt.Errorf("gate.spawn: workflow_def_ref is not int64: %w", err)
-				}
-				workflowID = &ref
-			}
-
-			// Load every gate_template under the workflow_def along with
-			// its attribute values.
-			rows, err := tx.Query(ctx, `
-				SELECT c.id,
-				       (SELECT value FROM attribute_value WHERE card_id = c.id AND attribute_def_id = $2) AS title_v,
-				       (SELECT value FROM attribute_value WHERE card_id = c.id AND attribute_def_id = $3) AS kind_v,
-				       (SELECT value FROM attribute_value WHERE card_id = c.id AND attribute_def_id = $4) AS req_v,
-				       (SELECT value FROM attribute_value WHERE card_id = c.id AND attribute_def_id = $5) AS dassign_v
-				FROM card c
-				WHERE c.parent_card_id = $1
-				  AND c.card_type_id = $6
-				  AND c.deleted_at IS NULL
-			`, *workflowID, titleAttr.ID, gateKindAttr.ID, requiredAttr.ID, defaultAssigneeAttr.ID, gateTemplateCT.ID)
+			spawned, err := SpawnFor(ctx, tx, in.CardID, in.WorkflowDefID)
 			if err != nil {
-				return nil, fmt.Errorf("gate.spawn: load templates: %w", err)
-			}
-			type template struct {
-				ID                 int64
-				Title              json.RawMessage
-				Kind               json.RawMessage
-				RequiredInStates   json.RawMessage
-				DefaultAssignee    json.RawMessage
-			}
-			var templates []template
-			for rows.Next() {
-				var t template
-				if err := rows.Scan(&t.ID, &t.Title, &t.Kind, &t.RequiredInStates, &t.DefaultAssignee); err != nil {
-					rows.Close()
-					return nil, err
-				}
-				templates = append(templates, t)
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
 				return nil, err
-			}
-
-			// Look up which (parent, template) pairs already have a runtime
-			// gate so we can skip them.
-			existing := map[int64]bool{}
-			r2, err := tx.Query(ctx, `
-				SELECT (av.value)::text::bigint
-				FROM card g
-				JOIN attribute_value av ON av.card_id = g.id AND av.attribute_def_id = $1
-				WHERE g.parent_card_id = $2
-				  AND g.card_type_id = $3
-				  AND g.deleted_at IS NULL
-			`, gateTemplateRefAttr.ID, in.CardID, gateCT.ID)
-			if err != nil {
-				return nil, fmt.Errorf("gate.spawn: existing scan: %w", err)
-			}
-			for r2.Next() {
-				var refID int64
-				if err := r2.Scan(&refID); err != nil {
-					r2.Close()
-					return nil, err
-				}
-				existing[refID] = true
-			}
-			r2.Close()
-
-			spawned := 0
-			for _, t := range templates {
-				if existing[t.ID] {
-					continue
-				}
-				// Insert the runtime gate card.
-				var newID int64
-				if err := tx.QueryRow(ctx, `
-					INSERT INTO card (card_type_id, parent_card_id)
-					VALUES ($1, $2)
-					RETURNING id
-				`, gateCT.ID, in.CardID).Scan(&newID); err != nil {
-					return nil, fmt.Errorf("gate.spawn: card insert: %w", err)
-				}
-
-				// Build the per-attribute writes.
-				type writeRow struct {
-					CardID int64           `json:"card_id"`
-					DefID  int32           `json:"def_id"`
-					Value  json.RawMessage `json:"value"`
-				}
-				writes := []writeRow{}
-				if len(t.Title) > 0 {
-					writes = append(writes, writeRow{CardID: newID, DefID: titleAttr.ID, Value: t.Title})
-				}
-				if len(t.Kind) > 0 {
-					writes = append(writes, writeRow{CardID: newID, DefID: gateKindAttr.ID, Value: t.Kind})
-				}
-				if len(t.RequiredInStates) > 0 {
-					writes = append(writes, writeRow{CardID: newID, DefID: requiredAttr.ID, Value: t.RequiredInStates})
-				}
-				if len(t.DefaultAssignee) > 0 {
-					writes = append(writes, writeRow{CardID: newID, DefID: assigneeAttr.ID, Value: t.DefaultAssignee})
-				}
-				ref, _ := json.Marshal(t.ID)
-				writes = append(writes, writeRow{CardID: newID, DefID: gateTemplateRefAttr.ID, Value: ref})
-				pendingV, _ := json.Marshal("pending")
-				writes = append(writes, writeRow{CardID: newID, DefID: statusAttr.ID, Value: pendingV})
-
-				buf, _ := json.Marshal(writes)
-				const sqlText = `
-					WITH input AS (
-						SELECT row_number() OVER () AS ord, *
-						FROM jsonb_to_recordset($1::jsonb)
-						AS x(card_id bigint, def_id int, value jsonb)
-					),
-					ins_act AS (
-						INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
-						SELECT card_id, 'attr_update', def_id, NULL, value, $2
-						FROM input ORDER BY ord
-						RETURNING id, card_id, attribute_def_id, value_new
-					),
-					upsert AS (
-						INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
-						SELECT card_id, attribute_def_id, value_new, id FROM ins_act
-						RETURNING card_id
-					)
-					SELECT count(*) FROM upsert
-				`
-				var n int64
-				if err := tx.QueryRow(ctx, sqlText, buf, actorID).Scan(&n); err != nil {
-					return nil, fmt.Errorf("gate.spawn: writes: %w", err)
-				}
-				// card_create activity for the gate.
-				if _, err := tx.Exec(ctx, `
-					INSERT INTO activity (card_id, kind, actor_id) VALUES ($1, 'card_create', $2)
-				`, newID, actorID); err != nil {
-					return nil, fmt.Errorf("gate.spawn: card_create activity: %w", err)
-				}
-				spawned++
 			}
 			outs[i] = SpawnOutput{Spawned: spawned}
 		}
@@ -309,6 +137,195 @@ func runSpawn(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]
 		}
 		return outs, nil
 	}
+}
+
+// SpawnFor inserts runtime `gate` sub-cards under parentCardID by cloning
+// every `gate_template` child of the workflow_def card identified by
+// workflowDefID. When workflowDefID is nil the function reads the parent's
+// own `workflow_def_ref` attribute_value; if neither is present it returns
+// (0, nil) — there's nothing to spawn.
+//
+// Idempotent on (parent_card_id, gate_template_ref): existing gate sub-cards
+// for the same template are skipped. Used both by the gate.spawn handler
+// and inline by card.classify so binding a card to a workflow materialises
+// its gates in the same transaction.
+func SpawnFor(ctx context.Context, tx pgx.Tx, parentCardID int64, workflowDefID *int64) (int, error) {
+	actorID := auth.ActorOrSystem(ctx)
+	snap, err := schema.Load(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	gateCT, ok := snap.CardTypeByName["gate"]
+	if !ok {
+		return 0, fmt.Errorf("gate.spawn: gate card_type missing (migration 0025 not applied?)")
+	}
+	gateTemplateCT, ok := snap.CardTypeByName["gate_template"]
+	if !ok {
+		return 0, fmt.Errorf("gate.spawn: gate_template card_type missing")
+	}
+	titleAttr := snap.AttrByName["title"]
+	gateKindAttr := snap.AttrByName["gate_kind"]
+	requiredAttr := snap.AttrByName["required_in_states"]
+	statusAttr := snap.AttrByName["gate_status"]
+	gateTemplateRefAttr := snap.AttrByName["gate_template_ref"]
+	assigneeAttr := snap.AttrByName["assignee"]
+	defaultAssigneeAttr := snap.AttrByName["default_assignee"]
+	workflowRefAttr := snap.AttrByName["workflow_def_ref"]
+
+	workflowID := workflowDefID
+	if workflowID == nil {
+		// Default to the parent's workflow_def_ref.
+		var refRaw []byte
+		err := tx.QueryRow(ctx, `
+			SELECT value FROM attribute_value
+			WHERE card_id = $1 AND attribute_def_id = $2
+		`, parentCardID, workflowRefAttr.ID).Scan(&refRaw)
+		if err == pgx.ErrNoRows {
+			return 0, nil
+		}
+		if err != nil {
+			return 0, fmt.Errorf("gate.spawn: workflow_def_ref read: %w", err)
+		}
+		var ref int64
+		if err := json.Unmarshal(refRaw, &ref); err != nil {
+			return 0, fmt.Errorf("gate.spawn: workflow_def_ref is not int64: %w", err)
+		}
+		workflowID = &ref
+	}
+
+	// Load every gate_template under the workflow_def along with
+	// its attribute values.
+	rows, err := tx.Query(ctx, `
+		SELECT c.id,
+		       (SELECT value FROM attribute_value WHERE card_id = c.id AND attribute_def_id = $2) AS title_v,
+		       (SELECT value FROM attribute_value WHERE card_id = c.id AND attribute_def_id = $3) AS kind_v,
+		       (SELECT value FROM attribute_value WHERE card_id = c.id AND attribute_def_id = $4) AS req_v,
+		       (SELECT value FROM attribute_value WHERE card_id = c.id AND attribute_def_id = $5) AS dassign_v
+		FROM card c
+		WHERE c.parent_card_id = $1
+		  AND c.card_type_id = $6
+		  AND c.deleted_at IS NULL
+	`, *workflowID, titleAttr.ID, gateKindAttr.ID, requiredAttr.ID, defaultAssigneeAttr.ID, gateTemplateCT.ID)
+	if err != nil {
+		return 0, fmt.Errorf("gate.spawn: load templates: %w", err)
+	}
+	type template struct {
+		ID                 int64
+		Title              json.RawMessage
+		Kind               json.RawMessage
+		RequiredInStates   json.RawMessage
+		DefaultAssignee    json.RawMessage
+	}
+	var templates []template
+	for rows.Next() {
+		var t template
+		if err := rows.Scan(&t.ID, &t.Title, &t.Kind, &t.RequiredInStates, &t.DefaultAssignee); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		templates = append(templates, t)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	// Look up which (parent, template) pairs already have a runtime
+	// gate so we can skip them.
+	existing := map[int64]bool{}
+	r2, err := tx.Query(ctx, `
+		SELECT (av.value)::text::bigint
+		FROM card g
+		JOIN attribute_value av ON av.card_id = g.id AND av.attribute_def_id = $1
+		WHERE g.parent_card_id = $2
+		  AND g.card_type_id = $3
+		  AND g.deleted_at IS NULL
+	`, gateTemplateRefAttr.ID, parentCardID, gateCT.ID)
+	if err != nil {
+		return 0, fmt.Errorf("gate.spawn: existing scan: %w", err)
+	}
+	for r2.Next() {
+		var refID int64
+		if err := r2.Scan(&refID); err != nil {
+			r2.Close()
+			return 0, err
+		}
+		existing[refID] = true
+	}
+	r2.Close()
+
+	spawned := 0
+	for _, t := range templates {
+		if existing[t.ID] {
+			continue
+		}
+		// Insert the runtime gate card.
+		var newID int64
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO card (card_type_id, parent_card_id)
+			VALUES ($1, $2)
+			RETURNING id
+		`, gateCT.ID, parentCardID).Scan(&newID); err != nil {
+			return 0, fmt.Errorf("gate.spawn: card insert: %w", err)
+		}
+
+		// Build the per-attribute writes.
+		type writeRow struct {
+			CardID int64           `json:"card_id"`
+			DefID  int32           `json:"def_id"`
+			Value  json.RawMessage `json:"value"`
+		}
+		writes := []writeRow{}
+		if len(t.Title) > 0 {
+			writes = append(writes, writeRow{CardID: newID, DefID: titleAttr.ID, Value: t.Title})
+		}
+		if len(t.Kind) > 0 {
+			writes = append(writes, writeRow{CardID: newID, DefID: gateKindAttr.ID, Value: t.Kind})
+		}
+		if len(t.RequiredInStates) > 0 {
+			writes = append(writes, writeRow{CardID: newID, DefID: requiredAttr.ID, Value: t.RequiredInStates})
+		}
+		if len(t.DefaultAssignee) > 0 {
+			writes = append(writes, writeRow{CardID: newID, DefID: assigneeAttr.ID, Value: t.DefaultAssignee})
+		}
+		ref, _ := json.Marshal(t.ID)
+		writes = append(writes, writeRow{CardID: newID, DefID: gateTemplateRefAttr.ID, Value: ref})
+		pendingV, _ := json.Marshal("pending")
+		writes = append(writes, writeRow{CardID: newID, DefID: statusAttr.ID, Value: pendingV})
+
+		buf, _ := json.Marshal(writes)
+		const sqlText = `
+			WITH input AS (
+				SELECT row_number() OVER () AS ord, *
+				FROM jsonb_to_recordset($1::jsonb)
+				AS x(card_id bigint, def_id int, value jsonb)
+			),
+			ins_act AS (
+				INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
+				SELECT card_id, 'attr_update', def_id, NULL, value, $2
+				FROM input ORDER BY ord
+				RETURNING id, card_id, attribute_def_id, value_new
+			),
+			upsert AS (
+				INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
+				SELECT card_id, attribute_def_id, value_new, id FROM ins_act
+				RETURNING card_id
+			)
+			SELECT count(*) FROM upsert
+		`
+		var n int64
+		if err := tx.QueryRow(ctx, sqlText, buf, actorID).Scan(&n); err != nil {
+			return 0, fmt.Errorf("gate.spawn: writes: %w", err)
+		}
+		// card_create activity for the gate.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO activity (card_id, kind, actor_id) VALUES ($1, 'card_create', $2)
+		`, newID, actorID); err != nil {
+			return 0, fmt.Errorf("gate.spawn: card_create activity: %w", err)
+		}
+		spawned++
+	}
+	return spawned, nil
 }
 
 // EffectiveGates returns gate sub-cards under parentCardID and their
