@@ -6,10 +6,7 @@ GO      ?= /home/d/bin/go
 CHROME  ?= /usr/bin/google-chrome
 WEB_PORT ?= 8090
 
-# Absolute path to migrations. The kitpd binary's MIGRATIONS_DIR default
-# is ./db/migrations relative to cwd; recipes that `cd server` need this.
 REPO_ROOT      := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-MIGRATIONS_DIR ?= $(REPO_ROOT)/db/migrations
 
 # kitpd listen address. The Svelte web bundle is built with
 # KITP_API_BASE=http://127.0.0.1:18080, so default `make run` here.
@@ -21,7 +18,7 @@ LISTEN_ADDR    ?= :18080
 # as the API, so a single `make run` is enough — no separate static server.
 WEB_DIR        ?= $(REPO_ROOT)/client/dist
 
-.PHONY: up down db-up db-reset migrate seed test test-bench run lint \
+.PHONY: up down db-up db-reset db-reset-clean schema-gen test test-bench run lint \
         web web-build web-dev web-serve web-test screenshot-shell e2e \
         dex-up dex-down run-oidc web-build-oidc e2e-oidc \
         e2e-svelte
@@ -45,15 +42,23 @@ db-up:
 		echo "postgres ready on 127.0.0.1:5544"; \
 	fi
 
-db-reset:
+# Drop the public schema and re-apply the declarative schema (seed + demo).
+# Pipes the schema-gen output directly into psql inside the kitp-pg container
+# so a fresh dev DB takes one command. Override `DEMO=` (empty) to apply seed
+# only — useful when you want a "production-shaped" DB locally.
+DEMO ?= -demo
+db-reset: db-up
 	docker exec kitp-pg psql -U kitp -d kitp -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO kitp; GRANT ALL ON SCHEMA public TO public;"
-	$(MAKE) migrate
+	cd server && $(GO) run ./cmd/schema-gen $(DEMO) | docker exec -i kitp-pg psql -U kitp -d kitp -v ON_ERROR_STOP=1 -q
 
-migrate:
-	cd server && DATABASE_URL='$(DB_DSN)' MIGRATIONS_DIR='$(MIGRATIONS_DIR)' MIGRATE_ONLY=1 $(GO) run ./cmd/kitpd
+# Convenience alias: reset with seed only, no demo data.
+db-reset-clean:
+	$(MAKE) db-reset DEMO=
 
-seed:
-	@echo "seeds run as part of migrate (0002_seed.sql)"
+# Print the generated SQL to stdout (no DB writes). Handy for diffing in PRs
+# or piping through `psql -f` against a non-docker DB.
+schema-gen:
+	cd server && $(GO) run ./cmd/schema-gen $(DEMO)
 
 test:
 	cd server && DATABASE_URL='$(DB_DSN)' $(GO) test ./...
@@ -62,7 +67,7 @@ test-bench:
 	cd server && DATABASE_URL='$(DB_DSN)' $(GO) test -bench=. -run=^$$ ./...
 
 run:
-	cd server && DATABASE_URL='$(DB_DSN)' MIGRATIONS_DIR='$(MIGRATIONS_DIR)' LISTEN_ADDR='$(LISTEN_ADDR)' WEB_DIR='$(WEB_DIR)' $(GO) run ./cmd/kitpd
+	cd server && DATABASE_URL='$(DB_DSN)' LISTEN_ADDR='$(LISTEN_ADDR)' WEB_DIR='$(WEB_DIR)' $(GO) run ./cmd/kitpd
 
 lint:
 	cd server && $(GO) vet ./...
@@ -144,7 +149,7 @@ web-build-oidc:
 
 # Boot dex + kitpd with AUTH_MODE=oidc. Use after `make web-build-oidc`.
 run-oidc: db-up dex-up
-	cd server && DATABASE_URL='$(DB_DSN)' MIGRATIONS_DIR='$(MIGRATIONS_DIR)' \
+	cd server && DATABASE_URL='$(DB_DSN)' \
 		LISTEN_ADDR='$(LISTEN_ADDR)' WEB_DIR='$(WEB_DIR)' \
 		AUTH_MODE=oidc OIDC_ISSUER=http://localhost:5556/dex OIDC_AUDIENCE=kitp-web \
 		OIDC_ROLE_CLAIM=groups OIDC_DEFAULT_ROLE=worker \

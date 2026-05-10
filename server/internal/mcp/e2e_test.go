@@ -35,7 +35,6 @@ func TestMCPSubprocess_Initialize_ToolsList_ToolsCall(t *testing.T) {
 		"AUTH_MODE=off",
 		"ENV=dev",
 		"LOG_LEVEL=warn",
-		"MIGRATIONS_DIR="+filepath.Join(repoRoot(t), "db", "migrations"),
 		// Force the legacy "every endpoint is a tool" surface so the
 		// asserts below can find echo__ping / card__insert in the
 		// listing. The default (minimal) is exercised by
@@ -203,7 +202,6 @@ func TestMCPSubprocess_MinimalToolsetExposesProcSearchOnly(t *testing.T) {
 		"AUTH_MODE=off",
 		"ENV=dev",
 		"LOG_LEVEL=warn",
-		"MIGRATIONS_DIR="+filepath.Join(repoRoot(t), "db", "migrations"),
 		// MCP_TOOLSET intentionally unset: minimal is the default.
 	)
 	stdin, _ := cmd.StdinPipe()
@@ -354,10 +352,6 @@ func serverRoot(t *testing.T) string {
 	return ""
 }
 
-// repoRoot returns the absolute kitp repo root (one level above server/).
-func repoRoot(t *testing.T) string {
-	return filepath.Dir(serverRoot(t))
-}
 
 // poolDSN extracts the DSN that store.TestPool used to create the pool.
 // We rely on the same env var fallback as TestPool (DATABASE_URL or the

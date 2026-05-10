@@ -7,7 +7,8 @@
 //   LISTEN_ADDR               — listen address, default ":8080"
 //   AUTH_MODE                 — "off" (System User) or "oidc"; default "off"
 //   ENV                       — "dev" or "production"; default "dev"
-//   MIGRATIONS_DIR            — path to db/migrations, default "./db/migrations"
+//   KITP_DEMO_DATA            — when set, apply the demo seed section on startup (dev default: on)
+//   KITP_SKIP_SCHEMA          — when set, skip the declarative-schema apply at startup
 //   LOG_LEVEL                 — debug|info|warn|error; default info (Phase 21)
 //   PG_TRACE                  — non-empty enables pgx query tracing (dev) (Phase 21)
 //   CORS                      — on|off override; default on in dev, off in production (Phase 22)
@@ -28,7 +29,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -61,6 +61,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/userrole"
 	"github.com/kitp/kitp/server/internal/mcp"
 	"github.com/kitp/kitp/server/internal/obs"
+	"github.com/kitp/kitp/server/internal/schema/declarative"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
@@ -147,7 +148,6 @@ func runHTTP() error {
 	addr := envOr("LISTEN_ADDR", ":8080")
 	mode := auth.Mode(envOr("AUTH_MODE", string(auth.ModeOff)))
 	env := envOr("ENV", "dev")
-	migrationsDir := envOr("MIGRATIONS_DIR", filepath.Join("db", "migrations"))
 	webDir := os.Getenv("WEB_DIR") // optional; if set, kitpd serves the Flutter bundle
 
 	if env == "production" && mode == auth.ModeOff {
@@ -168,12 +168,15 @@ func runHTTP() error {
 	}
 	defer pgPool.Close()
 
-	if err := store.Migrate(ctx, pgPool, migrationsDir); err != nil {
-		return fmt.Errorf("migrate: %w", err)
+	if os.Getenv("KITP_SKIP_SCHEMA") == "" {
+		demo := os.Getenv("KITP_DEMO_DATA") != "" || env == "dev"
+		if err := store.ApplySchema(ctx, pgPool, declarative.Options{Demo: demo}); err != nil {
+			return fmt.Errorf("apply schema: %w", err)
+		}
 	}
 
 	if os.Getenv("MIGRATE_ONLY") != "" {
-		log.Printf("MIGRATE_ONLY set; migrations applied, exiting")
+		log.Printf("MIGRATE_ONLY set; schema applied, exiting")
 		return nil
 	}
 
@@ -316,7 +319,6 @@ func runMCP() error {
 	}
 	mode := auth.Mode(envOr("AUTH_MODE", string(auth.ModeOff)))
 	env := envOr("ENV", "dev")
-	migrationsDir := envOr("MIGRATIONS_DIR", filepath.Join("db", "migrations"))
 
 	if env == "production" && mode == auth.ModeOff {
 		return errors.New("refusing to start: ENV=production with AUTH_MODE=off")
@@ -334,8 +336,11 @@ func runMCP() error {
 	}
 	defer pgPool.Close()
 
-	if err := store.Migrate(ctx, pgPool, migrationsDir); err != nil {
-		return fmt.Errorf("migrate: %w", err)
+	if os.Getenv("KITP_SKIP_SCHEMA") == "" {
+		demo := os.Getenv("KITP_DEMO_DATA") != "" || env == "dev"
+		if err := store.ApplySchema(ctx, pgPool, declarative.Options{Demo: demo}); err != nil {
+			return fmt.Errorf("apply schema: %w", err)
+		}
 	}
 
 	user, err := auth.NewSystemUser(ctx, pgPool, env, mode)

@@ -14,7 +14,7 @@ export async function run(driver: WebDriver): Promise<void> {
   await loginAsSystemUser(driver);
 
   // 1. Confirm /projects rendered with at least one project row. The
-  //    seed migration 0001/0005 inserts "Default Project".
+  //    declarative demo section inserts "Default Project".
   await waitForCountAtLeast(
     driver,
     'ul a[href^="/project/"]',

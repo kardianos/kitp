@@ -1,9 +1,9 @@
 // E2E orchestrator for the Svelte client.
 //
 // Pipeline (matches SVELTE_MIGRATION_PLAN.md §8):
-//   1. Reset the database (`make db-reset`).
-//   2. Apply migrations (`make migrate`).
-//   3. Build the Vite bundle to client-svelte/dist/.
+//   1. Reset the database (`make db-reset`) — drops public and applies
+//      the declarative schema (DDL + seed + demo) in one step.
+//   2. Build the Vite bundle to client-svelte/dist/.
 //   4. Boot kitpd on :18080 with WEB_DIR pointing at our dist.
 //   5. Boot chromedriver on :9515 (or reuse an already-running one).
 //   6. For each journey, build a WebDriver session, run the journey,
@@ -19,7 +19,7 @@
 //   --no-headless                Render Chrome with a visible window
 //                                (useful when debugging locally).
 //   --skip-build                 Reuse the existing dist/ (faster reruns).
-//   --skip-db-reset              Skip db-reset + migrate (faster reruns).
+//   --skip-db-reset              Skip db-reset (faster reruns).
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream, existsSync } from 'node:fs';

@@ -22,11 +22,17 @@ Bring everything up from a clean clone:
 
 ```sh
 make up           # docker-compose: brings up kitp-pg on 127.0.0.1:5544
-make migrate      # runs every .sql in db/migrations once
-make seed         # no-op (seed data ships inside the migration set)
+make db-reset     # apply db/schema/declarative.json (DDL + seed + demo)
 make web          # vite build → client/dist/
 make run          # one process: API + UI on http://localhost:18080
 ```
+
+`make db-reset` drops the `public` schema and pipes the schema-gen output into
+psql. Run it once on a fresh DB; `make run` also re-applies the schema on
+startup, but the script is idempotent (CREATE … IF NOT EXISTS / ON CONFLICT
+DO NOTHING throughout) so re-applying is cheap. For a production-shaped DB
+without the demo fixture data, use `make db-reset-clean`. To inspect the
+generated SQL offline, `make schema-gen` writes it to stdout.
 
 Open http://localhost:18080/ in Chrome. kitpd serves both the Svelte
 bundle (with SPA-fallback for client routes like `/project/42`) and the
@@ -48,8 +54,9 @@ make web-serve    # legacy: serve built bundle via python on :8090
 make e2e          # full Chrome end-to-end: server + client + DB
 ```
 
-The e2e target resets the Postgres `public` schema, re-runs migrations,
-boots a fresh kitpd on `:18080`, drives Chrome via selenium-webdriver,
+The e2e target resets the Postgres `public` schema, re-applies the
+declarative schema (DDL + seed + demo), boots a fresh kitpd on `:18080`,
+drives Chrome via selenium-webdriver,
 walks the user journey, captures one PNG per step into
 `docs/screenshots/e2e/`, and verifies post-state via direct API calls.
 Exit code reports pass/fail. The harness is implemented in Node at
@@ -80,7 +87,8 @@ client/         Svelte 5 + TypeScript SPA (Vite)
   src/screens/     one Svelte component per screen
   test/unit/       vitest
   test/e2e/        node + selenium-webdriver + chromedriver
-db/migrations/  forward-only SQL migrations, numbered
+db/schema/      declarative.json (canonical DDL + seed + demo)
+                Apply with `make db-reset` or `go run ./server/cmd/schema-gen`
 docs/           screenshots, traceability matrix
 e2e/            legacy Dart e2e harness (retired by the Svelte cutover;
                 kept in tree for archive — not wired into any make target)

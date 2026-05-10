@@ -1,15 +1,12 @@
 // Command schema-gen reads db/schema/declarative.json and prints a
-// CREATE-everything SQL script to stdout. Used by the parity test in
-// internal/schema/declarative and (eventually) by the migration
-// runner once the document covers every table.
+// CREATE-everything + INSERT-seeds SQL script to stdout. Pipe to psql
+// for a fresh install, or use `make db-reset` which drives the same
+// generator.
 //
 // Usage:
-//   go run ./server/cmd/schema-gen          # to stdout
-//   go run ./server/cmd/schema-gen -o out   # to a file
-//
-// The generator is deterministic: tables are emitted in
-// topologically-sorted order with alphabetic tie-breaks, so the
-// output is suitable for diffing in PRs.
+//   go run ./server/cmd/schema-gen                     # seed only
+//   go run ./server/cmd/schema-gen -demo               # seed + demo
+//   go run ./server/cmd/schema-gen -o build/schema.sql # write to file
 package main
 
 import (
@@ -25,6 +22,8 @@ func main() {
 	flag.StringVar(&out, "o", "", "write to this file instead of stdout")
 	var path string
 	flag.StringVar(&path, "schema", "", "path to declarative.json (default: walk up from package source)")
+	var demo bool
+	flag.BoolVar(&demo, "demo", false, "include the opt-in demo seed section after the built-in seeds")
 	flag.Parse()
 
 	doc, err := declarative.Load(path)
@@ -32,7 +31,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "schema-gen:", err)
 		os.Exit(1)
 	}
-	sql := declarative.GenerateSQL(doc)
+	sql := declarative.GenerateSQL(doc, declarative.Options{Demo: demo})
 	if out == "" {
 		os.Stdout.WriteString(sql)
 		return

@@ -4,36 +4,22 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kitp/kitp/server/internal/schema/declarative"
 )
 
-// MigrationsDir locates db/migrations relative to this source file. Tests
-// run with arbitrary cwd, so we walk up from the package source path.
-func MigrationsDir() string {
-	_, file, _, _ := runtime.Caller(0)
-	dir := filepath.Dir(file)
-	for range 8 {
-		candidate := filepath.Join(dir, "db", "migrations")
-		if st, err := os.Stat(candidate); err == nil && st.IsDir() {
-			return candidate
-		}
-		dir = filepath.Dir(dir)
-	}
-	panic("MigrationsDir: db/migrations not found above " + filepath.Dir(file))
-}
-
-// TestPool creates a fresh schema for the test package, migrates into it,
-// and returns a pool whose search_path is set to that schema. The schema
-// is dropped at test cleanup time.
+// TestPool creates a fresh schema for the test package, applies the
+// declarative schema (including the demo seed section so tests see
+// the populated dev fixtures), and returns a pool whose search_path
+// is set to that schema. The schema is dropped at test cleanup time.
 //
-// schemaName must be a short identifier — typically derived from the test
-// package name. Example: "kitp_test_api".
+// schemaName must be a short identifier — typically derived from the
+// test package name. Example: "kitp_test_api".
 func TestPool(t testing.TB, schemaName string) *pgxpool.Pool {
 	t.Helper()
 	if !validIdent(schemaName) {
@@ -75,9 +61,9 @@ func TestPool(t testing.TB, schemaName string) *pgxpool.Pool {
 		t.Fatalf("scoped pgxpool: %v", err)
 	}
 
-	if err := Migrate(ctx, pool, MigrationsDir()); err != nil {
+	if err := ApplySchema(ctx, pool, declarative.Options{Demo: true}); err != nil {
 		pool.Close()
-		t.Fatalf("migrate: %v", err)
+		t.Fatalf("apply schema: %v", err)
 	}
 
 	t.Cleanup(func() {

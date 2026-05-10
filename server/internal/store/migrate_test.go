@@ -4,54 +4,51 @@ import (
 	"context"
 	"testing"
 
+	"github.com/kitp/kitp/server/internal/schema/declarative"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
-// TestMigrateUpFromClean drops and re-creates a dedicated schema, runs the
-// migration runner against it, and asserts that the seed counts match what
-// 0002_seed.sql installs.
-func TestMigrateUpFromClean(t *testing.T) {
+// TestApplySchemaFromClean drops and re-creates a dedicated schema, applies
+// the declarative schema (seed + demo), and asserts the row counts match
+// what the doc installs end-to-end. This is the integration check that
+// guards against future declarative edits silently dropping seed rows.
+func TestApplySchemaFromClean(t *testing.T) {
 	pool := store.TestPool(t, "kitp_test_store")
 	ctx := context.Background()
 
-	type row struct {
-		name string
-		want int64
-	}
-	cases := []row{
+	cases := []struct {
+		query string
+		want  int64
+	}{
+		// 6 built-in card types: project/task/milestone/component/tag/comment_body.
 		{`SELECT count(*) FROM card_type`, 6},
-		// 0002: 5 built-ins (title/status/assignee/milestone_ref/component_ref) +
-		// 0003: 3 (path/root_exclusive_at/tags) + 0008: 2 (description/sort_order) +
-		// 0011: 1 (is_active).
+		// 11 built-in attribute_defs (title/status/assignee/milestone_ref/
+		// component_ref + path/root_exclusive_at/tags + description/sort_order + is_active).
 		{`SELECT count(*) FROM attribute_def`, 11},
-		// 9 edges from 0002 (5 title-required, 4 task-allowed) +
-		// 6 from 0003 (1 tag.path required, 1 tag.root_exclusive_at, 4 *.tags allowed) +
-		// 3 from 0008 (description on task+project, sort_order on task) +
-		// 3 from 0011 (is_active on milestone/component/tag).
+		// 21 built-in edges — see declarative.json::seed["edge"] for the list.
 		{`SELECT count(*) FROM edge`, 21},
-		// 1 System User from 0002 + 5 team members from 0004.
+		// 1 System User + 5 demo team members.
 		{`SELECT count(*) FROM user_account`, 6},
-		// 0002 seeds 'system' + 0010 adds viewer/worker/manager/admin = 5.
+		// system + viewer/worker/manager/admin = 5.
 		{`SELECT count(*) FROM role`, 5},
-		// 0002 seeds 1 (system <- System User). 0010 adds no user_role rows.
+		// System User holds the 'system' role globally; one user_role row.
 		{`SELECT count(*) FROM user_role`, 1},
-		// 0003 seeds 5 + 0010 adds user_card_sort.set = 6.
+		// 6 processes (card.create/update/delete, comment.post, task.update_with_comment, user_card_sort.set).
 		{`SELECT count(*) FROM process`, 6},
-		// 0003 seeds 6 + 0010 adds 1 = 7.
+		// 7 process_steps (task.update_with_comment has two; everyone else has one).
 		{`SELECT count(*) FROM process_step`, 7},
-		// 0001..0016 inclusive = 16 forward-only migrations.
-		{`SELECT count(*) FROM _migration`, 16},
-		// 0005 demo seed: 1 default project + 3 milestones + 5 components + 8 tags = 17 cards.
-		// 0007 dense seed: + 25 tasks. Total = 42.
+		// 4 status options: todo/doing/review/done.
+		{`SELECT count(*) FROM attribute_def_option`, 4},
+		// Demo cards: 1 project + 3 milestones + 5 components + 8 tags + 25 tasks = 42.
 		{`SELECT count(*) FROM card`, 42},
 	}
 	for _, c := range cases {
 		var got int64
-		if err := pool.QueryRow(ctx, c.name).Scan(&got); err != nil {
-			t.Fatalf("%s: %v", c.name, err)
+		if err := pool.QueryRow(ctx, c.query).Scan(&got); err != nil {
+			t.Fatalf("%s: %v", c.query, err)
 		}
 		if got != c.want {
-			t.Errorf("%s: got %d, want %d", c.name, got, c.want)
+			t.Errorf("%s: got %d, want %d", c.query, got, c.want)
 		}
 	}
 
@@ -80,19 +77,29 @@ func TestMigrateUpFromClean(t *testing.T) {
 	}
 }
 
-// TestMigrateIdempotent runs Migrate twice on the same schema and confirms
-// the second run is a no-op (no failures, same row counts).
-func TestMigrateIdempotent(t *testing.T) {
+// TestApplySchemaIdempotent runs ApplySchema a second time on the same
+// schema and confirms it is a no-op (no errors, identical counts).
+func TestApplySchemaIdempotent(t *testing.T) {
 	pool := store.TestPool(t, "kitp_test_store_idem")
 	ctx := context.Background()
-	if err := store.Migrate(ctx, pool, store.MigrationsDir()); err != nil {
-		t.Fatalf("second migrate: %v", err)
+	if err := store.ApplySchema(ctx, pool, declarative.Options{Demo: true}); err != nil {
+		t.Fatalf("second apply: %v", err)
 	}
-	var n int64
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM _migration`).Scan(&n); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		query string
+		want  int64
+	}{
+		{`SELECT count(*) FROM card_type`, 6},
+		{`SELECT count(*) FROM card`, 42},
+		{`SELECT count(*) FROM role`, 5},
 	}
-	if n != 16 {
-		t.Errorf("_migration count after re-run: got %d, want 16", n)
+	for _, c := range cases {
+		var got int64
+		if err := pool.QueryRow(ctx, c.query).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want {
+			t.Errorf("%s after re-apply: got %d, want %d", c.query, got, c.want)
+		}
 	}
 }
