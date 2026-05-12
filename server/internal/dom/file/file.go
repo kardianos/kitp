@@ -41,7 +41,7 @@ type CreateInput struct {
 
 // CreateOutput surfaces the freshly-created file row's metadata.
 type CreateOutput struct {
-	ID        int64  `json:"id"`
+	ID        int64  `json:"id,string"`
 	Filename  string `json:"filename"`
 	MimeType  string `json:"mime_type"`
 	SizeBytes int64  `json:"size_bytes"`

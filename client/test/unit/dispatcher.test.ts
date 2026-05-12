@@ -191,7 +191,7 @@ describe('Dispatcher', () => {
       registry: reg,
       fetch: fetchMock as unknown as typeof fetch,
       schedule: noopSchedule,
-      authState: { accessToken: 'old', isSignedIn: true },
+      authState: { isSignedIn: true },
       onUnauthorized,
     });
 

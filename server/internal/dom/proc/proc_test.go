@@ -280,7 +280,7 @@ func TestSearchFiltersByCallerRoles(t *testing.T) {
 			}
 		}
 		if roleName != "" {
-			var roleID int32
+			var roleID int64
 			if err := sp.P.QueryRow(ctx, `SELECT id FROM role WHERE name = $1`, roleName).Scan(&roleID); err != nil {
 				t.Fatalf("role lookup %q: %v", roleName, err)
 			}

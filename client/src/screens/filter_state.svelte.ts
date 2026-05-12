@@ -18,6 +18,7 @@
  */
 
 import type { Predicate } from '../filter/predicate';
+import type { ID } from '../reg/types';
 
 /**
  * One cache key. We embed projectId because the same screen scope
@@ -28,7 +29,7 @@ import type { Predicate } from '../filter/predicate';
  * view, or Grid loaded without `:id`. Keep it as a distinct key from
  * any numeric id.
  */
-function makeKey(scope: string, projectId: number | null | undefined): string {
+function makeKey(scope: string, projectId: ID | null | undefined): string {
   return `${scope}:${projectId ?? '_none_'}`;
 }
 
@@ -39,6 +40,15 @@ class FilterCache {
    * keep the API consistent.
    */
   byKey = $state<Record<string, Predicate | null>>({});
+  /**
+   * Active filter-preset id per (scope, project). `0n` is the sentinel
+   * for "user picked No preset" (custom predicate); a missing entry
+   * means "untouched — apply the screen's default_filter on next
+   * mount". Tracking this separately from `byKey` lets the preset
+   * combobox highlight the right row even after the user edits its
+   * predicate inline.
+   */
+  presetByKey = $state<Record<string, ID>>({});
 }
 
 const cache = new FilterCache();
@@ -52,36 +62,62 @@ const cache = new FilterCache();
  */
 export function getFilter(
   scope: string,
-  projectId: number | null | undefined,
+  projectId: ID | null | undefined,
 ): Predicate | null {
   return cache.byKey[makeKey(scope, projectId)] ?? null;
 }
 
 /**
- * Persist `predicate` for `(scope, projectId)`. A `null` predicate
- * clears the entry rather than storing a literal null — keeps the
- * map small and lets `getFilter` distinguish "cleared" from "never
- * touched" identically (both return null).
+ * Persist `predicate` for `(scope, projectId)`. Always records an
+ * entry (even when null) so callers can tell "user explicitly cleared"
+ * apart from "never touched" via {@link hasFilter}.
  */
 export function setFilter(
   scope: string,
-  projectId: number | null | undefined,
+  projectId: ID | null | undefined,
   predicate: Predicate | null,
 ): void {
-  const k = makeKey(scope, projectId);
-  if (predicate === null) {
-    if (k in cache.byKey) {
-      const next = { ...cache.byKey };
-      delete next[k];
-      cache.byKey = next;
-    }
-    return;
-  }
-  cache.byKey = { ...cache.byKey, [k]: predicate };
+  cache.byKey = { ...cache.byKey, [makeKey(scope, projectId)]: predicate };
+}
+
+/**
+ * True iff the cache has any entry (including a null predicate) for
+ * (scope, projectId). Screens use this to decide whether to apply the
+ * data-side default filter on first mount.
+ */
+export function hasFilter(
+  scope: string,
+  projectId: ID | null | undefined,
+): boolean {
+  return makeKey(scope, projectId) in cache.byKey;
+}
+
+/** The id of the active filter preset for (scope, projectId), or null
+ *  when no preset is active (custom predicate or untouched). */
+export function getActivePreset(
+  scope: string,
+  projectId: ID | null | undefined,
+): ID | null {
+  const v = cache.presetByKey[makeKey(scope, projectId)];
+  return v === undefined || v === 0n ? null : v;
+}
+
+/** Record the active preset id. Pass `null` to mean "no preset"
+ *  (e.g. the user edited the predicate manually). */
+export function setActivePreset(
+  scope: string,
+  projectId: ID | null | undefined,
+  presetId: ID | null,
+): void {
+  cache.presetByKey = {
+    ...cache.presetByKey,
+    [makeKey(scope, projectId)]: presetId ?? 0n,
+  };
 }
 
 /** Drop every cached predicate. Test-only; call sites in app code
  *  should narrow with setFilter(..., null) instead. */
 export function clearAllFilters(): void {
   cache.byKey = {};
+  cache.presetByKey = {};
 }

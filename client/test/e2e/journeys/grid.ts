@@ -22,9 +22,9 @@ export async function run(driver: WebDriver): Promise<void> {
   await loginAsSystemUser(driver);
   await navigateSpa(driver, '/grid');
 
-  // Wait until something signals the grid screen mounted: the title
-  // testid appears regardless of loading/empty state.
-  await waitFor(driver, '[data-testid="grid-title"]', 15_000);
+  // Wait until something signals the grid screen mounted: the project
+  // title picker is the first thing rendered regardless of load state.
+  await waitFor(driver, '[data-testid="project-title-picker"]', 15_000);
   // Then wait for the body + rows. The seed migration 0007 inserts 25
   // tasks; the initial predicate (status in todo/doing/review/done) keeps
   // all of them so this should always satisfy >= 2.

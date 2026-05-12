@@ -26,7 +26,7 @@ type ListInput struct{}
 // ListRow is one role_mapping row joined to the role.
 type ListRow struct {
 	ClaimValue string `json:"claim_value" mcp:"desc=value of the role claim (e.g. kitp.admin)"`
-	RoleID     int32  `json:"role_id" mcp:"desc=role id"`
+	RoleID     int64  `json:"role_id,string" mcp:"desc=role id"`
 	RoleName   string `json:"role_name" mcp:"desc=role name"`
 }
 

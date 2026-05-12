@@ -42,7 +42,7 @@ func makeTag(t *testing.T, srv *api.Server, projectID int64, path, root string) 
 		rootJSON = fmt.Sprintf("%q", root)
 	}
 	data := fmt.Sprintf(
-		`{"card_type_name":"tag","parent_card_id":%d,"title":%q,"attributes":{"path":%q,"root_exclusive_at":%s}}`,
+		`{"card_type_name":"tag","parent_card_id":"%d","title":%q,"attributes":{"path":%q,"root_exclusive_at":%s}}`,
 		projectID, path, path, rootJSON)
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(data)},
@@ -73,7 +73,7 @@ func TestApplyMutualExclusion(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
 	}})
 	var taskOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -85,7 +85,7 @@ func TestApplyMutualExclusion(t *testing.T) {
 	// Apply high.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "ah", Endpoint: "tag", Action: "apply", Data: json.RawMessage(
-			fmt.Sprintf(`{"target_card_id":%d,"tag_card_id":%d}`, taskOut.ID, high))},
+			fmt.Sprintf(`{"target_card_id":"%d","tag_card_id":"%d"}`, taskOut.ID, high))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("apply high: %+v", resp.Subresponses[0])
@@ -94,7 +94,7 @@ func TestApplyMutualExclusion(t *testing.T) {
 	// Apply low — should remove high.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "al", Endpoint: "tag", Action: "apply", Data: json.RawMessage(
-			fmt.Sprintf(`{"target_card_id":%d,"tag_card_id":%d}`, taskOut.ID, low))},
+			fmt.Sprintf(`{"target_card_id":"%d","tag_card_id":"%d"}`, taskOut.ID, low))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("apply low: %+v", resp.Subresponses[0])
@@ -109,7 +109,7 @@ func TestApplyMutualExclusion(t *testing.T) {
 	// Verify final attribute_value.tags == [low].
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "g", Endpoint: "card", Action: "select_with_attributes", Data: json.RawMessage(
-			fmt.Sprintf(`{"parent_card_id":%d,"card_type_name":"task"}`, pOut.ID))},
+			fmt.Sprintf(`{"parent_card_id":"%d","card_type_name":"task"}`, pOut.ID))},
 	}})
 	var gOut card.SelectWithAttributesOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -129,7 +129,7 @@ func TestApplyMutualExclusion(t *testing.T) {
 	// — the value transition tells the story).
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "a", Endpoint: "activity", Action: "select", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d}`, taskOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d"}`, taskOut.ID))},
 	}})
 	var aOut activity.SelectOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -160,7 +160,7 @@ func TestApplyNonExclusive(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
 	}})
 	var taskOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -171,9 +171,9 @@ func TestApplyNonExclusive(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "a1", Endpoint: "tag", Action: "apply", Data: json.RawMessage(
-			fmt.Sprintf(`{"target_card_id":%d,"tag_card_id":%d}`, taskOut.ID, t1))},
+			fmt.Sprintf(`{"target_card_id":"%d","tag_card_id":"%d"}`, taskOut.ID, t1))},
 		{ID: "a2", Endpoint: "tag", Action: "apply", Data: json.RawMessage(
-			fmt.Sprintf(`{"target_card_id":%d,"tag_card_id":%d}`, taskOut.ID, t2))},
+			fmt.Sprintf(`{"target_card_id":"%d","tag_card_id":"%d"}`, taskOut.ID, t2))},
 	}})
 	for _, sr := range resp.Subresponses {
 		if !sr.OK {
@@ -183,7 +183,7 @@ func TestApplyNonExclusive(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "g", Endpoint: "card", Action: "select_with_attributes", Data: json.RawMessage(
-			fmt.Sprintf(`{"parent_card_id":%d,"card_type_name":"task"}`, pOut.ID))},
+			fmt.Sprintf(`{"parent_card_id":"%d","card_type_name":"task"}`, pOut.ID))},
 	}})
 	var gOut card.SelectWithAttributesOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -214,7 +214,7 @@ func TestApplyCoalesces(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
 	}})
 	var taskOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -226,9 +226,9 @@ func TestApplyCoalesces(t *testing.T) {
 	sp.ResetWrites()
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "a1", Endpoint: "tag", Action: "apply", Data: json.RawMessage(
-			fmt.Sprintf(`{"target_card_id":%d,"tag_card_id":%d}`, taskOut.ID, t1))},
+			fmt.Sprintf(`{"target_card_id":"%d","tag_card_id":"%d"}`, taskOut.ID, t1))},
 		{ID: "a2", Endpoint: "tag", Action: "apply", Data: json.RawMessage(
-			fmt.Sprintf(`{"target_card_id":%d,"tag_card_id":%d}`, taskOut.ID, t2))},
+			fmt.Sprintf(`{"target_card_id":"%d","tag_card_id":"%d"}`, taskOut.ID, t2))},
 	}})
 	for _, sr := range resp.Subresponses {
 		if !sr.OK {

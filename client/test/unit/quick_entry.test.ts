@@ -52,10 +52,10 @@ interface MockDispatcher {
  *   - returns a rejected promise for any endpoint listed in `failOn`.
  */
 function makeDispatcher(opts: {
-  insertedId?: number;
+  insertedId?: bigint;
   failOn?: ReadonlyArray<{ endpoint: string; action: string }>;
 } = {}): MockDispatcher {
-  const insertedId = opts.insertedId ?? 42;
+  const insertedId = opts.insertedId ?? 42n;
   const failOn = opts.failOn ?? [];
   const calls: RequestArgs[] = [];
 
@@ -94,7 +94,7 @@ interface SimState {
   errorMessage: string | null;
   closed: boolean;
   refocused: boolean;
-  createdIds: number[];
+  createdIds: bigint[];
 }
 
 /**
@@ -109,7 +109,7 @@ async function runSubmit(
   args: {
     closeAfter: boolean;
     cardTypeName: string;
-    parentCardId?: number;
+    parentCardId?: bigint;
     prefill?: QuickEntrySubmitInput['prefill'];
   },
 ): Promise<void> {
@@ -178,7 +178,7 @@ afterEach(() => {
 
 describe('QuickEntryOverlay: submit on Enter (title only)', () => {
   it('issues card.insert + attribute.update for description; resolves; clears; stays open', async () => {
-    const dispatcher = makeDispatcher({ insertedId: 101 });
+    const dispatcher = makeDispatcher({ insertedId: 101n });
     const state = freshState({
       title: 'Wire up logs',
       description: 'Plumb structured logger through workers',
@@ -197,13 +197,13 @@ describe('QuickEntryOverlay: submit on Enter (title only)', () => {
       endpoint: 'attribute',
       action: 'update',
       data: {
-        cardId: 101,
+        cardId: 101n,
         attributeName: 'description',
         value: 'Plumb structured logger through workers',
       },
     });
 
-    expect(state.createdIds).toEqual([101]);
+    expect(state.createdIds).toEqual([101n]);
     expect(state.title).toBe('');
     expect(state.description).toBe('');
     expect(state.errorMessage).toBeNull();
@@ -213,7 +213,7 @@ describe('QuickEntryOverlay: submit on Enter (title only)', () => {
   });
 
   it('with no description, only one card.insert is issued', async () => {
-    const dispatcher = makeDispatcher({ insertedId: 7 });
+    const dispatcher = makeDispatcher({ insertedId: 7n });
     const state = freshState({ title: 'Fast path' });
 
     await runSubmit(state, dispatcher, { closeAfter: false, cardTypeName: 'task' });
@@ -226,33 +226,33 @@ describe('QuickEntryOverlay: submit on Enter (title only)', () => {
   });
 
   it('with prefill.assigneeUserId, also issues attribute.update for assignee', async () => {
-    const dispatcher = makeDispatcher({ insertedId: 11 });
+    const dispatcher = makeDispatcher({ insertedId: 11n });
     const state = freshState({ title: 'Assigned task', description: '' });
 
     await runSubmit(state, dispatcher, {
       closeAfter: false,
       cardTypeName: 'task',
-      prefill: { assigneeUserId: 5 },
+      prefill: { assigneeUserId: 5n },
     });
 
     expect(dispatcher.calls).toHaveLength(2);
     expect(dispatcher.calls[1]).toMatchObject({
       endpoint: 'attribute',
       action: 'update',
-      data: { cardId: 11, attributeName: 'assignee', value: 5 },
+      data: { cardId: 11n, attributeName: 'assignee', value: 5n },
     });
   });
 
-  it('with prefill.statusValue and prefill.laneAttribute, both fire', async () => {
-    const dispatcher = makeDispatcher({ insertedId: 50 });
+  it('with laneAttribute + extraAttributes the kanban column + lane prefills both fire', async () => {
+    const dispatcher = makeDispatcher({ insertedId: 50n });
     const state = freshState({ title: 'Kanban entry' });
 
     await runSubmit(state, dispatcher, {
       closeAfter: false,
       cardTypeName: 'task',
       prefill: {
-        statusValue: 'doing',
-        laneAttribute: { name: 'milestone', value: 'M3' },
+        laneAttribute: { name: 'status', value: 11n },
+        extraAttributes: [{ name: 'milestone_ref', value: 22n }],
       },
     });
 
@@ -261,7 +261,7 @@ describe('QuickEntryOverlay: submit on Enter (title only)', () => {
       .filter((c) => c.endpoint === 'attribute' && c.action === 'update')
       .map((c) => (c.data as { attributeName: string }).attributeName);
     expect(attrUpdates).toContain('status');
-    expect(attrUpdates).toContain('milestone');
+    expect(attrUpdates).toContain('milestone_ref');
   });
 
   it('passes parentCardId on the card.insert sub-request when provided', async () => {
@@ -271,18 +271,18 @@ describe('QuickEntryOverlay: submit on Enter (title only)', () => {
     await runSubmit(state, dispatcher, {
       closeAfter: false,
       cardTypeName: 'task',
-      parentCardId: 99,
+      parentCardId: 99n,
     });
 
     expect(dispatcher.calls[0]).toMatchObject({
       endpoint: 'card',
       action: 'insert',
-      data: { cardTypeName: 'task', title: 'Child', parentCardId: 99 },
+      data: { cardTypeName: 'task', title: 'Child', parentCardId: 99n },
     });
   });
 
   it('fires a "Created" success toast with an Undo callback', async () => {
-    const dispatcher = makeDispatcher({ insertedId: 77 });
+    const dispatcher = makeDispatcher({ insertedId: 77n });
     const state = freshState({ title: 'Toasted' });
 
     await runSubmit(state, dispatcher, { closeAfter: false, cardTypeName: 'task' });
@@ -300,7 +300,7 @@ describe('QuickEntryOverlay: submit on Enter (title only)', () => {
     expect(del).toMatchObject({
       endpoint: 'card',
       action: 'delete',
-      data: { cardId: 77 },
+      data: { cardId: 77n },
     });
   });
 });
@@ -311,7 +311,7 @@ describe('QuickEntryOverlay: submit on Enter (title only)', () => {
 
 describe('QuickEntryOverlay: submit on Ctrl+Enter', () => {
   it('runs the same submission and then closes the overlay (calls onClose)', async () => {
-    const dispatcher = makeDispatcher({ insertedId: 9 });
+    const dispatcher = makeDispatcher({ insertedId: 9n });
     const state = freshState({ title: 'Close me', description: 'desc' });
 
     await runSubmit(state, dispatcher, { closeAfter: true, cardTypeName: 'task' });
@@ -443,12 +443,12 @@ describe('resolveParentForInsert', () => {
   // helper centralises the fallback so screens can't forget again.
 
   it('passes through an explicit parent unchanged for any card type', () => {
-    expect(resolveParentForInsert('task', 7, null)).toEqual({
-      parentCardId: 7,
+    expect(resolveParentForInsert('task', 7n, null)).toEqual({
+      parentCardId: 7n,
       error: null,
     });
-    expect(resolveParentForInsert('project', 7, 99)).toEqual({
-      parentCardId: 7,
+    expect(resolveParentForInsert('project', 7n, 99n)).toEqual({
+      parentCardId: 7n,
       error: null,
     });
   });
@@ -461,16 +461,16 @@ describe('resolveParentForInsert', () => {
   });
 
   it('falls back to the active project scope for non-project card types', () => {
-    expect(resolveParentForInsert('task', undefined, 42)).toEqual({
-      parentCardId: 42,
+    expect(resolveParentForInsert('task', undefined, 42n)).toEqual({
+      parentCardId: 42n,
       error: null,
     });
-    expect(resolveParentForInsert('milestone', undefined, 42)).toEqual({
-      parentCardId: 42,
+    expect(resolveParentForInsert('milestone', undefined, 42n)).toEqual({
+      parentCardId: 42n,
       error: null,
     });
-    expect(resolveParentForInsert('component', undefined, 42)).toEqual({
-      parentCardId: 42,
+    expect(resolveParentForInsert('component', undefined, 42n)).toEqual({
+      parentCardId: 42n,
       error: null,
     });
   });

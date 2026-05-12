@@ -18,14 +18,25 @@ import (
 	"github.com/kitp/kitp/server/internal/reg"
 )
 
-// SelectInput has no fields in v1 — every call returns every row. We keep
-// the struct so the registry has a stable InputType to decode into.
-type SelectInput struct{}
+// SelectInput optionally narrows the result set. All filters AND
+// together; an empty input returns every user_account row.
+//
+// The Admin → Agents screen reads with `ParentUserID=actor, IsAgent=true`
+// to list a parent's agents. The assignee picker hides agents from
+// non-parents by filtering `IsAgent=false`. Other callers pass nothing
+// and get the full list (sorted by display_name) — the v1 behaviour.
+type SelectInput struct {
+	IDs            []int64 `json:"ids,omitempty"             mcp:"desc=optional explicit id filter; combined via AND"`
+	ParentUserID   *int64  `json:"parent_user_id,string,omitempty" mcp:"desc=optional parent_user_id filter; useful to list a user's owned agents"`
+	IsAgent        *bool   `json:"is_agent,omitempty"        mcp:"desc=optional is_agent filter; true = only agent rows, false = only humans"`
+}
 
 // Row is one user_account row — only the fields the UI needs.
 type Row struct {
-	ID          int64  `json:"id" mcp:"desc=user account id"`
-	DisplayName string `json:"display_name" mcp:"desc=user display name"`
+	ID            int64  `json:"id,string"                      mcp:"desc=user account id"`
+	DisplayName   string `json:"display_name"                    mcp:"desc=user display name"`
+	ParentUserID  *int64 `json:"parent_user_id,string,omitempty" mcp:"desc=human owner when is_agent=true; null for humans"`
+	IsAgent       bool   `json:"is_agent"                        mcp:"desc=true when this row is an agent owned by parent_user_id"`
 }
 
 // SelectOutput is the per-input payload — every input gets the same
@@ -39,17 +50,19 @@ type SelectOutput struct {
 // scoped project (nil when ScopeProjectID is nil).
 type RoleAssignment struct {
 	RoleName          string  `json:"role_name" mcp:"desc=role name"`
-	ScopeProjectID    *int64  `json:"scope_project_id,omitempty" mcp:"desc=optional project id; null = global"`
+	ScopeProjectID    *int64  `json:"scope_project_id,string,omitempty" mcp:"desc=optional project id; null = global"`
 	ScopeProjectTitle *string `json:"scope_project_title,omitempty" mcp:"desc=resolved project title for scoped grants"`
 }
 
 // RowWithRoles is one user_account row with their role assignments.
 type RowWithRoles struct {
-	ID          int64            `json:"id" mcp:"desc=user account id"`
-	DisplayName string           `json:"display_name" mcp:"desc=user display name"`
-	Email       *string          `json:"email,omitempty" mcp:"desc=user email"`
-	OIDCSub     *string          `json:"oidc_sub,omitempty" mcp:"desc=OIDC subject (sub claim) when provisioned"`
-	Roles       []RoleAssignment `json:"roles" mcp:"desc=role assignments held by this user"`
+	ID           int64            `json:"id,string"                        mcp:"desc=user account id"`
+	DisplayName  string           `json:"display_name"                      mcp:"desc=user display name"`
+	Email        *string          `json:"email,omitempty"                   mcp:"desc=user email"`
+	OIDCSub      *string          `json:"oidc_sub,omitempty"                mcp:"desc=OIDC subject (sub claim) when provisioned"`
+	ParentUserID *int64           `json:"parent_user_id,string,omitempty"   mcp:"desc=human owner when is_agent=true; null for humans"`
+	IsAgent      bool             `json:"is_agent"                          mcp:"desc=true when this row is an agent"`
+	Roles        []RoleAssignment `json:"roles"                             mcp:"desc=role assignments held by this user"`
 }
 
 // ListWithRolesInput has no fields. Every authenticated caller may list.
@@ -69,33 +82,7 @@ func Register() {
 		InputType:    reflect.TypeFor[SelectInput](),
 		OutputType:   reflect.TypeFor[SelectOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
-		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-			rows, err := tx.Query(ctx, `
-				SELECT id, display_name
-				FROM user_account
-				ORDER BY display_name
-			`)
-			if err != nil {
-				return nil, err
-			}
-			defer rows.Close()
-			var out []Row
-			for rows.Next() {
-				var r Row
-				if err := rows.Scan(&r.ID, &r.DisplayName); err != nil {
-					return nil, err
-				}
-				out = append(out, r)
-			}
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-			outs := make([]any, len(ins))
-			for i := range ins {
-				outs[i] = SelectOutput{Rows: out}
-			}
-			return outs, nil
-		},
+		Run:          runSelect,
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "user",
@@ -108,13 +95,80 @@ func Register() {
 	})
 }
 
+// runSelect handles user.select. We coalesce concurrent inputs by
+// taking the UNION of every input's filter — one SQL pass, then
+// per-input we slice the row set down to that input's filter. Empty
+// filters mean "match everything", so an empty SelectInput pulls the
+// full table the way v1 used to.
+func runSelect(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+	// All inputs share the same column set; we just need to run ONE
+	// query that's permissive enough to satisfy every caller, then
+	// filter per-input below.
+	rows, err := tx.Query(ctx, `
+		SELECT id, display_name, parent_user_id, is_agent
+		FROM user_account
+		ORDER BY display_name, id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	all := []Row{}
+	for rows.Next() {
+		var r Row
+		if err := rows.Scan(&r.ID, &r.DisplayName, &r.ParentUserID, &r.IsAgent); err != nil {
+			return nil, err
+		}
+		all = append(all, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	outs := make([]any, len(ins))
+	for i, raw := range ins {
+		in := raw.(SelectInput)
+		out := make([]Row, 0, len(all))
+		idSet := buildIDSet(in.IDs)
+		for _, r := range all {
+			if idSet != nil {
+				if _, ok := idSet[r.ID]; !ok {
+					continue
+				}
+			}
+			if in.ParentUserID != nil {
+				if r.ParentUserID == nil || *r.ParentUserID != *in.ParentUserID {
+					continue
+				}
+			}
+			if in.IsAgent != nil && r.IsAgent != *in.IsAgent {
+				continue
+			}
+			out = append(out, r)
+		}
+		outs[i] = SelectOutput{Rows: out}
+	}
+	return outs, nil
+}
+
+func buildIDSet(ids []int64) map[int64]struct{} {
+	if len(ids) == 0 {
+		return nil
+	}
+	set := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	return set
+}
+
 // runListWithRoles loads every user + their role assignments + scope project
 // titles in two queries (no N+1). The scope title is fetched via a LATERAL
 // lookup against attribute_value.title.
 func runListWithRoles(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 	users := []RowWithRoles{}
 	rows, err := tx.Query(ctx, `
-		SELECT id, display_name, email, oidc_sub
+		SELECT id, display_name, email, oidc_sub, parent_user_id, is_agent
 		FROM user_account
 		ORDER BY display_name, id
 	`)
@@ -124,7 +178,7 @@ func runListWithRoles(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) 
 	idx := map[int64]int{}
 	for rows.Next() {
 		var r RowWithRoles
-		if err := rows.Scan(&r.ID, &r.DisplayName, &r.Email, &r.OIDCSub); err != nil {
+		if err := rows.Scan(&r.ID, &r.DisplayName, &r.Email, &r.OIDCSub, &r.ParentUserID, &r.IsAgent); err != nil {
 			rows.Close()
 			return nil, err
 		}

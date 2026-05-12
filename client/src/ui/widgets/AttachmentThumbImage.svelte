@@ -17,9 +17,10 @@
   import { getContext } from 'svelte';
   import type { AuthState } from '../../auth/auth_state.svelte';
   import { fetchAttachmentBlob } from '../../attachments/upload';
+  import type { ID } from '../../reg/types';
 
   interface Props {
-    attachmentId: number;
+    attachmentId: ID;
     alt?: string;
     /** Tailwind classes forwarded to the `<img>`. */
     class?: string;

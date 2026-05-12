@@ -103,7 +103,7 @@ func TestPGTracer_Coalesce100AttrUpdates(t *testing.T) {
 			Endpoint: "card",
 			Action:   "insert",
 			Data: json.RawMessage(fmt.Sprintf(
-				`{"card_type_name":"task","parent_card_id":%d,"title":"task%d"}`, pOut.ID, i)),
+				`{"card_type_name":"task","parent_card_id":"%d","title":"task%d"}`, pOut.ID, i)),
 		}
 	}
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: subs})
@@ -130,7 +130,7 @@ func TestPGTracer_Coalesce100AttrUpdates(t *testing.T) {
 			Endpoint: "attribute",
 			Action:   "update",
 			Data: json.RawMessage(fmt.Sprintf(
-				`{"card_id":%d,"attribute_name":"title","value":"updated%d"}`, taskIDs[i], i)),
+				`{"card_id":"%d","attribute_name":"title","value":"updated%d"}`, taskIDs[i], i)),
 		}
 	}
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: updates})

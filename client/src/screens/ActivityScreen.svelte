@@ -36,6 +36,7 @@
     ActivitySelectOutput,
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
+    ID,
     UserSelectInput,
     UserSelectOutput,
   } from '../reg/types';
@@ -76,17 +77,17 @@
   // ---------------------------------------------------------------------------
 
   let rows = $state<ActivityRow[]>([]);
-  let userNames = $state<Record<number, string>>({});
-  let cardTitles = $state<Record<number, string>>({});
-  let tagPaths = $state<Record<number, string>>({});
+  let userNames = $state<Record<string, string>>({});
+  let cardTitles = $state<Record<string, string>>({});
+  let tagPaths = $state<Record<string, string>>({});
   /** Sorted user list backing the actor Combobox. */
-  let userOptions = $state<{ value: number; label: string }[]>([]);
+  let userOptions = $state<{ value: ID; label: string }[]>([]);
   /** No more rows on the server beyond what we've loaded. */
   let exhausted = $state(false);
 
   // Filters.
   let kinds = $state<string[]>([]);
-  let actorId = $state<number | null>(null);
+  let actorId = $state<ID | null>(null);
   let fromDate = $state<string | null>(null);
   let toDate = $state<string | null>(null);
 
@@ -169,8 +170,8 @@
       rows = actOut.rows;
       exhausted = actOut.rows.length < ACTIVITY_PAGE_SIZE;
 
-      const uMap: Record<number, string> = {};
-      for (const u of usersOut.rows) uMap[u.id] = u.display_name;
+      const uMap: Record<string, string> = {};
+      for (const u of usersOut.rows) uMap[u.id.toString()] = u.display_name;
       userNames = uMap;
       userOptions = usersOut.rows
         .map((u) => ({ value: u.id, label: u.display_name }))
@@ -179,24 +180,24 @@
       // Card titles: harvest from milestones + components + tags. Tags
       // surface their `path` attribute as the display string; fall back
       // to title when path is missing.
-      const titles: Record<number, string> = {};
-      const tags: Record<number, string> = {};
+      const titles: Record<string, string> = {};
+      const tags: Record<string, string> = {};
       for (const m of mOut.rows) {
         const t = m.attributes.title;
-        if (typeof t === 'string') titles[m.id] = t;
+        if (typeof t === 'string') titles[m.id.toString()] = t;
       }
       for (const c of cOut.rows) {
         const t = c.attributes.title;
-        if (typeof t === 'string') titles[c.id] = t;
+        if (typeof t === 'string') titles[c.id.toString()] = t;
       }
       for (const tag of tOut.rows) {
         const p = tag.attributes.path;
         if (typeof p === 'string') {
-          titles[tag.id] = p;
-          tags[tag.id] = p;
+          titles[tag.id.toString()] = p;
+          tags[tag.id.toString()] = p;
         } else {
           const t = tag.attributes.title;
-          if (typeof t === 'string') titles[tag.id] = t;
+          if (typeof t === 'string') titles[tag.id.toString()] = t;
         }
       }
       cardTitles = titles;
@@ -274,12 +275,12 @@
   function openSelected(): void {
     const r = visible[selectedIndex];
     if (r === undefined) return;
-    if (r.card_id === 0) return;
+    if (r.card_id === 0n) return;
     navigate(`/task/${r.card_id}`);
   }
 
-  function openCard(cardId: number): void {
-    if (cardId === 0) return;
+  function openCard(cardId: ID): void {
+    if (cardId === 0n) return;
     navigate(`/task/${cardId}`);
   }
 
@@ -363,7 +364,7 @@
           options={userOptions}
           placeholder="Anyone"
           onchange={(v) => {
-            actorId = typeof v === 'number' ? v : null;
+            actorId = typeof v === 'bigint' ? v : null;
           }}
         />
       </div>
@@ -441,7 +442,7 @@
         data-testid="activity-list"
       >
         {#each visible as row, i (row.id)}
-          {@const cardLabel = cardTitles[row.card_id] ?? `Card #${row.card_id}`}
+          {@const cardLabel = cardTitles[row.card_id.toString()] ?? `Card #${row.card_id}`}
           <li
             class={
               'px-4 py-2 ' +
@@ -449,7 +450,7 @@
             }
             data-activity-id={row.id}
           >
-            {#if row.card_id !== 0}
+            {#if row.card_id !== 0n}
               <button
                 type="button"
                 class="text-left text-sm font-semibold text-accent underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"

@@ -23,7 +23,7 @@ type Grant struct {
 
 // Row is one role with its grant set.
 type Row struct {
-	ID     int32   `json:"id" mcp:"desc=role id"`
+	ID     int64   `json:"id,string" mcp:"desc=role id"`
 	Name   string  `json:"name" mcp:"desc=role name"`
 	Doc    string  `json:"doc" mcp:"desc=human-readable description"`
 	Grants []Grant `json:"grants" mcp:"desc=granted (card_type, process) pairs"`
@@ -55,7 +55,7 @@ func Register() {
 			if err != nil {
 				return nil, err
 			}
-			byID := map[int32]*Row{}
+			byID := map[int64]*Row{}
 			ordered := []*Row{}
 			for rows.Next() {
 				var rr Row
@@ -83,7 +83,7 @@ func Register() {
 				return nil, err
 			}
 			for gRows.Next() {
-				var roleID int32
+				var roleID int64
 				var ctName, procName string
 				if err := gRows.Scan(&roleID, &ctName, &procName); err != nil {
 					gRows.Close()

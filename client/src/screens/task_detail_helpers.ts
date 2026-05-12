@@ -33,6 +33,7 @@ import type {
   CardSelectWithAttributesInput,
   CardWithAttrs,
   CommentInsertInput,
+  ID,
   TagApplyInput,
   TagRemoveInput,
   UserSelectInput,
@@ -49,13 +50,13 @@ export type Subrequest =
 export const ACTIVITY_LIMIT = 50;
 
 /**
- * Build the seven sub-requests the screen issues on mount. They go out
+ * Build the eight sub-requests the screen issues on mount. They go out
  * synchronously so the dispatcher batches them into ONE POST.
  *
  * Order is contractual — tests assert the exact ordering and matching
  * payloads so future refactors cannot silently flip a sub-response slot.
  */
-export function initialBatchSpec(taskId: number): Subrequest[] {
+export function initialBatchSpec(taskId: ID): Subrequest[] {
   return [
     // 0: the task itself. The server's `where` filters on attribute_value
     // not card.id, so we pull every task type and pick by id in memory —
@@ -89,7 +90,8 @@ export function initialBatchSpec(taskId: number): Subrequest[] {
       action: cardSelectWithAttributes.action,
       data: { cardTypeName: 'tag' } satisfies CardSelectWithAttributesInput,
     },
-    // 5: users — used by the activity stream + assignee combobox.
+    // 5: users — used by the activity stream to resolve actor labels
+    // (activity.actor_id is a `user_account.id`).
     {
       endpoint: userSelect.endpoint,
       action: userSelect.action,
@@ -101,6 +103,15 @@ export function initialBatchSpec(taskId: number): Subrequest[] {
       action: attributeDefSelect.action,
       data: {} satisfies AttributeDefSelectInput,
     },
+    // 7: persons — populates the assignee Combobox. Post-refactor, the
+    // `assignee` attribute is a card_ref to a `person` card, not a
+    // user_account ref; the assignee picker reads from this list while
+    // the activity stream keeps using `users` above for actor labels.
+    {
+      endpoint: cardSelectWithAttributes.endpoint,
+      action: cardSelectWithAttributes.action,
+      data: { cardTypeName: 'person' } satisfies CardSelectWithAttributesInput,
+    },
   ];
 }
 
@@ -111,7 +122,7 @@ export function initialBatchSpec(taskId: number): Subrequest[] {
  * Dart `next.isEmpty || next == lastSaved` short-circuit.
  */
 export function commitTitlePayload(
-  cardId: number,
+  cardId: ID,
   newTitle: string,
 ): AttributeUpdateInput {
   return {
@@ -126,7 +137,7 @@ export function commitTitlePayload(
  * descriptions clear the attribute (server treats `null` as remove).
  */
 export function commitDescriptionPayload(
-  cardId: number,
+  cardId: ID,
   newDescription: string,
 ): AttributeUpdateInput {
   return {
@@ -138,7 +149,7 @@ export function commitDescriptionPayload(
 
 /** Generic attribute-set payload (status / assignee / milestone / component). */
 export function attributeUpdatePayload(
-  cardId: number,
+  cardId: ID,
   attributeName: string,
   value: unknown,
 ): AttributeUpdateInput {
@@ -147,19 +158,19 @@ export function attributeUpdatePayload(
 
 /** Build the dispatcher input for `comment.insert`. */
 export function commentInsertPayload(
-  cardId: number,
+  cardId: ID,
   body: string,
 ): CommentInsertInput {
   return { cardId, body };
 }
 
 /** Build the dispatcher input for `tag.apply`. */
-export function applyTagPayload(taskId: number, tagCardId: number): TagApplyInput {
+export function applyTagPayload(taskId: ID, tagCardId: ID): TagApplyInput {
   return { targetCardId: taskId, tagCardId };
 }
 
 /** Build the dispatcher input for `tag.remove`. */
-export function removeTagPayload(taskId: number, tagCardId: number): TagRemoveInput {
+export function removeTagPayload(taskId: ID, tagCardId: ID): TagRemoveInput {
   return { targetCardId: taskId, tagCardId };
 }
 
@@ -174,7 +185,7 @@ export function sortActivityDesc(rows: readonly ActivityRow[]): ActivityRow[] {
     if (a.created_at !== b.created_at) {
       return a.created_at < b.created_at ? 1 : -1;
     }
-    return b.id - a.id;
+    return b.id < a.id ? -1 : b.id > a.id ? 1 : 0;
   });
 }
 
@@ -185,7 +196,7 @@ export function sortActivityDesc(rows: readonly ActivityRow[]): ActivityRow[] {
  */
 export function pickTaskById(
   rows: readonly CardWithAttrs[],
-  id: number,
+  id: ID,
 ): CardWithAttrs | null {
   for (const r of rows) {
     if (r.id === id) return r;
@@ -194,52 +205,77 @@ export function pickTaskById(
 }
 
 /**
- * Build the `userNames` lookup the activity rows + AttributeSidePanel
- * `refOptions[assignee]` are derived from.
+ * Build the `userNames` lookup the activity rows use to render the
+ * actor for each entry (`activity.actor_id` is a `user_account.id`).
+ * Keys are id-as-string because bigint can't be a plain object key in
+ * JS.
  */
 export function userNameMap(
-  rows: readonly { id: number; display_name: string }[],
-): Record<number, string> {
-  const out: Record<number, string> = {};
-  for (const u of rows) out[u.id] = u.display_name;
+  rows: readonly { id: ID; display_name: string }[],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const u of rows) out[u.id.toString()] = u.display_name;
   return out;
 }
 
-/** Build the `cardTitles` lookup keyed by card id. */
-export function cardTitleMap(rows: readonly CardWithAttrs[]): Record<number, string> {
-  const out: Record<number, string> = {};
+/**
+ * Build the `personNames` lookup the assignee picker / chip uses to
+ * resolve a `person` card id to its display title. Mirrors {@link
+ * userNameMap}'s key-as-string convention. Pulls the display name from
+ * `card.attributes.title`; rows with no title are simply omitted so the
+ * picker falls back to `#<id>` for them.
+ */
+export function personNameMap(
+  rows: readonly CardWithAttrs[],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const p of rows) {
+    const t = p.attributes['title'];
+    if (typeof t === 'string' && t.length > 0) out[p.id.toString()] = t;
+  }
+  return out;
+}
+
+/** Build the `cardTitles` lookup keyed by card-id-as-string. */
+export function cardTitleMap(rows: readonly CardWithAttrs[]): Record<string, string> {
+  const out: Record<string, string> = {};
   for (const c of rows) {
     const t = c.attributes['title'];
     if (typeof t === 'string' && t.length > 0) {
-      out[c.id] = t;
+      out[c.id.toString()] = t;
     }
   }
   return out;
 }
 
 /** Build the `tagPaths` lookup for tag cards (path attribute, fall back to title). */
-export function tagPathMap(rows: readonly CardWithAttrs[]): Record<number, string> {
-  const out: Record<number, string> = {};
+export function tagPathMap(rows: readonly CardWithAttrs[]): Record<string, string> {
+  const out: Record<string, string> = {};
   for (const t of rows) {
     const p = t.attributes['path'];
     if (typeof p === 'string' && p.length > 0) {
-      out[t.id] = p;
+      out[t.id.toString()] = p;
       continue;
     }
     const title = t.attributes['title'];
     if (typeof title === 'string' && title.length > 0) {
-      out[t.id] = title;
+      out[t.id.toString()] = title;
     }
   }
   return out;
 }
 
 /** Resolve the applied tag ids on a task — `attributes.tags`, defaulting to []. */
-export function appliedTagIds(task: CardWithAttrs | null): number[] {
+export function appliedTagIds(task: CardWithAttrs | null): ID[] {
   if (task === null) return [];
   const raw = task.attributes['tags'];
   if (!Array.isArray(raw)) return [];
-  return raw.filter((v): v is number => typeof v === 'number');
+  const out: ID[] = [];
+  for (const v of raw) {
+    if (typeof v === 'bigint') out.push(v);
+    else if (typeof v === 'number' && Number.isInteger(v)) out.push(BigInt(v));
+  }
+  return out;
 }
 
 // Re-export the spec records so callers can keep the registry plumbing

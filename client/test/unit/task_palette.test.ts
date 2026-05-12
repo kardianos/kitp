@@ -28,32 +28,37 @@ import type { CardWithAttrs, UserRow } from '../../src/reg/types.js';
 /* -------------------------------------------------------------------------- */
 
 function card(
-  id: number,
+  id: bigint,
   type: string,
   attrs: Record<string, unknown>,
 ): CardWithAttrs {
-  return { id, card_type_id: 1, card_type_name: type, attributes: attrs };
+  return { id, card_type_id: 1n, card_type_name: type, attributes: attrs };
 }
 
 const USERS: UserRow[] = [
-  { id: 1, display_name: 'alice' },
-  { id: 2, display_name: 'bob' },
+  { id: 1n, display_name: 'alice' },
+  { id: 2n, display_name: 'bob' },
+];
+
+const PERSONS: CardWithAttrs[] = [
+  card(101n, 'person', { title: 'Alice Person' }),
+  card(102n, 'person', { title: 'Bob Person' }),
 ];
 
 const MILESTONES: CardWithAttrs[] = [
-  card(10, 'milestone', { title: 'M1' }),
-  card(11, 'milestone', { title: 'M2' }),
+  card(10n, 'milestone', { title: 'M1' }),
+  card(11n, 'milestone', { title: 'M2' }),
 ];
 
 const COMPONENTS: CardWithAttrs[] = [
-  card(20, 'component', { title: 'frontend' }),
-  card(21, 'component', { name: 'backend' }), // exercises name fallback
-  card(22, 'component', {}), // exercises #id fallback
+  card(20n, 'component', { title: 'frontend' }),
+  card(21n, 'component', { name: 'backend' }), // exercises name fallback
+  card(22n, 'component', {}), // exercises #id fallback
 ];
 
 const TAGS: CardWithAttrs[] = [
-  card(30, 'tag', { path: 'priority/high' }),
-  card(31, 'tag', { path: 'area/api' }),
+  card(30n, 'tag', { path: 'priority/high' }),
+  card(31n, 'tag', { path: 'area/api' }),
 ];
 
 /* -------------------------------------------------------------------------- */
@@ -71,21 +76,10 @@ function makeStubCache(): AttributeSchemaCache {
   // closely enough for assertion: the real helper itself is exercised
   // indirectly via the production cache in the screen tests.
   const defs = [
-    {
-      id: 1,
-      name: 'status',
-      value_type: 'enum',
-      bound_to: [],
-      options: [
-        { value: 'todo', label: 'To do' },
-        { value: 'doing', label: 'Doing' },
-        { value: 'done', label: 'Done' },
-      ],
-    },
-    { id: 2, name: 'assignee', value_type: 'user_ref', bound_to: [] },
-    { id: 3, name: 'milestone_ref', value_type: 'card_ref', bound_to: [] },
-    { id: 4, name: 'component_ref', value_type: 'card_ref', bound_to: [] },
-    { id: 5, name: 'tags', value_type: 'card_ref', bound_to: [] },
+    { id: 2n, name: 'assignee', value_type: 'card_ref', bound_to: [] },
+    { id: 3n, name: 'milestone_ref', value_type: 'card_ref', bound_to: [] },
+    { id: 4n, name: 'component_ref', value_type: 'card_ref', bound_to: [] },
+    { id: 5n, name: 'tags', value_type: 'card_ref', bound_to: [] },
   ];
 
   function friendly(name: string): string {
@@ -98,11 +92,26 @@ function makeStubCache(): AttributeSchemaCache {
       .join(' ');
   }
 
+  // Mirrors production `normalizeValueType` (attribute_schema.svelte.ts):
+  // `user_ref` → `ref:user`; `card_ref` infers the target from a trailing
+  // `_ref` in the def name (otherwise falls back to `ref:card`). The
+  // palette post-processes the `ref:card` case for `assignee` so options
+  // wire up to person cards.
+  //
+  // The exception below for `tags` keeps the test stub aligned with the
+  // pre-refactor expectation that the `tags` attribute exposes options:
+  // production resolves the target card type for a list-typed `card_ref`
+  // via a different code path (the seed schema's `card_ref[]` value_type
+  // routes through a tag-aware lookup; we don't model that here).
   function normalize(rawType: string, name: string): string {
     if (rawType === 'user_ref') return 'ref:user';
     if (rawType === 'card_ref') {
-      if (name.endsWith('_ref')) return `ref:${name.slice(0, -'_ref'.length)}`;
-      return `ref:${name}`; // tags → ref:tags
+      if (name.endsWith('_ref')) {
+        const target = name.slice(0, -'_ref'.length);
+        if (target.length > 0) return `ref:${target}`;
+      }
+      if (name === 'tags') return 'ref:tag';
+      return 'ref:card';
     }
     return rawType;
   }
@@ -124,23 +133,13 @@ function makeStubCache(): AttributeSchemaCache {
         name: def.name,
         label: friendly(def.name),
         valueType,
-        ops:
-          valueType === 'enum' || valueType.startsWith('ref:')
-            ? ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists']
-            : ['eq', 'ne', 'exists', 'notExists'],
+        ops: valueType.startsWith('ref:')
+          ? ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists']
+          : ['eq', 'ne', 'exists', 'notExists'],
       };
-      if (valueType === 'enum' && def.options !== undefined) {
-        fa.options = def.options.map((o) => ({
-          value: o.value,
-          label: o.label,
-        }));
-      } else if (valueType.startsWith('ref:') && refResolver !== undefined) {
+      if (valueType.startsWith('ref:') && refResolver !== undefined) {
         const ct = valueType.slice('ref:'.length);
-        // The production helper looks for `tag` (singular). The seed
-        // schema's `tags` attribute is a card_ref to `tag`; this stub
-        // mimics that by rewriting the suffix.
-        const target = ct === 'tags' ? 'tag' : ct;
-        const resolved = refResolver(target);
+        const resolved = refResolver(ct);
         if (resolved.length > 0) fa.options = resolved;
       }
       return fa;
@@ -157,16 +156,16 @@ describe('buildRefOptions', () => {
   it('prefers title, then name, then #<id>', () => {
     const opts = buildRefOptions(COMPONENTS);
     expect(opts).toEqual([
-      { value: 20, label: 'frontend' },
-      { value: 21, label: 'backend' },
-      { value: 22, label: '#22' },
+      { value: 20n, label: 'frontend' },
+      { value: 21n, label: 'backend' },
+      { value: 22n, label: '#22' },
     ]);
   });
 
   it('uses path for tag-shaped rows', () => {
     expect(buildRefOptions(TAGS)).toEqual([
-      { value: 30, label: 'priority/high' },
-      { value: 31, label: 'area/api' },
+      { value: 30n, label: 'priority/high' },
+      { value: 31n, label: 'area/api' },
     ]);
   });
 });
@@ -174,8 +173,8 @@ describe('buildRefOptions', () => {
 describe('buildUserOptions', () => {
   it('maps each user to value=id, label=display_name', () => {
     expect(buildUserOptions(USERS)).toEqual([
-      { value: 1, label: 'alice' },
-      { value: 2, label: 'bob' },
+      { value: 1n, label: 'alice' },
+      { value: 2n, label: 'bob' },
     ]);
   });
 });
@@ -185,38 +184,38 @@ describe('buildUserOptions', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('buildTaskFilterPalette', () => {
-  it('returns the standard names in the expected order', () => {
+  it('returns the standard names plus synthetic text attrs in order', () => {
     const fa = buildTaskFilterPalette({
       schema: makeStubCache(),
-      users: USERS,
+      persons: PERSONS,
       milestones: MILESTONES,
       components: COMPONENTS,
       tags: TAGS,
     });
     expect(fa.map((a) => a.name)).toEqual([
-      'status',
       'assignee',
       'milestone_ref',
       'component_ref',
       'tags',
+      // Synthetic — driven by the TextSearchBar and the Add filter /
+      // Advanced editor; not surfaced as quick-filter dropdowns.
+      'title',
+      'description',
+      'comments',
     ]);
   });
 
   it('normalizes wire types into ref:* and produces friendly labels', () => {
     const fa = buildTaskFilterPalette({
       schema: makeStubCache(),
-      users: USERS,
+      persons: PERSONS,
       milestones: MILESTONES,
       components: COMPONENTS,
       tags: TAGS,
     });
     const byName = Object.fromEntries(fa.map((a) => [a.name, a]));
-    expect(byName['status']).toMatchObject({
-      valueType: 'enum',
-      label: 'Status',
-    });
     expect(byName['assignee']).toMatchObject({
-      valueType: 'ref:user',
+      valueType: 'ref:person',
       label: 'Assignee',
     });
     expect(byName['milestone_ref']).toMatchObject({
@@ -235,33 +234,28 @@ describe('buildTaskFilterPalette', () => {
   it('populates options for each picker from the supplied row tables', () => {
     const fa = buildTaskFilterPalette({
       schema: makeStubCache(),
-      users: USERS,
+      persons: PERSONS,
       milestones: MILESTONES,
       components: COMPONENTS,
       tags: TAGS,
     });
     const byName = Object.fromEntries(fa.map((a) => [a.name, a]));
-    expect(byName['status']?.options).toEqual([
-      { value: 'todo', label: 'To do' },
-      { value: 'doing', label: 'Doing' },
-      { value: 'done', label: 'Done' },
-    ]);
     expect(byName['assignee']?.options).toEqual([
-      { value: 1, label: 'alice' },
-      { value: 2, label: 'bob' },
+      { value: 101n, label: 'Alice Person' },
+      { value: 102n, label: 'Bob Person' },
     ]);
     expect(byName['milestone_ref']?.options).toEqual([
-      { value: 10, label: 'M1' },
-      { value: 11, label: 'M2' },
+      { value: 10n, label: 'M1' },
+      { value: 11n, label: 'M2' },
     ]);
     expect(byName['component_ref']?.options).toEqual([
-      { value: 20, label: 'frontend' },
-      { value: 21, label: 'backend' },
-      { value: 22, label: '#22' },
+      { value: 20n, label: 'frontend' },
+      { value: 21n, label: 'backend' },
+      { value: 22n, label: '#22' },
     ]);
     expect(byName['tags']?.options).toEqual([
-      { value: 30, label: 'priority/high' },
-      { value: 31, label: 'area/api' },
+      { value: 30n, label: 'priority/high' },
+      { value: 31n, label: 'area/api' },
     ]);
   });
 
@@ -271,7 +265,7 @@ describe('buildTaskFilterPalette', () => {
     expect(
       buildTaskFilterPalette({
         schema: stub,
-        users: USERS,
+        persons: PERSONS,
         milestones: MILESTONES,
         components: COMPONENTS,
         tags: TAGS,
@@ -282,12 +276,12 @@ describe('buildTaskFilterPalette', () => {
   it('honours an explicit `names` override', () => {
     const fa = buildTaskFilterPalette({
       schema: makeStubCache(),
-      users: USERS,
+      persons: PERSONS,
       milestones: MILESTONES,
       components: COMPONENTS,
-      names: ['assignee', 'status'],
+      names: ['assignee', 'milestone_ref'],
     });
-    expect(fa.map((a) => a.name)).toEqual(['assignee', 'status']);
+    expect(fa.map((a) => a.name)).toEqual(['assignee', 'milestone_ref']);
   });
 });
 
@@ -296,43 +290,33 @@ describe('buildTaskFilterPalette', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('resolveAttributeLabel', () => {
-  const enumAttr: FilterAttribute = {
-    name: 'status',
-    label: 'Status',
-    valueType: 'enum',
-    options: [
-      { value: 'todo', label: 'To do' },
-      { value: 'doing', label: 'Doing' },
-    ],
-    ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
-  };
   const refAttr: FilterAttribute = {
     name: 'milestone_ref',
     label: 'Milestone',
     valueType: 'ref:milestone',
     options: [
-      { value: 10, label: 'M1' },
-      { value: 11, label: 'M2' },
+      { value: 10n, label: 'M1' },
+      { value: 11n, label: 'M2' },
     ],
     ops: ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'],
   };
 
-  it('returns the enum option label for a known scalar value', () => {
-    expect(resolveAttributeLabel(enumAttr, 'todo')).toBe('To do');
-    expect(resolveAttributeLabel(enumAttr, 'doing')).toBe('Doing');
+  it('returns the option label for a known scalar value', () => {
+    expect(resolveAttributeLabel(refAttr, 10n)).toBe('M1');
+    expect(resolveAttributeLabel(refAttr, 11n)).toBe('M2');
   });
 
   it('falls back to String(value) for an unknown scalar', () => {
-    expect(resolveAttributeLabel(enumAttr, 'archived')).toBe('archived');
+    expect(resolveAttributeLabel(refAttr, 99n)).toBe('99');
   });
 
   it('renders null/undefined as a dash', () => {
-    expect(resolveAttributeLabel(enumAttr, null)).toBe('—');
-    expect(resolveAttributeLabel(enumAttr, undefined)).toBe('—');
+    expect(resolveAttributeLabel(refAttr, null)).toBe('—');
+    expect(resolveAttributeLabel(refAttr, undefined)).toBe('—');
   });
 
   it('joins multi values with comma and resolves each', () => {
-    expect(resolveAttributeLabel(refAttr, [10, 11])).toBe('M1, M2');
+    expect(resolveAttributeLabel(refAttr, [10n, 11n])).toBe('M1, M2');
   });
 
   it('renders empty arrays as a dash', () => {
@@ -341,50 +325,12 @@ describe('resolveAttributeLabel', () => {
 
   it('prefers refOverrides[name] when supplied', () => {
     const overrides = {
-      milestone_ref: [{ value: 10, label: 'Quarter 1' }],
+      milestone_ref: [{ value: 10n, label: 'Quarter 1' }],
     };
-    expect(resolveAttributeLabel(refAttr, 10, overrides)).toBe('Quarter 1');
+    expect(resolveAttributeLabel(refAttr, 10n, overrides)).toBe('Quarter 1');
   });
 
   it('returns String(value) when attr is undefined and no overrides match', () => {
     expect(resolveAttributeLabel(undefined, 42)).toBe('42');
-  });
-});
-
-/* -------------------------------------------------------------------------- */
-/* Cross-surface status label parity                                          */
-/* -------------------------------------------------------------------------- */
-
-describe('status label resolution agrees across surfaces', () => {
-  // Mirrors how each consumer surface resolves a status value into a
-  // visible label. If any of these stops agreeing, the status chip in
-  // a list row, the column header in Kanban, the cell in Grid, and the
-  // chip in FilterBar will start drifting — exactly the bug this whole
-  // refactor exists to prevent.
-  const palette = buildTaskFilterPalette({
-    schema: makeStubCache(),
-    users: USERS,
-    milestones: MILESTONES,
-    components: COMPONENTS,
-    tags: TAGS,
-  });
-  const statusAttr = palette.find((a) => a.name === 'status');
-  const statusOptions = statusAttr?.options;
-
-  it.each([
-    ['todo', 'To do'],
-    ['doing', 'Doing'],
-    ['done', 'Done'],
-  ])('value %s resolves to %s on every surface', (value, expected) => {
-    // FilterBar chip path (resolveAttributeLabel against palette attr).
-    expect(resolveAttributeLabel(statusAttr, value)).toBe(expected);
-    // GridScreen `statusOf()` path (same call).
-    expect(resolveAttributeLabel(statusAttr, value)).toBe(expected);
-    // KanbanScreen `labelFor()` path (palette lookup → resolveAttributeLabel).
-    const fa = palette.find((a) => a.name === 'status');
-    expect(resolveAttributeLabel(fa, value)).toBe(expected);
-    // TaskRow `statusText` path (caller passes statusOptions, row finds match).
-    const opt = statusOptions?.find((o) => o.value === value);
-    expect(opt?.label).toBe(expected);
   });
 });

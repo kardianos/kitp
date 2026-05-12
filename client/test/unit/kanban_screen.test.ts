@@ -34,12 +34,12 @@ import {
 /* -------------------------------------------------------------------------- */
 
 function task(
-  id: number,
+  id: bigint,
   attrs: Record<string, unknown> = {},
 ): CardWithAttrs {
   return {
     id,
-    card_type_id: 2,
+    card_type_id: 2n,
     card_type_name: 'task',
     attributes: { ...attrs },
   };
@@ -52,39 +52,39 @@ function task(
 describe('groupCardsByColumn', () => {
   it('buckets by string-valued attribute', () => {
     const cards = [
-      task(1, { status: 'todo' }),
-      task(2, { status: 'doing' }),
-      task(3, { status: 'todo' }),
-      task(4, { status: 'done' }),
+      task(1n, { status: 'todo' }),
+      task(2n, { status: 'doing' }),
+      task(3n, { status: 'todo' }),
+      task(4n, { status: 'done' }),
     ];
     const out = groupCardsByColumn(cards, 'status');
     expect(Object.keys(out).sort()).toEqual(['doing', 'done', 'todo']);
-    expect(out['todo']?.map((c) => c.id)).toEqual([1, 3]);
-    expect(out['doing']?.map((c) => c.id)).toEqual([2]);
-    expect(out['done']?.map((c) => c.id)).toEqual([4]);
+    expect(out['todo']?.map((c) => c.id)).toEqual([1n, 3n]);
+    expect(out['doing']?.map((c) => c.id)).toEqual([2n]);
+    expect(out['done']?.map((c) => c.id)).toEqual([4n]);
   });
 
   it('buckets nulls / undefined into the empty-string bucket', () => {
     const cards = [
-      task(1, { status: 'todo' }),
-      task(2, { status: null }),
-      task(3, {}), // status missing entirely
-      task(4, { status: 'todo' }),
+      task(1n, { status: 'todo' }),
+      task(2n, { status: null }),
+      task(3n, {}), // status missing entirely
+      task(4n, { status: 'todo' }),
     ];
     const out = groupCardsByColumn(cards, 'status');
-    expect(out['todo']?.map((c) => c.id)).toEqual([1, 4]);
-    expect(out['']?.map((c) => c.id)).toEqual([2, 3]);
+    expect(out['todo']?.map((c) => c.id)).toEqual([1n, 4n]);
+    expect(out['']?.map((c) => c.id)).toEqual([2n, 3n]);
   });
 
   it('stringifies numeric / boolean attribute values', () => {
     const cards = [
-      task(1, { assignee: 7 }),
-      task(2, { assignee: 7 }),
-      task(3, { assignee: 9 }),
+      task(1n, { assignee: 7 }),
+      task(2n, { assignee: 7 }),
+      task(3n, { assignee: 9 }),
     ];
     const out = groupCardsByColumn(cards, 'assignee');
-    expect(out['7']?.map((c) => c.id)).toEqual([1, 2]);
-    expect(out['9']?.map((c) => c.id)).toEqual([3]);
+    expect(out['7']?.map((c) => c.id)).toEqual([1n, 2n]);
+    expect(out['9']?.map((c) => c.id)).toEqual([3n]);
   });
 
   it('returns an empty record for an empty input list', () => {
@@ -99,20 +99,20 @@ describe('groupCardsByColumn', () => {
 describe('groupCardsByLane', () => {
   it('buckets the lane axis the same way as the column axis', () => {
     const cards = [
-      task(1, { assignee: 7, status: 'todo' }),
-      task(2, { assignee: 9, status: 'doing' }),
-      task(3, { assignee: 7, status: 'doing' }),
+      task(1n, { assignee: 7n, status: 'todo' }),
+      task(2n, { assignee: 9n, status: 'doing' }),
+      task(3n, { assignee: 7n, status: 'doing' }),
     ];
     const out = groupCardsByLane(cards, 'assignee');
-    expect(out['7']?.map((c) => c.id)).toEqual([1, 3]);
-    expect(out['9']?.map((c) => c.id)).toEqual([2]);
+    expect(out['7']?.map((c) => c.id)).toEqual([1n, 3n]);
+    expect(out['9']?.map((c) => c.id)).toEqual([2n]);
   });
 
   it('puts cards with no lane attribute into the empty-string bucket', () => {
-    const cards = [task(1, {}), task(2, { assignee: 7 })];
+    const cards = [task(1n, {}), task(2n, { assignee: 7 })];
     const out = groupCardsByLane(cards, 'assignee');
-    expect(out['']?.map((c) => c.id)).toEqual([1]);
-    expect(out['7']?.map((c) => c.id)).toEqual([2]);
+    expect(out['']?.map((c) => c.id)).toEqual([1n]);
+    expect(out['7']?.map((c) => c.id)).toEqual([2n]);
   });
 });
 
@@ -128,8 +128,8 @@ describe('computeNewSortOrder', () => {
 
   it('top of stack: first.sort_order - STEP', () => {
     const stack = [
-      task(1, { sort_order: 200 }),
-      task(2, { sort_order: 300 }),
+      task(1n, { sort_order: 200 }),
+      task(2n, { sort_order: 300 }),
     ];
     expect(computeNewSortOrder(stack, 0)).toBe(100);
     // Negative slotIndex behaves like top-of-stack.
@@ -138,8 +138,8 @@ describe('computeNewSortOrder', () => {
 
   it('bottom of stack: last.sort_order + STEP', () => {
     const stack = [
-      task(1, { sort_order: 100 }),
-      task(2, { sort_order: 200 }),
+      task(1n, { sort_order: 100 }),
+      task(2n, { sort_order: 200 }),
     ];
     expect(computeNewSortOrder(stack, 2)).toBe(300);
     // Past the end behaves like bottom-of-stack.
@@ -148,9 +148,9 @@ describe('computeNewSortOrder', () => {
 
   it('between two cards: arithmetic mean', () => {
     const stack = [
-      task(1, { sort_order: 100 }),
-      task(2, { sort_order: 200 }),
-      task(3, { sort_order: 300 }),
+      task(1n, { sort_order: 100 }),
+      task(2n, { sort_order: 200 }),
+      task(3n, { sort_order: 300 }),
     ];
     expect(computeNewSortOrder(stack, 1)).toBe(150);
     expect(computeNewSortOrder(stack, 2)).toBe(250);
@@ -158,34 +158,34 @@ describe('computeNewSortOrder', () => {
 
   it('between with nullish prev: next - STEP', () => {
     const stack = [
-      task(1, {}), // no sort_order
-      task(2, { sort_order: 200 }),
+      task(1n, {}), // no sort_order
+      task(2n, { sort_order: 200 }),
     ];
     expect(computeNewSortOrder(stack, 1)).toBe(100);
   });
 
   it('between with nullish next: prev + STEP', () => {
     const stack = [
-      task(1, { sort_order: 100 }),
-      task(2, {}), // no sort_order
+      task(1n, { sort_order: 100 }),
+      task(2n, {}), // no sort_order
     ];
     expect(computeNewSortOrder(stack, 1)).toBe(200);
   });
 
   it('between two nullish cards: slotIndex * STEP fallback', () => {
-    const stack = [task(1, {}), task(2, {}), task(3, {})];
+    const stack = [task(1n, {}), task(2n, {}), task(3n, {})];
     expect(computeNewSortOrder(stack, 1)).toBe(SORT_ORDER_STEP);
     expect(computeNewSortOrder(stack, 2)).toBe(2 * SORT_ORDER_STEP);
   });
 
   it('top of an all-nullish stack: 0 ((STEP ?? STEP) - STEP)', () => {
     // (first.sort_order ?? STEP) - STEP === 0 when sort_order is missing.
-    const stack = [task(1, {}), task(2, {})];
+    const stack = [task(1n, {}), task(2n, {})];
     expect(computeNewSortOrder(stack, 0)).toBe(0);
   });
 
   it('bottom of an all-nullish stack: +STEP (last ?? 0) + STEP', () => {
-    const stack = [task(1, {}), task(2, {})];
+    const stack = [task(1n, {}), task(2n, {})];
     expect(computeNewSortOrder(stack, 2)).toBe(SORT_ORDER_STEP);
   });
 });
@@ -196,7 +196,7 @@ describe('computeNewSortOrder', () => {
 
 describe('computeMoveBatch', () => {
   it('changing only sort returns ONE op (sort_order)', () => {
-    const card = task(42, { status: 'doing', sort_order: 100 });
+    const card = task(42n, { status: 'doing', sort_order: 100 });
     const ops: UpdateOp[] = computeMoveBatch(
       card,
       'doing', // same column value
@@ -206,30 +206,30 @@ describe('computeMoveBatch', () => {
       null, // lane disabled
     );
     expect(ops).toEqual([
-      { cardId: 42, attributeName: 'sort_order', value: 150 },
+      { cardId: 42n, attributeName: 'sort_order', value: 150 },
     ]);
   });
 
   it('changing column + sort returns TWO ops', () => {
-    const card = task(42, { status: 'doing', sort_order: 100 });
+    const card = task(42n, { status: 'doing', sort_order: 100 });
     const ops = computeMoveBatch(card, 'review', null, 150, 'status', null);
     expect(ops).toHaveLength(2);
     expect(ops[0]).toEqual({
-      cardId: 42,
+      cardId: 42n,
       attributeName: 'sort_order',
       value: 150,
     });
     expect(ops[1]).toEqual({
-      cardId: 42,
+      cardId: 42n,
       attributeName: 'status',
       value: 'review',
     });
   });
 
   it('changing column + lane + sort returns THREE ops', () => {
-    const card = task(42, {
+    const card = task(42n, {
       status: 'doing',
-      assignee: 7,
+      assignee: 7n,
       sort_order: 100,
     });
     const ops = computeMoveBatch(
@@ -247,25 +247,25 @@ describe('computeMoveBatch', () => {
       'assignee',
     ]);
     expect(ops[1]).toEqual({
-      cardId: 42,
+      cardId: 42n,
       attributeName: 'status',
       value: 'review',
     });
     expect(ops[2]).toEqual({
-      cardId: 42,
+      cardId: 42n,
       attributeName: 'assignee',
       value: 9,
     });
   });
 
   it('omits column op when the column value did not change', () => {
-    const card = task(42, { status: 'doing', sort_order: 100 });
+    const card = task(42n, { status: 'doing', sort_order: 100 });
     const ops = computeMoveBatch(card, 'doing', null, 200, 'status', null);
     expect(ops.map((o) => o.attributeName)).toEqual(['sort_order']);
   });
 
   it('omits lane op when the lane axis is null even if value differs', () => {
-    const card = task(42, { status: 'doing', assignee: 7, sort_order: 100 });
+    const card = task(42n, { status: 'doing', assignee: 7n, sort_order: 100 });
     // laneAttrName=null disables the lane axis entirely.
     const ops = computeMoveBatch(card, 'review', 9, 150, 'status', null);
     expect(ops).toHaveLength(2);
@@ -273,9 +273,9 @@ describe('computeMoveBatch', () => {
   });
 
   it('omits lane op when the lane value did not change', () => {
-    const card = task(42, {
+    const card = task(42n, {
       status: 'doing',
-      assignee: 7,
+      assignee: 7n,
       sort_order: 100,
     });
     const ops = computeMoveBatch(card, 'review', 7, 150, 'status', 'assignee');
@@ -284,18 +284,18 @@ describe('computeMoveBatch', () => {
   });
 
   it('omits sort op when the existing sort_order already equals the target', () => {
-    const card = task(42, { status: 'doing', sort_order: 200 });
+    const card = task(42n, { status: 'doing', sort_order: 200 });
     // Drop computed exactly the same value (same slot, no neighbours moved).
     const ops = computeMoveBatch(card, 'review', null, 200, 'status', null);
     expect(ops.map((o) => o.attributeName)).toEqual(['status']);
   });
 
   it('emits a clear-attribute write when the target column is null', () => {
-    const card = task(42, { status: 'doing', sort_order: 100 });
+    const card = task(42n, { status: 'doing', sort_order: 100 });
     const ops = computeMoveBatch(card, null, null, 150, 'status', null);
     expect(ops).toHaveLength(2);
     expect(ops[1]).toEqual({
-      cardId: 42,
+      cardId: 42n,
       attributeName: 'status',
       value: null,
     });
@@ -303,7 +303,7 @@ describe('computeMoveBatch', () => {
 
   it('does not emit a column op when both current and target are unset', () => {
     // Card has no `status` attr; target value is null. Both bucket to ''.
-    const card = task(42, { sort_order: 100 });
+    const card = task(42n, { sort_order: 100 });
     const ops = computeMoveBatch(card, null, null, 150, 'status', null);
     expect(ops.map((o) => o.attributeName)).toEqual(['sort_order']);
   });
@@ -344,12 +344,12 @@ describe('nextColumnIndex', () => {
 describe('sortByOrder', () => {
   it('orders by sort_order ASC with id tie-breaker, nulls last', () => {
     const out = sortByOrder([
-      task(3, { sort_order: 200 }),
-      task(1, {}),
-      task(2, { sort_order: 100 }),
-      task(4, {}),
-      task(5, { sort_order: 200 }),
+      task(3n, { sort_order: 200 }),
+      task(1n, {}),
+      task(2n, { sort_order: 100 }),
+      task(4n, {}),
+      task(5n, { sort_order: 200 }),
     ]);
-    expect(out.map((c) => c.id)).toEqual([2, 3, 5, 1, 4]);
+    expect(out.map((c) => c.id)).toEqual([2n, 3n, 5n, 1n, 4n]);
   });
 });

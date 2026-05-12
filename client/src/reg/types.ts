@@ -1,14 +1,29 @@
 /**
- * Shared row types for the handler registry. Each interface mirrors a Dart
- * data class from `client/lib/reg/handlers.dart` and `handlers_admin.dart`.
+ * Shared row types for the handler registry. Each interface mirrors a
+ * struct in `server/internal/dom/**`.
  *
  * Conventions:
- *   - Field names match the server's JSON exactly (snake_case).
+ *   - Field names match the server's JSON exactly (snake_case for outputs,
+ *     camelCase for inputs the encoders convert before sending).
  *   - Optional fields are typed `T | undefined` (with `?:`); they are
  *     OMITTED — not set to null — by the encoders in `handlers.ts`.
- *   - Numeric ID fields use `number`. The encoders/decoders use
- *     `Number(j.x)` (not bitwise tricks) so values up to 2^53-1 round-trip.
+ *   - ID fields use the `ID = bigint` alias. The server emits ids as JSON
+ *     numbers (int64); the dispatcher's bigint-aware JSON parser preserves
+ *     full int64 precision through to the client by converting any integer
+ *     that exceeds Number.MAX_SAFE_INTEGER into a BigInt at parse time.
+ *     The decoders in handlers.ts accept either bigint or number for an
+ *     id field and normalise to bigint.
+ *   - Non-id numeric fields (ordering, sort_order, size_bytes, limit,
+ *     offset, usage_count, …) use `number` because they don't need int64
+ *     precision and arithmetic on them stays ergonomic in JS.
  */
+
+/**
+ * ID alias — every id field on every domain row, server-side int64.
+ * Treat as opaque: don't do arithmetic on it, don't index plain objects
+ * with it (use `.toString()` if you need a Map / Record key).
+ */
+export type ID = bigint;
 
 // ============================================================================
 // echo.ping
@@ -34,9 +49,9 @@ export interface CardTypeSelectInput {
 }
 
 export interface CardTypeRow {
-  id: number;
+  id: ID;
   name: string;
-  parent_card_type_id?: number;
+  parent_card_type_id?: ID;
   allow_self_parent: boolean;
   is_built_in: boolean;
 }
@@ -51,7 +66,7 @@ export interface CardTypeSelectOutput {
 
 export interface CardInsertInput {
   cardTypeName: string;
-  parentCardId?: number;
+  parentCardId?: ID;
   title: string;
   /**
    * Optional initial attribute writes. Values must be JSON-encodable.
@@ -61,7 +76,7 @@ export interface CardInsertInput {
 }
 
 export interface CardInsertOutput {
-  id: number;
+  id: ID;
 }
 
 // ============================================================================
@@ -69,15 +84,15 @@ export interface CardInsertOutput {
 // ============================================================================
 
 export interface CardSelectInput {
-  parentCardId?: number;
+  parentCardId?: ID;
   cardTypeName?: string;
 }
 
 export interface CardRow {
-  id: number;
-  card_type_id: number;
+  id: ID;
+  card_type_id: ID;
   card_type_name: string;
-  parent_card_id?: number;
+  parent_card_id?: ID;
   title?: string;
 }
 
@@ -115,7 +130,7 @@ export interface CardOrderClause {
 export type CardWhereTree = Record<string, unknown>;
 
 export interface CardSelectWithAttributesInput {
-  parentCardId?: number;
+  parentCardId?: ID;
   cardTypeName?: string;
   where?: CardWherePredicate[];
   /** Recursive predicate tree; takes precedence over `where` when present. */
@@ -124,15 +139,35 @@ export interface CardSelectWithAttributesInput {
   limit?: number;
   offset?: number;
   includeDeleted?: boolean;
+  /**
+   * When true, the server LEFT JOINs `user_card_sort` for the calling
+   * actor and exposes `personal_sort_order` on each row; the `order`
+   * field then accepts `'personal_sort_order'` (NULLS LAST). Inbox uses
+   * this to render the per-user drag-drop ordering without a separate
+   * handler.
+   */
+  withPersonalSort?: boolean;
 }
 
 export interface CardWithAttrs {
-  id: number;
-  card_type_id: number;
+  id: ID;
+  card_type_id: ID;
   card_type_name: string;
-  parent_card_id?: number;
+  parent_card_id?: ID;
+  /**
+   * Structural flag: true when this value-card represents a terminal /
+   * closed state for any ref attribute pointing at it (e.g. a status
+   * card 'Done' or 'Cancelled'). Drives the notTerminal filter +
+   * action-button discovery.
+   */
+  is_terminal?: boolean;
   attributes: Record<string, unknown>;
   deleted_at?: string;
+  /**
+   * Populated when the request set `withPersonalSort:true`. Null /
+   * undefined means the calling actor has never reordered this card.
+   */
+  personal_sort_order?: number;
 }
 
 export interface CardSelectWithAttributesOutput {
@@ -146,12 +181,16 @@ export interface CardSelectWithAttributesOutput {
 export interface CardSearchInput {
   cardTypeName: string;
   query?: string;
-  ids?: number[];
+  ids?: ID[];
   limit?: number;
+  /** Restrict to cards whose parent_card_id equals this; used by
+   *  ref:* picker dropdowns to keep typeahead in the same project as
+   *  the editing task. */
+  parentCardId?: ID;
 }
 
 export interface CardSearchHit {
-  id: number;
+  id: ID;
   title: string;
 }
 
@@ -164,12 +203,12 @@ export interface CardSearchOutput {
 // ============================================================================
 
 export interface CardDeleteInput {
-  cardId: number;
+  cardId: ID;
 }
 
 export interface CardDeleteOutput {
   ok: boolean;
-  activity_id: number;
+  activity_id: ID;
 }
 
 // ============================================================================
@@ -200,26 +239,26 @@ export interface FileCreateInput {
 }
 
 export interface FileCreateOutput {
-  id: number;
+  id: ID;
   filename: string;
   mime_type: string;
   size_bytes: number;
 }
 
 export interface AttachmentListInput {
-  cardId: number;
+  cardId: ID;
 }
 
 export interface AttachmentRow {
-  id: number;
-  card_id: number;
-  file_id: number;
+  id: ID;
+  card_id: ID;
+  file_id: ID;
   filename: string;
   mime_type: string;
   size_bytes: number;
   created_at: string;
-  /** 0 when no thumb is available (non-image attachment, or thumb gen failed). */
-  thumb_file_id: number;
+  /** 0n when no thumb is available (non-image attachment, or thumb gen failed). */
+  thumb_file_id: ID;
   /** Display bucket the server has classified this attachment into. */
   kind: AttachmentKind;
 }
@@ -231,7 +270,7 @@ export interface AttachmentListOutput {
 }
 
 export interface AttachmentDeleteInput {
-  id: number;
+  id: ID;
 }
 
 export interface AttachmentDeleteOutput {
@@ -239,18 +278,18 @@ export interface AttachmentDeleteOutput {
 }
 
 export interface AttachmentCreateInput {
-  cardId: number;
-  fileId: number;
+  cardId: ID;
+  fileId: ID;
 }
 
 export interface AttachmentCreateOutput {
-  id: number;
-  card_id: number;
-  file_id: number;
+  id: ID;
+  card_id: ID;
+  file_id: ID;
   filename: string;
   mime_type: string;
   size_bytes: number;
-  thumb_file_id: number;
+  thumb_file_id: ID;
   kind: AttachmentKind;
 }
 
@@ -291,7 +330,7 @@ export interface ConfigGetOutput {
 // ============================================================================
 
 export interface AttributeUpdateInput {
-  cardId: number;
+  cardId: ID;
   attributeName: string;
   /** JSON-encodable value (string / number / bool / null / list / map). */
   value: unknown;
@@ -299,7 +338,7 @@ export interface AttributeUpdateInput {
 
 export interface AttributeUpdateOutput {
   ok: boolean;
-  activity_id: number;
+  activity_id: ID;
   prev_value?: unknown;
 }
 
@@ -312,31 +351,23 @@ export interface AttributeDefSelectInput {
 }
 
 export interface AttributeDefBoundCardType {
-  card_type_id: number;
+  card_type_id: ID;
   card_type_name: string;
   is_required: boolean;
   is_built_in: boolean;
   ordering: number;
 }
 
-/**
- * One value of an enum-typed attribute_def. Server emits this with
- * migration 0012 + the attributedef.go enum extension.
- */
-export interface AttributeDefOptionRow {
-  value: string;
-  label: string;
-  ordering: number;
-}
-
 export interface AttributeDefRow {
-  id: number;
+  id: ID;
   name: string;
   value_type: string;
+  /** For card_ref / card_ref[] value_types, the name of the card_type
+   *  whose cards are valid values (status / milestone / person / …).
+   *  Empty for primitive types. */
+  target_card_type_name?: string;
   is_built_in: boolean;
   bound_to: AttributeDefBoundCardType[];
-  /** Forward-compat (migration 0012); decoders treat absent as []. */
-  options?: AttributeDefOptionRow[];
 }
 
 export interface AttributeDefSelectOutput {
@@ -345,7 +376,7 @@ export interface AttributeDefSelectOutput {
 
 /** One initial edge to seed alongside an `attribute_def.insert`. */
 export interface AttributeDefBindEntry {
-  cardTypeId: number;
+  cardTypeId: ID;
   isRequired?: boolean;
   ordering?: number;
 }
@@ -357,7 +388,7 @@ export interface AttributeDefInsertInput {
 }
 
 export interface AttributeDefInsertOutput {
-  id: number;
+  id: ID;
 }
 
 // ============================================================================
@@ -365,8 +396,8 @@ export interface AttributeDefInsertOutput {
 // ============================================================================
 
 export interface EdgeInsertInput {
-  attributeDefId: number;
-  cardTypeId: number;
+  attributeDefId: ID;
+  cardTypeId: ID;
   isRequired?: boolean;
   ordering?: number;
 }
@@ -376,36 +407,11 @@ export interface EdgeInsertOutput {
 }
 
 export interface EdgeDeleteInput {
-  attributeDefId: number;
-  cardTypeId: number;
+  attributeDefId: ID;
+  cardTypeId: ID;
 }
 
 export interface EdgeDeleteOutput {
-  ok: boolean;
-  usage_count: number;
-}
-
-// ============================================================================
-// attribute_def_option.upsert / .delete
-// ============================================================================
-
-export interface AttributeDefOptionUpsertInput {
-  attributeDefId: number;
-  value: string;
-  label: string;
-  ordering?: number;
-}
-
-export interface AttributeDefOptionUpsertOutput {
-  ok: boolean;
-}
-
-export interface AttributeDefOptionDeleteInput {
-  attributeDefId: number;
-  value: string;
-}
-
-export interface AttributeDefOptionDeleteOutput {
   ok: boolean;
   usage_count: number;
 }
@@ -416,21 +422,21 @@ export interface AttributeDefOptionDeleteOutput {
 
 export interface ActivitySelectInput {
   /** Optional; omit for cross-card mode used by the global activity view. */
-  cardId?: number;
+  cardId?: ID;
   limit?: number;
-  beforeActivityId?: number;
+  beforeActivityId?: ID;
 }
 
 export interface ActivityRow {
-  id: number;
+  id: ID;
   /** Always populated; per-card responses also carry it for uniform routing. */
-  card_id: number;
+  card_id: ID;
   kind: string;
   attribute_name?: string;
   value_old?: unknown;
   value_new?: unknown;
   comment_body?: string;
-  actor_id: number;
+  actor_id: ID;
   created_at: string;
 }
 
@@ -443,14 +449,14 @@ export interface ActivitySelectOutput {
 // ============================================================================
 
 export interface CommentInsertInput {
-  cardId: number;
+  cardId: ID;
   body: string;
 }
 
 export interface CommentInsertOutput {
   ok: boolean;
-  activity_id: number;
-  comment_body_id: number;
+  activity_id: ID;
+  comment_body_id: ID;
 }
 
 // ============================================================================
@@ -462,7 +468,7 @@ export interface UserSelectInput {
 }
 
 export interface UserRow {
-  id: number;
+  id: ID;
   display_name: string;
 }
 
@@ -475,62 +481,33 @@ export interface UserSelectOutput {
 // ============================================================================
 
 export interface TagApplyInput {
-  targetCardId: number;
-  tagCardId: number;
+  targetCardId: ID;
+  tagCardId: ID;
 }
 
 export interface TagApplyOutput {
   ok: boolean;
-  activity_id: number;
-  removed_tag_ids: number[];
+  activity_id: ID;
+  removed_tag_ids: ID[];
 }
 
 export interface TagRemoveInput {
-  targetCardId: number;
-  tagCardId: number;
+  targetCardId: ID;
+  tagCardId: ID;
 }
 
 export interface TagRemoveOutput {
   ok: boolean;
-  activity_id: number;
+  activity_id: ID;
 }
 
-// ============================================================================
-// inbox.select
-// ============================================================================
-
-export interface InboxSelectInput {
-  /** In dev mode the server refuses any value other than the actor's user_id. */
-  userId?: number;
-  /** v2 predicate-tree, AND-joined onto the built-in inbox predicate. */
-  tree?: CardWhereTree;
-  /** Project scope — when set, only tasks whose `parent_card_id` matches. */
-  parentCardId?: number;
-  /** "mine" (default) keeps the assignee filter; "all" drops it. */
-  scope?: 'mine' | 'all';
-  limit?: number;
-  offset?: number;
-}
-
-export interface InboxRow {
-  id: number;
-  card_type_id: number;
-  parent_card_id?: number;
-  attributes: Record<string, unknown>;
-  /** Null on the wire when the row has never been reordered. */
-  personal_sort_order?: number;
-}
-
-export interface InboxSelectOutput {
-  rows: InboxRow[];
-}
 
 // ============================================================================
 // user_card_sort.set
 // ============================================================================
 
 export interface UserCardSortSetInput {
-  cardId: number;
+  cardId: ID;
   sortOrder: number;
 }
 
@@ -548,12 +525,12 @@ export interface UserListWithRolesInput {
 
 export interface RoleAssignmentRow {
   role_name: string;
-  scope_project_id?: number;
+  scope_project_id?: ID;
   scope_project_title?: string;
 }
 
 export interface UserListWithRolesRow {
-  id: number;
+  id: ID;
   display_name: string;
   email?: string;
   oidc_sub?: string;
@@ -578,7 +555,7 @@ export interface RoleGrantRow {
 }
 
 export interface RoleRow {
-  id: number;
+  id: ID;
   name: string;
   doc: string;
   grants: RoleGrantRow[];
@@ -593,20 +570,20 @@ export interface RoleListOutput {
 // ============================================================================
 
 export interface UserRoleSetInput {
-  userId: number;
+  userId: ID;
   roleName: string;
-  scopeProjectId?: number;
+  scopeProjectId?: ID;
 }
 
 export interface UserRoleSetOutput {
   ok: boolean;
-  user_role_id: number;
+  user_role_id: ID;
 }
 
 export interface UserRoleRevokeInput {
-  userId: number;
+  userId: ID;
   roleName: string;
-  scopeProjectId?: number;
+  scopeProjectId?: ID;
 }
 
 export interface UserRoleRevokeOutput {
@@ -624,7 +601,7 @@ export interface RoleMappingListInput {
 
 export interface RoleMappingListRow {
   claim_value: string;
-  role_id: number;
+  role_id: ID;
   role_name: string;
 }
 

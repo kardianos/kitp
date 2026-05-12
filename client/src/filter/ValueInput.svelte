@@ -51,11 +51,9 @@
     onchange?.(v);
   }
 
-  /** True when the attribute uses a Combobox (enum or ref:*). */
+  /** True when the attribute uses a Combobox (ref:*). */
   const isCombobox = $derived.by(
-    () =>
-      attribute.valueType === 'enum' ||
-      attribute.valueType.startsWith('ref:'),
+    () => attribute.valueType.startsWith('ref:'),
   );
 
   /** Stringify scalar values for `<input>` `value=` attribute. */

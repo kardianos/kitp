@@ -13,32 +13,9 @@ import type { ActivityRow } from '../../src/reg/types.js';
 import {
   formatActivityText,
   humaniseAttribute,
-  statusColor,
   tagDiff,
 } from '../../src/ui/widgets/activity_text.js';
 import { formatRelativeTime } from '../../src/ui/widgets/time.js';
-
-/* -------------------------------------------------------------------------- */
-/* statusColor                                                                */
-/* -------------------------------------------------------------------------- */
-
-describe('statusColor', () => {
-  it('maps the four canonical statuses', () => {
-    expect(statusColor('todo')).toBe('gray');
-    expect(statusColor('doing')).toBe('blue');
-    expect(statusColor('review')).toBe('amber');
-    expect(statusColor('done')).toBe('green');
-  });
-
-  it('returns gray for unknown / non-string values', () => {
-    expect(statusColor('blocked')).toBe('gray');
-    expect(statusColor('')).toBe('gray');
-    expect(statusColor(null)).toBe('gray');
-    expect(statusColor(undefined)).toBe('gray');
-    expect(statusColor(42)).toBe('gray');
-    expect(statusColor({})).toBe('gray');
-  });
-});
 
 /* -------------------------------------------------------------------------- */
 /* formatRelativeTime                                                         */
@@ -126,10 +103,10 @@ describe('formatActivityText', () => {
 
   function row(partial: Partial<ActivityRow>): ActivityRow {
     return {
-      id: 1,
-      card_id: 999,
+      id: 1n,
+      card_id: 999n,
       kind: 'card_create',
-      actor_id: 1,
+      actor_id: 1n,
       created_at: '2026-05-04T11:59:30Z',
       ...partial,
     };
@@ -248,7 +225,7 @@ describe('formatActivityText', () => {
   });
 
   it('falls back to user#<id> when the user is missing', () => {
-    const r = row({ actor_id: 99, kind: 'card_create' });
+    const r = row({ actor_id: 99n, kind: 'card_create' });
     expect(formatActivityText(r)).toBe('user#99 created the card.');
   });
 
@@ -267,10 +244,10 @@ describe('tagDiff', () => {
 
   function row(old_: unknown, new_: unknown): ActivityRow {
     return {
-      id: 1,
-      card_id: 1,
+      id: 1n,
+      card_id: 1n,
       kind: 'tag_apply',
-      actor_id: 1,
+      actor_id: 1n,
       created_at: '2026-01-01T00:00:00Z',
       value_old: old_,
       value_new: new_,

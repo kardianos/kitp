@@ -1,59 +1,60 @@
-// `AuthState` is a Svelte 5 rune store holding tokens + parsed claims in
-// memory only (never localStorage / sessionStorage). Any UI bit that wants
-// to react to sign-in / sign-out (admin nav link, top-nav user chip)
-// observes its rune-backed fields.
+// `AuthState` is a Svelte 5 rune store reflecting the BFF auth model.
+// The browser never sees an access / id / refresh token — the server's
+// `kitp_session` httpOnly cookie carries the credential. AuthState only
+// caches the identity bits the UI needs (user id, display name, group
+// claims) after a successful `GET /api/v1/auth/me`.
 //
-// On sign-in the dispatcher attaches `Authorization: Bearer <access>` to
-// every `POST /api/v1/batch`. On 401 the dispatcher forces a token
-// refresh; on a second 401 we clear state and route to login.
-//
-// Ports `client/lib/auth/auth_state.dart`. The rune-backed assignment
-// pattern replaces ChangeNotifier — Svelte runes already implement
-// fine-grained subscription.
+// On app load the orchestrator calls `loadSession(state)` once. A 200
+// flips `isSignedIn` true and populates the fields below. A 401 leaves
+// everything blank and the router gate sends the user to /login.
 
-import type { Claims, Tokens } from './oidc_client';
-import { decodeIdTokenClaims } from './oidc_client';
+export interface Claims {
+  sub?: string;
+  name?: string;
+  preferred_username?: string;
+  email?: string;
+  groups?: string[];
+}
 
 export class AuthState {
-  // Public reactive state — runes only work in `.svelte` / `.svelte.ts`
-  // modules, which is why this file has the `.svelte.ts` extension.
   isSignedIn = $state(false);
-  accessToken = $state<string | null>(null);
-  refreshToken = $state<string | null>(null);
-  idToken = $state<string | null>(null);
+  userId = $state<string | null>(null);
   claims = $state<Claims | null>(null);
-  /// Epoch seconds; null when the token endpoint omitted `expires_in`.
-  expiresAt = $state<number | null>(null);
+  /** Server-evaluated role names (e.g. ["system","admin"]). */
+  roles = $state<string[]>([]);
+  /** Server-precomputed admin flag — drives the sidebar Admin section. */
+  serverIsAdmin = $state(false);
 
-  /// Update tokens after a successful token-endpoint exchange. Decodes the
-  /// id_token (if present) into `claims`.
-  setTokens(t: Tokens): void {
-    this.accessToken = t.access_token;
-    this.refreshToken = t.refresh_token ?? null;
-    this.idToken = t.id_token ?? null;
-    this.claims = t.id_token ? decodeIdTokenClaims(t.id_token) : null;
-    if (t.expires_in !== undefined) {
-      this.expiresAt = Math.floor(Date.now() / 1000) + t.expires_in;
-    } else {
-      this.expiresAt = null;
-    }
+  /// Mirror the shape /api/v1/auth/me returns into the rune-backed
+  /// fields the UI subscribes to.
+  setFromMe(me: {
+    user_id: string;
+    display_name: string;
+    groups?: string[];
+    roles?: string[];
+    is_admin?: boolean;
+  }): void {
+    this.userId = me.user_id;
+    this.claims = {
+      sub: me.user_id,
+      name: me.display_name,
+      groups: me.groups ?? [],
+    };
+    this.roles = Array.isArray(me.roles) ? me.roles : [];
+    this.serverIsAdmin = me.is_admin === true;
     this.isSignedIn = true;
   }
 
-  /// Wipe all state — logout or rotation failure.
+  /// Wipe local state — logout or 401.
   signOut(): void {
-    this.accessToken = null;
-    this.refreshToken = null;
-    this.idToken = null;
+    this.userId = null;
     this.claims = null;
-    this.expiresAt = null;
+    this.roles = [];
+    this.serverIsAdmin = false;
     this.isSignedIn = false;
   }
 
-  /// The display name we show in the nav. Falls through name →
-  /// preferred_username → email → sub. Returns the empty string if none of
-  /// those claims is present (matches the Dart `?? ''` fallback at call
-  /// sites; the Dart getter returned String?).
+  /// Display name from the cached claims; '' when not signed in.
   get displayName(): string {
     const c = this.claims;
     if (!c) return '';
@@ -76,9 +77,78 @@ export class AuthState {
     return [];
   }
 
-  /// True when the signed-in user has the conventional `kitp.admin`
-  /// group. UI affordance gate only — server still enforces.
+  /// True when the server flagged the session as admin (any of the
+  /// 'admin' / 'system' roles, evaluated server-side and shipped via
+  /// /api/v1/auth/me). Falls back to the legacy 'kitp.admin' group
+  /// claim for OIDC sessions that haven't been re-issued yet.
+  /// UI affordance gate only — server still enforces.
   get isAdmin(): boolean {
+    if (this.serverIsAdmin) return true;
     return this.groups.includes('kitp.admin');
   }
+}
+
+/**
+ * Probe the server-side session via `GET /api/v1/auth/me`. Sets the
+ * rune-backed identity bits on success; leaves AuthState untouched
+ * (and returns false) on 401 / network error.
+ */
+export async function loadSession(state: AuthState, apiBase = ''): Promise<boolean> {
+  try {
+    const r = await fetch(`${apiBase}/api/v1/auth/me`, {
+      method: 'GET',
+      credentials: 'same-origin',
+    });
+    if (!r.ok) {
+      state.signOut();
+      return false;
+    }
+    const body = (await r.json()) as {
+      user_id: string;
+      display_name: string;
+      groups?: string[];
+    };
+    state.setFromMe(body);
+    return true;
+  } catch {
+    state.signOut();
+    return false;
+  }
+}
+
+/**
+ * POST `/api/v1/auth/dev-login` and load the resulting session. Only
+ * usable when the server runs in AUTH_MODE=off (the endpoint 404s
+ * otherwise).
+ */
+export async function devLogin(state: AuthState, apiBase = ''): Promise<boolean> {
+  const r = await fetch(`${apiBase}/api/v1/auth/dev-login`, {
+    method: 'POST',
+    credentials: 'same-origin',
+  });
+  if (!r.ok) return false;
+  const body = (await r.json()) as {
+    user_id: string;
+    display_name: string;
+    groups?: string[];
+  };
+  state.setFromMe(body);
+  return true;
+}
+
+/**
+ * POST `/api/v1/auth/logout`. Clears server-side session + cookie and
+ * resets local AuthState. The router gate kicks the user to /login on
+ * the next path push.
+ */
+export async function logout(state: AuthState, apiBase = ''): Promise<void> {
+  try {
+    await fetch(`${apiBase}/api/v1/auth/logout`, {
+      method: 'POST',
+      credentials: 'same-origin',
+    });
+  } catch {
+    // Cookie eviction is best-effort; we still want to drop local state.
+  }
+  state.signOut();
 }

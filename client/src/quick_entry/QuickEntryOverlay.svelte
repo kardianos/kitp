@@ -36,17 +36,18 @@
   import type {
     CardDeleteInput,
     CardDeleteOutput,
+    ID,
   } from '../reg/types.js';
 
   interface AssigneeOption {
-    value: number;
+    value: ID;
     label: string;
   }
 
   interface Props {
     open: boolean;
     defaultCardType: string;
-    parentCardId?: number;
+    parentCardId?: ID;
     prefill?: QuickEntryPrefill;
     /**
      * List of assignee options the Combobox renders. Empty array hides the
@@ -54,7 +55,7 @@
      * an assignee). Screens fetch this via `user.select` and pass it through.
      */
     assigneeOptions?: AssigneeOption[];
-    onCreated?: (newCardId: number) => void;
+    onCreated?: (newCardId: ID) => void;
     onClose?: () => void;
   }
 
@@ -74,7 +75,7 @@
 
   let title = $state('');
   let description = $state('');
-  let assigneeId = $state<number | null>(null);
+  let assigneeId = $state<ID | null>(null);
   let submitting = $state(false);
   let errorMessage = $state<string | null>(null);
 

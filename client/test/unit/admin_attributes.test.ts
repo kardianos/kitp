@@ -36,12 +36,12 @@ import type {
 /* -------------------------------------------------------------------------- */
 
 function def(
-  id: number,
+  id: bigint,
   name: string,
   opts: {
     valueType?: string;
     builtIn?: boolean;
-    boundTo?: { card_type_id: number; ordering?: number; required?: boolean }[];
+    boundTo?: { card_type_id: bigint; ordering?: number; required?: boolean }[];
   } = {},
 ): AttributeDefRow {
   return {
@@ -59,7 +59,7 @@ function def(
   };
 }
 
-function cardType(id: number, name: string, builtIn = false): CardTypeRow {
+function cardType(id: bigint, name: string, builtIn = false): CardTypeRow {
   return {
     id,
     name,
@@ -69,17 +69,17 @@ function cardType(id: number, name: string, builtIn = false): CardTypeRow {
 }
 
 const DEFS: AttributeDefRow[] = [
-  def(1, 'title', { valueType: 'text', builtIn: true }),
-  def(2, 'status', { valueType: 'enum', builtIn: true }),
-  def(3, 'priority', { valueType: 'number' }),
-  def(4, 'milestone_ref', { valueType: 'ref:milestone' }),
-  def(5, 'Custom_Attr', { valueType: 'text' }),
+  def(1n, 'title', { valueType: 'text', builtIn: true }),
+  def(2n, 'status', { valueType: 'enum', builtIn: true }),
+  def(3n, 'priority', { valueType: 'number' }),
+  def(4n, 'milestone_ref', { valueType: 'ref:milestone' }),
+  def(5n, 'Custom_Attr', { valueType: 'text' }),
 ];
 
 const CARD_TYPES: CardTypeRow[] = [
-  cardType(10, 'task', true),
-  cardType(11, 'project', true),
-  cardType(12, 'milestone'),
+  cardType(10n, 'task', true),
+  cardType(11n, 'project', true),
+  cardType(12n, 'milestone'),
 ];
 
 /* -------------------------------------------------------------------------- */
@@ -88,17 +88,17 @@ const CARD_TYPES: CardTypeRow[] = [
 
 describe('applyAttrSearch', () => {
   it('returns every def when search is empty', () => {
-    expect(applyAttrSearch(DEFS, '').map((d) => d.id)).toEqual([1, 2, 3, 4, 5]);
+    expect(applyAttrSearch(DEFS, '').map((d) => d.id)).toEqual([1n, 2n, 3n, 4n, 5n]);
   });
 
   it('whitespace-only search behaves like empty', () => {
-    expect(applyAttrSearch(DEFS, '   ').map((d) => d.id)).toEqual([1, 2, 3, 4, 5]);
+    expect(applyAttrSearch(DEFS, '   ').map((d) => d.id)).toEqual([1n, 2n, 3n, 4n, 5n]);
   });
 
   it('case-insensitive substring match against name', () => {
-    expect(applyAttrSearch(DEFS, 'TITLE').map((d) => d.id)).toEqual([1]);
-    expect(applyAttrSearch(DEFS, 'custom').map((d) => d.id)).toEqual([5]);
-    expect(applyAttrSearch(DEFS, 'ref').map((d) => d.id)).toEqual([4]);
+    expect(applyAttrSearch(DEFS, 'TITLE').map((d) => d.id)).toEqual([1n]);
+    expect(applyAttrSearch(DEFS, 'custom').map((d) => d.id)).toEqual([5n]);
+    expect(applyAttrSearch(DEFS, 'ref').map((d) => d.id)).toEqual([4n]);
   });
 
   it('returns empty when nothing matches', () => {
@@ -119,15 +119,15 @@ describe('applyAttrSearch', () => {
 describe('groupDefs', () => {
   it('partitions by is_built_in', () => {
     const g = groupDefs(DEFS);
-    expect(g.builtIn.map((d) => d.id)).toEqual([1, 2]);
-    expect(g.custom.map((d) => d.id)).toEqual([3, 4, 5]);
+    expect(g.builtIn.map((d) => d.id)).toEqual([1n, 2n]);
+    expect(g.custom.map((d) => d.id)).toEqual([3n, 4n, 5n]);
   });
 
   it('preserves input order within each bucket', () => {
     const reordered: AttributeDefRow[] = [DEFS[2]!, DEFS[0]!, DEFS[3]!, DEFS[1]!];
     const g = groupDefs(reordered);
-    expect(g.builtIn.map((d) => d.id)).toEqual([1, 2]);
-    expect(g.custom.map((d) => d.id)).toEqual([3, 4]);
+    expect(g.builtIn.map((d) => d.id)).toEqual([1n, 2n]);
+    expect(g.custom.map((d) => d.id)).toEqual([3n, 4n]);
   });
 
   it('handles empty input', () => {
@@ -135,9 +135,9 @@ describe('groupDefs', () => {
   });
 
   it('handles all-built-in input', () => {
-    const onlyBuiltIn = [def(1, 'a', { builtIn: true }), def(2, 'b', { builtIn: true })];
+    const onlyBuiltIn = [def(1n, 'a', { builtIn: true }), def(2n, 'b', { builtIn: true })];
     const g = groupDefs(onlyBuiltIn);
-    expect(g.builtIn.map((d) => d.id)).toEqual([1, 2]);
+    expect(g.builtIn.map((d) => d.id)).toEqual([1n, 2n]);
     expect(g.custom).toEqual([]);
   });
 });
@@ -155,31 +155,31 @@ describe('boundMatrix', () => {
       expect(row.ordering).toBe(0);
       expect(row.required).toBe(false);
     }
-    expect(m.map((r) => r.cardType.id)).toEqual([10, 11, 12]);
+    expect(m.map((r) => r.cardType.id)).toEqual([10n, 11n, 12n]);
   });
 
   it('marks bound rows and surfaces ordering + required', () => {
-    const d = def(99, 'foo', {
+    const d = def(99n, 'foo', {
       boundTo: [
-        { card_type_id: 10, ordering: 5, required: true },
-        { card_type_id: 12, ordering: 0, required: false },
+        { card_type_id: 10n, ordering: 5, required: true },
+        { card_type_id: 12n, ordering: 0, required: false },
       ],
     });
     const m = boundMatrix(CARD_TYPES, d);
     const byId = new Map(m.map((r) => [r.cardType.id, r]));
-    expect(byId.get(10)).toEqual({
+    expect(byId.get(10n)).toEqual({
       cardType: CARD_TYPES[0],
       bound: true,
       ordering: 5,
       required: true,
     });
-    expect(byId.get(11)).toEqual({
+    expect(byId.get(11n)).toEqual({
       cardType: CARD_TYPES[1],
       bound: false,
       ordering: 0,
       required: false,
     });
-    expect(byId.get(12)).toEqual({
+    expect(byId.get(12n)).toEqual({
       cardType: CARD_TYPES[2],
       bound: true,
       ordering: 0,
@@ -188,13 +188,13 @@ describe('boundMatrix', () => {
   });
 
   it('handles defs with no bindings', () => {
-    const d = def(99, 'foo', { boundTo: [] });
+    const d = def(99n, 'foo', { boundTo: [] });
     const m = boundMatrix(CARD_TYPES, d);
     for (const row of m) expect(row.bound).toBe(false);
   });
 
   it('handles empty card-type list', () => {
-    expect(boundMatrix([], def(1, 'a'))).toEqual([]);
+    expect(boundMatrix([], def(1n, 'a'))).toEqual([]);
   });
 });
 

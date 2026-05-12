@@ -26,32 +26,52 @@ import type {
  *
  * Picks the ref label from the first defined of `attributes.title`,
  * `attributes.name`, `attributes.path` (in that order), so the same
- * helper covers project / milestone / component (title), tag (path),
- * and any future card type that uses `name`. Falls back to `#<id>`.
+ * helper covers project / milestone / component / person (title),
+ * tag (path), and any future card type that uses `name`. Falls back
+ * to `#<id>`.
  */
 export function buildRefOptions(rows: CardWithAttrs[]): FilterAttributeOption[] {
   return rows.map((r) => {
     const a = r.attributes;
     const t = a['title'] ?? a['name'] ?? a['path'];
     const label = typeof t === 'string' && t.length > 0 ? t : `#${r.id}`;
-    return { value: r.id, label };
+    const opt: FilterAttributeOption = { value: r.id, label };
+    if (r.is_terminal === true) opt.isTerminal = true;
+    return opt;
   });
 }
 
-/** Build option list from `UserRow[]` (assignee). */
+/** Build option list from `UserRow[]` (legacy user-ref attributes). */
 export function buildUserOptions(users: UserRow[]): FilterAttributeOption[] {
   return users.map((u) => ({ value: u.id, label: u.display_name }));
 }
 
 export interface TaskPaletteInputs {
   schema: AttributeSchemaCache;
-  users: UserRow[];
+  /**
+   * Person cards (card_type_name='person'). Source for assignee option
+   * resolution now that the `assignee` attribute_def is a `card_ref`
+   * pointing at `person` cards (not a `user_ref` at user_account).
+   */
+  persons: CardWithAttrs[];
   milestones: CardWithAttrs[];
   components: CardWithAttrs[];
   tags?: CardWithAttrs[];
   /**
-   * Override the default attribute-name set (status / assignee /
-   * milestone_ref / component_ref / tags). Order is preserved.
+   * Status value cards (card_type_name='status'). Source for the
+   * `status` ref attribute's options + the terminal-state detection
+   * that drives the "Hide closed status" filter toggle.
+   */
+  statuses?: CardWithAttrs[];
+  /**
+   * Legacy user-account rows. Retained so any remaining `user_ref`
+   * attribute_defs continue to resolve, but no longer used for
+   * `assignee` after the schema flip.
+   */
+  users?: UserRow[];
+  /**
+   * Override the default attribute-name set (assignee / milestone_ref /
+   * component_ref / tags). Order is preserved.
    */
   names?: readonly string[];
 }
@@ -65,30 +85,90 @@ const DEFAULT_NAMES: readonly string[] = [
 ];
 
 /**
+ * Synthetic text attributes added at the bottom of every task palette
+ * so the FilterBar Add / Advanced editor can express `contains` leaves
+ * against title / description / comments without a corresponding
+ * attribute_def row. The server's where.go compiler routes `contains`
+ * on these attr names to the right SQL subquery (attribute_value for
+ * title/description; comment_body via activity for comments).
+ */
+const SYNTHETIC_TEXT_ATTRS: readonly FilterAttribute[] = [
+  {
+    name: 'title',
+    label: 'Title',
+    valueType: 'text',
+    ops: ['contains', 'eq', 'ne', 'exists', 'notExists'],
+  },
+  {
+    name: 'description',
+    label: 'Description',
+    valueType: 'text',
+    ops: ['contains', 'exists', 'notExists'],
+  },
+  {
+    name: 'comments',
+    label: 'Comments',
+    valueType: 'text',
+    ops: ['contains'],
+  },
+];
+
+/**
  * Standard filter palette for a task-shaped list screen.
  *
  * Returns an empty array until the schema cache has loaded — callers
  * who want a placeholder palette pre-load can render a skeleton in the
  * `!schema.loaded` branch.
+ *
+ * The `assignee` attribute_def is `card_ref → person` post-refactor,
+ * so its options resolve from `persons`. The schema cache's name-based
+ * card-type inference returns `ref:card` for `assignee` (no `_ref`
+ * suffix to inspect), so we post-process the produced FilterAttribute:
+ * relabel the valueType as `ref:person` and inject person-card options.
+ * The legacy `user` branch is retained for any lingering `user_ref`
+ * attribute_defs the schema might still expose.
  */
 export function buildTaskFilterPalette(
   inputs: TaskPaletteInputs,
 ): FilterAttribute[] {
-  const { schema, users, milestones, components, tags } = inputs;
+  const { schema, persons, milestones, components, tags, statuses, users } = inputs;
   if (!schema.loaded) return [];
 
   const refResolver = (cardTypeName: string): FilterAttributeOption[] => {
-    if (cardTypeName === 'user') return buildUserOptions(users);
+    if (cardTypeName === 'person') return buildRefOptions(persons);
+    if (cardTypeName === 'user') return buildUserOptions(users ?? []);
     if (cardTypeName === 'milestone') return buildRefOptions(milestones);
     if (cardTypeName === 'component') return buildRefOptions(components);
     if (cardTypeName === 'tag') return buildRefOptions(tags ?? []);
+    if (cardTypeName === 'status') return buildRefOptions(statuses ?? []);
     return [];
   };
 
   const out: FilterAttribute[] = [];
   for (const name of inputs.names ?? DEFAULT_NAMES) {
     const fa = schema.toFilterAttribute(name, refResolver);
-    if (fa !== null) out.push(fa);
+    if (fa === null) continue;
+    // `assignee` is now a card_ref → person card. The schema cache can
+    // only infer the target card type from a trailing `_ref` in the def
+    // name (so `milestone_ref` → `ref:milestone`); without that hint it
+    // falls back to the generic `ref:card`. Patch the palette entry in
+    // place so its valueType + options come out as `ref:person` with
+    // person-card options rather than an empty `ref:card` Combobox.
+    if (fa.name === 'assignee' && fa.valueType === 'ref:card') {
+      fa.valueType = 'ref:person';
+      const opts = buildRefOptions(persons);
+      if (opts.length > 0) fa.options = opts;
+    }
+    out.push(fa);
+  }
+  // Append synthetic text attributes for Add filter / Advanced usage.
+  // Skipped when caller supplied an explicit `names` list (they want a
+  // narrowed palette).
+  if (inputs.names === undefined) {
+    for (const syn of SYNTHETIC_TEXT_ATTRS) {
+      if (out.some((a) => a.name === syn.name)) continue;
+      out.push({ ...syn });
+    }
   }
   return out;
 }

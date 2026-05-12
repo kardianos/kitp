@@ -9,7 +9,7 @@ import (
 	"github.com/kitp/kitp/server/internal/schema/declarative"
 )
 
-// ApplySchema renders db/schema/declarative.json and executes it
+// ApplySchema renders db/schema/declarative.toml and executes it
 // against pool. Seeds are always applied; demo data is included when
 // opts.Demo is true. The generated SQL uses CREATE … IF NOT EXISTS
 // and ON CONFLICT DO NOTHING throughout, so calling this on an

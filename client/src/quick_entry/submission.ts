@@ -13,15 +13,14 @@ import type {
   AttributeUpdateOutput,
   CardInsertInput,
   CardInsertOutput,
+  ID,
 } from '../reg/types.js';
 
 /** Optional prefill values that the screen passes down to the overlay. */
 export interface QuickEntryPrefill {
   /** Inbox prefills "me"; results in an `attribute.update` for `assignee`. */
-  assigneeUserId?: number;
-  /** Kanban column prefill; results in an `attribute.update` for `status`. */
-  statusValue?: string;
-  /** Kanban swim-lane prefill; arbitrary attribute name + value. */
+  assigneeUserId?: ID;
+  /** Column-axis attribute prefill (kanban "+ in this column" button). */
   laneAttribute?: { name: string; value: unknown };
   /**
    * Arbitrary additional attribute presets — used when the kanban
@@ -36,7 +35,7 @@ export interface QuickEntryPrefill {
 /** Inputs a screen / overlay collects from the user and from its prefill. */
 export interface QuickEntrySubmitInput {
   cardTypeName: string;
-  parentCardId?: number;
+  parentCardId?: ID;
   title: string;
   description: string;
   prefill?: QuickEntryPrefill;
@@ -51,7 +50,7 @@ const PARENT_OPTIONAL_CARD_TYPES = new Set<string>(['project']);
  * string when the inputs can't satisfy the server's parent requirement.
  */
 export interface ParentResolution {
-  parentCardId: number | null;
+  parentCardId: ID | null;
   error: string | null;
 }
 
@@ -71,8 +70,8 @@ export interface ParentResolution {
  */
 export function resolveParentForInsert(
   cardTypeName: string,
-  explicitParent: number | undefined,
-  scopeProjectId: number | null,
+  explicitParent: ID | undefined,
+  scopeProjectId: ID | null,
 ): ParentResolution {
   if (explicitParent !== undefined) {
     return { parentCardId: explicitParent, error: null };
@@ -101,7 +100,7 @@ export function resolveParentForInsert(
 export async function submitQuickEntry(
   dispatcher: Pick<Dispatcher, 'request'>,
   input: QuickEntrySubmitInput,
-): Promise<number> {
+): Promise<ID> {
   const insertData: CardInsertInput = {
     cardTypeName: input.cardTypeName,
     title: input.title,
@@ -150,19 +149,6 @@ export async function submitQuickEntry(
             cardId: newCardId,
             attributeName: 'assignee',
             value: pf.assigneeUserId,
-          },
-        }),
-      );
-    }
-    if (pf?.statusValue !== undefined) {
-      ps.push(
-        dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
-          endpoint: 'attribute',
-          action: 'update',
-          data: {
-            cardId: newCardId,
-            attributeName: 'status',
-            value: pf.statusValue,
           },
         }),
       );

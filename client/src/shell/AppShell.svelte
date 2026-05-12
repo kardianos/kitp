@@ -18,6 +18,9 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import NavSidebar from './NavSidebar.svelte';
+  import ProjectTitlePicker from './ProjectTitlePicker.svelte';
+  import { projectsStore, watchProjects } from './projects_store.svelte';
+  import { getDispatcher } from '../dispatch/context';
   import { shortcuts } from '../keys/registry.svelte';
   import { useShortcut } from '../keys/shortcut';
   import { navigate, routerState } from '../routing/router.svelte';
@@ -88,11 +91,17 @@
     if (mobileOpen) mobileOpen = false;
   });
 
+  // Keep the projects cache warm so /project/:id crumbs can resolve to
+  // the project's title instead of a raw "#7". Idempotent — the store
+  // collapses concurrent calls and gates on projectsVersion.
+  const dispatcher = getDispatcher();
+  $effect(watchProjects(dispatcher));
+
   /**
    * Build breadcrumb segments from the current path. Slugs render
    * verbatim except for known patterns:
    *   /task/:id        -> "Task #:id"
-   *   /project/:id     -> "Project #:id"
+   *   /project/:id     -> "<project title>" when resolvable, else "Project #:id"
    *   /admin/users     -> "Admin / Users"
    * Each segment carries an `href` of the cumulative path so users can
    * jump back up the tree. (No href on the last segment.)
@@ -109,8 +118,18 @@
       const prev = i > 0 ? (segs[i - 1] as string) : '';
       let label = s;
       if (prev === 'task') label = `Task #${s}`;
-      else if (prev === 'project') label = `Project #${s}`;
-      else label = s.charAt(0).toUpperCase() + s.slice(1);
+      else if (prev === 'project') {
+        // Look up the project's title from the shared cache; fall back
+        // to "Project #<id>" while the cache is still loading or the
+        // id no longer resolves (deleted / never existed).
+        let title: string | null = null;
+        try {
+          title = projectsStore.titleFor(BigInt(s));
+        } catch {
+          /* non-numeric segment — leave label as-is */
+        }
+        label = title ?? `Project #${s}`;
+      } else label = s.charAt(0).toUpperCase() + s.slice(1);
       const isLast = i === segs.length - 1;
       out.push(isLast ? { label } : { label, href: cum });
     }
@@ -120,6 +139,23 @@
   function toggleHelp(): void {
     shortcuts.helpOpen = !shortcuts.helpOpen;
   }
+
+  /**
+   * Project picker is meaningful only on list screens that key their
+   * data fetch off `projectScope`. Other paths (/projects, /activity,
+   * /admin/*, /task/:id, /project/:id) don't react to it.
+   */
+  const showProjectPicker = $derived.by((): boolean => {
+    const p = routerState.path;
+    return (
+      p === '/inbox' ||
+      p === '/grid' ||
+      p === '/kanban' ||
+      p.startsWith('/inbox/') ||
+      p.startsWith('/grid/') ||
+      p.startsWith('/kanban/')
+    );
+  });
 </script>
 
 <div class="flex h-screen w-screen overflow-hidden bg-bg text-fg">
@@ -162,6 +198,10 @@
 
       <!-- Breadcrumbs -->
       <nav class="flex min-w-0 items-center gap-1 text-sm" aria-label="Breadcrumb">
+        {#if showProjectPicker}
+          <ProjectTitlePicker />
+          <span class="text-muted" aria-hidden="true">/</span>
+        {/if}
         {#each crumbs as crumb, i (i)}
           {#if i > 0}
             <span class="text-muted" aria-hidden="true">/</span>

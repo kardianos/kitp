@@ -21,7 +21,7 @@ type Step struct {
 
 // Process is the in-memory representation of one process row plus its steps.
 type Process struct {
-	ID    int32
+	ID    int64
 	Name  string
 	Steps []Step
 }
@@ -94,7 +94,7 @@ func LookupValidation(ctx context.Context, pool reg.ValidationPool, name string)
 // HasGrant returns true if the user has a role_grant on (card_type_id,
 // process_id). For phase 11, scope_card_id is ignored — every grant is
 // global.
-func HasGrant(ctx context.Context, pool reg.ValidationPool, userID int64, cardTypeID, processID int32) (bool, error) {
+func HasGrant(ctx context.Context, pool reg.ValidationPool, userID int64, cardTypeID, processID int64) (bool, error) {
 	var n int
 	row := pool.QueryRow(ctx, `
 		SELECT count(*)

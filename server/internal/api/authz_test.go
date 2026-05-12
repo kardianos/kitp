@@ -60,7 +60,7 @@ func makeProjectAndTask(t *testing.T, srv *api.Server, title string) (projectID 
 
 	resp = srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"task1"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"task1"}`, pOut.ID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("task insert: %+v", resp.Subresponses[0])
@@ -87,7 +87,7 @@ func grantRole(t *testing.T, sp *store.Pool, displayName, roleName string, scope
 			t.Fatalf("user insert: %v", err)
 		}
 	}
-	var roleID int32
+	var roleID int64
 	row = sp.P.QueryRow(ctx, `SELECT id FROM role WHERE name = $1`, roleName)
 	if err := row.Scan(&roleID); err != nil {
 		t.Fatalf("role %s: %v", roleName, err)
@@ -117,7 +117,7 @@ func TestSystemUserKeepsEveryGrant(t *testing.T) {
 	ctx := auth.WithSystemUser(context.Background())
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskID))},
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"description","value":"updated"}`, taskID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("system user attribute.update should succeed: %+v", resp.Subresponses[0])
@@ -139,11 +139,11 @@ func TestViewerDeniedEveryWrite(t *testing.T) {
 		sub  api.SubRequest
 	}{
 		{"attribute.update", api.SubRequest{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskID))}},
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"description","value":"updated"}`, taskID))}},
 		{"card.update process", api.SubRequest{ID: "u", Endpoint: "card", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"done"}`, taskID))}},
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"description","value":"updated"}`, taskID))}},
 		{"comment.post", api.SubRequest{ID: "c", Endpoint: "comment", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"body":"hi"}`, taskID))}},
+			fmt.Sprintf(`{"card_id":"%d","body":"hi"}`, taskID))}},
 	}
 	for _, tc := range cases {
 		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{tc.sub}})
@@ -170,7 +170,7 @@ func TestWorkerCanUpdateTaskNotInsertProject(t *testing.T) {
 	// Allowed: attribute.update on a task.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskID))},
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"description","value":"updated"}`, taskID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("worker attribute.update should succeed: %+v", resp.Subresponses[0])
@@ -204,7 +204,7 @@ func TestManagerScopedAllowVsDeny(t *testing.T) {
 	// Allowed: edit task in project A.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskA))},
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"description","value":"updated"}`, taskA))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("mgr in A should edit A: %+v", resp.Subresponses[0])
@@ -213,7 +213,7 @@ func TestManagerScopedAllowVsDeny(t *testing.T) {
 	// Denied: edit task in project B (outside scope).
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskB))},
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"description","value":"updated"}`, taskB))},
 	}})
 	if resp.Subresponses[0].OK {
 		t.Errorf("mgr scoped to A should NOT edit B: %+v", resp.Subresponses[0])
@@ -235,7 +235,7 @@ func TestAdminGlobalCanDoEverything(t *testing.T) {
 	// Edit existing task.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskA))},
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"description","value":"updated"}`, taskA))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("admin should edit task: %+v", resp.Subresponses[0])
@@ -266,9 +266,9 @@ func TestBatchMixedAllowedAndDeniedAborts(t *testing.T) {
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "ok", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskA))},
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"description","value":"updated"}`, taskA))},
 		{ID: "no", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, taskB))},
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"description","value":"updated"}`, taskB))},
 	}})
 	if resp.Subresponses[0].OK {
 		t.Errorf("slot 0 should be aborted: %+v", resp.Subresponses[0])

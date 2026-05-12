@@ -20,16 +20,17 @@
 
 import { useShortcut } from '../keys/shortcut.js';
 import type { ShortcutScope } from '../keys/scopes.js';
+import type { ID } from '../reg/types.js';
 import type { QuickEntryPrefill } from './submission.js';
 
 export interface UseQuickEntryOptions {
   scope: ShortcutScope;
   defaultCardType: string;
-  parentCardId?: number;
+  parentCardId?: ID;
   prefill?: QuickEntryPrefill;
   /** Optional list of assignee options for the inline picker. */
-  assigneeOptions?: { value: number; label: string }[];
-  onCreated?: (id: number) => void;
+  assigneeOptions?: { value: ID; label: string }[];
+  onCreated?: (id: ID) => void;
 }
 
 /**
@@ -40,10 +41,10 @@ export interface UseQuickEntryOptions {
 export interface UseQuickEntryProps {
   open: boolean;
   defaultCardType: string;
-  parentCardId?: number;
+  parentCardId?: ID;
   prefill?: QuickEntryPrefill;
-  assigneeOptions?: { value: number; label: string }[];
-  onCreated?: (id: number) => void;
+  assigneeOptions?: { value: ID; label: string }[];
+  onCreated?: (id: ID) => void;
   onClose: () => void;
 }
 

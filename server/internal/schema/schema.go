@@ -6,31 +6,34 @@ package schema
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 )
 
 // CardType captures the row plus enough metadata to enforce parent rules.
 type CardType struct {
-	ID               int32
+	ID               int64
 	Name             string
-	ParentCardTypeID *int32
+	ParentCardTypeID *int64
 	AllowSelfParent  bool
 }
 
 // AttributeDef is one attribute_def row.
 type AttributeDef struct {
-	ID        int32
-	Name      string
-	ValueType string
-	IsBuiltIn bool
+	ID               int64
+	Name             string
+	ValueType        string
+	IsBuiltIn        bool
+	TargetCardTypeID int64 // 0 when value_type is not card_ref / card_ref[]
 }
 
 // Edge is one edge row, linking a card_type to an attribute_def.
 type Edge struct {
-	CardTypeID     int32
-	AttributeDefID int32
+	CardTypeID     int64
+	AttributeDefID int64
 	IsRequired     bool
 	Ordering       int32
 }
@@ -38,26 +41,26 @@ type Edge struct {
 // Snapshot is the fully-loaded metadata view. Map keys (e.g. CardTypeByName)
 // are convenience indexes built once at load time.
 type Snapshot struct {
-	CardTypeByName     map[string]CardType
-	CardTypeByID       map[int32]CardType
-	AttrByName         map[string]AttributeDef
-	AttrByID           map[int32]AttributeDef
+	CardTypeByName map[string]CardType
+	CardTypeByID   map[int64]CardType
+	AttrByName     map[string]AttributeDef
+	AttrByID       map[int64]AttributeDef
 	// EdgesByCardTypeID is the per-type edge list, in stable ordering by
 	// (ordering, attribute_def_id).
-	EdgesByCardTypeID map[int32][]Edge
+	EdgesByCardTypeID map[int64][]Edge
 	// AllowedAttrs is a set: cardTypeID -> attrDefID -> Edge.
-	AllowedAttrs map[int32]map[int32]Edge
+	AllowedAttrs map[int64]map[int64]Edge
 }
 
 // Load reads card_type, attribute_def, and edge into a Snapshot using tx.
 func Load(ctx context.Context, tx pgx.Tx) (*Snapshot, error) {
 	s := &Snapshot{
 		CardTypeByName:    map[string]CardType{},
-		CardTypeByID:      map[int32]CardType{},
+		CardTypeByID:      map[int64]CardType{},
 		AttrByName:        map[string]AttributeDef{},
-		AttrByID:          map[int32]AttributeDef{},
-		EdgesByCardTypeID: map[int32][]Edge{},
-		AllowedAttrs:      map[int32]map[int32]Edge{},
+		AttrByID:          map[int64]AttributeDef{},
+		EdgesByCardTypeID: map[int64][]Edge{},
+		AllowedAttrs:      map[int64]map[int64]Edge{},
 	}
 
 	rows, err := tx.Query(ctx, `SELECT id, name, parent_card_type_id, allow_self_parent FROM card_type`)
@@ -78,13 +81,13 @@ func Load(ctx context.Context, tx pgx.Tx) (*Snapshot, error) {
 		return nil, err
 	}
 
-	rows, err = tx.Query(ctx, `SELECT id, name, value_type, is_built_in FROM attribute_def`)
+	rows, err = tx.Query(ctx, `SELECT id, name, value_type, is_built_in, COALESCE(target_card_type_id, 0) FROM attribute_def`)
 	if err != nil {
 		return nil, fmt.Errorf("schema: load attribute_def: %w", err)
 	}
 	for rows.Next() {
 		var a AttributeDef
-		if err := rows.Scan(&a.ID, &a.Name, &a.ValueType, &a.IsBuiltIn); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.ValueType, &a.IsBuiltIn, &a.TargetCardTypeID); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -112,7 +115,7 @@ func Load(ctx context.Context, tx pgx.Tx) (*Snapshot, error) {
 		}
 		s.EdgesByCardTypeID[e.CardTypeID] = append(s.EdgesByCardTypeID[e.CardTypeID], e)
 		if s.AllowedAttrs[e.CardTypeID] == nil {
-			s.AllowedAttrs[e.CardTypeID] = map[int32]Edge{}
+			s.AllowedAttrs[e.CardTypeID] = map[int64]Edge{}
 		}
 		s.AllowedAttrs[e.CardTypeID][e.AttributeDefID] = e
 	}
@@ -126,7 +129,7 @@ func Load(ctx context.Context, tx pgx.Tx) (*Snapshot, error) {
 
 // EdgeFor returns the edge for (cardTypeID, attrName) or false if no such
 // attribute is allowed on that card type.
-func (s *Snapshot) EdgeFor(cardTypeID int32, attrName string) (Edge, AttributeDef, bool) {
+func (s *Snapshot) EdgeFor(cardTypeID int64, attrName string) (Edge, AttributeDef, bool) {
 	a, ok := s.AttrByName[attrName]
 	if !ok {
 		return Edge{}, AttributeDef{}, false
@@ -139,9 +142,82 @@ func (s *Snapshot) EdgeFor(cardTypeID int32, attrName string) (Edge, AttributeDe
 	return e, a, ok
 }
 
+// CanonicalizeValue rewrites a wire-side attribute value to the jsonb
+// shape used in attribute_value storage. The dispatcher serialises
+// bigint ids as JSON strings (`"123"`) but the seed writes them as JSON
+// numbers (`123`); jsonb equality is type-sensitive, so without this
+// step a card_ref filter or write would mismatch every demo-seeded row
+// (and vice versa, a UI-written value would never match a UI-built
+// filter). Pass through unchanged when the attribute is not a known
+// card_ref / card_ref[]; non-numeric strings and parse failures also
+// pass through so real data is never corrupted by over-eager
+// normalisation.
+//
+// Used by read paths (predicate compilation, filter translation) AND
+// by write paths (attribute.update) so stored values and queried
+// values share the same canonical jsonb shape.
+func (s *Snapshot) CanonicalizeValue(attrName string, raw json.RawMessage) json.RawMessage {
+	if s == nil || len(raw) == 0 {
+		return raw
+	}
+	a, ok := s.AttrByName[attrName]
+	if !ok {
+		return raw
+	}
+	switch a.ValueType {
+	case "card_ref":
+		return cardRefValueToNumber(raw)
+	case "card_ref[]":
+		return cardRefArrayToNumbers(raw)
+	}
+	return raw
+}
+
+// cardRefValueToNumber turns a JSON-string-of-digits into a JSON
+// number. Values already in number form, JSON null, or non-digit
+// strings pass through unchanged.
+func cardRefValueToNumber(raw json.RawMessage) json.RawMessage {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return raw
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return raw
+	}
+	return json.RawMessage(strconv.FormatInt(n, 10))
+}
+
+// cardRefArrayToNumbers normalises every element of a JSON array via
+// cardRefValueToNumber. Re-encodes the array on any change; a no-op
+// input is returned verbatim.
+func cardRefArrayToNumbers(raw json.RawMessage) json.RawMessage {
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return raw
+	}
+	changed := false
+	out := make([]json.RawMessage, len(arr))
+	for i, el := range arr {
+		canon := cardRefValueToNumber(el)
+		if string(canon) != string(el) {
+			changed = true
+		}
+		out[i] = canon
+	}
+	if !changed {
+		return raw
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
 // ParentAllowed enforces the v1 parent rule: child.allow_self_parent or
 // parent's card_type matches child.ParentCardTypeID.
-func (s *Snapshot) ParentAllowed(child CardType, parentTypeID int32) bool {
+func (s *Snapshot) ParentAllowed(child CardType, parentTypeID int64) bool {
 	if child.AllowSelfParent && parentTypeID == child.ID {
 		return true
 	}
@@ -159,11 +235,11 @@ type queryRower interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-func CardTypeIDByCardID(ctx context.Context, pool queryRower, cardID int64) (int32, error) {
+func CardTypeIDByCardID(ctx context.Context, pool queryRower, cardID int64) (int64, error) {
 	if cardID == 0 {
 		return 0, nil
 	}
-	var ctid int32
+	var ctid int64
 	row := pool.QueryRow(ctx, `SELECT card_type_id FROM card WHERE id = $1`, cardID)
 	if err := row.Scan(&ctid); err != nil {
 		return 0, nil

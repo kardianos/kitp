@@ -121,7 +121,7 @@ func TestReaperOrphans(t *testing.T) {
 	// Stand up the reference chain that pins `keep` alive:
 	//   file → file_chunk(cas_address=keep) ← live attachment row.
 	// (orphan has no inbound references, so the reaper should drop it.)
-	var projectCardTypeID int32
+	var projectCardTypeID int64
 	if err := pool.QueryRow(ctx,
 		`SELECT id FROM card_type WHERE name='project'`,
 	).Scan(&projectCardTypeID); err != nil {

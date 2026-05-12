@@ -5,38 +5,44 @@
    * focusable and Enter / Space activate it.
    *
    * Renders, in order:
-   *   `#id` · title · status chip · assignee chip · milestone ref ·
-   *   component ref · tag chips · created date.
+   *   `#id` · title · assignee chip · milestone ref · component ref ·
+   *   tag chips · created date.
    *
    * Caller-provided lookup tables resolve numeric foreign keys to display
    * names; missing entries fall through to `#<id>` so we never blank-render.
    */
 
-  import type { CardWithAttrs } from '../../reg/types.js';
+  import type { CardWithAttrs, ID } from '../../reg/types.js';
   import { cx } from '../../util/class_names.js';
   import Avatar from '../Avatar.svelte';
-  import Chip from '../Chip.svelte';
   import TagChip from './TagChip.svelte';
   import AttributeChip from './AttributeChip.svelte';
-  import { statusColor } from './activity_text.js';
+  import TerminalActionButton from './TerminalActionButton.svelte';
 
   interface Props {
     card: CardWithAttrs;
     selected?: boolean;
     onSelect?: () => void;
     onOpen?: () => void;
-    /** assignee_id -> display name */
-    userNames?: Record<number, string>;
-    /** milestone/component ref id -> title */
-    cardTitles?: Record<number, string>;
-    /** tag id -> path */
-    tagPaths?: Record<number, string>;
     /**
-     * Enum option set for the `status` attribute (`attribute_def.options`).
-     * Used to render the chip label — `'todo'` becomes `'To do'` so the
-     * row matches what the FilterBar status chip shows.
+     * person card id -> display name. Keys are id.toString(). The
+     * assignee attribute on `task` cards is now a card_ref to a `person`
+     * card (post the user_account → person card refactor), so the chip
+     * label resolves via this map.
      */
-    statusOptions?: { value: unknown; label: string }[] | undefined;
+    personNames?: Record<string, string>;
+    /** milestone/component ref id -> title. Keys are id.toString(). */
+    cardTitles?: Record<string, string>;
+    /** tag id -> path. Keys are id.toString(). */
+    tagPaths?: Record<string, string>;
+    /**
+     * Terminal status value cards for this row's project. When provided
+     * and the card isn't already terminal, a hover-revealed "Close ▾"
+     * split button shows up on the right of the row. onTerminated fires
+     * after a successful attribute.update so the caller can refresh.
+     */
+    terminalStatusOptions?: { id: ID; label: string }[];
+    onTerminated?: () => void;
     class?: string;
   }
 
@@ -45,10 +51,11 @@
     selected = false,
     onSelect,
     onOpen,
-    userNames,
+    personNames,
     cardTitles,
     tagPaths,
-    statusOptions,
+    terminalStatusOptions,
+    onTerminated,
     class: klass = '',
   }: Props = $props();
 
@@ -58,46 +65,40 @@
     return '(untitled)';
   });
 
-  const status = $derived(card.attributes['status']);
-  const statusRaw = $derived(typeof status === 'string' ? status : '');
-  const statusText = $derived.by((): string => {
-    if (statusRaw === '') return '';
-    const opt = statusOptions?.find((o) => o.value === status);
-    return opt?.label ?? statusRaw;
-  });
-  const statusHint = $derived(statusColor(status));
-
   const assigneeId = $derived.by(() => {
     const v = card.attributes['assignee'];
-    return typeof v === 'number' ? v : undefined;
+    return typeof v === 'bigint' ? v : undefined;
   });
   const assigneeName = $derived.by(() => {
     if (assigneeId === undefined) return undefined;
-    return userNames?.[assigneeId] ?? `#${assigneeId}`;
+    const k = assigneeId.toString();
+    return personNames?.[k] ?? `#${k}`;
   });
 
   const milestoneId = $derived.by(() => {
     const v = card.attributes['milestone_ref'];
-    return typeof v === 'number' ? v : undefined;
+    return typeof v === 'bigint' ? v : undefined;
   });
   const milestoneText = $derived.by(() => {
     if (milestoneId === undefined) return undefined;
-    return cardTitles?.[milestoneId] ?? `#${milestoneId}`;
+    const k = milestoneId.toString();
+    return cardTitles?.[k] ?? `#${k}`;
   });
 
   const componentId = $derived.by(() => {
     const v = card.attributes['component_ref'];
-    return typeof v === 'number' ? v : undefined;
+    return typeof v === 'bigint' ? v : undefined;
   });
   const componentText = $derived.by(() => {
     if (componentId === undefined) return undefined;
-    return cardTitles?.[componentId] ?? `#${componentId}`;
+    const k = componentId.toString();
+    return cardTitles?.[k] ?? `#${k}`;
   });
 
-  const tagIds = $derived.by((): number[] => {
+  const tagIds = $derived.by((): bigint[] => {
     const raw = card.attributes['tags'];
     if (!Array.isArray(raw)) return [];
-    return raw.filter((v): v is number => typeof v === 'number');
+    return raw.filter((v): v is bigint => typeof v === 'bigint');
   });
 
   const createdAt = $derived.by(() => {
@@ -106,23 +107,9 @@
     return undefined;
   });
 
-  /**
-   * Map our coarse status hint onto Chip's variant set. The Chip primitive
-   * only ships three variants (default / accent / danger); 'doing' / 'done'
-   * map to accent; 'review' falls back to default to keep the contract
-   * tight. Tests verify the underlying mapping (`statusColor`); the visual
-   * choice here is incidental.
-   */
-  const statusVariant = $derived.by((): 'default' | 'accent' | 'danger' => {
-    switch (statusHint) {
-      case 'blue':
-      case 'green':
-        return 'accent';
-      case 'amber':
-        return 'default';
-      default:
-        return 'default';
-    }
+  const currentStatusId = $derived.by((): ID | null => {
+    const v = card.attributes['status'];
+    return typeof v === 'bigint' ? v : null;
   });
 
   function handleClick(): void {
@@ -148,7 +135,7 @@
   data-selected={selected ? 'true' : undefined}
   data-card-id={card.id}
   class={cx(
-    'flex w-full flex-col gap-2 rounded-md border border-border bg-bg p-3 text-left',
+    'group flex w-full flex-col gap-2 rounded-md border border-border bg-bg p-3 text-left',
     'transition-colors hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
     'data-[selected=true]:border-accent data-[selected=true]:bg-surface',
     'sm:flex-row sm:items-center',
@@ -164,13 +151,6 @@
       <span class="truncate text-sm font-medium text-fg">{title}</span>
     </div>
     <div class="flex flex-wrap items-center gap-1.5">
-      {#if statusText !== ''}
-        <Chip
-          label={statusText}
-          variant={statusVariant}
-          class="data-[hint={statusHint}]"
-        />
-      {/if}
       {#if assigneeName !== undefined}
         <span class="inline-flex items-center gap-1">
           <Avatar name={assigneeName} size="sm" />
@@ -184,12 +164,33 @@
         <AttributeChip label="component" value={componentText} />
       {/if}
       {#each tagIds as tid (tid)}
-        {@const path = tagPaths?.[tid] ?? `#${tid}`}
+        {@const path = tagPaths?.[tid.toString()] ?? `#${tid}`}
         <TagChip label={path} />
       {/each}
     </div>
   </div>
   {#if createdAt !== undefined}
     <div class="shrink-0 text-xs text-muted sm:ml-3">{createdAt}</div>
+  {/if}
+  {#if terminalStatusOptions !== undefined && terminalStatusOptions.length > 0}
+    <!-- Stop propagation: the row's outer onclick navigates to the task
+         detail, which would race the attribute update on a stray menu
+         click. The component itself stops propagation on its inner
+         buttons too, but the wrapping div is the right safety net. -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div
+      class="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 sm:ml-2"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <TerminalActionButton
+        cardId={card.id}
+        attributeName="status"
+        terminalOptions={terminalStatusOptions}
+        currentValue={currentStatusId}
+        compact
+        onChanged={() => onTerminated?.()}
+      />
+    </div>
   {/if}
 </div>

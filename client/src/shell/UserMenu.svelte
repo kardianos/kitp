@@ -1,16 +1,16 @@
 <!--
-  Avatar + display name with a popover containing "Sign out".
+  Avatar + display name with a popover containing user info + Sign out.
 
-  When OIDC_ENABLED is false (dev profile), the menu is hidden in favour
-  of a "Dev mode" badge — there's nothing to sign out of and showing a
-  disabled menu is misleading.
+  Both dev mode (AUTH_MODE=off) and OIDC mode now drive a real BFF
+  session cookie, so the popover renders in both — only the cosmetic
+  "Dev mode" hint inside the popover differentiates them.
 -->
 <script lang="ts">
   import { getContext } from 'svelte';
   import Avatar from '../ui/Avatar.svelte';
-  import type { AuthState } from '../auth/auth_state.svelte';
-  import type { OidcSession } from '../auth/oidc_session';
-  import { OIDC_ENABLED } from '../env';
+  import { type AuthState, logout } from '../auth/auth_state.svelte';
+  import { OIDC_ENABLED, KITP_API_BASE } from '../env';
+  import { navigate } from '../routing/router.svelte';
   import { cx } from '../util/class_names';
 
   interface Props {
@@ -19,7 +19,6 @@
   let { collapsed }: Props = $props();
 
   const authState = getContext<AuthState>('authState');
-  const oidcSession = getContext<OidcSession | null>('oidcSession');
 
   let popoverOpen = $state(false);
 
@@ -30,9 +29,10 @@
     popoverOpen = false;
   }
 
-  function signOut(): void {
+  async function signOut(): Promise<void> {
     popoverOpen = false;
-    if (oidcSession) oidcSession.signOut();
+    await logout(authState, KITP_API_BASE);
+    navigate('/login');
   }
 
   // Hide on outside-click. We use a window click-capture listener so any
@@ -52,56 +52,56 @@
   const labelName = $derived(displayName.length > 0 ? displayName : 'Anonymous');
 </script>
 
-{#if !OIDC_ENABLED}
-  <!-- Dev mode badge: no auth backend wired. -->
-  <div
+<div bind:this={rootEl} class="relative">
+  <button
+    type="button"
     class={cx(
-      'inline-flex items-center gap-2 rounded border border-dashed border-border px-2 py-1 text-xs text-muted',
+      'flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm hover:bg-border/40',
       collapsed ? 'justify-center' : '',
     )}
-    title="Running in dev mode — no OIDC configured"
+    aria-haspopup="menu"
+    aria-expanded={popoverOpen}
+    onclick={toggle}
+    data-testid="user-menu-trigger"
   >
-    {#if collapsed}
-      <span aria-label="Dev mode">D</span>
-    {:else}
-      <span class="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true"></span>
-      <span>Dev mode</span>
-    {/if}
-  </div>
-{:else}
-  <div bind:this={rootEl} class="relative">
-    <button
-      type="button"
-      class={cx(
-        'flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-sm hover:bg-border/40',
-        collapsed ? 'justify-center' : '',
-      )}
-      aria-haspopup="menu"
-      aria-expanded={popoverOpen}
-      onclick={toggle}
-    >
-      <Avatar name={labelName} size="sm" />
-      {#if !collapsed}
-        <span class="flex-1 truncate" title={labelName}>{labelName}</span>
-        <span class="text-muted" aria-hidden="true">▾</span>
+    <Avatar name={labelName} size="sm" />
+    {#if !collapsed}
+      <span class="flex-1 truncate" title={labelName}>{labelName}</span>
+      {#if !OIDC_ENABLED}
+        <span
+          class="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+          aria-hidden="true"
+          title="Dev mode"
+        ></span>
       {/if}
-    </button>
-
-    {#if popoverOpen}
-      <div
-        role="menu"
-        aria-label="Account menu"
-        class="absolute bottom-full left-0 z-30 mb-1 w-44 rounded-md border border-border bg-surface p-1 shadow-lg"
-      >
-        <button
-          type="button"
-          role="menuitem"
-          class="block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-border/40"
-          onclick={signOut}
-        >
-          Sign out
-        </button>
-      </div>
+      <span class="text-muted" aria-hidden="true">▾</span>
     {/if}
-  </div>
-{/if}
+  </button>
+
+  {#if popoverOpen}
+    <div
+      role="menu"
+      aria-label="Account menu"
+      class="absolute bottom-full left-0 z-30 mb-1 w-52 rounded-md border border-border bg-surface p-1 text-sm shadow-lg"
+    >
+      <div class="border-b border-border px-2 py-1.5">
+        <div class="truncate font-medium" title={labelName}>{labelName}</div>
+        {#if !OIDC_ENABLED}
+          <div class="mt-0.5 inline-flex items-center gap-1.5 text-[11px] text-muted">
+            <span class="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true"></span>
+            Dev mode (AUTH_MODE=off)
+          </div>
+        {/if}
+      </div>
+      <button
+        type="button"
+        role="menuitem"
+        class="block w-full rounded px-2 py-1.5 text-left hover:bg-border/40 focus:outline-none focus-visible:bg-border/40"
+        onclick={() => void signOut()}
+        data-testid="user-menu-sign-out"
+      >
+        Sign out
+      </button>
+    </div>
+  {/if}
+</div>

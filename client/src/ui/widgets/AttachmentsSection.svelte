@@ -27,6 +27,7 @@
     AttachmentListInput,
     AttachmentListOutput,
     AttachmentRow,
+    ID,
   } from '../../reg/types';
   import Button from '../Button.svelte';
   import IconButton from '../IconButton.svelte';
@@ -35,7 +36,7 @@
   import { cx } from '../../util/class_names';
 
   interface Props {
-    cardId: number;
+    cardId: ID;
     /** Optional: fired after every upload / delete commit so the parent
      *  screen can refresh siblings (e.g. the activity feed). */
     onChanged?: () => void;
@@ -75,7 +76,7 @@
   let inputEl: HTMLInputElement | null = $state(null);
 
   async function refresh(): Promise<void> {
-    if (cardId === 0) return;
+    if (cardId === 0n) return;
     loading = true;
     errorMsg = null;
     try {

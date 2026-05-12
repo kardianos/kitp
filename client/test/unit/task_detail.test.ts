@@ -32,6 +32,7 @@ import {
   commitDescriptionPayload,
   commitTitlePayload,
   initialBatchSpec,
+  personNameMap,
   pickTaskById,
   removeTagPayload,
   sortActivityDesc,
@@ -44,11 +45,11 @@ import {
 /* -------------------------------------------------------------------------- */
 
 describe('initialBatchSpec', () => {
-  const TASK_ID = 42;
+  const TASK_ID = 42n;
   const spec = initialBatchSpec(TASK_ID);
 
-  it('returns exactly seven sub-requests so the dispatcher coalesces one POST', () => {
-    expect(spec).toHaveLength(7);
+  it('returns exactly eight sub-requests so the dispatcher coalesces one POST', () => {
+    expect(spec).toHaveLength(8);
   });
 
   it('first sub-request is the task itself (card.select_with_attributes, type=task)', () => {
@@ -91,7 +92,7 @@ describe('initialBatchSpec', () => {
     });
   });
 
-  it('sixth sub-request fetches users', () => {
+  it('sixth sub-request fetches users (activity-stream actor labels)', () => {
     expect(spec[5]).toMatchObject({
       endpoint: 'user',
       action: 'select',
@@ -105,6 +106,14 @@ describe('initialBatchSpec', () => {
     });
   });
 
+  it('eighth sub-request fetches persons (assignee picker options)', () => {
+    expect(spec[7]).toMatchObject({
+      endpoint: 'card',
+      action: 'select_with_attributes',
+      data: { cardTypeName: 'person' },
+    });
+  });
+
   it('endpoint+action ordering is contractual', () => {
     const ids = spec.map((s) => `${s.endpoint}.${s.action}`);
     expect(ids).toEqual([
@@ -115,6 +124,7 @@ describe('initialBatchSpec', () => {
       'card.select_with_attributes', // tag
       'user.select',
       'attribute_def.select',
+      'card.select_with_attributes', // person
     ]);
   });
 });
@@ -125,8 +135,8 @@ describe('initialBatchSpec', () => {
 
 describe('commitTitlePayload', () => {
   it('shapes the attribute.update input for title', () => {
-    expect(commitTitlePayload(7, 'New title')).toEqual({
-      cardId: 7,
+    expect(commitTitlePayload(7n, 'New title')).toEqual({
+      cardId: 7n,
       attributeName: 'title',
       value: 'New title',
     });
@@ -135,8 +145,8 @@ describe('commitTitlePayload', () => {
   it('preserves whitespace verbatim — trimming is the screen layer\'s job', () => {
     // The screen trims before reaching the helper; the helper itself is
     // a pure constructor with no side effects.
-    expect(commitTitlePayload(1, '  spaced  ')).toEqual({
-      cardId: 1,
+    expect(commitTitlePayload(1n, '  spaced  ')).toEqual({
+      cardId: 1n,
       attributeName: 'title',
       value: '  spaced  ',
     });
@@ -149,16 +159,16 @@ describe('commitTitlePayload', () => {
 
 describe('commitDescriptionPayload', () => {
   it('passes a non-empty description through unchanged', () => {
-    expect(commitDescriptionPayload(9, 'hello\nworld')).toEqual({
-      cardId: 9,
+    expect(commitDescriptionPayload(9n, 'hello\nworld')).toEqual({
+      cardId: 9n,
       attributeName: 'description',
       value: 'hello\nworld',
     });
   });
 
   it('clears the attribute (value=null) when the description is empty', () => {
-    expect(commitDescriptionPayload(9, '')).toEqual({
-      cardId: 9,
+    expect(commitDescriptionPayload(9n, '')).toEqual({
+      cardId: 9n,
       attributeName: 'description',
       value: null,
     });
@@ -171,16 +181,16 @@ describe('commitDescriptionPayload', () => {
 
 describe('attributeUpdatePayload', () => {
   it('shapes the wire input for arbitrary attributes', () => {
-    expect(attributeUpdatePayload(11, 'status', 'doing')).toEqual({
-      cardId: 11,
+    expect(attributeUpdatePayload(11n, 'status', 'doing')).toEqual({
+      cardId: 11n,
       attributeName: 'status',
       value: 'doing',
     });
   });
 
   it('round-trips null as a clear-attribute marker', () => {
-    expect(attributeUpdatePayload(11, 'milestone_ref', null)).toEqual({
-      cardId: 11,
+    expect(attributeUpdatePayload(11n, 'milestone_ref', null)).toEqual({
+      cardId: 11n,
       attributeName: 'milestone_ref',
       value: null,
     });
@@ -193,18 +203,18 @@ describe('attributeUpdatePayload', () => {
 
 describe('applyTagPayload', () => {
   it('shapes tag.apply input as { targetCardId, tagCardId }', () => {
-    expect(applyTagPayload(1, 99)).toEqual({
-      targetCardId: 1,
-      tagCardId: 99,
+    expect(applyTagPayload(1n, 99n)).toEqual({
+      targetCardId: 1n,
+      tagCardId: 99n,
     });
   });
 });
 
 describe('removeTagPayload', () => {
   it('shapes tag.remove input as { targetCardId, tagCardId }', () => {
-    expect(removeTagPayload(2, 88)).toEqual({
-      targetCardId: 2,
-      tagCardId: 88,
+    expect(removeTagPayload(2n, 88n)).toEqual({
+      targetCardId: 2n,
+      tagCardId: 88n,
     });
   });
 });
@@ -215,15 +225,15 @@ describe('removeTagPayload', () => {
 
 describe('commentInsertPayload', () => {
   it('shapes comment.insert input', () => {
-    expect(commentInsertPayload(7, 'looks good')).toEqual({
-      cardId: 7,
+    expect(commentInsertPayload(7n, 'looks good')).toEqual({
+      cardId: 7n,
       body: 'looks good',
     });
   });
 
   it('preserves whitespace and newlines verbatim', () => {
-    expect(commentInsertPayload(7, 'a\n\nb ')).toEqual({
-      cardId: 7,
+    expect(commentInsertPayload(7n, 'a\n\nb ')).toEqual({
+      cardId: 7n,
       body: 'a\n\nb ',
     });
   });
@@ -234,38 +244,38 @@ describe('commentInsertPayload', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('sortActivityDesc', () => {
-  function row(id: number, created_at: string): ActivityRow {
+  function row(id: bigint, created_at: string): ActivityRow {
     return {
       id,
-      card_id: 1,
+      card_id: 1n,
       kind: 'comment',
-      actor_id: 1,
+      actor_id: 1n,
       created_at,
     };
   }
 
   it('orders rows by created_at descending', () => {
     const out = sortActivityDesc([
-      row(1, '2026-05-01T00:00:00Z'),
-      row(2, '2026-05-03T00:00:00Z'),
-      row(3, '2026-05-02T00:00:00Z'),
+      row(1n, '2026-05-01T00:00:00Z'),
+      row(2n, '2026-05-03T00:00:00Z'),
+      row(3n, '2026-05-02T00:00:00Z'),
     ]);
-    expect(out.map((r) => r.id)).toEqual([2, 3, 1]);
+    expect(out.map((r) => r.id)).toEqual([2n, 3n, 1n]);
   });
 
   it('breaks ties by id descending', () => {
     const out = sortActivityDesc([
-      row(1, '2026-05-01T00:00:00Z'),
-      row(3, '2026-05-01T00:00:00Z'),
-      row(2, '2026-05-01T00:00:00Z'),
+      row(1n, '2026-05-01T00:00:00Z'),
+      row(3n, '2026-05-01T00:00:00Z'),
+      row(2n, '2026-05-01T00:00:00Z'),
     ]);
-    expect(out.map((r) => r.id)).toEqual([3, 2, 1]);
+    expect(out.map((r) => r.id)).toEqual([3n, 2n, 1n]);
   });
 
   it('does not mutate the input array', () => {
     const input = [
-      row(1, '2026-05-01T00:00:00Z'),
-      row(2, '2026-05-02T00:00:00Z'),
+      row(1n, '2026-05-01T00:00:00Z'),
+      row(2n, '2026-05-02T00:00:00Z'),
     ];
     const snapshot = [...input];
     sortActivityDesc(input);
@@ -282,26 +292,26 @@ describe('sortActivityDesc', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('pickTaskById', () => {
-  function card(id: number): CardWithAttrs {
+  function card(id: bigint): CardWithAttrs {
     return {
       id,
-      card_type_id: 2,
+      card_type_id: 2n,
       card_type_name: 'task',
       attributes: { title: `Task ${id}` },
     };
   }
 
   it('finds the matching id', () => {
-    const found = pickTaskById([card(1), card(2), card(3)], 2);
-    expect(found?.id).toBe(2);
+    const found = pickTaskById([card(1n), card(2n), card(3n)], 2n);
+    expect(found?.id).toBe(2n);
   });
 
   it('returns null when no row matches', () => {
-    expect(pickTaskById([card(1)], 99)).toBeNull();
+    expect(pickTaskById([card(1n)], 99n)).toBeNull();
   });
 
   it('returns null on an empty list', () => {
-    expect(pickTaskById([], 1)).toBeNull();
+    expect(pickTaskById([], 1n)).toBeNull();
   });
 });
 
@@ -312,8 +322,8 @@ describe('pickTaskById', () => {
 describe('userNameMap', () => {
   it('keys the display name by user id', () => {
     const users: UserRow[] = [
-      { id: 1, display_name: 'alice' },
-      { id: 2, display_name: 'bob' },
+      { id: 1n, display_name: 'alice' },
+      { id: 2n, display_name: 'bob' },
     ];
     expect(userNameMap(users)).toEqual({ 1: 'alice', 2: 'bob' });
   });
@@ -324,14 +334,56 @@ describe('userNameMap', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* personNameMap                                                              */
+/* -------------------------------------------------------------------------- */
+
+describe('personNameMap', () => {
+  function person(id: bigint, attrs: Record<string, unknown>): CardWithAttrs {
+    return {
+      id,
+      card_type_id: 7n,
+      card_type_name: 'person',
+      attributes: attrs,
+    };
+  }
+
+  it('keys the title by person card id', () => {
+    expect(
+      personNameMap([
+        person(1n, { title: 'alice' }),
+        person(2n, { title: 'bob' }),
+      ]),
+    ).toEqual({ 1: 'alice', 2: 'bob' });
+  });
+
+  it('skips rows whose title is missing or non-string', () => {
+    expect(
+      personNameMap([
+        person(1n, { title: 'alice' }),
+        person(2n, {}),
+        person(3n, { title: 7 }),
+      ]),
+    ).toEqual({ 1: 'alice' });
+  });
+
+  it('skips rows whose title is the empty string', () => {
+    expect(personNameMap([person(1n, { title: '' })])).toEqual({});
+  });
+
+  it('returns an empty object for empty input', () => {
+    expect(personNameMap([])).toEqual({});
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /* cardTitleMap                                                                */
 /* -------------------------------------------------------------------------- */
 
 describe('cardTitleMap', () => {
-  function card(id: number, attrs: Record<string, unknown>): CardWithAttrs {
+  function card(id: bigint, attrs: Record<string, unknown>): CardWithAttrs {
     return {
       id,
-      card_type_id: 1,
+      card_type_id: 1n,
       card_type_name: 'milestone',
       attributes: attrs,
     };
@@ -339,18 +391,18 @@ describe('cardTitleMap', () => {
 
   it('keys title by card id when title is a non-empty string', () => {
     expect(
-      cardTitleMap([card(10, { title: 'M1' }), card(11, { title: 'M2' })]),
+      cardTitleMap([card(10n, { title: 'M1' }), card(11n, { title: 'M2' })]),
     ).toEqual({ 10: 'M1', 11: 'M2' });
   });
 
   it('skips rows whose title is missing or non-string', () => {
     expect(
-      cardTitleMap([card(10, { title: 'M1' }), card(11, {}), card(12, { title: 7 })]),
+      cardTitleMap([card(10n, { title: 'M1' }), card(11n, {}), card(12n, { title: 7 })]),
     ).toEqual({ 10: 'M1' });
   });
 
   it('skips rows whose title is the empty string', () => {
-    expect(cardTitleMap([card(10, { title: '' })])).toEqual({});
+    expect(cardTitleMap([card(10n, { title: '' })])).toEqual({});
   });
 });
 
@@ -359,27 +411,27 @@ describe('cardTitleMap', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('tagPathMap', () => {
-  function tag(id: number, attrs: Record<string, unknown>): CardWithAttrs {
+  function tag(id: bigint, attrs: Record<string, unknown>): CardWithAttrs {
     return {
       id,
-      card_type_id: 1,
+      card_type_id: 1n,
       card_type_name: 'tag',
       attributes: attrs,
     };
   }
 
   it('prefers the path attribute', () => {
-    expect(tagPathMap([tag(1, { path: 'priority/high' })])).toEqual({
+    expect(tagPathMap([tag(1n, { path: 'priority/high' })])).toEqual({
       1: 'priority/high',
     });
   });
 
   it('falls back to title when path is absent', () => {
-    expect(tagPathMap([tag(1, { title: 'urgent' })])).toEqual({ 1: 'urgent' });
+    expect(tagPathMap([tag(1n, { title: 'urgent' })])).toEqual({ 1: 'urgent' });
   });
 
   it('skips rows with neither path nor title', () => {
-    expect(tagPathMap([tag(1, {})])).toEqual({});
+    expect(tagPathMap([tag(1n, {})])).toEqual({});
   });
 });
 
@@ -390,19 +442,19 @@ describe('tagPathMap', () => {
 describe('appliedTagIds', () => {
   function card(attrs: Record<string, unknown>): CardWithAttrs {
     return {
-      id: 1,
-      card_type_id: 2,
+      id: 1n,
+      card_type_id: 2n,
       card_type_name: 'task',
       attributes: attrs,
     };
   }
 
   it('returns the numeric ids from attributes.tags', () => {
-    expect(appliedTagIds(card({ tags: [10, 11, 12] }))).toEqual([10, 11, 12]);
+    expect(appliedTagIds(card({ tags: [10n, 11n, 12n] }))).toEqual([10n, 11n, 12n]);
   });
 
-  it('filters non-number entries', () => {
-    expect(appliedTagIds(card({ tags: [10, 'no', 11] }))).toEqual([10, 11]);
+  it('filters non-bigint entries', () => {
+    expect(appliedTagIds(card({ tags: [10n, 'no', 11n] }))).toEqual([10n, 11n]);
   });
 
   it('returns [] when tags is not an array', () => {

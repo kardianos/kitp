@@ -1,0 +1,213 @@
+<script lang="ts">
+  /**
+   * Title-styled project switcher.
+   *
+   * Renders as an h1-sized button showing the active project's name with
+   * a chevron; clicking opens an inline list of projects. Pinned at the
+   * top of project-scoped screens (Inbox / Grid / Kanban) in place of
+   * the old static title.
+   *
+   * Reads / writes `projectScope`; mirrors the fetch pattern from the
+   * (now-removed) sidebar selector, including the stale-id eviction on
+   * load.
+   */
+  import { tick } from 'svelte';
+  import {
+    autoUpdate,
+    computePosition,
+    flip,
+    offset,
+  } from '@floating-ui/dom';
+  import { getDispatcher } from '../dispatch/context';
+  import type { CardWithAttrs, ID } from '../reg/types';
+  import { cx } from '../util/class_names';
+  import { projectScope } from './project_scope.svelte';
+  import { projectsStore, watchProjects } from './projects_store.svelte';
+
+  const dispatcher = getDispatcher();
+
+  // Lazy-load shared projects cache; auto-refetch on projectsVersion bumps.
+  $effect(watchProjects(dispatcher));
+
+  const projects = $derived(projectsStore.projects);
+  const loaded = $derived(projectsStore.loaded);
+
+  function titleOf(c: CardWithAttrs): string {
+    const t = c.attributes['title'];
+    return typeof t === 'string' && t.length > 0 ? t : `#${c.id}`;
+  }
+
+  const activeLabel = $derived.by((): string => {
+    const pid = projectScope.projectId;
+    if (pid === null) return 'All projects';
+    const found = projects.find((p) => p.id === pid);
+    if (found !== undefined) return titleOf(found);
+    return loaded ? `#${pid}` : '…';
+  });
+
+  type Opt = { id: ID | null; label: string };
+  const options = $derived.by((): Opt[] => {
+    const out: Opt[] = [{ id: null, label: 'All projects' }];
+    for (const p of projects) out.push({ id: p.id, label: titleOf(p) });
+    return out;
+  });
+
+  let open = $state(false);
+  let query = $state('');
+  let triggerEl: HTMLButtonElement | null = $state(null);
+  let popupEl: HTMLDivElement | null = $state(null);
+  let searchEl: HTMLInputElement | null = $state(null);
+  let cleanupFloat: (() => void) | null = null;
+
+  const filtered = $derived.by((): Opt[] => {
+    const q = query.trim().toLowerCase();
+    if (q === '') return options;
+    return options.filter((o) => o.label.toLowerCase().includes(q));
+  });
+
+  async function openMenu(): Promise<void> {
+    open = true;
+    query = '';
+    await tick();
+    if (!triggerEl || !popupEl) return;
+    cleanupFloat?.();
+    cleanupFloat = autoUpdate(triggerEl, popupEl, () => {
+      if (!triggerEl || !popupEl) return;
+      void computePosition(triggerEl, popupEl, {
+        placement: 'bottom-start',
+        middleware: [offset(4), flip()],
+      }).then(({ x, y }) => {
+        if (!popupEl) return;
+        Object.assign(popupEl.style, {
+          left: `${x}px`,
+          top: `${y}px`,
+          opacity: '1',
+          pointerEvents: 'auto',
+        });
+      });
+    });
+    if (projects.length > 8) searchEl?.focus();
+  }
+
+  function closeMenu(): void {
+    open = false;
+    cleanupFloat?.();
+    cleanupFloat = null;
+  }
+
+  function pick(id: ID | null): void {
+    projectScope.setProject(id);
+    closeMenu();
+    triggerEl?.focus();
+  }
+
+  function onDocPointerDown(e: PointerEvent): void {
+    if (!open) return;
+    const t = e.target as Node | null;
+    if (!t) return;
+    if (popupEl?.contains(t)) return;
+    if (triggerEl?.contains(t)) return;
+    closeMenu();
+  }
+
+  function onTriggerKeydown(e: KeyboardEvent): void {
+    if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      void openMenu();
+    } else if (e.key === 'Escape' && open) {
+      e.preventDefault();
+      closeMenu();
+    }
+  }
+
+  $effect(() => {
+    if (open) {
+      document.addEventListener('pointerdown', onDocPointerDown, true);
+      return () => {
+        document.removeEventListener('pointerdown', onDocPointerDown, true);
+      };
+    }
+    return undefined;
+  });
+
+  $effect(() => {
+    return () => {
+      cleanupFloat?.();
+    };
+  });
+</script>
+
+<div class="relative inline-flex max-w-full">
+  <button
+    bind:this={triggerEl}
+    type="button"
+    class="inline-flex max-w-[14rem] items-center gap-1 rounded px-1.5 py-0.5 text-sm font-medium text-fg hover:bg-border/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    aria-haspopup="listbox"
+    aria-expanded={open}
+    aria-label="Switch project"
+    data-testid="project-title-picker"
+    onclick={() => (open ? closeMenu() : void openMenu())}
+    onkeydown={onTriggerKeydown}
+  >
+    <span class="truncate">{activeLabel}</span>
+    <svg viewBox="0 0 12 12" class="h-3 w-3 shrink-0 text-muted" aria-hidden="true">
+      <path
+        d="M2 4 L6 8 L10 4"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        fill="none"
+      />
+    </svg>
+  </button>
+
+  {#if open}
+    <div
+      bind:this={popupEl}
+      class="z-50 flex w-64 flex-col overflow-hidden rounded-md border border-border bg-bg shadow-lg"
+      style="position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none;"
+    >
+      {#if projects.length > 8}
+        <div class="border-b border-border p-1.5">
+          <input
+            bind:this={searchEl}
+            type="text"
+            placeholder="Search projects…"
+            bind:value={query}
+            class="w-full rounded border border-border bg-bg px-2 py-1 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          />
+        </div>
+      {/if}
+      <ul
+        role="listbox"
+        aria-label="Projects"
+        class="max-h-72 flex-1 overflow-auto py-1 text-sm"
+      >
+        {#if filtered.length === 0}
+          <li class="px-3 py-2 text-muted">
+            {loaded ? 'No matches' : 'Loading…'}
+          </li>
+        {:else}
+          {#each filtered as opt (opt.id ?? '__all__')}
+            {@const selected = opt.id === projectScope.projectId}
+            <li>
+              <button
+                type="button"
+                role="option"
+                aria-selected={selected}
+                class={cx(
+                  'block w-full truncate px-3 py-1.5 text-left hover:bg-surface',
+                  selected ? 'font-medium text-accent' : 'text-fg',
+                )}
+                onclick={() => pick(opt.id)}
+              >
+                {opt.label}
+              </button>
+            </li>
+          {/each}
+        {/if}
+      </ul>
+    </div>
+  {/if}
+</div>

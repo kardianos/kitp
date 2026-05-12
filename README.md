@@ -22,7 +22,7 @@ Bring everything up from a clean clone:
 
 ```sh
 make up           # docker-compose: brings up kitp-pg on 127.0.0.1:5544
-make db-reset     # apply db/schema/declarative.json (DDL + seed + demo)
+make db-reset     # apply db/schema/declarative.toml (DDL + seed + demo)
 make web          # vite build → client/dist/
 make run          # one process: API + UI on http://localhost:18080
 ```
@@ -87,7 +87,7 @@ client/         Svelte 5 + TypeScript SPA (Vite)
   src/screens/     one Svelte component per screen
   test/unit/       vitest
   test/e2e/        node + selenium-webdriver + chromedriver
-db/schema/      declarative.json (canonical DDL + seed + demo)
+db/schema/      declarative.toml (canonical DDL + seed + demo)
                 Apply with `make db-reset` or `go run ./server/cmd/schema-gen`
 docs/           screenshots, traceability matrix
 e2e/            legacy Dart e2e harness (retired by the Svelte cutover;

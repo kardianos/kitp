@@ -166,6 +166,93 @@ func TestValidateExpired(t *testing.T) {
 	}
 }
 
+// TestProvisionCreatesPersonCard exercises the assignee-as-card branch of
+// OIDC provisioning: first-sight of an oidc_sub creates a user_account row,
+// a person card (with title + optional email attribute_values), and the
+// user_account_person link in one tx. Table-driven over (with email,
+// without email) to cover both branches of the optional email path.
+func TestProvisionCreatesPersonCard(t *testing.T) {
+	op := newFakeOP(t)
+	pool := store.TestPool(t, "kitp_test_oidc_person")
+	v := oidc.NewValidator(&oidc.Config{
+		Issuer:   op.server.URL,
+		Audience: "kitp-web",
+	}, pool)
+	ctx := context.Background()
+	now := time.Now()
+
+	cases := []struct {
+		name      string
+		sub       string
+		display   string
+		email     string
+		wantEmail bool
+	}{
+		{name: "with email", sub: "p-with-email", display: "Person A", email: "p@example.invalid", wantEmail: true},
+		{name: "no email", sub: "p-no-email", display: "Person B", email: "", wantEmail: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tok := op.signToken(t, jwt.MapClaims{
+				"iss":  op.server.URL,
+				"aud":  "kitp-web",
+				"sub":  c.sub,
+				"name": c.display,
+				"email": c.email,
+				"exp":  now.Add(time.Hour).Unix(),
+			})
+			userID, _, err := v.Resolve(ctx, tok)
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+
+			var personCardID int64
+			if err := pool.QueryRow(ctx, `
+				SELECT person_card_id FROM user_account_person WHERE user_account_id = $1
+			`, userID).Scan(&personCardID); err != nil {
+				t.Fatalf("link missing: %v", err)
+			}
+
+			var ctName, gotTitle string
+			if err := pool.QueryRow(ctx, `
+				SELECT ct.name, (av.value #>> '{}')
+				FROM card c
+				JOIN card_type ct ON ct.id = c.card_type_id
+				LEFT JOIN attribute_value av ON av.card_id = c.id
+				  AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name='title')
+				WHERE c.id = $1
+			`, personCardID).Scan(&ctName, &gotTitle); err != nil {
+				t.Fatalf("person card: %v", err)
+			}
+			if ctName != "person" {
+				t.Errorf("card_type = %q, want person", ctName)
+			}
+			if gotTitle != c.display {
+				t.Errorf("title = %q, want %q", gotTitle, c.display)
+			}
+
+			var gotEmail *string
+			if err := pool.QueryRow(ctx, `
+				SELECT av.value #>> '{}'
+				FROM attribute_value av
+				WHERE av.card_id = $1
+				  AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name='email')
+			`, personCardID).Scan(&gotEmail); err != nil {
+				if c.wantEmail {
+					t.Fatalf("expected email row: %v", err)
+				}
+				// no-email branch: absent row is correct.
+				return
+			}
+			if !c.wantEmail {
+				t.Errorf("expected no email row; found %v", gotEmail)
+			} else if gotEmail == nil || *gotEmail != c.email {
+				t.Errorf("email = %v, want %q", gotEmail, c.email)
+			}
+		})
+	}
+}
+
 func TestProvisionAppliesMultipleRoles(t *testing.T) {
 	op := newFakeOP(t)
 	pool := store.TestPool(t, "kitp_test_oidc_roles")

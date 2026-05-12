@@ -9,7 +9,7 @@
 
   Initial-batch contract (one POST):
     1. `card.select_with_attributes`  card_type_name='task', limit=500
-    2. `user.select`
+    2. `card.select_with_attributes`  card_type_name='person'  (assignee labels)
     3. `card.select_with_attributes`  card_type_name='milestone'
     4. `card.select_with_attributes`  card_type_name='component'
     5. `card.select_with_attributes`  card_type_name='tag'
@@ -35,7 +35,7 @@
   import { getDispatcher } from '../dispatch/context';
   import { BatchAbortedError, SubRequestError } from '../dispatch/errors';
   import {
-    AttributeSchemaCache,
+    sharedSchemaCache,
     friendlyLabel,
     type FilterAttribute,
   } from '../filter/attribute_schema.svelte';
@@ -43,13 +43,16 @@
     buildTaskFilterPalette,
     resolveAttributeLabel,
   } from '../filter/task_palette';
-  import FilterBar from '../filter/FilterBar.svelte';
+  import ScreenFilterBar from '../filter/ScreenFilterBar.svelte';
   import {
     isFlatAndOfLeaves,
     predicateToJson,
     type Predicate,
   } from '../filter/predicate';
-  import { defaultQuickChipsFor, type QuickChip } from '../filter/quick_chips';
+  import {
+    readColumnAttr,
+    readLaneAttr,
+  } from '../filter/screen_preset.svelte';
   import DragHandle from '../dnd/DragHandle.svelte';
   import DropZone from '../dnd/DropZone.svelte';
   import { setActiveScope, useShortcut } from '../keys/shortcut';
@@ -59,7 +62,6 @@
   import {
     attributeUpdate,
     cardSelectWithAttributes,
-    userSelect,
   } from '../reg/handlers';
   import type {
     AttributeUpdateInput,
@@ -67,13 +69,11 @@
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
     CardWithAttrs,
-    UserRow,
-    UserSelectInput,
-    UserSelectOutput,
+    ID,
   } from '../reg/types';
   import { navigate } from '../routing/router.svelte';
   import { setTaskNavList } from '../routing/task_nav_list.svelte';
-  import { getFilter, setFilter } from './filter_state.svelte';
+  import { getFilter } from './filter_state.svelte';
   import Combobox from '../ui/Combobox.svelte';
   import Spinner from '../ui/Spinner.svelte';
   import { notify } from '../ui/toast.svelte';
@@ -91,7 +91,7 @@
   /* ------------------------------------------------------------------ deps */
 
   const dispatcher = getDispatcher();
-  const schema = new AttributeSchemaCache(dispatcher);
+  const schema = sharedSchemaCache(dispatcher);
 
   /* ----------------------------------------------------------------- state */
 
@@ -100,33 +100,31 @@
   /** Sentinel lane attribute name meaning "no swim lanes". */
   const NO_LANE = '__none__';
 
-  /** Default column ordering for the well-known `status` attribute. */
-  const STATUS_COLUMN_ORDER = ['todo', 'doing', 'review', 'done'];
-
   let tasks = $state<CardWithAttrs[]>([]);
-  let users = $state<UserRow[]>([]);
+  let persons = $state<CardWithAttrs[]>([]);
   let milestones = $state<CardWithAttrs[]>([]);
   let components = $state<CardWithAttrs[]>([]);
   let tagsRows = $state<CardWithAttrs[]>([]);
+  let statuses = $state<CardWithAttrs[]>([]);
   /** card-id → display title for milestone / component refs. */
-  const cardTitles = $derived.by((): Record<number, string> => {
-    const out: Record<number, string> = {};
+  const cardTitles = $derived.by((): Record<string, string> => {
+    const out: Record<string, string> = {};
     for (const r of milestones) {
       const t = r.attributes['title'];
-      if (typeof t === 'string') out[r.id] = t;
+      if (typeof t === 'string') out[r.id.toString()] = t;
     }
     for (const r of components) {
       const t = r.attributes['title'];
-      if (typeof t === 'string') out[r.id] = t;
+      if (typeof t === 'string') out[r.id.toString()] = t;
     }
     return out;
   });
   /** tag-id → path string. */
-  const tagPaths = $derived.by((): Record<number, string> => {
-    const out: Record<number, string> = {};
+  const tagPaths = $derived.by((): Record<string, string> => {
+    const out: Record<string, string> = {};
     for (const r of tagsRows) {
       const p = r.attributes['path'];
-      if (typeof p === 'string') out[r.id] = p;
+      if (typeof p === 'string') out[r.id.toString()] = p;
     }
     return out;
   });
@@ -137,8 +135,21 @@
   let predicate = $state<Predicate | null>(
     untrack(() => getFilter('kanban', projectScope.projectId)),
   );
-  let columnAttr = $state<string>('status');
+  // The active filter card, bound from <ScreenFilterBar>. Kanban reads
+  // its `column_attr` / `lane_attr` attributes off this card via an
+  // effect so the axis combobox updates whenever the user picks a
+  // different preset (or one is applied on first visit).
+  let activeFilter = $state<CardWithAttrs | null>(null);
+  let columnAttr = $state<string>('milestone_ref');
   let laneAttr = $state<string>(NO_LANE);
+  // The active filter card OWNS the axes. Reset to defaults whenever a
+  // preset omits column_attr / lane_attr so switching from a 2-axis preset
+  // to a 1-axis preset doesn't leave the lane stuck on the previous value.
+  $effect(() => {
+    if (activeFilter === null) return;
+    columnAttr = readColumnAttr(activeFilter) ?? 'milestone_ref';
+    laneAttr = readLaneAttr(activeFilter) ?? NO_LANE;
+  });
 
   /** Keyboard navigation focus. */
   let focused = $state<{
@@ -149,24 +160,31 @@
 
   /* -------------------------------------------------------------- ref data */
 
-  /** assignee_id → display name. */
-  const userNames = $derived<Record<number, string>>(
-    Object.fromEntries(users.map((u) => [u.id, u.display_name])),
+  /** person-card-id → title. Keys are id.toString(). Used for the
+   *  assignee chip on each kanban card after the schema flipped
+   *  `assignee` from user_ref to card_ref(person). */
+  const personNames = $derived<Record<string, string>>(
+    Object.fromEntries(
+      persons
+        .map((p) => {
+          const t = p.attributes['title'];
+          return typeof t === 'string' ? [p.id.toString(), t] : null;
+        })
+        .filter((e): e is [string, string] => e !== null),
+    ),
   );
 
   /* ------------------------------------------------------- column / lane keys */
 
   /**
-   * Build the ordered list of column keys for [attr]. For `status` we
-   * use the canonical four-step order (plus an UNSET sentinel). For other
-   * attributes we seed the keys from the schema's option list (so an empty
-   * project still renders every known column / lane), then merge in any
-   * extra keys observed on the loaded tasks before appending UNSET.
+   * Build the ordered list of column keys for [attr]. We seed the keys
+   * from the schema's option list (so an empty project still renders
+   * every known column / lane), then merge in any extra keys observed
+   * on the loaded tasks before appending UNSET. Status works the same
+   * way as milestone / component — its options are the project's
+   * `status` cards, in their sort_order.
    */
   function columnKeysForAttr(attr: string): string[] {
-    if (attr === 'status') {
-      return [...STATUS_COLUMN_ORDER, UNSET_KEY];
-    }
     const seen = new Set<string>();
     const keys: string[] = [];
     const fa = filterAttributes.find((a) => a.name === attr);
@@ -206,13 +224,19 @@
     return String(v);
   }
 
-  /** Inverse of {@link keyOf}: turn a bucket key back into a wire value. */
-  function valueForKey(attr: string, key: string): unknown {
+  /** Inverse of {@link keyOf}: turn a bucket key back into a wire value.
+   *  Numeric keys (every card_ref attribute — status / milestone_ref /
+   *  component_ref / assignee) decode back to bigint so the option
+   *  lookup in resolveAttributeLabel matches the picker's
+   *  `value: <card-id>n`. */
+  function valueForKey(_attr: string, key: string): unknown {
     if (key === UNSET_KEY) return null;
-    if (attr === 'status') return key;
-    const n = Number(key);
-    if (Number.isFinite(n) && key !== '' && /^-?\d+(?:\.\d+)?$/.test(key)) {
-      return n;
+    if (/^-?\d+$/.test(key)) {
+      try {
+        return BigInt(key);
+      } catch {
+        /* fall through */
+      }
     }
     return key;
   }
@@ -275,11 +299,13 @@
     // Built-ins are always offered so the picker is non-empty before
     // schema arrives. `friendlyLabel` produces "Milestone" not
     // "milestone_ref".
-    for (const n of ['status', 'assignee', 'milestone_ref', 'component_ref']) {
+    for (const n of ['assignee', 'milestone_ref', 'component_ref']) {
       seen.set(n, friendlyLabel(n));
     }
     for (const def of schema.defs) {
-      if (def.value_type === 'enum' || def.value_type.startsWith('ref:')) {
+      // Every pick-from-a-list attribute is a card_ref; offer them
+      // all as group-by candidates.
+      if (def.value_type === 'card_ref' || def.value_type === 'card_ref[]') {
         if (!seen.has(def.name)) seen.set(def.name, friendlyLabel(def.name));
       }
     }
@@ -301,15 +327,14 @@
   const filterAttributes = $derived<FilterAttribute[]>(
     buildTaskFilterPalette({
       schema,
-      users,
+      // Assignee → person cards. The palette resolves it via its
+      // refResolver from this list.
+      persons,
       milestones,
       components,
       tags: tagsRows,
+      statuses,
     }),
-  );
-
-  const quickChips = $derived<QuickChip[]>(
-    filterAttributes.flatMap((a) => defaultQuickChipsFor(a)),
   );
 
   /** Encode the current filter for the wire `tree` field. */
@@ -354,17 +379,36 @@
         action: cardSelectWithAttributes.action,
         data: tasksData,
       });
-      const usersP = dispatcher.request<UserSelectInput, UserSelectOutput>({
-        endpoint: userSelect.endpoint,
-        action: userSelect.action,
+      const personsP = dispatcher.request<
+        CardSelectWithAttributesInput,
+        CardSelectWithAttributesOutput
+      >({
+        endpoint: cardSelectWithAttributes.endpoint,
+        action: cardSelectWithAttributes.action,
+        data: { cardTypeName: 'person' },
       });
+      // Picker queries inherit the active project scope. Milestones,
+      // components, and tags sit one level under their project in v1,
+      // so filtering by `parentCardId` is equivalent to "in this
+      // project." The all-projects view leaves the filter unset so
+      // every option shows up.
+      const milestoneData: CardSelectWithAttributesInput = { cardTypeName: 'milestone' };
+      const componentData: CardSelectWithAttributesInput = { cardTypeName: 'component' };
+      const tagData: CardSelectWithAttributesInput = { cardTypeName: 'tag' };
+      const statusData: CardSelectWithAttributesInput = { cardTypeName: 'status' };
+      if (scoped !== null) {
+        milestoneData.parentCardId = scoped;
+        componentData.parentCardId = scoped;
+        tagData.parentCardId = scoped;
+        statusData.parentCardId = scoped;
+      }
       const milestonesP = dispatcher.request<
         CardSelectWithAttributesInput,
         CardSelectWithAttributesOutput
       >({
         endpoint: cardSelectWithAttributes.endpoint,
         action: cardSelectWithAttributes.action,
-        data: { cardTypeName: 'milestone' },
+        data: milestoneData,
       });
       const componentsP = dispatcher.request<
         CardSelectWithAttributesInput,
@@ -372,7 +416,7 @@
       >({
         endpoint: cardSelectWithAttributes.endpoint,
         action: cardSelectWithAttributes.action,
-        data: { cardTypeName: 'component' },
+        data: componentData,
       });
       const tagsP = dispatcher.request<
         CardSelectWithAttributesInput,
@@ -380,24 +424,34 @@
       >({
         endpoint: cardSelectWithAttributes.endpoint,
         action: cardSelectWithAttributes.action,
-        data: { cardTypeName: 'tag' },
+        data: tagData,
+      });
+      const statusesP = dispatcher.request<
+        CardSelectWithAttributesInput,
+        CardSelectWithAttributesOutput
+      >({
+        endpoint: cardSelectWithAttributes.endpoint,
+        action: cardSelectWithAttributes.action,
+        data: statusData,
       });
       const schemaP = schema.load();
 
-      const [tOut, uOut, mOut, cOut, gOut] = await Promise.all([
+      const [tOut, pOut, mOut, cOut, gOut, sOut] = await Promise.all([
         tasksP,
-        usersP,
+        personsP,
         milestonesP,
         componentsP,
         tagsP,
+        statusesP,
         schemaP,
       ]);
 
       tasks = tOut.rows;
-      users = uOut.rows;
+      persons = pOut.rows;
       milestones = mOut.rows;
       components = cOut.rows;
       tagsRows = gOut.rows;
+      statuses = sOut.rows;
 
       // Reset selection if it falls outside the new visible range.
       focused = { columnIdx: 0, rowIdxWithinColumn: 0, laneIdx: 0 };
@@ -499,7 +553,9 @@
     slot: number,
   ): void {
     const card = payload as CardWithAttrs;
-    if (typeof card?.id !== 'number') return;
+    // Card ids cross the wire as bigint (see dispatcher.reviveIds);
+    // the legacy `number` guard here silently dropped every drop.
+    if (typeof card?.id !== 'bigint') return;
     const lane = cells[laneKey];
     const destStack = (lane?.[columnKey] ?? []).filter((c) => c.id !== card.id);
     void handleDrop(card, destStack, slot, columnKey, laneKey);
@@ -666,23 +722,27 @@
   const focusedLaneKey = $derived(laneKeys[focused.laneIdx]);
 
   const qePrefill = $derived.by(() => {
-    const out: { statusValue?: string; laneAttribute?: { name: string; value: unknown } } = {};
-    if (
-      columnAttr === 'status' &&
-      focusedColumnKey !== undefined &&
-      focusedColumnKey !== UNSET_KEY
-    ) {
-      out.statusValue = focusedColumnKey;
+    const out: { laneAttribute?: { name: string; value: unknown }; extraAttributes?: { name: string; value: unknown }[] } = {};
+    if (focusedColumnKey !== undefined && focusedColumnKey !== UNSET_KEY) {
+      out.laneAttribute = {
+        name: columnAttr,
+        value: valueForKey(columnAttr, focusedColumnKey),
+      };
     }
     if (
       laneAttr !== NO_LANE &&
       focusedLaneKey !== undefined &&
       focusedLaneKey !== UNSET_KEY
     ) {
-      out.laneAttribute = {
+      const extra = {
         name: laneAttr,
         value: valueForKey(laneAttr, focusedLaneKey),
       };
+      if (out.laneAttribute === undefined) {
+        out.laneAttribute = extra;
+      } else {
+        out.extraAttributes = [extra];
+      }
     }
     return out;
   });
@@ -698,7 +758,14 @@
     scope: 'kanban',
     defaultCardType: 'task',
     prefill: qePrefill,
-    assigneeOptions: users.map((u) => ({ value: u.id, label: u.display_name })),
+    // assignee is a card_ref → person card, so options are person cards.
+    assigneeOptions: persons.map((p) => {
+      const t = p.attributes['title'];
+      return {
+        value: p.id,
+        label: typeof t === 'string' && t.length > 0 ? t : `#${p.id}`,
+      };
+    }),
     onCreated: () => {
       void refresh();
     },
@@ -710,22 +777,17 @@
    * the new task into exactly the bucket the user clicked, regardless of
    * where keyboard focus happens to be.
    *
-   * Both axes are honored: status uses the dedicated `statusValue` slot,
-   * non-status axes route through `laneAttribute` (single) and the
-   * fallback `extraAttributes` list (when both axes are non-status).
+   * Both axes are honored uniformly: the column attribute lands in
+   * `laneAttribute`, the lane axis (when active) in `extraAttributes`.
+   * Status is just another card_ref attribute — no dedicated slot.
    */
   function openColumnAdd(columnKey: string, laneKey: string): void {
     const prefill: {
-      statusValue?: string;
       laneAttribute?: { name: string; value: unknown };
       extraAttributes?: { name: string; value: unknown }[];
     } = {};
     const setAxis = (attr: string, key: string): void => {
       if (key === UNSET_KEY || key === '') return;
-      if (attr === 'status' && prefill.statusValue === undefined) {
-        prefill.statusValue = key;
-        return;
-      }
       const a = { name: attr, value: valueForKey(attr, key) };
       if (prefill.laneAttribute === undefined) {
         prefill.laneAttribute = a;
@@ -753,39 +815,33 @@
     if (!Array.isArray(ids)) return [];
     const out: string[] = [];
     for (const id of ids) {
-      if (typeof id === 'number') {
-        const p = tagPaths[id];
-        if (p !== undefined) out.push(p);
-      }
+      // The dispatcher reviver normalises card-ref attribute arrays
+      // to bigint; `tagPaths` is keyed by id.toString() so we use
+      // that form for the lookup.
+      if (typeof id !== 'bigint') continue;
+      const p = tagPaths[id.toString()];
+      if (p !== undefined) out.push(p);
     }
     return out;
   }
 
   function assigneeForCard(c: CardWithAttrs): string | undefined {
     const v = c.attributes['assignee'];
-    if (typeof v !== 'number') return undefined;
-    return userNames[v];
+    if (typeof v !== 'bigint') return undefined;
+    return personNames[v.toString()];
   }
 
   /* ----------------------------------------------------------- mount */
 
   // Initial fetch + refetch when the global project scope flips.
+  // Gated on `filterReady` so the first request waits for
+  // ScreenFilterBar's default-filter probe.
+  let filterReady = $state(false);
   $effect(() => {
     void projectScope.projectId; // tracked dep
+    void filterReady;
+    if (!filterReady) return;
     void refresh();
-  });
-
-  // Filter persistence (see filter_state.svelte.ts). Hydrate from the
-  // cache when the project scope flips; persist on every predicate
-  // change so the next visit (or sibling tab navigation) restores it.
-  $effect(() => {
-    const pid = projectScope.projectId;
-    untrack(() => {
-      predicate = getFilter('kanban', pid);
-    });
-  });
-  $effect(() => {
-    setFilter('kanban', projectScope.projectId, predicate);
   });
 
   /* re-fetch when the filter changes. */
@@ -798,8 +854,6 @@
 
 <div class="flex h-full flex-col gap-3 p-4">
   <header class="flex flex-wrap items-center gap-3">
-    <h1 class="text-xl font-semibold">Kanban</h1>
-
     <!--
       Use <div>, not <label>: clicking a Combobox option bubbles to the
       label, which forwards a synthetic click to the trigger button and
@@ -835,18 +889,29 @@
       </span>
     </div>
 
-    <span class="ml-auto text-sm text-muted">
-      {tasks.length} task{tasks.length === 1 ? '' : 's'}
-    </span>
   </header>
 
-  <FilterBar
-    attributes={filterAttributes}
+  <ScreenFilterBar
+    screenType="kanban"
+    projectId={projectScope.projectId}
+    {dispatcher}
+    {filterAttributes}
     bind:predicate
-    scope="kanban"
-    {quickChips}
+    bind:activeFilter
+    bind:filterReady
+    extraAttributes={{
+      column_attr: columnAttr,
+      lane_attr: laneAttr === NO_LANE ? null : laneAttr,
+    }}
     onchange={onFilterChange}
-  />
+  >
+    {#snippet trailing()}
+      <span>{tasks.length} task{tasks.length === 1 ? '' : 's'}</span>
+      {#if loading}
+        <Spinner size="sm" />
+      {/if}
+    {/snippet}
+  </ScreenFilterBar>
 
   {#if loading && tasks.length === 0}
     <div class="flex flex-1 items-center justify-center">

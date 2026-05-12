@@ -94,9 +94,9 @@ func TestCardLifecycle(t *testing.T) {
 	resp2 := srv.Dispatch(ctx, api.BatchRequest{
 		Subrequests: []api.SubRequest{
 			{ID: "ins", Endpoint: "card", Action: "insert", Data: rawf(
-				`{"card_type_name":"task","parent_card_id":%d,"title":"Do thing"}`, projectID)},
+				`{"card_type_name":"task","parent_card_id":"%d","title":"Do thing"}`, projectID)},
 			{ID: "list", Endpoint: "card", Action: "select", Data: rawf(
-				`{"parent_card_id":%d,"card_type_name":"task"}`, projectID)},
+				`{"parent_card_id":"%d","card_type_name":"task"}`, projectID)},
 		},
 	})
 	taskID := idsOf(t, resp2.Subresponses[0])
@@ -124,7 +124,7 @@ func TestEdgeViolationRejected(t *testing.T) {
 	resp = srv.Dispatch(ctx, api.BatchRequest{
 		Subrequests: []api.SubRequest{
 			{ID: "tag", Endpoint: "card", Action: "insert", Data: rawf(
-				`{"card_type_name":"tag","parent_card_id":%d,"title":"priority/high"}`, pid)},
+				`{"card_type_name":"tag","parent_card_id":"%d","title":"priority/high"}`, pid)},
 		},
 	})
 	tagID := idsOf(t, resp.Subresponses[0])
@@ -133,7 +133,7 @@ func TestEdgeViolationRejected(t *testing.T) {
 	resp = srv.Dispatch(ctx, api.BatchRequest{
 		Subrequests: []api.SubRequest{
 			{ID: "bad", Endpoint: "card", Action: "insert", Data: rawf(
-				`{"card_type_name":"task","parent_card_id":%d,"title":"bad"}`, tagID)},
+				`{"card_type_name":"task","parent_card_id":"%d","title":"bad"}`, tagID)},
 			{ID: "neutral", Endpoint: "card", Action: "select", Data: rawf(
 				`{"card_type_name":"project"}`)},
 		},
@@ -203,13 +203,13 @@ func TestTaskUnderTaskAllowed(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: rawf(
-			`{"card_type_name":"task","parent_card_id":%d,"title":"parent task"}`, pid)},
+			`{"card_type_name":"task","parent_card_id":"%d","title":"parent task"}`, pid)},
 	}})
 	tid := idsOf(t, resp.Subresponses[0])
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "sub", Endpoint: "card", Action: "insert", Data: rawf(
-			`{"card_type_name":"task","parent_card_id":%d,"title":"sub task"}`, tid)},
+			`{"card_type_name":"task","parent_card_id":"%d","title":"sub task"}`, tid)},
 	}})
 	mustOK(t, resp.Subresponses[0])
 }

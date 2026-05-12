@@ -11,7 +11,7 @@
    * text (read-only embed in a screen that has no router).
    */
 
-  import type { ActivityRow } from '../../reg/types.js';
+  import type { ActivityRow, ID } from '../../reg/types.js';
   import { cx } from '../../util/class_names.js';
   import { formatActivityText, type IdMap } from './activity_text.js';
   import { formatRelativeTime } from './time.js';
@@ -21,7 +21,7 @@
     userNames?: IdMap;
     cardTitles?: IdMap;
     tagPaths?: IdMap;
-    onOpenCard?: (cardId: number) => void;
+    onOpenCard?: (cardId: ID) => void;
     class?: string;
   }
 
@@ -34,7 +34,7 @@
     class: klass = '',
   }: Props = $props();
 
-  const actor = $derived(userNames?.[row.actor_id] ?? `user#${row.actor_id}`);
+  const actor = $derived(userNames?.[row.actor_id.toString()] ?? `user#${row.actor_id}`);
   const relative = $derived(formatRelativeTime(row.created_at));
   const text = $derived(formatActivityText(row, userNames, cardTitles, tagPaths));
 

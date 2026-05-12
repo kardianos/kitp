@@ -129,10 +129,10 @@ func createAttachment(
 	b, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(b, &fOut)
 
-	attReq, _ := json.Marshal(map[string]any{
-		"card_id": cardID,
-		"file_id": fOut.ID,
-	})
+	attReq, _ := json.Marshal(struct {
+		CardID int64 `json:"card_id,string"`
+		FileID int64 `json:"file_id,string"`
+	}{CardID: cardID, FileID: fOut.ID})
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "a", Endpoint: "attachment", Action: "create", Data: attReq},
 	}})
@@ -192,7 +192,7 @@ func TestChunkedUploadDownloadDelete(t *testing.T) {
 	// List
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "l", Endpoint: "attachment", Action: "list", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d}`, pid))},
+			fmt.Sprintf(`{"card_id":"%d"}`, pid))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("list: %+v", resp.Subresponses[0])
@@ -222,7 +222,7 @@ func TestChunkedUploadDownloadDelete(t *testing.T) {
 	// Soft-delete
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "d", Endpoint: "attachment", Action: "delete", Data: json.RawMessage(
-			fmt.Sprintf(`{"id":%d}`, att.ID))},
+			fmt.Sprintf(`{"id":"%d"}`, att.ID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("delete: %+v", resp.Subresponses[0])
@@ -339,7 +339,7 @@ func TestImageThumbnailGenerated(t *testing.T) {
 	// list — confirms the same data flows through the read path.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "l", Endpoint: "attachment", Action: "list", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d}`, pid))},
+			fmt.Sprintf(`{"card_id":"%d"}`, pid))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("list: %+v", resp.Subresponses[0])
@@ -416,7 +416,7 @@ func TestActivityRows(t *testing.T) {
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "d", Endpoint: "attachment", Action: "delete", Data: json.RawMessage(
-			fmt.Sprintf(`{"id":%d}`, att.ID))},
+			fmt.Sprintf(`{"id":"%d"}`, att.ID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("delete: %+v", resp.Subresponses[0])

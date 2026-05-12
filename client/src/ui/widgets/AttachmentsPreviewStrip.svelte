@@ -32,13 +32,14 @@
     AttachmentListInput,
     AttachmentListOutput,
     AttachmentRow,
+    ID,
   } from '../../reg/types';
   import { cx } from '../../util/class_names';
   import AttachmentThumbImage from './AttachmentThumbImage.svelte';
   import AttachmentInlineView from './AttachmentInlineView.svelte';
 
   interface Props {
-    cardId: number;
+    cardId: ID;
     /**
      * Bumped by the parent each time the underlying attachment list might
      * have changed (upload finished, delete committed elsewhere).
@@ -62,7 +63,7 @@
   // ---------------------------------------------------------------------- //
 
   async function refresh(): Promise<void> {
-    if (cardId === 0) {
+    if (cardId === 0n) {
       rows = [];
       return;
     }

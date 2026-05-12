@@ -38,6 +38,8 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/auth/oidc"
+	"github.com/kitp/kitp/server/internal/auth/session"
+	"github.com/kitp/kitp/server/internal/auth/token"
 	"github.com/kitp/kitp/server/internal/cas"
 	"github.com/kitp/kitp/server/internal/dom/activity"
 	"github.com/kitp/kitp/server/internal/dom/attachment"
@@ -50,8 +52,9 @@ import (
 	domconfig "github.com/kitp/kitp/server/internal/dom/config"
 	"github.com/kitp/kitp/server/internal/dom/echo"
 	"github.com/kitp/kitp/server/internal/dom/file"
-	"github.com/kitp/kitp/server/internal/dom/inbox"
 	"github.com/kitp/kitp/server/internal/dom/process"
+	"github.com/kitp/kitp/server/internal/dom/projectexport"
+	"github.com/kitp/kitp/server/internal/dom/projectimport"
 	domrole "github.com/kitp/kitp/server/internal/dom/role"
 	"github.com/kitp/kitp/server/internal/dom/rolemapping"
 	"github.com/kitp/kitp/server/internal/dom/tag"
@@ -91,7 +94,11 @@ func envInt(key string, fallback int) int {
 // registerHandlers installs every domain handler into the registry.
 // Called by both the HTTP and MCP entrypoints — must only fire once
 // per process (reg.Register panics on duplicates).
-func registerHandlers(pool *store.Pool) {
+//
+// `storage` may be nil for entrypoints that don't carry a CAS backend
+// (e.g. the MCP CLI subcommand). Handlers that need it (project.import
+// is the only one today) are skipped when nil.
+func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 	echo.Register()
 	cardtype.Register()
 	card.Register(pool)
@@ -108,10 +115,12 @@ func registerHandlers(pool *store.Pool) {
 	proc.Register(pool)
 	domuser.Register()
 	usercardsort.Register(pool)
-	inbox.Register(pool)
 	domrole.Register()
 	userrole.Register(pool)
 	rolemapping.Register(pool)
+	if storage != nil {
+		projectimport.Register(projectimport.ImportConfig{Pool: pool, Storage: storage})
+	}
 }
 
 // buildPgxPool constructs a pgxpool.Pool from dsn, optionally installing
@@ -186,7 +195,18 @@ func runHTTP() error {
 	}
 
 	pool := store.NewPool(pgPool)
-	registerHandlers(pool)
+
+	// CAS storage is built before handler registration so the
+	// project.import handlers (which read CSV bytes from CAS) wire
+	// straight to the same backend chain the upload + download routes
+	// use further down.
+	maxAttachMB := envInt("ATTACHMENT_MAX_MB", 250)
+	maxAttachBytes := int64(maxAttachMB) * 1024 * 1024
+	chunkMaxMB := envInt("ATTACHMENT_CHUNK_MAX_MB", 8)
+	chunkMaxBytes := int64(chunkMaxMB) * 1024 * 1024
+	storage := cas.New(cas.NewPgBackend(pgPool))
+
+	registerHandlers(pool, storage)
 
 	srv := api.NewServer(pool)
 	srv.Logger = logger
@@ -200,9 +220,37 @@ func runHTTP() error {
 			webDir = ""
 		}
 	}
+
+	// Session manager — owns the BFF cookie + batched sliding-touch.
+	// IdleTTL: how long a cookie can sit unused before re-auth. Default
+	// 7d; tune via KITP_SESSION_IDLE_HOURS. AbsoluteCap: hard re-auth
+	// cap measured from the original login. Default 45d; tune via
+	// KITP_SESSION_ABSOLUTE_DAYS. TouchInterval: how often we flush
+	// last_seen_at; smaller = fresher idle gate at higher DB churn.
+	sessionMgr := session.New(pgPool, session.Config{
+		IdleTTL:       time.Duration(envInt("KITP_SESSION_IDLE_HOURS", 24*7)) * time.Hour,
+		AbsoluteCap:   time.Duration(envInt("KITP_SESSION_ABSOLUTE_DAYS", 45)) * 24 * time.Hour,
+		TouchInterval: time.Duration(envInt("KITP_SESSION_TOUCH_SECONDS", 180)) * time.Second,
+	})
+	sessionMgr.Start(ctx)
+	// Cookie security: default Secure on; flip with KITP_INSECURE_COOKIE=1
+	// for plain-http dev (Chrome refuses Secure cookies on http).
+	insecureCookie := os.Getenv("KITP_INSECURE_COOKIE") == "1"
+
+	// Mount the auth surface BEFORE srv.Mount so the dispatcher's
+	// "POST /api/v1/batch" registration coexists; the AuthRequired
+	// wrapper below gates that batch route.
+	session.RegisterHTTP(mux, session.HTTPConfig{
+		Manager:         sessionMgr,
+		Pool:            pgPool,
+		SystemUserID:    auth.SystemUserID,
+		DevLoginEnabled: mode == auth.ModeOff,
+		InsecureCookie:  insecureCookie,
+	})
+
 	srv.Mount(mux, webDir)
 
-	// CAS storage + chunked-upload + attachment download routes.
+	// CAS chunked-upload + attachment download routes.
 	//
 	//   - The pg backend is the only configured backend in v1; future
 	//     S3 / GCS backends prepend onto the chain.
@@ -213,11 +261,6 @@ func runHTTP() error {
 	//   - file.create / attachment.create / attachment.list /
 	//     attachment.delete go through the JSON batch dispatcher (see
 	//     registerHandlers).
-	maxAttachMB := envInt("ATTACHMENT_MAX_MB", 250)
-	maxAttachBytes := int64(maxAttachMB) * 1024 * 1024
-	chunkMaxMB := envInt("ATTACHMENT_CHUNK_MAX_MB", 8)
-	chunkMaxBytes := int64(chunkMaxMB) * 1024 * 1024
-	storage := cas.New(cas.NewPgBackend(pgPool))
 	cas.RegisterHTTP(mux, cas.HTTPConfig{
 		Pool:     pool,
 		Storage:  storage,
@@ -225,6 +268,16 @@ func runHTTP() error {
 		Logger:   logger,
 	})
 	attachment.RegisterHTTP(mux, attachment.Config{
+		Pool:    pool,
+		Storage: storage,
+		Logger:  logger,
+	})
+	// Project export (phases 3 + 4 of PROJECT_PORTABILITY_PLAN.md) —
+	// streams text/csv or application/zip via dedicated HTTP routes.
+	// Authz is checked inline against the dispatcher's role /
+	// role_grant tables. The full-zip endpoint reads attachment bytes
+	// from CAS when the include_attachments toggle is on.
+	projectexport.RegisterHTTP(mux, projectexport.Config{
 		Pool:    pool,
 		Storage: storage,
 		Logger:  logger,
@@ -261,20 +314,47 @@ func runHTTP() error {
 	// idempotency -> auth (System User OR OIDC) -> dispatcher. CORS lives at
 	// the outer layer so OPTIONS preflights short-circuit before doing any
 	// real work; the rest of the chain still executes for POSTs.
-	authMW := auth.Middleware(user) // dev-mode default
+	// BFF middleware chain:
+	//   session.Middleware  → attach UserCtx if cookie is valid (no 401)
+	//   session.GateAPI    → 401 for /api/* except the auth surface
+	//
+	// OIDC mode previously short-circuited to oidc.Middleware (bearer
+	// header only); that path is gone now that the OIDC dance is
+	// driven server-side and lands in a session cookie. The legacy
+	// auth.Middleware (auto-System-User) is also gone — in BFF mode
+	// nothing implicitly attaches a user, the only path in is the
+	// session cookie.
 	if mode == auth.ModeOIDC {
 		oidcCfg := oidc.FromEnv(os.Getenv)
 		if oidcCfg == nil {
 			return errors.New("AUTH_MODE=oidc but OIDC_ISSUER is empty")
 		}
 		validator := oidc.NewValidator(oidcCfg, pgPool)
-		authMW = oidc.Middleware(validator)
-		log.Printf("OIDC enabled (issuer=%s aud=%s)", oidcCfg.Issuer, oidcCfg.Audience)
+		if err := oidc.RegisterBFF(mux, oidc.BFFConfig{
+			Validator:      validator,
+			Pool:           pgPool,
+			SessionManager: sessionMgr,
+			InsecureCookie: insecureCookie,
+		}); err != nil {
+			return fmt.Errorf("oidc/bff: %w", err)
+		}
+		log.Printf("OIDC enabled (issuer=%s aud=%s redirect_uri=%s)",
+			oidcCfg.Issuer, oidcCfg.Audience, oidcCfg.RedirectURI)
 	}
+	authMW := session.Middleware(sessionMgr)
+	gateMW := session.GateAPI(session.GateConfig{
+		Prefix: "/api/",
+		Exempt: []string{
+			"/api/v1/auth/dev-login",
+			"/api/v1/auth/logout",
+			"/api/v1/auth/oidc/start",
+			"/api/v1/auth/oidc/callback",
+		},
+	})
 	var inner http.Handler = obs.RequestIDMiddleware(
 		obs.LoggingMiddleware(logger,
 			idem.Middleware(srv,
-				authMW(mux),
+				authMW(gateMW(mux)),
 			),
 		),
 	)
@@ -349,7 +429,9 @@ func runMCP() error {
 	}
 
 	pool := store.NewPool(pgPool)
-	registerHandlers(pool)
+	// MCP entrypoint runs handlers but has no CAS-backed routes, so
+	// skip handlers that need storage (only project.import today).
+	registerHandlers(pool, nil)
 
 	srv := api.NewServer(pool)
 	srv.Logger = logger
@@ -367,8 +449,26 @@ func runMCP() error {
 		mcp.SetToolset(mcp.ToolsetMinimal)
 	}
 
-	// Inject the System User into ctx so dispatcher Run calls run as them.
-	mcpCtx := auth.WithUser(ctx, user)
+	// Resolve the acting user. By default the MCP entry runs as the
+	// System User (back-compat: nothing changed for callers that don't
+	// set KITP_TOKEN). When KITP_TOKEN is non-empty, look it up via
+	// the user_token table and switch the actor to whatever user_account
+	// the token names — typically one of the parent user's agents.
+	// Bad / revoked / expired token fails fast so a misconfigured agent
+	// doesn't accidentally run as System.
+	actor := user
+	if tok := os.Getenv("KITP_TOKEN"); tok != "" {
+		mgr := token.New(pgPool, token.Config{})
+		mgr.Start(ctx) // batched touch on token usage
+		resolved, err := mgr.Lookup(ctx, tok)
+		if err != nil {
+			return fmt.Errorf("KITP_TOKEN: %w", err)
+		}
+		actor = &auth.UserCtx{ID: resolved.ID, DisplayName: resolved.DisplayName}
+		log.Printf("MCP authenticated as user_account.id=%d (%q) via KITP_TOKEN", actor.ID, actor.DisplayName)
+	}
+
+	mcpCtx := auth.WithUser(ctx, actor)
 
 	mcpSrv := mcp.NewServer(srv, os.Stdin, os.Stdout)
 	return mcpSrv.Run(mcpCtx)

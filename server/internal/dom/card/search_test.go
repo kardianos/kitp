@@ -34,7 +34,7 @@ func TestSearch(t *testing.T) {
 	for i, title := range titles {
 		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: fmt.Sprintf("t%d", i), Endpoint: "card", Action: "insert", Data: json.RawMessage(
-				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":%q}`,
+				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":%q}`,
 					pOut.ID, title))},
 		}})
 		if !resp.Subresponses[0].OK {
@@ -118,6 +118,42 @@ func TestSearch(t *testing.T) {
 			`{"card_type_name":"task","ids":[%s],"limit":2}`, idsBody))
 		if len(out.Rows) != 2 {
 			t.Fatalf("expected 2 rows after limit, got %d", len(out.Rows))
+		}
+	})
+
+	t.Run("parent_card_id filter scopes typeahead to in-project cards", func(t *testing.T) {
+		// Build a second project with one task; the parent_card_id
+		// filter must hide it from the first project's typeahead.
+		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "p2", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+				`{"card_type_name":"project","title":"P2"}`)},
+		}})
+		if !resp.Subresponses[0].OK {
+			t.Fatalf("project 2 insert: %+v", resp.Subresponses[0])
+		}
+		var p2 card.InsertOutput
+		b, _ := json.Marshal(resp.Subresponses[0].Data)
+		_ = json.Unmarshal(b, &p2)
+		resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "tx", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"Other Alpha"}`, p2.ID))},
+		}})
+		if !resp.Subresponses[0].OK {
+			t.Fatalf("other-project task insert: %+v", resp.Subresponses[0])
+		}
+
+		// Without the filter, "alpha" matches across both projects.
+		out := dispatchSearch(t, `{"card_type_name":"task","query":"alpha"}`)
+		if len(out.Rows) < 2 {
+			t.Fatalf("expected >= 2 alpha tasks (both projects), got %+v", out.Rows)
+		}
+
+		// With parent_card_id set, the typeahead is restricted to that
+		// project — the other project's "Other Alpha" must drop out.
+		out = dispatchSearch(t, fmt.Sprintf(
+			`{"card_type_name":"task","query":"alpha","parent_card_id":"%d"}`, pOut.ID))
+		if len(out.Rows) != 1 || out.Rows[0].Title != "Alpha task" {
+			t.Fatalf("parent-scoped search: expected single Alpha task; got %+v", out.Rows)
 		}
 	})
 

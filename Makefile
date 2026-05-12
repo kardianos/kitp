@@ -74,12 +74,16 @@ lint:
 
 # ---------- Svelte web client -----------------------------------------------
 
-# Build the Svelte SPA via Vite to client/dist. Bakes the API base URL the
-# e2e harness uses (kitpd on :18080) so the bundle works against the default
-# e2e topology without any runtime gymnastics. The Svelte client reads these
-# at build time via `import.meta.env.VITE_KITP_*`.
+# Build the Svelte SPA via Vite to client/dist. We deliberately leave
+# VITE_KITP_API_BASE unset so the dispatcher uses relative URLs
+# (`/api/v1/batch`). kitpd serves the bundle at WEB_DIR and the API at
+# the same origin, so the bundle works wherever it ships without
+# baking in a host:port. The web-dev target relies on Vite's `/api`
+# proxy (vite.config.ts) to reach kitpd cross-origin during live
+# reload. The Svelte client still reads these at build time via
+# `import.meta.env.VITE_KITP_*` when callers DO set them.
 web-build:
-	cd client && pnpm install --frozen-lockfile && VITE_KITP_API_BASE=http://127.0.0.1:18080 pnpm build
+	cd client && pnpm install --frozen-lockfile && pnpm build
 
 # Alias for the README quickstart.
 web: web-build

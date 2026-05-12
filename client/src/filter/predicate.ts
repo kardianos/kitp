@@ -22,7 +22,15 @@
 /* -------------------------------------------------------------------------- */
 
 /** Operators understood by every layer (UI → wire → server SQL). */
-export type Op = 'eq' | 'ne' | 'in' | 'notIn' | 'exists' | 'notExists';
+export type Op =
+  | 'eq'
+  | 'ne'
+  | 'in'
+  | 'notIn'
+  | 'exists'
+  | 'notExists'
+  | 'contains'
+  | 'notTerminal';
 
 /**
  * Wire-string for each operator. The values here MUST match the server's
@@ -36,6 +44,8 @@ export const OP_TO_WIRE: Readonly<Record<Op, string>> = {
   notIn: 'not in',
   exists: 'exists',
   notExists: 'not exists',
+  contains: 'contains',
+  notTerminal: 'not terminal',
 };
 
 const WIRE_TO_OP: Readonly<Record<string, Op>> = {
@@ -45,6 +55,8 @@ const WIRE_TO_OP: Readonly<Record<string, Op>> = {
   'not in': 'notIn',
   exists: 'exists',
   'not exists': 'notExists',
+  contains: 'contains',
+  'not terminal': 'notTerminal',
 };
 
 /** Returns the wire string for [op]. Inverse of {@link opFromWire}. */
@@ -72,12 +84,14 @@ export function opArity(op: Op): OpArity {
   switch (op) {
     case 'eq':
     case 'ne':
+    case 'contains':
       return 'single';
     case 'in':
     case 'notIn':
       return 'multi';
     case 'exists':
     case 'notExists':
+    case 'notTerminal':
       return 'none';
   }
 }

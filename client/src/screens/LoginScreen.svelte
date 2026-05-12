@@ -2,24 +2,21 @@
   LoginScreen.
 
   Two modes:
-    1. OIDC enabled (oidcSession provided in context): render a "Sign in with
-       OIDC" button that hands off to the OP via `oidcSession.startSignIn()`.
-    2. OIDC disabled (dev build, oidcSession === null): render a notice and
-       a "Continue as System User" button. The router's `requireAuth` guard
-       gates strictly on `authState.isSignedIn`, so to enter the app we
-       directly flip `authState.isSignedIn = true` (matching the dev-mode
-       affordance — there is no real session to lose).
+    1. OIDC enabled (KITP_OIDC_* baked into the bundle): "Sign in with OIDC"
+       redirects the browser to the server-side OIDC start endpoint. The
+       server then drives the PKCE dance, validates the ID token, mints a
+       session, sets the kitp_session cookie, and bounces the user back to /.
+    2. OIDC disabled (dev build): "Continue as System User" POSTs the
+       BFF dev-login endpoint; the server hands back a session cookie
+       and we navigate to /projects.
 
-  Pressing Enter triggers the primary action (matches the Dart screen's
-  expected behaviour and the keyboard-first project convention).
-
-  Ports `client/lib/ui/screens/login_screen.dart`.
+  In both paths the browser never holds an access / id / refresh token.
 -->
 <script lang="ts">
   import { getContext, onMount } from 'svelte';
   import Button from '../ui/Button.svelte';
-  import type { AuthState } from '../auth/auth_state.svelte';
-  import type { OidcSession } from '../auth/oidc_session';
+  import { type AuthState, devLogin } from '../auth/auth_state.svelte';
+  import { OIDC_ENABLED, KITP_API_BASE } from '../env';
   import { setActiveScope, useShortcut } from '../keys/shortcut';
   import { navigate } from '../routing/router.svelte';
   import { parseLoginError, type LoginError } from './login_helpers';
@@ -27,14 +24,10 @@
   setActiveScope('login');
 
   const authState = getContext<AuthState>('authState');
-  const oidcSession = getContext<OidcSession | null>('oidcSession');
 
-  // `?error=...` surfaces auth-callback failures that bounced us back here.
-  // We snapshot once on mount; reactive updates aren't needed because the
-  // user can only get a new error by leaving and re-entering this screen.
+  // `?error=...` surfaces server-side OIDC callback failures.
   let loginError = $state<LoginError | null>(null);
-  // In-flight flag for the IdP redirect — keeps the user from double-clicking
-  // while `startSignIn()` is mid-PKCE-derivation.
+  // In-flight flag — disables the button while the redirect / POST is mid-flight.
   let signingIn = $state(false);
 
   onMount(() => {
@@ -45,31 +38,29 @@
 
   async function startSignIn(): Promise<void> {
     if (signingIn) return;
-    if (oidcSession !== null) {
-      signingIn = true;
-      try {
-        await oidcSession.startSignIn();
-      } catch (e) {
-        signingIn = false;
-        loginError = { message: e instanceof Error ? e.message : String(e) };
-      }
-      // On success the browser is redirecting; keep `signingIn` truthy so
-      // the button stays disabled during the (very short) gap.
+    signingIn = true;
+    if (OIDC_ENABLED) {
+      // Hand control to the server-side OIDC redirect endpoint.
+      // It'll set the session cookie before bouncing back to '/'.
+      window.location.assign(`${KITP_API_BASE}/api/v1/auth/oidc/start`);
       return;
     }
-    // Dev mode: no OIDC. Flip auth state and bounce to the home tab. Seed
-    // `claims.groups` with the admin role so `requireAdmin` lets dev users
-    // (and the e2e harness) into `/admin/*`. In OIDC mode this is replaced
-    // by real claims from the id_token.
-    if (authState !== undefined) {
-      authState.isSignedIn = true;
-      authState.claims = { sub: 'dev', name: 'System', groups: ['kitp.admin'] };
+    // Dev mode: POST dev-login, then route in.
+    try {
+      const ok = await devLogin(authState, KITP_API_BASE);
+      if (!ok) {
+        signingIn = false;
+        loginError = { message: 'dev-login refused' };
+        return;
+      }
+      navigate('/projects');
+    } catch (e) {
+      signingIn = false;
+      loginError = { message: e instanceof Error ? e.message : String(e) };
     }
-    navigate('/projects');
   }
 
-  // Enter triggers the primary button. `fireInInputs: true` so the binding
-  // works even when (in some future iteration) we add a focusable input.
+  // Enter triggers the primary button.
   useShortcut('login', 'Enter', () => void startSignIn(), 'Sign in', {
     fireInInputs: true,
   });
@@ -86,7 +77,7 @@
       Sign in to kitp
     </h1>
 
-    {#if oidcSession !== null}
+    {#if OIDC_ENABLED}
       <p class="mt-2 text-center text-sm text-muted">
         Authenticate with your OpenID Connect provider.
       </p>
@@ -109,6 +100,7 @@
         <Button
           variant="primary"
           size="lg"
+          loading={signingIn}
           onclick={() => void startSignIn()}
         >
           {#snippet children()}Continue as System User{/snippet}

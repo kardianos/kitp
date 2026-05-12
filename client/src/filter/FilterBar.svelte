@@ -28,8 +28,9 @@
   import IconButton from '../ui/IconButton.svelte';
   import { cx } from '../util/class_names.js';
   import type { FilterAttribute } from './attribute_schema.svelte.js';
-  import FilterPresets from './FilterPresets.svelte';
   import FilterTreeEditor from './FilterTreeEditor.svelte';
+  import QuickFilterDropdown from './QuickFilterDropdown.svelte';
+  import TextSearchBar from './TextSearchBar.svelte';
   import {
     flattenLeaves,
     isFlatAndOfLeaves,
@@ -41,24 +42,102 @@
     type Predicate,
     type PredicateLeaf,
   } from './predicate.js';
-  import { quickChipIsActive, replaceLeafForAttr, type QuickChip } from './quick_chips.js';
+  import { replaceLeafForAttr } from './quick_chips.js';
   import ValueInput from './ValueInput.svelte';
 
   interface Props {
     attributes: FilterAttribute[];
     predicate: Predicate | null;
-    scope: string;
     onchange?: (p: Predicate | null) => void;
-    quickChips?: QuickChip[];
+    /**
+     * Optional snippet rendered as the prefix of the top row, before
+     * the search input. ScreenFilterBar feeds in its View picker +
+     * kebab menu so the saved-preset chrome and the search bar share
+     * a single physical row.
+     */
+    leading?: import('svelte').Snippet;
+    /**
+     * Optional snippet rendered at the far right of the top row.
+     * Screens fold their row-count badge / inline loading spinner in
+     * here so the dedicated header strip can go away.
+     */
+    trailing?: import('svelte').Snippet;
   }
 
   let {
     attributes,
     predicate = $bindable(),
-    scope,
     onchange,
-    quickChips = [],
+    leading,
+    trailing,
   }: Props = $props();
+
+  /* ---- Quick-filter dropdown selection ----------------------------------- */
+
+  /**
+   * Attributes promoted to the quick-filter row. Discrete-valued
+   * (ref:* / enum) only; freeform inputs (text / number / date) stay
+   * inside "+ Add filter".
+   */
+  const quickAttributes = $derived.by((): FilterAttribute[] =>
+    attributes.filter(
+      (a) => a.valueType.startsWith('ref:') || a.valueType === 'enum',
+    ),
+  );
+
+  /**
+   * Attributes that have at least one terminal option (e.g. status →
+   * Done, Cancelled). Each gets a "Hide closed X" pill in the filter
+   * bar that toggles a notTerminal(attr) leaf in the predicate.
+   */
+  const terminalAttributes = $derived.by((): FilterAttribute[] =>
+    quickAttributes.filter((a) =>
+      (a.options ?? []).some((o) => o.isTerminal === true),
+    ),
+  );
+
+  function hasNotTerminalLeaf(p: Predicate | null, attr: string): boolean {
+    if (p === null) return false;
+    if (p.kind === 'leaf') return p.op === 'notTerminal' && p.attr === attr;
+    if (p.connective !== 'and') return false;
+    for (const c of p.children) {
+      if (c.kind === 'leaf' && c.op === 'notTerminal' && c.attr === attr) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function toggleNotTerminal(attr: string): void {
+    if (hasNotTerminalLeaf(predicate, attr)) {
+      emit(stripNotTerminal(predicate, attr));
+    } else {
+      emit(addNotTerminal(predicate, attr));
+    }
+  }
+
+  function stripNotTerminal(p: Predicate | null, attr: string): Predicate | null {
+    if (p === null) return null;
+    if (p.kind === 'leaf') {
+      return p.op === 'notTerminal' && p.attr === attr ? null : p;
+    }
+    const kept = p.children.filter(
+      (c) => !(c.kind === 'leaf' && c.op === 'notTerminal' && c.attr === attr),
+    );
+    if (kept.length === 0) return null;
+    if (kept.length === 1 && p.connective !== 'not') return kept[0] as Predicate;
+    return { kind: 'group', connective: p.connective, children: kept };
+  }
+
+  function addNotTerminal(p: Predicate | null, attr: string): Predicate {
+    const leaf: PredicateLeaf = { kind: 'leaf', attr, op: 'notTerminal' };
+    if (p === null) return leaf;
+    if (p.kind === 'leaf') return { kind: 'group', connective: 'and', children: [p, leaf] };
+    if (p.connective === 'and') {
+      return { kind: 'group', connective: 'and', children: [...p.children, leaf] };
+    }
+    return { kind: 'group', connective: 'and', children: [p, leaf] };
+  }
 
   /* ---- Derived ----------------------------------------------------------- */
 
@@ -68,11 +147,13 @@
     return isFlatAndOfLeaves(predicate);
   });
 
-  /** Flat list of leaves for the chip row. Empty when predicate is null. */
+  /** Flat list of leaves for the chip row. Empty when predicate is null.
+   *  notTerminal leaves are surfaced via dedicated toggle pills above; we
+   *  filter them out here so the same constraint isn't shown twice. */
   const leaves = $derived.by((): PredicateLeaf[] => {
     if (predicate === null) return [];
     if (!isFlatAndOfLeaves(predicate)) return [];
-    return flattenLeaves(predicate);
+    return flattenLeaves(predicate).filter((l) => l.op !== 'notTerminal');
   });
 
   /* ---- Mutation helpers -------------------------------------------------- */
@@ -82,12 +163,24 @@
     onchange?.(next);
   }
 
+  /**
+   * Hidden leaves (notTerminal — the toggle pills own them) preserved
+   * across chip mutations. When the chip row swaps a leaf out, we
+   * re-append these so the toggle state doesn't get clobbered.
+   */
+  function hiddenLeaves(p: Predicate | null): PredicateLeaf[] {
+    if (p === null) return [];
+    if (!isFlatAndOfLeaves(p)) return [];
+    return flattenLeaves(p).filter((l) => l.op === 'notTerminal');
+  }
+
   function setLeaves(next: PredicateLeaf[]) {
-    if (next.length === 0) {
+    const merged = [...next, ...hiddenLeaves(predicate)];
+    if (merged.length === 0) {
       emit(null);
       return;
     }
-    emit(predicateFromLeaves(next));
+    emit(predicateFromLeaves(merged));
   }
 
   function removeLeafAt(idx: number) {
@@ -96,12 +189,8 @@
     setLeaves(cur);
   }
 
-  function applyQuickChip(chip: QuickChip) {
-    // Only replace existing leaf when the predicate is flat-AND. If the
-    // user has built an advanced tree the chip-row is hidden anyway and
-    // this code path is unreachable.
-    if (!isFlat) return;
-    emit(replaceLeafForAttr(predicate, chip.predicate));
+  function onQuickFilterChange(next: Predicate | null) {
+    emit(next);
   }
 
   /* ---- Inline editor popover -------------------------------------------- */
@@ -215,7 +304,7 @@
     if (editor.values.length === 0) return;
     const a = attrFor(editor.attr);
     if (a === undefined) return;
-    if (a.valueType === 'enum' || a.valueType.startsWith('ref:') || a.valueType === 'date' || a.valueType === 'bool') {
+    if (a.valueType.startsWith('ref:') || a.valueType === 'date' || a.valueType === 'bool') {
       commitEditor();
     }
   }
@@ -356,52 +445,73 @@
   }
 </script>
 
-<div class="flex w-full flex-col gap-2">
-  {#if quickChips.length > 0}
-    <div class="flex items-center gap-2 overflow-x-auto" aria-label="Quick filters">
-      <span class="shrink-0 text-xs uppercase tracking-wide text-muted">
-        Quick filters
-      </span>
-      {#each quickChips as chip (chip.id)}
-        {@const active = quickChipIsActive(predicate, chip)}
-        <button
-          type="button"
-          class={cx(
-            'inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-            active
-              ? 'border-transparent bg-accent text-accent-fg'
-              : 'border-border bg-surface text-fg hover:bg-border/40',
-          )}
-          onclick={() => applyQuickChip(chip)}
-        >
-          {chip.label}
-        </button>
-      {/each}
-    </div>
-  {/if}
-
+<div class="flex w-full flex-col gap-1.5">
+  <!-- Row 1: leading slot (view + kebab) | search input | show-closed pills -->
   <div class="flex flex-wrap items-center gap-2">
-    {#if isFlat}
-      {#each leaves as leaf, i (i + ':' + leaf.attr + ':' + leaf.op)}
-        <span class="inline-flex">
-          <button
-            type="button"
-            class="inline-flex items-center"
-            onclick={(e) => openEditorForLeaf(i, e.currentTarget as HTMLElement)}
-            aria-label="Edit filter {chipText(leaf)}"
-          >
-            <Chip
-              label={chipText(leaf)}
-              size="md"
-              variant="default"
-              removable
-              onRemove={() => removeLeafAt(i)}
+    {#if leading}
+      {@render leading()}
+    {/if}
+    <div class="min-w-0 flex-1">
+      <TextSearchBar {predicate} onchange={onQuickFilterChange} />
+    </div>
+    {#each terminalAttributes as attr (attr.name)}
+      {@const showing = !hasNotTerminalLeaf(predicate, attr.name)}
+      <!--
+        Toggle is labelled "Show closed <attr>" so the default state
+        (terminal hidden via the seeded notTerminal leaf) reads as an
+        unchecked, muted pill — visually consistent with "feature off".
+        Click flips: showing=true REMOVES the notTerminal leaf (so the
+        terminal cards reappear).
+      -->
+      <button
+        type="button"
+        class={cx(
+          'inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
+          'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+          showing
+            ? 'border-accent bg-accent/15 text-accent'
+            : 'border-border bg-surface text-muted hover:bg-border/40',
+        )}
+        aria-pressed={showing}
+        title={showing
+          ? `Showing closed ${attr.label.toLowerCase()} — click to hide`
+          : `Hiding closed ${attr.label.toLowerCase()} — click to show`}
+        data-testid="show-terminal-{attr.name}"
+        onclick={() => toggleNotTerminal(attr.name)}
+      >
+        {#if showing}
+          <svg viewBox="0 0 10 10" class="h-2.5 w-2.5" aria-hidden="true">
+            <path
+              d="M2 5 L4 7 L8 3"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              fill="none"
             />
-          </button>
-        </span>
-      {/each}
+          </svg>
+        {/if}
+        <span>Show closed {attr.label.toLowerCase()}</span>
+      </button>
+    {/each}
+    {#if trailing}
+      <div class="ml-auto inline-flex shrink-0 items-center gap-2 text-xs text-muted">
+        {@render trailing()}
+      </div>
+    {/if}
+  </div>
 
+  <!-- Row 2: quick-filter dropdowns | + Add filter | Advanced | Clear | active chips -->
+  <div class="flex flex-wrap items-center gap-2">
+    {#each quickAttributes as attr (attr.name)}
+      <QuickFilterDropdown
+        attribute={attr}
+        {predicate}
+        onchange={onQuickFilterChange}
+      />
+    {/each}
+
+    {#if isFlat}
       <Button
         size="sm"
         variant="secondary"
@@ -427,16 +537,34 @@
       Advanced
     </Button>
 
-    <FilterPresets
-      {scope}
-      {predicate}
-      onLoad={(p) => emit(p)}
-    />
-
     {#if predicate !== null}
       <Button size="sm" variant="ghost" onclick={() => emit(null)}>
         Clear
       </Button>
+    {/if}
+
+    <!-- Active leaf chips (manual + Add-filter additions). Wraps after the
+         action buttons so the actions stay anchored on the left even when
+         a long chip list pushes them. -->
+    {#if isFlat}
+      {#each leaves as leaf, i (i + ':' + leaf.attr + ':' + leaf.op)}
+        <span class="inline-flex">
+          <button
+            type="button"
+            class="inline-flex items-center"
+            onclick={(e) => openEditorForLeaf(i, e.currentTarget as HTMLElement)}
+            aria-label="Edit filter {chipText(leaf)}"
+          >
+            <Chip
+              label={chipText(leaf)}
+              size="md"
+              variant="default"
+              removable
+              onRemove={() => removeLeafAt(i)}
+            />
+          </button>
+        </span>
+      {/each}
     {/if}
   </div>
 </div>

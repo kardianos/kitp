@@ -9,7 +9,7 @@
 
     1. `card.select_with_attributes`  (project itself, filtered by id)
     2. `card.select_with_attributes`  (tasks under the project)
-    3. `user.select`                  (assignee labels)
+    3. `card.select_with_attributes`  (persons; assignee labels)
     4. `card.select_with_attributes`  (milestones)
     5. `card.select_with_attributes`  (components)
     6. `card.select_with_attributes`  (tags)
@@ -26,42 +26,35 @@
   Ports `client/lib/ui/screens/project_detail_screen.dart` (516 LOC).
 -->
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { untrack } from 'svelte';
   import { getDispatcher } from '../dispatch/context';
   import { BatchAbortedError, SubRequestError } from '../dispatch/errors';
   import {
-    AttributeSchemaCache,
+    sharedSchemaCache,
     type FilterAttribute,
   } from '../filter/attribute_schema.svelte';
   import { buildTaskFilterPalette } from '../filter/task_palette';
-  import FilterBar from '../filter/FilterBar.svelte';
+  import ScreenFilterBar from '../filter/ScreenFilterBar.svelte';
   import {
     predicateToJson,
     type Predicate,
   } from '../filter/predicate';
-  import {
-    defaultQuickChipsFor,
-    type QuickChip,
-  } from '../filter/quick_chips';
   import { setActiveScope, useShortcut } from '../keys/shortcut';
   import { useQuickEntry } from '../quick_entry/use_quick_entry.svelte';
   import QuickEntryOverlay from '../quick_entry/QuickEntryOverlay.svelte';
   import {
     cardSelectWithAttributes,
-    userSelect,
   } from '../reg/handlers';
   import type {
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
     CardWhereTree,
     CardWithAttrs,
-    UserRow,
-    UserSelectInput,
-    UserSelectOutput,
+    ID,
   } from '../reg/types';
   import { navigate } from '../routing/router.svelte';
   import { setTaskNavList } from '../routing/task_nav_list.svelte';
-  import { getFilter, setFilter } from './filter_state.svelte';
+  import { getFilter } from './filter_state.svelte';
   import { projectScope } from '../shell/project_scope.svelte';
   import Button from '../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
@@ -82,58 +75,67 @@
   // reactive reference is unnecessary — the captured value is the live
   // value for the lifetime of this component instance.
   // svelte-ignore state_referenced_locally
-  const projectId = Number(params['id'] ?? 0);
+  const projectId: ID = ((): ID => {
+    const raw = params['id'] ?? '';
+    if (raw === '') return 0n;
+    try {
+      return BigInt(raw);
+    } catch {
+      return 0n;
+    }
+  })();
 
   // Mirror the route into the nav-sidebar project picker. Visiting a
   // project detail (by click, deep link, or keyboard "Enter") should
   // pin the global scope so list screens land scoped to this project.
-  if (projectId > 0) projectScope.setProject(projectId);
+  if (projectId > 0n) projectScope.setProject(projectId);
 
   setActiveScope('project_detail');
   const dispatcher = getDispatcher();
-  const schemaCache = new AttributeSchemaCache(dispatcher);
+  const schemaCache = sharedSchemaCache(dispatcher);
 
   /* ----------------------------------------------------------------- state */
 
   let project = $state<CardWithAttrs | null>(null);
   let tasks = $state<CardWithAttrs[]>([]);
-  let users = $state<UserRow[]>([]);
+  let persons = $state<CardWithAttrs[]>([]);
   let milestones = $state<CardWithAttrs[]>([]);
   let components = $state<CardWithAttrs[]>([]);
   let tagsRows = $state<CardWithAttrs[]>([]);
-  // ProjectDetailScreen's projectId is fixed for the lifetime of this
-  // component (the route remounts when :id changes), so a single read
-  // at init is enough — no projectId-change effect needed.
+  let statuses = $state<CardWithAttrs[]>([]);
+  // ScreenFilterBar owns preset loading and predicate persistence —
+  // we just keep a bindable predicate the visible-rows derivation
+  // reads from.
   let predicate = $state<Predicate | null>(
     untrack(() => getFilter('project_detail', projectId)),
   );
-  $effect(() => {
-    setFilter('project_detail', projectId, predicate);
-  });
 
   /** Derived lookup tables fed to TaskRow. */
-  const userNames = $derived.by((): Record<number, string> => {
-    const out: Record<number, string> = {};
-    for (const u of users) out[u.id] = u.display_name;
+  const personNames = $derived.by((): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const p of persons) {
+      const t = p.attributes['title'];
+      if (typeof t === 'string') out[p.id.toString()] = t;
+    }
     return out;
   });
-  const cardTitles = $derived.by((): Record<number, string> => {
-    const out: Record<number, string> = {};
+  const cardTitles = $derived.by((): Record<string, string> => {
+    const out: Record<string, string> = {};
     for (const r of milestones) {
       const t = r.attributes['title'];
-      if (typeof t === 'string') out[r.id] = t;
+      if (typeof t === 'string') out[r.id.toString()] = t;
     }
     for (const r of components) {
       const t = r.attributes['title'];
-      if (typeof t === 'string') out[r.id] = t;
+      if (typeof t === 'string') out[r.id.toString()] = t;
     }
     return out;
   });
-  const tagPaths = $derived.by((): Record<number, string> => {
-    const out: Record<number, string> = {};
+  const tagPaths = $derived.by((): Record<string, string> => {
+    const out: Record<string, string> = {};
     for (const r of tagsRows) {
       const p = r.attributes['path'];
-      if (typeof p === 'string') out[r.id] = p;
+      if (typeof p === 'string') out[r.id.toString()] = p;
     }
     return out;
   });
@@ -182,7 +184,17 @@
         limit: 200,
       };
       if (predicate !== null) {
-        tasksInput.tree = predicateToJson(predicate) as CardWhereTree;
+        // Server's tree expects a group shape; bare leaves must be
+        // wrapped in a single-child AND so the wire is always a group.
+        const json = predicateToJson(predicate);
+        if (predicate.kind === 'group') {
+          tasksInput.tree = json as CardWhereTree;
+        } else {
+          tasksInput.tree = {
+            connective: 'and',
+            children: [json],
+          } as unknown as CardWhereTree;
+        }
       }
       const tasksP = dispatcher.request<
         CardSelectWithAttributesInput,
@@ -192,17 +204,25 @@
         action: cardSelectWithAttributes.action,
         data: tasksInput,
       });
-      const usersP = dispatcher.request<UserSelectInput, UserSelectOutput>({
-        endpoint: userSelect.endpoint,
-        action: userSelect.action,
+      const personsP = dispatcher.request<
+        CardSelectWithAttributesInput,
+        CardSelectWithAttributesOutput
+      >({
+        endpoint: cardSelectWithAttributes.endpoint,
+        action: cardSelectWithAttributes.action,
+        data: { cardTypeName: 'person' },
       });
+      // Picker queries are scoped to this project — the value-cards
+      // (milestones, components, tags) all sit directly under the
+      // project in v1, so filtering by parentCardId gives the
+      // in-project option set.
       const milestonesP = dispatcher.request<
         CardSelectWithAttributesInput,
         CardSelectWithAttributesOutput
       >({
         endpoint: cardSelectWithAttributes.endpoint,
         action: cardSelectWithAttributes.action,
-        data: { cardTypeName: 'milestone' },
+        data: { cardTypeName: 'milestone', parentCardId: projectId },
       });
       const componentsP = dispatcher.request<
         CardSelectWithAttributesInput,
@@ -210,7 +230,7 @@
       >({
         endpoint: cardSelectWithAttributes.endpoint,
         action: cardSelectWithAttributes.action,
-        data: { cardTypeName: 'component' },
+        data: { cardTypeName: 'component', parentCardId: projectId },
       });
       const tagsP = dispatcher.request<
         CardSelectWithAttributesInput,
@@ -218,28 +238,38 @@
       >({
         endpoint: cardSelectWithAttributes.endpoint,
         action: cardSelectWithAttributes.action,
-        data: { cardTypeName: 'tag' },
+        data: { cardTypeName: 'tag', parentCardId: projectId },
+      });
+      const statusesP = dispatcher.request<
+        CardSelectWithAttributesInput,
+        CardSelectWithAttributesOutput
+      >({
+        endpoint: cardSelectWithAttributes.endpoint,
+        action: cardSelectWithAttributes.action,
+        data: { cardTypeName: 'status', parentCardId: projectId },
       });
       const schemaP = schemaCache.load();
 
-      const [projOut, tasksOut, usersOut, milestonesOut, componentsOut, tagsOut] =
+      const [projOut, tasksOut, personsOut, milestonesOut, componentsOut, tagsOut, statusesOut] =
         await Promise.all([
           projectP,
           tasksP,
-          usersP,
+          personsP,
           milestonesP,
           componentsP,
           tagsP,
+          statusesP,
           schemaP,
         ]);
 
       const proj = projOut.rows.find((r) => r.id === projectId) ?? null;
       project = proj;
       tasks = tasksOut.rows;
-      users = usersOut.rows;
+      persons = personsOut.rows;
       milestones = milestonesOut.rows;
       components = componentsOut.rows;
       tagsRows = tagsOut.rows;
+      statuses = statusesOut.rows;
       loading = false;
       // Reset selection if the new visible range shrank.
       selectedIndex = 0;
@@ -264,23 +294,15 @@
   const filterAttributes = $derived<FilterAttribute[]>(
     buildTaskFilterPalette({
       schema: schemaCache,
-      users,
+      // Assignee → person cards. The palette resolves it via its
+      // refResolver from this list.
+      persons,
       milestones,
       components,
       tags: tagsRows,
+      statuses,
     }),
   );
-  /** Status palette entry, surfaced so TaskRow can resolve the status
-   *  enum label and render the same text as the FilterBar chip. */
-  const statusAttribute = $derived(
-    filterAttributes.find((a) => a.name === 'status'),
-  );
-
-  /** Quick chips: derived per-attribute (enum → one chip per option). */
-  const quickChips = $derived<QuickChip[]>(
-    filterAttributes.flatMap((a) => defaultQuickChipsFor(a)),
-  );
-
   /** Visible = predicate-filtered, sorted-by-id task list. */
   const visible = $derived<CardWithAttrs[]>(
     applyPredicateAndSort(tasks, predicate, 'id'),
@@ -314,7 +336,7 @@
   }
 
   /** Capture the current visible task order as the nav-list and navigate. */
-  function openTaskById(id: number): void {
+  function openTaskById(id: ID): void {
     setTaskNavList({
       label: titleText,
       ids: visible.map((c) => c.id),
@@ -344,12 +366,37 @@
     { fireInInputs: false },
   );
 
-  onMount(() => {
+  // Refresh on predicate change. Gated on `filterReady` so the first
+  // request waits for ScreenFilterBar's default-filter probe — kills
+  // the brief flash of unfiltered rows on cold load.
+  let filterReady = $state(false);
+  $effect(() => {
+    void predicate;
+    void filterReady;
+    if (!filterReady) return;
     void refresh();
   });
 </script>
 
 <div class="flex h-full flex-col gap-4 p-4">
+  <!--
+    ScreenFilterBar lives at the top level (outside the conditional render
+    below) so it mounts on the first render — *before* `project` loads.
+    Its $effect drives the default-filter probe; the resolved `filterReady`
+    binding then unblocks `refresh()` and the screen's data fetch. Mounting
+    it only in the `{:else}` branch would deadlock: project never loads
+    because filterReady never flips, because the FilterBar that owns it
+    never mounts.
+  -->
+  <ScreenFilterBar
+    screenType="project_detail"
+    projectId={projectId}
+    {dispatcher}
+    {filterAttributes}
+    bind:predicate
+    bind:filterReady
+  />
+
   {#if loading && project === null}
     <div class="flex flex-1 items-center justify-center">
       <Spinner size="lg" />
@@ -406,17 +453,6 @@
       </div>
     </header>
 
-    <!-- ----------------------------------------------------- filter bar -->
-    <FilterBar
-      attributes={filterAttributes}
-      bind:predicate
-      scope="project_detail"
-      {quickChips}
-      onchange={(p) => {
-        predicate = p;
-      }}
-    />
-
     {#if error !== null}
       <div
         role="alert"
@@ -453,10 +489,9 @@
             <TaskRow
               card={task}
               selected={i === selectedIndex}
-              {userNames}
+              {personNames}
               {cardTitles}
               {tagPaths}
-              statusOptions={statusAttribute?.options}
               onSelect={() => {
                 selectedIndex = i;
               }}

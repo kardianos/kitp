@@ -86,7 +86,7 @@ func gateUser(t *testing.T, sp *store.Pool, displayName, roleName string) int64 
 	if roleName == "" {
 		return userID
 	}
-	var roleID int32
+	var roleID int64
 	row = sp.P.QueryRow(ctx, `SELECT id FROM role WHERE name = $1`, roleName)
 	if err := row.Scan(&roleID); err != nil {
 		t.Fatalf("role %s: %v", roleName, err)

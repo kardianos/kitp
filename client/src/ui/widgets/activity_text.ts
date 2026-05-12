@@ -10,9 +10,17 @@
  * function falls back to `#<id>` / `user#<id>` so renders are never blank.
  */
 
-import type { ActivityRow } from '../../reg/types.js';
+import type { ActivityRow, ID } from '../../reg/types.js';
 
-export type IdMap = Record<number, string>;
+/** Lookup map keyed by id.toString() for bigint compatibility. */
+export type IdMap = Record<string, string>;
+
+/** Coerce a candidate id value (number or bigint, post- or pre-revival) to a string key. */
+function idKey(v: unknown): string | null {
+  if (typeof v === 'bigint') return v.toString();
+  if (typeof v === 'number' && Number.isInteger(v)) return v.toString();
+  return null;
+}
 
 /** Drop a trailing `_ref` and underscore-to-space the rest. */
 export function humaniseAttribute(name: string): string {
@@ -21,12 +29,9 @@ export function humaniseAttribute(name: string): string {
   return n.replace(/_/g, ' ');
 }
 
-function resolveActor(actorId: number, userNames?: IdMap): string {
-  return userNames?.[actorId] ?? `user#${actorId}`;
-}
-
-function resolveTagId(id: number, tagPaths?: IdMap): string {
-  return tagPaths?.[id] ?? `#${id}`;
+function resolveActor(actorId: ID, userNames?: IdMap): string {
+  const k = actorId.toString();
+  return userNames?.[k] ?? `user#${k}`;
 }
 
 function formatAttrValue(
@@ -37,38 +42,54 @@ function formatAttrValue(
   tagPaths?: IdMap,
 ): string {
   if (v === null || v === undefined) return '∅';
+  // Per-attribute special cases for ref shapes the kernel treats
+  // differently from "look up the bigint in cardTitles":
+  //   - assignee   → person-name map (separate from value-card titles)
+  //   - tags       → array of tag-card ids → tagPaths
+  // Everything else falls through to the generic id→title resolution
+  // below, which now covers every card_ref attribute (status, milestone,
+  // component, and any admin-added ref) as long as the caller's
+  // cardTitles map includes the value-card. No more per-attribute
+  // hard-coded list.
   switch (attrName) {
-    case 'assignee':
-      if (typeof v === 'number') return userNames?.[v] ?? `#${v}`;
+    case 'assignee': {
+      const k = idKey(v);
+      if (k !== null) return userNames?.[k] ?? `#${k}`;
       return String(v);
-    case 'milestone_ref':
-    case 'component_ref':
-      if (typeof v === 'number') return cardTitles?.[v] ?? `#${v}`;
-      return String(v);
+    }
     case 'tags':
       if (Array.isArray(v)) {
         if (v.length === 0) return '∅';
         return v
-          .map((id) => (typeof id === 'number' ? resolveTagId(id, tagPaths) : String(id)))
+          .map((id) => {
+            const k = idKey(id);
+            if (k === null) return String(id);
+            return tagPaths?.[k] ?? `#${k}`;
+          })
           .join(', ');
       }
       return String(v);
   }
+  // Generic: id-shaped bigint / numeric values resolve via cardTitles
+  // (one map merged from milestones + components + statuses + …).
+  const k = idKey(v);
+  if (k !== null) return cardTitles?.[k] ?? `#${k}`;
   if (typeof v === 'string') return v;
-  if (typeof v === 'number') return String(v);
+  if (typeof v === 'bigint') return String(v);
   if (typeof v === 'boolean') return String(v);
   return String(v);
 }
 
-function idSet(v: unknown): Set<number> {
+function idSet(v: unknown): Set<string> {
   if (Array.isArray(v)) {
-    const out = new Set<number>();
+    const out = new Set<string>();
     for (const e of v) {
-      if (typeof e === 'number') out.add(e);
+      const k = idKey(e);
+      if (k !== null) out.add(k);
     }
     return out;
   }
-  return new Set<number>();
+  return new Set<string>();
 }
 
 /**
@@ -83,11 +104,11 @@ export function tagDiff(
   const newIds = idSet(row.value_new);
   const added: string[] = [];
   const removed: string[] = [];
-  for (const id of newIds) {
-    if (!oldIds.has(id)) added.push(resolveTagId(id, tagPaths));
+  for (const k of newIds) {
+    if (!oldIds.has(k)) added.push(tagPaths?.[k] ?? `#${k}`);
   }
-  for (const id of oldIds) {
-    if (!newIds.has(id)) removed.push(resolveTagId(id, tagPaths));
+  for (const k of oldIds) {
+    if (!newIds.has(k)) removed.push(tagPaths?.[k] ?? `#${k}`);
   }
   return { added, removed };
 }
@@ -160,21 +181,4 @@ function readFilename(v: unknown): string {
   if (v === null || typeof v !== 'object' || Array.isArray(v)) return '';
   const fn = (v as Record<string, unknown>)['filename'];
   return typeof fn === 'string' ? fn : '';
-}
-
-/** Status to color hint used by TaskRow's status chip. */
-export function statusColor(s: unknown): 'gray' | 'blue' | 'amber' | 'green' {
-  if (typeof s !== 'string') return 'gray';
-  switch (s) {
-    case 'todo':
-      return 'gray';
-    case 'doing':
-      return 'blue';
-    case 'review':
-      return 'amber';
-    case 'done':
-      return 'green';
-    default:
-      return 'gray';
-  }
 }

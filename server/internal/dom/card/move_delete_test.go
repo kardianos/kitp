@@ -27,7 +27,7 @@ func TestDeleteUndelete(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -36,7 +36,7 @@ func TestDeleteUndelete(t *testing.T) {
 	// Delete then undelete in a single batch.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "d", Endpoint: "card", Action: "delete", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d"}`, tOut.ID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("delete: %+v", resp.Subresponses[0])
@@ -45,7 +45,7 @@ func TestDeleteUndelete(t *testing.T) {
 	// Default select_with_attributes hides the deleted task.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "g", Endpoint: "card", Action: "select_with_attributes", Data: json.RawMessage(
-			fmt.Sprintf(`{"parent_card_id":%d,"card_type_name":"task"}`, pOut.ID))},
+			fmt.Sprintf(`{"parent_card_id":"%d","card_type_name":"task"}`, pOut.ID))},
 	}})
 	var gOut card.SelectWithAttributesOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -57,7 +57,7 @@ func TestDeleteUndelete(t *testing.T) {
 	// include_deleted shows it.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "g", Endpoint: "card", Action: "select_with_attributes", Data: json.RawMessage(
-			fmt.Sprintf(`{"parent_card_id":%d,"card_type_name":"task","include_deleted":true}`, pOut.ID))},
+			fmt.Sprintf(`{"parent_card_id":"%d","card_type_name":"task","include_deleted":true}`, pOut.ID))},
 	}})
 	gOut = card.SelectWithAttributesOutput{}
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -69,7 +69,7 @@ func TestDeleteUndelete(t *testing.T) {
 	// Undelete and verify activity contains both card_delete + card_undelete.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "card", Action: "undelete", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d"}`, tOut.ID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("undelete: %+v", resp.Subresponses[0])
@@ -77,7 +77,7 @@ func TestDeleteUndelete(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "a", Endpoint: "activity", Action: "select", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d"}`, tOut.ID))},
 	}})
 	var aOut activity.SelectOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -113,7 +113,7 @@ func TestMoveValidatesParentType(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -121,7 +121,7 @@ func TestMoveValidatesParentType(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "tag", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"tag","parent_card_id":%d,"title":"priority/high","attributes":{"path":"priority/high"}}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"tag","parent_card_id":"%d","title":"priority/high","attributes":{"path":"priority/high"}}`, pOut.ID))},
 	}})
 	var tagOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -130,7 +130,7 @@ func TestMoveValidatesParentType(t *testing.T) {
 	// Move task under tag → rejected.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "m", Endpoint: "card", Action: "move", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"new_parent_card_id":%d}`, tOut.ID, tagOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d","new_parent_card_id":"%d"}`, tOut.ID, tagOut.ID))},
 	}})
 	if resp.Subresponses[0].OK {
 		t.Fatalf("expected edge_violation; got %+v", resp.Subresponses[0])
@@ -142,21 +142,21 @@ func TestMoveValidatesParentType(t *testing.T) {
 	// Move task under a different sub-task (allow_self_parent on task) is allowed.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t2", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T2"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T2"}`, pOut.ID))},
 	}})
 	var t2Out card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &t2Out)
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "m", Endpoint: "card", Action: "move", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"new_parent_card_id":%d}`, tOut.ID, t2Out.ID))},
+			fmt.Sprintf(`{"card_id":"%d","new_parent_card_id":"%d"}`, tOut.ID, t2Out.ID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("expected ok; got %+v", resp.Subresponses[0])
 	}
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "a", Endpoint: "activity", Action: "select", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d"}`, tOut.ID))},
 	}})
 	var aOut activity.SelectOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)

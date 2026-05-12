@@ -31,7 +31,7 @@ const scopeWalkDepth = 16
 // grantRow is one effective grant row for the calling actor. ScopeCardID is
 // nil for a global grant and a project card id for a scoped grant.
 type grantRow struct {
-	CardTypeID  int32
+	CardTypeID  int64
 	ProcessName string
 	ScopeCardID *int64
 }
@@ -75,20 +75,20 @@ type authzCache struct {
 // cardInfo is the cached card row used by parent walks.
 type cardInfo struct {
 	parentCardID *int64
-	cardTypeID   int32
+	cardTypeID   int64
 }
 
-// projectCardTypeID is the int32 id of the 'project' card_type. Lazy-loaded
+// projectCardTypeID is the id of the 'project' card_type. Lazy-loaded
 // once per request via cardLookup.
 type cardTypeKindCache struct {
-	projectID int32
+	projectID int64
 	loaded    bool
 }
 
 // resolveTargetProject walks parent_card_id from startCardID until it hits
 // a card whose card_type_id matches projectCardTypeID, or it runs out of
 // parents. Returns 0 if no project ancestor was found within scopeWalkDepth.
-func resolveTargetProject(startCardID int64, projectCardTypeID int32, lookup map[int64]cardInfo) int64 {
+func resolveTargetProject(startCardID int64, projectCardTypeID int64, lookup map[int64]cardInfo) int64 {
 	cur := startCardID
 	for range scopeWalkDepth {
 		info, ok := lookup[cur]
@@ -171,9 +171,9 @@ func expandCardLookup(ctx context.Context, pool *store.Pool, lookup map[int64]ca
 	return nil
 }
 
-// projectCardTypeID looks up the int32 id of the 'project' card_type once.
-func projectCardTypeID(ctx context.Context, pool *store.Pool) (int32, error) {
-	var id int32
+// projectCardTypeID looks up the id of the 'project' card_type once.
+func projectCardTypeID(ctx context.Context, pool *store.Pool) (int64, error) {
+	var id int64
 	row := pool.P.QueryRow(ctx, `SELECT id FROM card_type WHERE name = 'project'`)
 	if err := row.Scan(&id); err != nil {
 		return 0, fmt.Errorf("authz: project card_type lookup: %w", err)
@@ -187,7 +187,7 @@ func projectCardTypeID(ctx context.Context, pool *store.Pool) (int32, error) {
 //
 // For card.insert the input has no card_id; we use the supplied parent or
 // recognize a top-level 'project' insert.
-func (s *Server) targetProjectForLeaf(ctx context.Context, h reg.Handler, input any, lookup map[int64]cardInfo, projectTypeID int32) (int64, error) {
+func (s *Server) targetProjectForLeaf(ctx context.Context, h reg.Handler, input any, lookup map[int64]cardInfo, projectTypeID int64) (int64, error) {
 	// Special case: top-level project insert. We resolve the parent through
 	// the card.insert input shape; the input type is not exported by the
 	// dispatcher so we use a duck-typed extractor lookup.
@@ -229,7 +229,7 @@ func (s *Server) targetProjectForLeaf(ctx context.Context, h reg.Handler, input 
 
 // authorizeLeaf returns nil when the actor's grants permit (handler, input).
 // On deny, returns a HandlerError with code "unauthorized".
-func (s *Server) authorizeLeaf(ctx context.Context, h reg.Handler, input any, grants []grantRow, lookup map[int64]cardInfo, projectTypeID int32) error {
+func (s *Server) authorizeLeaf(ctx context.Context, h reg.Handler, input any, grants []grantRow, lookup map[int64]cardInfo, projectTypeID int64) error {
 	if h.ProcessName == "" || h.CardTypeID == nil {
 		return nil // not gated
 	}
@@ -275,7 +275,7 @@ func (s *Server) authorizeLeaf(ctx context.Context, h reg.Handler, input any, gr
 // the pool level would be ideal; for now it's a single point query per
 // sub-request, but cheap (process is a small table).
 func processExists(ctx context.Context, q reg.ValidationPool, name string) bool {
-	var id int32
+	var id int64
 	row := q.QueryRow(ctx, `SELECT id FROM process WHERE name = $1`, name)
 	if err := row.Scan(&id); err != nil {
 		if err == pgx.ErrNoRows {

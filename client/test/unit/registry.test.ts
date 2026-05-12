@@ -17,7 +17,6 @@ import {
   cardInsert,
   cardSelectWithAttributes,
   echoPing,
-  inboxSelect,
   registerBuiltInHandlers,
 } from '../../src/reg/handlers.js';
 import type {
@@ -28,8 +27,6 @@ import type {
   CardInsertOutput,
   CardSelectWithAttributesInput,
   CardSelectWithAttributesOutput,
-  InboxSelectInput,
-  InboxSelectOutput,
 } from '../../src/reg/types.js';
 
 // ---------------------------------------------------------------------------
@@ -52,7 +49,6 @@ const ALL_REGISTERED_KEYS: ReadonlyArray<readonly [string, string]> = [
   ['user', 'select'],
   ['tag', 'apply'],
   ['tag', 'remove'],
-  ['inbox', 'select'],
   ['user_card_sort', 'set'],
   ['edge', 'insert'],
   ['edge', 'delete'],
@@ -117,14 +113,14 @@ describe('card.insert codec', () => {
   it('encodes the full payload with snake_case field names', () => {
     const input: CardInsertInput = {
       cardTypeName: 'task',
-      parentCardId: 7,
+      parentCardId: 7n,
       title: 'hello',
       attributes: { status: 'todo', priority: 1 },
     };
     const encoded = cardInsert.encode(input) as Record<string, unknown>;
     expect(encoded).toEqual({
       card_type_name: 'task',
-      parent_card_id: 7,
+      parent_card_id: 7n,
       title: 'hello',
       attributes: { status: 'todo', priority: 1 },
     });
@@ -156,14 +152,14 @@ describe('card.insert codec', () => {
 
   it('decodes the server response into the typed output', () => {
     const out: CardInsertOutput = cardInsert.decode({ id: 42 });
-    expect(out).toEqual({ id: 42 });
+    expect(out).toEqual({ id: 42n });
   });
 
   it('preserves large integer ids without bitwise truncation', () => {
     // 2^53-1 — would lose precision under `(x as number) | 0`.
     const big = Number.MAX_SAFE_INTEGER;
     const out: CardInsertOutput = cardInsert.decode({ id: big });
-    expect(out.id).toBe(big);
+    expect(out.id).toBe(BigInt(big));
   });
 });
 
@@ -244,13 +240,13 @@ describe('card.select_with_attributes codec', () => {
     const raw = {
       rows: [
         {
-          id: 1,
-          card_type_id: 5,
+          id: 1n,
+          card_type_id: 5n,
           card_type_name: 'task',
           attributes: { title: 'hi' },
         },
         // intentionally minimal — exercises the asObjOrEmpty / strOrEmpty paths.
-        { id: 2, card_type_id: 5 },
+        { id: 2n, card_type_id: 5 },
       ],
     };
     const out: CardSelectWithAttributesOutput = cardSelectWithAttributes.decode(raw);
@@ -264,48 +260,41 @@ describe('card.select_with_attributes codec', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Round-trip: inbox.select
+// Round-trip: card.select_with_attributes — with_personal_sort flag and
+// personal_sort_order on the row. This is what the Inbox screen uses
+// post-unification, replacing the retired inbox.select handler.
 // ---------------------------------------------------------------------------
 
-describe('inbox.select codec', () => {
-  it('encodes tree, limit, offset, userId all together', () => {
-    const tree = {
-      connective: 'and',
-      children: [{ attr: 'milestone', op: '=', value: 4 }],
-    };
-    const input: InboxSelectInput = {
-      userId: 11,
-      tree,
-      limit: 50,
-      offset: 100,
-    };
-    const encoded = inboxSelect.encode(input) as Record<string, unknown>;
-    expect(encoded).toEqual({
-      user_id: 11,
-      tree,
-      limit: 50,
-      offset: 100,
-    });
+describe('card.select_with_attributes with_personal_sort codec', () => {
+  it('encodes with_personal_sort:true when set', () => {
+    const encoded = cardSelectWithAttributes.encode({
+      cardTypeName: 'task',
+      withPersonalSort: true,
+    }) as Record<string, unknown>;
+    expect(encoded.with_personal_sort).toBe(true);
   });
 
-  it('omits every optional field when not provided', () => {
-    const encoded = inboxSelect.encode({}) as Record<string, unknown>;
-    expect(encoded).toEqual({});
+  it('omits with_personal_sort when not set', () => {
+    const encoded = cardSelectWithAttributes.encode({
+      cardTypeName: 'task',
+    }) as Record<string, unknown>;
+    expect('with_personal_sort' in encoded).toBe(false);
   });
 
   it('decodes personal_sort_order as a number when present, otherwise omits it', () => {
     const raw = {
       rows: [
         {
-          id: 1,
-          card_type_id: 5,
+          id: 1n,
+          card_type_id: 5n,
+          card_type_name: 'task',
           attributes: { title: 'a' },
           personal_sort_order: 1024.5,
         },
-        { id: 2, card_type_id: 5, attributes: {} },
+        { id: 2n, card_type_id: 5n, card_type_name: 'task', attributes: {} },
       ],
     };
-    const out: InboxSelectOutput = inboxSelect.decode(raw);
+    const out = cardSelectWithAttributes.decode(raw);
     expect(out.rows[0]?.personal_sort_order).toBe(1024.5);
     expect(out.rows[1]?.personal_sort_order).toBeUndefined();
   });
@@ -325,15 +314,15 @@ describe('activity.select codec', () => {
 
   it('encodes the full per-card paging payload', () => {
     const input: ActivitySelectInput = {
-      cardId: 99,
+      cardId: 99n,
       limit: 25,
-      beforeActivityId: 1234,
+      beforeActivityId: 1234n,
     };
     const encoded = activitySelect.encode(input) as Record<string, unknown>;
     expect(encoded).toEqual({
-      card_id: 99,
+      card_id: 99n,
       limit: 25,
-      before_activity_id: 1234,
+      before_activity_id: 1234n,
     });
   });
 
@@ -341,45 +330,45 @@ describe('activity.select codec', () => {
     const raw = {
       rows: [
         {
-          id: 1,
-          card_id: 7,
+          id: 1n,
+          card_id: 7n,
           kind: 'attr_update',
           attribute_name: 'status',
           value_old: 'todo',
           value_new: 'doing',
-          actor_id: 3,
+          actor_id: 3n,
           created_at: '2025-01-01T00:00:00Z',
         },
         // minimal — actor_id missing must default to 0, created_at to ''.
-        { id: 2, kind: 'comment' },
+        { id: 2n, kind: 'comment' },
       ],
     };
     const out: ActivitySelectOutput = activitySelect.decode(raw);
     expect(out.rows).toHaveLength(2);
     expect(out.rows[0]?.attribute_name).toBe('status');
     expect(out.rows[0]?.value_old).toBe('todo');
-    expect(out.rows[1]?.actor_id).toBe(0);
+    expect(out.rows[1]?.actor_id).toBe(0n);
     expect(out.rows[1]?.created_at).toBe('');
     expect(out.rows[1]?.attribute_name).toBeUndefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Round-trip: attribute_def.select  (forward-compat options[])
+// Round-trip: attribute_def.select  (target_card_type_name on card_ref defs)
 // ---------------------------------------------------------------------------
 
 describe('attribute_def.select codec', () => {
-  it('decodes rows without options[] (today)', () => {
+  it('decodes plain (non-ref) rows without a target_card_type_name', () => {
     const raw = {
       rows: [
         {
-          id: 1,
-          name: 'status',
-          value_type: 'enum',
+          id: 1n,
+          name: 'title',
+          value_type: 'text',
           is_built_in: true,
           bound_to: [
             {
-              card_type_id: 2,
+              card_type_id: 2n,
               card_type_name: 'task',
               is_required: true,
               is_built_in: true,
@@ -391,49 +380,44 @@ describe('attribute_def.select codec', () => {
     };
     const out: AttributeDefSelectOutput = attributeDefSelect.decode(raw);
     expect(out.rows).toHaveLength(1);
-    expect(out.rows[0]?.options).toBeUndefined();
+    expect(out.rows[0]?.target_card_type_name).toBeUndefined();
     expect(out.rows[0]?.bound_to).toHaveLength(1);
     expect(out.rows[0]?.bound_to[0]?.card_type_name).toBe('task');
   });
 
-  it('decodes rows with options[] (post-migration 0012)', () => {
+  it('decodes card_ref rows with a resolved target_card_type_name', () => {
     const raw = {
       rows: [
         {
-          id: 1,
+          id: 1n,
           name: 'status',
-          value_type: 'enum',
+          value_type: 'card_ref',
           is_built_in: true,
           bound_to: [],
-          options: [
-            { value: 'todo', label: 'Todo', ordering: 0 },
-            { value: 'doing', label: 'Doing', ordering: 1 },
-            { value: 'done', label: 'Done', ordering: 2 },
-          ],
+          target_card_type_name: 'status',
         },
       ],
     };
     const out: AttributeDefSelectOutput = attributeDefSelect.decode(raw);
-    expect(out.rows[0]?.options).toHaveLength(3);
-    expect(out.rows[0]?.options?.[1]?.value).toBe('doing');
-    expect(out.rows[0]?.options?.[2]?.ordering).toBe(2);
+    expect(out.rows[0]?.value_type).toBe('card_ref');
+    expect(out.rows[0]?.target_card_type_name).toBe('status');
   });
 
-  it('treats null options as absent (forward-compat tolerance)', () => {
+  it('treats a null / missing target_card_type_name as undefined', () => {
     const raw = {
       rows: [
         {
-          id: 1,
-          name: 'status',
-          value_type: 'enum',
+          id: 1n,
+          name: 'priority',
+          value_type: 'text',
           is_built_in: true,
           bound_to: [],
-          options: null,
+          target_card_type_name: null,
         },
       ],
     };
     const out: AttributeDefSelectOutput = attributeDefSelect.decode(raw);
-    expect(out.rows[0]?.options).toBeUndefined();
+    expect(out.rows[0]?.target_card_type_name).toBeUndefined();
   });
 });
 

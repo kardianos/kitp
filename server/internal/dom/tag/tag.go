@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
@@ -25,27 +26,27 @@ import (
 
 // ApplyInput is one (target, tag) pair to apply.
 type ApplyInput struct {
-	TargetCardID int64 `json:"target_card_id" mcp:"required,desc=id of the card receiving the tag"`
-	TagCardID    int64 `json:"tag_card_id" mcp:"required,desc=id of the tag card to apply"`
+	TargetCardID int64 `json:"target_card_id,string" mcp:"required,desc=id of the card receiving the tag"`
+	TagCardID    int64 `json:"tag_card_id,string" mcp:"required,desc=id of the tag card to apply"`
 }
 
 // ApplyOutput acknowledges success.
 type ApplyOutput struct {
 	OK         bool    `json:"ok" mcp:"desc=true on success"`
-	ActivityID int64   `json:"activity_id" mcp:"desc=id of the activity row recording the apply"`
-	RemovedTagIDs []int64 `json:"removed_tag_ids,omitempty" mcp:"desc=ids of sibling tags removed by mutual exclusion"`
+	ActivityID int64   `json:"activity_id,string" mcp:"desc=id of the activity row recording the apply"`
+	RemovedTagIDs reg.IDs `json:"removed_tag_ids,omitempty" mcp:"desc=ids of sibling tags removed by mutual exclusion"`
 }
 
 // RemoveInput is one (target, tag) pair to remove.
 type RemoveInput struct {
-	TargetCardID int64 `json:"target_card_id" mcp:"required,desc=id of the card to remove the tag from"`
-	TagCardID    int64 `json:"tag_card_id" mcp:"required,desc=id of the tag card to remove"`
+	TargetCardID int64 `json:"target_card_id,string" mcp:"required,desc=id of the card to remove the tag from"`
+	TagCardID    int64 `json:"tag_card_id,string" mcp:"required,desc=id of the tag card to remove"`
 }
 
 // RemoveOutput acknowledges success.
 type RemoveOutput struct {
 	OK         bool  `json:"ok" mcp:"desc=true on success"`
-	ActivityID int64 `json:"activity_id" mcp:"desc=id of the activity row recording the removal"`
+	ActivityID int64 `json:"activity_id,string" mcp:"desc=id of the activity row recording the removal"`
 }
 
 // Register installs tag.apply and tag.remove.
@@ -101,7 +102,7 @@ func runApply(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]
 		}
 
 		// Confirm targets exist and have a card_type that allows the 'tags' edge.
-		targetTypes := map[int64]int32{}
+		targetTypes := map[int64]int64{}
 		{
 			ids := keysInt64(targetIDs)
 			rows, err := tx.Query(ctx, `SELECT id, card_type_id FROM card WHERE id = ANY($1::bigint[])`, ids)
@@ -110,7 +111,7 @@ func runApply(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]
 			}
 			for rows.Next() {
 				var id int64
-				var ctid int32
+				var ctid int64
 				if err := rows.Scan(&id, &ctid); err != nil {
 					rows.Close()
 					return nil, err
@@ -156,6 +157,7 @@ func runApply(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]
 		}
 
 		// Validate every input.
+		scopeChecks := make([]attribute.ProjectScopeCheck, 0, len(ins))
 		for i, raw := range ins {
 			in := raw.(ApplyInput)
 			ctid, ok := targetTypes[in.TargetCardID]
@@ -171,6 +173,18 @@ func runApply(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]
 				return nil, &reg.HandlerError{InputIndex: i, Code: "tag_not_found",
 					Message: fmt.Sprintf("tag.apply: tag card %d not found or not a tag", in.TagCardID)}
 			}
+			scopeChecks = append(scopeChecks, attribute.ProjectScopeCheck{
+				StartCardID:   in.TargetCardID,
+				AttributeName: "tags",
+				ValueCardIDs:  []int64{in.TagCardID},
+				InputIndex:    i,
+			})
+		}
+		// The 'tags' attribute is project-scoped: a tag must share the
+		// target card's enclosing project. ValidateProjectScope batches
+		// every (target, tag) pair into a single walk.
+		if err := attribute.ValidateProjectScope(ctx, tx, scopeChecks); err != nil {
+			return nil, err
 		}
 
 		// Load current tags arrays for every target in one query.
@@ -294,10 +308,10 @@ func runApply(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]
 		// COALESCE of latest. Actually we can do it in one CTE.
 		type jsonStep struct {
 			Ord       int    `json:"ord"`
-			TargetID  int64  `json:"target_id"`
+			TargetID  int64  `json:"target_id,string"`
 			ValueOld  string `json:"value_old"`  // jsonb-as-text
 			ValueNew  string `json:"value_new"`
-			TagCardID int64  `json:"tag_card_id"`
+			TagCardID int64  `json:"tag_card_id,string"`
 		}
 		spayload := make([]jsonStep, len(steps))
 		for i, s := range steps {
@@ -456,7 +470,7 @@ func runRemove(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 
 		type jsonStep struct {
 			Ord      int    `json:"ord"`
-			TargetID int64  `json:"target_id"`
+			TargetID int64  `json:"target_id,string"`
 			ValueOld string `json:"value_old"`
 			ValueNew string `json:"value_new"`
 		}

@@ -19,15 +19,15 @@ import (
 
 // InsertInput is one comment to post.
 type InsertInput struct {
-	CardID int64  `json:"card_id" mcp:"required,desc=id of the card being commented on"`
+	CardID int64  `json:"card_id,string" mcp:"required,desc=id of the card being commented on"`
 	Body   string `json:"body" mcp:"required,desc=free-form comment text body"`
 }
 
 // InsertOutput surfaces the new ids so a UI can route by them.
 type InsertOutput struct {
 	OK            bool  `json:"ok" mcp:"desc=true on success"`
-	ActivityID    int64 `json:"activity_id" mcp:"desc=id of the activity row created for this comment"`
-	CommentBodyID int64 `json:"comment_body_id" mcp:"desc=id of the comment_body row holding the text"`
+	ActivityID    int64 `json:"activity_id,string" mcp:"desc=id of the activity row created for this comment"`
+	CommentBodyID int64 `json:"comment_body_id,string" mcp:"desc=id of the comment_body row holding the text"`
 }
 
 // Register installs comment.insert.
@@ -46,7 +46,7 @@ func Register(p *store.Pool) {
 	})
 }
 
-func cardTypeFromInput(ctx context.Context, pool reg.ValidationPool, raw any) (int32, error) {
+func cardTypeFromInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	return schema.CardTypeIDByCardID(ctx, pool, raw.(InsertInput).CardID)
 }
 
@@ -73,7 +73,7 @@ func validateInsert(ctx context.Context, pool reg.ValidationPool, raw any) error
 
 // jsonRow is the per-row payload fed to jsonb_to_recordset.
 type jsonRow struct {
-	CardID int64  `json:"card_id"`
+	CardID int64  `json:"card_id,string"`
 	Body   string `json:"body"`
 }
 

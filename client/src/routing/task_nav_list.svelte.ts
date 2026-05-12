@@ -23,9 +23,11 @@
  * screen the user is actively flipping out of.
  */
 
+import type { ID } from '../reg/types';
+
 class TaskNavList {
   /** Ordered task ids, in the same order the source screen rendered them. */
-  ids = $state<number[]>([]);
+  ids = $state<ID[]>([]);
   /** Human label for the source ("Inbox", "Kanban: Doing", "Project: Foo").
    *  Surfaced as the chevrons' tooltip so the user knows what list they're
    *  walking through. */
@@ -41,7 +43,7 @@ export const taskNavList = new TaskNavList();
  */
 export function setTaskNavList(args: {
   label: string;
-  ids: readonly number[];
+  ids: readonly ID[];
 }): void {
   taskNavList.label = args.label;
   taskNavList.ids = args.ids.slice();

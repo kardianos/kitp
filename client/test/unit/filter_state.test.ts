@@ -24,7 +24,7 @@ beforeEach(() => {
 describe('filter_state cache', () => {
   it('returns null for a key that has never been written', () => {
     expect(getFilter('inbox', null)).toBeNull();
-    expect(getFilter('grid', 42)).toBeNull();
+    expect(getFilter('grid', 42n)).toBeNull();
   });
 
   it('round-trips a predicate', () => {
@@ -45,10 +45,10 @@ describe('filter_state cache', () => {
   it('isolates entries by projectId', () => {
     const a = eq('status', 'todo');
     const b = eq('status', 'done');
-    setFilter('kanban', 1, a);
-    setFilter('kanban', 2, b);
-    expect(getFilter('kanban', 1)).toBe(a);
-    expect(getFilter('kanban', 2)).toBe(b);
+    setFilter('kanban', 1n, a);
+    setFilter('kanban', 2n, b);
+    expect(getFilter('kanban', 1n)).toBe(a);
+    expect(getFilter('kanban', 2n)).toBe(b);
   });
 
   it('treats null projectId as distinct from numeric 0/undefined-shaped keys', () => {
@@ -67,10 +67,10 @@ describe('filter_state cache', () => {
 
   it('writing null clears the entry', () => {
     const p = eq('status', 'todo');
-    setFilter('inbox', 1, p);
-    expect(getFilter('inbox', 1)).toBe(p);
-    setFilter('inbox', 1, null);
-    expect(getFilter('inbox', 1)).toBeNull();
+    setFilter('inbox', 1n, p);
+    expect(getFilter('inbox', 1n)).toBe(p);
+    setFilter('inbox', 1n, null);
+    expect(getFilter('inbox', 1n)).toBeNull();
   });
 
   it('overwrites an existing entry', () => {
@@ -81,10 +81,10 @@ describe('filter_state cache', () => {
   });
 
   it('clearAllFilters drops every entry', () => {
-    setFilter('inbox', 1, eq('status', 'todo'));
-    setFilter('grid', 2, eq('status', 'doing'));
+    setFilter('inbox', 1n, eq('status', 'todo'));
+    setFilter('grid', 2n, eq('status', 'doing'));
     clearAllFilters();
-    expect(getFilter('inbox', 1)).toBeNull();
-    expect(getFilter('grid', 2)).toBeNull();
+    expect(getFilter('inbox', 1n)).toBeNull();
+    expect(getFilter('grid', 2n)).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 // Package declarative is the canonical source of truth for the kitp
-// database. db/schema/declarative.json declares every table, index,
+// database. db/schema/declarative.toml declares every table, index,
 // constraint, and the built-in seed rows (plus an optional demo set)
 // the application depends on. The generator in this package renders
 // that document to a single Postgres script — CREATE everything,
@@ -7,27 +7,28 @@
 // fully up.
 //
 // The application no longer carries a forward-only migration chain.
-// Schema changes happen by editing declarative.json; dev databases
+// Schema changes happen by editing declarative.toml; dev databases
 // are reset by dropping the public schema and re-applying the doc.
 package declarative
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // Reference is the foreign-key target of a column. Only single-column
 // references are supported; composite FKs are not used anywhere in the
 // schema.
 type Reference struct {
-	Table    string `json:"table"`
-	Column   string `json:"column"`
-	OnDelete string `json:"on_delete,omitempty"` // "cascade" | "set_null" | ""
+	Table    string `json:"table"                  toml:"table"`
+	Column   string `json:"column"                 toml:"column"`
+	OnDelete string `json:"on_delete,omitempty"    toml:"on_delete,omitempty"`
 }
 
 // Column describes one table column. Type is taken verbatim — the
@@ -36,33 +37,40 @@ type Reference struct {
 // sugar for a single-column PK; multi-column PKs come through
 // Table.PrimaryKey instead.
 type Column struct {
-	Name       string     `json:"name"`
-	Type       string     `json:"type"`
-	Nullable   *bool      `json:"nullable,omitempty"`
-	Default    string     `json:"default,omitempty"`
-	Unique     bool       `json:"unique,omitempty"`
-	PrimaryKey bool       `json:"primary_key,omitempty"`
-	References *Reference `json:"references,omitempty"`
+	Name       string     `json:"name"                  toml:"name"`
+	Type       string     `json:"type"                  toml:"type"`
+	Nullable   *bool      `json:"nullable,omitempty"    toml:"nullable,omitempty"`
+	Default    string     `json:"default,omitempty"     toml:"default,omitempty"`
+	Unique     bool       `json:"unique,omitempty"      toml:"unique,omitempty"`
+	PrimaryKey bool       `json:"primary_key,omitempty" toml:"primary_key,omitempty"`
+	References *Reference `json:"references,omitempty"  toml:"references,omitempty"`
 }
 
 // Index is a table-level CREATE INDEX directive. Columns lists the
 // indexed columns in order; Where (when non-empty) renders a partial
 // index. Unique flips the statement to CREATE UNIQUE INDEX.
+//
+// Using selects a non-default access method (e.g. "gin" for trigram).
+// Expressions overrides Columns when set: the strings are emitted
+// verbatim inside the parens, so callers can include operator classes
+// (e.g. "(value::text) gin_trgm_ops") that Columns cannot model.
 type Index struct {
-	Name    string   `json:"name"`
-	Columns []string `json:"columns"`
-	Unique  bool     `json:"unique,omitempty"`
-	Where   string   `json:"where,omitempty"`
+	Name        string   `json:"name"                  toml:"name"`
+	Columns     []string `json:"columns,omitempty"     toml:"columns,omitempty"`
+	Expressions []string `json:"expressions,omitempty" toml:"expressions,omitempty"`
+	Using       string   `json:"using,omitempty"       toml:"using,omitempty"`
+	Unique      bool     `json:"unique,omitempty"      toml:"unique,omitempty"`
+	Where       string   `json:"where,omitempty"       toml:"where,omitempty"`
 }
 
 // Table mirrors one declarative table entry.
 type Table struct {
-	Name       string     `json:"name"`
-	Doc        string     `json:"doc,omitempty"`
-	Columns    []Column   `json:"columns"`
-	PrimaryKey []string   `json:"primary_key,omitempty"`
-	Unique     [][]string `json:"unique,omitempty"`
-	Indexes    []Index    `json:"indexes,omitempty"`
+	Name       string     `json:"name"                  toml:"name"`
+	Doc        string     `json:"doc,omitempty"         toml:"doc,omitempty"`
+	Columns    []Column   `json:"columns"               toml:"columns"`
+	PrimaryKey []string   `json:"primary_key,omitempty" toml:"primary_key,omitempty"`
+	Unique     [][]string `json:"unique,omitempty"      toml:"unique,omitempty"`
+	Indexes    []Index    `json:"indexes,omitempty"     toml:"indexes,omitempty"`
 }
 
 // SeedRow is one row to INSERT, expressed as a column → value map.
@@ -75,38 +83,42 @@ type SeedRow map[string]any
 // names the conflict-target columns and ResetSequence emits a setval
 // after the INSERT (use when rows carry explicit serial ids).
 type SeedEntry struct {
-	Doc           string    `json:"doc,omitempty"`
-	Table         string    `json:"table,omitempty"`
-	Rows          []SeedRow `json:"rows,omitempty"`
-	OnConflict    []string  `json:"on_conflict,omitempty"`
-	ResetSequence string    `json:"reset_sequence,omitempty"` // sequence name, e.g. "user_account_id_seq"
-	SQL           string    `json:"sql,omitempty"`
+	Doc           string    `json:"doc,omitempty"            toml:"doc,omitempty"`
+	Table         string    `json:"table,omitempty"          toml:"table,omitempty"`
+	Rows          []SeedRow `json:"rows,omitempty"           toml:"rows,omitempty"`
+	OnConflict    []string  `json:"on_conflict,omitempty"    toml:"on_conflict,omitempty"`
+	ResetSequence string    `json:"reset_sequence,omitempty" toml:"reset_sequence,omitempty"`
+	SQL           string    `json:"sql,omitempty"            toml:"sql,omitempty,multiline"`
 }
 
-// Document is the on-disk shape of declarative.json.
+// Document is the on-disk shape of declarative.(json|toml).
 type Document struct {
-	Doc    string      `json:"_doc,omitempty"`
-	Tables []Table     `json:"tables"`
-	Seed   []SeedEntry `json:"seed,omitempty"`
-	Demo   []SeedEntry `json:"demo,omitempty"`
+	Doc        string      `json:"_doc,omitempty"        toml:"doc,omitempty"`
+	Extensions []string    `json:"extensions,omitempty"  toml:"extensions,omitempty"`
+	Tables     []Table     `json:"tables"                toml:"tables"`
+	Seed       []SeedEntry `json:"seed,omitempty"        toml:"seed,omitempty"`
+	Demo       []SeedEntry `json:"demo,omitempty"        toml:"demo,omitempty"`
 }
 
-// Path returns the canonical location of declarative.json. Walks up
-// from the package source so tests find it regardless of cwd.
+// Path returns the canonical location of declarative.toml. Walks up
+// from the package source so tests find it regardless of cwd. The
+// older .json layout is no longer supported — Load reads TOML only.
 func Path() string {
 	_, file, _, _ := runtime.Caller(0)
 	dir := filepath.Dir(file)
 	for range 8 {
-		candidate := filepath.Join(dir, "db", "schema", "declarative.json")
+		candidate := filepath.Join(dir, "db", "schema", "declarative.toml")
 		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
 			return candidate
 		}
 		dir = filepath.Dir(dir)
 	}
-	panic("declarative: declarative.json not found above package source")
+	panic("declarative: declarative.toml not found above package source")
 }
 
-// Load reads + parses the declarative document.
+// Load reads + parses the declarative document. TOML is the only
+// supported format; the historical declarative.toml was migrated by
+// `server/cmd/schema-tomlize`.
 func Load(path string) (*Document, error) {
 	if path == "" {
 		path = Path()
@@ -116,7 +128,7 @@ func Load(path string) (*Document, error) {
 		return nil, fmt.Errorf("declarative: read %s: %w", path, err)
 	}
 	var d Document
-	dec := json.NewDecoder(strings.NewReader(string(buf)))
+	dec := toml.NewDecoder(strings.NewReader(string(buf)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&d); err != nil {
 		return nil, fmt.Errorf("declarative: decode: %w", err)
@@ -136,8 +148,15 @@ type Options struct {
 func GenerateSQL(d *Document, opts Options) string {
 	tables := topoSortTables(d.Tables)
 	var b strings.Builder
-	b.WriteString("-- Auto-generated from db/schema/declarative.json by\n")
+	b.WriteString("-- Auto-generated from db/schema/declarative.toml by\n")
 	b.WriteString("-- server/cmd/schema-gen. Do not edit by hand.\n\n")
+
+	for _, e := range d.Extensions {
+		fmt.Fprintf(&b, "CREATE EXTENSION IF NOT EXISTS %s;\n", e)
+	}
+	if len(d.Extensions) > 0 {
+		b.WriteByte('\n')
+	}
 
 	for _, t := range tables {
 		emitTable(&b, t)
@@ -240,8 +259,15 @@ func emitIndex(b *strings.Builder, table string, idx Index) {
 	if idx.Unique {
 		kw = "CREATE UNIQUE INDEX"
 	}
-	fmt.Fprintf(b, "%s IF NOT EXISTS %s ON %s (%s)",
-		kw, idx.Name, table, strings.Join(idx.Columns, ", "))
+	body := idx.Expressions
+	if len(body) == 0 {
+		body = idx.Columns
+	}
+	fmt.Fprintf(b, "%s IF NOT EXISTS %s ON %s", kw, idx.Name, table)
+	if idx.Using != "" {
+		fmt.Fprintf(b, " USING %s", idx.Using)
+	}
+	fmt.Fprintf(b, " (%s)", strings.Join(body, ", "))
 	if idx.Where != "" {
 		fmt.Fprintf(b, " WHERE %s", idx.Where)
 	}

@@ -20,6 +20,7 @@
  */
 
 import type {
+  ID,
   RoleAssignmentRow,
   UserListWithRolesRow,
   UserRoleSetInput,
@@ -70,9 +71,9 @@ export function applyUserFilters(
  * OMITTED (not present) so the server treats it as "global scope".
  */
 export function assignRolePayload(
-  userId: number,
+  userId: ID,
   roleName: string,
-  scopeProjectId: number | null,
+  scopeProjectId: ID | null,
 ): UserRoleSetInput {
   const out: UserRoleSetInput = { userId, roleName };
   if (scopeProjectId !== null) {

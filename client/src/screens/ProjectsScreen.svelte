@@ -25,12 +25,12 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { getDispatcher } from '../dispatch/context';
-  import { BatchAbortedError, SubRequestError } from '../dispatch/errors';
-  import { AttributeSchemaCache, type FilterAttribute } from '../filter/attribute_schema.svelte';
+  import { useBag } from '../dispatch/bag.svelte';
+  import { sharedSchemaCache, type FilterAttribute } from '../filter/attribute_schema.svelte';
   import FilterBar from '../filter/FilterBar.svelte';
   import type { Predicate } from '../filter/predicate';
-  import { defaultQuickChipsFor, type QuickChip } from '../filter/quick_chips';
   import { setActiveScope, useShortcut } from '../keys/shortcut';
+  import { projectScope } from '../shell/project_scope.svelte';
   import { useQuickEntry } from '../quick_entry/use_quick_entry.svelte';
   import QuickEntryOverlay from '../quick_entry/QuickEntryOverlay.svelte';
   import {
@@ -38,12 +38,9 @@
     userSelect,
   } from '../reg/handlers';
   import type {
-    CardSelectWithAttributesInput,
-    CardSelectWithAttributesOutput,
     CardWithAttrs,
+    ID,
     UserRow,
-    UserSelectInput,
-    UserSelectOutput,
   } from '../reg/types';
   import { navigate } from '../routing/router.svelte';
   import Button from '../ui/Button.svelte';
@@ -57,14 +54,14 @@
   setActiveScope('projects');
 
   const dispatcher = getDispatcher();
-  const schema = new AttributeSchemaCache(dispatcher);
+  const schema = sharedSchemaCache(dispatcher);
+  const bag = useBag(dispatcher);
 
   /* ---------------------------------------------------------------- state */
 
   let projects = $state<CardWithAttrs[]>([]);
   let users = $state<UserRow[]>([]);
   let loading = $state(true);
-  let error = $state<string | null>(null);
   let search = $state('');
   let predicate = $state<Predicate | null>(null);
   let selectedIndex = $state(0);
@@ -73,9 +70,9 @@
   // Slide-out editor for the project's own properties (title, description,
   // attributes). Opening it sets `editingProjectId` so the panel knows which
   // card to load; closing nulls it back out.
-  let editingProjectId = $state<number | null>(null);
+  let editingProjectId = $state<ID | null>(null);
   let editorOpen = $state(false);
-  function editProject(id: number): void {
+  function editProject(id: ID): void {
     editingProjectId = id;
     editorOpen = true;
   }
@@ -84,52 +81,39 @@
     scope: 'projects',
     defaultCardType: 'project',
     onCreated: () => {
-      void refresh();
+      projectScope.notifyProjectsChanged();
+      refresh();
     },
   });
 
   /* -------------------------------------------------------- initial batch */
 
-  /**
-   * Fire the screen's three sub-requests in one render tick. The
-   * dispatcher coalesces them into a single `POST /api/v1/batch`.
-   */
-  async function refresh(): Promise<void> {
-    loading = true;
-    error = null;
-    try {
-      const projectsP = dispatcher.request<
-        CardSelectWithAttributesInput,
-        CardSelectWithAttributesOutput
-      >({
-        endpoint: cardSelectWithAttributes.endpoint,
-        action: cardSelectWithAttributes.action,
-        data: { cardTypeName: 'project' },
-      });
-      const usersP = dispatcher.request<UserSelectInput, UserSelectOutput>({
-        endpoint: userSelect.endpoint,
-        action: userSelect.action,
-      });
-      // `AttributeSchemaCache.load()` issues `attribute_def.select` on the
-      // same tick (and short-circuits on subsequent screen mounts).
-      const schemaP = schema.load();
-
-      const [projectsOut, usersOut] = await Promise.all([projectsP, usersP, schemaP]);
-      projects = projectsOut.rows;
-      users = usersOut.rows;
-      loading = false;
-      // Reset selection if it falls outside the new visible range.
+  // Per-call-site bindings. Each bind() returns a function that fires a
+  // sub-request keyed to its handler; calling several in the same tick
+  // coalesces into one batched POST. Errors flow through the global
+  // dispatcher.onFault registry (toast / /login redirect) — the local
+  // handler only handles the happy path. Bag lifecycle is tied to this
+  // component, so late responses for unmounted instances are dropped.
+  const loadProjects = bag.bind(cardSelectWithAttributes, 'projects.load', (r) => {
+    if (r.ok) {
+      projects = r.data.rows;
       selectedIndex = 0;
-    } catch (e) {
-      if (e instanceof SubRequestError) {
-        error = e.message;
-      } else if (e instanceof BatchAbortedError) {
-        error = e.reason;
-      } else {
-        error = e instanceof Error ? e.message : String(e);
-      }
-      loading = false;
     }
+    loading = false;
+  });
+  const loadUsers = bag.bind(userSelect, 'projects.users', (r) => {
+    if (r.ok) users = r.data.rows;
+  });
+
+  function refresh(): void {
+    loading = true;
+    loadProjects({ cardTypeName: 'project' });
+    loadUsers({});
+    // `AttributeSchemaCache.load()` issues `attribute_def.select` on the
+    // same tick (and short-circuits on subsequent screen mounts). It
+    // still uses the legacy promise API; failures surface through the
+    // same global fault registry.
+    void schema.load();
   }
 
   /* ----------------------------------------------------- derived: visible */
@@ -139,11 +123,6 @@
    *  can still hand-author leaves via the advanced editor without us
    *  inventing attributes that don't exist in the data. */
   const filterAttributes = $derived<FilterAttribute[]>([]);
-
-  /** Quick chips: empty for the same reason as the palette. */
-  const quickChips = $derived<QuickChip[]>(
-    filterAttributes.flatMap((a) => defaultQuickChipsFor(a)),
-  );
 
   /** Visible = filter + search applied to the loaded list. */
   const visible = $derived<CardWithAttrs[]>(
@@ -209,7 +188,7 @@
   });
 
   onMount(() => {
-    void refresh();
+    refresh();
   });
 </script>
 
@@ -225,8 +204,6 @@
     <FilterBar
       attributes={filterAttributes}
       bind:predicate
-      scope="projects"
-      {quickChips}
       onchange={(p) => {
         predicate = p;
       }}
@@ -249,20 +226,6 @@
   {#if loading && projects.length === 0}
     <div class="flex flex-1 items-center justify-center">
       <Spinner size="lg" />
-    </div>
-  {:else if error !== null}
-    <div
-      role="alert"
-      class="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger"
-    >
-      Failed to load projects: {error}
-      <button
-        type="button"
-        class="ml-3 underline"
-        onclick={() => void refresh()}
-      >
-        Retry
-      </button>
     </div>
   {:else if visible.length === 0}
     <div class="flex flex-1 items-center justify-center">
@@ -342,7 +305,10 @@
 <ProjectPropertiesPanel
   bind:open={editorOpen}
   cardId={editingProjectId}
-  onSaved={() => void refresh()}
+  onSaved={() => {
+    projectScope.notifyProjectsChanged();
+    refresh();
+  }}
 />
 
 <style>

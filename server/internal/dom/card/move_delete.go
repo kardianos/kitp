@@ -19,36 +19,36 @@ import (
 
 // DeleteInput is one card to soft-delete.
 type DeleteInput struct {
-	CardID int64 `json:"card_id" mcp:"required,desc=id of the card to soft-delete"`
+	CardID int64 `json:"card_id,string" mcp:"required,desc=id of the card to soft-delete"`
 }
 
 // DeleteOutput acknowledges success.
 type DeleteOutput struct {
 	OK         bool  `json:"ok" mcp:"desc=true on success"`
-	ActivityID int64 `json:"activity_id" mcp:"desc=id of the activity row recording the delete"`
+	ActivityID int64 `json:"activity_id,string" mcp:"desc=id of the activity row recording the delete"`
 }
 
 // UndeleteInput is one card to undelete.
 type UndeleteInput struct {
-	CardID int64 `json:"card_id" mcp:"required,desc=id of the card to undelete"`
+	CardID int64 `json:"card_id,string" mcp:"required,desc=id of the card to undelete"`
 }
 
 // UndeleteOutput acknowledges success.
 type UndeleteOutput struct {
 	OK         bool  `json:"ok" mcp:"desc=true on success"`
-	ActivityID int64 `json:"activity_id" mcp:"desc=id of the activity row recording the undelete"`
+	ActivityID int64 `json:"activity_id,string" mcp:"desc=id of the activity row recording the undelete"`
 }
 
 // MoveInput moves card_id under new_parent_card_id.
 type MoveInput struct {
-	CardID            int64 `json:"card_id" mcp:"required,desc=id of the card to move"`
-	NewParentCardID   int64 `json:"new_parent_card_id" mcp:"required,desc=id of the new parent card"`
+	CardID            int64 `json:"card_id,string" mcp:"required,desc=id of the card to move"`
+	NewParentCardID   int64 `json:"new_parent_card_id,string" mcp:"required,desc=id of the new parent card"`
 }
 
 // MoveOutput acknowledges success.
 type MoveOutput struct {
 	OK         bool  `json:"ok" mcp:"desc=true on success"`
-	ActivityID int64 `json:"activity_id" mcp:"desc=id of the activity row recording the move"`
+	ActivityID int64 `json:"activity_id,string" mcp:"desc=id of the activity row recording the move"`
 }
 
 // RegisterMoveDelete is called from card.Register to install the three
@@ -89,15 +89,15 @@ func RegisterMoveDelete(p *store.Pool) {
 	})
 }
 
-func cardTypeFromDeleteInput(ctx context.Context, pool reg.ValidationPool, raw any) (int32, error) {
+func cardTypeFromDeleteInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	return schema.CardTypeIDByCardID(ctx, pool, raw.(DeleteInput).CardID)
 }
 
-func cardTypeFromUndeleteInput(ctx context.Context, pool reg.ValidationPool, raw any) (int32, error) {
+func cardTypeFromUndeleteInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	return schema.CardTypeIDByCardID(ctx, pool, raw.(UndeleteInput).CardID)
 }
 
-func cardTypeFromMoveInput(ctx context.Context, pool reg.ValidationPool, raw any) (int32, error) {
+func cardTypeFromMoveInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	return schema.CardTypeIDByCardID(ctx, pool, raw.(MoveInput).CardID)
 }
 
@@ -276,7 +276,7 @@ func runMove(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]a
 			idList = append(idList, id)
 		}
 		type row struct {
-			TypeID   int32
+			TypeID   int64
 			ParentID *int64
 		}
 		info := map[int64]row{}
@@ -287,7 +287,7 @@ func runMove(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]a
 			}
 			for rows.Next() {
 				var id int64
-				var ctid int32
+				var ctid int64
 				var parent *int64
 				if err := rows.Scan(&id, &ctid, &parent); err != nil {
 					rows.Close()
@@ -301,7 +301,7 @@ func runMove(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]a
 		// Build the per-input payload.
 		type jsonRow struct {
 			Ord       int    `json:"ord"`
-			CardID    int64  `json:"card_id"`
+			CardID    int64  `json:"card_id,string"`
 			NewParent int64  `json:"new_parent"`
 			OldParent string `json:"old_parent"` // jsonb-encoded
 		}

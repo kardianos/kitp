@@ -122,7 +122,7 @@ func NewServer(dispatcher *api.Server, in io.Reader, out io.Writer) *Server {
 // jsonrpcRequest is the wire shape for one inbound JSON-RPC message.
 type jsonrpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
+	ID      json.RawMessage `json:"id,string,omitempty"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 }
@@ -130,7 +130,7 @@ type jsonrpcRequest struct {
 // jsonrpcResponse mirrors it on the way out.
 type jsonrpcResponse struct {
 	JSONRPC string         `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
+	ID      json.RawMessage `json:"id,string,omitempty"`
 	Result  any            `json:"result,omitempty"`
 	Error   *jsonrpcError  `json:"error,omitempty"`
 }

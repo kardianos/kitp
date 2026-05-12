@@ -30,13 +30,18 @@ import (
 type SearchInput struct {
 	CardTypeName string  `json:"card_type_name" mcp:"required,desc=card_type to search within"`
 	Query        string  `json:"query,omitempty" mcp:"desc=case-insensitive substring match on title"`
-	IDs          []int64 `json:"ids,omitempty" mcp:"desc=optional explicit id filter; combined with query via AND"`
+	IDs          reg.IDs `json:"ids,omitempty" mcp:"desc=optional explicit id filter; combined with query via AND"`
 	Limit        *int    `json:"limit,omitempty" mcp:"desc=optional row limit (default 50, capped at 200)"`
+	// ParentCardID restricts results to cards whose parent_card_id
+	// equals this value. Used by ref:* picker dropdowns to keep the
+	// typeahead in the same project as the editing task — matches the
+	// per-project reference scoping enforced on the write side.
+	ParentCardID *int64 `json:"parent_card_id,string,omitempty" mcp:"desc=optional parent card id filter; used by per-project picker scoping"`
 }
 
 // SearchHit is one result row.
 type SearchHit struct {
-	ID    int64  `json:"id" mcp:"desc=card id"`
+	ID    int64  `json:"id,string" mcp:"desc=card id"`
 	Title string `json:"title" mcp:"desc=current title attribute value"`
 }
 
@@ -90,6 +95,7 @@ func runSearch(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 				  AND ct.name = $1
 				  AND ($2::text IS NULL OR av.value #>> '{}' ILIKE '%' || $2 || '%')
 				  AND ($3::bigint[] IS NULL OR c.id = ANY($3))
+				  AND ($5::bigint IS NULL OR c.parent_card_id = $5)
 				ORDER BY av.value #>> '{}' ASC NULLS LAST, c.id ASC
 				LIMIT $4
 			`,
@@ -97,6 +103,7 @@ func runSearch(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 				nullableString(in.Query),
 				nullableInt64Array(in.IDs),
 				limit,
+				in.ParentCardID,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("card.search: %w", err)

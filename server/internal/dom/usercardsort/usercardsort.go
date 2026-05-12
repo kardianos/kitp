@@ -33,7 +33,7 @@ import (
 // midpoint between neighbours when computing SortOrder; the server stores
 // it verbatim.
 type SetInput struct {
-	CardID    int64   `json:"card_id" mcp:"required,desc=card to reorder"`
+	CardID    int64   `json:"card_id,string" mcp:"required,desc=card to reorder"`
 	SortOrder float64 `json:"sort_order" mcp:"required,desc=new sort order — caller picks midpoint between neighbours"`
 }
 
@@ -62,7 +62,7 @@ func Register(p *store.Pool) {
 // dispatcher can authorize (card_type, process). Inbox writes always target
 // task cards in practice; we look it up rather than hard-coding so a future
 // "drag a milestone in your personal view" works without a code change.
-func cardTypeFromInput(ctx context.Context, pool reg.ValidationPool, raw any) (int32, error) {
+func cardTypeFromInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	return schema.CardTypeIDByCardID(ctx, pool, raw.(SetInput).CardID)
 }
 
@@ -70,7 +70,7 @@ func cardTypeFromInput(ctx context.Context, pool reg.ValidationPool, raw any) (i
 // include user_id in the payload — the caller never supplies it; the
 // handler stamps it from ctx, so a malicious client cannot fake it.
 type jsonRow struct {
-	CardID    int64   `json:"card_id"`
+	CardID    int64   `json:"card_id,string"`
 	SortOrder float64 `json:"sort_order"`
 }
 

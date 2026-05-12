@@ -33,23 +33,23 @@ import {
 /* -------------------------------------------------------------------------- */
 
 function project(
-  id: number,
+  id: bigint,
   title: string,
   attrs: Record<string, unknown> = {},
 ): CardWithAttrs {
   return {
     id,
-    card_type_id: 1,
+    card_type_id: 1n,
     card_type_name: 'project',
     attributes: { title, ...attrs },
   };
 }
 
 const FIXTURES: CardWithAttrs[] = [
-  project(1, 'Apollo', { status: 'active' }),
-  project(2, 'Borealis', { status: 'archived' }),
-  project(3, 'Cassiopeia', { status: 'active' }),
-  project(4, 'Draco', {}),
+  project(1n, 'Apollo', { status: 'active' }),
+  project(2n, 'Borealis', { status: 'archived' }),
+  project(3n, 'Cassiopeia', { status: 'active' }),
+  project(4n, 'Draco', {}),
 ];
 
 /* -------------------------------------------------------------------------- */
@@ -59,19 +59,19 @@ const FIXTURES: CardWithAttrs[] = [
 describe('searchAndFilter', () => {
   it('returns every project when search is empty and predicate is null', () => {
     const out = searchAndFilter(FIXTURES, '', null);
-    expect(out.map((p) => p.id)).toEqual([1, 2, 3, 4]);
+    expect(out.map((p) => p.id)).toEqual([1n, 2n, 3n, 4n]);
   });
 
   it('whitespace-only search behaves like empty search', () => {
     const out = searchAndFilter(FIXTURES, '   ', null);
-    expect(out.map((p) => p.id)).toEqual([1, 2, 3, 4]);
+    expect(out.map((p) => p.id)).toEqual([1n, 2n, 3n, 4n]);
   });
 
   it('substring match is case-insensitive against attributes.title', () => {
-    expect(searchAndFilter(FIXTURES, 'apollo', null).map((p) => p.id)).toEqual([1]);
-    expect(searchAndFilter(FIXTURES, 'APOLLO', null).map((p) => p.id)).toEqual([1]);
+    expect(searchAndFilter(FIXTURES, 'apollo', null).map((p) => p.id)).toEqual([1n]);
+    expect(searchAndFilter(FIXTURES, 'APOLLO', null).map((p) => p.id)).toEqual([1n]);
     expect(searchAndFilter(FIXTURES, 'a', null).map((p) => p.id)).toEqual([
-      1, 2, 3, 4,
+      1n, 2n, 3n, 4n,
     ]);
   });
 
@@ -81,36 +81,36 @@ describe('searchAndFilter', () => {
 
   it('predicate = null + non-empty search returns search-only result', () => {
     const out = searchAndFilter(FIXTURES, 'cas', null);
-    expect(out.map((p) => p.id)).toEqual([3]);
+    expect(out.map((p) => p.id)).toEqual([3n]);
   });
 
   it('predicate (single leaf) narrows the substring-matched set', () => {
     // search="" + status='active' → Apollo, Cassiopeia
     const out = searchAndFilter(FIXTURES, '', eq('status', 'active'));
-    expect(out.map((p) => p.id)).toEqual([1, 3]);
+    expect(out.map((p) => p.id)).toEqual([1n, 3n]);
   });
 
   it('predicate (flat AND of leaves) is conjunctive', () => {
     // status='active' AND status='active' (degenerate — still narrows correctly).
     const both = andOf([eq('status', 'active'), eq('status', 'active')]);
     const out = searchAndFilter(FIXTURES, '', both);
-    expect(out.map((p) => p.id)).toEqual([1, 3]);
+    expect(out.map((p) => p.id)).toEqual([1n, 3n]);
   });
 
   it('search and predicate apply together (intersection)', () => {
     // search='a' (matches all four), predicate status='archived' (matches Borealis).
     const out = searchAndFilter(FIXTURES, 'a', eq('status', 'archived'));
-    expect(out.map((p) => p.id)).toEqual([2]);
+    expect(out.map((p) => p.id)).toEqual([2n]);
   });
 
   it('predicate exists / notExists discriminates on attribute presence', () => {
     const exists = { kind: 'leaf', attr: 'status', op: 'exists' } as const;
     const notExists = { kind: 'leaf', attr: 'status', op: 'notExists' } as const;
     expect(searchAndFilter(FIXTURES, '', exists).map((p) => p.id)).toEqual([
-      1, 2, 3,
+      1n, 2n, 3n,
     ]);
     expect(searchAndFilter(FIXTURES, '', notExists).map((p) => p.id)).toEqual([
-      4,
+      4n,
     ]);
   });
 });

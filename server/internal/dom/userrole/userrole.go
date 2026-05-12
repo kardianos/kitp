@@ -24,22 +24,22 @@ import (
 
 // SetInput is one row of user_role.set.
 type SetInput struct {
-	UserID         int64  `json:"user_id" mcp:"required,desc=user_account id receiving the role"`
+	UserID         int64  `json:"user_id,string" mcp:"required,desc=user_account id receiving the role"`
 	RoleName       string `json:"role_name" mcp:"required,desc=role name (e.g. worker, manager, admin)"`
-	ScopeProjectID *int64 `json:"scope_project_id,omitempty" mcp:"desc=optional project id for scoped grant; null = global"`
+	ScopeProjectID *int64 `json:"scope_project_id,string,omitempty" mcp:"desc=optional project id for scoped grant; null = global"`
 }
 
 // SetOutput is the per-row reply.
 type SetOutput struct {
 	OK         bool  `json:"ok" mcp:"desc=true on success"`
-	UserRoleID int64 `json:"user_role_id" mcp:"desc=id of the (created or pre-existing) user_role row"`
+	UserRoleID int64 `json:"user_role_id,string" mcp:"desc=id of the (created or pre-existing) user_role row"`
 }
 
 // RevokeInput mirrors SetInput; the server deletes any matching row.
 type RevokeInput struct {
-	UserID         int64  `json:"user_id" mcp:"required,desc=user_account id losing the role"`
+	UserID         int64  `json:"user_id,string" mcp:"required,desc=user_account id losing the role"`
 	RoleName       string `json:"role_name" mcp:"required,desc=role name"`
-	ScopeProjectID *int64 `json:"scope_project_id,omitempty" mcp:"desc=optional project id for scoped grant; null = global"`
+	ScopeProjectID *int64 `json:"scope_project_id,string,omitempty" mcp:"desc=optional project id for scoped grant; null = global"`
 }
 
 // RevokeOutput acknowledges; reports whether a row actually went away.
@@ -53,31 +53,29 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "user_role",
 		Action:       "set",
-		Doc:          "Admin-only: grant a role to a user, optionally scoped to a project. Coalesces N inputs into one upsert statement.",
+		Doc:          "Grant a role to a user, optionally scoped to a project. Admin-only EXCEPT when the target is an agent — then the agent's parent_user_id may also grant any non-admin role they hold themselves. Coalesces N inputs into one upsert statement.",
 		InputType:    reflect.TypeFor[SetInput](),
 		OutputType:   reflect.TypeFor[SetOutput](),
-		AllowedRoles: []string{"admin"},
-		Authz:        authzAdmin,
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		Authz:        authzSet,
 		Run:          runSet(p),
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "user_role",
 		Action:       "revoke",
-		Doc:          "Admin-only: revoke a role from a user (with matching scope).",
+		Doc:          "Revoke a role from a user (with matching scope). Admin-only EXCEPT when the target is an agent — then the agent's parent_user_id may also revoke.",
 		InputType:    reflect.TypeFor[RevokeInput](),
 		OutputType:   reflect.TypeFor[RevokeOutput](),
-		AllowedRoles: []string{"admin"},
-		Authz:        authzAdmin,
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		Authz:        authzRevoke,
 		Run:          runRevoke(p),
 	})
 }
 
-// authzAdmin gates user_role.set / user_role.revoke. The actor must hold the
-// `admin` role globally. We query the DB directly here (rather than
-// piggybacking on the dispatcher's role-grant check) because user_role is
-// not a (card_type, process) tuple — it's an admin-action endpoint with a
-// flat role check.
-func authzAdmin(ctx context.Context, _ any) error {
+// authzAdmin returns nil when the actor holds the `admin` or `system`
+// role globally. Used as the fallback gate when the agent-parent path
+// below doesn't apply.
+func authzAdmin(ctx context.Context) error {
 	pool, ok := authzPool.(*store.Pool)
 	if !ok || pool == nil {
 		return nil // tests that bypass Register may not bind a pool; fail open
@@ -99,6 +97,119 @@ func authzAdmin(ctx context.Context, _ any) error {
 	return nil
 }
 
+// authzSet is the gate for user_role.set. The full rule set:
+//
+//  1. Actor must not itself be an agent (no self-bootstrapping; agents
+//     cannot escalate themselves or their siblings).
+//  2. The role `admin` is NEVER grantable to a target with is_agent=TRUE,
+//     regardless of who's calling. Agents stay capped below their parent.
+//  3. If the target is an agent AND the actor is that agent's
+//     parent_user_id, the actor may grant any non-admin role they
+//     themselves hold globally. Lets workers / managers grant their
+//     own agents narrow scopes without escalating to admin.
+//  4. Otherwise, fall back to `authzAdmin`.
+func authzSet(ctx context.Context, in any) error {
+	row, ok := in.(SetInput)
+	if !ok {
+		return authzAdmin(ctx)
+	}
+	pool, _ := authzPool.(*store.Pool)
+	if pool == nil {
+		return nil // tests
+	}
+	actor := auth.ActorOrSystem(ctx)
+	if err := rejectAgentActor(ctx, pool, actor); err != nil {
+		return err
+	}
+	isAgent, parentID, err := loadAgentInfo(ctx, pool, row.UserID)
+	if err != nil {
+		return err
+	}
+	if isAgent && row.RoleName == "admin" {
+		return fmt.Errorf("user_role: admin is not grantable to agent target %d", row.UserID)
+	}
+	if isAgent && parentID != nil && *parentID == actor {
+		// Parent path: must already hold the role being granted.
+		held, err := actorHoldsRole(ctx, pool, actor, row.RoleName)
+		if err != nil {
+			return err
+		}
+		if !held {
+			return fmt.Errorf("user_role: parent %d does not hold role %q so cannot grant it to agent %d", actor, row.RoleName, row.UserID)
+		}
+		return nil
+	}
+	return authzAdmin(ctx)
+}
+
+// authzRevoke gates user_role.revoke. Symmetric to authzSet minus the
+// "must hold the role" check — revoking is always safe to permit when
+// the actor is the agent's parent.
+func authzRevoke(ctx context.Context, in any) error {
+	row, ok := in.(RevokeInput)
+	if !ok {
+		return authzAdmin(ctx)
+	}
+	pool, _ := authzPool.(*store.Pool)
+	if pool == nil {
+		return nil
+	}
+	actor := auth.ActorOrSystem(ctx)
+	if err := rejectAgentActor(ctx, pool, actor); err != nil {
+		return err
+	}
+	isAgent, parentID, err := loadAgentInfo(ctx, pool, row.UserID)
+	if err != nil {
+		return err
+	}
+	if isAgent && parentID != nil && *parentID == actor {
+		return nil
+	}
+	return authzAdmin(ctx)
+}
+
+// rejectAgentActor returns a non-nil error when the actor's own
+// user_account has is_agent=TRUE.
+func rejectAgentActor(ctx context.Context, pool *store.Pool, actor int64) error {
+	var actorIsAgent bool
+	err := pool.P.QueryRow(ctx, `SELECT is_agent FROM user_account WHERE id = $1`, actor).Scan(&actorIsAgent)
+	if err != nil {
+		return fmt.Errorf("user_role.authz: load actor: %w", err)
+	}
+	if actorIsAgent {
+		return fmt.Errorf("user_role: agent actor %d cannot manage role grants", actor)
+	}
+	return nil
+}
+
+// loadAgentInfo reads (is_agent, parent_user_id) for one user_account.
+func loadAgentInfo(ctx context.Context, pool *store.Pool, userID int64) (bool, *int64, error) {
+	var isAgent bool
+	var parentID *int64
+	err := pool.P.QueryRow(ctx, `SELECT is_agent, parent_user_id FROM user_account WHERE id = $1`, userID).Scan(&isAgent, &parentID)
+	if err != nil {
+		return false, nil, fmt.Errorf("user_role.authz: load target: %w", err)
+	}
+	return isAgent, parentID, nil
+}
+
+// actorHoldsRole is true when the actor has a global grant of the
+// named role. Scoped grants don't count — we don't want a "manager of
+// project 7" granting "manager" globally to their agent.
+func actorHoldsRole(ctx context.Context, pool *store.Pool, actor int64, roleName string) (bool, error) {
+	var n int
+	err := pool.P.QueryRow(ctx, `
+		SELECT count(*)
+		FROM user_role ur
+		JOIN role r ON r.id = ur.role_id
+		WHERE ur.user_id = $1 AND r.name = $2 AND ur.scope_card_id IS NULL
+	`, actor, roleName).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("user_role.authz: actor role lookup: %w", err)
+	}
+	return n > 0, nil
+}
+
 // authzPool holds the pool the Authz hook closes over. It is set by
 // Register and read by authzAdmin. Package-level state is necessary because
 // Authz is a value-typed callback on reg.Handler that can't accept a pool
@@ -107,9 +218,9 @@ var authzPool any
 
 // jsonSetRow is the per-input shape fed to jsonb_to_recordset.
 type jsonSetRow struct {
-	UserID         int64  `json:"user_id"`
+	UserID         int64  `json:"user_id,string"`
 	RoleName       string `json:"role_name"`
-	ScopeProjectID *int64 `json:"scope_project_id,omitempty"`
+	ScopeProjectID *int64 `json:"scope_project_id,string,omitempty"`
 	Ord            int    `json:"ord"`
 }
 
@@ -210,9 +321,9 @@ func runSet(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]an
 
 // jsonRevokeRow is the per-input shape fed to jsonb_to_recordset.
 type jsonRevokeRow struct {
-	UserID         int64  `json:"user_id"`
+	UserID         int64  `json:"user_id,string"`
 	RoleName       string `json:"role_name"`
-	ScopeProjectID *int64 `json:"scope_project_id,omitempty"`
+	ScopeProjectID *int64 `json:"scope_project_id,string,omitempty"`
 	Ord            int    `json:"ord"`
 }
 

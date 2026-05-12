@@ -7,8 +7,9 @@
 import {
   asArray,
   asBoolOrFalse,
-  asNum,
-  asNumOpt,
+  asId,
+  asIdOpt,
+  asIdOrZero,
   asNumOrZero,
   asObj,
   asStr,
@@ -47,7 +48,7 @@ function decodeRoleAssignmentRow(j: Record<string, unknown>): RoleAssignmentRow 
   const out: RoleAssignmentRow = {
     role_name: asStr(j.role_name),
   };
-  const scopeId = asNumOpt(j.scope_project_id);
+  const scopeId = asIdOpt(j.scope_project_id);
   if (scopeId !== undefined) out.scope_project_id = scopeId;
   const scopeTitle = asStrOpt(j.scope_project_title);
   if (scopeTitle !== undefined) out.scope_project_title = scopeTitle;
@@ -58,7 +59,7 @@ function decodeUserListWithRolesRow(
   j: Record<string, unknown>,
 ): UserListWithRolesRow {
   const out: UserListWithRolesRow = {
-    id: asNum(j.id),
+    id: asId(j.id),
     display_name: asStr(j.display_name),
     roles: asArray(j.roles).map((r) => decodeRoleAssignmentRow(asObj(r))),
   };
@@ -97,7 +98,7 @@ function decodeRoleGrantRow(j: Record<string, unknown>): RoleGrantRow {
 
 function decodeRoleRow(j: Record<string, unknown>): RoleRow {
   return {
-    id: asNum(j.id),
+    id: asId(j.id),
     name: asStr(j.name),
     doc: asStrOrEmpty(j.doc),
     grants: asArray(j.grants).map((r) => decodeRoleGrantRow(asObj(r))),
@@ -135,7 +136,7 @@ const userRoleSet: HandlerSpec<UserRoleSetInput, UserRoleSetOutput> = {
     const j = asObj(raw);
     return {
       ok: asBoolOrFalse(j.ok),
-      user_role_id: asNumOrZero(j.user_role_id),
+      user_role_id: asIdOrZero(j.user_role_id),
     };
   },
 };
@@ -169,7 +170,7 @@ function decodeRoleMappingListRow(
 ): RoleMappingListRow {
   return {
     claim_value: asStr(j.claim_value),
-    role_id: asNum(j.role_id),
+    role_id: asId(j.role_id),
     role_name: asStr(j.role_name),
   };
 }

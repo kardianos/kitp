@@ -56,12 +56,6 @@ export const routes: Route[] = [
     shell: false,
     scope: 'login',
   },
-  {
-    path: '/auth/callback',
-    component: () => import('../screens/AuthCallbackScreen.svelte'),
-    shell: false,
-    scope: 'global',
-  },
   { path: '/', redirectTo: '/projects' },
   {
     path: '/projects',
@@ -125,6 +119,13 @@ export const routes: Route[] = [
     guard: 'requireAdmin',
     shell: true,
     scope: 'admin_attributes',
+  },
+  {
+    path: '/admin/screens',
+    component: () => import('../screens/admin/AdminScreensScreen.svelte'),
+    guard: 'requireAdmin',
+    shell: true,
+    scope: 'admin_screens',
   },
   {
     path: '/_dev/components',

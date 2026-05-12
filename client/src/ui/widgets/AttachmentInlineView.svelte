@@ -13,10 +13,10 @@
   import { getContext } from 'svelte';
   import type { AuthState } from '../../auth/auth_state.svelte';
   import { fetchAttachmentBlob } from '../../attachments/upload';
-  import type { AttachmentKind } from '../../reg/types';
+  import type { AttachmentKind, ID } from '../../reg/types';
 
   interface Props {
-    attachmentId: number;
+    attachmentId: ID;
     kind: AttachmentKind;
     /** Used as `<img alt>` and `<iframe title>` for accessibility. */
     filename: string;

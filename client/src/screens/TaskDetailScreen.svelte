@@ -7,10 +7,13 @@
   doesn't squeeze the description.
 
   Dispatcher contract:
-    - On mount: ONE batch with seven sub-requests (task + activity +
-      milestones + components + tags + users + attribute_def). All
-      seven `request()` calls happen in the same render tick so the
-      dispatcher coalesces them into one POST.
+    - On mount: ONE batch with eight sub-requests (task + activity +
+      milestones + components + tags + users + persons + attribute_def).
+      All eight `request()` calls happen in the same render tick so the
+      dispatcher coalesces them into one POST. `users` powers the
+      activity stream's actor labels; `persons` powers the assignee
+      picker — post-refactor the `assignee` attribute is a card_ref to
+      a `person` card, not a `user_account` ref.
     - Title / description / attribute commits issue ONE batch
       (attribute.update) followed by a refresh batch.
     - Comment posts and tag apply/remove each issue ONE batch followed
@@ -36,7 +39,8 @@
   import AttachmentsSection from '../ui/widgets/AttachmentsSection.svelte';
   import AttachmentsPreviewStrip from '../ui/widgets/AttachmentsPreviewStrip.svelte';
   import AttributeSidePanel from '../ui/widgets/AttributeSidePanel.svelte';
-  import { AttributeSchemaCache } from '../filter/attribute_schema.svelte';
+  import TerminalActionButton from '../ui/widgets/TerminalActionButton.svelte';
+  import { sharedSchemaCache } from '../filter/attribute_schema.svelte';
   import type { FilterAttribute } from '../filter/attribute_schema.svelte';
   import type {
     ActivityRow,
@@ -51,6 +55,7 @@
     CardWithAttrs,
     CommentInsertInput,
     CommentInsertOutput,
+    ID,
     TagApplyInput,
     TagApplyOutput,
     TagRemoveInput,
@@ -71,6 +76,7 @@
     commentInsertPayload,
     commitDescriptionPayload,
     commitTitlePayload,
+    personNameMap,
     pickTaskById,
     removeTagPayload,
     sortActivityDesc,
@@ -95,10 +101,18 @@
   // The route pattern is `/task/:id`; default to 0 if the param is
   // malformed (the screen renders a "task not found" empty state once
   // the load resolves).
-  const taskId = $derived(Number(params.id ?? '') || 0);
+  const taskId = $derived.by((): ID => {
+    const raw = params.id ?? '';
+    if (raw === '') return 0n;
+    try {
+      return BigInt(raw);
+    } catch {
+      return 0n;
+    }
+  });
 
   const dispatcher = getDispatcher();
-  const schemaCache = new AttributeSchemaCache(dispatcher);
+  const schemaCache = sharedSchemaCache(dispatcher);
 
   /* -------------------------------------------------------------------- */
   /* Reactive state                                                       */
@@ -109,7 +123,14 @@
   let milestones = $state<readonly CardWithAttrs[]>([]);
   let components = $state<readonly CardWithAttrs[]>([]);
   let tagCards = $state<readonly CardWithAttrs[]>([]);
+  let statusCards = $state<readonly CardWithAttrs[]>([]);
+  // `users` (UserRow[]) backs the activity stream's "actor" labels
+  // (activity.actor_id is a `user_account.id`).
   let users = $state<readonly UserRow[]>([]);
+  // `persons` (CardWithAttrs[] of card_type='person') backs the assignee
+  // picker — post-refactor the `assignee` attribute is a card_ref to a
+  // `person` card, NOT a user_account ref.
+  let persons = $state<readonly CardWithAttrs[]>([]);
   let loading = $state(true);
   let errorMsg = $state<string | null>(null);
 
@@ -136,19 +157,51 @@
 
   // Tag picker (Combobox toggled by `t` shortcut and the "+ Add tag" btn).
   let tagPickerOpen = $state(false);
-  let tagPickerValue = $state<number | null>(null);
+  let tagPickerValue = $state<ID | null>(null);
 
   /* -------------------------------------------------------------------- */
   /* Derived lookups                                                      */
   /* -------------------------------------------------------------------- */
 
   const userNames = $derived(userNameMap(users));
-  const milestoneTitles = $derived(cardTitleMap(milestones));
-  const componentTitles = $derived(cardTitleMap(components));
-  const tagPaths = $derived(tagPathMap(tagCards));
-  // For ActivityRow's cardTitles map we merge the ref tables — milestones
-  // and components both flow into the same `card_id` namespace.
-  const cardTitles = $derived({ ...milestoneTitles, ...componentTitles });
+  const personNames = $derived(personNameMap(persons));
+  // Project-scoped picker option sets: milestones, components, and tags
+  // sit one level under their project in v1, so filtering by
+  // task.parent_card_id gives the in-project subset. The initial batch
+  // loads the lists globally (it can't filter — the task hasn't loaded
+  // yet); this $derived narrows them once the task is known.
+  const scopedMilestones = $derived.by((): readonly CardWithAttrs[] => {
+    if (task === null || task.parent_card_id === undefined) return milestones;
+    const pid = task.parent_card_id;
+    return milestones.filter((m) => m.parent_card_id === pid);
+  });
+  const scopedComponents = $derived.by((): readonly CardWithAttrs[] => {
+    if (task === null || task.parent_card_id === undefined) return components;
+    const pid = task.parent_card_id;
+    return components.filter((c) => c.parent_card_id === pid);
+  });
+  const scopedTagCards = $derived.by((): readonly CardWithAttrs[] => {
+    if (task === null || task.parent_card_id === undefined) return tagCards;
+    const pid = task.parent_card_id;
+    return tagCards.filter((tc) => tc.parent_card_id === pid);
+  });
+  const scopedStatuses = $derived.by((): readonly CardWithAttrs[] => {
+    if (task === null || task.parent_card_id === undefined) return statusCards;
+    const pid = task.parent_card_id;
+    return statusCards.filter((s) => s.parent_card_id === pid);
+  });
+  const milestoneTitles = $derived(cardTitleMap(scopedMilestones));
+  const componentTitles = $derived(cardTitleMap(scopedComponents));
+  const statusTitles = $derived(cardTitleMap(scopedStatuses));
+  const tagPaths = $derived(tagPathMap(scopedTagCards));
+  // For ActivityRow's cardTitles map we merge the ref tables — every
+  // value-card type a task can point at (milestone / component / status
+  // / future admin types) shares the same id namespace, so one map.
+  const cardTitles = $derived({
+    ...milestoneTitles,
+    ...componentTitles,
+    ...statusTitles,
+  });
 
   const orderedActivity = $derived(sortActivityDesc(activity));
 
@@ -180,28 +233,43 @@
     return out;
   });
 
+  /** Pull the person-card title (used wherever we need the display name). */
+  function personLabel(p: CardWithAttrs): string {
+    const t = p.attributes['title'];
+    return typeof t === 'string' && t.length > 0 ? t : `#${p.id}`;
+  }
+
   /**
    * refOptions for the side panel — these populate the trigger button's
    * label for currently-set values. For the three eagerly-loaded built-ins
    * we pass the full list; the dropdown's open-time options come from
-   * `refLoaders` below.
+   * `refLoaders` below. `assignee` is a card_ref to a `person` card
+   * post-refactor, so its option list now comes from the persons fetch
+   * rather than `user.select`.
    */
   const refOptions = $derived.by((): Record<string, { value: unknown; label: string }[]> => {
     const out: Record<string, { value: unknown; label: string }[]> = {};
-    out['assignee'] = users.map((u) => ({ value: u.id, label: u.display_name }));
-    out['milestone_ref'] = milestones.map((m) => ({
+    out['assignee'] = persons.map((p) => ({ value: p.id, label: personLabel(p) }));
+    out['milestone_ref'] = scopedMilestones.map((m) => ({
       value: m.id,
       label:
         typeof m.attributes['title'] === 'string'
           ? (m.attributes['title'] as string)
           : `#${m.id}`,
     }));
-    out['component_ref'] = components.map((c) => ({
+    out['component_ref'] = scopedComponents.map((c) => ({
       value: c.id,
       label:
         typeof c.attributes['title'] === 'string'
           ? (c.attributes['title'] as string)
           : `#${c.id}`,
+    }));
+    out['status'] = scopedStatuses.map((s) => ({
+      value: s.id,
+      label:
+        typeof s.attributes['title'] === 'string'
+          ? (s.attributes['title'] as string)
+          : `#${s.id}`,
     }));
     return out;
   });
@@ -209,13 +277,13 @@
   /**
    * Async loaders for every ref:* attribute in the schema.
    *
-   *   - `ref:user` is served from the eagerly-loaded `users` list by
-   *     filtering in memory — no extra round-trip needed for the user
-   *     count this app has, and the picker still feels "live".
-   *   - Every other `ref:<card_type>` (built-ins like milestone_ref /
-   *     component_ref AND any custom ref a project admin has wired up)
-   *     calls `card.search` so the picker scales beyond what we'd want
-   *     to load up front.
+   *   Every `ref:<card_type>` def — built-ins like status / assignee /
+   *   milestone_ref / component_ref and any custom ref a project admin
+   *   has wired up — uses the same `card.search` loader. The target card
+   *   type comes from `attribute_def.target_card_type_id`; person refs
+   *   stay global (no project filter), every other type is scoped to the
+   *   task's enclosing project so the picker mirrors the per-project
+   *   reference-scope rule enforced on the write side.
    */
   const refLoaders = $derived.by(() => {
     const out: Record<
@@ -225,27 +293,20 @@
     for (const fa of schema) {
       if (!fa.valueType.startsWith('ref:')) continue;
       const cardType = fa.valueType.slice('ref:'.length);
-      if (cardType === 'user') {
-        out[fa.name] = async (q: string) => {
-          const needle = q.trim().toLowerCase();
-          const matched = needle === ''
-            ? users
-            : users.filter((u) => u.display_name.toLowerCase().includes(needle));
-          return matched.slice(0, 50).map((u) => ({
-            value: u.id,
-            label: u.display_name,
-          }));
-        };
-      } else {
-        out[fa.name] = async (q: string) => {
-          const res = await dispatcher.request<CardSearchInput, CardSearchOutput>({
-            endpoint: cardSearch.endpoint,
-            action: cardSearch.action,
-            data: { cardTypeName: cardType, query: q, limit: 50 },
-          });
-          return res.rows.map((r) => ({ value: r.id, label: r.title }));
-        };
-      }
+      const scopeParent =
+        cardType !== 'person' && task !== null && task.parent_card_id !== undefined
+          ? task.parent_card_id
+          : undefined;
+      out[fa.name] = async (q: string) => {
+        const data: CardSearchInput = { cardTypeName: cardType, query: q, limit: 50 };
+        if (scopeParent !== undefined) data.parentCardId = scopeParent;
+        const res = await dispatcher.request<CardSearchInput, CardSearchOutput>({
+          endpoint: cardSearch.endpoint,
+          action: cardSearch.action,
+          data,
+        });
+        return res.rows.map((r) => ({ value: r.id, label: r.title }));
+      };
     }
     return out;
   });
@@ -253,14 +314,35 @@
   /** Tag ids currently applied to the task. */
   const appliedTags = $derived(appliedTagIds(task));
 
-  /** Tag-picker option list — every tag that is NOT yet applied. */
+  /** Status value cards scoped to this task's project that are terminal. */
+  const terminalStatusOptions = $derived.by((): { id: ID; label: string }[] =>
+    scopedStatuses
+      .filter((s) => s.is_terminal === true)
+      .map((s) => {
+        const t = s.attributes['title'];
+        return {
+          id: s.id,
+          label: typeof t === 'string' && t.length > 0 ? t : `#${s.id}`,
+        };
+      }),
+  );
+
+  /** Current status ref id on the task, or null when none. */
+  const currentStatusId = $derived.by((): ID | null => {
+    if (task === null) return null;
+    const v = task.attributes['status'];
+    if (typeof v === 'bigint') return v;
+    return null;
+  });
+
+  /** Tag-picker option list — every in-project tag that is NOT yet applied. */
   const tagPickerOptions = $derived.by(() => {
     const applied = new Set(appliedTags);
-    return tagCards
+    return scopedTagCards
       .filter((t) => !applied.has(t.id))
       .map((t) => ({
         value: t.id,
-        label: tagPaths[t.id] ?? `#${t.id}`,
+        label: tagPaths[t.id.toString()] ?? `#${t.id}`,
       }));
   });
 
@@ -269,7 +351,7 @@
   /* -------------------------------------------------------------------- */
 
   /**
-   * Issue the seven-sub-request initial batch. Every dispatcher call
+   * Issue the eight-sub-request initial batch. Every dispatcher call
    * fires synchronously inside the same render tick so the dispatcher
    * coalesces them into ONE POST `/api/v1/batch`.
    *
@@ -318,10 +400,30 @@
       action: cardSelectWithAttributes.action,
       data: { cardTypeName: 'tag' },
     });
+    const fStatuses = dispatcher.request<
+      CardSelectWithAttributesInput,
+      CardSelectWithAttributesOutput
+    >({
+      endpoint: cardSelectWithAttributes.endpoint,
+      action: cardSelectWithAttributes.action,
+      data: { cardTypeName: 'status' },
+    });
     const fUsers = dispatcher.request<UserSelectInput, UserSelectOutput>({
       endpoint: userSelect.endpoint,
       action: userSelect.action,
       data: {},
+    });
+    // Persons feed the assignee picker (post-refactor the `assignee`
+    // attribute is a card_ref to a `person` card). The user.select fetch
+    // above is preserved so the activity stream's actor labels keep
+    // resolving via `user_account.display_name`.
+    const fPersons = dispatcher.request<
+      CardSelectWithAttributesInput,
+      CardSelectWithAttributesOutput
+    >({
+      endpoint: cardSelectWithAttributes.endpoint,
+      action: cardSelectWithAttributes.action,
+      data: { cardTypeName: 'person' },
     });
     // Driven through AttributeSchemaCache so concurrent screens share the
     // result. `load()` already short-circuits when the cache is hot — but
@@ -330,13 +432,15 @@
     const fSchema = schemaCache.load();
 
     try {
-      const [tOut, aOut, mOut, cOut, tagOut, uOut] = await Promise.all([
+      const [tOut, aOut, mOut, cOut, tagOut, sOut, uOut, pOut] = await Promise.all([
         fTask,
         fActivity,
         fMilestones,
         fComponents,
         fTags,
+        fStatuses,
         fUsers,
+        fPersons,
       ]);
       await fSchema;
 
@@ -346,7 +450,9 @@
       milestones = mOut.rows;
       components = cOut.rows;
       tagCards = tagOut.rows;
+      statusCards = sOut.rows;
       users = uOut.rows;
+      persons = pOut.rows;
       loading = false;
 
       if (initial && found !== null) {
@@ -549,7 +655,7 @@
   /* Tag handling                                                         */
   /* -------------------------------------------------------------------- */
 
-  async function applyTag(tagCardId: number): Promise<void> {
+  async function applyTag(tagCardId: ID): Promise<void> {
     try {
       await dispatcher.request<TagApplyInput, TagApplyOutput>({
         endpoint: tagApply.endpoint,
@@ -566,7 +672,7 @@
     }
   }
 
-  async function removeTag(tagCardId: number): Promise<void> {
+  async function removeTag(tagCardId: ID): Promise<void> {
     try {
       await dispatcher.request<TagRemoveInput, TagRemoveOutput>({
         endpoint: tagRemove.endpoint,
@@ -598,8 +704,8 @@
     }
   }
 
-  function onTagPickerChange(v: number | number[] | null): void {
-    if (typeof v === 'number') {
+  function onTagPickerChange(v: ID | ID[] | null): void {
+    if (typeof v === 'bigint') {
       void applyTag(v);
     }
   }
@@ -614,7 +720,7 @@
     // preserved. Cold-loaded into the detail (no prior path) → fall back to
     // the parent project, or the projects list as a last resort.
     const fallback =
-      task !== null && typeof task.parent_card_id === 'number'
+      task !== null && typeof task.parent_card_id === 'bigint'
         ? `/project/${task.parent_card_id}`
         : '/projects';
     goBackOrFallback(fallback);
@@ -775,6 +881,17 @@
           {/if}
           <p class="mt-0.5 px-1 font-mono text-[11px] text-muted">#{taskId}</p>
         </div>
+        {#if task !== null && terminalStatusOptions.length > 0}
+          <div class="shrink-0 self-start pt-0.5">
+            <TerminalActionButton
+              cardId={task.id}
+              attributeName="status"
+              terminalOptions={terminalStatusOptions}
+              currentValue={currentStatusId}
+              onChanged={() => void refresh(false)}
+            />
+          </div>
+        {/if}
         {#if navTotal > 0 && navIndex >= 0}
           <!-- Top-right prev/next chevrons. Hidden on cold-load (navIndex
                < 0); rendered with a position counter so the user knows
@@ -982,7 +1099,7 @@
           {:else}
             <div data-testid="task-tag-row" class="flex flex-wrap gap-1">
               {#each appliedTags as tid (tid)}
-                {@const path = tagPaths[tid] ?? `#${tid}`}
+                {@const path = tagPaths[tid.toString()] ?? `#${tid}`}
                 <TagChip
                   label={path}
                   removable

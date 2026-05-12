@@ -77,7 +77,7 @@ export function boundMatrix(
   cardTypes: readonly CardTypeRow[],
   def: AttributeDefRow | null,
 ): MatrixRow[] {
-  const byId = new Map<number, { ordering: number; required: boolean }>();
+  const byId = new Map<bigint, { ordering: number; required: boolean }>();
   if (def) {
     for (const b of def.bound_to) {
       byId.set(b.card_type_id, {
@@ -142,30 +142,31 @@ export function validateNewAttr(draft: NewAttrDraft): ValidationResult {
 }
 
 /**
- * Strip the `ref:` prefix from a value_type label, returning just the
- * card_type name. Returns `null` for non-ref types.
+ * Resolve the referenced card_type name from an attribute_def's wire
+ * fields. Returns `null` for non-ref types.
  *
- *   parseRefCardType('ref:milestone')                    -> 'milestone'
- *   parseRefCardType('text')                             -> null
- *   parseRefCardType('ref:')                             -> null   (empty target)
- *   parseRefCardType('card_ref', 'milestone_ref')        -> 'milestone' (legacy)
- *   parseRefCardType('user_ref')                         -> null (not a card type)
+ *   parseRefCardType('ref:milestone')                       -> 'milestone'
+ *   parseRefCardType('card_ref', 'person')                  -> 'person'
+ *   parseRefCardType('card_ref[]', 'tag')                   -> 'tag'
+ *   parseRefCardType('text')                                -> null
+ *   parseRefCardType('ref:')                                -> null
  *
- * Server seed uses the legacy `card_ref` / `user_ref` tokens; the optional
- * `attrName` lets callers infer the target card type from a `<name>_ref`
- * convention so the admin Value-cards pane lights up for built-ins.
+ * The server seeds card_ref attribute_defs with `target_card_type_name`
+ * already resolved — the helper uses it when present rather than
+ * inferring anything from the attribute name. `ref:<type>` continues to
+ * work for client-side normalised types.
  */
 export function parseRefCardType(
   valueType: string,
-  attrName?: string,
+  targetCardTypeName?: string,
 ): string | null {
   if (valueType.startsWith('ref:')) {
     const t = valueType.slice(4).trim();
     return t === '' ? null : t;
   }
-  if (valueType === 'card_ref' && attrName !== undefined && attrName.endsWith('_ref')) {
-    const target = attrName.slice(0, -'_ref'.length).trim();
-    return target === '' ? null : target;
+  if (valueType === 'card_ref' || valueType === 'card_ref[]') {
+    const t = (targetCardTypeName ?? '').trim();
+    return t === '' ? null : t;
   }
   return null;
 }

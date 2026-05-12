@@ -20,6 +20,7 @@
 
 import { v4 as uuid } from 'uuid';
 
+import type { ApiFault, BindingEntry, FaultKind, Result } from './bag.svelte';
 import { BatchAbortedError, SubRequestError } from './errors.js';
 import {
   type SubRequest,
@@ -27,6 +28,137 @@ import {
   subRequestToJson,
   subResponseFromJson,
 } from './subrequest.js';
+
+/* -------------------------------------------------------------------------- */
+/* BigInt-aware JSON helpers.                                                 */
+/*                                                                            */
+/* The server emits id fields as JSON strings (Go `json:",string"` on every  */
+/* int64 id field) so full int64 precision crosses the wire intact —         */
+/* JSON.parse would otherwise round any value > Number.MAX_SAFE_INTEGER to   */
+/* the nearest float64. We convert those string-encoded ids back to bigint   */
+/* in `reviveIds` and emit outgoing bigint values as JSON strings via        */
+/* `stringifyBigInt`.                                                        */
+/*                                                                            */
+/* "Id-named" means a key matching /(?:^|_)id$|_ids$|Id$|Ids$/. Both single-  */
+/* value and array fields are handled.                                        */
+/* -------------------------------------------------------------------------- */
+
+const ID_KEY_RE = /(?:^|_)id$|_ids$|Id$|Ids$/;
+const DIGITS_RE = /^-?\d+$/;
+
+/**
+ * Attribute names whose values are card_ref / card_ref[] in v1. Stored
+ * as JSON numbers by the demo seed (`to_jsonb(bigint)`) but as JSON
+ * strings when written through the dispatcher (`stringifyBigInt`); we
+ * normalise both shapes to bigint at decode time so the rendering
+ * layer can compare against picker option values without type-juggling
+ * across number vs. bigint vs. string.
+ *
+ * Closed list because the reviver runs over every response — we don't
+ * want to BigInt-ify arbitrary integer attributes (e.g. `sort_order`).
+ * Phase-aligned with the seeded set of card_ref attribute_defs.
+ */
+/**
+ * Runtime registry of attribute names whose values are card_ref bigint
+ * ids. Populated by `AttributeSchemaCache.load()` from the seeded +
+ * admin-defined attribute_def rows; the dispatcher consults it when
+ * walking response JSON. Built-in card_refs (status, assignee,
+ * milestone_ref, …) AND any custom admin attribute show up here once
+ * the schema has been fetched — there is no hard-coded list to
+ * maintain.
+ *
+ * The set starts empty; `main.ts` preloads the schema right after the
+ * /auth/me probe so the first batched data fetch already has the
+ * correct revival map. Components that bypass that preload (the rare
+ * test, the MCP CLI) will see card_ref values as raw JSON numbers
+ * until they trigger a schema load.
+ */
+const CARD_REF_ATTR_KEYS = new Set<string>();
+const CARD_REF_ARRAY_ATTR_KEYS = new Set<string>();
+
+/** Register an attribute name so the dispatcher revives its bigint ids. */
+export function registerCardRefAttr(name: string, isArray: boolean): void {
+  if (isArray) CARD_REF_ARRAY_ATTR_KEYS.add(name);
+  else CARD_REF_ATTR_KEYS.add(name);
+}
+
+/** Test hook: forget every registered card_ref attribute. */
+export function clearCardRefAttrRegistry(): void {
+  CARD_REF_ATTR_KEYS.clear();
+  CARD_REF_ARRAY_ATTR_KEYS.clear();
+}
+
+function shouldReviveAsId(key: string): boolean {
+  return ID_KEY_RE.test(key) || CARD_REF_ATTR_KEYS.has(key);
+}
+
+function shouldReviveAsIdArray(key: string): boolean {
+  return CARD_REF_ARRAY_ATTR_KEYS.has(key);
+}
+
+/**
+ * Walk a parsed JSON value and convert id-shaped fields to bigint.
+ * Operates bottom-up; arrays of id-strings (e.g. `removed_tag_ids:["1","2"]`)
+ * are detected by the parent key. Returns the input mutated in place.
+ *
+ * Non-string values left alone — a legacy number id (small enough to fit in
+ * Number.MAX_SAFE_INTEGER, emitted by an older server) is also accepted to
+ * keep transition mixes safe.
+ *
+ * Card_ref attribute values are revived even though their keys don't
+ * end in `id`; see CARD_REF_ATTR_KEYS above.
+ */
+export function reviveIds(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) value[i] = reviveIds(value[i]);
+    return value;
+  }
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    for (const k of Object.keys(obj)) {
+      const v = obj[k];
+      if (shouldReviveAsId(k)) {
+        if (typeof v === 'string' && DIGITS_RE.test(v)) {
+          obj[k] = BigInt(v);
+        } else if (typeof v === 'number' && Number.isInteger(v)) {
+          obj[k] = BigInt(v);
+        } else if (Array.isArray(v)) {
+          for (let i = 0; i < v.length; i++) {
+            const e = v[i];
+            if (typeof e === 'string' && DIGITS_RE.test(e)) {
+              v[i] = BigInt(e);
+            } else if (typeof e === 'number' && Number.isInteger(e)) {
+              v[i] = BigInt(e);
+            }
+          }
+        }
+      } else if (shouldReviveAsIdArray(k) && Array.isArray(v)) {
+        for (let i = 0; i < v.length; i++) {
+          const e = v[i];
+          if (typeof e === 'string' && DIGITS_RE.test(e)) {
+            v[i] = BigInt(e);
+          } else if (typeof e === 'number' && Number.isInteger(e)) {
+            v[i] = BigInt(e);
+          }
+        }
+      } else {
+        obj[k] = reviveIds(v);
+      }
+    }
+    return obj;
+  }
+  return value;
+}
+
+/**
+ * Stringify a value to JSON, emitting bigint values as JSON strings
+ * (`"123"`). The server's `json:",string"` tag parses them back to int64.
+ */
+export function stringifyBigInt(value: unknown): string {
+  return JSON.stringify(value, (_k, v) =>
+    typeof v === 'bigint' ? v.toString() : v,
+  );
+}
 
 /* -------------------------------------------------------------------------- */
 /* Registry types — minimal interface here so this file does not depend on    */
@@ -56,20 +188,32 @@ export interface HandlerRegistryLike {
 /* -------------------------------------------------------------------------- */
 
 export interface AuthStateLike {
-  accessToken: string | null;
   isSignedIn: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
-/* Internal Pending record — one per in-flight `request()` call.              */
+/* Internal Pending record — one per in-flight call. Either a Promise-based   */
+/* `request()` caller (kind='promise') or a Bag binding (kind='binding').     */
+/* Both share the same queue / batch / decode pipeline; the flush dispatch    */
+/* loop picks the right delivery channel per entry.                           */
 /* -------------------------------------------------------------------------- */
 
-interface Pending {
+interface PendingPromise {
+  kind: 'promise';
   sub: SubRequest;
   decode: Decode<unknown>;
   resolve: (v: unknown) => void;
   reject: (e: unknown) => void;
 }
+
+interface PendingBinding {
+  kind: 'binding';
+  sub: SubRequest;
+  bindId: string;
+  seq: number;
+}
+
+type Pending = PendingPromise | PendingBinding;
 
 /* -------------------------------------------------------------------------- */
 /* Schedule fn: rAF when available (coalesces a render burst), microtask     */
@@ -95,7 +239,7 @@ export interface DispatcherOptions {
   registry: HandlerRegistryLike;
   /** Optional fetch override; defaults to global `fetch`. Tests inject a mock. */
   fetch?: typeof fetch;
-  /** Optional auth state. When set & signed-in, adds `Authorization` header. */
+  /** Optional auth state — drives the 401 → onUnauthorized retry gate. */
   authState?: AuthStateLike;
   /** Optional refresh hook. See class doc. */
   onUnauthorized?: () => Promise<boolean>;
@@ -129,6 +273,15 @@ export class Dispatcher {
   /** True once we have asked the scheduler for a flush callback. */
   private flushScheduled = false;
 
+  /** Active bag bindings — id → handler entry. Bag.dispose() unregisters. */
+  private readonly bindings = new Map<string, BindingEntry>();
+
+  /** Fault listeners keyed by ApiFault['kind']. Registered at boot in
+   *  `main.ts`; every batch-level or sub-level failure flows through here
+   *  before per-call handlers see it, so behaviours like "401 ⇒ /login"
+   *  live in exactly one place. */
+  private readonly faultListeners = new Map<FaultKind, Array<(f: ApiFault) => void>>();
+
   constructor(opts: DispatcherOptions) {
     this.apiBase = opts.apiBase;
     this.registry = opts.registry;
@@ -136,6 +289,67 @@ export class Dispatcher {
     this.authState = opts.authState;
     this.onUnauthorized = opts.onUnauthorized;
     this.schedule = opts.schedule ?? defaultSchedule;
+  }
+
+  /**
+   * Register a fault listener. Every failure path (sub-error, batch
+   * abort, decode failure, network error, HTTP 4xx/5xx) emits an
+   * {@link ApiFault} of the matching kind; every listener for that
+   * kind is invoked before per-call handlers see the failure. This is
+   * the single place to wire global behaviours like 401 ⇒ /login or
+   * "decode errors go to the toast".
+   */
+  onFault(kind: FaultKind, listener: (f: ApiFault) => void): void {
+    let bucket = this.faultListeners.get(kind);
+    if (bucket === undefined) {
+      bucket = [];
+      this.faultListeners.set(kind, bucket);
+    }
+    bucket.push(listener);
+  }
+
+  /** Internal: register a {@link Bag} binding. Owned by `Bag.bind()`. */
+  bindRegister(id: string, entry: BindingEntry): void {
+    this.bindings.set(id, entry);
+  }
+
+  /** Internal: unregister a {@link Bag} binding. Owned by `Bag.dispose()`. */
+  bindUnregister(id: string): void {
+    this.bindings.delete(id);
+  }
+
+  /**
+   * Internal: queue a sub-request for a bound id. Allocates a fresh
+   * sequence number so `replaceInflight` can drop stale responses on
+   * arrival.
+   */
+  bindSubmit<I, R>(bindId: string, spec: HandlerSpec<I, R>, data: I): void {
+    const entry = this.bindings.get(bindId);
+    if (entry === undefined) return; // bag disposed mid-flight; drop
+    entry.latestSeq++;
+    const seq = entry.latestSeq;
+    let encoded: unknown;
+    try {
+      encoded = data === undefined ? null : spec.encode(data);
+    } catch (e) {
+      // Synchronous encode failure routes through the same fault path
+      // as a decode error so global listeners (e.g. toast) see it too.
+      const fault: ApiFault = { kind: 'decode', message: `encode_error: ${String(e)}` };
+      this.emitFault(fault);
+      entry.handler({ ok: false, error: fault });
+      return;
+    }
+    const sub: SubRequest = {
+      id: uuid(),
+      type: 'data',
+      endpoint: spec.endpoint,
+      action: spec.action,
+      ref: {},
+      key: {},
+      data: encoded,
+    };
+    this.queue.push({ kind: 'binding', sub, bindId, seq });
+    this.maybeScheduleFlush();
   }
 
   /**
@@ -176,6 +390,7 @@ export class Dispatcher {
       };
 
       this.queue.push({
+        kind: 'promise',
         sub,
         decode: spec.decode as Decode<unknown>,
         resolve: resolve as (v: unknown) => void,
@@ -199,12 +414,11 @@ export class Dispatcher {
   }
 
   private buildHeaders(): Record<string, string> {
-    const h: Record<string, string> = { 'Content-Type': 'application/json' };
-    const tok = this.authState?.accessToken;
-    if (tok && tok.length > 0) {
-      h['Authorization'] = `Bearer ${tok}`;
-    }
-    return h;
+    // BFF cookie-only model: the kitp_session cookie identifies the
+    // actor on the server side. The dispatcher no longer carries the
+    // access token in JS — same-origin fetch sends the cookie
+    // automatically, and there is nothing here to leak to XSS.
+    return { 'Content-Type': 'application/json' };
   }
 
   private async flush(): Promise<void> {
@@ -217,7 +431,7 @@ export class Dispatcher {
     const batch = this.queue;
     this.queue = [];
 
-    const body = JSON.stringify({
+    const body = stringifyBigInt({
       subrequests: batch.map((p) => subRequestToJson(p.sub)),
     });
     const url = `${this.apiBase}/api/v1/batch`;
@@ -230,7 +444,9 @@ export class Dispatcher {
         body,
       });
     } catch (e) {
-      this.failAll(batch, new BatchAbortedError(String(e)));
+      const fault: ApiFault = { kind: 'network', message: String(e) };
+      this.emitFault(fault);
+      this.failAll(batch, fault, new BatchAbortedError(String(e)));
       return;
     }
 
@@ -255,7 +471,9 @@ export class Dispatcher {
             body,
           });
         } catch (e) {
-          this.failAll(batch, new BatchAbortedError(String(e)));
+          const fault: ApiFault = { kind: 'network', message: String(e) };
+          this.emitFault(fault);
+          this.failAll(batch, fault, new BatchAbortedError(String(e)));
           return;
         }
       }
@@ -264,7 +482,9 @@ export class Dispatcher {
     if (resp.status >= 400) {
       // 4xx / 5xx: the body has no per-sub-response slots, so the batch
       // contract collapses to "every future fails the same way."
-      this.failAll(batch, new BatchAbortedError(`http_${resp.status}`));
+      const fault: ApiFault = { kind: 'http', status: resp.status };
+      this.emitFault(fault);
+      this.failAll(batch, fault, new BatchAbortedError(`http_${resp.status}`));
       return;
     }
 
@@ -272,18 +492,25 @@ export class Dispatcher {
     try {
       const text = await resp.text();
       parsed = JSON.parse(text);
+      parsed = reviveIds(parsed);
     } catch (e) {
-      this.failAll(batch, new BatchAbortedError(`bad_response: ${String(e)}`));
+      const fault: ApiFault = { kind: 'decode', message: `bad_response: ${String(e)}` };
+      this.emitFault(fault);
+      this.failAll(batch, fault, new BatchAbortedError(`bad_response: ${String(e)}`));
       return;
     }
 
     if (!parsed || typeof parsed !== 'object') {
-      this.failAll(batch, new BatchAbortedError('bad_response: not an object'));
+      const fault: ApiFault = { kind: 'decode', message: 'bad_response: not an object' };
+      this.emitFault(fault);
+      this.failAll(batch, fault, new BatchAbortedError('bad_response: not an object'));
       return;
     }
     const rawSubs = (parsed as Record<string, unknown>)['subresponses'];
     if (!Array.isArray(rawSubs)) {
-      this.failAll(batch, new BatchAbortedError('bad_response: no subresponses'));
+      const fault: ApiFault = { kind: 'decode', message: 'bad_response: no subresponses' };
+      this.emitFault(fault);
+      this.failAll(batch, fault, new BatchAbortedError('bad_response: no subresponses'));
       return;
     }
 
@@ -298,32 +525,85 @@ export class Dispatcher {
     for (const p of batch) {
       const sr = subs.get(p.sub.id);
       if (sr === undefined) {
-        p.reject(new BatchAbortedError('missing_subresponse'));
+        const fault: ApiFault = { kind: 'aborted', reason: 'missing_subresponse' };
+        this.deliverFault(p, fault, new BatchAbortedError('missing_subresponse'));
         continue;
       }
       if (sr.ok) {
-        try {
-          const out = p.decode(sr.data);
-          p.resolve(out);
-        } catch (e) {
-          p.reject(new BatchAbortedError(`decode_error: ${String(e)}`));
-        }
+        this.deliverOk(p, sr.data);
         continue;
       }
       const err = sr.error;
       if (err && err.code === 'aborted') {
-        p.reject(new BatchAbortedError(err.message.length > 0 ? err.message : 'aborted'));
+        const reason = err.message.length > 0 ? err.message : 'aborted';
+        const fault: ApiFault = { kind: 'aborted', reason };
+        this.emitFault(fault);
+        this.deliverFault(p, fault, new BatchAbortedError(reason));
       } else {
-        p.reject(
-          new SubRequestError(err?.code ?? 'unknown_error', err?.message ?? ''),
-        );
+        const fault: ApiFault = {
+          kind: 'sub_error',
+          code: err?.code ?? 'unknown_error',
+          message: err?.message ?? '',
+        };
+        this.emitFault(fault);
+        this.deliverFault(p, fault, new SubRequestError(fault.code, fault.message));
       }
     }
   }
 
-  private failAll(batch: readonly Pending[], error: unknown): void {
+  /** Emit a fault to every registered listener for its kind. */
+  private emitFault(f: ApiFault): void {
+    const bucket = this.faultListeners.get(f.kind);
+    if (bucket === undefined) return;
+    for (const fn of bucket) {
+      try { fn(f); } catch { /* swallow — one bad listener cannot break the funnel */ }
+    }
+  }
+
+  /** Deliver a decoded success to either a promise caller or a bound handler. */
+  private deliverOk(p: Pending, raw: unknown): void {
+    if (p.kind === 'promise') {
+      try {
+        p.resolve(p.decode(raw));
+      } catch (e) {
+        const fault: ApiFault = { kind: 'decode', message: `decode_error: ${String(e)}` };
+        this.emitFault(fault);
+        p.reject(new BatchAbortedError(`decode_error: ${String(e)}`));
+      }
+      return;
+    }
+    const entry = this.bindings.get(p.bindId);
+    if (entry === undefined) return; // bag disposed mid-flight
+    if (entry.replaceInflight && p.seq !== entry.latestSeq) return; // superseded
+    let decoded: unknown;
+    try {
+      decoded = entry.decode(raw);
+    } catch (e) {
+      const fault: ApiFault = { kind: 'decode', message: `decode_error: ${String(e)}` };
+      this.emitFault(fault);
+      entry.handler({ ok: false, error: fault });
+      return;
+    }
+    entry.handler({ ok: true, data: decoded } as Result<unknown>);
+  }
+
+  /** Deliver a failure to either a promise caller or a bound handler. The
+   *  fault has already been emitted to the global registry by the caller. */
+  private deliverFault(p: Pending, fault: ApiFault, err: Error): void {
+    if (p.kind === 'promise') {
+      p.reject(err);
+      return;
+    }
+    const entry = this.bindings.get(p.bindId);
+    if (entry === undefined) return;
+    if (entry.replaceInflight && p.seq !== entry.latestSeq) return;
+    entry.handler({ ok: false, error: fault });
+  }
+
+  /** Batch-level failure: every entry in the batch sees the same fault. */
+  private failAll(batch: readonly Pending[], fault: ApiFault, err: Error): void {
     for (const p of batch) {
-      p.reject(error);
+      this.deliverFault(p, fault, err);
     }
   }
 }

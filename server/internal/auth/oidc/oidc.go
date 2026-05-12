@@ -41,6 +41,16 @@ type Config struct {
 	RoleClaim     string   // claim to read for role mapping; default "groups"
 	DefaultRole   string   // role granted when no claim matches; default "worker"
 	RequiredPairs [][2]string
+
+	// BFF redirect knobs. ClientID is required for the
+	// /api/v1/auth/oidc/start redirect; ClientSecret is required for
+	// confidential clients (the token endpoint exchange in /callback).
+	// RedirectURI must match what's registered with the OP; we default
+	// to "<server>/api/v1/auth/oidc/callback" if main.go doesn't set it.
+	ClientID     string
+	ClientSecret string
+	RedirectURI  string
+	Scopes       string // space-separated; default "openid profile email"
 }
 
 // FromEnv builds a Config from the standard env vars. Returns nil when
@@ -63,6 +73,13 @@ func FromEnv(env func(string) string) *Config {
 	if cfg.DefaultRole == "" {
 		cfg.DefaultRole = "worker"
 	}
+	cfg.ClientID = env("OIDC_CLIENT_ID")
+	cfg.ClientSecret = env("OIDC_CLIENT_SECRET")
+	cfg.RedirectURI = env("OIDC_REDIRECT_URI")
+	cfg.Scopes = env("OIDC_SCOPES")
+	if cfg.Scopes == "" {
+		cfg.Scopes = "openid profile email"
+	}
 	if req := env("OIDC_REQUIRED_CLAIMS"); req != "" {
 		for _, kv := range strings.Split(req, ",") {
 			pair := strings.SplitN(strings.TrimSpace(kv), "=", 2)
@@ -76,8 +93,10 @@ func FromEnv(env func(string) string) *Config {
 
 // discoveryDoc is the subset of openid-configuration we care about.
 type discoveryDoc struct {
-	Issuer  string `json:"issuer"`
-	JWKSURL string `json:"jwks_uri"`
+	Issuer                string `json:"issuer"`
+	JWKSURL               string `json:"jwks_uri"`
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
 }
 
 // jwksDoc is the subset of JWKS we care about (RSA keys with kid).
@@ -247,6 +266,43 @@ func (v *Validator) lookupKey(ctx context.Context, kid string) (*rsa.PublicKey, 
 	return nil, fmt.Errorf("oidc: no key for kid=%s", kid)
 }
 
+// AuthorizationEndpoint returns the OP's authorize URL. May trigger a
+// discovery fetch on first call. Used by the BFF /oidc/start handler.
+func (v *Validator) AuthorizationEndpoint(ctx context.Context) (string, error) {
+	if err := v.ensureDiscovery(ctx); err != nil {
+		return "", err
+	}
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.disco.AuthorizationEndpoint == "" {
+		return "", fmt.Errorf("oidc: discovery missing authorization_endpoint")
+	}
+	return v.disco.AuthorizationEndpoint, nil
+}
+
+// TokenEndpoint returns the OP's token URL.
+func (v *Validator) TokenEndpoint(ctx context.Context) (string, error) {
+	if err := v.ensureDiscovery(ctx); err != nil {
+		return "", err
+	}
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.disco.TokenEndpoint == "" {
+		return "", fmt.Errorf("oidc: discovery missing token_endpoint")
+	}
+	return v.disco.TokenEndpoint, nil
+}
+
+func (v *Validator) ensureDiscovery(ctx context.Context) error {
+	v.mu.RLock()
+	loaded := v.disco != nil
+	v.mu.RUnlock()
+	if loaded {
+		return nil
+	}
+	return v.refreshJWKS(ctx)
+}
+
 // refreshJWKS re-fetches discovery + JWKS. Called on first use, on TTL
 // expiry, and on kid miss.
 func (v *Validator) refreshJWKS(ctx context.Context) error {
@@ -367,14 +423,82 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	row := v.pool.QueryRow(ctx, `SELECT id FROM user_account WHERE oidc_sub = $1`, sub)
 	err := row.Scan(&userID)
 	if err != nil {
-		// Not found: insert.
-		row = v.pool.QueryRow(ctx, `
+		// Not found: insert. We also create the matching person card and
+		// the user_account_person link in the same tx so an assignee
+		// dropdown immediately shows the new login. card_type and
+		// attribute_def lookups go through the in-table names (cheap;
+		// these rows are seed-stable).
+		tx, err := v.pool.Begin(ctx)
+		if err != nil {
+			return 0, "", fmt.Errorf("oidc: provision begin: %w", err)
+		}
+		defer tx.Rollback(ctx)
+		row = tx.QueryRow(ctx, `
 			INSERT INTO user_account (oidc_sub, display_name, email)
 			VALUES ($1, $2, NULLIF($3, ''))
 			RETURNING id
 		`, sub, displayName, email)
 		if err := row.Scan(&userID); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision insert: %w", err)
+		}
+		var personCardID int64
+		row = tx.QueryRow(ctx, `
+			INSERT INTO card (card_type_id, parent_card_id)
+			SELECT id, NULL FROM card_type WHERE name = 'person'
+			RETURNING id
+		`)
+		if err := row.Scan(&personCardID); err != nil {
+			return 0, "", fmt.Errorf("oidc: provision person card: %w", err)
+		}
+		// card_create + title + (optional) email activity rows mirror
+		// the runtime path so the activity stream looks consistent.
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO activity (card_id, kind, actor_id) VALUES ($1, 'card_create', $2)`,
+			personCardID, userID); err != nil {
+			return 0, "", fmt.Errorf("oidc: provision person activity: %w", err)
+		}
+		var titleActID int64
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
+			SELECT $1, 'attr_update', ad.id, NULL, to_jsonb($2::text), $3
+			FROM attribute_def ad WHERE ad.name = 'title'
+			RETURNING id
+		`, personCardID, displayName, userID).Scan(&titleActID); err != nil {
+			return 0, "", fmt.Errorf("oidc: provision title activity: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
+			SELECT $1, ad.id, to_jsonb($2::text), $3
+			FROM attribute_def ad WHERE ad.name = 'title'
+		`, personCardID, displayName, titleActID); err != nil {
+			return 0, "", fmt.Errorf("oidc: provision title value: %w", err)
+		}
+		if email != "" {
+			var emailActID int64
+			if err := tx.QueryRow(ctx, `
+				INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
+				SELECT $1, 'attr_update', ad.id, NULL, to_jsonb($2::text), $3
+				FROM attribute_def ad WHERE ad.name = 'email'
+				RETURNING id
+			`, personCardID, email, userID).Scan(&emailActID); err != nil {
+				return 0, "", fmt.Errorf("oidc: provision email activity: %w", err)
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
+				SELECT $1, ad.id, to_jsonb($2::text), $3
+				FROM attribute_def ad WHERE ad.name = 'email'
+			`, personCardID, email, emailActID); err != nil {
+				return 0, "", fmt.Errorf("oidc: provision email value: %w", err)
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO user_account_person (user_account_id, person_card_id)
+			VALUES ($1, $2)
+		`, userID, personCardID); err != nil {
+			return 0, "", fmt.Errorf("oidc: provision link: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return 0, "", fmt.Errorf("oidc: provision commit: %w", err)
 		}
 	} else {
 		// Update display_name + email if they changed (cheap upsert-ish).
@@ -394,7 +518,7 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	matched := false
 	if len(values) > 0 {
 		for _, val := range values {
-			var roleID int32
+			var roleID int64
 			row := v.pool.QueryRow(ctx, `SELECT role_id FROM role_mapping WHERE claim_value = $1`, val)
 			if err := row.Scan(&roleID); err == nil {
 				if _, err := v.pool.Exec(ctx, `
@@ -409,7 +533,7 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		}
 	}
 	if !matched && v.cfg.DefaultRole != "" {
-		var roleID int32
+		var roleID int64
 		row := v.pool.QueryRow(ctx, `SELECT id FROM role WHERE name = $1`, v.cfg.DefaultRole)
 		if err := row.Scan(&roleID); err == nil {
 			_, _ = v.pool.Exec(ctx, `

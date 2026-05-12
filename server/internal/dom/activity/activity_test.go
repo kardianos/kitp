@@ -58,9 +58,9 @@ func TestSelectCrossCard(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t1", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T1"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T1"}`, pOut.ID))},
 		{ID: "t2", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T2"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T2"}`, pOut.ID))},
 	}})
 	mustOK(t, resp.Subresponses[0])
 	mustOK(t, resp.Subresponses[1])
@@ -73,9 +73,9 @@ func TestSelectCrossCard(t *testing.T) {
 	// Add one comment on each task so we have unambiguous per-card rows.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "c1", Endpoint: "comment", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"body":"hello t1"}`, t1.ID))},
+			fmt.Sprintf(`{"card_id":"%d","body":"hello t1"}`, t1.ID))},
 		{ID: "c2", Endpoint: "comment", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"body":"hello t2"}`, t2.ID))},
+			fmt.Sprintf(`{"card_id":"%d","body":"hello t2"}`, t2.ID))},
 	}})
 	mustOK(t, resp.Subresponses[0])
 	mustOK(t, resp.Subresponses[1])
@@ -147,7 +147,7 @@ func TestSelectPerCardUnchanged(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
 	}})
 	mustOK(t, resp.Subresponses[0])
 	var tOut card.InsertOutput
@@ -156,7 +156,7 @@ func TestSelectPerCardUnchanged(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "a", Endpoint: "activity", Action: "select", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d"}`, tOut.ID))},
 	}})
 	mustOK(t, resp.Subresponses[0])
 	var aOut activity.SelectOutput

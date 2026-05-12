@@ -1,4 +1,4 @@
-// Command schema-gen reads db/schema/declarative.json and prints a
+// Command schema-gen reads db/schema/declarative.toml and prints a
 // CREATE-everything + INSERT-seeds SQL script to stdout. Pipe to psql
 // for a fresh install, or use `make db-reset` which drives the same
 // generator.
@@ -21,7 +21,7 @@ func main() {
 	var out string
 	flag.StringVar(&out, "o", "", "write to this file instead of stdout")
 	var path string
-	flag.StringVar(&path, "schema", "", "path to declarative.json (default: walk up from package source)")
+	flag.StringVar(&path, "schema", "", "path to declarative.toml (default: walk up from package source)")
 	var demo bool
 	flag.BoolVar(&demo, "demo", false, "include the opt-in demo seed section after the built-in seeds")
 	flag.Parse()

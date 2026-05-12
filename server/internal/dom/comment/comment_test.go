@@ -50,7 +50,7 @@ func TestCommentLifecycle(t *testing.T) {
 	// activity stream begins with [card_create, attr_update title].
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -60,11 +60,11 @@ func TestCommentLifecycle(t *testing.T) {
 	sp.ResetWrites()
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "c1", Endpoint: "comment", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"body":"first"}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d","body":"first"}`, tOut.ID))},
 		{ID: "c2", Endpoint: "comment", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"body":"second"}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d","body":"second"}`, tOut.ID))},
 		{ID: "c3", Endpoint: "comment", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"body":"third"}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d","body":"third"}`, tOut.ID))},
 	}})
 	for _, sr := range resp.Subresponses {
 		if !sr.OK {
@@ -77,7 +77,7 @@ func TestCommentLifecycle(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "a", Endpoint: "activity", Action: "select", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d"}`, tOut.ID))},
 	}})
 	var aOut activity.SelectOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)

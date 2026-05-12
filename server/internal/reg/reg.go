@@ -67,7 +67,7 @@ type Handler struct {
 	Authz        func(ctx context.Context, in any) error
 	Validate     func(ctx context.Context, pool ValidationPool, in any) error
 	ProcessName  string
-	CardTypeID   func(ctx context.Context, pool ValidationPool, in any) (int32, error)
+	CardTypeID   func(ctx context.Context, pool ValidationPool, in any) (int64, error)
 	Run          func(ctx context.Context, tx pgx.Tx, ins []any) (outs []any, err error)
 }
 

@@ -9,17 +9,24 @@
    * Attributes commit through the embedded `AttributeSidePanel`.
    */
 
+  import { getContext } from 'svelte';
+
+  import type { AuthState } from '../../auth/auth_state.svelte';
   import { getDispatcher } from '../../dispatch/context';
   import {
-    AttributeSchemaCache,
+    sharedSchemaCache,
     type FilterAttribute,
   } from '../../filter/attribute_schema.svelte';
   import {
     attributeUpdate,
     cardSearch,
     cardSelectWithAttributes,
-    userSelect,
   } from '../../reg/handlers';
+  import ImportWizard from '../../screens/admin/ImportWizard.svelte';
+  import {
+    downloadProjectExportCsv,
+    downloadProjectExportZip,
+  } from '../../screens/admin/project_export';
   import type {
     AttributeUpdateInput,
     AttributeUpdateOutput,
@@ -28,9 +35,7 @@
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
     CardWithAttrs,
-    UserRow,
-    UserSelectInput,
-    UserSelectOutput,
+    ID,
   } from '../../reg/types';
   import SlideOver from '../SlideOver.svelte';
   import Spinner from '../Spinner.svelte';
@@ -39,17 +44,17 @@
 
   interface Props {
     open: boolean;
-    cardId: number | null;
+    cardId: ID | null;
     onSaved?: () => void;
   }
 
   let { open = $bindable(), cardId, onSaved }: Props = $props();
 
   const dispatcher = getDispatcher();
-  const schemaCache = new AttributeSchemaCache(dispatcher);
+  const schemaCache = sharedSchemaCache(dispatcher);
 
   let project = $state<CardWithAttrs | null>(null);
-  let users = $state<readonly UserRow[]>([]);
+  let persons = $state<readonly CardWithAttrs[]>([]);
   let loading = $state(false);
   let errorMsg = $state<string | null>(null);
 
@@ -57,6 +62,21 @@
   let descDraft = $state('');
   let titleSaving = $state(false);
   let descSaving = $state(false);
+
+  // Export state. The three checkboxes flip the endpoint's query
+  // params; `exporting` disables the buttons while bytes are flowing
+  // so double-clicks don't fire two requests. `includeAttachments`
+  // and `includeActivity` apply only to the full-ZIP export.
+  let includeDeleted = $state(false);
+  let includeAttachments = $state(false);
+  let includeActivity = $state(false);
+  let exporting = $state(false);
+  let importOpen = $state(false);
+
+  // Auth state is provided by the App root via setContext('authState',
+  // ...). We read it lazily here so test harnesses that don't wire it
+  // (e.g. unit tests that mount the panel in isolation) still work.
+  const authState = getContext<AuthState | undefined>('authState') ?? null;
 
   /** Schema for the AttributeSidePanel — defs bound to the `project` card
    *  type, minus the built-ins we render with dedicated fields above. */
@@ -82,15 +102,29 @@
     return out;
   });
 
+  /** Pull the person-card title (used wherever we need the display name). */
+  function personLabel(p: CardWithAttrs): string {
+    const t = p.attributes['title'];
+    return typeof t === 'string' && t.length > 0 ? t : `#${p.id}`;
+  }
+
   const refOptions = $derived.by((): Record<string, { value: unknown; label: string }[]> => {
     const out: Record<string, { value: unknown; label: string }[]> = {};
-    out['assignee'] = users.map((u) => ({ value: u.id, label: u.display_name }));
+    // assignee is now a card_ref to a `person` card. We still pre-resolve
+    // the option list here so the side-panel trigger button can render a
+    // label for the currently-set value without a round-trip.
+    out['assignee'] = persons.map((p) => ({ value: p.id, label: personLabel(p) }));
     return out;
   });
 
   /**
-   * Async loaders for ref:* attributes. `ref:user` filters the eagerly-
-   * loaded `users` list in memory; every other ref type goes through
+   * Async loaders for ref:* attributes. The `assignee` attribute is
+   * special-cased: the def is a generic `card_ref` (the schema cache
+   * normalises that to `ref:card` because the attribute name doesn't
+   * end in `_ref`), but the picker is restricted to `person` cards by
+   * convention — so we filter the eagerly-loaded `persons` list in
+   * memory rather than dispatching `card.search` with an unhelpful
+   * `cardTypeName='card'`. Every other `ref:<card_type>` goes through
    * `card.search` so the picker scales for large card counts.
    */
   const refLoaders = $derived.by(() => {
@@ -101,23 +135,31 @@
     for (const fa of schema) {
       if (!fa.valueType.startsWith('ref:')) continue;
       const cardType = fa.valueType.slice('ref:'.length);
-      if (cardType === 'user') {
+      if (fa.name === 'assignee') {
         out[fa.name] = async (q: string) => {
           const needle = q.trim().toLowerCase();
           const matched = needle === ''
-            ? users
-            : users.filter((u) => u.display_name.toLowerCase().includes(needle));
-          return matched.slice(0, 50).map((u) => ({
-            value: u.id,
-            label: u.display_name,
+            ? persons
+            : persons.filter((p) => personLabel(p).toLowerCase().includes(needle));
+          return matched.slice(0, 50).map((p) => ({
+            value: p.id,
+            label: personLabel(p),
           }));
         };
       } else {
+        // Ref:* typeahead is project-scoped: the project being edited
+        // IS the enclosing project, so milestones/components/tags
+        // under it have parent_card_id == cardId. person refs are
+        // global so we leave parent_card_id unset.
+        const scopeParent =
+          cardType !== 'person' && cardId !== null ? cardId : undefined;
         out[fa.name] = async (q: string) => {
+          const data: CardSearchInput = { cardTypeName: cardType, query: q, limit: 50 };
+          if (scopeParent !== undefined) data.parentCardId = scopeParent;
           const res = await dispatcher.request<CardSearchInput, CardSearchOutput>({
             endpoint: cardSearch.endpoint,
             action: cardSearch.action,
-            data: { cardTypeName: cardType, query: q, limit: 50 },
+            data,
           });
           return res.rows.map((r) => ({ value: r.id, label: r.title }));
         };
@@ -140,18 +182,21 @@
       action: cardSelectWithAttributes.action,
       data: { cardTypeName: 'project' },
     });
-    const fUsers = dispatcher.request<UserSelectInput, UserSelectOutput>({
-      endpoint: userSelect.endpoint,
-      action: userSelect.action,
-      data: {},
+    const fPersons = dispatcher.request<
+      CardSelectWithAttributesInput,
+      CardSelectWithAttributesOutput
+    >({
+      endpoint: cardSelectWithAttributes.endpoint,
+      action: cardSelectWithAttributes.action,
+      data: { cardTypeName: 'person' },
     });
     const fSchema = schemaCache.load();
     try {
-      const [pOut, uOut] = await Promise.all([fProj, fUsers]);
+      const [pOut, personsOut] = await Promise.all([fProj, fPersons]);
       await fSchema;
       const found = pOut.rows.find((r) => r.id === id) ?? null;
       project = found;
-      users = uOut.rows;
+      persons = personsOut.rows;
       if (found !== null) {
         const t = found.attributes['title'];
         const d = found.attributes['description'];
@@ -243,6 +288,54 @@
     notify({ type: 'success', message: 'Saved' });
     void refresh().then(() => onSaved?.());
   }
+
+  /**
+   * Trigger a browser download of this project's CSV export. The
+   * helper handles fetch + Authorization + anchor click; we only own
+   * the loading/error UX here.
+   */
+  async function onExportClick(): Promise<void> {
+    if (cardId === null || exporting) return;
+    exporting = true;
+    try {
+      await downloadProjectExportCsv({
+        projectId: cardId,
+        includeDeleted,
+        authState,
+      });
+      notify({ type: 'success', message: 'Export started' });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: msg.length > 0 ? msg : 'Export failed' });
+    } finally {
+      exporting = false;
+    }
+  }
+
+  /**
+   * Trigger a browser download of the full-ZIP export. The two extra
+   * checkboxes (includeAttachments / includeActivity) decide whether
+   * the server bundles attachment bytes and the activity stream.
+   */
+  async function onExportFullClick(): Promise<void> {
+    if (cardId === null || exporting) return;
+    exporting = true;
+    try {
+      await downloadProjectExportZip({
+        projectId: cardId,
+        includeDeleted,
+        includeAttachments,
+        includeActivity,
+        authState,
+      });
+      notify({ type: 'success', message: 'Export started' });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: msg.length > 0 ? msg : 'Export failed' });
+    } finally {
+      exporting = false;
+    }
+  }
 </script>
 
 <SlideOver bind:open title="Project properties" width="md">
@@ -296,6 +389,61 @@
         {refLoaders}
         onChanged={onAttributeChanged}
       />
+
+      <section class="flex flex-col gap-2 border-t border-border pt-4">
+        <span class="text-xs font-semibold uppercase tracking-wide text-muted">Export</span>
+        <label class="flex items-center gap-2 text-sm text-fg">
+          <input
+            type="checkbox"
+            bind:checked={includeDeleted}
+            class="h-4 w-4 rounded border-border accent-accent"
+          />
+          Include deleted tasks
+        </label>
+        <label class="flex items-center gap-2 text-sm text-fg">
+          <input
+            type="checkbox"
+            bind:checked={includeAttachments}
+            class="h-4 w-4 rounded border-border accent-accent"
+          />
+          Include attachments <span class="text-muted">(full export only)</span>
+        </label>
+        <label class="flex items-center gap-2 text-sm text-fg">
+          <input
+            type="checkbox"
+            bind:checked={includeActivity}
+            class="h-4 w-4 rounded border-border accent-accent"
+          />
+          Include activity log <span class="text-muted">(full export only)</span>
+        </label>
+        <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={exporting}
+            onclick={() => void onExportClick()}
+            class="rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg hover:bg-bg-soft focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+          >
+            {exporting ? 'Exporting…' : 'Export CSV'}
+          </button>
+          <button
+            type="button"
+            disabled={exporting}
+            onclick={() => void onExportFullClick()}
+            class="rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg hover:bg-bg-soft focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+          >
+            {exporting ? 'Exporting…' : 'Export full (ZIP)'}
+          </button>
+          <button
+            type="button"
+            onclick={() => (importOpen = true)}
+            class="rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg hover:bg-bg-soft focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            Import CSV…
+          </button>
+        </div>
+      </section>
     </div>
   {/if}
 </SlideOver>
+
+<ImportWizard bind:open={importOpen} projectId={cardId} />

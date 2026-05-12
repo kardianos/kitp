@@ -2,13 +2,12 @@
   AdminAttributesScreen — admin-only CRUD over attribute_def + edge rows
   plus value-card management for ref-typed attributes.
 
-  Layout: 3-pane (master / detail / preview) per migration plan §5.10.
+  Layout: 3-pane (master / detail / preview).
 
     LEFT (~280 px):   searchable list of attribute_def, grouped by
                       `is_built_in`. "+ New attribute" creates a draft.
     CENTER:           edit form for the selected def — name (read-only when
                       built-in), value_type (locked once any value exists),
-                      enum-options editor (read-only — see note below),
                       ref-card-type combobox.
     RIGHT:            "Bound to" matrix — one row per card_type with
                       [Bound] checkbox, ordering input, [Required] checkbox.
@@ -28,16 +27,11 @@
     j / k    move selection in left pane
     Enter    save the center form (when in create mode)
 
-  Notes / deviations from Dart source:
-    - The Dart source hard-codes _kRefCardTypeNames = milestone/component/tag.
-      The Svelte version derives the ref card_type from the def's value_type
-      (`ref:<name>`) so any future ref attribute automatically picks up its
-      value cards section.
-    - Server has NO endpoint for adding/removing attribute_def options
-      post-creation today (migration 0012 only seeds them). Therefore the
-      enum options editor renders read-only with a tooltip explaining that
-      options can only be set on creation; admins must use a database
-      migration to change them. (See report.)
+  Notes:
+    - The ref card_type is derived from the def's value_type (`ref:<name>`)
+      so any new ref attribute automatically picks up its value-cards
+      section. All pick-from-a-list attributes are unified under this
+      mechanism — there is no separate enum value_type any longer.
     - Value-card drag-reorder dispatches `user_card_sort.set` (admin scope).
       Soft-delete + inline rename + "+ Add value" all hit the standard
       handlers (`card.delete`, `attribute.update`, `card.insert`).
@@ -53,8 +47,6 @@
   import { projectScope } from '../../shell/project_scope.svelte';
   import {
     attributeDefInsert,
-    attributeDefOptionDelete,
-    attributeDefOptionUpsert,
     attributeDefSelect,
     attributeUpdate,
     cardDelete,
@@ -63,15 +55,10 @@
     cardTypeSelect,
     edgeDelete,
     edgeInsert,
-    userCardSortSet,
   } from '../../reg/handlers';
   import type {
     AttributeDefInsertInput,
     AttributeDefInsertOutput,
-    AttributeDefOptionDeleteInput,
-    AttributeDefOptionDeleteOutput,
-    AttributeDefOptionUpsertInput,
-    AttributeDefOptionUpsertOutput,
     AttributeDefRow,
     AttributeDefSelectInput,
     AttributeDefSelectOutput,
@@ -91,8 +78,7 @@
     EdgeDeleteOutput,
     EdgeInsertInput,
     EdgeInsertOutput,
-    UserCardSortSetInput,
-    UserCardSortSetOutput,
+    ID,
   } from '../../reg/types';
   import Button from '../../ui/Button.svelte';
   import Chip from '../../ui/Chip.svelte';
@@ -126,7 +112,7 @@
   /** Keyed by card_type name. Loaded lazily when a ref-typed def is selected. */
   let valueCards = $state<Record<string, CardWithAttrs[]>>({});
   let search = $state('');
-  let selectedDefId = $state<number | null>(null);
+  let selectedDefId = $state<ID | null>(null);
   let creating = $state(false);
   let draft = $state<NewAttrDraft>(blankDraft());
   let draftErrors = $state<Record<string, string>>({});
@@ -163,7 +149,7 @@
   const selectedRefCardType = $derived<string | null>(
     selectedDef === null
       ? null
-      : parseRefCardType(selectedDef.value_type, selectedDef.name),
+      : parseRefCardType(selectedDef.value_type, selectedDef.target_card_type_name),
   );
 
   const matrix = $derived<MatrixRow[]>(
@@ -179,9 +165,10 @@
     { value: 'number', label: 'number' },
     { value: 'bool', label: 'bool' },
     { value: 'date', label: 'date' },
-    { value: 'enum', label: 'enum' },
     // ref:<type> handled via the Combobox below selecting a card type;
-    // the form translates that into `ref:<name>` on save.
+    // the form translates that into `ref:<name>` on save. There is no
+    // separate "enum" type post-refactor: pick-from-a-list attributes
+    // are card_refs to a per-project value-card list.
     { value: 'ref', label: 'ref:<card type>' },
   ];
 
@@ -192,7 +179,10 @@
 
   function defHasAnyValuesForSelected(): boolean {
     if (selectedDef === null) return false;
-    const refType = parseRefCardType(selectedDef.value_type);
+    const refType = parseRefCardType(
+      selectedDef.value_type,
+      selectedDef.target_card_type_name,
+    );
     if (refType === null) {
       // Without a ref load we can't cheaply know — be conservative and only
       // lock for ref types where we have the cards loaded.
@@ -264,13 +254,32 @@
 
   async function loadValueCards(cardTypeName: string): Promise<void> {
     try {
+      // milestones / components / tags / statuses are parented to a
+      // project, so the admin list scopes to whichever project the
+      // sidebar has pinned. Without a scope we leave parentCardId unset
+      // so the admin still has a way to see every value card across
+      // the installation, but the "(All projects)" rendering surfaces
+      // a hint about which project each row belongs to.
+      //
+      // Order by sort_order ASC so drag-drop reorder writes (which
+      // mutate the sort_order attribute) are reflected on the next
+      // load. Cards with NULL sort_order land at the bottom (Postgres
+      // ASC NULLS LAST by default on this server's CompileOrder).
+      const data: CardSelectWithAttributesInput = {
+        cardTypeName,
+        includeDeleted: false,
+        limit: 500,
+        order: [{ field: 'attributes.sort_order', direction: 'ASC' }],
+      };
+      const scoped = projectScope.projectId;
+      if (scoped !== null) data.parentCardId = scoped;
       const out = await dispatcher.request<
         CardSelectWithAttributesInput,
         CardSelectWithAttributesOutput
       >({
         endpoint: cardSelectWithAttributes.endpoint,
         action: cardSelectWithAttributes.action,
-        data: { cardTypeName, includeDeleted: false, limit: 500 },
+        data,
       });
       valueCards = { ...valueCards, [cardTypeName]: out.rows };
     } catch (e) {
@@ -279,18 +288,20 @@
     }
   }
 
-  // Auto-fetch the value cards whenever we hop to a ref-typed def we
-  // haven't loaded yet. Each hop fires at most ONE follow-up batch.
+  // Auto-fetch the value cards whenever we hop to a ref-typed def or
+  // the sidebar's project scope flips. Re-fetching on every scope
+  // change keeps the admin's view aligned with whichever project
+  // they've picked.
   $effect(() => {
     const t = selectedRefCardType;
+    void projectScope.projectId; // tracked
     if (t === null) return;
-    if (valueCards[t] !== undefined) return;
     void loadValueCards(t);
   });
 
   /* --------------------------------------------------- selection handlers */
 
-  function selectDef(id: number): void {
+  function selectDef(id: ID): void {
     creating = false;
     selectedDefId = id;
   }
@@ -457,120 +468,19 @@
 
   let newValueTitle = $state('');
 
-  /* ---------------------------------------------- enum option editing */
-
-  let newOptionValue = $state('');
-  let newOptionLabel = $state('');
-  let newOptionOrder = $state<string>('');
-
-  async function addEnumOption(defId: number): Promise<void> {
-    const v = newOptionValue.trim();
-    if (v === '') return;
-    const label = newOptionLabel.trim() === '' ? v : newOptionLabel.trim();
-    // Default the ordering to "max + 1" so blanks append cleanly. The server
-    // will still bump higher rows up when the user picks a specific
-    // ordering that already exists (collision repair).
-    let ordering = Number.parseInt(newOptionOrder, 10);
-    if (!Number.isFinite(ordering)) {
-      const def = defs.find((d) => d.id === defId);
-      const opts = def?.options ?? [];
-      ordering = opts.reduce((m, o) => Math.max(m, o.ordering + 1), 0);
-    }
-    try {
-      const data: AttributeDefOptionUpsertInput = {
-        attributeDefId: defId,
-        value: v,
-        label,
-        ordering,
-      };
-      await dispatcher.request<
-        AttributeDefOptionUpsertInput,
-        AttributeDefOptionUpsertOutput
-      >({
-        endpoint: attributeDefOptionUpsert.endpoint,
-        action: attributeDefOptionUpsert.action,
-        data,
-      });
-      newOptionValue = '';
-      newOptionLabel = '';
-      newOptionOrder = '';
-      await refreshDefs();
-      notify({ type: 'success', message: `Option "${v}" added.` });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      notify({ type: 'error', message: `Add option failed: ${msg}` });
-    }
-  }
-
-  async function renameEnumOption(
-    defId: number,
-    value: string,
-    label: string,
-    ordering: number,
-  ): Promise<void> {
-    try {
-      const data: AttributeDefOptionUpsertInput = {
-        attributeDefId: defId,
-        value,
-        label,
-        ordering,
-      };
-      await dispatcher.request<
-        AttributeDefOptionUpsertInput,
-        AttributeDefOptionUpsertOutput
-      >({
-        endpoint: attributeDefOptionUpsert.endpoint,
-        action: attributeDefOptionUpsert.action,
-        data,
-      });
-      await refreshDefs();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      notify({ type: 'error', message: `Update option failed: ${msg}` });
-    }
-  }
-
-  async function deleteEnumOption(defId: number, value: string): Promise<void> {
-    try {
-      const out = await dispatcher.request<
-        AttributeDefOptionDeleteInput,
-        AttributeDefOptionDeleteOutput
-      >({
-        endpoint: attributeDefOptionDelete.endpoint,
-        action: attributeDefOptionDelete.action,
-        data: { attributeDefId: defId, value },
-      });
-      if (!out.ok) {
-        notify({
-          type: 'error',
-          message:
-            out.usage_count > 0
-              ? `In use by ${out.usage_count} card(s); reassign them first.`
-              : 'Delete refused.',
-        });
-        return;
-      }
-      await refreshDefs();
-      notify({ type: 'success', message: `Option "${value}" removed.` });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      notify({ type: 'error', message: `Delete option failed: ${msg}` });
-    }
-  }
-
   async function addValueCard(cardTypeName: string): Promise<void> {
     const t = newValueTitle.trim();
     if (t === '') return;
     // milestone / component / tag all have parent_card_type_id = project, so
     // the server requires a parent_card_id at insert time. Use whichever
-    // project the sidebar's ProjectSelector has pinned; if the user is in
+    // project the title-bar picker has pinned; if the user is in
     // "(All projects)" mode we surface a helpful error instead of letting
     // the wire failure leak through.
     const parent = projectScope.projectId;
     if (parent === null) {
       notify({
         type: 'error',
-        message: `Pick a project in the sidebar before adding a ${cardTypeName}.`,
+        message: `Pick a project from a list screen before adding a ${cardTypeName}.`,
       });
       return;
     }
@@ -673,24 +583,75 @@
     }
   }
 
+  /**
+   * Move the dragged value-card to slot `slot` (0..N; N drops at the
+   * end) and persist by writing the canonical `sort_order` attribute
+   * on every row whose position changes. We normalise the whole list
+   * to `(i + 1) * 100` so it stays well-spaced and works whether or
+   * not the original rows already had sort_orders — important for
+   * milestones / components / tags, which the demo seeds with no
+   * sort_order at all.
+   *
+   * NOTE: We deliberately write the global `sort_order` attribute, not
+   * `user_card_sort.set` (the per-user inbox-personal ordering). Admin
+   * reorder is a project-wide change everyone should see.
+   */
   async function reorderValueCard(
     payload: unknown,
-    targetSortOrder: number,
+    slot: number,
     cardTypeName: string,
   ): Promise<void> {
-    const obj = payload as { id?: number };
+    const obj = payload as { id?: ID };
     const id = obj?.id;
-    if (typeof id !== 'number') return;
+    if (typeof id !== 'bigint') return;
+    const cards = valueCards[cardTypeName] ?? [];
+    const moved = cards.find((c) => c.id === id);
+    if (moved === undefined) return;
+    const without = cards.filter((c) => c.id !== id);
+
+    // The original slot index counts BEFORE the moved row's slot; if
+    // the drop target sits below the moved row's old position we offset
+    // by one so the in-place move lands where the user expects.
+    const origIdx = cards.findIndex((c) => c.id === id);
+    let insertAt = slot;
+    if (origIdx >= 0 && origIdx < slot) insertAt -= 1;
+    if (insertAt < 0) insertAt = 0;
+    if (insertAt > without.length) insertAt = without.length;
+
+    const next = without.slice();
+    next.splice(insertAt, 0, moved);
+
+    // Build the minimal set of writes. A row only needs a write if its
+    // desired `(i + 1) * 100` doesn't match its current sort_order.
+    const updates: { cardId: ID; sortOrder: number }[] = [];
+    for (let i = 0; i < next.length; i++) {
+      const c = next[i];
+      if (c === undefined) continue;
+      const desired = (i + 1) * 100;
+      const cur = c.attributes['sort_order'];
+      const curNum =
+        typeof cur === 'number' ? cur :
+        typeof cur === 'bigint' ? Number(cur) :
+        NaN;
+      if (curNum === desired) continue;
+      updates.push({ cardId: c.id, sortOrder: desired });
+    }
+    if (updates.length === 0) return;
+
     try {
-      const data: UserCardSortSetInput = {
-        cardId: id,
-        sortOrder: targetSortOrder,
-      };
-      await dispatcher.request<UserCardSortSetInput, UserCardSortSetOutput>({
-        endpoint: userCardSortSet.endpoint,
-        action: userCardSortSet.action,
-        data,
-      });
+      await Promise.all(
+        updates.map((u) =>
+          dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
+            endpoint: attributeUpdate.endpoint,
+            action: attributeUpdate.action,
+            data: {
+              cardId: u.cardId,
+              attributeName: 'sort_order',
+              value: u.sortOrder,
+            },
+          }),
+        ),
+      );
       await loadValueCards(cardTypeName);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -947,12 +908,6 @@
               </label>
             {/if}
 
-            {#if draft.valueType === 'enum'}
-              <p class="text-xs text-muted">
-                Save the attribute first, then add enum options below.
-              </p>
-            {/if}
-
             {#if draftErrors._form}
               <div class="rounded border border-danger/40 bg-danger/10 px-2 py-1 text-xs text-danger">
                 {draftErrors._form}
@@ -1030,99 +985,6 @@
                 </span>
               {/if}
             </label>
-
-            {#if def.value_type === 'enum'}
-              <fieldset class="flex flex-col gap-2 rounded-md border border-border p-2">
-                <legend class="px-1 text-xs font-semibold text-muted">Options</legend>
-                {#if (def.options ?? []).length === 0}
-                  <p class="text-sm text-muted">No options defined.</p>
-                {:else}
-                  <ul class="flex flex-col gap-1">
-                    {#each def.options ?? [] as opt (opt.value)}
-                      <li
-                        data-testid={`enum-opt-${def.id}-${opt.value}`}
-                        class="flex items-center gap-2 rounded bg-surface px-2 py-1 text-sm"
-                      >
-                        <span
-                          class="w-24 shrink-0 truncate font-mono text-xs text-muted"
-                          title={`Stored value (immutable; rename creates a new option): ${opt.value}`}
-                        >{opt.value}</span>
-                        <input
-                          type="text"
-                          aria-label={`Label for ${opt.value}`}
-                          value={opt.label}
-                          class="flex-1 rounded border border-transparent bg-bg px-1 py-0.5 text-sm hover:border-border focus:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                          onblur={(e) => {
-                            const next = (e.target as HTMLInputElement).value;
-                            if (next.trim() !== '' && next !== opt.label) {
-                              void renameEnumOption(def.id, opt.value, next, opt.ordering);
-                            }
-                          }}
-                          onkeydown={(e) => {
-                            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                            else if (e.key === 'Escape') {
-                              (e.target as HTMLInputElement).value = opt.label;
-                              (e.target as HTMLInputElement).blur();
-                            }
-                          }}
-                        />
-                        <input
-                          type="number"
-                          aria-label={`Ordering for ${opt.value}`}
-                          value={opt.ordering}
-                          class="w-14 rounded border border-border bg-bg px-1 py-0.5 text-sm"
-                          onchange={(e) => {
-                            const n = Number((e.target as HTMLInputElement).value);
-                            if (Number.isFinite(n) && n !== opt.ordering) {
-                              void renameEnumOption(def.id, opt.value, opt.label, n);
-                            }
-                          }}
-                        />
-                        <IconButton
-                          aria-label={`Delete option ${opt.value}`}
-                          size="sm"
-                          variant="danger"
-                          onclick={() => void deleteEnumOption(def.id, opt.value)}
-                        >
-                          {#snippet children()}×{/snippet}
-                        </IconButton>
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-                <div class="flex items-center gap-2 pt-1">
-                  <input
-                    type="text"
-                    bind:value={newOptionValue}
-                    placeholder="value (e.g. urgent)"
-                    aria-label="New option value"
-                    class="w-32 rounded border border-border bg-bg px-2 py-1 text-sm"
-                  />
-                  <input
-                    type="text"
-                    bind:value={newOptionLabel}
-                    placeholder="label (defaults to value)"
-                    aria-label="New option label"
-                    class="flex-1 rounded border border-border bg-bg px-2 py-1 text-sm"
-                  />
-                  <input
-                    type="number"
-                    bind:value={newOptionOrder}
-                    placeholder="order"
-                    title="Position in the list. Leave blank to append. If you pick an order that an existing option holds, every option at or above that order is bumped up by one so nothing collides."
-                    aria-label="New option order"
-                    class="w-16 rounded border border-border bg-bg px-2 py-1 text-sm"
-                  />
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onclick={() => void addEnumOption(def.id)}
-                  >
-                    {#snippet children()}+ Add option{/snippet}
-                  </Button>
-                </div>
-              </fieldset>
-            {/if}
 
             {#if selectedRefCardType !== null}
               <label class="flex flex-col gap-1 text-sm">
@@ -1250,7 +1112,7 @@
                 <DropZone
                   id={`vc-zone-${refType}-${c.id}`}
                   onDrop={(p) =>
-                    void reorderValueCard(p, (i + 1) * 1000, refType)}
+                    void reorderValueCard(p, i, refType)}
                 >
                   <li
                     data-testid={`value-card-${c.id}`}
@@ -1309,6 +1171,13 @@
                   </li>
                 </DropZone>
               {/each}
+              {#if cards.length > 0}
+                <DropZone
+                  id={`vc-zone-${refType}-tail`}
+                  onDrop={(p) =>
+                    void reorderValueCard(p, cards.length, refType)}
+                />
+              {/if}
               {#if cards.length === 0}
                 <li class="p-3 text-center text-xs text-muted">
                   No value cards yet.

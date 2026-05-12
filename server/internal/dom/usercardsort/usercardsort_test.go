@@ -81,7 +81,7 @@ func makeCards(t *testing.T, srv *api.Server, n int) []int64 {
 			ID:       fmt.Sprintf("t%d", i),
 			Endpoint: "card", Action: "insert",
 			Data: json.RawMessage(fmt.Sprintf(
-				`{"card_type_name":"task","parent_card_id":%d,"title":"task%d"}`, pOut.ID, i)),
+				`{"card_type_name":"task","parent_card_id":"%d","title":"task%d"}`, pOut.ID, i)),
 		}
 	}
 	resp = srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: subs})
@@ -142,11 +142,11 @@ func TestLifecycleSetThree(t *testing.T) {
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "s0", Endpoint: "user_card_sort", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"sort_order":20}`, ids[0]))},
+			fmt.Sprintf(`{"card_id":"%d","sort_order":20}`, ids[0]))},
 		{ID: "s1", Endpoint: "user_card_sort", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"sort_order":10}`, ids[1]))},
+			fmt.Sprintf(`{"card_id":"%d","sort_order":10}`, ids[1]))},
 		{ID: "s2", Endpoint: "user_card_sort", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"sort_order":30}`, ids[2]))},
+			fmt.Sprintf(`{"card_id":"%d","sort_order":30}`, ids[2]))},
 	}})
 	for _, sr := range resp.Subresponses {
 		mustOK(t, sr)
@@ -176,14 +176,14 @@ func TestIdempotentUpsert(t *testing.T) {
 	// Initial set.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "s0", Endpoint: "user_card_sort", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"sort_order":100}`, ids[0]))},
+			fmt.Sprintf(`{"card_id":"%d","sort_order":100}`, ids[0]))},
 	}})
 	mustOK(t, resp.Subresponses[0])
 
 	// Re-set with a new value.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "s1", Endpoint: "user_card_sort", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"sort_order":42.5}`, ids[0]))},
+			fmt.Sprintf(`{"card_id":"%d","sort_order":42.5}`, ids[0]))},
 	}})
 	mustOK(t, resp.Subresponses[0])
 
@@ -210,7 +210,7 @@ func TestCoalesceFiveSets(t *testing.T) {
 			ID:       fmt.Sprintf("s%d", i),
 			Endpoint: "user_card_sort", Action: "set",
 			Data: json.RawMessage(fmt.Sprintf(
-				`{"card_id":%d,"sort_order":%d}`, ids[i], (i+1)*10)),
+				`{"card_id":"%d","sort_order":%d}`, ids[i], (i+1)*10)),
 		}
 	}
 	sp.ResetWrites()

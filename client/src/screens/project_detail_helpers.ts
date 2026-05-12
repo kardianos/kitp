@@ -17,7 +17,7 @@
 
 import type { Predicate } from '../filter/predicate.js';
 import { isFlatAndOfLeaves, flattenLeaves } from '../filter/predicate.js';
-import type { AttributeUpdateInput, CardWithAttrs } from '../reg/types.js';
+import type { AttributeUpdateInput, CardWithAttrs, ID } from '../reg/types.js';
 
 /* -------------------------------------------------------------------------- */
 /* applyPredicateAndSort                                                      */
@@ -74,6 +74,14 @@ function matchPredicate(card: CardWithAttrs, p: Predicate): boolean {
         return value !== undefined && value !== null;
       case 'notExists':
         return value === undefined || value === null;
+      case 'contains':
+      case 'notTerminal':
+        // These ops require server context the in-memory matcher
+        // doesn't have (target card row for `notTerminal`, full-text
+        // index for `contains`). The server has already filtered the
+        // task list against them; the in-memory pass is just
+        // resorting, so we trust the row and pass it through.
+        return true;
     }
   }
   if (isFlatAndOfLeaves(p)) {
@@ -145,7 +153,7 @@ export type EditingPayloadResult =
  * no-op).
  */
 export function editingPayload(
-  cardId: number,
+  cardId: ID,
   attributeName: string,
   currentValue: unknown,
   newValue: unknown,
@@ -189,12 +197,14 @@ export interface InitialBatchSpec {
 }
 
 /**
- * The screen mounts and fires SIX dispatcher sub-requests in the same
+ * The screen mounts and fires SEVEN dispatcher sub-requests in the same
  * render tick (the dispatcher coalesces them into one HTTP call):
  *
  *   1. `card.select_with_attributes` — the project itself.
  *   2. `card.select_with_attributes` — child tasks under the project.
- *   3. `user.select` — assignee labels.
+ *   3. `card.select_with_attributes` — persons (assignee labels; the
+ *      assignee attribute is now a card_ref to a `person` card, not a
+ *      `user_account` ref).
  *   4. `card.select_with_attributes` — milestones (`card_type='milestone'`).
  *   5. `card.select_with_attributes` — components (`card_type='component'`).
  *   6. `card.select_with_attributes` — tags (`card_type='tag'`).
@@ -207,7 +217,7 @@ export function buildInitialBatch(): InitialBatchSpec[] {
   return [
     { endpoint: 'card', action: 'select_with_attributes' }, // project
     { endpoint: 'card', action: 'select_with_attributes' }, // tasks
-    { endpoint: 'user', action: 'select' },
+    { endpoint: 'card', action: 'select_with_attributes' }, // persons
     { endpoint: 'card', action: 'select_with_attributes' }, // milestones
     { endpoint: 'card', action: 'select_with_attributes' }, // components
     { endpoint: 'card', action: 'select_with_attributes' }, // tags

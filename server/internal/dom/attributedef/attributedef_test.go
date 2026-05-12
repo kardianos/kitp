@@ -94,7 +94,7 @@ func TestInsertAndBindLifecycle(t *testing.T) {
 	ctx := adminCtx(t, sp)
 
 	// Look up some card_type ids for the bind_to.
-	var taskTypeID, projectTypeID int32
+	var taskTypeID, projectTypeID int64
 	if err := sp.P.QueryRow(context.Background(), `SELECT id FROM card_type WHERE name='task'`).Scan(&taskTypeID); err != nil {
 		t.Fatalf("task type id: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestInsertAndBindLifecycle(t *testing.T) {
 	// Insert a new def bound to task.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "i", Endpoint: "attribute_def", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"name":"severity","value_type":"text","bind_to":[{"card_type_id":%d}]}`, taskTypeID))},
+			fmt.Sprintf(`{"name":"severity","value_type":"text","bind_to":[{"card_type_id":"%d"}]}`, taskTypeID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("insert: %+v", resp.Subresponses[0])
@@ -120,7 +120,7 @@ func TestInsertAndBindLifecycle(t *testing.T) {
 	// Bind an additional card_type via edge.insert.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "e", Endpoint: "edge", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"attribute_def_id":%d,"card_type_id":%d}`, ins.ID, projectTypeID))},
+			fmt.Sprintf(`{"attribute_def_id":"%d","card_type_id":"%d"}`, ins.ID, projectTypeID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("edge.insert: %+v", resp.Subresponses[0])
@@ -150,7 +150,7 @@ func TestInsertAndBindLifecycle(t *testing.T) {
 	// Delete the project edge — no usage yet.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "d", Endpoint: "edge", Action: "delete", Data: json.RawMessage(
-			fmt.Sprintf(`{"attribute_def_id":%d,"card_type_id":%d}`, ins.ID, projectTypeID))},
+			fmt.Sprintf(`{"attribute_def_id":"%d","card_type_id":"%d"}`, ins.ID, projectTypeID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("edge.delete: %+v", resp.Subresponses[0])
@@ -178,7 +178,7 @@ func TestInsertAndBindLifecycle(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("task insert: %+v", resp.Subresponses[0])
@@ -190,7 +190,7 @@ func TestInsertAndBindLifecycle(t *testing.T) {
 	// Write the new attribute on the task.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"severity","value":"high"}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"severity","value":"high"}`, tOut.ID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("attribute.update: %+v", resp.Subresponses[0])
@@ -199,7 +199,7 @@ func TestInsertAndBindLifecycle(t *testing.T) {
 	// Now edge.delete on (severity, task) should be blocked.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "d2", Endpoint: "edge", Action: "delete", Data: json.RawMessage(
-			fmt.Sprintf(`{"attribute_def_id":%d,"card_type_id":%d}`, ins.ID, taskTypeID))},
+			fmt.Sprintf(`{"attribute_def_id":"%d","card_type_id":"%d"}`, ins.ID, taskTypeID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("edge.delete (blocked path): %+v", resp.Subresponses[0])
@@ -214,11 +214,12 @@ func TestInsertAndBindLifecycle(t *testing.T) {
 	}
 }
 
-// TestSelect_IncludesEnumOptions verifies migration 0012 seeded the
-// `status` def with value_type='enum' and four ordered option rows that
-// surface on attribute_def.select.
-func TestSelect_IncludesEnumOptions(t *testing.T) {
-	srv, _ := setup(t, "kitp_test_ad_enum_opts")
+// TestSelect_SurfacesCardRefTarget verifies every built-in card_ref
+// attribute_def round-trips its `target_card_type_name` through select.
+// The kernel uses this field to drive picker UI and project-scope
+// validation without any hardcoded knowledge of specific attributes.
+func TestSelect_SurfacesCardRefTarget(t *testing.T) {
+	srv, _ := setup(t, "kitp_test_ad_cardref_target")
 	ctx := auth.WithSystemUser(context.Background())
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
@@ -231,231 +232,22 @@ func TestSelect_IncludesEnumOptions(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &out)
 
-	var status *attributedef.SelectRow
-	for i, r := range out.Rows {
-		if r.Name == "status" {
-			status = &out.Rows[i]
-			break
-		}
+	want := map[string]string{
+		"assignee":      "person",
+		"milestone_ref": "milestone",
+		"component_ref": "component",
+		"tags":          "tag",
 	}
-	if status == nil {
-		t.Fatalf("status def missing; rows=%+v", out.Rows)
-	}
-	if status.ValueType != "enum" {
-		t.Errorf("status value_type = %q, want enum", status.ValueType)
-	}
-	wantValues := []string{"todo", "doing", "review", "done"}
-	wantLabels := []string{"Todo", "Doing", "Review", "Done"}
-	if len(status.Options) != 4 {
-		t.Fatalf("status options len = %d, want 4: %+v", len(status.Options), status.Options)
-	}
-	for i, opt := range status.Options {
-		if opt.Value != wantValues[i] {
-			t.Errorf("status options[%d].value = %q, want %q", i, opt.Value, wantValues[i])
-		}
-		if opt.Label != wantLabels[i] {
-			t.Errorf("status options[%d].label = %q, want %q", i, opt.Label, wantLabels[i])
-		}
-		if int(opt.Ordering) != i {
-			t.Errorf("status options[%d].ordering = %d, want %d", i, opt.Ordering, i)
-		}
-	}
-}
-
-// TestSelect_OmitsOptions_ForNonEnum confirms text/bool/etc defs return
-// an empty options slice (which json-marshals as omitted via omitempty).
-func TestSelect_OmitsOptions_ForNonEnum(t *testing.T) {
-	srv, _ := setup(t, "kitp_test_ad_nonenum_opts")
-	ctx := auth.WithSystemUser(context.Background())
-
-	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "attribute_def", Action: "select"},
-	}})
-	if !resp.Subresponses[0].OK {
-		t.Fatalf("select: %+v", resp.Subresponses[0])
-	}
-	var out attributedef.SelectOutput
-	buf, _ := json.Marshal(resp.Subresponses[0].Data)
-	_ = json.Unmarshal(buf, &out)
-
-	// Spot-check a known non-enum def: 'title' is text, 'is_active' is bool.
-	checked := 0
+	got := map[string]string{}
 	for _, r := range out.Rows {
-		if r.Name == "title" || r.Name == "is_active" {
-			if len(r.Options) != 0 {
-				t.Errorf("def %q (value_type=%s): options non-empty: %+v", r.Name, r.ValueType, r.Options)
-			}
-			checked++
+		if r.ValueType == "card_ref" || r.ValueType == "card_ref[]" {
+			got[r.Name] = r.TargetCardTypeName
 		}
 	}
-	if checked == 0 {
-		t.Fatalf("did not find title or is_active in select output")
-	}
-
-	// Also verify the wire shape: when options is empty it must be
-	// omitted from the JSON, not serialized as `"options": null` or `[]`.
-	// Round-trip through json to confirm.
-	rerendered, _ := json.Marshal(out)
-	for _, r := range out.Rows {
-		if r.Name == "title" || r.Name == "is_active" {
-			needle := fmt.Sprintf(`"name":%q`, r.Name)
-			if !bytesContains(rerendered, []byte(needle)) {
-				t.Fatalf("could not locate %s in rendered json", r.Name)
-			}
+	for name, target := range want {
+		if got[name] != target {
+			t.Errorf("attribute_def %q: target_card_type_name = %q, want %q", name, got[name], target)
 		}
-	}
-}
-
-// bytesContains is a tiny helper to keep the test file from importing
-// "bytes" just for this single call site.
-func bytesContains(haystack, needle []byte) bool {
-	if len(needle) == 0 {
-		return true
-	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		match := true
-		for j := range needle {
-			if haystack[i+j] != needle[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return true
-		}
-	}
-	return false
-}
-
-// TestOptionUpsertBumpsHigherOrderings asserts the user-visible "no
-// collision" rule: when an option is upserted at an ordering already held
-// by a different value, every option at >= that ordering is bumped up by
-// one. The user picks ordering=0 for "urgent" and the existing 0..3 chain
-// becomes 1..4.
-func TestOptionUpsertBumpsHigherOrderings(t *testing.T) {
-	srv, sp := setup(t, "kitp_test_ad_opt_bump")
-	ctx := adminCtx(t, sp)
-
-	var statusID int32
-	if err := sp.P.QueryRow(context.Background(), `SELECT id FROM attribute_def WHERE name='status'`).Scan(&statusID); err != nil {
-		t.Fatalf("status id: %v", err)
-	}
-
-	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "u", Endpoint: "attribute_def_option", Action: "upsert", Data: json.RawMessage(
-			fmt.Sprintf(`{"attribute_def_id":%d,"value":"urgent","label":"Urgent","ordering":0}`, statusID))},
-	}})
-	if !resp.Subresponses[0].OK {
-		t.Fatalf("upsert: %+v", resp.Subresponses[0])
-	}
-
-	// Read back: urgent at 0; todo/doing/review/done at 1..4.
-	type row struct {
-		value    string
-		ordering int32
-	}
-	got := map[string]int32{}
-	rows, err := sp.P.Query(context.Background(),
-		`SELECT value, ordering FROM attribute_def_option WHERE attribute_def_id=$1 ORDER BY ordering`,
-		statusID)
-	if err != nil {
-		t.Fatalf("read-back: %v", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var r row
-		if err := rows.Scan(&r.value, &r.ordering); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		got[r.value] = r.ordering
-	}
-	want := map[string]int32{"urgent": 0, "todo": 1, "doing": 2, "review": 3, "done": 4}
-	for v, ord := range want {
-		if got[v] != ord {
-			t.Errorf("option %q: ordering = %d, want %d (full map: %+v)", v, got[v], ord, got)
-		}
-	}
-}
-
-// TestOptionUpsertResaveSameOrderingNoBump pins the idempotent path. Saving
-// an option at its existing (value, ordering) must not shift its
-// neighbours — important because the admin UI commits label edits at the
-// same ordering on every blur.
-func TestOptionUpsertResaveSameOrderingNoBump(t *testing.T) {
-	srv, sp := setup(t, "kitp_test_ad_opt_idem")
-	ctx := adminCtx(t, sp)
-
-	var statusID int32
-	if err := sp.P.QueryRow(context.Background(), `SELECT id FROM attribute_def WHERE name='status'`).Scan(&statusID); err != nil {
-		t.Fatalf("status id: %v", err)
-	}
-
-	// Re-save 'doing' at its own ordering=1 with a new label.
-	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "u", Endpoint: "attribute_def_option", Action: "upsert", Data: json.RawMessage(
-			fmt.Sprintf(`{"attribute_def_id":%d,"value":"doing","label":"In Flight","ordering":1}`, statusID))},
-	}})
-	if !resp.Subresponses[0].OK {
-		t.Fatalf("upsert: %+v", resp.Subresponses[0])
-	}
-
-	got := map[string]int32{}
-	gotLabel := map[string]string{}
-	rows, err := sp.P.Query(context.Background(),
-		`SELECT value, label, ordering FROM attribute_def_option WHERE attribute_def_id=$1`,
-		statusID)
-	if err != nil {
-		t.Fatalf("read-back: %v", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var v, l string
-		var o int32
-		if err := rows.Scan(&v, &l, &o); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		got[v] = o
-		gotLabel[v] = l
-	}
-	want := map[string]int32{"todo": 0, "doing": 1, "review": 2, "done": 3}
-	for v, ord := range want {
-		if got[v] != ord {
-			t.Errorf("option %q: ordering = %d, want %d (idempotent re-save must not shift)", v, got[v], ord)
-		}
-	}
-	if gotLabel["doing"] != "In Flight" {
-		t.Errorf("doing label = %q, want In Flight (label-only edit must apply)", gotLabel["doing"])
-	}
-}
-
-// TestOptionDeleteRefusesInUse mirrors the edge.delete usage guard so an
-// admin can't strand cards on a value that no longer has an option entry.
-func TestOptionDeleteRefusesInUse(t *testing.T) {
-	srv, sp := setup(t, "kitp_test_ad_opt_inuse")
-	ctx := adminCtx(t, sp)
-
-	// 0007_dense_demo seeds tasks with status='todo'; deleting that option
-	// should be refused with usage_count > 0.
-	var statusID int32
-	if err := sp.P.QueryRow(context.Background(), `SELECT id FROM attribute_def WHERE name='status'`).Scan(&statusID); err != nil {
-		t.Fatalf("status id: %v", err)
-	}
-
-	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "d", Endpoint: "attribute_def_option", Action: "delete", Data: json.RawMessage(
-			fmt.Sprintf(`{"attribute_def_id":%d,"value":"todo"}`, statusID))},
-	}})
-	if !resp.Subresponses[0].OK {
-		t.Fatalf("delete: %+v", resp.Subresponses[0])
-	}
-	var out attributedef.OptionDeleteOutput
-	buf, _ := json.Marshal(resp.Subresponses[0].Data)
-	_ = json.Unmarshal(buf, &out)
-	if out.OK {
-		t.Errorf("delete should have been refused (cards still reference 'todo')")
-	}
-	if out.UsageCount == 0 {
-		t.Errorf("usage_count should be > 0 (seed leaves 'todo' tasks)")
 	}
 }
 
@@ -464,7 +256,7 @@ func TestEdgeDeleteRefusesBuiltIn(t *testing.T) {
 	srv, sp := setup(t, "kitp_test_ad_builtin")
 	ctx := adminCtx(t, sp)
 
-	var titleID, taskTypeID int32
+	var titleID, taskTypeID int64
 	if err := sp.P.QueryRow(context.Background(), `SELECT id FROM attribute_def WHERE name='title'`).Scan(&titleID); err != nil {
 		t.Fatalf("title id: %v", err)
 	}
@@ -474,7 +266,7 @@ func TestEdgeDeleteRefusesBuiltIn(t *testing.T) {
 
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "d", Endpoint: "edge", Action: "delete", Data: json.RawMessage(
-			fmt.Sprintf(`{"attribute_def_id":%d,"card_type_id":%d}`, titleID, taskTypeID))},
+			fmt.Sprintf(`{"attribute_def_id":"%d","card_type_id":"%d"}`, titleID, taskTypeID))},
 	}})
 	if resp.Subresponses[0].OK {
 		t.Fatalf("edge.delete on built-in pair should fail; got OK")

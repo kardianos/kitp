@@ -14,7 +14,7 @@
  * pickers don't pull the whole filter editor surface into their bundle.
  */
 
-import type { Dispatcher } from '../dispatch/dispatcher.js';
+import { type Dispatcher, registerCardRefAttr } from '../dispatch/dispatcher.js';
 import { attributeDefSelect } from '../reg/handlers.js';
 import type {
   AttributeDefRow,
@@ -31,6 +31,12 @@ import type { Op } from './predicate.js';
 export interface FilterAttributeOption {
   value: unknown;
   label: string;
+  /**
+   * Mirrors `card.is_terminal` for ref:* options. UI uses this to drive
+   * the "Hide closed X" toggle in the filter bar and to surface
+   * terminal actions ("Close", "Cancel") on cards.
+   */
+  isTerminal?: boolean;
 }
 
 /** UI-side description of one filterable attribute. */
@@ -41,12 +47,12 @@ export interface FilterAttribute {
   label: string;
   /**
    * Value type discriminator. The well-known set is `'text' | 'number' |
-   * 'bool' | 'date' | 'enum'`; any string starting with `'ref:'` (e.g.
+   * 'bool' | 'date'`; any string starting with `'ref:'` (e.g.
    * `'ref:milestone'`) is also accepted and rendered via a Combobox.
    * Unknown types fall through to the text input.
    */
-  valueType: 'text' | 'number' | 'bool' | 'date' | 'enum' | string;
-  /** Pre-resolved options for enum / ref types; undefined for free inputs. */
+  valueType: 'text' | 'number' | 'bool' | 'date' | string;
+  /** Pre-resolved options for ref:* types; undefined for free inputs. */
   options?: FilterAttributeOption[];
   /** Operators this attribute supports in the filter UI. */
   ops: Op[];
@@ -61,7 +67,7 @@ function defaultOpsForType(valueType: string): Op[] {
   if (valueType === 'bool') {
     return ['eq', 'ne', 'exists', 'notExists'];
   }
-  if (valueType === 'enum' || valueType.startsWith('ref:')) {
+  if (valueType.startsWith('ref:')) {
     return ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'];
   }
   // text / number / date / unknown
@@ -76,15 +82,19 @@ function defaultOpsForType(valueType: string): Op[] {
  * can, and fall back to the generic `ref:card` so the Combobox renderer at
  * least kicks in.
  */
-function normalizeValueType(rawType: string, name: string): string {
-  if (rawType === 'user_ref') return 'ref:user';
-  if (rawType === 'card_ref') {
-    if (name.endsWith('_ref')) {
-      const target = name.slice(0, -'_ref'.length);
-      if (target.length > 0) return `ref:${target}`;
+// Translate the server's value_type token into the client's
+// `ref:<card_type>` shape (which the Combobox renderer keys on).
+// For card_ref / card_ref[] we use the explicit target_card_type
+// name carried on the def — no name-suffix or special-case inference.
+// Primitive types pass through unchanged.
+function normalizeValueType(rawType: string, targetCardTypeName: string | undefined): string {
+  if (rawType === 'card_ref' || rawType === 'card_ref[]') {
+    if (targetCardTypeName !== undefined && targetCardTypeName !== '') {
+      return `ref:${targetCardTypeName}`;
     }
     return 'ref:card';
   }
+  if (rawType === 'user_ref') return 'ref:user'; // legacy compat
   return rawType;
 }
 
@@ -142,6 +152,15 @@ export class AttributeSchemaCache {
       })
       .then((out) => {
         this.defs = out.rows;
+        // Teach the dispatcher to revive card_ref attribute values as
+        // bigints. Idempotent — re-registering is a no-op on the
+        // underlying Set. Covers both built-in defs (status, assignee,
+        // …) and any custom attribute_def an admin has added since the
+        // last load.
+        for (const def of out.rows) {
+          if (def.value_type === 'card_ref') registerCardRefAttr(def.name, false);
+          else if (def.value_type === 'card_ref[]') registerCardRefAttr(def.name, true);
+        }
         this.loaded = true;
       })
       .finally(() => {
@@ -161,7 +180,6 @@ export class AttributeSchemaCache {
    *
    * - Returns `null` if the def isn't loaded yet (caller should `load()`
    *   first or render a loading state).
-   * - For enum types, options come from the def's `options` field.
    * - For `ref:<card_type_name>` types, options come from [refResolver]
    *   (callers pre-fetch via `card.select_with_attributes`); when the
    *   resolver is absent or returns `[]`, options are simply omitted.
@@ -173,7 +191,7 @@ export class AttributeSchemaCache {
     const def = this.defByName(name);
     if (def === undefined) return null;
 
-    const valueType = normalizeValueType(def.value_type, def.name);
+    const valueType = normalizeValueType(def.value_type, def.target_card_type_name);
     const fa: FilterAttribute = {
       name: def.name,
       label: friendlyLabel(def.name),
@@ -181,12 +199,7 @@ export class AttributeSchemaCache {
       ops: defaultOpsForType(valueType),
     };
 
-    if (valueType === 'enum') {
-      const opts = def.options ?? [];
-      if (opts.length > 0) {
-        fa.options = opts.map((o) => ({ value: o.value, label: o.label }));
-      }
-    } else if (valueType.startsWith('ref:') && refResolver !== undefined) {
+    if (valueType.startsWith('ref:') && refResolver !== undefined) {
       const cardTypeName = valueType.slice('ref:'.length);
       const resolved = refResolver(cardTypeName);
       if (resolved.length > 0) {
@@ -196,6 +209,29 @@ export class AttributeSchemaCache {
 
     return fa;
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Shared singleton                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Process-wide schema cache. Created lazily on first call so the
+ * dispatcher reference can be supplied at boot. Every screen that
+ * used to instantiate its own AttributeSchemaCache now reads from
+ * the singleton, which means the bigint-revival registration runs
+ * once and the preload in main.ts seeds it before the first batched
+ * data fetch ever runs.
+ */
+let _shared: AttributeSchemaCache | null = null;
+export function sharedSchemaCache(dispatcher: Dispatcher): AttributeSchemaCache {
+  if (_shared === null) _shared = new AttributeSchemaCache(dispatcher);
+  return _shared;
+}
+
+/** Test hook: reset the singleton so a fresh `dispatcher` can be wired in. */
+export function resetSharedSchemaCache(): void {
+  _shared = null;
 }
 
 /* -------------------------------------------------------------------------- */

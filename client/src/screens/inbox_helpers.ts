@@ -4,7 +4,7 @@
  * `_InboxScreenState` (see `client/lib/ui/screens/inbox_screen.dart`).
  */
 
-import type { InboxRow } from '../reg/types.js';
+import type { CardWithAttrs, ID } from '../reg/types.js';
 
 /** Sort-order spacing — mirrors `_kSortOrderStep` from the Dart side. */
 export const SORT_ORDER_STEP = 100;
@@ -23,7 +23,7 @@ export const SORT_ORDER_STEP = 100;
  *   - between with B nullish:                         a + STEP
  *   - between both nullish:                           dropIndex * STEP (stable fallback)
  */
-export function computeNewSortOrder(rows: InboxRow[], dropIndex: number): number {
+export function computeNewSortOrder(rows: CardWithAttrs[], dropIndex: number): number {
   if (rows.length === 0) return 0;
   if (dropIndex <= 0) {
     const first = rows[0]?.personal_sort_order ?? SORT_ORDER_STEP;
@@ -39,23 +39,6 @@ export function computeNewSortOrder(rows: InboxRow[], dropIndex: number): number
   if (a !== undefined) return a + SORT_ORDER_STEP;
   if (b !== undefined) return b - SORT_ORDER_STEP;
   return dropIndex * SORT_ORDER_STEP;
-}
-
-/**
- * For the Space-key "toggle done" shortcut. Spec says "toggle done", so any
- * non-`done` status target moves to `done`; `done` flips back to `todo`.
- *
- * Returns the target value plus the `attribute.update` payload shape so the
- * screen can hand it straight to the dispatcher.
- */
-export function predicateToggleStatus(
-  currentStatus: unknown,
-): { targetStatus: 'todo' | 'done'; payload: { attributeName: 'status'; value: 'todo' | 'done' } } {
-  const target: 'todo' | 'done' = currentStatus === 'done' ? 'todo' : 'done';
-  return {
-    targetStatus: target,
-    payload: { attributeName: 'status', value: target },
-  };
 }
 
 /**
@@ -75,7 +58,7 @@ export function move(visibleLen: number, current: number, delta: number): number
 
 /** One pending sort-order write produced by {@link planReorder}. */
 export interface ReorderUpdate {
-  cardId: number;
+  cardId: ID;
   sortOrder: number;
 }
 
@@ -105,8 +88,8 @@ export interface ReorderUpdate {
  * post-commit refresh then re-fetches the canonical order.
  */
 export function planReorder(
-  rows: InboxRow[],
-  movedID: number,
+  rows: CardWithAttrs[],
+  movedID: ID,
   insertAt: number,
 ): ReorderUpdate[] {
   const moved = rows.find((r) => r.id === movedID);

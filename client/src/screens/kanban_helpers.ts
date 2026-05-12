@@ -259,9 +259,11 @@ export function sortByOrder(cards: CardWithAttrs[]): CardWithAttrs[] {
     if (sa !== undefined && sb !== undefined) {
       const c = sa - sb;
       if (c !== 0) return c;
-      return a.id - b.id;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     }
-    if (sa === undefined && sb === undefined) return a.id - b.id;
+    if (sa === undefined && sb === undefined) {
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    }
     return sa === undefined ? 1 : -1; // nulls last
   });
   return cards;

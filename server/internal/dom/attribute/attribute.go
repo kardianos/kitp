@@ -21,7 +21,7 @@ import (
 
 // UpdateInput is one row of attribute.update.
 type UpdateInput struct {
-	CardID        int64           `json:"card_id" mcp:"required,desc=id of the card whose attribute is being updated"`
+	CardID        int64           `json:"card_id,string" mcp:"required,desc=id of the card whose attribute is being updated"`
 	AttributeName string          `json:"attribute_name" mcp:"required,desc=name of the attribute_def to write"`
 	Value         json.RawMessage `json:"value" mcp:"required,desc=new JSON value; literal null requests removal"`
 }
@@ -29,7 +29,7 @@ type UpdateInput struct {
 // UpdateOutput is the per-row reply.
 type UpdateOutput struct {
 	OK         bool            `json:"ok" mcp:"desc=true on success"`
-	ActivityID int64           `json:"activity_id" mcp:"desc=id of the activity row recording the change"`
+	ActivityID int64           `json:"activity_id,string" mcp:"desc=id of the activity row recording the change"`
 	PrevValue  json.RawMessage `json:"prev_value,omitempty" mcp:"desc=previous JSON value, if any"`
 }
 
@@ -51,7 +51,7 @@ func Register(p *store.Pool) {
 
 // cardTypeFromCardID resolves the card_type_id for the targeted card so the
 // dispatcher can authorize the (card_type, process) pair.
-func cardTypeFromCardID(ctx context.Context, pool reg.ValidationPool, raw any) (int32, error) {
+func cardTypeFromCardID(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	return schema.CardTypeIDByCardID(ctx, pool, raw.(UpdateInput).CardID)
 }
 
@@ -75,7 +75,7 @@ func validateUpdate(ctx context.Context, pool reg.ValidationPool, raw any) error
 			Message: "attribute.update: attribute_name is required"}
 	}
 
-	var cardTypeID int32
+	var cardTypeID int64
 	row := pool.QueryRow(ctx, `SELECT card_type_id FROM card WHERE id = $1`, in.CardID)
 	if err := row.Scan(&cardTypeID); err != nil {
 		if err == pgx.ErrNoRows {
@@ -87,16 +87,17 @@ func validateUpdate(ctx context.Context, pool reg.ValidationPool, raw any) error
 
 	// Look up the edge directly (cheap, single query). We also pull
 	// value_type so we can apply enum validation in the same pass.
-	var attrDefID int32
+	var attrDefID int64
 	var isRequired bool
 	var valueType string
+	var targetCardTypeID *int64
 	row = pool.QueryRow(ctx, `
-		SELECT ad.id, e.is_required, ad.value_type
+		SELECT ad.id, e.is_required, ad.value_type, ad.target_card_type_id
 		FROM attribute_def ad
 		JOIN edge e ON e.attribute_def_id = ad.id
 		WHERE ad.name = $1 AND e.card_type_id = $2
 	`, in.AttributeName, cardTypeID)
-	if err := row.Scan(&attrDefID, &isRequired, &valueType); err != nil {
+	if err := row.Scan(&attrDefID, &isRequired, &valueType, &targetCardTypeID); err != nil {
 		if err == pgx.ErrNoRows {
 			return &reg.HandlerError{Code: "edge_violation",
 				Message: fmt.Sprintf("attribute.update: attribute %q is not allowed on this card type",
@@ -112,54 +113,33 @@ func validateUpdate(ctx context.Context, pool reg.ValidationPool, raw any) error
 				Message: fmt.Sprintf("attribute.update: attribute %q is required and cannot be removed",
 					in.AttributeName)}
 		}
-		// Removal of an enum-typed attribute is not a membership check.
+		// Removal request — no further checks needed.
 		return nil
 	}
 
-	// Enum membership: only meaningful when value_type='enum'. Decode the
-	// JSON payload, accept only string values (the only enum shape we
-	// support today — see migration 0012 which seeds plain text values),
-	// and look the value up in attribute_def_option.
-	if valueType == "enum" {
-		var decoded any
-		if err := json.Unmarshal(in.Value, &decoded); err != nil {
-			return &reg.HandlerError{Code: "invalid_enum_value",
-				Message: fmt.Sprintf("attribute.update: value for enum attribute %q is not valid JSON: %v",
-					in.AttributeName, err)}
-		}
-		s, ok := decoded.(string)
-		if !ok {
-			return &reg.HandlerError{Code: "invalid_enum_value",
-				Message: fmt.Sprintf("attribute.update: value for enum attribute %q must be a string; got %T",
-					in.AttributeName, decoded)}
-		}
-		allowed := map[string]struct{}{}
-		var allowedList []string
-		rows, err := pool.Query(ctx, `
-			SELECT value FROM attribute_def_option
-			WHERE attribute_def_id = $1
-			ORDER BY ordering, value
-		`, attrDefID)
+	// Reference scope: every card_ref / card_ref[] write goes through
+	// the same per-project check. Value-cards whose enclosing project
+	// matches the target are accepted; global cards (e.g. person) are
+	// wildcards (accepted against any target). There is no enum
+	// special case — pick-from-a-list attributes ARE card_refs.
+	if valueType == "card_ref" || valueType == "card_ref[]" {
+		valueIDs, err := ParseCardRefValue(in.AttributeName, in.Value)
 		if err != nil {
-			return fmt.Errorf("attribute.update: validate enum options: %w", err)
+			return &reg.HandlerError{Code: "validation",
+				Message: fmt.Sprintf("attribute.update: %v", err)}
 		}
-		for rows.Next() {
-			var v string
-			if err := rows.Scan(&v); err != nil {
-				rows.Close()
-				return fmt.Errorf("attribute.update: validate enum scan: %w", err)
+		if len(valueIDs) > 0 {
+			check := ProjectScopeCheck{
+				StartCardID:   in.CardID,
+				AttributeName: in.AttributeName,
+				ValueCardIDs:  valueIDs,
 			}
-			allowed[v] = struct{}{}
-			allowedList = append(allowedList, v)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("attribute.update: validate enum rows: %w", err)
-		}
-		if _, ok := allowed[s]; !ok {
-			return &reg.HandlerError{Code: "invalid_enum_value",
-				Message: fmt.Sprintf("attribute.update: value %q is not allowed for enum attribute %q; allowed: %v",
-					s, in.AttributeName, allowedList)}
+			if targetCardTypeID != nil {
+				check.TargetCardTypeID = *targetCardTypeID
+			}
+			if err := ValidateProjectScope(ctx, pool, []ProjectScopeCheck{check}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -167,7 +147,7 @@ func validateUpdate(ctx context.Context, pool reg.ValidationPool, raw any) error
 
 // jsonRow is the per-row payload fed to jsonb_to_recordset.
 type jsonRow struct {
-	CardID        int64           `json:"card_id"`
+	CardID        int64           `json:"card_id,string"`
 	AttributeName string          `json:"attribute_name"`
 	Value         json.RawMessage `json:"value"`
 	Ord           int             `json:"ord"`
@@ -202,9 +182,38 @@ func runUpdate(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 		// by ord, UPSERT N attribute_value rows. The id-vs-ord correlation
 		// works because Postgres allocates activity ids in INSERT order, and
 		// our INSERT is "ORDER BY ord"; row_number() windows align them.
+		//
+		// The CASE in the input CTE canonicalises card_ref / card_ref[]
+		// values to JSON numbers so the dispatcher's wire convention
+		// (bigint ids as JSON strings) doesn't poison the jsonb store.
+		// Reads canonicalise on the query side too, so this is the
+		// "close the loop" half: stored values and queried values share
+		// the same canonical shape, and equality filters match both
+		// seeded (numeric) and UI-written rows.
 		const q = `
 			WITH input AS (
-				SELECT i.ord, i.card_id, ad.id AS attribute_def_id, i.value
+				SELECT i.ord, i.card_id, ad.id AS attribute_def_id,
+				       CASE
+				         WHEN ad.value_type = 'card_ref'
+				              AND jsonb_typeof(i.value) = 'string'
+				              AND (i.value #>> '{}') ~ '^-?\d+$'
+				           THEN to_jsonb(((i.value #>> '{}')::bigint))
+				         WHEN ad.value_type = 'card_ref[]'
+				              AND jsonb_typeof(i.value) = 'array'
+				           THEN COALESCE((
+				                  SELECT jsonb_agg(
+				                           CASE
+				                             WHEN jsonb_typeof(e.v) = 'string'
+				                                  AND (e.v #>> '{}') ~ '^-?\d+$'
+				                               THEN to_jsonb(((e.v #>> '{}')::bigint))
+				                             ELSE e.v
+				                           END
+				                           ORDER BY e.ord)
+				                  FROM jsonb_array_elements(i.value)
+				                       WITH ORDINALITY AS e(v, ord)),
+				                '[]'::jsonb)
+				         ELSE i.value
+				       END AS value
 				FROM jsonb_to_recordset($1::jsonb)
 				AS i(ord int, card_id bigint, attribute_name text, value jsonb)
 				JOIN attribute_def ad ON ad.name = i.attribute_name

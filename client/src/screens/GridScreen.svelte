@@ -4,7 +4,7 @@
    *
    * Dispatcher contract (one batch per gesture):
    *   1. card.select_with_attributes (tasks, with sort + tree predicate)
-   *   2. user.select                    (assignee resolution)
+   *   2. card.select_with_attributes   (persons; assignee labels + filter)
    *   3. card.select_with_attributes    (milestones)
    *   4. card.select_with_attributes    (components)
    *   5. card.select_with_attributes    (tags)
@@ -19,7 +19,7 @@
    * node-only runner.
    */
 
-  import { tick, untrack } from 'svelte';
+  import { getContext, tick, untrack } from 'svelte';
   import {
     autoUpdate,
     computePosition,
@@ -27,14 +27,15 @@
     offset,
   } from '@floating-ui/dom';
 
+  import type { AuthState } from '../auth/auth_state.svelte';
   import { getDispatcher } from '../dispatch/context.js';
   import {
     BatchAbortedError,
     SubRequestError,
   } from '../dispatch/errors.js';
-  import FilterBar from '../filter/FilterBar.svelte';
+  import ScreenFilterBar from '../filter/ScreenFilterBar.svelte';
   import {
-    AttributeSchemaCache,
+    sharedSchemaCache,
     type FilterAttribute,
   } from '../filter/attribute_schema.svelte';
   import {
@@ -48,10 +49,9 @@
     type Predicate,
     type PredicateLeaf,
   } from '../filter/predicate.js';
-  import {
-    replaceLeafForAttr,
-    type QuickChip,
-  } from '../filter/quick_chips.js';
+  // `in_` is still used by the per-column filter commit path (multi-value
+  // selections), but the Grid no longer ships with a default predicate.
+  import { replaceLeafForAttr } from '../filter/quick_chips.js';
   import ValueInput from '../filter/ValueInput.svelte';
   import { setActiveScope, useShortcut } from '../keys/shortcut.js';
   import { projectScope } from '../shell/project_scope.svelte';
@@ -59,19 +59,16 @@
   import QuickEntryOverlay from '../quick_entry/QuickEntryOverlay.svelte';
   import {
     cardSelectWithAttributes,
-    userSelect,
   } from '../reg/handlers.js';
   import type {
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
     CardWithAttrs,
-    UserRow,
-    UserSelectInput,
-    UserSelectOutput,
+    ID,
   } from '../reg/types.js';
   import { navigate } from '../routing/router.svelte.js';
   import { setTaskNavList } from '../routing/task_nav_list.svelte.js';
-  import { getFilter, setFilter } from './filter_state.svelte.js';
+  import { getFilter } from './filter_state.svelte.js';
   import Button from '../ui/Button.svelte';
   import Combobox from '../ui/Combobox.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
@@ -93,7 +90,7 @@
 
   interface Props {
     /** Optional project scope; null = grid spans every task in the system. */
-    projectId?: number;
+    projectId?: ID;
     params?: Record<string, string>;
   }
 
@@ -103,12 +100,15 @@
   // scope picked from the sidebar. The global scope is the everyday case
   // (Inbox / Grid / Kanban share it); the prop / param paths cover deep
   // links like `/project/42/grid` that should ignore the sidebar choice.
-  const scopedProjectId = $derived.by((): number | undefined => {
+  const scopedProjectId = $derived.by((): ID | undefined => {
     if (projectId !== undefined) return projectId;
     const v = params.id;
     if (typeof v === 'string' && v !== '') {
-      const n = Number(v);
-      if (Number.isFinite(n)) return n;
+      try {
+        return BigInt(v);
+      } catch {
+        /* fall through */
+      }
     }
     return projectScope.projectId ?? undefined;
   });
@@ -134,7 +134,6 @@
   const columns: ColumnDef[] = [
     { label: 'ID', field: null, attrName: null, width: 60 },
     { label: 'Title', field: 'attributes.title', attrName: null, width: 320 },
-    { label: 'Status', field: 'attributes.status', attrName: 'status', width: 110 },
     {
       label: 'Assignee',
       field: 'attributes.assignee',
@@ -165,38 +164,63 @@
   /* ------------------------------------------------------------------ state */
 
   const dispatcher = getDispatcher();
-  const schemaCache = new AttributeSchemaCache(dispatcher);
+  const authState = getContext<AuthState | undefined>('authState');
+  const schemaCache = sharedSchemaCache(dispatcher);
   setActiveScope('grid');
 
+  /**
+   * Person-card id for the signed-in actor (assignee values are now
+   * person-card ids, not user_account ids). Reads from OIDC `sub`; in the
+   * demo seed user_account.id == person_card.id 1:1, so the cast works.
+   * Fallback `2n` matches InboxScreen's `kCurrentUserId` for parity.
+   */
+  function parseMeId(): ID {
+    const sub = authState?.claims?.sub;
+    if (typeof sub === 'string' && sub.length > 0) {
+      try {
+        const n = BigInt(sub);
+        if (n > 0n) return n;
+      } catch {
+        /* fall through */
+      }
+    }
+    return 2n;
+  }
+  const meId = parseMeId();
+
   let rows = $state<CardWithAttrs[]>([]);
+  let personRows = $state<CardWithAttrs[]>([]);
   let milestoneRows = $state<CardWithAttrs[]>([]);
   let componentRows = $state<CardWithAttrs[]>([]);
   let tagRows = $state<CardWithAttrs[]>([]);
-  let userRows = $state<UserRow[]>([]);
+  let statusRows = $state<CardWithAttrs[]>([]);
 
   /** Derived lookup tables fed to TaskRow / inline cells. */
-  const userNames = $derived.by((): Record<number, string> => {
-    const out: Record<number, string> = {};
-    for (const u of userRows) out[u.id] = u.display_name;
+  const personNames = $derived.by((): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const p of personRows) {
+      const t = p.attributes['title'];
+      if (typeof t === 'string') out[p.id.toString()] = t;
+    }
     return out;
   });
-  const cardTitles = $derived.by((): Record<number, string> => {
-    const out: Record<number, string> = {};
+  const cardTitles = $derived.by((): Record<string, string> => {
+    const out: Record<string, string> = {};
     for (const r of milestoneRows) {
       const t = r.attributes['title'] ?? r.attributes['name'];
-      if (typeof t === 'string') out[r.id] = t;
+      if (typeof t === 'string') out[r.id.toString()] = t;
     }
     for (const r of componentRows) {
       const t = r.attributes['title'] ?? r.attributes['name'];
-      if (typeof t === 'string') out[r.id] = t;
+      if (typeof t === 'string') out[r.id.toString()] = t;
     }
     return out;
   });
-  const tagPaths = $derived.by((): Record<number, string> => {
-    const out: Record<number, string> = {};
+  const tagPaths = $derived.by((): Record<string, string> => {
+    const out: Record<string, string> = {};
     for (const r of tagRows) {
       const p = r.attributes['path'];
-      if (typeof p === 'string') out[r.id] = p;
+      if (typeof p === 'string') out[r.id.toString()] = p;
     }
     return out;
   });
@@ -205,17 +229,11 @@
   let exhausted = $state(false);
   let error = $state<string | null>(null);
   let sort = $state<SortState | null>(null);
-  // The Grid default predicate keeps the canonical four task states
-  // visible. We read the cache first; only fall back to the default
-  // when the user has never touched this scope/project. Read inside
-  // untrack() so the persistence effect below isn't part of the
-  // initial-state evaluation.
+  // Predicate starts from the persisted cache for this scope/project,
+  // or null when there's nothing cached yet. On first visit we apply
+  // the data-side default filter (see the effect below).
   let predicate = $state<Predicate | null>(
-    untrack(
-      () =>
-        getFilter('grid', projectScope.projectId) ??
-        in_('status', ['todo', 'doing', 'review', 'done']),
-    ),
+    untrack(() => getFilter('grid', projectScope.projectId)),
   );
   let selectedIndex = $state(0);
   let focusedColumn = $state<string | null>(null);
@@ -226,7 +244,7 @@
 
   /**
    * Issue ONE batch with the active sort + predicate. Six sub-requests:
-   * tasks + users + milestones + components + tags + attribute_defs.
+   * tasks + persons + milestones + components + tags + attribute_defs.
    */
   async function refresh(): Promise<void> {
     loading = true;
@@ -253,17 +271,36 @@
       action: cardSelectWithAttributes.action,
       data: taskInput,
     });
-    const fUsers = dispatcher.request<UserSelectInput, UserSelectOutput>({
-      endpoint: userSelect.endpoint,
-      action: userSelect.action,
+    const fPersons = dispatcher.request<
+      CardSelectWithAttributesInput,
+      CardSelectWithAttributesOutput
+    >({
+      endpoint: cardSelectWithAttributes.endpoint,
+      action: cardSelectWithAttributes.action,
+      data: { cardTypeName: 'person' },
     });
+    // Picker queries inherit the active project scope. Milestones,
+    // components, and tags sit one level under their project in v1, so
+    // filtering by `parentCardId` is equivalent to "in this project."
+    // The all-projects view leaves the filter unset so every option
+    // shows up.
+    const milestoneData: CardSelectWithAttributesInput = { cardTypeName: 'milestone' };
+    const componentData: CardSelectWithAttributesInput = { cardTypeName: 'component' };
+    const tagData: CardSelectWithAttributesInput = { cardTypeName: 'tag' };
+    const statusData: CardSelectWithAttributesInput = { cardTypeName: 'status' };
+    if (scopedProjectId !== undefined) {
+      milestoneData.parentCardId = scopedProjectId;
+      componentData.parentCardId = scopedProjectId;
+      tagData.parentCardId = scopedProjectId;
+      statusData.parentCardId = scopedProjectId;
+    }
     const fMilestones = dispatcher.request<
       CardSelectWithAttributesInput,
       CardSelectWithAttributesOutput
     >({
       endpoint: cardSelectWithAttributes.endpoint,
       action: cardSelectWithAttributes.action,
-      data: { cardTypeName: 'milestone' },
+      data: milestoneData,
     });
     const fComponents = dispatcher.request<
       CardSelectWithAttributesInput,
@@ -271,7 +308,7 @@
     >({
       endpoint: cardSelectWithAttributes.endpoint,
       action: cardSelectWithAttributes.action,
-      data: { cardTypeName: 'component' },
+      data: componentData,
     });
     const fTags = dispatcher.request<
       CardSelectWithAttributesInput,
@@ -279,26 +316,36 @@
     >({
       endpoint: cardSelectWithAttributes.endpoint,
       action: cardSelectWithAttributes.action,
-      data: { cardTypeName: 'tag' },
+      data: tagData,
+    });
+    const fStatuses = dispatcher.request<
+      CardSelectWithAttributesInput,
+      CardSelectWithAttributesOutput
+    >({
+      endpoint: cardSelectWithAttributes.endpoint,
+      action: cardSelectWithAttributes.action,
+      data: statusData,
     });
     // `AttributeSchemaCache.load()` issues `attribute_def.select` on the
     // same tick (and short-circuits on subsequent screen mounts).
     const fSchema = schemaCache.load();
 
     try {
-      const [tOut, uOut, mOut, cOut, tagOut] = await Promise.all([
+      const [tOut, pOut, mOut, cOut, tagOut, sOut] = await Promise.all([
         fTasks,
-        fUsers,
+        fPersons,
         fMilestones,
         fComponents,
         fTags,
+        fStatuses,
         fSchema,
       ]);
       rows = tOut.rows;
-      userRows = uOut.rows;
+      personRows = pOut.rows;
       milestoneRows = mOut.rows;
       componentRows = cOut.rows;
       tagRows = tagOut.rows;
+      statusRows = sOut.rows;
       exhausted = tOut.rows.length < PAGE_LIMIT;
       // Reset selection inside bounds.
       if (selectedIndex >= rows.length) {
@@ -357,28 +404,18 @@
     }
   }
 
-  // Re-fetch when sort or predicate changes. The leading boolean below
-  // tracks whether we've ever fetched: we always want to fire on mount
-  // even if predicate/sort start at their defaults.
+  // Re-fetch when sort or predicate changes. Gated on `filterReady`
+  // so the first request waits for ScreenFilterBar's default-filter
+  // probe — otherwise the screen fires an unfiltered fetch (predicate
+  // null), then a filtered one when the probe resolves, and the user
+  // sees a brief flash of the unfiltered rows.
+  let filterReady = $state(false);
   $effect(() => {
-    // Tracked deps:
     void predicate;
     void sort;
     void scopedProjectId;
+    if (!filterReady) return;
     void refresh();
-  });
-
-  // Filter persistence (see filter_state.svelte.ts). Hydrate when the
-  // project scope flips; persist on every predicate change.
-  $effect(() => {
-    const pid = projectScope.projectId;
-    untrack(() => {
-      const cached = getFilter('grid', pid);
-      if (cached !== null) predicate = cached;
-    });
-  });
-  $effect(() => {
-    setFilter('grid', projectScope.projectId, predicate);
   });
 
   /* ----------------------------------------------------- filter attributes */
@@ -390,7 +427,13 @@
    */
   function resolveOptionsFor(name: string): { value: unknown; label: string }[] {
     if (name === 'assignee') {
-      return userRows.map((u) => ({ value: u.id, label: u.display_name }));
+      return personRows.map((p) => {
+        const t = p.attributes['title'];
+        return {
+          value: p.id,
+          label: typeof t === 'string' && t.length > 0 ? t : `#${p.id}`,
+        };
+      });
     }
     if (name === 'milestone_ref') {
       return milestoneRows.map((m) => {
@@ -429,10 +472,13 @@
   const filterAttributes = $derived<FilterAttribute[]>(
     buildTaskFilterPalette({
       schema: schemaCache,
-      users: userRows,
+      // Assignee → person cards. The palette resolves it via its
+      // refResolver from this list.
+      persons: personRows,
       milestones: milestoneRows,
       components: componentRows,
       tags: tagRows,
+      statuses: statusRows,
     }),
   );
 
@@ -440,37 +486,6 @@
   function filterAttributeFor(name: string): FilterAttribute | null {
     return filterAttributes.find((a) => a.name === name) ?? null;
   }
-
-  const quickChips = $derived.by((): QuickChip[] => {
-    const chips: QuickChip[] = [];
-    const status = filterAttributeFor('status');
-    if (status?.options !== undefined) {
-      for (const opt of status.options) {
-        chips.push({
-          id: `status:${String(opt.value)}`,
-          label: opt.label,
-          predicate: eq('status', opt.value),
-        });
-      }
-    }
-    const me = currentUserId;
-    if (me !== undefined) {
-      chips.push({
-        id: 'assignee:mine',
-        label: 'Mine',
-        predicate: eq('assignee', me),
-      });
-    }
-    return chips;
-  });
-
-  // Best-effort "current user": the first row of `user.select` is the
-  // signed-in actor by API contract on this client; we use it to seed
-  // the "Mine" quick chip. If the row list is empty, we omit the chip.
-  const currentUserId = $derived.by((): number | undefined => {
-    const u = userRows[0];
-    return u?.id;
-  });
 
   /* ----------------------------------------------------- per-column filter */
 
@@ -646,7 +661,7 @@
   }
 
   /** Capture the current grid order as the task nav-list and navigate. */
-  function openTaskById(id: number): void {
+  function openTaskById(id: ID): void {
     setTaskNavList({
       label: scopedProjectId === undefined ? 'Grid' : `Grid — project ${scopedProjectId}`,
       ids: rows.map((r) => r.id),
@@ -720,26 +735,18 @@
 
   /* ------------------------------------------------------------------ cells */
 
-  function statusOf(row: CardWithAttrs): string | undefined {
-    const v = row.attributes['status'];
-    if (typeof v !== 'string') return undefined;
-    // Resolve through the palette so the cell renders the enum option's
-    // label ("To do") instead of the raw wire value ("todo") — agrees
-    // with the FilterBar status chip and the TaskRow status chip.
-    const fa = filterAttributeFor('status');
-    return resolveAttributeLabel(fa ?? undefined, v);
-  }
-
   function assigneeOf(row: CardWithAttrs): string | undefined {
     const id = row.attributes['assignee'];
-    if (typeof id !== 'number') return undefined;
-    return userNames[id] ?? `#${id}`;
+    if (typeof id !== 'bigint') return undefined;
+    const key = id.toString();
+    return personNames[key] ?? `#${key}`;
   }
 
   function refTitle(row: CardWithAttrs, key: string): string | undefined {
     const id = row.attributes[key];
-    if (typeof id !== 'number') return undefined;
-    return cardTitles[id] ?? `#${id}`;
+    if (typeof id !== 'bigint') return undefined;
+    const k = id.toString();
+    return cardTitles[k] ?? `#${k}`;
   }
 
   function tagsOf(row: CardWithAttrs): string[] {
@@ -747,8 +754,8 @@
     if (!Array.isArray(ids)) return [];
     const out: string[] = [];
     for (const id of ids) {
-      if (typeof id !== 'number') continue;
-      const p = tagPaths[id];
+      if (typeof id !== 'bigint') continue;
+      const p = tagPaths[id.toString()];
       if (p === undefined) continue;
       if (p.startsWith('priority/')) continue; // priority lives in its own column
       out.push(p);
@@ -760,8 +767,8 @@
     const ids = row.attributes['tags'];
     if (!Array.isArray(ids)) return undefined;
     for (const id of ids) {
-      if (typeof id !== 'number') continue;
-      const p = tagPaths[id];
+      if (typeof id !== 'bigint') continue;
+      const p = tagPaths[id.toString()];
       if (typeof p === 'string' && p.startsWith('priority/')) return p;
     }
     return undefined;
@@ -779,12 +786,6 @@
   // rows of plain DOM well; full window virtualization is a follow-up.
   const visibleRows = $derived(rows.slice(0, PAGE_LIMIT));
 
-  const titleText = $derived.by(() =>
-    scopedProjectId === undefined
-      ? 'Grid'
-      : `Grid — project ${scopedProjectId}`,
-  );
-
   /* --------------------------------------------------------- col-filter UI */
 
   const colFilterAttribute = $derived.by((): FilterAttribute | null => {
@@ -794,26 +795,25 @@
 </script>
 
 <div class="flex h-full w-full flex-col">
-  <header class="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
-    <h1 class="text-lg font-semibold" data-testid="grid-title">{titleText}</h1>
-    <div class="flex items-center gap-3 text-xs text-muted">
-      <span data-testid="grid-row-count">
-        {rows.length}
-        row{rows.length === 1 ? '' : 's'}
-      </span>
-      {#if loading}
-        <Spinner size="sm" />
-      {/if}
-    </div>
-  </header>
-
   <div class="shrink-0 border-b border-border px-4 py-2">
-    <FilterBar
-      attributes={filterAttributes}
+    <ScreenFilterBar
+      screenType="grid"
+      projectId={scopedProjectId ?? null}
+      {dispatcher}
+      {filterAttributes}
       bind:predicate
-      scope="grid"
-      quickChips={quickChips}
-    />
+      bind:filterReady
+    >
+      {#snippet trailing()}
+        <span data-testid="grid-row-count">
+          {rows.length}
+          row{rows.length === 1 ? '' : 's'}
+        </span>
+        {#if loading}
+          <Spinner size="sm" />
+        {/if}
+      {/snippet}
+    </ScreenFilterBar>
   </div>
 
   {#if error !== null}
@@ -965,21 +965,10 @@
                   })()}
                 </span>
               </div>
-              <!-- Status -->
-              <div
-                class="flex shrink-0 items-center px-2"
-                style:width="{columns[2]!.width}px"
-              >
-                {#if statusOf(row) !== undefined}
-                  <AttributeChip label="status" value={statusOf(row)!} />
-                {:else}
-                  <span class="text-muted">—</span>
-                {/if}
-              </div>
               <!-- Assignee -->
               <div
                 class="flex shrink-0 items-center px-2"
-                style:width="{columns[3]!.width}px"
+                style:width="{columns[2]!.width}px"
               >
                 {#if assigneeOf(row) !== undefined}
                   <AttributeChip label="assignee" value={assigneeOf(row)!} />
@@ -990,7 +979,7 @@
               <!-- Priority -->
               <div
                 class="flex shrink-0 items-center px-2"
-                style:width="{columns[4]!.width}px"
+                style:width="{columns[3]!.width}px"
               >
                 {#if priorityOf(row) !== undefined}
                   <TagChip label={priorityOf(row)!} />
@@ -1001,7 +990,7 @@
               <!-- Milestone -->
               <div
                 class="flex shrink-0 items-center px-2"
-                style:width="{columns[5]!.width}px"
+                style:width="{columns[4]!.width}px"
               >
                 {#if refTitle(row, 'milestone_ref') !== undefined}
                   <AttributeChip
@@ -1015,7 +1004,7 @@
               <!-- Component -->
               <div
                 class="flex shrink-0 items-center px-2"
-                style:width="{columns[6]!.width}px"
+                style:width="{columns[5]!.width}px"
               >
                 {#if refTitle(row, 'component_ref') !== undefined}
                   <AttributeChip
@@ -1029,7 +1018,7 @@
               <!-- Tags -->
               <div
                 class="flex shrink-0 items-center gap-1 overflow-hidden px-2"
-                style:width="{columns[7]!.width}px"
+                style:width="{columns[6]!.width}px"
               >
                 {#each tagsOf(row) as t (t)}
                   <TagChip label={t} />
@@ -1038,7 +1027,7 @@
               <!-- Created -->
               <div
                 class="flex shrink-0 items-center px-2 text-xs text-muted"
-                style:width="{columns[8]!.width}px"
+                style:width="{columns[7]!.width}px"
               >
                 {createdOf(row) ?? '—'}
               </div>
@@ -1067,8 +1056,7 @@
 
 {#if colFilter !== null && colFilterAttribute !== null}
   {@const fa = colFilterAttribute}
-  {@const isCombobox =
-    fa.valueType === 'enum' || fa.valueType.startsWith('ref:')}
+  {@const isCombobox = fa.valueType.startsWith('ref:')}
   {@const multiple = colFilter.values.length > 1}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div

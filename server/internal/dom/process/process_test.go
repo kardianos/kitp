@@ -54,26 +54,28 @@ func TestUpdateWithCommentProcess(t *testing.T) {
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &tOut)
 
 	// Invoke process: data is the union of attribute.update + comment.insert inputs.
+	// We pick `description` (a text-typed attribute) so the test exercises
+	// the two-step process without needing any value-card seeding.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "uwc", Endpoint: "task", Action: "update_with_comment", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo","body":"setting status"}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"description","value":"done","body":"setting description"}`, tOut.ID))},
 	}})
 	if !resp.Subresponses[0].OK {
-		t.Fatalf("process: %+v", resp.Subresponses[0])
+		t.Fatalf("process: %+v err=%+v", resp.Subresponses[0], resp.Subresponses[0].Error)
 	}
 
 	// Activity should now contain: card_create, attr_update title (from
-	// insert), attr_update status, comment.
+	// insert), attr_update description, comment.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "a", Endpoint: "activity", Action: "select", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d"}`, tOut.ID))},
 	}})
 	var aOut activity.SelectOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -125,7 +127,7 @@ func TestProcessRollback(t *testing.T) {
 	// Pre-create a task so we have a valid card_id for the attribute.update steps.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -136,7 +138,7 @@ func TestProcessRollback(t *testing.T) {
 	// Step 3 never runs. Step 1 must be rolled back.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "wf", Endpoint: "task", Action: "test_workflow", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"project","title":"new_proj_should_be_rolled_back","card_id":%d,"attribute_name":"not_a_real_attr","value":"x"}`, tOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"project","title":"new_proj_should_be_rolled_back","card_id":"%d","attribute_name":"not_a_real_attr","value":"x"}`, tOut.ID))},
 	}})
 	if resp.Subresponses[0].OK {
 		t.Fatalf("expected failure, got %+v", resp.Subresponses[0])
@@ -177,26 +179,33 @@ func TestAuthDeny(t *testing.T) {
 	_ = json.Unmarshal(buf, &pOut)
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":%d,"title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &tOut)
 
-	// Revoke the system role's grant on (task, card.update).
+	// Revoke every role's grant on (task, card.update) so the System
+	// User can't sneak through via the seed-granted 'admin' role.
+	// (Pre-BFF the System User only held 'system'; today the seed
+	// gives it both 'system' and 'admin' so the sidebar Admin section
+	// lights up in dev mode. The test needs to deny every grant the
+	// actor inherits.)
 	if _, err := pgxPool.Exec(ctx, `
 		DELETE FROM role_grant
-		WHERE role_id   = (SELECT id FROM role        WHERE name='system')
-		  AND card_type_id = (SELECT id FROM card_type WHERE name='task')
+		WHERE card_type_id = (SELECT id FROM card_type WHERE name='task')
 		  AND process_id  = (SELECT id FROM process    WHERE name='card.update')
 	`); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 
 	// Try attribute.update on the task — should fail with unauthorized.
+	// We pick a text-typed attribute (`title`) instead of status so the
+	// value validation doesn't reject the write before the authz layer
+	// gets a turn.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_id":%d,"attribute_name":"status","value":"todo"}`, tOut.ID))},
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"title","value":"new title"}`, tOut.ID))},
 	}})
 	if resp.Subresponses[0].OK {
 		t.Fatalf("expected unauthorized, got %+v", resp.Subresponses[0])

@@ -69,7 +69,7 @@ func TestSetAndRevokeLifecycle(t *testing.T) {
 	// Set.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "g", Endpoint: "user_role", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"user_id":%d,"role_name":"manager"}`, target))},
+			fmt.Sprintf(`{"user_id":"%d","role_name":"manager"}`, target))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("set should succeed: %+v", resp.Subresponses[0])
@@ -88,7 +88,7 @@ func TestSetAndRevokeLifecycle(t *testing.T) {
 	// Re-set (idempotent).
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "g2", Endpoint: "user_role", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"user_id":%d,"role_name":"manager"}`, target))},
+			fmt.Sprintf(`{"user_id":"%d","role_name":"manager"}`, target))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("re-set should succeed: %+v", resp.Subresponses[0])
@@ -97,7 +97,7 @@ func TestSetAndRevokeLifecycle(t *testing.T) {
 	// Revoke.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "r", Endpoint: "user_role", Action: "revoke", Data: json.RawMessage(
-			fmt.Sprintf(`{"user_id":%d,"role_name":"manager"}`, target))},
+			fmt.Sprintf(`{"user_id":"%d","role_name":"manager"}`, target))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("revoke should succeed: %+v", resp.Subresponses[0])
@@ -124,7 +124,7 @@ func TestNonAdminUnauthorized(t *testing.T) {
 	ctx := auth.WithUser(context.Background(), &auth.UserCtx{ID: caller, DisplayName: "joe-worker"})
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "g", Endpoint: "user_role", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"user_id":%d,"role_name":"admin"}`, target))},
+			fmt.Sprintf(`{"user_id":"%d","role_name":"admin"}`, target))},
 	}})
 	if resp.Subresponses[0].OK {
 		t.Errorf("non-admin grant should fail: %+v", resp.Subresponses[0])
@@ -143,11 +143,11 @@ func TestCoalescedSet(t *testing.T) {
 	sp.ResetWrites()
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "1", Endpoint: "user_role", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"user_id":%d,"role_name":"worker"}`, a))},
+			fmt.Sprintf(`{"user_id":"%d","role_name":"worker"}`, a))},
 		{ID: "2", Endpoint: "user_role", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"user_id":%d,"role_name":"manager"}`, b))},
+			fmt.Sprintf(`{"user_id":"%d","role_name":"manager"}`, b))},
 		{ID: "3", Endpoint: "user_role", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"user_id":%d,"role_name":"viewer"}`, c))},
+			fmt.Sprintf(`{"user_id":"%d","role_name":"viewer"}`, c))},
 	}})
 	for i, sr := range resp.Subresponses {
 		if !sr.OK {

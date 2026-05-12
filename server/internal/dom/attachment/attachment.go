@@ -49,7 +49,7 @@ func SetThumbDeps(storage *cas.Storage, logger *slog.Logger) {
 
 // ListInput requests attachments for one card.
 type ListInput struct {
-	CardID int64 `json:"card_id" mcp:"required,desc=card to list attachments for"`
+	CardID int64 `json:"card_id,string" mcp:"required,desc=card to list attachments for"`
 }
 
 // Row is one attachment record. SizeBytes / MimeType / Filename come
@@ -57,14 +57,14 @@ type ListInput struct {
 // generated (or recognised) a thumbnail; the client fetches it via
 // GET /api/v1/attachment/{id}/thumb.
 type Row struct {
-	ID          int64  `json:"id" mcp:"desc=attachment row id"`
-	CardID      int64  `json:"card_id" mcp:"desc=card the attachment belongs to"`
-	FileID      int64  `json:"file_id" mcp:"desc=file row id"`
+	ID          int64  `json:"id,string" mcp:"desc=attachment row id"`
+	CardID      int64  `json:"card_id,string" mcp:"desc=card the attachment belongs to"`
+	FileID      int64  `json:"file_id,string" mcp:"desc=file row id"`
 	Filename    string `json:"filename" mcp:"desc=display filename (from the file row)"`
 	MimeType    string `json:"mime_type" mcp:"desc=MIME type (from the file row)"`
 	SizeBytes   int64  `json:"size_bytes" mcp:"desc=total size across all chunks"`
 	CreatedAt   string `json:"created_at" mcp:"desc=ISO8601 timestamp of the attachment row"`
-	ThumbFileID int64  `json:"thumb_file_id" mcp:"desc=thumbnail file id (0 when no thumb)"`
+	ThumbFileID int64  `json:"thumb_file_id,string" mcp:"desc=thumbnail file id (0 when no thumb)"`
 	Kind        string `json:"kind" mcp:"desc=display bucket: image|pdf|other"`
 }
 
@@ -75,7 +75,7 @@ type ListOutput struct {
 
 // DeleteInput soft-deletes one attachment row.
 type DeleteInput struct {
-	ID int64 `json:"id" mcp:"required,desc=attachment id to delete"`
+	ID int64 `json:"id,string" mcp:"required,desc=attachment id to delete"`
 }
 
 // DeleteOutput acks the soft-delete.
@@ -85,19 +85,19 @@ type DeleteOutput struct {
 
 // CreateInput links an existing `file` row to a card.
 type CreateInput struct {
-	CardID int64 `json:"card_id" mcp:"required,desc=card to attach to"`
-	FileID int64 `json:"file_id" mcp:"required,desc=existing file row id (created via file.create)"`
+	CardID int64 `json:"card_id,string" mcp:"required,desc=card to attach to"`
+	FileID int64 `json:"file_id,string" mcp:"required,desc=existing file row id (created via file.create)"`
 }
 
 // CreateOutput returns the freshly-created attachment.
 type CreateOutput struct {
-	ID          int64  `json:"id"`
-	CardID      int64  `json:"card_id"`
-	FileID      int64  `json:"file_id"`
+	ID          int64  `json:"id,string"`
+	CardID      int64  `json:"card_id,string"`
+	FileID      int64  `json:"file_id,string"`
 	Filename    string `json:"filename"`
 	MimeType    string `json:"mime_type"`
 	SizeBytes   int64  `json:"size_bytes"`
-	ThumbFileID int64  `json:"thumb_file_id"`
+	ThumbFileID int64  `json:"thumb_file_id,string"`
 	Kind        string `json:"kind"`
 }
 

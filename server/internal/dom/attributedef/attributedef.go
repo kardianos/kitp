@@ -39,31 +39,21 @@ type SelectInput struct{}
 // list of a def. Edges may include built-in card types; the client decides
 // whether to allow unbinding them (we surface is_built_in via card_type).
 type BoundCardType struct {
-	CardTypeID   int32  `json:"card_type_id" mcp:"desc=card_type id this attribute is bound to"`
+	CardTypeID   int64  `json:"card_type_id,string" mcp:"desc=card_type id this attribute is bound to"`
 	CardTypeName string `json:"card_type_name" mcp:"desc=card_type name"`
 	IsRequired   bool   `json:"is_required" mcp:"desc=true when the edge marks the attribute as required for that card_type"`
 	IsBuiltIn    bool   `json:"is_built_in" mcp:"desc=true if the bound card_type is built-in (admin UI may protect deletes)"`
 	Ordering     int32  `json:"ordering" mcp:"desc=display ordering for the edge"`
 }
 
-// AttributeDefOptionRow is one allowed option for an enum-typed
-// attribute_def. Options come from the attribute_def_option table (see
-// migration 0012). Only enum-typed defs ever populate this list; for all
-// other value_types the field is empty/omitted.
-type AttributeDefOptionRow struct {
-	Value    string `json:"value" mcp:"desc=stored JSON value (the literal jsonb the server accepts)"`
-	Label    string `json:"label" mcp:"desc=display label for the option"`
-	Ordering int32  `json:"ordering" mcp:"desc=display ordering (ascending)"`
-}
-
 // SelectRow is one attribute_def row plus its bindings.
 type SelectRow struct {
-	ID        int32                   `json:"id" mcp:"desc=attribute_def id"`
-	Name      string                  `json:"name" mcp:"desc=attribute_def name"`
-	ValueType string                  `json:"value_type" mcp:"desc=value type label (text, bool, card_ref, …)"`
-	IsBuiltIn bool                    `json:"is_built_in" mcp:"desc=true if installed by a migration"`
-	BoundTo   []BoundCardType         `json:"bound_to" mcp:"desc=card_types the attribute is bound to via edge"`
-	Options   []AttributeDefOptionRow `json:"options,omitempty" mcp:"desc=allowed options for enum-typed attributes (sorted by ordering); empty for non-enum defs"`
+	ID                  int64           `json:"id,string" mcp:"desc=attribute_def id"`
+	Name                string          `json:"name" mcp:"desc=attribute_def name"`
+	ValueType           string          `json:"value_type" mcp:"desc=value type label (text, bool, card_ref, card_ref[], number)"`
+	TargetCardTypeName  string          `json:"target_card_type_name,omitempty" mcp:"desc=for card_ref / card_ref[] value_types, the name of the card_type whose cards are valid values (status / milestone / person / …)"`
+	IsBuiltIn           bool            `json:"is_built_in" mcp:"desc=true if installed by a migration"`
+	BoundTo             []BoundCardType `json:"bound_to" mcp:"desc=card_types the attribute is bound to via edge"`
 }
 
 // SelectOutput wraps the rows.
@@ -73,7 +63,7 @@ type SelectOutput struct {
 
 // EdgeInput describes one (card_type, is_required) binding.
 type EdgeInput struct {
-	CardTypeID int32 `json:"card_type_id" mcp:"required,desc=card_type id to bind"`
+	CardTypeID int64 `json:"card_type_id,string" mcp:"required,desc=card_type id to bind"`
 	IsRequired bool  `json:"is_required,omitempty" mcp:"desc=optional: mark the edge as required (default false)"`
 	Ordering   int32 `json:"ordering,omitempty" mcp:"desc=optional ordering hint"`
 }
@@ -87,13 +77,13 @@ type InsertInput struct {
 
 // InsertOutput surfaces the new id.
 type InsertOutput struct {
-	ID int32 `json:"id" mcp:"desc=id of the new attribute_def row"`
+	ID int64 `json:"id,string" mcp:"desc=id of the new attribute_def row"`
 }
 
 // EdgeInsertInput binds an existing def to a card_type.
 type EdgeInsertInput struct {
-	AttributeDefID int32 `json:"attribute_def_id" mcp:"required,desc=existing attribute_def to bind"`
-	CardTypeID     int32 `json:"card_type_id" mcp:"required,desc=card_type to bind to"`
+	AttributeDefID int64 `json:"attribute_def_id,string" mcp:"required,desc=existing attribute_def to bind"`
+	CardTypeID     int64 `json:"card_type_id,string" mcp:"required,desc=card_type to bind to"`
 	IsRequired     bool  `json:"is_required,omitempty" mcp:"desc=optional required flag"`
 	Ordering       int32 `json:"ordering,omitempty" mcp:"desc=optional ordering hint"`
 }
@@ -105,46 +95,14 @@ type EdgeInsertOutput struct {
 
 // EdgeDeleteInput removes one (def, card_type) binding.
 type EdgeDeleteInput struct {
-	AttributeDefID int32 `json:"attribute_def_id" mcp:"required,desc=def the edge points at"`
-	CardTypeID     int32 `json:"card_type_id" mcp:"required,desc=card_type the edge connects to"`
+	AttributeDefID int64 `json:"attribute_def_id,string" mcp:"required,desc=def the edge points at"`
+	CardTypeID     int64 `json:"card_type_id,string" mcp:"required,desc=card_type the edge connects to"`
 }
 
 // EdgeDeleteOutput reports whether a row was deleted.
 type EdgeDeleteOutput struct {
 	OK         bool `json:"ok" mcp:"desc=true if the edge was deleted"`
 	UsageCount int  `json:"usage_count,omitempty" mcp:"desc=number of attribute_value rows that block the delete"`
-}
-
-// OptionUpsertInput adds or rewrites one row in attribute_def_option. The
-// (def_id, value) pair is the natural key — sending the same value twice is
-// an UPDATE of label / ordering, not a duplicate. Admin-only because the
-// option list is the schema's source of truth for what's an acceptable
-// jsonb literal on cards.
-type OptionUpsertInput struct {
-	AttributeDefID int32  `json:"attribute_def_id" mcp:"required,desc=enum-typed attribute_def to add the option to"`
-	Value          string `json:"value" mcp:"required,desc=stored value (the literal jsonb the server accepts on attribute.update)"`
-	Label          string `json:"label" mcp:"required,desc=display label"`
-	Ordering       int32  `json:"ordering,omitempty" mcp:"desc=display ordering (ascending; default 0)"`
-}
-
-// OptionUpsertOutput acks the upsert.
-type OptionUpsertOutput struct {
-	OK bool `json:"ok" mcp:"desc=true on successful upsert"`
-}
-
-// OptionDeleteInput removes one option from an enum-typed attribute_def.
-// Refuses with usage_count > 0 if any attribute_value still references the
-// value, so the admin must clear or migrate references first.
-type OptionDeleteInput struct {
-	AttributeDefID int32  `json:"attribute_def_id" mcp:"required,desc=enum-typed attribute_def"`
-	Value          string `json:"value" mcp:"required,desc=stored value to remove"`
-}
-
-// OptionDeleteOutput surfaces the same usage-count guard as edge.delete so
-// the admin UI can render a "in use by N cards" warning.
-type OptionDeleteOutput struct {
-	OK         bool `json:"ok" mcp:"desc=true if the option was deleted"`
-	UsageCount int  `json:"usage_count,omitempty" mcp:"desc=number of attribute_value rows blocking the delete"`
 }
 
 var authzPool *store.Pool
@@ -191,26 +149,6 @@ func Register(p *store.Pool) {
 		Authz:        authzAdmin,
 		Run:          runEdgeDelete(p),
 	})
-	reg.Register(reg.Handler{
-		Endpoint:     "attribute_def_option",
-		Action:       "upsert",
-		Doc:          "Admin-only: add or update one allowed option on an enum-typed attribute_def.",
-		InputType:    reflect.TypeFor[OptionUpsertInput](),
-		OutputType:   reflect.TypeFor[OptionUpsertOutput](),
-		AllowedRoles: []string{"admin"},
-		Authz:        authzAdmin,
-		Run:          runOptionUpsert(p),
-	})
-	reg.Register(reg.Handler{
-		Endpoint:     "attribute_def_option",
-		Action:       "delete",
-		Doc:          "Admin-only: remove one option from an enum-typed attribute_def. Refuses with usage_count when any attribute_value still references the value.",
-		InputType:    reflect.TypeFor[OptionDeleteInput](),
-		OutputType:   reflect.TypeFor[OptionDeleteOutput](),
-		AllowedRoles: []string{"admin"},
-		Authz:        authzAdmin,
-		Run:          runOptionDelete(p),
-	})
 }
 
 // authzAdmin gates writes. The actor must hold admin or system globally.
@@ -241,19 +179,24 @@ func authzAdmin(ctx context.Context, _ any) error {
 // well under 100 rows and only a handful are enum-typed.
 func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		// One LEFT JOIN to card_type so card_ref defs surface the name of
+		// their target type — the client picker uses this to decide what
+		// to load + filter by parent project. No special-casing per
+		// attribute name; the kernel reads it straight from the row.
 		defRows, err := tx.Query(ctx, `
-			SELECT id, name, value_type, is_built_in
-			FROM attribute_def
-			ORDER BY name
+			SELECT ad.id, ad.name, ad.value_type, COALESCE(ct.name, ''), ad.is_built_in
+			FROM attribute_def ad
+			LEFT JOIN card_type ct ON ct.id = ad.target_card_type_id
+			ORDER BY ad.name
 		`)
 		if err != nil {
 			return nil, fmt.Errorf("attribute_def.select: defs: %w", err)
 		}
 		var out []SelectRow
-		idx := map[int32]int{}
+		idx := map[int64]int{}
 		for defRows.Next() {
 			var r SelectRow
-			if err := defRows.Scan(&r.ID, &r.Name, &r.ValueType, &r.IsBuiltIn); err != nil {
+			if err := defRows.Scan(&r.ID, &r.Name, &r.ValueType, &r.TargetCardTypeName, &r.IsBuiltIn); err != nil {
 				defRows.Close()
 				return nil, err
 			}
@@ -276,7 +219,7 @@ func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 			return nil, fmt.Errorf("attribute_def.select: edges: %w", err)
 		}
 		for edgeRows.Next() {
-			var defID int32
+			var defID int64
 			var b BoundCardType
 			if err := edgeRows.Scan(&defID, &b.CardTypeID, &b.CardTypeName, &b.IsBuiltIn, &b.IsRequired, &b.Ordering); err != nil {
 				edgeRows.Close()
@@ -288,34 +231,6 @@ func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 		}
 		edgeRows.Close()
 		if err := edgeRows.Err(); err != nil {
-			return nil, err
-		}
-
-		// Options for enum-typed defs (migration 0012). We follow the same
-		// pattern as the edges query: one read, bucket by attribute_def_id
-		// in Go. ORDER BY ordering ASC so the client can render options
-		// in the canonical sequence without sorting.
-		optRows, err := tx.Query(ctx, `
-			SELECT attribute_def_id, value, label, ordering
-			FROM attribute_def_option
-			ORDER BY attribute_def_id, ordering, value
-		`)
-		if err != nil {
-			return nil, fmt.Errorf("attribute_def.select: options: %w", err)
-		}
-		for optRows.Next() {
-			var defID int32
-			var o AttributeDefOptionRow
-			if err := optRows.Scan(&defID, &o.Value, &o.Label, &o.Ordering); err != nil {
-				optRows.Close()
-				return nil, err
-			}
-			if i, ok := idx[defID]; ok {
-				out[i].Options = append(out[i].Options, o)
-			}
-		}
-		optRows.Close()
-		if err := optRows.Err(); err != nil {
 			return nil, err
 		}
 
@@ -342,7 +257,7 @@ type jsonInsertRow struct {
 // returning id.
 type jsonEdgeSeed struct {
 	Ord        int   `json:"ord"`
-	CardTypeID int32 `json:"card_type_id"`
+	CardTypeID int64 `json:"card_type_id,string"`
 	IsRequired bool  `json:"is_required"`
 	Ordering   int32 `json:"ordering"`
 }
@@ -407,10 +322,10 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 			return nil, fmt.Errorf("attribute_def.insert: %w", err)
 		}
 		outs := make([]any, len(ins))
-		idByOrd := make([]int32, len(ins))
+		idByOrd := make([]int64, len(ins))
 		for rows.Next() {
 			var ord int
-			var id int32
+			var id int64
 			if err := rows.Scan(&ord, &id); err != nil {
 				rows.Close()
 				return nil, err
@@ -435,8 +350,8 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 		// NOTHING in case a duplicate slipped in.
 		if len(edges) > 0 {
 			type rendered struct {
-				AttributeDefID int32 `json:"attribute_def_id"`
-				CardTypeID     int32 `json:"card_type_id"`
+				AttributeDefID int64 `json:"attribute_def_id,string"`
+				CardTypeID     int64 `json:"card_type_id,string"`
 				IsRequired     bool  `json:"is_required"`
 				Ordering       int32 `json:"ordering"`
 			}
@@ -473,8 +388,8 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 
 // jsonEdgeRow is the per-input shape for runEdgeInsert.
 type jsonEdgeRow struct {
-	AttributeDefID int32 `json:"attribute_def_id"`
-	CardTypeID     int32 `json:"card_type_id"`
+	AttributeDefID int64 `json:"attribute_def_id,string"`
+	CardTypeID     int64 `json:"card_type_id,string"`
 	IsRequired     bool  `json:"is_required"`
 	Ordering       int32 `json:"ordering"`
 }
@@ -516,139 +431,6 @@ func runEdgeInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any
 		outs := make([]any, len(ins))
 		for i := range ins {
 			outs[i] = EdgeInsertOutput{OK: true}
-		}
-		return outs, nil
-	}
-}
-
-// runOptionUpsert handles per-input upserts with ordering-collision repair.
-//
-// Each row is processed in turn:
-//  1. Validate that the target def is enum-typed (a guard that catches admins
-//     pointing the option editor at a text/number/ref def).
-//  2. If another option on the same def is already sitting at the requested
-//     ordering, bump every other option whose ordering is >= the requested
-//     value up by one. The dragged-in option then slots in cleanly without
-//     two rows colliding at the same ordinal. Re-saving an option at its
-//     current (value, ordering) is a no-op for the bump step.
-//  3. UPSERT (value is the natural key; label/ordering refresh on conflict).
-//
-// arrayPath — the per-row pattern is needed because each row's bump SQL
-// references parameters we don't want to multiplex.
-func runOptionUpsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(OptionUpsertInput)
-			if in.AttributeDefID == 0 || in.Value == "" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "attribute_def_option.upsert: attribute_def_id and value are required"}
-			}
-			label := in.Label
-			if label == "" {
-				label = in.Value
-			}
-
-			// Guard: must point at an enum-typed def. Cheap point query;
-			// runs once per input rather than batched so a bad row in a
-			// mixed batch is reported with the matching InputIndex.
-			var vt string
-			if err := tx.QueryRow(ctx, `
-				SELECT value_type FROM attribute_def WHERE id = $1
-			`, in.AttributeDefID).Scan(&vt); err != nil {
-				if err == pgx.ErrNoRows {
-					return nil, &reg.HandlerError{InputIndex: i, Code: "not_found",
-						Message: fmt.Sprintf("attribute_def_option.upsert: attribute_def %d not found", in.AttributeDefID)}
-				}
-				return nil, fmt.Errorf("attribute_def_option.upsert: guard: %w", err)
-			}
-			if vt != "enum" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "attribute_def_option.upsert: target attribute_def is not enum-typed"}
-			}
-
-			// Bump if a *different* row already sits at this ordering.
-			// Re-saving the same row at the same ordering doesn't shift
-			// anything (idempotent label-only edits stay no-ops).
-			var conflict int
-			if err := tx.QueryRow(ctx, `
-				SELECT count(*) FROM attribute_def_option
-				WHERE attribute_def_id = $1
-				  AND ordering = $2
-				  AND value <> $3
-			`, in.AttributeDefID, in.Ordering, in.Value).Scan(&conflict); err != nil {
-				return nil, fmt.Errorf("attribute_def_option.upsert: collision check: %w", err)
-			}
-			if conflict > 0 {
-				if _, err := tx.Exec(ctx, `
-					UPDATE attribute_def_option
-					SET ordering = ordering + 1
-					WHERE attribute_def_id = $1
-					  AND ordering >= $2
-					  AND value <> $3
-				`, in.AttributeDefID, in.Ordering, in.Value); err != nil {
-					return nil, fmt.Errorf("attribute_def_option.upsert: bump: %w", err)
-				}
-			}
-
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO attribute_def_option (attribute_def_id, value, label, ordering)
-				VALUES ($1, $2, $3, $4)
-				ON CONFLICT (attribute_def_id, value) DO UPDATE
-					SET label = EXCLUDED.label,
-					    ordering = EXCLUDED.ordering
-			`, in.AttributeDefID, in.Value, label, in.Ordering); err != nil {
-				return nil, fmt.Errorf("attribute_def_option.upsert: %w", err)
-			}
-			outs[i] = OptionUpsertOutput{OK: true}
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		return outs, nil
-	}
-}
-
-// runOptionDelete deletes one option per input, refusing with usage_count
-// when any attribute_value rows still reference the value (mirrors
-// runEdgeDelete's safety check). Per-input loop keeps the implementation
-// small; option lists are short.
-func runOptionDelete(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(OptionDeleteInput)
-			if in.AttributeDefID == 0 || in.Value == "" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "attribute_def_option.delete: attribute_def_id and value are required"}
-			}
-			// usage = number of attribute_value rows on this def whose stored
-			// jsonb literal equals the option's value. We compare via the
-			// to_jsonb wrapping the server uses on writes — anything else
-			// would miss strict-typed values.
-			var usage int
-			row := tx.QueryRow(ctx, `
-				SELECT count(*) FROM attribute_value
-				WHERE attribute_def_id = $1 AND value = to_jsonb($2::text)
-			`, in.AttributeDefID, in.Value)
-			if err := row.Scan(&usage); err != nil {
-				return nil, fmt.Errorf("attribute_def_option.delete: usage: %w", err)
-			}
-			if usage > 0 {
-				outs[i] = OptionDeleteOutput{OK: false, UsageCount: usage}
-				continue
-			}
-			ct, err := tx.Exec(ctx, `
-				DELETE FROM attribute_def_option
-				WHERE attribute_def_id = $1 AND value = $2
-			`, in.AttributeDefID, in.Value)
-			if err != nil {
-				return nil, fmt.Errorf("attribute_def_option.delete: %w", err)
-			}
-			outs[i] = OptionDeleteOutput{OK: ct.RowsAffected() > 0}
-		}
-		if p != nil {
-			p.NoteWrite()
 		}
 		return outs, nil
 	}

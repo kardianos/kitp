@@ -45,6 +45,7 @@
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
     CardWithAttrs,
+    ID,
     RoleAssignmentRow,
     RoleListInput,
     RoleListOutput,
@@ -88,11 +89,11 @@
 
   let search = $state('');
   let roleFilter = $state<string | null>(null);
-  let selectedUserId = $state<number | null>(null);
+  let selectedUserId = $state<ID | null>(null);
 
   /** Inline assign-role form state. */
   let assignRole = $state<string | null>(null);
-  let assignProject = $state<number | null>(null);
+  let assignProject = $state<ID | null>(null);
   let assigning = $state(false);
   let assignFormOpen = $state(false);
 
@@ -187,14 +188,14 @@
   );
 
   /** Project label by id, used to render the scope chip + CSV. */
-  function projectTitle(id: number): string | undefined {
+  function projectTitle(id: ID): string | undefined {
     const p = projects.find((x) => x.id === id);
     if (p === undefined) return undefined;
     const t = p.attributes['title'];
     return typeof t === 'string' && t.length > 0 ? t : undefined;
   }
 
-  const projectAssignOptions = $derived<{ value: number | null; label: string }[]>([
+  const projectAssignOptions = $derived<{ value: ID | null; label: string }[]>([
     { value: null, label: 'Global (no scope)' },
     ...projects.map((p) => ({
       value: p.id,
@@ -578,7 +579,7 @@
                     options={projectAssignOptions}
                     placeholder="Global (no scope)"
                     onchange={(v) => {
-                      assignProject = v as number | null;
+                      assignProject = v as ID | null;
                     }}
                   />
                 </div>

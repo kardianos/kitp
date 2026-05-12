@@ -13,8 +13,8 @@ import (
 	"reflect"
 )
 
-// cardIDFromInput walks the input struct for a `json:"card_id"` or
-// `json:"target_card_id"` field and returns its int64 value. Returns 0 if
+// cardIDFromInput walks the input struct for a `json:"card_id,string"` or
+// `json:"target_card_id,string"` field and returns its int64 value. Returns 0 if
 // no match — the dispatcher then skips scoped-grant matching for that leaf.
 func cardIDFromInput(h interface{}, in any) int64 {
 	v := reflect.ValueOf(in)

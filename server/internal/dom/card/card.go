@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
@@ -29,29 +30,29 @@ import (
 // kind='card_create' plus one kind='attr_update' per initial attribute.
 type InsertInput struct {
 	CardTypeName string                     `json:"card_type_name" mcp:"required,desc=name of the card_type to create (e.g. project, task)"`
-	ParentCardID *int64                     `json:"parent_card_id,omitempty" mcp:"desc=parent card id; nil for top-level project cards"`
+	ParentCardID *int64                     `json:"parent_card_id,string,omitempty" mcp:"desc=parent card id; nil for top-level project cards"`
 	Title        string                     `json:"title" mcp:"required,desc=value for the built-in title attribute"`
 	Attributes   map[string]json.RawMessage `json:"attributes,omitempty" mcp:"desc=optional map of additional attribute name to JSON value"`
 }
 
 // InsertOutput carries the new row id.
 type InsertOutput struct {
-	ID int64 `json:"id" mcp:"desc=id of the newly inserted card row"`
+	ID int64 `json:"id,string" mcp:"desc=id of the newly inserted card row"`
 }
 
 // SelectInput filters cards by parent and/or type. Both fields are optional;
 // no fields means "all top-level cards" (parent IS NULL).
 type SelectInput struct {
-	ParentCardID *int64  `json:"parent_card_id,omitempty" mcp:"desc=if set, return only cards with this parent_card_id"`
+	ParentCardID *int64  `json:"parent_card_id,string,omitempty" mcp:"desc=if set, return only cards with this parent_card_id"`
 	CardTypeName *string `json:"card_type_name,omitempty" mcp:"desc=if set, return only cards of this card_type"`
 }
 
 // CardRow is a card record with its title flattened in for convenience.
 type CardRow struct {
-	ID           int64   `json:"id" mcp:"desc=card id"`
-	CardTypeID   int32   `json:"card_type_id" mcp:"desc=card_type id"`
+	ID           int64   `json:"id,string" mcp:"desc=card id"`
+	CardTypeID   int64   `json:"card_type_id,string" mcp:"desc=card_type id"`
 	CardTypeName string  `json:"card_type_name" mcp:"desc=card_type name"`
-	ParentCardID *int64  `json:"parent_card_id,omitempty" mcp:"desc=parent card id, if any"`
+	ParentCardID *int64  `json:"parent_card_id,string,omitempty" mcp:"desc=parent card id, if any"`
 	Title        *string `json:"title,omitempty" mcp:"desc=convenience copy of the title attribute"`
 }
 
@@ -64,8 +65,8 @@ type SelectOutput struct {
 // We resolve names to ids in Go (to give clean error messages) but the
 // actual INSERT still uses the array path.
 type jsonInsertRow struct {
-	CardTypeID   int32  `json:"card_type_id"`
-	ParentCardID *int64 `json:"parent_card_id,omitempty"`
+	CardTypeID   int64  `json:"card_type_id,string"`
+	ParentCardID *int64 `json:"parent_card_id,string,omitempty"`
 }
 
 // Register installs every card.* handler. The pool reference lets the
@@ -109,12 +110,12 @@ func Register(p *store.Pool) {
 }
 
 // cardTypeFromName resolves the card_type_id for an InsertInput.
-func cardTypeFromName(ctx context.Context, pool reg.ValidationPool, raw any) (int32, error) {
+func cardTypeFromName(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	in := raw.(InsertInput)
 	if in.CardTypeName == "" {
 		return 0, nil
 	}
-	var id int32
+	var id int64
 	row := pool.QueryRow(ctx, `SELECT id FROM card_type WHERE name = $1`, in.CardTypeName)
 	if err := row.Scan(&id); err != nil {
 		return 0, nil
@@ -135,7 +136,7 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 		}
 
 		// Pre-collect parent ids so we can validate parent-type rules.
-		parentLookups := make(map[int64]int32) // parent_id -> card_type_id
+		parentLookups := make(map[int64]int64) // parent_id -> card_type_id
 		for _, raw := range ins {
 			in := raw.(InsertInput)
 			if in.ParentCardID != nil {
@@ -153,7 +154,7 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 			}
 			for rows.Next() {
 				var pid int64
-				var ctid int32
+				var ctid int64
 				if err := rows.Scan(&pid, &ctid); err != nil {
 					rows.Close()
 					return nil, err
@@ -169,7 +170,7 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 		payload := make([]jsonInsertRow, len(ins))
 		type initAttr struct {
 			InputIndex     int
-			AttributeDefID int32
+			AttributeDefID int64
 			Value          json.RawMessage
 		}
 		var initialAttrs []initAttr
@@ -244,6 +245,51 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 			}
 		}
 
+		// Per-project reference scope: every card_ref / card_ref[] initial
+		// attribute value must point at a card under the new card's
+		// enclosing project (or at a global card like a person — those
+		// are wildcards). The to-be-inserted card has no id yet, so the
+		// scope walk starts from parent_card_id. Top-level inserts skip
+		// the check because the enclosing-project notion doesn't apply
+		// (projects and other root-level types either have global refs
+		// like assignee, or no refs at all).
+		var scopeChecks []attribute.ProjectScopeCheck
+		for _, a := range initialAttrs {
+			ad, ok := snap.AttrByID[a.AttributeDefID]
+			if !ok {
+				continue
+			}
+			if ad.ValueType != "card_ref" && ad.ValueType != "card_ref[]" {
+				continue
+			}
+			valueIDs, err := attribute.ParseCardRefValue(ad.Name, a.Value)
+			if err != nil {
+				return nil, &reg.HandlerError{InputIndex: a.InputIndex, Code: "validation",
+					Message: fmt.Sprintf("card.insert: %v", err)}
+			}
+			if len(valueIDs) == 0 {
+				continue
+			}
+			parent := ins[a.InputIndex].(InsertInput).ParentCardID
+			if parent == nil {
+				// Top-level card — its enclosing "project" is itself
+				// (when it IS a project) or null. The scope helper
+				// handles global-vs-scoped via wildcard semantics, so
+				// we just skip the check entirely here.
+				continue
+			}
+			scopeChecks = append(scopeChecks, attribute.ProjectScopeCheck{
+				StartCardID:      *parent,
+				AttributeName:    ad.Name,
+				ValueCardIDs:     valueIDs,
+				InputIndex:       a.InputIndex,
+				TargetCardTypeID: ad.TargetCardTypeID,
+			})
+		}
+		if err := attribute.ValidateProjectScope(ctx, tx, scopeChecks); err != nil {
+			return nil, err
+		}
+
 		buf, err := json.Marshal(payload)
 		if err != nil {
 			return nil, err
@@ -288,16 +334,25 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 		// + attribute_value upsert per initial attribute, all in one CTE.
 		// jsonInitAttr binds input slot -> card id via the ids slice.
 		type jsonInitAttr struct {
-			CardID         int64           `json:"card_id"`
-			AttributeDefID int32           `json:"attribute_def_id"`
+			CardID         int64           `json:"card_id,string"`
+			AttributeDefID int64           `json:"attribute_def_id,string"`
 			Value          json.RawMessage `json:"value"`
 		}
 		attrPayload := make([]jsonInitAttr, len(initialAttrs))
 		for i, a := range initialAttrs {
+			// Canonicalise card_ref / card_ref[] values to JSON numbers
+			// so the demo seed (numeric) and the UI-initiated insert
+			// (string-form) end up with the same jsonb shape — the read
+			// path's predicate compiler also canonicalises, so any
+			// subsequent filter matches both seeded and UI-written rows.
+			value := a.Value
+			if ad, ok := snap.AttrByID[a.AttributeDefID]; ok {
+				value = snap.CanonicalizeValue(ad.Name, value)
+			}
 			attrPayload[i] = jsonInitAttr{
 				CardID:         ids[a.InputIndex],
 				AttributeDefID: a.AttributeDefID,
-				Value:          a.Value,
+				Value:          value,
 			}
 		}
 		attrBuf, err := json.Marshal(attrPayload)
@@ -358,6 +413,21 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 		for i, id := range ids {
 			outs[i] = InsertOutput{ID: id}
 		}
+
+		// Per-card_type post-insert hooks. Today the only hook is
+		// "freshly-created project → seed its built-in screens"; if
+		// another card_type ever needs the same treatment, factor the
+		// dispatch into a table keyed by card_type name.
+		for i, raw := range ins {
+			in := raw.(InsertInput)
+			if in.CardTypeName != "project" {
+				continue
+			}
+			if err := seedProjectScreens(ctx, tx, ids[i], actorID, snap); err != nil {
+				return nil, err
+			}
+		}
+
 		return outs, nil
 	}
 }

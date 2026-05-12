@@ -34,6 +34,7 @@ import type {
   AttachmentCreateOutput,
   FileCreateInput,
   FileCreateOutput,
+  ID,
   MissingChunksInput,
   MissingChunksOutput,
 } from '../reg/types';
@@ -69,9 +70,11 @@ export interface UploadOptions {
   onProgress?: ((p: UploadProgress) => void) | undefined;
 }
 
-function authHeaders(authState?: AuthState | null): Record<string, string> {
-  const tok = authState?.accessToken;
-  if (tok && tok.length > 0) return { Authorization: `Bearer ${tok}` };
+function authHeaders(_authState?: AuthState | null): Record<string, string> {
+  // BFF cookie-only: the kitp_session cookie rides along on same-origin
+  // requests, so the upload routes (POST /api/v1/cas/chunk) don't need
+  // any explicit auth header. Kept as a function in case the chunk
+  // routes ever grow per-request headers (e.g. an X-Idempotency-Key).
   return {};
 }
 
@@ -98,7 +101,7 @@ async function sha256Hex(blob: Blob): Promise<string> {
  */
 export async function uploadAttachment(
   dispatcher: Dispatcher,
-  cardId: number,
+  cardId: ID,
   file: File,
   authState?: AuthState | null,
   opts: UploadOptions = {},
@@ -241,18 +244,18 @@ async function uploadOneChunk(
 }
 
 /** Build the URL for a download — useful for `<a href="…">` direct links. */
-export function downloadUrl(attachmentId: number): string {
-  return `${KITP_API_BASE}/api/v1/attachment/${encodeURIComponent(String(attachmentId))}/download`;
+export function downloadUrl(attachmentId: ID): string {
+  return `${KITP_API_BASE}/api/v1/attachment/${encodeURIComponent(attachmentId.toString())}/download`;
 }
 
 /** Build the URL for the inline-view route (Content-Disposition: inline). */
-export function viewUrl(attachmentId: number): string {
-  return `${KITP_API_BASE}/api/v1/attachment/${encodeURIComponent(String(attachmentId))}/view`;
+export function viewUrl(attachmentId: ID): string {
+  return `${KITP_API_BASE}/api/v1/attachment/${encodeURIComponent(attachmentId.toString())}/view`;
 }
 
 /** Build the URL for the server-generated thumbnail (image attachments). */
-export function thumbUrl(attachmentId: number): string {
-  return `${KITP_API_BASE}/api/v1/attachment/${encodeURIComponent(String(attachmentId))}/thumb`;
+export function thumbUrl(attachmentId: ID): string {
+  return `${KITP_API_BASE}/api/v1/attachment/${encodeURIComponent(attachmentId.toString())}/thumb`;
 }
 
 /**
@@ -262,7 +265,7 @@ export function thumbUrl(attachmentId: number): string {
  * browser) is not an option — that's why we go via fetch.
  */
 export async function fetchAttachmentBlob(
-  attachmentId: number,
+  attachmentId: ID,
   kind: 'view' | 'thumb' | 'download',
   authState?: AuthState | null,
 ): Promise<Blob> {
@@ -288,7 +291,7 @@ export async function fetchAttachmentBlob(
  * blob URL so the Authorization header rides the request.
  */
 export async function downloadAttachment(
-  attachmentId: number,
+  attachmentId: ID,
   filename: string,
   authState?: AuthState | null,
 ): Promise<void> {

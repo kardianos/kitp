@@ -24,7 +24,6 @@ import type {
   AttributeDefBoundCardType,
   AttributeDefInsertInput,
   AttributeDefInsertOutput,
-  AttributeDefOptionRow,
   AttributeDefRow,
   AttributeDefSelectInput,
   AttributeDefSelectOutput,
@@ -63,17 +62,10 @@ import type {
   CommentInsertOutput,
   EchoPingInput,
   EchoPingOutput,
-  AttributeDefOptionDeleteInput,
-  AttributeDefOptionDeleteOutput,
-  AttributeDefOptionUpsertInput,
-  AttributeDefOptionUpsertOutput,
   EdgeDeleteInput,
   EdgeDeleteOutput,
   EdgeInsertInput,
   EdgeInsertOutput,
-  InboxRow,
-  InboxSelectInput,
-  InboxSelectOutput,
   TagApplyInput,
   TagApplyOutput,
   TagRemoveInput,
@@ -116,6 +108,39 @@ function asNum(v: unknown): number {
 function asNumOpt(v: unknown): number | undefined {
   if (v === null || v === undefined) return undefined;
   return asNum(v);
+}
+
+/**
+ * Coerce a JSON id value to a bigint. Accepts either a number (parsed
+ * directly from JSON when the value fits within Number.MAX_SAFE_INTEGER)
+ * or a bigint (already upgraded by the dispatcher's bigint-aware parser
+ * when the value exceeded Number.MAX_SAFE_INTEGER). Throws on other types.
+ */
+function asId(v: unknown): bigint {
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'number' && Number.isFinite(v) && Number.isInteger(v)) {
+    return BigInt(v);
+  }
+  throw new Error('decode_error: expected id');
+}
+
+/** Optional id; null/undefined become undefined. */
+function asIdOpt(v: unknown): bigint | undefined {
+  if (v === null || v === undefined) return undefined;
+  return asId(v);
+}
+
+/** Array of ids; null/undefined become an empty array. */
+function asIdArray(v: unknown): bigint[] {
+  if (v === null || v === undefined) return [];
+  if (!Array.isArray(v)) throw new Error('decode_error: expected id array');
+  return v.map(asId);
+}
+
+/** Id with default 0n; mirrors asNumOrZero for nullable id columns. */
+function asIdOrZero(v: unknown): bigint {
+  if (v === null || v === undefined) return 0n;
+  return asId(v);
 }
 
 /** Coerce a JSON string to a JS string; throws on non-string. */
@@ -203,12 +228,12 @@ const echoPing: HandlerSpec<EchoPingInput, EchoPingOutput> = {
 
 function decodeCardTypeRow(j: Record<string, unknown>): CardTypeRow {
   const out: CardTypeRow = {
-    id: asNum(j.id),
+    id: asId(j.id),
     name: asStr(j.name),
     allow_self_parent: asBoolOrFalse(j.allow_self_parent),
     is_built_in: asBoolOrFalse(j.is_built_in),
   };
-  const parent = asNumOpt(j.parent_card_type_id);
+  const parent = asIdOpt(j.parent_card_type_id);
   if (parent !== undefined) out.parent_card_type_id = parent;
   return out;
 }
@@ -245,7 +270,7 @@ const cardInsert: HandlerSpec<CardInsertInput, CardInsertOutput> = {
   },
   decode: (raw) => {
     const j = asObj(raw);
-    return { id: asNum(j.id) };
+    return { id: asId(j.id) };
   },
 };
 
@@ -255,11 +280,11 @@ const cardInsert: HandlerSpec<CardInsertInput, CardInsertOutput> = {
 
 function decodeCardRow(j: Record<string, unknown>): CardRow {
   const out: CardRow = {
-    id: asNum(j.id),
-    card_type_id: asNum(j.card_type_id),
+    id: asId(j.id),
+    card_type_id: asId(j.card_type_id),
     card_type_name: asStr(j.card_type_name),
   };
-  const parent = asNumOpt(j.parent_card_id);
+  const parent = asIdOpt(j.parent_card_id);
   if (parent !== undefined) out.parent_card_id = parent;
   const title = asStrOpt(j.title);
   if (title !== undefined) out.title = title;
@@ -289,15 +314,18 @@ const cardSelect: HandlerSpec<CardSelectInput, CardSelectOutput> = {
 
 function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
   const out: CardWithAttrs = {
-    id: asNum(j.id),
-    card_type_id: asNum(j.card_type_id),
+    id: asId(j.id),
+    card_type_id: asId(j.card_type_id),
     card_type_name: asStrOrEmpty(j.card_type_name),
     attributes: asObjOrEmpty(j.attributes),
   };
-  const parent = asNumOpt(j.parent_card_id);
+  const parent = asIdOpt(j.parent_card_id);
   if (parent !== undefined) out.parent_card_id = parent;
+  if (typeof j.is_terminal === 'boolean') out.is_terminal = j.is_terminal;
   const deletedAt = asStrOpt(j.deleted_at);
   if (deletedAt !== undefined) out.deleted_at = deletedAt;
+  const personalSort = asNumOpt(j.personal_sort_order);
+  if (personalSort !== undefined) out.personal_sort_order = personalSort;
   return out;
 }
 
@@ -321,6 +349,7 @@ const cardSelectWithAttributes: HandlerSpec<
     if (i.limit !== undefined) m.limit = i.limit;
     if (i.offset !== undefined) m.offset = i.offset;
     if (i.includeDeleted !== undefined) m.include_deleted = i.includeDeleted;
+    if (i.withPersonalSort) m.with_personal_sort = true;
     return m;
   },
   decode: (raw) => {
@@ -344,6 +373,7 @@ const cardSearch: HandlerSpec<CardSearchInput, CardSearchOutput> = {
     if (i.query !== undefined && i.query !== '') m.query = i.query;
     if (i.ids !== undefined && i.ids.length > 0) m.ids = i.ids;
     if (i.limit !== undefined) m.limit = i.limit;
+    if (i.parentCardId !== undefined) m.parent_card_id = i.parentCardId;
     return m;
   },
   decode: (raw) => {
@@ -351,7 +381,7 @@ const cardSearch: HandlerSpec<CardSearchInput, CardSearchOutput> = {
     return {
       rows: asArray(j.rows).map((r) => {
         const o = asObj(r);
-        return { id: asNumOrZero(o.id), title: asStrOrEmpty(o.title) };
+        return { id: asIdOrZero(o.id), title: asStrOrEmpty(o.title) };
       }),
     };
   },
@@ -403,7 +433,7 @@ const fileCreate: HandlerSpec<FileCreateInput, FileCreateOutput> = {
   decode: (raw) => {
     const j = asObj(raw);
     return {
-      id: asNumOrZero(j.id),
+      id: asIdOrZero(j.id),
       filename: asStrOrEmpty(j.filename),
       mime_type: asStrOrEmpty(j.mime_type),
       size_bytes: asNumOrZero(j.size_bytes),
@@ -435,14 +465,14 @@ const attachmentList: HandlerSpec<AttachmentListInput, AttachmentListOutput> = {
       rows: asArray(j.rows).map((r) => {
         const o = asObj(r);
         return {
-          id: asNumOrZero(o.id),
-          card_id: asNumOrZero(o.card_id),
-          file_id: asNumOrZero(o.file_id),
+          id: asIdOrZero(o.id),
+          card_id: asIdOrZero(o.card_id),
+          file_id: asIdOrZero(o.file_id),
           filename: asStrOrEmpty(o.filename),
           mime_type: asStrOrEmpty(o.mime_type),
           size_bytes: asNumOrZero(o.size_bytes),
           created_at: asStrOrEmpty(o.created_at),
-          thumb_file_id: asNumOrZero(o.thumb_file_id),
+          thumb_file_id: asIdOrZero(o.thumb_file_id),
           kind: asAttachmentKind(o.kind),
         };
       }),
@@ -457,13 +487,13 @@ const attachmentCreate: HandlerSpec<AttachmentCreateInput, AttachmentCreateOutpu
   decode: (raw) => {
     const j = asObj(raw);
     return {
-      id: asNumOrZero(j.id),
-      card_id: asNumOrZero(j.card_id),
-      file_id: asNumOrZero(j.file_id),
+      id: asIdOrZero(j.id),
+      card_id: asIdOrZero(j.card_id),
+      file_id: asIdOrZero(j.file_id),
       filename: asStrOrEmpty(j.filename),
       mime_type: asStrOrEmpty(j.mime_type),
       size_bytes: asNumOrZero(j.size_bytes),
-      thumb_file_id: asNumOrZero(j.thumb_file_id),
+      thumb_file_id: asIdOrZero(j.thumb_file_id),
       kind: asAttachmentKind(j.kind),
     };
   },
@@ -491,7 +521,7 @@ const cardDelete: HandlerSpec<CardDeleteInput, CardDeleteOutput> = {
     const j = asObj(raw);
     return {
       ok: asBoolOrFalse(j.ok),
-      activity_id: asNumOrZero(j.activity_id),
+      activity_id: asIdOrZero(j.activity_id),
     };
   },
 };
@@ -514,7 +544,7 @@ const attributeUpdate: HandlerSpec<AttributeUpdateInput, AttributeUpdateOutput> 
     const j = asObj(raw);
     const out: AttributeUpdateOutput = {
       ok: asBoolOrFalse(j.ok),
-      activity_id: asNumOrZero(j.activity_id),
+      activity_id: asIdOrZero(j.activity_id),
     };
     if (j.prev_value !== undefined && j.prev_value !== null) {
       out.prev_value = j.prev_value;
@@ -531,7 +561,7 @@ function decodeAttributeDefBoundCardType(
   j: Record<string, unknown>,
 ): AttributeDefBoundCardType {
   return {
-    card_type_id: asNum(j.card_type_id),
+    card_type_id: asId(j.card_type_id),
     card_type_name: asStrOrEmpty(j.card_type_name),
     is_required: asBoolOrFalse(j.is_required),
     is_built_in: asBoolOrFalse(j.is_built_in),
@@ -539,32 +569,17 @@ function decodeAttributeDefBoundCardType(
   };
 }
 
-function decodeAttributeDefOptionRow(
-  j: Record<string, unknown>,
-): AttributeDefOptionRow {
-  return {
-    value: asStrOrEmpty(j.value),
-    label: asStrOrEmpty(j.label),
-    ordering: asNumOrZero(j.ordering),
-  };
-}
-
 function decodeAttributeDefRow(j: Record<string, unknown>): AttributeDefRow {
   const boundRaw = asArray(j.bound_to);
   const out: AttributeDefRow = {
-    id: asNum(j.id),
+    id: asId(j.id),
     name: asStr(j.name),
     value_type: asStrOrEmpty(j.value_type),
     is_built_in: asBoolOrFalse(j.is_built_in),
     bound_to: boundRaw.map((r) => decodeAttributeDefBoundCardType(asObj(r))),
   };
-  // Forward-compat (migration 0012): server starts returning `options[]` for
-  // enum-typed defs. Until then the field is absent and we leave it unset.
-  if (j.options !== undefined && j.options !== null) {
-    out.options = asArray(j.options).map((r) =>
-      decodeAttributeDefOptionRow(asObj(r)),
-    );
-  }
+  const target = asStrOpt(j.target_card_type_name);
+  if (target !== undefined && target !== '') out.target_card_type_name = target;
   return out;
 }
 
@@ -616,7 +631,7 @@ const attributeDefInsert: HandlerSpec<
   },
   decode: (raw) => {
     const j = asObj(raw);
-    return { id: asNum(j.id) };
+    return { id: asId(j.id) };
   },
 };
 
@@ -626,10 +641,10 @@ const attributeDefInsert: HandlerSpec<
 
 function decodeActivityRow(j: Record<string, unknown>): ActivityRow {
   const out: ActivityRow = {
-    id: asNum(j.id),
-    card_id: asNumOrZero(j.card_id),
+    id: asId(j.id),
+    card_id: asIdOrZero(j.card_id),
     kind: asStr(j.kind),
-    actor_id: asNumOrZero(j.actor_id),
+    actor_id: asIdOrZero(j.actor_id),
     created_at: asStrOrEmpty(j.created_at),
   };
   const attrName = asStrOpt(j.attribute_name);
@@ -675,8 +690,8 @@ const commentInsert: HandlerSpec<CommentInsertInput, CommentInsertOutput> = {
     const j = asObj(raw);
     return {
       ok: asBoolOrFalse(j.ok),
-      activity_id: asNumOrZero(j.activity_id),
-      comment_body_id: asNumOrZero(j.comment_body_id),
+      activity_id: asIdOrZero(j.activity_id),
+      comment_body_id: asIdOrZero(j.comment_body_id),
     };
   },
 };
@@ -687,7 +702,7 @@ const commentInsert: HandlerSpec<CommentInsertInput, CommentInsertOutput> = {
 
 function decodeUserRow(j: Record<string, unknown>): UserRow {
   return {
-    id: asNum(j.id),
+    id: asId(j.id),
     display_name: asStr(j.display_name),
   };
 }
@@ -719,8 +734,8 @@ const tagApply: HandlerSpec<TagApplyInput, TagApplyOutput> = {
     const j = asObj(raw);
     return {
       ok: asBoolOrFalse(j.ok),
-      activity_id: asNumOrZero(j.activity_id),
-      removed_tag_ids: asArray(j.removed_tag_ids).map((r) => asNum(r)),
+      activity_id: asIdOrZero(j.activity_id),
+      removed_tag_ids: asIdArray(j.removed_tag_ids),
     };
   },
 };
@@ -736,43 +751,7 @@ const tagRemove: HandlerSpec<TagRemoveInput, TagRemoveOutput> = {
     const j = asObj(raw);
     return {
       ok: asBoolOrFalse(j.ok),
-      activity_id: asNumOrZero(j.activity_id),
-    };
-  },
-};
-
-// ============================================================================
-// inbox.select
-// ============================================================================
-
-function decodeInboxRow(j: Record<string, unknown>): InboxRow {
-  const out: InboxRow = {
-    id: asNum(j.id),
-    card_type_id: asNum(j.card_type_id),
-    attributes: asObjOrEmpty(j.attributes),
-  };
-  const parent = asNumOpt(j.parent_card_id);
-  if (parent !== undefined) out.parent_card_id = parent;
-  const sort = asNumOpt(j.personal_sort_order);
-  if (sort !== undefined) out.personal_sort_order = sort;
-  return out;
-}
-
-const inboxSelect: HandlerSpec<InboxSelectInput, InboxSelectOutput> = {
-  endpoint: 'inbox',
-  action: 'select',
-  encode: (i) => {
-    const m: Record<string, unknown> = {};
-    if (i.userId !== undefined) m.user_id = i.userId;
-    if (i.tree !== undefined) m.tree = i.tree;
-    if (i.limit !== undefined) m.limit = i.limit;
-    if (i.offset !== undefined) m.offset = i.offset;
-    return m;
-  },
-  decode: (raw) => {
-    const j = asObj(raw);
-    return {
-      rows: asArray(j.rows).map((r) => decodeInboxRow(asObj(r))),
+      activity_id: asIdOrZero(j.activity_id),
     };
   },
 };
@@ -830,44 +809,6 @@ const edgeDelete: HandlerSpec<EdgeDeleteInput, EdgeDeleteOutput> = {
 };
 
 // ============================================================================
-// attribute_def_option.upsert / .delete
-// ============================================================================
-
-const attributeDefOptionUpsert: HandlerSpec<
-  AttributeDefOptionUpsertInput,
-  AttributeDefOptionUpsertOutput
-> = {
-  endpoint: 'attribute_def_option',
-  action: 'upsert',
-  encode: (i) => ({
-    attribute_def_id: i.attributeDefId,
-    value: i.value,
-    label: i.label,
-    ordering: i.ordering ?? 0,
-  }),
-  decode: (raw) => ({ ok: asBoolOrFalse(asObj(raw).ok) }),
-};
-
-const attributeDefOptionDelete: HandlerSpec<
-  AttributeDefOptionDeleteInput,
-  AttributeDefOptionDeleteOutput
-> = {
-  endpoint: 'attribute_def_option',
-  action: 'delete',
-  encode: (i) => ({
-    attribute_def_id: i.attributeDefId,
-    value: i.value,
-  }),
-  decode: (raw) => {
-    const j = asObj(raw);
-    return {
-      ok: asBoolOrFalse(j.ok),
-      usage_count: asNumOrZero(j.usage_count),
-    };
-  },
-};
-
-// ============================================================================
 // Re-exports for use by tests / dispatch / screens
 // ============================================================================
 
@@ -878,6 +819,10 @@ export {
   asArray,
   asNum,
   asNumOpt,
+  asId,
+  asIdOpt,
+  asIdArray,
+  asIdOrZero,
   asStr,
   asStrOpt,
   asStrOrEmpty,
@@ -908,12 +853,9 @@ export {
   userSelect,
   tagApply,
   tagRemove,
-  inboxSelect,
   userCardSortSet,
   edgeInsert,
   edgeDelete,
-  attributeDefOptionUpsert,
-  attributeDefOptionDelete,
 };
 
 // ============================================================================
@@ -946,11 +888,8 @@ export function registerBuiltInHandlers(r: HandlerRegistry): void {
   r.register(userSelect);
   r.register(tagApply);
   r.register(tagRemove);
-  r.register(inboxSelect);
   r.register(userCardSortSet);
   r.register(edgeInsert);
   r.register(edgeDelete);
-  r.register(attributeDefOptionUpsert);
-  r.register(attributeDefOptionDelete);
   registerAdminHandlers(r);
 }

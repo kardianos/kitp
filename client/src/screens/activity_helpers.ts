@@ -6,14 +6,14 @@
  * `@testing-library/svelte`, so component-level tests are out of scope).
  */
 
-import type { ActivityRow } from '../reg/types.js';
+import type { ActivityRow, ID } from '../reg/types.js';
 
 /** Filter spec applied client-side to the list of activity rows. */
 export interface ActivityFilter {
   /** Selected kinds; an empty array means "all kinds". */
   kinds: string[];
   /** Actor user-id to filter by, or null for "any actor". */
-  actorId: number | null;
+  actorId: ID | null;
   /** ISO yyyy-mm-dd lower bound (inclusive); null means unbounded. */
   fromDate: string | null;
   /** ISO yyyy-mm-dd upper bound (inclusive); null means unbounded. */
@@ -22,7 +22,7 @@ export interface ActivityFilter {
 
 /** Wire payload for an `activity.select` "load more" call. */
 export interface PaginatePayload {
-  before_activity_id: number;
+  before_activity_id: ID;
   limit: number;
 }
 

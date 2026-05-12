@@ -19,10 +19,11 @@
   import type { FilterAttribute } from '../../filter/attribute_schema.svelte.js';
   import { getDispatcher } from '../../dispatch/context.js';
   import { attributeUpdate } from '../../reg/handlers.js';
+  import type { ID } from '../../reg/types.js';
   import { cx } from '../../util/class_names.js';
 
   interface Props {
-    cardId: number;
+    cardId: ID;
     /** Current attribute values keyed by attribute name. */
     attributes: Record<string, unknown>;
     /** Filterable / editable attribute schema (driven by attribute_def.select). */
@@ -73,13 +74,12 @@
   /** Returns true when the attribute commits eagerly on any value change. */
   function isInstantCommitType(attr: FilterAttribute): boolean {
     const t = attr.valueType;
-    return t === 'enum' || t.startsWith('ref:') || t === 'bool' || t === 'date';
+    return t.startsWith('ref:') || t === 'bool' || t === 'date';
   }
 
   /** Returns true when the editor is a Combobox dropdown we can auto-open. */
   function isComboboxType(attr: FilterAttribute): boolean {
-    const t = attr.valueType;
-    return t === 'enum' || t.startsWith('ref:');
+    return attr.valueType.startsWith('ref:');
   }
 
   /**
