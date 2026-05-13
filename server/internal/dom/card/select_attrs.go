@@ -73,7 +73,7 @@ type CardWithAttrs struct {
 	CardTypeID    int64                      `json:"card_type_id,string" mcp:"desc=card_type id"`
 	CardTypeName  string                     `json:"card_type_name" mcp:"desc=card_type name"`
 	ParentCardID  *int64                     `json:"parent_card_id,string,omitempty" mcp:"desc=parent card id, if any"`
-	IsTerminal    bool                       `json:"is_terminal" mcp:"desc=true when this value-card represents a terminal/closed state (Done, Cancelled, …)"`
+	Phase         string                     `json:"phase" mcp:"desc=phase of this value-card (triage/active/terminal); meaningful only for value-cards bound to a flow"`
 	Attributes    map[string]json.RawMessage `json:"attributes" mcp:"desc=current attribute values keyed by attribute_def name"`
 	DeletedAt     *time.Time                 `json:"deleted_at,omitempty" mcp:"desc=non-null when the card has been soft-deleted"`
 	PersonalSort  *float64                   `json:"personal_sort_order,omitempty" mcp:"desc=caller's user_card_sort.sort_order when with_personal_sort=true; null when the user hasn't reordered this card"`
@@ -245,7 +245,7 @@ func queryOne(ctx context.Context, tx pgx.Tx, in SelectWithAttributesInput, snap
 	}
 
 	q := fmt.Sprintf(`
-		SELECT c.id, c.card_type_id, ct.name, c.parent_card_id, c.is_terminal, c.deleted_at,
+		SELECT c.id, c.card_type_id, ct.name, c.parent_card_id, c.phase, c.deleted_at,
 		       coalesce(attrs.values, '{}'::jsonb) AS attrs,
 		       %s
 		FROM card c
@@ -271,7 +271,7 @@ func queryOne(ctx context.Context, tx pgx.Tx, in SelectWithAttributesInput, snap
 	for rows.Next() {
 		var r CardWithAttrs
 		var attrsRaw []byte
-		if err := rows.Scan(&r.ID, &r.CardTypeID, &r.CardTypeName, &r.ParentCardID, &r.IsTerminal, &r.DeletedAt, &attrsRaw, &r.PersonalSort); err != nil {
+		if err := rows.Scan(&r.ID, &r.CardTypeID, &r.CardTypeName, &r.ParentCardID, &r.Phase, &r.DeletedAt, &attrsRaw, &r.PersonalSort); err != nil {
 			return nil, err
 		}
 		if len(attrsRaw) > 0 {

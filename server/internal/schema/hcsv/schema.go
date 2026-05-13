@@ -28,6 +28,11 @@ type Column struct {
 	Unique     bool
 	PrimaryKey bool
 	References *Reference
+	// Check is the body of an inline CHECK constraint. The emitter
+	// wraps it as `CHECK (<expr>)`; the cell carries just the expression
+	// (e.g. `phase IN ('triage','active','terminal')`). Empty means no
+	// CHECK on this column.
+	Check string
 }
 
 // Index is a table-level CREATE INDEX directive.
@@ -233,6 +238,7 @@ func readColumns(sec *Section) ([]Column, error) {
 			c.Nullable = &b
 		}
 		c.Default, _ = getCell(row, "default")
+		c.Check, _ = getCell(row, "check")
 		if ref, _ := getCell(row, "references"); ref != "" {
 			tbl, col, ok := strings.Cut(ref, ".")
 			if !ok {
@@ -471,6 +477,9 @@ func columnDDL(c Column, inlineSinglePK bool) string {
 			panic(fmt.Sprintf("hcsv: unsupported on_delete %q", c.References.OnDelete))
 		}
 		parts = append(parts, fk)
+	}
+	if c.Check != "" {
+		parts = append(parts, "CHECK ("+c.Check+")")
 	}
 	return strings.Join(parts, " ")
 }

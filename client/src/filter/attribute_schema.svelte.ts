@@ -32,9 +32,9 @@ export interface FilterAttributeOption {
   value: unknown;
   label: string;
   /**
-   * Mirrors `card.is_terminal` for ref:* options. UI uses this to drive
-   * the "Hide closed X" toggle in the filter bar and to surface
-   * terminal actions ("Close", "Cancel") on cards.
+   * Mirrors `card.phase === 'terminal'` for ref:* options. UI uses
+   * this to drive the "Hide closed X" toggle in the filter bar and
+   * to surface terminal actions ("Close", "Cancel") on cards.
    */
   isTerminal?: boolean;
 }

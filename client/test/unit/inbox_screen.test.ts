@@ -28,6 +28,7 @@ function row(id: bigint, sort: number | undefined): CardWithAttrs {
     id,
     card_type_id: 1n,
     card_type_name: 'task',
+    phase: 'active',
     attributes: { title: `Task ${id}` },
   };
   if (sort !== undefined) r.personal_sort_order = sort;

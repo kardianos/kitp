@@ -27,7 +27,7 @@
 //
 // Card-row attribute expansion: when a section is `# table card` (or
 // `## table card`), the loader splits each row into structural columns
-// (id, card_type_id, parent_card_id, is_terminal, …) and attribute
+// (id, card_type_id, parent_card_id, phase, …) and attribute
 // columns (any column matching a built-in attribute_def.name). For each
 // attribute, one card_create activity is emitted per card, followed by
 // per-attribute (activity, attribute_value) CTE pairs that thread
@@ -958,46 +958,61 @@ func (l *seedLoader) renderCellWithRow(r *seedRow, c cellValue, colType string) 
 //
 // For card-parent references we cannot use a CTE because the parent's
 // CTE is in a different statement. Instead, emit a subquery that
-// selects the id from card via attribute_value/title. That works when
-// the parent has a `title` attribute. For non-title parents (rare)
+// selects the id from card via attribute_value/<name_attribute>. The
+// attribute name comes from the card table's `### meta name_attribute`
+// — no hardcoded `title` knowledge here. For non-name parents (rare)
 // the strawman expects an explicit alias.
 func (l *seedLoader) rowIDExpr(r *seedRow) string {
 	// Prefer an alias if one was declared (we record it but still need
 	// to map back to a SQL expression). Aliases also can't cross CTE
 	// boundaries, so we resolve them via a subquery against the table.
-	return cardLookupByTitle(r)
+	return l.cardLookupByNameAttr(r)
 }
 
-// cardLookupByTitle emits `(SELECT id FROM card WHERE … title='X')`
-// using the row's title attribute. Falls back to looking up by alias-
-// mapped name attribute.
-func cardLookupByTitle(r *seedRow) string {
-	// titles live in the attribute_value table; for cards lookup is
-	// (SELECT av.card_id FROM attribute_value av JOIN attribute_def ad
-	//  ON ad.id=av.attribute_def_id WHERE ad.name='title' AND av.value=to_jsonb('X'::text))
-	titleCell, ok := r.cells["title"]
-	if !ok {
-		return "NULL /* unresolved card parent */"
+// cardLookupByNameAttr emits `(SELECT id FROM card WHERE … <name_attr>='X')`
+// using the row's name-attribute value. The attribute name (`title`
+// in the live schema) comes from the card table's meta block —
+// schema.hcsv is the single source of truth on which attribute names
+// cards by.
+func (l *seedLoader) cardLookupByNameAttr(r *seedRow) string {
+	nameAttr := l.cardNameAttribute()
+	if nameAttr == "" {
+		return "NULL /* card meta missing name_attribute */"
 	}
-	if titleCell.kind != ckString && titleCell.kind != ckBare {
-		return "NULL /* parent title is dynamic */"
+	nameCell, ok := r.cells[nameAttr]
+	if !ok {
+		return fmt.Sprintf("NULL /* unresolved card parent: no %s attribute */", nameAttr)
+	}
+	if nameCell.kind != ckString && nameCell.kind != ckBare {
+		return fmt.Sprintf("NULL /* parent %s is dynamic */", nameAttr)
 	}
 	// Constrain by card_type too if known.
 	ctCell, _ := r.cells["card_type_id"]
-	tjson := fmt.Sprintf("to_jsonb(%s::text)", sqlString(titleCell.text))
+	njson := fmt.Sprintf("to_jsonb(%s::text)", sqlString(nameCell.text))
 	if ctCell.kind == ckLookup {
 		ctSel := fmt.Sprintf("(SELECT id FROM %s WHERE name=%s)", ctCell.lookupTable, sqlString(ctCell.lookupName))
 		return fmt.Sprintf(
-			"(SELECT av.card_id FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id JOIN card c ON c.id=av.card_id WHERE ad.name='title' AND av.value=%s AND c.card_type_id=%s LIMIT 1)",
-			tjson, ctSel)
+			"(SELECT av.card_id FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id JOIN card c ON c.id=av.card_id WHERE ad.name=%s AND av.value=%s AND c.card_type_id=%s LIMIT 1)",
+			sqlString(nameAttr), njson, ctSel)
 	}
 	return fmt.Sprintf(
-		"(SELECT av.card_id FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE ad.name='title' AND av.value=%s LIMIT 1)",
-		tjson)
+		"(SELECT av.card_id FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE ad.name=%s AND av.value=%s LIMIT 1)",
+		sqlString(nameAttr), njson)
+}
+
+// cardNameAttribute pulls the `name_attribute` value from the card
+// table's `### meta` block. Empty string when the schema doesn't carry
+// one — caller renders a fallback marker so a broken schema is loud.
+func (l *seedLoader) cardNameAttribute() string {
+	tbl, ok := l.tables["card"]
+	if !ok || tbl.Meta == nil {
+		return ""
+	}
+	return tbl.Meta["name_attribute"]
 }
 
 // aliasLookupSQL returns a SQL expression resolving an @alias to its
-// row id. For card rows we resolve via the title-attribute subquery
+// row id. For card rows we resolve via the name-attribute subquery
 // (cross-CTE-statement-safe). For non-card rows we use the table's
 // natural-name lookup.
 func (l *seedLoader) aliasLookupSQL(alias string) string {
@@ -1006,7 +1021,7 @@ func (l *seedLoader) aliasLookupSQL(alias string) string {
 		return fmt.Sprintf("NULL /* unknown alias @%s */", alias)
 	}
 	if r.table == "card" {
-		return cardLookupByTitle(r)
+		return l.cardLookupByNameAttr(r)
 	}
 	// Non-card alias: use the table's name_column lookup if the row
 	// has a value for it; otherwise fall back to a default.
@@ -1022,8 +1037,9 @@ func (l *seedLoader) aliasLookupSQL(alias string) string {
 }
 
 // dollarLookupSQL emits an inline SELECT for $<table>.<name>. Uses the
-// table's `### meta` to find the name column. Card lookups join on
-// the title attribute value.
+// table's `### meta` to find the column or attribute that holds the
+// natural name — schema.hcsv is the single source of truth so the
+// loader never hardcodes a specific attribute name.
 func (l *seedLoader) dollarLookupSQL(table, name string) string {
 	tbl, ok := l.tables[table]
 	if !ok {

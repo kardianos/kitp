@@ -202,12 +202,14 @@ func compileLeaf(n CardWhereTreeNode, addArg func(any) string, snap *schema.Snap
 			WHERE av.card_id = c.id AND ad.name = %s
 		)`, addArg(n.Attr)), nil
 	case "not terminal":
-		// Hide cards whose `<attr>` ref points at a card flagged
-		// is_terminal=TRUE (e.g. status='Done', status='Cancelled'). A
+		// Hide cards whose `<attr>` ref points at a value-card with
+		// phase='terminal' (e.g. status='Done', status='Cancelled'). A
 		// card with NO value for <attr> passes the gate — "no status"
 		// is treated as non-terminal so unstarted work isn't accidentally
 		// hidden. The jsonb_typeof check shields the bigint cast from
 		// stringified-id values that slipped past CanonicalizeFilterValue.
+		// Kept as an alias of has_phase ∈ {'terminal'} for filter cards
+		// seeded before Gate 1; new code uses has_phase directly.
 		return fmt.Sprintf(`NOT EXISTS (
 			SELECT 1
 			FROM attribute_value av
@@ -216,9 +218,41 @@ func compileLeaf(n CardWhereTreeNode, addArg func(any) string, snap *schema.Snap
 			WHERE av.card_id = c.id
 			  AND ad.name = %s
 			  AND jsonb_typeof(av.value) = 'number'
-			  AND target.is_terminal = TRUE
+			  AND target.phase = 'terminal'
 			  AND target.deleted_at IS NULL
 		)`, addArg(n.Attr)), nil
+	case "has_phase":
+		// Show cards whose `<attr>` ref points at a value-card whose
+		// phase is one of the given values. Mirror "not terminal"'s
+		// dereference shape (jsonb→bigint→card) but flip to positive
+		// match against the supplied phase set. `values` is a flat list
+		// of phase strings, e.g. ['active'] or ['triage','active'].
+		// Empty values → no row qualifies (vacuously false).
+		if len(n.Values) == 0 {
+			return "FALSE", nil
+		}
+		placeholders := make([]string, len(n.Values))
+		for j, v := range n.Values {
+			var s string
+			if err := json.Unmarshal(v, &s); err != nil {
+				return "", fmt.Errorf("has_phase: value[%d] must be a string: %w", j, err)
+			}
+			if s != "triage" && s != "active" && s != "terminal" {
+				return "", fmt.Errorf("has_phase: value[%d] %q: must be triage|active|terminal", j, s)
+			}
+			placeholders[j] = addArg(s)
+		}
+		return fmt.Sprintf(`EXISTS (
+			SELECT 1
+			FROM attribute_value av
+			JOIN attribute_def ad ON ad.id = av.attribute_def_id
+			JOIN card target ON target.id = (av.value)::text::bigint
+			WHERE av.card_id = c.id
+			  AND ad.name = %s
+			  AND jsonb_typeof(av.value) = 'number'
+			  AND target.phase = ANY(ARRAY[%s])
+			  AND target.deleted_at IS NULL
+		)`, addArg(n.Attr), strings.Join(placeholders, ", ")), nil
 	case "contains":
 		// Trigram-accelerated substring match. The special attr name
 		// "comments" pivots from attribute_value to comment_body via the

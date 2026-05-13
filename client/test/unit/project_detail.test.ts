@@ -41,6 +41,7 @@ function task(
     id,
     card_type_id: 2n,
     card_type_name: 'task',
+    phase: 'active',
     attributes: { title, ...attrs },
   };
 }

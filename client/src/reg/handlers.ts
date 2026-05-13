@@ -313,15 +313,21 @@ const cardSelect: HandlerSpec<CardSelectInput, CardSelectOutput> = {
 // ============================================================================
 
 function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
+  // Server returns phase as a NOT NULL column; default to 'active' for
+  // pre-Gate-1 fixture payloads that pre-date the schema change so unit
+  // tests don't need to thread phase into every CardWithAttrs literal.
+  const phaseRaw = j.phase;
+  const phase: 'triage' | 'active' | 'terminal' =
+    phaseRaw === 'triage' || phaseRaw === 'terminal' ? phaseRaw : 'active';
   const out: CardWithAttrs = {
     id: asId(j.id),
     card_type_id: asId(j.card_type_id),
     card_type_name: asStrOrEmpty(j.card_type_name),
+    phase,
     attributes: asObjOrEmpty(j.attributes),
   };
   const parent = asIdOpt(j.parent_card_id);
   if (parent !== undefined) out.parent_card_id = parent;
-  if (typeof j.is_terminal === 'boolean') out.is_terminal = j.is_terminal;
   const deletedAt = asStrOpt(j.deleted_at);
   if (deletedAt !== undefined) out.deleted_at = deletedAt;
   const personalSort = asNumOpt(j.personal_sort_order);

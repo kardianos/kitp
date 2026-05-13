@@ -51,8 +51,8 @@ $card_type.milestone, parent, "v1"
 
 ## table card | alias=test_status_doing
 ### rows
-card_type_id, parent_card_id, title, sort_order
-$card_type.status, parent, "Doing", 10
+card_type_id, parent_card_id, phase, title, sort_order
+$card_type.status, parent, active, "Doing", 10
 
 
 ## table card

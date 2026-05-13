@@ -33,6 +33,7 @@ function card(
     id,
     card_type_id: 99n,
     card_type_name: 'screen',
+    phase: 'active',
     attributes,
   };
 }

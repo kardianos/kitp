@@ -297,6 +297,7 @@ describe('pickTaskById', () => {
       id,
       card_type_id: 2n,
       card_type_name: 'task',
+      phase: 'active',
       attributes: { title: `Task ${id}` },
     };
   }
@@ -343,6 +344,7 @@ describe('personNameMap', () => {
       id,
       card_type_id: 7n,
       card_type_name: 'person',
+      phase: 'active',
       attributes: attrs,
     };
   }
@@ -385,6 +387,7 @@ describe('cardTitleMap', () => {
       id,
       card_type_id: 1n,
       card_type_name: 'milestone',
+      phase: 'active',
       attributes: attrs,
     };
   }
@@ -416,6 +419,7 @@ describe('tagPathMap', () => {
       id,
       card_type_id: 1n,
       card_type_name: 'tag',
+      phase: 'active',
       attributes: attrs,
     };
   }
@@ -445,6 +449,7 @@ describe('appliedTagIds', () => {
       id: 1n,
       card_type_id: 2n,
       card_type_name: 'task',
+      phase: 'active',
       attributes: attrs,
     };
   }

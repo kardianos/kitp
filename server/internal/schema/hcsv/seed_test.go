@@ -36,7 +36,7 @@ name, type, pk, nullable, default, references
 id, bigserial, true, , ,
 card_type_id, bigint, , false, , card_type.id
 parent_card_id, bigint, , , , card.id
-is_terminal, boolean, , false, false,
+phase, text, , false, 'triage',
 
 ## table attribute_def
 ### meta

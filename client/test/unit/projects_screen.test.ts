@@ -41,6 +41,7 @@ function project(
     id,
     card_type_id: 1n,
     card_type_name: 'project',
+    phase: 'active',
     attributes: { title, ...attrs },
   };
 }

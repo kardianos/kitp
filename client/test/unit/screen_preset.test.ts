@@ -36,6 +36,7 @@ function card(
     id,
     card_type_id: 99n,
     card_type_name: 'filter',
+    phase: 'active',
     attributes,
   };
 }

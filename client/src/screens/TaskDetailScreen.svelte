@@ -317,7 +317,7 @@
   /** Status value cards scoped to this task's project that are terminal. */
   const terminalStatusOptions = $derived.by((): { id: ID; label: string }[] =>
     scopedStatuses
-      .filter((s) => s.is_terminal === true)
+      .filter((s) => s.phase === 'terminal')
       .map((s) => {
         const t = s.attributes['title'];
         return {

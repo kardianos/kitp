@@ -138,20 +138,20 @@ attribute_def_id, bigint, , false, , attribute_def.id
 is_required, boolean, , false, false, 
 ordering, int, , false, 0, 
 
-## table card | doc="A card instance. is_terminal flags 'this is a final / closed value' for value-cards used in ref attributes (status='Done', status='Cancelled', milestone='Shipped', …); structural so the predicate compiler can hide cards pointing at terminal values via the notTerminal op, and so action affordances ('Close', 'Cancel') know which value cards to expose. Defaults false; only true for explicitly-flagged value cards."
+## table card | doc="A card instance. phase is a 3-value enum (triage/active/terminal) that categorises flow-bound value-cards used in ref attributes (status='Done' → terminal; status='New idea' → triage; status='Doing' → active). Drives the predicate compiler's has_phase op and the legacy notTerminal alias (phase='terminal'), the TransitionBar UI buckets via (from.phase, to.phase) pairs, and the default-create-status resolution chain. Defaults 'triage' for new value-cards (admins flip to active/terminal at creation time). Cards that are not flow-bound value-cards (tasks, projects, persons, …) carry the default but the value is never consulted."
 
 ### meta
 name_attribute
 title
 
 ### columns
-name, type, pk, nullable, default, references
-id, bigserial, true, , , 
-card_type_id, bigint, , false, , card_type.id
-parent_card_id, bigint, , , , card.id
-is_terminal, boolean, , false, false, 
-created_at, timestamptz, , false, now(), 
-deleted_at, timestamptz, , , , 
+name, type, pk, nullable, default, references, check
+id, bigserial, true, , , ,
+card_type_id, bigint, , false, , card_type.id,
+parent_card_id, bigint, , , , card.id,
+phase, text, , false, 'triage', , "phase IN ('triage','active','terminal')"
+created_at, timestamptz, , false, now(), ,
+deleted_at, timestamptz, , , , ,
 
 ### indexes
 name, columns

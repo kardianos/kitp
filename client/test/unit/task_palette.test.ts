@@ -32,7 +32,7 @@ function card(
   type: string,
   attrs: Record<string, unknown>,
 ): CardWithAttrs {
-  return { id, card_type_id: 1n, card_type_name: type, attributes: attrs };
+  return { id, card_type_id: 1n, card_type_name: type, phase: 'active', attributes: attrs };
 }
 
 const USERS: UserRow[] = [

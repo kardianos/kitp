@@ -163,12 +163,15 @@ export interface CardWithAttrs {
   card_type_name: string;
   parent_card_id?: ID;
   /**
-   * Structural flag: true when this value-card represents a terminal /
-   * closed state for any ref attribute pointing at it (e.g. a status
-   * card 'Done' or 'Cancelled'). Drives the notTerminal filter +
-   * action-button discovery.
+   * Three-valued phase tag on value-cards bound to a flow:
+   * `'triage'` (needs categorisation, e.g. "New idea", "Inbox"),
+   * `'active'` (in-flight work, e.g. "Todo", "Doing"), or
+   * `'terminal'` (final state, e.g. "Done", "Cancelled"). Drives
+   * the notTerminal / has_phase filters and TransitionBar action
+   * buckets. Always present (column NOT NULL); meaningful only on
+   * cards used as ref-attribute values.
    */
-  is_terminal?: boolean;
+  phase: 'triage' | 'active' | 'terminal';
   attributes: Record<string, unknown>;
   deleted_at?: string;
   /**

@@ -107,14 +107,15 @@ $card_type.tag, parent, "team/product",   "team/product",   null,       t_team_p
 $card_type.tag, parent, "team/growth",    "team/growth",    null,       t_team_grow
 
 
-## table card | under=proj_default | doc="Status value-cards. is_terminal flags Done/Cancelled so the predicate compiler can hide tasks pointing at them via notTerminal(status)."
+## table card | under=proj_default | doc="Status value-cards. phase classifies each status row for the predicate compiler's has_phase op and the legacy notTerminal alias: triage statuses surface in inbox/triage flows; active statuses are the in-flight queue; terminal statuses (Done, Cancelled) are hidden by has_phase ∈ {triage, active} filters."
 ### rows
-card_type_id,     parent_card_id, is_terminal, title,       sort_order, alias
-$card_type.status, parent,         false,       "Todo",      1,         s_todo
-$card_type.status, parent,         false,       "Doing",     2,         s_doing
-$card_type.status, parent,         false,       "Review",    3,         s_review
-$card_type.status, parent,         true,        "Done",      4,         s_done
-$card_type.status, parent,         true,        "Cancelled", 5,         s_cancel
+card_type_id,     parent_card_id, phase,    title,       sort_order, alias
+$card_type.status, parent,         triage,   "New idea",  0,         s_new_idea
+$card_type.status, parent,         active,   "Todo",      1,         s_todo
+$card_type.status, parent,         active,   "Doing",     2,         s_doing
+$card_type.status, parent,         active,   "Review",    3,         s_review
+$card_type.status, parent,         terminal, "Done",      4,         s_done
+$card_type.status, parent,         terminal, "Cancelled", 5,         s_cancel
 
 
 ## table card | under=proj_default | doc="25 dense tasks. status is round-robin so every state has at least a few rows; 'Closed:'-prefixed titles force Done so a manually-curated terminal example survives the rotation. sort_order is task_idx * 100 (the loader can't compute that, so each row carries its literal value)."

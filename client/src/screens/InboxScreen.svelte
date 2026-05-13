@@ -246,7 +246,7 @@
   /** Terminal status options (e.g. Done, Cancelled) for the row "Close ▾" splits. */
   const terminalStatusOptions = $derived.by((): { id: bigint; label: string }[] =>
     statuses
-      .filter((s) => s.is_terminal === true)
+      .filter((s) => s.phase === 'terminal')
       .map((s) => {
         const t = s.attributes['title'];
         return {

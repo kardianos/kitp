@@ -263,6 +263,97 @@ func TestTree_NestedAndOrNot(t *testing.T) {
 	}
 }
 
+// TestTree_HasPhase exercises the new has_phase op: dereference a
+// card_ref attribute to its value-card and gate on phase membership.
+// The test stages three milestone "value cards" with phases
+// {triage, active, terminal} and three tasks each pointing at one of
+// them via milestone_ref, then issues has_phase queries to verify the
+// phase set drives the row set.
+func TestTree_HasPhase(t *testing.T) {
+	srv, sp := setupAttr(t, "kitp_test_card_tree_has_phase")
+	_, ids, sm := seedTasks(t, srv, []map[string]any{
+		{"milestone_ref": "triage_m"},
+		{"milestone_ref": "active_m"},
+		{"milestone_ref": "term_m"},
+	})
+	// card.insert defaults phase='triage' for new value-cards; fast-
+	// forward two of them to active / terminal so the test covers all
+	// three buckets. UPDATE rather than going through attribute.update
+	// because phase is a structural column, not an attribute_value.
+	ctx := context.Background()
+	for name, want := range map[string]string{
+		"active_m": "active",
+		"term_m":   "terminal",
+	} {
+		if _, err := sp.P.Exec(ctx,
+			`UPDATE card SET phase = $1 WHERE id = $2`, want, sm[name]); err != nil {
+			t.Fatalf("set phase %s=%s: %v", name, want, err)
+		}
+	}
+
+	// has_phase=['active'] picks only the active task.
+	rows := queryTree(t, srv, parentOf(t, srv, ids[0]),
+		`{"connective":"and","children":[{"attr":"milestone_ref","op":"has_phase","values":["active"]}]}`)
+	if got, want := rowIDs(rows), sortedInts(ids[1]); !equalIDs(got, want) {
+		t.Errorf("has_phase=[active]: got %v, want %v", got, want)
+	}
+
+	// has_phase=['triage','active'] picks both non-terminal tasks —
+	// the seeded notTerminal alias maps to the same set.
+	rows = queryTree(t, srv, parentOf(t, srv, ids[0]),
+		`{"connective":"and","children":[{"attr":"milestone_ref","op":"has_phase","values":["triage","active"]}]}`)
+	if got, want := rowIDs(rows), sortedInts(ids[0], ids[1]); !equalIDs(got, want) {
+		t.Errorf("has_phase=[triage,active]: got %v, want %v", got, want)
+	}
+
+	// has_phase=['terminal'] picks only the terminal task.
+	rows = queryTree(t, srv, parentOf(t, srv, ids[0]),
+		`{"connective":"and","children":[{"attr":"milestone_ref","op":"has_phase","values":["terminal"]}]}`)
+	if got, want := rowIDs(rows), sortedInts(ids[2]); !equalIDs(got, want) {
+		t.Errorf("has_phase=[terminal]: got %v, want %v", got, want)
+	}
+
+	// Empty values → vacuously false: no rows match.
+	rows = queryTree(t, srv, parentOf(t, srv, ids[0]),
+		`{"connective":"and","children":[{"attr":"milestone_ref","op":"has_phase","values":[]}]}`)
+	if got := rowIDs(rows); len(got) != 0 {
+		t.Errorf("has_phase=[]: got %v, want empty", got)
+	}
+}
+
+// TestTree_NotTerminal_PhaseSemantics confirms the legacy "not terminal"
+// op now reads `target.phase = 'terminal'` (was `target.is_terminal =
+// TRUE` before Gate 1). The shape is unchanged — a task whose ref
+// points at a terminal-phase value-card is hidden, every other case
+// passes — but the underlying gate uses phase.
+func TestTree_NotTerminal_PhaseSemantics(t *testing.T) {
+	srv, sp := setupAttr(t, "kitp_test_card_tree_not_terminal_phase")
+	_, ids, sm := seedTasks(t, srv, []map[string]any{
+		{"milestone_ref": "m_active"}, // phase='triage' by default;
+		{"milestone_ref": "m_done"},   // we'll flip to active / terminal
+		{},                             // no milestone_ref at all
+	})
+	ctx := context.Background()
+	if _, err := sp.P.Exec(ctx,
+		`UPDATE card SET phase = 'active' WHERE id = $1`, sm["m_active"]); err != nil {
+		t.Fatalf("set active phase: %v", err)
+	}
+	if _, err := sp.P.Exec(ctx,
+		`UPDATE card SET phase = 'terminal' WHERE id = $1`, sm["m_done"]); err != nil {
+		t.Fatalf("set terminal phase: %v", err)
+	}
+
+	rows := queryTree(t, srv, parentOf(t, srv, ids[0]),
+		`{"connective":"and","children":[{"attr":"milestone_ref","op":"not terminal"}]}`)
+	// Tasks pointing at active milestones survive; the terminal one
+	// is hidden; the no-attribute task passes (missing attribute is
+	// treated as non-terminal).
+	want := sortedInts(ids[0], ids[2])
+	if got := rowIDs(rows); !equalIDs(got, want) {
+		t.Errorf("not terminal: got %v, want %v", got, want)
+	}
+}
+
 // TestTree_BackwardCompatFlat ensures the legacy flat where[] still
 // works untouched when no `tree` is set.
 func TestTree_BackwardCompatFlat(t *testing.T) {

@@ -36,7 +36,7 @@ export function buildRefOptions(rows: CardWithAttrs[]): FilterAttributeOption[] 
     const t = a['title'] ?? a['name'] ?? a['path'];
     const label = typeof t === 'string' && t.length > 0 ? t : `#${r.id}`;
     const opt: FilterAttributeOption = { value: r.id, label };
-    if (r.is_terminal === true) opt.isTerminal = true;
+    if (r.phase === 'terminal') opt.isTerminal = true;
     return opt;
   });
 }
