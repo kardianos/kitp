@@ -618,21 +618,50 @@ Both operations are reversible. No data is lost. The admin UI surfaces the curre
 
 ## Implementation plan
 
-1. **`card.phase` rename + 3-value enum.** Add column, migrate (`is_terminal=TRUE → phase='terminal'`, existing in-flight statuses → `phase='active'`, drop is_terminal). Update `where.go` `not terminal` SQL to read `phase = 'terminal'`. Add `has_phase` predicate op. Update demo seed: add `New idea` (or `Triage`) status per project with `phase='triage'`. Self-contained.
-2. **Status becomes required on `task`.** Flip the `is_required` flag on the `edge` row for (task, status). Update demo seed so every demo task has a status (already true; just verify). Add invariant test.
+### Gates (agent handoff contract)
+
+Each numbered step below is a **gate**. An agent dispatched to advance this work is given **only one gate at a time**, with the explicit instruction to:
+
+1. Implement exactly the named step (and its prerequisites only if not already done).
+2. Run `cd server && go test -count=1 ./...` — every package must pass.
+3. Run `cd client && npm run check && npm test` — type-check + unit tests pass.
+4. Commit. Stop. Report back.
+
+No agent gets multiple gates in one dispatch. The orchestrator (Claude or the user) verifies the gate's effects (build + tests + spot diff) before authorizing the next gate. This prevents the "half-applied state" failure mode where an agent rushes through 5 steps and leaves something broken three commits ago that's now hard to bisect.
+
+Gate prerequisites are encoded as the dependency line at the bottom of this section.
+
+### Gates
+
+1. **`card.phase` rename + 3-value enum.** Add column, migrate (`is_terminal=TRUE → phase='terminal'`, existing in-flight statuses → `phase='active'`, drop is_terminal). Update `where.go` `not terminal` SQL to read `phase = 'terminal'`. Add `has_phase` predicate op. Update demo seed: add `New idea` / `Triage` status per project with `phase='triage'`. Update the `card` table's doc string in `schema.hcsv` (still references `is_terminal`). Update `test_demo.hcsv` to re-add the `phase` column on its status card row (was dropped pending this rename). Self-contained.
+2. **Status becomes required on `task`.** Flip the `is_required` flag on the `edge` row for (task, status). Update seed/demo so every existing task has a status (the demo already does; verify test_demo). Add invariant test.
 3. **`flow` + `flow_step` tables + handlers.** `flow.set / delete / list / preview_delete`, `flow_step.set / delete / list`. `flow.scope_card_id` is `NOT NULL`. Include `flow.default_create_status_id`. `flow_step.from_card_id` is `NOT NULL`. No write path through `attribute.update` yet — admins can author transitions without them taking effect.
-4. **`flow_step.list_for_card` handler.** Server-side join that returns transitions + `from_phase`/`to_phase`/`allowed` for a given card id. The same query is reused by the rejection envelope in step 5.
-5. **`attribute.update` flow authz + positive-feedback rejection.** Add the validation branch; existing role_grant still applies as an outer gate. On reject, populate `available` in the error envelope via `flow_step.list_for_card`. (`has_phase` already landed in step 1; `is set` / `is unset` aliases are *not* added — `exists` / `not exists` already serve.)
+4. **`flow_step.list_for_card` handler.** Server-side join that returns transitions + `from_phase`/`to_phase`/`allowed` for a given card id. The same query is reused by the rejection envelope in gate 5 — share the implementation, parameterise the call sites.
+5. **`attribute.update` flow authz + positive-feedback rejection.** Add the validation branch; existing role_grant still applies as an outer gate. On reject, populate `available` in the error envelope via `flow_step.list_for_card` — **same function** the read-side handler uses. The MCP tag set at `server/internal/mcp/` consumes the identical envelope (different renderer; same payload).
 6. **`card.insert` default-create-status resolution (client side).** QuickEntry resolves the chain (screen → flow → first triage by sort → first active by sort → error) and includes `status` in the payload's `attributes`. Server validates as a normal required attribute.
 7. **`<TransitionBar>` component.** Replaces `TerminalActionButton`. TaskRow + TaskDetail switch over. Old widget deleted in the same commit.
-8. **Screen attributes: `slug`, `hotkey`, `flow_ref`, `default_create_status`, `view_requires_role`, `toggle_groups`.** Add to declarative.toml. Backfill the 4 existing seeded screens with slugs (`inbox`, `grid`, `kanban`, `project`). Add the partial unique index on `(parent_card_id, hotkey)`.
-9. **Router restructure.** `/project/:id/screen/:slug` becomes the only screen URL. Old paths `/inbox` `/grid` `/kanban` deleted. Hotkey chords register per project on scope change; AppShell's hardcoded `NAV_CHORDS` becomes a runtime loop. The four existing screen components become body renderers behind `<ScreenHost>` and lose their bespoke data-fetch + filter-bar + viewMode logic.
-10. **`is_template` attribute + `project.stamp` handler.** Add the attribute to the `project` card_type. Implement the graph-copy handler with ID remapping. Predicate-tree value-card-ID rewriter (used by filter card copy). Tests: round-trip stamp + verify the new project has independent IDs but equivalent structure.
-11. **Refactor declarative.toml seed.** The existing seed becomes "the template project." Add a stamping step (raw SQL DO block or a Go post-apply hook that calls `project.stamp`) to produce the demo project. Seed the Ideas + Archive screen cards into the template (zero new code beyond declarative.toml).
+8. **Screen attributes: `slug`, `hotkey`, `flow_ref`, `default_create_status`, `view_requires_role`, `toggle_groups`.** Add to `seed.hcsv` (the attribute_defs) and to existing seeded screens. Hotkey uniqueness is **app-level**, not DB-level: an in-transaction SELECT before INSERT/UPDATE on `attribute_value` for the `hotkey` attribute, scoped to `(parent_card_id, value)` (see V2 below). Backfill the 4 existing seeded screens with slugs (`inbox`, `grid`, `kanban`, `project`).
+9. **Router restructure.** `/project/:id/screen/:slug` becomes the only screen URL. Old paths `/inbox`, `/grid`, `/kanban` deleted. Hotkey chords register per project on scope change; AppShell's hardcoded `NAV_CHORDS` becomes a runtime loop. The four existing screen components become body renderers behind `<ScreenHost>` and lose their bespoke data-fetch + filter-bar + viewMode logic. **Blast radius:** grep for `/inbox`, `/grid`, `/kanban`, `navigate(`, `useShortcut(.*'g ` — every match needs updating. Also: SPA fallback in `server/internal/api/api.go`, every E2E test, every project doc.
+10. **`is_template` attribute + `project.stamp` handler.** Add the attribute. Implement the graph-copy handler with ID remapping including predicate-tree rewriting. Tests: round-trip stamp + verify new project has independent IDs but equivalent structure. **Implementation note**: the graph-copy logic can (and ideally should) be generated mechanically from the schema-as-data — given a root card and the FK / card_ref relationships in `schema.hcsv` + `seed.hcsv`, the copy walks all reachable descendants and remaps ids. Pre-compile-time codegen against the schema produces a stamping function specialised to the current schema; runtime stays cheap. If the agent finds this too ambitious for one gate, fall back to a hand-written copy; mark the codegen path as a follow-up.
+11. **Refactor seed to template-stamping pattern.** Current seed/demo becomes "the template project." Add a stamping step (Go post-apply hook calling `project.stamp`) to produce the demo project. Seed the Ideas + Archive screen cards into the template.
 12. **Client: template-aware project listing.** `ProjectsScreen` ships the `is_template != true` predicate. Admin project list adds the "Template" badge column + optional "Show templates" toggle.
-13. **Drop dead code.** `SCREEN_TYPES` constant, `viewMode` state on Inbox, `TerminalActionButton`, `screen_type` enum docs, the `screen.predicate` attribute proposal. Same commit that lands #9 or follow-up.
+13. **Drop dead code.** `SCREEN_TYPES` constant, `viewMode` state on Inbox, `TerminalActionButton`, `screen_type` enum docs, the `screen.predicate` attribute proposal. Same commit as gate 9 or a follow-up.
 
-Dependencies: #2 needs #1 (the new triage value-card has to exist before status can be marked required). #5 needs #3. #6 needs #1 + #2 + #3 (default chain has to land on a real triage status). #7 needs #4. #9 needs #8 and benefits from the router-test rewrite happening at the same time. #10 is independent of the flow/screen work — could land before or after — but #11 depends on both #10 (for `project.stamp`) and #8 (for the screen attributes the template carries).
+**Cross-cutting cleanup (do at gate 5 or earlier):** the hcsv seed loader's `isCardRefArrayAttr` currently has a hardcoded `tags` switch. Convert to schema-driven by reading `attribute_def.value_type` from the parsed schema model. Or expose a seed-side property declaration. Either way, no hardcoded value-type knowledge in the loader.
+
+**Cross-cutting cleanup (do at gate 1):** `card_id`-resolution and any other place that hardcodes "this is the name column" should be removed; the meta block in schema.hcsv is the single source of truth.
+
+### Dependency graph between gates
+
+- Gate 2 needs 1 (triage value-cards must exist before flipping required).
+- Gate 5 needs 3 and 4.
+- Gate 6 needs 1, 2, 3 (the default-status chain must resolve to a real triage row).
+- Gate 7 needs 4 (TransitionBar reads `flow_step.list_for_card`).
+- Gate 9 needs 8 (screens carry slugs).
+- Gate 10 is independent of 1–9 in principle, but the predicate-rewrite logic needs the schema model from earlier gates to be stable; do gate 10 only after gate 8.
+- Gate 11 needs 10 (the stamp handler) and 8 (the screen attributes the template carries).
+- Gate 12 needs 11 (the template / demo split must exist before the listing filters them apart).
+- Gate 13 is a sweep — runs after every other gate.
 
 ## Variants and risks
 
@@ -644,19 +673,31 @@ One route pattern, slug-in-path: `/project/:id/screen/:slug`. The slug is a per-
 
 Bookmark stability: changing a screen's slug breaks bookmarks pointing at the old slug. The admin UI warns on rename. We do not maintain a slug-history table for v1; if it becomes a real complaint, add `(parent_card_id, old_slug)` redirect rows later.
 
-### V2 — Per-project hotkeys (resolved)
+### V2 — Per-project hotkeys (resolved, app-level enforcement)
 
-DB enforces uniqueness with a partial unique index:
+The DB-level partial-unique index originally proposed isn't buildable as stated: `attributes` is not a column on `card` — attribute values live in `attribute_value` rows keyed by `(card_id, attribute_def_id)`. Enforcement is therefore **app-level**, inside the existing `attribute.update` handler:
 
-```sql
-CREATE UNIQUE INDEX screen_hotkey_per_project
-  ON card (parent_card_id, (attributes->>'hotkey'))
-  WHERE deleted_at IS NULL
-    AND card_type_id = (SELECT id FROM card_type WHERE name='screen')
-    AND (attributes->>'hotkey') IS NOT NULL;
+When the inbound update targets the `hotkey` attribute on a `screen` card:
+
+```
+BEGIN tx (the existing attribute.update tx)
+  SELECT EXISTS (
+    SELECT 1
+    FROM attribute_value av
+    JOIN attribute_def ad ON ad.id = av.attribute_def_id
+    JOIN card c ON c.id = av.card_id
+    WHERE ad.name = 'hotkey'
+      AND av.value = $newValue
+      AND c.parent_card_id = $screenParent
+      AND c.id <> $screenId
+      AND c.deleted_at IS NULL
+  ) AS dup;
+  if dup: reject with code 'hotkey_in_use' and the conflicting screen's title.
+  proceed with the normal UPSERT.
+END tx
 ```
 
-(Exact form depends on whether the attribute_value table or a flattened attributes jsonb is the source of truth; the application enforces it independently via a uniqueness check inside `attribute.update` for the `hotkey` attribute on `screen` cards.)
+The check is single-query and runs inside the same transaction, so concurrent writes don't race. The error envelope echoes the conflict so the admin UI can tell the user "the `i` hotkey is already used by Inbox in this project."
 
 At runtime, AppShell registers the chord set on the *currently-scoped project*'s screen cards. When projectScope changes, the previous set unregisters and the new set registers — a single effect listening on project scope. Outside a project (on `/projects`, admin pages), no project-screen chords are live; only the global ones (`g p` for projects, etc.).
 
