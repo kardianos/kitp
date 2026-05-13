@@ -84,7 +84,7 @@ $card_type.tag,       $attribute_def.title,             true,  0
 $card_type.task,      $attribute_def.assignee,          false, 1
 $card_type.task,      $attribute_def.milestone_ref,     false, 1
 $card_type.task,      $attribute_def.component_ref,     false, 1
-$card_type.task,      $attribute_def.status,            false, 1
+$card_type.task,      $attribute_def.status,            true,  1
 $card_type.status,    $attribute_def.title,             true,  0
 $card_type.status,    $attribute_def.sort_order,        false, 1
 $card_type.tag,       $attribute_def.path,              true,  2

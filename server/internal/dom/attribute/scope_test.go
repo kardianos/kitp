@@ -262,6 +262,57 @@ func TestProjectScope_TagApply(t *testing.T) {
 	}
 }
 
+// TestTaskStatusRequired_RejectsRemoval is the Gate 2 invariant: the
+// (task, status) edge carries is_required=true, so an attribute.update
+// that removes status (value: null) must be rejected via the existing
+// required-edge rejection path with code 'edge_violation'. The check
+// fires regardless of whether the task currently has a status value
+// — it's a property of the edge, not of the attribute_value row.
+func TestTaskStatusRequired_RejectsRemoval(t *testing.T) {
+	srv, _ := setupScope(t, "kitp_test_status_required")
+	ctx := auth.WithSystemUser(context.Background())
+
+	// Insert a project then a fresh task under it. Gate 2 does not
+	// enforce required-on-insert (that lands in Gate 6), so the
+	// task can be created without status here.
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			`{"card_type_name":"project","title":"P"}`)},
+	}})
+	mustOK(t, resp.Subresponses[0])
+	var pOut card.InsertOutput
+	raw(t, resp.Subresponses[0], &pOut)
+
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
+	}})
+	mustOK(t, resp.Subresponses[0])
+	var tOut card.InsertOutput
+	raw(t, resp.Subresponses[0], &tOut)
+
+	// Attempt to remove status via attribute.update value=null. The
+	// (task, status) edge is is_required=true, so this must reject
+	// with code 'edge_violation' and a message naming the attribute.
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "rm", Endpoint: "attribute", Action: "update", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_id":"%d","attribute_name":"status","value":null}`, tOut.ID))},
+	}})
+	sr := resp.Subresponses[0]
+	if sr.OK {
+		t.Fatalf("expected edge_violation; got OK")
+	}
+	if sr.Error == nil || sr.Error.Code != "edge_violation" {
+		t.Fatalf("expected edge_violation; got %+v", sr.Error)
+	}
+	if !strings.Contains(sr.Error.Message, "status") {
+		t.Errorf("error message should name the required attribute; got %q", sr.Error.Message)
+	}
+	if !strings.Contains(sr.Error.Message, "required") {
+		t.Errorf("error message should mention 'required'; got %q", sr.Error.Message)
+	}
+}
+
 // TestProjectScope_MixedBatch: a batch containing one valid and one
 // invalid attribute.update must reject the offending row and the
 // dispatcher should pin the failure to the right input slot.
