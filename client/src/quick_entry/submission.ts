@@ -39,6 +39,21 @@ export interface QuickEntrySubmitInput {
   title: string;
   description: string;
   prefill?: QuickEntryPrefill;
+  /**
+   * Resolved default-create-status id (Gate 6 of FLOW_AND_SCREEN_KERNEL).
+   * QuickEntryOverlay computes this via `resolveDefaultCreateStatus`
+   * before calling submitQuickEntry and ships it in the
+   * `card.insert` attributes payload so the server's required-edge
+   * check accepts the new (task, status) pair on the same insert.
+   *
+   * Skipped (not sent) when:
+   *   - The card_type isn't `task` (only tasks carry a required status
+   *     today; project / milestone / etc. don't need a status edge).
+   *   - The prefill already pins `status` via `laneAttribute` or
+   *     `extraAttributes` (the kanban column "+" path); the explicit
+   *     user intent wins over the chain default.
+   */
+  defaultStatusCardId?: ID;
 }
 
 /** Card types that the schema makes top-level (no parent_card_id required). */
@@ -107,6 +122,27 @@ export async function submitQuickEntry(
   };
   if (input.parentCardId !== undefined) {
     insertData.parentCardId = input.parentCardId;
+  }
+
+  // Gate 6: stamp the resolved default-create-status into the insert's
+  // attributes payload when the caller threaded one through. The
+  // overlay decides whether to call the resolver and what to do on
+  // error; we just forward the value here. An explicit prefill that
+  // pins `status` (e.g. kanban column "+" with a column attr of
+  // `status`) takes precedence — the explicit user intent wins over
+  // the chain default, mirroring the spec's "screen override beats
+  // flow override" ordering one level up.
+  const pinsStatusViaPrefill =
+    input.prefill?.laneAttribute?.name === 'status' ||
+    (input.prefill?.extraAttributes ?? []).some((a) => a.name === 'status');
+  if (
+    input.defaultStatusCardId !== undefined &&
+    !pinsStatusViaPrefill
+  ) {
+    insertData.attributes = {
+      ...(insertData.attributes ?? {}),
+      status: input.defaultStatusCardId,
+    };
   }
 
   const insertP = dispatcher.request<CardInsertInput, CardInsertOutput>({

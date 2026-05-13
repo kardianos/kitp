@@ -90,6 +90,7 @@ func seedTasksForTester(t *testing.T, srv *api.Server, userID int64, n int) []in
 	var pOut card.InsertOutput
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
+	statusID := mkStatusUnder(t, srv, pOut.ID)
 
 	subs := make([]api.SubRequest, n)
 	for i := range subs {
@@ -97,8 +98,8 @@ func seedTasksForTester(t *testing.T, srv *api.Server, userID int64, n int) []in
 			ID:       fmt.Sprintf("t%d", i),
 			Endpoint: "card", Action: "insert",
 			Data: json.RawMessage(fmt.Sprintf(
-				`{"card_type_name":"task","parent_card_id":"%d","title":"task%d","attributes":{"assignee":%d}}`,
-				pOut.ID, i, userID)),
+				`{"card_type_name":"task","parent_card_id":"%d","title":"task%d","attributes":{"assignee":%d,"status":"%d"}}`,
+				pOut.ID, i, userID, statusID)),
 		}
 	}
 	resp = srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: subs})
@@ -205,12 +206,15 @@ func TestSelectWithAttributes_AssigneeTreeFilter(t *testing.T) {
 	_ = json.Unmarshal(buf, &pOut)
 	buf, _ = json.Marshal(resp.Subresponses[1].Data)
 	_ = json.Unmarshal(buf, &sOut)
+	statusID := mkStatusUnder(t, srv, pOut.ID)
 
 	resp = srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "mine", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"mine","attributes":{"assignee":%d}}`, pOut.ID, testerID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"mine","attributes":{"assignee":%d,"status":"%d"}}`,
+				pOut.ID, testerID, statusID))},
 		{ID: "theirs", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"theirs","attributes":{"assignee":%d}}`, pOut.ID, sOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"theirs","attributes":{"assignee":%d,"status":"%d"}}`,
+				pOut.ID, sOut.ID, statusID))},
 	}})
 	for _, sr := range resp.Subresponses {
 		if !sr.OK {

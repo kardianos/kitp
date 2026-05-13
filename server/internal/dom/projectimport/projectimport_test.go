@@ -93,7 +93,11 @@ func uploadCSV(t *testing.T, handler http.Handler, srv *api.Server, body []byte)
 	return fOut.ID
 }
 
-// makeProject returns a fresh project id.
+// makeProject returns a fresh project id, plus seeds a same-project
+// status card so subsequent task inserts (whether by the test itself
+// or by project.import's commit) satisfy Gate 6's (task, status)
+// required-edge check. The status id is not returned; callers that
+// need it look it up explicitly via card.select_with_attributes.
 func makeProject(t *testing.T, srv *api.Server, title string) int64 {
 	t.Helper()
 	ctx := auth.WithSystemUser(context.Background())
@@ -107,6 +111,15 @@ func makeProject(t *testing.T, srv *api.Server, title string) int64 {
 	var o card.InsertOutput
 	b, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(b, &o)
+	// Seed one status under this project so Gate 6's required-edge
+	// check accepts task inserts on the import path.
+	sResp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, o.ID))},
+	}})
+	if !sResp.Subresponses[0].OK {
+		t.Fatalf("project status seed: %+v", sResp.Subresponses[0].Error)
+	}
 	return o.ID
 }
 
@@ -324,11 +337,22 @@ func TestPreview_RoundTripFromExport(t *testing.T) {
 	b, _ = json.Marshal(tgid.Data)
 	_ = json.Unmarshal(b, &tOut)
 
+	// Status under the source project for the task's (task, status)
+	// required-edge check.
+	srcStatus := dispatch(t, srv, "src_s", "card", "insert", fmt.Sprintf(
+		`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, src))
+	if !srcStatus.OK {
+		t.Fatalf("seed src status: %+v", srcStatus.Error)
+	}
+	var ssOut card.InsertOutput
+	bSS, _ := json.Marshal(srcStatus.Data)
+	_ = json.Unmarshal(bSS, &ssOut)
+
 	// One task that references milestone / component / tags.
 	taskBody := fmt.Sprintf(`{
 		"card_type_name":"task","parent_card_id":"%d","title":"T1",
-		"attributes":{"milestone_ref":"%d","component_ref":"%d","tags":["%d"]}
-	}`, src, mOut.ID, cOut.ID, tOut.ID)
+		"attributes":{"milestone_ref":"%d","component_ref":"%d","tags":["%d"],"status":"%d"}
+	}`, src, mOut.ID, cOut.ID, tOut.ID, ssOut.ID)
 	if r := dispatch(t, srv, "tk", "card", "insert", taskBody); !r.OK {
 		t.Fatalf("seed task: %+v", r.Error)
 	}

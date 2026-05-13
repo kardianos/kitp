@@ -50,6 +50,23 @@ func raw(t *testing.T, sr api.SubResponse, dst any) {
 	}
 }
 
+// mkStatusUnder inserts one status card under projectID and returns its
+// id. Helper for Gate 6's required-attribute check on card.insert: any
+// task created under projectID needs a same-project status to pass.
+func mkStatusUnder(t *testing.T, srv *api.Server, projectID int64) int64 {
+	t.Helper()
+	ctx := auth.WithSystemUser(context.Background())
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`,
+				projectID))},
+	}})
+	mustOK(t, resp.Subresponses[0])
+	var out card.InsertOutput
+	raw(t, resp.Subresponses[0], &out)
+	return out.ID
+}
+
 // TestLifecycleTitleUpdate covers the full Phase 6 story:
 //   - insert task with title=Foo (so card_create + attr_update for title appear)
 //   - update title=Bar
@@ -69,10 +86,12 @@ func TestLifecycleTitleUpdate(t *testing.T) {
 	mustOK(t, resp.Subresponses[0])
 	var pOut card.InsertOutput
 	raw(t, resp.Subresponses[0], &pOut)
+	statusID := mkStatusUnder(t, srv, pOut.ID)
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"Foo"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"Foo","attributes":{"status":"%d"}}`,
+				pOut.ID, statusID))},
 	}})
 	mustOK(t, resp.Subresponses[0])
 	var tOut card.InsertOutput
@@ -88,7 +107,10 @@ func TestLifecycleTitleUpdate(t *testing.T) {
 	}
 
 	// 3. Activity stream: card_create + attr_update for Foo (from insert) +
-	//    attr_update Foo->Bar + attr_update Bar->Baz = 4 rows in order.
+	//    attr_update for status (Gate 6: status required on insert) +
+	//    attr_update Foo->Bar + attr_update Bar->Baz = 5 rows in order.
+	// Filter to title-only attr_updates for the transitions check so the
+	// status attr_update doesn't interfere with the ordering assertion.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "a", Endpoint: "activity", Action: "select", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_id":"%d"}`, tOut.ID))},
@@ -97,8 +119,8 @@ func TestLifecycleTitleUpdate(t *testing.T) {
 	var aOut activity.SelectOutput
 	raw(t, resp.Subresponses[0], &aOut)
 
-	if len(aOut.Rows) != 4 {
-		t.Fatalf("activity rows: got %d, want 4: %+v", len(aOut.Rows), aOut.Rows)
+	if len(aOut.Rows) != 5 {
+		t.Fatalf("activity rows: got %d, want 5: %+v", len(aOut.Rows), aOut.Rows)
 	}
 	if aOut.Rows[0].Kind != "card_create" {
 		t.Errorf("row0 kind: %q, want card_create", aOut.Rows[0].Kind)
@@ -108,23 +130,27 @@ func TestLifecycleTitleUpdate(t *testing.T) {
 		{`"Foo"`, `"Bar"`},
 		{`"Bar"`, `"Baz"`},
 	}
+	titleRows := make([]activity.Row, 0, len(aOut.Rows))
+	for _, r := range aOut.Rows {
+		if r.Kind == "attr_update" && r.AttributeName != nil && *r.AttributeName == "title" {
+			titleRows = append(titleRows, r)
+		}
+	}
+	if len(titleRows) != len(wantTransitions) {
+		t.Fatalf("title attr_update rows: got %d, want %d: %+v",
+			len(titleRows), len(wantTransitions), titleRows)
+	}
 	for i, want := range wantTransitions {
-		row := aOut.Rows[i+1]
-		if row.Kind != "attr_update" {
-			t.Errorf("row %d kind: %q, want attr_update", i+1, row.Kind)
-		}
-		if row.AttributeName == nil || *row.AttributeName != "title" {
-			t.Errorf("row %d attribute_name: %v, want title", i+1, row.AttributeName)
-		}
+		row := titleRows[i]
 		gotOld := strings.TrimSpace(string(row.ValueOld))
 		if gotOld == "null" {
 			gotOld = ""
 		}
 		if gotOld != want[0] {
-			t.Errorf("row %d value_old: %q, want %q", i+1, gotOld, want[0])
+			t.Errorf("row %d value_old: %q, want %q", i, gotOld, want[0])
 		}
 		if got := strings.TrimSpace(string(row.ValueNew)); got != want[1] {
-			t.Errorf("row %d value_new: %q, want %q", i+1, got, want[1])
+			t.Errorf("row %d value_new: %q, want %q", i, got, want[1])
 		}
 	}
 
@@ -159,6 +185,7 @@ func TestCoalesceUpdate100(t *testing.T) {
 	mustOK(t, resp.Subresponses[0])
 	var pOut card.InsertOutput
 	raw(t, resp.Subresponses[0], &pOut)
+	statusID := mkStatusUnder(t, srv, pOut.ID)
 
 	// Insert 100 tasks under the project, then 100 attribute updates.
 	subs := make([]api.SubRequest, 100)
@@ -168,7 +195,8 @@ func TestCoalesceUpdate100(t *testing.T) {
 			Endpoint: "card",
 			Action:   "insert",
 			Data: json.RawMessage(fmt.Sprintf(
-				`{"card_type_name":"task","parent_card_id":"%d","title":"task%d"}`, pOut.ID, i)),
+				`{"card_type_name":"task","parent_card_id":"%d","title":"task%d","attributes":{"status":"%d"}}`,
+				pOut.ID, i, statusID)),
 		}
 	}
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: subs})
@@ -240,10 +268,12 @@ func TestUpdate_RejectsInvalidCardRefValue(t *testing.T) {
 	mustOK(t, resp.Subresponses[0])
 	var pOut card.InsertOutput
 	raw(t, resp.Subresponses[0], &pOut)
+	statusID := mkStatusUnder(t, srv, pOut.ID)
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
+				pOut.ID, statusID))},
 	}})
 	mustOK(t, resp.Subresponses[0])
 	var tOut card.InsertOutput
@@ -282,9 +312,11 @@ func TestUpdate_AcceptsValidCardRef(t *testing.T) {
 	var pOut card.InsertOutput
 	raw(t, resp.Subresponses[0], &pOut)
 
+	statusID := mkStatusUnder(t, srv, pOut.ID)
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
+				pOut.ID, statusID))},
 		{ID: "m", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_type_name":"milestone","parent_card_id":"%d","title":"M1"}`, pOut.ID))},
 	}})
@@ -339,6 +371,16 @@ func BenchmarkBatch100AttrUpdates(b *testing.B) {
 	var pOut card.InsertOutput
 	rawB(b, resp.Subresponses[0], &pOut)
 
+	// Status under the project so the bench's 100 task inserts can
+	// satisfy the (task, status) required-edge check.
+	statusResp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
+	}})
+	mustOKB(b, statusResp.Subresponses[0])
+	var sBenchOut card.InsertOutput
+	rawB(b, statusResp.Subresponses[0], &sBenchOut)
+
 	taskIDs := make([]int64, 100)
 	subs := make([]api.SubRequest, 100)
 	for i := range subs {
@@ -347,7 +389,8 @@ func BenchmarkBatch100AttrUpdates(b *testing.B) {
 			Endpoint: "card",
 			Action:   "insert",
 			Data: json.RawMessage(fmt.Sprintf(
-				`{"card_type_name":"task","parent_card_id":"%d","title":"task%d"}`, pOut.ID, i)),
+				`{"card_type_name":"task","parent_card_id":"%d","title":"task%d","attributes":{"status":"%d"}}`,
+				pOut.ID, i, sBenchOut.ID)),
 		}
 	}
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: subs})

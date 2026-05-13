@@ -146,10 +146,13 @@
   // Properties slide-out (title / description / project-bound attributes).
   let propsOpen = $state(false);
 
+  // Gate 6: candidateStatuses is the loaded status set. Getter form
+  // keeps the rune reactive across the async fetch.
   const qe = useQuickEntry({
     scope: 'project_detail',
     defaultCardType: 'task',
     parentCardId: projectId,
+    candidateStatuses: () => statuses,
     onCreated: () => {
       void refresh();
     },

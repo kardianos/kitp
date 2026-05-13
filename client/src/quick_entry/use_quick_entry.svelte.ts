@@ -20,7 +20,8 @@
 
 import { useShortcut } from '../keys/shortcut.js';
 import type { ShortcutScope } from '../keys/scopes.js';
-import type { ID } from '../reg/types.js';
+import type { CardWithAttrs, ID } from '../reg/types.js';
+import type { FlowRow } from './default_status.svelte.js';
 import type { QuickEntryPrefill } from './submission.js';
 
 export interface UseQuickEntryOptions {
@@ -30,6 +31,19 @@ export interface UseQuickEntryOptions {
   prefill?: QuickEntryPrefill;
   /** Optional list of assignee options for the inline picker. */
   assigneeOptions?: { value: ID; label: string }[];
+  /**
+   * Gate 6: inputs for the default-create-status chain. Screens that
+   * have these values in memory thread them through so QuickEntry can
+   * stamp the resolved status on the new task in the same
+   * `card.insert`. These are provided as getters (not eager values)
+   * so a screen that calls `useQuickEntry` once at mount and refreshes
+   * `statuses` async still has the latest data when the user submits.
+   * The plain-value forms remain accepted for non-reactive callers and
+   * tests; both shapes round-trip through the overlay unchanged.
+   */
+  screenCard?: CardWithAttrs | null | (() => CardWithAttrs | null);
+  flow?: FlowRow | null | (() => FlowRow | null);
+  candidateStatuses?: CardWithAttrs[] | (() => CardWithAttrs[]);
   onCreated?: (id: ID) => void;
 }
 
@@ -44,6 +58,12 @@ export interface UseQuickEntryProps {
   parentCardId?: ID;
   prefill?: QuickEntryPrefill;
   assigneeOptions?: { value: ID; label: string }[];
+  /** Resolved (not a getter) — the rune unwraps any function form. */
+  screenCard?: CardWithAttrs | null;
+  /** Resolved (not a getter) — the rune unwraps any function form. */
+  flow?: FlowRow | null;
+  /** Resolved (not a getter) — the rune unwraps any function form. */
+  candidateStatuses?: CardWithAttrs[];
   onCreated?: (id: ID) => void;
   onClose: () => void;
 }
@@ -93,6 +113,21 @@ export function useQuickEntry(opts: UseQuickEntryOptions): UseQuickEntry {
       const effective = override ?? opts.prefill;
       if (effective !== undefined) p.prefill = effective;
       if (opts.assigneeOptions !== undefined) p.assigneeOptions = opts.assigneeOptions;
+      if (opts.screenCard !== undefined) {
+        p.screenCard = typeof opts.screenCard === 'function'
+          ? (opts.screenCard as () => CardWithAttrs | null)()
+          : opts.screenCard;
+      }
+      if (opts.flow !== undefined) {
+        p.flow = typeof opts.flow === 'function'
+          ? (opts.flow as () => FlowRow | null)()
+          : opts.flow;
+      }
+      if (opts.candidateStatuses !== undefined) {
+        p.candidateStatuses = typeof opts.candidateStatuses === 'function'
+          ? (opts.candidateStatuses as () => CardWithAttrs[])()
+          : opts.candidateStatuses;
+      }
       if (opts.onCreated !== undefined) p.onCreated = opts.onCreated;
       return p;
     },

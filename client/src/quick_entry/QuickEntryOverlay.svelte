@@ -33,9 +33,14 @@
     type QuickEntryPrefill,
     type QuickEntrySubmitInput,
   } from './submission.js';
+  import {
+    resolveDefaultCreateStatus,
+    type FlowRow,
+  } from './default_status.svelte.js';
   import type {
     CardDeleteInput,
     CardDeleteOutput,
+    CardWithAttrs,
     ID,
   } from '../reg/types.js';
 
@@ -55,6 +60,17 @@
      * an assignee). Screens fetch this via `user.select` and pass it through.
      */
     assigneeOptions?: AssigneeOption[];
+    /**
+     * Gate 6: inputs for the default-create-status resolution chain.
+     * Optional — when omitted (or when `defaultCardType !== 'task'`) the
+     * overlay skips the chain and lets the server's required-edge check
+     * surface the missing status. Screens that have these values in
+     * memory (Inbox, Kanban, Grid, ProjectDetail) thread them through so
+     * the new task's status is stamped on the same `card.insert`.
+     */
+    screenCard?: CardWithAttrs | null;
+    flow?: FlowRow | null;
+    candidateStatuses?: CardWithAttrs[];
     onCreated?: (newCardId: ID) => void;
     onClose?: () => void;
   }
@@ -65,6 +81,9 @@
     parentCardId,
     prefill,
     assigneeOptions = [],
+    screenCard,
+    flow,
+    candidateStatuses,
     onCreated,
     onClose,
   }: Props = $props();
@@ -255,6 +274,41 @@
       return;
     }
 
+    // Gate 6: resolve the default-create-status chain when we're
+    // inserting a task. Other card types either don't have a required
+    // status edge (project / milestone / etc.) or don't surface through
+    // QuickEntry, so the chain is skipped. If the caller didn't thread
+    // the inputs through, we also skip the chain — the server's
+    // required-edge check will surface the missing status with a
+    // friendly enough error.
+    let defaultStatusCardId: ID | undefined;
+    if (defaultCardType === 'task' && candidateStatuses !== undefined) {
+      // Skip the chain when the prefill already pins `status` (kanban
+      // column "+"); submission.ts also short-circuits but resolving
+      // here would be wasted work and could surface a misleading error
+      // when the project has no triage / active statuses but the user
+      // explicitly chose one.
+      const pinsStatus =
+        effectivePrefill.laneAttribute?.name === 'status' ||
+        (effectivePrefill.extraAttributes ?? []).some(
+          (a) => a.name === 'status',
+        );
+      if (!pinsStatus) {
+        const r = resolveDefaultCreateStatus({
+          screenCard: screenCard ?? null,
+          flow: flow ?? null,
+          candidateStatuses,
+        });
+        if ('error' in r) {
+          submitting = false;
+          errorMessage = r.message;
+          notify({ type: 'error', message: r.message });
+          return;
+        }
+        defaultStatusCardId = r.statusCardId;
+      }
+    }
+
     const args: QuickEntrySubmitInput = {
       cardTypeName: defaultCardType,
       title,
@@ -262,6 +316,7 @@
       prefill: effectivePrefill,
     };
     if (resolution.parentCardId !== null) args.parentCardId = resolution.parentCardId;
+    if (defaultStatusCardId !== undefined) args.defaultStatusCardId = defaultStatusCardId;
 
     try {
       const newCardId = await submitQuickEntry(dispatcher, args);

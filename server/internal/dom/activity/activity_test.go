@@ -56,11 +56,24 @@ func TestSelectCrossCard(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
+	// Status under the project so task inserts can satisfy the Gate 6
+	// (task, status) required-edge check.
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
+	}})
+	mustOK(t, resp.Subresponses[0])
+	var sOut card.InsertOutput
+	buf, _ = json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &sOut)
+
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t1", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T1"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T1","attributes":{"status":"%d"}}`,
+				pOut.ID, sOut.ID))},
 		{ID: "t2", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T2"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T2","attributes":{"status":"%d"}}`,
+				pOut.ID, sOut.ID))},
 	}})
 	mustOK(t, resp.Subresponses[0])
 	mustOK(t, resp.Subresponses[1])
@@ -146,8 +159,18 @@ func TestSelectPerCardUnchanged(t *testing.T) {
 	_ = json.Unmarshal(buf, &pOut)
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
+	}})
+	mustOK(t, resp.Subresponses[0])
+	var sOut card.InsertOutput
+	buf, _ = json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &sOut)
+
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
+				pOut.ID, sOut.ID))},
 	}})
 	mustOK(t, resp.Subresponses[0])
 	var tOut card.InsertOutput

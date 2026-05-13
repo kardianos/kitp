@@ -43,7 +43,9 @@ func setupAuthz(t *testing.T, schema string) (*api.Server, *store.Pool) {
 }
 
 // makeProjectAndTask uses the System User to insert a project (and a task
-// under it) we can probe in subsequent role-aware calls.
+// under it) we can probe in subsequent role-aware calls. A same-project
+// status card is also seeded and stamped on the task so Gate 6's
+// (task, status) required-edge check passes at insert time.
 func makeProjectAndTask(t *testing.T, srv *api.Server, title string) (projectID int64, taskID int64) {
 	t.Helper()
 	sysCtx := auth.WithSystemUser(context.Background())
@@ -59,8 +61,20 @@ func makeProjectAndTask(t *testing.T, srv *api.Server, title string) (projectID 
 	_ = json.Unmarshal(buf, &pOut)
 
 	resp = srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("status insert: %+v", resp.Subresponses[0])
+	}
+	var sOut card.InsertOutput
+	buf, _ = json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &sOut)
+
+	resp = srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"task1"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"task1","attributes":{"status":"%d"}}`,
+				pOut.ID, sOut.ID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("task insert: %+v", resp.Subresponses[0])

@@ -65,11 +65,12 @@ func TestSelectWithAttributes_Predicate(t *testing.T) {
 		statusIDs[name] = sOut.ID
 	}
 
+	taskStatusID := mkStatusUnder(t, srv, pOut.ID)
 	for i, status := range []string{"open", "closed", "open"} {
 		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: fmt.Sprintf("t%d", i), Endpoint: "card", Action: "insert", Data: json.RawMessage(
-				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"t%d","attributes":{"milestone_ref":%d}}`,
-					pOut.ID, i, statusIDs[status]))},
+				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"t%d","attributes":{"milestone_ref":%d,"status":"%d"}}`,
+					pOut.ID, i, statusIDs[status], taskStatusID))},
 		}})
 		if !resp.Subresponses[0].OK {
 			t.Fatalf("task insert %d: %+v", i, resp.Subresponses[0])
@@ -169,11 +170,12 @@ func TestSelectWithAttributes_AndPredicate(t *testing.T) {
 		_ = json.Unmarshal(b, &sOut)
 		statusIDs[name] = sOut.ID
 	}
+	taskStatusID := mkStatusUnder(t, srv, pOut.ID)
 	for i, s := range specs {
 		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: fmt.Sprintf("t%d", i), Endpoint: "card", Action: "insert", Data: json.RawMessage(
-				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"t%d","attributes":{"assignee":%d,"milestone_ref":%d}}`,
-					pOut.ID, i, s.assignee, statusIDs[s.status]))},
+				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"t%d","attributes":{"assignee":%d,"milestone_ref":%d,"status":"%d"}}`,
+					pOut.ID, i, s.assignee, statusIDs[s.status], taskStatusID))},
 		}})
 		if !resp.Subresponses[0].OK {
 			t.Fatalf("task insert %d: %+v err=%+v", i, resp.Subresponses[0], resp.Subresponses[0].Error)
@@ -235,10 +237,12 @@ func TestSelectWithAttributes_Order_Limit(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
+	sid := mkStatusUnder(t, srv, pOut.ID)
 	for _, t1 := range []string{"alpha", "gamma", "beta"} {
 		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: t1, Endpoint: "card", Action: "insert", Data: json.RawMessage(
-				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":%q}`, pOut.ID, t1))},
+				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":%q,"attributes":{"status":"%d"}}`,
+					pOut.ID, t1, sid))},
 		}})
 		if !resp.Subresponses[0].OK {
 			t.Fatalf("ins %s: %+v", t1, resp.Subresponses[0])
@@ -283,13 +287,15 @@ func TestSelectWithAttributes_OrderBySortOrder(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
+	sid := mkStatusUnder(t, srv, pOut.ID)
 	// Three tasks. We'll insert in id order then assign sort_order so the
 	// resulting ASC ordering reverses the insertion order.
 	taskIDs := make([]int64, 3)
 	for i := range taskIDs {
 		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: fmt.Sprintf("t%d", i), Endpoint: "card", Action: "insert", Data: json.RawMessage(
-				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"task%d"}`, pOut.ID, i))},
+				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"task%d","attributes":{"status":"%d"}}`,
+					pOut.ID, i, sid))},
 		}})
 		mustOK(t, resp.Subresponses[0])
 		var o card.InsertOutput
@@ -345,23 +351,36 @@ func BenchmarkGrid1000Cards(b *testing.B) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
-	// 1000 tasks × 4 attributes set on insert (title + assignee +
-	// description + sort_order). Phase 6 emits one card_create activity
+	// Status under the project so the bench tasks can satisfy the
+	// (task, status) required-edge check.
+	statusResp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
+	}})
+	if !statusResp.Subresponses[0].OK {
+		b.Fatalf("status: %+v", statusResp.Subresponses[0])
+	}
+	var sBenchOut card.InsertOutput
+	statusBuf, _ := json.Marshal(statusResp.Subresponses[0].Data)
+	_ = json.Unmarshal(statusBuf, &sBenchOut)
+
+	// 1000 tasks × 5 attributes set on insert (title + status + assignee
+	// + description + sort_order). Phase 6 emits one card_create activity
 	// + one attr_update per attribute, so each task already has those
 	// attributes by the time the LATERAL select runs. The LATERAL read
 	// shape doesn't care about column count.
 	//
-	// We deliberately steer clear of project-scoped card_refs
-	// (milestone_ref / component_ref / tags) here so the bench doesn't
-	// have to seed matching milestone / component cards just to satisfy
-	// the per-project reference-scope check.
+	// We deliberately steer clear of project-scoped card_refs other than
+	// status (milestone_ref / component_ref / tags) here so the bench
+	// doesn't have to seed matching milestone / component cards just to
+	// satisfy the per-project reference-scope check.
 	N := 1000
 	subs := make([]api.SubRequest, N)
 	for i := range subs {
 		data := fmt.Sprintf(
 			`{"card_type_name":"task","parent_card_id":"%d","title":"t%d","attributes":{`+
-				`"assignee":%d,"description":%q,"sort_order":%d}}`,
-			pOut.ID, i, int64(2+(i%5)), fmt.Sprintf("desc%d", i), i*100)
+				`"assignee":%d,"description":%q,"sort_order":%d,"status":"%d"}}`,
+			pOut.ID, i, int64(2+(i%5)), fmt.Sprintf("desc%d", i), i*100, sBenchOut.ID)
 		subs[i] = api.SubRequest{ID: fmt.Sprintf("t%d", i), Endpoint: "card", Action: "insert",
 			Data: json.RawMessage(data)}
 	}
@@ -420,9 +439,10 @@ func TestSelectWithAttributes_Bench(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
-	// Seed one status card so the bench tasks have a valid card_ref to
-	// point at. The LATERAL read shape doesn't depend on per-task variety;
-	// every task gets the same status.
+	// Seed one milestone (used by milestone_ref) and one status card so
+	// the bench tasks have valid card_refs to point at. The LATERAL read
+	// shape doesn't depend on per-task variety; every task gets the same
+	// status / milestone.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_type_name":"milestone","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
@@ -433,18 +453,17 @@ func TestSelectWithAttributes_Bench(t *testing.T) {
 	var sOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &sOut)
+	tStatus := mkStatusUnder(t, srv, pOut.ID)
 
-	// Insert 1000 tasks with 5 attributes each (title + status + assignee
-	// + description + sort_order). We avoid the project-scoped card_refs
-	// (milestone_ref / component_ref / tags) to keep the seed minimal —
-	// the LATERAL read shape doesn't care which attributes are set.
+	// Insert 1000 tasks with 6 attributes each (title + status + assignee
+	// + description + sort_order + milestone_ref).
 	N := 1000
 	subs := make([]api.SubRequest, N)
 	for i := range subs {
 		data := fmt.Sprintf(
 			`{"card_type_name":"task","parent_card_id":"%d","title":"t%d","attributes":{`+
-				`"milestone_ref":%d,"assignee":%d,"description":%q,"sort_order":%d}}`,
-			pOut.ID, i, sOut.ID, int64(2+(i%5)), fmt.Sprintf("desc%d", i), i*100)
+				`"milestone_ref":%d,"assignee":%d,"description":%q,"sort_order":%d,"status":"%d"}}`,
+			pOut.ID, i, sOut.ID, int64(2+(i%5)), fmt.Sprintf("desc%d", i), i*100, tStatus)
 		subs[i] = api.SubRequest{ID: fmt.Sprintf("t%d", i), Endpoint: "card", Action: "insert",
 			Data: json.RawMessage(data)}
 	}

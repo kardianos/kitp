@@ -29,13 +29,14 @@ func TestSearch(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
+	statusID := mkStatusUnder(t, srv, pOut.ID)
 	titles := []string{"Alpha task", "Beta task", "Gamma quest", "Delta task"}
 	taskIDs := make([]int64, 0, len(titles))
 	for i, title := range titles {
 		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: fmt.Sprintf("t%d", i), Endpoint: "card", Action: "insert", Data: json.RawMessage(
-				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":%q}`,
-					pOut.ID, title))},
+				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":%q,"attributes":{"status":"%d"}}`,
+					pOut.ID, title, statusID))},
 		}})
 		if !resp.Subresponses[0].OK {
 			t.Fatalf("task insert %d: %+v", i, resp.Subresponses[0])
@@ -134,9 +135,11 @@ func TestSearch(t *testing.T) {
 		var p2 card.InsertOutput
 		b, _ := json.Marshal(resp.Subresponses[0].Data)
 		_ = json.Unmarshal(b, &p2)
+		s2 := mkStatusUnder(t, srv, p2.ID)
 		resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: "tx", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"Other Alpha"}`, p2.ID))},
+				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"Other Alpha","attributes":{"status":"%d"}}`,
+					p2.ID, s2))},
 		}})
 		if !resp.Subresponses[0].OK {
 			t.Fatalf("other-project task insert: %+v", resp.Subresponses[0])

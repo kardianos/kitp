@@ -44,12 +44,14 @@ type scopeFixture struct {
 	mileA    int64
 	compA    int64
 	tagA     int64
+	statusA  int64 // status under projectA, used by taskA at insert time
 
 	projectB int64
 	taskB    int64
 	mileB    int64
 	compB    int64
 	tagB     int64
+	statusB  int64 // status under projectB, used by taskB at insert time
 
 	// personID is a global person card (no enclosing project), used to
 	// verify assignee writes still succeed across projects.
@@ -72,10 +74,15 @@ func makeProjectFixture(t *testing.T, srv *api.Server) scopeFixture {
 		raw(t, resp.Subresponses[0], &o)
 		return o.ID
 	}
-	mkChild := func(typeName, title string, parent int64) int64 {
+	mkChild := func(typeName, title string, parent int64, attrs ...string) int64 {
+		extra := ""
+		if len(attrs) == 1 && attrs[0] != "" {
+			extra = `,"attributes":` + attrs[0]
+		}
 		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: "c", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-				fmt.Sprintf(`{"card_type_name":%q,"parent_card_id":"%d","title":%q}`, typeName, parent, title))},
+				fmt.Sprintf(`{"card_type_name":%q,"parent_card_id":"%d","title":%q%s}`,
+					typeName, parent, title, extra))},
 		}})
 		if !resp.Subresponses[0].OK {
 			t.Fatalf("insert %s %q under %d: %+v", typeName, title, parent, resp.Subresponses[0])
@@ -112,13 +119,19 @@ func makeProjectFixture(t *testing.T, srv *api.Server) scopeFixture {
 
 	fx := scopeFixture{}
 	fx.projectA = mkProj("A")
-	fx.taskA = mkChild("task", "task A", fx.projectA)
+	// Status under each project — required for Gate 6's required-edge
+	// check on card.insert when the new card is a task.
+	fx.statusA = mkChild("status", "Todo-A", fx.projectA)
+	fx.taskA = mkChild("task", "task A", fx.projectA,
+		fmt.Sprintf(`{"status":"%d"}`, fx.statusA))
 	fx.mileA = mkChild("milestone", "M-A", fx.projectA)
 	fx.compA = mkChild("component", "C-A", fx.projectA)
 	fx.tagA = mkTag(fx.projectA, "tag-a/path")
 
 	fx.projectB = mkProj("B")
-	fx.taskB = mkChild("task", "task B", fx.projectB)
+	fx.statusB = mkChild("status", "Todo-B", fx.projectB)
+	fx.taskB = mkChild("task", "task B", fx.projectB,
+		fmt.Sprintf(`{"status":"%d"}`, fx.statusB))
 	fx.mileB = mkChild("milestone", "M-B", fx.projectB)
 	fx.compB = mkChild("component", "C-B", fx.projectB)
 	fx.tagB = mkTag(fx.projectB, "tag-b/path")
@@ -195,23 +208,26 @@ func TestProjectScope_CardInsert(t *testing.T) {
 
 	type row struct {
 		name     string
-		attrs    string // JSON object body
+		attrs    string // JSON object body — status is appended automatically below
 		wantCode string
 	}
 	rows := []row{
-		{"same-project milestone", fmt.Sprintf(`{"milestone_ref":"%d"}`, fx.mileA), ""},
-		{"same-project component", fmt.Sprintf(`{"component_ref":"%d"}`, fx.compA), ""},
-		{"same-project tags", fmt.Sprintf(`{"tags":["%d"]}`, fx.tagA), ""},
-		{"cross-project milestone", fmt.Sprintf(`{"milestone_ref":"%d"}`, fx.mileB), "cross_project_ref"},
-		{"cross-project component", fmt.Sprintf(`{"component_ref":"%d"}`, fx.compB), "cross_project_ref"},
-		{"cross-project tags", fmt.Sprintf(`{"tags":["%d","%d"]}`, fx.tagA, fx.tagB), "cross_project_ref"},
-		{"assignee unscoped", fmt.Sprintf(`{"assignee":"%d"}`, fx.personID), ""},
+		{"same-project milestone", fmt.Sprintf(`"milestone_ref":"%d"`, fx.mileA), ""},
+		{"same-project component", fmt.Sprintf(`"component_ref":"%d"`, fx.compA), ""},
+		{"same-project tags", fmt.Sprintf(`"tags":["%d"]`, fx.tagA), ""},
+		{"cross-project milestone", fmt.Sprintf(`"milestone_ref":"%d"`, fx.mileB), "cross_project_ref"},
+		{"cross-project component", fmt.Sprintf(`"component_ref":"%d"`, fx.compB), "cross_project_ref"},
+		{"cross-project tags", fmt.Sprintf(`"tags":["%d","%d"]`, fx.tagA, fx.tagB), "cross_project_ref"},
+		{"assignee unscoped", fmt.Sprintf(`"assignee":"%d"`, fx.personID), ""},
 	}
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
+			// Every task carries a same-project status so the
+			// required-edge check passes; the matrix tests exercise
+			// the OTHER attributes' scope rules in isolation.
 			body := fmt.Sprintf(
-				`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":%s}`,
-				fx.projectA, r.attrs)
+				`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{%s,"status":"%d"}}`,
+				fx.projectA, r.attrs, fx.statusA)
 			resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 				{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(body)},
 			}})
@@ -268,13 +284,15 @@ func TestProjectScope_TagApply(t *testing.T) {
 // required-edge rejection path with code 'edge_violation'. The check
 // fires regardless of whether the task currently has a status value
 // — it's a property of the edge, not of the attribute_value row.
+//
+// Gate 6 added a parallel enforcement at card.insert (required
+// attributes must be present), so the test now inserts with a status
+// to get past that boundary before exercising attribute.update's
+// removal-rejection path.
 func TestTaskStatusRequired_RejectsRemoval(t *testing.T) {
 	srv, _ := setupScope(t, "kitp_test_status_required")
 	ctx := auth.WithSystemUser(context.Background())
 
-	// Insert a project then a fresh task under it. Gate 2 does not
-	// enforce required-on-insert (that lands in Gate 6), so the
-	// task can be created without status here.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			`{"card_type_name":"project","title":"P"}`)},
@@ -282,10 +300,12 @@ func TestTaskStatusRequired_RejectsRemoval(t *testing.T) {
 	mustOK(t, resp.Subresponses[0])
 	var pOut card.InsertOutput
 	raw(t, resp.Subresponses[0], &pOut)
+	statusID := mkStatusUnder(t, srv, pOut.ID)
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
+				pOut.ID, statusID))},
 	}})
 	mustOK(t, resp.Subresponses[0])
 	var tOut card.InsertOutput

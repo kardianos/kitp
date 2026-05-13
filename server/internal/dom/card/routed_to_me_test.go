@@ -92,12 +92,14 @@ func seedRoutingFixture(t *testing.T, srv *api.Server, sp *store.Pool) (int64, i
 	var pOut card.InsertOutput
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
+	statusID := mkStatusUnder(t, srv, pOut.ID)
 
 	tasks := make([]int64, 3)
 	for i := range tasks {
 		resp := srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(fmt.Sprintf(
-				`{"card_type_name":"task","parent_card_id":"%d","title":"t%d"}`, pOut.ID, i))},
+				`{"card_type_name":"task","parent_card_id":"%d","title":"t%d","attributes":{"status":"%d"}}`,
+				pOut.ID, i, statusID))},
 		}})
 		if !resp.Subresponses[0].OK {
 			t.Fatalf("task: %+v", resp.Subresponses[0].Error)

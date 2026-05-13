@@ -111,6 +111,7 @@ async function runSubmit(
     cardTypeName: string;
     parentCardId?: bigint;
     prefill?: QuickEntrySubmitInput['prefill'];
+    defaultStatusCardId?: bigint;
   },
 ): Promise<void> {
   if (state.submitting) return;
@@ -125,6 +126,9 @@ async function runSubmit(
     };
     if (args.parentCardId !== undefined) submit.parentCardId = args.parentCardId;
     if (args.prefill !== undefined) submit.prefill = args.prefill;
+    if (args.defaultStatusCardId !== undefined) {
+      submit.defaultStatusCardId = args.defaultStatusCardId;
+    }
 
     const newId = await submitQuickEntry(dispatcher, submit);
     state.createdIds.push(newId);
@@ -532,5 +536,93 @@ describe('QuickEntryOverlay imports', () => {
   it('the use_quick_entry rune controller loads without throwing', async () => {
     const m = await import('../../src/quick_entry/use_quick_entry.svelte');
     expect(typeof m.useQuickEntry).toBe('function');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 7. defaultStatusCardId (Gate 6) — wires the resolver's output into the     */
+/*    card.insert attributes payload so the server's required-edge check      */
+/*    accepts the task on insert.                                             */
+/* -------------------------------------------------------------------------- */
+
+describe('QuickEntryOverlay: Gate 6 default-create-status', () => {
+  it('stamps defaultStatusCardId into card.insert attributes', async () => {
+    const dispatcher = makeDispatcher({ insertedId: 123n });
+    const state = freshState({ title: 'gated task' });
+
+    await runSubmit(state, dispatcher, {
+      closeAfter: false,
+      cardTypeName: 'task',
+      defaultStatusCardId: 55n,
+    });
+
+    expect(dispatcher.calls[0]).toMatchObject({
+      endpoint: 'card',
+      action: 'insert',
+      data: {
+        cardTypeName: 'task',
+        title: 'gated task',
+        attributes: { status: 55n },
+      },
+    });
+  });
+
+  it('omits status when defaultStatusCardId is undefined (non-task path or test fixtures)', async () => {
+    const dispatcher = makeDispatcher({ insertedId: 124n });
+    const state = freshState({ title: 'no-status' });
+
+    await runSubmit(state, dispatcher, {
+      closeAfter: false,
+      cardTypeName: 'task',
+    });
+
+    const insertCall = dispatcher.calls[0];
+    expect(insertCall).toMatchObject({
+      endpoint: 'card',
+      action: 'insert',
+      data: { cardTypeName: 'task', title: 'no-status' },
+    });
+    // No attributes object when nothing seeds it.
+    expect(
+      (insertCall!.data as { attributes?: Record<string, unknown> }).attributes,
+    ).toBeUndefined();
+  });
+
+  it('lets a kanban-prefill `status` lane override the resolved default', async () => {
+    // The kanban column "+" button pins `status` via prefill.laneAttribute.
+    // The resolver in QuickEntryOverlay sees the pin and short-circuits, so
+    // submission.ts wouldn't ordinarily receive a defaultStatusCardId. The
+    // test belt-and-braces the lower layer: even if a defaultStatusCardId
+    // slipped through, the prefill wins and the insert payload's status
+    // matches the user's explicit choice.
+    const dispatcher = makeDispatcher({ insertedId: 125n });
+    const state = freshState({ title: 'kanban-pin' });
+
+    await runSubmit(state, dispatcher, {
+      closeAfter: false,
+      cardTypeName: 'task',
+      // Caller threaded a default through, but the prefill pins status.
+      defaultStatusCardId: 11n,
+      prefill: {
+        laneAttribute: { name: 'status', value: 77n },
+      },
+    });
+
+    const insertCall = dispatcher.calls[0];
+    // Insert payload's `status` attribute is OMITTED — the
+    // attribute.update for the lane attribute lands status on the task
+    // in the same batch, mirroring the legacy kanban behaviour.
+    expect(
+      (insertCall!.data as { attributes?: Record<string, unknown> }).attributes,
+    ).toBeUndefined();
+    // The follow-up attribute.update IS in the batch.
+    const laneUpdate = dispatcher.calls.find(
+      (c) =>
+        c.endpoint === 'attribute' &&
+        c.action === 'update' &&
+        (c.data as { attributeName: string }).attributeName === 'status',
+    );
+    expect(laneUpdate).toBeDefined();
+    expect(laneUpdate!.data).toMatchObject({ value: 77n });
   });
 });

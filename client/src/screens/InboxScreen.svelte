@@ -281,10 +281,20 @@
   // the current user, and the overlay's combobox reads from a static prop
   // (it would not reactively re-render if `personNames` changed). Users who
   // need to retarget can do it from the task detail screen.
+  //
+  // Gate 6: statuses are threaded through as the candidate set for the
+  // default-create-status chain (no flow yet — that lands when the
+  // client gains a flow.list handler). The Inbox doesn't load its own
+  // screen card (ScreenFilterBar handles that internally), so the
+  // screen-level override is absent here; the chain falls through to
+  // first-triage / first-active. The getter form keeps the rune
+  // reactive: when statuses populate asynchronously the latest list
+  // is read at submit time, not at construction.
   const qe = useQuickEntry({
     scope: 'inbox',
     defaultCardType: 'task',
     prefill: { assigneeUserId: meId },
+    candidateStatuses: () => statuses,
     onCreated: () => {
       void refresh();
     },

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
@@ -31,6 +32,26 @@ func mustOK(t *testing.T, sr api.SubResponse) {
 	if !sr.OK {
 		t.Fatalf("sub %s failed: %+v", sr.ID, sr.Error)
 	}
+}
+
+// mkStatusUnder inserts one status card under projectID and returns its
+// id. Helper for Gate 6's required-attribute check on card.insert: any
+// task created under projectID needs a same-project status to pass
+// validation. Caller picks the phase ('triage' / 'active' / 'terminal')
+// based on what the test is exercising; default callers pass 'active'.
+func mkStatusUnder(t *testing.T, srv *api.Server, projectID int64) int64 {
+	t.Helper()
+	ctx := auth.WithSystemUser(context.Background())
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`,
+				projectID))},
+	}})
+	mustOK(t, resp.Subresponses[0])
+	var out card.InsertOutput
+	buf, _ := json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &out)
+	return out.ID
 }
 
 // idsOf decodes a card.insert sub-response payload back into []int64.
@@ -91,10 +112,12 @@ func TestCardLifecycle(t *testing.T) {
 		t.Fatalf("inserted project not in list: %+v (id=%d)", rows, projectID)
 	}
 
+	statusID := mkStatusUnder(t, srv, projectID)
 	resp2 := srv.Dispatch(ctx, api.BatchRequest{
 		Subrequests: []api.SubRequest{
 			{ID: "ins", Endpoint: "card", Action: "insert", Data: rawf(
-				`{"card_type_name":"task","parent_card_id":"%d","title":"Do thing"}`, projectID)},
+				`{"card_type_name":"task","parent_card_id":"%d","title":"Do thing","attributes":{"status":"%d"}}`,
+				projectID, statusID)},
 			{ID: "list", Endpoint: "card", Action: "select", Data: rawf(
 				`{"parent_card_id":"%d","card_type_name":"task"}`, projectID)},
 		},
@@ -124,7 +147,7 @@ func TestEdgeViolationRejected(t *testing.T) {
 	resp = srv.Dispatch(ctx, api.BatchRequest{
 		Subrequests: []api.SubRequest{
 			{ID: "tag", Endpoint: "card", Action: "insert", Data: rawf(
-				`{"card_type_name":"tag","parent_card_id":"%d","title":"priority/high"}`, pid)},
+				`{"card_type_name":"tag","parent_card_id":"%d","title":"priority/high","attributes":{"path":"priority/high"}}`, pid)},
 		},
 	})
 	tagID := idsOf(t, resp.Subresponses[0])
@@ -200,18 +223,92 @@ func TestTaskUnderTaskAllowed(t *testing.T) {
 			`{"card_type_name":"project","title":"P"}`)},
 	}})
 	pid := idsOf(t, resp.Subresponses[0])
+	sid := mkStatusUnder(t, srv, pid)
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: rawf(
-			`{"card_type_name":"task","parent_card_id":"%d","title":"parent task"}`, pid)},
+			`{"card_type_name":"task","parent_card_id":"%d","title":"parent task","attributes":{"status":"%d"}}`,
+			pid, sid)},
 	}})
 	tid := idsOf(t, resp.Subresponses[0])
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "sub", Endpoint: "card", Action: "insert", Data: rawf(
-			`{"card_type_name":"task","parent_card_id":"%d","title":"sub task"}`, tid)},
+			`{"card_type_name":"task","parent_card_id":"%d","title":"sub task","attributes":{"status":"%d"}}`,
+			tid, sid)},
 	}})
 	mustOK(t, resp.Subresponses[0])
+}
+
+// TestRequiredAttributeOnInsert is Gate 6's server-side boundary
+// check: card.insert rejects with edge_violation when a required
+// attribute is missing from the payload. Today (task, status) is the
+// only non-title required edge; the test inserts a task without
+// status and expects the rejection plus a message that names the
+// attribute so an operator can diagnose the failure.
+//
+// Symmetric check: a task WITH status passes, demonstrating that the
+// boundary doesn't over-reject when the caller threads the required
+// attribute through (the client's default-create-status chain).
+func TestRequiredAttributeOnInsert(t *testing.T) {
+	srv, _ := setup(t, "kitp_test_card_required_insert")
+	ctx := auth.WithSystemUser(context.Background())
+
+	// Project + status (under that project).
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			`{"card_type_name":"project","title":"P"}`)},
+	}})
+	pid := idsOf(t, resp.Subresponses[0])
+	sid := mkStatusUnder(t, srv, pid)
+
+	t.Run("missing required status rejects with edge_violation", func(t *testing.T) {
+		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "bad", Endpoint: "card", Action: "insert", Data: rawf(
+				`{"card_type_name":"task","parent_card_id":"%d","title":"no-status"}`, pid)},
+		}})
+		sr := resp.Subresponses[0]
+		if sr.OK {
+			t.Fatalf("expected edge_violation; got OK")
+		}
+		if sr.Error == nil || sr.Error.Code != "edge_violation" {
+			t.Fatalf("expected edge_violation; got %+v", sr.Error)
+		}
+		if !strings.Contains(sr.Error.Message, "status") {
+			t.Errorf("error message must name the missing attribute; got %q",
+				sr.Error.Message)
+		}
+		if !strings.Contains(sr.Error.Message, "required") {
+			t.Errorf("error message should mention 'required'; got %q",
+				sr.Error.Message)
+		}
+	})
+
+	t.Run("null required status rejects with edge_violation", func(t *testing.T) {
+		// Explicit null is equivalent to missing — the (task, status)
+		// edge is required so a null write at insert is not allowed.
+		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "bad_null", Endpoint: "card", Action: "insert", Data: rawf(
+				`{"card_type_name":"task","parent_card_id":"%d","title":"null-status","attributes":{"status":null}}`,
+				pid)},
+		}})
+		sr := resp.Subresponses[0]
+		if sr.OK {
+			t.Fatalf("expected edge_violation; got OK")
+		}
+		if sr.Error == nil || sr.Error.Code != "edge_violation" {
+			t.Fatalf("expected edge_violation; got %+v", sr.Error)
+		}
+	})
+
+	t.Run("required status present passes", func(t *testing.T) {
+		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "ok", Endpoint: "card", Action: "insert", Data: rawf(
+				`{"card_type_name":"task","parent_card_id":"%d","title":"with-status","attributes":{"status":"%d"}}`,
+				pid, sid)},
+		}})
+		mustOK(t, resp.Subresponses[0])
+	})
 }
 
 // rawf is a tiny json.RawMessage helper.

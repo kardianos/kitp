@@ -493,6 +493,18 @@ func insertTasks(ctx context.Context, tx pgx.Tx, projectID int64, plan commitPla
 	if len(plan.tasks) == 0 {
 		return 0, nil
 	}
+	// Gate 6: card.insert enforces required attributes (today
+	// (task, status)). The CSV import has no status column, so resolve
+	// the per-project default here using the same chain shape the
+	// client uses: first triage by sort_order, then first active by
+	// sort_order. If no candidate exists the project is mis-configured
+	// and we surface a clear error rather than letting card.insert
+	// reject every row.
+	statusID, err := pickDefaultStatusForProject(ctx, tx, projectID)
+	if err != nil {
+		return 0, err
+	}
+
 	ins := make([]any, 0, len(plan.tasks))
 	for _, tp := range plan.tasks {
 		attrs := map[string]json.RawMessage{}
@@ -529,6 +541,7 @@ func insertTasks(ctx context.Context, tx pgx.Tx, projectID int64, plan commitPla
 				attrs["assignee"] = json.RawMessage(strconv.FormatInt(id, 10))
 			}
 		}
+		attrs["status"] = json.RawMessage(strconv.FormatInt(statusID, 10))
 		ins = append(ins, card.InsertInput{
 			CardTypeName: "task",
 			ParentCardID: &projectID,
@@ -540,6 +553,45 @@ func insertTasks(ctx context.Context, tx pgx.Tx, projectID int64, plan commitPla
 		return 0, fmt.Errorf("insert tasks: %w", err)
 	}
 	return len(ins), nil
+}
+
+// pickDefaultStatusForProject finds the first status card under
+// projectID by phase priority (triage, then active), tie-broken by
+// sort_order ASC then id ASC. Returns an error suitable for surfacing
+// when the project has no usable status — the import surface receives
+// it as the structured 'flow_no_default' rejection that mirrors the
+// client-side chain's bottom-out.
+func pickDefaultStatusForProject(ctx context.Context, tx pgx.Tx, projectID int64) (int64, error) {
+	// sort_order lives in attribute_value as a jsonb number; cast via
+	// ::text::numeric so the ORDER BY treats it as a number. Status
+	// cards without a sort_order sink to the back via the 2^31 default.
+	const q = `
+		SELECT c.id
+		FROM card c
+		JOIN card_type ct ON ct.id = c.card_type_id
+		LEFT JOIN attribute_value av ON av.card_id = c.id
+		     AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name='sort_order')
+		WHERE ct.name = 'status'
+		  AND c.parent_card_id = $1
+		  AND c.deleted_at IS NULL
+		  AND c.phase IN ('triage', 'active')
+		ORDER BY
+			CASE c.phase WHEN 'triage' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
+			COALESCE(av.value::text::numeric, 2147483647::numeric),
+			c.id
+		LIMIT 1
+	`
+	var id int64
+	if err := tx.QueryRow(ctx, q, projectID).Scan(&id); err != nil {
+		if err == pgx.ErrNoRows {
+			return 0, &reg.HandlerError{Code: "flow_no_default",
+				Message: fmt.Sprintf(
+					"project.import: project %d has no usable starting status; add a status (phase=triage or active) before importing tasks",
+					projectID)}
+		}
+		return 0, fmt.Errorf("pickDefaultStatusForProject: %w", err)
+	}
+	return id, nil
 }
 
 // callCardInsert is the typed wrapper around reg.Lookup("card",

@@ -6,6 +6,7 @@
 package card
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,16 @@ import (
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
 )
+
+// isJSONNull reports whether raw is a JSON null literal (or empty).
+// Mirrors attribute.isJSONNull; copied here to keep the card package
+// free of a cyclic dep on attribute for one helper.
+func isJSONNull(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
 
 // InsertInput is the wire shape for one row of card.insert. ParentCardID
 // is nil for top-level cards (projects).
@@ -242,6 +253,48 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 					AttributeDefID: ad.ID,
 					Value:          val,
 				})
+			}
+
+			// Gate 6: enforce required-attribute presence at the
+			// card.insert boundary. Every edge with is_required=TRUE
+			// for this card_type must have a non-null value in the
+			// payload. Title is always written above (the handler
+			// rejects an empty Title earlier), so the loop only
+			// catches non-title required edges: today that's
+			// (task, status). Future card types with required edges
+			// pick this up automatically.
+			//
+			// This keeps card.insert honest about "the caller
+			// provides every required attribute": the client-side
+			// default-create-status chain resolves it, but if a
+			// future MCP / external caller bypasses the chain the
+			// task creation fails at the boundary with a clear
+			// error rather than landing a half-formed row.
+			presentByDef := map[int64]bool{}
+			for _, a := range initialAttrs {
+				if a.InputIndex != i {
+					continue
+				}
+				if isJSONNull(a.Value) {
+					continue
+				}
+				presentByDef[a.AttributeDefID] = true
+			}
+			for _, e := range snap.EdgesByCardTypeID[ct.ID] {
+				if !e.IsRequired {
+					continue
+				}
+				if presentByDef[e.AttributeDefID] {
+					continue
+				}
+				ad, ok := snap.AttrByID[e.AttributeDefID]
+				if !ok {
+					continue
+				}
+				return nil, &reg.HandlerError{InputIndex: i, Code: "edge_violation",
+					Message: fmt.Sprintf(
+						"card.insert: attribute %q is required on card_type %q",
+						ad.Name, in.CardTypeName)}
 			}
 		}
 

@@ -753,6 +753,12 @@
   // hint — the rapid-fire-create flow doesn't need them to refresh per
   // submission (the focused column is sticky between presses) and the
   // overlay re-fetches on `onCreated`.
+  //
+  // Gate 6: candidateStatuses uses the getter form so the resolved
+  // default-create-status reads the latest async-loaded list at submit
+  // time. The kanban column "+" path pins status via prefill so the
+  // resolver is skipped — but `n`-key creates from arbitrary focus
+  // still need the chain.
   // svelte-ignore state_referenced_locally
   const qe = useQuickEntry({
     scope: 'kanban',
@@ -766,6 +772,7 @@
         label: typeof t === 'string' && t.length > 0 ? t : `#${p.id}`,
       };
     }),
+    candidateStatuses: () => statuses,
     onCreated: () => {
       void refresh();
     },

@@ -24,10 +24,12 @@ func TestDeleteUndelete(t *testing.T) {
 	var pOut card.InsertOutput
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
+	sid := mkStatusUnder(t, srv, pOut.ID)
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
+				pOut.ID, sid))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -86,8 +88,10 @@ func TestDeleteUndelete(t *testing.T) {
 	for _, r := range aOut.Rows {
 		kinds = append(kinds, r.Kind)
 	}
-	// Expect: card_create, attr_update (title), card_delete, card_undelete.
-	wantKinds := []string{"card_create", "attr_update", "card_delete", "card_undelete"}
+	// Expect: card_create, attr_update (title), attr_update (status),
+	// card_delete, card_undelete. The status row joined the lifecycle
+	// when Gate 6 made required attributes a card.insert-time concern.
+	wantKinds := []string{"card_create", "attr_update", "attr_update", "card_delete", "card_undelete"}
 	if len(kinds) != len(wantKinds) {
 		t.Fatalf("activity kinds: %v want %v", kinds, wantKinds)
 	}
@@ -110,10 +114,12 @@ func TestMoveValidatesParentType(t *testing.T) {
 	var pOut card.InsertOutput
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
+	sid := mkStatusUnder(t, srv, pOut.ID)
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
+				pOut.ID, sid))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -142,7 +148,8 @@ func TestMoveValidatesParentType(t *testing.T) {
 	// Move task under a different sub-task (allow_self_parent on task) is allowed.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t2", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T2"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T2","attributes":{"status":"%d"}}`,
+				pOut.ID, sid))},
 	}})
 	var t2Out card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)

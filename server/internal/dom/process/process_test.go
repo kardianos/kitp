@@ -52,9 +52,23 @@ func TestUpdateWithCommentProcess(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
+	// Status under the project so task inserts can satisfy Gate 6's
+	// (task, status) required-edge check.
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("status: %+v", resp.Subresponses[0])
+	}
+	var sOut card.InsertOutput
+	buf, _ = json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &sOut)
+
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
+				pOut.ID, sOut.ID))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -72,7 +86,8 @@ func TestUpdateWithCommentProcess(t *testing.T) {
 	}
 
 	// Activity should now contain: card_create, attr_update title (from
-	// insert), attr_update description, comment.
+	// insert), attr_update status (Gate 6: status required on insert),
+	// attr_update description, comment.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "a", Endpoint: "activity", Action: "select", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_id":"%d"}`, tOut.ID))},
@@ -81,7 +96,7 @@ func TestUpdateWithCommentProcess(t *testing.T) {
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &aOut)
 
-	wantKinds := []string{"card_create", "attr_update", "attr_update", "comment"}
+	wantKinds := []string{"card_create", "attr_update", "attr_update", "attr_update", "comment"}
 	if len(aOut.Rows) != len(wantKinds) {
 		t.Fatalf("activity rows: %d want %d: %+v", len(aOut.Rows), len(wantKinds), aOut.Rows)
 	}
@@ -126,8 +141,16 @@ func TestProcessRollback(t *testing.T) {
 
 	// Pre-create a task so we have a valid card_id for the attribute.update steps.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
+	}})
+	var sOut card.InsertOutput
+	buf, _ = json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &sOut)
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
+				pOut.ID, sOut.ID))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -169,7 +192,7 @@ func TestAuthDeny(t *testing.T) {
 	ctx := auth.WithSystemUser(context.Background())
 	pgxPool := srv.Pool.P
 
-	// Project + task.
+	// Project + status + task.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			`{"card_type_name":"project","title":"P"}`)},
@@ -178,8 +201,16 @@ func TestAuthDeny(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
+	}})
+	var sOut card.InsertOutput
+	buf, _ = json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &sOut)
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
+				pOut.ID, sOut.ID))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)

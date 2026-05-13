@@ -74,7 +74,9 @@ func newAgent(t *testing.T, sp *store.Pool, name string, parent int64) int64 {
 
 // newProjectAndTask seeds a project + one task under it, returning
 // (projectID, taskID). Helper that side-steps card.insert authz by
-// going through the system context.
+// going through the system context. A same-project status card is
+// also seeded and stamped on the task so the Gate 6 (task, status)
+// required-edge check passes at insert time.
 func newProjectAndTask(t *testing.T, sp *store.Pool, title string) (int64, int64) {
 	t.Helper()
 	ctx := auth.WithSystemUser(context.Background())
@@ -86,7 +88,15 @@ func newProjectAndTask(t *testing.T, sp *store.Pool, title string) (int64, int64
 	buf, _ := json.Marshal(resp.Data)
 	_ = json.Unmarshal(buf, &pOut)
 	resp = apiInsert(t, sp, ctx, fmt.Sprintf(
-		`{"card_type_name":"task","parent_card_id":"%d","title":"%s-task"}`, pOut.ID, title))
+		`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))
+	var sOut struct {
+		ID int64 `json:"id,string"`
+	}
+	buf, _ = json.Marshal(resp.Data)
+	_ = json.Unmarshal(buf, &sOut)
+	resp = apiInsert(t, sp, ctx, fmt.Sprintf(
+		`{"card_type_name":"task","parent_card_id":"%d","title":"%s-task","attributes":{"status":"%d"}}`,
+		pOut.ID, title, sOut.ID))
 	var tOut struct {
 		ID int64 `json:"id,string"`
 	}

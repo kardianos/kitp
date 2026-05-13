@@ -89,6 +89,7 @@ func seedSimpleProject(t *testing.T, srv *api.Server) simpleSeed {
 	pid := insert("p", `{"card_type_name":"project","title":"Demo Project"}`)
 	mid := insert("m", fmt.Sprintf(`{"card_type_name":"milestone","parent_card_id":"%d","title":"M1"}`, pid))
 	cid := insert("c", fmt.Sprintf(`{"card_type_name":"component","parent_card_id":"%d","title":"Frontend"}`, pid))
+	sid := insert("s", fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pid))
 	tagID := insert("tg", fmt.Sprintf(
 		`{"card_type_name":"tag","parent_card_id":"%d","title":"priority/high","attributes":{"path":"priority/high"}}`, pid))
 
@@ -100,9 +101,10 @@ func seedSimpleProject(t *testing.T, srv *api.Server) simpleSeed {
 		"attributes":{
 			"assignee":"1",
 			"milestone_ref":"%d","component_ref":"%d","tags":["%d"],
+			"status":"%d",
 			"description":"Replace ad-hoc pickers","sort_order":100
 		}
-	}`, pid, mid, cid, tagID))
+	}`, pid, mid, cid, tagID, sid))
 
 	// One comment.
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{

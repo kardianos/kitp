@@ -176,9 +176,27 @@ func TestInsertAndBindLifecycle(t *testing.T) {
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
+	// Status insert as the System User: admin's seed role_grant set
+	// doesn't include `status` (a known wart tracked in MEMORY's
+	// "New card_types need admin grants" note), so we bypass via the
+	// system actor — the test is exercising attributedef + edge
+	// behaviour, not status authz.
+	sysCtx := auth.WithSystemUser(context.Background())
+	resp = srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("status insert: %+v err=%+v", resp.Subresponses[0], resp.Subresponses[0].Error)
+	}
+	var sOut card.InsertOutput
+	buf, _ = json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &sOut)
+
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T"}`, pOut.ID))},
+			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
+				pOut.ID, sOut.ID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("task insert: %+v", resp.Subresponses[0])

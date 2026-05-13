@@ -681,9 +681,13 @@
 
   /* ------------------------------------------------------------- shortcuts */
 
+  // Gate 6: thread statusRows (the loaded status candidate set) into
+  // the QuickEntry rune as a getter so the default-create-status chain
+  // sees the latest list at submit time.
   const qe = useQuickEntry({
     scope: 'grid',
     defaultCardType: 'task',
+    candidateStatuses: () => statusRows,
     onCreated: () => {
       void refresh();
     },

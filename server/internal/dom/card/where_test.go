@@ -66,10 +66,15 @@ func seedTasks(t *testing.T, srv *api.Server, specs []map[string]any) (int64, []
 		byName[v] = mOut.ID
 	}
 
+	// Gate 6: every task needs a status (required edge). Seed a single
+	// status card under the project and stamp it on every task that
+	// doesn't already have one in its spec.
+	taskStatusID := mkStatusUnder(t, srv, pOut.ID)
+
 	ids := make([]int64, len(specs))
 	for i, s := range specs {
 		// Substitute string milestone_ref values with their freshly-minted ids.
-		patched := make(map[string]any, len(s))
+		patched := make(map[string]any, len(s)+1)
 		for k, v := range s {
 			if k == "milestone_ref" {
 				if sv, ok := v.(string); ok {
@@ -78,6 +83,9 @@ func seedTasks(t *testing.T, srv *api.Server, specs []map[string]any) (int64, []
 				}
 			}
 			patched[k] = v
+		}
+		if _, hasStatus := patched["status"]; !hasStatus {
+			patched["status"] = taskStatusID
 		}
 		attrs, _ := json.Marshal(patched)
 		body := fmt.Sprintf(
