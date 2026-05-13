@@ -9,13 +9,15 @@
 // are stamped into each new project via project.stamp (Gate 11).
 //
 // Endpoints:
-//   - flow.set            — upsert one flow row
-//   - flow.delete         — delete one flow row (cascades flow_step rows)
-//   - flow.list           — list flows, optionally filtered by project / attribute_def
-//   - flow.preview_delete — dry-run delete preview (V16 spec shape)
-//   - flow_step.set       — upsert one flow_step row
-//   - flow_step.delete    — delete one flow_step row
-//   - flow_step.list      — list flow_step rows for a flow
+//   - flow.set                  — upsert one flow row
+//   - flow.delete               — delete one flow row (cascades flow_step rows)
+//   - flow.list                 — list flows, optionally filtered by project / attribute_def
+//   - flow.preview_delete       — dry-run delete preview (V16 spec shape)
+//   - flow_step.set             — upsert one flow_step row
+//   - flow_step.delete          — delete one flow_step row
+//   - flow_step.list            — list flow_step rows for a flow
+//   - flow_step.list_for_card   — list available transitions for a given card
+//                                  (read-side affordance API; gate 4 of FLOW_AND_SCREEN_KERNEL)
 //
 // Authz: every write handler is admin-only via a global-admin guard on
 // the same shape used by attributedef / rolemapping (load the actor's
@@ -176,6 +178,44 @@ type StepListOutput struct {
 	Rows []StepListRow `json:"rows" mcp:"desc=flow_step rows for this flow, in sort_order then label"`
 }
 
+// ---- flow_step.list_for_card ----
+
+// ListForCardInput identifies the card whose available transitions we want
+// (Gate 4 of FLOW_AND_SCREEN_KERNEL.md). The handler returns every
+// flow_step whose from_card_id matches one of the card's current
+// attribute values on a flow-bound attribute, stamped with phase /
+// labels / allowed so the client renders without re-querying.
+type ListForCardInput struct {
+	CardID int64 `json:"card_id,string" mcp:"required,desc=id of the card to find available transitions for"`
+}
+
+// AvailableTransition is one flow_step the caller may attempt to fire,
+// pre-joined with the from/to value-card metadata (title + phase),
+// optional requires_role name, and the per-actor allowed bit.
+type AvailableTransition struct {
+	ID               int64  `json:"id,string" mcp:"desc=flow_step id"`
+	FlowID           int64  `json:"flow_id,string" mcp:"desc=parent flow id"`
+	FlowName         string `json:"flow_name" mcp:"desc=parent flow name"`
+	AttributeDefID   int64  `json:"attribute_def_id,string" mcp:"desc=attribute_def the flow is bound to"`
+	AttributeDefName string `json:"attribute_def_name" mcp:"desc=attribute_def name (e.g. status)"`
+	FromCardID       int64  `json:"from_card_id,string" mcp:"desc=value-card the transition starts from"`
+	FromLabel        string `json:"from_label" mcp:"desc=title of the from value-card"`
+	FromPhase        string `json:"from_phase" mcp:"desc=phase of the from value-card (triage|active|terminal)"`
+	ToCardID         int64  `json:"to_card_id,string" mcp:"desc=value-card the transition lands on"`
+	ToLabel          string `json:"to_label" mcp:"desc=title of the to value-card"`
+	ToPhase          string `json:"to_phase" mcp:"desc=phase of the to value-card (triage|active|terminal)"`
+	Label            string `json:"label" mcp:"desc=transition button label"`
+	RequiresRoleID   int64  `json:"requires_role_id,string,omitempty" mcp:"desc=role id required to fire this transition; 0 = any authenticated"`
+	RequiresRoleName string `json:"requires_role_name,omitempty" mcp:"desc=role name required, empty when no role gate"`
+	SortOrder        int32  `json:"sort_order" mcp:"desc=display order within UI bucket"`
+	Allowed          bool   `json:"allowed" mcp:"desc=true if the calling actor's roles satisfy requires_role_id (or it's NULL)"`
+}
+
+// ListForCardOutput wraps the rows in a stable envelope.
+type ListForCardOutput struct {
+	Rows []AvailableTransition `json:"rows" mcp:"desc=available transitions, ordered by attribute_def_name, sort_order, label"`
+}
+
 // ---- Register + authz ----
 
 // authzPool is the package-level pool used by the admin gate. Set by
@@ -252,6 +292,15 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[StepListOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
 		Run:          runStepList(p),
+	})
+	reg.Register(reg.Handler{
+		Endpoint:     "flow_step",
+		Action:       "list_for_card",
+		Doc:          "Read-side affordance API: return every flow_step the given card may currently fire — one row per (flow, attribute_def, from_card_id=card's value) match — pre-joined with from/to titles + phases, optional requires_role name, and a per-actor allowed bit. Gate 5's attribute.update rejection envelope reuses the same query.",
+		InputType:    reflect.TypeFor[ListForCardInput](),
+		OutputType:   reflect.TypeFor[ListForCardOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		Run:          runStepListForCard(p),
 	})
 }
 
@@ -846,4 +895,192 @@ func runStepList(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) 
 		}
 		return outs, nil
 	}
+}
+
+// ---- flow_step.list_for_card ----
+
+// runStepListForCard is the Gate-4 read-side handler. Per input card, it
+// resolves the enclosing project, then defers to listAvailableTransitions
+// — the same helper Gate 5's attribute.update rejection envelope calls
+// to populate `available[]` on a flow_disallowed reject. One query, two
+// call sites.
+func runStepListForCard(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		actorID := auth.ActorOrSystem(ctx)
+		outs := make([]any, len(ins))
+		for i, raw := range ins {
+			in := raw.(ListForCardInput)
+			if in.CardID == 0 {
+				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+					Message: "flow_step.list_for_card: card_id is required"}
+			}
+			projectID, err := projectIDForCard(ctx, tx, in.CardID)
+			if err != nil {
+				return nil, fmt.Errorf("flow_step.list_for_card: resolve project: %w", err)
+			}
+			// projectID == 0 ⇒ no enclosing project (orphan or root). No
+			// flows can apply, so we shortcut to an empty result rather
+			// than running the join.
+			rows, err := listAvailableTransitions(ctx, tx, actorID, in.CardID, projectID)
+			if err != nil {
+				return nil, fmt.Errorf("flow_step.list_for_card: %w", err)
+			}
+			outs[i] = ListForCardOutput{Rows: rows}
+		}
+		if p != nil {
+			p.NoteRead()
+		}
+		return outs, nil
+	}
+}
+
+// projectIDForCard walks the parent_card_id chain from cardID upward
+// and returns the id of the first ancestor (including cardID itself)
+// whose card_type is 'project'. Returns 0 if none is found — the
+// caller treats that as "no enclosing project", which means no
+// project-scoped flows can apply.
+//
+// Recursive CTE so the round trip is one query regardless of nesting
+// depth. Cards have ON DELETE CASCADE on parent_card_id so the chain
+// is always intact for live rows.
+func projectIDForCard(ctx context.Context, tx pgx.Tx, cardID int64) (int64, error) {
+	var pid int64
+	row := tx.QueryRow(ctx, `
+		WITH RECURSIVE chain AS (
+			SELECT id, parent_card_id, card_type_id
+			FROM card WHERE id = $1
+			UNION ALL
+			SELECT c.id, c.parent_card_id, c.card_type_id
+			FROM card c
+			JOIN chain ch ON ch.parent_card_id = c.id
+		)
+		SELECT chain.id
+		FROM chain
+		JOIN card_type ct ON ct.id = chain.card_type_id
+		WHERE ct.name = 'project'
+		LIMIT 1
+	`, cardID)
+	if err := row.Scan(&pid); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return pid, nil
+}
+
+// listAvailableTransitions is the shared core query. Given a card,
+// the actor firing the request, and the enclosing project (the
+// caller can pre-resolve it via projectIDForCard or pass 0 to mean
+// "no project scope, return empty"), it returns every flow_step the
+// card may currently attempt to traverse — one row per
+// (flow, attribute_def, from_card_id) match — pre-joined with the
+// from/to value-card title and phase, the optional required role
+// name, and a per-actor `allowed` bit.
+//
+// Match shape: for each flow whose scope_card_id is this project, the
+// card must have an attribute_value on the flow's attribute_def whose
+// JSON value equals one of the flow_step.from_card_id values. The
+// (av.value)::text::bigint cast matches the canonical form
+// (jsonb_typeof = 'number') the attribute writer canonicalises to —
+// same idiom flow.preview_delete uses.
+//
+// `allowed` is true when requires_role_id IS NULL, OR the actor holds
+// the seeded `system` role globally (mirrors the dispatcher gate's
+// system bypass — F-ROLE auth model), OR the actor holds that role
+// via a user_role row that is either global (scope_card_id IS NULL)
+// or scoped to this project.
+//
+// Gate 5's attribute.update rejection envelope calls this same helper
+// (with the same args) to populate the `available[]` field on a
+// flow_disallowed reject. The shape must therefore stay stable —
+// AvailableTransition is the wire contract for both endpoints and the
+// rejection payload.
+func listAvailableTransitions(ctx context.Context, tx pgx.Tx, actorID, cardID, projectID int64) ([]AvailableTransition, error) {
+	if projectID == 0 {
+		return nil, nil
+	}
+	const q = `
+		WITH actor_roles AS (
+			SELECT role_id, scope_card_id FROM user_role WHERE user_id = $1
+		),
+		actor_has_system AS (
+			SELECT EXISTS (
+				SELECT 1 FROM actor_roles ar
+				JOIN role r ON r.id = ar.role_id
+				WHERE r.name = 'system' AND ar.scope_card_id IS NULL
+			) AS yes
+		)
+		SELECT
+			fs.id,
+			fs.flow_id, f.name AS flow_name,
+			f.attribute_def_id, ad.name AS attribute_def_name,
+			fs.from_card_id,
+			COALESCE(av_from_title.value #>> '{}', '')  AS from_label,
+			fc.phase AS from_phase,
+			fs.to_card_id,
+			COALESCE(av_to_title.value   #>> '{}', '')  AS to_label,
+			tc.phase AS to_phase,
+			fs.label,
+			COALESCE(fs.requires_role_id, 0) AS requires_role_id,
+			COALESCE(r.name, '')             AS requires_role_name,
+			fs.sort_order,
+			(
+				fs.requires_role_id IS NULL
+				OR (SELECT yes FROM actor_has_system)
+				OR EXISTS (
+					SELECT 1 FROM actor_roles ar
+					WHERE ar.role_id = fs.requires_role_id
+					  AND (ar.scope_card_id IS NULL OR ar.scope_card_id = $3)
+				)
+			) AS allowed
+		FROM flow f
+		JOIN attribute_def ad ON ad.id = f.attribute_def_id
+		JOIN attribute_value av
+		  ON av.card_id = $2
+		 AND av.attribute_def_id = f.attribute_def_id
+		 AND jsonb_typeof(av.value) = 'number'
+		JOIN flow_step fs
+		  ON fs.flow_id = f.id
+		 AND fs.from_card_id = (av.value)::text::bigint
+		JOIN card fc ON fc.id = fs.from_card_id AND fc.deleted_at IS NULL
+		JOIN card tc ON tc.id = fs.to_card_id   AND tc.deleted_at IS NULL
+		LEFT JOIN role r ON r.id = fs.requires_role_id
+		LEFT JOIN attribute_def ad_title ON ad_title.name = 'title'
+		LEFT JOIN attribute_value av_from_title
+		  ON av_from_title.card_id          = fs.from_card_id
+		 AND av_from_title.attribute_def_id = ad_title.id
+		LEFT JOIN attribute_value av_to_title
+		  ON av_to_title.card_id          = fs.to_card_id
+		 AND av_to_title.attribute_def_id = ad_title.id
+		WHERE f.scope_card_id = $3
+		ORDER BY ad.name, fs.sort_order, fs.label, fs.id
+	`
+	rows, err := tx.Query(ctx, q, actorID, cardID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AvailableTransition
+	for rows.Next() {
+		var r AvailableTransition
+		if err := rows.Scan(
+			&r.ID,
+			&r.FlowID, &r.FlowName,
+			&r.AttributeDefID, &r.AttributeDefName,
+			&r.FromCardID, &r.FromLabel, &r.FromPhase,
+			&r.ToCardID, &r.ToLabel, &r.ToPhase,
+			&r.Label,
+			&r.RequiresRoleID, &r.RequiresRoleName,
+			&r.SortOrder,
+			&r.Allowed,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
