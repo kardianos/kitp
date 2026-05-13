@@ -243,7 +243,6 @@ const agentCreate: HandlerSpec<AgentCreateInput, AgentCreateOutput> = {
     const j = asObj(raw);
     return {
       user_id: asId(j.user_id),
-      person_card_id: asId(j.person_card_id),
     };
   },
 };

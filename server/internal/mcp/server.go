@@ -12,6 +12,7 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -355,4 +356,32 @@ func (s *Server) write(resp jsonrpcResponse) {
 	defer s.mu.Unlock()
 	_, _ = s.out.Write(buf)
 	_, _ = s.out.Write([]byte{'\n'})
+}
+
+// HandleSingle processes one inbound JSON-RPC message and returns the
+// encoded response bytes (without trailing newline). Returns nil for
+// notifications (messages without an id). Used by the Streamable HTTP
+// transport — each POST body carries one message and the response body
+// carries the matching reply.
+//
+// A fresh Server is constructed per call so the per-instance write lock
+// never serialises concurrent HTTP requests; the underlying dispatcher
+// is goroutine-safe and is the only shared state.
+func (s *Server) HandleSingle(ctx context.Context, raw []byte) []byte {
+	var buf bytes.Buffer
+	fresh := &Server{dispatcher: s.dispatcher, out: &buf}
+	var req jsonrpcRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		fresh.writeError(nil, -32700, "parse error: "+err.Error(), nil)
+	} else {
+		fresh.handle(ctx, req)
+	}
+	out := buf.Bytes()
+	if len(out) > 0 && out[len(out)-1] == '\n' {
+		out = out[:len(out)-1]
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

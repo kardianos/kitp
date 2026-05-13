@@ -64,6 +64,7 @@ type SelectWithAttributesInput struct {
 	Offset           *int            `json:"offset,omitempty" mcp:"desc=optional row offset"`
 	IncludeDeleted   bool            `json:"include_deleted,omitempty" mcp:"desc=if true, include soft-deleted rows"`
 	WithPersonalSort bool            `json:"with_personal_sort,omitempty" mcp:"desc=when true, LEFT JOIN user_card_sort for the calling actor and expose personal_sort_order on each row; lets clients (e.g. Inbox) sort by the user's own ordering without a separate handler"`
+	RoutedToMe       bool            `json:"routed_to_me,omitempty" mcp:"desc=agent-perspective inbox filter: when true the result is restricted to cards whose user_card_agent row routes them to the calling agent (agent_user_id=actor AND user_id=actor.parent_user_id). Returns no rows when the caller is not an agent."`
 }
 
 // CardWithAttrs is one row of the LATERAL read.
@@ -169,6 +170,26 @@ func queryOne(ctx context.Context, tx pgx.Tx, in SelectWithAttributesInput, snap
 				ON ucs.user_id = %s::bigint AND ucs.card_id = c.id`, addArg(actorID))
 	}
 
+	// Agent-perspective inbox: INNER JOIN user_card_agent and gate on
+	// (agent_user_id=actor, user_id=actor.parent_user_id). The subquery
+	// for parent_user_id collapses to NULL when the actor is not an
+	// agent, which makes the join match nothing — so a non-agent caller
+	// that flips this flag harmlessly gets zero rows back instead of
+	// being forbidden. user_id=parent intentionally pins this to the
+	// routings the agent's owner created; cross-parent routing isn't
+	// modelled in v1.
+	routedJoin := ""
+	if in.RoutedToMe {
+		actorID := auth.ActorOrSystem(ctx)
+		actorParam := addArg(actorID)
+		routedJoin = fmt.Sprintf(`
+			JOIN user_card_agent uca
+				ON uca.card_id = c.id
+				AND uca.agent_user_id = %s::bigint
+				AND uca.user_id = (SELECT parent_user_id FROM user_account WHERE id = %s::bigint)`,
+			actorParam, actorParam)
+	}
+
 	// ORDER BY clause: translate each entry. For attributes.<name> we add a
 	// LATERAL JOIN that exposes the value as a sortable jsonb. For
 	// created_at and personal_sort_order we use the column directly.
@@ -229,7 +250,7 @@ func queryOne(ctx context.Context, tx pgx.Tx, in SelectWithAttributesInput, snap
 		       %s
 		FROM card c
 		JOIN card_type ct ON ct.id = c.card_type_id
-		%s%s
+		%s%s%s
 		LEFT JOIN LATERAL (
 			SELECT jsonb_object_agg(ad.name, av.value) AS values
 			FROM attribute_value av
@@ -238,7 +259,7 @@ func queryOne(ctx context.Context, tx pgx.Tx, in SelectWithAttributesInput, snap
 		) attrs ON TRUE
 		%s
 		%s%s%s
-	`, personalSortSelect, personalSortJoin, strings.Join(orderJoins, "\n"), whereSQL, orderSQL, limitSQL, offsetSQL)
+	`, personalSortSelect, personalSortJoin, routedJoin, strings.Join(orderJoins, "\n"), whereSQL, orderSQL, limitSQL, offsetSQL)
 
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {

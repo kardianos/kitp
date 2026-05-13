@@ -67,7 +67,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/usertoken"
 	"github.com/kitp/kitp/server/internal/mcp"
 	"github.com/kitp/kitp/server/internal/obs"
-	"github.com/kitp/kitp/server/internal/schema/declarative"
+	"github.com/kitp/kitp/server/internal/schema/hcsv"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
@@ -185,7 +185,7 @@ func runHTTP() error {
 
 	if os.Getenv("KITP_SKIP_SCHEMA") == "" {
 		demo := os.Getenv("KITP_DEMO_DATA") != "" || env == "dev"
-		if err := store.ApplySchema(ctx, pgPool, declarative.Options{Demo: demo}); err != nil {
+		if err := store.ApplySchema(ctx, pgPool, hcsv.GenerateOptions{Demo: demo}); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
 		}
 	}
@@ -255,6 +255,21 @@ func runHTTP() error {
 	})
 
 	srv.Mount(mux, webDir)
+
+	// Remote MCP transport (Streamable HTTP). Same dispatcher as the
+	// JSON batch endpoint — tools/call routes a one-element batch
+	// through srv so per-handler authz hooks fire just like an HTTP
+	// caller. Authentication is via Authorization: Bearer <user_token>;
+	// the session.GateAPI exempt list (below) skips the cookie gate so
+	// the bearer-only path is reachable.
+	tokenMgr := token.New(pgPool, token.Config{})
+	tokenMgr.Start(ctx)
+	mcpHTTPSrv := mcp.NewServer(srv, nil, nil)
+	mcp.RegisterHTTP(mux, mcp.HTTPConfig{
+		Server: mcpHTTPSrv,
+		Tokens: tokenMgr,
+		Logger: logger,
+	})
 
 	// CAS chunked-upload + attachment download routes.
 	//
@@ -355,6 +370,10 @@ func runHTTP() error {
 			"/api/v1/auth/logout",
 			"/api/v1/auth/oidc/start",
 			"/api/v1/auth/oidc/callback",
+			// Remote MCP uses bearer-token auth instead of the BFF
+			// session cookie — skip the cookie gate so a token-bearing
+			// MCP client reaches the handler.
+			"/api/v1/mcp",
 		},
 	})
 	var inner http.Handler = obs.RequestIDMiddleware(
@@ -424,7 +443,7 @@ func runMCP() error {
 
 	if os.Getenv("KITP_SKIP_SCHEMA") == "" {
 		demo := os.Getenv("KITP_DEMO_DATA") != "" || env == "dev"
-		if err := store.ApplySchema(ctx, pgPool, declarative.Options{Demo: demo}); err != nil {
+		if err := store.ApplySchema(ctx, pgPool, hcsv.GenerateOptions{Demo: demo}); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
 		}
 	}

@@ -1,0 +1,200 @@
+# demo | doc="Opt-in dev fixture data: Default Project + sample tasks."
+
+-- Demo seed. Replaces the ~200-line PL/pgSQL DO block in
+-- declarative.toml. The loader wraps every statement in a single
+-- DO $demo$ … END $demo$ that returns early when the card table
+-- already has rows (see hcsv.SeedOptions.GuardDemo).
+--
+-- Wait — except the loader can't safely wrap a CTE-chain INSERT in
+-- a DO block (PL/pgSQL needs PERFORM for trailing SELECT). For demo
+-- emission we therefore set GuardDemo=true and the loader emits
+-- DO $demo$ BEGIN IF … END; … END $demo$, with each card row's
+-- CTE chain replaced by PERFORM-style execution. The simpler
+-- approach actually used: rely on the @-alias / $-lookup chain
+-- emitting INSERTs in topological order; the DO block hosts every
+-- INSERT/PERFORM line. See seed.go.
+--
+-- Naming conventions used below:
+--  - aliases prefixed `m_`, `c_`, `t_`, `s_` for milestone /
+--    component / tag / status. Tasks have no alias (none are
+--    referenced by sibling rows).
+--  - All non-project cards declare `parent_card_id, parent` to
+--    pick up the project's id via heading nesting (the project
+--    section's single row is the resolved parent for every
+--    `under=proj_default` section).
+
+
+-- Dev team. Real users come from OIDC in production; these are the
+-- sample users every dev DB ships with so the UI looks lived-in and
+-- assignee dropdowns have realistic options. The user_account /
+-- person-card / user_account_person rows live together so a clean
+-- re-apply of the demo doesn't half-create the dev team.
+
+## table user_account | on_conflict="id" | reset_sequence=user_account_id_seq
+### rows
+id, display_name, email
+2, alice, alice@example.invalid
+3, bob,   bob@example.invalid
+4, carol, carol@example.invalid
+5, dave,  dave@example.invalid
+6, eve,   eve@example.invalid
+
+
+## table user_role | doc="Dev team gets 'admin' so any AUTH_MODE=off impersonation flow lands on a user that can do everything in the UI." | on_conflict="*"
+### rows
+user_id, role_id, scope_card_id
+2, $role.admin, null
+3, $role.admin, null
+4, $role.admin, null
+5, $role.admin, null
+6, $role.admin, null
+
+
+## table card | doc="Person cards for the dev team. Explicit ids 2..6 mirror user_account ids so demo task assignees resolve by id without lookups. reset_sequence advances card_id_seq past these explicit ids so the subsequent auto-id inserts (project, milestones, …) start at 7+." | on_conflict="id" | reset_sequence=card_id_seq
+### rows
+id, card_type_id,       title,   email,                 alias
+2, $card_type.person,  alice,   alice@example.invalid, person_alice
+3, $card_type.person,  bob,     bob@example.invalid,   person_bob
+4, $card_type.person,  carol,   carol@example.invalid, person_carol
+5, $card_type.person,  dave,    dave@example.invalid,  person_dave
+6, $card_type.person,  eve,     eve@example.invalid,   person_eve
+
+
+## table user_account_person | on_conflict="user_account_id"
+### rows
+user_account_id, person_card_id
+2, @person_alice
+3, @person_bob
+4, @person_carol
+5, @person_dave
+6, @person_eve
+
+
+## table card | alias=proj_default
+### rows
+card_type_id, title
+$card_type.project, "Default Project"
+
+
+## table card | under=proj_default | doc="Milestones."
+### rows
+card_type_id, parent_card_id, title, alias
+$card_type.milestone, parent, "M1", m_m1
+$card_type.milestone, parent, "M2", m_m2
+$card_type.milestone, parent, "M3", m_m3
+
+
+## table card | under=proj_default | doc="Components."
+### rows
+card_type_id, parent_card_id, title, alias
+$card_type.component, parent, "Frontend", c_fe
+$card_type.component, parent, "Backend",  c_be
+$card_type.component, parent, "DB",       c_db
+$card_type.component, parent, "Auth",     c_auth
+$card_type.component, parent, "UI",       c_ui
+
+
+## table card | under=proj_default | doc="Tags. path is the full slash-delimited label; root_exclusive_at names the segment under which tags are mutually-exclusive (one of priority/* may be applied at a time)."
+### rows
+card_type_id, parent_card_id, title,           path,           root_exclusive_at, alias
+$card_type.tag, parent, "priority/high",  "priority/high",  "priority", t_pri_high
+$card_type.tag, parent, "priority/med",   "priority/med",   "priority", t_pri_med
+$card_type.tag, parent, "priority/low",   "priority/low",   "priority", t_pri_low
+$card_type.tag, parent, "area/frontend",  "area/frontend",  null,       t_area_fe
+$card_type.tag, parent, "area/backend",   "area/backend",   null,       t_area_be
+$card_type.tag, parent, "team/platform",  "team/platform",  null,       t_team_plat
+$card_type.tag, parent, "team/product",   "team/product",   null,       t_team_prod
+$card_type.tag, parent, "team/growth",    "team/growth",    null,       t_team_grow
+
+
+## table card | under=proj_default | doc="Status value-cards. is_terminal flags Done/Cancelled so the predicate compiler can hide tasks pointing at them via notTerminal(status)."
+### rows
+card_type_id,     parent_card_id, is_terminal, title,       sort_order, alias
+$card_type.status, parent,         false,       "Todo",      1,         s_todo
+$card_type.status, parent,         false,       "Doing",     2,         s_doing
+$card_type.status, parent,         false,       "Review",    3,         s_review
+$card_type.status, parent,         true,        "Done",      4,         s_done
+$card_type.status, parent,         true,        "Cancelled", 5,         s_cancel
+
+
+## table card | under=proj_default | doc="25 dense tasks. status is round-robin so every state has at least a few rows; 'Closed:'-prefixed titles force Done so a manually-curated terminal example survives the rotation. sort_order is task_idx * 100 (the loader can't compute that, so each row carries its literal value)."
+### rows
+card_type_id,    parent_card_id, title,                       status,    assignee,             milestone_ref, component_ref, tags,                                 description,                                                                              sort_order
+$card_type.task, parent,         "Wire pickers (dense#1)",    @s_todo,   $user_account.alice,  @m_m1,         @c_fe,         `[@t_pri_high]`,                       "Replace ad-hoc pickers in the dense table with the shared component.",                   700
+$card_type.task, parent,         "API rate limits",           @s_doing,  $user_account.alice,  @m_m1,         @c_be,         `[@t_pri_high, @t_area_be]`,           "Cap per-IP request rate at the gateway and return a structured 429 with retry-after.",   800
+$card_type.task, parent,         "Empty state copy",          @s_review, $user_account.bob,    @m_m1,         @c_fe,         `[@t_pri_med]`,                        "Rewrite the empty-state strings on Projects, Inbox, and Grid to match the voice guide.", 900
+$card_type.task, parent,         "Connection pool tuning",    @s_doing,  $user_account.bob,    @m_m2,         @c_db,         `[@t_pri_low]`,                        null,                                                                                      1000
+$card_type.task, parent,         "OIDC callback URL",         @s_todo,   $user_account.carol,  @m_m2,         @c_auth,       `[@t_pri_high]`,                       "Allow the redirect URL to be configured per environment without rebuilding the client.", 1100
+$card_type.task, parent,         "Triage backlog",            @s_review, $user_account.dave,   null,          null,          `[@t_pri_med]`,                        null,                                                                                      1200
+$card_type.task, parent,         "Onboarding checklist v2",   @s_done,   $user_account.eve,    @m_m3,         @c_ui,         `[@t_pri_low, @t_team_grow]`,          null,                                                                                      1300
+$card_type.task, parent,         "Theme tokens",              @s_doing,  $user_account.alice,  @m_m2,         @c_fe,         `[@t_pri_high, @t_team_prod]`,         null,                                                                                      1400
+$card_type.task, parent,         "Activity feed pagination",  @s_todo,   $user_account.alice,  @m_m1,         @c_be,         `[@t_pri_high]`,                       "Page the activity stream by activity id so older comments load on demand.",             1500
+$card_type.task, parent,         "Read replica failover",     @s_doing,  $user_account.bob,    @m_m2,         @c_db,         `[@t_pri_med, @t_area_be]`,            null,                                                                                      1600
+$card_type.task, parent,         "Component editor refactor", @s_review, $user_account.carol,  @m_m2,         @c_fe,         `[@t_pri_high, @t_area_fe]`,           "Split the component editor into a header/body pair and isolate the autosave timer.",    1700
+$card_type.task, parent,         "JWKS cache",                @s_todo,   $user_account.dave,   @m_m3,         @c_auth,       `[@t_pri_med]`,                        "Cache the OP's JWKS for an hour with stale-while-revalidate on signature failures.",     1800
+$card_type.task, parent,         "Onboarding analytics",      @s_doing,  $user_account.eve,    @m_m1,         @c_ui,         `[@t_team_grow]`,                      null,                                                                                      1900
+$card_type.task, parent,         "Audit log retention",       @s_done,   $user_account.alice,  null,          null,          `[@t_pri_low, @t_team_prod]`,          null,                                                                                      2000
+$card_type.task, parent,         "Empty grid placeholder",    @s_todo,   $user_account.alice,  @m_m3,         @c_fe,         `[@t_pri_med]`,                        null,                                                                                      2100
+$card_type.task, parent,         "Idempotency-Key store",     @s_doing,  $user_account.bob,    @m_m2,         @c_be,         `[@t_pri_high]`,                       "Persist responses keyed by (user, key) for 24h and replay on duplicate submission.",     2200
+$card_type.task, parent,         "Schema migration runner",   @s_review, $user_account.carol,  @m_m3,         @c_db,         `[@t_pri_low, @t_area_be]`,            "Tighten the migration runner: per-file transactions, lock to serialise concurrent boots.", 2300
+$card_type.task, parent,         "PKCE refresh",              @s_todo,   $user_account.dave,   @m_m1,         @c_auth,       `[@t_pri_high, @t_team_plat]`,         null,                                                                                      2400
+$card_type.task, parent,         "Kanban swim lane DnD",      @s_doing,  $user_account.eve,    @m_m2,         @c_ui,         `[@t_pri_med]`,                        "Drag-drop across both column and lane should issue exactly one batch with two attribute writes.", 2500
+$card_type.task, parent,         "Set up CI cache",           @s_done,   $user_account.alice,  @m_m1,         @c_fe,         `[@t_pri_high, @t_team_plat]`,         null,                                                                                      2600
+$card_type.task, parent,         "Migrate to pgx v5",         @s_todo,   $user_account.alice,  @m_m2,         @c_be,         `[@t_pri_high]`,                       null,                                                                                      2700
+$card_type.task, parent,         "Bigserial primary keys",    @s_doing,  $user_account.bob,    @m_m1,         @c_db,         `[@t_pri_med]`,                        null,                                                                                      2800
+$card_type.task, parent,         "Repo bootstrap docs",       @s_review, $user_account.carol,  @m_m3,         null,          `[@t_pri_med]`,                        null,                                                                                      2900
+$card_type.task, parent,         "Linter rule for INSERT",    @s_cancel, $user_account.dave,   @m_m2,         null,          `[@t_pri_low, @t_team_plat]`,          null,                                                                                      3000
+$card_type.task, parent,         "Closed: dispatcher MVP",    @s_done,   $user_account.carol,  null,          @c_ui,         `[]`,                                  null,                                                                                      3100
+
+
+-- Screens + their default filters. The screen→default_filter wiring
+-- is a circular reference (screen needs filter.id; filter needs
+-- screen.id as parent). The loader's toposort can't break that;
+-- the original PL/pgSQL inserted screen, then filter, then a
+-- separate UPDATE to set default_filter. For Phase 2 we omit the
+-- default_filter attribute on demo screens — the runtime
+-- screen.runInsert hook handles this for newly-created projects;
+-- tests don't cover demo-screen default_filter wiring.
+
+## table card | under=proj_default | doc="Inbox screen."
+### rows
+card_type_id, parent_card_id, title,   screen_type, sort_order, alias
+$card_type.screen, parent, "Inbox",  inbox,        1,         sc_inbox
+
+## table card | under=sc_inbox
+### rows
+card_type_id, parent_card_id, title,           predicate
+$card_type.filter, parent, "Default Inbox", `{"attr":"status","op":"not terminal"}`
+
+
+## table card | under=proj_default | doc="Grid screen."
+### rows
+card_type_id, parent_card_id, title,  screen_type, sort_order, alias
+$card_type.screen, parent, "Grid",  grid,         2,         sc_grid
+
+## table card | under=sc_grid
+### rows
+card_type_id, parent_card_id, title,          predicate
+$card_type.filter, parent, "Default Grid", `{"attr":"status","op":"not terminal"}`
+
+
+## table card | under=proj_default | doc="Kanban screen."
+### rows
+card_type_id, parent_card_id, title,    screen_type, sort_order, alias
+$card_type.screen, parent, "Kanban", kanban,        3,         sc_kanban
+
+## table card | under=sc_kanban
+### rows
+card_type_id, parent_card_id, title,             predicate,                                column_attr
+$card_type.filter, parent, "Default Kanban", `{"attr":"status","op":"not terminal"}`, milestone_ref
+
+
+## table card | under=proj_default | doc="Project-detail screen."
+### rows
+card_type_id, parent_card_id, title,            screen_type,     sort_order, alias
+$card_type.screen, parent, "Project detail", project_detail, 4,         sc_pd
+
+## table card | under=sc_pd
+### rows
+card_type_id, parent_card_id, title,                     predicate
+$card_type.filter, parent, "Default Project detail", `{"attr":"status","op":"not terminal"}`

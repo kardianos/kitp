@@ -101,10 +101,12 @@
   const mintToken = bag.bind(userTokenCreate, 'admin_agents.token.create', (r) => {
     if (r.ok && selectedId !== null) {
       pendingMint = { agentId: selectedId, label: r.data.label, token: r.data.token };
-      // Reset the input + reload that agent's token list.
-      const key = String(selectedId);
-      mintLabelByAgent[key] = '';
-      mintLabelByAgent = { ...mintLabelByAgent };
+      // Reset the input + reload that agent's token list. Property
+      // writes on $state objects are reactive on their own — do NOT
+      // do `mintLabelByAgent = { ...mintLabelByAgent }`, that read +
+      // write pair re-fires any $effect that calls this code path
+      // and produces a depth-exceeded loop.
+      mintLabelByAgent[String(selectedId)] = '';
       loadTokensFor(selectedId);
     }
   });
@@ -129,9 +131,7 @@
     if (r.ok && selectedId !== null) {
       const key = String(selectedId);
       tokensByAgent[key] = r.data.rows;
-      tokensByAgent = { ...tokensByAgent };
       tokensLoading[key] = false;
-      tokensLoading = { ...tokensLoading };
     }
   });
 
@@ -155,8 +155,10 @@
   function loadTokensFor(id: ID): void {
     const key = String(id);
     tokenLoadFor.set(key, id);
+    // Property write only — see comment in mintToken handler about
+    // why a `tokensLoading = { ...tokensLoading }` reassignment here
+    // causes effect_update_depth_exceeded.
     tokensLoading[key] = true;
-    tokensLoading = { ...tokensLoading };
     loadTokens({ userId: id });
   }
 
@@ -174,6 +176,36 @@
     if (selectedId === null) return;
     if (!confirm(`Revoke token "${label}"?`)) return;
     revokeToken({ userId: selectedId, label });
+  }
+
+  // Dev-only impersonation: swap the calling user's session to one of
+  // their own agents so the parent can preview the agent's UI view
+  // (Inbox flips to "routed to me", activity labels apply, etc).
+  // AUTH_MODE=off endpoint — 404s in OIDC mode. The post goes through
+  // the same /api/v1/auth/dev-impersonate endpoint that owns the
+  // ownership check, so we don't replicate that gate here.
+  async function viewAs(agentId: ID): Promise<void> {
+    if (!confirm('Switch your session to act as this agent? You will be signed in as the agent until you log out.')) {
+      return;
+    }
+    try {
+      const r = await fetch('/api/v1/auth/dev-impersonate', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: agentId.toString() }),
+      });
+      if (!r.ok) {
+        const text = await r.text();
+        notify({ type: 'error', message: `Impersonation failed: ${text}` });
+        return;
+      }
+      // Reload so AuthState pulls fresh /auth/me and every screen
+      // re-renders with the new actor.
+      window.location.href = '/inbox';
+    } catch (e) {
+      notify({ type: 'error', message: `Impersonation failed: ${e instanceof Error ? e.message : String(e)}` });
+    }
   }
 
   async function copyToClipboard(value: string): Promise<void> {
@@ -235,7 +267,7 @@
     {:else if agents.length === 0}
       <EmptyState
         title="No agents yet"
-        description="Create your first agent above. It will receive its own user_account row and a person card so it can be assigned to tasks via the normal assignee picker."
+        description="Create your first agent above. Agents are not assignable through the regular assignee picker — delegate one of your own tasks to an agent from your inbox."
       />
     {:else}
       <ul class="flex flex-1 flex-col divide-y divide-border overflow-y-auto rounded-md border border-border">
@@ -273,9 +305,14 @@
             <h2 class="text-xl font-semibold">{titleFor(a)}</h2>
             <p class="text-xs text-muted">user_account #{a.id} · parented to you</p>
           </div>
-          <Button variant="danger" size="md" onclick={() => deleteAgent(a.id)}>
-            {#snippet children()}Delete agent{/snippet}
-          </Button>
+          <div class="flex items-center gap-2">
+            <Button variant="secondary" size="md" onclick={() => viewAs(a.id)}>
+              {#snippet children()}View as this agent{/snippet}
+            </Button>
+            <Button variant="danger" size="md" onclick={() => deleteAgent(a.id)}>
+              {#snippet children()}Delete agent{/snippet}
+            </Button>
+          </div>
         </header>
 
         <!-- ---------------------------------- pending mint banner -->

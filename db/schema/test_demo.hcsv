@@ -1,0 +1,74 @@
+# demo | doc="Stable test fixture. Used by migrate_test row-count assertions; do not change without updating those assertions. The dev-fixture demo.hcsv may grow freely without touching this file."
+
+-- Test demo. Designed to exercise the loader features that matter for
+-- tests (attribute expansion, parent token, alias references, JSON in
+-- backtick cells, on_conflict idempotency, reset_sequence) with the
+-- smallest stable row set.
+--
+-- Row counts (asserted in migrate_test.go):
+--   user_account = 2 (System + Frank)
+--   user_account_person = 2 (System + Frank)
+--   user_role = 3 (System has system+admin; Frank has admin)
+--   card = 8 (2 persons + 1 project + 1 milestone + 1 status + 2 tasks +
+--             1 screen)
+
+
+## table user_account | on_conflict="id" | reset_sequence=user_account_id_seq
+### rows
+id, display_name, email
+2, frank, frank@example.invalid
+
+
+## table user_role | on_conflict="*"
+### rows
+user_id, role_id, scope_card_id
+2, $role.admin, null
+
+
+## table card | doc="Frank's person card. Explicit id=2 mirrors user_account.id=2 for assignee lookups." | on_conflict="id" | reset_sequence=card_id_seq
+### rows
+id, card_type_id,      title, email,                 alias
+2, $card_type.person, frank, frank@example.invalid, person_frank
+
+
+## table user_account_person | on_conflict="user_account_id"
+### rows
+user_account_id, person_card_id
+2, @person_frank
+
+
+## table card | alias=test_proj
+### rows
+card_type_id, title
+$card_type.project, "Test Project"
+
+
+## table card | alias=test_milestone_v1
+### rows
+card_type_id, parent_card_id, title
+$card_type.milestone, parent, "v1"
+
+
+## table card | alias=test_status_doing
+### rows
+card_type_id, parent_card_id, title, sort_order
+$card_type.status, parent, "Doing", 10
+
+
+## table card
+### rows
+card_type_id, parent_card_id, title, assignee, milestone_ref, status, sort_order
+$card_type.task, parent, "Land hcsv migration", @person_frank, @test_milestone_v1, @test_status_doing, 100
+$card_type.task, parent, "Write release notes", @person_frank, @test_milestone_v1, @test_status_doing, 200
+
+
+## table card | alias=test_screen_inbox
+### rows
+card_type_id, parent_card_id, title, screen_type, sort_order
+$card_type.screen, parent, "Inbox", inbox, 1
+
+
+## table card | doc="One filter card under the screen, with a backtick-quoted JSON predicate to exercise that feature." | under=test_screen_inbox
+### rows
+card_type_id, parent_card_id, title, predicate, sort_order
+$card_type.filter, parent, "Active", `{"attr":"status","op":"not terminal"}`, 1

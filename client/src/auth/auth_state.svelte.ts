@@ -24,6 +24,12 @@ export class AuthState {
   roles = $state<string[]>([]);
   /** Server-precomputed admin flag — drives the sidebar Admin section. */
   serverIsAdmin = $state(false);
+  /** True when the signed-in user_account row has is_agent=true.
+   *  Drives the Inbox screen's "routed to me" query variant (#50). */
+  isAgent = $state(false);
+  /** user_account.parent_user_id when isAgent; otherwise null. Surfaces
+   *  the owning human for activity labels and impersonation flows. */
+  parentUserId = $state<string | null>(null);
 
   /// Mirror the shape /api/v1/auth/me returns into the rune-backed
   /// fields the UI subscribes to.
@@ -33,6 +39,8 @@ export class AuthState {
     groups?: string[];
     roles?: string[];
     is_admin?: boolean;
+    is_agent?: boolean;
+    parent_user_id?: string;
   }): void {
     this.userId = me.user_id;
     this.claims = {
@@ -42,6 +50,8 @@ export class AuthState {
     };
     this.roles = Array.isArray(me.roles) ? me.roles : [];
     this.serverIsAdmin = me.is_admin === true;
+    this.isAgent = me.is_agent === true;
+    this.parentUserId = typeof me.parent_user_id === 'string' ? me.parent_user_id : null;
     this.isSignedIn = true;
   }
 
@@ -51,6 +61,8 @@ export class AuthState {
     this.claims = null;
     this.roles = [];
     this.serverIsAdmin = false;
+    this.isAgent = false;
+    this.parentUserId = null;
     this.isSignedIn = false;
   }
 
@@ -107,6 +119,10 @@ export async function loadSession(state: AuthState, apiBase = ''): Promise<boole
       user_id: string;
       display_name: string;
       groups?: string[];
+      roles?: string[];
+      is_admin?: boolean;
+      is_agent?: boolean;
+      parent_user_id?: string;
     };
     state.setFromMe(body);
     return true;

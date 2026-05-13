@@ -1,0 +1,218 @@
+# db | doc="Canonical kitp database schema (strawman slice)"
+
+-- hcsv format strawman — schema definition.
+--
+-- Format overview (see README.md for the full spec attempt):
+--   - Markdown-style headings (#, ##, ###) define parent-child hierarchy.
+--     Depth is structural; no fixed depth conventions.
+--   - `# db` is the root.
+--   - `## prop` carries db-wide properties (extensions, etc).
+--   - `## table <name>` declares a table.
+--   - Under a table: `### meta`, `### columns`, `### indexes`.
+--   - First non-blank line after a heading is the column header; subsequent
+--     non-blank lines are rows.
+--   - Pipe-delimited modifiers on headings: `# table foo | alias=bar`.
+--   - `null` literal = SQL NULL; empty cell = column default / null.
+--   - `$<table>.<name>` = lookup by the table's `name_column` (defined in meta).
+--   - `@<alias>` = reference a row by alias.
+--   - `parent` = the immediately-enclosing parent row's id.
+--   - Strings with commas/spaces/quotes wrap in `"..."` (CSV-style escape: `""` inside).
+--   - SQL-style `--` line comments. Block comments not supported.
+
+## prop
+name, value
+extension, pg_trgm
+
+
+## table user_account | doc="Users. id=1 is the System User used by AUTH_MODE=off."
+
+### meta
+name_column, id_column
+display_name, id
+
+### columns
+name, type, pk, unique, nullable, default, references, on_delete
+id, bigserial, true, false, false, , ,
+oidc_sub, text, false, true, true, , ,
+display_name, text, false, false, false, , ,
+email, text, false, false, true, , ,
+parent_user_id, bigint, false, false, true, , user_account.id, cascade
+is_agent, boolean, false, false, false, false, ,
+created_at, timestamptz, false, false, false, now(), ,
+
+
+## table role | doc="Application role. Assigned to users via user_role."
+
+### meta
+name_column, id_column
+name, id
+
+### columns
+name, type, pk, nullable, default
+id, bigserial, true, false,
+name, text, false, false,
+doc, text, false, true,
+
+### indexes
+name, columns, unique
+role_name_uniq, name, true
+
+
+## table user_role | doc="Assigns a role to a user, optionally scoped to a card subtree. m:n table; no name_column."
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+id, bigserial, true, false, , ,
+user_id, bigint, false, false, , user_account.id, cascade
+role_id, bigint, false, false, , role.id, cascade
+scope_card_id, bigint, false, true, , card.id, cascade
+
+### indexes
+name, columns, unique
+user_role_uniq, "user_id, role_id, scope_card_id", true
+
+
+## table process | doc="Logical workflow name (e.g. card.create)."
+
+### meta
+name_column, id_column
+name, id
+
+### columns
+name, type, pk, nullable, default
+id, bigserial, true, false,
+name, text, false, false,
+doc, text, false, true,
+
+### indexes
+name, columns, unique
+process_name_uniq, name, true
+
+
+## table card_type | doc="Built-in and user-declared card types."
+
+### meta
+name_column, id_column
+name, id
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+id, bigserial, true, false, , ,
+name, text, false, false, , ,
+is_built_in, boolean, false, false, false, ,
+allow_self_parent, boolean, false, false, false, ,
+parent_card_type_id, bigint, false, true, , card_type.id, restrict
+
+### indexes
+name, columns, unique
+card_type_name_uniq, name, true
+
+
+## table attribute_def | doc="An attribute definition (title, assignee, ...). value_type ∈ {text, number, bool, card_ref, card_ref[]}."
+
+### meta
+name_column, id_column
+name, id
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+id, bigserial, true, false, , ,
+name, text, false, false, , ,
+value_type, text, false, false, , ,
+is_built_in, boolean, false, false, false, ,
+target_card_type_id, bigint, false, true, , card_type.id, restrict
+
+### indexes
+name, columns, unique
+attribute_def_name_uniq, name, true
+
+
+## table edge | doc="An attribute_def bound to a card_type, optionally required."
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+id, bigserial, true, false, , ,
+card_type_id, bigint, false, false, , card_type.id, cascade
+attribute_def_id, bigint, false, false, , attribute_def.id, cascade
+is_required, boolean, false, false, false, ,
+ordering, double precision, false, false, 0.0, ,
+
+### indexes
+name, columns, unique
+edge_uniq, "card_type_id, attribute_def_id", true
+
+
+## table role_grant | doc="(role, card_type, process) tuple authorising role-holders to invoke process on card_type."
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+id, bigserial, true, false, , ,
+role_id, bigint, false, false, , role.id, cascade
+card_type_id, bigint, false, false, , card_type.id, cascade
+process_id, bigint, false, false, , process.id, cascade
+
+### indexes
+name, columns, unique
+role_grant_uniq, "role_id, card_type_id, process_id", true
+
+
+## table card | doc="A card instance. phase categorises flow-bound value cards (triage/active/terminal); defaults 'active' for non-value cards (the value is unused there)."
+
+### meta
+name_attribute, id_column
+title, id
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+id, bigserial, true, false, , ,
+card_type_id, bigint, false, false, , card_type.id, restrict
+parent_card_id, bigint, false, true, , card.id, cascade
+phase, text, false, false, 'active', ,
+deleted_at, timestamptz, false, true, , ,
+
+
+## table activity | doc="Append-only stream of card events: card_create, attr_update, tag_apply, comment, ..."
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+id, bigserial, true, false, , ,
+card_id, bigint, false, false, , card.id, cascade
+kind, text, false, false, , ,
+attribute_def_id, bigint, false, true, , attribute_def.id, restrict
+value_old, jsonb, false, true, , ,
+value_new, jsonb, false, true, , ,
+actor_id, bigint, false, false, , user_account.id, restrict
+created_at, timestamptz, false, false, now(), ,
+
+### indexes
+name, columns
+activity_card, card_id
+
+
+## table attribute_value | doc="Current value of one attribute on one card. Composite PK (card_id, attribute_def_id)."
+
+### columns
+name, type, pk, unique, nullable, default, references, on_delete
+card_id, bigint, true, false, false, , card.id, cascade
+attribute_def_id, bigint, true, false, false, , attribute_def.id, restrict
+value, jsonb, false, false, true, , ,
+last_activity_id, bigint, false, false, true, , activity.id, set_null
+
+### indexes
+name, columns, expressions, unique, using, where
+attribute_value_trgm, , "(value::text) gin_trgm_ops", false, gin,
+
+
+## table user_role_v2 | doc="Demonstrates partial unique indexes (the live user_role table uses two: one for scoped, one for global)."
+
+### columns
+name, type, pk, unique, nullable, default, references, on_delete
+id, bigserial, true, false, false, , ,
+user_id, bigint, false, false, false, , user_account.id, cascade
+role_id, bigint, false, false, false, , role.id, cascade
+scope_card_id, bigint, false, false, true, , card.id, cascade
+
+### indexes
+name, columns, expressions, unique, using, where
+uniq_user_role_scoped, "user_id, role_id, scope_card_id", , true, , "scope_card_id IS NOT NULL"
+uniq_user_role_global, "user_id, role_id", , true, , "scope_card_id IS NULL"

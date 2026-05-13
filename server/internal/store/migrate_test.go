@@ -4,51 +4,76 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kitp/kitp/server/internal/schema/declarative"
+	"github.com/kitp/kitp/server/internal/schema/hcsv"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
-// TestApplySchemaFromClean drops and re-creates a dedicated schema, applies
-// the declarative schema (seed + demo), and asserts the row counts match
-// what the doc installs end-to-end. This is the integration check that
-// guards against future declarative edits silently dropping seed rows.
-func TestApplySchemaFromClean(t *testing.T) {
-	pool := store.TestPool(t, "kitp_test_store")
+// TestApplySchemaSeedOnly applies just the install seed — no demo
+// fixture — and asserts the minimal row set every production install
+// ships with: one user (System), one person card (System), two
+// user_role rows (System holds both system + admin), every built-in
+// card_type / attribute_def / edge / process / role.
+func TestApplySchemaSeedOnly(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_seed_only")
 	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
 
 	cases := []struct {
 		query string
 		want  int64
 	}{
-		// 10 built-in card types: project/task/milestone/component/tag/
-		// status/comment_body/person + screen + filter. (status is now a
-		// per-project value-card type seeded with Todo/Doing/Review/Done/
-		// Cancelled; Done + Cancelled carry is_terminal=TRUE.)
-		{`SELECT count(*) FROM card_type`, 10},
-		// 17 built-in attribute_defs — the prior 16 + status (card_ref → status).
-		{`SELECT count(*) FROM attribute_def`, 17},
-		// 40 built-in edges — the prior 37 + 3 status edges (task→status,
-		// status→title, status→sort_order).
-		{`SELECT count(*) FROM edge`, 40},
-		// 1 System User + 5 demo team members.
-		{`SELECT count(*) FROM user_account`, 6},
-		// 1:1 link table: every user_account has a matching person card.
-		{`SELECT count(*) FROM user_account_person`, 6},
-		// system + viewer/worker/manager/admin = 5.
+		{`SELECT count(*) FROM user_account`, 1},        // System only
+		{`SELECT count(*) FROM user_account_person`, 1}, // System's link
+		{`SELECT count(*) FROM card`, 1},                // System's person card
+		{`SELECT count(*) FROM user_role`, 2},           // system + admin on user 1
 		{`SELECT count(*) FROM role`, 6},
-		// System User holds BOTH 'system' and 'admin' roles globally (so
-		// the BFF dev session unlocks the sidebar Admin section), plus
-		// the five demo users (alice/bob/carol/dave/eve, ids 2..6) hold
-		// 'admin' = 7 user_role rows total.
-		{`SELECT count(*) FROM user_role`, 7},
-		// 6 processes (card.create/update/delete, comment.post, task.update_with_comment, user_card_sort.set).
+		{`SELECT count(*) FROM card_type`, 10},
+		{`SELECT count(*) FROM attribute_def`, 17},
+		{`SELECT count(*) FROM edge`, 40},
 		{`SELECT count(*) FROM process`, 6},
-		// 7 process_steps (task.update_with_comment has two; everyone else has one).
 		{`SELECT count(*) FROM process_step`, 7},
-		// Seed person cards (6) + demo cards (1 project + 3 milestones +
-		// 5 components + 8 tags + 5 status values + 25 tasks + 4 screens +
-		// 4 filters = 55) = 61.
-		{`SELECT count(*) FROM card`, 61},
+	}
+	for _, c := range cases {
+		var got int64
+		if err := pool.QueryRow(ctx, c.query).Scan(&got); err != nil {
+			t.Fatalf("%s: %v", c.query, err)
+		}
+		if got != c.want {
+			t.Errorf("%s: got %d, want %d", c.query, got, c.want)
+		}
+	}
+}
+
+// TestApplySchemaWithTestDemo applies the install seed plus the stable
+// test_demo.hcsv fixture (NOT the dev demo.hcsv, which is allowed to
+// grow freely). The counts here are stable by design — changing
+// test_demo.hcsv requires updating these assertions in the same edit.
+func TestApplySchemaWithTestDemo(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_with_test_demo")
+	ctx := context.Background()
+	opts := hcsv.GenerateOptions{Demo: true, DemoPath: hcsv.TestDemoPath()}
+	if err := store.ApplySchema(ctx, pool, opts); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
+
+	cases := []struct {
+		query string
+		want  int64
+	}{
+		// System + frank
+		{`SELECT count(*) FROM user_account`, 2},
+		{`SELECT count(*) FROM user_account_person`, 2},
+		// System: system+admin. frank: admin.
+		{`SELECT count(*) FROM user_role`, 3},
+		// 2 persons + 1 project + 1 milestone + 1 status + 2 tasks +
+		// 1 screen + 1 filter = 9.
+		{`SELECT count(*) FROM card`, 9},
+		{`SELECT count(*) FROM role`, 6},
+		{`SELECT count(*) FROM card_type`, 10},
+		{`SELECT count(*) FROM attribute_def`, 17},
+		{`SELECT count(*) FROM edge`, 40},
 	}
 	for _, c := range cases {
 		var got int64
@@ -86,12 +111,16 @@ func TestApplySchemaFromClean(t *testing.T) {
 	}
 }
 
-// TestApplySchemaIdempotent runs ApplySchema a second time on the same
-// schema and confirms it is a no-op (no errors, identical counts).
+// TestApplySchemaIdempotent applies seed + test_demo twice and
+// confirms the second apply is a no-op (no errors, same row counts).
 func TestApplySchemaIdempotent(t *testing.T) {
-	pool := store.TestPool(t, "kitp_test_store_idem")
+	pool := store.TestPoolBare(t, "kitp_test_idem")
 	ctx := context.Background()
-	if err := store.ApplySchema(ctx, pool, declarative.Options{Demo: true}); err != nil {
+	opts := hcsv.GenerateOptions{Demo: true, DemoPath: hcsv.TestDemoPath()}
+	if err := store.ApplySchema(ctx, pool, opts); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	if err := store.ApplySchema(ctx, pool, opts); err != nil {
 		t.Fatalf("second apply: %v", err)
 	}
 	cases := []struct {
@@ -99,7 +128,8 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		want  int64
 	}{
 		{`SELECT count(*) FROM card_type`, 10},
-		{`SELECT count(*) FROM card`, 61},
+		{`SELECT count(*) FROM card`, 9},
+		{`SELECT count(*) FROM user_account`, 2},
 		{`SELECT count(*) FROM role`, 6},
 	}
 	for _, c := range cases {

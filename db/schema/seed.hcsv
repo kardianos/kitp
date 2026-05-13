@@ -1,0 +1,187 @@
+# seed | doc="Install-level rows applied to every kitp DB."
+
+-- Install seed. See db/schema/schema.hcsv for the table definitions
+-- and docs/hcsv_strawman/README.md for the file-format spec.
+
+
+## table user_account | doc="System User (id=1). The only user every install needs; lets AUTH_MODE=off start with a working actor and gives automated jobs / activity rows a stable actor_id=1. Real users come from OIDC; dev / demo teams live in demo.hcsv." | on_conflict="id" | reset_sequence=user_account_id_seq
+### rows
+id, display_name, email
+1, System,
+
+
+## table role | doc="Built-in roles. 'system' holds every grant for AUTH_MODE=off; the others are the OIDC role model." | on_conflict="name"
+### rows
+name
+system
+viewer
+commenter
+worker
+manager
+admin
+
+
+## table user_role | doc="System User gets both 'system' (every grant; AUTH_MODE=off) and 'admin' (so the BFF dev session unlocks Admin UI affordances). Demo / dev team grants live in demo.hcsv." | on_conflict="*"
+### rows
+user_id, role_id, scope_card_id
+1, $role.system, null
+1, $role.admin,  null
+
+
+## table role_mapping | doc="Default OIDC group → role mappings for the dex dev stack." | on_conflict="claim_value"
+### rows
+claim_value, role_id
+kitp.admin,   $role.admin
+kitp.manager, $role.manager
+kitp.worker,  $role.worker
+
+
+## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter are project-scoped (parent_card_type_id=project). person + comment_body are global. filter cards parent under screen." | on_conflict="name"
+### rows
+name, is_built_in, allow_self_parent, parent_card_type_id
+project,      true,  false, null
+task,         true,  true,  $card_type.project
+milestone,    true,  false, $card_type.project
+component,    true,  false, $card_type.project
+tag,          true,  true,  $card_type.project
+status,       true,  false, $card_type.project
+comment_body, true,  false, null
+person,       true,  false, null
+screen,       true,  false, $card_type.project
+filter,       true,  false, $card_type.screen
+
+
+## table attribute_def | doc="Built-in attribute definitions. Each pick-from-a-list attribute is a card_ref with target_card_type_id pointing at the card_type whose cards are the valid values." | on_conflict="name"
+### rows
+name, value_type, is_built_in, target_card_type_id
+title,             text,        true, null
+assignee,          card_ref,    true, $card_type.person
+milestone_ref,     card_ref,    true, $card_type.milestone
+component_ref,     card_ref,    true, $card_type.component
+status,            card_ref,    true, $card_type.status
+path,              text,        true, null
+root_exclusive_at, text,        true, null
+tags,              card_ref[],  true, $card_type.tag
+description,       text,        true, null
+sort_order,        number,      true, null
+is_active,         bool,        true, null
+email,             text,        true, null
+screen_type,       text,        true, null
+predicate,         text,        true, null
+default_filter,    card_ref,    true, $card_type.filter
+column_attr,       text,        true, null
+lane_attr,         text,        true, null
+
+
+## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"
+### rows
+card_type_id, attribute_def_id, is_required, ordering
+$card_type.project,   $attribute_def.title,             true,  0
+$card_type.task,      $attribute_def.title,             true,  0
+$card_type.milestone, $attribute_def.title,             true,  0
+$card_type.component, $attribute_def.title,             true,  0
+$card_type.tag,       $attribute_def.title,             true,  0
+$card_type.task,      $attribute_def.assignee,          false, 1
+$card_type.task,      $attribute_def.milestone_ref,     false, 1
+$card_type.task,      $attribute_def.component_ref,     false, 1
+$card_type.task,      $attribute_def.status,            false, 1
+$card_type.status,    $attribute_def.title,             true,  0
+$card_type.status,    $attribute_def.sort_order,        false, 1
+$card_type.tag,       $attribute_def.path,              true,  2
+$card_type.tag,       $attribute_def.root_exclusive_at, false, 3
+$card_type.project,   $attribute_def.tags,              false, 4
+$card_type.task,      $attribute_def.tags,              false, 4
+$card_type.milestone, $attribute_def.tags,              false, 4
+$card_type.component, $attribute_def.tags,              false, 4
+$card_type.task,      $attribute_def.description,       false, 5
+$card_type.project,   $attribute_def.description,       false, 5
+$card_type.task,      $attribute_def.sort_order,        false, 6
+$card_type.milestone, $attribute_def.sort_order,        false, 4
+$card_type.component, $attribute_def.sort_order,        false, 4
+$card_type.tag,       $attribute_def.sort_order,        false, 4
+$card_type.milestone, $attribute_def.is_active,         false, 5
+$card_type.component, $attribute_def.is_active,         false, 5
+$card_type.tag,       $attribute_def.is_active,         false, 5
+$card_type.person,    $attribute_def.title,             true,  0
+$card_type.person,    $attribute_def.email,             false, 1
+$card_type.person,    $attribute_def.is_active,         false, 2
+$card_type.screen,    $attribute_def.title,             true,  0
+$card_type.screen,    $attribute_def.screen_type,       true,  1
+$card_type.screen,    $attribute_def.default_filter,    false, 2
+$card_type.screen,    $attribute_def.sort_order,        false, 3
+$card_type.screen,    $attribute_def.is_active,         false, 4
+$card_type.filter,    $attribute_def.title,             true,  0
+$card_type.filter,    $attribute_def.predicate,         false, 1
+$card_type.filter,    $attribute_def.column_attr,       false, 2
+$card_type.filter,    $attribute_def.lane_attr,         false, 3
+$card_type.filter,    $attribute_def.sort_order,        false, 4
+$card_type.filter,    $attribute_def.is_active,         false, 5
+
+
+## table process | doc="Built-in processes (workflows)." | on_conflict="name"
+### rows
+name
+card.create
+card.update
+card.delete
+comment.post
+task.update_with_comment
+user_card_sort.set
+
+
+## table process_step | doc="Process steps. task.update_with_comment is the compositional demo: update attrs then leave a comment in one tx." | on_conflict="process_id, ordinal"
+### rows
+process_id, ordinal, endpoint, action
+$process."card.create",              1, card,           insert
+$process."card.update",              1, attribute,      update
+$process."card.delete",              1, card,           delete
+$process."comment.post",             1, comment,        insert
+$process."task.update_with_comment", 1, attribute,      update
+$process."task.update_with_comment", 2, comment,        insert
+$process."user_card_sort.set",       1, user_card_sort, set
+
+
+## table card | doc="Person card for the System User. Explicit id=1 mirrors user_account.id=1 so activity actor lookups and any task happen-to-be-assigned-to-System scenarios resolve. ON CONFLICT (id) DO NOTHING short-circuits the entire CTE chain on re-apply (the activity / attribute_value CTEs SELECT FROM the card CTE, so an empty result cascades through). Dev / demo person cards live in demo.hcsv." | reset_sequence=card_id_seq | on_conflict="id"
+### rows
+id, card_type_id,       title,   alias
+1, $card_type.person,  System,  person_system
+
+
+## table user_account_person | doc="1:1 link between System user_account and its person card. Dev / demo links live in demo.hcsv." | on_conflict="user_account_id"
+### rows
+user_account_id, person_card_id
+1, 1
+
+
+-- role_grant. Cross-products are expressed with array-expansion in
+-- attribute cells; the loader emits one INSERT per element-tuple.
+
+## table role_grant | doc="system role: every (card_type, process) tuple. Carries every grant for AUTH_MODE=off." | on_conflict="role_id, card_type_id, process_id"
+### rows
+role_id, card_type_id, process_id
+$role.system, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.status, $card_type.comment_body, $card_type.person, $card_type.screen, $card_type.filter]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."task.update_with_comment", $process."user_card_sort.set"]`
+
+
+## table role_grant | doc="commenter grants: only comment.post on task." | on_conflict="role_id, card_type_id, process_id"
+### rows
+role_id, card_type_id, process_id
+$role.commenter, $card_type.task, $process."comment.post"
+
+
+## table role_grant | doc="worker grants: act on task (update/comment/personal-sort)." | on_conflict="role_id, card_type_id, process_id"
+### rows
+role_id, card_type_id, process_id
+$role.worker, $card_type.task, `[$process."card.update", $process."comment.post", $process."user_card_sort.set"]`
+
+
+## table role_grant | doc="manager grants: worker grants on task + create/update/delete on project/milestone/component/tag/screen/filter." | on_conflict="role_id, card_type_id, process_id"
+### rows
+role_id, card_type_id, process_id
+$role.manager, $card_type.task, `[$process."card.update", $process."comment.post", $process."user_card_sort.set"]`
+$role.manager, `[$card_type.project, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.screen, $card_type.filter]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
+
+
+## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type." | on_conflict="role_id, card_type_id, process_id"
+### rows
+role_id, card_type_id, process_id
+$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`

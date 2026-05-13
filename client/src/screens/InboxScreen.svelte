@@ -77,8 +77,20 @@
 
   import { useBag } from '../dispatch/bag.svelte';
   import { userSelect } from '../reg/handlers';
-  import { userCardAgentSet } from '../reg/handlers_admin';
-  import type { UserRow } from '../reg/types';
+  import {
+    userCardAgentClear,
+    userCardAgentList,
+    userCardAgentSet,
+  } from '../reg/handlers_admin';
+  import type {
+    UserCardAgentClearInput,
+    UserCardAgentClearOutput,
+    UserCardAgentListInput,
+    UserCardAgentListOutput,
+    UserCardAgentSetInput,
+    UserCardAgentSetOutput,
+    UserRow,
+  } from '../reg/types';
 
   /* ------------------------------------------------------------------ scope */
   setActiveScope('inbox');
@@ -127,66 +139,78 @@
     untrack(() => getFilter('inbox', projectScope.projectId)),
   );
   let selectedIndex = $state(0);
+  /** "mine" (default) shows only tasks assigned to the actor; "all" drops
+   *  the assignee filter so the inbox doubles as a project-wide open-tasks
+   *  list. Lives in component state — not persisted across visits because
+   *  "all" + a wide project scope can flood the screen. */
+  let viewMode = $state<'mine' | 'all'>('mine');
 
-  /* ------------------------------- bulk-route to agent (#43) -----------
-   * The inbox doubles as the routing surface for the calling user's
-   * agents: enter selection mode, tick the rows you want to delegate,
-   * pick an agent from the dropdown, and one batched user_card_agent.set
-   * fans out the route. The mode toggle is a soft state — every
-   * unrelated keyboard / drag interaction works as before; the
-   * selection bar simply overlays. */
+  /* ----------------------------- delegate-to-agent (per-row) -----------
+   * Cards assigned to me show a small "delegate to" picker on each row
+   * in Mine view. Picking an agent writes user_card_agent.set; choosing
+   * "—" clears it. The picker is hidden when the signed-in user is
+   * themselves an agent (agents see routed-to-me view; they cannot
+   * sub-delegate further) or when they have no agents to delegate to.
+   * Routings are loaded as part of the initial refresh batch and held
+   * in `routingByCardId` so the picker reflects the current state. */
   const bag = useBag(dispatcher);
-  let selectionMode = $state(false);
-  let selectedIds = $state<Set<string>>(new Set());
   let myAgents = $state<UserRow[]>([]);
-  let routeTargetId = $state<string>('');
+  /** card_id.toString() → agent user_account id currently routed for that card. */
+  let routingByCardId = $state<Record<string, ID>>({});
 
   const loadMyAgents = bag.bind(userSelect, 'inbox.my_agents', (r) => {
     if (r.ok) myAgents = r.data.rows;
   });
-  const routeOne = bag.bind(userCardAgentSet, 'inbox.route', (r) => {
-    if (!r.ok) return;
-    // Per-row ack — toast only once at the end via the count.
-    routeAcks++;
-    if (routeAcks >= routeExpected && routeExpected > 0) {
-      notify({ type: 'success', message: `Routed ${routeExpected} task${routeExpected === 1 ? '' : 's'}` });
-      selectedIds = new Set();
-      routeAcks = 0;
-      routeExpected = 0;
-      selectionMode = false;
-    }
-  });
-  let routeExpected = 0;
-  let routeAcks = 0;
 
-  function toggleSelectionMode(): void {
-    selectionMode = !selectionMode;
-    if (!selectionMode) selectedIds = new Set();
+  const showAgentPicker = $derived(
+    authState?.isAgent !== true && myAgents.length > 0 && viewMode === 'mine',
+  );
+
+  function setRouting(cardId: ID, agentId: ID): void {
+    const key = cardId.toString();
+    const prev = routingByCardId[key];
+    routingByCardId[key] = agentId;
+    dispatcher
+      .request<UserCardAgentSetInput, UserCardAgentSetOutput>({
+        endpoint: userCardAgentSet.endpoint,
+        action: userCardAgentSet.action,
+        data: { cardId, agentUserId: agentId },
+      })
+      .catch((e) => {
+        if (prev === undefined) delete routingByCardId[key];
+        else routingByCardId[key] = prev;
+        const msg = e instanceof Error ? e.message : String(e);
+        notify({ type: 'error', message: `Delegate failed: ${msg}` });
+      });
   }
 
-  function toggleSelected(id: ID): void {
-    const key = id.toString();
-    const next = new Set(selectedIds);
-    if (next.has(key)) next.delete(key); else next.add(key);
-    selectedIds = next;
+  function clearRouting(cardId: ID): void {
+    const key = cardId.toString();
+    const prev = routingByCardId[key];
+    delete routingByCardId[key];
+    dispatcher
+      .request<UserCardAgentClearInput, UserCardAgentClearOutput>({
+        endpoint: userCardAgentClear.endpoint,
+        action: userCardAgentClear.action,
+        data: { cardId },
+      })
+      .catch((e) => {
+        if (prev !== undefined) routingByCardId[key] = prev;
+        const msg = e instanceof Error ? e.message : String(e);
+        notify({ type: 'error', message: `Clear delegation failed: ${msg}` });
+      });
   }
 
-  function routeSelected(): void {
-    if (routeTargetId === '') {
-      notify({ type: 'error', message: 'Pick an agent first' });
+  function onPickAgent(cardId: ID, ev: Event): void {
+    const v = (ev.currentTarget as HTMLSelectElement).value;
+    if (v === '') {
+      clearRouting(cardId);
       return;
     }
-    let agentId: ID;
     try {
-      agentId = BigInt(routeTargetId);
+      setRouting(cardId, BigInt(v));
     } catch {
       notify({ type: 'error', message: 'Invalid agent id' });
-      return;
-    }
-    routeExpected = selectedIds.size;
-    routeAcks = 0;
-    for (const key of selectedIds) {
-      routeOne({ cardId: BigInt(key), agentUserId: agentId });
     }
   }
 
@@ -231,12 +255,6 @@
         };
       }),
   );
-  /** "mine" (default) shows only tasks assigned to the actor; "all" drops
-   *  the assignee filter so the inbox doubles as a project-wide open-tasks
-   *  list. Lives in component state — not persisted across visits because
-   *  "all" + a wide project scope can flood the screen. */
-  let viewMode = $state<'mine' | 'all'>('mine');
-
   /* ----------------------------------------------------- computed filter UI */
 
   /**
@@ -334,9 +352,11 @@
     // join — the same handler Grid / Kanban / ProjectDetail call. The
     // "mine" view layers an `assignee = me` leaf onto the user's saved
     // predicate; "all" drops it so the screen doubles as a project-wide
-    // open-tasks list.
+    // open-tasks list. When the signed-in user is an agent (#50), the
+    // assignee filter is replaced with the `routed_to_me` flag so the
+    // result is the parent's routings to this agent rather than tasks
+    // the agent is itself assigned to.
     const userTree = buildTree();
-    const treeArg = applyAssigneeScope(userTree, viewMode, meId);
     const taskInput: CardSelectWithAttributesInput = {
       cardTypeName: 'task',
       limit: 200,
@@ -346,7 +366,15 @@
         { field: 'created_at', direction: 'DESC' },
       ],
     };
-    if (treeArg !== undefined) taskInput.tree = treeArg;
+    if (authState?.isAgent === true) {
+      taskInput.routedToMe = true;
+      // Agent view ignores the "mine / all" toggle — both fold to the
+      // same set of routed cards; user-authored predicates still apply.
+      if (userTree !== undefined) taskInput.tree = userTree;
+    } else {
+      const treeArg = applyAssigneeScope(userTree, viewMode, meId);
+      if (treeArg !== undefined) taskInput.tree = treeArg;
+    }
     const scoped = projectScope.projectId;
     if (scoped !== null) taskInput.parentCardId = scoped;
 
@@ -415,18 +443,29 @@
       action: cardSelectWithAttributes.action,
       data: statusData,
     });
+    // Existing routings the actor owns. Folded into the same batch so
+    // the per-row picker can display the current target on first paint.
+    // Agents skip this — they're the routing target, not the owner.
+    const fRoutings = authState?.isAgent === true
+      ? Promise.resolve<UserCardAgentListOutput>({ rows: [] })
+      : dispatcher.request<UserCardAgentListInput, UserCardAgentListOutput>({
+          endpoint: userCardAgentList.endpoint,
+          action: userCardAgentList.action,
+          data: scoped !== null ? { parentCardId: scoped } : {},
+        });
     // `AttributeSchemaCache.load()` issues `attribute_def.select` on the
     // same tick (and short-circuits on subsequent screen mounts).
     const fSchema = schemaCache.load();
 
     try {
-      const [inboxOut, personOut, mOut, cOut, tagOut, sOut] = await Promise.all([
+      const [inboxOut, personOut, mOut, cOut, tagOut, sOut, routingsOut] = await Promise.all([
         fInbox,
         fPersons,
         fMilestones,
         fComponents,
         fTags,
         fStatuses,
+        fRoutings,
         fSchema,
       ]);
 
@@ -436,6 +475,11 @@
       components = cOut.rows;
       tagsRows = tagOut.rows;
       statuses = sOut.rows;
+      const nextRouting: Record<string, ID> = {};
+      for (const r of routingsOut.rows) {
+        nextRouting[r.card_id.toString()] = r.agent_user_id;
+      }
+      routingByCardId = nextRouting;
 
       // Keep the row selection in range.
       if (selectedIndex >= rows.length) {
@@ -625,6 +669,16 @@
 <div class="flex h-full flex-col">
   <header class="flex items-center justify-between gap-3 px-4 py-2" data-testid="inbox-header">
     <div class="flex items-center gap-3">
+      {#if authState?.isAgent === true}
+        <span
+          class="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent/10 px-2 py-1 text-xs font-medium text-accent"
+          data-testid="inbox-agent-banner"
+          title="Showing tasks routed to you by your parent user"
+        >
+          <span aria-hidden="true">⚡</span>
+          Agent view · routed work
+        </span>
+      {/if}
       <div
         class="inline-flex overflow-hidden rounded-md border border-border text-xs"
         role="group"
@@ -659,54 +713,11 @@
       </div>
     </div>
     <div class="flex items-center gap-2">
-      <Button
-        size="sm"
-        variant={selectionMode ? 'primary' : 'secondary'}
-        onclick={toggleSelectionMode}
-      >
-        {#snippet children()}{selectionMode ? 'Cancel selection' : 'Select'}{/snippet}
-      </Button>
       <Button size="sm" variant="secondary" onclick={() => qe.open()}>
         {#snippet children()}New task{/snippet}
       </Button>
     </div>
   </header>
-
-  {#if selectionMode}
-    <div
-      class="flex items-center justify-between gap-3 border-b border-border bg-surface/40 px-4 py-2 text-sm"
-      data-testid="inbox-selection-bar"
-    >
-      <span class="text-muted">
-        {selectedIds.size} task{selectedIds.size === 1 ? '' : 's'} selected
-      </span>
-      <div class="flex items-center gap-2">
-        <label for="inbox-route-target" class="text-xs uppercase tracking-wide text-muted">
-          Route to agent
-        </label>
-        <select
-          id="inbox-route-target"
-          bind:value={routeTargetId}
-          class="rounded-md border border-border bg-bg px-2 py-1 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        >
-          <option value="">— pick an agent —</option>
-          {#each myAgents as a (a.id)}
-            <option value={a.id.toString()}>{a.display_name}</option>
-          {/each}
-        </select>
-        <Button
-          size="sm"
-          variant="primary"
-          disabled={selectedIds.size === 0 || routeTargetId === ''}
-          onclick={routeSelected}
-        >
-          {#snippet children()}
-            Route {selectedIds.size > 0 ? selectedIds.size : ''}
-          {/snippet}
-        </Button>
-      </div>
-    </div>
-  {/if}
 
   <div class="border-b border-border px-4 pb-3" data-testid="inbox-filter-bar">
     <ScreenFilterBar
@@ -752,19 +763,6 @@
           accepts={acceptsInboxRow}
         />
         <div class="my-1 flex items-stretch gap-1" data-row-id={row.id}>
-          {#if selectionMode}
-            <label
-              class="flex h-full w-6 cursor-pointer items-center justify-center"
-              aria-label={`Select task ${previewLabelFor(row)}`}
-            >
-              <input
-                type="checkbox"
-                checked={selectedIds.has(row.id.toString())}
-                onchange={() => toggleSelected(row.id)}
-                class="h-4 w-4 accent-accent"
-              />
-            </label>
-          {/if}
           <DragHandle
             payload={row}
             previewLabel={previewLabelFor(row)}
@@ -791,6 +789,26 @@
               onTerminated={() => void refresh()}
             />
           </div>
+          {#if showAgentPicker}
+            {@const routedTo = routingByCardId[row.id.toString()]}
+            <label
+              class="flex items-center gap-1 self-center pl-2 text-xs text-muted"
+              data-testid="inbox-row-delegate"
+            >
+              <span class="hidden sm:inline">Delegate</span>
+              <select
+                value={routedTo === undefined ? '' : routedTo.toString()}
+                onchange={(ev) => onPickAgent(row.id, ev)}
+                class="rounded-md border border-border bg-bg px-2 py-1 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                aria-label="Delegate task to one of your agents"
+              >
+                <option value="">— none —</option>
+                {#each myAgents as a (a.id)}
+                  <option value={a.id.toString()}>{a.display_name}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
         </div>
       {/each}
       <DropZone

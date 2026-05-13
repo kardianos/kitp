@@ -147,6 +147,14 @@ export interface CardSelectWithAttributesInput {
    * handler.
    */
   withPersonalSort?: boolean;
+  /**
+   * Agent-perspective inbox filter (#50). When true, the result is
+   * INNER JOINed against `user_card_agent` and filtered to rows where
+   * `agent_user_id = actor AND user_id = actor.parent_user_id` — i.e.
+   * what the calling agent's parent has routed to it. Non-agent callers
+   * see zero rows.
+   */
+  routedToMe?: boolean;
 }
 
 export interface CardWithAttrs {
@@ -646,7 +654,6 @@ export interface AgentCreateInput {
 
 export interface AgentCreateOutput {
   user_id: ID;
-  person_card_id: ID;
 }
 
 export interface AgentDeleteInput {

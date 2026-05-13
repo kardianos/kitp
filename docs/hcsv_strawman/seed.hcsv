@@ -1,0 +1,116 @@
+# seed | doc="Install-level rows applied to every kitp DB."
+
+-- Install seed. Schema-level lookups: $<table>.<name>.
+-- See ./README.md for format and ./schema.hcsv for the table definitions.
+
+
+# table user_account
+### rows
+id, display_name, email
+1, System,
+2, alice, alice@example.invalid
+3, bob, bob@example.invalid
+4, carol, carol@example.invalid
+5, dave, dave@example.invalid
+6, eve, eve@example.invalid
+
+
+# table role
+### rows
+name, doc
+system, "Internal role; carries every grant in AUTH_MODE=off."
+viewer, "Read-only access."
+commenter, "Viewer + comment.post on tasks."
+worker, "Acts on tasks; updates status/assignee, posts comments, reorders inbox."
+manager, "Worker + create/edit/delete on project/milestone/component/tag/screen/filter."
+admin, "Manager + user role management and OIDC claim mapping."
+
+
+# table user_role
+### rows
+user_id, role_id, scope_card_id
+1, $role.system, null
+1, $role.admin, null
+2, $role.admin, null
+3, $role.admin, null
+4, $role.admin, null
+5, $role.admin, null
+6, $role.admin, null
+
+
+# table process
+### rows
+name, doc
+card.create, "Insert a new card."
+card.update, "Mutate one or more card attribute_values."
+card.delete, "Soft-delete a card."
+comment.post, "Add a comment activity row."
+user_card_sort.set, "Set or update a user's personal sort order for a card."
+
+
+# table card_type
+### rows
+name, is_built_in, allow_self_parent
+project, true, false
+task, true, true
+person, true, false
+milestone, true, false
+component, true, false
+tag, true, true
+status, true, false
+screen, true, false
+filter, true, false
+
+
+# table attribute_def
+### rows
+name, value_type, is_built_in, target_card_type_id
+title, text, true,
+description, text, true,
+sort_order, number, true,
+status, card_ref, true, $card_type.status
+assignee, card_ref, true, $card_type.person
+milestone_ref, card_ref, true, $card_type.milestone
+component_ref, card_ref, true, $card_type.component
+tags, "card_ref[]", true, $card_type.tag
+
+
+# table edge
+### rows
+card_type_id, attribute_def_id, is_required, ordering
+$card_type.project, $attribute_def.title, true, 0
+$card_type.task, $attribute_def.title, true, 0
+$card_type.task, $attribute_def.description, false, 1
+$card_type.task, $attribute_def.status, true, 2
+$card_type.task, $attribute_def.assignee, false, 3
+$card_type.task, $attribute_def.milestone_ref, false, 4
+$card_type.task, $attribute_def.component_ref, false, 5
+$card_type.task, $attribute_def.tags, false, 6
+$card_type.task, $attribute_def.sort_order, false, 7
+$card_type.milestone, $attribute_def.title, true, 0
+$card_type.component, $attribute_def.title, true, 0
+$card_type.tag, $attribute_def.title, true, 0
+
+
+-- role_grant — cross-product example. Two ways to express the same data;
+-- the runner accepts either. See README §"Array expansion" for the
+-- semantics of `[a, b]` in a cell.
+--
+-- Explicit form (one row per grant) — fine for small sets, verbose for
+-- cross-products:
+# table role_grant
+### rows
+role_id, card_type_id, process_id
+$role.worker, $card_type.task, $process."card.update"
+$role.worker, $card_type.task, $process."comment.post"
+$role.worker, $card_type.task, $process."user_card_sort.set"
+
+-- Array-expansion form — `[a, b, c]` in a cell triggers cross-product
+-- expansion. The runner emits one row per element-tuple. Equivalent to
+-- the manager block in declarative.toml's role_grant SQL:
+# table role_grant
+### rows
+role_id, card_type_id, process_id
+$role.manager, $card_type.task, "[$process.\"card.update\", $process.\"comment.post\", $process.\"user_card_sort.set\"]"
+$role.manager, "[$card_type.project, $card_type.milestone, $card_type.component, $card_type.tag]", "[$process.\"card.create\", $process.\"card.update\", $process.\"card.delete\"]"
+$role.admin, "[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag]", "[$process.\"card.create\", $process.\"card.update\", $process.\"card.delete\", $process.\"comment.post\"]"

@@ -70,8 +70,8 @@ func TestCreateThenDeleteLifecycle(t *testing.T) {
 		buf, _ := json.Marshal(resp.Subresponses[0].Data)
 		_ = json.Unmarshal(buf, &out)
 	}
-	if out.UserID == 0 || out.PersonCardID == 0 {
-		t.Fatalf("expected non-zero ids in CreateOutput, got %+v", out)
+	if out.UserID == 0 {
+		t.Fatalf("expected non-zero user id in CreateOutput, got %+v", out)
 	}
 
 	// Verify user_account row.
@@ -94,45 +94,18 @@ func TestCreateThenDeleteLifecycle(t *testing.T) {
 		t.Fatalf("display name: got %q, want %q", displayName, "research-agent")
 	}
 
-	// Verify person card + title attribute_value.
-	var cardTypeID int64
+	// Agents have no person card and no user_account_person link —
+	// they are routed-to via user_card_agent, not via the assignee
+	// attribute. Assert the absence of both.
+	var nLink int
 	if err := sp.P.QueryRow(context.Background(),
-		`SELECT card_type_id FROM card WHERE id = $1`, out.PersonCardID,
-	).Scan(&cardTypeID); err != nil {
-		t.Fatalf("lookup card: %v", err)
-	}
-	var personTypeID int64
-	if err := sp.P.QueryRow(context.Background(),
-		`SELECT id FROM card_type WHERE name = 'person'`,
-	).Scan(&personTypeID); err != nil {
-		t.Fatalf("person card_type lookup: %v", err)
-	}
-	if cardTypeID != personTypeID {
-		t.Fatalf("card_type_id: got %d, want %d", cardTypeID, personTypeID)
-	}
-	var title string
-	if err := sp.P.QueryRow(context.Background(), `
-		SELECT av.value #>> '{}' FROM attribute_value av
-		JOIN attribute_def ad ON ad.id = av.attribute_def_id
-		WHERE av.card_id = $1 AND ad.name = 'title'`,
-		out.PersonCardID,
-	).Scan(&title); err != nil {
-		t.Fatalf("title lookup: %v", err)
-	}
-	if title != "research-agent" {
-		t.Fatalf("title: got %q", title)
-	}
-
-	// Verify the link row.
-	var linkUser, linkCard int64
-	if err := sp.P.QueryRow(context.Background(),
-		`SELECT user_account_id, person_card_id FROM user_account_person WHERE user_account_id = $1`,
+		`SELECT count(*) FROM user_account_person WHERE user_account_id = $1`,
 		out.UserID,
-	).Scan(&linkUser, &linkCard); err != nil {
+	).Scan(&nLink); err != nil {
 		t.Fatalf("link lookup: %v", err)
 	}
-	if linkCard != out.PersonCardID {
-		t.Fatalf("link person_card_id: got %d, want %d", linkCard, out.PersonCardID)
+	if nLink != 0 {
+		t.Fatalf("expected NO user_account_person link for agent, got %d", nLink)
 	}
 
 	// Delete the agent.
@@ -145,7 +118,7 @@ func TestCreateThenDeleteLifecycle(t *testing.T) {
 			resp.Subresponses[0].Error.Code, resp.Subresponses[0].Error.Message)
 	}
 
-	// Verify everything gone.
+	// Verify the user_account row is gone.
 	var n int
 	if err := sp.P.QueryRow(context.Background(),
 		`SELECT count(*) FROM user_account WHERE id = $1`, out.UserID,
@@ -154,22 +127,6 @@ func TestCreateThenDeleteLifecycle(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("user_account should be gone, got count=%d", n)
-	}
-	if err := sp.P.QueryRow(context.Background(),
-		`SELECT count(*) FROM card WHERE id = $1`, out.PersonCardID,
-	).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Fatalf("person card should be gone, got count=%d", n)
-	}
-	if err := sp.P.QueryRow(context.Background(),
-		`SELECT count(*) FROM user_account_person WHERE user_account_id = $1`, out.UserID,
-	).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Fatalf("link should be gone, got count=%d", n)
 	}
 }
 

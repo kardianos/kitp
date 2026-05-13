@@ -350,6 +350,7 @@ const cardSelectWithAttributes: HandlerSpec<
     if (i.offset !== undefined) m.offset = i.offset;
     if (i.includeDeleted !== undefined) m.include_deleted = i.includeDeleted;
     if (i.withPersonalSort) m.with_personal_sort = true;
+    if (i.routedToMe) m.routed_to_me = true;
     return m;
   },
   decode: (raw) => {

@@ -1,0 +1,70 @@
+# demo | doc="Opt-in dev fixture data: Default Project + sample tasks."
+
+-- Demo seed. Replaces the ~200-line PL/pgSQL DO block in declarative.toml.
+--
+-- Key features exercised here:
+-- - `parent` token — child rows pick up the parent row's id.
+-- - `attributes.x` expansion — a card row's non-structural columns that
+-- match an attribute_def.name become attribute_value writes, each with
+-- a matching activity row. card_create activity is always emitted.
+-- - `@<alias>` references for non-parent siblings (e.g., a task's
+-- milestone_ref pointing at a milestone created earlier in the file).
+-- - Multi-row parents: explicit `under=<alias>` on a child section
+-- disambiguates which parent its rows belong to (per design decision
+-- — `parent` alone resolves to the *last* row of the parent section).
+
+
+# table card | alias=proj_default
+### rows
+card_type_id, title
+$card_type.project, "Default Project"
+
+
+## table card
+### rows
+card_type_id, parent_card_id, title, alias
+$card_type.milestone, parent, "M1", m_m1
+$card_type.milestone, parent, "M2", m_m2
+$card_type.milestone, parent, "M3", m_m3
+
+
+## table card
+### rows
+card_type_id, parent_card_id, title, alias
+$card_type.component, parent, "Frontend", c_fe
+$card_type.component, parent, "Backend", c_be
+
+
+## table card | doc="Status value-cards. phase categorises them for the flow & queue filters."
+### rows
+card_type_id, parent_card_id, title, phase, alias
+$card_type.status, parent, "New idea", triage, s_triage
+$card_type.status, parent, "Todo", active, s_todo
+$card_type.status, parent, "Doing", active, s_doing
+$card_type.status, parent, "Done", terminal, s_done
+$card_type.status, parent, "Cancelled", terminal, s_cancel
+
+
+## table card | doc="Tasks. Non-structural columns (title, status, assignee, milestone_ref, sort_order) are attribute_def names; the runner expands each into (activity attr_update, attribute_value) pairs."
+### rows
+card_type_id, parent_card_id, title, status, assignee, milestone_ref, component_ref, sort_order
+$card_type.task, parent, "Implement login form",     @s_todo,   $user_account.alice, @m_m1, @c_fe, 100
+$card_type.task, parent, "Wire SSO callback",        @s_doing,  $user_account.bob,   @m_m1, @c_be, 200
+$card_type.task, parent, "Triage onboarding bugs",   @s_triage, $user_account.carol, @m_m2, @c_fe, 300
+$card_type.task, parent, "Ship v1",                  @s_done,   $user_account.alice, @m_m3, @c_be, 400
+$card_type.task, parent, "Old feature, deprecated",  @s_cancel, $user_account.dave,  @m_m3, @c_be, 500
+
+
+-- Comparison to today's declarative.toml [[demo]] block:
+-- - That block is ~200 lines of PL/pgSQL with DECLARE / FOREACH / IF
+-- branches and 25 nested INSERTs per row pattern.
+-- - The above is ~30 lines of data.
+-- - Every row above expands at runtime to:
+-- - 1 card row
+-- - 1 activity row of kind=card_create
+-- - 1 (activity attr_update + attribute_value) pair for each
+-- non-structural column that matches an attribute_def.name
+-- Task rows produce: 1 card + 1 create activity + 6 (act+attr) pairs
+-- = 14 rows each. Five task rows = 70 generated rows. Plus 11 from
+-- project/milestones/components/status cards. ~80 rows generated
+-- from 14 lines of demo.hcsv data.
