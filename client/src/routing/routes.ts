@@ -136,6 +136,13 @@ export const routes: Route[] = [
     scope: 'admin_screens',
   },
   {
+    path: '/admin/flows',
+    component: () => import('../screens/admin/AdminFlowsScreen.svelte'),
+    guard: 'requireAdmin',
+    shell: true,
+    scope: 'admin_flows',
+  },
+  {
     path: '/admin/agents',
     component: () => import('../screens/admin/AdminAgentsScreen.svelte'),
     // Any signed-in non-agent can own their own agents — the screen lists

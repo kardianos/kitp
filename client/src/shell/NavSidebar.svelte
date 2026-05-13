@@ -47,6 +47,7 @@
     { href: '/admin/projects', label: 'Projects' },
     { href: '/admin/attributes', label: 'Attributes' },
     { href: '/admin/screens', label: 'Screens' },
+    { href: '/admin/flows', label: 'Flows' },
     { href: '/admin/agents', label: 'Agents' },
   ];
 

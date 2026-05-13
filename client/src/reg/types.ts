@@ -409,6 +409,166 @@ export interface FlowStepListForCardOutput {
 }
 
 // ============================================================================
+// flow.list / flow.set / flow.delete / flow.preview_delete  (admin)
+// ============================================================================
+
+/**
+ * One flow row joined to its bound attribute_def's name. Mirrors
+ * `server/internal/dom/flow/flow.go::ListRow`.
+ */
+export interface FlowRow {
+  id: ID;
+  name: string;
+  /** Optional human-readable description. Empty when unset on the server. */
+  doc: string;
+  attribute_def_id: ID;
+  attribute_def_name: string;
+  scope_card_id: ID;
+  /** 0n means no default; the new-task path will not preselect a status. */
+  default_create_status_id: ID;
+  /** RFC3339 timestamp. */
+  created_at: string;
+}
+
+export interface FlowListInput {
+  /** Optional filter on project (scope) card id. */
+  scopeCardId?: ID;
+  /** Optional filter on bound attribute_def id. */
+  attributeDefId?: ID;
+}
+
+export interface FlowListOutput {
+  rows: FlowRow[];
+}
+
+export interface FlowSetInput {
+  /** Omit / 0n to insert. Pass an existing id to update by id. */
+  id?: ID;
+  name: string;
+  doc?: string;
+  attributeDefId: ID;
+  scopeCardId: ID;
+  /** Optional default status value-card; 0n / undefined clears the default. */
+  defaultCreateStatusId?: ID;
+}
+
+export interface FlowSetOutput {
+  id: ID;
+}
+
+export interface FlowDeleteInput {
+  flowId: ID;
+}
+
+export interface FlowDeleteOutput {
+  ok: boolean;
+  deleted: number;
+}
+
+export interface FlowPreviewDeleteInput {
+  flowId: ID;
+}
+
+/** Per-phase bucketing for `tasks_currently_in_flow_states`. */
+export interface FlowPhaseCounts {
+  triage: number;
+  active: number;
+  terminal: number;
+}
+
+/** V16 preview shape — admin sees affected-task counts before delete. */
+export interface FlowPreviewDeleteOutput {
+  flow_id: ID;
+  flow_name: string;
+  step_count: number;
+  tasks_currently_in_flow_states: number;
+  tasks_by_phase: FlowPhaseCounts;
+  sample_step_labels: string[];
+}
+
+// ============================================================================
+// flow_step.list / flow_step.set / flow_step.delete  (admin)
+// ============================================================================
+
+/**
+ * One flow_step row joined to its optional requires_role's name. Mirrors
+ * `server/internal/dom/flow/flow.go::StepListRow`.
+ */
+export interface FlowStepRow {
+  id: ID;
+  flow_id: ID;
+  from_card_id: ID;
+  to_card_id: ID;
+  label: string;
+  /** 0n means no role gate. */
+  requires_role_id: ID;
+  /** Empty string when no role gate. */
+  requires_role_name: string;
+  sort_order: number;
+}
+
+export interface FlowStepListInput {
+  flowId: ID;
+}
+
+export interface FlowStepListOutput {
+  rows: FlowStepRow[];
+}
+
+export interface FlowStepSetInput {
+  /** Omit / 0n to insert. */
+  id?: ID;
+  flowId: ID;
+  fromCardId: ID;
+  toCardId: ID;
+  label: string;
+  /** 0n / undefined = no role gate (any authenticated user may fire). */
+  requiresRoleId?: ID;
+  sortOrder?: number;
+}
+
+export interface FlowStepSetOutput {
+  id: ID;
+}
+
+export interface FlowStepDeleteInput {
+  flowStepId: ID;
+}
+
+export interface FlowStepDeleteOutput {
+  ok: boolean;
+  deleted: number;
+}
+
+/**
+ * One row in the `blocked_by` detail attached to a `value_referenced_by_flow`
+ * rejection envelope (Gate 10's `card.delete` V8 check). Surfaces enough
+ * metadata for the admin UI to render an actionable "delete these flow_steps
+ * first" callout.
+ */
+export interface FlowStepBlocker {
+  flow_step_id: ID;
+  flow_id: ID;
+  flow_name: string;
+  /** Which side of the step the deleted card sits on: `'from'` or `'to'`. */
+  role: 'from' | 'to' | string;
+  from_label: string;
+  to_label: string;
+  step_label: string;
+}
+
+/**
+ * Structured detail payload server attaches to a `value_referenced_by_flow`
+ * rejection on `card.delete`. The screen reads `error.detail` and walks
+ * `blocked_by[]` to render a friendly "delete those transitions first"
+ * dialog.
+ */
+export interface ValueReferencedByFlowDetail {
+  card_id: ID;
+  blocked_by: FlowStepBlocker[];
+}
+
+// ============================================================================
 // attribute_def.select / attribute_def.insert
 // ============================================================================
 

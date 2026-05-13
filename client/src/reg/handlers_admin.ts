@@ -23,6 +23,22 @@ import type {
   AgentCreateOutput,
   AgentDeleteInput,
   AgentDeleteOutput,
+  FlowDeleteInput,
+  FlowDeleteOutput,
+  FlowListInput,
+  FlowListOutput,
+  FlowPreviewDeleteInput,
+  FlowPreviewDeleteOutput,
+  FlowRow,
+  FlowSetInput,
+  FlowSetOutput,
+  FlowStepDeleteInput,
+  FlowStepDeleteOutput,
+  FlowStepListInput,
+  FlowStepListOutput,
+  FlowStepRow,
+  FlowStepSetInput,
+  FlowStepSetOutput,
   RoleAssignmentRow,
   RoleGrantRow,
   RoleListInput,
@@ -365,6 +381,171 @@ const userCardAgentList: HandlerSpec<UserCardAgentListInput, UserCardAgentListOu
 };
 
 // ============================================================================
+// flow.list / flow.set / flow.delete / flow.preview_delete
+//
+// Admin-only write paths for the per-attribute state machine (Gate 14 of
+// FLOW_AND_SCREEN_KERNEL.md). The /admin/flows screen lets a project admin
+// author transitions without writing SQL. Reads (`flow.list`) are open to
+// any authenticated user.
+// ============================================================================
+
+function decodeFlowRow(j: Record<string, unknown>): FlowRow {
+  return {
+    id: asId(j.id),
+    name: asStr(j.name),
+    doc: asStrOrEmpty(j.doc),
+    attribute_def_id: asId(j.attribute_def_id),
+    attribute_def_name: asStrOrEmpty(j.attribute_def_name),
+    scope_card_id: asId(j.scope_card_id),
+    default_create_status_id: asIdOrZero(j.default_create_status_id),
+    created_at: asStrOrEmpty(j.created_at),
+  };
+}
+
+const flowList: HandlerSpec<FlowListInput, FlowListOutput> = {
+  endpoint: 'flow',
+  action: 'list',
+  encode: (i) => {
+    const m: Record<string, unknown> = {};
+    if (i.scopeCardId !== undefined) m.scope_card_id = i.scopeCardId;
+    if (i.attributeDefId !== undefined) m.attribute_def_id = i.attributeDefId;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { rows: asArray(j.rows).map((r) => decodeFlowRow(asObj(r))) };
+  },
+};
+
+const flowSet: HandlerSpec<FlowSetInput, FlowSetOutput> = {
+  endpoint: 'flow',
+  action: 'set',
+  encode: (i) => {
+    const m: Record<string, unknown> = {
+      name: i.name,
+      attribute_def_id: i.attributeDefId,
+      scope_card_id: i.scopeCardId,
+    };
+    if (i.id !== undefined && i.id !== 0n) m.id = i.id;
+    if (i.doc !== undefined && i.doc !== '') m.doc = i.doc;
+    if (i.defaultCreateStatusId !== undefined && i.defaultCreateStatusId !== 0n) {
+      m.default_create_status_id = i.defaultCreateStatusId;
+    }
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { id: asId(j.id) };
+  },
+};
+
+const flowDelete: HandlerSpec<FlowDeleteInput, FlowDeleteOutput> = {
+  endpoint: 'flow',
+  action: 'delete',
+  encode: (i) => ({ flow_id: i.flowId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: asBoolOrFalse(j.ok),
+      deleted: asNumOrZero(j.deleted),
+    };
+  },
+};
+
+const flowPreviewDelete: HandlerSpec<
+  FlowPreviewDeleteInput,
+  FlowPreviewDeleteOutput
+> = {
+  endpoint: 'flow',
+  action: 'preview_delete',
+  encode: (i) => ({ flow_id: i.flowId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    const phaseRaw = j.tasks_by_phase;
+    const phase = phaseRaw === null || phaseRaw === undefined ? {} : asObj(phaseRaw);
+    return {
+      flow_id: asId(j.flow_id),
+      flow_name: asStrOrEmpty(j.flow_name),
+      step_count: asNumOrZero(j.step_count),
+      tasks_currently_in_flow_states: asNumOrZero(j.tasks_currently_in_flow_states),
+      tasks_by_phase: {
+        triage: asNumOrZero(phase.triage),
+        active: asNumOrZero(phase.active),
+        terminal: asNumOrZero(phase.terminal),
+      },
+      sample_step_labels: asArray(j.sample_step_labels).map((v) =>
+        typeof v === 'string' ? v : '',
+      ),
+    };
+  },
+};
+
+// ============================================================================
+// flow_step.list / flow_step.set / flow_step.delete
+// ============================================================================
+
+function decodeFlowStepRow(j: Record<string, unknown>): FlowStepRow {
+  return {
+    id: asId(j.id),
+    flow_id: asId(j.flow_id),
+    from_card_id: asId(j.from_card_id),
+    to_card_id: asId(j.to_card_id),
+    label: asStrOrEmpty(j.label),
+    requires_role_id: asIdOrZero(j.requires_role_id),
+    requires_role_name: asStrOrEmpty(j.requires_role_name),
+    sort_order: asNumOrZero(j.sort_order),
+  };
+}
+
+const flowStepList: HandlerSpec<FlowStepListInput, FlowStepListOutput> = {
+  endpoint: 'flow_step',
+  action: 'list',
+  encode: (i) => ({ flow_id: i.flowId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { rows: asArray(j.rows).map((r) => decodeFlowStepRow(asObj(r))) };
+  },
+};
+
+const flowStepSet: HandlerSpec<FlowStepSetInput, FlowStepSetOutput> = {
+  endpoint: 'flow_step',
+  action: 'set',
+  encode: (i) => {
+    const m: Record<string, unknown> = {
+      flow_id: i.flowId,
+      from_card_id: i.fromCardId,
+      to_card_id: i.toCardId,
+      label: i.label,
+    };
+    if (i.id !== undefined && i.id !== 0n) m.id = i.id;
+    if (i.requiresRoleId !== undefined && i.requiresRoleId !== 0n) {
+      m.requires_role_id = i.requiresRoleId;
+    }
+    if (i.sortOrder !== undefined && i.sortOrder !== 0) {
+      m.sort_order = i.sortOrder;
+    }
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { id: asId(j.id) };
+  },
+};
+
+const flowStepDelete: HandlerSpec<FlowStepDeleteInput, FlowStepDeleteOutput> = {
+  endpoint: 'flow_step',
+  action: 'delete',
+  encode: (i) => ({ flow_step_id: i.flowStepId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: asBoolOrFalse(j.ok),
+      deleted: asNumOrZero(j.deleted),
+    };
+  },
+};
+
+// ============================================================================
 // Re-exports + registration helper
 // ============================================================================
 
@@ -384,6 +565,13 @@ export {
   userCardAgentSet,
   userCardAgentClear,
   userCardAgentList,
+  flowList,
+  flowSet,
+  flowDelete,
+  flowPreviewDelete,
+  flowStepList,
+  flowStepSet,
+  flowStepDelete,
 };
 
 /** Register the admin handlers on top of the v1 set. */
@@ -403,4 +591,11 @@ export function registerAdminHandlers(r: HandlerRegistry): void {
   r.register(userCardAgentSet);
   r.register(userCardAgentClear);
   r.register(userCardAgentList);
+  r.register(flowList);
+  r.register(flowSet);
+  r.register(flowDelete);
+  r.register(flowPreviewDelete);
+  r.register(flowStepList);
+  r.register(flowStepSet);
+  r.register(flowStepDelete);
 }

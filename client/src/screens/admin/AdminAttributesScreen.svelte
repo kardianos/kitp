@@ -44,6 +44,7 @@
   import DragHandle from '../../dnd/DragHandle.svelte';
   import DropZone from '../../dnd/DropZone.svelte';
   import { setActiveScope, useShortcut } from '../../keys/shortcut';
+  import { navigate } from '../../routing/router.svelte';
   import { projectScope } from '../../shell/project_scope.svelte';
   import {
     attributeDefInsert,
@@ -78,13 +79,16 @@
     EdgeDeleteOutput,
     EdgeInsertInput,
     EdgeInsertOutput,
+    FlowStepBlocker,
     ID,
+    ValueReferencedByFlowDetail,
   } from '../../reg/types';
   import Button from '../../ui/Button.svelte';
   import Chip from '../../ui/Chip.svelte';
   import Combobox from '../../ui/Combobox.svelte';
   import EmptyState from '../../ui/EmptyState.svelte';
   import IconButton from '../../ui/IconButton.svelte';
+  import Modal from '../../ui/Modal.svelte';
   import Spinner from '../../ui/Spinner.svelte';
   import { notify } from '../../ui/toast.svelte';
   import { cx } from '../../util/class_names';
@@ -98,6 +102,7 @@
     type MatrixRow,
     type NewAttrDraft,
   } from './admin_attributes_helpers';
+  import { formatBlockedByMessage } from './admin_flows_helpers';
 
   setActiveScope('admin_attributes');
 
@@ -122,6 +127,19 @@
 
   let searchEl: HTMLInputElement | null = $state(null);
   let newBtnEl: HTMLButtonElement | null = $state(null);
+
+  /**
+   * V8 (FLOW_AND_SCREEN_KERNEL §V8): `card.delete` rejects value-cards
+   * referenced by any flow_step with code `value_referenced_by_flow` and
+   * a structured `blocked_by[]` payload (Gate 10's
+   * `runDelete` → `flowStepBlockers`). When that fires we open a friendly
+   * dialog listing the offending transitions so the admin can fix them in
+   * /admin/flows instead of staring at "Delete failed: ...".
+   */
+  let blockedByOpen = $state(false);
+  let blockedByTitle = $state('');
+  let blockedByMessage = $state('');
+  let blockedByDetail = $state<FlowStepBlocker[]>([]);
 
   function blankDraft(): NewAttrDraft {
     return {
@@ -545,9 +563,35 @@
       }
       await loadValueCards(cardTypeName);
     } catch (e) {
+      // V8: when card.delete is rejected because the value-card is named by
+      // a flow_step row, the server attaches a structured `blocked_by[]`
+      // detail. Surface that as a friendly dialog with a link to
+      // /admin/flows instead of a generic error toast.
+      if (
+        e instanceof SubRequestError &&
+        e.code === 'value_referenced_by_flow'
+      ) {
+        const detail = e.detail as ValueReferencedByFlowDetail | undefined;
+        const blockers = detail?.blocked_by ?? [];
+        const titleStr =
+          typeof card.attributes['title'] === 'string' &&
+          (card.attributes['title'] as string).length > 0
+            ? (card.attributes['title'] as string)
+            : `#${card.id}`;
+        blockedByTitle = titleStr;
+        blockedByDetail = blockers;
+        blockedByMessage = formatBlockedByMessage(titleStr, blockers);
+        blockedByOpen = true;
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       notify({ type: 'error', message: `Delete failed: ${msg}` });
     }
+  }
+
+  function goToFlows(): void {
+    blockedByOpen = false;
+    navigate('/admin/flows');
   }
 
   /**
@@ -1190,3 +1234,38 @@
     </div>
   {/if}
 </div>
+
+<!--
+  V8 blocked_by dialog. Surfaces the server's `value_referenced_by_flow`
+  rejection with a list of offending flow_steps and a one-click jump to
+  /admin/flows so the admin can delete those transitions first.
+-->
+<Modal
+  bind:open={blockedByOpen}
+  title="Can't delete: referenced by flow transitions"
+  size="md"
+  onClose={() => (blockedByOpen = false)}
+>
+  <div class="flex flex-col gap-3 text-sm" data-testid="blocked-by-dialog">
+    <p class="whitespace-pre-line text-fg">{blockedByMessage}</p>
+    {#if blockedByDetail.length > 0}
+      <ul class="ml-4 list-disc space-y-1 text-fg">
+        {#each blockedByDetail as b (b.flow_step_id)}
+          <li>
+            <span class="font-medium">{b.step_label === '' ? '(unnamed)' : b.step_label}</span>
+            <span class="text-muted"> — {b.flow_name}</span>
+            <span class="text-muted"> ({b.from_label} → {b.to_label})</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+  {#snippet footer()}
+    <Button variant="ghost" onclick={() => (blockedByOpen = false)}>
+      {#snippet children()}Close{/snippet}
+    </Button>
+    <Button variant="primary" onclick={goToFlows}>
+      {#snippet children()}Open Admin · Flows{/snippet}
+    </Button>
+  {/snippet}
+</Modal>
