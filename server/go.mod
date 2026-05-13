@@ -5,6 +5,8 @@ go 1.26.2
 require github.com/jackc/pgx/v5 v5.9.2
 
 require (
+	github.com/emersion/go-imap v1.0.0-beta.1 // indirect
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect

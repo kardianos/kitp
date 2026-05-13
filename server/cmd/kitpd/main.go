@@ -18,6 +18,9 @@
 //   CAS_REAPER_GRACE_SEC      — orphan grace period in seconds; default 3600
 //   KITP_COMM_SMTP_TICK_SEC   — SMTP sender poll cadence in seconds; default 10
 //   KITP_COMM_SMTP_DRY_RUN    — when "1", SMTP senders log instead of sending
+//   KITP_COMM_IMAP_TICK_SEC   — IMAP poller cadence in seconds; default 60
+//   KITP_COMM_IMAP_DRY_RUN    — when "1", IMAP pollers log instead of polling
+//   KITP_COMM_IMAP_INSECURE   — when "1", allow plaintext IMAP (no TLS); dev only
 //
 // In production the server refuses to start if AUTH_MODE=off (N-SEC-5).
 package main
@@ -361,6 +364,24 @@ func runHTTP() error {
 			len(smtpSenders), smtpTick, envOr("KITP_COMM_SMTP_DRY_RUN", "0"))
 	}
 
+	// IMAP pollers. Mirror of the SMTP pool: one goroutine per
+	// configured comm_channel card, fetching unseen messages on each
+	// tick and routing via the three-tier threading lookup (header /
+	// subject suffix / body trailer). Adding a new channel currently
+	// requires a kitpd restart — auto-detect is a follow-up gate
+	// (email_comm_spec.md §"IMAP poller").
+	imapTick := time.Duration(envInt("KITP_COMM_IMAP_TICK_SEC", 60)) * time.Second
+	imapPollers, err := comm.StartIMAPPollerPool(ctx, pool, imapTick, logger)
+	if err != nil {
+		return fmt.Errorf("imap pollers: %w", err)
+	}
+	if len(imapPollers) > 0 {
+		log.Printf("started %d IMAP poller(s) (tick=%s, dry_run=%s, insecure=%s)",
+			len(imapPollers), imapTick,
+			envOr("KITP_COMM_IMAP_DRY_RUN", "0"),
+			envOr("KITP_COMM_IMAP_INSECURE", "0"))
+	}
+
 	idem := obs.NewIdempotencyStore(pgPool, logger)
 	idem.StartCleanup(ctx)
 
@@ -447,6 +468,9 @@ func runHTTP() error {
 	}
 	for _, sender := range smtpSenders {
 		sender.Stop()
+	}
+	for _, poller := range imapPollers {
+		poller.Stop()
 	}
 	return nil
 }
