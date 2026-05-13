@@ -281,10 +281,24 @@ id, card_type_id,     parent_card_id, phase,    title,       sort_order, alias
 16, $card_type.status, parent,         terminal, "Cancelled", 50,         tpl_s_cancel
 
 
+## table card | under=tpl_project | doc="Comm status value-cards for the template's comm flow (Gate 2 of email_comm_spec). Distinct from the task status cards: same card_type, different attribute_def (`comm_status` vs `status`). Reuses the status card_type since both are semantically status value-cards." | on_conflict="id"
+### rows
+id, card_type_id,     parent_card_id, phase,    title,         sort_order, alias
+23, $card_type.status, parent,         active,   "Open",        10,         tpl_cs_open
+24, $card_type.status, parent,         active,   "In progress", 20,         tpl_cs_progress
+25, $card_type.status, parent,         terminal, "Resolved",    30,         tpl_cs_resolved
+
+
 ## table flow | doc="Standard task flow for the template. Binds the `status` attribute to the template project; new projects get a stamped copy via project.stamp." | on_conflict="attribute_def_id, scope_card_id"
 ### rows
 name,             attribute_def_id,        scope_card_id, default_create_status_id, alias
 "Standard task",  $attribute_def.status,   @tpl_project,  @tpl_s_idea,              tpl_flow_status
+
+
+## table flow | doc="Standard comm flow for the template (Gate 2 of email_comm_spec). Binds the `comm_status` attribute to the template project so every stamped project inherits an open → in-progress → resolved comm lifecycle independent of the task status flow." | on_conflict="attribute_def_id, scope_card_id"
+### rows
+name,                 attribute_def_id,             scope_card_id, default_create_status_id, alias
+"Standard comm flow", $attribute_def.comm_status,   @tpl_project,  @tpl_cs_open,             tpl_flow_comm
 
 
 ## table flow_step | doc="12 transitions for the standard status flow. Buckets (from.phase, to.phase) drive the TransitionBar's UI category: triage→active = Accept, triage→terminal = Reject, active→active = progress, active→terminal = Close, terminal→active = Reopen." | on_conflict="flow_id, from_card_id, to_card_id, label"
@@ -302,6 +316,14 @@ flow_id,           from_card_id,  to_card_id,     label,             sort_order
 @tpl_flow_status,  @tpl_s_review, @tpl_s_cancel,  "Cancel",          6
 @tpl_flow_status,  @tpl_s_done,   @tpl_s_todo,    "Reopen",          1
 @tpl_flow_status,  @tpl_s_cancel, @tpl_s_todo,    "Reopen",          2
+
+
+## table flow_step | doc="Comm flow transitions (Gate 2 of email_comm_spec): Open → In progress (start working), In progress → Resolved (resolve), Resolved → Open (reopen). Three labels mirror the lightweight helpdesk lifecycle described in the spec." | on_conflict="flow_id, from_card_id, to_card_id, label"
+### rows
+flow_id,         from_card_id,     to_card_id,        label,           sort_order
+@tpl_flow_comm,  @tpl_cs_open,     @tpl_cs_progress,  "Start working", 1
+@tpl_flow_comm,  @tpl_cs_progress, @tpl_cs_resolved,  "Resolve",       1
+@tpl_flow_comm,  @tpl_cs_resolved, @tpl_cs_open,      "Reopen",        1
 
 
 -- Template screens. Six screen cards, all six built-in layouts. The

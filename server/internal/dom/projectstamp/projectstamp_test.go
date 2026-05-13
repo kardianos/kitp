@@ -688,9 +688,10 @@ func TestStampPermissionWorker(t *testing.T) {
 
 // TestStampFromInstallSeedTemplate exercises Gate 11: the install seed
 // creates a 'Standard Project Template' project (is_template=true)
-// carrying 6 status value-cards, 6 screens, 1 flow, and 12 flow_steps.
-// Stamping from that template should produce a fresh project with the
-// same shape (independent ids).
+// carrying 6 task-status value-cards, 3 comm-status value-cards (Gate 2
+// of email_comm_spec), 6 screens, 2 flows (status + comm), 12+3=15
+// flow_steps. Stamping from that template should produce a fresh
+// project with the same shape (independent ids).
 func TestStampFromInstallSeedTemplate(t *testing.T) {
 	f := setup(t, "kitp_test_projectstamp_install_seed")
 	// Don't seedTemplate — use the seeded one.
@@ -714,14 +715,15 @@ func TestStampFromInstallSeedTemplate(t *testing.T) {
 		t.Fatal("expected a new project id; got 0")
 	}
 
-	// Descendant counts under the new project. Six statuses, six
-	// screens; no milestones / components / tags / filters in the
-	// install-seed template.
+	// Descendant counts under the new project. Nine status cards
+	// (6 task statuses + 3 comm statuses from Gate 2 of
+	// email_comm_spec), six screens; no milestones / components /
+	// tags / filters in the install-seed template.
 	type want struct {
 		typ string
 		n   int
 	}
-	for _, w := range []want{{"status", 6}, {"screen", 6}, {"milestone", 0}, {"filter", 0}} {
+	for _, w := range []want{{"status", 9}, {"screen", 6}, {"milestone", 0}, {"filter", 0}} {
 		var got int
 		if err := f.sp.P.QueryRow(f.ctx, `
 			WITH RECURSIVE walk AS (
@@ -740,21 +742,33 @@ func TestStampFromInstallSeedTemplate(t *testing.T) {
 		}
 	}
 
-	// Flow + flow_step counts. Exactly one flow scoped to the new
-	// project, with 12 transitions.
-	var newFlowID int64
+	// Flow count: 2 (status flow + comm flow, both stamped from the
+	// template). flow_step total: 12 (status) + 3 (comm) = 15.
+	var flowN int
 	if err := f.sp.P.QueryRow(f.ctx, `
-		SELECT id FROM flow WHERE scope_card_id = $1
-	`, out.NewProjectID).Scan(&newFlowID); err != nil {
-		t.Fatalf("new flow lookup: %v", err)
+		SELECT count(*) FROM flow WHERE scope_card_id = $1
+	`, out.NewProjectID).Scan(&flowN); err != nil {
+		t.Fatalf("flow count: %v", err)
 	}
-	var stepN int
+	if flowN != 2 {
+		t.Errorf("new flow count = %d, want 2 (status + comm)", flowN)
+	}
+
+	var statusFlowID int64
+	if err := f.sp.P.QueryRow(f.ctx, `
+		SELECT f.id FROM flow f
+		JOIN attribute_def ad ON ad.id = f.attribute_def_id
+		WHERE f.scope_card_id = $1 AND ad.name = 'status'
+	`, out.NewProjectID).Scan(&statusFlowID); err != nil {
+		t.Fatalf("status flow lookup: %v", err)
+	}
+	var statusStepN int
 	if err := f.sp.P.QueryRow(f.ctx,
-		`SELECT count(*) FROM flow_step WHERE flow_id = $1`, newFlowID).Scan(&stepN); err != nil {
-		t.Fatalf("flow_step count: %v", err)
+		`SELECT count(*) FROM flow_step WHERE flow_id = $1`, statusFlowID).Scan(&statusStepN); err != nil {
+		t.Fatalf("status flow_step count: %v", err)
 	}
-	if stepN != 12 {
-		t.Errorf("new flow_step count = %d, want 12", stepN)
+	if statusStepN != 12 {
+		t.Errorf("new status flow_step count = %d, want 12", statusStepN)
 	}
 
 	// The new project is NOT marked is_template (the attribute simply
@@ -769,5 +783,116 @@ func TestStampFromInstallSeedTemplate(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("new project has is_template attribute rows (got %d); should not be copied", n)
+	}
+}
+
+// TestStampedProjectHasCommFlow exercises Gate 2 of email_comm_spec:
+// the install-seed template carries a "Standard comm flow" bound to
+// the `comm_status` attribute with three open→in-progress→resolved
+// transitions. Stamping must copy the comm flow + its three flow_steps
+// alongside the standard task status flow, and the new comm flow's
+// default_create_status_id must point at the new project's "Open" card.
+func TestStampedProjectHasCommFlow(t *testing.T) {
+	f := setup(t, "kitp_test_projectstamp_comm_flow")
+
+	var seededTemplateID int64
+	if err := f.sp.P.QueryRow(f.ctx, `
+		SELECT c.id FROM card c
+		JOIN attribute_value av ON av.card_id = c.id
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE ad.name = 'is_template' AND av.value = to_jsonb(TRUE)
+		LIMIT 1
+	`).Scan(&seededTemplateID); err != nil {
+		t.Fatalf("lookup seeded template: %v", err)
+	}
+
+	out := stamp(t, f, seededTemplateID, "Stamped with comm flow")
+	if out.NewProjectID == 0 {
+		t.Fatal("expected a new project id; got 0")
+	}
+
+	// Two flows under the new project: the status flow and the comm flow.
+	var flowN int
+	if err := f.sp.P.QueryRow(f.ctx, `
+		SELECT count(*) FROM flow WHERE scope_card_id = $1
+	`, out.NewProjectID).Scan(&flowN); err != nil {
+		t.Fatalf("flow count: %v", err)
+	}
+	if flowN != 2 {
+		t.Errorf("new project flow count = %d, want 2 (status + comm)", flowN)
+	}
+
+	// Locate the comm flow by its attribute_def (comm_status).
+	var commFlowID int64
+	var defaultCreate *int64
+	if err := f.sp.P.QueryRow(f.ctx, `
+		SELECT f.id, f.default_create_status_id FROM flow f
+		JOIN attribute_def ad ON ad.id = f.attribute_def_id
+		WHERE f.scope_card_id = $1 AND ad.name = 'comm_status'
+	`, out.NewProjectID).Scan(&commFlowID, &defaultCreate); err != nil {
+		t.Fatalf("comm flow lookup (a fresh project should have a comm flow): %v", err)
+	}
+	if defaultCreate == nil {
+		t.Fatal("comm flow default_create_status_id is NULL; want a stamped 'Open' status card id")
+	}
+
+	// The comm flow's default_create_status_id must point at the new
+	// "Open" comm-status card (not the template's).
+	var openID int64
+	var openTitle string
+	if err := f.sp.P.QueryRow(f.ctx, `
+		SELECT c.id, av.value #>> '{}'
+		FROM card c
+		JOIN card_type ct ON ct.id = c.card_type_id
+		JOIN attribute_value av ON av.card_id = c.id
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE c.parent_card_id = $1
+		  AND ct.name = 'status'
+		  AND ad.name = 'title'
+		  AND av.value = to_jsonb('Open'::text)
+	`, out.NewProjectID).Scan(&openID, &openTitle); err != nil {
+		t.Fatalf("locate stamped 'Open' comm status card: %v", err)
+	}
+	if *defaultCreate != openID {
+		t.Errorf("comm flow default_create_status_id = %d, want %d (the stamped 'Open' card)", *defaultCreate, openID)
+	}
+
+	// Three flow_step rows under the stamped comm flow.
+	var commStepN int
+	if err := f.sp.P.QueryRow(f.ctx,
+		`SELECT count(*) FROM flow_step WHERE flow_id = $1`, commFlowID).Scan(&commStepN); err != nil {
+		t.Fatalf("comm flow_step count: %v", err)
+	}
+	if commStepN != 3 {
+		t.Errorf("comm flow_step count = %d, want 3 (open→progress, progress→resolved, resolved→open)", commStepN)
+	}
+
+	// All comm flow_step from/to references resolve to status cards
+	// under the stamped project (no leftover template ids).
+	rows, err := f.sp.P.Query(f.ctx, `
+		SELECT fs.from_card_id, fs.to_card_id, fs.label,
+		       fc.parent_card_id, tc.parent_card_id
+		FROM flow_step fs
+		JOIN card fc ON fc.id = fs.from_card_id
+		JOIN card tc ON tc.id = fs.to_card_id
+		WHERE fs.flow_id = $1
+		ORDER BY fs.label
+	`, commFlowID)
+	if err != nil {
+		t.Fatalf("comm flow_step rows: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fromID, toID, fromParent, toParent int64
+		var label string
+		if err := rows.Scan(&fromID, &toID, &label, &fromParent, &toParent); err != nil {
+			t.Fatalf("scan flow_step: %v", err)
+		}
+		if fromParent != out.NewProjectID {
+			t.Errorf("flow_step %q from_card parent = %d, want %d (new project)", label, fromParent, out.NewProjectID)
+		}
+		if toParent != out.NewProjectID {
+			t.Errorf("flow_step %q to_card parent = %d, want %d (new project)", label, toParent, out.NewProjectID)
+		}
 	}
 }

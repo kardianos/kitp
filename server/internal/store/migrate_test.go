@@ -29,8 +29,9 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		{`SELECT count(*) FROM user_account`, 1},        // System only
 		{`SELECT count(*) FROM user_account_person`, 1}, // System's link
 		// 1 System person + 1 template project + 6 template statuses +
-		// 6 template screens = 14.
-		{`SELECT count(*) FROM card`, 14},
+		// 3 template comm statuses (Gate 2 of email_comm_spec) +
+		// 6 template screens = 17.
+		{`SELECT count(*) FROM card`, 17},
 		{`SELECT count(*) FROM user_role`, 2}, // system + admin on user 1
 		{`SELECT count(*) FROM role`, 6},
 		{`SELECT count(*) FROM card_type`, 13},
@@ -38,9 +39,10 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		{`SELECT count(*) FROM edge`, 68},
 		{`SELECT count(*) FROM process`, 6},
 		{`SELECT count(*) FROM process_step`, 7},
-		// Template's status flow + 12 transitions (Gate 11).
-		{`SELECT count(*) FROM flow`, 1},
-		{`SELECT count(*) FROM flow_step`, 12},
+		// Template's status flow + 12 transitions (Gate 11), plus the
+		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
+		{`SELECT count(*) FROM flow`, 2},
+		{`SELECT count(*) FROM flow_step`, 15},
 	}
 	for _, c := range cases {
 		var got int64
@@ -74,18 +76,20 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{`SELECT count(*) FROM user_account_person`, 2},
 		// System: system+admin. frank: admin.
 		{`SELECT count(*) FROM user_role`, 3},
-		// 13 seed cards (template project + 6 statuses + 6 screens) +
-		// 9 test_demo cards (2 persons + 1 project + 1 milestone +
-		// 1 status + 2 tasks + 1 screen + 1 filter) = 22.
-		{`SELECT count(*) FROM card`, 22},
+		// 16 seed cards (template project + 6 statuses + 3 comm statuses
+		// from Gate 2 of email_comm_spec + 6 screens) + 9 test_demo cards
+		// (2 persons + 1 project + 1 milestone + 1 status + 2 tasks +
+		// 1 screen + 1 filter) = 25.
+		{`SELECT count(*) FROM card`, 25},
 		{`SELECT count(*) FROM role`, 6},
 		{`SELECT count(*) FROM card_type`, 13},
 		{`SELECT count(*) FROM attribute_def`, 43},
 		{`SELECT count(*) FROM edge`, 68},
-		// Template's status flow + 12 transitions (Gate 11). test_demo
-		// adds none of its own.
-		{`SELECT count(*) FROM flow`, 1},
-		{`SELECT count(*) FROM flow_step`, 12},
+		// Template's status flow + 12 transitions (Gate 11), plus the
+		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
+		// test_demo adds none of its own.
+		{`SELECT count(*) FROM flow`, 2},
+		{`SELECT count(*) FROM flow_step`, 15},
 	}
 	for _, c := range cases {
 		var got int64
@@ -141,12 +145,12 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		want  int64
 	}{
 		{`SELECT count(*) FROM card_type`, 13},
-		// 13 seed (template) + 9 test_demo = 22.
-		{`SELECT count(*) FROM card`, 22},
+		// 16 seed (template + 3 comm statuses from Gate 2) + 9 test_demo = 25.
+		{`SELECT count(*) FROM card`, 25},
 		{`SELECT count(*) FROM user_account`, 2},
 		{`SELECT count(*) FROM role`, 6},
-		{`SELECT count(*) FROM flow`, 1},
-		{`SELECT count(*) FROM flow_step`, 12},
+		{`SELECT count(*) FROM flow`, 2},
+		{`SELECT count(*) FROM flow_step`, 15},
 	}
 	for _, c := range cases {
 		var got int64

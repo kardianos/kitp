@@ -60,6 +60,16 @@ After Gate 1 lands, the install-seed counts go from:
 
 The `migrate_test.go` row-count assertions in `server/internal/store/` are updated to match.
 
+### Gate 2 seeded counts
+
+After Gate 2 lands, the template carries the comm flow alongside the existing task status flow. The install-seed counts shift again:
+
+- `card`: 14 → 17 (+ 3 comm-status value-cards: Open active / In progress active / Resolved terminal — all parented under the template project, using the `status` card_type but distinguished from task statuses by the `comm_status` attribute_def they answer to).
+- `flow`: 1 → 2 (+ "Standard comm flow", scoped to the template project, bound to `comm_status`, default_create_status pointing at "Open").
+- `flow_step`: 12 → 15 (+ 3 transitions: Open → In progress / In progress → Resolved / Resolved → Open).
+
+Because the comm flow lives on the template, `project.stamp` graph-copies it into every new project for free — no extra wiring beyond what Gate 10/11 already did for the task status flow.
+
 ### New table — `comm_secret`
 
 The only data we can't store in `attribute_value` is the IMAP/SMTP password — secret at rest, retrieved per-poll, never displayed once saved. Everything else (host, port, username, addresses) is plain `attribute_value` JSONb.
@@ -211,7 +221,7 @@ False-positive risk on body-trailer matching: 58 bits is enough entropy that a r
 Each gate is a single agent dispatch with build + tests passing before the next is authorized.
 
 1. **Schema additions.** Add the new card_types, attribute_defs, and the `comm_secret` + `comm_log` tables to `schema.hcsv` and `seed.hcsv`. No handlers yet. Tests: schema applies cleanly; seed counts update appropriately.
-2. **`comm` flow seeded.** Define the default `comm` flow (open → in-progress → resolved) and its status value-cards as part of the template's seed. Tests: a fresh project has a comm flow.
+2. **`comm` flow seeded.** Define the default `comm` flow (open → in-progress → resolved) and its status value-cards as part of the template's seed. Tests: a fresh project has a comm flow. *(Shipped — see "Gate 2 seeded counts" above; the template now carries 3 comm-status cards, the "Standard comm flow", and its 3 transitions.)*
 3. **CRUD handlers.** `comm_channel.set / list`, `comm.create`, `comm_log.list`. No IMAP/SMTP wiring yet — handlers manipulate rows only. Tests: create channel, create comm, list comm.
 4. **Reply authoring.** `reply.post` handler. Inserts `reply_body` row with `delivery_status='pending'`. Tests: reply created; appears in `comm.replies`.
 5. **SMTP sender goroutine.** Long-running worker per channel; polls for pending replies, sends, updates status. Tests: integration test against a mock SMTP server (use `smtpmock` or a small in-process listener).
