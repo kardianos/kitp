@@ -12,14 +12,21 @@
  * Thrown when a per-sub-response `{ok:false, error:{code,message}}` envelope
  * arrives from the server. `aborted`-coded errors are mapped to
  * {@link BatchAbortedError} before this is thrown.
+ *
+ * The optional `detail` field carries the structured payload the server
+ * attaches to specific error codes (e.g. the V13 `flow_disallowed` /
+ * `flow_role_required` envelope's `from / attempted_to / available[]`
+ * shape — see TransitionBar's sticky banner).
  */
 export class SubRequestError extends Error {
   readonly code: string;
+  readonly detail?: unknown;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, detail?: unknown) {
     super(message);
     this.name = 'SubRequestError';
     this.code = code;
+    if (detail !== undefined) this.detail = detail;
     // Preserve the prototype chain across down-level transpilation.
     Object.setPrototypeOf(this, SubRequestError.prototype);
   }

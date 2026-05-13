@@ -545,8 +545,11 @@ export class Dispatcher {
           code: err?.code ?? 'unknown_error',
           message: err?.message ?? '',
         };
+        if (err?.detail !== undefined) {
+          (fault as { detail?: unknown }).detail = err.detail;
+        }
         this.emitFault(fault);
-        this.deliverFault(p, fault, new SubRequestError(fault.code, fault.message));
+        this.deliverFault(p, fault, new SubRequestError(fault.code, fault.message, err?.detail));
       }
     }
   }

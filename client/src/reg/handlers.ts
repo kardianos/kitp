@@ -42,6 +42,8 @@ import type {
   AttachmentListOutput,
   FileCreateInput,
   FileCreateOutput,
+  FlowStepListForCardInput,
+  FlowStepListForCardOutput,
   MissingChunksInput,
   MissingChunksOutput,
   CardRow,
@@ -70,6 +72,8 @@ import type {
   TagApplyOutput,
   TagRemoveInput,
   TagRemoveOutput,
+  TransitionPhase,
+  TransitionRow,
   UserCardSortSetInput,
   UserCardSortSetOutput,
   UserRow,
@@ -643,6 +647,60 @@ const attributeDefInsert: HandlerSpec<
 };
 
 // ============================================================================
+// flow_step.list_for_card — read-side affordance API. Returns every
+// transition the given card may currently fire (per attribute_def +
+// from-value match), pre-joined with from/to titles + phases, optional
+// requires_role name, and a per-actor `allowed` bit. The TransitionBar
+// component buckets these rows by `(from_phase, to_phase)` to render
+// accept / reject / close / reopen / progress etc.
+// ============================================================================
+
+function asTransitionPhase(v: unknown): TransitionPhase {
+  if (v === 'triage' || v === 'terminal') return v;
+  return 'active';
+}
+
+function decodeTransitionRow(j: Record<string, unknown>): TransitionRow {
+  const out: TransitionRow = {
+    id: asId(j.id),
+    flow_id: asId(j.flow_id),
+    flow_name: asStrOrEmpty(j.flow_name),
+    attribute_def_id: asId(j.attribute_def_id),
+    attribute_def_name: asStrOrEmpty(j.attribute_def_name),
+    from_card_id: asId(j.from_card_id),
+    from_label: asStrOrEmpty(j.from_label),
+    from_phase: asTransitionPhase(j.from_phase),
+    to_card_id: asId(j.to_card_id),
+    to_label: asStrOrEmpty(j.to_label),
+    to_phase: asTransitionPhase(j.to_phase),
+    label: asStrOrEmpty(j.label),
+    requires_role_name: asStrOrEmpty(j.requires_role_name),
+    sort_order: asNumOrZero(j.sort_order),
+    allowed: asBoolOrFalse(j.allowed),
+  };
+  const requiresRole = asIdOpt(j.requires_role_id);
+  if (requiresRole !== undefined && requiresRole !== 0n) {
+    out.requires_role_id = requiresRole;
+  }
+  return out;
+}
+
+const flowStepListForCard: HandlerSpec<
+  FlowStepListForCardInput,
+  FlowStepListForCardOutput
+> = {
+  endpoint: 'flow_step',
+  action: 'list_for_card',
+  encode: (i) => ({ card_id: i.cardId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeTransitionRow(asObj(r))),
+    };
+  },
+};
+
+// ============================================================================
 // activity.select
 // ============================================================================
 
@@ -865,6 +923,7 @@ export {
   attributeUpdate,
   attributeDefSelect,
   attributeDefInsert,
+  flowStepListForCard,
   activitySelect,
   commentInsert,
   userSelect,
@@ -900,6 +959,7 @@ export function registerBuiltInHandlers(r: HandlerRegistry): void {
   r.register(attributeUpdate);
   r.register(attributeDefSelect);
   r.register(attributeDefInsert);
+  r.register(flowStepListForCard);
   r.register(activitySelect);
   r.register(commentInsert);
   r.register(userSelect);

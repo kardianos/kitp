@@ -39,7 +39,7 @@
   import AttachmentsSection from '../ui/widgets/AttachmentsSection.svelte';
   import AttachmentsPreviewStrip from '../ui/widgets/AttachmentsPreviewStrip.svelte';
   import AttributeSidePanel from '../ui/widgets/AttributeSidePanel.svelte';
-  import TerminalActionButton from '../ui/widgets/TerminalActionButton.svelte';
+  import TransitionBar from '../ui/widgets/TransitionBar.svelte';
   import { sharedSchemaCache } from '../filter/attribute_schema.svelte';
   import type { FilterAttribute } from '../filter/attribute_schema.svelte';
   import type {
@@ -55,15 +55,19 @@
     CardWithAttrs,
     CommentInsertInput,
     CommentInsertOutput,
+    FlowStepListForCardInput,
+    FlowStepListForCardOutput,
     ID,
     TagApplyInput,
     TagApplyOutput,
     TagRemoveInput,
     TagRemoveOutput,
+    TransitionRow,
     UserRow,
     UserSelectInput,
     UserSelectOutput,
   } from '../reg/types';
+  import { flowStepListForCard } from '../reg/handlers';
   import {
     activitySelect,
     appliedTagIds,
@@ -124,6 +128,19 @@
   let components = $state<readonly CardWithAttrs[]>([]);
   let tagCards = $state<readonly CardWithAttrs[]>([]);
   let statusCards = $state<readonly CardWithAttrs[]>([]);
+  /**
+   * Available state transitions for this task — drives the header
+   * `<TransitionBar>`. Refreshed on every load + after every successful
+   * `attribute.update` (status changes change which transitions exist).
+   */
+  let transitions = $state<readonly TransitionRow[]>([]);
+  /**
+   * Reference to the mounted `<TransitionBar>` so the `c` keyboard
+   * shortcut can fire the first transition in the `close` bucket (the
+   * old `TerminalActionButton`'s primary action moves under it per spec
+   * §V14).
+   */
+  let transitionBar: { fireFirstClose: () => void } | undefined = $state();
   // `users` (UserRow[]) backs the activity stream's "actor" labels
   // (activity.actor_id is a `user_account.id`).
   let users = $state<readonly UserRow[]>([]);
@@ -314,27 +331,6 @@
   /** Tag ids currently applied to the task. */
   const appliedTags = $derived(appliedTagIds(task));
 
-  /** Status value cards scoped to this task's project that are terminal. */
-  const terminalStatusOptions = $derived.by((): { id: ID; label: string }[] =>
-    scopedStatuses
-      .filter((s) => s.phase === 'terminal')
-      .map((s) => {
-        const t = s.attributes['title'];
-        return {
-          id: s.id,
-          label: typeof t === 'string' && t.length > 0 ? t : `#${s.id}`,
-        };
-      }),
-  );
-
-  /** Current status ref id on the task, or null when none. */
-  const currentStatusId = $derived.by((): ID | null => {
-    if (task === null) return null;
-    const v = task.attributes['status'];
-    if (typeof v === 'bigint') return v;
-    return null;
-  });
-
   /** Tag-picker option list — every in-project tag that is NOT yet applied. */
   const tagPickerOptions = $derived.by(() => {
     const applied = new Set(appliedTags);
@@ -425,6 +421,17 @@
       action: cardSelectWithAttributes.action,
       data: { cardTypeName: 'person' },
     });
+    // Gate 7: TransitionBar reads from this. Falls back to an empty list
+    // on any error (the screen is still usable without flow info). The
+    // request goes out on the same tick as the others so the dispatcher
+    // folds it into the same POST.
+    const fTransitions = dispatcher
+      .request<FlowStepListForCardInput, FlowStepListForCardOutput>({
+        endpoint: flowStepListForCard.endpoint,
+        action: flowStepListForCard.action,
+        data: { cardId: taskId },
+      })
+      .catch(() => ({ rows: [] as TransitionRow[] }));
     // Driven through AttributeSchemaCache so concurrent screens share the
     // result. `load()` already short-circuits when the cache is hot — but
     // the first call still issues a real request; that request goes onto
@@ -432,7 +439,7 @@
     const fSchema = schemaCache.load();
 
     try {
-      const [tOut, aOut, mOut, cOut, tagOut, sOut, uOut, pOut] = await Promise.all([
+      const [tOut, aOut, mOut, cOut, tagOut, sOut, uOut, pOut, trOut] = await Promise.all([
         fTask,
         fActivity,
         fMilestones,
@@ -441,6 +448,7 @@
         fStatuses,
         fUsers,
         fPersons,
+        fTransitions,
       ]);
       await fSchema;
 
@@ -453,6 +461,7 @@
       statusCards = sOut.rows;
       users = uOut.rows;
       persons = pOut.rows;
+      transitions = trOut.rows;
       loading = false;
 
       if (initial && found !== null) {
@@ -776,6 +785,15 @@
   useShortcut('task_detail', 'e d', () => void focusDescriptionEdit(), 'Edit description');
   useShortcut('task_detail', 'e c', () => void focusComment(), 'Edit a comment');
   useShortcut('task_detail', 't', toggleTags, 'Toggle tag picker');
+  // V14: close bucket of TransitionBar replaces the old TerminalActionButton.
+  // `c` fires the first transition in the close bucket (active→terminal),
+  // matching the pre-Gate-7 keybinding.
+  useShortcut(
+    'task_detail',
+    'c',
+    () => transitionBar?.fireFirstClose(),
+    'Close task (first close transition)',
+  );
   // List-walking shortcuts. j/k mirror the list-screen convention
   // (j = down/next, k = up/previous); ] / [ are a bracket alternative
   // for either hand. Each useShortcut call registers both bindings and
@@ -881,13 +899,13 @@
           {/if}
           <p class="mt-0.5 px-1 font-mono text-[11px] text-muted">#{taskId}</p>
         </div>
-        {#if task !== null && terminalStatusOptions.length > 0}
+        {#if task !== null && transitions.length > 0}
           <div class="shrink-0 self-start pt-0.5">
-            <TerminalActionButton
+            <TransitionBar
+              bind:this={transitionBar}
               cardId={task.id}
-              attributeName="status"
-              terminalOptions={terminalStatusOptions}
-              currentValue={currentStatusId}
+              transitions={transitions as TransitionRow[]}
+              variant="detail"
               onChanged={() => void refresh(false)}
             />
           </div>

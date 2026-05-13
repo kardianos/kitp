@@ -25,6 +25,7 @@
   import { getDispatcher } from '../dispatch/context';
   import {
     cardSelectWithAttributes,
+    flowStepListForCard,
     userCardSortSet,
   } from '../reg/handlers';
   import type {
@@ -32,7 +33,10 @@
     CardSelectWithAttributesOutput,
     CardWhereTree,
     CardWithAttrs,
+    FlowStepListForCardInput,
+    FlowStepListForCardOutput,
     ID,
+    TransitionRow,
     UserCardSortSetInput,
     UserCardSortSetOutput,
   } from '../reg/types';
@@ -130,6 +134,18 @@
   let components = $state<CardWithAttrs[]>([]);
   let tagsRows = $state<CardWithAttrs[]>([]);
   let statuses = $state<CardWithAttrs[]>([]);
+  /**
+   * Available transitions per task card. Keys are id.toString().
+   * Populated after the main row batch lands by issuing one
+   * `flow_step.list_for_card` per visible card — coalesced by the
+   * dispatcher into ONE POST /api/v1/batch.
+   *
+   * TODO(perf): swap for a batched `flow_step.list_for_cards
+   * { card_ids[] }` once the server exposes one. N+1 is fine while we
+   * have ~200 rows max and the dispatcher folds them into one HTTP call,
+   * but it grows the per-request workload server-side.
+   */
+  let transitionsByCardId = $state<Record<string, TransitionRow[]>>({});
   let loading = $state(true);
   let error = $state<string | null>(null);
   // <ScreenFilterBar> owns the predicate, the active preset id, and the
@@ -243,18 +259,14 @@
     }
     return out;
   });
-  /** Terminal status options (e.g. Done, Cancelled) for the row "Close ▾" splits. */
-  const terminalStatusOptions = $derived.by((): { id: bigint; label: string }[] =>
-    statuses
-      .filter((s) => s.phase === 'terminal')
-      .map((s) => {
-        const t = s.attributes['title'];
-        return {
-          id: s.id,
-          label: typeof t === 'string' && t.length > 0 ? t : `#${s.id}`,
-        };
-      }),
-  );
+  /**
+   * Per-card transition lookup for `<TaskRow transitions={...}>`. Falls
+   * back to an empty array so the row renders cleanly while
+   * transitionsByCardId is still loading or for cards without flows.
+   */
+  function transitionsFor(card: CardWithAttrs): TransitionRow[] {
+    return transitionsByCardId[card.id.toString()] ?? [];
+  }
   /* ----------------------------------------------------- computed filter UI */
 
   /**
@@ -495,11 +507,44 @@
       if (selectedIndex >= rows.length) {
         selectedIndex = rows.length === 0 ? 0 : rows.length - 1;
       }
+
+      // Fetch flow_step.list_for_card per row in a fresh batched tick so
+      // the dispatcher coalesces them into one POST. TODO(perf): replace
+      // with a batched `flow_step.list_for_cards` once the server exposes
+      // a multi-id variant — see comment on `transitionsByCardId`.
+      void loadTransitionsFor(rows);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
     }
+  }
+
+  /**
+   * Issue one `flow_step.list_for_card` per row. Every call goes out on
+   * the same render tick so the dispatcher folds them into ONE POST. The
+   * resulting per-card transition map drives TaskRow's TransitionBar
+   * affordance.
+   */
+  async function loadTransitionsFor(cards: readonly CardWithAttrs[]): Promise<void> {
+    if (cards.length === 0) {
+      transitionsByCardId = {};
+      return;
+    }
+    const futures = cards.map((c) =>
+      dispatcher
+        .request<FlowStepListForCardInput, FlowStepListForCardOutput>({
+          endpoint: flowStepListForCard.endpoint,
+          action: flowStepListForCard.action,
+          data: { cardId: c.id },
+        })
+        .then((out) => ({ id: c.id, rows: out.rows }))
+        .catch(() => ({ id: c.id, rows: [] as TransitionRow[] })),
+    );
+    const results = await Promise.all(futures);
+    const next: Record<string, TransitionRow[]> = {};
+    for (const r of results) next[r.id.toString()] = r.rows;
+    transitionsByCardId = next;
   }
 
   // Initial fetch + refetch whenever the project scope or view mode flips.
@@ -795,8 +840,8 @@
               personNames={personNames}
               cardTitles={cardTitles}
               tagPaths={tagPaths}
-              terminalStatusOptions={terminalStatusOptions}
-              onTerminated={() => void refresh()}
+              transitions={transitionsFor(row)}
+              onTransitioned={() => void refresh()}
             />
           </div>
           {#if showAgentPicker}

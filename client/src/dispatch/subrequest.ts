@@ -24,6 +24,15 @@ export interface SubRequest {
 export interface SubError {
   code: string;
   message: string;
+  /**
+   * Optional structured payload the server carries over from
+   * `reg.HandlerError.Detail`. Gate 5 (FLOW_AND_SCREEN_KERNEL §V13) uses
+   * this for the positive-feedback rejection envelope on
+   * `flow_disallowed` / `flow_role_required` — see
+   * `client/src/ui/widgets/TransitionBar.svelte`. Other handlers may
+   * leave it absent.
+   */
+  detail?: unknown;
 }
 
 /** One element in the batched response body. */
@@ -61,6 +70,9 @@ export function subResponseFromJson(raw: Record<string, unknown>): SubResponse {
       code: typeof obj['code'] === 'string' ? (obj['code'] as string) : '',
       message: typeof obj['message'] === 'string' ? (obj['message'] as string) : '',
     };
+    if (obj['detail'] !== undefined && obj['detail'] !== null) {
+      error.detail = obj['detail'];
+    }
   }
   const out: SubResponse = {
     id: typeof raw['id'] === 'string' ? (raw['id'] as string) : '',

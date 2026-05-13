@@ -12,12 +12,12 @@
    * names; missing entries fall through to `#<id>` so we never blank-render.
    */
 
-  import type { CardWithAttrs, ID } from '../../reg/types.js';
+  import type { CardWithAttrs, TransitionRow } from '../../reg/types.js';
   import { cx } from '../../util/class_names.js';
   import Avatar from '../Avatar.svelte';
   import TagChip from './TagChip.svelte';
   import AttributeChip from './AttributeChip.svelte';
-  import TerminalActionButton from './TerminalActionButton.svelte';
+  import TransitionBar from './TransitionBar.svelte';
 
   interface Props {
     card: CardWithAttrs;
@@ -36,13 +36,15 @@
     /** tag id -> path. Keys are id.toString(). */
     tagPaths?: Record<string, string>;
     /**
-     * Terminal status value cards for this row's project. When provided
-     * and the card isn't already terminal, a hover-revealed "Close ▾"
-     * split button shows up on the right of the row. onTerminated fires
-     * after a successful attribute.update so the caller can refresh.
+     * Available flow_step transitions for this row. When provided and
+     * non-empty, the row renders a `<TransitionBar variant="row">` on
+     * the right (hover-revealed). The parent fetches these via
+     * `flow_step.list_for_card`; the row variant is compact.
+     * onTransitioned fires after a successful attribute.update so the
+     * caller can refresh.
      */
-    terminalStatusOptions?: { id: ID; label: string }[];
-    onTerminated?: () => void;
+    transitions?: TransitionRow[];
+    onTransitioned?: () => void;
     class?: string;
   }
 
@@ -54,8 +56,8 @@
     personNames,
     cardTitles,
     tagPaths,
-    terminalStatusOptions,
-    onTerminated,
+    transitions,
+    onTransitioned,
     class: klass = '',
   }: Props = $props();
 
@@ -105,11 +107,6 @@
     const v = card.attributes['created_at'];
     if (typeof v === 'string' && v.length >= 10) return v.slice(0, 10);
     return undefined;
-  });
-
-  const currentStatusId = $derived.by((): ID | null => {
-    const v = card.attributes['status'];
-    return typeof v === 'bigint' ? v : null;
   });
 
   function handleClick(): void {
@@ -172,7 +169,7 @@
   {#if createdAt !== undefined}
     <div class="shrink-0 text-xs text-muted sm:ml-3">{createdAt}</div>
   {/if}
-  {#if terminalStatusOptions !== undefined && terminalStatusOptions.length > 0}
+  {#if transitions !== undefined && transitions.length > 0}
     <!-- Stop propagation: the row's outer onclick navigates to the task
          detail, which would race the attribute update on a stray menu
          click. The component itself stops propagation on its inner
@@ -183,13 +180,11 @@
       class="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 sm:ml-2"
       onclick={(e) => e.stopPropagation()}
     >
-      <TerminalActionButton
+      <TransitionBar
         cardId={card.id}
-        attributeName="status"
-        terminalOptions={terminalStatusOptions}
-        currentValue={currentStatusId}
-        compact
-        onChanged={() => onTerminated?.()}
+        transitions={transitions}
+        variant="row"
+        onChanged={() => onTransitioned?.()}
       />
     </div>
   {/if}

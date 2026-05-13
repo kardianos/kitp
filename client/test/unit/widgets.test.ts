@@ -285,6 +285,7 @@ describe('widget imports', () => {
       import('../../src/ui/widgets/AttributeChip.svelte'),
       import('../../src/ui/widgets/TagChip.svelte'),
       import('../../src/ui/widgets/AttributeSidePanel.svelte'),
+      import('../../src/ui/widgets/TransitionBar.svelte'),
     ]);
     for (const m of mods) {
       expect(m.default).toBeDefined();

@@ -33,7 +33,7 @@ import type { Dispatcher, HandlerSpec } from './dispatcher';
  * registered onFault listeners) see the same shape.
  */
 export type ApiFault =
-  | { kind: 'sub_error'; code: string; message: string }
+  | { kind: 'sub_error'; code: string; message: string; detail?: unknown }
   | { kind: 'aborted'; reason: string }
   | { kind: 'http'; status: number }
   | { kind: 'decode'; message: string }

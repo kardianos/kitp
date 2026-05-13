@@ -354,6 +354,61 @@ export interface AttributeUpdateOutput {
 }
 
 // ============================================================================
+// flow_step.list_for_card
+// ============================================================================
+
+/**
+ * One transition the caller may attempt to fire from the given card,
+ * pre-joined with from/to value-card metadata (title + phase), the
+ * optional requires_role name, and a per-actor `allowed` bit.
+ *
+ * Mirrors `server/internal/dom/flow/flow.go::AvailableTransition`. The
+ * server emits this row both from `flow_step.list_for_card` and inside
+ * the V13 rejection envelope's `available[]` for failed
+ * `attribute.update` writes — same shape, two call sites.
+ *
+ * The TransitionBar component buckets these rows by
+ * `(from_phase, to_phase)` and renders each bucket per the table in
+ * §"<TransitionBar> replaces TerminalActionButton" of
+ * FLOW_AND_SCREEN_KERNEL.md.
+ */
+export type TransitionPhase = 'triage' | 'active' | 'terminal';
+
+export interface TransitionRow {
+  /** flow_step id. */
+  id: ID;
+  flow_id: ID;
+  flow_name: string;
+  attribute_def_id: ID;
+  /** Typically `'status'` — the attribute_def the parent flow is bound to. */
+  attribute_def_name: string;
+  from_card_id: ID;
+  from_label: string;
+  from_phase: TransitionPhase;
+  to_card_id: ID;
+  to_label: string;
+  to_phase: TransitionPhase;
+  /** Transition button label authored on the flow_step row. */
+  label: string;
+  /** 0n means no role gate. */
+  requires_role_id?: ID;
+  /** Empty string when no role gate. */
+  requires_role_name: string;
+  /** Display order within UI bucket. */
+  sort_order: number;
+  /** True if the calling actor's roles satisfy `requires_role_id`. */
+  allowed: boolean;
+}
+
+export interface FlowStepListForCardInput {
+  cardId: ID;
+}
+
+export interface FlowStepListForCardOutput {
+  rows: TransitionRow[];
+}
+
+// ============================================================================
 // attribute_def.select / attribute_def.insert
 // ============================================================================
 
