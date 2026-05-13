@@ -53,6 +53,9 @@
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
     CardWithAttrs,
+    CommListForTaskInput,
+    CommListForTaskOutput,
+    CommRow,
     CommentInsertInput,
     CommentInsertOutput,
     FlowStepListForCardInput,
@@ -67,7 +70,12 @@
     UserSelectInput,
     UserSelectOutput,
   } from '../reg/types';
-  import { flowStepListForCard } from '../reg/handlers';
+  import { commListForTask, flowStepListForCard } from '../reg/handlers';
+  import {
+    commStatusLabel,
+    commStatusTone,
+    sortRepliesAsc,
+  } from './comm_helpers';
   import {
     activitySelect,
     appliedTagIds,
@@ -128,6 +136,14 @@
   let components = $state<readonly CardWithAttrs[]>([]);
   let tagCards = $state<readonly CardWithAttrs[]>([]);
   let statusCards = $state<readonly CardWithAttrs[]>([]);
+  /**
+   * Read-only comm list for the "Comms" section between Activity and
+   * Comments. Spec §"What about the Task detail view?" explicitly says
+   * the Reply action is NOT available on Task detail — users navigate to
+   * the Comms screen to author replies. We only render title, status,
+   * thread id, and the reply chain here.
+   */
+  let comms = $state<readonly CommRow[]>([]);
   /**
    * Available state transitions for this task — drives the header
    * `<TransitionBar>`. Refreshed on every load + after every successful
@@ -219,6 +235,28 @@
     ...componentTitles,
     ...statusTitles,
   });
+
+  /**
+   * Comm-status phase lookup keyed by value-card id-as-string. Comm-status
+   * value-cards share the `status` card_type with task statuses; both
+   * loads share the `scopedStatuses` set. For the read-only Comms
+   * section we only need the badge tone (active=blue, terminal=green,
+   * triage=muted), so a phase lookup is sufficient.
+   */
+  const commStatusPhases = $derived.by((): Record<string, 'triage' | 'active' | 'terminal'> => {
+    const out: Record<string, 'triage' | 'active' | 'terminal'> = {};
+    for (const s of scopedStatuses) out[s.id.toString()] = s.phase;
+    return out;
+  });
+
+  /** Resolve a comm_status id to its badge tone classes via the kernel's phase. */
+  function commStatusBadgeClass(commStatus: ID): string {
+    const phase = commStatusPhases[commStatus.toString()] ?? 'active';
+    const tone = commStatusTone(phase);
+    if (tone === 'blue') return 'border-accent/40 bg-accent/10 text-accent';
+    if (tone === 'green') return 'border-success/40 bg-success/10 text-success';
+    return 'border-border bg-surface text-muted';
+  }
 
   const orderedActivity = $derived(sortActivityDesc(activity));
 
@@ -432,6 +470,17 @@
         data: { cardId: taskId },
       })
       .catch(() => ({ rows: [] as TransitionRow[] }));
+    // Comm Gate 8: read-only list of comms attached to this task. The
+    // section renders between Activity and Comments; no Reply action is
+    // available here per spec — the user navigates to the Comms screen
+    // to author replies. Folded into the initial-batch POST.
+    const fComms = dispatcher
+      .request<CommListForTaskInput, CommListForTaskOutput>({
+        endpoint: commListForTask.endpoint,
+        action: commListForTask.action,
+        data: { taskId },
+      })
+      .catch(() => ({ rows: [] as CommRow[] }));
     // Driven through AttributeSchemaCache so concurrent screens share the
     // result. `load()` already short-circuits when the cache is hot — but
     // the first call still issues a real request; that request goes onto
@@ -439,7 +488,7 @@
     const fSchema = schemaCache.load();
 
     try {
-      const [tOut, aOut, mOut, cOut, tagOut, sOut, uOut, pOut, trOut] = await Promise.all([
+      const [tOut, aOut, mOut, cOut, tagOut, sOut, uOut, pOut, trOut, commsOut] = await Promise.all([
         fTask,
         fActivity,
         fMilestones,
@@ -449,6 +498,7 @@
         fUsers,
         fPersons,
         fTransitions,
+        fComms,
       ]);
       await fSchema;
 
@@ -462,6 +512,7 @@
       users = uOut.rows;
       persons = pOut.rows;
       transitions = trOut.rows;
+      comms = commsOut.rows;
       loading = false;
 
       if (initial && found !== null) {
@@ -1038,6 +1089,99 @@
                   cardTitles={cardTitles}
                   tagPaths={tagPaths}
                 />
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+
+      <!-- Comms (read-only — Reply lives on the Comms screen).
+           Per spec §"What about the Task detail view?": Task detail shows
+           internal comments (existing), attached comms (this section), and
+           the reply history of each comm. The "Reply" action is *not*
+           available here; the user navigates to the Comms screen to post
+           a reply, keeping the boundary clean. -->
+      <section aria-labelledby="comms-heading" class="flex flex-col border-t border-fg/70">
+        <h2
+          id="comms-heading"
+          class="flex items-center justify-between border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
+        >
+          <span>Comms ({comms.length})</span>
+          {#if task !== null && typeof task.parent_card_id === 'bigint'}
+            <a
+              href="/project/{task.parent_card_id}/screen/comms"
+              data-testid="task-comms-goto-link"
+              class="rounded-md border border-border bg-bg px-2 py-0.5 text-[10px] font-normal text-fg hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              onclick={(e) => {
+                e.preventDefault();
+                const pid = task?.parent_card_id;
+                if (typeof pid === 'bigint') navigate(`/project/${pid}/screen/comms`);
+              }}
+            >
+              Go to Comms
+            </a>
+          {/if}
+        </h2>
+        {#if comms.length === 0}
+          <p class="px-3 py-2 text-sm text-muted" data-testid="task-comms-empty">
+            No comms attached.
+          </p>
+        {:else}
+          <ul
+            data-testid="task-comms-list"
+            class="flex flex-col gap-0 divide-y divide-fg/15 bg-bg"
+          >
+            {#each comms as c (c.id)}
+              {@const replies = sortRepliesAsc(c.replies)}
+              <li class="flex flex-col gap-1 px-3 py-2" data-testid="task-comms-row" data-comm-id={c.id}>
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="truncate text-sm font-medium text-fg">{c.title}</span>
+                  {#if c.comm_status !== 0n}
+                    <span
+                      class="inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-medium {commStatusBadgeClass(c.comm_status)}"
+                      data-testid="task-comms-status"
+                    >
+                      {commStatusLabel(c.comm_status, statusTitles)}
+                    </span>
+                  {/if}
+                  <span
+                    class="shrink-0 rounded bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted"
+                    data-testid="task-comms-thread-id"
+                    title="Thread id"
+                  >
+                    #{c.thread_id}
+                  </span>
+                </div>
+                {#if replies.length === 0}
+                  <p class="text-xs italic text-muted" data-testid="task-comms-no-replies">
+                    No replies yet.
+                  </p>
+                {:else}
+                  <ul class="flex flex-col gap-1" data-testid="task-comms-replies">
+                    {#each replies as r (r.id)}
+                      <li
+                        class="rounded-md border border-border/60 px-2 py-1 text-xs"
+                        data-testid="task-comms-reply"
+                        data-reply-id={r.id}
+                        data-delivery-status={r.delivery_status}
+                      >
+                        <div class="flex items-center justify-between gap-2">
+                          <span class="truncate font-medium text-fg">
+                            {r.delivery_status === 'received' ? r.from : r.to}
+                          </span>
+                          <span
+                            class="shrink-0 rounded bg-surface px-1 text-[10px] uppercase tracking-wider text-muted"
+                          >
+                            {r.delivery_status}
+                          </span>
+                        </div>
+                        {#if r.body_text !== ''}
+                          <p class="mt-0.5 whitespace-pre-wrap text-muted">{r.body_text}</p>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
               </li>
             {/each}
           </ul>

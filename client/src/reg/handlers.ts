@@ -60,6 +60,11 @@ import type {
   CardTypeSelectOutput,
   CardWherePredicate,
   CardWithAttrs,
+  CommCreateInput,
+  CommCreateOutput,
+  CommListForTaskInput,
+  CommListForTaskOutput,
+  CommRow,
   CommentInsertInput,
   CommentInsertOutput,
   EchoPingInput,
@@ -70,6 +75,9 @@ import type {
   EdgeInsertOutput,
   ProjectStampInput,
   ProjectStampOutput,
+  ReplyPostInput,
+  ReplyPostOutput,
+  ReplyRow,
   TagApplyInput,
   TagApplyOutput,
   TagRemoveInput,
@@ -914,6 +922,89 @@ const projectStamp: HandlerSpec<ProjectStampInput, ProjectStampOutput> = {
 };
 
 // ============================================================================
+// comm.create / comm.list_for_task / reply.post — Comm Gate 8 wrappers.
+// Mirror `server/internal/dom/comm/comm.go`. Encodes camelCase input fields
+// into the server's snake_case wire shape; decodes the row envelopes into
+// typed structs the Comms screen and TaskDetail consume directly.
+// ============================================================================
+
+const commCreate: HandlerSpec<CommCreateInput, CommCreateOutput> = {
+  endpoint: 'comm',
+  action: 'create',
+  encode: (i) => {
+    const m: Record<string, unknown> = {
+      task_id: i.taskId,
+      channel_id: i.channelId,
+    };
+    if (i.subject !== undefined && i.subject !== '') m.subject = i.subject;
+    if (i.initialMessage !== undefined && i.initialMessage !== '') {
+      m.initial_message = i.initialMessage;
+    }
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      comm_id: asId(j.comm_id),
+      thread_id: asStrOrEmpty(j.thread_id),
+    };
+  },
+};
+
+function decodeReplyRow(j: Record<string, unknown>): ReplyRow {
+  return {
+    id: asId(j.id),
+    to: asStrOrEmpty(j.to),
+    from: asStrOrEmpty(j.from),
+    subject: asStrOrEmpty(j.subject),
+    body_text: asStrOrEmpty(j.body_text),
+    delivery_status: asStrOrEmpty(j.delivery_status),
+    created_at: asStrOrEmpty(j.created_at),
+  };
+}
+
+function decodeCommRow(j: Record<string, unknown>): CommRow {
+  return {
+    id: asId(j.id),
+    title: asStrOrEmpty(j.title),
+    thread_id: asStrOrEmpty(j.thread_id),
+    channel_id: asIdOrZero(j.channel_id),
+    comm_status: asIdOrZero(j.comm_status),
+    replies: asArray(j.replies).map((r) => decodeReplyRow(asObj(r))),
+  };
+}
+
+const commListForTask: HandlerSpec<CommListForTaskInput, CommListForTaskOutput> = {
+  endpoint: 'comm',
+  action: 'list_for_task',
+  encode: (i) => ({ task_id: i.taskId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeCommRow(asObj(r))),
+    };
+  },
+};
+
+const replyPost: HandlerSpec<ReplyPostInput, ReplyPostOutput> = {
+  endpoint: 'reply',
+  action: 'post',
+  encode: (i) => {
+    const m: Record<string, unknown> = {
+      comm_id: i.commId,
+      to: i.to,
+      body: i.body,
+    };
+    if (i.subject !== undefined && i.subject !== '') m.subject = i.subject;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { reply_id: asId(j.reply_id) };
+  },
+};
+
+// ============================================================================
 // Re-exports for use by tests / dispatch / screens
 // ============================================================================
 
@@ -963,6 +1054,9 @@ export {
   edgeInsert,
   edgeDelete,
   projectStamp,
+  commCreate,
+  commListForTask,
+  replyPost,
 };
 
 // ============================================================================
@@ -1000,5 +1094,8 @@ export function registerBuiltInHandlers(r: HandlerRegistry): void {
   r.register(edgeInsert);
   r.register(edgeDelete);
   r.register(projectStamp);
+  r.register(commCreate);
+  r.register(commListForTask);
+  r.register(replyPost);
   registerAdminHandlers(r);
 }

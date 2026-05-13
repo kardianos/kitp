@@ -770,6 +770,77 @@ export interface UserCardSortSetOutput {
 }
 
 // ============================================================================
+// comm.create / comm.list_for_task / reply.post — Comm Gate 8 client surface.
+//
+// Mirrors `server/internal/dom/comm/comm.go`:
+//   - comm.create    { task_id, channel_id, subject?, initial_message? }
+//                    → { comm_id, thread_id }
+//   - comm.list_for_task { task_id } → { rows: CommRow[] }
+//   - reply.post     { comm_id, to, subject?, body } → { reply_id }
+// ============================================================================
+
+export interface CommCreateInput {
+  taskId: ID;
+  channelId: ID;
+  subject?: string;
+  initialMessage?: string;
+}
+
+export interface CommCreateOutput {
+  comm_id: ID;
+  thread_id: string;
+}
+
+export interface CommListForTaskInput {
+  taskId: ID;
+}
+
+/**
+ * One reply_body row materialised on the comms screen.
+ *
+ * `delivery_status` is a closed set:
+ *   `pending` / `sent` / `bounced` / `failed` / `received`.
+ */
+export interface ReplyRow {
+  id: ID;
+  to: string;
+  from: string;
+  subject: string;
+  body_text: string;
+  delivery_status: string;
+  created_at: string;
+}
+
+/**
+ * One comm card with its replies hydrated. `comm_status` is the value-card
+ * id (not the status title); callers resolve titles through a status map
+ * loaded separately.
+ */
+export interface CommRow {
+  id: ID;
+  title: string;
+  thread_id: string;
+  channel_id: ID;
+  comm_status: ID;
+  replies: ReplyRow[];
+}
+
+export interface CommListForTaskOutput {
+  rows: CommRow[];
+}
+
+export interface ReplyPostInput {
+  commId: ID;
+  to: string;
+  subject?: string;
+  body: string;
+}
+
+export interface ReplyPostOutput {
+  reply_id: ID;
+}
+
+// ============================================================================
 // user.list_with_roles  (admin)
 // ============================================================================
 

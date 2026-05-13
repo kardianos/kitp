@@ -71,6 +71,7 @@
   import Spinner from '../ui/Spinner.svelte';
   import { notify } from '../ui/toast.svelte';
   import TaskRow from '../ui/widgets/TaskRow.svelte';
+  import CommTaskRow from '../ui/widgets/CommTaskRow.svelte';
 
   import {
     move,
@@ -79,13 +80,16 @@
   } from './inbox_helpers';
 
   import { useBag } from '../dispatch/bag.svelte';
-  import { userSelect } from '../reg/handlers';
+  import { commListForTask, userSelect } from '../reg/handlers';
   import {
     userCardAgentClear,
     userCardAgentList,
     userCardAgentSet,
   } from '../reg/handlers_admin';
   import type {
+    CommListForTaskInput,
+    CommListForTaskOutput,
+    CommRow,
     UserCardAgentClearInput,
     UserCardAgentClearOutput,
     UserCardAgentListInput,
@@ -94,6 +98,27 @@
     UserCardAgentSetOutput,
     UserRow,
   } from '../reg/types';
+
+  /* ----------------------------------------------------------------- props */
+
+  interface Props {
+    params?: Record<string, string>;
+  }
+  let { params = {} }: Props = $props();
+
+  /**
+   * Active screen slug — `/project/:id/screen/:slug`. Used to switch
+   * ListLayout into Comms mode (slug='comms'): each task row is
+   * augmented with `<CommTaskRow>` that surfaces the comm status badge,
+   * inline replies, reply composer, and the comm-side TransitionBar.
+   */
+  // svelte-ignore state_referenced_locally
+  const slug = $derived.by((): string => {
+    const v = params['slug'];
+    return typeof v === 'string' ? v : '';
+  });
+
+  const isCommsScreen = $derived(slug === 'comms');
 
   /* ------------------------------------------------------------------ scope */
   setActiveScope('inbox');
@@ -133,6 +158,21 @@
   let components = $state<CardWithAttrs[]>([]);
   let tagsRows = $state<CardWithAttrs[]>([]);
   let statuses = $state<CardWithAttrs[]>([]);
+  /**
+   * On the Comms screen, each visible task can carry one or more comm
+   * cards (via the `comms` card_ref[] attribute). We hydrate them per row
+   * via `comm.list_for_task` after the initial batch lands — the calls go
+   * out on the same render tick so the dispatcher folds them into ONE
+   * POST. Keys are task id.toString(); the row renders one CommTaskRow
+   * per (task, comm) pair so a task with two comms shows up twice.
+   *
+   * Comm-side transition rows live in `commTransitionsByCardId` keyed by
+   * comm id.toString(); flow_step.list_for_card on a comm returns the
+   * comm_status transitions because the comm carries that attribute.
+   */
+  let commsByTaskId = $state<Record<string, CommRow[]>>({});
+  let commTransitionsByCardId = $state<Record<string, TransitionRow[]>>({});
+  let commStatusCards = $state<readonly CardWithAttrs[]>([]);
   /**
    * Available transitions per task card. Keys are id.toString().
    * Populated after the main row batch lands by issuing one
@@ -261,6 +301,47 @@
   function transitionsFor(card: CardWithAttrs): TransitionRow[] {
     return transitionsByCardId[card.id.toString()] ?? [];
   }
+
+  /** Comm-status value-card id → title lookup. */
+  const commStatusTitles = $derived.by((): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const s of commStatusCards) {
+      const t = s.attributes['title'];
+      if (typeof t === 'string' && t.length > 0) out[s.id.toString()] = t;
+    }
+    return out;
+  });
+
+  /** Comm-status value-card id → phase ('triage' | 'active' | 'terminal'). */
+  const commStatusPhases = $derived.by((): Record<string, 'triage' | 'active' | 'terminal'> => {
+    const out: Record<string, 'triage' | 'active' | 'terminal'> = {};
+    for (const s of commStatusCards) {
+      out[s.id.toString()] = s.phase;
+    }
+    return out;
+  });
+
+  /**
+   * Flatten `commsByTaskId` into one (task, comm) pair per row. A task
+   * with two comms shows up twice; the seeded filter only surfaces tasks
+   * with comms so empty buckets aren't possible in steady state — but
+   * during the initial-load gap (between the task batch and the per-task
+   * comm batch) we render an empty placeholder row for each task to
+   * avoid layout pop-in.
+   */
+  interface CommPair {
+    task: CardWithAttrs;
+    comm: CommRow;
+  }
+  const commPairs = $derived.by((): CommPair[] => {
+    const out: CommPair[] = [];
+    for (const t of rows) {
+      const comms = commsByTaskId[t.id.toString()] ?? [];
+      for (const c of comms) out.push({ task: t, comm: c });
+    }
+    return out;
+  });
+
   /* ----------------------------------------------------- computed filter UI */
 
   /**
@@ -383,7 +464,14 @@
         { field: 'created_at', direction: 'DESC' },
       ],
     };
-    if (authState?.isAgent === true) {
+    if (isCommsScreen) {
+      // Comms screen is project-wide: every task carrying a comm is
+      // listed, regardless of assignee or agent routing. The seeded
+      // "Comms attached" filter card supplies the `exists comms`
+      // predicate via `userTree`; we don't layer the inbox's assignee
+      // scope on top.
+      if (userTree !== undefined) taskInput.tree = userTree;
+    } else if (authState?.isAgent === true) {
       taskInput.routedToMe = true;
       // Agent view skips the assignee scope — the routed-to-me filter
       // already narrows to the actor's queue; user-authored predicates
@@ -509,10 +597,112 @@
       // with a batched `flow_step.list_for_cards` once the server exposes
       // a multi-id variant — see comment on `transitionsByCardId`.
       void loadTransitionsFor(rows);
+      // Comms mode: per-task comm hydration + comm-side transitions
+      // (the comm has its own comm_status flow). Both fan out on a fresh
+      // tick so the dispatcher coalesces them.
+      if (isCommsScreen) {
+        void loadCommsFor(rows);
+        // commStatusCards drives the comm_status badge title resolution.
+        void loadCommStatusCards();
+      } else {
+        commsByTaskId = {};
+        commTransitionsByCardId = {};
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
+    }
+  }
+
+  /**
+   * Hydrate the comm rows for every visible task on the Comms screen.
+   * Issues one `comm.list_for_task` per row; the dispatcher folds them
+   * into a single batched POST. After the rows land, kick off
+   * comm-side `flow_step.list_for_card` per comm so the row's
+   * comm-status TransitionBar has data.
+   */
+  async function loadCommsFor(cards: readonly CardWithAttrs[]): Promise<void> {
+    if (cards.length === 0) {
+      commsByTaskId = {};
+      commTransitionsByCardId = {};
+      return;
+    }
+    const futures = cards.map((c) =>
+      dispatcher
+        .request<CommListForTaskInput, CommListForTaskOutput>({
+          endpoint: commListForTask.endpoint,
+          action: commListForTask.action,
+          data: { taskId: c.id },
+        })
+        .then((out) => ({ id: c.id, rows: out.rows }))
+        .catch(() => ({ id: c.id, rows: [] as CommRow[] })),
+    );
+    const results = await Promise.all(futures);
+    const next: Record<string, CommRow[]> = {};
+    const everyComm: CommRow[] = [];
+    for (const r of results) {
+      next[r.id.toString()] = r.rows;
+      for (const co of r.rows) everyComm.push(co);
+    }
+    commsByTaskId = next;
+    if (everyComm.length > 0) void loadCommTransitionsFor(everyComm);
+  }
+
+  /**
+   * Fetch the comm-side `flow_step.list_for_card` rows for each comm.
+   * Comm cards carry a `comm_status` attribute with its own flow, so the
+   * generic handler returns the comm flow's transitions when fed a comm
+   * id. The result powers the in-row comm-status TransitionBar variant.
+   */
+  async function loadCommTransitionsFor(comms: readonly CommRow[]): Promise<void> {
+    if (comms.length === 0) {
+      commTransitionsByCardId = {};
+      return;
+    }
+    const futures = comms.map((c) =>
+      dispatcher
+        .request<FlowStepListForCardInput, FlowStepListForCardOutput>({
+          endpoint: flowStepListForCard.endpoint,
+          action: flowStepListForCard.action,
+          data: { cardId: c.id },
+        })
+        .then((out) => ({ id: c.id, rows: out.rows }))
+        .catch(() => ({ id: c.id, rows: [] as TransitionRow[] })),
+    );
+    const results = await Promise.all(futures);
+    const next: Record<string, TransitionRow[]> = {};
+    for (const r of results) next[r.id.toString()] = r.rows;
+    commTransitionsByCardId = next;
+  }
+
+  /**
+   * One-time fetch for the comm-flow's status value-cards so the row's
+   * comm-status badge can resolve `comm_status` ids to titles + phases.
+   * Comm statuses are stamped per-project under the project card just
+   * like task statuses — we pull every `status` card under the active
+   * project, then narrow by id on the renderer side. (The seeded comm
+   * flow's value cards use `card_type='status'`, distinguished from
+   * task statuses only by which `attribute_def` they answer to via
+   * `flow.attribute_def_id`; for the badge we only need title + phase
+   * so the wider list is harmless.)
+   */
+  async function loadCommStatusCards(): Promise<void> {
+    const data: CardSelectWithAttributesInput = { cardTypeName: 'status' };
+    const scoped = projectScope.projectId;
+    if (scoped !== null) data.parentCardId = scoped;
+    try {
+      const out = await dispatcher.request<
+        CardSelectWithAttributesInput,
+        CardSelectWithAttributesOutput
+      >({
+        endpoint: cardSelectWithAttributes.endpoint,
+        action: cardSelectWithAttributes.action,
+        data,
+      });
+      commStatusCards = out.rows;
+    } catch {
+      commStatusCards = [];
     }
   }
 
@@ -748,7 +938,11 @@
       onchange={onFilterChange}
     >
       {#snippet trailing()}
-        <span>{rows.length} open task{rows.length === 1 ? '' : 's'}</span>
+        {#if isCommsScreen}
+          <span>{commPairs.length} comm{commPairs.length === 1 ? '' : 's'}</span>
+        {:else}
+          <span>{rows.length} open task{rows.length === 1 ? '' : 's'}</span>
+        {/if}
         {#if loading}
           <Spinner size="sm" />
         {/if}
@@ -768,6 +962,40 @@
         action={{ label: 'Retry', onClick: () => void refresh() }}
       />
     </div>
+  {:else if isCommsScreen}
+    {#if commPairs.length === 0}
+      <div class="flex flex-1 items-center justify-center" data-testid="comms-empty">
+        <EmptyState
+          title="No comms yet."
+          description="Comms appear here once a comm_channel is configured and a task has an attached communication thread."
+        />
+      </div>
+    {:else}
+      <div class="flex-1 overflow-auto px-4 py-2" data-testid="comms-list">
+        {#each commPairs as pair, i (`${pair.task.id}:${pair.comm.id}`)}
+          <div class="my-1" data-row-id={pair.task.id} data-comm-id={pair.comm.id}>
+            <CommTaskRow
+              card={pair.task}
+              comm={pair.comm}
+              commStatusPhase={commStatusPhases[pair.comm.comm_status.toString()] ?? 'active'}
+              commStatusTitles={commStatusTitles}
+              selected={i === selectedIndex}
+              onSelect={() => {
+                selectedIndex = i;
+              }}
+              onOpen={() => openTaskById(pair.task.id)}
+              personNames={personNames}
+              cardTitles={cardTitles}
+              tagPaths={tagPaths}
+              transitions={transitionsFor(pair.task)}
+              commTransitions={commTransitionsByCardId[pair.comm.id.toString()] ?? []}
+              onReplySent={() => void refresh()}
+              onTransitioned={() => void refresh()}
+            />
+          </div>
+        {/each}
+      </div>
+    {/if}
   {:else if rows.length === 0}
     <div class="flex flex-1 items-center justify-center" data-testid="inbox-empty">
       <EmptyState title="Your inbox is clear." description="Nothing assigned to you right now." />
