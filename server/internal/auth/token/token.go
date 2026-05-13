@@ -96,13 +96,16 @@ func (m *Manager) Start(ctx context.Context) {
 // cannot be recovered later. label / expiresAt may be empty / nil
 // for "no description" / "no hard expiry".
 func (m *Manager) Create(ctx context.Context, userID int64, label string, expiresAt *time.Time) (string, error) {
+	if label == "" {
+		return "", errors.New("token: label is required")
+	}
 	id, err := newTokenID()
 	if err != nil {
 		return "", fmt.Errorf("token: generate id: %w", err)
 	}
 	if _, err := m.pool.Exec(ctx, `
 		INSERT INTO user_token (id, user_id, label, expires_at)
-		VALUES ($1, $2, NULLIF($3, ''), $4)
+		VALUES ($1, $2, $3, $4)
 	`, id, userID, label, expiresAt); err != nil {
 		return "", fmt.Errorf("token: insert: %w", err)
 	}
@@ -160,6 +163,57 @@ func (m *Manager) Revoke(ctx context.Context, tok string) error {
 	delete(m.pendingUse, tok)
 	m.mu.Unlock()
 	return nil
+}
+
+// ListRow is one entry returned by List. The bearer value is never
+// included — it lives only in the row's hidden `id` column. Callers
+// identify a row by (user_id, label) when revoking.
+type ListRow struct {
+	Label       string
+	CreatedAt   time.Time
+	LastUsedAt  time.Time
+	ExpiresAt   *time.Time
+	RevokedAt   *time.Time
+}
+
+// List returns every token bound to userID. Used by `user_token.list`
+// — the handler restricts access to the target's parent / an admin.
+func (m *Manager) List(ctx context.Context, userID int64) ([]ListRow, error) {
+	rows, err := m.pool.Query(ctx, `
+		SELECT label, created_at, last_used_at, expires_at, revoked_at
+		FROM user_token
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("token: list: %w", err)
+	}
+	defer rows.Close()
+	var out []ListRow
+	for rows.Next() {
+		var r ListRow
+		if err := rows.Scan(&r.Label, &r.CreatedAt, &r.LastUsedAt, &r.ExpiresAt, &r.RevokedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RevokeByLabel marks one token revoked, addressed by the
+// non-secret (user_id, label) pair. Returns the number of rows
+// updated (0 if no matching row, 1 on success — the (user_id, label)
+// uniqueness constraint guarantees ≤1). Idempotent — revoking an
+// already-revoked row returns 0 with no error.
+func (m *Manager) RevokeByLabel(ctx context.Context, userID int64, label string) (int, error) {
+	tag, err := m.pool.Exec(ctx, `
+		UPDATE user_token SET revoked_at = now()
+		WHERE user_id = $1 AND label = $2 AND revoked_at IS NULL
+	`, userID, label)
+	if err != nil {
+		return 0, fmt.Errorf("token: revoke_by_label: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 func (m *Manager) flush(ctx context.Context) error {

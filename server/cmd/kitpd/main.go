@@ -42,6 +42,7 @@ import (
 	"github.com/kitp/kitp/server/internal/auth/token"
 	"github.com/kitp/kitp/server/internal/cas"
 	"github.com/kitp/kitp/server/internal/dom/activity"
+	"github.com/kitp/kitp/server/internal/dom/agent"
 	"github.com/kitp/kitp/server/internal/dom/attachment"
 	domcas "github.com/kitp/kitp/server/internal/dom/cas"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
@@ -60,8 +61,10 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/tag"
 	"github.com/kitp/kitp/server/internal/dom/proc"
 	domuser "github.com/kitp/kitp/server/internal/dom/user"
+	"github.com/kitp/kitp/server/internal/dom/usercardagent"
 	"github.com/kitp/kitp/server/internal/dom/usercardsort"
 	"github.com/kitp/kitp/server/internal/dom/userrole"
+	"github.com/kitp/kitp/server/internal/dom/usertoken"
 	"github.com/kitp/kitp/server/internal/mcp"
 	"github.com/kitp/kitp/server/internal/obs"
 	"github.com/kitp/kitp/server/internal/schema/declarative"
@@ -115,8 +118,11 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 	proc.Register(pool)
 	domuser.Register()
 	usercardsort.Register(pool)
+	usercardagent.Register(pool)
 	domrole.Register()
 	userrole.Register(pool)
+	agent.Register(pool)
+	usertoken.Register(pool)
 	rolemapping.Register(pool)
 	if storage != nil {
 		projectimport.Register(projectimport.ImportConfig{Pool: pool, Storage: storage})

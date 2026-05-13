@@ -129,7 +129,8 @@ columns = ['expires_at']
 
 [[tables]]
 name = 'user_token'
-doc = 'Opaque bearer tokens that authenticate an MCP (or future remote) client AS a specific user_account row. Typical use: a human mints a token bound to one of their agent user_accounts, hands it to the MCP client out-of-band. The value is 32 random bytes base64url-encoded — same shape as session.id — and is looked up directly; nothing meaningful is embedded. last_used_at participates in the same batched-touch pattern as session.last_seen_at. ON DELETE CASCADE so revoking the agent user_account row revokes every token bound to it.'
+doc = 'Opaque bearer tokens that authenticate an MCP (or future remote) client AS a specific user_account row. Typical use: a human mints a token bound to one of their agent user_accounts, hands it to the MCP client out-of-band. The value is 32 random bytes base64url-encoded — same shape as session.id — and is looked up directly; nothing meaningful is embedded. last_used_at participates in the same batched-touch pattern as session.last_seen_at. ON DELETE CASCADE so revoking the agent user_account row revokes every token bound to it. label is required and unique per user so user_token.list / user_token.revoke can address rows without leaking the secret value back to the wire — list returns labels + timestamps, revoke takes (user_id, label).'
+unique = [['user_id', 'label']]
 
 [[tables.columns]]
 name = 'id'
@@ -149,6 +150,7 @@ on_delete = 'cascade'
 [[tables.columns]]
 name = 'label'
 type = 'text'
+nullable = false
 
 [[tables.columns]]
 name = 'created_at'
