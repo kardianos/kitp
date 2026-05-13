@@ -21,6 +21,8 @@
 //   KITP_COMM_IMAP_TICK_SEC   — IMAP poller cadence in seconds; default 60
 //   KITP_COMM_IMAP_DRY_RUN    — when "1", IMAP pollers log instead of polling
 //   KITP_COMM_IMAP_INSECURE   — when "1", allow plaintext IMAP (no TLS); dev only
+//   KITP_COMM_LOG_RETENTION_DAYS — days to keep comm_log rows; default 30
+//   KITP_COMM_LOG_PRUNE_HOURS — comm_log prune cadence in hours; default 24
 //
 // In production the server refuses to start if AUTH_MODE=off (N-SEC-5).
 package main
@@ -382,6 +384,19 @@ func runHTTP() error {
 			envOr("KITP_COMM_IMAP_INSECURE", "0"))
 	}
 
+	// comm_log retention prune. A single background goroutine
+	// periodically deletes comm_log rows older than the configured
+	// retention window (default 30d). Cadence is independent of
+	// retention so a small install can prune nightly without changing
+	// how long it keeps records.
+	retentionDays := envInt("KITP_COMM_LOG_RETENTION_DAYS", 30)
+	pruneHours := envInt("KITP_COMM_LOG_PRUNE_HOURS", 24)
+	pruner := comm.StartLogPruner(pool,
+		time.Duration(retentionDays)*24*time.Hour,
+		time.Duration(pruneHours)*time.Hour)
+	pruner.SetLogger(logger)
+	log.Printf("started comm_log pruner (retention=%dd, interval=%dh)", retentionDays, pruneHours)
+
 	idem := obs.NewIdempotencyStore(pgPool, logger)
 	idem.StartCleanup(ctx)
 
@@ -472,6 +487,7 @@ func runHTTP() error {
 	for _, poller := range imapPollers {
 		poller.Stop()
 	}
+	pruner.Stop()
 	return nil
 }
 
