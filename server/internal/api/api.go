@@ -57,9 +57,17 @@ type BatchRequest struct {
 
 // ErrorEnvelope rides on a sub-response when something went wrong with that
 // individual sub-request.
+//
+// Detail is an optional structured payload the dispatcher carries over
+// verbatim from `reg.HandlerError.Detail`. The flow-aware
+// `attribute.update` rejection envelope (V13) populates it with
+// `from / attempted_to / available[]` so the client and MCP renderers
+// can surface positive-feedback affordances ("you can do X; ask a
+// manager for Y") without making another round-trip.
 type ErrorEnvelope struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	Detail  any    `json:"detail,omitempty"`
 }
 
 // SubResponse is the per-sub-request reply. Order in BatchResponse mirrors
@@ -259,7 +267,7 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 		expanded, err := s.expandSubrequest(ctx, i, sr)
 		if err != nil {
 			code := errCode(err, "unknown_handler")
-			abortAll(out.Subresponses, i, code, err.Error())
+			abortAllWithDetail(out.Subresponses, i, code, err.Error(), errDetail(err))
 			return out
 		}
 		prepped = append(prepped, expanded...)
@@ -305,6 +313,7 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 		if err != nil {
 			offender := group[0].OuterIdx
 			code := "handler_error"
+			var detail any
 			if he, ok := err.(*reg.HandlerError); ok {
 				if he.InputIndex >= 0 && he.InputIndex < len(group) {
 					offender = group[he.InputIndex].OuterIdx
@@ -312,8 +321,9 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 				if he.Code != "" {
 					code = he.Code
 				}
+				detail = he.Detail
 			}
-			abortAll(out.Subresponses, offender, code, err.Error())
+			abortAllWithDetail(out.Subresponses, offender, code, err.Error(), detail)
 			return err
 		}
 		if len(outs) != len(group) {
@@ -433,6 +443,20 @@ func (s *Server) prepareLeaf(ctx context.Context, outerIdx int, h reg.Handler, d
 
 	if h.Validate != nil {
 		if err := h.Validate(ctx, s.Pool.P, input); err != nil {
+			// Preserve Detail when the validator returned a structured
+			// *reg.HandlerError (Gate 5: flow_disallowed /
+			// flow_role_required carry from / attempted_to / available[]).
+			if he, ok := err.(*reg.HandlerError); ok {
+				code := he.Code
+				if code == "" {
+					code = "validation"
+				}
+				return prepared{}, &reg.HandlerError{
+					Code:    code,
+					Message: he.Message,
+					Detail:  he.Detail,
+				}
+			}
 			code := errCode(err, "validation")
 			return prepared{}, &reg.HandlerError{Code: code, Message: err.Error()}
 		}
@@ -507,11 +531,15 @@ func (s *Server) runAuthzPass(ctx context.Context, prepped []prepared, slots []S
 			he, _ := err.(*reg.HandlerError)
 			code := "unauthorized"
 			msg := err.Error()
-			if he != nil && he.Code != "" {
-				code = he.Code
+			var detail any
+			if he != nil {
+				if he.Code != "" {
+					code = he.Code
+				}
 				msg = he.Message
+				detail = he.Detail
 			}
-			abortAll(slots, p.OuterIdx, code, msg)
+			abortAllWithDetail(slots, p.OuterIdx, code, msg, detail)
 			return err
 		}
 	}
@@ -522,12 +550,22 @@ func (s *Server) runAuthzPass(ctx context.Context, prepped []prepared, slots []S
 // Slots that were already filled with success data are also overwritten so the
 // transactional all-or-nothing contract holds.
 func abortAll(slots []SubResponse, offender int, code, msg string) {
+	abortAllWithDetail(slots, offender, code, msg, nil)
+}
+
+// abortAllWithDetail is the same shape with an additional Detail payload
+// that rides on the offender's error envelope. Used by the flow-aware
+// `attribute.update` rejection path (V13) to surface
+// `from / attempted_to / available[]` alongside `code / message`.
+func abortAllWithDetail(slots []SubResponse, offender int, code, msg string, detail any) {
 	for i := range slots {
 		id := slots[i].ID
 		if i == offender {
-			slots[i] = SubResponse{ID: id, OK: false, Error: &ErrorEnvelope{Code: code, Message: msg}}
+			slots[i] = SubResponse{ID: id, OK: false,
+				Error: &ErrorEnvelope{Code: code, Message: msg, Detail: detail}}
 		} else {
-			slots[i] = SubResponse{ID: id, OK: false, Error: &ErrorEnvelope{Code: "aborted", Message: "batch aborted by sibling sub-request"}}
+			slots[i] = SubResponse{ID: id, OK: false,
+				Error: &ErrorEnvelope{Code: "aborted", Message: "batch aborted by sibling sub-request"}}
 		}
 	}
 }
@@ -547,4 +585,15 @@ func errCode(err error, def string) string {
 		return he.Code
 	}
 	return def
+}
+
+// errDetail extracts a HandlerError's optional structured Detail payload
+// when present. Returns nil for plain errors. Used by the dispatcher's
+// expand / authz paths so a structured rejection (Gate 5's flow
+// envelope) survives the round-trip into the ErrorEnvelope.
+func errDetail(err error) any {
+	if he, ok := err.(*reg.HandlerError); ok {
+		return he.Detail
+	}
+	return nil
 }

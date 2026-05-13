@@ -183,10 +183,18 @@ func Reset() {
 // batch. InputIndex is the position inside the slice handed to Run (not
 // the submission slot — the dispatcher maps it back). Code is the
 // machine-readable label that surfaces in the sub-response.
+//
+// Detail is an optional structured payload the dispatcher serialises
+// verbatim into the sub-response error envelope alongside `code` and
+// `message`. Gate 5 (FLOW_AND_SCREEN_KERNEL §V13) uses it to carry the
+// `from / attempted_to / available[]` positive-feedback payload on a
+// `flow_disallowed` / `flow_role_required` rejection. Any
+// JSON-marshallable value works; nil omits the field entirely.
 type HandlerError struct {
 	InputIndex int
 	Code       string
 	Message    string
+	Detail     any
 }
 
 func (e *HandlerError) Error() string { return e.Message }

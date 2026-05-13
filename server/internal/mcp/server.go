@@ -285,21 +285,33 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonrpcRequest) {
 		// reserved for protocol-level failures), but a successful
 		// response carrying isError=true and a textual content block.
 		// Some MCP clients also read the data field; we include both.
+		//
+		// Gate 5 (FLOW_AND_SCREEN_KERNEL V13): when the rejection
+		// carries a structured Detail payload (the flow-aware
+		// attribute.update envelope's from / attempted_to / available[]),
+		// pass it through verbatim on data.detail so the LLM client can
+		// read the available transitions and surface them to the user.
 		text := "(no error message)"
 		code := "unknown"
+		var detail any
 		if sr.Error != nil {
 			text = sr.Error.Message
 			code = sr.Error.Code
+			detail = sr.Error.Detail
+		}
+		data := map[string]any{
+			"code":    code,
+			"message": text,
+		}
+		if detail != nil {
+			data["detail"] = detail
 		}
 		s.writeResult(req.ID, map[string]any{
 			"isError": true,
 			"content": []any{
 				map[string]any{"type": "text", "text": text},
 			},
-			"data": map[string]any{
-				"code":    code,
-				"message": text,
-			},
+			"data": data,
 		})
 		return
 	}

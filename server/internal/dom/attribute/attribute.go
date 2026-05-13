@@ -142,6 +142,15 @@ func validateUpdate(ctx context.Context, pool reg.ValidationPool, raw any) error
 			}
 		}
 	}
+
+	// Gate 5: flow-aware authz. When the attribute has a flow bound in
+	// the card's enclosing project, tighten the write by flow_step
+	// existence + per-actor role satisfaction. role_grant remains the
+	// outer gate; the flow check is additive. See attribute/flow.go
+	// for the rejection envelope (V13) shape.
+	if err := validateFlow(ctx, pool, in.CardID, in.AttributeName, attrDefID, valueType, in.Value); err != nil {
+		return err
+	}
 	return nil
 }
 

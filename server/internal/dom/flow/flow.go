@@ -934,6 +934,24 @@ func runStepListForCard(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins 
 	}
 }
 
+// ProjectIDForCard is the exported variant of the package-private
+// projectIDForCard helper, accepting the broader Reader surface (any
+// pgxpool / pgx.Tx) so callers outside this package (Gate 5's
+// attribute.update validate branch) can resolve the enclosing project
+// against a read-only pool before the transaction opens.
+func ProjectIDForCard(ctx context.Context, db Reader, cardID int64) (int64, error) {
+	return projectIDForCardRead(ctx, db, cardID)
+}
+
+// Reader is the read surface ProjectIDForCard / ListAvailableTransitions
+// need. Both pgxpool.Pool and pgx.Tx satisfy it. Defined here so
+// callers don't have to choose between "validate uses the pool" and
+// "the read handler uses tx" — same function, same shape.
+type Reader interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // projectIDForCard walks the parent_card_id chain from cardID upward
 // and returns the id of the first ancestor (including cardID itself)
 // whose card_type is 'project'. Returns 0 if none is found — the
@@ -944,8 +962,15 @@ func runStepListForCard(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins 
 // depth. Cards have ON DELETE CASCADE on parent_card_id so the chain
 // is always intact for live rows.
 func projectIDForCard(ctx context.Context, tx pgx.Tx, cardID int64) (int64, error) {
+	return projectIDForCardRead(ctx, tx, cardID)
+}
+
+// projectIDForCardRead is the underlying implementation accepting the
+// broader Reader interface so both projectIDForCard (in-tx, pgx.Tx) and
+// ProjectIDForCard (pre-tx, pgxpool) can share the same SQL.
+func projectIDForCardRead(ctx context.Context, db Reader, cardID int64) (int64, error) {
 	var pid int64
-	row := tx.QueryRow(ctx, `
+	row := db.QueryRow(ctx, `
 		WITH RECURSIVE chain AS (
 			SELECT id, parent_card_id, card_type_id
 			FROM card WHERE id = $1
@@ -967,6 +992,16 @@ func projectIDForCard(ctx context.Context, tx pgx.Tx, cardID int64) (int64, erro
 		return 0, err
 	}
 	return pid, nil
+}
+
+// ListAvailableTransitions is the exported call site for Gate 5's
+// attribute.update rejection envelope. Accepts any Reader (pgxpool
+// for pre-tx Validate use, pgx.Tx for in-tx use) so the same helper
+// answers both the read-side handler (`flow_step.list_for_card`,
+// Gate 4) and the write-side rejection envelope (Gate 5). One
+// implementation, two call sites.
+func ListAvailableTransitions(ctx context.Context, db Reader, actorID, cardID, projectID int64) ([]AvailableTransition, error) {
+	return listAvailableTransitionsRead(ctx, db, actorID, cardID, projectID)
 }
 
 // listAvailableTransitions is the shared core query. Given a card,
@@ -997,6 +1032,13 @@ func projectIDForCard(ctx context.Context, tx pgx.Tx, cardID int64) (int64, erro
 // AvailableTransition is the wire contract for both endpoints and the
 // rejection payload.
 func listAvailableTransitions(ctx context.Context, tx pgx.Tx, actorID, cardID, projectID int64) ([]AvailableTransition, error) {
+	return listAvailableTransitionsRead(ctx, tx, actorID, cardID, projectID)
+}
+
+// listAvailableTransitionsRead is the Reader-typed core shared by the
+// in-tx (pgx.Tx) and pre-tx (pgxpool) call sites. Both wrappers call
+// it and surface the same []AvailableTransition shape.
+func listAvailableTransitionsRead(ctx context.Context, db Reader, actorID, cardID, projectID int64) ([]AvailableTransition, error) {
 	if projectID == 0 {
 		return nil, nil
 	}
@@ -1056,7 +1098,7 @@ func listAvailableTransitions(ctx context.Context, tx pgx.Tx, actorID, cardID, p
 		WHERE f.scope_card_id = $3
 		ORDER BY ad.name, fs.sort_order, fs.label, fs.id
 	`
-	rows, err := tx.Query(ctx, q, actorID, cardID, projectID)
+	rows, err := db.Query(ctx, q, actorID, cardID, projectID)
 	if err != nil {
 		return nil, err
 	}

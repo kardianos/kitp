@@ -165,9 +165,10 @@ func BuildSeed(doc *Document, schema *Schema, opts SeedOptions) (string, error) 
 		return "", fmt.Errorf("hcsv: root section must be `# seed` or `# demo`, got %q at line %d", root.Kind, root.Line)
 	}
 	l := &seedLoader{
-		schema:  schema,
-		tables:  indexTables(schema),
-		aliases: map[string]*seedRow{},
+		schema:          schema,
+		tables:          indexTables(schema),
+		aliases:         map[string]*seedRow{},
+		cardRefArrayAttr: collectCardRefArrayAttrs(root),
 	}
 	if err := l.walk(root, nil); err != nil {
 		return "", err
@@ -270,6 +271,70 @@ type seedLoader struct {
 	// sectionStack is the chain of currently-open depth-2 sections so
 	// depth-3+ sections find their `parent` row.
 	sectionStack []*seedSection
+	// cardRefArrayAttr is the set of attribute_def names whose
+	// value_type is card_ref[], pre-scanned from the parsed Doc so the
+	// loader can distinguish "cross-product over a list" (the default
+	// for `[…]` cells) from "JSON array value" (for card_ref[] cells)
+	// without a hardcoded switch on the attribute name. See V18 /
+	// FLOW_AND_SCREEN_KERNEL.md gate-5 cross-cutting cleanup.
+	cardRefArrayAttr map[string]bool
+}
+
+// collectCardRefArrayAttrs walks the parsed doc once before the loader
+// starts emitting rows and collects every attribute_def row whose
+// value_type column is "card_ref[]". The result is a name-set the
+// loader consults when parsing card-table cells: cells targeted at one
+// of these attributes get JSON-array parsing rather than the default
+// cross-product expansion.
+//
+// Schema-driven so adding a new card_ref[] attribute (the spec calls
+// out future cases) doesn't require touching this file. The hardcoded
+// `tags` switch this replaced was the last knob the loader carried
+// about specific attribute names.
+func collectCardRefArrayAttrs(root *Section) map[string]bool {
+	out := map[string]bool{}
+	var visit func(*Section)
+	visit = func(sec *Section) {
+		if sec == nil {
+			return
+		}
+		// Match either `## table attribute_def` (the seed file's depth
+		// for top-level tables) or any depth — we don't constrain
+		// because seed.hcsv keeps attribute_def at depth 2.
+		if sec.Kind == "table" && sec.Name == "attribute_def" {
+			for _, child := range sec.Children {
+				if child.Kind != "rows" {
+					continue
+				}
+				nameCol := -1
+				typeCol := -1
+				for i, h := range child.Header {
+					switch h {
+					case "name":
+						nameCol = i
+					case "value_type":
+						typeCol = i
+					}
+				}
+				if nameCol < 0 || typeCol < 0 {
+					continue
+				}
+				for _, row := range child.Rows {
+					if nameCol >= len(row) || typeCol >= len(row) {
+						continue
+					}
+					if strings.TrimSpace(row[typeCol]) == "card_ref[]" {
+						out[strings.TrimSpace(row[nameCol])] = true
+					}
+				}
+			}
+		}
+		for _, child := range sec.Children {
+			visit(child)
+		}
+	}
+	visit(root)
+	return out
 }
 
 func indexTables(s *Schema) map[string]*Table {
@@ -392,7 +457,7 @@ func (l *seedLoader) readTableSection(sec *Section, parent *seedRow) (*seedSecti
 			if i < len(row) {
 				raw = row[i]
 			}
-			pv, err := parseCell(raw, isCardRefArrayAttr(tbl, h))
+			pv, err := parseCell(raw, l.isCardRefArrayAttr(tbl, h))
 			if err != nil {
 				return nil, fmt.Errorf("hcsv: line %d: column %q: %w", rowsSec.Line, h, err)
 			}
@@ -441,19 +506,15 @@ func (l *seedLoader) readTableSection(sec *Section, parent *seedRow) (*seedSecti
 
 // isCardRefArrayAttr reports whether column `name` on table `t` is a
 // card-attribute (for card-table only) whose attribute_def has value
-// type card_ref[]. The schema doesn't carry attribute_def value types
-// statically (those are seed rows themselves), so the loader keeps a
-// small hard-coded set: `tags` is the only such attribute in the
-// declarative.toml as of Phase 2.
-func isCardRefArrayAttr(t *Table, name string) bool {
+// type card_ref[]. The answer is data-driven: the loader pre-scans
+// every attribute_def row in the doc at construction time and stashes
+// the name-set in `l.cardRefArrayAttr`. No hardcoded list of attribute
+// names anywhere in the loader.
+func (l *seedLoader) isCardRefArrayAttr(t *Table, name string) bool {
 	if t.Name != "card" {
 		return false
 	}
-	switch name {
-	case "tags":
-		return true
-	}
-	return false
+	return l.cardRefArrayAttr[name]
 }
 
 // isStructuralCardColumn returns true when `name` is a physical
