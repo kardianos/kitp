@@ -685,6 +685,218 @@ func TestPermission(t *testing.T) {
 	}
 }
 
+// ---- reply.post ----
+
+// createCommForReply creates one comm under the fixture's task and
+// returns its id. Optionally configures the channel's from_address.
+func createCommForReply(t *testing.T, f *fixture, fromAddress string) (channelID, commID int64) {
+	t.Helper()
+	body := fmt.Sprintf(`{"project_id":"%d","name":"Support","channel_type":"email"`, f.projectID)
+	if fromAddress != "" {
+		body += fmt.Sprintf(`,"from_address":%q`, fromAddress)
+	}
+	body += `}`
+	var setOut comm.ChannelSetOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "ch", Endpoint: "comm_channel", Action: "set", Data: json.RawMessage(body),
+	}, &setOut)
+	var ccOut comm.CommCreateOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "c", Endpoint: "comm", Action: "create", Data: json.RawMessage(
+			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Help!"}`,
+				f.taskID, setOut.ChannelID)),
+	}, &ccOut)
+	return setOut.ChannelID, ccOut.CommID
+}
+
+// dispatchAs runs a sub-request under a non-admin user. Returns the
+// raw SubResponse so callers can inspect OK / Error themselves.
+func dispatchAs(t *testing.T, f *fixture, roleName string, displayName string, sub api.SubRequest) api.SubResponse {
+	t.Helper()
+	ctx := context.Background()
+	var uid int64
+	if err := f.sp.P.QueryRow(ctx, `INSERT INTO user_account (display_name) VALUES ($1) RETURNING id`, displayName).Scan(&uid); err != nil {
+		t.Fatalf("user %s: %v", displayName, err)
+	}
+	if _, err := f.sp.P.Exec(ctx, `
+		INSERT INTO user_role (user_id, role_id) SELECT $1, id FROM role WHERE name=$2
+	`, uid, roleName); err != nil {
+		t.Fatalf("role %s: %v", roleName, err)
+	}
+	userCtx := auth.WithUser(ctx, &auth.UserCtx{ID: uid, DisplayName: displayName})
+	resp := f.srv.Dispatch(userCtx, api.BatchRequest{Subrequests: []api.SubRequest{sub}})
+	return resp.Subresponses[0]
+}
+
+func TestReplyPost(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_reply_post")
+	_, commID := createCommForReply(t, f, "")
+
+	var rpOut comm.ReplyPostOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "r", Endpoint: "reply", Action: "post", Data: json.RawMessage(
+			fmt.Sprintf(`{"comm_id":"%d","to":"customer@example.com","subject":"Re: Help!","body":"Hello, here is a fix."}`,
+				commID)),
+	}, &rpOut)
+
+	if rpOut.ReplyID == 0 {
+		t.Fatal("expected reply_id > 0")
+	}
+
+	// reply_body card carries the five attributes.
+	ctx := context.Background()
+	var to, from, subject, bodyText, status string
+	if err := f.sp.P.QueryRow(ctx, `
+		SELECT
+			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_to'),
+			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_from'),
+			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_subject'),
+			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_body_text'),
+			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='delivery_status')
+	`, rpOut.ReplyID).Scan(&to, &from, &subject, &bodyText, &status); err != nil {
+		t.Fatalf("read reply attrs: %v", err)
+	}
+	if to != "customer@example.com" {
+		t.Errorf("reply_to=%q want customer@example.com", to)
+	}
+	if from != "" {
+		t.Errorf("reply_from=%q want empty (channel has no from_address)", from)
+	}
+	if subject != "Re: Help!" {
+		t.Errorf("reply_subject=%q want 'Re: Help!'", subject)
+	}
+	if bodyText != "Hello, here is a fix." {
+		t.Errorf("reply_body_text=%q want 'Hello, here is a fix.'", bodyText)
+	}
+	if status != "pending" {
+		t.Errorf("delivery_status=%q want pending", status)
+	}
+
+	// Comm's replies attribute now lists the new reply_body id.
+	var repliesJSON []byte
+	if err := f.sp.P.QueryRow(ctx, `
+		SELECT av.value FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE av.card_id=$1 AND ad.name='replies'
+	`, commID).Scan(&repliesJSON); err != nil {
+		t.Fatalf("comm.replies: %v", err)
+	}
+	var ids []int64
+	if err := json.Unmarshal(repliesJSON, &ids); err != nil {
+		t.Fatalf("decode replies: %v: %s", err, repliesJSON)
+	}
+	if len(ids) != 1 || ids[0] != rpOut.ReplyID {
+		t.Errorf("comm.replies=%v, want [%d]", ids, rpOut.ReplyID)
+	}
+
+	// The reply also surfaces through comm.list_for_task.
+	var listOut comm.CommListForTaskOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "l", Endpoint: "comm", Action: "list_for_task", Data: json.RawMessage(
+			fmt.Sprintf(`{"task_id":"%d"}`, f.taskID)),
+	}, &listOut)
+	if len(listOut.Rows) != 1 || len(listOut.Rows[0].Replies) != 1 {
+		t.Fatalf("list_for_task shape: %+v", listOut.Rows)
+	}
+	if listOut.Rows[0].Replies[0].DeliveryStatus != "pending" {
+		t.Errorf("list_for_task reply.delivery_status=%q want pending",
+			listOut.Rows[0].Replies[0].DeliveryStatus)
+	}
+}
+
+func TestReplyPostInheritsFromAddress(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_reply_post_from_addr")
+	_, commID := createCommForReply(t, f, "kitp@example.com")
+
+	var rpOut comm.ReplyPostOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "r", Endpoint: "reply", Action: "post", Data: json.RawMessage(
+			fmt.Sprintf(`{"comm_id":"%d","to":"customer@example.com","subject":"Re: Help","body":"Hi"}`,
+				commID)),
+	}, &rpOut)
+
+	var from string
+	if err := f.sp.P.QueryRow(context.Background(), `
+		SELECT (SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_from')
+	`, rpOut.ReplyID).Scan(&from); err != nil {
+		t.Fatalf("read reply_from: %v", err)
+	}
+	if from != "kitp@example.com" {
+		t.Errorf("reply_from=%q want kitp@example.com", from)
+	}
+}
+
+func TestReplyPostValidation(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_reply_post_validation")
+	_, commID := createCommForReply(t, f, "")
+
+	for _, c := range []struct {
+		body string
+		code string
+		desc string
+	}{
+		{fmt.Sprintf(`{"comm_id":"%d","to":"","body":"x"}`, commID), "validation", "empty to"},
+		{fmt.Sprintf(`{"comm_id":"%d","to":"a@b.c","body":""}`, commID), "validation", "empty body"},
+		{`{"comm_id":"0","to":"a@b.c","body":"x"}`, "validation", "missing comm_id"},
+	} {
+		errEnv := dispatchExpectErr(t, f, api.SubRequest{
+			ID: "x", Endpoint: "reply", Action: "post", Data: json.RawMessage(c.body),
+		})
+		if errEnv.Code != c.code {
+			t.Errorf("%s: code=%q want %q (%s)", c.desc, errEnv.Code, c.code, errEnv.Message)
+		}
+	}
+}
+
+func TestReplyPostNonCommRejects(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_reply_post_non_comm")
+	// Pass the fixture's task id as comm_id — wrong card_type.
+	errEnv := dispatchExpectErr(t, f, api.SubRequest{
+		ID: "x", Endpoint: "reply", Action: "post", Data: json.RawMessage(
+			fmt.Sprintf(`{"comm_id":"%d","to":"a@b.c","body":"x"}`, f.taskID)),
+	})
+	if errEnv.Code != "comm_wrong_type" {
+		t.Errorf("code=%q want comm_wrong_type: %s", errEnv.Code, errEnv.Message)
+	}
+}
+
+func TestReplyPostPermission(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_reply_post_permission")
+	_, commID := createCommForReply(t, f, "")
+
+	body := json.RawMessage(fmt.Sprintf(`{"comm_id":"%d","to":"a@b.c","body":"x"}`, commID))
+
+	// viewer rejected.
+	resp := dispatchAs(t, f, "viewer", "reply-viewer", api.SubRequest{
+		ID: "v", Endpoint: "reply", Action: "post", Data: body,
+	})
+	if resp.OK {
+		t.Fatal("viewer should be unauthorized for reply.post")
+	}
+	if resp.Error == nil || resp.Error.Code != "unauthorized" {
+		t.Errorf("viewer: expected unauthorized, got %+v", resp.Error)
+	}
+
+	// commenter rejected.
+	resp = dispatchAs(t, f, "commenter", "reply-commenter", api.SubRequest{
+		ID: "c", Endpoint: "reply", Action: "post", Data: body,
+	})
+	if resp.OK {
+		t.Fatal("commenter should be unauthorized for reply.post")
+	}
+	if resp.Error == nil || resp.Error.Code != "unauthorized" {
+		t.Errorf("commenter: expected unauthorized, got %+v", resp.Error)
+	}
+
+	// worker accepted — spec calls out worker/manager/admin can author.
+	resp = dispatchAs(t, f, "worker", "reply-worker", api.SubRequest{
+		ID: "w", Endpoint: "reply", Action: "post", Data: body,
+	})
+	if !resp.OK {
+		t.Errorf("worker should be authorized for reply.post: %+v", resp.Error)
+	}
+}
+
 // TestChannelValidation guards the obvious validation paths so the
 // admin UI can surface "channel_type=email only" / "name required" etc.
 func TestChannelValidation(t *testing.T) {

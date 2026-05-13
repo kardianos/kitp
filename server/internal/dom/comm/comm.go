@@ -148,6 +148,27 @@ type CommListForTaskOutput struct {
 	Rows []CommRow `json:"rows" mcp:"desc=comm cards under the task, with their replies"`
 }
 
+// ---- reply.post ----
+
+// ReplyPostInput is the wire payload for reply.post. Operators
+// (worker / manager / admin) author outbound replies on a comm; the
+// SMTP sender goroutine (Gate 5) picks up pending rows on its next
+// tick and ships them. The handler itself only writes the reply_body
+// card and appends its id to the comm's replies attribute — no
+// network I/O happens here.
+type ReplyPostInput struct {
+	CommID  int64  `json:"comm_id,string" mcp:"required,desc=comm card id to reply on"`
+	To      string `json:"to" mcp:"required,desc=outbound To: address"`
+	Subject string `json:"subject,omitempty" mcp:"desc=subject line; threading suffix [#<thread_id>] is appended at send time"`
+	Body    string `json:"body" mcp:"required,desc=plain-text body"`
+}
+
+// ReplyPostOutput carries the new reply_body card id so the caller
+// can render the new entry inline without re-listing.
+type ReplyPostOutput struct {
+	ReplyID int64 `json:"reply_id,string" mcp:"desc=new reply_body card id"`
+}
+
 // ---- comm_log.list ----
 
 // CommLogListInput filters the per-project comm_log stream.
@@ -222,6 +243,15 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[CommListForTaskOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
 		Run:          runCommListForTask(p),
+	})
+	reg.Register(reg.Handler{
+		Endpoint:     "reply",
+		Action:       "post",
+		Doc:          "Author an outbound reply on a comm. Inserts a reply_body card with delivery_status='pending', inherits reply_from from the comm's channel from_address attribute, and appends the new id to the comm's replies attribute. The SMTP sender (Gate 5) picks up pending rows on its next tick. worker / manager / admin may author.",
+		InputType:    reflect.TypeFor[ReplyPostInput](),
+		OutputType:   reflect.TypeFor[ReplyPostOutput](),
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		Run:          runReplyPost(p),
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "comm_log",
@@ -1211,6 +1241,119 @@ func loadRepliesByID(ctx context.Context, tx pgx.Tx, ids []int64) (map[int64]Rep
 		return nil, err
 	}
 	return out, nil
+}
+
+// ---- reply.post implementation ----
+
+func runReplyPost(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		actorID := auth.ActorOrSystem(ctx)
+		snap, err := schema.Load(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		replyCTID, err := resolveCardType(snap, "reply_body")
+		if err != nil {
+			return nil, err
+		}
+
+		outs := make([]any, len(ins))
+		for i, raw := range ins {
+			in := raw.(ReplyPostInput)
+			if in.CommID == 0 {
+				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+					Message: "reply.post: comm_id is required"}
+			}
+			if in.To == "" {
+				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+					Message: "reply.post: to is required"}
+			}
+			if in.Body == "" {
+				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+					Message: "reply.post: body is required"}
+			}
+
+			// Verify the target is a comm card and grab its channel_ref so
+			// we can copy the channel's from_address into reply_from.
+			var commKind string
+			var channelRef int64
+			row := tx.QueryRow(ctx, `
+				SELECT ct.name,
+				       COALESCE((SELECT (value)::text::bigint FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='channel_ref' AND jsonb_typeof(value)='number'), 0)
+				FROM card c JOIN card_type ct ON ct.id = c.card_type_id
+				WHERE c.id = $1 AND c.deleted_at IS NULL
+			`, in.CommID)
+			if err := row.Scan(&commKind, &channelRef); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return nil, &reg.HandlerError{InputIndex: i, Code: "comm_not_found",
+						Message: fmt.Sprintf("reply.post: comm %d not found", in.CommID)}
+				}
+				return nil, fmt.Errorf("reply.post: load comm: %w", err)
+			}
+			if commKind != "comm" {
+				return nil, &reg.HandlerError{InputIndex: i, Code: "comm_wrong_type",
+					Message: fmt.Sprintf("reply.post: card %d is %q, not comm", in.CommID, commKind)}
+			}
+
+			// Resolve the channel's configured from_address (best-effort:
+			// channels need not have one configured yet — the SMTP sender
+			// will refuse to ship a row that has an empty reply_from).
+			var fromAddress string
+			if channelRef != 0 {
+				if err := tx.QueryRow(ctx, `
+					SELECT COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = $1 AND ad.name='from_address'), '')
+				`, channelRef).Scan(&fromAddress); err != nil {
+					return nil, fmt.Errorf("reply.post: load channel from_address: %w", err)
+				}
+			}
+
+			// Insert the reply_body card (global; no parent).
+			var replyID int64
+			if err := tx.QueryRow(ctx, `
+				INSERT INTO card (card_type_id) VALUES ($1) RETURNING id
+			`, replyCTID).Scan(&replyID); err != nil {
+				return nil, fmt.Errorf("reply.post: insert reply_body card: %w", err)
+			}
+			if err := writeCardCreateActivity(ctx, tx, replyID, actorID); err != nil {
+				return nil, fmt.Errorf("reply.post: activity: %w", err)
+			}
+
+			// Write the five required attributes. The threading suffix
+			// [#<thread_id>] is NOT appended here; the SMTP sender builds
+			// the final subject at send time.
+			jstr := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
+			writes := []struct {
+				name string
+				val  json.RawMessage
+			}{
+				{"reply_to", jstr(in.To)},
+				{"reply_from", jstr(fromAddress)},
+				{"reply_subject", jstr(in.Subject)},
+				{"reply_body_text", jstr(in.Body)},
+				{"delivery_status", jstr("pending")},
+			}
+			for _, w := range writes {
+				ad, ok := snap.AttrByName[w.name]
+				if !ok {
+					return nil, fmt.Errorf("reply.post: attribute_def %q missing", w.name)
+				}
+				if err := writeAttributeValue(ctx, tx, replyID, ad.ID, w.val, actorID); err != nil {
+					return nil, fmt.Errorf("reply.post: write %s: %w", w.name, err)
+				}
+			}
+
+			// Append the new reply_body id to the comm's replies attribute.
+			if err := appendCardRefList(ctx, tx, in.CommID, "replies", replyID, snap, actorID); err != nil {
+				return nil, fmt.Errorf("reply.post: append to replies: %w", err)
+			}
+
+			outs[i] = ReplyPostOutput{ReplyID: replyID}
+		}
+		if p != nil {
+			p.NoteWrite()
+		}
+		return outs, nil
+	}
 }
 
 // ---- comm_log.list implementation ----
