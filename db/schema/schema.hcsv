@@ -383,3 +383,30 @@ label, text, , false, , ,
 requires_role_id, bigint, , , , role.id,
 sort_order, int, , false, 0, ,
 created_at, timestamptz, , false, now(), ,
+
+
+## table comm_secret | doc="Encrypted IMAP/SMTP passwords for a comm_channel card. One row per channel; channel_card_id is the PK and FK with ON DELETE CASCADE so deleting the channel drops the secret. imap_password and smtp_password are bytea cells written via pgcrypto's sym_encrypt (key from KITP_COMM_SECRET_KEY env var) — Gate 3 wires the encryption; Gate 1 only ships the column shape."
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+channel_card_id, bigint, true, , , card.id, cascade
+imap_password, bytea, , , , ,
+smtp_password, bytea, , , , ,
+updated_at, timestamptz, , false, now(), ,
+
+
+## table comm_log | doc="Per-project ring buffer of channel-level events (poll cycles, send attempts, bounces, parse errors). Decoupled from cards because the volume is high and a parse error before identification has no card to attach to. Retention via a periodic prune gated by KITP_COMM_LOG_RETENTION_DAYS."
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+id, bigserial, true, , , ,
+project_id, bigint, , false, , card.id,
+channel_id, bigint, , , , card.id,
+kind, text, , false, , ,
+detail, jsonb, , , , ,
+at, timestamptz, , false, now(), ,
+
+### indexes
+name, columns
+idx_comm_log_project_at, "project_id, at desc"
+idx_comm_log_project_kind_at, "project_id, kind, at desc"

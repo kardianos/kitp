@@ -36,7 +36,7 @@ kitp.manager, $role.manager
 kitp.worker,  $role.worker
 
 
-## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter are project-scoped (parent_card_type_id=project). person + comment_body are global. filter cards parent under screen." | on_conflict="name"
+## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task." | on_conflict="name"
 ### rows
 name, is_built_in, allow_self_parent, parent_card_type_id
 project,      true,  false, null
@@ -49,6 +49,9 @@ comment_body, true,  false, null
 person,       true,  false, null
 screen,       true,  false, $card_type.project
 filter,       true,  false, $card_type.screen
+comm_channel, true,  false, $card_type.project
+comm,         true,  false, $card_type.task
+reply_body,   true,  false, null
 
 
 ## table attribute_def | doc="Built-in attribute definitions. Each pick-from-a-list attribute is a card_ref with target_card_type_id pointing at the card_type whose cards are the valid values." | on_conflict="name"
@@ -78,6 +81,25 @@ default_filter,        card_ref,    true, $card_type.filter
 column_attr,           text,        true, null
 lane_attr,             text,        true, null
 is_template,           bool,        true, null
+comms,                 card_ref[],  true, $card_type.comm
+channel_type,          text,        true, null
+imap_host,             text,        true, null
+imap_port,             number,      true, null
+imap_username,         text,        true, null
+smtp_host,             text,        true, null
+smtp_port,             number,      true, null
+smtp_username,         text,        true, null
+from_address,          text,        true, null
+intake_status,         card_ref,    true, $card_type.status
+channel_ref,           card_ref,    true, $card_type.comm_channel
+thread_id,             text,        true, null
+replies,               card_ref[],  true, $card_type.reply_body
+comm_status,           card_ref,    true, $card_type.status
+reply_to,              text,        true, null
+reply_from,            text,        true, null
+reply_subject,         text,        true, null
+reply_body_text,       text,        true, null
+delivery_status,       text,        true, null
 
 
 ## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"
@@ -130,6 +152,27 @@ $card_type.filter,    $attribute_def.column_attr,       false, 2
 $card_type.filter,    $attribute_def.lane_attr,         false, 3
 $card_type.filter,    $attribute_def.sort_order,        false, 4
 $card_type.filter,    $attribute_def.is_active,         false, 5
+$card_type.task,         $attribute_def.comms,             false, 7
+$card_type.comm_channel, $attribute_def.title,             true,  0
+$card_type.comm_channel, $attribute_def.channel_type,      true,  1
+$card_type.comm_channel, $attribute_def.imap_host,         false, 2
+$card_type.comm_channel, $attribute_def.imap_port,         false, 3
+$card_type.comm_channel, $attribute_def.imap_username,     false, 4
+$card_type.comm_channel, $attribute_def.smtp_host,         false, 5
+$card_type.comm_channel, $attribute_def.smtp_port,         false, 6
+$card_type.comm_channel, $attribute_def.smtp_username,     false, 7
+$card_type.comm_channel, $attribute_def.from_address,      false, 8
+$card_type.comm_channel, $attribute_def.intake_status,     false, 9
+$card_type.comm,         $attribute_def.title,             true,  0
+$card_type.comm,         $attribute_def.channel_ref,       true,  1
+$card_type.comm,         $attribute_def.thread_id,         true,  2
+$card_type.comm,         $attribute_def.comm_status,       true,  3
+$card_type.comm,         $attribute_def.replies,           false, 4
+$card_type.reply_body,   $attribute_def.reply_to,          true,  0
+$card_type.reply_body,   $attribute_def.reply_from,        true,  1
+$card_type.reply_body,   $attribute_def.reply_subject,     true,  2
+$card_type.reply_body,   $attribute_def.reply_body_text,   true,  3
+$card_type.reply_body,   $attribute_def.delivery_status,   true,  4
 
 
 ## table process | doc="Built-in processes (workflows)." | on_conflict="name"
@@ -173,7 +216,7 @@ user_account_id, person_card_id
 ## table role_grant | doc="system role: every (card_type, process) tuple. Carries every grant for AUTH_MODE=off." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
-$role.system, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.status, $card_type.comment_body, $card_type.person, $card_type.screen, $card_type.filter]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."task.update_with_comment", $process."user_card_sort.set"]`
+$role.system, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.status, $card_type.comment_body, $card_type.person, $card_type.screen, $card_type.filter, $card_type.comm_channel, $card_type.comm, $card_type.reply_body]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."task.update_with_comment", $process."user_card_sort.set"]`
 
 
 ## table role_grant | doc="commenter grants: only comment.post on task." | on_conflict="role_id, card_type_id, process_id"
@@ -188,17 +231,17 @@ role_id, card_type_id, process_id
 $role.worker, $card_type.task, `[$process."card.update", $process."comment.post", $process."user_card_sort.set"]`
 
 
-## table role_grant | doc="manager grants: worker grants on task + create/update/delete on project/milestone/component/tag/screen/filter/status." | on_conflict="role_id, card_type_id, process_id"
+## table role_grant | doc="manager grants: worker grants on task + create/update/delete on project/milestone/component/tag/screen/filter/status. Comm gets a lighter footprint (update/comment/sort only) — comm_channel + reply_body stay admin-only." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
-$role.manager, $card_type.task, `[$process."card.update", $process."comment.post", $process."user_card_sort.set"]`
+$role.manager, `[$card_type.task, $card_type.comm]`, `[$process."card.update", $process."comment.post", $process."user_card_sort.set"]`
 $role.manager, `[$card_type.project, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.screen, $card_type.filter, $card_type.status]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
 
 
-## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references)." | on_conflict="role_id, card_type_id, process_id"
+## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references). The three comm card_types (comm_channel, comm, reply_body) are admin-only configuration surface; managers get a lighter cut on comm via the manager grant." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
-$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
+$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status, $card_type.comm_channel, $card_type.comm, $card_type.reply_body]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
 
 
 -- ---------------------------------------------------------------------

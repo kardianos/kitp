@@ -33,9 +33,9 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		{`SELECT count(*) FROM card`, 14},
 		{`SELECT count(*) FROM user_role`, 2}, // system + admin on user 1
 		{`SELECT count(*) FROM role`, 6},
-		{`SELECT count(*) FROM card_type`, 10},
-		{`SELECT count(*) FROM attribute_def`, 24},
-		{`SELECT count(*) FROM edge`, 47},
+		{`SELECT count(*) FROM card_type`, 13},
+		{`SELECT count(*) FROM attribute_def`, 43},
+		{`SELECT count(*) FROM edge`, 68},
 		{`SELECT count(*) FROM process`, 6},
 		{`SELECT count(*) FROM process_step`, 7},
 		// Template's status flow + 12 transitions (Gate 11).
@@ -79,9 +79,9 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		// 1 status + 2 tasks + 1 screen + 1 filter) = 22.
 		{`SELECT count(*) FROM card`, 22},
 		{`SELECT count(*) FROM role`, 6},
-		{`SELECT count(*) FROM card_type`, 10},
-		{`SELECT count(*) FROM attribute_def`, 24},
-		{`SELECT count(*) FROM edge`, 47},
+		{`SELECT count(*) FROM card_type`, 13},
+		{`SELECT count(*) FROM attribute_def`, 43},
+		{`SELECT count(*) FROM edge`, 68},
 		// Template's status flow + 12 transitions (Gate 11). test_demo
 		// adds none of its own.
 		{`SELECT count(*) FROM flow`, 1},
@@ -102,6 +102,7 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		"project": true, "task": true, "milestone": true,
 		"component": true, "tag": true, "status": true,
 		"comment_body": true, "person": true, "screen": true, "filter": true,
+		"comm_channel": true, "comm": true, "reply_body": true,
 	}
 	rows, err := pool.Query(ctx, `SELECT name FROM card_type ORDER BY id`)
 	if err != nil {
@@ -139,7 +140,7 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		query string
 		want  int64
 	}{
-		{`SELECT count(*) FROM card_type`, 10},
+		{`SELECT count(*) FROM card_type`, 13},
 		// 13 seed (template) + 9 test_demo = 22.
 		{`SELECT count(*) FROM card`, 22},
 		{`SELECT count(*) FROM user_account`, 2},

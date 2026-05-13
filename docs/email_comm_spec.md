@@ -47,8 +47,18 @@ Tasks gain a single new attribute referencing comm cards (see below). They do **
 | `reply_to` | `text` | yes (on `reply_body`) | Outbound `To:` envelope. Free text; in v1 always an email address. |
 | `reply_from` | `text` | yes (on `reply_body`) | Outbound `From:` (typically copied from the channel's `from_address`). |
 | `reply_subject` | `text` | yes (on `reply_body`) | Subject line; the threading suffix `[#<thread_id>]` is appended at send time. |
-| `reply_body` | `text` | yes (on `reply_body`) | Plain-text body. |
-| `delivery_status` | `text` | yes (on `reply_body`) | Closed set: `pending` / `sent` / `bounced` / `failed`. Set by the SMTP sender; `pending` at create time. |
+| `reply_body_text` | `text` | yes (on `reply_body`) | Plain-text body. Renamed from the original draft's `reply_body` to avoid name collision with the `reply_body` card_type — attribute_def.name must be unique across the install. |
+| `delivery_status` | `text` | yes (on `reply_body`) | Closed set: `pending` / `sent` / `bounced` / `failed` / `received`. Set by the SMTP sender; `pending` at create time. `received` covers inbound message bodies materialised on the comm's replies list. |
+
+### Gate 1 seeded counts
+
+After Gate 1 lands, the install-seed counts go from:
+
+- `card_type`: 10 → 13 (+ `comm_channel`, `comm`, `reply_body`).
+- `attribute_def`: 24 → 43 (+ the 19 new defs above).
+- `edge`: 47 → 68 (+ 21: 10 on `comm_channel`, 5 on `comm`, 5 on `reply_body`, 1 on `task` for `comms`).
+
+The `migrate_test.go` row-count assertions in `server/internal/store/` are updated to match.
 
 ### New table — `comm_secret`
 
