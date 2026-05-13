@@ -162,8 +162,8 @@ func (s *Server) Mount(mux *http.ServeMux, webDir string) {
 }
 
 // spaHandler serves files from webDir, falling back to index.html for any
-// GET that doesn't match a real file (so Flutter's client-side router
-// owns paths like /project/42 and /inbox).
+// GET that doesn't match a real file (so the SPA client-side router owns
+// paths like /projects, /project/42/screen/inbox, and /task/7).
 func spaHandler(webDir string) http.Handler {
 	fs := http.FileServer(http.Dir(webDir))
 	indexPath := filepath.Join(webDir, "index.html")

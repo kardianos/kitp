@@ -201,8 +201,10 @@
         return;
       }
       // Reload so AuthState pulls fresh /auth/me and every screen
-      // re-renders with the new actor.
-      window.location.href = '/inbox';
+      // re-renders with the new actor. We land on /projects — the
+      // impersonated user picks a project from there and the
+      // per-project screens follow.
+      window.location.href = '/projects';
     } catch (e) {
       notify({ type: 'error', message: `Impersonation failed: ${e instanceof Error ? e.message : String(e)}` });
     }

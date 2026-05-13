@@ -45,7 +45,7 @@ export async function loginAsSystemUser(driver: WebDriver): Promise<void> {
 }
 
 /**
- * Navigate to `path` (relative, e.g. '/inbox'). Triggers the SPA router via
+ * Navigate to `path` (relative, e.g. '/projects'). Triggers the SPA router via
  * `history.pushState` + a synthetic popstate so we don't full-page-reload.
  *
  * This avoids re-running the auth bootstrap that a hard `driver.get(...)`
@@ -206,6 +206,41 @@ export async function waitForCountAtLeast(
  */
 export async function sleep(driver: WebDriver, ms: number): Promise<void> {
   await driver.sleep(ms);
+}
+
+/**
+ * Read the first project's id from the `/projects` list. Assumes the
+ * caller is signed in and currently on /projects (or navigates there
+ * first). Reads `<a href="/project/<id>">` and parses the id from the
+ * URL.
+ *
+ * Gate 9 (FLOW_AND_SCREEN_KERNEL): per-layout routes (`/inbox`,
+ * `/grid`, `/kanban`) are gone. Tests that used to navigate to those
+ * direct paths now resolve the active project id here, then build
+ * `/project/${id}/screen/inbox` etc.
+ */
+export async function pickFirstProjectId(driver: WebDriver): Promise<string> {
+  await navigateSpa(driver, '/projects');
+  await waitForCountAtLeast(driver, 'ul a[href^="/project/"]', 1, 15_000);
+  const a = (await driver.findElements(By.css('ul a[href^="/project/"]')))[0]!;
+  const href = (await a.getAttribute('href')) ?? '';
+  // Match `/project/<digits>` and strip any trailing path.
+  const m = href.match(/\/project\/(\d+)/);
+  if (!m) throw new Error(`Could not parse project id from href: ${href}`);
+  return m[1]!;
+}
+
+/**
+ * Convenience wrapper: build a `/project/<id>/screen/<slug>` URL from
+ * the first project on /projects. Returns the URL string for the
+ * caller to pass to navigateSpa() or assertions.
+ */
+export async function firstProjectScreenUrl(
+  driver: WebDriver,
+  slug: string,
+): Promise<string> {
+  const id = await pickFirstProjectId(driver);
+  return `/project/${id}/screen/${slug}`;
 }
 
 export { until };

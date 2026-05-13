@@ -12,7 +12,9 @@ export const journeyName = 'task_detail';
 export async function run(driver: WebDriver): Promise<void> {
   await loginAsSystemUser(driver);
 
-  // 1. Open the first project from the project list.
+  // 1. Open the first project from the project list. Gate 9 redirects
+  //    /project/:id → /project/:id/screen/project, so the URL after the
+  //    click contains both '/project/' and '/screen/project'.
   await waitForCountAtLeast(driver, 'ul a[href^="/project/"]', 1, 15_000);
   const firstProject = (await driver.findElements(
     By.css('ul a[href^="/project/"]'),
@@ -21,9 +23,10 @@ export async function run(driver: WebDriver): Promise<void> {
   await firstProject.click();
   await waitForUrl(driver, '/project/', 10_000);
 
-  // 2. Open the first task in that project. ProjectDetailScreen lists
-  //    tasks under [data-testid="project-tasks-list"] with TaskRow
-  //    children carrying [data-card-id].
+  // 2. Open the first task in that project. The PairLayout (formerly
+  //    ProjectDetailScreen, renamed in Gate 9) lists tasks under
+  //    [data-testid="project-tasks-list"] with TaskRow children
+  //    carrying [data-card-id].
   await waitFor(driver, '[data-testid="project-tasks-list"]', 15_000);
   await waitForCountAtLeast(
     driver,

@@ -22,7 +22,16 @@
  *     the route table is the single source of truth used by the router for
  *     redirects.
  *   - `redirectTo`: when set, the route is a pure redirect entry — the path
- *     matches and we navigate to `redirectTo`.
+ *     matches and we navigate to `redirectTo`. The string may include
+ *     `:name` segments that interpolate from the matched params (e.g.
+ *     `/project/:id` → `/project/:id/screen/project`).
+ *
+ * Gate 9 (FLOW_AND_SCREEN_KERNEL): per-layout routes (`/inbox`, `/grid`,
+ * `/kanban`, `/project/:id`) are removed. Every screen URL is now
+ * `/project/:id/screen/:slug`; `<ScreenHost>` resolves the screen card by
+ * `(project_id, slug)` and dispatches to the matching body layout.
+ * `/project/:id` redirects to `/project/:id/screen/project` so the
+ * projects-list click path still lands somewhere sensible.
  */
 
 import type { ShortcutScope } from '../keys/scopes';
@@ -44,7 +53,12 @@ export interface Route {
   shell?: boolean;
   /** Keyboard shortcut scope this screen activates. */
   scope?: ShortcutScope;
-  /** When set the route redirects to this path immediately on match. */
+  /**
+   * When set the route redirects to this path immediately on match.
+   * `:name` segments are interpolated from the matched route params, so
+   * `/project/:id` → `/project/:id/screen/project` works without a
+   * bespoke handler in Router.svelte.
+   */
   redirectTo?: string;
 }
 
@@ -65,39 +79,26 @@ export const routes: Route[] = [
     scope: 'projects',
   },
   {
-    path: '/inbox',
-    component: () => import('../screens/InboxScreen.svelte'),
-    guard: 'requireAuth',
-    shell: true,
-    scope: 'inbox',
-  },
-  {
-    path: '/grid',
-    component: () => import('../screens/GridScreen.svelte'),
-    guard: 'requireAuth',
-    shell: true,
-    scope: 'grid',
-  },
-  {
-    path: '/kanban',
-    component: () => import('../screens/KanbanScreen.svelte'),
-    guard: 'requireAuth',
-    shell: true,
-    scope: 'kanban',
-  },
-  {
     path: '/activity',
     component: () => import('../screens/ActivityScreen.svelte'),
     guard: 'requireAuth',
     shell: true,
     scope: 'activity',
   },
+  // `/project/:id` is no longer a real screen — every screen URL is
+  // `/project/:id/screen/:slug`. The projects-list click path still
+  // navigates to `/project/:id`; redirect to the project-detail screen
+  // (slug=`project`) so the user lands somewhere meaningful.
   {
     path: '/project/:id',
-    component: () => import('../screens/ProjectDetailScreen.svelte'),
+    redirectTo: '/project/:id/screen/project',
+  },
+  {
+    path: '/project/:id/screen/:slug',
+    component: () => import('../screens/ScreenHost.svelte'),
     guard: 'requireAuth',
     shell: true,
-    scope: 'project_detail',
+    scope: 'screen_host',
   },
   {
     path: '/task/:id',
@@ -145,6 +146,16 @@ export const routes: Route[] = [
   },
 ];
 
+/**
+ * URL helper for screen routes. Every screen lives under a project; this
+ * keeps the join in one place so callers don't sprinkle string-concat
+ * across the code base. Use everywhere that today builds an old
+ * `/inbox` / `/grid` / `/kanban` URL.
+ */
+export function screenUrl(projectId: bigint | string, slug: string): string {
+  return `/project/${projectId.toString()}/screen/${slug}`;
+}
+
 /** Match outcome used by the router. */
 export interface RouteMatch {
   route: Route;
@@ -166,6 +177,29 @@ export function matchRoute(pathname: string): RouteMatch | null {
     if (params !== null) return { route, params };
   }
   return null;
+}
+
+/**
+ * Interpolate `:name` segments in a path template (typically a
+ * `Route.redirectTo`) from a params record. Unknown segments are left
+ * untouched so the dev sees the broken URL instead of a silent empty
+ * substitution.
+ */
+export function interpolatePath(
+  template: string,
+  params: Record<string, string>,
+): string {
+  return template
+    .split('/')
+    .map((seg) => {
+      if (seg.startsWith(':')) {
+        const name = seg.slice(1);
+        const v = params[name];
+        return v !== undefined ? encodeURIComponent(v) : seg;
+      }
+      return seg;
+    })
+    .join('/');
 }
 
 /**

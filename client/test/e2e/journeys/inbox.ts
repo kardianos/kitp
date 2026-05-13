@@ -5,14 +5,23 @@
 import { By, type WebDriver } from 'selenium-webdriver';
 
 import { waitFor } from '../driver.ts';
-import { loginAsSystemUser, navigateSpa, sleep, waitForCountAtLeast } from '../helpers.ts';
+import {
+  firstProjectScreenUrl,
+  loginAsSystemUser,
+  navigateSpa,
+  sleep,
+  waitForCountAtLeast,
+} from '../helpers.ts';
 import { captureScreenshot } from '../screenshots.ts';
 
 export const journeyName = 'inbox';
 
 export async function run(driver: WebDriver): Promise<void> {
   await loginAsSystemUser(driver);
-  await navigateSpa(driver, '/inbox');
+  // Gate 9: per-project screen URLs only. Resolve the first project's
+  // inbox screen URL from the projects list, then navigate.
+  const inboxUrl = await firstProjectScreenUrl(driver, 'inbox');
+  await navigateSpa(driver, inboxUrl);
 
   // Wait for the inbox list. InboxScreen renders rows under
   // [data-testid="inbox-list"] with each TaskRow carrying [data-card-id].

@@ -16,7 +16,12 @@
 import { By, type WebDriver } from 'selenium-webdriver';
 
 import { waitFor } from '../driver.ts';
-import { loginAsSystemUser, navigateSpa, waitForCountAtLeast } from '../helpers.ts';
+import {
+  firstProjectScreenUrl,
+  loginAsSystemUser,
+  navigateSpa,
+  waitForCountAtLeast,
+} from '../helpers.ts';
 import { captureScreenshot } from '../screenshots.ts';
 
 export const journeyName = 'inbox_reorder_keys';
@@ -35,7 +40,9 @@ async function rowIDs(driver: WebDriver): Promise<string[]> {
 
 export async function run(driver: WebDriver): Promise<void> {
   await loginAsSystemUser(driver);
-  await navigateSpa(driver, '/inbox');
+  // Gate 9: per-project screen URLs only.
+  const inboxUrl = await firstProjectScreenUrl(driver, 'inbox');
+  await navigateSpa(driver, inboxUrl);
   await waitFor(driver, '[data-testid="inbox-list"]', 15_000);
   await waitForCountAtLeast(
     driver,

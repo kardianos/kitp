@@ -172,9 +172,9 @@ describe('applyFilterToTree', () => {
 /* Smoke import                                                               */
 /* -------------------------------------------------------------------------- */
 
-describe('GridScreen smoke import', () => {
+describe('GridLayout smoke import', () => {
   it('imports cleanly (component compiles)', async () => {
-    const mod = await import('../../src/screens/GridScreen.svelte');
+    const mod = await import('../../src/screens/GridLayout.svelte');
     expect(mod.default).toBeDefined();
   });
 });

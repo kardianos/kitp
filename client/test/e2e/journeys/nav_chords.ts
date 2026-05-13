@@ -8,15 +8,26 @@
 //   - actual route effect: not just "URL changed" — the screen's
 //     ready-selector renders, so the user is really on the right page.
 //
+// Gate 9 (FLOW_AND_SCREEN_KERNEL): per-project chords (g i / g g / g k)
+// are now data-driven — registered from the loaded screen cards under
+// the active project. The expected path is therefore
+// /project/<id>/screen/<slug>, not the old /inbox alias.
+//
 // Why a dedicated journey rather than folding into keyboard.ts: the
 // keyboard journey already opens / closes the help overlay per screen,
 // which navigates via navigateSpa() (not the SPA chord path). Mixing
 // the two flows would obscure which step actually exercised the chord.
 
-import { type WebDriver } from 'selenium-webdriver';
+import { By, type WebDriver } from 'selenium-webdriver';
 
 import { waitFor, waitForUrl } from '../driver.ts';
-import { loginAsSystemUser, navigateSpa, pressChord, sleep } from '../helpers.ts';
+import {
+  loginAsSystemUser,
+  navigateSpa,
+  pickFirstProjectId,
+  pressChord,
+  sleep,
+} from '../helpers.ts';
 import { captureScreenshot } from '../screenshots.ts';
 
 export const journeyName = 'nav_chords';
@@ -24,6 +35,7 @@ export const journeyName = 'nav_chords';
 interface ChordCase {
   /** Two-letter chord, space-separated (matches the dispatcher's wire form). */
   chord: string;
+  /** Expected URL after the chord fires. */
   expectedPath: string;
   /** Selector that proves the destination screen rendered. */
   ready: string;
@@ -31,52 +43,65 @@ interface ChordCase {
   capture: string;
 }
 
-const CASES: ChordCase[] = [
-  {
-    chord: 'g i',
-    expectedPath: '/inbox',
-    ready:
-      '[data-testid="inbox-list"], [data-testid="inbox-empty"], [data-testid="inbox-loading"]',
-    capture: 'inbox',
-  },
-  {
-    chord: 'g g',
-    expectedPath: '/grid',
-    ready: '[data-testid="grid-body"]',
-    capture: 'grid',
-  },
-  {
-    chord: 'g k',
-    expectedPath: '/kanban',
-    ready: '[data-kanban-column], h1',
-    capture: 'kanban',
-  },
-  {
-    chord: 'g a',
-    expectedPath: '/activity',
-    ready: '[data-testid="activity-list"], h1',
-    capture: 'activity',
-  },
-  {
-    chord: 'g p',
-    expectedPath: '/projects',
-    ready: 'aside[aria-label="Primary navigation"]',
-    capture: 'projects',
-  },
-];
-
 export async function run(driver: WebDriver): Promise<void> {
   await loginAsSystemUser(driver);
-  // We start on /projects after login. Park us on /inbox via SPA nav so
-  // the first chord (g i) actually has work to do — without this the
-  // chord might "succeed" trivially because we were already there.
-  await navigateSpa(driver, '/inbox');
 
-  for (const c of CASES) {
+  // Resolve the per-project chord targets from the first project in
+  // the projects list. The chord handlers AppShell registers reference
+  // the same project so this must match.
+  const projectId = await pickFirstProjectId(driver);
+  const inboxPath = `/project/${projectId}/screen/inbox`;
+  const gridPath = `/project/${projectId}/screen/grid`;
+  const kanbanPath = `/project/${projectId}/screen/kanban`;
+
+  const cases: ChordCase[] = [
+    {
+      chord: 'g i',
+      expectedPath: inboxPath,
+      ready:
+        '[data-testid="inbox-list"], [data-testid="inbox-empty"], [data-testid="inbox-loading"]',
+      capture: 'inbox',
+    },
+    {
+      chord: 'g g',
+      expectedPath: gridPath,
+      ready: '[data-testid="grid-body"]',
+      capture: 'grid',
+    },
+    {
+      chord: 'g k',
+      expectedPath: kanbanPath,
+      ready: '[data-kanban-column], h1',
+      capture: 'kanban',
+    },
+    {
+      chord: 'g a',
+      expectedPath: '/activity',
+      ready: '[data-testid="activity-list"], h1',
+      capture: 'activity',
+    },
+    {
+      chord: 'g p',
+      expectedPath: '/projects',
+      ready: 'aside[aria-label="Primary navigation"]',
+      capture: 'projects',
+    },
+  ];
+
+  // Park on the inbox screen so AppShell's project-screens fetch has
+  // resolved and the dynamic chord registry is populated before we
+  // press the first chord.
+  await navigateSpa(driver, inboxPath);
+  // Wait for the per-project sidebar group to render — it implies
+  // projectScreensStore has loaded and the chord registrations are
+  // live.
+  await waitFor(driver, '[data-testid^="nav-screen-"]', 15_000);
+
+  for (const c of cases) {
     // Move to a non-target route first so the URL transition is
-    // observable. /grid is a safe parking spot for every test except
-    // the g g case, which we redirect to /projects beforehand instead.
-    const parking = c.expectedPath === '/grid' ? '/projects' : '/grid';
+    // observable. /grid-equivalent is a safe parking spot for every
+    // case except the gg case; we send those through /projects instead.
+    const parking = c.expectedPath === gridPath ? '/projects' : gridPath;
     if (parking !== c.expectedPath) {
       await navigateSpa(driver, parking);
     }
@@ -91,4 +116,7 @@ export async function run(driver: WebDriver): Promise<void> {
     await sleep(driver, 200);
     await captureScreenshot(driver, journeyName, c.capture);
   }
+
+  // Mark imports as used in case the lint config doesn't see them.
+  void By;
 }

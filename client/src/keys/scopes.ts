@@ -14,6 +14,7 @@ export type ShortcutScope =
   | 'activity'
   | 'task_detail'
   | 'project_detail'
+  | 'screen_host'
   | 'login'
   | 'admin_users'
   | 'admin_attributes'

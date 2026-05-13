@@ -20,31 +20,27 @@
   import NavSidebar from './NavSidebar.svelte';
   import ProjectTitlePicker from './ProjectTitlePicker.svelte';
   import { projectsStore, watchProjects } from './projects_store.svelte';
+  import {
+    projectScreensStore,
+    watchProjectScreens,
+  } from './project_screens_store.svelte';
+  import { projectScope } from './project_scope.svelte';
   import { getDispatcher } from '../dispatch/context';
   import { shortcuts } from '../keys/registry.svelte';
   import { useShortcut } from '../keys/shortcut';
+  import { readHotkey, readSlug, readTitle } from '../filter/screen_preset.svelte';
   import { navigate, routerState } from '../routing/router.svelte';
+  import { screenUrl } from '../routing/routes';
   import { cx } from '../util/class_names';
 
   /**
-   * Top-level navigation chord shortcuts. Mirrors the labels rendered
-   * next to each link in NavSidebar — keep this list and the sidebar's
-   * `navItems` in sync. Registered with `scope: 'global'` because
-   * AppShell wraps every signed-in screen, so the chords are valid
-   * everywhere except the standalone Login/Auth callback screens
-   * (which don't mount AppShell at all and so won't see these
-   * registrations).
+   * Project-independent navigation chords. The per-project screen
+   * chords (`g i`, `g g`, `g k`, …) come from the loaded screen cards
+   * for the active project — see the dynamic registration effect below.
+   * These two stay hardcoded because they don't live under a project.
    */
-  const NAV_CHORDS: Array<{ chord: string; path: string; label: string }> = [
-    { chord: 'g p', path: '/projects', label: 'Go to Projects' },
-    { chord: 'g i', path: '/inbox', label: 'Go to Inbox' },
-    { chord: 'g g', path: '/grid', label: 'Go to Grid' },
-    { chord: 'g k', path: '/kanban', label: 'Go to Kanban' },
-    { chord: 'g a', path: '/activity', label: 'Go to Activity' },
-  ];
-  for (const { chord, path, label } of NAV_CHORDS) {
-    useShortcut('global', chord, () => navigate(path), label);
-  }
+  useShortcut('global', 'g p', () => navigate('/projects'), 'Go to Projects');
+  useShortcut('global', 'g a', () => navigate('/activity'), 'Go to Activity');
 
   interface Props {
     children?: Snippet;
@@ -97,14 +93,61 @@
   const dispatcher = getDispatcher();
   $effect(watchProjects(dispatcher));
 
+  // Keep the per-project screen list warm so the sidebar can render
+  // dynamic screen links and the chord registration effect below can
+  // see the live set.
+  $effect(watchProjectScreens(dispatcher));
+
+  /**
+   * Register `g <hotkey>` chords for every screen in the active
+   * project; unregister them on project change. The hardcoded
+   * `NAV_CHORDS` table this replaces lived at the top of AppShell —
+   * gate 9 makes it data-driven so a freshly-seeded screen comes with
+   * a working hotkey on the next project visit, no code change.
+   *
+   * `useShortcut` is bound to component lifecycle (onMount/onDestroy)
+   * and so can't be used inside an effect; we go through the registry
+   * directly. The cleanup closure unregisters the previous batch on
+   * the next run.
+   */
+  $effect(() => {
+    // Track the per-project screen list. `forProjectId` is part of the
+    // dependency set so a project switch retriggers; `screens` so a
+    // mutation through `bumpVersion()` does too.
+    const list = projectScreensStore.screens;
+    void projectScreensStore.forProjectId;
+    const pid = projectScope.projectId;
+    const ids: number[] = [];
+    if (pid !== null) {
+      for (const sc of list) {
+        const hk = readHotkey(sc);
+        const slug = readSlug(sc);
+        if (hk === null || slug === null) continue;
+        const title = readTitle(sc);
+        const id = shortcuts.register({
+          scope: 'global',
+          binding: `g ${hk}`,
+          handler: () => navigate(screenUrl(pid, slug)),
+          label: `Go to ${title}`,
+        });
+        ids.push(id);
+      }
+    }
+    return () => {
+      for (const id of ids) shortcuts.unregister(id);
+    };
+  });
+
   /**
    * Build breadcrumb segments from the current path. Slugs render
    * verbatim except for known patterns:
-   *   /task/:id        -> "Task #:id"
-   *   /project/:id     -> "<project title>" when resolvable, else "Project #:id"
-   *   /admin/users     -> "Admin / Users"
-   * Each segment carries an `href` of the cumulative path so users can
-   * jump back up the tree. (No href on the last segment.)
+   *   /task/:id                       -> "Task #:id"
+   *   /project/:id                    -> "<project title>" when resolvable
+   *   /project/:id/screen/:slug       -> ... / "<screen title>" (slug-cased)
+   *   /admin/users                    -> "Admin / Users"
+   * The literal `screen` segment in `/project/:id/screen/:slug` is
+   * skipped — the project title + screen title is enough; the user
+   * doesn't gain anything from a "screen" crumb between them.
    */
   type Crumb = { label: string; href?: string };
   const crumbs: Crumb[] = $derived.by(() => {
@@ -116,6 +159,12 @@
       const s = segs[i] as string;
       cum += '/' + s;
       const prev = i > 0 ? (segs[i - 1] as string) : '';
+      // Skip the literal `screen` segment so the crumb chain reads
+      // "<project> / <screen title>" instead of
+      // "<project> / Screen / <slug>".
+      if (s === 'screen' && i > 0 && (segs[i - 2] ?? '') === 'project') {
+        continue;
+      }
       let label = s;
       if (prev === 'task') label = `Task #${s}`;
       else if (prev === 'project') {
@@ -129,6 +178,15 @@
           /* non-numeric segment — leave label as-is */
         }
         label = title ?? `Project #${s}`;
+      } else if (prev === 'screen') {
+        // Resolve `<slug>` against the loaded screens; fall back to a
+        // titlecased slug when the list isn't loaded yet so the crumb
+        // never reads as "inbox" instead of "Inbox".
+        const found = projectScreensStore.screens.find(
+          (r) => readSlug(r) === s,
+        );
+        if (found) label = readTitle(found);
+        else label = s.charAt(0).toUpperCase() + s.slice(1);
       } else label = s.charAt(0).toUpperCase() + s.slice(1);
       const isLast = i === segs.length - 1;
       out.push(isLast ? { label } : { label, href: cum });
@@ -141,20 +199,13 @@
   }
 
   /**
-   * Project picker is meaningful only on list screens that key their
-   * data fetch off `projectScope`. Other paths (/projects, /activity,
-   * /admin/*, /task/:id, /project/:id) don't react to it.
+   * Project picker is meaningful only when the user is on a per-project
+   * screen (the `/project/:id/screen/:slug` family). Top-level routes
+   * (/projects, /activity, /admin/*, /task/:id) don't react to it.
    */
   const showProjectPicker = $derived.by((): boolean => {
     const p = routerState.path;
-    return (
-      p === '/inbox' ||
-      p === '/grid' ||
-      p === '/kanban' ||
-      p.startsWith('/inbox/') ||
-      p.startsWith('/grid/') ||
-      p.startsWith('/kanban/')
-    );
+    return /^\/project\/[^/]+\/screen\//.test(p);
   });
 </script>
 

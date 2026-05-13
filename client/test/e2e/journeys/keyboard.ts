@@ -28,11 +28,27 @@ interface ScreenSpec {
   ready: string;
 }
 
+// Per-project screen paths are resolved at runtime by picking the first
+// project off the projects list, since gate 9 removed the /inbox /grid
+// /kanban top-level routes. The resolver fires on each visit; the
+// projects fetch is cheap and the URL is now project-scoped.
+function screenPathResolver(slug: string): (driver: WebDriver) => Promise<string> {
+  return async (driver: WebDriver): Promise<string> => {
+    await navigateSpa(driver, '/projects');
+    await waitForCountAtLeast(driver, 'ul a[href^="/project/"]', 1, 15_000);
+    const proj = (await driver.findElements(By.css('ul a[href^="/project/"]')))[0]!;
+    const href = (await proj.getAttribute('href')) ?? '';
+    const m = href.match(/\/project\/(\d+)/);
+    if (!m) throw new Error(`No project id in href: ${href}`);
+    return `/project/${m[1]}/screen/${slug}`;
+  };
+}
+
 const SCREENS: ScreenSpec[] = [
   { name: 'projects', pathOrResolver: '/projects', ready: 'ul a[href^="/project/"], h1' },
-  { name: 'inbox', pathOrResolver: '/inbox', ready: '[data-testid="inbox-list"], [data-testid="inbox-empty"], [data-testid="inbox-loading"]' },
-  { name: 'grid', pathOrResolver: '/grid', ready: '[data-testid="grid-body"]' },
-  { name: 'kanban', pathOrResolver: '/kanban', ready: '[data-kanban-column], h1' },
+  { name: 'inbox', pathOrResolver: screenPathResolver('inbox'), ready: '[data-testid="inbox-list"], [data-testid="inbox-empty"], [data-testid="inbox-loading"]' },
+  { name: 'grid', pathOrResolver: screenPathResolver('grid'), ready: '[data-testid="grid-body"]' },
+  { name: 'kanban', pathOrResolver: screenPathResolver('kanban'), ready: '[data-kanban-column], h1' },
   { name: 'activity', pathOrResolver: '/activity', ready: '[data-testid="activity-list"], h1' },
   {
     name: 'task_detail',
@@ -42,6 +58,7 @@ const SCREENS: ScreenSpec[] = [
       await waitForCountAtLeast(driver, 'ul a[href^="/project/"]', 1, 15_000);
       const proj = (await driver.findElements(By.css('ul a[href^="/project/"]')))[0]!;
       await proj.click();
+      // Project click now redirects /project/:id → /project/:id/screen/project
       await waitForUrl(driver, '/project/', 10_000);
       await waitForCountAtLeast(
         driver,

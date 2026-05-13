@@ -730,7 +730,7 @@
     // the parent project, or the projects list as a last resort.
     const fallback =
       task !== null && typeof task.parent_card_id === 'bigint'
-        ? `/project/${task.parent_card_id}`
+        ? `/project/${task.parent_card_id}/screen/project`
         : '/projects';
     goBackOrFallback(fallback);
   }

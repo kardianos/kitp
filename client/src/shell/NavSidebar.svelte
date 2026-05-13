@@ -2,8 +2,11 @@
   Persistent left sidebar.
 
   - Top: brand mark.
-  - Middle: five top-level nav links; admin section (collapsible <details>)
-    rendered only when `authState.isAdmin`.
+  - Middle (project-independent): Projects link, then Activity link.
+  - Middle (per-project): one row per screen card under the currently
+    scoped project — title + chord hint. Driven entirely by data; gate 9
+    removed the hardcoded "Inbox / Grid / Kanban" list.
+  - Admin section (collapsible <details>) rendered only when `isAdmin`.
   - Bottom: <UserMenu /> with display name + sign-out (or a "Dev mode"
     badge when OIDC is disabled).
 
@@ -12,10 +15,16 @@
 -->
 <script lang="ts">
   import { getContext } from 'svelte';
+  import { readHotkey, readSlug, readTitle } from '../filter/screen_preset.svelte';
   import { routerState, linkAction } from '../routing/router.svelte';
+  import { screenUrl } from '../routing/routes';
+  import { projectScope } from './project_scope.svelte';
+  import { projectScreensStore } from './project_screens_store.svelte';
+  import { projectsStore } from './projects_store.svelte';
   import { cx } from '../util/class_names';
   import UserMenu from './UserMenu.svelte';
   import type { AuthState } from '../auth/auth_state.svelte';
+  import type { CardWithAttrs } from '../reg/types';
 
   interface Props {
     collapsed: boolean;
@@ -25,11 +34,11 @@
 
   const authState = getContext<AuthState>('authState');
 
+  // Project-independent rows. The third (Activity) used to live in the
+  // per-screen list; per gate 9 the sidebar splits cleanly between
+  // "always visible" (Projects, Activity) and "per-project" (screens).
   const navItems: Array<{ href: string; label: string; chord: string }> = [
     { href: '/projects', label: 'Projects', chord: 'g p' },
-    { href: '/inbox', label: 'Inbox', chord: 'g i' },
-    { href: '/grid', label: 'Grid', chord: 'g g' },
-    { href: '/kanban', label: 'Kanban', chord: 'g k' },
     { href: '/activity', label: 'Activity', chord: 'g a' },
   ];
 
@@ -44,6 +53,57 @@
     const path = routerState.path;
     return path === href || path.startsWith(href + '/');
   }
+
+  /**
+   * Per-screen sidebar rows for the active project. Filters out screens
+   * the actor lacks `view_requires_role` for so the sidebar hides what
+   * the URL gate also blocks.
+   */
+  interface ScreenRow {
+    href: string;
+    label: string;
+    chord: string | null;
+    slug: string;
+  }
+  const screenRows = $derived.by((): ScreenRow[] => {
+    const pid = projectScope.projectId;
+    if (pid === null) return [];
+    const rows: ScreenRow[] = [];
+    for (const sc of projectScreensStore.screens) {
+      if (isForbidden(sc)) continue;
+      const slug = readSlug(sc);
+      if (slug === null) continue;
+      const hk = readHotkey(sc);
+      rows.push({
+        href: screenUrl(pid, slug),
+        label: readTitle(sc),
+        chord: hk === null ? null : `g ${hk}`,
+        slug,
+      });
+    }
+    return rows;
+  });
+
+  function isForbidden(card: CardWithAttrs): boolean {
+    const v = card.attributes['view_requires_role'];
+    if (typeof v !== 'bigint') return false;
+    // Without a per-role-grant feed on the client, mirror ScreenHost's
+    // conservative check: admins pass, others are blocked when the
+    // attribute is set.
+    return authState?.isAdmin !== true;
+  }
+
+  /**
+   * Heading text for the per-project group. Falls back to a generic
+   * label while the projects cache loads so the section never flashes
+   * as "Project #7" before "Default Project" arrives.
+   */
+  const projectHeader = $derived.by((): string => {
+    const pid = projectScope.projectId;
+    if (pid === null) return 'Project';
+    const t = projectsStore.titleFor(pid);
+    return t ?? 'Project';
+  });
 </script>
 
 <aside
@@ -97,6 +157,39 @@
         </li>
       {/each}
     </ul>
+
+    {#if !collapsed && screenRows.length > 0}
+      <div class="my-3 border-t border-border"></div>
+      <div
+        class="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-wide text-muted"
+      >
+        {projectHeader}
+      </div>
+      <ul class="flex flex-col gap-0.5">
+        {#each screenRows as row (row.slug)}
+          <li>
+            <a
+              href={row.href}
+              use:linkAction
+              data-testid={`nav-screen-${row.slug}`}
+              class={cx(
+                'flex items-center justify-between rounded px-2 py-1.5 text-sm',
+                'hover:bg-border/40',
+                isActive(row.href)
+                  ? 'bg-accent/20 font-medium text-accent'
+                  : 'text-fg',
+              )}
+              aria-current={isActive(row.href) ? 'page' : undefined}
+            >
+              <span class="truncate">{row.label}</span>
+              {#if row.chord !== null}
+                <span class="font-mono text-[10px] text-muted">{row.chord}</span>
+              {/if}
+            </a>
+          </li>
+        {/each}
+      </ul>
+    {/if}
 
     {#if authState?.isAdmin && !collapsed}
       <div class="my-3 border-t border-border"></div>

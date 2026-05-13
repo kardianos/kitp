@@ -10,7 +10,12 @@
   import { getContext, onMount, type Component } from 'svelte';
   import { routerState, navigate, installPopstate } from './router.svelte';
   import { applyGuard } from './guards';
-  import { matchRoute, type Route, type ScreenModule } from './routes';
+  import {
+    interpolatePath,
+    matchRoute,
+    type Route,
+    type ScreenModule,
+  } from './routes';
   import AppShell from '../shell/AppShell.svelte';
   import type { AuthState } from '../auth/auth_state.svelte';
   import { setActiveScope } from '../keys/shortcut';
@@ -54,9 +59,12 @@
 
     const route = match.route;
 
-    // Pure redirect entry.
+    // Pure redirect entry. The target is interpolated against the
+    // matched params so patterns like `/project/:id` →
+    // `/project/:id/screen/project` work without a bespoke handler.
     if (route.redirectTo !== undefined) {
-      navigate(route.redirectTo, { replace: true });
+      const dest = interpolatePath(route.redirectTo, match.params);
+      navigate(dest, { replace: true });
       return;
     }
 

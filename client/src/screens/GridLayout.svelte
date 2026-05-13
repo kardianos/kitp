@@ -97,9 +97,10 @@
   let { projectId, params = {} }: Props = $props();
 
   // Resolution order: explicit prop > `:id` route param > global project
-  // scope picked from the sidebar. The global scope is the everyday case
-  // (Inbox / Grid / Kanban share it); the prop / param paths cover deep
-  // links like `/project/42/grid` that should ignore the sidebar choice.
+  // scope picked from the sidebar. The global scope is the everyday case;
+  // ScreenHost mounts this layout under `/project/:id/screen/grid` and
+  // syncs `:id` into `projectScope` so the param path and the sidebar
+  // choice agree by construction.
   const scopedProjectId = $derived.by((): ID | undefined => {
     if (projectId !== undefined) return projectId;
     const v = params.id;

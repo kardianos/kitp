@@ -238,9 +238,9 @@ describe('planReorder', () => {
 /* compile smoke for the .svelte component                                    */
 /* -------------------------------------------------------------------------- */
 
-describe('InboxScreen import', () => {
+describe('InboxLayout import', () => {
   it('module loads', async () => {
-    const m = await import('../../src/screens/InboxScreen.svelte');
+    const m = await import('../../src/screens/InboxLayout.svelte');
     expect(m.default).toBeDefined();
   });
 });

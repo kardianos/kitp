@@ -9,6 +9,7 @@ import { By, type WebDriver } from 'selenium-webdriver';
 
 import { waitFor } from '../driver.ts';
 import {
+  firstProjectScreenUrl,
   loginAsSystemUser,
   navigateSpa,
   sleep,
@@ -20,7 +21,9 @@ export const journeyName = 'grid';
 
 export async function run(driver: WebDriver): Promise<void> {
   await loginAsSystemUser(driver);
-  await navigateSpa(driver, '/grid');
+  // Gate 9: per-project screen URLs only.
+  const gridUrl = await firstProjectScreenUrl(driver, 'grid');
+  await navigateSpa(driver, gridUrl);
 
   // Wait until something signals the grid screen mounted: the project
   // title picker is the first thing rendered regardless of load state.

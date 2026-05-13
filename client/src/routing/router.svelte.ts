@@ -126,7 +126,7 @@ export function installPopstate(): () => void {
  * (Cmd/Ctrl/Shift/Middle) falls through so users can still open in a new
  * tab.
  *
- * Usage: `<a href="/inbox" use:linkAction>Inbox</a>`
+ * Usage: `<a href="/projects" use:linkAction>Projects</a>`
  */
 export function linkAction(node: HTMLAnchorElement): { destroy(): void } {
   function onClick(ev: MouseEvent): void {
