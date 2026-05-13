@@ -110,6 +110,42 @@ describe('ShortcutRegistry: register / unregister', () => {
     shortcuts.unregister(99999);
     expect(shortcuts.entries).toHaveLength(1);
   });
+
+  it('handles a tight unregister loop without throwing', () => {
+    // Regression: when the per-project chord registration effect (AppShell)
+    // ran its cleanup, the in-place splice path could leave findIndex
+    // reading past the shortening array's new end on the next iteration —
+    // the callback's `e.id` then threw a TypeError. Filtering to a fresh
+    // array sidesteps that.
+    const ids: number[] = [];
+    for (let i = 0; i < 8; i++) {
+      ids.push(
+        shortcuts.register({
+          scope: 'global',
+          binding: `g ${String.fromCharCode(97 + i)}`,
+          handler: () => {},
+          label: `Slot ${i}`,
+        }),
+      );
+    }
+    expect(shortcuts.entries).toHaveLength(8);
+    expect(() => {
+      for (const id of ids) shortcuts.unregister(id);
+    }).not.toThrow();
+    expect(shortcuts.entries).toHaveLength(0);
+  });
+
+  it('handles double-unregister without throwing', () => {
+    const id = shortcuts.register({
+      scope: 'global',
+      binding: 'q',
+      handler: () => {},
+      label: 'Q',
+    });
+    shortcuts.unregister(id);
+    expect(() => shortcuts.unregister(id)).not.toThrow();
+    expect(shortcuts.entries).toHaveLength(0);
+  });
 });
 
 describe('ShortcutRegistry: visible across active scope and global', () => {

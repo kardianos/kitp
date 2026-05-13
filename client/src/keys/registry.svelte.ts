@@ -38,10 +38,21 @@ class ShortcutRegistry {
     return id;
   }
 
-  /** Remove a previously registered entry by its id. */
+  /** Remove a previously registered entry by its id.
+   *
+   * Rewrites `entries` as a filtered copy rather than splicing in place:
+   * Svelte 5's reactive proxy briefly surfaces undefined indices when
+   * several `unregister` calls fire back-to-back inside an effect cleanup
+   * (each in-place splice shortens the array between iterations of an
+   * already-running `findIndex`, so the next read past the new end yields
+   * undefined and the callback's `e.id` access throws). A whole-array
+   * reassignment publishes one consistent state transition per call and
+   * sidesteps the mid-mutation race.
+   *
+   * No-op when the id is missing — duplicate cleanups stay safe. */
   unregister(id: number): void {
-    const idx = this.entries.findIndex((e) => e.id === id);
-    if (idx >= 0) this.entries.splice(idx, 1);
+    const next = this.entries.filter((e) => e !== undefined && e.id !== id);
+    if (next.length !== this.entries.length) this.entries = next;
   }
 
   /** Entries visible for the current scope plus the always-on `global`. */
