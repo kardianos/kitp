@@ -841,6 +841,137 @@ export interface ReplyPostOutput {
 }
 
 // ============================================================================
+// comm_channel.set / comm_channel.list / comm_log.list — Comm Gate 9 admin
+// surface for the /admin/comm-channels + /admin/comm-log screens.
+//
+// Mirrors `server/internal/dom/comm/comm.go`:
+//   - comm_channel.set  { id?, project_id, name, channel_type,
+//                         imap_host?, imap_port?, imap_username?,
+//                         imap_password?,
+//                         smtp_host?, smtp_port?, smtp_username?,
+//                         smtp_password?,
+//                         from_address?, intake_status_id? }
+//                       → { channel_id }
+//   - comm_channel.list { project_id } → { rows: ChannelRow[] }
+//   - comm_log.list     { project_id, kind?, since?, limit? }
+//                       → { rows: CommLogRow[] }
+//
+// Password fields are write-only: ChannelRow surfaces
+// has_imap_password / has_smtp_password booleans so the GUI can show
+// "configured" without exposing the encrypted bytes. Leaving a password
+// field undefined on the set wire shape leaves the stored value
+// unchanged (omit-on-update semantics); supplying an empty string would
+// clear it (the server's pgcrypto code passes the empty value through).
+// ============================================================================
+
+/** One closed kind value emitted by the IMAP poller + SMTP sender. */
+export type CommLogKind =
+  | 'poll'
+  | 'send_ok'
+  | 'send_bounce'
+  | 'send_fail'
+  | 'imap_auth_fail'
+  | 'parse_error'
+  | 'unmatched_thread'
+  | 'attachment_too_large';
+
+/** Every CommLogKind value in display order — used by the chip filter. */
+export const COMM_LOG_KINDS: readonly CommLogKind[] = [
+  'poll',
+  'send_ok',
+  'send_bounce',
+  'send_fail',
+  'imap_auth_fail',
+  'parse_error',
+  'unmatched_thread',
+  'attachment_too_large',
+] as const;
+
+export interface ChannelSetInput {
+  /** Existing channel card id; 0 / undefined inserts a new channel. */
+  id?: ID;
+  projectId: ID;
+  name: string;
+  channelType: string;
+  imapHost?: string;
+  imapPort?: number;
+  imapUsername?: string;
+  /** Omit to leave the stored password unchanged on update. */
+  imapPassword?: string;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpUsername?: string;
+  /** Omit to leave the stored password unchanged on update. */
+  smtpPassword?: string;
+  fromAddress?: string;
+  intakeStatusId?: ID;
+}
+
+export interface ChannelSetOutput {
+  channel_id: ID;
+}
+
+export interface ChannelListInput {
+  projectId: ID;
+}
+
+/**
+ * One comm_channel card, joined with its comm_secret row. Password
+ * fields are intentionally absent — the wire-shape surfaces only
+ * boolean has_*_password flags so the GUI can show "configured"
+ * without revealing the encrypted bytes.
+ */
+export interface ChannelRow {
+  id: ID;
+  name: string;
+  channel_type: string;
+  imap_host: string;
+  imap_port: number;
+  imap_username: string;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string;
+  from_address: string;
+  intake_status_id: ID;
+  has_imap_password: boolean;
+  has_smtp_password: boolean;
+  created_at: string;
+}
+
+export interface ChannelListOutput {
+  rows: ChannelRow[];
+}
+
+export interface CommLogListInput {
+  projectId: ID;
+  /** One of the eight CommLogKind values; empty / undefined = no filter. */
+  kind?: string;
+  /** ISO timestamp; rows older than this are excluded; empty = 24h. */
+  since?: string;
+  /** Max rows; default 200 (server clamps to 1000). */
+  limit?: number;
+}
+
+/**
+ * One comm_log row. `channel_id` is 0 for pre-identification events
+ * (e.g. IMAP auth failures before the channel could be resolved);
+ * `channel_name` is empty in that case or when the channel card has
+ * been deleted.
+ */
+export interface CommLogRow {
+  id: ID;
+  channel_id: ID;
+  channel_name: string;
+  kind: string;
+  detail?: unknown;
+  at: string;
+}
+
+export interface CommLogListOutput {
+  rows: CommLogRow[];
+}
+
+// ============================================================================
 // user.list_with_roles  (admin)
 // ============================================================================
 

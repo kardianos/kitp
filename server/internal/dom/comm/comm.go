@@ -181,11 +181,12 @@ type CommLogListInput struct {
 
 // CommLogRow is one comm_log row.
 type CommLogRow struct {
-	ID        int64           `json:"id,string" mcp:"desc=comm_log row id"`
-	ChannelID int64           `json:"channel_id,string,omitempty" mcp:"desc=channel card id; 0 / omitted for pre-identification rows (e.g. IMAP auth failures)"`
-	Kind      string          `json:"kind" mcp:"desc=event kind"`
-	Detail    json.RawMessage `json:"detail,omitempty" mcp:"desc=kind-specific structured detail jsonb"`
-	At        string          `json:"at" mcp:"desc=RFC3339 row timestamp"`
+	ID          int64           `json:"id,string" mcp:"desc=comm_log row id"`
+	ChannelID   int64           `json:"channel_id,string,omitempty" mcp:"desc=channel card id; 0 / omitted for pre-identification rows (e.g. IMAP auth failures)"`
+	ChannelName string          `json:"channel_name,omitempty" mcp:"desc=channel display name (title attribute on the channel card); empty when channel_id is 0 or the channel has been deleted"`
+	Kind        string          `json:"kind" mcp:"desc=event kind"`
+	Detail      json.RawMessage `json:"detail,omitempty" mcp:"desc=kind-specific structured detail jsonb"`
+	At          string          `json:"at" mcp:"desc=RFC3339 row timestamp"`
 }
 
 // CommLogListOutput wraps the rows in a stable envelope.
@@ -1375,13 +1376,19 @@ func runCommLogList(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []an
 				limit = 1000
 			}
 			rows, err := tx.Query(ctx, `
-				SELECT id, COALESCE(channel_id, 0), kind, detail,
-				       to_char(at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
-				FROM comm_log
-				WHERE project_id = $1
-				  AND ($2::text = '' OR kind = $2)
-				  AND at >= COALESCE(NULLIF($3, '')::timestamptz, now() - interval '24 hours')
-				ORDER BY at DESC, id DESC
+				SELECT cl.id, COALESCE(cl.channel_id, 0), cl.kind, cl.detail,
+				       to_char(cl.at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+				       COALESCE((
+				         SELECT av.value #>> '{}'
+				         FROM attribute_value av
+				         JOIN attribute_def ad ON ad.id = av.attribute_def_id
+				         WHERE av.card_id = cl.channel_id AND ad.name = 'title'
+				       ), '') AS channel_name
+				FROM comm_log cl
+				WHERE cl.project_id = $1
+				  AND ($2::text = '' OR cl.kind = $2)
+				  AND cl.at >= COALESCE(NULLIF($3, '')::timestamptz, now() - interval '24 hours')
+				ORDER BY cl.at DESC, cl.id DESC
 				LIMIT $4
 			`, in.ProjectID, in.Kind, in.Since, limit)
 			if err != nil {
@@ -1391,7 +1398,7 @@ func runCommLogList(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []an
 			for rows.Next() {
 				var r CommLogRow
 				var detail []byte
-				if err := rows.Scan(&r.ID, &r.ChannelID, &r.Kind, &detail, &r.At); err != nil {
+				if err := rows.Scan(&r.ID, &r.ChannelID, &r.Kind, &detail, &r.At, &r.ChannelName); err != nil {
 					rows.Close()
 					return nil, err
 				}

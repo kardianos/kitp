@@ -153,6 +153,20 @@ export const routes: Route[] = [
     scope: 'admin_agents',
   },
   {
+    path: '/admin/comm-log',
+    component: () => import('../screens/admin/AdminCommLogScreen.svelte'),
+    guard: 'requireAdmin',
+    shell: true,
+    scope: 'admin_comm_log',
+  },
+  {
+    path: '/admin/comm-channels',
+    component: () => import('../screens/admin/AdminCommChannelsScreen.svelte'),
+    guard: 'requireAdmin',
+    shell: true,
+    scope: 'admin_comm_channels',
+  },
+  {
     path: '/_dev/components',
     component: () => import('../screens/_dev/Components.svelte'),
     shell: false,

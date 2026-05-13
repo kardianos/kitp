@@ -21,4 +21,6 @@ export type ShortcutScope =
   | 'admin_screens'
   | 'admin_agents'
   | 'admin_projects'
-  | 'admin_flows';
+  | 'admin_flows'
+  | 'admin_comm_log'
+  | 'admin_comm_channels';

@@ -49,6 +49,8 @@
     { href: '/admin/screens', label: 'Screens' },
     { href: '/admin/flows', label: 'Flows' },
     { href: '/admin/agents', label: 'Agents' },
+    { href: '/admin/comm-channels', label: 'Comm channels' },
+    { href: '/admin/comm-log', label: 'Comm log' },
   ];
 
   function isActive(href: string): boolean {

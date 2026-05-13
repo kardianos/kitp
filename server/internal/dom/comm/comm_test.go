@@ -598,16 +598,26 @@ func TestCommLogList(t *testing.T) {
 	f := setupAdmin(t, "kitp_test_comm_log_list")
 
 	ctx := context.Background()
+
+	// Gate 9 added a channel_name JOIN; create one channel so we can
+	// verify the join surfaces the title attribute through to the row.
+	var setOut comm.ChannelSetOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "ch", Endpoint: "comm_channel", Action: "set", Data: json.RawMessage(
+			fmt.Sprintf(`{"project_id":"%d","name":"Support","channel_type":"email"}`, f.projectID)),
+	}, &setOut)
+
 	// Insert log rows directly via SQL — Gate 5/6 will add a writer
 	// handler; for now the comm_log table is filled by the IMAP/SMTP
 	// loops only, and Gate 3 ships the reader. Add 3 rows so the list
-	// has something to return.
+	// has something to return; one of them carries a channel_id so the
+	// join lights up.
 	if _, err := f.sp.P.Exec(ctx, `
 		INSERT INTO comm_log (project_id, channel_id, kind, detail, at) VALUES
 			($1, NULL, 'imap_auth_fail', '{"err":"bad creds"}'::jsonb, now() - interval '5 minutes'),
 			($1, NULL, 'poll', '{"messages_seen":2}'::jsonb, now() - interval '3 minutes'),
-			($1, NULL, 'send_ok', '{"to":"a@example.com"}'::jsonb, now() - interval '1 minute')
-	`, f.projectID); err != nil {
+			($1, $2, 'send_ok', '{"to":"a@example.com"}'::jsonb, now() - interval '1 minute')
+	`, f.projectID, setOut.ChannelID); err != nil {
 		t.Fatalf("insert log rows: %v", err)
 	}
 
@@ -625,6 +635,25 @@ func TestCommLogList(t *testing.T) {
 		if listOut.Rows[i].Kind != w {
 			t.Errorf("rows[%d].Kind=%q, want %q", i, listOut.Rows[i].Kind, w)
 		}
+	}
+
+	// Gate 9 join: the send_ok row carried channel_id; channel_name
+	// must come back as the channel card's title ("Support").
+	sendOK := listOut.Rows[0]
+	if sendOK.ChannelID != setOut.ChannelID {
+		t.Errorf("send_ok ChannelID=%d, want %d", sendOK.ChannelID, setOut.ChannelID)
+	}
+	if sendOK.ChannelName != "Support" {
+		t.Errorf("send_ok ChannelName=%q, want %q", sendOK.ChannelName, "Support")
+	}
+	// And the imap_auth_fail row carried no channel_id; channel_name
+	// must be empty.
+	authFail := listOut.Rows[2]
+	if authFail.ChannelID != 0 {
+		t.Errorf("imap_auth_fail ChannelID=%d, want 0", authFail.ChannelID)
+	}
+	if authFail.ChannelName != "" {
+		t.Errorf("imap_auth_fail ChannelName=%q, want \"\"", authFail.ChannelName)
 	}
 
 	// Filter by kind.

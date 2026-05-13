@@ -60,10 +60,18 @@ import type {
   CardTypeSelectOutput,
   CardWherePredicate,
   CardWithAttrs,
+  ChannelListInput,
+  ChannelListOutput,
+  ChannelRow,
+  ChannelSetInput,
+  ChannelSetOutput,
   CommCreateInput,
   CommCreateOutput,
   CommListForTaskInput,
   CommListForTaskOutput,
+  CommLogListInput,
+  CommLogListOutput,
+  CommLogRow,
   CommRow,
   CommentInsertInput,
   CommentInsertOutput,
@@ -1005,6 +1013,118 @@ const replyPost: HandlerSpec<ReplyPostInput, ReplyPostOutput> = {
 };
 
 // ============================================================================
+// comm_channel.set / comm_channel.list / comm_log.list — Comm Gate 9 admin
+// wrappers. Mirror `server/internal/dom/comm/comm.go`. Field-by-field, the
+// channel.set encoder omits any blank / zero / undefined value so the
+// server's `omit-on-update` semantics apply to non-password fields too —
+// PATCH-style updates from the GUI don't blank existing rows. Password
+// fields use a dedicated optional check: undefined means "don't touch";
+// the empty string is explicitly NOT sent (the GUI's "Set password"
+// affordance always supplies a non-empty string when it fires set).
+// ============================================================================
+
+const commChannelSet: HandlerSpec<ChannelSetInput, ChannelSetOutput> = {
+  endpoint: 'comm_channel',
+  action: 'set',
+  encode: (i) => {
+    const m: Record<string, unknown> = {
+      project_id: i.projectId,
+      name: i.name,
+      channel_type: i.channelType,
+    };
+    if (i.id !== undefined && i.id !== 0n) m.id = i.id;
+    if (i.imapHost !== undefined && i.imapHost !== '') m.imap_host = i.imapHost;
+    if (i.imapPort !== undefined && i.imapPort !== 0) m.imap_port = i.imapPort;
+    if (i.imapUsername !== undefined && i.imapUsername !== '') {
+      m.imap_username = i.imapUsername;
+    }
+    if (i.imapPassword !== undefined && i.imapPassword !== '') {
+      m.imap_password = i.imapPassword;
+    }
+    if (i.smtpHost !== undefined && i.smtpHost !== '') m.smtp_host = i.smtpHost;
+    if (i.smtpPort !== undefined && i.smtpPort !== 0) m.smtp_port = i.smtpPort;
+    if (i.smtpUsername !== undefined && i.smtpUsername !== '') {
+      m.smtp_username = i.smtpUsername;
+    }
+    if (i.smtpPassword !== undefined && i.smtpPassword !== '') {
+      m.smtp_password = i.smtpPassword;
+    }
+    if (i.fromAddress !== undefined && i.fromAddress !== '') {
+      m.from_address = i.fromAddress;
+    }
+    if (i.intakeStatusId !== undefined && i.intakeStatusId !== 0n) {
+      m.intake_status_id = i.intakeStatusId;
+    }
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { channel_id: asId(j.channel_id) };
+  },
+};
+
+function decodeChannelRow(j: Record<string, unknown>): ChannelRow {
+  return {
+    id: asId(j.id),
+    name: asStrOrEmpty(j.name),
+    channel_type: asStrOrEmpty(j.channel_type),
+    imap_host: asStrOrEmpty(j.imap_host),
+    imap_port: asNumOrZero(j.imap_port),
+    imap_username: asStrOrEmpty(j.imap_username),
+    smtp_host: asStrOrEmpty(j.smtp_host),
+    smtp_port: asNumOrZero(j.smtp_port),
+    smtp_username: asStrOrEmpty(j.smtp_username),
+    from_address: asStrOrEmpty(j.from_address),
+    intake_status_id: asIdOrZero(j.intake_status_id),
+    has_imap_password: asBoolOrFalse(j.has_imap_password),
+    has_smtp_password: asBoolOrFalse(j.has_smtp_password),
+    created_at: asStrOrEmpty(j.created_at),
+  };
+}
+
+const commChannelList: HandlerSpec<ChannelListInput, ChannelListOutput> = {
+  endpoint: 'comm_channel',
+  action: 'list',
+  encode: (i) => ({ project_id: i.projectId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { rows: asArray(j.rows).map((r) => decodeChannelRow(asObj(r))) };
+  },
+};
+
+function decodeCommLogRow(j: Record<string, unknown>): CommLogRow {
+  const out: CommLogRow = {
+    id: asId(j.id),
+    channel_id: asIdOrZero(j.channel_id),
+    channel_name: asStrOrEmpty(j.channel_name),
+    kind: asStrOrEmpty(j.kind),
+    at: asStrOrEmpty(j.at),
+  };
+  // `detail` is jsonb on the server and may be any JSON-encodable value;
+  // pass it through verbatim and let the per-kind renderers narrow.
+  if (j.detail !== undefined && j.detail !== null) {
+    out.detail = j.detail;
+  }
+  return out;
+}
+
+const commLogList: HandlerSpec<CommLogListInput, CommLogListOutput> = {
+  endpoint: 'comm_log',
+  action: 'list',
+  encode: (i) => {
+    const m: Record<string, unknown> = { project_id: i.projectId };
+    if (i.kind !== undefined && i.kind !== '') m.kind = i.kind;
+    if (i.since !== undefined && i.since !== '') m.since = i.since;
+    if (i.limit !== undefined && i.limit > 0) m.limit = i.limit;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { rows: asArray(j.rows).map((r) => decodeCommLogRow(asObj(r))) };
+  },
+};
+
+// ============================================================================
 // Re-exports for use by tests / dispatch / screens
 // ============================================================================
 
@@ -1057,6 +1177,9 @@ export {
   commCreate,
   commListForTask,
   replyPost,
+  commChannelSet,
+  commChannelList,
+  commLogList,
 };
 
 // ============================================================================
@@ -1097,5 +1220,8 @@ export function registerBuiltInHandlers(r: HandlerRegistry): void {
   r.register(commCreate);
   r.register(commListForTask);
   r.register(replyPost);
+  r.register(commChannelSet);
+  r.register(commChannelList);
+  r.register(commLogList);
   registerAdminHandlers(r);
 }
