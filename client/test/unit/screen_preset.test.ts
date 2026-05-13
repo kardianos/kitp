@@ -13,14 +13,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { CardWithAttrs } from '../../src/reg/types.js';
 import {
+  LAYOUTS,
   loadScreenAndFilters,
   readColumnAttr,
   readDefaultFilterID,
   readLaneAttr,
+  readLayout,
   readPredicate,
-  readScreenType,
   readTitle,
-  SCREEN_TYPES,
 } from '../../src/filter/screen_preset.svelte.js';
 import type { Dispatcher } from '../../src/dispatch/dispatcher.js';
 
@@ -42,12 +42,12 @@ function card(
 }
 
 /* -------------------------------------------------------------------------- */
-/* SCREEN_TYPES exhaustiveness                                                */
+/* LAYOUTS exhaustiveness                                                     */
 /* -------------------------------------------------------------------------- */
 
-describe('SCREEN_TYPES', () => {
+describe('LAYOUTS', () => {
   it('lists exactly the four built-in layouts the application supports', () => {
-    expect(SCREEN_TYPES).toEqual([
+    expect(LAYOUTS).toEqual([
       'list',
       'grid',
       'kanban',
@@ -65,7 +65,7 @@ describe.each<{
   fn: (c: CardWithAttrs) => unknown;
   attr: string;
 }>([
-  { name: 'readScreenType', fn: readScreenType, attr: 'layout' },
+  { name: 'readLayout', fn: readLayout, attr: 'layout' },
   { name: 'readColumnAttr', fn: readColumnAttr, attr: 'column_attr' },
   { name: 'readLaneAttr', fn: readLaneAttr, attr: 'lane_attr' },
 ])('$name (string accessor on `$attr`)', ({ fn, attr }) => {
@@ -235,7 +235,7 @@ describe('loadScreenAndFilters', () => {
     label: string;
     screens: CardWithAttrs[];
     filters: CardWithAttrs[];
-    screenType: 'list' | 'grid' | 'kanban' | 'pair';
+    layout: 'list' | 'grid' | 'kanban' | 'pair';
     wantScreenId: bigint | null;
     wantFilterCount: number;
     wantDefaultId: bigint | null;
@@ -244,7 +244,7 @@ describe('loadScreenAndFilters', () => {
       label: 'no screen for layout → empty',
       screens: [],
       filters: [],
-      screenType: 'list',
+      layout: 'list',
       wantScreenId: null,
       wantFilterCount: 0,
       wantDefaultId: null,
@@ -253,7 +253,7 @@ describe('loadScreenAndFilters', () => {
       label: 'screen but no filters → screen + empty filter list',
       screens: [card(10n, { layout: 'list' })],
       filters: [],
-      screenType: 'list',
+      layout: 'list',
       wantScreenId: 10n,
       wantFilterCount: 0,
       wantDefaultId: null,
@@ -262,7 +262,7 @@ describe('loadScreenAndFilters', () => {
       label: 'screen + filters, no default_filter set',
       screens: [card(11n, { layout: 'grid' })],
       filters: [card(20n, { title: 'A' }), card(21n, { title: 'B' })],
-      screenType: 'grid',
+      layout: 'grid',
       wantScreenId: 11n,
       wantFilterCount: 2,
       wantDefaultId: null,
@@ -271,7 +271,7 @@ describe('loadScreenAndFilters', () => {
       label: 'screen + filters + default_filter present',
       screens: [card(12n, { layout: 'kanban', default_filter: 21n })],
       filters: [card(20n, { title: 'A' }), card(21n, { title: 'B' })],
-      screenType: 'kanban',
+      layout: 'kanban',
       wantScreenId: 12n,
       wantFilterCount: 2,
       wantDefaultId: 21n,
@@ -280,7 +280,7 @@ describe('loadScreenAndFilters', () => {
       label: 'default_filter points at a missing card → null default',
       screens: [card(13n, { layout: 'kanban', default_filter: 99n })],
       filters: [card(20n, { title: 'A' })],
-      screenType: 'kanban',
+      layout: 'kanban',
       wantScreenId: 13n,
       wantFilterCount: 1,
       wantDefaultId: null,
@@ -293,7 +293,7 @@ describe('loadScreenAndFilters', () => {
         card(32n, { layout: 'kanban' }),
       ],
       filters: [],
-      screenType: 'grid',
+      layout: 'grid',
       wantScreenId: 31n,
       wantFilterCount: 0,
       wantDefaultId: null,
@@ -303,13 +303,13 @@ describe('loadScreenAndFilters', () => {
     async ({
       screens,
       filters,
-      screenType,
+      layout,
       wantScreenId,
       wantFilterCount,
       wantDefaultId,
     }) => {
       const dispatcher = makeDispatcher(screens, filters);
-      const out = await loadScreenAndFilters(dispatcher, 100n, screenType);
+      const out = await loadScreenAndFilters(dispatcher, 100n, layout);
       expect(out.screen?.id ?? null).toBe(wantScreenId);
       expect(out.filters.length).toBe(wantFilterCount);
       expect(out.defaultFilter?.id ?? null).toBe(wantDefaultId);

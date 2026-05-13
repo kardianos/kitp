@@ -61,13 +61,13 @@
     readDefaultFilterID,
     readPredicate,
     readTitle,
-    type ScreenType,
+    type Layout,
   } from './screen_preset.svelte';
 
   interface Props {
-    /** Screen identifier; one of SCREEN_TYPES. Doubles as the
+    /** Screen layout slot; one of LAYOUTS. Doubles as the
      *  filter-state cache scope key. */
-    screenType: ScreenType;
+    screenType: Layout;
     /** Active project. `null` (all-projects view) disables presets — no
      *  per-project screen card exists to load. */
     projectId: ID | null;

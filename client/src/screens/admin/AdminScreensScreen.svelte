@@ -10,8 +10,8 @@
     LEFT  (~280px):   searchable project list + "+ New project".
     CENTER:           screens for the selected project, sorted by
                       sort_order then id. "+ Add screen" combobox uses
-                      `missingScreenTypes(screens, SCREEN_TYPES)` so a
-                      project can't end up with duplicate built-in layouts.
+                      `missingLayouts(screens, LAYOUTS)` so a project
+                      can't end up with duplicate built-in layouts.
     RIGHT:            filters under the selected screen + "Default
                       filter:" combobox writing `default_filter` on
                       the screen card.
@@ -34,14 +34,14 @@
   import { BatchAbortedError, SubRequestError } from '../../dispatch/errors';
   import { predicateToJson } from '../../filter/predicate';
   import {
+    LAYOUTS,
     readColumnAttr,
     readDefaultFilterID,
     readLaneAttr,
+    readLayout,
     readPredicate,
-    readScreenType,
     readTitle,
-    SCREEN_TYPES,
-    type ScreenType,
+    type Layout,
   } from '../../filter/screen_preset.svelte';
   import { setActiveScope, useShortcut } from '../../keys/shortcut';
   import { useQuickEntry } from '../../quick_entry/use_quick_entry.svelte';
@@ -76,7 +76,7 @@
   import {
     errMsg,
     friendlyScreenLabel,
-    missingScreenTypes,
+    missingLayouts,
     sortBySortOrder,
     validatePredicateJson,
   } from './admin_screens_helpers';
@@ -96,7 +96,7 @@
   let selectedScreenId = $state<ID | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let pendingAddScreenType = $state<ScreenType | null>(null);
+  let pendingAddLayout = $state<Layout | null>(null);
   let searchEl: HTMLInputElement | null = $state(null);
 
   /* ------------------------------------------------------------ derivations */
@@ -126,10 +126,10 @@
    *  we re-sort defensively. */
   const sortedFilters = $derived(sortBySortOrder(filters));
 
-  const addableScreenTypes = $derived(missingScreenTypes(screens, SCREEN_TYPES));
+  const addableLayouts = $derived(missingLayouts(screens, LAYOUTS));
 
   const addScreenOptions = $derived.by(() =>
-    addableScreenTypes.map((t) => ({ value: t, label: friendlyScreenLabel(t) })),
+    addableLayouts.map((t) => ({ value: t, label: friendlyScreenLabel(t) })),
   );
 
   /** Combobox options for "Default filter:". Stringified ids because
@@ -300,16 +300,16 @@
 
   async function addScreen(): Promise<void> {
     const project = selectedProject;
-    const screenType = pendingAddScreenType;
-    if (project === null || screenType === null) return;
-    const title = friendlyScreenLabel(screenType);
+    const layout = pendingAddLayout;
+    if (project === null || layout === null) return;
+    const title = friendlyScreenLabel(layout);
     await insertCard(
       'screen',
       project.id,
       title,
-      { layout: screenType, slug: screenType, sort_order: screens.length + 1 },
+      { layout, slug: layout, sort_order: screens.length + 1 },
       async () => {
-        pendingAddScreenType = null;
+        pendingAddLayout = null;
         await loadScreensFor(project.id);
         notify({ type: 'success', message: `Added "${title}" screen.` });
       },
@@ -437,10 +437,10 @@
     );
   }
 
-  /** Combobox options are built from SCREEN_TYPES, so anything the user
-   *  picks is already a valid ScreenType — just accept it. */
-  function pickScreenType(v: unknown): void {
-    pendingAddScreenType = (v as ScreenType | null) ?? null;
+  /** Combobox options are built from LAYOUTS, so anything the user
+   *  picks is already a valid Layout — just accept it. */
+  function pickLayout(v: unknown): void {
+    pendingAddLayout = (v as Layout | null) ?? null;
   }
 
   function pickDefaultFilter(v: unknown): void {
@@ -591,7 +591,7 @@
           {/if}
         {/snippet}
         {#snippet row(s)}
-          {@const screenType = readScreenType(s) ?? ''}
+          {@const layout = readLayout(s) ?? ''}
           {@const defaultId = readDefaultFilterID(s)}
           <div
             data-testid={`screen-row-${s.id}`}
@@ -606,8 +606,8 @@
               onclick={() => (selectedScreenId = s.id)}
             >
               <span class="font-medium text-fg">{readTitle(s)}</span>
-              {#if screenType !== ''}
-                <Chip label={screenType} size="sm" />
+              {#if layout !== ''}
+                <Chip label={layout} size="sm" />
               {/if}
               {#if defaultId !== null}
                 {@const def = filters.find((f) => f.id === defaultId)}
@@ -627,7 +627,7 @@
           </div>
         {/snippet}
         {#snippet footer()}
-          {#if selectedProject !== null && addableScreenTypes.length > 0}
+          {#if selectedProject !== null && addableLayouts.length > 0}
             <div
               class="m-3 flex items-center gap-2 rounded border border-dashed border-border p-2"
               data-testid="add-screen-controls"
@@ -635,18 +635,18 @@
               <span class="text-sm text-muted">+ Add screen:</span>
               <span class="w-44">
                 <Combobox
-                  aria-label="Screen type"
+                  aria-label="Layout"
                   options={addScreenOptions}
-                  value={pendingAddScreenType}
+                  value={pendingAddLayout}
                   searchable={false}
-                  placeholder="screen type…"
-                  onchange={pickScreenType}
+                  placeholder="layout…"
+                  onchange={pickLayout}
                 />
               </span>
               <Button
                 variant="secondary"
                 size="sm"
-                disabled={pendingAddScreenType === null}
+                disabled={pendingAddLayout === null}
                 onclick={() => void addScreen()}
               >
                 {#snippet children()}Add{/snippet}
@@ -667,11 +667,11 @@
       >
         {#snippet header()}
           {#if selectedScreen !== null}
-            {@const screenType = readScreenType(selectedScreen) ?? ''}
+            {@const layout = readLayout(selectedScreen) ?? ''}
             <div class="flex items-center gap-2 border-b border-border px-3 py-2">
               <h3 class="text-sm font-semibold">{readTitle(selectedScreen)}</h3>
-              {#if screenType !== ''}
-                <Chip label={screenType} size="sm" />
+              {#if layout !== ''}
+                <Chip label={layout} size="sm" />
               {/if}
             </div>
             <div class="flex items-center gap-2 border-b border-border px-3 py-2">

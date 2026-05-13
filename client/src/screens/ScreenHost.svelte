@@ -39,7 +39,7 @@
   } from '../reg/types';
 
   import {
-    readScreenType,
+    readLayout,
     readSlug,
   } from '../filter/screen_preset.svelte';
   import { setActiveScope } from '../keys/shortcut';
@@ -187,7 +187,7 @@
 
   const layout = $derived.by((): string | null => {
     if (screen === null) return null;
-    return readScreenType(screen);
+    return readLayout(screen);
   });
 
   // Eight cases collapsed into a four-way map. Unknown layouts fall

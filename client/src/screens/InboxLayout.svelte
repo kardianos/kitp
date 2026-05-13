@@ -71,7 +71,6 @@
   import Spinner from '../ui/Spinner.svelte';
   import { notify } from '../ui/toast.svelte';
   import TaskRow from '../ui/widgets/TaskRow.svelte';
-  import { cx } from '../util/class_names';
 
   import {
     move,
@@ -155,11 +154,6 @@
     untrack(() => getFilter('inbox', projectScope.projectId)),
   );
   let selectedIndex = $state(0);
-  /** "mine" (default) shows only tasks assigned to the actor; "all" drops
-   *  the assignee filter so the inbox doubles as a project-wide open-tasks
-   *  list. Lives in component state — not persisted across visits because
-   *  "all" + a wide project scope can flood the screen. */
-  let viewMode = $state<'mine' | 'all'>('mine');
 
   /* ----------------------------- delegate-to-agent (per-row) -----------
    * Cards assigned to me show a small "delegate to" picker on each row
@@ -179,7 +173,7 @@
   });
 
   const showAgentPicker = $derived(
-    authState?.isAgent !== true && myAgents.length > 0 && viewMode === 'mine',
+    authState?.isAgent !== true && myAgents.length > 0,
   );
 
   function setRouting(cardId: ID, agentId: ID): void {
@@ -339,19 +333,21 @@
   }
 
   /**
-   * AND an `assignee = me` leaf onto the user's existing tree when
-   * scope === 'mine'. `scope === 'all'` drops the assignee filter so
-   * the inbox doubles as a project-wide open-tasks list. The leaf is
-   * inserted into the existing AND group when present so the wire
-   * shape stays a single connected tree (matches the legacy
-   * inbox.select behaviour without re-using its server endpoint).
+   * AND an `assignee = me` leaf onto the user's existing tree so the
+   * Inbox shows only the actor's tasks. The leaf is inserted into the
+   * existing AND group when present so the wire shape stays a single
+   * connected tree (matches the legacy inbox.select behaviour without
+   * re-using its server endpoint).
+   *
+   * The Inbox screen card's `toggle_groups.scope.mine_only` item
+   * (default_on=true) is the data-side declaration of this same scope;
+   * once `<ScreenToggleGroups>` lands it will emit the leaf instead of
+   * this inline hardcode.
    */
   function applyAssigneeScope(
     tree: CardWhereTree | undefined,
-    mode: 'mine' | 'all',
     userId: ID,
   ): CardWhereTree | undefined {
-    if (mode === 'all') return tree;
     const meLeaf = { attr: 'assignee', op: '=', values: [userId] };
     if (tree === undefined) {
       return { connective: 'and', children: [meLeaf] };
@@ -372,12 +368,11 @@
 
     // The inbox is just a per-user task list with the personal sort
     // join — the same handler Grid / Kanban / ProjectDetail call. The
-    // "mine" view layers an `assignee = me` leaf onto the user's saved
-    // predicate; "all" drops it so the screen doubles as a project-wide
-    // open-tasks list. When the signed-in user is an agent (#50), the
-    // assignee filter is replaced with the `routed_to_me` flag so the
-    // result is the parent's routings to this agent rather than tasks
-    // the agent is itself assigned to.
+    // assignee filter is the seeded `toggle_groups.scope.mine_only`
+    // item layered onto the user's saved predicate. When the signed-in
+    // user is an agent (#50), the assignee filter is replaced with the
+    // `routed_to_me` flag so the result is the parent's routings to
+    // this agent rather than tasks the agent is itself assigned to.
     const userTree = buildTree();
     const taskInput: CardSelectWithAttributesInput = {
       cardTypeName: 'task',
@@ -390,11 +385,12 @@
     };
     if (authState?.isAgent === true) {
       taskInput.routedToMe = true;
-      // Agent view ignores the "mine / all" toggle — both fold to the
-      // same set of routed cards; user-authored predicates still apply.
+      // Agent view skips the assignee scope — the routed-to-me filter
+      // already narrows to the actor's queue; user-authored predicates
+      // still apply on top.
       if (userTree !== undefined) taskInput.tree = userTree;
     } else {
-      const treeArg = applyAssigneeScope(userTree, viewMode, meId);
+      const treeArg = applyAssigneeScope(userTree, meId);
       if (treeArg !== undefined) taskInput.tree = treeArg;
     }
     const scoped = projectScope.projectId;
@@ -547,8 +543,8 @@
     transitionsByCardId = next;
   }
 
-  // Initial fetch + refetch whenever the project scope or view mode flips.
-  // We deliberately enumerate the tracked deps so unrelated state mutations
+  // Initial fetch + refetch whenever the project scope flips. We
+  // deliberately enumerate the tracked deps so unrelated state mutations
   // don't trigger a refetch storm. Other re-fetches go through explicit
   // handlers (`onFilterChange`, reorder).
   //
@@ -558,7 +554,6 @@
   let filterReady = $state(false);
   $effect(() => {
     void projectScope.projectId;
-    void viewMode;
     void filterReady;
     untrack(() => {
       if (!filterReady) return;
@@ -674,7 +669,7 @@
    *  see the same list either way. */
   function openTaskById(id: ID): void {
     setTaskNavList({
-      label: viewMode === 'mine' ? 'Inbox' : 'Inbox (all open)',
+      label: 'Inbox',
       ids: rows.map((r) => r.id),
     });
     navigate(`/task/${id}`);
@@ -734,38 +729,6 @@
           Agent view · routed work
         </span>
       {/if}
-      <div
-        class="inline-flex overflow-hidden rounded-md border border-border text-xs"
-        role="group"
-        aria-label="Inbox scope"
-      >
-        <button
-          type="button"
-          class={cx(
-            'px-2 py-1 transition-colors',
-            viewMode === 'mine'
-              ? 'bg-accent text-accent-fg'
-              : 'bg-bg text-fg hover:bg-surface',
-          )}
-          aria-pressed={viewMode === 'mine'}
-          onclick={() => {
-            viewMode = 'mine';
-          }}
-        >Mine</button>
-        <button
-          type="button"
-          class={cx(
-            'border-l border-border px-2 py-1 transition-colors',
-            viewMode === 'all'
-              ? 'bg-accent text-accent-fg'
-              : 'bg-bg text-fg hover:bg-surface',
-          )}
-          aria-pressed={viewMode === 'all'}
-          onclick={() => {
-            viewMode = 'all';
-          }}
-        >All open</button>
-      </div>
     </div>
     <div class="flex items-center gap-2">
       <Button size="sm" variant="secondary" onclick={() => qe.open()}>

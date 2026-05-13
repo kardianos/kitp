@@ -3,7 +3,7 @@
  * so they can be unit-tested without a Svelte component-mount runtime
  * (vitest is node-only here).
  *
- *   - `missingScreenTypes`    order-preserving set difference for the
+ *   - `missingLayouts`        order-preserving set difference for the
  *                             "+ Add screen" combobox.
  *   - `sortBySortOrder`    sort_order ASC, NULLS LAST, ties by id ASC.
  *   - `validatePredicateJson` decode JSON typed into "Edit predicate";
@@ -12,17 +12,17 @@
  */
 
 import { predicateFromJson, type Predicate } from '../../filter/predicate.js';
-import { readScreenType, type ScreenType } from '../../filter/screen_preset.svelte.js';
+import { readLayout, type Layout } from '../../filter/screen_preset.svelte.js';
 import type { CardWithAttrs } from '../../reg/types.js';
 
 /** Subset of `all` not present in `screens`, in `all`-order. */
-export function missingScreenTypes(
+export function missingLayouts(
   screens: readonly CardWithAttrs[],
-  all: readonly ScreenType[],
-): ScreenType[] {
+  all: readonly Layout[],
+): Layout[] {
   const present = new Set<string>();
   for (const s of screens) {
-    const t = readScreenType(s);
+    const t = readLayout(s);
     if (t !== null) present.add(t);
   }
   return all.filter((t) => !present.has(t));

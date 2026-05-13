@@ -39,7 +39,7 @@ Reads:
 - `card.select_with_attributes` `cardTypeName:'filter', parentCardId:<screen>` — filters for a screen
 
 Writes (all existing endpoints — no new server code):
-- `card.insert` `cardTypeName:'screen', parentCardId:<project>, title, attributes:{screen_type, sort_order}` — create a missing screen
+- `card.insert` `cardTypeName:'screen', parentCardId:<project>, title, attributes:{layout, slug, sort_order}` — create a missing screen
 - `card.insert` `cardTypeName:'filter', parentCardId:<screen>, title, attributes:{predicate?, column_attr?, lane_attr?}` — create a filter
 - `attribute.update` `cardId:<filter>, attributeName:'title'|'predicate'|'column_attr'|'lane_attr'` — edit
 - `attribute.update` `cardId:<screen>, attributeName:'default_filter', value:<filter_id>` — set default
@@ -52,7 +52,7 @@ Writes (all existing endpoints — no new server code):
 ┌──────────────┬────────────────────────┬──────────────────────────┐
 │ Projects     │ Screens for project    │ Filters for screen       │
 │              │                        │                          │
-│ [search /]   │ project title          │ screen title + type      │
+│ [search /]   │ project title          │ screen title + layout    │
 │ - Project A  │                        │                          │
 │ - Project B* │ + Add screen           │ Default: [combobox▼]     │
 │ - Project C  │                        │                          │
@@ -74,17 +74,17 @@ Writes (all existing endpoints — no new server code):
 ### CENTER pane
 - Header: selected project title.
 - List of screen cards (sorted by `sort_order` asc, then id asc):
-  - Title + `screen_type` chip + small "Default: <filter title>" hint.
+  - Title + `layout` chip + small "Default: <filter title>" hint.
   - Click selects → loads filters in RIGHT pane.
 - "+ Add screen" button: opens a small inline dialog
-  - `screen_type` combobox: `missingScreenTypes(screens, SCREEN_TYPES)` (so already-present types are excluded)
-  - `title` defaults to the friendly label for that screen_type (e.g. "Project detail" for `project_detail`)
+  - `layout` combobox: `missingLayouts(screens, LAYOUTS)` (so already-present layouts are excluded)
+  - `title` defaults to the friendly label for that layout (e.g. "Pair" for `pair`); `slug` defaults to the layout name.
   - Sets `sort_order` to `screens.length + 1` to land at the bottom.
 - "Delete screen" action on each row (icon button, with `window.confirm`).
-- When the project has every screen_type from `SCREEN_TYPES`, "+ Add screen" is hidden / disabled.
+- When the project has every layout from `LAYOUTS`, "+ Add screen" is hidden / disabled.
 
 ### RIGHT pane
-- Header: selected screen's title + screen_type chip.
+- Header: selected screen's title + layout chip.
 - "Default filter:" combobox listing the screen's filter cards by title. Picking one fires `attribute.update default_filter` on the screen card. The current value is read from `default_filter` on the screen.
 - List of filter cards (sorted by `sort_order` asc):
   - Inline-editable title (blur commits via `attribute.update title`).
@@ -101,17 +101,17 @@ Each helper is a small pure function, exhaustively covered by a vitest `it.each(
 
 ```ts
 import type { CardWithAttrs, ID } from '../../reg/types';
-import type { ScreenType } from '../../filter/screen_preset.svelte';
+import type { Layout } from '../../filter/screen_preset.svelte';
 
 /**
- * Return the screen_types from `all` that aren't present in `screens`.
+ * Return the layouts from `all` that aren't present in `screens`.
  * Preserves order of `all` so the UI's "+ Add screen" combobox lists
- * missing types in the same order the application defines them.
+ * missing layouts in the same order the application defines them.
  */
-export function missingScreenTypes(
+export function missingLayouts(
   screens: readonly CardWithAttrs[],
-  all: readonly ScreenType[],
-): ScreenType[]
+  all: readonly Layout[],
+): Layout[]
 
 /**
  * Sort screens by sort_order ASC, then by id ASC. Non-numeric / missing
@@ -133,17 +133,17 @@ export function validatePredicateJson(raw: string):
   | { ok: false; error: string }
 
 /**
- * Friendly label for a screen_type. Capitalises and replaces
- * underscores ('project_detail' → 'Project detail').
+ * Friendly label for a layout name. Capitalises and replaces
+ * underscores ('multi_word' → 'Multi word').
  */
-export function friendlyScreenLabel(screenType: string): string
+export function friendlyScreenLabel(layout: string): string
 ```
 
 ## Tests — `admin_screens.test.ts`
 
 Every helper gets `describe.each` / `it.each` coverage. Minimum cases:
 
-**missingScreenTypes** (5+ rows):
+**missingLayouts** (5+ rows):
 - empty screens → returns full `all`
 - all present → returns []
 - one missing → returns just that one
@@ -166,9 +166,10 @@ Every helper gets `describe.each` / `it.each` coverage. Minimum cases:
 - valid group predicate → ok, decoded group
 
 **friendlyScreenLabel** (4+ rows):
-- 'inbox' → 'Inbox'
-- 'project_detail' → 'Project detail'
+- 'list' → 'List'
+- 'pair' → 'Pair'
 - 'kanban' → 'Kanban'
+- 'multi_word_thing' → 'Multi word thing'
 - '' → '' (or some sane fallback)
 
 ## Acceptance checks (for the verifier)
@@ -179,7 +180,7 @@ Every helper gets `describe.each` / `it.each` coverage. Minimum cases:
 4. All four helpers exist and are exported from `admin_screens_helpers.ts`.
 5. `admin_screens.test.ts` exists, runs, and has `it.each(...)` tables for every helper with the case counts listed above.
 6. No new attribute_defs / card_types / server endpoints introduced.
-7. No status / hardcoded screen-type strings beyond what `SCREEN_TYPES` exports.
+7. No status / hardcoded layout strings beyond what `LAYOUTS` exports.
 8. `cd client && npx svelte-check` → 0 errors, 0 warnings.
 9. `cd client && npx vitest run` → all tests pass.
 10. `cd server && go test ./...` → all tests pass.
@@ -191,7 +192,7 @@ Every helper gets `describe.each` / `it.each` coverage. Minimum cases:
 - Don't add a new card_type or attribute_def.
 - Don't add a new server endpoint.
 - Use `window.prompt` / `window.confirm` for inputs (matches existing AdminAttributesScreen style).
-- Don't hardcode screen_type strings; read from `SCREEN_TYPES`.
+- Don't hardcode layout strings; read from `LAYOUTS`.
 - Don't introduce a new authz mechanism; rely on existing `role_grant` rows.
 
 ## Reference patterns to follow

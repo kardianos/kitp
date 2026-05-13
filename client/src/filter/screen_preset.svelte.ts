@@ -1,18 +1,17 @@
 /**
  * Per-project saved view presets.
  *
- * Each project ships with one `screen` card per built-in layout
- * ('list' | 'grid' | 'kanban' | 'pair') and each screen owns N `filter`
- * card children. The screen's `default_filter` (card_ref → filter)
- * picks which preset applies on first load.
+ * Each project owns N `screen` cards; each screen owns N `filter` card
+ * children. The screen's `default_filter` (card_ref → filter) picks
+ * which preset applies on first load.
  *
  * Gate 8 renamed the closed-set attribute from `screen_type` to
  * `layout`. The values are the renderer names the application
- * enforces. The wider screen-card schema now also carries `slug`,
- * `hotkey`, `flow_ref`, etc; see docs/FLOW_AND_SCREEN_KERNEL.md.
- * SCREEN_TYPES survives this gate so the four built-in screens still
- * find their counterparts via layout-matching; Gate 13 retires the
- * constant entirely when router-by-slug lands.
+ * enforces. The wider screen-card schema also carries `slug`,
+ * `hotkey`, `flow_ref`, etc; see docs/FLOW_AND_SCREEN_KERNEL.md. Gate
+ * 13 dropped the legacy `SCREEN_TYPES` constant in favour of the
+ * `LAYOUTS` slot list below — only the admin CRUD combobox needs the
+ * closed set; ScreenHost dispatches on `layout` directly.
  *
  * This module owns the shared fetch + accessor helpers; the UI lives in
  * `FilterPresetSelector.svelte` and is wired into each screen.
@@ -34,13 +33,13 @@ import { predicateFromJson, type Predicate } from './predicate';
  * silently ignored — the kernel stores text without validation, so the
  * application is the source of truth on what counts.
  */
-export type ScreenType =
+export type Layout =
   | 'list'
   | 'grid'
   | 'kanban'
   | 'pair';
 
-export const SCREEN_TYPES: readonly ScreenType[] = [
+export const LAYOUTS: readonly Layout[] = [
   'list',
   'grid',
   'kanban',
@@ -71,7 +70,7 @@ export interface ScreenPresetSet {
 export async function loadScreenAndFilters(
   dispatcher: Pick<Dispatcher, 'request'>,
   projectId: ID,
-  screenType: ScreenType,
+  layout: Layout,
 ): Promise<ScreenPresetSet> {
   const screenOut = await dispatcher.request<
     CardSelectWithAttributesInput,
@@ -84,7 +83,7 @@ export async function loadScreenAndFilters(
 
   const screen =
     screenOut.rows.find(
-      (r) => readScreenType(r) === screenType,
+      (r) => readLayout(r) === layout,
     ) ?? null;
   if (screen === null) {
     return { screen: null, filters: [], defaultFilter: null };
@@ -120,11 +119,11 @@ export async function loadScreenAndFilters(
 
 /**
  * Read the `layout` attribute as a string (or null when absent / non-
- * string / empty). The function name preserves the old
- * `readScreenType` call sites while the underlying attribute moved
- * from `screen_type` to `layout` in Gate 8.
+ * string / empty). Gate 8 renamed the underlying attribute from
+ * `screen_type` to `layout`; Gate 13 renamed the helper from
+ * `readScreenType` to match.
  */
-export function readScreenType(card: CardWithAttrs): string | null {
+export function readLayout(card: CardWithAttrs): string | null {
   const v = card.attributes['layout'];
   return typeof v === 'string' && v.length > 0 ? v : null;
 }

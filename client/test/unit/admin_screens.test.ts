@@ -13,10 +13,10 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CardWithAttrs } from '../../src/reg/types.js';
-import { SCREEN_TYPES, type ScreenType } from '../../src/filter/screen_preset.svelte.js';
+import { LAYOUTS, type Layout } from '../../src/filter/screen_preset.svelte.js';
 import {
   friendlyScreenLabel,
-  missingScreenTypes,
+  missingLayouts,
   sortBySortOrder,
   validatePredicateJson,
 } from '../../src/screens/admin/admin_screens_helpers.js';
@@ -45,20 +45,20 @@ function screen(id: bigint, layout: string, sortOrder?: number): CardWithAttrs {
 }
 
 /* -------------------------------------------------------------------------- */
-/* missingScreenTypes                                                         */
+/* missingLayouts                                                             */
 /* -------------------------------------------------------------------------- */
 
-describe('missingScreenTypes', () => {
+describe('missingLayouts', () => {
   it.each<{
     label: string;
     screens: CardWithAttrs[];
-    all: readonly ScreenType[];
-    want: ScreenType[];
+    all: readonly Layout[];
+    want: Layout[];
   }>([
     {
       label: 'empty screens → full all',
       screens: [],
-      all: SCREEN_TYPES,
+      all: LAYOUTS,
       want: ['list', 'grid', 'kanban', 'pair'],
     },
     {
@@ -69,19 +69,19 @@ describe('missingScreenTypes', () => {
         screen(3n, 'kanban'),
         screen(4n, 'pair'),
       ],
-      all: SCREEN_TYPES,
+      all: LAYOUTS,
       want: [],
     },
     {
       label: 'one missing (kanban) → returns just kanban',
       screens: [screen(1n, 'list'), screen(2n, 'grid'), screen(4n, 'pair')],
-      all: SCREEN_TYPES,
+      all: LAYOUTS,
       want: ['kanban'],
     },
     {
       label: 'duplicates in screens still reports the remainder correctly',
       screens: [screen(1n, 'list'), screen(2n, 'list'), screen(3n, 'grid')],
-      all: SCREEN_TYPES,
+      all: LAYOUTS,
       want: ['kanban', 'pair'],
     },
     {
@@ -93,11 +93,11 @@ describe('missingScreenTypes', () => {
     {
       label: 'screens with no layout attribute are ignored',
       screens: [card(1n, {}), screen(2n, 'list')],
-      all: SCREEN_TYPES,
+      all: LAYOUTS,
       want: ['grid', 'kanban', 'pair'],
     },
   ])('$label', ({ screens, all, want }) => {
-    expect(missingScreenTypes(screens, all)).toEqual(want);
+    expect(missingLayouts(screens, all)).toEqual(want);
   });
 });
 
