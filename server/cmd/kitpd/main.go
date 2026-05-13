@@ -53,6 +53,7 @@ import (
 	domconfig "github.com/kitp/kitp/server/internal/dom/config"
 	"github.com/kitp/kitp/server/internal/dom/echo"
 	"github.com/kitp/kitp/server/internal/dom/file"
+	"github.com/kitp/kitp/server/internal/dom/flow"
 	"github.com/kitp/kitp/server/internal/dom/process"
 	"github.com/kitp/kitp/server/internal/dom/projectexport"
 	"github.com/kitp/kitp/server/internal/dom/projectimport"
@@ -113,6 +114,7 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 	comment.Register(pool)
 	domconfig.Register()
 	file.Register(pool)
+	flow.Register(pool)
 	tag.Register(pool)
 	process.Register(pool)
 	proc.Register(pool)

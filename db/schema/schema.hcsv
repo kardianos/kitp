@@ -352,3 +352,34 @@ completed_at, timestamptz, , , ,
 ### indexes
 name, columns
 idx_import_job_project_id_created_at, "project_id, created_at"
+
+
+## table flow | doc="One state-machine definition, scoped to one project. Each row binds a flow to one (attribute_def, project) pair — the attribute_def names the attribute whose value cards are the flow's states, and the project is the scope under which this flow applies. There are no global / install-wide flows; templates live in the install seed and are stamped into each new project at seed time (Gate 11). default_create_status_id names the status this flow assigns to a new task when a screen using this flow has no per-screen override." | unique="attribute_def_id, scope_card_id"
+
+### meta
+name_column
+name
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+id, bigserial, true, , , ,
+name, text, , false, , ,
+doc, text, , , , ,
+attribute_def_id, bigint, , false, , attribute_def.id,
+scope_card_id, bigint, , false, , card.id, cascade
+default_create_status_id, bigint, , , , card.id,
+created_at, timestamptz, , false, now(), ,
+
+
+## table flow_step | doc="One transition edge in a flow. from_card_id and to_card_id both point at value cards on the same attribute_def as the flow. Tasks always have a real status value-card (status is a required attribute), so there is no 'from unset' case — every transition is real → real. label is the button text; the UI category (Accept / Reject / Close / Reopen / progress) is derived at render time from (from_card.phase, to_card.phase). requires_role_id NULL means any authenticated user. sort_order orders entries within the same UI bucket for deterministic rendering." | unique="flow_id, from_card_id, to_card_id, label"
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+id, bigserial, true, , , ,
+flow_id, bigint, , false, , flow.id, cascade
+from_card_id, bigint, , false, , card.id,
+to_card_id, bigint, , false, , card.id,
+label, text, , false, , ,
+requires_role_id, bigint, , , , role.id,
+sort_order, int, , false, 0, ,
+created_at, timestamptz, , false, now(), ,
