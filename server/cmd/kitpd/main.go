@@ -33,6 +33,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kitp/kitp/server/internal/api"
@@ -49,6 +50,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/attributedef"
 	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/dom/cardtype"
+	"github.com/kitp/kitp/server/internal/dom/comm"
 	"github.com/kitp/kitp/server/internal/dom/comment"
 	domconfig "github.com/kitp/kitp/server/internal/dom/config"
 	"github.com/kitp/kitp/server/internal/dom/echo"
@@ -112,6 +114,7 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 	activity.Register(pool)
 	attachment.Register(pool)
 	domcas.Register(pool)
+	comm.Register(pool)
 	comment.Register(pool)
 	domconfig.Register()
 	file.Register(pool)
@@ -134,7 +137,10 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 }
 
 // buildPgxPool constructs a pgxpool.Pool from dsn, optionally installing
-// the obs.QueryTracer when LOG_LEVEL=debug or PG_TRACE=1.
+// the obs.QueryTracer when LOG_LEVEL=debug or PG_TRACE=1. Every new
+// connection is bound to the resolved KITP_COMM_SECRET_KEY so the
+// comm package's sym_encrypt/sym_decrypt SQL references via
+// current_setting('app.comm_secret_key') resolve correctly.
 func buildPgxPool(ctx context.Context, dsn string, logger *slog.Logger) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -142,6 +148,11 @@ func buildPgxPool(ctx context.Context, dsn string, logger *slog.Logger) (*pgxpoo
 	}
 	if obs.PGTraceEnabled() {
 		cfg.ConnConfig.Tracer = &obs.QueryTracer{Logger: logger}
+	}
+	key := store.CommSecretKey()
+	cfg.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
+		_, err := c.Exec(ctx, "SELECT set_config('app.comm_secret_key', $1, false)", key)
+		return err
 	}
 	return pgxpool.NewWithConfig(ctx, cfg)
 }

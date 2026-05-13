@@ -3,6 +3,7 @@
 ## prop
 name, value
 extension, pg_trgm
+extension, pgcrypto
 
 
 ## table user_account | doc="Users. id=1 is the System User used by AUTH_MODE=off. email and oidc_sub identify OIDC subjects. parent_user_id (self-FK) names the human owner when is_agent=true — agents are user_account rows owned by another user_account, with role rows scoped to a parent-granted subset and token-only authentication (see user_token). ON DELETE CASCADE so deleting a human deletes every agent they own."

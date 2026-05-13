@@ -100,7 +100,7 @@ val, text, false, true,
 		t.Fatalf("BuildSchema: %v", err)
 	}
 	got := GenerateSQL(s)
-	want := `CREATE EXTENSION IF NOT EXISTS pg_trgm;
+	want := `CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
 
 -- A table.
 CREATE TABLE IF NOT EXISTS a (

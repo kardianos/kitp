@@ -11,6 +11,9 @@ package store
 
 import (
 	"context"
+	"log"
+	"os"
+	"sync"
 	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
@@ -65,4 +68,45 @@ func (p *Pool) ResetReads() {
 // BeginTx starts a transaction. Callers are expected to Commit or Rollback.
 func (p *Pool) BeginTx(ctx context.Context) (pgx.Tx, error) {
 	return p.P.Begin(ctx)
+}
+
+// commSecretKey returns the KITP_COMM_SECRET_KEY env var, falling back to
+// a documented dev default when unset. The first call logs a one-shot
+// warning when the default is in play so dev / test runs don't spam the
+// log but operators can't accidentally ship the default to production.
+//
+// The default value MUST be different from anything the spec might suggest
+// for production — operators who leave KITP_COMM_SECRET_KEY unset and
+// store real channel passwords are storing them under a published key.
+// Comm Gate 3 ships the encryption plumbing; production deployments are
+// expected to set the env var as part of their secret-management story.
+var (
+	commSecretKeyOnce sync.Once
+	commSecretKeyVal  string
+)
+
+// CommSecretKey returns the resolved key, logging the dev-default warning
+// at first call. Exported for the comm package to pass to sym_encrypt /
+// sym_decrypt SQL calls when not relying on the per-connection setting.
+func CommSecretKey() string {
+	commSecretKeyOnce.Do(func() {
+		commSecretKeyVal = os.Getenv("KITP_COMM_SECRET_KEY")
+		if commSecretKeyVal == "" {
+			commSecretKeyVal = "dev-do-not-ship-this-key-in-prod"
+			log.Printf("warning: KITP_COMM_SECRET_KEY unset; using dev default. " +
+				"Comm channel passwords will be encrypted with a published key — " +
+				"set KITP_COMM_SECRET_KEY before storing real credentials.")
+		}
+	})
+	return commSecretKeyVal
+}
+
+// setCommSecretKey sets the per-connection app.comm_secret_key GUC so
+// SQL using current_setting('app.comm_secret_key') (e.g. comm_channel.set
+// in dom/comm) resolves to the configured value. Called from pgxpool
+// AfterConnect hooks in main.go + testutil.go.
+func setCommSecretKey(ctx context.Context, c *pgx.Conn) error {
+	key := CommSecretKey()
+	_, err := c.Exec(ctx, "SELECT set_config('app.comm_secret_key', $1, false)", key)
+	return err
 }

@@ -320,11 +320,19 @@ func readMeta(sec *Section) map[string]string {
 // GenerateSQL renders the schema to a CREATE-everything SQL script
 // (extensions + tables + indexes). Output mirrors declarative.go's
 // format so the diff against today's output is minimal.
+//
+// Extensions are pinned to the `public` schema. The test harness applies
+// the schema under a per-test schema name with `SET search_path =
+// test_schema, public` so an unqualified CREATE EXTENSION lands in the
+// per-test schema and gets dropped at cleanup — racing with other
+// concurrent test setups that all try to install the same extension at
+// once. WITH SCHEMA public avoids that race entirely; the extension
+// lives in a stable namespace from the first install onward.
 func GenerateSQL(s *Schema) string {
 	tables := topoSortTables(s.Tables)
 	var b strings.Builder
 	for _, e := range s.Extensions {
-		fmt.Fprintf(&b, "CREATE EXTENSION IF NOT EXISTS %s;\n", e)
+		fmt.Fprintf(&b, "CREATE EXTENSION IF NOT EXISTS %s WITH SCHEMA public;\n", e)
 	}
 	if len(s.Extensions) > 0 {
 		b.WriteByte('\n')

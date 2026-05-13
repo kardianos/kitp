@@ -53,8 +53,10 @@ func TestPool(t testing.TB, schemaName string) *pgxpool.Pool {
 		t.Fatalf("parse pool config: %v", err)
 	}
 	cfg.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
-		_, err := c.Exec(ctx, fmt.Sprintf(`SET search_path = %s, public`, schemaName))
-		return err
+		if _, err := c.Exec(ctx, fmt.Sprintf(`SET search_path = %s, public`, schemaName)); err != nil {
+			return err
+		}
+		return setCommSecretKey(ctx, c)
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -102,8 +104,10 @@ func TestPoolBare(t *testing.T, schemaName string) *pgxpool.Pool {
 		t.Fatalf("parse pool config: %v", err)
 	}
 	cfg.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
-		_, err := c.Exec(ctx, fmt.Sprintf(`SET search_path = %s, public`, schemaName))
-		return err
+		if _, err := c.Exec(ctx, fmt.Sprintf(`SET search_path = %s, public`, schemaName)); err != nil {
+			return err
+		}
+		return setCommSecretKey(ctx, c)
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
