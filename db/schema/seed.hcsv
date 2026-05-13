@@ -368,3 +368,15 @@ id, card_type_id,     parent_card_id, title,   layout, slug,  hotkey, sort_order
 ### rows
 id, card_type_id,     parent_card_id, title,             layout, slug,    sort_order, flow_ref,          toggle_groups
 22, $card_type.screen, parent,         "Closed last 30d", list,   archive, 6,          @tpl_flow_status, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":true}]}]`
+
+
+## table card | under=tpl_project | alias=tpl_sc_comms | doc="Comms screen (Gate 7 of email_comm_spec). Lists tasks with attached comms. flow_ref points at the template's comm flow so the TransitionBar shows comm-status transitions; toggle_groups filter by comm_status phase (active / terminal) rather than task status. default_create_status overrides to 'Open' (the comm flow's triage status). The 'Comms attached' filter child uses op:'exists' against the comms attribute (V10 dropped is_set alias in favor of exists)." | on_conflict="id"
+### rows
+id, card_type_id,     parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,         default_create_status, toggle_groups
+26, $card_type.screen, parent,         "Comms", list,   comms, c,      7,          @tpl_flow_comm,  @tpl_cs_open,          `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"comm_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Resolved","predicate":{"attr":"comm_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+
+
+## table card | under=tpl_sc_comms | doc="Default filter for the Comms screen: select tasks that have any attached comm cards. Uses op:'exists' (V10 spelling; the spec's is_set alias was dropped). The screen→default_filter wiring is left to runtime — see demo.hcsv's matching comment for the circular-reference rationale." | on_conflict="id"
+### rows
+id, card_type_id,     parent_card_id, title,             predicate
+27, $card_type.filter, parent,         "Comms attached",  `{"attr":"comms","op":"exists"}`

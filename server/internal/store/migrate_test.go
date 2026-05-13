@@ -30,8 +30,9 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		{`SELECT count(*) FROM user_account_person`, 1}, // System's link
 		// 1 System person + 1 template project + 6 template statuses +
 		// 3 template comm statuses (Gate 2 of email_comm_spec) +
-		// 6 template screens = 17.
-		{`SELECT count(*) FROM card`, 17},
+		// 6 template screens + 1 Comms screen + 1 "Comms attached"
+		// filter card (Gate 7 of email_comm_spec) = 19.
+		{`SELECT count(*) FROM card`, 19},
 		{`SELECT count(*) FROM user_role`, 2}, // system + admin on user 1
 		{`SELECT count(*) FROM role`, 6},
 		{`SELECT count(*) FROM card_type`, 13},
@@ -76,11 +77,12 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{`SELECT count(*) FROM user_account_person`, 2},
 		// System: system+admin. frank: admin.
 		{`SELECT count(*) FROM user_role`, 3},
-		// 16 seed cards (template project + 6 statuses + 3 comm statuses
-		// from Gate 2 of email_comm_spec + 6 screens) + 9 test_demo cards
-		// (2 persons + 1 project + 1 milestone + 1 status + 2 tasks +
-		// 1 screen + 1 filter) = 25.
-		{`SELECT count(*) FROM card`, 25},
+		// 18 seed cards (template project + 6 statuses + 3 comm statuses
+		// from Gate 2 of email_comm_spec + 6 screens + 1 Comms screen
+		// + 1 "Comms attached" filter from Gate 7 of email_comm_spec)
+		// + 9 test_demo cards (2 persons + 1 project + 1 milestone
+		// + 1 status + 2 tasks + 1 screen + 1 filter) = 27.
+		{`SELECT count(*) FROM card`, 27},
 		{`SELECT count(*) FROM role`, 6},
 		{`SELECT count(*) FROM card_type`, 13},
 		{`SELECT count(*) FROM attribute_def`, 43},
@@ -145,8 +147,9 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		want  int64
 	}{
 		{`SELECT count(*) FROM card_type`, 13},
-		// 16 seed (template + 3 comm statuses from Gate 2) + 9 test_demo = 25.
-		{`SELECT count(*) FROM card`, 25},
+		// 18 seed (template + 3 comm statuses from Gate 2 + Gate 7's
+		// Comms screen + "Comms attached" filter) + 9 test_demo = 27.
+		{`SELECT count(*) FROM card`, 27},
 		{`SELECT count(*) FROM user_account`, 2},
 		{`SELECT count(*) FROM role`, 6},
 		{`SELECT count(*) FROM flow`, 2},

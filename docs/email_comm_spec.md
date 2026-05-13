@@ -70,6 +70,16 @@ After Gate 2 lands, the template carries the comm flow alongside the existing ta
 
 Because the comm flow lives on the template, `project.stamp` graph-copies it into every new project for free — no extra wiring beyond what Gate 10/11 already did for the task status flow.
 
+### Gate 7 seeded counts
+
+After Gate 7 lands, the template carries the Comms screen + its default filter card alongside the existing six screens. The install-seed counts shift once more:
+
+- `card`: 17 → 19 (+ 1 "Comms" screen with `slug='comms'`, `layout='list'`, `hotkey='c'`, `flow_ref` → the template's comm flow, `default_create_status` → the "Open" comm status, plus 1 "Comms attached" filter card under it with predicate `{op:'exists', attr:'comms'}`).
+
+The predicate uses `exists` per FLOW_AND_SCREEN_KERNEL V10 — the spec's earlier `is_set` proposal was dropped in favor of the existing `exists` / `not exists` operators. The screen's `default_filter` attribute is deliberately omitted (circular reference between the screen and its filter child; matches the existing demo.hcsv pattern), so the runtime resolves the default filter by looking up the screen's lone filter child.
+
+The Comms screen + filter come from the template seed, so `project.stamp` graph-copies them into every new project for free — flow_ref is remapped to the new project's comm flow, default_create_status to the new project's "Open" comm status, and the predicate's `comms` attribute name passes through unchanged.
+
 ### New table — `comm_secret`
 
 The only data we can't store in `attribute_value` is the IMAP/SMTP password — secret at rest, retrieved per-poll, never displayed once saved. Everything else (host, port, username, addresses) is plain `attribute_value` JSONb.
@@ -163,7 +173,7 @@ A new seeded screen card (per project, comes from the project template) with:
 - `hotkey='c'` (subject to per-project uniqueness; admins can rename)
 - `flow_ref` → the project's `comm` flow (the kernel handles the flow registration; comm's flow is per-project just like status's flow).
 - `phase_scope` toggle group with the comm flow's phases.
-- A filter card "Comms attached" with predicate `{op:'is_set', attr:'comms'}` (or whichever exact predicate-op spelling lands).
+- A filter card "Comms attached" with predicate `{op:'exists', attr:'comms'}` (V10 spelling; the earlier draft suggested `is_set` but that alias was dropped in favor of the existing `exists` / `not exists` operators).
 - `default_create_status` → triage status of the comm flow.
 
 The Comms screen's `<TaskRow>` variant renders comm-specific affordances: a "Reply" button that opens an inline composer (writes to `reply.post`), a list of recent replies inline, and the comm status (separate from task status).
@@ -226,7 +236,7 @@ Each gate is a single agent dispatch with build + tests passing before the next 
 4. **Reply authoring.** `reply.post` handler. Inserts `reply_body` row with `delivery_status='pending'`. Tests: reply created; appears in `comm.replies`.
 5. **SMTP sender goroutine.** Long-running worker per channel; polls for pending replies, sends, updates status. Tests: integration test against a mock SMTP server (use `smtpmock` or a small in-process listener).
 6. **IMAP poller goroutine.** One per channel; polls inbox, parses, threads, creates/appends. Tests: integration against a fake IMAP using `go-imap-server` or an in-process mock.
-7. **Comms screen seed.** Add the comms screen card to the project template (with the right slug, hotkey, flow_ref, predicate filter). Tests: stamping a new project produces a comms screen.
+7. **Comms screen seed.** Add the comms screen card to the project template (with the right slug, hotkey, flow_ref, predicate filter). Tests: stamping a new project produces a comms screen. *(Shipped — see "Gate 7 seeded counts" above; the template now carries the Comms screen + its "Comms attached" filter card.)*
 8. **Client UI.** TaskRow variant for comm rows on the Comms screen; reply composer; comm status indicator on Task detail. Tests: unit-level for the composer + integration for the reply flow.
 9. **Admin comm-log view.** New `/admin/comm-log` route with filters. Tests: filter combinations return expected rows.
 10. **Retention prune.** Daily job that prunes `comm_log` older than configured retention. Tests: prune leaves recent rows untouched.
