@@ -99,6 +99,7 @@
     groupStepsByFrom,
     lookupCardTitle,
     parseSortOrder,
+    valueCardCacheKey,
     valueCardTitleMap,
     validateFlow,
     validateFlowStep,
@@ -119,8 +120,10 @@
   let steps = $state<FlowStepRow[]>([]);
   let attributeDefs = $state<AttributeDefRow[]>([]);
   let roles = $state<RoleRow[]>([]);
-  /** Loaded lazily — keyed by card_type name. Holds the value-cards that may
-   *  appear as from/to on the selected flow (e.g. status / milestone cards). */
+  /** Loaded lazily — keyed by `valueCardCacheKey(projectId, card_type)` so
+   *  switching projects doesn't surface another project's value-cards in
+   *  the from/to pickers. Holds the value-cards that may appear as
+   *  from/to on the selected flow (e.g. status / milestone cards). */
   let valueCardsByType = $state<Record<string, CardWithAttrs[]>>({});
 
   let selectedProjectId = $state<ID | null>(projectScope.projectId);
@@ -204,10 +207,14 @@
     return t !== undefined && t !== '' ? t : null;
   });
 
-  /** Value-cards loaded for the current flow's bound card_type. */
+  /** Value-cards loaded for the current flow's bound card_type, scoped to
+   *  the flow's project (not the currently-picked project — flows are
+   *  project-scoped, so a flow's transitions only make sense against value
+   *  cards in the flow's own project). */
   const valueCards = $derived.by<CardWithAttrs[]>(() => {
     if (valueCardType === null) return [];
-    return valueCardsByType[valueCardType] ?? [];
+    if (selectedFlow === null) return [];
+    return valueCardsByType[valueCardCacheKey(selectedFlow.scope_card_id, valueCardType)] ?? [];
   });
 
   const valueTitles = $derived(valueCardTitleMap(valueCards));
@@ -360,7 +367,10 @@
         action: cardSelectWithAttributes.action,
         data,
       });
-      valueCardsByType = { ...valueCardsByType, [cardTypeName]: out.rows };
+      valueCardsByType = {
+        ...valueCardsByType,
+        [valueCardCacheKey(parent, cardTypeName)]: out.rows,
+      };
     } catch (e) {
       notify({ type: 'error', message: `Load values failed: ${errMsg(e)}` });
     }
@@ -389,10 +399,17 @@
 
   $effect(() => {
     const t = valueCardType;
-    const pid = selectedProjectId;
-    if (t === null || pid === null) return;
-    if (valueCardsByType[t] === undefined) {
-      void loadValueCards(t, pid);
+    const flow = selectedFlow;
+    // Load value cards scoped to the FLOW's project (flow.scope_card_id),
+    // not the user's currently-picked project. The flow's transitions can
+    // only reference value-cards in the flow's own project — that's the
+    // server-side invariant flow_step.set enforces, and the picker has to
+    // honor it so admins don't see (and try to pick) value-cards that the
+    // server would reject.
+    if (t === null || flow === null) return;
+    const key = valueCardCacheKey(flow.scope_card_id, t);
+    if (valueCardsByType[key] === undefined) {
+      void loadValueCards(t, flow.scope_card_id);
     }
   });
 

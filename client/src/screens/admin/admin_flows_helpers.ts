@@ -112,6 +112,17 @@ export function lookupCardTitle(
   return titles.get(id.toString()) ?? `#${id}`;
 }
 
+/**
+ * Compose the cache key for a `(project, card_type)` pair. The Admin · Flows
+ * screen keys its value-card cache by this pair so switching the project
+ * picker can't surface another project's value cards in the from/to
+ * transition pickers — flows are project-scoped and so are their
+ * value-cards.
+ */
+export function valueCardCacheKey(projectId: ID, cardTypeName: string): string {
+  return `${projectId.toString()}:${cardTypeName}`;
+}
+
 // ----------------------------------------------------------------------------
 // Role badge
 // ----------------------------------------------------------------------------

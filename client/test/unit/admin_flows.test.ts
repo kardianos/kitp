@@ -46,6 +46,7 @@ import {
   parseSortOrder,
   validateFlow,
   validateFlowStep,
+  valueCardCacheKey,
   valueCardTitleMap,
 } from '../../src/screens/admin/admin_flows_helpers.js';
 
@@ -180,6 +181,25 @@ describe('valueCardTitleMap', () => {
     expect(lookupCardTitle(m, 2n)).toBe('Doing');
     expect(lookupCardTitle(m, 3n)).toBe('#3');
     expect(lookupCardTitle(m, 99n)).toBe('#99');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* valueCardCacheKey — guards against the picker showing the wrong project's  */
+/* statuses after the user switches the project picker.                       */
+/* -------------------------------------------------------------------------- */
+
+describe('valueCardCacheKey', () => {
+  it('produces distinct keys per (project, card_type) pair', () => {
+    expect(valueCardCacheKey(28n, 'status')).toBe('28:status');
+    expect(valueCardCacheKey(10n, 'status')).toBe('10:status');
+    // different projects → different keys
+    expect(valueCardCacheKey(28n, 'status')).not.toBe(valueCardCacheKey(10n, 'status'));
+    // different card types under the same project → different keys
+    expect(valueCardCacheKey(28n, 'status')).not.toBe(valueCardCacheKey(28n, 'milestone'));
+  });
+  it('is stable for the same inputs', () => {
+    expect(valueCardCacheKey(28n, 'status')).toBe(valueCardCacheKey(28n, 'status'));
   });
 });
 
