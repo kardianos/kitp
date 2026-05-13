@@ -16,6 +16,8 @@
 //   ATTACHMENT_CHUNK_MAX_MB   — per-chunk cap on /api/v1/cas/chunk; default 8
 //   CAS_REAPER_INTERVAL_SEC   — reaper sweep cadence in seconds; default 3600
 //   CAS_REAPER_GRACE_SEC      — orphan grace period in seconds; default 3600
+//   KITP_COMM_SMTP_TICK_SEC   — SMTP sender poll cadence in seconds; default 10
+//   KITP_COMM_SMTP_DRY_RUN    — when "1", SMTP senders log instead of sending
 //
 // In production the server refuses to start if AUTH_MODE=off (N-SEC-5).
 package main
@@ -343,6 +345,22 @@ func runHTTP() error {
 	}
 	reaper.Start(ctx)
 
+	// SMTP senders. One goroutine per configured comm_channel card;
+	// each polls for pending reply_body rows and ships them via SMTP.
+	// Adding a new channel currently requires a kitpd restart — auto-
+	// detect is a follow-up gate (email_comm_spec.md §"SMTP sender").
+	// In dev / test environments without comm channels this returns
+	// an empty slice; the call is a no-op.
+	smtpTick := time.Duration(envInt("KITP_COMM_SMTP_TICK_SEC", 10)) * time.Second
+	smtpSenders, err := comm.StartSMTPSenderPool(ctx, pool, smtpTick, logger)
+	if err != nil {
+		return fmt.Errorf("smtp senders: %w", err)
+	}
+	if len(smtpSenders) > 0 {
+		log.Printf("started %d SMTP sender(s) (tick=%s, dry_run=%s)",
+			len(smtpSenders), smtpTick, envOr("KITP_COMM_SMTP_DRY_RUN", "0"))
+	}
+
 	idem := obs.NewIdempotencyStore(pgPool, logger)
 	idem.StartCleanup(ctx)
 
@@ -426,6 +444,9 @@ func runHTTP() error {
 	defer shutdownCancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
+	}
+	for _, sender := range smtpSenders {
+		sender.Stop()
 	}
 	return nil
 }
