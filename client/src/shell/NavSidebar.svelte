@@ -44,6 +44,7 @@
 
   const adminItems: Array<{ href: string; label: string }> = [
     { href: '/admin/users', label: 'Users' },
+    { href: '/admin/projects', label: 'Projects' },
     { href: '/admin/attributes', label: 'Attributes' },
     { href: '/admin/screens', label: 'Screens' },
     { href: '/admin/agents', label: 'Agents' },

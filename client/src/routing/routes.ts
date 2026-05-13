@@ -115,6 +115,13 @@ export const routes: Route[] = [
     scope: 'admin_users',
   },
   {
+    path: '/admin/projects',
+    component: () => import('../screens/admin/AdminProjectsScreen.svelte'),
+    guard: 'requireAdmin',
+    shell: true,
+    scope: 'admin_projects',
+  },
+  {
     path: '/admin/attributes',
     component: () => import('../screens/admin/AdminAttributesScreen.svelte'),
     guard: 'requireAdmin',

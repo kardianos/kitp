@@ -19,4 +19,5 @@ export type ShortcutScope =
   | 'admin_users'
   | 'admin_attributes'
   | 'admin_screens'
-  | 'admin_agents';
+  | 'admin_agents'
+  | 'admin_projects';

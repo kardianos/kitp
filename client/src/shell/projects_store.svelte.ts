@@ -19,6 +19,7 @@ import type {
   CardWithAttrs,
   ID,
 } from '../reg/types';
+import { TEMPLATE_EXCLUSION_LEAF } from '../screens/projects_helpers';
 import { projectScope } from './project_scope.svelte';
 
 class ProjectsStore {
@@ -41,13 +42,23 @@ class ProjectsStore {
     this.loading = true;
     this.inFlight = (async () => {
       try {
+        // User-facing project caches (ProjectTitlePicker, NavSidebar
+        // breadcrumb) ship the same `is_template != true` exclusion as
+        // ProjectsScreen — Gate 12 of FLOW_AND_SCREEN_KERNEL. Admin
+        // surfaces that need the full list (AdminProjectsScreen, the
+        // admin user-list project resolver) fetch independently with no
+        // predicate. See `screens/projects_helpers.ts`.
         const out = await dispatcher.request<
           CardSelectWithAttributesInput,
           CardSelectWithAttributesOutput
         >({
           endpoint: cardSelectWithAttributes.endpoint,
           action: cardSelectWithAttributes.action,
-          data: { cardTypeName: 'project', limit: 200 },
+          data: {
+            cardTypeName: 'project',
+            limit: 200,
+            where: [TEMPLATE_EXCLUSION_LEAF],
+          },
         });
         this.projects = out.rows;
         // Drop a persisted scope that no longer resolves — same stale-id

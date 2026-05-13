@@ -19,7 +19,11 @@
 
 import type { Predicate } from '../filter/predicate.js';
 import { isFlatAndOfLeaves, flattenLeaves } from '../filter/predicate.js';
-import type { CardWithAttrs } from '../reg/types.js';
+import type {
+  CardSelectWithAttributesInput,
+  CardWherePredicate,
+  CardWithAttrs,
+} from '../reg/types.js';
 
 /** Lower-case substring match on `attributes.title` (or fallback string). */
 function projectTitle(p: CardWithAttrs): string {
@@ -130,3 +134,33 @@ export function buildInitialBatch(): InitialBatchSpec[] {
 
 /** Number of sub-requests the screen issues on mount. Tested explicitly. */
 export const initialBatchCount = 3;
+
+/**
+ * Predicate leaf that user-facing project lists ship to exclude template
+ * projects (Gate 12 / V27 of FLOW_AND_SCREEN_KERNEL.md). The kernel keeps
+ * `card.select_with_attributes` schema-uniform, so the exclusion is
+ * client-side by convention — admin surfaces opt back in by omitting it.
+ *
+ * Edge case: a project that has never had `is_template` written carries no
+ * `attribute_value` row at all. Server-side, `!=` compiles to a `NOT
+ * EXISTS` sub-query that passes when no matching row exists, so an unset
+ * row passes the filter. See `server/internal/dom/card/where.go`.
+ */
+export const TEMPLATE_EXCLUSION_LEAF: CardWherePredicate = {
+  attr: 'is_template',
+  op: '!=',
+  value: true,
+};
+
+/**
+ * Build the `card.select_with_attributes` input shipped by the user-facing
+ * projects list (`ProjectsScreen`). Centralised here so the projects
+ * screen, its unit tests, and any other user-facing project picker can
+ * share the same exclusion leaf without re-typing it.
+ */
+export function buildUserProjectListInput(): CardSelectWithAttributesInput {
+  return {
+    cardTypeName: 'project',
+    where: [TEMPLATE_EXCLUSION_LEAF],
+  };
+}

@@ -68,6 +68,8 @@ import type {
   EdgeDeleteOutput,
   EdgeInsertInput,
   EdgeInsertOutput,
+  ProjectStampInput,
+  ProjectStampOutput,
   TagApplyInput,
   TagApplyOutput,
   TagRemoveInput,
@@ -884,6 +886,34 @@ const edgeDelete: HandlerSpec<EdgeDeleteInput, EdgeDeleteOutput> = {
 };
 
 // ============================================================================
+// project.stamp — graph-copy a template project (Gate 10) into a fresh
+// project. The admin "Stamp from this template" affordance in Gate 12
+// dispatches this; the user-facing /projects screen never invokes it
+// directly. Server-side handler lives at
+// server/internal/dom/projectstamp/projectstamp.go.
+// ============================================================================
+
+const projectStamp: HandlerSpec<ProjectStampInput, ProjectStampOutput> = {
+  endpoint: 'project',
+  action: 'stamp',
+  encode: (i) => ({
+    template_project_id: i.templateProjectId,
+    name: i.name,
+  }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    const out: ProjectStampOutput = {
+      new_project_id: asId(j.new_project_id),
+    };
+    const warningsRaw = j.warnings;
+    if (Array.isArray(warningsRaw) && warningsRaw.length > 0) {
+      out.warnings = warningsRaw.map((w) => (typeof w === 'string' ? w : ''));
+    }
+    return out;
+  },
+};
+
+// ============================================================================
 // Re-exports for use by tests / dispatch / screens
 // ============================================================================
 
@@ -932,6 +962,7 @@ export {
   userCardSortSet,
   edgeInsert,
   edgeDelete,
+  projectStamp,
 };
 
 // ============================================================================
@@ -968,5 +999,6 @@ export function registerBuiltInHandlers(r: HandlerRegistry): void {
   r.register(userCardSortSet);
   r.register(edgeInsert);
   r.register(edgeDelete);
+  r.register(projectStamp);
   registerAdminHandlers(r);
 }

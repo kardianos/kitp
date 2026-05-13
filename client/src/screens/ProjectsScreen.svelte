@@ -49,7 +49,7 @@
   import Spinner from '../ui/Spinner.svelte';
   import ProjectPropertiesPanel from '../ui/widgets/ProjectPropertiesPanel.svelte';
   import { cx } from '../util/class_names';
-  import { searchAndFilter, move } from './projects_helpers';
+  import { buildUserProjectListInput, searchAndFilter, move } from './projects_helpers';
 
   setActiveScope('projects');
 
@@ -107,7 +107,14 @@
 
   function refresh(): void {
     loading = true;
-    loadProjects({ cardTypeName: 'project' });
+    // Hide template projects from the user-facing list. The kernel keeps
+    // `card.select_with_attributes` schema-uniform (no per-card-type
+    // exclusion); the convention is client-side — every user-facing
+    // surface ships the `is_template != true` leaf. A project that has
+    // never had `is_template` written carries no attribute_value row at
+    // all; the server's `!=` compiles to NOT EXISTS, so unset rows pass
+    // the filter (see server/internal/dom/card/where.go).
+    loadProjects(buildUserProjectListInput());
     loadUsers({});
     // `AttributeSchemaCache.load()` issues `attribute_def.select` on the
     // same tick (and short-circuits on subsequent screen mounts). It

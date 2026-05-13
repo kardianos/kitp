@@ -52,6 +52,7 @@ const ALL_REGISTERED_KEYS: ReadonlyArray<readonly [string, string]> = [
   ['user_card_sort', 'set'],
   ['edge', 'insert'],
   ['edge', 'delete'],
+  ['project', 'stamp'],
   // admin
   ['user', 'list_with_roles'],
   ['role', 'list'],

@@ -20,12 +20,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { andOf, eq } from '../../src/filter/predicate.js';
+import { cardSelectWithAttributes } from '../../src/reg/handlers.js';
 import type { CardWithAttrs } from '../../src/reg/types.js';
 import {
   buildInitialBatch,
+  buildUserProjectListInput,
   initialBatchCount,
   move,
   searchAndFilter,
+  TEMPLATE_EXCLUSION_LEAF,
 } from '../../src/screens/projects_helpers.js';
 
 /* -------------------------------------------------------------------------- */
@@ -168,5 +171,43 @@ describe('buildInitialBatch', () => {
       'card.select_with_attributes',
       'user.select',
     ]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Template exclusion (Gate 12)                                               */
+/* -------------------------------------------------------------------------- */
+
+describe('TEMPLATE_EXCLUSION_LEAF', () => {
+  it('targets the is_template attribute with the != true predicate', () => {
+    expect(TEMPLATE_EXCLUSION_LEAF).toEqual({
+      attr: 'is_template',
+      op: '!=',
+      value: true,
+    });
+  });
+});
+
+describe('buildUserProjectListInput', () => {
+  it('passes cardTypeName=project and includes the template-exclusion leaf', () => {
+    const input = buildUserProjectListInput();
+    expect(input.cardTypeName).toBe('project');
+    expect(input.where).toEqual([TEMPLATE_EXCLUSION_LEAF]);
+    // No `tree` field — we use the legacy `where[]` shape since it is a
+    // single leaf and avoids paying the tree compiler at runtime.
+    expect(input.tree).toBeUndefined();
+  });
+
+  it('encodes through cardSelectWithAttributes to the documented wire shape', () => {
+    // The encoded payload is what hits the server. Asserting it nails
+    // the wire contract so a future encoder rewrite cannot silently
+    // drop the exclusion.
+    const encoded = cardSelectWithAttributes.encode(
+      buildUserProjectListInput(),
+    ) as Record<string, unknown>;
+    expect(encoded).toEqual({
+      card_type_name: 'project',
+      where: [{ attr: 'is_template', op: '!=', value: true }],
+    });
   });
 });

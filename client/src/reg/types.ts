@@ -578,6 +578,25 @@ export interface TagRemoveOutput {
 
 
 // ============================================================================
+// project.stamp — Gate 10/12 of FLOW_AND_SCREEN_KERNEL. Given a template
+// project id, the server graph-copies the template's value cards / flow /
+// flow_steps / screens / filters with ID remapping and emits a fresh
+// project rooted at the supplied `name`. Authz: manager / admin (V26).
+// ============================================================================
+
+export interface ProjectStampInput {
+  templateProjectId: ID;
+  name: string;
+}
+
+export interface ProjectStampOutput {
+  /** Id of the freshly stamped project card. */
+  new_project_id: ID;
+  /** Non-fatal advisories from the server (e.g. "template_empty"). */
+  warnings?: string[];
+}
+
+// ============================================================================
 // user_card_sort.set
 // ============================================================================
 
