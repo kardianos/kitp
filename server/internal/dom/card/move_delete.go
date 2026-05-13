@@ -102,6 +102,15 @@ func cardTypeFromMoveInput(ctx context.Context, pool reg.ValidationPool, raw any
 }
 
 // runDelete is an arrayPath writer. // arrayPath
+//
+// V8 (FLOW_AND_SCREEN_KERNEL.md): before issuing the soft-delete update,
+// every requested card is checked against flow_step references. If any
+// flow_step row names the card as from_card_id or to_card_id, the delete
+// is rejected with code `value_referenced_by_flow` and a structured
+// `blocked_by` detail listing each offending step. The admin's recovery
+// path is to delete the flow_step rows individually (in AdminFlows) and
+// retry the card delete; no silent cascade so authored transitions are
+// never lost without a deliberate action.
 func runDelete(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 		actorID := auth.ActorOrSystem(ctx)
@@ -113,6 +122,42 @@ func runDelete(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 					Message: "card.delete: card_id is required"}
 			}
 			ids[i] = in.CardID
+		}
+
+		// V8: flow_step reference check. One query covers the whole batch;
+		// for each blocked card we surface the first input index that
+		// references it so the caller can map the error back to a specific
+		// sub-request.
+		for i, id := range ids {
+			blockers, err := flowStepBlockers(ctx, tx, id)
+			if err != nil {
+				return nil, fmt.Errorf("card.delete: blocker check: %w", err)
+			}
+			if len(blockers) > 0 {
+				// Resolve the card's title for a friendlier message.
+				var title string
+				row := tx.QueryRow(ctx, `
+					SELECT COALESCE(av.value #>> '{}', '')
+					FROM attribute_value av
+					JOIN attribute_def ad ON ad.id = av.attribute_def_id
+					WHERE av.card_id = $1 AND ad.name = 'title'
+				`, id)
+				_ = row.Scan(&title)
+				if title == "" {
+					title = fmt.Sprintf("card %d", id)
+				}
+				return nil, &reg.HandlerError{
+					InputIndex: i,
+					Code:       "value_referenced_by_flow",
+					Message: fmt.Sprintf(
+						"Cannot delete %q: %d flow_step row(s) reference it.",
+						title, len(blockers)),
+					Detail: map[string]any{
+						"card_id":    id,
+						"blocked_by": blockers,
+					},
+				}
+			}
 		}
 		// One CTE: UPDATE deleted_at + INSERT activity 'card_delete'.
 		const q = `
@@ -401,4 +446,63 @@ func runMove(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]a
 		}
 		return outs, nil
 	}
+}
+
+// FlowStepBlocker is one flow_step row that prevents a value-card delete
+// (V8). Carries enough metadata for the admin UI to render an actionable
+// "delete these steps first" callout: which flow, which from/to label
+// each step joins.
+type FlowStepBlocker struct {
+	FlowStepID int64  `json:"flow_step_id,string"`
+	FlowID     int64  `json:"flow_id,string"`
+	FlowName   string `json:"flow_name"`
+	Role       string `json:"role"`            // "from" or "to" — which side of the step the deleted card sits on
+	FromLabel  string `json:"from_label"`
+	ToLabel    string `json:"to_label"`
+	StepLabel  string `json:"step_label"`
+}
+
+// flowStepBlockers returns every flow_step row whose from_card_id or
+// to_card_id is `cardID`. Empty slice means the card is free to delete.
+// Joined to the flow row for the flow name and to attribute_value rows
+// for the from/to titles so the UI doesn't need a second round-trip.
+func flowStepBlockers(ctx context.Context, tx pgx.Tx, cardID int64) ([]FlowStepBlocker, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT
+			fs.id,
+			fs.flow_id,
+			f.name,
+			CASE WHEN fs.from_card_id = $1 THEN 'from' ELSE 'to' END AS role,
+			COALESCE(av_from.value #>> '{}', '') AS from_label,
+			COALESCE(av_to.value   #>> '{}', '') AS to_label,
+			fs.label
+		FROM flow_step fs
+		JOIN flow f ON f.id = fs.flow_id
+		LEFT JOIN attribute_def ad_title ON ad_title.name = 'title'
+		LEFT JOIN attribute_value av_from
+		  ON av_from.card_id          = fs.from_card_id
+		 AND av_from.attribute_def_id = ad_title.id
+		LEFT JOIN attribute_value av_to
+		  ON av_to.card_id          = fs.to_card_id
+		 AND av_to.attribute_def_id = ad_title.id
+		WHERE fs.from_card_id = $1 OR fs.to_card_id = $1
+		ORDER BY fs.id
+	`, cardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FlowStepBlocker
+	for rows.Next() {
+		var b FlowStepBlocker
+		if err := rows.Scan(&b.FlowStepID, &b.FlowID, &b.FlowName,
+			&b.Role, &b.FromLabel, &b.ToLabel, &b.StepLabel); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

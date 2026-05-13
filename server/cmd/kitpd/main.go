@@ -57,6 +57,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/process"
 	"github.com/kitp/kitp/server/internal/dom/projectexport"
 	"github.com/kitp/kitp/server/internal/dom/projectimport"
+	"github.com/kitp/kitp/server/internal/dom/projectstamp"
 	domrole "github.com/kitp/kitp/server/internal/dom/role"
 	"github.com/kitp/kitp/server/internal/dom/rolemapping"
 	"github.com/kitp/kitp/server/internal/dom/tag"
@@ -115,6 +116,7 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 	domconfig.Register()
 	file.Register(pool)
 	flow.Register(pool)
+	projectstamp.Register(pool)
 	tag.Register(pool)
 	process.Register(pool)
 	proc.Register(pool)

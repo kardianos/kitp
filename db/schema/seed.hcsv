@@ -77,6 +77,7 @@ predicate,             text,        true, null
 default_filter,        card_ref,    true, $card_type.filter
 column_attr,           text,        true, null
 lane_attr,             text,        true, null
+is_template,           bool,        true, null
 
 
 ## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"
@@ -96,6 +97,7 @@ $card_type.status,    $attribute_def.sort_order,        false, 1
 $card_type.tag,       $attribute_def.path,              true,  2
 $card_type.tag,       $attribute_def.root_exclusive_at, false, 3
 $card_type.project,   $attribute_def.tags,              false, 4
+$card_type.project,   $attribute_def.is_template,       false, 6
 $card_type.task,      $attribute_def.tags,              false, 4
 $card_type.milestone, $attribute_def.tags,              false, 4
 $card_type.component, $attribute_def.tags,              false, 4
@@ -186,14 +188,14 @@ role_id, card_type_id, process_id
 $role.worker, $card_type.task, `[$process."card.update", $process."comment.post", $process."user_card_sort.set"]`
 
 
-## table role_grant | doc="manager grants: worker grants on task + create/update/delete on project/milestone/component/tag/screen/filter." | on_conflict="role_id, card_type_id, process_id"
+## table role_grant | doc="manager grants: worker grants on task + create/update/delete on project/milestone/component/tag/screen/filter/status." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
 $role.manager, $card_type.task, `[$process."card.update", $process."comment.post", $process."user_card_sort.set"]`
-$role.manager, `[$card_type.project, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.screen, $card_type.filter]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
+$role.manager, `[$card_type.project, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.screen, $card_type.filter, $card_type.status]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
 
 
-## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type." | on_conflict="role_id, card_type_id, process_id"
+## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references)." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
-$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
+$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
