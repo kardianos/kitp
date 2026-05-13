@@ -685,3 +685,89 @@ func TestStampPermissionWorker(t *testing.T) {
 		t.Errorf("error = %+v, want code=unauthorized", sub.Error)
 	}
 }
+
+// TestStampFromInstallSeedTemplate exercises Gate 11: the install seed
+// creates a 'Standard Project Template' project (is_template=true)
+// carrying 6 status value-cards, 6 screens, 1 flow, and 12 flow_steps.
+// Stamping from that template should produce a fresh project with the
+// same shape (independent ids).
+func TestStampFromInstallSeedTemplate(t *testing.T) {
+	f := setup(t, "kitp_test_projectstamp_install_seed")
+	// Don't seedTemplate — use the seeded one.
+
+	var seededTemplateID int64
+	if err := f.sp.P.QueryRow(f.ctx, `
+		SELECT c.id FROM card c
+		JOIN attribute_value av ON av.card_id = c.id
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE ad.name = 'is_template' AND av.value = to_jsonb(TRUE)
+		LIMIT 1
+	`).Scan(&seededTemplateID); err != nil {
+		t.Fatalf("lookup seeded template: %v", err)
+	}
+	if seededTemplateID == 0 {
+		t.Fatal("no seeded template project found — Gate 11 should have created one")
+	}
+
+	out := stamp(t, f, seededTemplateID, "Stamped from install seed")
+	if out.NewProjectID == 0 {
+		t.Fatal("expected a new project id; got 0")
+	}
+
+	// Descendant counts under the new project. Six statuses, six
+	// screens; no milestones / components / tags / filters in the
+	// install-seed template.
+	type want struct {
+		typ string
+		n   int
+	}
+	for _, w := range []want{{"status", 6}, {"screen", 6}, {"milestone", 0}, {"filter", 0}} {
+		var got int
+		if err := f.sp.P.QueryRow(f.ctx, `
+			WITH RECURSIVE walk AS (
+				SELECT id, card_type_id, parent_card_id FROM card WHERE parent_card_id = $1 AND deleted_at IS NULL
+				UNION ALL
+				SELECT c.id, c.card_type_id, c.parent_card_id
+				FROM card c JOIN walk w ON w.id = c.parent_card_id
+				WHERE c.deleted_at IS NULL
+			)
+			SELECT count(*) FROM walk w JOIN card_type ct ON ct.id = w.card_type_id WHERE ct.name = $2
+		`, out.NewProjectID, w.typ).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", w.typ, err)
+		}
+		if got != w.n {
+			t.Errorf("new project %s count = %d, want %d", w.typ, got, w.n)
+		}
+	}
+
+	// Flow + flow_step counts. Exactly one flow scoped to the new
+	// project, with 12 transitions.
+	var newFlowID int64
+	if err := f.sp.P.QueryRow(f.ctx, `
+		SELECT id FROM flow WHERE scope_card_id = $1
+	`, out.NewProjectID).Scan(&newFlowID); err != nil {
+		t.Fatalf("new flow lookup: %v", err)
+	}
+	var stepN int
+	if err := f.sp.P.QueryRow(f.ctx,
+		`SELECT count(*) FROM flow_step WHERE flow_id = $1`, newFlowID).Scan(&stepN); err != nil {
+		t.Fatalf("flow_step count: %v", err)
+	}
+	if stepN != 12 {
+		t.Errorf("new flow_step count = %d, want 12", stepN)
+	}
+
+	// The new project is NOT marked is_template (the attribute simply
+	// isn't copied, so the default false applies via attribute absence).
+	var n int
+	if err := f.sp.P.QueryRow(f.ctx, `
+		SELECT count(*) FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE av.card_id = $1 AND ad.name = 'is_template'
+	`, out.NewProjectID).Scan(&n); err != nil {
+		t.Fatalf("is_template count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("new project has is_template attribute rows (got %d); should not be copied", n)
+	}
+}

@@ -130,10 +130,15 @@ func TestBacktickCells(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 	rows := doc.Root.Children[0].Children[0].Rows
+	// parseRow prefixes backtick-quoted cells with `backtickPrefix` so
+	// downstream parsing knows to skip array / lookup / alias detection
+	// on their contents. The marker is part of the contract — the cell
+	// loader strips it back off when emitting SQL.
+	bt := backtickPrefix
 	want := [][]string{
-		{"plain", `{"foo":"bar","n":1}`, "end"},
-		{"x", "with`literal", "y"},
-		{"u", `{"k":"v with, comma"}`, "v"},
+		{"plain", bt + `{"foo":"bar","n":1}`, "end"},
+		{"x", bt + "with`literal", "y"},
+		{"u", bt + `{"k":"v with, comma"}`, "v"},
 	}
 	if !reflect.DeepEqual(rows, want) {
 		t.Fatalf("rows = %#v\nwant %#v", rows, want)
@@ -160,11 +165,12 @@ func TestBacktickMultilineCell(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 rows, got %d: %#v", len(rows), rows)
 	}
-	wantMulti := "{\n  \"attr\": \"status\",\n  \"op\": \"has_phase\",\n  \"values\": [\"active\"]\n}"
+	bt := backtickPrefix
+	wantMulti := bt + "{\n  \"attr\": \"status\",\n  \"op\": \"has_phase\",\n  \"values\": [\"active\"]\n}"
 	if rows[0][1] != wantMulti {
 		t.Fatalf("multiline cell = %q\nwant %q", rows[0][1], wantMulti)
 	}
-	if rows[1][1] != `{"trivial":true}` {
+	if rows[1][1] != bt+`{"trivial":true}` {
 		t.Fatalf("second-row cell = %q", rows[1][1])
 	}
 }

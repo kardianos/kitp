@@ -11,8 +11,11 @@
 //     SQL string literals when the target column is text/jsonb; bare
 //     numbers and bools render directly.
 //   - "..." double-quoted: always a SQL string literal.
-//   - `...` backtick: contents verbatim. Emitted as `'...'::jsonb`
-//     for jsonb columns, `'...'` for text columns.
+//   - `...` backtick: contents verbatim — array / lookup / alias /
+//     parent detection is suppressed. Emitted as `'...'` for text
+//     columns and `to_jsonb('...'::text)` for attribute_value cells
+//     (so embedded JSON survives the round trip as a JSON-encoded
+//     string, the shape the client and predicate compiler consume).
 //   - parent: id of the row owning this row's section via heading
 //     nesting (depth-3 child of a depth-2 table card section).
 //   - @<alias>: id of a previously-aliased row (alias= modifier on the
@@ -33,9 +36,12 @@
 // per-attribute (activity, attribute_value) CTE pairs that thread
 // last_activity_id from the just-inserted activity row.
 //
-// The demo guard clause (skip if Default Project exists) is emitted as
-// a single PL/pgSQL DO block wrapping the demo SQL — keeping the
-// guard simple beats inventing more loader machinery for one fixture.
+// The demo guard clause (skip if any non-template project exists) is
+// emitted as a single PL/pgSQL DO block wrapping the demo SQL — keeping
+// the guard simple beats inventing more loader machinery for one
+// fixture. The "non-template" qualifier exists so the install seed's
+// own template project (Gate 11; flagged is_template=true) does not
+// trip the guard before the demo runs on first apply.
 package hcsv
 
 import (
@@ -168,7 +174,7 @@ func BuildSeed(doc *Document, schema *Schema, opts SeedOptions) (string, error) 
 		schema:          schema,
 		tables:          indexTables(schema),
 		aliases:         map[string]*seedRow{},
-		cardRefArrayAttr: collectCardRefArrayAttrs(root),
+		attrValueType:    collectAttributeValueTypes(root),
 	}
 	if err := l.walk(root, nil); err != nil {
 		return "", err
@@ -180,7 +186,12 @@ func BuildSeed(doc *Document, schema *Schema, opts SeedOptions) (string, error) 
 	if opts.GuardDemo {
 		var b strings.Builder
 		b.WriteString("DO $demo$ BEGIN\n")
-		b.WriteString("IF (SELECT count(*) FROM card WHERE card_type_id=(SELECT id FROM card_type WHERE name='project')) > 0 THEN RETURN; END IF;\n")
+		// Skip the demo when a non-template project already exists. The
+		// install seed (Gate 11) creates a 'Standard Project Template'
+		// project flagged is_template=true; the guard ignores that one so
+		// the demo / test_demo loads on first apply but is a no-op on
+		// re-apply where the demo project itself is present.
+		b.WriteString("IF EXISTS (SELECT 1 FROM card c WHERE c.card_type_id=(SELECT id FROM card_type WHERE name='project') AND NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE av.card_id=c.id AND ad.name='is_template' AND av.value=to_jsonb(TRUE))) THEN RETURN; END IF;\n")
 		// setval() emitted by reset_sequence is a plain SELECT — wrap
 		// as PERFORM so PL/pgSQL accepts it.
 		body = strings.ReplaceAll(body, "SELECT setval(", "PERFORM setval(")
@@ -271,28 +282,32 @@ type seedLoader struct {
 	// sectionStack is the chain of currently-open depth-2 sections so
 	// depth-3+ sections find their `parent` row.
 	sectionStack []*seedSection
-	// cardRefArrayAttr is the set of attribute_def names whose
-	// value_type is card_ref[], pre-scanned from the parsed Doc so the
-	// loader can distinguish "cross-product over a list" (the default
-	// for `[…]` cells) from "JSON array value" (for card_ref[] cells)
-	// without a hardcoded switch on the attribute name. See V18 /
-	// FLOW_AND_SCREEN_KERNEL.md gate-5 cross-cutting cleanup.
-	cardRefArrayAttr map[string]bool
+	// attrValueType maps attribute_def name → value_type, pre-scanned
+	// from the parsed Doc so the loader can distinguish "cross-product
+	// over a list" (the default for `[…]` cells), "JSON array value"
+	// (for card_ref[] cells), and "verbatim JSON literal in backticks"
+	// (for any other non-card_ref attribute) without a hardcoded
+	// switch on the attribute name. See V18 / FLOW_AND_SCREEN_KERNEL.md
+	// gate-5 cross-cutting cleanup.
+	attrValueType map[string]string
 }
 
-// collectCardRefArrayAttrs walks the parsed doc once before the loader
-// starts emitting rows and collects every attribute_def row whose
-// value_type column is "card_ref[]". The result is a name-set the
-// loader consults when parsing card-table cells: cells targeted at one
-// of these attributes get JSON-array parsing rather than the default
-// cross-product expansion.
+// collectAttributeValueTypes walks the parsed doc once before the loader
+// starts emitting rows and indexes every attribute_def row by name →
+// value_type. The loader consults the map when parsing card-table cells
+// to decide between:
+//   - card_ref[] → the `[…]` cell is a JSON-array literal (no cross-
+//     product expansion);
+//   - anything else (text / number / bool / card_ref) → backtick-quoted
+//     cells stay verbatim so embedded JSON arrays / objects do not
+//     trigger array expansion through `[`. Non-backtick cells fall
+//     through to the normal grammar.
 //
-// Schema-driven so adding a new card_ref[] attribute (the spec calls
-// out future cases) doesn't require touching this file. The hardcoded
-// `tags` switch this replaced was the last knob the loader carried
-// about specific attribute names.
-func collectCardRefArrayAttrs(root *Section) map[string]bool {
-	out := map[string]bool{}
+// Schema-driven so adding a new attribute / value_type doesn't require
+// touching this file. The hardcoded `tags` switch this replaced was the
+// last knob the loader carried about specific attribute names.
+func collectAttributeValueTypes(root *Section) map[string]string {
+	out := map[string]string{}
 	var visit func(*Section)
 	visit = func(sec *Section) {
 		if sec == nil {
@@ -323,9 +338,7 @@ func collectCardRefArrayAttrs(root *Section) map[string]bool {
 					if nameCol >= len(row) || typeCol >= len(row) {
 						continue
 					}
-					if strings.TrimSpace(row[typeCol]) == "card_ref[]" {
-						out[strings.TrimSpace(row[nameCol])] = true
-					}
+					out[strings.TrimSpace(row[nameCol])] = strings.TrimSpace(row[typeCol])
 				}
 			}
 		}
@@ -457,7 +470,7 @@ func (l *seedLoader) readTableSection(sec *Section, parent *seedRow) (*seedSecti
 			if i < len(row) {
 				raw = row[i]
 			}
-			pv, err := parseCell(raw, l.isCardRefArrayAttr(tbl, h))
+			pv, err := parseCell(raw, l.isCardRefArrayAttr(tbl, h), l.verbatimBacktickFor(tbl, h))
 			if err != nil {
 				return nil, fmt.Errorf("hcsv: line %d: column %q: %w", rowsSec.Line, h, err)
 			}
@@ -508,13 +521,55 @@ func (l *seedLoader) readTableSection(sec *Section, parent *seedRow) (*seedSecti
 // card-attribute (for card-table only) whose attribute_def has value
 // type card_ref[]. The answer is data-driven: the loader pre-scans
 // every attribute_def row in the doc at construction time and stashes
-// the name-set in `l.cardRefArrayAttr`. No hardcoded list of attribute
-// names anywhere in the loader.
+// each name's value_type in `l.attrValueType`. No hardcoded list of
+// attribute names anywhere in the loader.
 func (l *seedLoader) isCardRefArrayAttr(t *Table, name string) bool {
 	if t.Name != "card" {
 		return false
 	}
-	return l.cardRefArrayAttr[name]
+	return l.attrValueType[name] == "card_ref[]"
+}
+
+// verbatimBacktickFor reports whether a backtick-quoted cell on column
+// `name` of table `t` should be carried through as ckBacktick verbatim
+// (no array / lookup interpretation). Two cases qualify:
+//
+//   - A card attribute whose value_type is anything OTHER than card_ref
+//     / card_ref[]. These attributes (`text`, `number`, `bool`) often
+//     hold JSON literals (predicate trees, toggle-group specs); leading
+//     `[` in a backtick cell must not trigger cross-product expansion.
+//   - A jsonb column on a non-card table. Backtick-quoted JSON values
+//     stored directly in a jsonb column similarly shouldn't be parsed
+//     as cross-product lists.
+//
+// Backtick-wrapped lists of $-lookups used to drive role_grant cross-
+// product expansion (bigint columns, no value_type) are NOT covered —
+// those land here with `false` and the loader strips the marker, leaving
+// the normal cell grammar to interpret the `[…]` as ckArray.
+func (l *seedLoader) verbatimBacktickFor(t *Table, name string) bool {
+	if t.Name == "card" {
+		vt, ok := l.attrValueType[name]
+		if !ok {
+			return false
+		}
+		switch vt {
+		case "card_ref", "card_ref[]":
+			return false
+		}
+		return true
+	}
+	if t != nil {
+		for _, c := range t.Columns {
+			if c.Name == name {
+				ct := strings.ToLower(c.Type)
+				if strings.HasPrefix(ct, "jsonb") {
+					return true
+				}
+				return false
+			}
+		}
+	}
+	return false
 }
 
 // isStructuralCardColumn returns true when `name` is a physical
@@ -553,7 +608,27 @@ func isStructuralCardColumn(schema *Schema, name string) bool {
 // parseCell decodes one CSV-decoded raw cell into a cellValue. When
 // the column targets a card_ref[] attribute, `[…]` is parsed as a
 // single JSON-array value rather than cross-product expansion.
-func parseCell(raw string, isCardRefArray bool) (cellValue, error) {
+//
+// `verbatimBacktick` (set by callers for jsonb columns and non-card_ref
+// card-attribute columns) tells the parser that backtick-quoted content
+// should be carried through as ckBacktick — leading `[` does NOT trigger
+// cross-product expansion. The other use of backtick — wrapping a
+// cross-product list of $-lookups for an integer column, e.g. role_grant
+// rows — is preserved by leaving `verbatimBacktick=false` for those
+// columns: parseCell strips the marker and the `[…]` content is parsed
+// normally as ckArray.
+func parseCell(raw string, isCardRefArray, verbatimBacktick bool) (cellValue, error) {
+	if strings.HasPrefix(raw, backtickPrefix) {
+		inner := raw[len(backtickPrefix):]
+		if verbatimBacktick {
+			return cellValue{kind: ckBacktick, raw: raw, text: inner}, nil
+		}
+		// Strip the marker and let the rest of the cell-grammar (array /
+		// $-lookup / @-alias / parent / null / bare) own the
+		// interpretation. This is how the role_grant cross-product
+		// expansion has worked since the loader landed.
+		raw = inner
+	}
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return cellValue{kind: ckBare, raw: "", text: ""}, nil
@@ -579,7 +654,7 @@ func parseCell(raw string, isCardRefArray bool) (cellValue, error) {
 		}
 		arr := make([]cellValue, 0, len(parts))
 		for _, p := range parts {
-			elt, err := parseCell(p, false) // elements don't recurse into card_ref[] specialcase
+			elt, err := parseCell(p, false, false) // elements don't recurse into special cases
 			if err != nil {
 				return cellValue{}, err
 			}
@@ -1035,6 +1110,14 @@ func (l *seedLoader) rowIDExpr(r *seedRow) string {
 // in the live schema) comes from the card table's meta block —
 // schema.hcsv is the single source of truth on which attribute names
 // cards by.
+//
+// When the row has a known parent (from heading nesting or `under=`),
+// the subquery also constrains on `parent_card_id` — necessary now that
+// the install seed and demo / test_demo can both define cards with the
+// same title (e.g., "Inbox" exists on both the template and Default
+// Project). Without the parent constraint a downstream `@sc_inbox`
+// reference would resolve via `LIMIT 1` to whichever screen happened to
+// land first in the result set.
 func (l *seedLoader) cardLookupByNameAttr(r *seedRow) string {
 	nameAttr := l.cardNameAttribute()
 	if nameAttr == "" {
@@ -1050,15 +1133,20 @@ func (l *seedLoader) cardLookupByNameAttr(r *seedRow) string {
 	// Constrain by card_type too if known.
 	ctCell, _ := r.cells["card_type_id"]
 	njson := fmt.Sprintf("to_jsonb(%s::text)", sqlString(nameCell.text))
+	conds := []string{
+		fmt.Sprintf("ad.name=%s", sqlString(nameAttr)),
+		fmt.Sprintf("av.value=%s", njson),
+	}
 	if ctCell.kind == ckLookup {
 		ctSel := fmt.Sprintf("(SELECT id FROM %s WHERE name=%s)", ctCell.lookupTable, sqlString(ctCell.lookupName))
-		return fmt.Sprintf(
-			"(SELECT av.card_id FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id JOIN card c ON c.id=av.card_id WHERE ad.name=%s AND av.value=%s AND c.card_type_id=%s LIMIT 1)",
-			sqlString(nameAttr), njson, ctSel)
+		conds = append(conds, fmt.Sprintf("c.card_type_id=%s", ctSel))
+	}
+	if r.parent != nil {
+		conds = append(conds, fmt.Sprintf("c.parent_card_id=%s", l.cardLookupByNameAttr(r.parent)))
 	}
 	return fmt.Sprintf(
-		"(SELECT av.card_id FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id WHERE ad.name=%s AND av.value=%s LIMIT 1)",
-		sqlString(nameAttr), njson)
+		"(SELECT av.card_id FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id JOIN card c ON c.id=av.card_id WHERE %s LIMIT 1)",
+		strings.Join(conds, " AND "))
 }
 
 // cardNameAttribute pulls the `name_attribute` value from the card
@@ -1121,6 +1209,15 @@ func (l *seedLoader) dollarLookupSQL(table, name string) string {
 
 // renderJSON turns a cellValue into a JSON expression suitable for an
 // attribute_value.value cell.
+//
+// ckBacktick is rendered as a JSON STRING (not a parsed JSON value).
+// Predicate JSON and toggle-group JSON are stored on text-typed
+// attribute_defs as JSON-encoded text; the client parses the string
+// layer back with JSON.parse before consuming the embedded JSON tree.
+// Keeping ckBacktick a string preserves that round-trip shape and
+// matches how the same content rendered before Gate 11 (when backticks
+// flowed through ckBare → renderBareJSON, which wraps text as
+// to_jsonb('…'::text)).
 func (l *seedLoader) renderJSON(c cellValue) string {
 	switch c.kind {
 	case ckNull:
@@ -1128,7 +1225,7 @@ func (l *seedLoader) renderJSON(c cellValue) string {
 	case ckString:
 		return fmt.Sprintf("to_jsonb(%s::text)", sqlString(c.text))
 	case ckBacktick:
-		return sqlString(c.text) + "::jsonb"
+		return fmt.Sprintf("to_jsonb(%s::text)", sqlString(c.text))
 	case ckLookup:
 		return fmt.Sprintf("to_jsonb(%s)", l.dollarLookupSQL(c.lookupTable, c.lookupName))
 	case ckAlias:

@@ -172,7 +172,9 @@ func TestEdgeViolationRejected(t *testing.T) {
 	}
 
 	// And nothing should have been written: re-listing projects shows just
-	// the one we made plus the seeded 'Default Project' from migration 0005.
+	// the one we made plus the two seeded projects ('Default Project' from
+	// the demo seed and 'Standard Project Template' from the install seed,
+	// Gate 11).
 	resp = srv.Dispatch(ctx, api.BatchRequest{
 		Subrequests: []api.SubRequest{
 			{ID: "list", Endpoint: "card", Action: "select", Data: json.RawMessage(
@@ -180,8 +182,8 @@ func TestEdgeViolationRejected(t *testing.T) {
 		},
 	})
 	rows := rowsOf(t, resp.Subresponses[0])
-	if len(rows) != 2 {
-		t.Errorf("project rollback: got %d projects, want 2 (our P + seeded Default Project)", len(rows))
+	if len(rows) != 3 {
+		t.Errorf("project rollback: got %d projects, want 3 (our P + Default Project + Standard Project Template)", len(rows))
 	}
 }
 

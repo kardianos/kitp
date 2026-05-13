@@ -185,9 +185,12 @@ func TestFlowSetAndList(t *testing.T) {
 			fmt.Sprintf(`{"id":"%d","name":"Standard task v2","attribute_def_id":"%d","scope_card_id":"%d"}`,
 				setOut.ID, f.statusAttrID, f.projectID)),
 	}, nil)
+	// Scope to f.projectID so the install-seed template's flow (Gate 11)
+	// doesn't pollute the list — global flow.list also returns that row.
 	var listOut2 flow.ListOutput
 	dispatch(t, f, api.SubRequest{
-		ID: "l2", Endpoint: "flow", Action: "list",
+		ID: "l2", Endpoint: "flow", Action: "list", Data: json.RawMessage(
+			fmt.Sprintf(`{"scope_card_id":"%d"}`, f.projectID)),
 	}, &listOut2)
 	if len(listOut2.Rows) != 1 || listOut2.Rows[0].Name != "Standard task v2" {
 		t.Errorf("rename failed: %+v", listOut2.Rows)

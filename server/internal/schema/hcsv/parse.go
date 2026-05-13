@@ -40,6 +40,15 @@ import (
 	"strings"
 )
 
+// backtickPrefix marks the start of a backtick-quoted cell value carried
+// out of parseRow. The downstream cell parser strips this prefix and
+// emits a verbatim (ckBacktick) cell — preventing leading `[` / `@` /
+// `$` inside the quoted content from triggering array expansion / alias
+// / lookup interpretation. The chosen prefix uses NUL + a tag byte so it
+// can never collide with user content (NUL is rejected upstream by
+// rowBalanced).
+const backtickPrefix = "\x00\x01b"
+
 // Section is one heading-rooted node in the parsed document.
 type Section struct {
 	Depth     int               // 1 for `#`, 2 for `##`, 3 for `###`, ...
@@ -374,6 +383,12 @@ func parseRow(s string) ([]string, error) {
 				i++
 			}
 		case i < n && s[i] == '`':
+			// Prefix backtick-quoted cells with a NUL-+-marker so the
+			// downstream cell parser can identify them as "verbatim
+			// literal — do not interpret as array / lookup / alias".
+			// Backtick cells often contain JSON arrays / objects whose
+			// leading `[` would otherwise trigger cross-product expansion.
+			cell.WriteString(backtickPrefix)
 			i++
 			for {
 				if i >= n {
