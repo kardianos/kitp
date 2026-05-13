@@ -464,12 +464,21 @@ export interface CommentInsertOutput {
 // ============================================================================
 
 export interface UserSelectInput {
-  _empty?: never;
+  /** Optional filter on a specific set of user_account ids. */
+  ids?: ID[];
+  /** Optional filter on parent_user_id. Used by the Admin Agents screen
+   *  to pull only the calling user's own agents. */
+  parentUserId?: ID;
+  /** Optional filter on is_agent. */
+  isAgent?: boolean;
 }
 
 export interface UserRow {
   id: ID;
   display_name: string;
+  /** Present when filtered or otherwise surfaced by the server. */
+  parent_user_id?: ID;
+  is_agent?: boolean;
 }
 
 export interface UserSelectOutput {
@@ -625,4 +634,105 @@ export interface RoleMappingDeleteInput {
 export interface RoleMappingDeleteOutput {
   ok: boolean;
   deleted: number;
+}
+
+// ============================================================================
+// agent.create / agent.delete
+// ============================================================================
+
+export interface AgentCreateInput {
+  displayName: string;
+}
+
+export interface AgentCreateOutput {
+  user_id: ID;
+  person_card_id: ID;
+}
+
+export interface AgentDeleteInput {
+  userId: ID;
+}
+
+export interface AgentDeleteOutput {
+  ok: boolean;
+  deleted: number;
+}
+
+// ============================================================================
+// user_token.create / list / revoke
+// ============================================================================
+
+export interface UserTokenCreateInput {
+  userId: ID;
+  label: string;
+  /** Optional RFC3339 timestamp. */
+  expiresAt?: string;
+}
+
+export interface UserTokenCreateOutput {
+  /** Secret bearer value — shown ONCE; the server cannot recover it later. */
+  token: string;
+  label: string;
+}
+
+export interface UserTokenListInput {
+  userId: ID;
+}
+
+export interface UserTokenListRow {
+  label: string;
+  created_at: string;
+  last_used_at: string;
+  expires_at?: string;
+  revoked_at?: string;
+}
+
+export interface UserTokenListOutput {
+  rows: UserTokenListRow[];
+}
+
+export interface UserTokenRevokeInput {
+  userId: ID;
+  label: string;
+}
+
+export interface UserTokenRevokeOutput {
+  ok: boolean;
+  deleted: number;
+}
+
+// ============================================================================
+// user_card_agent.set / clear / list
+// ============================================================================
+
+export interface UserCardAgentSetInput {
+  cardId: ID;
+  agentUserId: ID;
+}
+
+export interface UserCardAgentSetOutput {
+  ok: boolean;
+}
+
+export interface UserCardAgentClearInput {
+  cardId: ID;
+}
+
+export interface UserCardAgentClearOutput {
+  ok: boolean;
+  deleted: number;
+}
+
+export interface UserCardAgentListInput {
+  parentCardId?: ID;
+}
+
+export interface UserCardAgentListRow {
+  card_id: ID;
+  agent_user_id: ID;
+  created_at: string;
+}
+
+export interface UserCardAgentListOutput {
+  rows: UserCardAgentListRow[];
 }

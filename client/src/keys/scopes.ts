@@ -17,4 +17,5 @@ export type ShortcutScope =
   | 'login'
   | 'admin_users'
   | 'admin_attributes'
-  | 'admin_screens';
+  | 'admin_screens'
+  | 'admin_agents';

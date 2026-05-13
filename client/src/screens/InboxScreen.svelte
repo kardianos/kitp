@@ -75,6 +75,11 @@
     SORT_ORDER_STEP,
   } from './inbox_helpers';
 
+  import { useBag } from '../dispatch/bag.svelte';
+  import { userSelect } from '../reg/handlers';
+  import { userCardAgentSet } from '../reg/handlers_admin';
+  import type { UserRow } from '../reg/types';
+
   /* ------------------------------------------------------------------ scope */
   setActiveScope('inbox');
 
@@ -122,6 +127,68 @@
     untrack(() => getFilter('inbox', projectScope.projectId)),
   );
   let selectedIndex = $state(0);
+
+  /* ------------------------------- bulk-route to agent (#43) -----------
+   * The inbox doubles as the routing surface for the calling user's
+   * agents: enter selection mode, tick the rows you want to delegate,
+   * pick an agent from the dropdown, and one batched user_card_agent.set
+   * fans out the route. The mode toggle is a soft state — every
+   * unrelated keyboard / drag interaction works as before; the
+   * selection bar simply overlays. */
+  const bag = useBag(dispatcher);
+  let selectionMode = $state(false);
+  let selectedIds = $state<Set<string>>(new Set());
+  let myAgents = $state<UserRow[]>([]);
+  let routeTargetId = $state<string>('');
+
+  const loadMyAgents = bag.bind(userSelect, 'inbox.my_agents', (r) => {
+    if (r.ok) myAgents = r.data.rows;
+  });
+  const routeOne = bag.bind(userCardAgentSet, 'inbox.route', (r) => {
+    if (!r.ok) return;
+    // Per-row ack — toast only once at the end via the count.
+    routeAcks++;
+    if (routeAcks >= routeExpected && routeExpected > 0) {
+      notify({ type: 'success', message: `Routed ${routeExpected} task${routeExpected === 1 ? '' : 's'}` });
+      selectedIds = new Set();
+      routeAcks = 0;
+      routeExpected = 0;
+      selectionMode = false;
+    }
+  });
+  let routeExpected = 0;
+  let routeAcks = 0;
+
+  function toggleSelectionMode(): void {
+    selectionMode = !selectionMode;
+    if (!selectionMode) selectedIds = new Set();
+  }
+
+  function toggleSelected(id: ID): void {
+    const key = id.toString();
+    const next = new Set(selectedIds);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    selectedIds = next;
+  }
+
+  function routeSelected(): void {
+    if (routeTargetId === '') {
+      notify({ type: 'error', message: 'Pick an agent first' });
+      return;
+    }
+    let agentId: ID;
+    try {
+      agentId = BigInt(routeTargetId);
+    } catch {
+      notify({ type: 'error', message: 'Invalid agent id' });
+      return;
+    }
+    routeExpected = selectedIds.size;
+    routeAcks = 0;
+    for (const key of selectedIds) {
+      routeOne({ cardId: BigInt(key), agentUserId: agentId });
+    }
+  }
 
   /** Derived lookup tables for `<TaskRow>` props. */
   const personNames = $derived.by((): Record<string, string> => {
@@ -203,6 +270,13 @@
     onCreated: () => {
       void refresh();
     },
+  });
+
+  // Preload my agents so the routing dropdown has options ready. Cheap
+  // single request that piggy-backs onto the same batch as the inbox's
+  // own initial fetches when selection mode is engaged.
+  $effect(() => {
+    loadMyAgents({ parentUserId: meId, isAgent: true });
   });
 
   /* ---------------------------------------------------------- data fetch */
@@ -584,10 +658,55 @@
         >All open</button>
       </div>
     </div>
-    <Button size="sm" variant="secondary" onclick={() => qe.open()}>
-      {#snippet children()}New task{/snippet}
-    </Button>
+    <div class="flex items-center gap-2">
+      <Button
+        size="sm"
+        variant={selectionMode ? 'primary' : 'secondary'}
+        onclick={toggleSelectionMode}
+      >
+        {#snippet children()}{selectionMode ? 'Cancel selection' : 'Select'}{/snippet}
+      </Button>
+      <Button size="sm" variant="secondary" onclick={() => qe.open()}>
+        {#snippet children()}New task{/snippet}
+      </Button>
+    </div>
   </header>
+
+  {#if selectionMode}
+    <div
+      class="flex items-center justify-between gap-3 border-b border-border bg-surface/40 px-4 py-2 text-sm"
+      data-testid="inbox-selection-bar"
+    >
+      <span class="text-muted">
+        {selectedIds.size} task{selectedIds.size === 1 ? '' : 's'} selected
+      </span>
+      <div class="flex items-center gap-2">
+        <label for="inbox-route-target" class="text-xs uppercase tracking-wide text-muted">
+          Route to agent
+        </label>
+        <select
+          id="inbox-route-target"
+          bind:value={routeTargetId}
+          class="rounded-md border border-border bg-bg px-2 py-1 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          <option value="">— pick an agent —</option>
+          {#each myAgents as a (a.id)}
+            <option value={a.id.toString()}>{a.display_name}</option>
+          {/each}
+        </select>
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={selectedIds.size === 0 || routeTargetId === ''}
+          onclick={routeSelected}
+        >
+          {#snippet children()}
+            Route {selectedIds.size > 0 ? selectedIds.size : ''}
+          {/snippet}
+        </Button>
+      </div>
+    </div>
+  {/if}
 
   <div class="border-b border-border px-4 pb-3" data-testid="inbox-filter-bar">
     <ScreenFilterBar
@@ -633,6 +752,19 @@
           accepts={acceptsInboxRow}
         />
         <div class="my-1 flex items-stretch gap-1" data-row-id={row.id}>
+          {#if selectionMode}
+            <label
+              class="flex h-full w-6 cursor-pointer items-center justify-center"
+              aria-label={`Select task ${previewLabelFor(row)}`}
+            >
+              <input
+                type="checkbox"
+                checked={selectedIds.has(row.id.toString())}
+                onchange={() => toggleSelected(row.id)}
+                class="h-4 w-4 accent-accent"
+              />
+            </label>
+          {/if}
           <DragHandle
             payload={row}
             previewLabel={previewLabelFor(row)}

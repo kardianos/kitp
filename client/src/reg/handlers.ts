@@ -701,16 +701,26 @@ const commentInsert: HandlerSpec<CommentInsertInput, CommentInsertOutput> = {
 // ============================================================================
 
 function decodeUserRow(j: Record<string, unknown>): UserRow {
-  return {
+  const out: UserRow = {
     id: asId(j.id),
     display_name: asStr(j.display_name),
   };
+  const parent = asIdOpt(j.parent_user_id);
+  if (parent !== undefined) out.parent_user_id = parent;
+  if (typeof j.is_agent === 'boolean') out.is_agent = j.is_agent;
+  return out;
 }
 
 const userSelect: HandlerSpec<UserSelectInput, UserSelectOutput> = {
   endpoint: 'user',
   action: 'select',
-  encode: () => ({}),
+  encode: (i) => {
+    const m: Record<string, unknown> = {};
+    if (i?.ids !== undefined && i.ids.length > 0) m.ids = i.ids;
+    if (i?.parentUserId !== undefined) m.parent_user_id = i.parentUserId;
+    if (i?.isAgent !== undefined) m.is_agent = i.isAgent;
+    return m;
+  },
   decode: (raw) => {
     const j = asObj(raw);
     return {

@@ -128,6 +128,16 @@ export const routes: Route[] = [
     scope: 'admin_screens',
   },
   {
+    path: '/admin/agents',
+    component: () => import('../screens/admin/AdminAgentsScreen.svelte'),
+    // Any signed-in non-agent can own their own agents — the screen lists
+    // only the calling user's agents. We still file it under /admin/* in
+    // the nav so it sits next to the other infra-management screens.
+    guard: 'requireAuth',
+    shell: true,
+    scope: 'admin_agents',
+  },
+  {
     path: '/_dev/components',
     component: () => import('../screens/_dev/Components.svelte'),
     shell: false,

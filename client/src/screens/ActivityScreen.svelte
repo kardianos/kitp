@@ -170,8 +170,24 @@
       rows = actOut.rows;
       exhausted = actOut.rows.length < ACTIVITY_PAGE_SIZE;
 
+      // Build the actor-label map. For agents we render
+      // "<agent_name> (agent of <parent_name>)" so activity rows make
+      // sense at a glance — readers shouldn't have to memorise which
+      // user ids are agents. user.select now surfaces parent_user_id +
+      // is_agent on every row, so we resolve the parent in the same
+      // pass without a second query.
       const uMap: Record<string, string> = {};
-      for (const u of usersOut.rows) uMap[u.id.toString()] = u.display_name;
+      const byId: Record<string, typeof usersOut.rows[number]> = {};
+      for (const u of usersOut.rows) byId[u.id.toString()] = u;
+      for (const u of usersOut.rows) {
+        if (u.is_agent === true && u.parent_user_id !== undefined) {
+          const parent = byId[u.parent_user_id.toString()];
+          const parentName = parent?.display_name ?? `#${u.parent_user_id}`;
+          uMap[u.id.toString()] = `${u.display_name} (agent of ${parentName})`;
+        } else {
+          uMap[u.id.toString()] = u.display_name;
+        }
+      }
       userNames = uMap;
       userOptions = usersOut.rows
         .map((u) => ({ value: u.id, label: u.display_name }))

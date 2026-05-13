@@ -37,6 +37,7 @@
     { href: '/admin/users', label: 'Users' },
     { href: '/admin/attributes', label: 'Attributes' },
     { href: '/admin/screens', label: 'Screens' },
+    { href: '/admin/agents', label: 'Agents' },
   ];
 
   function isActive(href: string): boolean {

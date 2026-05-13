@@ -19,6 +19,10 @@ import {
 import type { HandlerSpec } from './handler_registry.js';
 import { HandlerRegistry } from './handler_registry.js';
 import type {
+  AgentCreateInput,
+  AgentCreateOutput,
+  AgentDeleteInput,
+  AgentDeleteOutput,
   RoleAssignmentRow,
   RoleGrantRow,
   RoleListInput,
@@ -31,6 +35,13 @@ import type {
   RoleMappingSetInput,
   RoleMappingSetOutput,
   RoleRow,
+  UserCardAgentClearInput,
+  UserCardAgentClearOutput,
+  UserCardAgentListInput,
+  UserCardAgentListOutput,
+  UserCardAgentListRow,
+  UserCardAgentSetInput,
+  UserCardAgentSetOutput,
   UserListWithRolesInput,
   UserListWithRolesOutput,
   UserListWithRolesRow,
@@ -38,6 +49,13 @@ import type {
   UserRoleRevokeOutput,
   UserRoleSetInput,
   UserRoleSetOutput,
+  UserTokenCreateInput,
+  UserTokenCreateOutput,
+  UserTokenListInput,
+  UserTokenListOutput,
+  UserTokenListRow,
+  UserTokenRevokeInput,
+  UserTokenRevokeOutput,
 } from './types.js';
 
 // ============================================================================
@@ -214,6 +232,140 @@ const roleMappingDelete: HandlerSpec<
 };
 
 // ============================================================================
+// agent.create / agent.delete
+// ============================================================================
+
+const agentCreate: HandlerSpec<AgentCreateInput, AgentCreateOutput> = {
+  endpoint: 'agent',
+  action: 'create',
+  encode: (i) => ({ display_name: i.displayName }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      user_id: asId(j.user_id),
+      person_card_id: asId(j.person_card_id),
+    };
+  },
+};
+
+const agentDelete: HandlerSpec<AgentDeleteInput, AgentDeleteOutput> = {
+  endpoint: 'agent',
+  action: 'delete',
+  encode: (i) => ({ user_id: i.userId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: asBoolOrFalse(j.ok),
+      deleted: asNumOrZero(j.deleted),
+    };
+  },
+};
+
+// ============================================================================
+// user_token.create / list / revoke
+// ============================================================================
+
+const userTokenCreate: HandlerSpec<UserTokenCreateInput, UserTokenCreateOutput> = {
+  endpoint: 'user_token',
+  action: 'create',
+  encode: (i) => {
+    const m: Record<string, unknown> = { user_id: i.userId, label: i.label };
+    if (i.expiresAt !== undefined) m.expires_at = i.expiresAt;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { token: asStr(j.token), label: asStr(j.label) };
+  },
+};
+
+function decodeUserTokenListRow(j: Record<string, unknown>): UserTokenListRow {
+  const out: UserTokenListRow = {
+    label: asStr(j.label),
+    created_at: asStr(j.created_at),
+    last_used_at: asStr(j.last_used_at),
+  };
+  const exp = asStrOpt(j.expires_at);
+  if (exp !== undefined) out.expires_at = exp;
+  const rev = asStrOpt(j.revoked_at);
+  if (rev !== undefined) out.revoked_at = rev;
+  return out;
+}
+
+const userTokenList: HandlerSpec<UserTokenListInput, UserTokenListOutput> = {
+  endpoint: 'user_token',
+  action: 'list',
+  encode: (i) => ({ user_id: i.userId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeUserTokenListRow(asObj(r))),
+    };
+  },
+};
+
+const userTokenRevoke: HandlerSpec<UserTokenRevokeInput, UserTokenRevokeOutput> = {
+  endpoint: 'user_token',
+  action: 'revoke',
+  encode: (i) => ({ user_id: i.userId, label: i.label }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { ok: asBoolOrFalse(j.ok), deleted: asNumOrZero(j.deleted) };
+  },
+};
+
+// ============================================================================
+// user_card_agent.set / clear / list
+// ============================================================================
+
+const userCardAgentSet: HandlerSpec<UserCardAgentSetInput, UserCardAgentSetOutput> = {
+  endpoint: 'user_card_agent',
+  action: 'set',
+  encode: (i) => ({ card_id: i.cardId, agent_user_id: i.agentUserId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { ok: asBoolOrFalse(j.ok) };
+  },
+};
+
+const userCardAgentClear: HandlerSpec<
+  UserCardAgentClearInput,
+  UserCardAgentClearOutput
+> = {
+  endpoint: 'user_card_agent',
+  action: 'clear',
+  encode: (i) => ({ card_id: i.cardId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { ok: asBoolOrFalse(j.ok), deleted: asNumOrZero(j.deleted) };
+  },
+};
+
+function decodeUserCardAgentListRow(j: Record<string, unknown>): UserCardAgentListRow {
+  return {
+    card_id: asId(j.card_id),
+    agent_user_id: asId(j.agent_user_id),
+    created_at: asStr(j.created_at),
+  };
+}
+
+const userCardAgentList: HandlerSpec<UserCardAgentListInput, UserCardAgentListOutput> = {
+  endpoint: 'user_card_agent',
+  action: 'list',
+  encode: (i) => {
+    const m: Record<string, unknown> = {};
+    if (i.parentCardId !== undefined) m.parent_card_id = i.parentCardId;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      rows: asArray(j.rows).map((r) => decodeUserCardAgentListRow(asObj(r))),
+    };
+  },
+};
+
+// ============================================================================
 // Re-exports + registration helper
 // ============================================================================
 
@@ -225,6 +377,14 @@ export {
   roleMappingList,
   roleMappingSet,
   roleMappingDelete,
+  agentCreate,
+  agentDelete,
+  userTokenCreate,
+  userTokenList,
+  userTokenRevoke,
+  userCardAgentSet,
+  userCardAgentClear,
+  userCardAgentList,
 };
 
 /** Register the admin handlers on top of the v1 set. */
@@ -236,4 +396,12 @@ export function registerAdminHandlers(r: HandlerRegistry): void {
   r.register(roleMappingList);
   r.register(roleMappingSet);
   r.register(roleMappingDelete);
+  r.register(agentCreate);
+  r.register(agentDelete);
+  r.register(userTokenCreate);
+  r.register(userTokenList);
+  r.register(userTokenRevoke);
+  r.register(userCardAgentSet);
+  r.register(userCardAgentClear);
+  r.register(userCardAgentList);
 }

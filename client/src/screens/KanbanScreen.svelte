@@ -970,7 +970,14 @@
               </header>
               <div
                 class={cx(
-                  'flex flex-1 flex-col gap-1 p-2',
+                  'flex flex-1 flex-col gap-1 overflow-y-auto p-2',
+                  // The cap is what stops a column with many cards from
+                  // pushing its swim-lane row past the next one — without
+                  // it the lane rows below get bumped down off-screen
+                  // (and visually "overlap" because the outer `gap-4` is
+                  // smaller than the overflow). 28rem ≈ 10-12 cards;
+                  // anything longer scrolls inside the cell.
+                  'max-h-[28rem] min-h-0',
                   stack.length === 0 && 'min-h-[200px]',
                 )}
               >
