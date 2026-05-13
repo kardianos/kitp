@@ -12,10 +12,10 @@ import (
 )
 
 // TestProjectInsertSeedsScreens runs the data table of expected
-// (screen_type, title, sort_order, column_attr) tuples against a
-// freshly-inserted project and confirms each row materialises in the
+// (slug, layout, title, sort_order, hotkey, column_attr) tuples against
+// a freshly-inserted project and confirms each row materialises in the
 // DB with the correct attributes + filter child + default_filter
-// wiring. Treats the seed as data: adding a new screen_type to
+// wiring. Treats the seed as data: adding a new screen spec to
 // `screenSeed` in screen_seed.go is the only change required for this
 // test to keep passing once you extend the matrix below.
 func TestProjectInsertSeedsScreens(t *testing.T) {
@@ -50,36 +50,58 @@ func TestProjectInsertSeedsScreens(t *testing.T) {
 	// Data-table expectations. Mirrors `screenSeed` in screen_seed.go;
 	// when that table grows, this one grows alongside it.
 	type want struct {
-		screenType string
+		slug       string
+		layout     string
 		title      string
 		sortOrder  int64
+		hotkey     string // empty when the seed doesn't bind one
 		columnAttr string // empty when the filter shouldn't carry one
 	}
 	wants := []want{
-		{screenType: "inbox", title: "Inbox", sortOrder: 1},
-		{screenType: "grid", title: "Grid", sortOrder: 2},
-		{screenType: "kanban", title: "Kanban", sortOrder: 3, columnAttr: "milestone_ref"},
-		{screenType: "project_detail", title: "Project detail", sortOrder: 4},
+		{slug: "inbox", layout: "list", title: "Inbox", sortOrder: 1, hotkey: "i"},
+		{slug: "grid", layout: "grid", title: "Grid", sortOrder: 2, hotkey: "g"},
+		{slug: "kanban", layout: "kanban", title: "Kanban", sortOrder: 3, hotkey: "k", columnAttr: "milestone_ref"},
+		{slug: "project", layout: "pair", title: "Project detail", sortOrder: 4},
 	}
 	if len(sOut.Rows) != len(wants) {
 		t.Fatalf("screen count: got %d, want %d", len(sOut.Rows), len(wants))
 	}
 
-	// Index seeded screens by screen_type for table-driven checks.
-	byType := map[string]card.CardWithAttrs{}
+	// Index seeded screens by slug for table-driven checks.
+	bySlug := map[string]card.CardWithAttrs{}
 	for _, r := range sOut.Rows {
-		var stRaw string
-		if err := json.Unmarshal(r.Attributes["screen_type"], &stRaw); err != nil {
-			t.Fatalf("decode screen_type on card %d: %v", r.ID, err)
+		var slugRaw string
+		if err := json.Unmarshal(r.Attributes["slug"], &slugRaw); err != nil {
+			t.Fatalf("decode slug on card %d: %v", r.ID, err)
 		}
-		byType[stRaw] = r
+		bySlug[slugRaw] = r
 	}
 
 	for _, w := range wants {
-		t.Run(w.screenType, func(t *testing.T) {
-			screen, ok := byType[w.screenType]
+		t.Run(w.slug, func(t *testing.T) {
+			screen, ok := bySlug[w.slug]
 			if !ok {
-				t.Fatalf("no screen seeded for %q", w.screenType)
+				t.Fatalf("no screen seeded for slug %q", w.slug)
+			}
+			var layoutRaw string
+			if err := json.Unmarshal(screen.Attributes["layout"], &layoutRaw); err != nil {
+				t.Fatalf("decode layout: %v", err)
+			}
+			if layoutRaw != w.layout {
+				t.Errorf("layout: got %q, want %q", layoutRaw, w.layout)
+			}
+			if w.hotkey == "" {
+				if raw, ok := screen.Attributes["hotkey"]; ok {
+					t.Errorf("hotkey: got %s, want absent", raw)
+				}
+			} else {
+				var hkRaw string
+				if err := json.Unmarshal(screen.Attributes["hotkey"], &hkRaw); err != nil {
+					t.Fatalf("decode hotkey: %v", err)
+				}
+				if hkRaw != w.hotkey {
+					t.Errorf("hotkey: got %q, want %q", hkRaw, w.hotkey)
+				}
 			}
 			var titleRaw string
 			if err := json.Unmarshal(screen.Attributes["title"], &titleRaw); err != nil {

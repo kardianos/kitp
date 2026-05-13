@@ -64,8 +64,8 @@ $card_type.task, parent, "Write release notes", @person_frank, @test_milestone_v
 
 ## table card | alias=test_screen_inbox
 ### rows
-card_type_id, parent_card_id, title, screen_type, sort_order
-$card_type.screen, parent, "Inbox", inbox, 1
+card_type_id, parent_card_id, title, layout, slug,  hotkey, sort_order
+$card_type.screen, parent, "Inbox", list,   inbox, i,      1
 
 
 ## table card | doc="One filter card under the screen, with a backtick-quoted JSON predicate to exercise that feature." | under=test_screen_inbox

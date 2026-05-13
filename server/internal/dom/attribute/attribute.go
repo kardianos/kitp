@@ -180,6 +180,18 @@ func runUpdate(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 				Value:         value,
 				Ord:           i,
 			}
+
+			// V2 in-tx uniqueness gate for screen.hotkey / screen.slug.
+			// Runs before the bulk UPSERT so a conflict aborts the whole
+			// run; coalescing two writes in the same batch never lands a
+			// duplicate value. The check is a no-op for any other
+			// attribute.
+			if rej, err := screenUniquenessCheck(ctx, tx, in.CardID, in.AttributeName, value); err != nil {
+				return nil, err
+			} else if rej != nil {
+				rej.InputIndex = i
+				return nil, rej
+			}
 		}
 
 		buf, err := json.Marshal(payload)

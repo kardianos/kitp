@@ -54,23 +54,29 @@ filter,       true,  false, $card_type.screen
 ## table attribute_def | doc="Built-in attribute definitions. Each pick-from-a-list attribute is a card_ref with target_card_type_id pointing at the card_type whose cards are the valid values." | on_conflict="name"
 ### rows
 name, value_type, is_built_in, target_card_type_id
-title,             text,        true, null
-assignee,          card_ref,    true, $card_type.person
-milestone_ref,     card_ref,    true, $card_type.milestone
-component_ref,     card_ref,    true, $card_type.component
-status,            card_ref,    true, $card_type.status
-path,              text,        true, null
-root_exclusive_at, text,        true, null
-tags,              card_ref[],  true, $card_type.tag
-description,       text,        true, null
-sort_order,        number,      true, null
-is_active,         bool,        true, null
-email,             text,        true, null
-screen_type,       text,        true, null
-predicate,         text,        true, null
-default_filter,    card_ref,    true, $card_type.filter
-column_attr,       text,        true, null
-lane_attr,         text,        true, null
+title,                 text,        true, null
+assignee,              card_ref,    true, $card_type.person
+milestone_ref,         card_ref,    true, $card_type.milestone
+component_ref,         card_ref,    true, $card_type.component
+status,                card_ref,    true, $card_type.status
+path,                  text,        true, null
+root_exclusive_at,     text,        true, null
+tags,                  card_ref[],  true, $card_type.tag
+description,           text,        true, null
+sort_order,            number,      true, null
+is_active,             bool,        true, null
+email,                 text,        true, null
+layout,                text,        true, null
+slug,                  text,        true, null
+hotkey,                text,        true, null
+flow_ref,              number,      true, null
+default_create_status, card_ref,    true, $card_type.status
+view_requires_role,    text,        true, null
+toggle_groups,         text,        true, null
+predicate,             text,        true, null
+default_filter,        card_ref,    true, $card_type.filter
+column_attr,           text,        true, null
+lane_attr,             text,        true, null
 
 
 ## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"
@@ -105,11 +111,17 @@ $card_type.tag,       $attribute_def.is_active,         false, 5
 $card_type.person,    $attribute_def.title,             true,  0
 $card_type.person,    $attribute_def.email,             false, 1
 $card_type.person,    $attribute_def.is_active,         false, 2
-$card_type.screen,    $attribute_def.title,             true,  0
-$card_type.screen,    $attribute_def.screen_type,       true,  1
-$card_type.screen,    $attribute_def.default_filter,    false, 2
-$card_type.screen,    $attribute_def.sort_order,        false, 3
-$card_type.screen,    $attribute_def.is_active,         false, 4
+$card_type.screen,    $attribute_def.title,                 true,  0
+$card_type.screen,    $attribute_def.layout,                true,  1
+$card_type.screen,    $attribute_def.slug,                  true,  2
+$card_type.screen,    $attribute_def.hotkey,                false, 3
+$card_type.screen,    $attribute_def.flow_ref,              false, 4
+$card_type.screen,    $attribute_def.default_create_status, false, 5
+$card_type.screen,    $attribute_def.view_requires_role,    false, 6
+$card_type.screen,    $attribute_def.toggle_groups,         false, 7
+$card_type.screen,    $attribute_def.default_filter,        false, 8
+$card_type.screen,    $attribute_def.sort_order,            false, 9
+$card_type.screen,    $attribute_def.is_active,             false, 10
 $card_type.filter,    $attribute_def.title,             true,  0
 $card_type.filter,    $attribute_def.predicate,         false, 1
 $card_type.filter,    $attribute_def.column_attr,       false, 2

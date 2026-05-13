@@ -389,7 +389,7 @@
     never mounts.
   -->
   <ScreenFilterBar
-    screenType="project_detail"
+    screenType="pair"
     projectId={projectId}
     {dispatcher}
     {filterAttributes}

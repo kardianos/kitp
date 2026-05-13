@@ -24,17 +24,19 @@ import (
 // project-creation seed. New screen types are added by adding rows
 // here — no extra Go branches.
 type screenSeedSpec struct {
-	ScreenType string // matches the application's closed-set screen_type enum
+	Layout     string // renderer pick; matches the application's LAYOUTS set
+	Slug       string // per-project URL token; matches ^[a-z][a-z0-9-]*$
+	Hotkey     string // single character (g <hotkey>) inside the project scope
 	Title      string // human-readable title on the screen card
 	SortOrder  int64  // display order in the admin/UI listings
 	ColumnAttr string // kanban-only convention; empty for other screens
 }
 
 var screenSeed = []screenSeedSpec{
-	{ScreenType: "inbox", Title: "Inbox", SortOrder: 1},
-	{ScreenType: "grid", Title: "Grid", SortOrder: 2},
-	{ScreenType: "kanban", Title: "Kanban", SortOrder: 3, ColumnAttr: "milestone_ref"},
-	{ScreenType: "project_detail", Title: "Project detail", SortOrder: 4},
+	{Layout: "list", Slug: "inbox", Hotkey: "i", Title: "Inbox", SortOrder: 1},
+	{Layout: "grid", Slug: "grid", Hotkey: "g", Title: "Grid", SortOrder: 2},
+	{Layout: "kanban", Slug: "kanban", Hotkey: "k", Title: "Kanban", SortOrder: 3, ColumnAttr: "milestone_ref"},
+	{Layout: "pair", Slug: "project", Title: "Project detail", SortOrder: 4},
 }
 
 // seedProjectScreens populates the per-project screen + filter cards
@@ -53,9 +55,17 @@ func seedProjectScreens(ctx context.Context, tx pgx.Tx, projectID, actorID int64
 	if !ok {
 		return fmt.Errorf("seedProjectScreens: attribute_def 'title' missing")
 	}
-	screenTypeAD, ok := snap.AttrByName["screen_type"]
+	layoutAD, ok := snap.AttrByName["layout"]
 	if !ok {
-		return fmt.Errorf("seedProjectScreens: attribute_def 'screen_type' missing")
+		return fmt.Errorf("seedProjectScreens: attribute_def 'layout' missing")
+	}
+	slugAD, ok := snap.AttrByName["slug"]
+	if !ok {
+		return fmt.Errorf("seedProjectScreens: attribute_def 'slug' missing")
+	}
+	hotkeyAD, ok := snap.AttrByName["hotkey"]
+	if !ok {
+		return fmt.Errorf("seedProjectScreens: attribute_def 'hotkey' missing")
 	}
 	defaultFilterAD, ok := snap.AttrByName["default_filter"]
 	if !ok {
@@ -71,13 +81,21 @@ func seedProjectScreens(ctx context.Context, tx pgx.Tx, projectID, actorID int64
 	}
 
 	for _, s := range screenSeed {
-		screenID, err := insertCardWithAttrs(ctx, tx, screenCT.ID, &projectID, actorID, []attrWrite{
+		screenAttrs := []attrWrite{
 			{defID: titleAD.ID, value: jsonString(s.Title)},
-			{defID: screenTypeAD.ID, value: jsonString(s.ScreenType)},
+			{defID: layoutAD.ID, value: jsonString(s.Layout)},
+			{defID: slugAD.ID, value: jsonString(s.Slug)},
 			{defID: sortOrderAD.ID, value: jsonNumber(s.SortOrder)},
-		})
+		}
+		if s.Hotkey != "" {
+			screenAttrs = append(screenAttrs, attrWrite{
+				defID: hotkeyAD.ID,
+				value: jsonString(s.Hotkey),
+			})
+		}
+		screenID, err := insertCardWithAttrs(ctx, tx, screenCT.ID, &projectID, actorID, screenAttrs)
 		if err != nil {
-			return fmt.Errorf("seedProjectScreens: screen %q: %w", s.ScreenType, err)
+			return fmt.Errorf("seedProjectScreens: screen %q: %w", s.Slug, err)
 		}
 
 		filterAttrs := []attrWrite{
@@ -91,12 +109,12 @@ func seedProjectScreens(ctx context.Context, tx pgx.Tx, projectID, actorID int64
 		}
 		filterID, err := insertCardWithAttrs(ctx, tx, filterCT.ID, &screenID, actorID, filterAttrs)
 		if err != nil {
-			return fmt.Errorf("seedProjectScreens: filter for %q: %w", s.ScreenType, err)
+			return fmt.Errorf("seedProjectScreens: filter for %q: %w", s.Slug, err)
 		}
 
 		// Wire screen.default_filter → filter card.
 		if err := writeAttr(ctx, tx, screenID, defaultFilterAD.ID, jsonInt64(filterID), actorID); err != nil {
-			return fmt.Errorf("seedProjectScreens: default_filter for %q: %w", s.ScreenType, err)
+			return fmt.Errorf("seedProjectScreens: default_filter for %q: %w", s.Slug, err)
 		}
 	}
 	return nil

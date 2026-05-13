@@ -153,6 +153,20 @@ The `screen` card_type stays. Its attribute list grows by six entries and one re
 
 Existing attributes that stay: `title`, `sort_order`, `default_filter`, `column_attr`, `lane_attr`. Predicates live exclusively on filter cards. A screen with no filter cards relies entirely on its toggle groups for row selection; a screen with one filter card uses it via `default_filter`; a screen with many lets the user pick. The previously-proposed `screen.predicate` attribute is removed — anywhere a screen needs a static predicate, a filter card carries it.
 
+#### Gate 8 implementation notes
+
+The above table lists three card_ref attributes whose target is not a card_type in the current codebase (`flow`, `role` are tables, not card_type rows). The `attribute_def` schema requires `target_card_type_id` to name a real `card_type` row, so card_ref-with-no-target isn't expressible. Gate 8 records the values in the closest legal types:
+
+- `flow_ref` is stored as `number` (the `flow.id` value). App code validates the referenced flow row exists and is scoped to the screen's project. (FK enforcement deferred — see "Optional follow-ups" below.)
+- `view_requires_role` is stored as `text` (the `role.name` value). The `role.name` column has a UNIQUE constraint so the text round-trips to the role row.
+- `default_create_status` stays as `card_ref → status` because status IS a card_type — the existing per-project scope rule applies.
+
+Hotkey and slug uniqueness is enforced at the attribute.update layer (V2 below). The check runs inside the open write transaction so concurrent writes cannot race past it. Rejection codes:
+
+- `slug_invalid` — slug doesn't match `^[a-z][a-z0-9-]*$`.
+- `slug_in_use` — another screen under the same project already owns this slug.
+- `hotkey_in_use` — another screen under the same project already owns this hotkey.
+
 ### Toggle groups
 
 The `toggle_groups` screen attribute stores an array of typed group objects. The shape is a closed JSON schema that the application validates:

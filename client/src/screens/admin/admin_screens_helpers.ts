@@ -8,7 +8,7 @@
  *   - `sortBySortOrder`    sort_order ASC, NULLS LAST, ties by id ASC.
  *   - `validatePredicateJson` decode JSON typed into "Edit predicate";
  *                             empty/whitespace means "no predicate".
- *   - `friendlyScreenLabel`   `project_detail` → `Project detail`.
+ *   - `friendlyScreenLabel`   `multi_word_thing` → `Multi word thing`.
  */
 
 import { predicateFromJson, type Predicate } from '../../filter/predicate.js';
@@ -87,7 +87,7 @@ export function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Capitalise + underscore-to-space (`project_detail` → `Project detail`). */
+/** Capitalise + underscore-to-space (`pair` → `Pair`, `multi_word` → `Multi word`). */
 export function friendlyScreenLabel(screenType: string): string {
   if (screenType === '') return '';
   const spaced = screenType.replace(/_/g, ' ');

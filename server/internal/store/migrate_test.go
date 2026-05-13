@@ -30,8 +30,8 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		{`SELECT count(*) FROM user_role`, 2},           // system + admin on user 1
 		{`SELECT count(*) FROM role`, 6},
 		{`SELECT count(*) FROM card_type`, 10},
-		{`SELECT count(*) FROM attribute_def`, 17},
-		{`SELECT count(*) FROM edge`, 40},
+		{`SELECT count(*) FROM attribute_def`, 23},
+		{`SELECT count(*) FROM edge`, 46},
 		{`SELECT count(*) FROM process`, 6},
 		{`SELECT count(*) FROM process_step`, 7},
 	}
@@ -72,8 +72,8 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{`SELECT count(*) FROM card`, 9},
 		{`SELECT count(*) FROM role`, 6},
 		{`SELECT count(*) FROM card_type`, 10},
-		{`SELECT count(*) FROM attribute_def`, 17},
-		{`SELECT count(*) FROM edge`, 40},
+		{`SELECT count(*) FROM attribute_def`, 23},
+		{`SELECT count(*) FROM edge`, 46},
 	}
 	for _, c := range cases {
 		var got int64

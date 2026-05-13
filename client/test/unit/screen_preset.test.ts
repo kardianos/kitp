@@ -46,12 +46,12 @@ function card(
 /* -------------------------------------------------------------------------- */
 
 describe('SCREEN_TYPES', () => {
-  it('lists exactly the four screens the application supports', () => {
+  it('lists exactly the four built-in layouts the application supports', () => {
     expect(SCREEN_TYPES).toEqual([
-      'inbox',
+      'list',
       'grid',
       'kanban',
-      'project_detail',
+      'pair',
     ]);
   });
 });
@@ -65,7 +65,7 @@ describe.each<{
   fn: (c: CardWithAttrs) => unknown;
   attr: string;
 }>([
-  { name: 'readScreenType', fn: readScreenType, attr: 'screen_type' },
+  { name: 'readScreenType', fn: readScreenType, attr: 'layout' },
   { name: 'readColumnAttr', fn: readColumnAttr, attr: 'column_attr' },
   { name: 'readLaneAttr', fn: readLaneAttr, attr: 'lane_attr' },
 ])('$name (string accessor on `$attr`)', ({ fn, attr }) => {
@@ -76,7 +76,7 @@ describe.each<{
   }>([
     { label: 'absent', value: undefined, want: null },
     { label: 'empty string', value: '', want: null },
-    { label: 'plain string', value: 'inbox', want: 'inbox' },
+    { label: 'plain string', value: 'list', want: 'list' },
     { label: 'numeric (wrong type)', value: 42, want: null },
     { label: 'bigint (wrong type)', value: 5n, want: null },
     { label: 'null (cleared)', value: null, want: null },
@@ -235,32 +235,32 @@ describe('loadScreenAndFilters', () => {
     label: string;
     screens: CardWithAttrs[];
     filters: CardWithAttrs[];
-    screenType: 'inbox' | 'grid' | 'kanban' | 'project_detail';
+    screenType: 'list' | 'grid' | 'kanban' | 'pair';
     wantScreenId: bigint | null;
     wantFilterCount: number;
     wantDefaultId: bigint | null;
   }>([
     {
-      label: 'no screen for type → empty',
+      label: 'no screen for layout → empty',
       screens: [],
       filters: [],
-      screenType: 'inbox',
+      screenType: 'list',
       wantScreenId: null,
       wantFilterCount: 0,
       wantDefaultId: null,
     },
     {
       label: 'screen but no filters → screen + empty filter list',
-      screens: [card(10n, { screen_type: 'inbox' })],
+      screens: [card(10n, { layout: 'list' })],
       filters: [],
-      screenType: 'inbox',
+      screenType: 'list',
       wantScreenId: 10n,
       wantFilterCount: 0,
       wantDefaultId: null,
     },
     {
       label: 'screen + filters, no default_filter set',
-      screens: [card(11n, { screen_type: 'grid' })],
+      screens: [card(11n, { layout: 'grid' })],
       filters: [card(20n, { title: 'A' }), card(21n, { title: 'B' })],
       screenType: 'grid',
       wantScreenId: 11n,
@@ -269,7 +269,7 @@ describe('loadScreenAndFilters', () => {
     },
     {
       label: 'screen + filters + default_filter present',
-      screens: [card(12n, { screen_type: 'kanban', default_filter: 21n })],
+      screens: [card(12n, { layout: 'kanban', default_filter: 21n })],
       filters: [card(20n, { title: 'A' }), card(21n, { title: 'B' })],
       screenType: 'kanban',
       wantScreenId: 12n,
@@ -278,7 +278,7 @@ describe('loadScreenAndFilters', () => {
     },
     {
       label: 'default_filter points at a missing card → null default',
-      screens: [card(13n, { screen_type: 'kanban', default_filter: 99n })],
+      screens: [card(13n, { layout: 'kanban', default_filter: 99n })],
       filters: [card(20n, { title: 'A' })],
       screenType: 'kanban',
       wantScreenId: 13n,
@@ -286,11 +286,11 @@ describe('loadScreenAndFilters', () => {
       wantDefaultId: null,
     },
     {
-      label: 'screen_type filter picks the right screen out of many',
+      label: 'layout filter picks the right screen out of many',
       screens: [
-        card(30n, { screen_type: 'inbox' }),
-        card(31n, { screen_type: 'grid' }),
-        card(32n, { screen_type: 'kanban' }),
+        card(30n, { layout: 'list' }),
+        card(31n, { layout: 'grid' }),
+        card(32n, { layout: 'kanban' }),
       ],
       filters: [],
       screenType: 'grid',
@@ -330,7 +330,7 @@ describe('loadScreenAndFilters', () => {
     await loadScreenAndFilters(
       { request: request as Pick<Dispatcher, 'request'>['request'] },
       100n,
-      'inbox',
+      'list',
     );
     expect(filterCalls).toBe(0);
   });

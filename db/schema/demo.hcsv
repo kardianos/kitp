@@ -159,8 +159,8 @@ $card_type.task, parent,         "Closed: dispatcher MVP",    @s_done,   $user_a
 
 ## table card | under=proj_default | doc="Inbox screen."
 ### rows
-card_type_id, parent_card_id, title,   screen_type, sort_order, alias
-$card_type.screen, parent, "Inbox",  inbox,        1,         sc_inbox
+card_type_id, parent_card_id, title,   layout, slug,  hotkey, sort_order, alias
+$card_type.screen, parent, "Inbox",  list,   inbox, i,      1,          sc_inbox
 
 ## table card | under=sc_inbox
 ### rows
@@ -170,8 +170,8 @@ $card_type.filter, parent, "Default Inbox", `{"attr":"status","op":"not terminal
 
 ## table card | under=proj_default | doc="Grid screen."
 ### rows
-card_type_id, parent_card_id, title,  screen_type, sort_order, alias
-$card_type.screen, parent, "Grid",  grid,         2,         sc_grid
+card_type_id, parent_card_id, title,  layout, slug, hotkey, sort_order, alias
+$card_type.screen, parent, "Grid",  grid,   grid, g,      2,          sc_grid
 
 ## table card | under=sc_grid
 ### rows
@@ -181,8 +181,8 @@ $card_type.filter, parent, "Default Grid", `{"attr":"status","op":"not terminal"
 
 ## table card | under=proj_default | doc="Kanban screen."
 ### rows
-card_type_id, parent_card_id, title,    screen_type, sort_order, alias
-$card_type.screen, parent, "Kanban", kanban,        3,         sc_kanban
+card_type_id, parent_card_id, title,    layout, slug,   hotkey, sort_order, alias
+$card_type.screen, parent, "Kanban", kanban, kanban, k,      3,          sc_kanban
 
 ## table card | under=sc_kanban
 ### rows
@@ -192,8 +192,8 @@ $card_type.filter, parent, "Default Kanban", `{"attr":"status","op":"not termina
 
 ## table card | under=proj_default | doc="Project-detail screen."
 ### rows
-card_type_id, parent_card_id, title,            screen_type,     sort_order, alias
-$card_type.screen, parent, "Project detail", project_detail, 4,         sc_pd
+card_type_id, parent_card_id, title,            layout, slug,    sort_order, alias
+$card_type.screen, parent, "Project detail", pair,   project, 4,          sc_pd
 
 ## table card | under=sc_pd
 ### rows

@@ -11,7 +11,7 @@
     CENTER:           screens for the selected project, sorted by
                       sort_order then id. "+ Add screen" combobox uses
                       `missingScreenTypes(screens, SCREEN_TYPES)` so a
-                      project can't end up with duplicate screen_types.
+                      project can't end up with duplicate built-in layouts.
     RIGHT:            filters under the selected screen + "Default
                       filter:" combobox writing `default_filter` on
                       the screen card.
@@ -307,7 +307,7 @@
       'screen',
       project.id,
       title,
-      { screen_type: screenType, sort_order: screens.length + 1 },
+      { layout: screenType, slug: screenType, sort_order: screens.length + 1 },
       async () => {
         pendingAddScreenType = null;
         await loadScreensFor(project.id);

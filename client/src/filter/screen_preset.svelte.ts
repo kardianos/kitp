@@ -1,10 +1,18 @@
 /**
  * Per-project saved view presets.
  *
- * Each project ships with one `screen` card per screen_type ('inbox' |
- * 'grid' | 'kanban' | 'project_detail') and each screen owns N `filter`
+ * Each project ships with one `screen` card per built-in layout
+ * ('list' | 'grid' | 'kanban' | 'pair') and each screen owns N `filter`
  * card children. The screen's `default_filter` (card_ref → filter)
  * picks which preset applies on first load.
+ *
+ * Gate 8 renamed the closed-set attribute from `screen_type` to
+ * `layout`. The values are the renderer names the application
+ * enforces. The wider screen-card schema now also carries `slug`,
+ * `hotkey`, `flow_ref`, etc; see docs/FLOW_AND_SCREEN_KERNEL.md.
+ * SCREEN_TYPES survives this gate so the four built-in screens still
+ * find their counterparts via layout-matching; Gate 13 retires the
+ * constant entirely when router-by-slug lands.
  *
  * This module owns the shared fetch + accessor helpers; the UI lives in
  * `FilterPresetSelector.svelte` and is wired into each screen.
@@ -21,27 +29,27 @@ import type {
 import { predicateFromJson, type Predicate } from './predicate';
 
 /**
- * Closed set of screen identifiers the app knows about. A row in the
- * `screen` card table whose `screen_type` is outside this set is
+ * Closed set of layouts (renderer names) the app knows about. A row in
+ * the `screen` card table whose `layout` is outside this set is
  * silently ignored — the kernel stores text without validation, so the
  * application is the source of truth on what counts.
  */
 export type ScreenType =
-  | 'inbox'
+  | 'list'
   | 'grid'
   | 'kanban'
-  | 'project_detail';
+  | 'pair';
 
 export const SCREEN_TYPES: readonly ScreenType[] = [
-  'inbox',
+  'list',
   'grid',
   'kanban',
-  'project_detail',
+  'pair',
 ] as const;
 
 /** Result of {@link loadScreenAndFilters}. */
 export interface ScreenPresetSet {
-  /** The single screen card for (project, screen_type), or null when missing. */
+  /** The single screen card for (project, layout), or null when missing. */
   screen: CardWithAttrs | null;
   /** Filter cards parented to that screen, in `sort_order` (then id). */
   filters: CardWithAttrs[];
@@ -53,12 +61,12 @@ export interface ScreenPresetSet {
  * Issue the two batched requests a screen needs to materialise its
  * presets:
  *   1. card.select_with_attributes: card_type='screen', parent=projectId
- *      → pick the one whose attributes.screen_type matches.
+ *      → pick the one whose `layout` attribute matches.
  *   2. card.select_with_attributes: card_type='filter', parent=<that
  *      screen's id>.
  *
  * Step 2 only fires after step 1 returns; if the project has no screen
- * row for this type we short-circuit with an empty result.
+ * row for this layout we short-circuit with an empty result.
  */
 export async function loadScreenAndFilters(
   dispatcher: Pick<Dispatcher, 'request'>,
@@ -110,8 +118,26 @@ export async function loadScreenAndFilters(
 /* checks everywhere.                                                         */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Read the `layout` attribute as a string (or null when absent / non-
+ * string / empty). The function name preserves the old
+ * `readScreenType` call sites while the underlying attribute moved
+ * from `screen_type` to `layout` in Gate 8.
+ */
 export function readScreenType(card: CardWithAttrs): string | null {
-  const v = card.attributes['screen_type'];
+  const v = card.attributes['layout'];
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/** Read the `slug` attribute as a string (or null when absent). */
+export function readSlug(card: CardWithAttrs): string | null {
+  const v = card.attributes['slug'];
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/** Read the `hotkey` attribute as a string (or null when absent). */
+export function readHotkey(card: CardWithAttrs): string | null {
+  const v = card.attributes['hotkey'];
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 

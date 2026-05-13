@@ -721,7 +721,7 @@
 
   <div class="border-b border-border px-4 pb-3" data-testid="inbox-filter-bar">
     <ScreenFilterBar
-      screenType="inbox"
+      screenType="list"
       projectId={projectScope.projectId}
       {dispatcher}
       {filterAttributes}

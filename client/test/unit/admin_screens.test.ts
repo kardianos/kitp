@@ -38,8 +38,8 @@ function card(
   };
 }
 
-function screen(id: bigint, screenType: string, sortOrder?: number): CardWithAttrs {
-  const attrs: Record<string, unknown> = { screen_type: screenType };
+function screen(id: bigint, layout: string, sortOrder?: number): CardWithAttrs {
+  const attrs: Record<string, unknown> = { layout };
   if (sortOrder !== undefined) attrs.sort_order = sortOrder;
   return card(id, attrs);
 }
@@ -59,42 +59,42 @@ describe('missingScreenTypes', () => {
       label: 'empty screens → full all',
       screens: [],
       all: SCREEN_TYPES,
-      want: ['inbox', 'grid', 'kanban', 'project_detail'],
+      want: ['list', 'grid', 'kanban', 'pair'],
     },
     {
       label: 'all present → empty',
       screens: [
-        screen(1n, 'inbox'),
+        screen(1n, 'list'),
         screen(2n, 'grid'),
         screen(3n, 'kanban'),
-        screen(4n, 'project_detail'),
+        screen(4n, 'pair'),
       ],
       all: SCREEN_TYPES,
       want: [],
     },
     {
       label: 'one missing (kanban) → returns just kanban',
-      screens: [screen(1n, 'inbox'), screen(2n, 'grid'), screen(4n, 'project_detail')],
+      screens: [screen(1n, 'list'), screen(2n, 'grid'), screen(4n, 'pair')],
       all: SCREEN_TYPES,
       want: ['kanban'],
     },
     {
       label: 'duplicates in screens still reports the remainder correctly',
-      screens: [screen(1n, 'inbox'), screen(2n, 'inbox'), screen(3n, 'grid')],
+      screens: [screen(1n, 'list'), screen(2n, 'list'), screen(3n, 'grid')],
       all: SCREEN_TYPES,
-      want: ['kanban', 'project_detail'],
+      want: ['kanban', 'pair'],
     },
     {
       label: 'preserves order of `all`',
       screens: [screen(1n, 'kanban')],
-      all: ['project_detail', 'inbox', 'grid', 'kanban'] as const,
-      want: ['project_detail', 'inbox', 'grid'],
+      all: ['pair', 'list', 'grid', 'kanban'] as const,
+      want: ['pair', 'list', 'grid'],
     },
     {
-      label: 'screens with no screen_type attribute are ignored',
-      screens: [card(1n, {}), screen(2n, 'inbox')],
+      label: 'screens with no layout attribute are ignored',
+      screens: [card(1n, {}), screen(2n, 'list')],
       all: SCREEN_TYPES,
-      want: ['grid', 'kanban', 'project_detail'],
+      want: ['grid', 'kanban', 'pair'],
     },
   ])('$label', ({ screens, all, want }) => {
     expect(missingScreenTypes(screens, all)).toEqual(want);
@@ -114,7 +114,7 @@ describe('sortBySortOrder', () => {
     {
       label: 'numeric sort_orders → ascending',
       input: [
-        screen(1n, 'inbox', 30),
+        screen(1n, 'list', 30),
         screen(2n, 'grid', 10),
         screen(3n, 'kanban', 20),
       ],
@@ -124,7 +124,7 @@ describe('sortBySortOrder', () => {
       label: 'ties broken by id',
       input: [
         screen(3n, 'kanban', 10),
-        screen(1n, 'inbox', 10),
+        screen(1n, 'list', 10),
         screen(2n, 'grid', 10),
       ],
       wantIds: [1n, 2n, 3n],
@@ -132,7 +132,7 @@ describe('sortBySortOrder', () => {
     {
       label: 'missing sort_order → sorts last',
       input: [
-        screen(1n, 'inbox'),
+        screen(1n, 'list'),
         screen(2n, 'grid', 10),
         screen(3n, 'kanban'),
       ],
@@ -141,10 +141,10 @@ describe('sortBySortOrder', () => {
     {
       label: 'mix of present/absent → present first, absent last (tied by id)',
       input: [
-        screen(5n, 'inbox'),
+        screen(5n, 'list'),
         screen(1n, 'grid', 5),
         screen(3n, 'kanban'),
-        screen(2n, 'project_detail', 1),
+        screen(2n, 'pair', 1),
       ],
       wantIds: [2n, 1n, 3n, 5n],
     },
@@ -156,7 +156,7 @@ describe('sortBySortOrder', () => {
     {
       label: 'non-numeric sort_order (string) treated as absent',
       input: [
-        card(1n, { screen_type: 'inbox', sort_order: 'oops' }),
+        card(1n, { layout: 'list', sort_order: 'oops' }),
         screen(2n, 'grid', 10),
       ],
       wantIds: [2n, 1n],
@@ -168,7 +168,7 @@ describe('sortBySortOrder', () => {
   it('does not mutate the input', () => {
     const input = [
       screen(3n, 'kanban', 30),
-      screen(1n, 'inbox', 10),
+      screen(1n, 'list', 10),
       screen(2n, 'grid', 20),
     ];
     const before = input.map((s) => s.id);
@@ -251,10 +251,10 @@ describe('validatePredicateJson', () => {
 
 describe('friendlyScreenLabel', () => {
   it.each<{ input: string; want: string }>([
-    { input: 'inbox', want: 'Inbox' },
+    { input: 'list', want: 'List' },
     { input: 'grid', want: 'Grid' },
     { input: 'kanban', want: 'Kanban' },
-    { input: 'project_detail', want: 'Project detail' },
+    { input: 'pair', want: 'Pair' },
     { input: 'multi_word_thing', want: 'Multi word thing' },
     { input: '', want: '' },
   ])('$input → $want', ({ input, want }) => {
