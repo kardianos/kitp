@@ -38,26 +38,9 @@ class ShortcutRegistry {
     return id;
   }
 
-  /** Remove a previously registered entry by its id.
-   *
-   * The `e !== undefined` guard exists because Svelte 5's reactive
-   * proxy can surface undefined indices when several `unregister`
-   * calls fire back-to-back inside an effect cleanup: each splice
-   * shortens the array between the iteration loop's prior length
-   * read and the next index access, so the trailing index reads as
-   * undefined. Without the guard, `e.id` throws and the cleanup
-   * stops half-applied.
-   *
-   * Implemented as in-place splice (not whole-array reassignment) —
-   * a reassignment fans out to every effect that read `entries`
-   * via Svelte's class-field signal, which can multiply small
-   * cleanups into long reactive cascades on screens that mount many
-   * shortcut hooks. The splice path keeps the change scoped to a
-   * single element.
-   *
-   * No-op when the id is missing — duplicate cleanups stay safe. */
+  /** Remove a previously registered entry by its id. */
   unregister(id: number): void {
-    const idx = this.entries.findIndex((e) => e !== undefined && e.id === id);
+    const idx = this.entries.findIndex((e) => e.id === id);
     if (idx >= 0) this.entries.splice(idx, 1);
   }
 
