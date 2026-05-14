@@ -44,6 +44,11 @@ type InsertInput struct {
 	ParentCardID *int64                     `json:"parent_card_id,string,omitempty" mcp:"desc=parent card id; nil for top-level project cards"`
 	Title        string                     `json:"title" mcp:"required,desc=value for the built-in title attribute"`
 	Attributes   map[string]json.RawMessage `json:"attributes,omitempty" mcp:"desc=optional map of additional attribute name to JSON value"`
+	// Optional initial value for the structural `phase` column. Empty
+	// means "let the column default apply" (triage). When set, must be
+	// one of triage|active|terminal — `phase` is otherwise unreachable
+	// because it doesn't live in attribute_value.
+	Phase string `json:"phase,omitempty" mcp:"desc=initial phase for value-cards; one of triage|active|terminal (defaults to triage)"`
 }
 
 // InsertOutput carries the new row id.
@@ -78,6 +83,10 @@ type SelectOutput struct {
 type jsonInsertRow struct {
 	CardTypeID   int64  `json:"card_type_id,string"`
 	ParentCardID *int64 `json:"parent_card_id,string,omitempty"`
+	// Empty string means "use the column default" (triage). The INSERT
+	// CTE substitutes NULLIF('', '') → NULL → DEFAULT so unset rows
+	// keep their behaviour.
+	Phase string `json:"phase,omitempty"`
 }
 
 // Register installs every card.* handler. The pool reference lets the
@@ -118,6 +127,7 @@ func Register(p *store.Pool) {
 	})
 	RegisterSearch(p)
 	RegisterMoveDelete(p)
+	RegisterSetPhase(p)
 }
 
 // cardTypeFromName resolves the card_type_id for an InsertInput.
@@ -217,7 +227,11 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 							in.CardTypeName, parentName)}
 				}
 			}
-			payload[i] = jsonInsertRow{CardTypeID: ct.ID, ParentCardID: in.ParentCardID}
+			if in.Phase != "" && !IsValidPhase(in.Phase) {
+				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+					Message: fmt.Sprintf("card.insert: phase %q: must be triage|active|terminal", in.Phase)}
+			}
+			payload[i] = jsonInsertRow{CardTypeID: ct.ID, ParentCardID: in.ParentCardID, Phase: in.Phase}
 
 			// Validate + collect title and any additional initial attributes.
 			titleEdge, _, ok := snap.EdgeFor(ct.ID, "title")
@@ -348,15 +362,19 @@ func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([
 			return nil, err
 		}
 
-		// Statement 1: coalesced INSERT into card.
+		// Statement 1: coalesced INSERT into card. Phase is optional;
+		// an empty string in the payload becomes NULL via NULLIF, and
+		// COALESCE(NULL, 'triage') keeps the column default behaviour
+		// for callers that don't set it.
 		const insertSQL = `
 			WITH input AS (
 				SELECT row_number() OVER () AS ord, *
 				FROM jsonb_to_recordset($1::jsonb)
-				AS x(card_type_id int, parent_card_id bigint)
+				AS x(card_type_id int, parent_card_id bigint, phase text)
 			)
-			INSERT INTO card (card_type_id, parent_card_id)
-			SELECT card_type_id, parent_card_id FROM input ORDER BY ord
+			INSERT INTO card (card_type_id, parent_card_id, phase)
+			SELECT card_type_id, parent_card_id, COALESCE(NULLIF(phase, ''), 'triage')
+			FROM input ORDER BY ord
 			RETURNING id
 		`
 		rows, err := tx.Query(ctx, insertSQL, buf)

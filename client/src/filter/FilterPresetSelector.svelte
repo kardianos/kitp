@@ -39,20 +39,26 @@
   }
 </script>
 
-<!-- Skip the picker entirely when the screen has no saved filters; the
-     screen still works (no preset = blank predicate). -->
-{#if filters.length > 0}
-  <div class="flex items-center gap-1 text-xs text-muted">
-    <span>View:</span>
-    <span class="w-40">
-      <Combobox
-        aria-label="Saved filter preset"
-        options={options}
-        value={selected}
-        searchable={filters.length > 8}
-        placeholder="Default"
-        onchange={onPick}
-      />
-    </span>
-  </div>
-{/if}
+<!--
+  Always rendered, even when the screen has no saved views — gives the
+  user a visible anchor next to the kebab's "Save current as new view…"
+  action so the affordance to manage views is discoverable regardless
+  of whether any view exists yet. Empty `options` collapses the
+  Combobox to its "Default" placeholder.
+-->
+<div
+  class="flex items-center gap-1 text-xs text-muted"
+  data-testid="filter-preset-selector"
+>
+  <span>View:</span>
+  <span class="w-40">
+    <Combobox
+      aria-label="Saved filter preset"
+      options={options}
+      value={selected}
+      searchable={filters.length > 8}
+      placeholder="Default"
+      onchange={onPick}
+    />
+  </span>
+</div>

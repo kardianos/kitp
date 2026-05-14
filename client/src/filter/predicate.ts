@@ -30,7 +30,8 @@ export type Op =
   | 'exists'
   | 'notExists'
   | 'contains'
-  | 'notTerminal';
+  | 'notTerminal'
+  | 'hasPhase';
 
 /**
  * Wire-string for each operator. The values here MUST match the server's
@@ -46,6 +47,7 @@ export const OP_TO_WIRE: Readonly<Record<Op, string>> = {
   notExists: 'not exists',
   contains: 'contains',
   notTerminal: 'not terminal',
+  hasPhase: 'has_phase',
 };
 
 const WIRE_TO_OP: Readonly<Record<string, Op>> = {
@@ -57,6 +59,7 @@ const WIRE_TO_OP: Readonly<Record<string, Op>> = {
   'not exists': 'notExists',
   contains: 'contains',
   'not terminal': 'notTerminal',
+  has_phase: 'hasPhase',
 };
 
 /** Returns the wire string for [op]. Inverse of {@link opFromWire}. */
@@ -88,12 +91,25 @@ export function opArity(op: Op): OpArity {
       return 'single';
     case 'in':
     case 'notIn':
+    case 'hasPhase':
       return 'multi';
     case 'exists':
     case 'notExists':
     case 'notTerminal':
       return 'none';
   }
+}
+
+/**
+ * Closed set of `phase` values understood by `has_phase` (server-side
+ * `card.where.go` rejects anything else). Surfaced as a type + a
+ * runtime array so the advanced filter editor can render checkboxes
+ * without hard-coding the list.
+ */
+export type Phase = 'triage' | 'active' | 'terminal';
+export const PHASES: readonly Phase[] = ['triage', 'active', 'terminal'] as const;
+export function isPhase(v: unknown): v is Phase {
+  return v === 'triage' || v === 'active' || v === 'terminal';
 }
 
 /* -------------------------------------------------------------------------- */

@@ -235,65 +235,77 @@ describe('loadScreenAndFilters', () => {
     label: string;
     screens: CardWithAttrs[];
     filters: CardWithAttrs[];
-    layout: 'list' | 'grid' | 'kanban' | 'pair';
+    slug: string;
     wantScreenId: bigint | null;
     wantFilterCount: number;
     wantDefaultId: bigint | null;
   }>([
     {
-      label: 'no screen for layout → empty',
+      label: 'no screen for slug → empty',
       screens: [],
       filters: [],
-      layout: 'list',
+      slug: 'inbox',
       wantScreenId: null,
       wantFilterCount: 0,
       wantDefaultId: null,
     },
     {
       label: 'screen but no filters → screen + empty filter list',
-      screens: [card(10n, { layout: 'list' })],
+      screens: [card(10n, { slug: 'inbox', layout: 'list' })],
       filters: [],
-      layout: 'list',
+      slug: 'inbox',
       wantScreenId: 10n,
       wantFilterCount: 0,
       wantDefaultId: null,
     },
     {
       label: 'screen + filters, no default_filter set',
-      screens: [card(11n, { layout: 'grid' })],
+      screens: [card(11n, { slug: 'grid', layout: 'grid' })],
       filters: [card(20n, { title: 'A' }), card(21n, { title: 'B' })],
-      layout: 'grid',
+      slug: 'grid',
       wantScreenId: 11n,
       wantFilterCount: 2,
       wantDefaultId: null,
     },
     {
       label: 'screen + filters + default_filter present',
-      screens: [card(12n, { layout: 'kanban', default_filter: 21n })],
+      screens: [
+        card(12n, {
+          slug: 'kanban',
+          layout: 'kanban',
+          default_filter: 21n,
+        }),
+      ],
       filters: [card(20n, { title: 'A' }), card(21n, { title: 'B' })],
-      layout: 'kanban',
+      slug: 'kanban',
       wantScreenId: 12n,
       wantFilterCount: 2,
       wantDefaultId: 21n,
     },
     {
       label: 'default_filter points at a missing card → null default',
-      screens: [card(13n, { layout: 'kanban', default_filter: 99n })],
+      screens: [
+        card(13n, {
+          slug: 'kanban',
+          layout: 'kanban',
+          default_filter: 99n,
+        }),
+      ],
       filters: [card(20n, { title: 'A' })],
-      layout: 'kanban',
+      slug: 'kanban',
       wantScreenId: 13n,
       wantFilterCount: 1,
       wantDefaultId: null,
     },
     {
-      label: 'layout filter picks the right screen out of many',
+      label: 'slug picks the right screen among multiple list-layout siblings',
       screens: [
-        card(30n, { layout: 'list' }),
-        card(31n, { layout: 'grid' }),
-        card(32n, { layout: 'kanban' }),
+        card(30n, { slug: 'inbox', layout: 'list' }),
+        card(31n, { slug: 'ideas', layout: 'list' }),
+        card(32n, { slug: 'archive', layout: 'list' }),
       ],
       filters: [],
-      layout: 'grid',
+      slug: 'ideas',
       wantScreenId: 31n,
       wantFilterCount: 0,
       wantDefaultId: null,
@@ -303,13 +315,13 @@ describe('loadScreenAndFilters', () => {
     async ({
       screens,
       filters,
-      layout,
+      slug,
       wantScreenId,
       wantFilterCount,
       wantDefaultId,
     }) => {
       const dispatcher = makeDispatcher(screens, filters);
-      const out = await loadScreenAndFilters(dispatcher, 100n, layout);
+      const out = await loadScreenAndFilters(dispatcher, 100n, slug);
       expect(out.screen?.id ?? null).toBe(wantScreenId);
       expect(out.filters.length).toBe(wantFilterCount);
       expect(out.defaultFilter?.id ?? null).toBe(wantDefaultId);

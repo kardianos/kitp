@@ -42,6 +42,9 @@
   import { BatchAbortedError, SubRequestError } from '../../dispatch/errors';
   import { getDispatcher } from '../../dispatch/context';
   import { setActiveScope, useShortcut } from '../../keys/shortcut';
+  import { useQuickEntry } from '../../quick_entry/use_quick_entry.svelte';
+  import QuickEntryOverlay from '../../quick_entry/QuickEntryOverlay.svelte';
+  import { projectScope } from '../../shell/project_scope.svelte';
   import {
     attributeUpdate,
     cardSelectWithAttributes,
@@ -258,6 +261,26 @@
     fireInInputs: false,
   });
 
+  /* --------------------------------------------------- new project flow */
+
+  /**
+   * Project creation lives here so the admin can spin up a new project
+   * without leaving /admin/projects. After creation we refresh the local
+   * table and bump the shared store so the title-bar picker sees it too.
+   */
+  const qe = useQuickEntry({
+    scope: 'admin_projects',
+    defaultCardType: 'project',
+    onCreated: () => {
+      projectScope.notifyProjectsChanged();
+      void refresh();
+    },
+  });
+
+  useShortcut('admin_projects', 'n', () => qe.open(), 'New project', {
+    fireInInputs: false,
+  });
+
   /* ------------------------------------------------------------- mount */
 
   onMount(() => {
@@ -273,15 +296,22 @@
         {projects.length} total &middot; {templateCount} template{templateCount === 1 ? '' : 's'}
       </span>
     </div>
-    <label class="flex items-center gap-2 text-sm text-fg">
-      <input
-        type="checkbox"
-        bind:checked={showTemplates}
-        class="h-4 w-4 rounded border-border"
-        data-testid="show-templates-toggle"
-      />
-      <span>Show templates</span>
-    </label>
+    <div class="flex items-center gap-4">
+      <label class="flex items-center gap-2 text-sm text-fg">
+        <input
+          type="checkbox"
+          bind:checked={showTemplates}
+          class="h-4 w-4 rounded border-border"
+          data-testid="show-templates-toggle"
+        />
+        <span>Show templates</span>
+      </label>
+      <span data-testid="admin-projects-new">
+        <Button variant="primary" size="sm" onclick={() => qe.open()}>
+          {#snippet children()}+ New project{/snippet}
+        </Button>
+      </span>
+    </div>
   </header>
 
   {#if loading && projects.length === 0}
@@ -456,3 +486,5 @@
     </Button>
   {/snippet}
 </Modal>
+
+<QuickEntryOverlay {...qe.props} />

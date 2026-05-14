@@ -14,6 +14,10 @@
       "type": "integer",
       "description": "parent card id; nil for top-level project cards"
     },
+    "phase": {
+      "type": "string",
+      "description": "initial phase for value-cards; one of triage|active|terminal (defaults to triage)"
+    },
     "title": {
       "type": "string",
       "description": "value for the built-in title attribute"

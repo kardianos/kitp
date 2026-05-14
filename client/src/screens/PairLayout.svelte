@@ -84,6 +84,14 @@
       return 0n;
     }
   })();
+  /** Active screen slug from `/project/:id/screen/:slug`. Drives the
+   *  preset cache scope so two pair-layout screens in the same
+   *  project don't share state. */
+  // svelte-ignore state_referenced_locally
+  const slug: string = ((): string => {
+    const v = params['slug'];
+    return typeof v === 'string' && v !== '' ? v : 'project';
+  })();
 
   // Mirror the route into the nav-sidebar project picker. Visiting a
   // project detail (by click, deep link, or keyboard "Enter") should
@@ -107,7 +115,7 @@
   // we just keep a bindable predicate the visible-rows derivation
   // reads from.
   let predicate = $state<Predicate | null>(
-    untrack(() => getFilter('project_detail', projectId)),
+    untrack(() => getFilter(slug, projectId)),
   );
 
   /** Derived lookup tables fed to TaskRow. */
@@ -392,7 +400,7 @@
     never mounts.
   -->
   <ScreenFilterBar
-    screenType="pair"
+    screenSlug={slug}
     projectId={projectId}
     {dispatcher}
     {filterAttributes}

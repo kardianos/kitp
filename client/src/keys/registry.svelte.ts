@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import type { ShortcutScope } from './scopes';
 
 /**
@@ -30,18 +31,42 @@ class ShortcutRegistry {
 
   #nextId = 1;
 
-  /** Register a shortcut. Returns the id used for `unregister`. */
+  /** Register a shortcut. Returns the id used for `unregister`.
+   *
+   * Wrapped in `untrack` because the access `this.entries.push(...)`
+   * reads the entries field signal. Without untrack a caller running
+   * inside a `$effect` (e.g. AppShell's per-project chord registration)
+   * would pick up `entries` as a tracked dep — the subsequent push
+   * fires the same signal, Svelte re-schedules the effect, the next
+   * run's cleanup + body re-enters here, and the cycle climbs to
+   * Svelte's `effect_update_depth_exceeded` ceiling.
+   *
+   * Untrack only suppresses reads from being added to the caller's
+   * dep set; the push still fires its signal so legitimate subscribers
+   * (ShortcutHelp's `visible` derived) see the change. */
   register(entry: Omit<ShortcutEntry, 'id'>): number {
-    const id = this.#nextId++;
-    const full: ShortcutEntry = { ...entry, id };
-    this.entries.push(full);
-    return id;
+    return untrack(() => {
+      const id = this.#nextId++;
+      const full: ShortcutEntry = { ...entry, id };
+      this.entries.push(full);
+      return id;
+    });
   }
 
-  /** Remove a previously registered entry by its id. */
+  /** Remove a previously registered entry by its id.
+   *
+   * Same untrack rationale as `register` — keeps the registry's
+   * mutation API from threading the caller's effect into the entries
+   * dep graph. The `e !== undefined` guard handles a separate Svelte
+   * 5 reactive-array quirk: back-to-back splices can surface an
+   * undefined index mid-iteration through the proxy. */
   unregister(id: number): void {
-    const idx = this.entries.findIndex((e) => e.id === id);
-    if (idx >= 0) this.entries.splice(idx, 1);
+    untrack(() => {
+      const idx = this.entries.findIndex(
+        (e) => e !== undefined && e.id === id,
+      );
+      if (idx >= 0) this.entries.splice(idx, 1);
+    });
   }
 
   /** Entries visible for the current scope plus the always-on `global`. */

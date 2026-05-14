@@ -17,6 +17,7 @@
 import type { ID } from '../reg/types';
 
 const STORAGE_KEY = 'kitp.projectScope.id';
+const TEMPLATES_KEY = 'kitp.projectScope.showTemplates';
 
 function readInitial(): ID | null {
   if (typeof window === 'undefined') return null;
@@ -31,6 +32,15 @@ function readInitial(): ID | null {
   return null;
 }
 
+function readInitialShowTemplates(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.sessionStorage.getItem(TEMPLATES_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 function persist(value: ID | null): void {
   if (typeof window === 'undefined') return;
   try {
@@ -41,6 +51,16 @@ function persist(value: ID | null): void {
     }
   } catch {
     /* ignore quota / unavailable */
+  }
+}
+
+function persistShowTemplates(value: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (value) window.sessionStorage.setItem(TEMPLATES_KEY, '1');
+    else window.sessionStorage.removeItem(TEMPLATES_KEY);
+  } catch {
+    /* ignore */
   }
 }
 
@@ -58,9 +78,29 @@ class ProjectScope {
    */
   projectsVersion = $state(0);
 
+  /**
+   * When true, the shared projects cache drops its `is_template != true`
+   * exclusion so admins can pick a template project from the title-bar
+   * picker (authoring flows / screens / value-cards against a template
+   * follows the same path as a real project). Persisted in
+   * sessionStorage; flipping it bumps `projectsVersion` so the cache
+   * reloads through the same path a project-list mutation uses.
+   *
+   * The toggle UI lives inside `<ProjectTitlePicker>` and is only
+   * rendered on `/admin/*` routes.
+   */
+  showTemplates = $state<boolean>(readInitialShowTemplates());
+
   setProject(id: ID | null): void {
     this.projectId = id;
     persist(id);
+  }
+
+  setShowTemplates(value: boolean): void {
+    if (this.showTemplates === value) return;
+    this.showTemplates = value;
+    persistShowTemplates(value);
+    this.projectsVersion += 1;
   }
 
   /** Signal that the project list has changed; sidebar will reload. */

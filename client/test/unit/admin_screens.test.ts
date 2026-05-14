@@ -18,8 +18,12 @@ import {
   friendlyScreenLabel,
   missingLayouts,
   sortBySortOrder,
+  uniqueSlug,
   validatePredicateJson,
+  validateScreenHotkey,
+  validateScreenSlug,
 } from '../../src/screens/admin/admin_screens_helpers.js';
+import { readFlowRef } from '../../src/filter/screen_preset.svelte.js';
 
 /* -------------------------------------------------------------------------- */
 /* Fixture builders                                                           */
@@ -259,5 +263,88 @@ describe('friendlyScreenLabel', () => {
     { input: '', want: '' },
   ])('$input → $want', ({ input, want }) => {
     expect(friendlyScreenLabel(input)).toBe(want);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* validateScreenSlug                                                         */
+/* -------------------------------------------------------------------------- */
+
+describe('validateScreenSlug', () => {
+  it.each<{ input: string; wantOk: boolean }>([
+    { input: 'inbox', wantOk: true },
+    { input: 'a', wantOk: true },
+    { input: 'my-screen', wantOk: true },
+    { input: 'my_screen', wantOk: true },
+    { input: 'screen42', wantOk: true },
+    { input: '  trimmed  ', wantOk: true },
+    { input: '', wantOk: false },
+    { input: '   ', wantOk: false },
+    { input: 'Inbox', wantOk: false },
+    { input: '1abc', wantOk: false },
+    { input: 'has space', wantOk: false },
+    { input: 'a/b', wantOk: false },
+    { input: 'a.b', wantOk: false },
+  ])('$input → ok=$wantOk', ({ input, wantOk }) => {
+    expect(validateScreenSlug(input).ok).toBe(wantOk);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* validateScreenHotkey                                                       */
+/* -------------------------------------------------------------------------- */
+
+describe('validateScreenHotkey', () => {
+  it.each<{ input: string; wantOk: boolean }>([
+    { input: '', wantOk: true },
+    { input: '  ', wantOk: true },
+    { input: 'i', wantOk: true },
+    { input: 'G', wantOk: true },
+    { input: '7', wantOk: true },
+    { input: 'gg', wantOk: false },
+    { input: '!', wantOk: false },
+    { input: ' i ', wantOk: true },
+    { input: 'i j', wantOk: false },
+  ])('$input → ok=$wantOk', ({ input, wantOk }) => {
+    expect(validateScreenHotkey(input).ok).toBe(wantOk);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* uniqueSlug                                                                 */
+/* -------------------------------------------------------------------------- */
+
+describe('uniqueSlug', () => {
+  it.each<{ base: string; taken: string[]; want: string }>([
+    { base: 'grid', taken: [], want: 'grid' },
+    { base: 'grid', taken: ['list'], want: 'grid' },
+    { base: 'grid', taken: ['grid'], want: 'grid-2' },
+    { base: 'grid', taken: ['grid', 'grid-2'], want: 'grid-3' },
+    { base: 'grid', taken: ['grid', 'grid-2', 'grid-3'], want: 'grid-4' },
+    // Gap in the numbering is filled (we walk monotonically, so we
+    // return the first free number — `grid-2` here, not `grid-4`).
+    { base: 'grid', taken: ['grid', 'grid-3'], want: 'grid-2' },
+  ])('$base + $taken → $want', ({ base, taken, want }) => {
+    expect(uniqueSlug(base, new Set(taken))).toBe(want);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* readFlowRef                                                                */
+/* -------------------------------------------------------------------------- */
+
+describe('readFlowRef', () => {
+  it.each<{ label: string; attrs: Record<string, unknown>; want: bigint | null }>([
+    { label: 'absent → null', attrs: {}, want: null },
+    { label: 'bigint → bigint', attrs: { flow_ref: 42n }, want: 42n },
+    { label: 'bigint 0n → null', attrs: { flow_ref: 0n }, want: null },
+    { label: 'number → bigint', attrs: { flow_ref: 7 }, want: 7n },
+    { label: 'number 0 → null', attrs: { flow_ref: 0 }, want: null },
+    { label: 'string of digits → bigint', attrs: { flow_ref: '99' }, want: 99n },
+    { label: 'string "0" → null', attrs: { flow_ref: '0' }, want: null },
+    { label: 'non-numeric string → null', attrs: { flow_ref: 'abc' }, want: null },
+    { label: 'NaN → null', attrs: { flow_ref: Number.NaN }, want: null },
+  ])('$label', ({ attrs, want }) => {
+    expect(readFlowRef(card(1n, attrs))).toBe(want);
   });
 });

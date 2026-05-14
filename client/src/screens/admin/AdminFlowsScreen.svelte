@@ -91,6 +91,7 @@
   import Spinner from '../../ui/Spinner.svelte';
   import { notify } from '../../ui/toast.svelte';
   import { projectScope } from '../../shell/project_scope.svelte';
+  import { projectsStore, watchProjects } from '../../shell/projects_store.svelte';
   import { cx } from '../../util/class_names';
 
   import {
@@ -112,10 +113,14 @@
   /* ---------------------------------------------------------- dependencies */
 
   const dispatcher = getDispatcher();
+  // Project list lives in the shared `projectsStore` (the title-bar
+  // picker is now the only project picker on this screen). Keeping the
+  // cache warm here means an admin who lands on /admin/flows directly
+  // still gets a populated picker.
+  $effect(watchProjects(dispatcher));
 
   /* ----------------------------------------------------------------- state */
 
-  let projects = $state<CardWithAttrs[]>([]);
   let flows = $state<FlowRow[]>([]);
   let steps = $state<FlowStepRow[]>([]);
   let attributeDefs = $state<AttributeDefRow[]>([]);
@@ -126,7 +131,15 @@
    *  from/to on the selected flow (e.g. status / milestone cards). */
   let valueCardsByType = $state<Record<string, CardWithAttrs[]>>({});
 
-  let selectedProjectId = $state<ID | null>(projectScope.projectId);
+  /**
+   * The title-bar `ProjectTitlePicker` is now the only project picker
+   * on this screen — `selectedProjectId` is purely a $derived view of
+   * the global scope so flow / step fetches re-fire when the admin
+   * picks a different project from the breadcrumb.
+   */
+  const selectedProjectId = $derived(projectScope.projectId);
+  /** Shared, template-aware project cache for title lookups. */
+  const projects = $derived(projectsStore.projects);
   let selectedFlowId = $state<ID | null>(null);
   let search = $state('');
 
@@ -270,18 +283,16 @@
 
   /* ------------------------------------------------------------- data fetch */
 
+  /**
+   * Fetch the screen's static reference data (attribute defs + roles).
+   * Projects come from `projectsStore` (kept warm by the watchProjects
+   * effect above) so this screen no longer issues its own card.select
+   * for them — the title-bar picker is the single source of truth.
+   */
   async function loadInitial(): Promise<void> {
     loading = true;
     error = null;
     try {
-      const projP = dispatcher.request<
-        CardSelectWithAttributesInput,
-        CardSelectWithAttributesOutput
-      >({
-        endpoint: cardSelectWithAttributes.endpoint,
-        action: cardSelectWithAttributes.action,
-        data: { cardTypeName: 'project' },
-      });
       const defsP = dispatcher.request<
         AttributeDefSelectInput,
         AttributeDefSelectOutput
@@ -295,17 +306,9 @@
         action: roleList.action,
         data: {},
       });
-      const [projOut, defsOut, rolesOut] = await Promise.all([projP, defsP, rolesP]);
-      projects = projOut.rows;
+      const [defsOut, rolesOut] = await Promise.all([defsP, rolesP]);
       attributeDefs = defsOut.rows;
       roles = rolesOut.rows;
-      // Default the project picker to whichever project the sidebar
-      // had pinned; fall back to the first one so the screen has
-      // something to render on an admin's fresh load.
-      if (selectedProjectId === null && projects.length > 0) {
-        const first = projects[0];
-        if (first !== undefined) selectedProjectId = first.id;
-      }
       loading = false;
     } catch (e) {
       loading = false;
@@ -705,18 +708,6 @@
 
   /* ------------------------------------------------------ combobox glue */
 
-  function pickProject(v: unknown): void {
-    if (typeof v !== 'string' || v === '') {
-      selectedProjectId = null;
-      return;
-    }
-    try {
-      selectedProjectId = BigInt(v);
-    } catch {
-      /* ignore */
-    }
-  }
-
   function pickCreateAttr(v: unknown): void {
     if (typeof v !== 'string' || v === '') {
       createDraft = { ...createDraft, attributeDefId: null };
@@ -829,20 +820,7 @@
   <header
     class="flex items-center justify-between gap-3 border-b border-border px-4 py-2"
   >
-    <div class="flex items-center gap-3">
-      <h1 class="text-lg font-semibold">Admin · Flows</h1>
-      <span class="text-sm text-muted">Project:</span>
-      <span class="w-56">
-        <Combobox
-          aria-label="Project"
-          options={projectOptions}
-          value={selectedProjectId === null ? null : selectedProjectId.toString()}
-          searchable={projectOptions.length > 8}
-          placeholder="Pick a project…"
-          onchange={pickProject}
-        />
-      </span>
-    </div>
+    <h1 class="text-lg font-semibold">Admin · Flows</h1>
     <Button variant="primary" size="sm" onclick={openCreate}>
       {#snippet children()}+ New flow{/snippet}
     </Button>

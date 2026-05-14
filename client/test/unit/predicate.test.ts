@@ -21,17 +21,22 @@ import {
   flattenLeaves,
   in_,
   isFlatAndOfLeaves,
+  isPhase,
   ne,
   notExists,
   notIn,
   notOf,
+  opArity,
   opFromWire,
   opToWire,
   orOf,
+  PHASES,
   predicateFromJson,
   predicateFromLeaves,
   predicateToJson,
   toText,
+  type Op,
+  type Phase,
   type Predicate,
   type PredicateLeaf,
 } from '../../src/filter/predicate.js';
@@ -122,7 +127,17 @@ describe('predicate wire shape', () => {
   });
 
   it('opToWire / opFromWire are exact inverses', () => {
-    for (const op of ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'] as const) {
+    for (const op of [
+      'eq',
+      'ne',
+      'in',
+      'notIn',
+      'exists',
+      'notExists',
+      'contains',
+      'notTerminal',
+      'hasPhase',
+    ] as const) {
       expect(opFromWire(opToWire(op))).toBe(op);
     }
   });
@@ -263,5 +278,52 @@ describe('toText', () => {
   it('renders an empty AND as "true" and an empty OR as "false"', () => {
     expect(toText(andOf([]))).toBe('true');
     expect(toText(orOf([]))).toBe('false');
+  });
+});
+
+describe('hasPhase op', () => {
+  it.each<{ phase: unknown; want: boolean }>([
+    { phase: 'triage', want: true },
+    { phase: 'active', want: true },
+    { phase: 'terminal', want: true },
+    { phase: 'done', want: false },
+    { phase: '', want: false },
+    { phase: 0, want: false },
+    { phase: null, want: false },
+    { phase: undefined, want: false },
+  ])('isPhase($phase) → $want', ({ phase, want }) => {
+    expect(isPhase(phase)).toBe(want);
+  });
+
+  it('PHASES lists the three canonical phases in admin order', () => {
+    expect(PHASES).toEqual(['triage', 'active', 'terminal']);
+  });
+
+  it('opArity is multi (server takes a values list)', () => {
+    expect(opArity('hasPhase' as Op)).toBe('multi');
+  });
+
+  it.each<{ op: Op; wire: string }>([
+    { op: 'hasPhase', wire: 'has_phase' },
+    { op: 'notTerminal', wire: 'not terminal' },
+    { op: 'contains', wire: 'contains' },
+  ])('opToWire($op) === $wire', ({ op, wire }) => {
+    expect(opToWire(op)).toBe(wire);
+  });
+
+  it('round-trips through JSON with values intact', () => {
+    const leaf: PredicateLeaf = {
+      kind: 'leaf',
+      attr: 'status',
+      op: 'hasPhase',
+      values: ['triage', 'active'] satisfies Phase[],
+    };
+    const out = predicateFromJson(predicateToJson(leaf));
+    expect(out).toEqual(leaf);
+    expect(predicateToJson(leaf)).toEqual({
+      attr: 'status',
+      op: 'has_phase',
+      values: ['triage', 'active'],
+    });
   });
 });

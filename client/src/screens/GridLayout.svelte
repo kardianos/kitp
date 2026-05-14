@@ -96,6 +96,14 @@
 
   let { projectId, params = {} }: Props = $props();
 
+  /** Active screen slug from `/project/:id/screen/:slug`. Drives the
+   *  preset cache scope so two grid-layout screens in the same project
+   *  don't share state. */
+  const slug = $derived.by((): string => {
+    const v = params['slug'];
+    return typeof v === 'string' && v !== '' ? v : 'grid';
+  });
+
   // Resolution order: explicit prop > `:id` route param > global project
   // scope picked from the sidebar. The global scope is the everyday case;
   // ScreenHost mounts this layout under `/project/:id/screen/grid` and
@@ -234,7 +242,7 @@
   // or null when there's nothing cached yet. On first visit we apply
   // the data-side default filter (see the effect below).
   let predicate = $state<Predicate | null>(
-    untrack(() => getFilter('grid', projectScope.projectId)),
+    untrack(() => getFilter(slug, projectScope.projectId)),
   );
   let selectedIndex = $state(0);
   let focusedColumn = $state<string | null>(null);
@@ -802,7 +810,7 @@
 <div class="flex h-full w-full flex-col">
   <div class="shrink-0 border-b border-border px-4 py-2">
     <ScreenFilterBar
-      screenType="grid"
+      screenSlug={slug}
       projectId={scopedProjectId ?? null}
       {dispatcher}
       {filterAttributes}

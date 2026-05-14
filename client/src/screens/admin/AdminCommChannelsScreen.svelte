@@ -23,6 +23,8 @@
   import { BatchAbortedError, SubRequestError } from '../../dispatch/errors';
   import { getDispatcher } from '../../dispatch/context';
   import { setActiveScope } from '../../keys/shortcut';
+  import { projectScope } from '../../shell/project_scope.svelte';
+  import { projectsStore, watchProjects } from '../../shell/projects_store.svelte';
   import {
     cardSelectWithAttributes,
     commChannelList,
@@ -60,16 +62,23 @@
   setActiveScope('admin_comm_channels');
 
   const dispatcher = getDispatcher();
+  // Keep the shared project cache warm so the title-bar picker has
+  // entries on first paint.
+  $effect(watchProjects(dispatcher));
 
   /* ----------------------------------------------------------------- state */
 
-  let projects = $state<CardWithAttrs[]>([]);
   let channels = $state<ChannelRow[]>([]);
   let statuses = $state<CardWithAttrs[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
 
-  let selectedProjectId = $state<ID | null>(null);
+  /** The title-bar `ProjectTitlePicker` is the only project picker on
+   *  this screen; `selectedProjectId` is a $derived view of the global
+   *  scope so channel + status fetches re-fire when the admin picks a
+   *  different project from the breadcrumb. */
+  const selectedProjectId = $derived(projectScope.projectId);
+  const projects = $derived(projectsStore.projects);
 
   /** Form draft. `formOpen` flag governs visibility (so type narrowing
    *  inside the modal snippet works — Svelte's check doesn't propagate
@@ -80,15 +89,6 @@
   let saving = $state(false);
 
   /* --------------------------------------------------- derived options */
-
-  const projectOptions = $derived(
-    projects.map((p) => ({
-      value: p.id.toString(),
-      label: typeof p.attributes['title'] === 'string'
-        ? (p.attributes['title'] as string)
-        : `#${p.id}`,
-    })),
-  );
 
   const statusOptions = $derived([
     { value: '0', label: '(no intake status — use flow default)' },
@@ -101,29 +101,6 @@
   ]);
 
   /* ----------------------------------------------------------- data fetch */
-
-  async function loadProjects(): Promise<void> {
-    try {
-      const out = await dispatcher.request<
-        CardSelectWithAttributesInput,
-        CardSelectWithAttributesOutput
-      >({
-        endpoint: cardSelectWithAttributes.endpoint,
-        action: cardSelectWithAttributes.action,
-        data: { cardTypeName: 'project' },
-      });
-      projects = out.rows;
-      // Default to the first project so the screen renders something.
-      if (selectedProjectId === null && projects.length > 0) {
-        const first = projects[0];
-        if (first !== undefined) selectedProjectId = first.id;
-      }
-    } catch (e) {
-      if (e instanceof SubRequestError) error = e.message;
-      else if (e instanceof BatchAbortedError) error = e.reason;
-      else error = errMsg(e);
-    }
-  }
 
   async function loadChannelsFor(projectId: ID): Promise<void> {
     try {
@@ -166,7 +143,6 @@
   async function loadInitial(): Promise<void> {
     loading = true;
     error = null;
-    await loadProjects();
     if (selectedProjectId !== null) {
       await Promise.all([
         loadChannelsFor(selectedProjectId),
@@ -250,18 +226,6 @@
 
   /* ----------------------------------------------------------- helpers */
 
-  function pickProject(v: string | string[] | null): void {
-    if (v === null || typeof v !== 'string') {
-      selectedProjectId = null;
-      return;
-    }
-    try {
-      selectedProjectId = BigInt(v);
-    } catch {
-      selectedProjectId = null;
-    }
-  }
-
   function pickIntakeStatus(v: string | string[] | null): void {
     if (typeof v === 'string') draft.intakeStatusId = v;
     else draft.intakeStatusId = '0';
@@ -278,22 +242,9 @@
 
 <div class="flex h-full flex-col" data-testid="admin-comm-channels-screen">
   <header
-    class="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3"
+    class="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3"
   >
     <h1 class="text-lg font-semibold">Admin · Comm channels</h1>
-    <span class="ml-4 flex items-center gap-2 text-sm">
-      <span class="text-muted">Project:</span>
-      <span class="w-56">
-        <Combobox
-          aria-label="Project"
-          options={projectOptions}
-          value={selectedProjectId === null ? null : selectedProjectId.toString()}
-          searchable={projectOptions.length > 8}
-          placeholder="Pick a project…"
-          onchange={pickProject}
-        />
-      </span>
-    </span>
     <Button
       variant="primary"
       size="sm"

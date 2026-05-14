@@ -87,9 +87,69 @@ export function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/**
+ * Pick a slug that doesn't collide with any in `taken`. If `base` is
+ * free, returns it; otherwise appends `-2`, `-3`, … until a free slot
+ * is found. Two `grid` screens get `grid` + `grid-2`; a third becomes
+ * `grid-3`. ScreenHost resolves by slug via `find(r => readSlug(r) ===
+ * wanted)`, so unique slugs are the prerequisite for >1 screen per
+ * layout to be addressable.
+ */
+export function uniqueSlug(base: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(base)) return base;
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  // Extremely unlikely fallback; keeps the function total.
+  return `${base}-${Date.now()}`;
+}
+
 /** Capitalise + underscore-to-space (`pair` → `Pair`, `multi_word` → `Multi word`). */
 export function friendlyScreenLabel(screenType: string): string {
   if (screenType === '') return '';
   const spaced = screenType.replace(/_/g, ' ');
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+/**
+ * The slug becomes a URL path segment (`/project/:id/screen/<slug>`), so
+ * restrict to characters that don't need percent-encoding: lowercase
+ * a-z, digits, `-`, `_`. Empty is rejected. Must not start with a digit
+ * to avoid colliding with future numeric route segments.
+ *
+ * Returns `{ ok: true }` on success, `{ ok: false, error }` otherwise.
+ */
+export function validateScreenSlug(
+  raw: string,
+): { ok: true } | { ok: false; error: string } {
+  const trimmed = raw.trim();
+  if (trimmed === '') return { ok: false, error: 'Slug is required.' };
+  if (!/^[a-z][a-z0-9_-]*$/.test(trimmed)) {
+    return {
+      ok: false,
+      error: 'Slug: lowercase letters, digits, "-", "_"; must start with a letter.',
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * The hotkey is the tail of a `g <key>` chord registered in AppShell.
+ * Accept a single printable ASCII key — that's what the chord parser
+ * recognises today. Empty is allowed and means "no chord"; the
+ * registration loop in AppShell skips screens whose hotkey is null.
+ */
+export function validateScreenHotkey(
+  raw: string,
+): { ok: true } | { ok: false; error: string } {
+  const trimmed = raw.trim();
+  if (trimmed === '') return { ok: true };
+  if (!/^[A-Za-z0-9]$/.test(trimmed)) {
+    return {
+      ok: false,
+      error: 'Hotkey: one letter or digit (or blank to disable).',
+    };
+  }
+  return { ok: true };
 }

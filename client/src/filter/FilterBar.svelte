@@ -96,47 +96,139 @@
     ),
   );
 
-  function hasNotTerminalLeaf(p: Predicate | null, attr: string): boolean {
-    if (p === null) return false;
-    if (p.kind === 'leaf') return p.op === 'notTerminal' && p.attr === attr;
-    if (p.connective !== 'and') return false;
-    for (const c of p.children) {
-      if (c.kind === 'leaf' && c.op === 'notTerminal' && c.attr === attr) {
-        return true;
-      }
+  /**
+   * Walk a flat-AND predicate (or single leaf) and visit every top-level
+   * leaf. Non-flat predicates (OR, NOT, nested AND) are out of the
+   * pill's scope — they fall through to the advanced editor, and the
+   * toggle pill renders as if terminal is visible (showing=true) for
+   * those shapes.
+   */
+  function eachTopLeaf(
+    p: Predicate | null,
+    fn: (leaf: PredicateLeaf) => void,
+  ): void {
+    if (p === null) return;
+    if (p.kind === 'leaf') {
+      fn(p);
+      return;
     }
-    return false;
+    if (p.connective !== 'and') return;
+    for (const c of p.children) if (c.kind === 'leaf') fn(c);
+  }
+
+  /**
+   * "Terminal is currently hidden for `attr`" — true when ANY top-level
+   * leaf excludes the terminal phase for this attribute. Two ways to
+   * express that: a legacy `notTerminal` op, or a `hasPhase` op whose
+   * `values` doesn't contain `'terminal'`. Filter cards saved with
+   * `has_phase=[triage]` (Ideas, Archive, etc.) light up the latter
+   * branch — the pill needs to reflect that exclusion or the user sees
+   * "Show closed: on" while the predicate already hides closed cards.
+   */
+  function terminalHiddenForAttr(p: Predicate | null, attr: string): boolean {
+    let hidden = false;
+    eachTopLeaf(p, (l) => {
+      if (l.attr !== attr) return;
+      if (l.op === 'notTerminal') hidden = true;
+      else if (l.op === 'hasPhase') {
+        const vs = (l.values ?? []).filter(
+          (v): v is string => typeof v === 'string',
+        );
+        if (!vs.includes('terminal')) hidden = true;
+      }
+    });
+    return hidden;
   }
 
   function toggleNotTerminal(attr: string): void {
-    if (hasNotTerminalLeaf(predicate, attr)) {
-      emit(stripNotTerminal(predicate, attr));
+    if (terminalHiddenForAttr(predicate, attr)) {
+      emit(revealTerminal(predicate, attr));
     } else {
       emit(addNotTerminal(predicate, attr));
     }
   }
 
-  function stripNotTerminal(p: Predicate | null, attr: string): Predicate | null {
+  /**
+   * Make terminal visible for `attr`. Two cases:
+   *   1. There's a `notTerminal(attr)` leaf — strip it.
+   *   2. There's a `hasPhase(attr, values)` leaf whose `values` doesn't
+   *      include `'terminal'` — add 'terminal' so the user keeps the
+   *      other selected phases AND now sees closed cards.
+   * Other leaves are left alone.
+   */
+  function revealTerminal(p: Predicate | null, attr: string): Predicate | null {
     if (p === null) return null;
-    if (p.kind === 'leaf') {
-      return p.op === 'notTerminal' && p.attr === attr ? null : p;
+    const reviseLeaf = (leaf: PredicateLeaf): PredicateLeaf | null => {
+      if (leaf.attr !== attr) return leaf;
+      if (leaf.op === 'notTerminal') return null;
+      if (leaf.op === 'hasPhase') {
+        const vs = (leaf.values ?? []).filter(
+          (v): v is string => typeof v === 'string',
+        );
+        if (vs.includes('terminal')) return leaf;
+        return {
+          kind: 'leaf',
+          attr: leaf.attr,
+          op: 'hasPhase',
+          values: [...vs, 'terminal'],
+        };
+      }
+      return leaf;
+    };
+    if (p.kind === 'leaf') return reviseLeaf(p);
+    const kept: Predicate[] = [];
+    for (const c of p.children) {
+      if (c.kind === 'leaf') {
+        const next = reviseLeaf(c);
+        if (next !== null) kept.push(next);
+      } else {
+        kept.push(c);
+      }
     }
-    const kept = p.children.filter(
-      (c) => !(c.kind === 'leaf' && c.op === 'notTerminal' && c.attr === attr),
-    );
     if (kept.length === 0) return null;
     if (kept.length === 1 && p.connective !== 'not') return kept[0] as Predicate;
     return { kind: 'group', connective: p.connective, children: kept };
   }
 
+  /**
+   * Hide terminal for `attr`. If a `hasPhase` leaf already constrains
+   * the attr and includes `'terminal'`, drop just that value (keep the
+   * other phases). Otherwise add a fresh `notTerminal` leaf to a flat
+   * AND so the toggle stays on top of whatever predicate the user has.
+   */
   function addNotTerminal(p: Predicate | null, attr: string): Predicate {
-    const leaf: PredicateLeaf = { kind: 'leaf', attr, op: 'notTerminal' };
-    if (p === null) return leaf;
-    if (p.kind === 'leaf') return { kind: 'group', connective: 'and', children: [p, leaf] };
-    if (p.connective === 'and') {
-      return { kind: 'group', connective: 'and', children: [...p.children, leaf] };
+    const reviseLeaf = (leaf: PredicateLeaf): PredicateLeaf => {
+      if (leaf.attr !== attr || leaf.op !== 'hasPhase') return leaf;
+      const vs = (leaf.values ?? []).filter(
+        (v): v is string => typeof v === 'string',
+      );
+      const next = vs.filter((v) => v !== 'terminal');
+      if (next.length === vs.length) return leaf; // terminal wasn't in there
+      return { kind: 'leaf', attr: leaf.attr, op: 'hasPhase', values: next };
+    };
+    const fresh: PredicateLeaf = { kind: 'leaf', attr, op: 'notTerminal' };
+    if (p === null) return fresh;
+    if (p.kind === 'leaf') {
+      const revised = reviseLeaf(p);
+      // If we trimmed terminal out of an existing hasPhase, that already
+      // hides closed — no need to add notTerminal too.
+      if (revised !== p) return revised;
+      return { kind: 'group', connective: 'and', children: [p, fresh] };
     }
-    return { kind: 'group', connective: 'and', children: [p, leaf] };
+    if (p.connective === 'and') {
+      let trimmed = false;
+      const next = p.children.map((c) => {
+        if (c.kind !== 'leaf') return c;
+        const revised = reviseLeaf(c);
+        if (revised !== c) trimmed = true;
+        return revised;
+      });
+      if (trimmed) {
+        return { kind: 'group', connective: 'and', children: next };
+      }
+      return { kind: 'group', connective: 'and', children: [...p.children, fresh] };
+    }
+    return { kind: 'group', connective: 'and', children: [p, fresh] };
   }
 
   /* ---- Derived ----------------------------------------------------------- */
@@ -455,7 +547,7 @@
       <TextSearchBar {predicate} onchange={onQuickFilterChange} />
     </div>
     {#each terminalAttributes as attr (attr.name)}
-      {@const showing = !hasNotTerminalLeaf(predicate, attr.name)}
+      {@const showing = !terminalHiddenForAttr(predicate, attr.name)}
       <!--
         Toggle is labelled "Show closed <attr>" so the default state
         (terminal hidden via the seeded notTerminal leaf) reads as an

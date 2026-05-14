@@ -60,17 +60,22 @@ export interface ScreenPresetSet {
  * Issue the two batched requests a screen needs to materialise its
  * presets:
  *   1. card.select_with_attributes: card_type='screen', parent=projectId
- *      → pick the one whose `layout` attribute matches.
+ *      → pick the one whose `slug` attribute matches.
  *   2. card.select_with_attributes: card_type='filter', parent=<that
  *      screen's id>.
  *
  * Step 2 only fires after step 1 returns; if the project has no screen
- * row for this layout we short-circuit with an empty result.
+ * row for this slug we short-circuit with an empty result.
+ *
+ * Slug — not layout — is the unique identifier: a project can have
+ * multiple screens of the same layout (Inbox / Ideas / Archive all
+ * use `list`) and the URL carries the slug, so matching on layout
+ * would collapse them onto the first one.
  */
 export async function loadScreenAndFilters(
   dispatcher: Pick<Dispatcher, 'request'>,
   projectId: ID,
-  layout: Layout,
+  slug: string,
 ): Promise<ScreenPresetSet> {
   const screenOut = await dispatcher.request<
     CardSelectWithAttributesInput,
@@ -82,9 +87,7 @@ export async function loadScreenAndFilters(
   });
 
   const screen =
-    screenOut.rows.find(
-      (r) => readLayout(r) === layout,
-    ) ?? null;
+    screenOut.rows.find((r) => readSlug(r) === slug) ?? null;
   if (screen === null) {
     return { screen: null, filters: [], defaultFilter: null };
   }
@@ -138,6 +141,27 @@ export function readSlug(card: CardWithAttrs): string | null {
 export function readHotkey(card: CardWithAttrs): string | null {
   const v = card.attributes['hotkey'];
   return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/**
+ * Read the `flow_ref` attribute (number → flow id) as a bigint, or null
+ * when unset. Stored as a JSON number on the wire so deserialisers may
+ * hand us either bigint, number, or a digits-only string depending on
+ * the dispatcher path the row took.
+ */
+export function readFlowRef(card: CardWithAttrs): ID | null {
+  const v = card.attributes['flow_ref'];
+  if (typeof v === 'bigint') return v === 0n ? null : v;
+  if (typeof v === 'number' && Number.isFinite(v) && v !== 0) return BigInt(v);
+  if (typeof v === 'string' && /^-?\d+$/.test(v)) {
+    try {
+      const n = BigInt(v);
+      return n === 0n ? null : n;
+    } catch {
+      /* fall through */
+    }
+  }
+  return null;
 }
 
 export function readTitle(card: CardWithAttrs): string {

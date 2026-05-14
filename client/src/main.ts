@@ -70,22 +70,31 @@ dispatcher.onFault('aborted', (f) => {
   console.warn('dispatch aborted:', f.reason);
 });
 
-// Probe the server for an existing session before <App> mounts so the
-// initial route gate doesn't flicker through /login when the user is
-// already signed in. The same orchestration also primes the shared
-// schema cache, which registers every card_ref attribute name with the
-// dispatcher's bigint-revival registry — without this preload the very
-// first batched data fetch would see card_ref values as raw JSON
-// numbers (and side-panel labels, terminal-action visibility, etc.
-// would silently mis-render until a second batch arrives).
+// Probe the server for an existing session BEFORE <App> mounts so the
+// initial route gate runs against the live auth state. Fire-and-forget
+// here races the Router: on a hard refresh of any auth-gated URL
+// (admin/*, /project/..., /task/...) the guard would see isSignedIn=
+// false, redirect to /login or /projects, and the auth probe would
+// land too late — the URL would already have moved away from where
+// the user was.
+//
+// The same orchestration primes the shared schema cache, which
+// registers every card_ref attribute name with the dispatcher's
+// bigint-revival registry. Without this preload the first batched
+// data fetch would see card_ref values as raw JSON numbers and
+// side-panel labels, terminal-action visibility, etc. would silently
+// mis-render until a second batch arrives.
+//
+// Cost: ~one network round-trip of blank page on cold load. That's
+// the existing index.html background; no flash, no flicker.
+let appHandle: ReturnType<typeof mount> | null = null;
 void (async () => {
   const ok = await loadSession(authState, KITP_API_BASE);
   if (ok) await sharedSchemaCache(dispatcher).load();
+  appHandle = mount(App, {
+    target,
+    props: { dispatcher, authState },
+  });
 })();
 
-const app = mount(App, {
-  target,
-  props: { dispatcher, authState },
-});
-
-export default app;
+export default appHandle;

@@ -191,7 +191,12 @@
   // load-on-scope-change effect. We just bind to `predicate` and react
   // to its onchange callback.
   let predicate = $state<Predicate | null>(
-    untrack(() => getFilter('inbox', projectScope.projectId)),
+    // Cache scope is the URL slug — see ScreenFilterBar. Inbox /
+    // Ideas / Archive / Comms all share the `list` layout but each
+    // has its own slug, so per-screen predicates don't bleed.
+    untrack(() =>
+      getFilter(slug === '' ? 'inbox' : slug, projectScope.projectId),
+    ),
   );
   let selectedIndex = $state(0);
 
@@ -929,7 +934,7 @@
 
   <div class="border-b border-border px-4 pb-3" data-testid="inbox-filter-bar">
     <ScreenFilterBar
-      screenType="list"
+      screenSlug={slug === '' ? 'inbox' : slug}
       projectId={projectScope.projectId}
       {dispatcher}
       {filterAttributes}

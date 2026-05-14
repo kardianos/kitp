@@ -16,7 +16,7 @@
    *     attributes off it without this component knowing what they
    *     are.
    *
-   * Screens reduce to `<ScreenFilterBar screenType="…" projectId={…}
+   * Screens reduce to `<ScreenFilterBar screenSlug="…" projectId={…}
    * {filterAttributes} bind:predicate bind:activeFilter
    * extraAttributes={…} onchange={refresh} />`.
    */
@@ -61,13 +61,18 @@
     readDefaultFilterID,
     readPredicate,
     readTitle,
-    type Layout,
   } from './screen_preset.svelte';
 
   interface Props {
-    /** Screen layout slot; one of LAYOUTS. Doubles as the
-     *  filter-state cache scope key. */
-    screenType: Layout;
+    /**
+     * Slug of the active screen (the `:slug` segment in
+     * `/project/:id/screen/:slug`). Identifies the screen card to
+     * resolve presets against and doubles as the filter-state cache
+     * scope key. Slug is the canonical identifier — multiple screens
+     * can share a layout (Inbox / Ideas / Archive all use `list`) but
+     * each carries a unique slug per project.
+     */
+    screenSlug: string;
     /** Active project. `null` (all-projects view) disables presets — no
      *  per-project screen card exists to load. */
     projectId: ID | null;
@@ -105,7 +110,7 @@
   }
 
   let {
-    screenType,
+    screenSlug,
     projectId,
     dispatcher,
     filterAttributes,
@@ -155,7 +160,7 @@
    */
   $effect(() => {
     const pid = projectId;
-    const st = screenType;
+    const st = screenSlug;
     untrack(() => {
       // Reset the ready flag whenever the (project, screen) pair flips
       // so screens re-gate their refetch through the new probe.
@@ -174,15 +179,32 @@
       void loadScreenAndFilters(dispatcher, pid, st)
         .then((set) => {
           // Guard against late resolves after the user navigated away.
-          if (projectId !== pid || screenType !== st) return;
+          if (projectId !== pid || screenSlug !== st) return;
           screenCard = set.screen;
           presets = set.filters;
-          if (wasFirstVisit && set.defaultFilter !== null) {
-            predicate = readPredicate(set.defaultFilter);
-            activeId = set.defaultFilter.id;
-            setFilter(st, pid, predicate);
-            setActivePreset(st, pid, activeId);
-            onchange?.(predicate);
+          if (wasFirstVisit) {
+            if (set.defaultFilter !== null) {
+              predicate = readPredicate(set.defaultFilter);
+              activeId = set.defaultFilter.id;
+              setFilter(st, pid, predicate);
+              setActivePreset(st, pid, activeId);
+              onchange?.(predicate);
+            } else {
+              // No default filter on the screen → hide terminal-phase
+              // statuses by default so the user lands on a useful view
+              // (matches the FilterBar pill's "Show closed status" off
+              // state). The pill flips the leaf on/off; we just seed
+              // the leaf so the screen's first paint isn't drowned in
+              // Done / Cancelled rows.
+              const seeded: Predicate = {
+                kind: 'leaf',
+                attr: 'status',
+                op: 'notTerminal',
+              };
+              predicate = seeded;
+              setFilter(st, pid, seeded);
+              onchange?.(seeded);
+            }
           }
           // Open the gate. Screens that gated their first refresh on
           // filterReady will now fire with the correct predicate.
@@ -194,7 +216,7 @@
           // does not stay shut and strand the parent screen on its
           // spinner — open it with no presets so the user sees the
           // empty / fresh state and can retry from there.
-          if (projectId !== pid || screenType !== st) return;
+          if (projectId !== pid || screenSlug !== st) return;
           screenCard = null;
           presets = [];
           filterReady = true;
@@ -207,7 +229,7 @@
   // write.
   $effect(() => {
     const pid = projectId;
-    const st = screenType;
+    const st = screenSlug;
     const p = predicate;
     untrack(() => {
       setFilter(st, pid, p);
@@ -216,7 +238,7 @@
 
   function onPresetPick(id: ID | null): void {
     activeId = id;
-    setActivePreset(screenType, projectId, id);
+    setActivePreset(screenSlug, projectId, id);
     if (id === null) return;
     const f = presets.find((x) => x.id === id);
     if (f === undefined) return;
@@ -230,7 +252,7 @@
     // "(no preset)" until the user picks one).
     if (activeId !== null) {
       activeId = null;
-      setActivePreset(screenType, projectId, null);
+      setActivePreset(screenSlug, projectId, null);
     }
     onchange?.(p);
   }
@@ -241,7 +263,7 @@
   async function reload(): Promise<void> {
     const pid = projectId;
     if (pid === null) return;
-    const set = await loadScreenAndFilters(dispatcher, pid, screenType);
+    const set = await loadScreenAndFilters(dispatcher, pid, screenSlug);
     if (projectId !== pid) return;
     screenCard = set.screen;
     presets = set.filters;
@@ -329,7 +351,7 @@
       }
       // Drop the active preset and re-apply whatever the new default is.
       activeId = null;
-      setActivePreset(screenType, projectId, null);
+      setActivePreset(screenSlug, projectId, null);
       await reload();
       notify({ type: 'success', message: 'Deleted' });
     } catch (e) {

@@ -88,6 +88,21 @@
 
   setActiveScope('kanban');
 
+  /* ------------------------------------------------------------------ props */
+
+  interface Props {
+    params?: Record<string, string>;
+  }
+  let { params = {} }: Props = $props();
+
+  /** Active screen slug from `/project/:id/screen/:slug`. Drives the
+   *  preset cache scope so two kanban-layout screens in the same
+   *  project don't share state. */
+  const slug = $derived.by((): string => {
+    const v = params['slug'];
+    return typeof v === 'string' && v !== '' ? v : 'kanban';
+  });
+
   /* ------------------------------------------------------------------ deps */
 
   const dispatcher = getDispatcher();
@@ -133,7 +148,10 @@
   let error = $state<string | null>(null);
 
   let predicate = $state<Predicate | null>(
-    untrack(() => getFilter('kanban', projectScope.projectId)),
+    // Cache scope is the URL slug — see ScreenFilterBar. Two
+    // kanban-layout screens in the same project keep their predicates
+    // separate.
+    untrack(() => getFilter(slug, projectScope.projectId)),
   );
   // The active filter card, bound from <ScreenFilterBar>. Kanban reads
   // its `column_attr` / `lane_attr` attributes off this card via an
@@ -899,7 +917,7 @@
   </header>
 
   <ScreenFilterBar
-    screenType="kanban"
+    screenSlug={slug}
     projectId={projectScope.projectId}
     {dispatcher}
     {filterAttributes}

@@ -25,8 +25,12 @@
   import Modal from '../ui/Modal.svelte';
   import type { FilterAttribute } from './attribute_schema.svelte.js';
   import {
+    isPhase,
+    OP_TO_WIRE,
     opArity,
+    PHASES,
     type Op,
+    type Phase,
     type Predicate,
     type PredicateGroup,
     type PredicateLeaf,
@@ -203,8 +207,16 @@
 
   function setLeafOp(leaf: EditNodeLeaf, op: Op) {
     const prevArity = opArity(leaf.op);
+    const prevOp = leaf.op;
     leaf.op = op;
     const newArity = opArity(op);
+    // `hasPhase` carries phase strings, not ref-target values, so values
+    // from any other op are meaningless. Same when leaving `hasPhase`
+    // for a normal value-picker op. Clear in both directions.
+    if (op === 'hasPhase' || prevOp === 'hasPhase') {
+      leaf.values = [];
+      return;
+    }
     // Adapt the value shape.
     if (newArity === 'none') {
       leaf.values = [];
@@ -215,6 +227,36 @@
     } else if (newArity === 'single' && prevArity === 'multi') {
       const v = leaf.values[0];
       leaf.values = v === undefined ? [] : [v];
+    }
+  }
+
+  /**
+   * Friendly label for an op in the operator combobox. Falls through to
+   * the wire string (`= / != / not in / has_phase / …`) which already
+   * reads as plain English; we then format `has_phase` → `has phase` so
+   * the leaf reads "Status has phase Terminal".
+   */
+  function opLabel(op: Op): string {
+    if (op === 'hasPhase') return 'has phase';
+    return OP_TO_WIRE[op];
+  }
+
+  /**
+   * Capitalise a phase value for the right-side picker labels — `triage`
+   * → `Triage`, etc. Kept local so the type narrow lives next to its
+   * sole consumer.
+   */
+  function phaseLabel(p: Phase): string {
+    return p.charAt(0).toUpperCase() + p.slice(1);
+  }
+
+  /** Toggle membership of `phase` in `leaf.values`. */
+  function togglePhase(leaf: EditNodeLeaf, phase: Phase): void {
+    const cur = leaf.values.filter(isPhase);
+    if (cur.includes(phase)) {
+      leaf.values = cur.filter((p) => p !== phase);
+    } else {
+      leaf.values = [...cur, phase];
     }
   }
 
@@ -378,7 +420,7 @@
         aria-label="Operator"
         options={(attr?.ops ?? (['eq', 'ne'] as Op[])).map((o) => ({
           value: o,
-          label: o,
+          label: opLabel(o),
         }))}
         value={leaf.op}
         searchable={false}
@@ -388,7 +430,25 @@
       />
     </div>
     <div class="min-w-[10rem] flex-1">
-      {#if attr && arity !== 'none'}
+      {#if leaf.op === 'hasPhase'}
+        <!-- Phase picker: closed three-checkbox set; works on any ref
+             attribute. Server matches the target card's `phase` column
+             against the chosen list. -->
+        <div class="flex flex-wrap items-center gap-3 px-1 py-0.5 text-sm">
+          {#each PHASES as phase (phase)}
+            {@const checked = leaf.values.filter(isPhase).includes(phase)}
+            <label class="inline-flex items-center gap-1 text-fg">
+              <input
+                type="checkbox"
+                aria-label={phaseLabel(phase)}
+                {checked}
+                onchange={() => togglePhase(leaf, phase)}
+              />
+              <span>{phaseLabel(phase)}</span>
+            </label>
+          {/each}
+        </div>
+      {:else if attr && arity !== 'none'}
         <ValueInput
           attribute={attr}
           value={arity === 'multi' ? leaf.values : leaf.values[0]}

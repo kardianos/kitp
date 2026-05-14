@@ -33,6 +33,8 @@ import type {
   CardDeleteOutput,
   CardInsertInput,
   CardInsertOutput,
+  CardSetPhaseInput,
+  CardSetPhaseOutput,
   CardOrderClause,
   AttachmentCreateInput,
   AttachmentCreateOutput,
@@ -288,11 +290,29 @@ const cardInsert: HandlerSpec<CardInsertInput, CardInsertOutput> = {
     if (i.attributes !== undefined && Object.keys(i.attributes).length > 0) {
       m.attributes = i.attributes;
     }
+    if (i.phase !== undefined) m.phase = i.phase;
     return m;
   },
   decode: (raw) => {
     const j = asObj(raw);
     return { id: asId(j.id) };
+  },
+};
+
+// ============================================================================
+// card.set_phase
+// ============================================================================
+
+const cardSetPhase: HandlerSpec<CardSetPhaseInput, CardSetPhaseOutput> = {
+  endpoint: 'card',
+  action: 'set_phase',
+  encode: (i) => ({ card_id: i.cardId, phase: i.phase }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: asBoolOrFalse(j.ok),
+      activity_id: asIdOrZero(j.activity_id),
+    };
   },
 };
 
@@ -1155,6 +1175,7 @@ export {
   cardSelectWithAttributes,
   cardSearch,
   cardDelete,
+  cardSetPhase,
   configGet,
   casMissingChunks,
   fileCreate,
@@ -1198,6 +1219,7 @@ export function registerBuiltInHandlers(r: HandlerRegistry): void {
   r.register(cardSelectWithAttributes);
   r.register(cardSearch);
   r.register(cardDelete);
+  r.register(cardSetPhase);
   r.register(configGet);
   r.register(casMissingChunks);
   r.register(fileCreate);

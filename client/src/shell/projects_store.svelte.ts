@@ -44,21 +44,25 @@ class ProjectsStore {
       try {
         // User-facing project caches (ProjectTitlePicker, NavSidebar
         // breadcrumb) ship the same `is_template != true` exclusion as
-        // ProjectsScreen — Gate 12 of FLOW_AND_SCREEN_KERNEL. Admin
-        // surfaces that need the full list (AdminProjectsScreen, the
-        // admin user-list project resolver) fetch independently with no
-        // predicate. See `screens/projects_helpers.ts`.
+        // ProjectsScreen — Gate 12 of FLOW_AND_SCREEN_KERNEL. The
+        // exclusion drops when `projectScope.showTemplates` is true so
+        // admins can pick a template from the title-bar picker; the
+        // toggle is gated to /admin/* routes by the picker UI. See
+        // `screens/projects_helpers.ts` for the canonical predicate.
+        const data: CardSelectWithAttributesInput = {
+          cardTypeName: 'project',
+          limit: 200,
+        };
+        if (!projectScope.showTemplates) {
+          data.where = [TEMPLATE_EXCLUSION_LEAF];
+        }
         const out = await dispatcher.request<
           CardSelectWithAttributesInput,
           CardSelectWithAttributesOutput
         >({
           endpoint: cardSelectWithAttributes.endpoint,
           action: cardSelectWithAttributes.action,
-          data: {
-            cardTypeName: 'project',
-            limit: 200,
-            where: [TEMPLATE_EXCLUSION_LEAF],
-          },
+          data,
         });
         this.projects = out.rows;
         // Drop a persisted scope that no longer resolves — same stale-id

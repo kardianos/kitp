@@ -27,14 +27,10 @@
   import { BatchAbortedError, SubRequestError } from '../../dispatch/errors';
   import { getDispatcher } from '../../dispatch/context';
   import { setActiveScope } from '../../keys/shortcut';
-  import {
-    cardSelectWithAttributes,
-    commLogList,
-  } from '../../reg/handlers';
+  import { projectScope } from '../../shell/project_scope.svelte';
+  import { projectsStore, watchProjects } from '../../shell/projects_store.svelte';
+  import { commLogList } from '../../reg/handlers';
   import type {
-    CardSelectWithAttributesInput,
-    CardSelectWithAttributesOutput,
-    CardWithAttrs,
     CommLogListInput,
     CommLogListOutput,
     CommLogRow,
@@ -42,7 +38,6 @@
   } from '../../reg/types';
   import Button from '../../ui/Button.svelte';
   import Chip from '../../ui/Chip.svelte';
-  import Combobox from '../../ui/Combobox.svelte';
   import EmptyState from '../../ui/EmptyState.svelte';
   import Spinner from '../../ui/Spinner.svelte';
   import { cx } from '../../util/class_names';
@@ -60,10 +55,13 @@
   setActiveScope('admin_comm_log');
 
   const dispatcher = getDispatcher();
+  // Keep the shared project cache warm so the title-bar picker has
+  // entries on first paint + the "all projects" fan-out below has a
+  // target list as soon as the screen loads.
+  $effect(watchProjects(dispatcher));
 
   /* ------------------------------------------------------------------ state */
 
-  let projects = $state<CardWithAttrs[]>([]);
   /** Decorated row: comm_log row plus the project_id whose response carried it. */
   interface DecoratedRow extends CommLogRow {
     /** The project this row belongs to; tracked client-side because the
@@ -75,8 +73,18 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
 
-  /** 'all' sentinel = sum across every visible project. */
-  let projectFilter = $state<ID | 'all'>('all');
+  /** Project list comes from the shared store (the title-bar picker
+   *  drives selection). */
+  const projects = $derived(projectsStore.projects);
+  /**
+   * The title-bar `ProjectTitlePicker`'s "All projects" choice
+   * (`projectScope.projectId === null`) doubles as the fan-out
+   * trigger for this screen — we sum comm_log rows across every
+   * visible project. A specific project id scopes to one fetch.
+   */
+  const projectFilter = $derived<ID | 'all'>(
+    projectScope.projectId === null ? 'all' : projectScope.projectId,
+  );
   /** '' = no kind filter. */
   let kindFilter = $state('');
   let windowKey = $state<TimeWindowKey>(DEFAULT_TIME_WINDOW);
@@ -86,35 +94,7 @@
   let autoRefresh = $state(false);
   let autoRefreshHandle: ReturnType<typeof setInterval> | null = null;
 
-  /* --------------------------------------------------- project options */
-
-  const projectOptions = $derived([
-    { value: 'all', label: 'All projects' },
-    ...projects.map((p) => ({
-      value: p.id.toString(),
-      label: typeof p.attributes['title'] === 'string'
-        ? (p.attributes['title'] as string)
-        : `#${p.id}`,
-    })),
-  ]);
-
   /* ----------------------------------------------------------- data fetch */
-
-  async function loadProjects(): Promise<void> {
-    try {
-      const out = await dispatcher.request<
-        CardSelectWithAttributesInput,
-        CardSelectWithAttributesOutput
-      >({
-        endpoint: cardSelectWithAttributes.endpoint,
-        action: cardSelectWithAttributes.action,
-        data: { cardTypeName: 'project' },
-      });
-      projects = out.rows;
-    } catch (e) {
-      error = errMsg(e);
-    }
-  }
 
   async function loadRows(): Promise<void> {
     loading = true;
@@ -188,10 +168,7 @@
   /* ----------------------------------------------------------- lifecycle */
 
   onMount(() => {
-    void (async () => {
-      await loadProjects();
-      await loadRows();
-    })();
+    void loadRows();
   });
 
   onDestroy(() => {
@@ -205,20 +182,6 @@
 
   function errMsg(e: unknown): string {
     return e instanceof Error ? e.message : String(e);
-  }
-
-  function pickProject(v: string | string[] | null): void {
-    if (v === null || v === 'all') {
-      projectFilter = 'all';
-      return;
-    }
-    if (typeof v === 'string') {
-      try {
-        projectFilter = BigInt(v);
-      } catch {
-        projectFilter = 'all';
-      }
-    }
   }
 
   function pickKind(k: string): void {
@@ -265,20 +228,6 @@
     <div class="flex flex-wrap items-center gap-3">
       <h1 class="text-lg font-semibold">Admin · Comm log</h1>
       <span class="text-xs text-muted">{rows.length} rows</span>
-
-      <span class="ml-4 flex items-center gap-2 text-sm">
-        <span class="text-muted">Project:</span>
-        <span class="w-56">
-          <Combobox
-            aria-label="Project filter"
-            options={projectOptions}
-            value={projectFilter === 'all' ? 'all' : projectFilter.toString()}
-            searchable={projectOptions.length > 8}
-            placeholder="Pick a project…"
-            onchange={pickProject}
-          />
-        </span>
-      </span>
 
       <label class="ml-auto flex items-center gap-2 text-sm text-fg">
         <input

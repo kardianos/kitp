@@ -19,7 +19,7 @@
   import type { Snippet } from 'svelte';
   import NavSidebar from './NavSidebar.svelte';
   import ProjectTitlePicker from './ProjectTitlePicker.svelte';
-  import { projectsStore, watchProjects } from './projects_store.svelte';
+  import { watchProjects } from './projects_store.svelte';
   import {
     projectScreensStore,
     watchProjectScreens,
@@ -142,12 +142,14 @@
    * Build breadcrumb segments from the current path. Slugs render
    * verbatim except for known patterns:
    *   /task/:id                       -> "Task #:id"
-   *   /project/:id                    -> "<project title>" when resolvable
-   *   /project/:id/screen/:slug       -> ... / "<screen title>" (slug-cased)
+   *   /project/:id/screen/:slug       -> "<screen title>" (slug-cased)
    *   /admin/users                    -> "Admin / Users"
-   * The literal `screen` segment in `/project/:id/screen/:slug` is
-   * skipped — the project title + screen title is enough; the user
-   * doesn't gain anything from a "screen" crumb between them.
+   *
+   * The picker stands in for the project, so when the path enters under
+   * `/project/...` both the literal `project` segment and the project
+   * id crumb are skipped — otherwise the header reads "[Foo ▾] /
+   * Project / Foo / Inbox". The literal `screen` segment between the id
+   * and the slug is skipped the same way; the slug crumb is enough.
    */
   type Crumb = { label: string; href?: string };
   const crumbs: Crumb[] = $derived.by(() => {
@@ -159,26 +161,16 @@
       const s = segs[i] as string;
       cum += '/' + s;
       const prev = i > 0 ? (segs[i - 1] as string) : '';
-      // Skip the literal `screen` segment so the crumb chain reads
-      // "<project> / <screen title>" instead of
-      // "<project> / Screen / <slug>".
+      // Suppress the project/id pair — the title-bar picker shows it.
+      if (s === 'project' && i === 0) continue;
+      if (prev === 'project' && i === 1) continue;
+      // Skip the literal `screen` segment between the id and the slug.
       if (s === 'screen' && i > 0 && (segs[i - 2] ?? '') === 'project') {
         continue;
       }
       let label = s;
       if (prev === 'task') label = `Task #${s}`;
-      else if (prev === 'project') {
-        // Look up the project's title from the shared cache; fall back
-        // to "Project #<id>" while the cache is still loading or the
-        // id no longer resolves (deleted / never existed).
-        let title: string | null = null;
-        try {
-          title = projectsStore.titleFor(BigInt(s));
-        } catch {
-          /* non-numeric segment — leave label as-is */
-        }
-        label = title ?? `Project #${s}`;
-      } else if (prev === 'screen') {
+      else if (prev === 'screen') {
         // Resolve `<slug>` against the loaded screens; fall back to a
         // titlecased slug when the list isn't loaded yet so the crumb
         // never reads as "inbox" instead of "Inbox".
@@ -197,16 +189,6 @@
   function toggleHelp(): void {
     shortcuts.helpOpen = !shortcuts.helpOpen;
   }
-
-  /**
-   * Project picker is meaningful only when the user is on a per-project
-   * screen (the `/project/:id/screen/:slug` family). Top-level routes
-   * (/projects, /activity, /admin/*, /task/:id) don't react to it.
-   */
-  const showProjectPicker = $derived.by((): boolean => {
-    const p = routerState.path;
-    return /^\/project\/[^/]+\/screen\//.test(p);
-  });
 </script>
 
 <div class="flex h-screen w-screen overflow-hidden bg-bg text-fg">
@@ -249,14 +231,9 @@
 
       <!-- Breadcrumbs -->
       <nav class="flex min-w-0 items-center gap-1 text-sm" aria-label="Breadcrumb">
-        {#if showProjectPicker}
-          <ProjectTitlePicker />
-          <span class="text-muted" aria-hidden="true">/</span>
-        {/if}
+        <ProjectTitlePicker />
         {#each crumbs as crumb, i (i)}
-          {#if i > 0}
-            <span class="text-muted" aria-hidden="true">/</span>
-          {/if}
+          <span class="text-muted" aria-hidden="true">/</span>
           {#if crumb.href}
             <a
               href={crumb.href}

@@ -162,32 +162,42 @@
       {/each}
     </ul>
 
-    {#if !collapsed && screenRows.length > 0}
+    {#if screenRows.length > 0}
       <div class="my-3 border-t border-border"></div>
-      <div
-        class="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-wide text-muted"
-      >
-        {projectHeader}
-      </div>
+      {#if !collapsed}
+        <div
+          class="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-wide text-muted"
+        >
+          {projectHeader}
+        </div>
+      {/if}
       <ul class="flex flex-col gap-0.5">
         {#each screenRows as row (row.slug)}
+          {@const initial = (row.chord ?? row.label).replace(/^g\s+/, '').charAt(0).toUpperCase()}
           <li>
             <a
               href={row.href}
               use:linkAction
               data-testid={`nav-screen-${row.slug}`}
+              title={collapsed ? row.label : undefined}
               class={cx(
-                'flex items-center justify-between rounded px-2 py-1.5 text-sm',
+                'flex items-center rounded px-2 py-1.5 text-sm',
                 'hover:bg-border/40',
+                collapsed ? 'justify-center' : 'justify-between',
                 isActive(row.href)
                   ? 'bg-accent/20 font-medium text-accent'
                   : 'text-fg',
               )}
               aria-current={isActive(row.href) ? 'page' : undefined}
             >
-              <span class="truncate">{row.label}</span>
-              {#if row.chord !== null}
-                <span class="font-mono text-[10px] text-muted">{row.chord}</span>
+              {#if collapsed}
+                <span class="sr-only">{row.label}</span>
+                <span aria-hidden="true">{initial}</span>
+              {:else}
+                <span class="truncate">{row.label}</span>
+                {#if row.chord !== null}
+                  <span class="font-mono text-[10px] text-muted">{row.chord}</span>
+                {/if}
               {/if}
             </a>
           </li>

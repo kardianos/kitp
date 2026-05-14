@@ -110,6 +110,31 @@ describe('ShortcutRegistry: register / unregister', () => {
     shortcuts.unregister(99999);
     expect(shortcuts.entries).toHaveLength(1);
   });
+
+  it('handles a tight unregister loop without throwing', () => {
+    // Regression: when AppShell's per-project chord registration effect
+    // ran its cleanup, the reactive-array proxy could surface an
+    // undefined index mid-iteration inside `findIndex`. Without the
+    // predicate's `e !== undefined` guard, `e.id` threw and the throw
+    // bubbled out of Svelte's flush_sync, stranding every later
+    // reactive update in the cycle (tasks never rendered).
+    const ids: number[] = [];
+    for (let i = 0; i < 8; i++) {
+      ids.push(
+        shortcuts.register({
+          scope: 'global',
+          binding: `g ${String.fromCharCode(97 + i)}`,
+          handler: () => {},
+          label: `Slot ${i}`,
+        }),
+      );
+    }
+    expect(shortcuts.entries).toHaveLength(8);
+    expect(() => {
+      for (const id of ids) shortcuts.unregister(id);
+    }).not.toThrow();
+    expect(shortcuts.entries).toHaveLength(0);
+  });
 });
 
 describe('ShortcutRegistry: visible across active scope and global', () => {

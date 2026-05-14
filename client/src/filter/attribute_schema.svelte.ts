@@ -68,7 +68,10 @@ function defaultOpsForType(valueType: string): Op[] {
     return ['eq', 'ne', 'exists', 'notExists'];
   }
   if (valueType.startsWith('ref:')) {
-    return ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'];
+    // `hasPhase` dereferences the ref and matches against the target
+    // card's `phase` column — only meaningful for refs, never for
+    // scalars. Server validates `value ∈ {triage|active|terminal}`.
+    return ['eq', 'ne', 'in', 'notIn', 'hasPhase', 'exists', 'notExists'];
   }
   // text / number / date / unknown
   return ['eq', 'ne', 'exists', 'notExists'];

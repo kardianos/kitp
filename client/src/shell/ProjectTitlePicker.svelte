@@ -20,6 +20,9 @@
   } from '@floating-ui/dom';
   import { getDispatcher } from '../dispatch/context';
   import type { CardWithAttrs, ID } from '../reg/types';
+  import { navigate, routerState } from '../routing/router.svelte';
+  import { screenUrl } from '../routing/routes';
+  import { isTemplate } from '../screens/admin/admin_projects_helpers';
   import { cx } from '../util/class_names';
   import { projectScope } from './project_scope.svelte';
   import { projectsStore, watchProjects } from './projects_store.svelte';
@@ -45,12 +48,21 @@
     return loaded ? `#${pid}` : '…';
   });
 
-  type Opt = { id: ID | null; label: string };
+  type Opt = { id: ID | null; label: string; template: boolean };
   const options = $derived.by((): Opt[] => {
-    const out: Opt[] = [{ id: null, label: 'All projects' }];
-    for (const p of projects) out.push({ id: p.id, label: titleOf(p) });
+    const out: Opt[] = [{ id: null, label: 'All projects', template: false }];
+    for (const p of projects) {
+      out.push({ id: p.id, label: titleOf(p), template: isTemplate(p) });
+    }
     return out;
   });
+
+  /**
+   * Templates toggle is only exposed under /admin/* — pickers on regular
+   * routes never need to surface template projects. The route check is
+   * a string prefix off the live path so it tracks navigation reactively.
+   */
+  const inAdminMode = $derived(routerState.path.startsWith('/admin'));
 
   let open = $state(false);
   let query = $state('');
@@ -95,10 +107,42 @@
     cleanupFloat = null;
   }
 
+  /**
+   * Resolve where to land after picking a project (or "All projects").
+   *
+   * Rule: only navigate when the project id is actually IN the URL. On
+   * /admin/*, /projects, /activity, /task/:id, … the project lives in
+   * `projectScope` (which downstream screens read reactively); jumping
+   * to /project/X would yank the user off the screen they're managing.
+   *
+   *   pick X         + on /project/:id/screen/:slug  →  /project/X/screen/:slug
+   *   pick X         + on /project/:id (bare)        →  /project/X
+   *   pick X         + anywhere else                 →  scope only, no nav
+   *   pick null      + on /project/...               →  /projects
+   *   pick null      + anywhere else                 →  scope only, no nav
+   *
+   * Returns null when the caller should not navigate.
+   */
+  function nextPathFor(id: ID | null, currentPath: string): string | null {
+    const screenMatch = currentPath.match(
+      /^\/project\/[^/]+\/screen\/([^/]+)/,
+    );
+    const onProjectUrl = currentPath.startsWith('/project/');
+    if (id !== null) {
+      if (screenMatch !== null) return screenUrl(id, screenMatch[1] as string);
+      if (onProjectUrl) return `/project/${id.toString()}`;
+      return null;
+    }
+    if (onProjectUrl) return '/projects';
+    return null;
+  }
+
   function pick(id: ID | null): void {
     projectScope.setProject(id);
     closeMenu();
     triggerEl?.focus();
+    const target = nextPathFor(id, routerState.path);
+    if (target !== null && target !== routerState.path) navigate(target);
   }
 
   function onDocPointerDown(e: PointerEvent): void {
@@ -168,6 +212,26 @@
       class="z-50 flex w-64 flex-col overflow-hidden rounded-md border border-border bg-bg shadow-lg"
       style="position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none;"
     >
+      {#if inAdminMode}
+        <!-- Admin-only template toggle. Flipping it bumps
+             projectsVersion so the shared cache refetches without the
+             is_template != true predicate; templates then appear in
+             the listbox below with a "(tpl)" chip. -->
+        <label
+          class="flex cursor-pointer items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted hover:bg-surface"
+        >
+          <input
+            type="checkbox"
+            checked={projectScope.showTemplates}
+            data-testid="project-picker-show-templates"
+            onchange={(e) =>
+              projectScope.setShowTemplates(
+                (e.target as HTMLInputElement).checked,
+              )}
+          />
+          <span>Show templates</span>
+        </label>
+      {/if}
       {#if projects.length > 8}
         <div class="border-b border-border p-1.5">
           <input
@@ -197,12 +261,17 @@
                 role="option"
                 aria-selected={selected}
                 class={cx(
-                  'block w-full truncate px-3 py-1.5 text-left hover:bg-surface',
+                  'flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface',
                   selected ? 'font-medium text-accent' : 'text-fg',
                 )}
                 onclick={() => pick(opt.id)}
               >
-                {opt.label}
+                <span class="truncate">{opt.label}</span>
+                {#if opt.template}
+                  <span
+                    class="ml-auto shrink-0 rounded border border-border px-1 text-[10px] uppercase tracking-wide text-muted"
+                  >tpl</span>
+                {/if}
               </button>
             </li>
           {/each}

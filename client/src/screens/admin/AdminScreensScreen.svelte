@@ -1,57 +1,59 @@
 <!--
   AdminScreensScreen — admin-only CRUD over `screen` + `filter` cards
-  across every project.
+  for the project pinned by the title-bar `<ProjectTitlePicker>`.
 
   Complements <ScreenFilterBar>'s in-screen preset CRUD by surfacing every
   project's screen/filter cards in one place. Both surfaces hit the same
   handlers so the data layer stays the single source of truth.
 
-  Layout: 3 panes, mirroring AdminAttributesScreen.
-    LEFT  (~280px):   searchable project list + "+ New project".
-    CENTER:           screens for the selected project, sorted by
-                      sort_order then id. "+ Add screen" combobox uses
-                      `missingLayouts(screens, LAYOUTS)` so a project
-                      can't end up with duplicate built-in layouts.
-    RIGHT:            filters under the selected screen + "Default
-                      filter:" combobox writing `default_filter` on
-                      the screen card.
+  Layout: 2 panes (the project selector lives in the title-bar picker).
+    CENTER:  screens for the selected project, sorted by sort_order
+             then id. Each row has inline editors for title / slug /
+             hotkey / layout / flow plus a "+ Add screen" combobox at
+             the foot.
+    RIGHT:   filters under the selected screen + "Default filter:"
+             combobox writing `default_filter` on the screen card.
 
   Wire surface (no new endpoints):
-    - card.select_with_attributes  (project / screen / filter)
+    - card.select_with_attributes  (screen / filter)
     - card.insert + card.delete    (screen / filter)
-    - attribute.update             (title / predicate / default_filter)
-
-  Keyboard:
-    /         focus left-pane search
-    j / k     move project selection
-    n         "+ New project" (bound by useQuickEntry)
+    - attribute.update             (title / slug / hotkey / layout /
+                                    flow_ref / predicate / default_filter)
 -->
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
-
   import { getDispatcher } from '../../dispatch/context';
   import { stringifyBigInt } from '../../dispatch/dispatcher';
   import { BatchAbortedError, SubRequestError } from '../../dispatch/errors';
-  import { predicateToJson } from '../../filter/predicate';
+  import {
+    sharedSchemaCache,
+    type FilterAttribute,
+  } from '../../filter/attribute_schema.svelte';
+  import FilterTreeEditor from '../../filter/FilterTreeEditor.svelte';
+  import { predicateToJson, type Predicate } from '../../filter/predicate';
+  import { buildTaskFilterPalette } from '../../filter/task_palette';
   import {
     LAYOUTS,
     readColumnAttr,
     readDefaultFilterID,
+    readFlowRef,
+    readHotkey,
     readLaneAttr,
     readLayout,
     readPredicate,
+    readSlug,
     readTitle,
     type Layout,
   } from '../../filter/screen_preset.svelte';
-  import { setActiveScope, useShortcut } from '../../keys/shortcut';
-  import { useQuickEntry } from '../../quick_entry/use_quick_entry.svelte';
-  import QuickEntryOverlay from '../../quick_entry/QuickEntryOverlay.svelte';
+  import { setActiveScope } from '../../keys/shortcut';
+  import { projectScope } from '../../shell/project_scope.svelte';
+  import { projectsStore, watchProjects } from '../../shell/projects_store.svelte';
   import {
     attributeUpdate,
     cardDelete,
     cardInsert,
     cardSelectWithAttributes,
   } from '../../reg/handlers';
+  import { flowList } from '../../reg/handlers_admin';
   import type {
     AttributeUpdateInput,
     AttributeUpdateOutput,
@@ -62,6 +64,9 @@
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
     CardWithAttrs,
+    FlowListInput,
+    FlowListOutput,
+    FlowRow,
     ID,
   } from '../../reg/types';
   import Button from '../../ui/Button.svelte';
@@ -76,36 +81,76 @@
   import {
     errMsg,
     friendlyScreenLabel,
-    missingLayouts,
     sortBySortOrder,
+    uniqueSlug,
     validatePredicateJson,
+    validateScreenHotkey,
+    validateScreenSlug,
   } from './admin_screens_helpers';
   import CardListPane from './CardListPane.svelte';
 
   setActiveScope('admin_screens');
 
   const dispatcher = getDispatcher();
+  const schemaCache = sharedSchemaCache(dispatcher);
+  // The title-bar `ProjectTitlePicker` is the canonical project picker;
+  // the LEFT pane on this screen mirrors `projectScope` so the two stay
+  // in sync (clicking a row here pins the same scope the breadcrumb
+  // exposes). Keep the shared cache warm in case the admin lands on
+  // /admin/screens directly.
+  $effect(watchProjects(dispatcher));
 
   /* ----------------------------------------------------------------- state */
 
-  let projects = $state<CardWithAttrs[]>([]);
   let screens = $state<CardWithAttrs[]>([]);
   let filters = $state<CardWithAttrs[]>([]);
-  let search = $state('');
-  let selectedProjectId = $state<ID | null>(null);
+  /** Flows available for the selected project. Drives the per-row "Flow"
+   *  combobox; loaded by `loadFlowsFor` on every project switch. */
+  let flows = $state<FlowRow[]>([]);
+  /**
+   * `selectedProjectId` is a $derived view of the global scope — the
+   * title-bar `ProjectTitlePicker` is the sole project picker on this
+   * screen, so anything reading "the selected project" pulls straight
+   * from `projectScope` instead of carrying a parallel `$state`.
+   */
+  const selectedProjectId = $derived<ID | null>(projectScope.projectId);
+  /** Shared project cache. Used for title lookups; the picker drives
+   *  selection. */
+  const projects = $derived(projectsStore.projects);
   let selectedScreenId = $state<ID | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let pendingAddLayout = $state<Layout | null>(null);
-  let searchEl: HTMLInputElement | null = $state(null);
+
+  /* ----- Visual predicate editor ---------------------------------------- */
+
+  /**
+   * Filter card currently being edited in the visual tree builder. `null`
+   * when the modal is closed. We keep the card (not just its id) so the
+   * modal can re-seed from `readPredicate(...)` without a second lookup.
+   */
+  let visualEditorFilter = $state<CardWithAttrs | null>(null);
+  /** Modal open/close — Modal binds to it; we also flip it in onSave. */
+  let visualEditorOpen = $state(false);
+  /** True while the supporting card lists are in flight. */
+  let paletteLoading = $state(false);
+
+  /**
+   * Supporting card lists for the palette. Reused across modal opens
+   * within the same project; cleared on project switch via the effect
+   * below. The dispatcher batches concurrent requests, so the modal's
+   * one-shot fetch hits the server as a single HTTP round-trip.
+   */
+  let palettePersons = $state<CardWithAttrs[]>([]);
+  let paletteMilestones = $state<CardWithAttrs[]>([]);
+  let paletteComponents = $state<CardWithAttrs[]>([]);
+  let paletteTags = $state<CardWithAttrs[]>([]);
+  let paletteStatuses = $state<CardWithAttrs[]>([]);
+  /** Track which project the palette inputs were loaded for so a switch
+   *  invalidates the cache rather than showing stale options. */
+  let paletteLoadedForProject = $state<ID | null>(null);
 
   /* ------------------------------------------------------------ derivations */
-
-  const filteredProjects = $derived.by((): CardWithAttrs[] => {
-    const needle = search.trim().toLowerCase();
-    if (needle === '') return projects;
-    return projects.filter((p) => readTitle(p).toLowerCase().includes(needle));
-  });
 
   const selectedProject = $derived<CardWithAttrs | null>(
     selectedProjectId === null
@@ -126,10 +171,14 @@
    *  we re-sort defensively. */
   const sortedFilters = $derived(sortBySortOrder(filters));
 
-  const addableLayouts = $derived(missingLayouts(screens, LAYOUTS));
-
+  /**
+   * Always offer every layout — a project may want multiple screens of
+   * the same layout (e.g. a primary inbox plus a comms list). The slug
+   * is auto-disambiguated on insert so the ScreenHost resolver still
+   * has a unique key.
+   */
   const addScreenOptions = $derived.by(() =>
-    addableLayouts.map((t) => ({ value: t, label: friendlyScreenLabel(t) })),
+    LAYOUTS.map((t) => ({ value: t, label: friendlyScreenLabel(t) })),
   );
 
   /** Combobox options for "Default filter:". Stringified ids because
@@ -143,6 +192,18 @@
     const id = readDefaultFilterID(selectedScreen);
     return id === null ? null : id.toString();
   });
+
+  /** Layout combobox options shared by every row's "Layout" picker. */
+  const layoutOptions = $derived.by(() =>
+    LAYOUTS.map((t) => ({ value: t, label: friendlyScreenLabel(t) })),
+  );
+
+  /** Flow combobox options for the row pickers. An empty-string sentinel
+   *  represents "no flow"; otherwise the bigint flow id stringified. */
+  const flowOptions = $derived.by(() => [
+    { value: '', label: '(none)' },
+    ...flows.map((f) => ({ value: f.id.toString(), label: f.name })),
+  ]);
 
   /* ------------------------------------------------------------ data fetch */
 
@@ -168,22 +229,24 @@
     return out.rows;
   }
 
-  async function loadProjects(): Promise<void> {
+  /**
+   * The shared `projectsStore` drives the LEFT pane list. Track its
+   * `loaded` flag through `loading` so the existing spinner / retry
+   * affordances keep working without a parallel fetch.
+   */
+  $effect(() => {
+    if (projectsStore.loaded) {
+      loading = false;
+      error = null;
+    }
+  });
+
+  /** Re-trigger a fetch by bumping the projects version; the
+   *  watchProjects effect re-loads. Used by the error-retry button. */
+  function retryProjects(): void {
     loading = true;
     error = null;
-    try {
-      projects = await fetchCards('project', null);
-      loading = false;
-      if (selectedProjectId === null && projects.length > 0) {
-        const first = projects[0];
-        if (first !== undefined) selectedProjectId = first.id;
-      }
-    } catch (e) {
-      loading = false;
-      if (e instanceof SubRequestError) error = e.message;
-      else if (e instanceof BatchAbortedError) error = e.reason;
-      else error = e instanceof Error ? e.message : String(e);
-    }
+    projectScope.notifyProjectsChanged();
   }
 
   async function loadScreensFor(projectId: ID): Promise<void> {
@@ -213,17 +276,133 @@
     }
   }
 
-  // Reload screens when the project selection flips.
+  /**
+   * Fetch the option lists feeding the visual filter builder (persons,
+   * milestones, components, tags, statuses) plus the schema cache. We
+   * fire them in parallel; the dispatcher folds them into one batch.
+   * Idempotent per project: re-opening the modal on the same project
+   * does not re-fetch.
+   */
+  async function loadPaletteFor(projectId: ID): Promise<void> {
+    if (paletteLoadedForProject === projectId && !paletteLoading) return;
+    paletteLoading = true;
+    try {
+      // Persons are global (not scoped to a project); the per-project
+      // value-card lists hang one level under the project card.
+      const personData: CardSelectWithAttributesInput = { cardTypeName: 'person' };
+      const milestoneData: CardSelectWithAttributesInput = {
+        cardTypeName: 'milestone',
+        parentCardId: projectId,
+      };
+      const componentData: CardSelectWithAttributesInput = {
+        cardTypeName: 'component',
+        parentCardId: projectId,
+      };
+      const tagData: CardSelectWithAttributesInput = {
+        cardTypeName: 'tag',
+        parentCardId: projectId,
+      };
+      const statusData: CardSelectWithAttributesInput = {
+        cardTypeName: 'status',
+        parentCardId: projectId,
+      };
+      const req = (
+        d: CardSelectWithAttributesInput,
+      ): Promise<CardSelectWithAttributesOutput> =>
+        dispatcher.request<
+          CardSelectWithAttributesInput,
+          CardSelectWithAttributesOutput
+        >({
+          endpoint: cardSelectWithAttributes.endpoint,
+          action: cardSelectWithAttributes.action,
+          data: d,
+        });
+      // Fire schemaCache.load() alongside the card fetches so the batch
+      // dispatcher folds the attribute_def.select call into the same
+      // round-trip. Its result is void; we keep the promise out of the
+      // destructure.
+      const schemaLoad = schemaCache.load();
+      const [pOut, mOut, cOut, tOut, sOut] = await Promise.all([
+        req(personData),
+        req(milestoneData),
+        req(componentData),
+        req(tagData),
+        req(statusData),
+      ]);
+      await schemaLoad;
+      if (selectedProjectId !== projectId) return;
+      palettePersons = pOut.rows;
+      paletteMilestones = mOut.rows;
+      paletteComponents = cOut.rows;
+      paletteTags = tOut.rows;
+      paletteStatuses = sOut.rows;
+      paletteLoadedForProject = projectId;
+    } catch (e) {
+      notify({ type: 'error', message: `Load filter options failed: ${errMsg(e)}` });
+    } finally {
+      paletteLoading = false;
+    }
+  }
+
+  /**
+   * Load flows scoped to the picked project so the per-row Flow picker
+   * resolves the screen's `flow_ref` to a name. AdminFlowsScreen owns
+   * mutations; this screen reads only.
+   */
+  async function loadFlowsFor(projectId: ID): Promise<void> {
+    try {
+      const out = await dispatcher.request<FlowListInput, FlowListOutput>({
+        endpoint: flowList.endpoint,
+        action: flowList.action,
+        data: { scopeCardId: projectId },
+      });
+      if (selectedProjectId !== projectId) return;
+      flows = out.rows;
+    } catch (e) {
+      notify({ type: 'error', message: `Load flows failed: ${errMsg(e)}` });
+    }
+  }
+
+  // Reload screens + flows when the project selection flips. Flows are
+  // independent of the screen pick — we only need to refresh them on
+  // project switch. Palette inputs are reloaded lazily on visual-editor
+  // open; we invalidate them here so the next open re-fetches.
   $effect(() => {
     const pid = selectedProjectId;
     if (pid === null) {
       screens = [];
       selectedScreenId = null;
       filters = [];
+      flows = [];
+      paletteLoadedForProject = null;
       return;
     }
     void loadScreensFor(pid);
+    void loadFlowsFor(pid);
+    paletteLoadedForProject = null;
   });
+
+  /**
+   * Build the FilterAttribute palette from the loaded value-card lists.
+   * Returns an empty array until the schema cache has loaded; the
+   * `loadPaletteFor` await chain guarantees this is populated before the
+   * modal opens.
+   */
+  const visualPalette = $derived<FilterAttribute[]>(
+    buildTaskFilterPalette({
+      schema: schemaCache,
+      persons: palettePersons,
+      milestones: paletteMilestones,
+      components: paletteComponents,
+      tags: paletteTags,
+      statuses: paletteStatuses,
+    }),
+  );
+
+  /** Predicate to seed the editor with on each open. */
+  const visualEditorPredicate = $derived<Predicate | null>(
+    visualEditorFilter === null ? null : readPredicate(visualEditorFilter),
+  );
 
   // Reload filters when the screen selection flips.
   $effect(() => {
@@ -303,11 +482,20 @@
     const layout = pendingAddLayout;
     if (project === null || layout === null) return;
     const title = friendlyScreenLabel(layout);
+    // Collect taken slugs (skip nulls) so a second `grid` screen lands
+    // as `grid-2` instead of shadowing the first. The user can rename
+    // immediately from the row's slug input.
+    const taken = new Set<string>();
+    for (const s of screens) {
+      const sl = readSlug(s);
+      if (sl !== null) taken.add(sl);
+    }
+    const slug = uniqueSlug(layout, taken);
     await insertCard(
       'screen',
       project.id,
       title,
-      { layout, slug: layout, sort_order: screens.length + 1 },
+      { layout, slug, sort_order: screens.length + 1 },
       async () => {
         pendingAddLayout = null;
         await loadScreensFor(project.id);
@@ -354,6 +542,103 @@
     );
   }
 
+  /**
+   * Row-level field editors. Each persists via `attribute.update` and
+   * refreshes the screens list so derived state (chord registrations
+   * from AppShell, breadcrumb resolution, etc.) sees the new value on
+   * the next render.
+   */
+  async function renameScreen(s: CardWithAttrs, nextTitle: string): Promise<void> {
+    const trimmed = nextTitle.trim();
+    if (trimmed === '' || trimmed === readTitle(s)) return;
+    const project = selectedProject;
+    if (project === null) return;
+    await updateAttr(
+      s.id,
+      'title',
+      trimmed,
+      () => loadScreensFor(project.id),
+      'Rename failed',
+    );
+  }
+
+  async function updateScreenSlug(s: CardWithAttrs, nextSlug: string): Promise<void> {
+    const trimmed = nextSlug.trim();
+    if (trimmed === '' || trimmed === (readSlug(s) ?? '')) return;
+    const v = validateScreenSlug(trimmed);
+    if (!v.ok) {
+      notify({ type: 'error', message: v.error });
+      return;
+    }
+    const project = selectedProject;
+    if (project === null) return;
+    await updateAttr(
+      s.id,
+      'slug',
+      trimmed,
+      () => loadScreensFor(project.id),
+      'Slug update failed',
+    );
+  }
+
+  async function updateScreenHotkey(s: CardWithAttrs, nextHotkey: string): Promise<void> {
+    const trimmed = nextHotkey.trim();
+    const cur = readHotkey(s) ?? '';
+    if (trimmed === cur) return;
+    const v = validateScreenHotkey(trimmed);
+    if (!v.ok) {
+      notify({ type: 'error', message: v.error });
+      return;
+    }
+    const project = selectedProject;
+    if (project === null) return;
+    // The server normalises "" away on write — null clears the chord.
+    const value = trimmed === '' ? null : trimmed;
+    await updateAttr(
+      s.id,
+      'hotkey',
+      value,
+      () => loadScreensFor(project.id),
+      'Hotkey update failed',
+    );
+  }
+
+  async function updateScreenLayout(s: CardWithAttrs, layout: Layout): Promise<void> {
+    if (readLayout(s) === layout) return;
+    const project = selectedProject;
+    if (project === null) return;
+    await updateAttr(
+      s.id,
+      'layout',
+      layout,
+      () => loadScreensFor(project.id),
+      'Layout update failed',
+    );
+  }
+
+  async function updateScreenFlow(
+    s: CardWithAttrs,
+    nextFlowId: ID | null,
+  ): Promise<void> {
+    if (readFlowRef(s) === nextFlowId) return;
+    const project = selectedProject;
+    if (project === null) return;
+    // flow_ref's value_type is `number`; the write CTE only
+    // canonicalises card_ref shapes, so a bigint here would land in
+    // attribute_value as the JSON string `"123"` (dispatcher convention)
+    // and projectstamp's `(value)::text::bigint` remap would break on
+    // the next clone. Send it as a plain JS number so the JSONB shape
+    // matches the seeded rows. Flow ids comfortably fit in Number.
+    const value = nextFlowId === null ? null : Number(nextFlowId);
+    await updateAttr(
+      s.id,
+      'flow_ref',
+      value,
+      () => loadScreensFor(project.id),
+      'Flow update failed',
+    );
+  }
+
   async function addFilter(): Promise<void> {
     const s = selectedScreen;
     if (s === null) return;
@@ -387,6 +672,52 @@
       },
       'Rename failed',
     );
+  }
+
+  /**
+   * Open the visual filter builder for `f`. We lazy-load the palette
+   * inputs (persons / milestones / components / tags / statuses + the
+   * schema cache) for the selected project before flipping the modal
+   * open so the editor renders with a populated attribute list rather
+   * than the placeholder leaf you'd get from an empty palette.
+   */
+  async function openVisualEditor(f: CardWithAttrs): Promise<void> {
+    const project = selectedProject;
+    if (project === null) return;
+    await loadPaletteFor(project.id);
+    if (selectedProject !== project) return; // user switched mid-load
+    visualEditorFilter = f;
+    visualEditorOpen = true;
+  }
+
+  /**
+   * Persist the predicate produced by FilterTreeEditor. Same wire path
+   * as the JSON prompt: write the `predicate` attribute as a JSON-
+   * encoded string (bigint-aware via `stringifyBigInt`) so card-ref
+   * leaves round-trip cleanly.
+   */
+  async function saveVisualPredicate(p: Predicate | null): Promise<void> {
+    const f = visualEditorFilter;
+    if (f === null) return;
+    visualEditorOpen = false;
+    const value = p === null ? null : stringifyBigInt(predicateToJson(p));
+    await updateAttr(
+      f.id,
+      'predicate',
+      value,
+      async () => {
+        const sid = selectedScreenId;
+        if (sid !== null) await loadFiltersFor(sid);
+        notify({ type: 'success', message: 'Predicate updated.' });
+      },
+      'Update failed',
+    );
+    visualEditorFilter = null;
+  }
+
+  function cancelVisualEditor(): void {
+    visualEditorOpen = false;
+    visualEditorFilter = null;
   }
 
   async function editFilterPredicate(f: CardWithAttrs): Promise<void> {
@@ -457,49 +788,29 @@
     }
   }
 
-  /* ------------------------------------------------------ keyboard glue */
-
-  async function focusSearch(): Promise<void> {
-    await tick();
-    searchEl?.focus();
-    searchEl?.select();
+  /** Combobox -> updateScreenLayout. LAYOUTS is closed so we cast safely. */
+  function pickRowLayout(s: CardWithAttrs, v: unknown): void {
+    if (typeof v !== 'string' || v === '') return;
+    const t = v as Layout;
+    if (!LAYOUTS.includes(t)) return;
+    void updateScreenLayout(s, t);
   }
 
-  function moveSelection(delta: number): void {
-    const list = filteredProjects;
-    if (list.length === 0) return;
-    const cur = list.findIndex((p) => p.id === selectedProjectId);
-    let next = cur + delta;
-    if (cur === -1) next = delta > 0 ? 0 : list.length - 1;
-    if (next < 0) next = 0;
-    if (next > list.length - 1) next = list.length - 1;
-    const target = list[next];
-    if (target !== undefined) selectedProjectId = target.id;
+  /** Combobox -> updateScreenFlow. Empty string clears the binding. */
+  function pickRowFlow(s: CardWithAttrs, v: unknown): void {
+    if (Array.isArray(v)) return;
+    if (v === null || v === '') {
+      void updateScreenFlow(s, null);
+      return;
+    }
+    if (typeof v !== 'string') return;
+    try {
+      void updateScreenFlow(s, BigInt(v));
+    } catch {
+      /* ignore unparseable */
+    }
   }
 
-  useShortcut('admin_screens', '/', () => void focusSearch(), 'Focus search', {
-    fireInInputs: false,
-  });
-  useShortcut('admin_screens', 'j', () => moveSelection(+1), 'Next project', {
-    fireInInputs: false,
-  });
-  useShortcut('admin_screens', 'k', () => moveSelection(-1), 'Previous project', {
-    fireInInputs: false,
-  });
-
-  const qe = useQuickEntry({
-    scope: 'admin_screens',
-    defaultCardType: 'project',
-    onCreated: (id) => {
-      void loadProjects().then(() => {
-        selectedProjectId = id;
-      });
-    },
-  });
-
-  onMount(() => {
-    void loadProjects();
-  });
 </script>
 
 <div class="flex h-full flex-col">
@@ -517,64 +828,22 @@
       class="m-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger"
     >
       Failed to load: {error}
-      <button type="button" class="ml-3 underline" onclick={() => void loadProjects()}>
+      <button type="button" class="ml-3 underline" onclick={retryProjects}>
         Retry
       </button>
     </div>
+  {:else if selectedProject === null}
+    <!-- No project pinned. The title-bar picker is the only project
+         picker on this screen; surface the affordance so admins don't
+         hunt for it. -->
+    <div class="flex flex-1 items-center justify-center p-6">
+      <EmptyState
+        title="Pick a project"
+        description="Use the project picker in the breadcrumb above to choose which project's screens to manage."
+      />
+    </div>
   {:else}
-    <div class="grid flex-1 min-h-0 grid-cols-[280px_1fr_360px]">
-      <!-- LEFT -->
-      <CardListPane
-        ariaLabel="Project list"
-        border="right"
-        items={filteredProjects}
-        emptyHint="No projects match."
-      >
-        {#snippet header()}
-          <div class="flex flex-col gap-2 border-b border-border p-2">
-            <input
-              type="search"
-              bind:this={searchEl}
-              bind:value={search}
-              placeholder="Search projects (press /)"
-              aria-label="Search projects"
-              class={cx(
-                'w-full rounded-md border border-border bg-bg px-2 py-1 text-sm',
-                'text-fg placeholder:text-muted',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              )}
-            />
-            <button
-              type="button"
-              data-testid="new-project-button"
-              class={cx(
-                'inline-flex h-8 select-none items-center justify-center rounded-md',
-                'bg-accent px-2 text-sm font-medium text-accent-fg',
-                'transition-colors hover:opacity-90',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              )}
-              onclick={() => qe.open()}
-            >
-              + New project
-            </button>
-          </div>
-        {/snippet}
-        {#snippet row(p)}
-          <button
-            type="button"
-            data-testid={`project-row-${p.id}`}
-            class={cx(
-              'flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-sm',
-              'hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              p.id === selectedProjectId ? 'bg-surface' : '',
-            )}
-            onclick={() => (selectedProjectId = p.id)}
-          >
-            <span class="truncate font-medium text-fg">{readTitle(p)}</span>
-          </button>
-        {/snippet}
-      </CardListPane>
-
+    <div class="grid flex-1 min-h-0 grid-cols-[1fr_360px]">
       <!-- CENTER -->
       <CardListPane
         ariaLabel="Screens for project"
@@ -591,43 +860,137 @@
           {/if}
         {/snippet}
         {#snippet row(s)}
+          {@const titleStr = readTitle(s)}
+          {@const slugStr = readSlug(s) ?? ''}
+          {@const hotkeyStr = readHotkey(s) ?? ''}
           {@const layout = readLayout(s) ?? ''}
+          {@const flowId = readFlowRef(s)}
           {@const defaultId = readDefaultFilterID(s)}
+          <!-- onfocusin captures any focus inside the row (title, slug, etc.)
+               so the right pane re-targets to the focused screen without
+               needing a separate select gesture. -->
           <div
             data-testid={`screen-row-${s.id}`}
             class={cx(
-              'mx-3 my-1 flex items-center justify-between gap-2 rounded border border-border px-3 py-2',
+              'mx-3 my-1 flex flex-col gap-2 rounded border border-border px-3 py-2',
               s.id === selectedScreenId ? 'bg-surface' : 'bg-bg',
             )}
+            onfocusin={() => (selectedScreenId = s.id)}
           >
-            <button
-              type="button"
-              class="flex flex-1 items-center gap-2 text-left"
-              onclick={() => (selectedScreenId = s.id)}
-            >
-              <span class="font-medium text-fg">{readTitle(s)}</span>
-              {#if layout !== ''}
-                <Chip label={layout} size="sm" />
-              {/if}
-              {#if defaultId !== null}
-                {@const def = filters.find((f) => f.id === defaultId)}
-                <span class="text-xs text-muted">
-                  Default: {def ? readTitle(def) : `#${defaultId}`}
+            <!-- Title row + delete -->
+            <div class="flex items-center gap-2">
+              <input
+                type="text"
+                value={titleStr}
+                aria-label="Screen title"
+                data-testid={`screen-title-${s.id}`}
+                class="flex-1 rounded border border-transparent bg-bg px-1 py-0.5 text-sm font-medium text-fg hover:border-border focus:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                onblur={(e) =>
+                  void renameScreen(s, (e.target as HTMLInputElement).value)}
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') {
+                    (e.target as HTMLInputElement).blur();
+                  } else if (e.key === 'Escape') {
+                    (e.target as HTMLInputElement).value = titleStr;
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+              />
+              <IconButton
+                aria-label={`Delete ${titleStr} screen`}
+                size="sm"
+                variant="danger"
+                onclick={() => void deleteScreen(s)}
+              >
+                {#snippet children()}🗑{/snippet}
+              </IconButton>
+            </div>
+
+            <!-- Slug + hotkey -->
+            <div class="grid grid-cols-2 gap-2">
+              <label class="flex flex-col gap-0.5 text-xs text-muted">
+                <span>Slug</span>
+                <input
+                  type="text"
+                  value={slugStr}
+                  aria-label="Slug"
+                  data-testid={`screen-slug-${s.id}`}
+                  spellcheck="false"
+                  class="rounded border border-border bg-bg px-1.5 py-0.5 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  onblur={(e) =>
+                    void updateScreenSlug(s, (e.target as HTMLInputElement).value)}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                    else if (e.key === 'Escape') {
+                      (e.target as HTMLInputElement).value = slugStr;
+                      (e.target as HTMLInputElement).blur();
+                    }
+                  }}
+                />
+              </label>
+              <label class="flex flex-col gap-0.5 text-xs text-muted">
+                <span>Hotkey (g …)</span>
+                <input
+                  type="text"
+                  value={hotkeyStr}
+                  aria-label="Hotkey"
+                  data-testid={`screen-hotkey-${s.id}`}
+                  maxlength="1"
+                  spellcheck="false"
+                  class="w-16 rounded border border-border bg-bg px-1.5 py-0.5 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  onblur={(e) =>
+                    void updateScreenHotkey(s, (e.target as HTMLInputElement).value)}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                    else if (e.key === 'Escape') {
+                      (e.target as HTMLInputElement).value = hotkeyStr;
+                      (e.target as HTMLInputElement).blur();
+                    }
+                  }}
+                />
+              </label>
+            </div>
+
+            <!-- Layout + flow -->
+            <div class="grid grid-cols-2 gap-2">
+              <label class="flex flex-col gap-0.5 text-xs text-muted">
+                <span>Layout</span>
+                <span data-testid={`screen-layout-${s.id}`}>
+                  <Combobox
+                    aria-label="Layout"
+                    options={layoutOptions}
+                    value={layout === '' ? null : layout}
+                    searchable={false}
+                    placeholder="layout…"
+                    onchange={(v) => pickRowLayout(s, v)}
+                  />
                 </span>
-              {/if}
-            </button>
-            <IconButton
-              aria-label={`Delete ${readTitle(s)} screen`}
-              size="sm"
-              variant="danger"
-              onclick={() => void deleteScreen(s)}
-            >
-              {#snippet children()}🗑{/snippet}
-            </IconButton>
+              </label>
+              <label class="flex flex-col gap-0.5 text-xs text-muted">
+                <span>Flow</span>
+                <span data-testid={`screen-flow-${s.id}`}>
+                  <Combobox
+                    aria-label="Flow"
+                    options={flowOptions}
+                    value={flowId === null ? '' : flowId.toString()}
+                    searchable={flowOptions.length > 8}
+                    placeholder="(none)"
+                    onchange={(v) => pickRowFlow(s, v)}
+                  />
+                </span>
+              </label>
+            </div>
+
+            {#if defaultId !== null}
+              {@const def = filters.find((f) => f.id === defaultId)}
+              <div class="text-xs text-muted">
+                Default filter: {def ? readTitle(def) : `#${defaultId}`}
+              </div>
+            {/if}
           </div>
         {/snippet}
         {#snippet footer()}
-          {#if selectedProject !== null && addableLayouts.length > 0}
+          {#if selectedProject !== null}
             <div
               class="m-3 flex items-center gap-2 rounded border border-dashed border-border p-2"
               data-testid="add-screen-controls"
@@ -736,6 +1099,13 @@
             <div class="flex items-center gap-2 pl-1">
               <button
                 type="button"
+                class="rounded border border-border bg-bg px-2 py-0.5 text-xs text-fg hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+                data-testid={`filter-visual-${f.id}`}
+                disabled={paletteLoading}
+                onclick={() => void openVisualEditor(f)}
+              >Visual builder</button>
+              <button
+                type="button"
                 class="rounded border border-border bg-bg px-2 py-0.5 text-xs text-fg hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                 onclick={() => void editFilterPredicate(f)}
               >Edit predicate</button>
@@ -764,4 +1134,19 @@
   {/if}
 </div>
 
-<QuickEntryOverlay {...qe.props} />
+<!--
+  Visual predicate builder. Mounted only while a filter is selected so
+  FilterTreeEditor's open-edge effect always re-seeds from a fresh
+  `predicate` (it seeds on the false→true flip). attributes come from
+  the lazy-loaded palette — `openVisualEditor` awaits the fetch before
+  flipping `open` so the editor never opens against an empty palette.
+-->
+{#if visualEditorFilter !== null}
+  <FilterTreeEditor
+    attributes={visualPalette}
+    predicate={visualEditorPredicate}
+    bind:open={visualEditorOpen}
+    onSave={(p) => void saveVisualPredicate(p)}
+    onCancel={cancelVisualEditor}
+  />
+{/if}

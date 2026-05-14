@@ -73,10 +73,31 @@ export interface CardInsertInput {
    * Forwarded to the server's `data.attributes` jsonb field unchanged.
    */
   attributes?: Record<string, unknown>;
+  /**
+   * Optional initial value for the structural `phase` column. Omit to
+   * keep the server default (`triage`); set to land a value-card on a
+   * specific phase in a single round-trip (e.g. seeding a "Cancelled"
+   * status as `terminal`).
+   */
+  phase?: 'triage' | 'active' | 'terminal';
 }
 
 export interface CardInsertOutput {
   id: ID;
+}
+
+// ============================================================================
+// card.set_phase
+// ============================================================================
+
+export interface CardSetPhaseInput {
+  cardId: ID;
+  phase: 'triage' | 'active' | 'terminal';
+}
+
+export interface CardSetPhaseOutput {
+  ok: boolean;
+  activity_id: ID;
 }
 
 // ============================================================================

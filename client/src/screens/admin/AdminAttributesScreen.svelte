@@ -53,6 +53,7 @@
     cardDelete,
     cardInsert,
     cardSelectWithAttributes,
+    cardSetPhase,
     cardTypeSelect,
     edgeDelete,
     edgeInsert,
@@ -71,6 +72,8 @@
     CardInsertOutput,
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
+    CardSetPhaseInput,
+    CardSetPhaseOutput,
     CardTypeRow,
     CardTypeSelectInput,
     CardTypeSelectOutput,
@@ -595,6 +598,34 @@
   }
 
   /**
+   * Write a value-card's structural `phase` column via `card.set_phase`.
+   * Phase classifies the card for `has_phase` / `notTerminal` predicates
+   * and the default-create-status resolution chain (Gate 6); only
+   * `status`-typed value-cards consult it today, but the editor is
+   * shown for every value-card pane so future flow-bound types pick it
+   * up without a code change.
+   */
+  async function setValueCardPhase(
+    card: CardWithAttrs,
+    cardTypeName: string,
+    nextPhase: 'triage' | 'active' | 'terminal',
+  ): Promise<void> {
+    if (card.phase === nextPhase) return;
+    try {
+      await dispatcher.request<CardSetPhaseInput, CardSetPhaseOutput>({
+        endpoint: cardSetPhase.endpoint,
+        action: cardSetPhase.action,
+        data: { cardId: card.id, phase: nextPhase },
+      });
+      await loadValueCards(cardTypeName);
+      notify({ type: 'success', message: `Phase set to ${nextPhase}.` });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: `Phase update failed: ${msg}` });
+    }
+  }
+
+  /**
    * Flip a value card's `is_active` attribute (migration 0011 bool flag) so
    * the card stays in the dataset for activity-history / referential
    * integrity but disappears from picker dropdowns. Soft-archive — the
@@ -783,7 +814,7 @@
       </button>
     </div>
   {:else}
-    <div class="grid flex-1 min-h-0 grid-cols-[280px_1fr_360px]">
+    <div class="grid flex-1 min-h-0 grid-cols-[280px_1fr_460px]">
       <!-- ---------------------------------------------------- LEFT -->
       <aside
         class="flex flex-col border-r border-border min-h-0"
@@ -1195,6 +1226,33 @@
                         class="rounded border border-border px-1 text-[10px] uppercase tracking-wide text-muted"
                       >archived</span>
                     {/if}
+                    <!-- Phase combobox — drives `has_phase` / `notTerminal`
+                         predicates and the default-create-status chain.
+                         Shown for every value-card type so a future
+                         flow-bound milestone / component / tag picks it
+                         up automatically; harmless on types whose phase
+                         column is never consulted. -->
+                    <span class="w-28 shrink-0" data-testid={`value-card-phase-${c.id}`}>
+                      <Combobox
+                        aria-label={`Phase for ${titleStr}`}
+                        options={[
+                          { value: 'triage', label: 'Triage' },
+                          { value: 'active', label: 'Active' },
+                          { value: 'terminal', label: 'Terminal' },
+                        ]}
+                        value={c.phase}
+                        searchable={false}
+                        onchange={(v) => {
+                          if (
+                            v === 'triage' ||
+                            v === 'active' ||
+                            v === 'terminal'
+                          ) {
+                            void setValueCardPhase(c, refType, v);
+                          }
+                        }}
+                      />
+                    </span>
                     <IconButton
                       aria-label={isActive ? `Archive ${titleStr}` : `Restore ${titleStr}`}
                       title={isActive ? 'Archive (hide from pickers)' : 'Restore'}
