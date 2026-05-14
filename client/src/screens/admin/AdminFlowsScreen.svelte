@@ -208,13 +208,15 @@
   });
 
   /** Value-cards loaded for the current flow's bound card_type, scoped to
-   *  the flow's project (not the currently-picked project — flows are
-   *  project-scoped, so a flow's transitions only make sense against value
-   *  cards in the flow's own project). */
+   *  the selected project. flow_step.set rejects cross-project from/to
+   *  references, so a flow's transitions can only reference value-cards
+   *  in the same project — and that project equals selectedProjectId
+   *  once `loadFlowsFor` settles (flows are loaded per the current
+   *  project picker). */
   const valueCards = $derived.by<CardWithAttrs[]>(() => {
     if (valueCardType === null) return [];
-    if (selectedFlow === null) return [];
-    return valueCardsByType[valueCardCacheKey(selectedFlow.scope_card_id, valueCardType)] ?? [];
+    if (selectedProjectId === null) return [];
+    return valueCardsByType[valueCardCacheKey(selectedProjectId, valueCardType)] ?? [];
   });
 
   const valueTitles = $derived(valueCardTitleMap(valueCards));
@@ -399,17 +401,18 @@
 
   $effect(() => {
     const t = valueCardType;
-    const flow = selectedFlow;
-    // Load value cards scoped to the FLOW's project (flow.scope_card_id),
-    // not the user's currently-picked project. The flow's transitions can
-    // only reference value-cards in the flow's own project — that's the
-    // server-side invariant flow_step.set enforces, and the picker has to
-    // honor it so admins don't see (and try to pick) value-cards that the
-    // server would reject.
-    if (t === null || flow === null) return;
-    const key = valueCardCacheKey(flow.scope_card_id, t);
+    const pid = selectedProjectId;
+    // Load value cards scoped to the picked project. flows are
+    // loaded per the picker, so the flow's own scope_card_id always
+    // converges to pid once loadFlowsFor settles — we key off pid
+    // directly to keep the effect's tracked dependencies primitive
+    // (an earlier version read `selectedFlow.scope_card_id`, which
+    // pulled the whole derived chain into the dep set and tripped
+    // Svelte's effect-update depth limit on project switch).
+    if (t === null || pid === null) return;
+    const key = valueCardCacheKey(pid, t);
     if (valueCardsByType[key] === undefined) {
-      void loadValueCards(t, flow.scope_card_id);
+      void loadValueCards(t, pid);
     }
   });
 
