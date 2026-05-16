@@ -12,6 +12,12 @@
   --color-accent: #2563eb;
   --color-accent-fg: #ffffff;
   --color-danger: #dc2626;
+  /* Section-frame border (around card-detail panes, sidebars, etc).
+     In light mode an opaque mid-dark — visible against white bg.
+     In dark mode this needs to be MUCH softer than fg/70 would
+     produce; fg/70 in dark resolves to near-white and looks like a
+     grid of fluorescent strips. Token lets us flip per theme. */
+  --color-section: rgba(15, 23, 42, 0.7);
 }
 
 [data-theme='dark'] {
@@ -23,6 +29,7 @@
   --color-accent: #60a5fa;
   --color-accent-fg: #0b1220;
   --color-danger: #f87171;
+  --color-section: rgba(226, 232, 240, 0.18);
 }
 
 html,

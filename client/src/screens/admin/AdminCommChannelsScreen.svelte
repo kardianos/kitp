@@ -39,6 +39,7 @@
     ChannelRow,
     ChannelSetInput,
     ChannelSetOutput,
+    ChannelStatus,
     ID,
   } from '../../reg/types';
   import Button from '../../ui/Button.svelte';
@@ -218,6 +219,66 @@
     }
   }
 
+  /**
+   * Send a status-only update. Used by the Enable / Disable row buttons.
+   * Every other field is left undefined so the server preserves the
+   * stored values (the partial-update path) — name + channel_type are
+   * required by the wire so we forward the row's current values.
+   *
+   * The runtime owns 'disabled-fault'; the UI only sets 'enabled' or
+   * 'disabled-admin'. Re-enabling a faulted channel also clears the
+   * fault reason server-side (see channelFieldWrites).
+   */
+  async function setStatus(row: ChannelRow, next: ChannelStatus): Promise<void> {
+    if (selectedProjectId === null) return;
+    const input: ChannelSetInput = {
+      id: row.id,
+      projectId: selectedProjectId,
+      name: row.name,
+      channelType: row.channel_type,
+      channelStatus: next,
+    };
+    try {
+      await dispatcher.request<ChannelSetInput, ChannelSetOutput>({
+        endpoint: commChannelSet.endpoint,
+        action: commChannelSet.action,
+        data: input,
+      });
+      notify({
+        type: 'success',
+        message: next === 'enabled' ? 'Channel enabled' : 'Channel disabled',
+      });
+      await loadChannelsFor(selectedProjectId);
+    } catch (e) {
+      notify({ type: 'error', message: `Status change failed: ${errMsg(e)}` });
+    }
+  }
+
+  /** Tailwind class triplet for the status pill. Keeping color choices
+   *  centralised so the three states stay visually distinct (a faulted
+   *  channel must read differently from one an admin paused on purpose). */
+  function statusPillClass(s: ChannelStatus): string {
+    switch (s) {
+      case 'enabled':
+        return 'bg-success/15 text-success';
+      case 'disabled-admin':
+        return 'bg-muted/20 text-muted';
+      case 'disabled-fault':
+        return 'bg-danger/15 text-danger';
+    }
+  }
+
+  function statusLabel(s: ChannelStatus): string {
+    switch (s) {
+      case 'enabled':
+        return 'Enabled';
+      case 'disabled-admin':
+        return 'Disabled';
+      case 'disabled-fault':
+        return 'Fault';
+    }
+  }
+
   /* ----------------------------------------------------------- lifecycle */
 
   onMount(() => {
@@ -300,6 +361,7 @@
             <th scope="col" class="py-2 pr-3">From</th>
             <th scope="col" class="py-2 pr-3">Intake</th>
             <th scope="col" class="py-2 pr-3">Passwords</th>
+            <th scope="col" class="py-2 pr-3">Status</th>
             <th scope="col" class="py-2 pr-3 text-right">Actions</th>
           </tr>
         </thead>
@@ -331,14 +393,49 @@
                   SMTP {ch.has_smtp_password ? '✓' : '—'}
                 </span>
               </td>
-              <td class="py-1.5 pr-3 text-right">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onclick={() => openEditForm(ch)}
+              <td class="py-1.5 pr-3 text-xs" data-testid="channel-status-cell">
+                <span
+                  class={cx(
+                    'inline-block rounded px-1.5 py-0.5 text-xs font-medium',
+                    statusPillClass(ch.channel_status),
+                  )}
+                  data-channel-status={ch.channel_status}
                 >
-                  {#snippet children()}Edit{/snippet}
-                </Button>
+                  {statusLabel(ch.channel_status)}
+                </span>
+                {#if ch.channel_status === 'disabled-fault' && ch.channel_fault_reason !== ''}
+                  <div class="mt-1 text-xs text-danger" data-testid="channel-fault-reason">
+                    {ch.channel_fault_reason}
+                  </div>
+                {/if}
+              </td>
+              <td class="py-1.5 pr-3 text-right">
+                <div class="flex items-center justify-end gap-1.5">
+                  {#if ch.channel_status === 'enabled'}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onclick={() => void setStatus(ch, 'disabled-admin')}
+                    >
+                      {#snippet children()}Disable{/snippet}
+                    </Button>
+                  {:else}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onclick={() => void setStatus(ch, 'enabled')}
+                    >
+                      {#snippet children()}Enable{/snippet}
+                    </Button>
+                  {/if}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onclick={() => openEditForm(ch)}
+                  >
+                    {#snippet children()}Edit{/snippet}
+                  </Button>
+                </div>
               </td>
             </tr>
           {/each}

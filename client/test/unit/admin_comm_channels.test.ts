@@ -74,6 +74,8 @@ describe('channelRowToDraft', () => {
       smtp_username: 'support',
       from_address: 'support@example.com',
       intake_status_id: 13n,
+      channel_status: 'enabled',
+      channel_fault_reason: '',
       has_imap_password: true,
       has_smtp_password: false,
       created_at: '2026-05-13T12:00:00Z',

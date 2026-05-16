@@ -207,7 +207,7 @@
 {#if previewable.length > 0}
   <section
     aria-label="Attachment previews"
-    class="border-t border-fg/70"
+    class="border-t border-section"
     data-testid="attachments-preview-strip"
   >
     <div class="flex flex-wrap gap-3 px-3 py-2">

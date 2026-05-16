@@ -127,9 +127,19 @@
     border: 1px solid var(--color-border);
     padding: 0.25rem 0.5rem;
   }
+  /* Dark-mode tables: the default --color-border sits too close to the
+     surface and the cell dividers nearly vanish. Bump to a derived
+     value with more contrast. Same for hr below. */
+  :global([data-theme='dark']) .markdown-body :global(th),
+  :global([data-theme='dark']) .markdown-body :global(td) {
+    border-color: color-mix(in srgb, var(--color-fg) 28%, transparent);
+  }
   .markdown-body :global(hr) {
     border: 0;
     border-top: 1px solid var(--color-border);
     margin: 0.75rem 0;
+  }
+  :global([data-theme='dark']) .markdown-body :global(hr) {
+    border-top-color: color-mix(in srgb, var(--color-fg) 28%, transparent);
   }
 </style>

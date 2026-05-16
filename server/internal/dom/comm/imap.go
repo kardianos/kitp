@@ -81,6 +81,12 @@ type IMAPPoller struct {
 	// backing off.
 	backoff       time.Duration
 	nextAttemptAt time.Time
+	// capHits is the number of *consecutive* failures we've had while
+	// already at backoffMax. Reset to 0 on any success. Once it crosses
+	// sustainedFailureCapHits we mark the channel disabled-fault — the
+	// "this is no longer transient" signal. See bumpBackoff for the
+	// increment rule.
+	capHits int
 
 	stop chan struct{}
 	done chan struct{}
@@ -210,6 +216,52 @@ const (
 	backoffMax = 10 * time.Minute
 )
 
+// sustainedFailureCapHits is the number of consecutive failures at the
+// backoff ceiling required to flip the channel into disabled-fault.
+// With backoffMax=10m, capHits=2 means we have been failing at the
+// ceiling for ~20 minutes after the initial ramp (~35 minutes of
+// total continuous failure) before disabling — long enough that
+// brief outages don't get a channel stuck, short enough that a
+// genuinely broken channel doesn't spam logs forever.
+const sustainedFailureCapHits = 2
+
+// looksLikeAuthError returns true when err reads like an IMAP
+// credential failure (bad username/password, account locked, no auth
+// mechanism). These are "human must intervene" signals — retrying
+// with the same creds will keep failing and risks account lockout —
+// so we trip disabled-fault immediately rather than waiting for
+// sustained-backoff. Network errors (i/o timeout, connection refused,
+// TLS) deliberately fall through to the backoff path; transient
+// outages must not strand a healthy channel.
+//
+// The match is substring-based against the wire text the IMAP server
+// (or the dial code) returns — IMAP doesn't carry typed errors and
+// every server phrases credential rejections differently. Keep this
+// list narrow; false positives disable a working channel.
+func looksLikeAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	needles := []string{
+		"authenticationfailed", // RFC 5530 response code, most modern servers
+		"invalid credentials",
+		"invalid login",
+		"login failed",
+		"bad credentials",
+		"wrong password",
+		"no auth",
+		"auth failed",
+		"authentication failed",
+	}
+	for _, n := range needles {
+		if strings.Contains(s, n) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *IMAPPoller) run() {
 	defer close(p.done)
 	t := time.NewTicker(p.tick)
@@ -229,10 +281,24 @@ func (p *IMAPPoller) run() {
 				p.logger.LogAttrs(ctx, slog.LevelError, "imap poller RunOnce",
 					slog.Int64("channel_id", p.channelID),
 					slog.Duration("backoff", p.backoff),
+					slog.Int("cap_hits", p.capHits),
 					slog.String("err", err.Error()))
+				// Sustained-failure trip: once we've been failing at
+				// the backoff ceiling for the threshold, treat it as
+				// "this is no longer transient" and disable the
+				// channel until an admin re-enables.
+				if p.capHits >= sustainedFailureCapHits {
+					if mfErr := MarkChannelFault(ctx, p.pool, p.channelID,
+						fmt.Sprintf("sustained polling failure: %v", err)); mfErr != nil {
+						p.logger.LogAttrs(ctx, slog.LevelError, "imap poller mark fault",
+							slog.Int64("channel_id", p.channelID),
+							slog.String("err", mfErr.Error()))
+					}
+				}
 			} else {
 				p.backoff = 0
 				p.nextAttemptAt = time.Time{}
+				p.capHits = 0
 			}
 			cancel()
 		}
@@ -240,6 +306,7 @@ func (p *IMAPPoller) run() {
 }
 
 func (p *IMAPPoller) bumpBackoff() {
+	prev := p.backoff
 	if p.backoff == 0 {
 		p.backoff = backoffMin
 	} else {
@@ -247,6 +314,13 @@ func (p *IMAPPoller) bumpBackoff() {
 		if p.backoff > backoffMax {
 			p.backoff = backoffMax
 		}
+	}
+	// Only count consecutive cap-hits: the *first* failure that lands
+	// us at the ceiling doesn't trip yet (it could still be the tail
+	// of a ramp). Each subsequent failure with prev already at the
+	// ceiling does.
+	if prev == backoffMax && p.backoff == backoffMax {
+		p.capHits++
 	}
 	p.nextAttemptAt = time.Now().Add(p.backoff)
 }
@@ -260,6 +334,11 @@ func (p *IMAPPoller) Backoff() time.Duration { return p.backoff }
 // errors through a fake imapClient.
 func (p *IMAPPoller) BumpBackoffForTest() { p.bumpBackoff() }
 
+// CapHitsForTest reports the consecutive-cap-hit counter used by the
+// sustained-failure auto-disable path. Tests assert this rolls in
+// step with bumpBackoff once the ceiling is reached.
+func (p *IMAPPoller) CapHitsForTest() int { return p.capHits }
+
 // RunOnce executes one scan + ingest cycle synchronously. Exported so
 // tests can drive the loop without waiting on the ticker. Loads the
 // channel config + decrypted IMAP password from one short tx, dials
@@ -268,6 +347,19 @@ func (p *IMAPPoller) BumpBackoffForTest() { p.bumpBackoff() }
 // seen. Returns the first error encountered; the loop logs and
 // applies exponential backoff.
 func (p *IMAPPoller) RunOnce(ctx context.Context) error {
+	// Honour the channel's tri-state status before touching the IMAP
+	// server. A disabled channel doesn't log a poll row either — the
+	// admin UI surfaces status separately, and writing poll rows for
+	// channels that aren't actually polled would muddy the operator
+	// view of liveness.
+	status, _, err := ReadChannelStatus(ctx, p.pool.P, p.channelID)
+	if err != nil {
+		return fmt.Errorf("imap poller: read status: %w", err)
+	}
+	if status != ChannelStatusEnabled {
+		return nil
+	}
+
 	cfg, projectID, intakeStatusID, err := p.loadChannelConfig(ctx)
 	if err != nil {
 		return fmt.Errorf("imap poller: load config: %w", err)
@@ -287,6 +379,21 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 	client, err := p.dial(ctx, cfg)
 	if err != nil {
 		_ = p.recordAuthFail(ctx, projectID, err)
+		// Credential-shaped failures are the "human must intervene"
+		// signal: bad creds, account locked, no auth mechanism. Those
+		// trip disabled-fault immediately so we stop hammering the
+		// server and risking lockouts. Network / TLS / timeout
+		// failures (the common transient-blip case) fall through to
+		// the backoff path; sustained backoff at the ceiling will
+		// trip them eventually if they persist.
+		if looksLikeAuthError(err) {
+			if mfErr := MarkChannelFault(ctx, p.pool, p.channelID,
+				fmt.Sprintf("IMAP authentication failed: %v", err)); mfErr != nil {
+				p.logger.LogAttrs(ctx, slog.LevelError, "imap poller mark fault",
+					slog.Int64("channel_id", p.channelID),
+					slog.String("err", mfErr.Error()))
+			}
+		}
 		return fmt.Errorf("imap dial: %w", err)
 	}
 	defer func() { _ = client.Close() }()

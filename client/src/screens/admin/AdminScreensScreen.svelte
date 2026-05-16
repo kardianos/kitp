@@ -44,6 +44,7 @@
     readTitle,
     type Layout,
   } from '../../filter/screen_preset.svelte';
+  import { clearHelpTopic, setHelpTopic } from '../../help/help_context.svelte';
   import { setActiveScope } from '../../keys/shortcut';
   import { projectScope } from '../../shell/project_scope.svelte';
   import { projectsStore, watchProjects } from '../../shell/projects_store.svelte';
@@ -90,6 +91,14 @@
   import CardListPane from './CardListPane.svelte';
 
   setActiveScope('admin_screens');
+
+  // The Screens admin doubles as the Filters admin (right pane edits
+  // filter cards). Surface the Screens help; the Markdown body links
+  // across to the Filters topic for the right-pane explainer.
+  $effect(() => {
+    setHelpTopic({ kind: 'topic', topic: 'admin.screens' });
+    return () => clearHelpTopic();
+  });
 
   const dispatcher = getDispatcher();
   const schemaCache = sharedSchemaCache(dispatcher);

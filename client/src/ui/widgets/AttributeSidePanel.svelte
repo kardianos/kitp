@@ -193,7 +193,7 @@
 
 <aside
   class={cx(
-    'flex w-full flex-col border border-fg/70 bg-bg',
+    'flex w-full flex-col border border-section bg-bg',
     klass,
   )}
   aria-label="Attributes"

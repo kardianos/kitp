@@ -42,6 +42,7 @@
     readLayout,
     readSlug,
   } from '../filter/screen_preset.svelte';
+  import { clearHelpTopic, setHelpTopic } from '../help/help_context.svelte';
   import { setActiveScope } from '../keys/shortcut';
   import { projectScope } from '../shell/project_scope.svelte';
   import { navigate } from '../routing/router.svelte';
@@ -155,6 +156,17 @@
     void projectId;
     void slug;
     void loadScreen();
+  });
+
+  // Publish the help topic for the help-modal button as soon as the
+  // screen card resolves. Cleared on unmount so the next screen's
+  // mount overwrites cleanly instead of inheriting our id.
+  $effect(() => {
+    const s = screen;
+    if (s !== null) {
+      setHelpTopic({ kind: 'screen', screenCardId: s.id });
+    }
+    return () => clearHelpTopic();
   });
 
   /* --------------------------------------------------- access control */

@@ -2,9 +2,11 @@
   /**
    * One row of the task-detail activity stream.
    *
-   * Most kinds render as a single line ("alice changed status from todo to
-   * done"); `comment` is the exception — its body is shown in a slightly
-   * indented block with newlines preserved (`whitespace-pre-wrap`).
+   * Layout is intentionally tight: an inline line ("alice commented · 2h
+   * ago") with the timestamp pushed to the right edge so the whole
+   * stream reads as a single flowing list rather than a row of cards.
+   * `comment` is the one kind that needs a second line — the body is
+   * indented with a thin left-rule, no surface-coloured box.
    *
    * Card links are rendered as buttons when `onOpenCard` is supplied so
    * keyboard users can activate them; otherwise they collapse to plain
@@ -38,6 +40,14 @@
   const relative = $derived(formatRelativeTime(row.created_at));
   const text = $derived(formatActivityText(row, userNames, cardTitles, tagPaths));
 
+  const isCardLink = $derived(
+    onOpenCard !== undefined &&
+      (row.kind === 'card_create' ||
+        row.kind === 'card_delete' ||
+        row.kind === 'card_undelete' ||
+        row.kind === 'card_move'),
+  );
+
   function openCard(): void {
     onOpenCard?.(row.card_id);
   }
@@ -50,36 +60,46 @@
   }
 </script>
 
-<div class={cx('flex flex-col gap-1 py-1.5', klass)} data-activity-id={row.id}>
-  <div class="text-[11px] text-muted">{relative}</div>
-  {#if row.kind === 'comment'}
-    <div class="rounded-md bg-surface p-2.5">
-      <div class="text-xs font-semibold text-fg">{actor}</div>
-      <div class="mt-1 whitespace-pre-wrap text-sm text-fg">
-        {row.comment_body ?? ''}
-      </div>
+{#if row.kind === 'comment'}
+  <div class={cx('', klass)} data-activity-id={row.id}>
+    <div class="flex items-baseline gap-1.5">
+      <span class="font-medium text-fg">{actor}</span>
+      <span class="text-muted">commented</span>
+      <span class="ml-auto shrink-0 text-[11px] tabular-nums text-muted">{relative}</span>
     </div>
-  {:else if onOpenCard !== undefined &&
-    (row.kind === 'card_create' || row.kind === 'card_delete' || row.kind === 'card_undelete' || row.kind === 'card_move')}
-    <div class="text-sm text-fg">
-      <span>{actor} </span>
-      <button
-        type="button"
-        class="rounded text-accent underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        onclick={openCard}
-        onkeydown={onLinkKeydown}
-      >
-        {row.kind === 'card_create'
-          ? 'created the card'
-          : row.kind === 'card_delete'
-            ? 'deleted the card'
-            : row.kind === 'card_undelete'
-              ? 'restored the card'
-              : 'moved the card'}
-      </button>
-      <span>.</span>
+    <div class="ml-0.5 whitespace-pre-wrap border-l-2 border-fg/15 pl-2 text-fg">
+      {row.comment_body ?? ''}
     </div>
-  {:else}
-    <div class="text-sm text-fg">{text}</div>
-  {/if}
-</div>
+  </div>
+{:else if isCardLink}
+  <div
+    class={cx('flex items-baseline gap-1', klass)}
+    data-activity-id={row.id}
+  >
+    <span class="text-fg">{actor}</span>
+    <button
+      type="button"
+      class="rounded text-accent underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      onclick={openCard}
+      onkeydown={onLinkKeydown}
+    >
+      {row.kind === 'card_create'
+        ? 'created the card'
+        : row.kind === 'card_delete'
+          ? 'deleted the card'
+          : row.kind === 'card_undelete'
+            ? 'restored the card'
+            : 'moved the card'}
+    </button>
+    <span class="text-fg">.</span>
+    <span class="ml-auto shrink-0 text-[11px] tabular-nums text-muted">{relative}</span>
+  </div>
+{:else}
+  <div
+    class={cx('flex items-baseline gap-2', klass)}
+    data-activity-id={row.id}
+  >
+    <span class="min-w-0 flex-1 text-fg">{text}</span>
+    <span class="shrink-0 text-[11px] tabular-nums text-muted">{relative}</span>
+  </div>
+{/if}

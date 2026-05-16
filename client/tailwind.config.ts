@@ -13,6 +13,7 @@ export default {
         border: 'var(--color-border)',
         surface: 'var(--color-surface)',
         danger: 'var(--color-danger)',
+        section: 'var(--color-section)',
       },
     },
   },

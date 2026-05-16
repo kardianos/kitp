@@ -66,6 +66,7 @@ import type {
   ChannelListOutput,
   ChannelRow,
   ChannelSetInput,
+  ChannelStatus,
   ChannelSetOutput,
   CommCreateInput,
   CommCreateOutput,
@@ -83,6 +84,10 @@ import type {
   EdgeDeleteOutput,
   EdgeInsertInput,
   EdgeInsertOutput,
+  HelpGetScreenInput,
+  HelpGetScreenOutput,
+  HelpGetTopicInput,
+  HelpGetTopicOutput,
   ProjectStampInput,
   ProjectStampOutput,
   ReplyPostInput,
@@ -1075,6 +1080,9 @@ const commChannelSet: HandlerSpec<ChannelSetInput, ChannelSetOutput> = {
     if (i.intakeStatusId !== undefined && i.intakeStatusId !== 0n) {
       m.intake_status_id = i.intakeStatusId;
     }
+    if (i.channelStatus !== undefined) {
+      m.channel_status = i.channelStatus;
+    }
     return m;
   },
   decode: (raw) => {
@@ -1082,6 +1090,16 @@ const commChannelSet: HandlerSpec<ChannelSetInput, ChannelSetOutput> = {
     return { channel_id: asId(j.channel_id) };
   },
 };
+
+// Normalise the server's channel_status onto our closed union. Unknown
+// or absent values surface as 'enabled' so a fresh-from-DB channel
+// without the attribute set behaves like any other healthy channel.
+function asChannelStatus(v: unknown): ChannelStatus {
+  if (v === 'enabled' || v === 'disabled-admin' || v === 'disabled-fault') {
+    return v;
+  }
+  return 'enabled';
+}
 
 function decodeChannelRow(j: Record<string, unknown>): ChannelRow {
   return {
@@ -1096,6 +1114,8 @@ function decodeChannelRow(j: Record<string, unknown>): ChannelRow {
     smtp_username: asStrOrEmpty(j.smtp_username),
     from_address: asStrOrEmpty(j.from_address),
     intake_status_id: asIdOrZero(j.intake_status_id),
+    channel_status: asChannelStatus(j.channel_status),
+    channel_fault_reason: asStrOrEmpty(j.channel_fault_reason),
     has_imap_password: asBoolOrFalse(j.has_imap_password),
     has_smtp_password: asBoolOrFalse(j.has_smtp_password),
     created_at: asStrOrEmpty(j.created_at),
@@ -1141,6 +1161,38 @@ const commLogList: HandlerSpec<CommLogListInput, CommLogListOutput> = {
   decode: (raw) => {
     const j = asObj(raw);
     return { rows: asArray(j.rows).map((r) => decodeCommLogRow(asObj(r))) };
+  },
+};
+
+// ============================================================================
+// help.get_topic / get_screen
+// ============================================================================
+
+const helpGetTopic: HandlerSpec<HelpGetTopicInput, HelpGetTopicOutput> = {
+  endpoint: 'help',
+  action: 'get_topic',
+  encode: (i) => ({ topic: i.topic }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      title: asStrOrEmpty(j.title),
+      markdown: asStrOrEmpty(j.markdown),
+    };
+  },
+};
+
+const helpGetScreen: HandlerSpec<HelpGetScreenInput, HelpGetScreenOutput> = {
+  endpoint: 'help',
+  action: 'get_screen',
+  // screen_card_id is an int64 — server tags it as `json:",string"`, so we
+  // ship the bigint as a digit string to keep precision.
+  encode: (i) => ({ screen_card_id: i.screenCardId.toString() }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      title: asStrOrEmpty(j.title),
+      markdown: asStrOrEmpty(j.markdown),
+    };
   },
 };
 
@@ -1201,6 +1253,8 @@ export {
   commChannelSet,
   commChannelList,
   commLogList,
+  helpGetTopic,
+  helpGetScreen,
 };
 
 // ============================================================================
@@ -1245,5 +1299,7 @@ export function registerBuiltInHandlers(r: HandlerRegistry): void {
   r.register(commChannelSet);
   r.register(commChannelList);
   r.register(commLogList);
+  r.register(helpGetTopic);
+  r.register(helpGetScreen);
   registerAdminHandlers(r);
 }

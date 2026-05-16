@@ -37,6 +37,7 @@
 
   import { getDispatcher } from '../../dispatch/context';
   import { BatchAbortedError, SubRequestError } from '../../dispatch/errors';
+  import { clearHelpTopic, setHelpTopic } from '../../help/help_context.svelte';
   import { setActiveScope, useShortcut } from '../../keys/shortcut';
   import {
     attributeDefSelect,
@@ -109,6 +110,13 @@
   } from './admin_flows_helpers';
 
   setActiveScope('admin_flows');
+
+  // Publish the per-page help topic. Cleared on unmount so the next
+  // screen's mount overwrites cleanly.
+  $effect(() => {
+    setHelpTopic({ kind: 'topic', topic: 'admin.flows' });
+    return () => clearHelpTopic();
+  });
 
   /* ---------------------------------------------------------- dependencies */
 

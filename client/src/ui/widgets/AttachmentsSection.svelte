@@ -229,7 +229,7 @@
 
 <section
   aria-labelledby="attachments-heading"
-  class="flex flex-col border border-fg/70 bg-bg"
+  class="flex flex-col border border-section bg-bg"
 >
   <h2
     id="attachments-heading"

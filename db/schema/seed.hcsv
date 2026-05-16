@@ -91,6 +91,8 @@ smtp_port,             number,      true, null
 smtp_username,         text,        true, null
 from_address,          text,        true, null
 intake_status,         card_ref,    true, $card_type.status
+channel_status,        text,        true, null
+channel_fault_reason,  text,        true, null
 channel_ref,           card_ref,    true, $card_type.comm_channel
 thread_id,             text,        true, null
 replies,               card_ref[],  true, $card_type.reply_body
@@ -163,6 +165,8 @@ $card_type.comm_channel, $attribute_def.smtp_port,         false, 6
 $card_type.comm_channel, $attribute_def.smtp_username,     false, 7
 $card_type.comm_channel, $attribute_def.from_address,      false, 8
 $card_type.comm_channel, $attribute_def.intake_status,     false, 9
+$card_type.comm_channel, $attribute_def.channel_status,    false, 10
+$card_type.comm_channel, $attribute_def.channel_fault_reason, false, 11
 $card_type.comm,         $attribute_def.title,             true,  0
 $card_type.comm,         $attribute_def.channel_ref,       true,  1
 $card_type.comm,         $attribute_def.thread_id,         true,  2

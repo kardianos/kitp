@@ -4,6 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>kitp</title>
+    <script>
+      // Apply the persisted theme before the bundle loads so reloads
+      // don't flash the light palette on dark-mode users. Mirrors the
+      // logic in src/shell/theme.svelte.ts — keep the two in sync.
+      (function () {
+        try {
+          var m = localStorage.getItem('kitp.theme');
+          if (m !== 'light' && m !== 'dark') {
+            m = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+              ? 'dark'
+              : 'light';
+          }
+          if (m === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+        } catch (_) {
+          // localStorage / matchMedia unavailable; default light.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

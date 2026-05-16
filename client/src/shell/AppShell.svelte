@@ -29,8 +29,10 @@
   import { shortcuts } from '../keys/registry.svelte';
   import { useShortcut } from '../keys/shortcut';
   import { readHotkey, readSlug, readTitle } from '../filter/screen_preset.svelte';
+  import HelpButton from '../help/HelpButton.svelte';
   import { navigate, routerState } from '../routing/router.svelte';
   import { screenUrl } from '../routing/routes';
+  import ThemeToggle from './ThemeToggle.svelte';
   import { cx } from '../util/class_names';
 
   /**
@@ -250,6 +252,16 @@
       </nav>
 
       <div class="flex-1"></div>
+
+      <!-- Theme toggle (sun / moon). Persisted to localStorage; the
+           inline boot script in index.html applies the saved choice
+           before the bundle loads, so reloads don't flash light. -->
+      <ThemeToggle />
+
+      <!-- Per-page help (markdown modal) sits to the left of the ? icon
+           so the two affordances share visual weight; click the book
+           for "about this screen", the ? for keyboard shortcuts. -->
+      <HelpButton />
 
       <!-- Help icon (opens shortcut help via the registry's helpOpen flag) -->
       <button

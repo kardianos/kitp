@@ -40,6 +40,10 @@
   import AttachmentsPreviewStrip from '../ui/widgets/AttachmentsPreviewStrip.svelte';
   import AttributeSidePanel from '../ui/widgets/AttributeSidePanel.svelte';
   import TransitionBar from '../ui/widgets/TransitionBar.svelte';
+  import MilkdownComposer from '../composer/MilkdownComposer.svelte';
+  import { uploadAttachment } from '../attachments/upload';
+  import type { AuthState } from '../auth/auth_state.svelte';
+  import { getContext } from 'svelte';
   import { sharedSchemaCache } from '../filter/attribute_schema.svelte';
   import type { FilterAttribute } from '../filter/attribute_schema.svelte';
   import type {
@@ -187,6 +191,38 @@
   // Bumped each time the right-rail AttachmentsSection commits an upload
   // or delete; the preview strip listens to it via a $effect to refetch.
   let attachmentsVersion = $state(0);
+
+  /**
+   * Rich-text comment composer behind a flag. When true, the textarea is
+   * replaced with a Milkdown editor (slash commands + tables + image
+   * upload). Flip to false to fall back to the textarea while we shake
+   * out edge cases. Eventually this becomes the only path.
+   */
+  const RICH_COMPOSER = true;
+
+  const authState = getContext<AuthState | null>('authState') ?? null;
+
+  /**
+   * Image uploader for the rich composer. Reuses the existing
+   * attachment pipeline: chunk-upload to CAS → file.create →
+   * attachment.create (parented to the current task). The resulting
+   * attachment id becomes the inline image src
+   * `/api/v1/attachment/{id}/view`, which the server streams with
+   * `Content-Disposition: inline` so `<img>` renders directly.
+   *
+   * Inline images therefore *also* show up in the right-rail
+   * AttachmentsSection — by design: every uploaded asset is reachable
+   * through both surfaces. The activity stream gets one
+   * attachment_create row per upload.
+   */
+  async function uploadImage(file: File): Promise<{ src: string; alt: string }> {
+    const att = await uploadAttachment(dispatcher, taskId, file, authState);
+    attachmentsVersion += 1;
+    return {
+      src: `/api/v1/attachment/${att.id.toString()}/view`,
+      alt: file.name,
+    };
+  }
 
   // Tag picker (Combobox toggled by `t` shortcut and the "+ Add tag" btn).
   let tagPickerOpen = $state(false);
@@ -903,9 +939,9 @@
     </div>
   {:else}
     <!-- Main column ----------------------------------------------------- -->
-    <main class="flex min-w-0 flex-col gap-2 border border-fg/70 bg-bg">
+    <main class="flex min-w-0 flex-col gap-2 border border-section bg-bg">
       <!-- Header: back arrow + title (read-only / editing) -->
-      <header class="flex items-start gap-2 border-b border-fg/70 bg-surface/40 px-3 py-2">
+      <header class="flex items-start gap-2 border-b border-section bg-surface/40 px-3 py-2">
         <IconButton
           aria-label="Back"
           onclick={goBack}
@@ -931,7 +967,7 @@
               bind:value={titleDraft}
               type="text"
               data-testid="task-title-input"
-              class="w-full border border-fg/70 bg-bg px-2 py-1 text-lg font-semibold text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+              class="w-full border border-section bg-bg px-2 py-1 text-lg font-semibold text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
               onkeydown={onTitleKeydown}
               onblur={() => void commitTitle()}
             />
@@ -1021,7 +1057,7 @@
       </header>
 
       <!-- Description -->
-      <section aria-labelledby="desc-heading" class="border-t border-fg/70">
+      <section aria-labelledby="desc-heading" class="border-t border-section">
         <h2
           id="desc-heading"
           class="border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
@@ -1066,42 +1102,13 @@
            card has no image / PDF attachments the section renders nothing. -->
       <AttachmentsPreviewStrip cardId={taskId} version={attachmentsVersion} />
 
-      <!-- Activity stream -->
-      <section aria-labelledby="activity-heading" class="flex flex-col border-t border-fg/70">
-        <h2
-          id="activity-heading"
-          class="border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
-        >
-          Activity ({orderedActivity.length})
-        </h2>
-        {#if orderedActivity.length === 0}
-          <p class="px-3 py-2 text-sm text-muted">No activity yet.</p>
-        {:else}
-          <ul
-            data-testid="task-activity-list"
-            class="flex max-h-[40vh] flex-col gap-0 divide-y divide-fg/15 overflow-y-auto bg-bg"
-          >
-            {#each orderedActivity as row (row.id)}
-              <li class="px-3 py-1">
-                <ActivityRowView
-                  {row}
-                  userNames={userNames}
-                  cardTitles={cardTitles}
-                  tagPaths={tagPaths}
-                />
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </section>
-
       <!-- Comms (read-only — Reply lives on the Comms screen).
            Per spec §"What about the Task detail view?": Task detail shows
            internal comments (existing), attached comms (this section), and
            the reply history of each comm. The "Reply" action is *not*
            available here; the user navigates to the Comms screen to post
            a reply, keeping the boundary clean. -->
-      <section aria-labelledby="comms-heading" class="flex flex-col border-t border-fg/70">
+      <section aria-labelledby="comms-heading" class="flex flex-col border-t border-section">
         <h2
           id="comms-heading"
           class="flex items-center justify-between border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
@@ -1189,7 +1196,7 @@
       </section>
 
       <!-- Comment composer -->
-      <section aria-labelledby="comment-heading" class="flex flex-col border-t border-fg/70">
+      <section aria-labelledby="comment-heading" class="flex flex-col border-t border-section">
         <h2
           id="comment-heading"
           class="border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
@@ -1197,16 +1204,29 @@
           Comment
         </h2>
         <div class="flex flex-col gap-2 px-3 py-2">
-          <textarea
-            bind:this={commentEl}
-            bind:value={commentDraft}
-            data-testid="task-comment-input"
-            rows="3"
-            class="w-full border border-fg/40 bg-bg px-2 py-1 text-sm text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-            placeholder="Add a comment… (Mod+Enter to post)"
-            disabled={postingComment}
-            onkeydown={onCommentKeydown}
-          ></textarea>
+          {#if RICH_COMPOSER}
+            <!-- Milkdown-based editor: slash commands for headings,
+                 lists, tables, code; drop/paste images upload through
+                 the existing attachment pipeline. Same Markdown
+                 source on the wire as the textarea. -->
+            <MilkdownComposer
+              bind:value={commentDraft}
+              placeholder="Add a comment… (type / for formatting)"
+              disabled={postingComment}
+              onUploadImage={uploadImage}
+            />
+          {:else}
+            <textarea
+              bind:this={commentEl}
+              bind:value={commentDraft}
+              data-testid="task-comment-input"
+              rows="3"
+              class="w-full border border-fg/40 bg-bg px-2 py-1 text-sm text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+              placeholder="Add a comment… (Mod+Enter to post)"
+              disabled={postingComment}
+              onkeydown={onCommentKeydown}
+            ></textarea>
+          {/if}
           <div class="flex justify-end">
             <Button
               variant="primary"
@@ -1219,6 +1239,36 @@
             </Button>
           </div>
         </div>
+      </section>
+
+      <!-- Activity stream. Sits below the comment composer so the
+           composer is the first thing reached when scrolling; the
+           stream is a continuous, low-chrome timeline rather than
+           a table of rows. -->
+      <section aria-labelledby="activity-heading" class="flex flex-col border-t border-section">
+        <h2
+          id="activity-heading"
+          class="border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
+        >
+          Activity ({orderedActivity.length})
+        </h2>
+        {#if orderedActivity.length === 0}
+          <p class="px-3 py-2 text-sm text-muted">No activity yet.</p>
+        {:else}
+          <div
+            data-testid="task-activity-list"
+            class="flex max-h-[40vh] flex-col gap-0.5 overflow-y-auto bg-bg px-3 py-1.5 text-sm leading-snug"
+          >
+            {#each orderedActivity as row (row.id)}
+              <ActivityRowView
+                {row}
+                userNames={userNames}
+                cardTitles={cardTitles}
+                tagPaths={tagPaths}
+              />
+            {/each}
+          </div>
+        {/if}
       </section>
     </main>
 
@@ -1247,7 +1297,7 @@
       <!-- Tags section -->
       <section
         aria-labelledby="tags-heading"
-        class="flex flex-col border border-fg/70 bg-bg"
+        class="flex flex-col border border-section bg-bg"
       >
         <h2
           id="tags-heading"

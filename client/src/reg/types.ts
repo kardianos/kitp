@@ -926,7 +926,21 @@ export interface ChannelSetInput {
   smtpPassword?: string;
   fromAddress?: string;
   intakeStatusId?: ID;
+  /**
+   * Tri-state enable/disable. Leave undefined to preserve the stored
+   * value (the typical case when an admin edits other fields). Set
+   * explicitly to 'enabled' to clear a fault, or 'disabled-admin' to
+   * pause the channel. The runtime owns 'disabled-fault' — the admin
+   * UI never writes that value directly.
+   */
+  channelStatus?: ChannelStatus;
 }
+
+/**
+ * The three values comm_channel.channel_status accepts. Kept in sync
+ * with the server constants in server/internal/dom/comm/channel_status.go.
+ */
+export type ChannelStatus = 'enabled' | 'disabled-admin' | 'disabled-fault';
 
 export interface ChannelSetOutput {
   channel_id: ID;
@@ -954,6 +968,17 @@ export interface ChannelRow {
   smtp_username: string;
   from_address: string;
   intake_status_id: ID;
+  /**
+   * Tri-state status. Missing / unknown server values surface as
+   * 'enabled' so legacy rows keep working without a re-seed.
+   */
+  channel_status: ChannelStatus;
+  /**
+   * Set by the runtime when channel_status='disabled-fault'; empty
+   * otherwise. Free-form prose (e.g. "IMAP dial failed: …") suitable
+   * for surfacing inline next to the status pill.
+   */
+  channel_fault_reason: string;
   has_imap_password: boolean;
   has_smtp_password: boolean;
   created_at: string;
@@ -1166,6 +1191,28 @@ export interface UserTokenRevokeInput {
 export interface UserTokenRevokeOutput {
   ok: boolean;
   deleted: number;
+}
+
+// ============================================================================
+// help.get_topic / get_screen
+// ============================================================================
+
+export interface HelpGetTopicInput {
+  topic: string;
+}
+
+export interface HelpGetTopicOutput {
+  title: string;
+  markdown: string;
+}
+
+export interface HelpGetScreenInput {
+  screenCardId: ID;
+}
+
+export interface HelpGetScreenOutput {
+  title: string;
+  markdown: string;
 }
 
 // ============================================================================

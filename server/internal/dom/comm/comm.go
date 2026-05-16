@@ -59,6 +59,13 @@ type ChannelSetInput struct {
 	SMTPPassword   *string `json:"smtp_password,omitempty" mcp:"desc=SMTP password; omit to leave unchanged on update; sent to pgcrypto sym_encrypt at rest"`
 	FromAddress    string  `json:"from_address,omitempty" mcp:"desc=outbound From: envelope (e.g. support@example.com)"`
 	IntakeStatusID int64   `json:"intake_status_id,string,omitempty" mcp:"desc=status card id assigned to new tasks created from inbound mail (falls back to the project flow's default at intake time)"`
+	// Status is the tri-state enable/disable knob. Empty string means
+	// "leave the existing value unchanged" — admins editing other
+	// fields (host, password rotation, …) should not accidentally
+	// clear a disabled-fault flag. Set explicitly to 'enabled' to
+	// resume polling after a fault, or to 'disabled-admin' to pause.
+	// The runtime owns the 'disabled-fault' transition.
+	Status string `json:"channel_status,omitempty" mcp:"desc=tri-state status; one of 'enabled' | 'disabled-admin' | 'disabled-fault'; empty leaves the stored value unchanged"`
 }
 
 // ChannelSetOutput surfaces the channel card id so the caller can chain.
@@ -88,6 +95,8 @@ type ChannelRow struct {
 	SMTPUsername    string `json:"smtp_username" mcp:"desc=SMTP login username"`
 	FromAddress     string `json:"from_address" mcp:"desc=outbound From: envelope"`
 	IntakeStatusID  int64  `json:"intake_status_id,string,omitempty" mcp:"desc=intake status card id; 0/omitted = use project flow default"`
+	Status          string `json:"channel_status" mcp:"desc=tri-state status: 'enabled' | 'disabled-admin' | 'disabled-fault'"`
+	FaultReason     string `json:"channel_fault_reason,omitempty" mcp:"desc=free-form reason set by the runtime when status='disabled-fault'; empty otherwise"`
 	HasIMAPPassword bool   `json:"has_imap_password" mcp:"desc=true if a non-null encrypted IMAP password is stored"`
 	HasSMTPPassword bool   `json:"has_smtp_password" mcp:"desc=true if a non-null encrypted SMTP password is stored"`
 	CreatedAt       string `json:"created_at" mcp:"desc=RFC3339 creation timestamp of the channel card"`
@@ -568,6 +577,11 @@ func validateChannelSet(ctx context.Context, tx pgx.Tx, idx int, in ChannelSetIn
 		}
 	}
 
+	if in.Status != "" && !ValidChannelStatus(in.Status) {
+		return &reg.HandlerError{InputIndex: idx, Code: "validation",
+			Message: fmt.Sprintf("comm_channel.set: channel_status %q is not one of 'enabled' / 'disabled-admin' / 'disabled-fault'", in.Status)}
+	}
+
 	if in.IntakeStatusID != 0 {
 		// Optional: must point at a value-card of card_type=status. The
 		// scope check (must be same project) is enforced by the
@@ -662,6 +676,16 @@ func channelFieldWrites(in ChannelSetInput, snap *schema.Snapshot, isUpdate bool
 	if in.IntakeStatusID != 0 {
 		push("intake_status", jid(in.IntakeStatusID))
 	}
+	if in.Status != "" {
+		push("channel_status", jstr(in.Status))
+		// When the admin explicitly re-enables a channel, clear the
+		// stale fault reason so the UI doesn't keep showing a stale
+		// "IMAP dial failed" message next to a healthy channel. Other
+		// status transitions don't touch the reason.
+		if in.Status == ChannelStatusEnabled {
+			push("channel_fault_reason", jstr(""))
+		}
+	}
 	return out
 }
 
@@ -727,7 +751,9 @@ func runChannelList(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []an
 					       COALESCE((SELECT (value)::text::int FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='smtp_port' AND jsonb_typeof(value)='number'), 0) AS smtp_port,
 					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='smtp_username'),'')         AS smtp_username,
 					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='from_address'),'')          AS from_address,
-					       COALESCE((SELECT (value)::text::bigint FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='intake_status' AND jsonb_typeof(value)='number'), 0) AS intake_status_id
+					       COALESCE((SELECT (value)::text::bigint FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='intake_status' AND jsonb_typeof(value)='number'), 0) AS intake_status_id,
+					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='channel_status'),'enabled') AS channel_status,
+					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='channel_fault_reason'),'') AS channel_fault_reason
 					FROM card c
 					JOIN card_type ct ON ct.id = c.card_type_id
 					WHERE ct.name = 'comm_channel'
@@ -739,6 +765,7 @@ func runChannelList(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []an
 				       ca.imap_host, ca.imap_port, ca.imap_username,
 				       ca.smtp_host, ca.smtp_port, ca.smtp_username,
 				       ca.from_address, ca.intake_status_id,
+				       ca.channel_status, ca.channel_fault_reason,
 				       (cs.imap_password IS NOT NULL) AS has_imap_password,
 				       (cs.smtp_password IS NOT NULL) AS has_smtp_password,
 				       to_char(ca.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
@@ -757,6 +784,7 @@ func runChannelList(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []an
 					&r.IMAPHost, &r.IMAPPort, &r.IMAPUsername,
 					&r.SMTPHost, &r.SMTPPort, &r.SMTPUsername,
 					&r.FromAddress, &r.IntakeStatusID,
+					&r.Status, &r.FaultReason,
 					&r.HasIMAPPassword, &r.HasSMTPPassword,
 					&r.CreatedAt,
 				); err != nil {

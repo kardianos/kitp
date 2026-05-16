@@ -213,6 +213,19 @@ type pendingReply struct {
 // open. (Postgres connections in this pool are otherwise idle during
 // network I/O.)
 func (s *SMTPSender) RunOnce(ctx context.Context) error {
+	// Honour the comm_channel's tri-state status. A disabled channel
+	// still holds its pending reply rows in delivery_status='pending'
+	// — those resume sending the next tick after the channel is
+	// re-enabled. We don't fail them so the admin can pause/resume a
+	// channel without losing outbound mail.
+	status, _, err := ReadChannelStatus(ctx, s.pool.P, s.channelID)
+	if err != nil {
+		return fmt.Errorf("smtp sender: read status: %w", err)
+	}
+	if status != ChannelStatusEnabled {
+		return nil
+	}
+
 	rows, err := s.loadPending(ctx, 10)
 	if err != nil {
 		return fmt.Errorf("smtp sender: load pending: %w", err)
