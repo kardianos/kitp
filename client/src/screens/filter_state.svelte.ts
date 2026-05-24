@@ -77,7 +77,12 @@ export function setFilter(
   projectId: ID | null | undefined,
   predicate: Predicate | null,
 ): void {
-  cache.byKey = { ...cache.byKey, [makeKey(scope, projectId)]: predicate };
+  // Fine-grained per-key write into the `$state` proxy (FE-H2). Mutating
+  // one property invalidates only the readers of that key, not every
+  // reader of `byKey` — the whole-object reassign this replaced fired
+  // every `getFilter`/`hasFilter` subscriber on each write (the same
+  // fan-out the registry fixed in cc1cfd1 by switching to splice).
+  cache.byKey[makeKey(scope, projectId)] = predicate;
 }
 
 /**
@@ -109,10 +114,8 @@ export function setActivePreset(
   projectId: ID | null | undefined,
   presetId: ID | null,
 ): void {
-  cache.presetByKey = {
-    ...cache.presetByKey,
-    [makeKey(scope, projectId)]: presetId ?? 0n,
-  };
+  // Per-key proxy write — see setFilter for the FE-H2 rationale.
+  cache.presetByKey[makeKey(scope, projectId)] = presetId ?? 0n;
 }
 
 /** Drop every cached predicate. Test-only; call sites in app code

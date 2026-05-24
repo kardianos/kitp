@@ -294,6 +294,10 @@ func Register(p *store.Pool) {
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		ProcessName:  "card.update",
 		CardTypeID:   cardTypeFromReplyPostInput,
+		// The input carries comm_id, not a plain card_id, so the
+		// per-row scope pass needs an explicit walk-start (comm → task
+		// → project) or a project-scoped manager is denied (BE-H3 / A2).
+		ScopeCardID: scopeCardFromReplyPostInput,
 		// Unified handler — body lives in
 		// db/schema/functions/reply_post_batch.sql. Per Phase 3 of
 		// docs/UNIFIED_HANDLER_PLAN.md the SQL function now owns the
@@ -343,6 +347,13 @@ func cardTypeFromReplyPostInput(ctx context.Context, pool reg.ValidationPool, ra
 		return 0, err
 	}
 	return parentCardTypeID, nil
+}
+
+// scopeCardFromReplyPostInput returns the comm card id the per-row
+// scope pass walks up from (comm → task → project). Used as
+// reg.Handler.ScopeCardID for reply.post (BE-H3 / A2).
+func scopeCardFromReplyPostInput(_ context.Context, _ reg.ValidationPool, raw any) (int64, error) {
+	return raw.(ReplyPostInput).CommID, nil
 }
 
 // authzAdmin requires the actor to hold the admin or system role

@@ -1,0 +1,21 @@
+{
+  "name": "kitp-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "kitp web client — zero-framework, signal/control, esbuild-only.",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --serve",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.0"
+  },
+  "comments": {
+    "toolchain": "esbuild is the SOLE build/dev dependency. No Svelte, Vite, Tailwind, React, vitest, or jest. Type-checking is via `tsc --noEmit` (typescript provided ambiently / by editor) as the type oracle; esbuild does emit only.",
+    "runtime-deps": "dompurify + marked are the markdown/XSS boundary and are VENDORED under web/vendor/ as ESM when the Markdown control lands (next pass) — not installed via this toolchain.",
+    "tests": "node --test runs test/*.test.mjs (esbuild-built on the fly). Dependency-light: no test framework."
+  }
+}

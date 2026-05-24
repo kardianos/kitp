@@ -26,7 +26,7 @@
   } from './project_screens_store.svelte';
   import { projectScope } from './project_scope.svelte';
   import { getDispatcher } from '../dispatch/context';
-  import { shortcuts } from '../keys/registry.svelte';
+  import { shortcuts, type ShortcutEntry } from '../keys/registry.svelte';
   import { useShortcut } from '../keys/shortcut';
   import { readHotkey, readSlug, readTitle } from '../filter/screen_preset.svelte';
   import HelpButton from '../help/HelpButton.svelte';
@@ -101,44 +101,49 @@
   $effect(watchProjectScreens(dispatcher));
 
   /**
-   * Register `g <hotkey>` chords for every screen in the active
-   * project; unregister them on project change. The hardcoded
-   * `NAV_CHORDS` table this replaces lived at the top of AppShell —
-   * gate 9 makes it data-driven so a freshly-seeded screen comes with
-   * a working hotkey on the next project visit, no code change.
+   * `g <hotkey>` chords for every screen in the active project, derived
+   * purely from the loaded screen cards. The hardcoded `NAV_CHORDS`
+   * table this replaces lived at the top of AppShell — gate 9 makes it
+   * data-driven so a freshly-seeded screen comes with a working hotkey
+   * on the next project visit, no code change.
    *
-   * `useShortcut` is bound to component lifecycle (onMount/onDestroy)
-   * and so can't be used inside an effect; we go through the registry
-   * directly. The cleanup closure unregisters the previous batch on
-   * the next run.
+   * This is a plain `$derived`, NOT an `$effect` that imperatively
+   * register/unregisters on every project switch. The previous effect
+   * read `projectScope.projectId` and wrote the registry's `entries`,
+   * and `projectsStore.load` could (mid-load) write `projectScope`,
+   * relaying a data load back into this effect — the live
+   * `effect_update_depth_exceeded` cascade (FE-C2). Exposing the chords
+   * as a derived source the dispatcher reads removes the write side of
+   * that loop entirely. Synthetic-id `ShortcutEntry`s are stamped by the
+   * registry when it folds the source in.
    */
-  $effect(() => {
-    // Track the per-project screen list. `forProjectId` is part of the
-    // dependency set so a project switch retriggers; `screens` so a
-    // mutation through `bumpVersion()` does too.
-    const list = projectScreensStore.screens;
-    void projectScreensStore.forProjectId;
+  const screenChords: ShortcutEntry[] = $derived.by(() => {
     const pid = projectScope.projectId;
-    const ids: number[] = [];
-    if (pid !== null) {
-      for (const sc of list) {
-        const hk = readHotkey(sc);
-        const slug = readSlug(sc);
-        if (hk === null || slug === null) continue;
-        const title = readTitle(sc);
-        const id = shortcuts.register({
-          scope: 'global',
-          binding: `g ${hk}`,
-          handler: () => navigate(screenUrl(pid, slug)),
-          label: `Go to ${title}`,
-        });
-        ids.push(id);
-      }
+    if (pid === null) return [];
+    const out: ShortcutEntry[] = [];
+    for (const sc of projectScreensStore.screens) {
+      const hk = readHotkey(sc);
+      const slug = readSlug(sc);
+      if (hk === null || slug === null) continue;
+      const title = readTitle(sc);
+      out.push({
+        scope: 'global',
+        binding: `g ${hk}`,
+        handler: () => navigate(screenUrl(pid, slug)),
+        label: `Go to ${title}`,
+        // Negative sentinel: dynamic entries are never unregistered by
+        // id, and the registry restamps as needed when merging.
+        id: -1,
+      });
     }
-    return () => {
-      for (const id of ids) shortcuts.unregister(id);
-    };
+    return out;
   });
+
+  // Register the derived chord list as a reactive source once. The
+  // dispatcher reads `shortcuts.all`, which folds this in and tracks
+  // `screenChords`'s own deps — so a project switch or screen-card
+  // reload updates the live chord set with no registry mutation.
+  $effect(() => shortcuts.registerSource(() => screenChords));
 
   /**
    * Build breadcrumb segments from the current path. Slugs render

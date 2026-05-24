@@ -5,8 +5,11 @@ package comment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
@@ -51,6 +54,12 @@ func Register(p *store.Pool) {
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		ProcessName:  "comment.edit",
 		CardTypeID:   cardTypeFromUpdateInput,
+		// The input carries activity_id, not card_id, so the per-row
+		// scope pass needs an explicit resolver to dereference it to the
+		// activity's card (then walk that card → project). Without this a
+		// project-scoped manager editing a comment would be denied
+		// (BE-H3 / A2).
+		ScopeCardID: scopeCardFromUpdateInput,
 		// Unified handler — body lives in
 		// db/schema/functions/comment_update_batch.sql. See
 		// docs/UNIFIED_HANDLER_PLAN.md Phase 2.
@@ -75,12 +84,31 @@ type UpdateOutput struct {
 }
 
 func cardTypeFromUpdateInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+	cardID, err := scopeCardFromUpdateInput(ctx, pool, raw)
+	if err != nil {
+		return 0, err
+	}
+	if cardID == 0 {
+		return 0, nil
+	}
+	return schema.CardTypeIDByCardID(ctx, pool, cardID)
+}
+
+// scopeCardFromUpdateInput dereferences the edited activity to the card
+// it belongs to so the per-row scope pass can walk that card → project.
+// Used as reg.Handler.ScopeCardID for comment.update (BE-H3 / A2).
+// Returns (0, nil) when the activity is missing — the handler's own
+// validation surfaces the proper not-found error.
+func scopeCardFromUpdateInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	in := raw.(UpdateInput)
 	var cardID int64
 	err := pool.QueryRow(ctx, `SELECT card_id FROM activity WHERE id = $1`, in.ActivityID).Scan(&cardID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
 		return 0, fmt.Errorf("comment.update: lookup card_id from activity: %w", err)
 	}
-	return schema.CardTypeIDByCardID(ctx, pool, cardID)
+	return cardID, nil
 }
 

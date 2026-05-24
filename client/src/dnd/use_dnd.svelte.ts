@@ -86,12 +86,21 @@ export const AUTOSCROLL_VELOCITY_PX = 10;
 /* -------------------------------------------------------------------------- */
 
 /**
- * The store carries all live drag state. We avoid `$state` rune syntax in this
- * file so it remains importable from plain `.ts` test files (vitest does not
- * preprocess `.svelte.ts` runes by default in this project's setup). The public
- * surface is the same — Svelte components subscribe via `$effect` over
- * `dnd.active.hoverZoneId` etc., or, more typically, simply read it once at
- * render time.
+ * The store carries all live drag state.
+ *
+ * REACTIVITY CONTRACT (FE-H1): `active` and `zones` are plain class
+ * fields, NOT `$state`. Mutating them triggers NO Svelte reactivity.
+ * This is intentional — the store is consumed exclusively through the
+ * imperative `setHover` callback path (`DropZone` wires `setHover` to
+ * its own local `$state` boolean; `onDrop` is a direct call). Do NOT
+ * write `$effect(() => x = dnd.active?.hoverZoneId)` expecting it to
+ * re-run on hover changes: it will read the value once and then go
+ * stale silently. If a future consumer genuinely needs a reactive read
+ * of drag state, promote the specific field to `$state` here first —
+ * don't rely on a subscription this store does not provide.
+ *
+ * (Keeping these non-rune also lets the module import cleanly into the
+ * plain-`.ts` `dnd` unit tests.)
  */
 class DndStore {
   active: ActiveDrag | null = null;

@@ -137,6 +137,65 @@ describe('ShortcutRegistry: register / unregister', () => {
   });
 });
 
+describe('ShortcutRegistry: dynamic sources (FE-C2)', () => {
+  it('folds a dynamic source into `all` and `visible` without mutating entries', () => {
+    let chords = [
+      {
+        scope: 'global' as const,
+        binding: 'g i',
+        handler: () => {},
+        label: 'Go to Inbox',
+        id: -1,
+      },
+    ];
+    const dispose = shortcuts.registerSource(() => chords);
+
+    // The dynamic chord is visible to the dispatcher (via `all`) and the
+    // help overlay (via `visible`), but `entries` stays empty — no
+    // imperative push/splice, which is the whole point of the cascade
+    // fix.
+    expect(shortcuts.entries).toHaveLength(0);
+    expect(shortcuts.all.map((e) => e.binding)).toContain('g i');
+    expect(shortcuts.visible.map((e) => e.binding)).toContain('g i');
+
+    // Swapping the source's output (what a project switch does to the
+    // derived screen-chord list) is picked up on the next read.
+    chords = [
+      {
+        scope: 'global' as const,
+        binding: 'g k',
+        handler: () => {},
+        label: 'Go to Kanban',
+        id: -1,
+      },
+    ];
+    expect(shortcuts.all.map((e) => e.binding)).toContain('g k');
+    expect(shortcuts.all.map((e) => e.binding)).not.toContain('g i');
+
+    dispose();
+    expect(shortcuts.all.map((e) => e.binding)).not.toContain('g k');
+  });
+
+  it("a dynamic 'g <hotkey>' chord fires through the dispatcher", () => {
+    const handler = vi.fn();
+    shortcuts.registerSource(() => [
+      {
+        scope: 'global',
+        binding: 'g j',
+        handler,
+        label: 'Go to Journal',
+        id: -1,
+      },
+    ]);
+
+    // 'g' buffers as a chord prefix because a dynamic source advertises
+    // a 'g …' chord; 'j' completes it.
+    expect(dispatchKey({ key: 'g' })).toBe(true);
+    expect(dispatchKey({ key: 'j' })).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('ShortcutRegistry: visible across active scope and global', () => {
   it('visible includes both active-scope and global entries', () => {
     shortcuts.register({

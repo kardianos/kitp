@@ -20,6 +20,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/dom/cardtype"
+	"github.com/kitp/kitp/server/internal/dom/comm"
 	"github.com/kitp/kitp/server/internal/dom/comment"
 	"github.com/kitp/kitp/server/internal/dom/echo"
 	"github.com/kitp/kitp/server/internal/dom/usercardsort"
@@ -40,6 +41,43 @@ func setupAuthz(t *testing.T, schema string) (*api.Server, *store.Pool) {
 	comment.Register(sp)
 	usercardsort.Register(sp)
 	return api.NewServer(sp), sp
+}
+
+// setupAuthzWithComm is setupAuthz plus the comm domain handlers, so
+// tests can exercise the indirect-id scope resolvers (comm.set_recipients).
+func setupAuthzWithComm(t *testing.T, schema string) (*api.Server, *store.Pool) {
+	t.Helper()
+	reg.Reset()
+	pool := store.TestPool(t, schema)
+	sp := store.NewPool(pool)
+	echo.Register()
+	cardtype.Register()
+	card.Register(sp)
+	attribute.Register(sp)
+	activity.Register(sp)
+	comment.Register(sp)
+	usercardsort.Register(sp)
+	comm.Register(sp)
+	return api.NewServer(sp), sp
+}
+
+// makeProjectTaskComm makes a project + task (via the dispatcher as
+// system) and then seeds a bare comm card directly under the task with
+// SQL (comm.create needs a configured channel, which is heavier than
+// this scope test needs). Returns (projectID, commID).
+func makeProjectTaskComm(t *testing.T, srv *api.Server, title string) (projectID int64, commID int64) {
+	t.Helper()
+	projectID, taskID := makeProjectAndTask(t, srv, title)
+	ctx := auth.WithSystemUser(context.Background())
+	sp := srv.Pool
+	if err := sp.P.QueryRow(ctx, `
+		INSERT INTO card (card_type_id, parent_card_id)
+		SELECT id, $1 FROM card_type WHERE name = 'comm'
+		RETURNING id
+	`, taskID).Scan(&commID); err != nil {
+		t.Fatalf("seed comm card: %v", err)
+	}
+	return projectID, commID
 }
 
 // makeProjectAndTask uses the System User to insert a project (and a task
@@ -295,5 +333,87 @@ func TestBatchMixedAllowedAndDeniedAborts(t *testing.T) {
 	if resp.Subresponses[1].OK || resp.Subresponses[1].Error == nil ||
 		resp.Subresponses[1].Error.Code != "unauthorized" {
 		t.Errorf("slot 1: expected unauthorized, got %+v", resp.Subresponses[1])
+	}
+}
+
+// TestScopedManagerCanEditCommentByActivityID is the BE-H3 / A2
+// regression: comment.update's input carries activity_id (not a plain
+// card_id), so before the explicit ScopeCardID resolver the per-row
+// scope pass resolved tProj=0 and a project-scoped manager was denied.
+// A manager scoped to the comment's project must now reach (and pass)
+// the scope pass. The manager authors the comment so the handler's own
+// author-only check doesn't confound the scope assertion.
+func TestScopedManagerCanEditCommentByActivityID(t *testing.T) {
+	srv, sp := setupAuthz(t, "kitp_test_authz_comment_scope")
+	projA, taskA := makeProjectAndTask(t, srv, "P-comment-A")
+
+	// Manager scoped to project A authors + edits a comment. The scope
+	// pass must allow the insert (card_id-based) AND the update
+	// (activity_id → card → project A).
+	scope := projA
+	uid := grantRole(t, sp, "mgr-comment-A", "manager", &scope)
+	ctx := asUser(uid, "mgr-comment-A")
+
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "c", Endpoint: "comment", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_id":"%d","body":"original"}`, taskA))},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("scoped manager comment.insert should succeed: %+v", resp.Subresponses[0])
+	}
+	var ins comment.InsertOutput
+	buf, _ := json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &ins)
+	if ins.ActivityID == 0 {
+		t.Fatalf("no activity id: %+v", resp.Subresponses[0])
+	}
+
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "e", Endpoint: "comment", Action: "update", Data: json.RawMessage(
+			fmt.Sprintf(`{"activity_id":"%d","body":"edited"}`, ins.ActivityID))},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("scoped manager comment.update should succeed (A2): %+v", resp.Subresponses[0])
+	}
+}
+
+// TestScopedManagerSetRecipientsAllowVsDeny exercises the A2 resolver
+// for an indirect-id handler whose process IS seeded for scoped grants
+// (comm.set_recipients → ProcessName card.update, gated on the comm's
+// parent task type). Its input carries comm_id, not card_id, so without
+// the ScopeCardID resolver the scope pass would resolve tProj=0 and
+// deny even the in-scope manager. With it, a manager scoped to the
+// comm's project is allowed and a manager scoped elsewhere is denied —
+// the resolver both opens and narrows correctly.
+func TestScopedManagerSetRecipientsAllowVsDeny(t *testing.T) {
+	srv, sp := setupAuthzWithComm(t, "kitp_test_authz_recip_scope")
+	projA, commA := makeProjectTaskComm(t, srv, "P-recip-A")
+	projB, commB := makeProjectTaskComm(t, srv, "P-recip-B")
+	_ = projB
+
+	scope := projA
+	uid := grantRole(t, sp, "mgr-recip-A", "manager", &scope)
+	ctx := asUser(uid, "mgr-recip-A")
+
+	// Allowed: set recipients on a comm in project A (empty list clears).
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "r", Endpoint: "comm", Action: "set_recipients", Data: json.RawMessage(
+			fmt.Sprintf(`{"comm_id":"%d","recipient_person_ids":[]}`, commA))},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("scoped manager set_recipients in A should succeed (A2): %+v", resp.Subresponses[0])
+	}
+
+	// Denied: set recipients on a comm in project B (outside scope). The
+	// scope pass denies with unauthorized before the handler body runs.
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "r", Endpoint: "comm", Action: "set_recipients", Data: json.RawMessage(
+			fmt.Sprintf(`{"comm_id":"%d","recipient_person_ids":[]}`, commB))},
+	}})
+	if resp.Subresponses[0].OK {
+		t.Errorf("manager scoped to A should NOT set recipients on a comm in B: %+v", resp.Subresponses[0])
+	}
+	if resp.Subresponses[0].Error == nil || resp.Subresponses[0].Error.Code != "unauthorized" {
+		t.Errorf("expected unauthorized (scope-pass deny), got %+v", resp.Subresponses[0].Error)
 	}
 }

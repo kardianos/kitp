@@ -1,0 +1,293 @@
+/* ==========================================================================
+   kitp design tokens — hand-authored, no build step, no Tailwind.
+   Ship this file as-is; the framework references var(--…) only.
+
+   Continuity: the color tokens are adapted directly from the current
+   Svelte client's app.css (the --color-* set + color-scheme strategy) so
+   the rewrite is visually continuous. We KEEP the exact same names
+   (--color-bg, --color-fg, --color-muted, --color-surface, --color-border,
+   --color-accent, --color-accent-fg, --color-danger, --color-danger-fg,
+   --color-on-image, --color-section) and the same hex values, then add the
+   token families Tailwind used to supply implicitly (spacing, type, radius,
+   shadow, z-index) plus a few derived semantic colors the old client only
+   had via Tailwind opacity utilities (success, the *-soft fills, focus
+   ring).
+
+   Theme strategy: light is the default on :root. Dark is applied two ways,
+   either of which works alone:
+     1. [data-theme="dark"]  — explicit user choice (theme toggle writes
+        data-theme onto <html>; mirrors the current client exactly).
+     2. prefers-color-scheme  — only when the user has NOT chosen, i.e.
+        [data-theme="auto"] or no data-theme attribute. We gate the media
+        query on :root:not([data-theme="light"]) so an explicit light choice
+        is never overridden by the OS.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   LIGHT (default) — the canonical palette.
+   -------------------------------------------------------------------------- */
+:root {
+  /* Tells the UA which palette to use for native form controls
+     (checkboxes, scrollbars, range thumbs). Without this a dark page still
+     renders bright-white native checkboxes. */
+  color-scheme: light;
+
+  /* ---- core surfaces & text (continuity: identical to client app.css) -- */
+  --color-bg: #ffffff;
+  --color-fg: #0f172a;
+  --color-muted: #64748b;
+  --color-surface: #f8fafc;
+  --color-border: #e2e8f0;
+
+  /* ---- accent ---- */
+  --color-accent: #2563eb;
+  --color-accent-fg: #ffffff;
+
+  /* ---- destructive ---- */
+  --color-danger: #dc2626;
+  /* Pinned white in both themes: saturated red + dark-mode fg flip would
+     read as muddy navy on red. */
+  --color-danger-fg: #ffffff;
+
+  /* ---- success (new semantic token; old client used green-via-opacity) - */
+  --color-success: #16a34a;
+  --color-success-fg: #ffffff;
+
+  /* ---- warning ---- */
+  --color-warning: #d97706;
+  --color-warning-fg: #ffffff;
+
+  /* ---- foreground on an always-dark surface (lightbox, avatar tiles) --- */
+  --color-on-image: #ffffff;
+
+  /* ---- section frame (card-detail panes, sidebars). Opaque mid-dark in
+     light; MUCH softer in dark (see below) so it doesn't read as
+     fluorescent strips. ---- */
+  --color-section: rgba(15, 23, 42, 0.7);
+
+  /* ---- derived "soft" fills (replace Tailwind `bg-accent/10` etc.).
+     These are the translucent tints chips/badges/alerts used inline. ---- */
+  --color-accent-soft: rgba(37, 99, 235, 0.1);
+  --color-accent-ring: rgba(37, 99, 235, 0.4);
+  --color-danger-soft: rgba(220, 38, 38, 0.1);
+  --color-danger-ring: rgba(220, 38, 38, 0.4);
+  --color-success-soft: rgba(22, 163, 74, 0.1);
+  --color-success-ring: rgba(22, 163, 74, 0.4);
+
+  /* Focus ring color used by every interactive control. */
+  --color-focus-ring: var(--color-accent);
+
+  /* Backdrop scrim behind modals / slide-overs. */
+  --color-scrim: rgba(15, 23, 42, 0.45);
+
+  /* ------------------------------------------------------------------------
+     SPACING SCALE — 4px base. Use for padding, margin, gap. The current
+     client leaned on Tailwind's 0.25rem step; these are the same rungs it
+     actually used (1, 1.5, 2, 3, 4, plus a few larger).
+     ---------------------------------------------------------------------- */
+  --space-0: 0;
+  --space-px: 1px;
+  --space-1: 0.25rem;  /* 4  */
+  --space-2: 0.5rem;   /* 8  */
+  --space-3: 0.75rem;  /* 12 */
+  --space-4: 1rem;     /* 16 */
+  --space-5: 1.25rem;  /* 20 */
+  --space-6: 1.5rem;   /* 24 */
+  --space-8: 2rem;     /* 32 */
+  --space-10: 2.5rem;  /* 40 */
+  --space-12: 3rem;    /* 48 */
+  --space-16: 4rem;    /* 64 */
+
+  /* ------------------------------------------------------------------------
+     TYPOGRAPHY
+     ---------------------------------------------------------------------- */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* font-size / line-height pairs. Names match usage, not Tailwind. */
+  --text-2xs: 0.625rem;  /* 10px — role hints, group labels */
+  --text-xs: 0.75rem;    /* 12px — chips, meta, card #id     */
+  --text-sm: 0.875rem;   /* 14px — body/control default      */
+  --text-base: 1rem;     /* 16px                             */
+  --text-lg: 1.125rem;   /* 18px — task title                */
+  --text-xl: 1.25rem;    /* 20px — screen H1                 */
+  --text-2xl: 1.5rem;    /* 24px — projects H1               */
+
+  --leading-tight: 1.2;
+  --leading-snug: 1.35;
+  --leading-normal: 1.5;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --tracking-wide: 0.04em;   /* uppercase section labels */
+  --tracking-wider: 0.08em;
+
+  /* ------------------------------------------------------------------------
+     RADIUS
+     ---------------------------------------------------------------------- */
+  --radius-sm: 0.25rem;   /* 4  — chips, grips        */
+  --radius-md: 0.375rem;  /* 6  — controls, cards     */
+  --radius-lg: 0.5rem;    /* 8  — panels, dialogs     */
+  --radius-xl: 0.75rem;   /* 12 — large surfaces      */
+  --radius-full: 9999px;  /* pills, avatars           */
+
+  /* ------------------------------------------------------------------------
+     SHADOWS (tuned for light bg; dark overrides below to deepen)
+     ---------------------------------------------------------------------- */
+  --shadow-sm: 0 1px 2px 0 rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 2px 6px -1px rgba(15, 23, 42, 0.1),
+    0 1px 3px -1px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 10px 24px -6px rgba(15, 23, 42, 0.18),
+    0 4px 8px -4px rgba(15, 23, 42, 0.12);
+  /* Lift for a card being dragged. */
+  --shadow-drag: 0 12px 28px -6px rgba(15, 23, 42, 0.32);
+
+  /* ------------------------------------------------------------------------
+     Z-INDEX LAYERS — one ladder, named by role, so nothing guesses.
+     Matches the current client's ad-hoc z-40 / z-50 usage but makes the
+     full stack explicit.
+     ---------------------------------------------------------------------- */
+  --z-base: 0;
+  --z-sticky: 10;     /* sticky column/lane headers, table header  */
+  --z-dropdown: 30;   /* combobox / menu popovers, kebab menus     */
+  --z-overlay-scrim: 40; /* click-catcher behind a menu/dialog     */
+  --z-modal: 50;      /* dialogs, slide-overs, floating popovers    */
+  --z-toast: 60;      /* toast stack — above everything             */
+  --z-help: 70;       /* keyboard-help overlay — absorbs all input  */
+
+  /* ------------------------------------------------------------------------
+     MOTION
+     ---------------------------------------------------------------------- */
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-flip: 420ms;   /* kanban card reflow (matches client) */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* ------------------------------------------------------------------------
+     LAYOUT CONSTANTS (the shell's fixed dimensions)
+     ---------------------------------------------------------------------- */
+  --rail-width: 13.75rem;       /* ~220px left nav            */
+  --rail-width-collapsed: 0;
+  --topbar-height: 3rem;        /* 48px                       */
+  --detail-rail-width: 20rem;   /* 320px task-detail right rail */
+  --kanban-col-width: 16rem;    /* 256px                      */
+}
+
+/* --------------------------------------------------------------------------
+   DARK — explicit choice. Continuity: identical to client app.css dark set.
+   -------------------------------------------------------------------------- */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-bg: #0b1220;
+  --color-fg: #e2e8f0;
+  --color-muted: #94a3b8;
+  --color-surface: #111827;
+  --color-border: #1f2937;
+
+  --color-accent: #60a5fa;
+  --color-accent-fg: #0b1220;
+
+  --color-danger: #f87171;
+  --color-danger-fg: #ffffff;
+
+  --color-success: #4ade80;
+  --color-success-fg: #052e16;
+
+  --color-warning: #fbbf24;
+  --color-warning-fg: #1c1207;
+
+  --color-on-image: #ffffff;
+  --color-section: rgba(226, 232, 240, 0.18);
+
+  --color-accent-soft: rgba(96, 165, 250, 0.16);
+  --color-accent-ring: rgba(96, 165, 250, 0.5);
+  --color-danger-soft: rgba(248, 113, 113, 0.16);
+  --color-danger-ring: rgba(248, 113, 113, 0.5);
+  --color-success-soft: rgba(74, 222, 128, 0.16);
+  --color-success-ring: rgba(74, 222, 128, 0.5);
+
+  --color-focus-ring: var(--color-accent);
+  --color-scrim: rgba(0, 0, 0, 0.6);
+
+  /* Deepen shadows on a dark bg so elevation still reads. */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 2px 6px -1px rgba(0, 0, 0, 0.6), 0 1px 3px -1px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 10px 24px -6px rgba(0, 0, 0, 0.7), 0 4px 8px -4px rgba(0, 0, 0, 0.55);
+  --shadow-drag: 0 12px 28px -6px rgba(0, 0, 0, 0.8);
+}
+
+/* --------------------------------------------------------------------------
+   DARK — system preference, ONLY when the user hasn't pinned a theme.
+   Gated so an explicit data-theme="light" wins over the OS.
+   -------------------------------------------------------------------------- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]),
+  :root[data-theme="auto"] {
+    color-scheme: dark;
+
+    --color-bg: #0b1220;
+    --color-fg: #e2e8f0;
+    --color-muted: #94a3b8;
+    --color-surface: #111827;
+    --color-border: #1f2937;
+
+    --color-accent: #60a5fa;
+    --color-accent-fg: #0b1220;
+
+    --color-danger: #f87171;
+    --color-danger-fg: #ffffff;
+
+    --color-success: #4ade80;
+    --color-success-fg: #052e16;
+
+    --color-warning: #fbbf24;
+    --color-warning-fg: #1c1207;
+
+    --color-on-image: #ffffff;
+    --color-section: rgba(226, 232, 240, 0.18);
+
+    --color-accent-soft: rgba(96, 165, 250, 0.16);
+    --color-accent-ring: rgba(96, 165, 250, 0.5);
+    --color-danger-soft: rgba(248, 113, 113, 0.16);
+    --color-danger-ring: rgba(248, 113, 113, 0.5);
+    --color-success-soft: rgba(74, 222, 128, 0.16);
+    --color-success-ring: rgba(74, 222, 128, 0.5);
+
+    --color-scrim: rgba(0, 0, 0, 0.6);
+
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
+    --shadow-md: 0 2px 6px -1px rgba(0, 0, 0, 0.6), 0 1px 3px -1px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 10px 24px -6px rgba(0, 0, 0, 0.7), 0 4px 8px -4px rgba(0, 0, 0, 0.55);
+    --shadow-drag: 0 12px 28px -6px rgba(0, 0, 0, 0.8);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Root document defaults. Everything else is the framework's job; these
+   two rules just bind the page to the tokens (same as client app.css).
+   -------------------------------------------------------------------------- */
+html,
+body {
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+/* Respect reduced-motion: zero out the kanban flip and transitions. The
+   framework reads --duration-* so flipping these to 0 disables animation
+   everywhere with no per-component code. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-flip: 0ms;
+  }
+}

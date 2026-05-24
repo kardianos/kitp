@@ -286,7 +286,13 @@ BEGIN
             _order_sql := 'ORDER BY c.id';
         END IF;
 
-        _where_sql := 'WHERE ' || array_to_string(_clauses, ' AND ');
+        -- WHERE TRUE AND … : the `TRUE` seed means an empty _clauses
+        -- array (or a future clause that becomes conditional) can never
+        -- emit a bare, syntactically-invalid `WHERE` (A15b / BE-L4).
+        _where_sql := 'WHERE TRUE';
+        IF cardinality(_clauses) > 0 THEN
+            _where_sql := _where_sql || ' AND ' || array_to_string(_clauses, ' AND ');
+        END IF;
 
         IF _limit_v IS NOT NULL THEN
             _params := _params || jsonb_build_array(_limit_v);

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -175,12 +176,21 @@ func ActorOrSystem(ctx context.Context) int64 {
 // subjects from validated tokens. The header is silently dropped in
 // production builds (which refuse AUTH_MODE=off anyway).
 func Middleware(u *UserCtx) func(http.Handler) http.Handler {
+	// Resolve the impersonation gate once at wiring time: the
+	// X-Dev-User-Id header is honoured only outside production. This is
+	// a hard, in-function guard (SEC-5 / A8) so a future re-wire of this
+	// middleware into a production router can't accidentally ship the
+	// impersonation bypass — it doesn't depend on the caller remembering
+	// to not mount it.
+	allowImpersonation := os.Getenv("ENV") != "production"
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			actor := u
-			if hdr := r.Header.Get("X-Dev-User-Id"); hdr != "" {
-				if id := parseInt64(hdr); id > 0 {
-					actor = &UserCtx{ID: id, DisplayName: "dev-impersonate"}
+			if allowImpersonation {
+				if hdr := r.Header.Get("X-Dev-User-Id"); hdr != "" {
+					if id := parseInt64(hdr); id > 0 {
+						actor = &UserCtx{ID: id, DisplayName: "dev-impersonate"}
+					}
 				}
 			}
 			ctx := WithUser(r.Context(), actor)

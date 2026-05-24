@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import { autoUpdate, computePosition, flip, offset, size as flSize } from '@floating-ui/dom';
   import { cx } from '../util/class_names.js';
+  import { sameId } from '../reg/types';
   import Chip from './Chip.svelte';
 
   interface Option {
@@ -88,8 +89,11 @@
   });
 
   function isSelected(opt: Option): boolean {
-    if (multiple) return selectedMulti.includes(opt.value);
-    return selectedSingle !== null && selectedSingle === opt.value;
+    // `sameId` (not `===`) so a card_ref value that arrived as a raw
+    // JSON number — schema preload not yet primed — still matches its
+    // bigint option (FE-H3). Falls back to `===` for non-id values.
+    if (multiple) return selectedMulti.some((v) => sameId(v, opt.value));
+    return selectedSingle !== null && sameId(selectedSingle, opt.value);
   }
 
   const filtered = $derived.by((): Option[] => {
@@ -112,11 +116,13 @@
    * if set, else its `label`, else null.
    */
   function labelFor(val: T): string | null {
-    const fromOptions = options.find((o) => o.value === val);
+    // `sameId` so the trigger resolves a label even when `val` is a raw
+    // number and the option `value` is a bigint (FE-H3).
+    const fromOptions = options.find((o) => sameId(o.value, val));
     if (fromOptions !== undefined) {
       return fromOptions.selectedLabel ?? fromOptions.label;
     }
-    const fromAsync = asyncOptions.find((o) => o.value === val);
+    const fromAsync = asyncOptions.find((o) => sameId(o.value, val));
     if (fromAsync !== undefined) {
       return fromAsync.selectedLabel ?? fromAsync.label;
     }
@@ -138,8 +144,8 @@
     if (opt.disabled) return;
     if (multiple) {
       const cur = selectedMulti;
-      const next = cur.includes(opt.value)
-        ? cur.filter((v) => v !== opt.value)
+      const next = cur.some((v) => sameId(v, opt.value))
+        ? cur.filter((v) => !sameId(v, opt.value))
         : [...cur, opt.value];
       emit(next);
       // Keep open for multi.
@@ -158,7 +164,7 @@
 
   function removeMulti(v: T) {
     if (!multiple) return;
-    emit(selectedMulti.filter((x) => x !== v));
+    emit(selectedMulti.filter((x) => !sameId(x, v)));
   }
 
   // Exported so a parent can imperatively pop the menu (and, when
@@ -229,6 +235,15 @@
       debounceHandle = null;
       void runLoad(q);
     }, delay);
+    // Clear a pending timer when the effect re-runs or the component
+    // unmounts (FE-L2) so a queued load can't fire into a destroyed
+    // component.
+    return () => {
+      if (debounceHandle !== null) {
+        clearTimeout(debounceHandle);
+        debounceHandle = null;
+      }
+    };
   });
 
   function setupFloating() {

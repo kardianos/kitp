@@ -147,7 +147,9 @@ function hasChordWithPrefix(prefix: string): boolean {
   // `e !== undefined` guards the Svelte 5 reactive-array splice quirk
   // that the registry's unregister calls out — a concurrent splice can
   // surface an undefined index mid-iteration through the proxy.
-  for (const e of shortcuts.entries) {
+  // `all` folds in the dynamic (data-driven) chord sources alongside
+  // the imperatively-registered entries.
+  for (const e of shortcuts.all) {
     if (e === undefined) continue;
     if (!scopeIsActive(e.scope)) continue;
     if (e.binding.startsWith(prefix + ' ')) return true;
@@ -203,7 +205,7 @@ function findMatch(binding: string): ShortcutEntry | undefined {
   // See `hasChordWithPrefix` for the undefined-guard rationale.
   let best: ShortcutEntry | undefined;
   let bestRank = -Infinity;
-  for (const e of shortcuts.entries) {
+  for (const e of shortcuts.all) {
     if (e === undefined) continue;
     if (e.binding !== binding) continue;
     if (!scopeIsActive(e.scope)) continue;

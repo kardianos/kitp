@@ -119,6 +119,15 @@
   const NO_LANE = '__none__';
 
   let tasks = $state<CardWithAttrs[]>([]);
+  /**
+   * Monotonic generation for `tasks`. Bumped every time a refresh
+   * replaces the array. The optimistic-drop rollback (FE-M5) captures
+   * this before its await and only restores the snapshot if the
+   * generation is unchanged — otherwise a refresh landed mid-drop and
+   * restoring the stale snapshot would clobber it, so we re-refresh
+   * instead.
+   */
+  let taskGen = $state(0);
   let persons = $state<CardWithAttrs[]>([]);
   let milestones = $state<CardWithAttrs[]>([]);
   let components = $state<CardWithAttrs[]>([]);
@@ -470,6 +479,7 @@
       ]);
 
       tasks = tOut.rows;
+      taskGen++;
       persons = pOut.rows;
       milestones = mOut.rows;
       components = cOut.rows;
@@ -561,11 +571,22 @@
       return { ...t, attributes: next };
     });
     tasks = patched;
+    // Capture the generation of the optimistic snapshot. If a refresh
+    // replaces `tasks` while the batch is in flight, `taskGen` advances
+    // and the rollback below must NOT stomp the fresher data.
+    const genAtDrop = taskGen;
 
     try {
       await applyOps(ops);
     } catch (e) {
-      tasks = original;
+      // Only restore the pre-drop snapshot if no refresh landed
+      // mid-flight (FE-M5). If one did, re-issue a refresh so we
+      // converge on server truth instead of clobbering it with `original`.
+      if (taskGen === genAtDrop) {
+        tasks = original;
+      } else {
+        void refresh();
+      }
       const msg =
         e instanceof SubRequestError
           ? e.message

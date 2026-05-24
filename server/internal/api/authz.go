@@ -16,10 +16,7 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
@@ -117,44 +114,49 @@ func preloadCards(ctx context.Context, pool *store.Pool, ids []int64) (map[int64
 	return out, rows.Err()
 }
 
-// expandCardLookup walks parents transitively for every id in seed and adds
-// any newly-discovered parent rows to the lookup map. Capped by
-// scopeWalkDepth iterations across the whole batch (the per-card walk is
-// also capped at scopeWalkDepth, but the chain may need additional rounds).
+// expandCardLookup adds every transitive parent of the cards already in
+// `lookup` to the map, so the per-sub-request scope walk is purely
+// in-memory. The whole ancestor closure is resolved in ONE capped
+// recursive CTE (A12 / BE-M4) — the previous implementation issued one
+// query per BFS level (O(depth) round-trips). The recursive arm carries
+// `WHERE depth < 16` (matching scopeWalkDepth and
+// db/schema/functions/card_ancestors.sql) so a parent_card_id cycle
+// can't loop (A1 / SEC-1).
 func expandCardLookup(ctx context.Context, pool *store.Pool, lookup map[int64]cardInfo) error {
-	for range scopeWalkDepth {
-		var missing []int64
-		for _, info := range lookup {
-			if info.parentCardID != nil {
-				if _, ok := lookup[*info.parentCardID]; !ok {
-					missing = append(missing, *info.parentCardID)
-				}
-			}
-		}
-		if len(missing) == 0 {
-			return nil
-		}
-		rows, err := pool.P.Query(ctx, `
-			SELECT id, parent_card_id, card_type_id FROM card WHERE id = ANY($1::bigint[])
-		`, missing)
-		if err != nil {
-			return fmt.Errorf("authz: parent walk: %w", err)
-		}
-		for rows.Next() {
-			var id int64
-			var info cardInfo
-			if err := rows.Scan(&id, &info.parentCardID, &info.cardTypeID); err != nil {
-				rows.Close()
-				return err
-			}
-			lookup[id] = info
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
+	if len(lookup) == 0 {
+		return nil
+	}
+	seed := make([]int64, 0, len(lookup))
+	for id := range lookup {
+		seed = append(seed, id)
+	}
+	// Walk parent_card_id up from every seed id in a single statement.
+	// Seed rows are already in `lookup`; the CTE re-emits them (depth 0)
+	// plus every ancestor up to the cap, and we merge any new rows.
+	rows, err := pool.P.Query(ctx, `
+		WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (
+			SELECT c.id, c.parent_card_id, c.card_type_id, 0
+			FROM card c WHERE c.id = ANY($1::bigint[])
+			UNION ALL
+			SELECT p.id, p.parent_card_id, p.card_type_id, up.depth + 1
+			FROM card p JOIN up ON p.id = up.parent_card_id
+			WHERE up.depth < 16
+		)
+		SELECT DISTINCT id, parent_card_id, card_type_id FROM up
+	`, seed)
+	if err != nil {
+		return fmt.Errorf("authz: parent closure: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var info cardInfo
+		if err := rows.Scan(&id, &info.parentCardID, &info.cardTypeID); err != nil {
 			return err
 		}
+		lookup[id] = info
 	}
-	return nil
+	return rows.Err()
 }
 
 // projectCardTypeID looks up the id of the 'project' card_type once.
@@ -201,16 +203,35 @@ func (s *Server) targetProjectForLeaf(ctx context.Context, h reg.Handler, input 
 	if h.CardTypeID == nil {
 		return 0, nil
 	}
-	// For other handlers we need the card_id the handler operates on. There
-	// is no generic accessor; we ask the handler to tell us via a documented
-	// input field. We rely on the handler-specific CardTypeID extractor that
-	// already inspects the input — the cards we want to walk are those
-	// registered in the lookup map.
-	cid := cardIDFromInput(h, input)
+	// For other handlers we need the card_id the handler operates on.
+	// Handlers whose input doesn't carry a plain `card_id` /
+	// `target_card_id` field expose an explicit ScopeCardID resolver
+	// (e.g. comm.set_recipients(comm_id), comment.update(activity_id));
+	// everything else falls back to reflecting the conventional field.
+	// (BE-H3 / A2.)
+	cid, err := s.scopeCardID(ctx, h, input)
+	if err != nil {
+		return 0, err
+	}
 	if cid == 0 {
 		return 0, nil
 	}
 	return resolveTargetProject(cid, projectTypeID, lookup), nil
+}
+
+// scopeCardID resolves the card id the per-row scope pass should walk
+// up from. Prefers the handler's explicit ScopeCardID resolver (which
+// may query the DB to dereference an indirect id like comm_id /
+// activity_id); falls back to the reflection-based card_id /
+// target_card_id field extractor. Returns (0, nil) when there's no
+// card context — the dispatcher then skips scoped-grant matching for
+// that leaf (only global grants pass), which is the intended behaviour
+// for handlers with no project anchor.
+func (s *Server) scopeCardID(ctx context.Context, h reg.Handler, input any) (int64, error) {
+	if h.ScopeCardID != nil {
+		return h.ScopeCardID(ctx, s.Pool.P, input)
+	}
+	return cardIDFromInput(h, input), nil
 }
 
 // authorizeLeaf returns nil when the actor's grants permit (handler, input).
@@ -221,16 +242,22 @@ func (s *Server) authorizeLeaf(ctx context.Context, h reg.Handler, input any, gr
 	}
 	cardTypeID, err := h.CardTypeID(ctx, s.Pool.P, input)
 	if err != nil {
-		return &reg.HandlerError{Code: "validation", Message: err.Error()}
+		// Internal lookup failure — return the wrapped error raw so the
+		// dispatcher's errEnvelope redacts it (no err.Error() on the
+		// wire). Wrapping it into a HandlerError{Message: err.Error()}
+		// here would defeat that redaction (A5 / SEC-2).
+		return fmt.Errorf("authz: resolve card_type for %s.%s: %w", h.Endpoint, h.Action, err)
 	}
 	if cardTypeID == 0 {
 		return nil // no card-type context — skip auth (matches old behavior)
 	}
 	// Verify the process is actually seeded; if not, we skip authz like the
 	// pre-Phase-20 dispatcher used to (this keeps the test/echo flows alive).
-	exists, err := processExists(ctx, s.Pool.P, h.ProcessName)
+	// Answered from the pool's once-loaded process-name cache, not a
+	// per-leaf point query (A15c / BE-L3).
+	exists, err := s.Pool.ProcessExists(ctx, h.ProcessName)
 	if err != nil {
-		return &reg.HandlerError{Code: "internal", Message: err.Error()}
+		return fmt.Errorf("authz: process lookup for %s.%s: %w", h.Endpoint, h.Action, err)
 	}
 	if !exists {
 		return nil
@@ -238,7 +265,7 @@ func (s *Server) authorizeLeaf(ctx context.Context, h reg.Handler, input any, gr
 
 	tProj, err := s.targetProjectForLeaf(ctx, h, input, lookup, projectTypeID)
 	if err != nil {
-		return &reg.HandlerError{Code: "validation", Message: err.Error()}
+		return fmt.Errorf("authz: resolve target project for %s.%s: %w", h.Endpoint, h.Action, err)
 	}
 
 	for _, g := range grants {
@@ -261,22 +288,7 @@ func (s *Server) authorizeLeaf(ctx context.Context, h reg.Handler, input any, gr
 	}
 }
 
-// processExists returns true if a process row by that name exists.
-// Cached at the pool level would be ideal; for now it's a single
-// point query per sub-request, but cheap (process is a small table).
-//
-// Returns (false, nil) when the row is genuinely absent and
-// (false, err) on any other DB error so the caller can abort the
-// batch instead of misreading a transient failure as "no such
-// process" (S3).
-func processExists(ctx context.Context, q reg.ValidationPool, name string) (bool, error) {
-	var id int64
-	row := q.QueryRow(ctx, `SELECT id FROM process WHERE name = $1`, name)
-	if err := row.Scan(&id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-		return false, fmt.Errorf("process lookup %q: %w", name, err)
-	}
-	return true, nil
-}
+// process existence is resolved via store.Pool.ProcessExists, which
+// answers from a once-loaded in-memory snapshot of the (tiny,
+// schema-immutable) process table rather than a per-leaf point query
+// (A15c / BE-L3).

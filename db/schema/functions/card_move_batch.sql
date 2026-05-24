@@ -37,6 +37,11 @@ DECLARE
     _child_type_name text;
     _activity_id bigint;
     _ok boolean;
+    -- A11 cross-project ref re-validation.
+    _new_project bigint;
+    _ref_attr text;
+    _ref_vid bigint;
+    _ref_vproj bigint;
 BEGIN
     FOR _idx, _card_id, _new_parent IN
         SELECT (r.ord - 1)::int,
@@ -76,6 +81,21 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- 2c. Cycle guard (A1 / SEC-1). A move is a cycle when the new
+        --     parent IS the card, or the card is an ancestor of the new
+        --     parent (i.e. the new parent sits in the subtree rooted at
+        --     the card). card_ancestors walks parent_card_id up from the
+        --     new parent with the depth cap baked in; if _card_id shows
+        --     up in that chain, re-parenting would close a loop.
+        IF _new_parent = _card_id
+           OR EXISTS (SELECT 1 FROM card_ancestors(_new_parent) a WHERE a.id = _card_id) THEN
+            RETURN QUERY SELECT _idx, false, 'cycle'::text,
+                format('card.move: cannot move card %s under itself or its own descendant %s',
+                    _card_id, _new_parent),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 3. ParentAllowed.
         _ok := false;
         IF _child_allow_self AND _parent_type_id = _child_type_id THEN
@@ -90,6 +110,27 @@ BEGIN
                 format('card.move: card_type %L is not allowed under parent type %L',
                     COALESCE(_child_type_name, '?'),
                     COALESCE(_parent_type_name, '?')),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+
+        -- 3b. Cross-project ref re-validation (A11 / BE-M5). A re-parent
+        --     can change the card's enclosing project; card.insert /
+        --     attribute.update enforce that a card's project-scoped
+        --     card_ref values live in the same project, but a plain move
+        --     used to skip the check, leaving a moved card with refs into
+        --     its old project. Re-run the invariant against the NEW
+        --     enclosing project via the shared helper (reuses A10's
+        --     card_enclosing_project). Global value-cards are wildcards
+        --     and never offend.
+        _new_project := card_enclosing_project(_new_parent);
+        SELECT cp.attr_name, cp.value_card_id, cp.value_project
+          INTO _ref_attr, _ref_vid, _ref_vproj
+        FROM card_ref_cross_project(_card_id, _new_project) cp;
+        IF FOUND THEN
+            RETURN QUERY SELECT _idx, false, 'cross_project_ref'::text,
+                format('card.move: attribute %L value card %s belongs to project %s but the move would place card %s in project %s',
+                    _ref_attr, _ref_vid, _ref_vproj, _card_id, COALESCE(_new_project::text, '0')),
                 NULL::jsonb;
             CONTINUE;
         END IF;

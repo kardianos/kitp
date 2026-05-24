@@ -23,10 +23,13 @@ import "fmt"
 // nothing.
 //
 // The CTE walks parent_card_id from the target card to its
-// `card_type='project'` ancestor; bounded by Postgres' planner +
-// the btree on `parent_card_id`. In practice cards are 1-3 hops
-// from their project (task→project, comm→task→project,
-// reply→comm→task→project).
+// `card_type='project'` ancestor; the recursive arm carries a
+// `WHERE depth < 16` cap (CLAUDE.md "Recursive CTE depth cap"; 16
+// matches internal/api/authz.go's scopeWalkDepth and the
+// db/schema/functions/card_ancestors.sql helper) so a malicious or
+// accidental parent_card_id cycle can't pin a connection (A1 / SEC-1).
+// In practice cards are 1-3 hops from their project (task→project,
+// comm→task→project, reply→comm→task→project).
 //
 // `cardIDExpr` is the SQL expression yielding the target card id —
 // typically `"c.id"` for queries with a `FROM card c` alias, or
@@ -37,12 +40,13 @@ import "fmt"
 // Closes issues/backend/07-med-reads-across-projects.md.
 func VisibilityClause(cardIDExpr, userArg string) string {
 	return fmt.Sprintf(`EXISTS (
-		WITH RECURSIVE up(id, parent_card_id, card_type_id) AS (
-			SELECT id, parent_card_id, card_type_id
+		WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (
+			SELECT id, parent_card_id, card_type_id, 0
 			FROM card WHERE id = %s
 			UNION ALL
-			SELECT p.id, p.parent_card_id, p.card_type_id
+			SELECT p.id, p.parent_card_id, p.card_type_id, up.depth + 1
 			FROM card p JOIN up ON p.id = up.parent_card_id
+			WHERE up.depth < 16
 		)
 		SELECT 1
 		FROM user_account caller

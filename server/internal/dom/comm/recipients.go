@@ -50,6 +50,12 @@ func registerCommSetRecipients(_ *store.Pool) {
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		ProcessName:  "card.update",
 		CardTypeID:   cardTypeFromCommSetRecipientsInput,
+		// The input carries comm_id, not a plain card_id, so the
+		// dispatcher's per-row scope pass needs an explicit resolver to
+		// walk up from the comm card to its project — otherwise a
+		// project-scoped manager would be denied (BE-H3 / A2). The comm
+		// card itself is the walk start; comm → task → project.
+		ScopeCardID: scopeCardFromCommID,
 		// Unified handler — body lives in
 		// db/schema/functions/comm_set_recipients_batch.sql. Per
 		// Phase 3 of docs/UNIFIED_HANDLER_PLAN.md the SQL function
@@ -79,6 +85,15 @@ func cardTypeFromCommSetRecipientsInput(ctx context.Context, pool reg.Validation
 		return 0, err
 	}
 	return parentCardTypeID, nil
+}
+
+// scopeCardFromCommID returns the comm card id the dispatcher's
+// per-row scope pass should walk up from (comm → task → project). The
+// comm card itself is the right walk start; CommSetRecipientsInput.CommID
+// is that card. Used as reg.Handler.ScopeCardID for comm.set_recipients
+// (BE-H3 / A2).
+func scopeCardFromCommID(_ context.Context, _ reg.ValidationPool, raw any) (int64, error) {
+	return raw.(CommSetRecipientsInput).CommID, nil
 }
 
 // writeCommRecipients stores the supplied id list (already validated +

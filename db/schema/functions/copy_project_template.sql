@@ -114,7 +114,10 @@ BEGIN
         SELECT c.id, c.card_type_id, c.parent_card_id, c.phase, w.depth + 1
         FROM card c
         JOIN walk w ON w.id = c.parent_card_id
-        WHERE c.deleted_at IS NULL
+        -- depth < 16 caps the downward tree walk (CLAUDE.md cap; matches
+        -- card_ancestors / scopeWalkDepth) so a parent_card_id cycle in
+        -- the template can't pin the connection (A1).
+        WHERE c.deleted_at IS NULL AND w.depth < 16
     )
     SELECT w.id, w.card_type_id, w.parent_card_id, w.phase
     FROM walk w

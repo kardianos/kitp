@@ -21,6 +21,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/reg"
@@ -66,14 +67,10 @@ func (s *Server) runRoleGate(ctx context.Context, prepped []prepared, slots []Su
 
 	for _, p := range prepped {
 		if err := s.checkLeafRoles(ctx, p.Handler, loadRoles); err != nil {
-			he, _ := err.(*reg.HandlerError)
-			code := "unauthorized"
-			msg := err.Error()
-			if he != nil && he.Code != "" {
-				code = he.Code
-				msg = he.Message
-			}
-			abortAll(slots, p.OuterIdx, code, msg)
+			// A deny is a curated *reg.HandlerError ("unauthorized");
+			// a role-load failure is a wrapped internal error. errEnvelope
+			// keeps the former and redacts the latter (A5 / SEC-2).
+			s.abortWithError(ctx, slots, p.OuterIdx, "unauthorized", err)
 			return err
 		}
 	}
@@ -113,7 +110,9 @@ func (s *Server) checkLeafRoles(
 	//    needed — dev-mode and prod resolve through identical paths.
 	have, err := loadRoles()
 	if err != nil {
-		return &reg.HandlerError{Code: "internal", Message: err.Error()}
+		// Internal failure — return raw so the dispatcher's errEnvelope
+		// redacts it instead of shipping err.Error() (A5 / SEC-2).
+		return fmt.Errorf("role gate: load roles for %s.%s: %w", h.Endpoint, h.Action, err)
 	}
 	for _, r := range h.AllowedRoles {
 		if _, ok := have[r]; ok {

@@ -25,6 +25,38 @@
  */
 export type ID = bigint;
 
+/**
+ * Compare two id-shaped values for equality, robust to a number /
+ * bigint / string mix (FE-H3). The dispatcher revives id-shaped wire
+ * fields to `bigint`, but card_ref *attribute* values only revive once
+ * the schema preload has primed `CARD_REF_ATTR_KEYS` — before that (a
+ * cold test, the MCP CLI, or an admin-added card_ref attr not yet in
+ * the catalog) the value arrives as a raw JSON `number`, and `123 ===
+ * 123n` is `false` in JS. That silently rendered a picker as "unset".
+ *
+ * Comparing via a canonical decimal string sidesteps the boot-ordering
+ * dependency entirely: `42`, `42n`, and `"42"` all canonicalize to
+ * `"42"`. `null`/`undefined` only equal each other. Non-integral or
+ * non-id values (objects, floats, arbitrary strings) fall back to a
+ * direct `===` so this stays safe to use on heterogeneous option values.
+ */
+export function sameId(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  const ca = canonId(a);
+  const cb = canonId(b);
+  if (ca === null || cb === null) return false;
+  return ca === cb;
+}
+
+/** Canonical decimal string for an id-shaped scalar, or null when the
+ *  value isn't id-shaped (so `sameId` can fall back to `===`). */
+function canonId(v: unknown): string | null {
+  if (typeof v === 'bigint') return v.toString();
+  if (typeof v === 'number') return Number.isInteger(v) ? String(v) : null;
+  if (typeof v === 'string') return /^-?\d+$/.test(v) ? v : null;
+  return null;
+}
+
 // ============================================================================
 // echo.ping
 // ============================================================================

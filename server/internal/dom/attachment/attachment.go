@@ -127,6 +127,11 @@ func Register(p *store.Pool) {
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		ProcessName:  "card.update",
 		CardTypeID:   cardTypeFromDeleteInput(p),
+		// Input carries only the attachment id, not a card_id, so the
+		// per-row scope pass needs an explicit resolver to dereference
+		// attachment → card (then walk that card → project). Without it a
+		// project-scoped manager would be denied (BE-H3 / A2).
+		ScopeCardID: scopeCardFromDeleteInput(p),
 		// Unified handler — body lives in
 		// db/schema/functions/attachment_delete_batch.sql. See
 		// docs/UNIFIED_HANDLER_PLAN.md Phase 2.
@@ -183,6 +188,26 @@ func cardTypeFromDeleteInput(p *store.Pool) func(ctx context.Context, pool reg.V
 			return 0, fmt.Errorf("attachment.delete: card_type lookup: %w", err)
 		}
 		return cardTypeID, nil
+	}
+}
+
+// scopeCardFromDeleteInput dereferences the attachment to its owning
+// card so the per-row scope pass can walk that card → project. Used as
+// reg.Handler.ScopeCardID for attachment.delete (BE-H3 / A2). Returns
+// (0, nil) on a missing attachment — the handler surfaces the proper
+// not-found error.
+func scopeCardFromDeleteInput(_ *store.Pool) func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+	return func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+		id := raw.(DeleteInput).ID
+		var cardID int64
+		err := pool.QueryRow(ctx, `SELECT card_id FROM attachment WHERE id = $1`, id).Scan(&cardID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return 0, nil
+			}
+			return 0, fmt.Errorf("attachment.delete: card_id lookup: %w", err)
+		}
+		return cardID, nil
 	}
 }
 

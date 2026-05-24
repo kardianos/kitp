@@ -65,6 +65,23 @@ type Handler struct {
 	Authz        func(ctx context.Context, in any) error
 	ProcessName  string
 	CardTypeID   func(ctx context.Context, pool ValidationPool, in any) (int64, error)
+	// ScopeCardID returns the card id the dispatcher's per-row scope
+	// pass (internal/api/authz.go) should walk up from to find the
+	// target project. Set it on gated (worker/manager) handlers whose
+	// input does NOT carry a plain `card_id` / `target_card_id` field —
+	// e.g. comm.set_recipients (comm_id), reply.post (comm_id),
+	// comment.update (activity_id → the activity's card). It may query
+	// the DB via the ValidationPool to dereference an indirect id.
+	//
+	// When nil, the dispatcher falls back to reflecting a
+	// `card_id` / `target_card_id` field off the input. A gated handler
+	// that has neither a resolvable field NOR a ScopeCardID resolver
+	// would fail scope-matching closed (tProj=0 → only global grants
+	// pass), silently denying scoped managers — so reg.Register panics
+	// at startup in that case (BE-H3 / A2). Returning (0, nil) is a
+	// legitimate "no card context, skip scope" answer; the panic only
+	// fires when the handler can't resolve a card id at all.
+	ScopeCardID func(ctx context.Context, pool ValidationPool, in any) (int64, error)
 	// GlobalScope marks a handler as intentionally NOT subject to the
 	// per-row scope check. Set true ONLY when the handler operates on
 	// rows that have no project anchor (CAS chunks, person cards
@@ -213,6 +230,27 @@ func Register(h Handler) {
 					"Per-row scope check would silently skip — see issues/backend/06-med-handlers-skip-scope-check.md.",
 				h.Endpoint, h.Action))
 		}
+		// The scope pass must also be able to locate the *card* to walk
+		// up from. It uses ScopeCardID when set, otherwise reflects a
+		// `card_id` / `target_card_id` field off the input. A gated
+		// handler with neither would fail scope-matching closed (tProj=0
+		// → only global grants pass), silently denying project-scoped
+		// managers — the BE-H3 / A2 bug. Assert the guarantee at startup
+		// rather than implying it.
+		//
+		// card.insert is the one documented exception: it has no card_id
+		// (the card doesn't exist yet) — the dispatcher resolves its
+		// scope from parent_card_id via a dedicated special case
+		// (internal/api/authz.go targetProjectForLeaf). Exempt it here so
+		// the guard stays a tight invariant for every other handler.
+		isCardInsert := h.Endpoint == "card" && h.Action == "insert"
+		if !isCardInsert && h.ScopeCardID == nil && !inputHasScopeCardField(h.InputType) {
+			panic(fmt.Sprintf(
+				"reg.Register: %s.%s is project-scoped (worker/manager) but the dispatcher can't resolve a card id for it — "+
+					"its input type has no `card_id`/`target_card_id` field and no ScopeCardID resolver is set. "+
+					"Add a ScopeCardID func that returns the card to scope-check against (BE-H3 / A2).",
+				h.Endpoint, h.Action))
+		}
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -221,6 +259,43 @@ func Register(h Handler) {
 		panic(fmt.Sprintf("reg.Register: duplicate handler %s.%s", h.Endpoint, h.Action))
 	}
 	handlers[k] = h
+}
+
+// inputHasScopeCardField reports whether the handler's input struct
+// carries a field the dispatcher's reflection-based card-id extractor
+// (internal/api/authz_input.go cardIDFromInput) recognises — a
+// `json:"card_id,..."` or `json:"target_card_id,..."` field. Kept in
+// lockstep with that extractor's field set; if cardIDFromInput grows a
+// new field name, add it here too.
+func inputHasScopeCardField(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+	for i := 0; i < t.NumField(); i++ {
+		switch jsonTagName(t.Field(i).Tag.Get("json")) {
+		case "card_id", "target_card_id":
+			return true
+		}
+	}
+	return false
+}
+
+// jsonTagName extracts the name from a `json:"name,opts..."` struct
+// tag. Mirrors api.jsonName; duplicated here to keep reg import-light
+// (reg must not import api — that would invert the dependency).
+func jsonTagName(tag string) string {
+	for i := 0; i < len(tag); i++ {
+		if tag[i] == ',' {
+			return tag[:i]
+		}
+	}
+	return tag
 }
 
 // needsRowScope returns true if AllowedRoles names a tier whose

@@ -249,9 +249,15 @@
    * Person-card id for the signed-in actor (assignee values are now
    * person-card ids, not user_account ids). Reads from OIDC `sub`; in the
    * demo seed user_account.id == person_card.id 1:1, so the cast works.
-   * Fallback `2n` matches InboxScreen's `kCurrentUserId` for parity.
+   *
+   * FE-L4: returns `null` when `sub` is missing / unparseable rather
+   * than falling back to a hardcoded `2n`. The old fallback silently
+   * rendered user #2's "assigned to me" view for any signed-in user
+   * whose `sub` didn't parse — a cross-user data leak. Callers must
+   * treat `null` as "no actor identity" (fail safe: show nothing
+   * me-scoped) instead of impersonating an arbitrary id.
    */
-  function parseMeId(): ID {
+  function parseMeId(): ID | null {
     const sub = authState?.claims?.sub;
     if (typeof sub === 'string' && sub.length > 0) {
       try {
@@ -261,7 +267,7 @@
         /* fall through */
       }
     }
-    return 2n;
+    return null;
   }
   const meId = parseMeId();
 

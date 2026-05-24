@@ -12,6 +12,7 @@ package userrole
 import (
 	"context"
 	"fmt"
+	"os"
 	"reflect"
 
 	"github.com/kitp/kitp/server/internal/auth"
@@ -111,9 +112,9 @@ func authzList(ctx context.Context, in any) error {
 	if !ok {
 		return authzAdmin(ctx)
 	}
-	pool, _ := authzPool.(*store.Pool)
+	pool := authzPool
 	if pool == nil {
-		return nil
+		return missingPoolDeny("list")
 	}
 	actor := auth.ActorOrSystem(ctx)
 	if row.UserID == actor {
@@ -133,9 +134,9 @@ func authzList(ctx context.Context, in any) error {
 // role globally. Used as the fallback gate when the agent-parent path
 // below doesn't apply.
 func authzAdmin(ctx context.Context) error {
-	pool, ok := authzPool.(*store.Pool)
-	if !ok || pool == nil {
-		return nil // tests that bypass Register may not bind a pool; fail open
+	pool := authzPool
+	if pool == nil {
+		return missingPoolDeny("authz")
 	}
 	userID := auth.ActorOrSystem(ctx)
 	var n int
@@ -171,9 +172,9 @@ func authzSet(ctx context.Context, in any) error {
 	if !ok {
 		return authzAdmin(ctx)
 	}
-	pool, _ := authzPool.(*store.Pool)
+	pool := authzPool
 	if pool == nil {
-		return nil // tests
+		return missingPoolDeny("set")
 	}
 	actor := auth.ActorOrSystem(ctx)
 	if err := rejectAgentActor(ctx, pool, actor); err != nil {
@@ -197,9 +198,9 @@ func authzRevoke(ctx context.Context, in any) error {
 	if !ok {
 		return authzAdmin(ctx)
 	}
-	pool, _ := authzPool.(*store.Pool)
+	pool := authzPool
 	if pool == nil {
-		return nil
+		return missingPoolDeny("revoke")
 	}
 	actor := auth.ActorOrSystem(ctx)
 	if err := rejectAgentActor(ctx, pool, actor); err != nil {
@@ -240,9 +241,30 @@ func loadAgentInfo(ctx context.Context, pool *store.Pool, userID int64) (bool, *
 	return isAgent, parentID, nil
 }
 
-// authzPool holds the pool the Authz hook closes over. It is set by
-// Register and read by authzAdmin. Package-level state is necessary because
-// Authz is a value-typed callback on reg.Handler that can't accept a pool
-// argument directly.
-var authzPool any
+// authzPool holds the pool the Authz hooks close over. Set by Register
+// and read by authzAdmin / authzSet / authzRevoke / authzList.
+// Package-level state is necessary because Authz is a value-typed
+// callback on reg.Handler that can't accept a pool argument directly.
+//
+// Strongly typed (*store.Pool, not `any`) so the nil-pool branch is the
+// single explicit "no pool wired" case rather than a type-assertion
+// fall-through that could silently fail open (SEC-7 / A6).
+var authzPool *store.Pool
+
+// missingPoolDeny returns the right answer when no pool is wired: a
+// deny (fail CLOSED) in production, nil (fail open) in dev/test.
+//
+// In production every handler is registered with a real pool, so a nil
+// authzPool means a wiring bug — denying is the safe response (SEC-7 /
+// A6). In dev/test some suites exercise an Authz hook without calling
+// Register (no pool bound); those keep the historical fail-open so they
+// don't have to stand up a DB just to test unrelated logic. Tests that
+// care about the authz outcome inject a real pool via Register /
+// SetAuthzPoolForTest instead of relying on this branch.
+func missingPoolDeny(hook string) error {
+	if os.Getenv("ENV") == "production" {
+		return fmt.Errorf("user_role.%s: no DB pool configured; refusing (fail closed)", hook)
+	}
+	return nil
+}
 

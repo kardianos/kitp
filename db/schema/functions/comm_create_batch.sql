@@ -8,8 +8,8 @@
 --   2. Task: exists + card_type='task' + capture title (for default
 --      subject).
 --   3. Channel: exists + card_type='comm_channel'.
---   4. Enclosing project resolution (recursive walk through
---      parent_card_id) for task + channel; must be non-zero and equal.
+--   4. Enclosing project resolution (shared capped card_enclosing_project
+--      helper) for task + channel; must be non-zero and equal.
 --   5. Resolve comm_status default from the project's comm flow.
 --   6. Mint a unique 10-char alphanumeric thread_id via gen_random_bytes
 --      (retry on the astronomically rare collision). The Go path used
@@ -180,20 +180,9 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 4. Enclosing project resolution for task + channel.
-        WITH RECURSIVE chain AS (
-            SELECT id, parent_card_id, card_type_id FROM card WHERE id = _task_id
-            UNION ALL
-            SELECT c.id, c.parent_card_id, c.card_type_id
-            FROM card c JOIN chain ch ON ch.parent_card_id = c.id
-        )
-        SELECT chain.id INTO _task_project
-        FROM chain JOIN card_type ct ON ct.id = chain.card_type_id
-        WHERE ct.name = 'project'
-        LIMIT 1;
-        IF NOT FOUND THEN
-            _task_project := 0;
-        END IF;
+        -- 4. Enclosing project resolution for task + channel via the
+        --    shared capped card_enclosing_project helper (A1/A10).
+        _task_project := COALESCE(card_enclosing_project(_task_id), 0);
 
         IF _task_project = 0 THEN
             RETURN QUERY SELECT _idx, false, 'task_no_project'::text,
@@ -202,19 +191,7 @@ BEGIN
             CONTINUE;
         END IF;
 
-        WITH RECURSIVE chain AS (
-            SELECT id, parent_card_id, card_type_id FROM card WHERE id = _channel_id
-            UNION ALL
-            SELECT c.id, c.parent_card_id, c.card_type_id
-            FROM card c JOIN chain ch ON ch.parent_card_id = c.id
-        )
-        SELECT chain.id INTO _channel_project
-        FROM chain JOIN card_type ct ON ct.id = chain.card_type_id
-        WHERE ct.name = 'project'
-        LIMIT 1;
-        IF NOT FOUND THEN
-            _channel_project := 0;
-        END IF;
+        _channel_project := COALESCE(card_enclosing_project(_channel_id), 0);
 
         IF _task_project <> _channel_project THEN
             RETURN QUERY SELECT _idx, false, 'project_mismatch'::text,

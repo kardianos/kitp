@@ -161,33 +161,10 @@ BEGIN
         END IF;
 
         -- 4. Project-scope check: tag must be global or share project.
-        WITH RECURSIVE chain AS (
-            SELECT id, parent_card_id, card_type_id FROM card WHERE id = _target_id
-            UNION ALL
-            SELECT c.id, c.parent_card_id, c.card_type_id
-            FROM card c JOIN chain ch ON ch.parent_card_id = c.id
-        )
-        SELECT chain.id INTO _target_project_id
-        FROM chain JOIN card_type ct ON ct.id = chain.card_type_id
-        WHERE ct.name = 'project'
-        LIMIT 1;
-        IF NOT FOUND THEN
-            _target_project_id := NULL;
-        END IF;
-
-        WITH RECURSIVE chain AS (
-            SELECT id, parent_card_id, card_type_id FROM card WHERE id = _tag_id
-            UNION ALL
-            SELECT c.id, c.parent_card_id, c.card_type_id
-            FROM card c JOIN chain ch ON ch.parent_card_id = c.id
-        )
-        SELECT chain.id INTO _tag_project_id
-        FROM chain JOIN card_type ct ON ct.id = chain.card_type_id
-        WHERE ct.name = 'project'
-        LIMIT 1;
-        IF NOT FOUND THEN
-            _tag_project_id := NULL;
-        END IF;
+        --    Both walks go through the shared capped card_enclosing_project
+        --    helper (A1/A10) — NULL means "no enclosing project" (global).
+        _target_project_id := card_enclosing_project(_target_id);
+        _tag_project_id := card_enclosing_project(_tag_id);
 
         IF _tag_project_id IS NOT NULL
            AND (_target_project_id IS NULL OR _tag_project_id <> _target_project_id) THEN

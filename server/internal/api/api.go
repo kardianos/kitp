@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -355,8 +356,11 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 	for i, sr := range req.Subrequests {
 		expanded, err := s.expandSubrequest(ctx, i, sr)
 		if err != nil {
-			code := errCode(err, "unknown_handler")
-			abortAllWithDetail(out.Subresponses, i, code, err.Error(), errDetail(err))
+			// expandSubrequest returns curated validation HandlerErrors
+			// (bad input, unknown handler) AND, on the process-expansion
+			// path, possibly a wrapped DB error — errEnvelope keeps the
+			// former and redacts the latter (A5).
+			s.abortWithError(ctx, out.Subresponses, i, "unknown_handler", err)
 			return out
 		}
 		prepped = append(prepped, expanded...)
@@ -380,7 +384,8 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 	// One transaction per HTTP request (N-SRV-1).
 	tx, err := s.Pool.BeginTx(ctx)
 	if err != nil {
-		abortAll(out.Subresponses, 0, "tx_begin", err.Error())
+		// DB infra failure — redact the driver error (A5).
+		s.abortWithError(ctx, out.Subresponses, 0, "tx_begin", err)
 		return out
 	}
 	committed := false
@@ -423,24 +428,28 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 		runCancel()
 		if err != nil {
 			offender := group[0].OuterIdx
-			code := "handler_error"
-			var detail any
-			if he, ok := err.(*reg.HandlerError); ok {
-				if he.InputIndex >= 0 && he.InputIndex < len(group) {
-					offender = group[he.InputIndex].OuterIdx
-				}
-				if he.Code != "" {
-					code = he.Code
-				}
-				detail = he.Detail
+			var he *reg.HandlerError
+			if errors.As(err, &he) && he.InputIndex >= 0 && he.InputIndex < len(group) {
+				offender = group[he.InputIndex].OuterIdx
 			}
-			abortAllWithDetail(out.Subresponses, offender, code, err.Error(), detail)
+			// Redact: a *reg.HandlerError carries safe code/message/detail;
+			// anything else collapses to a generic internal error and is
+			// logged server-side (BE-M1 / BE-M2 / SEC-2 / A5).
+			s.abortWithError(ctx, out.Subresponses, offender, "handler_error", err)
 			return err
 		}
 		if len(outs) != len(group) {
 			err := fmt.Errorf("handler %s.%s returned %d outputs for %d inputs",
 				group[0].Handler.Endpoint, group[0].Handler.Action, len(outs), len(group))
-			abortAll(out.Subresponses, group[0].OuterIdx, "handler_protocol", err.Error())
+			// Internal protocol violation (a handler bug). Stable code,
+			// generic wire message; the detail is logged server-side
+			// (BE-M1 / A5).
+			abortAll(out.Subresponses, group[0].OuterIdx, "handler_protocol", "internal error")
+			if s.Logger != nil {
+				s.Logger.LogAttrs(ctx, slog.LevelError, "handler protocol violation",
+					slog.String("request_id", requestIDFromContext(ctx)),
+					slog.String("err", err.Error()))
+			}
 			return err
 		}
 		for i, p := range group {
@@ -474,7 +483,8 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		abortAll(out.Subresponses, 0, "tx_commit", err.Error())
+		// DB infra failure — redact the driver error (A5).
+		s.abortWithError(ctx, out.Subresponses, 0, "tx_commit", err)
 		return out
 	}
 	committed = true
@@ -548,7 +558,26 @@ func (s *Server) prepareLeaf(ctx context.Context, outerIdx int, h reg.Handler, d
 
 	if h.Authz != nil {
 		if err := h.Authz(ctx, input); err != nil {
-			return prepared{}, &reg.HandlerError{Code: "unauthorized", Message: err.Error()}
+			// The per-handler Authz hook returns a plain error mixing
+			// genuine denials ("actor N is not an admin") with wrapped DB
+			// failures (loadAgentInfo / role lookups). We can't tell them
+			// apart, so ship a generic "not authorized" and log the real
+			// reason server-side rather than risk leaking Postgres text
+			// (A5 / SEC-2). A hook that wants a specific client message
+			// can return an *HTTPError / *reg.HandlerError, which
+			// errEnvelope (downstream) preserves.
+			var he *reg.HandlerError
+			if errors.As(err, &he) {
+				return prepared{}, he
+			}
+			if s.Logger != nil {
+				s.Logger.LogAttrs(ctx, slog.LevelInfo, "authz hook denied",
+					slog.String("request_id", requestIDFromContext(ctx)),
+					slog.String("endpoint", h.Endpoint),
+					slog.String("action", h.Action),
+					slog.String("err", err.Error()))
+			}
+			return prepared{}, &reg.HandlerError{Code: "unauthorized", Message: "not authorized"}
 		}
 	}
 
@@ -586,7 +615,19 @@ func (s *Server) runAuthzPass(ctx context.Context, prepped []prepared, slots []S
 			}
 			continue
 		}
-		if cid := cardIDFromInput(p.Handler, p.Input); cid != 0 {
+		// Use the same resolver the scope pass uses, so handlers with an
+		// explicit ScopeCardID (comm.set_recipients, reply.post,
+		// comment.update) seed the card their indirect id dereferences to
+		// — not 0, which would skip the walk and fail scoped managers
+		// closed (BE-H3 / A2).
+		cid, err := s.scopeCardID(ctx, p.Handler, p.Input)
+		if err != nil {
+			// scopeCardID may run a DB query (indirect-id dereference);
+			// a failure here is internal — redact (A5).
+			s.abortWithError(ctx, slots, p.OuterIdx, "validation", err)
+			return err
+		}
+		if cid != 0 {
 			seedIDs[cid] = struct{}{}
 		}
 	}
@@ -596,44 +637,79 @@ func (s *Server) runAuthzPass(ctx context.Context, prepped []prepared, slots []S
 	}
 	lookup, err := preloadCards(ctx, s.Pool, ids)
 	if err != nil {
-		abortAll(slots, prepped[0].OuterIdx, "validation", err.Error())
+		s.abortWithError(ctx, slots, prepped[0].OuterIdx, "validation", err)
 		return err
 	}
 	if err := expandCardLookup(ctx, s.Pool, lookup); err != nil {
-		abortAll(slots, prepped[0].OuterIdx, "validation", err.Error())
+		s.abortWithError(ctx, slots, prepped[0].OuterIdx, "validation", err)
 		return err
 	}
 
 	projTypeID, err := projectCardTypeID(ctx, s.Pool)
 	if err != nil {
-		abortAll(slots, prepped[0].OuterIdx, "validation", err.Error())
+		s.abortWithError(ctx, slots, prepped[0].OuterIdx, "validation", err)
 		return err
 	}
 
 	grants, err := loadActorGrants(ctx, s.Pool, userID)
 	if err != nil {
-		abortAll(slots, prepped[0].OuterIdx, "validation", err.Error())
+		s.abortWithError(ctx, slots, prepped[0].OuterIdx, "validation", err)
 		return err
 	}
 
 	for _, p := range prepped {
 		if err := s.authorizeLeaf(ctx, p.Handler, p.Input, grants, lookup, projTypeID); err != nil {
-			he, _ := err.(*reg.HandlerError)
-			code := "unauthorized"
-			msg := err.Error()
-			var detail any
-			if he != nil {
-				if he.Code != "" {
-					code = he.Code
-				}
-				msg = he.Message
-				detail = he.Detail
-			}
-			abortAllWithDetail(slots, p.OuterIdx, code, msg, detail)
+			// authorizeLeaf returns a *reg.HandlerError with a safe
+			// (curated) message on a real deny, or a wrapped internal
+			// error on a lookup failure — errEnvelope keeps the former,
+			// redacts the latter (A5).
+			s.abortWithError(ctx, slots, p.OuterIdx, "unauthorized", err)
 			return err
 		}
 	}
 	return nil
+}
+
+// errEnvelope reduces an error to the (code, message, detail) the wire
+// envelope should carry, redacting anything that isn't a deliberate,
+// display-safe *reg.HandlerError (BE-M1 / BE-M2 / SEC-2 / A5).
+//
+// A *reg.HandlerError is the dispatcher's curated client error: its
+// Code/Message/Detail were chosen by the handler or by mapPGError to be
+// safe to display, so they ride through unchanged. Any other error
+// (a wrapped scan/preload/DB failure, an unmapped pgErr) is a 500-class
+// internal fault whose text may name tables, columns or constraints —
+// it collapses to the generic `internal` / "internal error" pair (the
+// same redaction the router's writeErr applies) and the full wrapped
+// chain is logged server-side via the dispatcher's Logger. `defCode` is
+// the code to stamp on a HandlerError that left Code empty (e.g.
+// "unauthorized" for the authz/role passes).
+func (s *Server) errEnvelope(ctx context.Context, err error, defCode string) (code, msg string, detail any) {
+	var he *reg.HandlerError
+	if errors.As(err, &he) {
+		code = he.Code
+		if code == "" {
+			code = defCode
+		}
+		return code, he.Message, he.Detail
+	}
+	// Non-HandlerError → internal fault. Log the real chain; never ship it.
+	if s.Logger != nil {
+		s.Logger.LogAttrs(ctx, slog.LevelError, "dispatcher internal error",
+			slog.String("request_id", requestIDFromContext(ctx)),
+			slog.Int64("user_id", auth.ActorOrSystem(ctx)),
+			slog.String("err", err.Error()))
+	}
+	return "internal", "internal error", nil
+}
+
+// abortWithError redacts err via errEnvelope and aborts the batch with
+// the resulting safe code/message/detail on the offender slot. The
+// single choke point so no abort site copies raw err.Error() onto the
+// wire (BE-M1 / BE-M2 / SEC-2 / A5).
+func (s *Server) abortWithError(ctx context.Context, slots []SubResponse, offender int, defCode string, err error) {
+	code, msg, detail := s.errEnvelope(ctx, err, defCode)
+	abortAllWithDetail(slots, offender, code, msg, detail)
 }
 
 // abortAll marks the offender slot with err and every other slot with "aborted".
@@ -671,7 +747,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // errCode extracts a HandlerError's code if present, otherwise returns
 // the supplied default.
 func errCode(err error, def string) string {
-	if he, ok := err.(*reg.HandlerError); ok && he.Code != "" {
+	var he *reg.HandlerError
+	if errors.As(err, &he) && he.Code != "" {
 		return he.Code
 	}
 	return def
@@ -682,7 +759,8 @@ func errCode(err error, def string) string {
 // expand / authz paths so a structured rejection (Gate 5's flow
 // envelope) survives the round-trip into the ErrorEnvelope.
 func errDetail(err error) any {
-	if he, ok := err.(*reg.HandlerError); ok {
+	var he *reg.HandlerError
+	if errors.As(err, &he) {
 		return he.Detail
 	}
 	return nil

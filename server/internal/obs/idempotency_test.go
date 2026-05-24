@@ -284,3 +284,106 @@ func mustHTTP(t *testing.T, srv *httptest.Server, body []byte, idemKey string) *
 	}
 	return r
 }
+
+// TestIdempotency_FailedBatchNotCached is the BE-H4 / A3 regression: a
+// batch whose sub-request errors (HTTP 200 with a per-leaf error
+// envelope) must NOT be cached, so a retry with the same key
+// re-executes rather than replaying the failure forever.
+func TestIdempotency_FailedBatchNotCached(t *testing.T) {
+	_, srv, _ := setup(t, "kitp_test_idem_fail_not_cached")
+
+	// card.insert with an unknown card_type → per-leaf error, batch 200.
+	body := batchBody(t, []api.SubRequest{
+		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			`{"card_type_name":"does_not_exist","title":"x"}`)},
+	})
+
+	r1 := mustHTTP(t, srv, body, "k-fail")
+	defer r1.Body.Close()
+	if r1.StatusCode != http.StatusOK {
+		t.Fatalf("first status: %d", r1.StatusCode)
+	}
+	b1, _ := io.ReadAll(r1.Body)
+	var resp1 api.BatchResponse
+	if err := json.Unmarshal(b1, &resp1); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp1.Subresponses[0].OK {
+		t.Fatalf("expected sub-request to fail, got OK: %s", b1)
+	}
+
+	// Retry with the same key. It must NOT be a replay — the failure
+	// wasn't cached, so the handler re-executes.
+	r2 := mustHTTP(t, srv, body, "k-fail")
+	defer r2.Body.Close()
+	if r2.Header.Get("Idempotency-Replay") == "true" {
+		t.Fatal("failed batch was cached and replayed — A3 regression (BE-H4)")
+	}
+}
+
+// TestIdempotency_SuccessfulBatchStillCached is the positive control:
+// a clean all-success batch IS cached and replays on retry.
+func TestIdempotency_SuccessfulBatchStillCached(t *testing.T) {
+	_, srv, _ := setup(t, "kitp_test_idem_ok_cached")
+	body := batchBody(t, []api.SubRequest{
+		{ID: "p", Endpoint: "echo", Action: "ping", Data: json.RawMessage(`{"x":1}`)},
+	})
+	r1 := mustHTTP(t, srv, body, "k-ok")
+	r1.Body.Close()
+	if r1.StatusCode != http.StatusOK {
+		t.Fatalf("first: %d", r1.StatusCode)
+	}
+	r2 := mustHTTP(t, srv, body, "k-ok")
+	defer r2.Body.Close()
+	if r2.Header.Get("Idempotency-Replay") != "true" {
+		t.Fatal("successful batch should have been cached + replayed")
+	}
+}
+
+// TestIdempotency_LookupErrorFailsClosed is the SEC-6 / A4 regression:
+// when the idempotency lookup itself errors, the middleware must fail
+// CLOSED (return an error → 5xx) and NOT run the inner handler, rather
+// than fail open and risk a duplicate mutation. We force the lookup to
+// error by dropping the idempotency_response table on the pool.
+func TestIdempotency_LookupErrorFailsClosed(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_idem_lookup_fail")
+	logger := obs.NewLoggerTo("error", io.Discard)
+	idem := obs.NewIdempotencyStore(pool, logger)
+
+	// Break the lookup query so it errors at execution. We drop the
+	// request_hash column (which lookup SELECTs) rather than the whole
+	// table: the shared dev DB's `public` schema also holds an
+	// idempotency_response (leftover from prior schema applies), and a
+	// DROP TABLE in the test schema would let the lookup fall through to
+	// public via the `search_path = <schema>, public` binding and
+	// silently succeed. The test-schema table is first in the path, so
+	// dropping its column makes the SELECT fail deterministically
+	// regardless of what `public` contains.
+	if _, err := pool.Exec(context.Background(),
+		`ALTER TABLE idempotency_response DROP COLUMN request_hash`); err != nil {
+		t.Fatalf("break lookup column: %v", err)
+	}
+
+	ran := false
+	inner := api.AuthedHandler(func(_ context.Context, w http.ResponseWriter, _ *http.Request, _ *auth.UserCtx) error {
+		ran = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"subresponses":[]}`))
+		return nil
+	})
+	wrapped := idem.WrapAuthed(inner)
+
+	req := httptest.NewRequest("POST", "/api/v1/batch", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Idempotency-Key", "k-lookup-err")
+	rec := httptest.NewRecorder()
+	err := wrapped(context.Background(), rec, req, &auth.UserCtx{ID: 7})
+	if err == nil {
+		t.Fatal("expected lookup error to surface (fail closed), got nil")
+	}
+	if he, ok := api.AsHTTPError(err); !ok || he.Status < 500 {
+		t.Fatalf("expected a 5xx HTTPError, got %v", err)
+	}
+	if ran {
+		t.Fatal("inner handler ran despite lookup error — failed OPEN (SEC-6 / A4)")
+	}
+}

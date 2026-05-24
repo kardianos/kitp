@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -109,8 +110,15 @@ func (s *IdempotencyStore) WrapAuthed(next api.AuthedHandler) api.AuthedHandler 
 
 		stored, gotHash, found, err := s.lookup(ctx, userID, key)
 		if err != nil {
+			// Fail CLOSED on lookup error (SEC-6 / A4): if we can't tell
+			// whether this key was already processed, running the mutation
+			// anyway risks a duplicate write the client believed was
+			// deduped. Return a 500 (router redacts the message) so the
+			// client retries against a healthy DB instead. Replaying a
+			// cached response on a *store* error stays best-effort below;
+			// only this lookup-error bypass is tightened.
 			s.logWarn(ctx, "idempotency.lookup", err)
-			found = false // fail-open
+			return api.Internal(fmt.Errorf("idempotency lookup: %w", err))
 		}
 		if found {
 			if !bytes.Equal(gotHash, hash[:]) {
@@ -145,13 +153,41 @@ func (s *IdempotencyStore) WrapAuthed(next api.AuthedHandler) api.AuthedHandler 
 		if err := next(ctx, cap, r, u); err != nil {
 			return err // router translates; not cached
 		}
-		if cap.status == http.StatusOK && cap.buf.Len() > 0 {
+		// Only cache a batch that actually SUCCEEDED. The batch envelope
+		// always returns HTTP 200 with per-leaf errors (a sub-request
+		// error or a full abort still rides a 200), so a status check
+		// alone would cache failures as if they were durable successes —
+		// a retry with the same Idempotency-Key would then replay the
+		// failure forever instead of re-executing the mutation (BE-H4 /
+		// A3). Inspect the envelope and skip caching when any sub-response
+		// carries an error / aborted code.
+		if cap.status == http.StatusOK && cap.buf.Len() > 0 && batchSucceeded(cap.buf.Bytes()) {
 			if err := s.store(ctx, userID, key, hash[:], cap.buf.Bytes()); err != nil {
 				s.logWarn(ctx, "idempotency.store", err)
 			}
 		}
 		return nil
 	}
+}
+
+// batchSucceeded reports whether a captured batch-response body is a
+// clean all-success result safe to cache for idempotent replay. Returns
+// false when any sub-response is not OK or carries an error envelope
+// (including the `aborted` code on a sibling-aborted batch), or when the
+// body doesn't parse as a batch envelope (fail closed — don't cache
+// something we can't classify). See BE-H4 / A3.
+func batchSucceeded(body []byte) bool {
+	var resp api.BatchResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false
+	}
+	// A zero-subresponse body (empty batch) is a benign success.
+	for _, sr := range resp.Subresponses {
+		if !sr.OK || sr.Error != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // Middleware is the legacy http-middleware shape. Kept for test
@@ -186,9 +222,19 @@ func (s *IdempotencyStore) Middleware(_ any, next http.Handler) http.Handler {
 		// Hit?
 		stored, gotHash, found, err := s.lookup(r.Context(), userID, key)
 		if err != nil {
+			// Fail CLOSED on lookup error (SEC-6 / A4): don't run the
+			// mutation when we can't confirm whether this key was already
+			// processed. 503 so the client retries against a healthy DB.
 			s.logWarn(r.Context(), "idempotency.lookup", err)
-			// Fail open; treat as miss.
-			found = false
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":    "idempotency_unavailable",
+					"message": "idempotency store unavailable; retry",
+				},
+			})
+			return
 		}
 		if found {
 			if !bytes.Equal(gotHash, hash[:]) {
@@ -215,9 +261,12 @@ func (s *IdempotencyStore) Middleware(_ any, next http.Handler) http.Handler {
 		cap := &captureResponseWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(cap, r)
 
-		// Only persist successful (HTTP 200) responses; everything else
-		// is treated as a client error and not cached.
-		if cap.status == http.StatusOK && cap.buf.Len() > 0 {
+		// Only persist a batch that actually SUCCEEDED. The batch
+		// envelope returns 200 even when a sub-request errors or the
+		// whole batch aborts, so a status-only check would cache
+		// failures and replay them on retry (BE-H4 / A3). Skip caching
+		// unless every sub-response is OK.
+		if cap.status == http.StatusOK && cap.buf.Len() > 0 && batchSucceeded(cap.buf.Bytes()) {
 			if err := s.store(r.Context(), userID, key, hash[:], cap.buf.Bytes()); err != nil {
 				s.logWarn(r.Context(), "idempotency.store", err)
 			}

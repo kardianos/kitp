@@ -167,6 +167,25 @@ func (b *Builder) Compile(sql string) (string, []any, error) {
 			continue
 		}
 
+		// Dollar-quoted string tripwire (BE-L2 / A15a). The scanner does
+		// NOT understand `$tag$ … $tag$` bodies, so a `:name` inside one
+		// would be wrongly rewritten into a `$N`. No handler SQL uses
+		// dollar quotes today; rather than silently corrupt a future one,
+		// refuse to compile when we see a dollar-quote OPENER:
+		//   - `$$`              (empty tag), or
+		//   - `$<ident>$`       (tag follows SQL-identifier rules:
+		//                        starts with letter/underscore).
+		// A bare `$N` positional placeholder (`$` then digits, no closing
+		// `$`) is fine and passes through untouched.
+		if c == '$' && isDollarQuoteOpener(sql, i) {
+			j := i + 1
+			for j < n && sql[j] != '$' {
+				j++
+			}
+			return "", nil, fmt.Errorf("named.Builder.Compile: dollar-quoted string ($%s$) not supported; "+
+				"the scanner can't see :name slots inside it (BE-L2)", sql[i+1:j])
+		}
+
 		// Postgres cast `::type` — NOT a named slot. Pass both
 		// colons through unchanged.
 		if c == ':' && i+1 < n && sql[i+1] == ':' {
@@ -223,6 +242,26 @@ func isIdent(s string) bool {
 		}
 	}
 	return true
+}
+
+// isDollarQuoteOpener reports whether sql[i:] begins a Postgres
+// dollar-quote opener — `$$` or `$<tag>$` where <tag> is a SQL
+// identifier (starts with a letter/underscore, continues with
+// letters/digits/underscores). A `$` followed by digits (a `$N`
+// positional placeholder) is NOT an opener. Used by Compile's tripwire
+// (BE-L2 / A15a). Assumes sql[i] == '$'.
+func isDollarQuoteOpener(sql string, i int) bool {
+	j := i + 1
+	if j < len(sql) && sql[j] == '$' {
+		return true // `$$`
+	}
+	if j >= len(sql) || !isIdentStart(sql[j]) {
+		return false // `$` then digit / non-ident → positional or stray
+	}
+	for j < len(sql) && isIdentCont(sql[j]) {
+		j++
+	}
+	return j < len(sql) && sql[j] == '$' // `$ident$`
 }
 
 func isIdentStart(c byte) bool {

@@ -232,22 +232,8 @@ BEGIN
                     _proj bigint;
                     _default_value bigint;
                 BEGIN
-                    SELECT chain.id INTO _proj
-                    FROM (
-                        WITH RECURSIVE chain AS (
-                            SELECT id, parent_card_id, card_type_id, 0 AS depth
-                            FROM card WHERE id = _parent_card_id
-                            UNION ALL
-                            SELECT c.id, c.parent_card_id, c.card_type_id, ch.depth + 1
-                            FROM card c
-                            JOIN chain ch ON ch.parent_card_id = c.id
-                            WHERE ch.depth < 16
-                        )
-                        SELECT chain.id, chain.card_type_id FROM chain
-                        JOIN card_type ct2 ON ct2.id = chain.card_type_id
-                        WHERE ct2.name = 'project'
-                        LIMIT 1
-                    ) chain;
+                    -- Enclosing project via the shared capped helper (A1/A10).
+                    _proj := card_enclosing_project(_parent_card_id);
                     IF _proj IS NOT NULL THEN
                         SELECT f.default_create_status_id INTO _default_value
                         FROM flow f
@@ -278,20 +264,9 @@ BEGIN
         --    values. Only runs when the new card has a parent (top-level
         --    cards have no enclosing project to clash with).
         IF _has_parent THEN
-            -- Resolve enclosing project (NULL when none).
-            WITH RECURSIVE chain AS (
-                SELECT id, parent_card_id, card_type_id FROM card WHERE id = _parent_card_id
-                UNION ALL
-                SELECT c.id, c.parent_card_id, c.card_type_id
-                FROM card c JOIN chain ch ON ch.parent_card_id = c.id
-            )
-            SELECT chain.id INTO _enclosing_project
-            FROM chain JOIN card_type ct ON ct.id = chain.card_type_id
-            WHERE ct.name = 'project'
-            LIMIT 1;
-            IF NOT FOUND THEN
-                _enclosing_project := NULL;
-            END IF;
+            -- Resolve enclosing project (NULL when none) via the shared
+            -- capped helper (A1/A10).
+            _enclosing_project := card_enclosing_project(_parent_card_id);
 
             _rej_code := NULL;
             FOR _attr_name, _attr_value IN
@@ -369,19 +344,9 @@ BEGIN
                             _attr_name, _v);
                         EXIT;
                     END IF;
-                    WITH RECURSIVE chain AS (
-                        SELECT id, parent_card_id, card_type_id FROM card WHERE id = _v
-                        UNION ALL
-                        SELECT c.id, c.parent_card_id, c.card_type_id
-                        FROM card c JOIN chain ch ON ch.parent_card_id = c.id
-                    )
-                    SELECT chain.id INTO _vproj
-                    FROM chain JOIN card_type ct ON ct.id = chain.card_type_id
-                    WHERE ct.name = 'project'
-                    LIMIT 1;
-                    IF NOT FOUND THEN
-                        _vproj := NULL;
-                    END IF;
+                    -- Value's enclosing project via the shared capped
+                    -- helper (A1/A10); NULL → global.
+                    _vproj := card_enclosing_project(_v);
                     -- Global value is a wildcard.
                     IF _vproj IS NULL THEN
                         CONTINUE;

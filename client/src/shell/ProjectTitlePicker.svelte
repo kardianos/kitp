@@ -35,6 +35,25 @@
   const projects = $derived(projectsStore.projects);
   const loaded = $derived(projectsStore.loaded);
 
+  /**
+   * Evict a persisted scope that no longer resolves against the loaded
+   * project list. This used to live as a `setProject(null)` side effect
+   * inside `projectsStore.load`, which relayed a *data load* into the
+   * AppShell chord effect's dep set (the FE-C2 cascade). Moving it here
+   * — the canonical project-switch UI, always mounted in the header —
+   * keeps the load one-way: it surfaces staleness via the derived
+   * `scopeResolves`, and the picker resets it explicitly. The effect
+   * reads `projectScope.projectId`/`projects`/`loaded` and writes
+   * `projectId` once to `null`; that write makes `scopeResolves` true,
+   * so it settles in one pass with no loop.
+   */
+  $effect(() => {
+    const pid = projectScope.projectId;
+    if (!projectsStore.scopeResolves(pid)) {
+      projectScope.setProject(null);
+    }
+  });
+
   function titleOf(c: CardWithAttrs): string {
     const t = c.attributes['title'];
     return typeof t === 'string' && t.length > 0 ? t : `#${c.id}`;

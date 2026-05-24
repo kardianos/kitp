@@ -238,3 +238,36 @@ func TestBind_AddArgCompatible(t *testing.T) {
 		t.Errorf("args: got %#v want %#v", args, want)
 	}
 }
+
+// TestCompile_DollarQuoteErrors is the BE-L2 / A15a tripwire: the
+// scanner can't see :name slots inside a `$tag$ … $tag$` body, so it
+// must error at compile rather than silently rewrite one.
+func TestCompile_DollarQuoteErrors(t *testing.T) {
+	for _, tmpl := range []string{
+		`SELECT $$ :name $$`,            // empty tag
+		`SELECT $body$ :name $body$`,    // named tag
+		`DO $$ BEGIN END $$`,            // empty tag, no slot
+		`SELECT $func$ x $func$ FROM t`, // named tag
+	} {
+		b := named.New()
+		b.Set("name", 1)
+		if _, _, err := b.Compile(tmpl); err == nil {
+			t.Errorf("expected dollar-quote error for %q, got nil", tmpl)
+		}
+	}
+}
+
+// TestCompile_PositionalDollarUntouched: a bare `$N` positional
+// placeholder (or a `$` not opening a dollar-quote) must still compile
+// fine — only `$tag$` openers are rejected.
+func TestCompile_PositionalDollarUntouched(t *testing.T) {
+	b := named.New()
+	b.Set("x", 1)
+	sql, _, err := b.Compile(`SELECT * FROM t WHERE a = $1 AND b = :x`)
+	if err != nil {
+		t.Fatalf("positional $1 should compile: %v", err)
+	}
+	if sql != `SELECT * FROM t WHERE a = $1 AND b = $1` {
+		t.Errorf("sql: got %q", sql)
+	}
+}

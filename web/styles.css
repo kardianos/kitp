@@ -1,0 +1,189 @@
+/* kitp web — hand-authored CSS, no Tailwind, no build.
+ *
+ * Aligns to the designer-owned token layer: web/design/tokens.css exists, so
+ * we import it and reference only var(--…). We do NOT edit web/design/.
+ *
+ * TODO(reconcile): as the real screen controls land, fold their semantic
+ * classes (.btn, .card, .col, .chip, …) here against the same tokens. This
+ * file currently styles only the proof's controls.
+ */
+
+@import url("./design/tokens.css");
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- shell ---- */
+.app-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: var(--topbar-height);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.app-foot {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+  font-size: var(--text-xs);
+}
+
+.app-foot code {
+  font-family: var(--font-mono);
+  color: var(--color-fg);
+}
+
+.muted {
+  color: var(--color-muted);
+}
+
+/* ---- buttons ---- */
+.btn {
+  font: inherit;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-fg);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.btn:hover {
+  background: var(--color-surface);
+}
+.btn:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+.btn-primary {
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  border-color: transparent;
+}
+.btn-primary:hover {
+  filter: brightness(0.95);
+}
+
+/* ---- screen ---- */
+.screen {
+  padding: var(--space-6);
+  outline: none;
+}
+.screen__title {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+}
+.screen__header {
+  margin-bottom: var(--space-4);
+}
+.screen__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* ---- toolbar ---- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* ---- task list ---- */
+.task-list {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  padding: var(--space-3);
+  outline: none;
+}
+.task-list:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+.task-list__items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.task-list__item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+.task-list__id {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.task-list__title {
+  font-size: var(--text-sm);
+}
+.task-list__empty {
+  padding: var(--space-3);
+}
+/* Inline fault banner — the control self-represents an error here (the
+ * `onError: 'self'` route). Dismissed with Escape (region hotkey). */
+.task-list__fault {
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border: 1px solid var(--color-danger-ring);
+  border-radius: var(--radius-md);
+}
+
+/* ---- NotFound placeholder (core requirement) ---- */
+.control-not-found {
+  border: 1px dashed var(--color-danger-ring);
+  background: var(--color-danger-soft);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+.control-not-found__title {
+  font-weight: var(--weight-semibold);
+  color: var(--color-danger);
+}
+.control-not-found__hint {
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+  margin: var(--space-1) 0 var(--space-2);
+}
+.control-not-found__dump {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-fg);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  max-height: 12rem;
+  overflow: auto;
+}

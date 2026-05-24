@@ -574,6 +574,11 @@ func TestSMTPSenderEndToEnd(t *testing.T) {
 	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
 		t.Fatal(err)
 	}
+	// The mock listens on 127.0.0.1, which the SSRF dial guard (SEC-4 /
+	// A9) blocks by default. Allowlist it — exactly how an operator
+	// permits an internal relay — so the production sendSMTP path can
+	// reach the local mock.
+	t.Setenv("KITP_COMM_HOST_ALLOWLIST", host)
 
 	body := fmt.Sprintf(`{"project_id":"%d","name":"E2E","channel_type":"email","smtp_host":%q,"smtp_port":%d,"from_address":"kitp@example.com"}`,
 		f.projectID, host, port)

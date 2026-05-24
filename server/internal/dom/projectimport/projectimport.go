@@ -78,8 +78,13 @@ func Register(cfg ImportConfig) {
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		ProcessName:  "card.update",
 		CardTypeID:   cardTypeFromUploadInput,
-		SQLFunc:      "project_import_upload_batch",
-		PreRun:       preRunUpload,
+		// Input carries project_id, not card_id, so the per-row scope
+		// pass needs an explicit walk-start: the project card itself
+		// (BE-H3 / A2). Without it a project-scoped manager importing
+		// into their own project would be denied.
+		ScopeCardID: scopeCardFromUploadInput,
+		SQLFunc:     "project_import_upload_batch",
+		PreRun:      preRunUpload,
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "project.import",
@@ -90,6 +95,7 @@ func Register(cfg ImportConfig) {
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		ProcessName:  "card.update",
 		CardTypeID:   cardTypeFromJobID(func(in any) int64 { return in.(SetMappingInput).JobID }),
+		ScopeCardID:  scopeCardFromJobID(func(in any) int64 { return in.(SetMappingInput).JobID }),
 		SQLFunc:      "project_import_set_mapping_batch",
 	})
 	reg.Register(reg.Handler{
@@ -101,6 +107,7 @@ func Register(cfg ImportConfig) {
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		ProcessName:  "card.update",
 		CardTypeID:   cardTypeFromJobID(func(in any) int64 { return in.(PreviewInput).JobID }),
+		ScopeCardID:  scopeCardFromJobID(func(in any) int64 { return in.(PreviewInput).JobID }),
 		Timeout:      60 * time.Second, // scans every row of the CSV; per S1
 		SQLFunc:      "project_import_preview_batch",
 		PreRun:       preRunPreview,
@@ -114,6 +121,7 @@ func Register(cfg ImportConfig) {
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		ProcessName:  "card.update",
 		CardTypeID:   cardTypeFromJobID(func(in any) int64 { return in.(CommitInput).JobID }),
+		ScopeCardID:  scopeCardFromJobID(func(in any) int64 { return in.(CommitInput).JobID }),
 		Timeout:      60 * time.Second, // bulk insert path; per S1
 		SQLFunc:      "project_import_commit_batch",
 		PreRun:       preRunCommit,
@@ -125,6 +133,33 @@ func Register(cfg ImportConfig) {
 // that project.
 func cardTypeFromUploadInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	return schema.CardTypeIDByCardID(ctx, pool, raw.(UploadInput).ProjectID)
+}
+
+// scopeCardFromUploadInput returns the project card the per-row scope
+// pass walks up from. The upload input's project_id IS the project
+// card, so it's the right walk start (BE-H3 / A2).
+func scopeCardFromUploadInput(_ context.Context, _ reg.ValidationPool, raw any) (int64, error) {
+	return raw.(UploadInput).ProjectID, nil
+}
+
+// scopeCardFromJobID returns a ScopeCardID resolver that dereferences
+// an import_job.id to its project card so the per-row scope pass can
+// walk that card → project. The set_mapping / preview / commit inputs
+// carry only a job_id, not a card_id, so without this a project-scoped
+// manager would be denied (BE-H3 / A2). Returns (0, nil) on a missing
+// job — the handler's own validation surfaces the not-found error.
+func scopeCardFromJobID(jobIDOf func(any) int64) func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+	return func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+		var projectCardID int64
+		err := pool.QueryRow(ctx, `SELECT project_id FROM import_job WHERE id = $1`, jobIDOf(raw)).Scan(&projectCardID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return 0, nil
+			}
+			return 0, fmt.Errorf("project.import: scope card lookup: %w", err)
+		}
+		return projectCardID, nil
+	}
 }
 
 // cardTypeFromJobID returns an extractor that walks import_job.id →

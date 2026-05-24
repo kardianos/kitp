@@ -149,23 +149,29 @@
   }: Props = $props();
 
   let screenCard = $state<CardWithAttrs | null>(null);
-  // Mirror screenCard into the bindable `screen` prop whenever the
-  // loader rebinds it. Keeps the parent in sync without forcing callers
-  // who don't care about the screen card to wire anything up.
-  $effect(() => {
-    screenBinding = screenCard;
-  });
   let presets = $state<CardWithAttrs[]>([]);
   let activeId = $state<ID | null>(null);
 
   /** Resolve `activeFilter` from `presets` + `activeId` for the parent
-   *  to consume via bind:. Done as a $derived so it stays in sync
-   *  without manual writes. */
+   *  to consume via bind:. A plain `$derived` (no effect) — the parent's
+   *  `bind:activeFilter` reads it directly. The previous effect-into-
+   *  bindable mirror (FE-C1) is gone: there's no body that writes the
+   *  bindable, so nothing for a parent re-render to feed back into. */
   const resolvedActive = $derived<CardWithAttrs | null>(
     activeId === null ? null : (presets.find((f) => f.id === activeId) ?? null),
   );
+
+  // Fan the two derived/state values out to the bindable props the
+  // parent reads. Each statement reads ONLY a `$derived`/`$state` and
+  // writes ONLY a bindable prop this component never reads back, so
+  // there is no cycle (the FE-C1 hazard was effects that mirror into a
+  // bindable the same component re-reads, plus loaders that wrote a
+  // signal they tracked — both removed below). Parents only consume
+  // `activeFilter`/`screen` via `bind:`, so this is a pure one-way
+  // fan-out with no feedback path.
   $effect(() => {
     activeFilter = resolvedActive;
+    screenBinding = screenCard;
   });
 
   /** True when the active preset is also the screen's default. Drives
@@ -177,20 +183,37 @@
   );
 
   /**
-   * Load presets whenever (project, screen) changes. On first visit
-   * for that pair (no filter_state cache entry yet), apply the data-
-   * side default filter; subsequent visits restore the user's last
+   * "What to load" is a pure `$derived` of the two primitive inputs —
+   * the only thing that should re-trigger a preset reload. The loader
+   * effect below tracks ONLY this key, never the filter cache it reads,
+   * which is the structural break for the FE-C1 cycle: previously the
+   * loader read `getFilter`/`hasFilter` (the same `$state` cache the
+   * persist write touched), so a persist could re-fire the loader and
+   * the whole thing was held together by blanket `untrack`. Now the
+   * cache is read once per key change as an explicit snapshot.
+   */
+  const loadKey = $derived(`${screenSlug}\0${projectId ?? '_none_'}`);
+
+  /**
+   * Load presets whenever the (project, screen) key changes. On first
+   * visit for that pair (no filter_state cache entry yet), apply the
+   * data-side default filter; subsequent visits restore the user's last
    * choice. The all-projects view (projectId === null) clears the
    * preset list — there's no per-project screen card to load.
    *
-   * We capture `wasFirstVisit` synchronously before letting the persist
-   * effect run. Otherwise the persist effect (which fires immediately
-   * after this one initialises `predicate`) writes a null entry into the
-   * filter cache, `hasFilter` flips to true, and the async default-
-   * filter probe below silently no-ops — i.e. the user's "Set as
-   * default" choice never re-applies on revisit.
+   * Persistence is NOT done here as an effect anymore: predicate writes
+   * are persisted at their source (the change handlers below), so this
+   * loader is a clean one-way producer — it reads `loadKey` (primitive)
+   * + a one-time cache snapshot and writes only local view state.
    */
   $effect(() => {
+    // Tracked dep: the load key only. Everything inside the snapshot
+    // block is read non-reactively so a later cache write (a user
+    // editing the filter) can't re-fire this loader and stomp their
+    // in-progress edits. This is the one legitimate snapshot `untrack`
+    // the review sanctions — read once at key change, never a feedback
+    // path.
+    void loadKey;
     const pid = projectId;
     const st = screenSlug;
     untrack(() => {
@@ -269,30 +292,22 @@
     });
   });
 
-  // Persist the predicate whenever it changes. setFilter writes a $state
-  // record, so untrack here so we don't loop through this effect's own
-  // write.
-  $effect(() => {
-    const pid = projectId;
-    const st = screenSlug;
-    const p = predicate;
-    untrack(() => {
-      setFilter(st, pid, p);
-    });
-  });
-
   /* ---------------------------------------------- named snippets ---------- */
+
+  /** "What snippets to load" — a primitive key the loader effect tracks
+   *  in place of reactively reading inside `loadSnippets`. */
+  const snippetKey = $derived(projectId);
 
   /** Load (or rehydrate from cache) the project's snippet cards
    *  whenever the project flips. Errors fall through silently — the
    *  dispatcher's fault registry surfaces them — and the dropdown
-   *  just stays empty. */
+   *  just stays empty. Tracks only the primitive `snippetKey`, so no
+   *  `untrack` is needed: `loadSnippets` writes a shared cache this
+   *  effect never reads. */
   $effect(() => {
-    const pid = projectId;
-    untrack(() => {
-      if (pid === null) return;
-      void loadSnippets(dispatcher, pid).catch(() => {});
-    });
+    const pid = snippetKey;
+    if (pid === null) return;
+    void loadSnippets(dispatcher, pid).catch(() => {});
   });
 
   /** Snippets visible to this screen. Reactive: reads the shared
@@ -310,10 +325,11 @@
   const selectedSnippetIds = $derived(getSelectedSnippetIds(predicate));
 
   /** User toggled the multi-select. Replace the top-level snippet
-   *  leaves with the new set; emit. */
+   *  leaves with the new set; persist + emit. */
   function onSnippetsChange(v: ID | ID[] | null): void {
     const ids = Array.isArray(v) ? v : [];
     predicate = setSelectedSnippets(predicate, ids);
+    setFilter(screenSlug, projectId, predicate);
     onchange?.(predicate);
   }
 
@@ -324,6 +340,7 @@
     const f = presets.find((x) => x.id === id);
     if (f === undefined) return;
     predicate = readPredicate(f);
+    setFilter(screenSlug, projectId, predicate);
     onchange?.(predicate);
   }
 
@@ -336,6 +353,13 @@
     // stays put so layouts that read attributes off `activeFilter`
     // (Grid's group headers, Kanban's column axis) don't lose their
     // configuration the moment the user touches a filter chip.
+    //
+    // Persistence happens here (at the predicate's source) rather than
+    // in a tracking `$effect` — that effect read `predicate` and wrote
+    // the same `$state` cache the loader read, the FE-C1 cycle. Writing
+    // it explicitly on the one event that mutates the predicate keeps
+    // the cache one-way.
+    setFilter(screenSlug, projectId, p);
     onchange?.(p);
   }
 

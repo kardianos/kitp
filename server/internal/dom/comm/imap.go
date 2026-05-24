@@ -1293,6 +1293,11 @@ func stripHTMLTags(s string) string {
 // default). FetchUnseen / MarkSeen rely on the underlying conn's
 // read/write deadlines, which the dial timeout effectively pins.
 func dialIMAP(ctx context.Context, cfg IMAPConfig) (imapClient, error) {
+	// SSRF guard (SEC-4 / A9): reject internal / loopback / link-local
+	// dial targets before opening the socket.
+	if err := guardDialHost(ctx, cfg.Host); err != nil {
+		return nil, err
+	}
 	addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
 	dialer := &net.Dialer{Timeout: 30 * time.Second}
 	if deadline, ok := ctx.Deadline(); ok {

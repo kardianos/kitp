@@ -49,10 +49,12 @@ class RouterState {
    */
   previousPath = $state<string | null>(null);
 
-  /** Currently matched route (or null if 404). */
-  get match(): RouteMatch | null {
-    return matchRoute(this.path);
-  }
+  /**
+   * Currently matched route (or null if 404). Memoized via `$derived`
+   * (FE-M3) so it recomputes once per `path` change rather than on every
+   * read — several components read `routerState.match` per render.
+   */
+  match = $derived<RouteMatch | null>(matchRoute(this.path));
 }
 
 export const routerState = new RouterState();

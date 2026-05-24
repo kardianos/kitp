@@ -3,11 +3,55 @@ package auth_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/store"
 )
+
+// TestMiddleware_DevUserHeaderGatedByEnv is the SEC-5 / A8 regression:
+// the X-Dev-User-Id impersonation header must be honoured ONLY outside
+// production. The gate is captured at wiring time so a future re-mount
+// in prod can't ship the bypass.
+func TestMiddleware_DevUserHeaderGatedByEnv(t *testing.T) {
+	base := &auth.UserCtx{ID: auth.SystemUserID, DisplayName: "System"}
+
+	capture := func() (http.Handler, *int64) {
+		var seen int64
+		h := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			if u, ok := auth.FromContext(r.Context()); ok && u != nil {
+				seen = u.ID
+			}
+		})
+		return h, &seen
+	}
+
+	t.Run("dev honours header", func(t *testing.T) {
+		t.Setenv("ENV", "dev")
+		inner, seen := capture()
+		mw := auth.Middleware(base)(inner)
+		req := httptest.NewRequest("POST", "/api/v1/batch", nil)
+		req.Header.Set("X-Dev-User-Id", "42")
+		mw.ServeHTTP(httptest.NewRecorder(), req)
+		if *seen != 42 {
+			t.Fatalf("dev: expected impersonated id 42, got %d", *seen)
+		}
+	})
+
+	t.Run("production ignores header", func(t *testing.T) {
+		t.Setenv("ENV", "production")
+		inner, seen := capture()
+		mw := auth.Middleware(base)(inner)
+		req := httptest.NewRequest("POST", "/api/v1/batch", nil)
+		req.Header.Set("X-Dev-User-Id", "42")
+		mw.ServeHTTP(httptest.NewRecorder(), req)
+		if *seen != auth.SystemUserID {
+			t.Fatalf("production: header must be ignored, expected System (%d), got %d", auth.SystemUserID, *seen)
+		}
+	})
+}
 
 // TestProductionRefusesOff covers N-SEC-5 / phase 4 deliverable: when env=
 // production and mode=off, NewSystemUser returns the well-known refusal

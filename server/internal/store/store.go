@@ -11,6 +11,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -27,9 +28,51 @@ type Pool struct {
 	P          *pgxpool.Pool
 	writeCount int64
 	readCount  int64
+
+	// process is the cached set of seeded process names (A15c / BE-L3).
+	// `process` is a small, schema-immutable table; the dispatcher's
+	// per-leaf authz used to point-query it once per gated sub-request.
+	// We load every name once on first success and answer from memory
+	// after. A load error is NOT cached (the next call retries) so a
+	// transient DB blip at first-use doesn't permanently break authz.
+	processMu  sync.Mutex
+	processSet map[string]struct{}
 }
 
 func NewPool(p *pgxpool.Pool) *Pool { return &Pool{P: p} }
+
+// ProcessExists reports whether a `process` row by that name exists,
+// answering from a once-loaded in-memory set rather than a per-call
+// point query (A15c / BE-L3). The first call loads the whole (tiny)
+// process table; a load failure is cached and returned so the caller
+// can abort rather than misread a transient DB error as "no such
+// process". `process` rows are seeded at schema-apply time and never
+// mutate at runtime, so the snapshot can't go stale within a process.
+func (p *Pool) ProcessExists(ctx context.Context, name string) (bool, error) {
+	p.processMu.Lock()
+	defer p.processMu.Unlock()
+	if p.processSet == nil {
+		set := map[string]struct{}{}
+		rows, err := p.P.Query(ctx, `SELECT name FROM process`)
+		if err != nil {
+			return false, fmt.Errorf("process set load: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err != nil {
+				return false, fmt.Errorf("process set load: %w", err)
+			}
+			set[n] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			return false, fmt.Errorf("process set load: %w", err)
+		}
+		p.processSet = set
+	}
+	_, ok := p.processSet[name]
+	return ok, nil
+}
 
 // NoteWrite is called by every "// arrayPath" writer once per SQL write
 // statement-group in a Run, so tests can verify that a coalesced batch
@@ -85,6 +128,31 @@ var (
 	commSecretKeyVal  string
 )
 
+// DevCommSecretKey is the published fallback used when
+// KITP_COMM_SECRET_KEY is unset in dev/test. It is deliberately
+// recognisable so it can never be mistaken for a real key, and so
+// RefuseStartIfNoCommSecretKey can reject it.
+const DevCommSecretKey = "dev-do-not-ship-this-key-in-prod"
+
+// RefuseStartIfNoCommSecretKey returns a non-nil error when env is
+// "production" and KITP_COMM_SECRET_KEY is unset (or accidentally set
+// to the dev default). Comm-channel passwords are encrypted with this
+// key; shipping the published dev default to production would protect
+// real credentials with a key anyone can read (SEC-8 / A7). The startup
+// path (cmd/kitpd) treats a non-nil return as fatal, mirroring the
+// AUTH_MODE=off production refusal. Dev/test (any other env) always
+// returns nil — CommSecretKey's dev fallback + one-shot warning stays.
+func RefuseStartIfNoCommSecretKey(env string) error {
+	if env != "production" {
+		return nil
+	}
+	v := os.Getenv("KITP_COMM_SECRET_KEY")
+	if v == "" || v == DevCommSecretKey {
+		return fmt.Errorf("refusing to start: ENV=production with KITP_COMM_SECRET_KEY unset or set to the dev default (see SEC-8); set a real key before storing comm-channel credentials")
+	}
+	return nil
+}
+
 // CommSecretKey returns the resolved key, logging the dev-default warning
 // at first call. Exported for the comm package to pass to sym_encrypt /
 // sym_decrypt SQL calls when not relying on the per-connection setting.
@@ -92,7 +160,7 @@ func CommSecretKey() string {
 	commSecretKeyOnce.Do(func() {
 		commSecretKeyVal = os.Getenv("KITP_COMM_SECRET_KEY")
 		if commSecretKeyVal == "" {
-			commSecretKeyVal = "dev-do-not-ship-this-key-in-prod"
+			commSecretKeyVal = DevCommSecretKey
 			log.Printf("warning: KITP_COMM_SECRET_KEY unset; using dev default. " +
 				"Comm channel passwords will be encrypted with a published key — " +
 				"set KITP_COMM_SECRET_KEY before storing real credentials.")

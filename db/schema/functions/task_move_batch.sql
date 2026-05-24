@@ -191,6 +191,19 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
+        -- Cycle guard (A1 / SEC-1): never re-parent a task under itself
+        -- or under a card inside its own subtree. A well-formed project
+        -- can't be a descendant of a task, but guarding here keeps the
+        -- invariant explicit and matches card.move. card_ancestors carries
+        -- the depth cap.
+        IF _new_project_id = _card_id
+           OR EXISTS (SELECT 1 FROM card_ancestors(_new_project_id) a WHERE a.id = _card_id) THEN
+            RETURN QUERY SELECT _idx, false, 'cycle'::text,
+                format('task.move: cannot move card %s under itself or its own descendant %s',
+                    _card_id, _new_project_id),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
 
         -- 4. Resolve destination status if omitted.
         IF _new_status_id = 0 THEN
@@ -299,11 +312,15 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 6. Build moved set.
+        -- 6. Build moved set. The cascade walk follows the `parent_task`
+        --    attribute (a card_ref self-reference, distinct from
+        --    parent_card_id). UNION already dedups, but a parent_task
+        --    cycle would still loop forever without a cap — carry
+        --    depth < 16 to match the CLAUDE.md card-tree cap (A1).
         _moved_ids := ARRAY[_card_id];
         IF _strategy = 'cascade' THEN
             WITH RECURSIVE descendants AS (
-                SELECT c.id
+                SELECT c.id, 0 AS depth
                 FROM card c
                 JOIN attribute_value av ON av.card_id = c.id
                 JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'parent_task'
@@ -311,7 +328,7 @@ BEGIN
                   AND jsonb_typeof(av.value) = 'number'
                   AND (av.value)::text::bigint = _card_id
                 UNION
-                SELECT c.id
+                SELECT c.id, d.depth + 1
                 FROM card c
                 JOIN attribute_value av ON av.card_id = c.id
                 JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'parent_task'
@@ -319,8 +336,9 @@ BEGIN
                   ON jsonb_typeof(av.value) = 'number'
                  AND (av.value)::text::bigint = d.id
                 WHERE c.deleted_at IS NULL
+                  AND d.depth < 16
             )
-            SELECT COALESCE(array_agg(id ORDER BY id), ARRAY[]::bigint[])
+            SELECT COALESCE(array_agg(DISTINCT id ORDER BY id), ARRAY[]::bigint[])
               INTO _desc FROM descendants;
             _moved_ids := _moved_ids || _desc;
         END IF;

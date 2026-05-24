@@ -631,6 +631,11 @@ func (s *SMTPSender) loadReplyAttachments(ctx context.Context, replyID int64) ([
 //
 // Tests substitute a recording stub via SMTPSender.SetTransport.
 func sendSMTP(ctx context.Context, host string, port int, username, password, from, to string, msg []byte) error {
+	// SSRF guard (SEC-4 / A9): reject internal / loopback / link-local
+	// dial targets before opening the socket.
+	if err := guardDialHost(ctx, host); err != nil {
+		return err
+	}
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	d := net.Dialer{Timeout: 15 * time.Second}
 	rawConn, err := d.DialContext(ctx, "tcp", addr)
@@ -697,9 +702,13 @@ func sendSMTP(ctx context.Context, host string, port int, username, password, fr
 		return wrapSMTPError(err, "smtp DATA end")
 	}
 	if err := client.Quit(); err != nil {
-		// Quit failures are noisy; the message has already been
-		// accepted at this point so swallow the error rather than
-		// flipping the row to 'failed'.
+		// The DATA phase already returned success, so the server has
+		// accepted the message; a QUIT failure (connection reset on
+		// teardown, slow close) does not un-send it. Intentionally
+		// ignored — flipping the row to 'failed' here would cause a
+		// duplicate resend. Not wrapped/returned per the CLAUDE.md error
+		// rule's "safe to drop, with a comment explaining why" clause
+		// (A15e / BE-L5).
 		_ = err
 	}
 	return nil

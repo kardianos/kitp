@@ -187,8 +187,11 @@ value, jsonb, ,
 last_activity_id, bigint, , activity.id
 
 ### indexes
-name, expressions, using
-attribute_value_trgm, "(value::text) gin_trgm_ops", gin
+name, columns, expressions, using, where
+attribute_value_trgm, , "(value::text) gin_trgm_ops", gin,
+attribute_value_def_value, "attribute_def_id, value", , ,
+attribute_value_def_card, "attribute_def_id, card_id", , ,
+attribute_value_def_ref, , "attribute_def_id, ((value)::text::bigint)", , "jsonb_typeof(value) = 'number'"
 
 ## table process | doc="Logical workflow name (e.g. card.create). process_step rows declare the ordered handler chain."
 
@@ -458,6 +461,9 @@ updated_at, timestamptz, , false, now(), ,
 -- dispatcher's wrapper code is one shape.
 -- ---------------------------------------------------------------------
 
+## function card_ancestors | doc="Shared capped parent_card_id walk (A1 / BE-C1 / SEC-1). Returns the ancestor chain of a card (inclusive) with a 0-based depth column; the recursive arm carries WHERE depth < 16 so a parent cycle can't pin a connection. The single source of the depth cap (A15d)." | path="functions/card_ancestors.sql" | arg_types="bigint"
+## function card_enclosing_project | doc="Resolve a card's enclosing project (first card_type='project' ancestor within the depth cap) via card_ancestors. Canonical card→project resolver (A10 / BE-M3); declared after card_ancestors because its SQL body references it at create time." | path="functions/card_enclosing_project.sql" | arg_types="bigint"
+## function card_ref_cross_project | doc="Check whether a card's stored card_ref / card_ref[] values would cross a project boundary for a given target enclosing project (A11 / BE-M5). Returns the first offending (attr, value_card, value_project) or no rows. Reuses card_enclosing_project; declared after it. Used by card.move to re-validate the cross-project ref invariant on re-parent." | path="functions/card_ref_cross_project.sql" | arg_types="bigint, bigint"
 ## function comment_insert_batch | doc="comment.insert — validate + write per row." | path="functions/comment_insert_batch.sql"
 ## function build_flow_available_array | doc="V13 helper: emits the available[] JSONB array for a flow rejection envelope. Mirrors flow.listAvailableTransitions in PL/pgSQL." | path="functions/build_flow_available_array.sql" | arg_types="bigint, bigint, bigint"
 ## function attribute_update_batch | doc="attribute.update — validate (card / edge / required-removal / project-scope / screen-uniqueness / flow gate) and write per row." | path="functions/attribute_update_batch.sql"
@@ -525,6 +531,7 @@ updated_at, timestamptz, , false, now(), ,
 ## function activity_select_batch | doc="activity.select — paged activity for one card (or cross-card when card_id is omitted) with comment_body bodies hydrated for kind=comment rows; per-actor visibility predicate (B7) applied in both modes." | path="functions/activity_select_batch.sql"
 ## function cas_missing_chunks_batch | doc="cas.missing_chunks — anti-join input addresses against cas_blob; result.missing[] preserves input ordinality so duplicated input addresses appear duplicated in the output (matches the legacy Go-side unnest behaviour). Empty / missing addresses[] returns missing=[]." | path="functions/cas_missing_chunks_batch.sql"
 ## function _canon_card_ref | doc="Canonicalise a jsonb value against an attribute_def.value_type. card_ref string-of-digits becomes a JSON number; card_ref[] applies elementwise; other shapes pass through. Mirrors schema.Snapshot.CanonicalizeValue." | path="functions/canon_card_ref.sql" | arg_types="jsonb, text"
+## function _ph_push | doc="Placeholder-bag append primitive for card_compile_predicate (A13 / BE-H2 safe increment). Appends a value to the JSONB params bag and returns (new_bag, 0-based index) so no predicate leaf hand-counts a placeholder offset. Declared before card_compile_predicate." | path="functions/ph_push.sql" | arg_types="jsonb, jsonb"
 ## function card_compile_predicate | doc="Recursive predicate-tree compiler used by card_select_with_attributes_batch. Walks the v2 tree (connective / leaf / snippet) and emits a SQL boolean fragment plus an accumulated JSONB params bag. Mirrors the Go-side card.CompileTree." | path="functions/card_compile_predicate.sql" | arg_types="jsonb, jsonb, bigint[]"
 ## function card_select_with_attributes_batch | doc="card.select_with_attributes — SPA's main read path. Compiles the v1 where[] / v2 tree via card_compile_predicate, layers in optional personal_sort / routed_to_me joins + ordering LATERALs, EXECUTEs the dynamic SQL, returns each input's rows as a JSONB array under result.rows. Per-actor visibility predicate (B7) AND-joined." | path="functions/card_select_with_attributes_batch.sql"
 ## function flow_list_batch | doc="flow.list — list flow rows, optionally filtered by scope_card_id (project) and / or attribute_def_id. Joined to attribute_def for the display name." | path="functions/flow_list_batch.sql"

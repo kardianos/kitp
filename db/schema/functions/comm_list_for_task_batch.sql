@@ -182,12 +182,16 @@ BEGIN
                       AND c.parent_card_id = _task_id
                       AND c.deleted_at IS NULL
                       AND EXISTS (
-                        WITH RECURSIVE up(id, parent_card_id, card_type_id) AS (
-                            SELECT card.id, card.parent_card_id, card.card_type_id
+                        -- depth < 16 caps the parent walk (CLAUDE.md cap;
+                        -- matches card_ancestors / scopeWalkDepth) so a
+                        -- parent_card_id cycle can't pin the connection (A1).
+                        WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (
+                            SELECT card.id, card.parent_card_id, card.card_type_id, 0
                             FROM card WHERE card.id = c.id
                             UNION ALL
-                            SELECT p.id, p.parent_card_id, p.card_type_id
+                            SELECT p.id, p.parent_card_id, p.card_type_id, up.depth + 1
                             FROM card p JOIN up ON p.id = up.parent_card_id
+                            WHERE up.depth < 16
                         )
                         SELECT 1
                         FROM user_account caller

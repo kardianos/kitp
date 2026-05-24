@@ -14,10 +14,11 @@
 --      filters match regardless of write origin.
 --   4. Project-scope check: every card_ref / card_ref[] value must
 --      either be global (no enclosing project — e.g. person) or share
---      the target card's enclosing project. Walks the parent_card_id
---      chain with a recursive CTE. The target_card_type_id contract is
---      also enforced — e.g. milestone_ref must point at a milestone
---      card. Failures → 'cross_project_ref'.
+--      the target card's enclosing project. Resolves the enclosing
+--      project via the shared capped card_enclosing_project helper
+--      (A1/A10). The target_card_type_id contract is also enforced —
+--      e.g. milestone_ref must point at a milestone card. Failures →
+--      'cross_project_ref'.
 --   5. Screen uniqueness: for slug / hotkey on screen cards, no other
 --      screen under the same project may hold the same value. slug
 --      additionally validates ^[a-z][a-z0-9-]*$. Failures →
@@ -220,21 +221,9 @@ BEGIN
         IF (_value_type = 'card_ref' OR _value_type = 'card_ref[]')
            AND array_length(_value_card_ids, 1) IS NOT NULL THEN
 
-            -- Resolve target's enclosing project (0 when target is a
-            -- global card).
-            WITH RECURSIVE chain AS (
-                SELECT id, parent_card_id, card_type_id FROM card WHERE id = _card_id
-                UNION ALL
-                SELECT c.id, c.parent_card_id, c.card_type_id
-                FROM card c JOIN chain ch ON ch.parent_card_id = c.id
-            )
-            SELECT chain.id INTO _target_project_id
-            FROM chain JOIN card_type ct ON ct.id = chain.card_type_id
-            WHERE ct.name = 'project'
-            LIMIT 1;
-            IF NOT FOUND THEN
-                _target_project_id := NULL;
-            END IF;
+            -- Resolve target's enclosing project (NULL when target is a
+            -- global card) via the shared capped helper (A1/A10).
+            _target_project_id := card_enclosing_project(_card_id);
 
             DECLARE
                 _rej_code text;
@@ -263,20 +252,9 @@ BEGIN
                             _attr_name, _v);
                         EXIT;
                     END IF;
-                    -- Resolve value's enclosing project. NULL → global.
-                    WITH RECURSIVE chain AS (
-                        SELECT id, parent_card_id, card_type_id FROM card WHERE id = _v
-                        UNION ALL
-                        SELECT c.id, c.parent_card_id, c.card_type_id
-                        FROM card c JOIN chain ch ON ch.parent_card_id = c.id
-                    )
-                    SELECT chain.id INTO _vproj
-                    FROM chain JOIN card_type ct ON ct.id = chain.card_type_id
-                    WHERE ct.name = 'project'
-                    LIMIT 1;
-                    IF NOT FOUND THEN
-                        _vproj := NULL;
-                    END IF;
+                    -- Resolve value's enclosing project (NULL → global)
+                    -- via the shared capped helper (A1/A10).
+                    _vproj := card_enclosing_project(_v);
                     -- Global value (no project ancestor) is a wildcard.
                     IF _vproj IS NULL THEN
                         CONTINUE;
@@ -353,21 +331,10 @@ BEGIN
         -- 6. Flow gate (card_ref only). Mirrors attribute/flow.go.
         IF _value_type = 'card_ref' AND jsonb_typeof(_value_norm) = 'number' THEN
             -- Reuse the target_project we resolved for scope above,
-            -- or compute it fresh when scope didn't run.
+            -- or compute it fresh when scope didn't run, via the shared
+            -- capped helper (A1/A10).
             IF _target_project_id IS NULL THEN
-                WITH RECURSIVE chain AS (
-                    SELECT id, parent_card_id, card_type_id FROM card WHERE id = _card_id
-                    UNION ALL
-                    SELECT c.id, c.parent_card_id, c.card_type_id
-                    FROM card c JOIN chain ch ON ch.parent_card_id = c.id
-                )
-                SELECT chain.id INTO _target_project_id
-                FROM chain JOIN card_type ct ON ct.id = chain.card_type_id
-                WHERE ct.name = 'project'
-                LIMIT 1;
-                IF NOT FOUND THEN
-                    _target_project_id := NULL;
-                END IF;
+                _target_project_id := card_enclosing_project(_card_id);
             END IF;
 
             IF _target_project_id IS NOT NULL THEN

@@ -159,6 +159,19 @@ func (s *Server) runSQLFunc(ctx context.Context, tx pgx.Tx, group []prepared, in
 // the SQLSTATE indicates a row-level rejection that escaped the
 // function (e.g. a constraint violation the function didn't
 // pre-check). Other errors pass through wrapped for context.
+//
+// Wire-safety (BE-M1 / BE-M2 / SEC-2 / A5): each SQLSTATE maps to a
+// STABLE client code + a GENERIC message. Raw Postgres text
+// (pgErr.Message / pgErr.Detail) names tables, columns and constraint
+// identifiers — schema intelligence we don't hand to clients. The
+// dispatcher logs the wrapped chain server-side (see Server.envelope);
+// here we only choose the code and a safe, fixed message.
+//
+// P0001 (RAISE EXCEPTION) is the one author-controlled SQLSTATE: every
+// kitp function RAISEs only deliberate, display-safe text (validation
+// messages, "must be triage|active|terminal", etc.), so its message is
+// the intended client signal and is surfaced as-is. All other codes
+// are Postgres-internal and redacted.
 func mapPGError(h reg.Handler, err error) error {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
@@ -166,18 +179,23 @@ func mapPGError(h reg.Handler, err error) error {
 	}
 	switch pgErr.Code {
 	case "P0001":
-		// RAISE EXCEPTION inside the function — use the message as-is.
+		// RAISE EXCEPTION inside the function — author-controlled,
+		// display-safe text; the intended client message.
 		return &reg.HandlerError{Code: "internal", Message: pgErr.Message}
 	case "23505":
-		return &reg.HandlerError{Code: "conflict", Message: pgErr.Message}
+		return &reg.HandlerError{Code: "conflict", Message: "conflicts with an existing record"}
 	case "23503":
-		return &reg.HandlerError{Code: "fk_violation", Message: pgErr.Message}
+		return &reg.HandlerError{Code: "fk_violation", Message: "references a record that does not exist"}
+	case "23514":
+		return &reg.HandlerError{Code: "check_violation", Message: "violates a data constraint"}
 	case "40P01":
-		return &reg.HandlerError{Code: "deadlock", Message: pgErr.Message}
+		return &reg.HandlerError{Code: "deadlock", Message: "deadlock detected; retry"}
 	case "57014":
 		// query_canceled — timeout fired (S1).
-		return &reg.HandlerError{Code: "timeout", Message: pgErr.Message}
+		return &reg.HandlerError{Code: "timeout", Message: "query timed out"}
 	}
+	// Unmapped SQLSTATE: wrap so the dispatcher's envelope redacts it to
+	// a generic internal error and logs the underlying chain.
 	return fmt.Errorf("%s.%s: %w", h.Endpoint, h.Action, err)
 }
 

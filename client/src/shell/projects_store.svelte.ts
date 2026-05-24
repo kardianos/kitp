@@ -10,7 +10,6 @@
  * sync via `projectScope.projectsVersion`.
  */
 
-import { untrack } from 'svelte';
 import type { Dispatcher } from '../dispatch/dispatcher';
 import { cardSelectWithAttributes } from '../reg/handlers';
 import type {
@@ -65,12 +64,14 @@ class ProjectsStore {
           data,
         });
         this.projects = out.rows;
-        // Drop a persisted scope that no longer resolves — same stale-id
-        // guard the standalone fetch in ProjectTitlePicker used to do.
-        const pid = projectScope.projectId;
-        if (pid !== null && !out.rows.some((p) => p.id === pid)) {
-          projectScope.setProject(null);
-        }
+        // NOTE: we deliberately do NOT touch `projectScope` here. The old
+        // code called `projectScope.setProject(null)` to evict a persisted
+        // scope that no longer resolved — but that turned a *data load* into
+        // a write of `projectScope.projectId`, which the AppShell chord
+        // effect tracked, relaying a load into an unrelated effect's dep set
+        // (the FE-C2 cascade). Stale-scope eviction is now a derived signal
+        // (`scopeResolves`) the title-picker resets explicitly. See
+        // `frontend-design-review.md` "one-way data flow for loads".
         this.lastVersion = wantVersion;
         this.loaded = true;
       } catch {
@@ -94,24 +95,48 @@ class ProjectsStore {
     }
     return null;
   }
+
+  /**
+   * True when the given scope id is present in the loaded project list.
+   * `null` (All projects) always resolves. While the list is still
+   * loading we report `true` (don't evict a scope we can't yet confirm
+   * is stale — that would clear a valid deep-link scope on cold start).
+   *
+   * This replaces the old in-`load` `setProject(null)` side effect: the
+   * title picker reads this as a derived signal and resets a stale scope
+   * itself, keeping `load` a pure one-way data flow. Reads `projects` /
+   * `loaded` so callers take a reactive dependency.
+   */
+  scopeResolves(id: ID | null): boolean {
+    if (id === null) return true;
+    if (!this.loaded) return true;
+    return this.projects.some((p) => p.id === id);
+  }
 }
 
 export const projectsStore = new ProjectsStore();
 
 /**
  * Convenience for components that just want "load on mount, re-load
- * when the version bumps". Wrap the call in an effect; this keeps the
- * untrack incantation in one place.
+ * when an input changes". Wrap the call in an effect.
+ *
+ * FE-M2: track the *actual* inputs `load()` reads — `projectsVersion`
+ * AND `showTemplates` — rather than relying on the convention that
+ * every `showTemplates` flip also bumps the version. With the inputs
+ * tracked directly there's no `untrack` to maintain and no loop: `load`
+ * reads only `projectsVersion` / `showTemplates` / `loaded` before its
+ * first await, and the `loaded`/`projects` it later writes are not part
+ * of the trigger set in a way that re-fires the load (it early-returns
+ * once `lastVersion` matches). The old `setProject(null)` side effect —
+ * the one that relayed a load into the chord effect — is gone (see
+ * `load`), so the dependency is now honest end-to-end.
  */
 export function watchProjects(
   dispatcher: Pick<Dispatcher, 'request'>,
 ): () => void {
-  // The effect tracks projectsVersion so a notifyProjectsChanged()
-  // bump from anywhere (rename, create, delete) triggers a re-fetch.
   return () => {
     void projectScope.projectsVersion;
-    untrack(() => {
-      void projectsStore.load(dispatcher);
-    });
+    void projectScope.showTemplates;
+    void projectsStore.load(dispatcher);
   };
 }

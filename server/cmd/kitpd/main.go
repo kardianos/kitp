@@ -232,6 +232,14 @@ func runHTTP() error {
 	if env == "production" && mode == auth.ModeOIDC && os.Getenv("OIDC_ISSUER") == "" {
 		return errors.New("refusing to start: ENV=production with AUTH_MODE=oidc but OIDC_ISSUER is empty")
 	}
+	// Comm-channel passwords are encrypted with KITP_COMM_SECRET_KEY; in
+	// dev store.CommSecretKey falls back to a published default. Shipping
+	// that default to production would encrypt real credentials under a
+	// key anyone can read (SEC-8 / A7). Refuse to start, mirroring the
+	// AUTH_MODE=off refusal above.
+	if err := store.RefuseStartIfNoCommSecretKey(env); err != nil {
+		return err
+	}
 
 	logger := obs.NewLogger(envOr("LOG_LEVEL", "info"))
 

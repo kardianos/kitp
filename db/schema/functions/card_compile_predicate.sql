@@ -56,7 +56,10 @@ DECLARE
     _v jsonb;
     _v_canon jsonb;
     _placeholders text[];
-    _ph_count int;
+    -- Placeholder indices captured at append time by _ph_push, so no
+    -- leaf computes an offset by hand (A13 / BE-H2 safe increment).
+    _attr_idx int;
+    _val_idx int;
     _days int;
     _needle text;
     _snip_id bigint;
@@ -165,14 +168,13 @@ BEGIN
             IF _v IS NULL THEN _v := 'null'::jsonb; END IF;
         END IF;
         _v_canon := _canon_card_ref(_v, _value_type);
-        -- Append attr (text) + value (jsonb) to params.
-        params := params || jsonb_build_array(_attr) || jsonb_build_array(_v_canon);
-        _ph_count := jsonb_array_length(params);
-        -- Two newest indices: attr at (count-2), value at (count-1).
+        -- Append attr (text) + value (jsonb); _ph_push reports each index.
+        SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
+        SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
         _sql := format(
             'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
             'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value = ($1->%s)::jsonb)',
-            (_ph_count - 2)::text, (_ph_count - 1)::text);
+            _attr_idx::text, _val_idx::text);
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op IN ('!=', 'ne') THEN
@@ -183,34 +185,31 @@ BEGIN
             IF _v IS NULL THEN _v := 'null'::jsonb; END IF;
         END IF;
         _v_canon := _canon_card_ref(_v, _value_type);
-        params := params || jsonb_build_array(_attr) || jsonb_build_array(_v_canon);
-        _ph_count := jsonb_array_length(params);
+        SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
+        SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
         _sql := format(
             'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
             'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value = ($1->%s)::jsonb)',
-            (_ph_count - 2)::text, (_ph_count - 1)::text);
+            _attr_idx::text, _val_idx::text);
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op = 'in' THEN
         IF jsonb_array_length(_values) = 0 THEN
             RETURN jsonb_build_object('sql', 'FALSE', 'params', params);
         END IF;
-        params := params || jsonb_build_array(_attr);
+        SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
         _placeholders := ARRAY[]::text[];
         FOR _v IN SELECT value FROM jsonb_array_elements(_values)
         LOOP
             _v_canon := _canon_card_ref(_v, _value_type);
-            params := params || jsonb_build_array(_v_canon);
-            _ph_count := jsonb_array_length(params);
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
             _placeholders := array_append(_placeholders,
-                format('($1->%s)::jsonb', (_ph_count - 1)::text));
+                format('($1->%s)::jsonb', _val_idx::text));
         END LOOP;
-        _ph_count := jsonb_array_length(params);
-        -- attr index is (_ph_count - len(values) - 1). Recompute via len.
         _sql := format(
             'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
             'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value IN (%s))',
-            (_ph_count - jsonb_array_length(_values) - 1)::text,
+            _attr_idx::text,
             array_to_string(_placeholders, ', '));
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
@@ -218,50 +217,45 @@ BEGIN
         IF jsonb_array_length(_values) = 0 THEN
             RETURN jsonb_build_object('sql', 'TRUE', 'params', params);
         END IF;
-        params := params || jsonb_build_array(_attr);
+        SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
         _placeholders := ARRAY[]::text[];
         FOR _v IN SELECT value FROM jsonb_array_elements(_values)
         LOOP
             _v_canon := _canon_card_ref(_v, _value_type);
-            params := params || jsonb_build_array(_v_canon);
-            _ph_count := jsonb_array_length(params);
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
             _placeholders := array_append(_placeholders,
-                format('($1->%s)::jsonb', (_ph_count - 1)::text));
+                format('($1->%s)::jsonb', _val_idx::text));
         END LOOP;
-        _ph_count := jsonb_array_length(params);
         _sql := format(
             'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
             'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value IN (%s))',
-            (_ph_count - jsonb_array_length(_values) - 1)::text,
+            _attr_idx::text,
             array_to_string(_placeholders, ', '));
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op = 'exists' THEN
-        params := params || jsonb_build_array(_attr);
-        _ph_count := jsonb_array_length(params);
+        SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
         _sql := format(
             'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
             'WHERE av.card_id = c.id AND ad.name = ($1->>%s))',
-            (_ph_count - 1)::text);
+            _attr_idx::text);
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op = 'not exists' THEN
-        params := params || jsonb_build_array(_attr);
-        _ph_count := jsonb_array_length(params);
+        SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
         _sql := format(
             'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
             'WHERE av.card_id = c.id AND ad.name = ($1->>%s))',
-            (_ph_count - 1)::text);
+            _attr_idx::text);
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op = 'before_today' THEN
-        params := params || jsonb_build_array(_attr);
-        _ph_count := jsonb_array_length(params);
+        SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
         _sql := format(
             'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
             'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value #>> ''{}'' <> '''' ' ||
             'AND av.value #>> ''{}'' < to_char(now()::date, ''YYYY-MM-DD''))',
-            (_ph_count - 1)::text);
+            _attr_idx::text);
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op = 'within_days' THEN
@@ -282,14 +276,14 @@ BEGIN
         IF _days > 3650 THEN
             RAISE EXCEPTION 'within_days: % days is unreasonable (>10y)', _days;
         END IF;
-        params := params || jsonb_build_array(_attr) || jsonb_build_array(_days);
-        _ph_count := jsonb_array_length(params);
+        SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
+        SELECT p, i INTO params, _val_idx FROM _ph_push(params, to_jsonb(_days)) AS r(p, i);
         _sql := format(
             'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
             'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value #>> ''{}'' <> '''' ' ||
             'AND av.value #>> ''{}'' >= to_char(now()::date, ''YYYY-MM-DD'') ' ||
             'AND av.value #>> ''{}'' <= to_char((now() + (($1->>%s)::int) * interval ''1 day'')::date, ''YYYY-MM-DD''))',
-            (_ph_count - 2)::text, (_ph_count - 1)::text);
+            _attr_idx::text, _val_idx::text);
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op = 'contains' THEN
@@ -305,19 +299,18 @@ BEGIN
             RAISE EXCEPTION 'contains: value must be non-empty';
         END IF;
         IF _attr = 'comments' THEN
-            params := params || jsonb_build_array('%' || _needle || '%');
-            _ph_count := jsonb_array_length(params);
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, to_jsonb('%' || _needle || '%')) AS r(p, i);
             _sql := format(
                 'EXISTS (SELECT 1 FROM activity a JOIN comment_body cb ON cb.id = (a.value_new ->> ''comment_body_id'')::bigint ' ||
                 'WHERE a.card_id = c.id AND a.kind = ''comment'' AND cb.body ILIKE ($1->>%s))',
-                (_ph_count - 1)::text);
+                _val_idx::text);
         ELSE
-            params := params || jsonb_build_array(_attr) || jsonb_build_array('%' || _needle || '%');
-            _ph_count := jsonb_array_length(params);
+            SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, to_jsonb('%' || _needle || '%')) AS r(p, i);
             _sql := format(
                 'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
                 'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value::text ILIKE ($1->>%s))',
-                (_ph_count - 2)::text, (_ph_count - 1)::text);
+                _attr_idx::text, _val_idx::text);
         END IF;
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
@@ -325,7 +318,7 @@ BEGIN
         IF jsonb_array_length(_values) = 0 THEN
             RETURN jsonb_build_object('sql', 'FALSE', 'params', params);
         END IF;
-        params := params || jsonb_build_array(_attr);
+        SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
         _placeholders := ARRAY[]::text[];
         FOR _v IN SELECT value FROM jsonb_array_elements(_values)
         LOOP
@@ -336,31 +329,28 @@ BEGIN
             IF _phase_str NOT IN ('triage', 'active', 'terminal') THEN
                 RAISE EXCEPTION 'has_phase: %: must be triage|active|terminal', _phase_str;
             END IF;
-            params := params || jsonb_build_array(_phase_str);
-            _ph_count := jsonb_array_length(params);
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, to_jsonb(_phase_str)) AS r(p, i);
             _placeholders := array_append(_placeholders,
-                format('($1->>%s)', (_ph_count - 1)::text));
+                format('($1->>%s)', _val_idx::text));
         END LOOP;
-        _ph_count := jsonb_array_length(params);
         _sql := format(
             'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
             'JOIN card target ON target.id = (av.value)::text::bigint ' ||
             'WHERE av.card_id = c.id AND ad.name = ($1->>%s) ' ||
             'AND jsonb_typeof(av.value) = ''number'' ' ||
             'AND target.phase = ANY(ARRAY[%s]::text[]) AND target.deleted_at IS NULL)',
-            (_ph_count - jsonb_array_length(_values) - 1)::text,
+            _attr_idx::text,
             array_to_string(_placeholders, ', '));
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op = 'not terminal' THEN
-        params := params || jsonb_build_array(_attr);
-        _ph_count := jsonb_array_length(params);
+        SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
         _sql := format(
             'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
             'JOIN card target ON target.id = (av.value)::text::bigint ' ||
             'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND jsonb_typeof(av.value) = ''number'' ' ||
             'AND target.phase = ''terminal'' AND target.deleted_at IS NULL)',
-            (_ph_count - 1)::text);
+            _attr_idx::text);
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op = 'parent_status_phase' THEN
@@ -380,10 +370,9 @@ BEGIN
             IF _phase_str NOT IN ('triage', 'active', 'terminal') THEN
                 RAISE EXCEPTION 'parent_status_phase: %: must be triage|active|terminal', _phase_str;
             END IF;
-            params := params || jsonb_build_array(_phase_str);
-            _ph_count := jsonb_array_length(params);
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, to_jsonb(_phase_str)) AS r(p, i);
             _placeholders := array_append(_placeholders,
-                format('($1->>%s)', (_ph_count - 1)::text));
+                format('($1->>%s)', _val_idx::text));
         END LOOP;
         _sql := format(
             'EXISTS (SELECT 1 FROM attribute_value pav JOIN attribute_def pad ON pad.id = pav.attribute_def_id ' ||
