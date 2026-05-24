@@ -103,8 +103,35 @@ framework's drag rule (below) ties them to optimistic updates.
 
 ### `Toolbar`
 A horizontal action/region bar: title slot, control slots, trailing slot
-(counts, spinner). The board header, list header, FilterBar shell,
-BulkActionBar, and admin header are all `Toolbar`s.
+(counts, spinner). The board axes header, FilterBar rows, BulkActionBar, and
+admin header are all `Toolbar`s.
+
+### `AppShell`
+The persistent frame around every signed-in screen. Three parts:
+- **topbar** — brand `kitp` + rail-collapse chevron `‹` (left); a
+  **project-scope `Picker`** (`[Default Project ▾]` / `[All projects ▾]`) +
+  breadcrumb crumb (center); and a right cluster of `IconButton`s —
+  **theme toggle** `☾`/`☀` (writes `data-theme` on `<html>`; R8),
+  **panel/right-rail toggle** `▥`, and **help** `?` (opens the shortcut
+  overlay).
+- **rail** — global links (Projects `g p`, Activity `g a`) with right-aligned
+  muted chord hints; a **scope section** ("DEFAULT PROJECT": Inbox `g i`,
+  Grid `g g`, Kanban `g k`, Project detail) shown only when scoped to one
+  project; an **ADMIN** section; and a foot **user chip** (`Avatar` + name +
+  `▾` account menu). Collapses to icon-width.
+- **outlet** — the active screen.
+
+### `ScreenFilterBar`
+The shared header for every task-list screen (Inbox, Grid, Kanban, Project
+detail). It is a stack of two `Toolbar` rows over the same active-filter
+card:
+- Row 1: export `IconButton` `⤓` · **View** `Picker` (saved screen view) ·
+  **NAMED** filter `Picker` · **GROUP** `Picker` (group-by) · `⋮` kebab ·
+  **Search tasks…** search `Field` · **in: [Title ▾]** search-scope `Picker`.
+- Row 2: one **filter `Picker` per attribute** (Status, Assignee, Originator,
+  Milestone, Component, Tags) · **+ Add filter** · **Advanced** · **Clear** ·
+  a row/open-task **count** · a **Show closed status** `Checkbox`.
+It supersedes the old "quick-filter chip strip + Saved filters ▾" model.
 
 ### `Popover`
 Floating panel anchored to a trigger (auto-position, flip, click-outside to
@@ -131,6 +158,12 @@ config: { variant: 'row'|'detail' }
 binding: { cardId, transitions, onChanged }
 ```
 Reused by: Task-detail header (`detail`), Inbox/Grid/Comms rows (`row`).
+
+> CURRENT BUILD: the live task-detail header surfaces the *simpler* form of
+> this control — a pair of status `Picker` dropdowns: one labelled with the
+> current status value (`[ Done ▾ ]`) and a `[ Status ▾ ]` transition
+> dropdown. The full 9-bucket bar above is the design target; the control
+> build should reconcile the two. See REFRESH-NOTES.md.
 
 ### `QuickEntryOverlay`
 Rapid card creation. A `Popover` wrapping a small `Form` with one-shot
@@ -243,20 +276,22 @@ Rules: R1 (board focus is a 2-D selection over cells), R4, R5 (hjkl + shift-move
 ### Task detail = `AppShell` + `Toolbar`(header) + `IconButton`×N + `TransitionBar`(detail) + `Field`(title/desc/comment) + `Markdown` + `Picker`/`DatePicker`/`Checkbox`/`Field`(attribute panel, one per `attribute_def`) + `Collection`×4 (activity/comments/related/comms) + `Card`(comment) + `Avatar` + `Chip`(tags) + `DropZone`(attachments) + `Popover`(kebab/transition menus) + `ConfirmDialog`(purge) + `Dialog`(move) + `QuickEntryOverlay`(subtask) + `Toast`
 Rules: R2 (title/desc/comment + every attr), R3, R4, R5 (`e _` chords, prev/next), R6 (attr/tag/comment optimistic), R7 (10-request initial batch), R8.
 
-### Inbox / List = `AppShell` + `Toolbar`(header + Mine/All toggle + New) + `ScreenFilterBar` + `Collection`(rows){ `Card`→`TaskRow` = `DragHandle` + `Chip`(status+attrs) + `TransitionBar`(row) } + `QuickEntryOverlay` + `Toast`
+### Inbox / List = `AppShell` + `Button`(New task) + `ScreenFilterBar` + `Collection`(rows){ `Card`→`TaskRow` = `DragHandle` + `Chip`(status+attrs) + `TransitionBar`(row) } + `QuickEntryOverlay` + `Toast`
 Rules: R1, R4, R5 (`j`/`k`, shift-reorder, `/`), R6 (reorder → 1 `user_card_sort.set`), R7, R8.
+Note: inbox is personal (assignee = signed-in user); the System demo user owns nothing so it renders the EmptyState ("Your inbox is clear."). No separate Mine/All segmented control — scope is the View + Assignee filter.
 
-### Grid / Table = `AppShell` + `Toolbar`(header + Export) + `ScreenFilterBar` + `Collection`(table layout){ sortable header cells + `Checkbox` per row + `Chip`(status) + `TransitionBar`(row) } + `Toolbar`→`BulkActionBar` + `Dialog`(bulk move/purge) + `QuickEntryOverlay` + `Toast`
+### Grid / Table = `AppShell` + `Button`(+ New issue) + `ScreenFilterBar`(carries export ⤓) + `Collection`(table layout){ sortable header cells (▽) + leading `Checkbox` column + select-all header + `Chip`(priority/status) + `TransitionBar`(row) } + `Toolbar`→`BulkActionBar` + `Dialog`(bulk move/purge) + `QuickEntryOverlay` + `Toast`
 Rules: R1 (multi-select), R3, R4, R5, R6, R7, R8.
 
-### Projects = `AppShell` + `Toolbar` + `Field`(search) + `Collection`(rows){ `Card` + `IconButton`(rename) } + `Dialog`+`Form`(new project: `Field`×2 + `Picker`) + `Toast`
+### Projects = `AppShell` + H1 + `Button`(+ New project) + `Field`(search, `/` focuses) + `Collection`(rows){ `Card`(name + "OPEN TASKS: n") + `IconButton`(✎ rename) } + `Dialog`+`Form`(new project: `Field`×2 + "+ More details" disclosure + `Picker`(type); footer = Add & Another / Add & Close) + `Toast`
 Rules: R1, R2 (inline rename), R3, R4, R5, R8.
 
-### Activity = `AppShell` + `Toolbar` + `FilterTreeEditor`(= `Picker`/`Field` tree) + `Collection`(rows: `ActivityRow` + `TaskRefLink`) + `Toast`
+### Activity = `AppShell` + filter row{ `Picker`(KIND, ACTOR) + `DatePicker`×2(FROM/TO) } + `Collection`(rows: `ActivityRow` = `TaskRefLink`(Card #N) + change text + relative time) + `Toast`
 Rules: R1, R4, R5, R8.
+Note: the filter is a flat labeled-combobox row in the current build, not a `FilterTreeEditor` predicate tree.
 
-### Login = `Form`{ `Field`×2 + `FormErrors` + `SubmitButton` } + `Button`(OIDC)
-Rules: R3, R8.
+### Login = `Button`(single: "Continue as System User" in dev / "Sign in with OIDC" in OIDC mode) + muted note
+Rules: R8. (No email/password `Form` in the live client.)
 
 ### Admin (every screen) = `AppShell` + `Toolbar`(header + New) + two-pane{ `CardListPane`(= `Field`search + `Collection`) | `Form`(schema-driven `Field`/`Picker`/`Checkbox`/`DatePicker`, plus per-screen extras like the Attributes "Bound to" matrix = `Collection`+`Checkbox`+`Field`) } + `Dialog`(add/confirm) + `Chip`(badges) + `Toast`
 Rules: R1 (list-pane selection), R2, R3, R4, R5 (`/`, `n`), R8.

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -201,15 +202,52 @@ func (s *Server) MountBatch(rt *Router, decorators ...AuthedDecorator) {
 	rt.Authed("POST /api/v1/batch", h)
 }
 
+// SPAGateConfig controls whether the SPA *document* (index.html) is
+// gated behind a valid session. When Enabled, a request that resolves
+// to the SPA document with no valid session is 302'd to LoginStartPath
+// (the OIDC start endpoint) carrying a validated `redirect` query so the
+// user lands back on the deep link after the SSO round-trip.
+//
+// Only the document is gated — real static assets (app.js, css, source
+// maps, images) are always served. The session resolver therefore runs
+// once per navigation, not once per asset, and assets carry no
+// user-specific data.
+type SPAGateConfig struct {
+	// SessionResolver resolves the BFF session cookie. Treated as
+	// unauthenticated when it returns (nil, nil) OR a non-nil error.
+	// Required when Enabled is true.
+	SessionResolver Resolver
+	// Enabled turns the gate on. Off in AUTH_MODE=off so dev-login keeps
+	// working with no SSO endpoint to bounce to. When false MountSPAGated
+	// behaves exactly like the legacy MountSPA.
+	Enabled bool
+	// LoginStartPath is the local path the gate bounces unauthenticated
+	// document requests to (the OIDC start handler, e.g.
+	// "/api/v1/auth/oidc/start").
+	LoginStartPath string
+}
+
 // MountSPA installs the SPA fallback (or the JSON root when webDir is
-// empty / missing) and /healthz on the top-level mux. These do not go
-// through the apiRouter — they're outside /api/* and don't need a
-// session.
+// empty / missing) and /healthz on the top-level mux, with no session
+// gate. Preserved for tests and callers that don't need gating; it
+// delegates to MountSPAGated with Enabled:false.
 //
 // Pointer receiver kept for symmetry with the other Mount methods even
 // though this one doesn't touch *Server state — keeping the receiver
 // preserves the existing `srv.Mount(...)` test ergonomics.
 func (s *Server) MountSPA(mux *http.ServeMux, webDir string) {
+	s.MountSPAGated(mux, webDir, SPAGateConfig{Enabled: false})
+}
+
+// MountSPAGated installs the SPA fallback (or the JSON root when webDir
+// is empty / missing) and /healthz on the top-level mux. When
+// cfg.Enabled is true, the SPA *document* (index.html — served for "/",
+// the SPA fallback, and a direct request for index.html) is gated behind
+// a valid session: an unauthenticated document request 302s to
+// cfg.LoginStartPath carrying a validated `redirect`. Real static assets
+// are never gated. These routes live outside /api/* on the top-level mux.
+func (s *Server) MountSPAGated(mux *http.ServeMux, webDir string, cfg SPAGateConfig) {
+	// /healthz stays public regardless of the gate.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, struct {
 			OK bool `json:"ok"`
@@ -223,7 +261,7 @@ func (s *Server) MountSPA(mux *http.ServeMux, webDir string) {
 			// "GET /" + "/api/" as ambiguous (different methods +
 			// different paths, neither dominates). spaHandler
 			// itself rejects non-GET methods with 405.
-			mux.Handle("/", spaHandler(webDir))
+			mux.Handle("/", spaHandler(webDir, cfg))
 			return
 		}
 		// webDir was set but missing — fall through to the JSON root and
@@ -247,12 +285,29 @@ func (s *Server) MountSPA(mux *http.ServeMux, webDir string) {
 // spaHandler serves files from webDir, falling back to index.html for any
 // GET that doesn't match a real file (so the SPA client-side router owns
 // paths like /projects, /project/42/screen/inbox, and /task/7).
-func spaHandler(webDir string) http.Handler {
+//
+// When cfg.Enabled, any request that is about to serve the index.html
+// *document* (the "/" case, the SPA fallback, or a direct index.html
+// request) first requires a valid session; with none it 302s to the
+// SSO start path carrying the original local path as a validated
+// `redirect`. Real static assets bypass the gate entirely.
+func spaHandler(webDir string, cfg SPAGateConfig) http.Handler {
 	fs := http.FileServer(http.Dir(webDir))
 	indexPath := filepath.Join(webDir, "index.html")
+
+	// serveDoc gates index.html behind the session (when enabled) then
+	// serves it. Returns after writing a redirect when unauthenticated.
+	serveDoc := func(w http.ResponseWriter, r *http.Request) {
+		if cfg.Enabled && !spaAuthed(cfg, r) {
+			http.Redirect(w, r, cfg.LoginStartPath+"?redirect="+url.QueryEscape(spaLocalPath(r)), http.StatusFound)
+			return
+		}
+		http.ServeFile(w, r, indexPath)
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Static bundle is GET-only. The pattern dropped its method
-		// restriction (see MountSPA) to side-step Go 1.22 mux's
+		// restriction (see MountSPAGated) to side-step Go 1.22 mux's
 		// "GET / vs /api/" ambiguity, so the method gate moved here.
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
@@ -262,7 +317,8 @@ func spaHandler(webDir string) http.Handler {
 		// Map the URL path to a filesystem path under webDir.
 		clean := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
 		if clean == "." || clean == "/" {
-			http.ServeFile(w, r, indexPath)
+			// The "/" document.
+			serveDoc(w, r)
 			return
 		}
 		full := filepath.Join(webDir, clean)
@@ -271,12 +327,44 @@ func spaHandler(webDir string) http.Handler {
 			return
 		}
 		if st, err := os.Stat(full); err == nil && !st.IsDir() {
+			// A real file. index.html itself is the document and is
+			// gated; every other asset (app.js, css, maps, images) is
+			// served without the session check.
+			if full == indexPath {
+				serveDoc(w, r)
+				return
+			}
 			fs.ServeHTTP(w, r)
 			return
 		}
-		// Not a real file: fall back to index.html (SPA route).
-		http.ServeFile(w, r, indexPath)
+		// Not a real file: SPA route → fall back to the index.html document.
+		serveDoc(w, r)
 	})
+}
+
+// spaAuthed reports whether the request carries a valid session per the
+// gate's resolver. A nil user OR a non-nil error counts as
+// unauthenticated (the resolver returns (nil, nil) for "no credential"
+// and a non-nil error for "credential present but rejected" — both gate
+// the document).
+func spaAuthed(cfg SPAGateConfig, r *http.Request) bool {
+	if cfg.SessionResolver == nil {
+		return false
+	}
+	user, err := cfg.SessionResolver(r)
+	return err == nil && user != nil
+}
+
+// spaLocalPath returns the request's local path (URL.Path plus a `?`+raw
+// query when present). Used as the `redirect` carried into the SSO start
+// path so the user lands back on the deep link. It is escaped by the
+// caller via url.QueryEscape, and re-validated server-side by
+// safeLocalRedirect before any redirect is performed.
+func spaLocalPath(r *http.Request) string {
+	if r.URL.RawQuery != "" {
+		return r.URL.Path + "?" + r.URL.RawQuery
+	}
+	return r.URL.Path
 }
 
 // HandleBatch is the only HTTP handler in v1.
@@ -304,14 +392,14 @@ func (s *Server) HandleBatch(w http.ResponseWriter, r *http.Request) {
 // preparedRecord entries for the same outer slot — the leader carries the
 // outer slot, followers attach to the same outer slot.
 type prepared struct {
-	OuterIdx       int          // index in BatchRequest.Subrequests
-	Endpoint       string       // effective endpoint
-	Action         string       // effective action
-	Handler        reg.Handler  // resolved leaf handler
-	Input          any          // decoded value of Handler.InputType
-	IsLast         bool         // last step of a process; outputs go to the outer slot
-	IsLeader       bool         // first step of a process; used for process logging only
-	ProcessName    string       // resolved process name (informational)
+	OuterIdx    int         // index in BatchRequest.Subrequests
+	Endpoint    string      // effective endpoint
+	Action      string      // effective action
+	Handler     reg.Handler // resolved leaf handler
+	Input       any         // decoded value of Handler.InputType
+	IsLast      bool        // last step of a process; outputs go to the outer slot
+	IsLeader    bool        // first step of a process; used for process logging only
+	ProcessName string      // resolved process name (informational)
 }
 
 // Dispatch is exposed for tests so they can drive the dispatcher without
@@ -524,14 +612,14 @@ func (s *Server) expandSubrequest(ctx context.Context, outerIdx int, sr SubReque
 		h, ok := reg.Lookup(step.Endpoint, step.Action)
 		if !ok {
 			return nil, &reg.HandlerError{
-				Code:    "unknown_step",
+				Code: "unknown_step",
 				Message: fmt.Sprintf("process %s step %d targets unknown handler %s.%s",
 					procName, step.Ordinal, step.Endpoint, step.Action),
 			}
 		}
 		p, err := s.prepareLeaf(ctx, outerIdx, h, sr.Data, procName,
 			i == len(proc.Steps)-1, /* IsLast */
-			i == 0,                  /* IsLeader */
+			i == 0,                 /* IsLeader */
 		)
 		if err != nil {
 			return nil, err

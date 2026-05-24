@@ -80,8 +80,11 @@ is `kanban`.
   ordered by `attributes.sort_order`), plus persons / milestones /
   components / tags / statuses for labels and picker options, plus the
   attribute schema. All fetched in ONE coalesced batch.
-- **Config off the screen/filter card:** `column_attr` (primary axis,
-  default `status`), `group_by_attr` (lane axis, default none), predicate.
+- **Config off the screen/filter card:** `column_attr` (primary axis; the
+  current demo's "Default Kanban" screen defaults to **`milestone`**, not
+  `status` — the "Columns by" Picker re-keys live), `group_by_attr` (lane
+  axis, default none), predicate. Column `data-column` keys are the value-
+  card ids of the grouping attribute (e.g. milestone card ids) + `(unset)`.
 - **Key interactions:** pick "Columns by" / "Swim lanes by"; drag a card
   between columns/lanes (issues ONE batch combining `sort_order` + column
   attr + lane attr updates, optimistic with snap-back on error); per-column
@@ -109,10 +112,13 @@ is `kanban`.
   me" (also reused for Comms and any other `list`-layout screen).
 - **Primary data:** `inbox.select` (or comm list for the comms slug) +
   persons/milestones/components/tags + schema, ONE batch.
-- **Key interactions:** Mine / All-open toggle; quick-filter chips; FilterBar
-  (add filter, advanced, saved presets); drag-reorder (one
-  `user_card_sort.set`, optimistic); `j`/`k` select, Shift+`j`/`k` reorder,
-  Enter open; `n` new task; row TransitionBar on hover.
+- **Key interactions:** the shared `ScreenFilterBar` (View / NAMED filter /
+  GROUP / search + scope / per-attribute filter Pickers / + Add filter /
+  Advanced / Clear / Show closed status) — NOT a quick-filter chip strip or
+  a separate Mine/All toggle (scope = personal inbox view + Assignee
+  filter); drag-reorder (one `user_card_sort.set`, optimistic); `j`/`k`
+  select, Shift+`j`/`k` reorder, Enter open; `n` new task; row TransitionBar
+  on hover. The System demo user has no assigned tasks → EmptyState.
 - See `mock-inbox.md`.
 
 ### 4. Grid / Table (`layout: grid`) — covered in `mock-inbox.md` (table variant)

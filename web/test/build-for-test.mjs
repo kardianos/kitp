@@ -27,10 +27,18 @@ export async function buildTestBundles() {
 }
 
 async function doBuild() {
-  // ONE bundle (the barrel) so the Control singleton + NotFound wiring are
+  // ONE bundle per barrel so the Control singleton + NotFound wiring are
   // shared. Separate per-module bundles would each get their own Control copy.
+  //   core.js  — the framework core (signal/tree/dispatch/api/data/control/…).
+  //   app.js   — core + the real screen controls (kanban/shell) for the
+  //              vertical-slice tests. Tests that need both import app.js so
+  //              they share the same Control singleton as the registered
+  //              controls.
   await esbuild.build({
-    entryPoints: { core: join(here, '..', 'src', 'core', 'index.ts') },
+    entryPoints: {
+      core: join(here, '..', 'src', 'core', 'index.ts'),
+      app: join(here, '..', 'src', 'test-barrel.ts'),
+    },
     outdir,
     bundle: true,
     format: 'esm',

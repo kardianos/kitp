@@ -7,23 +7,27 @@ Lighter mocks. Each is composed from the same common-control set (see
 
 ## Login (standalone, no shell)
 
+Centered card on a plain page (no rail). Current dev-mode build:
+
 ```
 ┌───────────────────────────────────────────────┐
 │                                                 │
-│                    k i t p                      │
-│                                                 │
 │        ┌─────────────────────────────────┐      │
-│        │ Email     [ ………………………………… ]      │  ← Field (email)
-│        │ Password  [ ………………………………… ]      │  ← Field (password)
-│        │ ⚠ Invalid email or password.    │      │  ← FormErrors (on failure)
-│        │            [   Sign in   ]      │      │  ← SubmitButton (busy spinner)
-│        │ ───────────── or ─────────────  │      │
-│        │       [ Continue with SSO ]     │      │  ← OIDC redirect button
+│        │           Sign in to kitp        │      │  ← H1
+│        │  OIDC is not configured. Set     │      │  ← muted note (dev / unconfigured)
+│        │  KITP_OIDC_* env vars and rebuild.│     │
+│        │     [  Continue as System User  ]│      │  ← primary Button (dev affordance)
 │        └─────────────────────────────────┘      │
+│                                                 │
 └───────────────────────────────────────────────┘
 ```
-Controls: `Form` + `Field` ×2 + `FormErrors` + `SubmitButton` + `Button`
-(OIDC). Validation + error display via the framework's validation rule.
+- In **dev / unconfigured** mode (the harness runs `AUTH_MODE=off`): a single
+  primary **"Continue as System User"** button, plus the muted note above.
+- In **OIDC mode** the button reads **"Sign in with OIDC"** and redirects to
+  the IdP (there is no email/password form in the current client — that part
+  of the earlier mock was aspirational).
+Controls: `Button` (single) + muted note. (No `Field`/`FormErrors`/SSO-split
+in the live build.)
 
 ---
 
@@ -31,54 +35,100 @@ Controls: `Form` + `Field` ×2 + `FormErrors` + `SubmitButton` + `Button`
 
 ```
 ┌──────────┬────────────────────────────────────────────────────────────────┐
-│ shell    │ Projects                                          [+ New project]│
-│          │ [+ Add filter] [Advanced]   [ Search projects… ]                 │  ← Toolbar + search Field
-│          │ ┌──────────────────────────────────────────────────────────┐  ✎ │
-│          │ │ Default Project          OPEN TASKS: 25                   │     │  ← row (Card); ✎ inline rename
+│ kitp  ‹  │ [All projects ▾]  / Projects                      ☾  ▥  ?        │  ← shell topbar (scope = All projects)
+│ Projects │                                                                  │
+│ Activity │ Projects                                          [ + New project]│  ← H1 + primary action
+│··········│ [ Search projects… (press / to focus) ]                          │  ← search Field (/ focuses)
+│ ADMIN    │ ┌──────────────────────────────────────────────────────────┐  ✎ │
+│          │ │ Default Project                                          │     │  ← row (Card); ✎ inline rename
+│ ⊙ System▾│ │ OPEN TASKS: —                                            │     │     subtitle "OPEN TASKS: <n|—>"
 │          │ ├──────────────────────────────────────────────────────────┤  ✎ │
-│          │ │ E2E Project A            OPEN TASKS: 3                     │     │
+│          │ │ Mobile App                                               │     │
+│          │ │ OPEN TASKS: —                                            │     │
 │          │ └──────────────────────────────────────────────────────────┘     │
 └──────────┴────────────────────────────────────────────────────────────────┘
 ```
-New-project Dialog: Title `Field`, Description textarea `Field`, Project-
-type `Picker`. Footer hint: "Enter = add another · Ctrl+Enter = add and
-close · Esc = cancel". Controls: `Collection` + `Card` rows + `Toolbar` +
-`Field` + `Dialog` + `Form` + `Picker`. Selection: `j`/`k` + Enter.
+- Breadcrumb scope is **All projects** here (vs a single project inside the
+  project-scoped screens). No left "DEFAULT PROJECT" section when scope =
+  all projects; only Projects / Activity / ADMIN show.
+- Each row: project name + an "OPEN TASKS: <n>" subtitle (em-dash when the
+  count isn't loaded) + a trailing **✎** edit IconButton.
+
+New-project Dialog (observed): title **"New project"**, a **Title** `Field`
+(autofocus), a **Description (optional)** textarea `Field`, a **"+ More
+details"** disclosure link (expands to extra fields incl. project type),
+a footer hint **"Press Enter to add another · Ctrl+Enter to add and close ·
+Esc to cancel"**, and two footer buttons **[ Add & Another ]** /
+**[ Add & Close ]** (primary). Controls: `Collection` + `Card` rows +
+`Field`(search) + `Dialog` + `Form` + `Field`×2 + disclosure +
+`Picker`(type, under More details). Selection: `j`/`k` + Enter; `n` opens
+the dialog.
 
 ---
 
-## Project detail (`layout: project`)
+## Project detail (`layout: project`, slug `project`)
+
+NOT a two-pane properties+tasks split anymore. It is the same
+ScreenFilterBar on top, then an H1 project name + a "No description." (or the
+description) subtitle, an **[ Edit properties ]** button + **[ + New task ]**
+primary button at the right, then a vertical **Collection of task cards**
+(the `TaskRow` rendered as a bordered card, not a dense row).
 
 ```
 ┌──────────┬────────────────────────────────────────────────────────────────┐
-│ shell    │ <Project name>                                      [+ New task] │
-│          │ ┌ PROPERTIES ───────────────┐  ┌ TASKS ──────────────────────┐  │
-│          │ │ Description  [ …… ✎ ]       │  │ #1 task …  [Todo] alice     │  │
-│          │ │ Type         default       │  │ #2 task …  [Doing] bob      │  │
-│          │ │ Created      2026-05-01    │  │ …                            │  │
-│          │ └────────────────────────────┘  └──────────────────────────────┘  │
+│ kitp  ‹  │ [Default Project ▾] / Project detail              ☾  ▥  ?        │  ← shell topbar
+│ rail     │ ⤓ View:[Default Project d…▾] NAMED[(none)▾] GROUP[(no grp)▾] ⋮    │  ← ScreenFilterBar (same as inbox/grid)
+│ DEFAULT  │   [Status▾][Assignee▾][Originator▾][Milestone▾][Component▾][Tags▾]│
+│ PROJECT  │   [+ Add filter][Advanced][Clear]                                │
+│          ├────────────────────────────────────────────────────────────────┤
+│ Project  │ Default Project                   [ Edit properties ] [+ New task]│  ← H1 + actions
+│  detail  │ No description.                                                   │  ← muted subtitle
+│          │ ┌──────────────────────────────────────────────────────────────┐│
+│          │ │ #54  Wire pickers (dense#1)                                   ││  ← task card (selected: accent ring)
+│          │ │ Ⓐ alice  [milestone: M1] [component: Frontend] [priority/high]││     avatar · assignee · attr chips
+│          │ └──────────────────────────────────────────────────────────────┘│
+│          │ ┌──────────────────────────────────────────────────────────────┐│
+│          │ │ #55  API rate limits                                          ││
+│          │ │ Ⓐ alice  [milestone: M1] [component: Backend] [priority/high]…││
+│          │ └──────────────────────────────────────────────────────────────┘│
+│          │ …                                                                │
 └──────────┴────────────────────────────────────────────────────────────────┘
 ```
-Controls: `ProjectPropertiesPanel` (= `Field` rows), `Collection`+`TaskRow`,
-`QuickEntryOverlay`.
+- Attribute chips: assignee = colored circular **Avatar** + name; the rest
+  render as label-prefixed `Chip`s (`milestone: M1`, `component: Frontend`,
+  `priority/high`, `area/backend`, `team/growth`, …).
+- "Edit properties" opens the project property editor; "+ New task" opens
+  `QuickEntryOverlay` prefilled to this project.
+Controls: `ScreenFilterBar`, `Button` ×2 (Edit properties / + New task),
+`Collection` + `Card`→`TaskRow`, `Avatar`, `Chip`, `QuickEntryOverlay`.
 
 ---
 
 ## Activity
 
+Global screen (breadcrumb scope = "All projects / Activity"). The filter is
+a **labeled-combobox row**, not a predicate-tree editor: KIND / ACTOR /
+FROM / TO. Each activity row links its referenced card (`Card #N`) and
+shows the change text + a right-aligned relative time.
+
 ```
 ┌──────────┬────────────────────────────────────────────────────────────────┐
-│ shell    │ Activity                                                         │
-│          │ ┌ FILTER ──────────────────────────────────────────────────────┐│  ← ActivityFilterEditor (predicate)
-│          │ │ kind in (comment, attribute_change)  actor = alice            ││
-│          │ └──────────────────────────────────────────────────────────────┘│
-│          │ 2h ago  alice changed Status todo→review on #18 →  (open)        │  ← rows; Enter opens referenced task
-│          │ 3h ago  bob commented on #27                                     │
+│ kitp  ‹  │ [All projects ▾]  / Activity                      ☾  ▥  ?        │  ← shell topbar
+│          │ KIND [ All kinds ▾ ]  ACTOR [ Anyone ▾ ]  FROM [ Any time 📅 ]    │  ← filter row (Pickers + DatePickers)
+│          │                                            TO [ Any time 📅 ]     │
+│          ├────────────────────────────────────────────────────────────────┤
+│          │ Card #129                                              5 min ago │  ← card ref (accent link)
+│          │ System changed predicate from ∅ to {…json…}                      │     change text (multiline)
+│          │ Card #129                                              5 min ago │
+│          │ System changed title from ∅ to Heads                             │
+│          │ Card #129                                              5 min ago │
+│          │ System created the card.                                         │  ← "created the card" is an accent link
 │          │ …                                                                │
 └──────────┴────────────────────────────────────────────────────────────────┘
 ```
-Controls: predicate editor (= `FilterTreeEditor`), `Collection`+`ActivityRow`,
-`TaskRefLink`. Selection: `j`/`k` + Enter.
+Controls: filter row = `Picker` (KIND, ACTOR) + `DatePicker` ×2 (FROM/TO);
+`Collection` + `ActivityRow` (each = `TaskRefLink` + change text + relative
+time). Selection: `j`/`k` + Enter opens the referenced card.
 
 ---
 

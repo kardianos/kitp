@@ -264,7 +264,7 @@ inputs are pure resolutions, results land in defined tree sinks.
 - At boot (`main.ts`), register an `http` fault listener: on **401** (and
   auth-class 403 if applicable) do a **full-page redirect** to the SSO start
   endpoint, e.g.
-  `location.assign('/auth/oidc/start?redirect=' + encodeURIComponent(location.pathname + location.search))`.
+  `location.assign('/api/v1/auth/oidc/start?redirect=' + encodeURIComponent(location.pathname + location.search))`.
   Keep the start path as a single constant.
 - The sole **public** surface is that SSO bounce. If the designer's screen
   inventory lists a "Login" screen, it collapses to this redirect — there is no

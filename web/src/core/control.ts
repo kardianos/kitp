@@ -79,6 +79,14 @@ export interface ControlContext {
   tree: import('./tree.js').TreeNode;
   /** Optional shared event bus for cross-control signals (quick-entry, etc.). */
   bus?: { emit(type: string, detail?: unknown): void };
+  /**
+   * Optional shared scope object (e.g. the AppShell's project scope). Resolved
+   * by `{ from: 'scope.<path>' }` inputs in a control's data table; the
+   * DataController peeks it at fire time. Reactive triggers still watch a TREE
+   * path (`{ signal: 'scope.projectId' }`) — mirror the scope into the tree if
+   * a query should refetch on its change.
+   */
+  scope?: Record<string, unknown>;
 }
 
 /**
@@ -191,6 +199,22 @@ export abstract class Control<Cfg extends BaseControlConfig = BaseControlConfig>
     for (const fn of [...bucket]) fn(payload);
   }
 
+  /**
+   * Register a control-owned intent handler. The DataController registers
+   * action/query intents the same way (via the DataHost); this is the
+   * surface a control uses for its own UI-only intents (open a dialog, move a
+   * selection) raised by `this.intent(name)` from a hotkey or a button. The
+   * registration is dropped on destroy along with the listener table.
+   */
+  protected registerIntent(name: string, fn: (payload: unknown) => void): void {
+    let bucket = this.intentListeners.get(name);
+    if (!bucket) {
+      bucket = [];
+      this.intentListeners.set(name, bucket);
+    }
+    bucket.push(fn);
+  }
+
   /** Deliver a fault to this control's inline representation (the 'self' route). */
   setFault(fault: ApiFault): void {
     this.fault.set(fault);
@@ -219,6 +243,7 @@ export abstract class Control<Cfg extends BaseControlConfig = BaseControlConfig>
     return {
       ctx: { api: self.ctx.api, tree: self.ctx.tree },
       config: self.config as unknown as Record<string, unknown>,
+      ...(self.ctx.scope ? { scope: self.ctx.scope } : {}),
       dataQueries: () => self.mergedQueries(),
       dataActions: () => self.mergedActions(),
       findHandler: (name) => self.handlers.get(name),

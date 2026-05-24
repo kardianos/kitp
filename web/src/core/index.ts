@@ -18,6 +18,7 @@ export * from './data.js';
 export * from './control.js';
 export * from './hotkeys.js';
 export * from './keyed-list.js';
+export * from './virtual-list.js';
 // Side-effecting last: installs the NotFound factory path onto the shared
 // Control class exported above.
 export { NotFound } from './not-found.js';

@@ -21,7 +21,7 @@ import { sharedSchemaCache } from './filter/attribute_schema.svelte';
 import { loadHandlerCatalog } from './schema/store.svelte';
 import { navigate } from './routing/router.svelte';
 import { notify } from './ui/toast.svelte';
-import { KITP_API_BASE } from './env';
+import { KITP_API_BASE, OIDC_ENABLED } from './env';
 
 const target = document.getElementById('app');
 if (!target) {
@@ -49,6 +49,18 @@ dispatcher.onFault('http', (f) => {
   if (f.kind !== 'http') return;
   if (f.status === 401) {
     authState.signOut();
+    if (OIDC_ENABLED) {
+      // SSO mode: the server gates the SPA document and expects a
+      // full-page bounce to the OIDC start endpoint, which threads the
+      // deep link back through the flow. The SPA renders no login UI.
+      location.assign(
+        `${KITP_API_BASE}/api/v1/auth/oidc/start?redirect=${encodeURIComponent(
+          location.pathname + location.search,
+        )}`,
+      );
+      return;
+    }
+    // Dev / dev-login path: in-app navigation to the local login screen.
     navigate('/login');
     return;
   }

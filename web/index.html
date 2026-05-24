@@ -3,33 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>kitp web — signal/control proof</title>
+    <title>kitp web — Kanban vertical slice</title>
     <link rel="stylesheet" href="./styles.css" />
     <!--
-      Design tokens: the designer agent owns web/design/tokens.css. When it
-      exists, styles.css imports it (see the TODO there) and this stub layer
-      is reconciled away. We do NOT edit web/design/.
+      Design tokens are owned by web/design/tokens.css; styles.css imports them
+      and references only var(--…). We do NOT edit web/design/.
     -->
   </head>
   <body>
-    <header class="app-bar">
-      <strong>kitp web</strong>
-      <span class="muted">zero-framework signal/control proof</span>
-      <button id="cascade-btn" class="btn" type="button">Trigger cascade cap</button>
-    </header>
-
+    <!-- The AppShell mounts here and owns the full frame (topbar/rail/outlet). -->
     <main id="root"></main>
-
-    <footer class="app-foot">
-      <div>
-        <span class="muted">cascade demo:</span>
-        <code id="cascade-out">(click the button above)</code>
-      </div>
-      <div>
-        <span class="muted">last fault:</span>
-        <code id="fault-log">(none)</code>
-      </div>
-    </footer>
 
     <!-- esbuild bundles src/main.ts -> dist/app.js (with sourcemap). -->
     <script type="module" src="./dist/app.js"></script>

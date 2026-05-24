@@ -89,6 +89,15 @@ export interface QueryBinding {
   result: ResultSink;
   /** Default 'self'. */
   onError?: ErrorRoute;
+  /**
+   * Suppress the fire when any of these resolved input fields is null or
+   * undefined. Declarative guard for scope-dependent reads: a board keyed on
+   * `{ from: 'scope.projectId' }` lists `['parentCardId']` here so it stays
+   * idle (no cross-project flash) until the scope resolves, then the
+   * `{ signal }` trigger refires it once the path is set. Empty / absent →
+   * always fire (the existing behaviour).
+   */
+  skipWhenNull?: string[];
 }
 
 /** A declarative optimistic patch for an action. */
@@ -284,6 +293,16 @@ export class DataController {
       ...(this.host.scope ? { scope: this.host.scope } : {}),
       payload,
     });
+    // Declarative scope guard: a query that depends on a not-yet-resolved
+    // input (e.g. parentCardId from scope.projectId before projects load)
+    // stays idle rather than firing an unscoped read. The `{ signal }`
+    // trigger refires it the moment the watched path is written.
+    if (q.skipWhenNull) {
+      for (const field of q.skipWhenNull) {
+        const v = input[field];
+        if (v === null || v === undefined) return;
+      }
+    }
     this.host.ctx.api.callByName(
       q.spec,
       input,

@@ -9,6 +9,16 @@ class ClassList {
   add(...cs) {
     for (const c of cs) this.set.add(c);
   }
+  remove(...cs) {
+    for (const c of cs) this.set.delete(c);
+  }
+  toggle(c, force) {
+    const has = this.set.has(c);
+    const want = force === undefined ? !has : force;
+    if (want) this.set.add(c);
+    else this.set.delete(c);
+    return want;
+  }
   contains(c) {
     return this.set.has(c);
   }
@@ -28,6 +38,70 @@ class FakeElement {
     this._text = '';
     this.tabIndex = 0;
     this.listeners = new Map();
+    this.attributes = {};
+    // Common element props the real screen controls set directly.
+    this.draggable = false;
+    this.disabled = false;
+    this.title = '';
+    this.type = '';
+    this.placeholder = '';
+    this.value = '';
+    this.selected = false;
+    // Scroll-viewport surface the recycling virtual list reads. Plain numeric
+    // fields the test sets directly; a real layout engine would derive them.
+    this.scrollTop = 0;
+    this.clientHeight = 0;
+  }
+  setAttribute(k, v) {
+    this.attributes[k] = String(v);
+  }
+  getAttribute(k) {
+    return k in this.attributes ? this.attributes[k] : null;
+  }
+  // Class-selector querySelector/All ('.foo') + tag fallback. Enough for the
+  // shell/screen-host body lookups the tests exercise.
+  querySelector(sel) {
+    return this._query(sel)[0] ?? null;
+  }
+  querySelectorAll(sel) {
+    return this._query(sel);
+  }
+  _query(sel) {
+    const out = [];
+    const matches = (el) => {
+      if (typeof sel !== 'string') return false;
+      if (sel.startsWith('.')) return el.classList.contains(sel.slice(1));
+      if (sel.startsWith('[') && sel.endsWith(']')) {
+        // Support both presence `[data-foo]` and value `[data-foo="bar"]`
+        // selectors. The value form is split on the first `=`.
+        const inner = sel.slice(1, -1);
+        const eq = inner.indexOf('=');
+        const rawName = (eq === -1 ? inner : inner.slice(0, eq)).replace(/^data-/, '');
+        const ds = rawName.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+        if (!el.dataset || !(ds in el.dataset)) return false;
+        if (eq === -1) return true;
+        const want = inner.slice(eq + 1).replace(/^["']|["']$/g, '');
+        return String(el.dataset[ds]) === want;
+      }
+      return el.tagName === String(sel).toUpperCase();
+    };
+    const walk = (el) => {
+      for (const c of el.children ?? []) {
+        if (matches(c)) out.push(c);
+        walk(c);
+      }
+    };
+    walk(this);
+    return out;
+  }
+  // Synchronous event dispatch — fires registered listeners for the type.
+  dispatchEvent(ev) {
+    const arr = this.listeners.get(ev.type) ?? [];
+    if (ev.target === undefined) ev.target = this;
+    if (typeof ev.preventDefault !== 'function') ev.preventDefault = () => {};
+    if (typeof ev.stopPropagation !== 'function') ev.stopPropagation = () => {};
+    for (const h of [...arr]) h(ev);
+    return true;
   }
   set className(v) {
     this._className = v;
@@ -47,11 +121,23 @@ class FakeElement {
   }
   append(...nodes) {
     for (const n of nodes) {
+      // A DocumentFragment splices its children in (matching real DOM).
+      if (n && n.tagName === '#FRAGMENT') {
+        for (const c of n.children.splice(0)) {
+          c.parentNode = this;
+          this.children.push(c);
+        }
+        continue;
+      }
       n.parentNode = this;
       this.children.push(n);
     }
   }
   appendChild(n) {
+    if (n && n.tagName === '#FRAGMENT') {
+      this.append(n);
+      return n;
+    }
     n.parentNode = this;
     this.children.push(n);
     return n;
@@ -70,11 +156,13 @@ class FakeElement {
       this.parentNode = null;
     }
   }
+  replaceChildren(...nodes) {
+    for (const c of this.children) c.parentNode = null;
+    this.children = [];
+    this.append(...nodes);
+  }
   get firstChild() {
     return this.children[0] ?? null;
-  }
-  querySelector() {
-    return null;
   }
   addEventListener(t, h) {
     if (!this.listeners.has(t)) this.listeners.set(t, []);
@@ -96,11 +184,46 @@ class FakeElement {
   }
 }
 
+// Minimal ResizeObserver stub: records observed targets and disconnect() so a
+// test can assert the virtual list wires + tears it down. It does NOT fire
+// automatically (no layout engine); a test triggers a resize by setting
+// clientHeight and calling the handle's refresh(), which mirrors the same code
+// path the real observer callback runs.
+class FakeResizeObserver {
+  static instances = [];
+  constructor(cb) {
+    this.cb = cb;
+    this.targets = [];
+    this.disconnected = false;
+    FakeResizeObserver.instances.push(this);
+  }
+  observe(target) {
+    this.targets.push(target);
+  }
+  disconnect() {
+    this.disconnected = true;
+    this.targets = [];
+  }
+  // Test helper: emulate a layout change firing the callback.
+  trigger() {
+    this.cb();
+  }
+}
+
 export function installDomShim() {
+  const html = new FakeElement('html');
+  html.setAttribute('data-theme', 'light');
   const doc = {
     createElement: (tag) => new FakeElement(tag),
+    // A DocumentFragment is, for our purposes, just a transient container the
+    // shim treats like an element: append() collects nodes, and append()-ing
+    // the fragment elsewhere splices its children in.
+    createDocumentFragment: () => new FakeElement('#fragment'),
+    documentElement: html,
   };
   globalThis.document = doc;
   globalThis.HTMLElement = FakeElement;
-  return { FakeElement };
+  FakeResizeObserver.instances = [];
+  globalThis.ResizeObserver = FakeResizeObserver;
+  return { FakeElement, FakeResizeObserver };
 }

@@ -1,0 +1,454 @@
+/**
+ * Predicate AST + op-catalog for the structured PredicateFilter.
+ *
+ * Lifted from the Svelte client's `client/src/filter/predicate.ts` and
+ * re-expressed against the `web/` framework conventions. NOTHING here imports
+ * from `client/` or touches the DOM / signals — these are pure functions
+ * exercised directly by `node --test`.
+ *
+ * A {@link Predicate} is either:
+ *   - {@link PredicateLeaf}:  `<attr> <op> <value(s)>`
+ *   - {@link PredicateGroup}: `(child1) AND (child2)` (or OR / NOT)
+ *
+ * Both shapes are JSON-round-trippable so a predicate can flow into saved
+ * views, URLs, and across the wire to `card.select_with_attributes` (`tree:`
+ * field). {@link toWire} produces EXACTLY the shape
+ * `db/schema/functions/card_compile_predicate.sql` consumes; {@link fromWire}
+ * is its inverse.
+ *
+ * NOT groups must have exactly one child; {@link fromWire} enforces that
+ * invariant on decode (the editor enforces it on edit). Empty AND groups are
+ * vacuously true; empty OR groups are vacuously false (the SQL compiler
+ * agrees — see the empty-children dispatch in card_compile_predicate.sql).
+ */
+
+/* -------------------------------------------------------------------------- */
+/* Operators                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Operators understood by every layer (UI -> wire -> server SQL). The set
+ * matches the op dispatch in `card_compile_predicate.sql` 1:1.
+ */
+export type Op =
+  | 'eq'
+  | 'ne'
+  | 'in'
+  | 'notIn'
+  | 'exists'
+  | 'notExists'
+  | 'contains'
+  | 'notTerminal'
+  | 'hasPhase'
+  | 'parentStatusPhase'
+  | 'snippet'
+  | 'beforeToday'
+  | 'withinDays';
+
+/**
+ * Wire-string for each operator. These values MUST match the `op` field the
+ * SQL compiler dispatches on (`db/schema/functions/card_compile_predicate.sql`).
+ * Don't rename keys/values — they're the wire contract.
+ */
+export const OP_TO_WIRE: Readonly<Record<Op, string>> = {
+  eq: '=',
+  ne: '!=',
+  in: 'in',
+  notIn: 'not in',
+  exists: 'exists',
+  notExists: 'not exists',
+  contains: 'contains',
+  notTerminal: 'not terminal',
+  hasPhase: 'has_phase',
+  parentStatusPhase: 'parent_status_phase',
+  snippet: 'snippet',
+  beforeToday: 'before_today',
+  withinDays: 'within_days',
+};
+
+const WIRE_TO_OP: Readonly<Record<string, Op>> = {
+  '=': 'eq',
+  eq: 'eq',
+  '!=': 'ne',
+  ne: 'ne',
+  in: 'in',
+  'not in': 'notIn',
+  exists: 'exists',
+  'not exists': 'notExists',
+  contains: 'contains',
+  'not terminal': 'notTerminal',
+  has_phase: 'hasPhase',
+  parent_status_phase: 'parentStatusPhase',
+  snippet: 'snippet',
+  before_today: 'beforeToday',
+  within_days: 'withinDays',
+};
+
+/** Returns the wire string for [op]. Inverse of {@link opFromWire}. */
+export function opToWire(op: Op): string {
+  return OP_TO_WIRE[op];
+}
+
+/**
+ * Parses a wire string into an {@link Op}. Accepts both the v1 aliases
+ * (`=` / `eq`, `!=` / `ne`) the SQL compiler normalises. Throws on unknown
+ * operators so server-issued JSON cannot silently smuggle in an operator the
+ * client cannot render.
+ */
+export function opFromWire(s: string): Op {
+  const v = WIRE_TO_OP[s];
+  if (v === undefined) {
+    throw new Error(`unknown predicate operator: ${JSON.stringify(s)}`);
+  }
+  return v;
+}
+
+/** Whether [op] takes no value, a single value, or a list. */
+export type OpArity = 'none' | 'single' | 'multi';
+
+export function opArity(op: Op): OpArity {
+  switch (op) {
+    case 'eq':
+    case 'ne':
+    case 'contains':
+    case 'snippet':
+    case 'withinDays':
+      return 'single';
+    case 'in':
+    case 'notIn':
+    case 'hasPhase':
+    case 'parentStatusPhase':
+      return 'multi';
+    case 'exists':
+    case 'notExists':
+    case 'notTerminal':
+    case 'beforeToday':
+      return 'none';
+  }
+}
+
+/**
+ * Friendly display label for an op in the operator selector. Pure label data;
+ * the wire string (`=`, `not in`, `has_phase`, ...) is what crosses the
+ * network — this is only the editor's display text.
+ */
+export const OP_LABELS: Readonly<Record<Op, string>> = {
+  eq: 'is',
+  ne: 'is not',
+  in: 'is any of',
+  notIn: 'is none of',
+  exists: 'is set',
+  notExists: 'is not set',
+  contains: 'contains',
+  notTerminal: 'is open',
+  hasPhase: 'has phase',
+  parentStatusPhase: "parent's status is",
+  snippet: 'named filter',
+  beforeToday: 'is before today',
+  withinDays: 'within next (days)',
+};
+
+export function opLabel(op: Op): string {
+  return OP_LABELS[op];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Value types + op-catalog keyed by value_type                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The well-known value-type discriminators an attribute schema may carry.
+ * `card_ref` / `card_ref[]` mirror the server's `attribute_def.value_type`
+ * tokens; the others are scalar JSON types. The catalog below keys the
+ * allowed operators on these tokens.
+ */
+export type ValueType = 'text' | 'number' | 'bool' | 'date' | 'card_ref' | 'card_ref[]';
+
+/**
+ * The op-catalog: which operators each value_type exposes in the editor, and
+ * (via {@link opArity}) how many values each op carries. Shared across the
+ * quick-filter bar and the tree editor so the same attribute exposes the same
+ * affordances everywhere.
+ *
+ *   - text:        eq / ne / contains / exists / notExists
+ *   - number:      eq / ne / exists / notExists
+ *   - bool:        eq / ne / exists / notExists
+ *   - date:        eq / ne / exists / notExists / beforeToday / withinDays
+ *   - card_ref:    eq / ne / in / notIn / hasPhase / exists / notExists
+ *   - card_ref[]:  in / notIn / hasPhase / exists / notExists
+ *
+ * `hasPhase` dereferences the ref target and matches its `phase` column — only
+ * meaningful for refs, never scalars. The relative-date ops are scoped to
+ * `date` so every other attribute's operator list stays short.
+ */
+export const OPS_BY_VALUE_TYPE: Readonly<Record<ValueType, readonly Op[]>> = {
+  text: ['eq', 'ne', 'contains', 'exists', 'notExists'],
+  number: ['eq', 'ne', 'exists', 'notExists'],
+  bool: ['eq', 'ne', 'exists', 'notExists'],
+  date: ['eq', 'ne', 'exists', 'notExists', 'beforeToday', 'withinDays'],
+  card_ref: ['eq', 'ne', 'in', 'notIn', 'hasPhase', 'exists', 'notExists'],
+  'card_ref[]': ['in', 'notIn', 'hasPhase', 'exists', 'notExists'],
+};
+
+/**
+ * Operators allowed for [valueType]. Unknown value types fall back to the
+ * `text` op set so a leaf still edits (matching the Svelte ValueInput's text
+ * fallback for unrecognised types).
+ */
+export function opsForValueType(valueType: string): readonly Op[] {
+  return OPS_BY_VALUE_TYPE[valueType as ValueType] ?? OPS_BY_VALUE_TYPE.text;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Phases (closed set for has_phase / parent_status_phase / not terminal)     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Closed set of `phase` values understood by `has_phase` (the SQL compiler
+ * rejects anything else). Surfaced as a type + a runtime array so the editor
+ * can render checkboxes without hard-coding the list.
+ */
+export type Phase = 'triage' | 'active' | 'terminal';
+export const PHASES: readonly Phase[] = ['triage', 'active', 'terminal'] as const;
+export function isPhase(v: unknown): v is Phase {
+  return v === 'triage' || v === 'active' || v === 'terminal';
+}
+
+/* -------------------------------------------------------------------------- */
+/* AST                                                                        */
+/* -------------------------------------------------------------------------- */
+
+export interface PredicateLeaf {
+  kind: 'leaf';
+  attr: string;
+  op: Op;
+  /** Single-value ops use values[0]; multi-value ops use values; no-value ops omit. */
+  values?: unknown[];
+}
+
+export interface PredicateGroup {
+  kind: 'group';
+  connective: 'and' | 'or' | 'not';
+  children: Predicate[];
+}
+
+export type Predicate = PredicateLeaf | PredicateGroup;
+
+/* -------------------------------------------------------------------------- */
+/* Wire encode / decode                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The wire shape of a predicate node — exactly what `card_compile_predicate.sql`
+ * consumes. A group emits `{ connective, children }`; a leaf emits
+ * `{ attr, op, values? }` (op as the wire string via {@link OP_TO_WIRE}).
+ * Empty `values` arrays are omitted so `exists` / `not exists` payloads stay
+ * minimal (matching the SQL compiler's no-value ops).
+ *
+ * This is structurally compatible with {@link CardWherePredicate}: a wire leaf
+ * IS a `CardWherePredicate`, and a `CardWherePredicate[]` is the flat top-level
+ * AND the `where[]` field carries.
+ */
+export interface WireNode {
+  // Group fields.
+  connective?: 'and' | 'or' | 'not';
+  children?: WireNode[];
+  // Leaf fields.
+  attr?: string;
+  op?: string;
+  value?: unknown;
+  values?: unknown[];
+  /** Compound v1 shape `{ and: [...] }` the legacy where[] also accepts. */
+  and?: WireNode[];
+}
+
+/**
+ * Encode a {@link Predicate} to its wire shape (`tree` field on
+ * `card.select_with_attributes`). Inverse of {@link fromWire}.
+ */
+export function toWire(p: Predicate): WireNode {
+  if (p.kind === 'leaf') {
+    const m: WireNode = { attr: p.attr, op: OP_TO_WIRE[p.op] };
+    if (p.values !== undefined && p.values.length > 0) {
+      m.values = p.values.slice();
+    }
+    return m;
+  }
+  return {
+    connective: p.connective,
+    children: p.children.map(toWire),
+  };
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * Inverse of {@link toWire}. Decodes a wire node (group or leaf, including the
+ * v1 single-`value` and `{ and: [...] }` shapes) into a {@link Predicate}.
+ * Throws on unknown shapes / operators so server drift surfaces immediately.
+ */
+export function fromWire(raw: unknown): Predicate {
+  if (!isPlainObject(raw)) {
+    throw new Error('predicate wire node must be an object');
+  }
+
+  // Connective group.
+  if ('connective' in raw && raw.connective !== undefined && raw.connective !== '') {
+    const c = raw.connective;
+    if (c !== 'and' && c !== 'or' && c !== 'not') {
+      throw new Error(`unknown group connective: ${JSON.stringify(c)}`);
+    }
+    const children = decodeChildren(raw.children);
+    if (c === 'not' && children.length !== 1) {
+      throw new Error(`NOT group must have exactly one child (got ${children.length})`);
+    }
+    return { kind: 'group', connective: c, children };
+  }
+
+  // v1 compound shape: { and: [...] }.
+  if ('and' in raw && Array.isArray(raw.and)) {
+    return { kind: 'group', connective: 'and', children: decodeChildren(raw.and) };
+  }
+
+  // Leaf.
+  const attrRaw = raw.attr;
+  if (typeof attrRaw !== 'string') {
+    throw new Error('leaf attr must be a string');
+  }
+  const opRaw = raw.op;
+  // Default op '=' matches the SQL compiler's COALESCE(node->>'op', '=').
+  const op = opFromWire(typeof opRaw === 'string' && opRaw !== '' ? opRaw : '=');
+  const leaf: PredicateLeaf = { kind: 'leaf', attr: attrRaw, op };
+  // v2 `values` takes precedence; fall back to v1 single `value`.
+  if (raw.values !== undefined && raw.values !== null) {
+    if (!Array.isArray(raw.values)) {
+      throw new Error('leaf values must be an array');
+    }
+    leaf.values = raw.values.slice();
+  } else if ('value' in raw && raw.value !== undefined) {
+    leaf.values = [raw.value];
+  }
+  return leaf;
+}
+
+function decodeChildren(raw: unknown): Predicate[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error('group children must be an array');
+  }
+  return raw.map(fromWire);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Validation                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `true` when [p] is structurally valid: NOT groups carry exactly one child,
+ * leaves carry a non-empty attr, and (for non-`none`-arity ops) the editor is
+ * free to leave the value empty (an empty value compiles to a vacuous leaf
+ * server-side, never an error). Recurses into every child.
+ */
+export function isValid(p: Predicate): boolean {
+  if (p.kind === 'leaf') {
+    return p.attr.length > 0;
+  }
+  if (p.connective === 'not' && p.children.length !== 1) return false;
+  return p.children.every(isValid);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Flat-AND helpers (backward-compat with the where[] field)                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `true` when [p] is a flat top-level AND of leaves — the shape the quick
+ * `where[]` field can carry. A bare leaf also qualifies.
+ */
+export function isFlatAndOfLeaves(p: Predicate): boolean {
+  if (p.kind === 'leaf') return true;
+  if (p.connective !== 'and') return false;
+  return p.children.every((c) => c.kind === 'leaf');
+}
+
+/**
+ * Project [p] to a flat `CardWherePredicate[]` (the `where[]` wire field), when
+ * it is a flat AND of leaves (or a single leaf). Returns null otherwise — the
+ * caller should fall back to the v2 `tree` field. Each emitted leaf is the wire
+ * shape, structurally a {@link CardWherePredicate}.
+ */
+export function toWhereLeaves(p: Predicate): CardWherePredicate[] | null {
+  if (!isFlatAndOfLeaves(p)) return null;
+  if (p.kind === 'leaf') return [toWire(p) as CardWherePredicate];
+  return p.children.map((c) => toWire(c) as CardWherePredicate);
+}
+
+/**
+ * Wrap [leaves] in a top-level AND group. Single-leaf input returns the leaf
+ * itself (no needless wrapper); empty input returns an empty AND group
+ * (vacuously true). Inverse-ish of {@link toWhereLeaves} for the editor seed.
+ */
+export function fromWhereLeaves(leaves: CardWherePredicate[]): Predicate {
+  const parsed = leaves.map((l) => fromWire(l) as PredicateLeaf);
+  if (parsed.length === 1) return parsed[0]!;
+  return { kind: 'group', connective: 'and', children: parsed };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Constructor helpers                                                        */
+/* -------------------------------------------------------------------------- */
+
+export function leaf(attr: string, op: Op, values?: unknown[]): PredicateLeaf {
+  const l: PredicateLeaf = { kind: 'leaf', attr, op };
+  if (values !== undefined && values.length > 0) l.values = values.slice();
+  return l;
+}
+
+export function group(connective: 'and' | 'or' | 'not', children: Predicate[]): PredicateGroup {
+  return { kind: 'group', connective, children: children.slice() };
+}
+
+export function andOf(children: Predicate[]): PredicateGroup {
+  return group('and', children);
+}
+export function orOf(children: Predicate[]): PredicateGroup {
+  return group('or', children);
+}
+export function notOf(child: Predicate): PredicateGroup {
+  return group('not', [child]);
+}
+
+/** An empty root group (vacuously-true AND) the editor seeds when there's no predicate. */
+export function emptyRoot(): PredicateGroup {
+  return { kind: 'group', connective: 'and', children: [] };
+}
+
+/* -------------------------------------------------------------------------- */
+/* CardWherePredicate — backward-compatible re-export                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A single `card.select_with_attributes` `where` predicate leaf — the wire
+ * shape the server compiles via `card_compile_predicate.sql`. This is the same
+ * structure {@link WireNode} carries for a leaf, kept as its own name because
+ * existing call sites (`kanban/specs.ts`, the Grid, `projects/project-helpers.ts`,
+ * the admin import) import `CardWherePredicate` and pass `op:'!='` /
+ * `op:'contains'` leaves directly. Keeping it a permissive `op?: string`,
+ * `value?`/`values?`, `and?` shape preserves every existing call.
+ *
+ * `op:'!='` compiles to a `NOT EXISTS` sub-query so a card that never had the
+ * attribute written still passes the filter.
+ *
+ * Re-exported from `projects/project-helpers.ts` so the historical import path
+ * keeps working; this module is now the source of truth for the type.
+ */
+export interface CardWherePredicate {
+  attr?: string;
+  op?: string;
+  value?: unknown;
+  values?: unknown[];
+  /** When set, all sub-predicates AND together; the leaf fields are ignored. */
+  and?: CardWherePredicate[];
+}

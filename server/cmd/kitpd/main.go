@@ -3,45 +3,46 @@
 // server over stdin/stdout (Phase 19).
 //
 // Configuration is environment-driven:
-//   DATABASE_URL              — pgx connection string (required)
-//   LISTEN_ADDR               — listen address, default ":8080"
-//   AUTH_MODE                 — "off" (System User) or "oidc"; default "off"
-//   ENV                       — "dev" or "production"; default "dev"
-//   KITP_DEMO_DATA            — when set, apply the demo seed section on startup (dev default: on)
-//   KITP_SKIP_SCHEMA          — when set, skip the declarative-schema apply at startup
-//   LOG_LEVEL                 — debug|info|warn|error; default info (Phase 21)
-//   PG_TRACE                  — non-empty enables pgx query tracing (dev) (Phase 21)
-//   CORS                      — on|off override; default on in dev, off in production (Phase 22)
-//   ATTACHMENT_MAX_MB         — whole-file upload cap in megabytes; default 250
-//   ATTACHMENT_CHUNK_MAX_MB   — per-chunk cap on /api/v1/cas/chunk; default 8
-//   CAS_REAPER_INTERVAL_SEC   — reaper sweep cadence in seconds; default 3600
-//   CAS_REAPER_GRACE_SEC      — orphan grace period in seconds; default 3600
-//   KITP_COMM_SMTP_TICK_SEC   — SMTP sender poll cadence in seconds; default 10
-//   KITP_COMM_SMTP_DRY_RUN    — when "1", SMTP senders log instead of sending
-//   KITP_COMM_IMAP_TICK_SEC   — IMAP poller cadence in seconds; default 60
-//   KITP_COMM_IMAP_DRY_RUN    — when "1", IMAP pollers log instead of polling
-//   KITP_COMM_IMAP_INSECURE   — when "1", allow plaintext IMAP (no TLS); dev only
-//   KITP_COMM_LOG_RETENTION_DAYS — days to keep comm_log rows; default 30
-//   KITP_COMM_LOG_PRUNE_HOURS — comm_log prune cadence in hours; default 24
-//   KITP_CSP_REPORT_ONLY      — when "1", flips CSP to soft-launch mode
-//                               (Content-Security-Policy-Report-Only)
-//   KITP_CSP_REPORT_URI       — when set, emits a report-uri directive
-//                               pointing browsers at this URL for CSP
-//                               violation reports
-//   KITP_OIDC_TRUST_UNVERIFIED_EMAIL — when "1", disables the
-//                               `email_verified` gate on the OIDC
-//                               pre-created-account email fallback.
-//                               Leave OFF for self-service OPs; flip
-//                               ON for trusted corporate OPs that
-//                               verify emails out-of-band.
-//   KITP_INIT_ADMIN_EMAIL     — when set AND the DB is in init mode
-//                               (no non-System admin exists), create a
-//                               user_account + person card with this
-//                               email and grant the admin role. OIDC
-//                               sign-in attaches the sub to that row
-//                               on first login. When unset and init
-//                               mode applies, the first OIDC user to
-//                               sign in self-elevates to admin.
+//
+//	DATABASE_URL              — pgx connection string (required)
+//	LISTEN_ADDR               — listen address, default ":8080"
+//	AUTH_MODE                 — "off" (System User) or "oidc"; default "off"
+//	ENV                       — "dev" or "production"; default "dev"
+//	KITP_DEMO_DATA            — when set, apply the demo seed section on startup (dev default: on)
+//	KITP_SKIP_SCHEMA          — when set, skip the declarative-schema apply at startup
+//	LOG_LEVEL                 — debug|info|warn|error; default info (Phase 21)
+//	PG_TRACE                  — non-empty enables pgx query tracing (dev) (Phase 21)
+//	CORS                      — on|off override; default on in dev, off in production (Phase 22)
+//	ATTACHMENT_MAX_MB         — whole-file upload cap in megabytes; default 250
+//	ATTACHMENT_CHUNK_MAX_MB   — per-chunk cap on /api/v1/cas/chunk; default 8
+//	CAS_REAPER_INTERVAL_SEC   — reaper sweep cadence in seconds; default 3600
+//	CAS_REAPER_GRACE_SEC      — orphan grace period in seconds; default 3600
+//	KITP_COMM_SMTP_TICK_SEC   — SMTP sender poll cadence in seconds; default 10
+//	KITP_COMM_SMTP_DRY_RUN    — when "1", SMTP senders log instead of sending
+//	KITP_COMM_IMAP_TICK_SEC   — IMAP poller cadence in seconds; default 60
+//	KITP_COMM_IMAP_DRY_RUN    — when "1", IMAP pollers log instead of polling
+//	KITP_COMM_IMAP_INSECURE   — when "1", allow plaintext IMAP (no TLS); dev only
+//	KITP_COMM_LOG_RETENTION_DAYS — days to keep comm_log rows; default 30
+//	KITP_COMM_LOG_PRUNE_HOURS — comm_log prune cadence in hours; default 24
+//	KITP_CSP_REPORT_ONLY      — when "1", flips CSP to soft-launch mode
+//	                            (Content-Security-Policy-Report-Only)
+//	KITP_CSP_REPORT_URI       — when set, emits a report-uri directive
+//	                            pointing browsers at this URL for CSP
+//	                            violation reports
+//	KITP_OIDC_TRUST_UNVERIFIED_EMAIL — when "1", disables the
+//	                            `email_verified` gate on the OIDC
+//	                            pre-created-account email fallback.
+//	                            Leave OFF for self-service OPs; flip
+//	                            ON for trusted corporate OPs that
+//	                            verify emails out-of-band.
+//	KITP_INIT_ADMIN_EMAIL     — when set AND the DB is in init mode
+//	                            (no non-System admin exists), create a
+//	                            user_account + person card with this
+//	                            email and grant the admin role. OIDC
+//	                            sign-in attaches the sub to that row
+//	                            on first login. When unset and init
+//	                            mode applies, the first OIDC user to
+//	                            sign in self-elevates to admin.
 //
 // In production the server refuses to start if AUTH_MODE=off (N-SEC-5).
 package main
@@ -73,11 +74,11 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/activitysink"
 	"github.com/kitp/kitp/server/internal/dom/agent"
 	"github.com/kitp/kitp/server/internal/dom/attachment"
-	domcas "github.com/kitp/kitp/server/internal/dom/cas"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/attributedef"
 	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/dom/cardtype"
+	domcas "github.com/kitp/kitp/server/internal/dom/cas"
 	"github.com/kitp/kitp/server/internal/dom/comm"
 	"github.com/kitp/kitp/server/internal/dom/comment"
 	domconfig "github.com/kitp/kitp/server/internal/dom/config"
@@ -85,6 +86,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/file"
 	"github.com/kitp/kitp/server/internal/dom/flow"
 	"github.com/kitp/kitp/server/internal/dom/help"
+	"github.com/kitp/kitp/server/internal/dom/proc"
 	"github.com/kitp/kitp/server/internal/dom/process"
 	"github.com/kitp/kitp/server/internal/dom/projectexport"
 	"github.com/kitp/kitp/server/internal/dom/projectimport"
@@ -92,14 +94,13 @@ import (
 	domrole "github.com/kitp/kitp/server/internal/dom/role"
 	"github.com/kitp/kitp/server/internal/dom/rolemapping"
 	"github.com/kitp/kitp/server/internal/dom/tag"
-	"github.com/kitp/kitp/server/internal/dom/proc"
 	domuser "github.com/kitp/kitp/server/internal/dom/user"
 	"github.com/kitp/kitp/server/internal/dom/usercardagent"
 	"github.com/kitp/kitp/server/internal/dom/usercardsort"
 	"github.com/kitp/kitp/server/internal/dom/userrole"
 	"github.com/kitp/kitp/server/internal/dom/usertoken"
-	"github.com/kitp/kitp/server/internal/mcp"
 	"github.com/kitp/kitp/server/internal/job"
+	"github.com/kitp/kitp/server/internal/mcp"
 	"github.com/kitp/kitp/server/internal/obs"
 	"github.com/kitp/kitp/server/internal/schema/hcsv"
 	"github.com/kitp/kitp/server/internal/store"
@@ -404,8 +405,17 @@ func runHTTP() error {
 	// responses too).
 	srv.MountBatch(apiRouter, idem.WrapAuthed)
 
-	// SPA + /healthz live on the top-level mux, outside /api/*.
-	srv.MountSPA(mux, webDir)
+	// SPA + /healthz live on the top-level mux, outside /api/*. In OIDC
+	// mode the SPA *document* is gated behind the session: an
+	// unauthenticated app-shell request 302s to the SSO start endpoint
+	// carrying the deep link as `redirect`. The gate is OFF in
+	// AUTH_MODE=off so dev-login keeps working with no SSO host to
+	// bounce to. Real static assets are never gated either way.
+	srv.MountSPAGated(mux, webDir, api.SPAGateConfig{
+		SessionResolver: newSessionResolver(sessionMgr, insecureCookie),
+		Enabled:         mode == auth.ModeOIDC,
+		LoginStartPath:  "/api/v1/auth/oidc/start",
+	})
 	mux.Handle("/api/", apiRouter.Mux())
 	// Hand the dispatcher's attachment.create handler the CAS storage so
 	// it can build a thumbnail server-side for image attachments. Wiring

@@ -4,22 +4,25 @@
 // Two endpoints are exposed:
 //
 //   GET /api/v1/auth/oidc/start
-//       1. Generate a PKCE pair + opaque state.
-//       2. Stash (state -> verifier) in the oidc_state table with a
-//          10-minute expiry.
-//       3. 302 to the OP's authorization endpoint with PKCE +
+//       1. Validate the caller's `redirect` deep link (safeLocalRedirect).
+//       2. Generate a PKCE pair + opaque state.
+//       3. Stash (state -> verifier, redirect) in the oidc_state table
+//          with a 10-minute expiry.
+//       4. 302 to the OP's authorization endpoint with PKCE +
 //          state + scope.
 //
 //   GET /api/v1/auth/oidc/callback
-//       1. Look up the verifier by state (delete the row on read).
+//       1. Look up the verifier + redirect by state (delete the row on read).
 //       2. POST the code + verifier to the OP's token endpoint.
 //       3. Validate the returned id_token via Validator.Resolve
 //          (which also upserts the user + applies role mappings).
 //       4. Create a kitp session and set the cookie.
-//       5. 302 to '/'.
+//       5. 302 to the validated redirect (default '/').
 //
-// On failure both endpoints redirect to "/login?error=<reason>" so
-// the SPA's existing error-surface helper renders the message.
+// On failure both endpoints render a minimal server-side HTML error page
+// (status 401) with a retry link. They deliberately do NOT bounce to the
+// SPA's /login route: with the SPA-document gate enabled that route would
+// 302 straight back here and loop. See redirectLogin.
 
 package oidc
 
@@ -31,6 +34,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net/http"
@@ -123,10 +127,16 @@ func handleStart(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 	}
 	challenge := s256Challenge(verifier)
 
+	// Validate the caller-supplied deep link before it ever touches the
+	// DB or the eventual post-login redirect. safeLocalRedirect collapses
+	// anything that isn't a safe same-origin path down to "/", so an
+	// open-redirect can't be smuggled through the state row.
+	redirect := safeLocalRedirect(r.URL.Query().Get("redirect"))
+
 	_, err = cfg.Pool.Exec(r.Context(), `
 		INSERT INTO oidc_state (state, verifier, redirect, expires_at)
 		VALUES ($1, $2, $3, now() + $4 * INTERVAL '1 second')
-	`, state, verifier, "/", int(cfg.StateTTL.Seconds()))
+	`, state, verifier, redirect, int(cfg.StateTTL.Seconds()))
 	if err != nil {
 		logRedirect(r, "oidc.start: state_insert", err)
 		redirectLogin(w, r, "could not start sign-in")
@@ -163,12 +173,12 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 		return
 	}
 
-	var verifier string
+	var verifier, redirect string
 	row := cfg.Pool.QueryRow(r.Context(), `
 		DELETE FROM oidc_state WHERE state = $1 AND expires_at > now()
-		RETURNING verifier
+		RETURNING verifier, redirect
 	`, state)
-	if err := row.Scan(&verifier); err != nil {
+	if err := row.Scan(&verifier, &redirect); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			redirectLogin(w, r, "state expired")
 			return
@@ -216,7 +226,51 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 		MaxAge:         cfg.SessionManager.Config().AbsoluteCap,
 		InsecureCookie: cfg.InsecureCookie,
 	})
-	http.Redirect(w, r, "/", http.StatusFound)
+	// Re-validate the stored redirect defensively before sending the
+	// browser there: the column is only ever written through
+	// safeLocalRedirect in handleStart, but re-running the guard here
+	// means a future write path can't open a redirect hole, and an empty
+	// column falls back to "/".
+	http.Redirect(w, r, safeLocalRedirect(redirect), http.StatusFound)
+}
+
+// safeLocalRedirect returns raw only when it is a safe, same-origin
+// local path; otherwise it returns "/". This is the open-redirect guard
+// for the post-login destination. A path is accepted only when ALL hold:
+//
+//   - it starts with a single "/" (so it's rooted, not relative);
+//   - it does NOT start with "//" or "/\" (scheme-relative // and the
+//     backslash variant browsers normalise to // both escape the origin);
+//   - it contains no CR or LF (header/redirect splitting);
+//   - it parses via net/url to a URL with an empty Scheme AND empty Host
+//     (rejects "https://evil", "javascript:...", and userinfo/host tricks
+//     that survive the prefix checks).
+//
+// Anything else — including the empty string — collapses to "/".
+func safeLocalRedirect(raw string) string {
+	if raw == "" {
+		return "/"
+	}
+	if raw[0] != '/' {
+		return "/"
+	}
+	// "//evil.com" is scheme-relative; "/\evil.com" is the backslash
+	// form browsers fold to "//". Reject both before url.Parse, which
+	// would otherwise read "//evil.com" as host=evil.com.
+	if strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, "/\\") {
+		return "/"
+	}
+	if strings.ContainsAny(raw, "\r\n") {
+		return "/"
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "/"
+	}
+	if u.Scheme != "" || u.Host != "" {
+		return "/"
+	}
+	return raw
 }
 
 type exchangeParams struct {
@@ -297,10 +351,30 @@ func peekSub(idToken string) (string, error) {
 	return s, nil
 }
 
-func redirectLogin(w http.ResponseWriter, r *http.Request, reason string) {
-	q := url.Values{}
-	q.Set("error", reason)
-	http.Redirect(w, r, "/login?"+q.Encode(), http.StatusFound)
+// redirectLogin renders a minimal, self-contained server-side error page
+// (no SPA, no external assets) when the OIDC dance fails. It MUST NOT
+// bounce to the SPA's /login route: with the SPA-document gate enabled
+// that route 302s straight back to the SSO start endpoint, so a failed
+// sign-in would loop forever. Instead we show the reason and a single
+// "Try sign-in again" link back to the start endpoint.
+//
+// Status is 401 (the visitor is unauthenticated and the attempt failed).
+// reason is HTML-escaped — it can carry OP-supplied error text, so it
+// must never be interpolated raw.
+func redirectLogin(w http.ResponseWriter, _ *http.Request, reason string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusUnauthorized)
+	const tmpl = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sign-in failed</title></head>
+<body>
+<h1>Sign-in failed</h1>
+<p>%s</p>
+<p><a href="/api/v1/auth/oidc/start">Try sign-in again</a></p>
+</body>
+</html>
+`
+	fmt.Fprintf(w, tmpl, html.EscapeString(reason))
 }
 
 // logRedirect records the verbose underlying error to slog while the

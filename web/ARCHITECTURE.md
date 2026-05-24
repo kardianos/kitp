@@ -68,10 +68,15 @@ no framework compiler, no module-graph dev server magic.
   `web/vendor/` as ESM — noted, not installed via the framework toolchain.
   They are the XSS/markdown boundary and are not yet wired in this pass; see
   §10 Stubbed.)
-- `web/build.mjs` is the single build script. `node build.mjs` does a
-  production bundle to `web/dist/`; `node build.mjs --serve` runs esbuild in
-  watch mode behind esbuild's own static file server (the "tiny static
-  serve"). No other server, no Vite, no proxy framework.
+- `web/build.mjs` is the single build script. `node build.mjs` emits a
+  **self-contained** `web/dist/` — `index.html` + `app.js` + `styles.css`
+  (the `@import` of `web/design/tokens.css` is inlined by esbuild, so dist
+  carries no runtime dependency on `web/design/`). The emitted
+  `dist/index.html` rewrites the script ref to `./app.js`, so the dist root is
+  directly servable by kitpd via `WEB_DIR=web/dist` (no `web/` source exposed).
+  `node build.mjs --serve` runs esbuild in watch mode behind esbuild's own
+  static file server (the "tiny static serve"), serving the source `index.html`
+  from `web/`. No other server, no Vite, no proxy framework.
 - `npm run build` → `node build.mjs`; `npm run dev` → `node build.mjs --serve`;
   `npm test` → `node --test` over `web/test/*.test.mjs` (built with esbuild
   on the fly — dependency-light, no vitest/jest).
@@ -307,72 +312,245 @@ Ported from `client/src/dispatch/` (the protocol knowledge is hard-won):
 
 ---
 
-## 10. The end-to-end proof (`src/main.ts`)
+## 10. The first real screen vertical slice (`src/main.ts`)
 
-`src/main.ts` assembles a minimal screen entirely from a **declarative
-config** via `Control.New`, demonstrating every required capability:
+`src/main.ts` assembles the **AppShell → ScreenHost(kanban) → Kanban** tree
+entirely from a **declarative config** via `Control.New`, replacing the earlier
+`proof`/`TaskList` demo. It demonstrates every required capability against the
+real wire shapes and the refreshed `web/design/` mocks:
 
-1. A `Screen` control with declarative `children`: a `Toolbar`, a
-   `TaskList` driven by a **declarative data table** (§11), and a
-   `SparkleChart` child whose type is *not registered* → renders the visible
-   `NotFound` placeholder (proving graceful degradation).
-2. The `TaskList` declares its entire data behaviour as DATA (no imperative
-   `call`): a **query** fires on mount and on the `reload` intent (writes rows
-   to `screen.tasks` → the list renders reactively from the tree path); an
-   **action** `add` applies an **optimistic** tree patch, fires the spec, and
-   `mergePath`s the echo, routing errors to the **top-level** handler; an
-   action `badAdd` always faults and routes the error to **self** (an inline
-   banner) with the optimistic patch auto-rolled-back. The `Toolbar` and the
-   hotkeys only fire `intent(name, payload)` — they say *when*; the table says
-   *what*.
-3. **Hierarchical hotkeys** derived from the live control tree fire intents
-   (`r` = reload, `a` = add at screen scope; `Escape` = dismiss the inline
-   fault at the list region) through the derived hotkey controller.
-4. A console-triggerable demo of the **cascade-cap throw** (an intentional
-   non-converging effect pair) so the named error is observable — guarded
-   behind a button so it doesn't fire on load.
+1. **AppShell** (`src/shell/app-shell.ts`) — the persistent frame per
+   `web/design/mock-kanban.md`: a topbar (rail-collapse `‹`, brand, project-scope
+   `<select>` Picker, breadcrumb crumb, theme toggle `☾`/`☀`, panel `▥`, help
+   `?`), a left rail (global links Projects/Activity with chord hints, a DEFAULT
+   PROJECT scope section Inbox/Grid/Kanban/Project detail, an ADMIN section, a
+   foot user chip), and an `outlet` region into which the ScreenHost mounts. The
+   shell declares **global-tier hotkeys** (`g p`/`g a`/`g i`/`g g`/`g k`, `?`)
+   as **intents** (`shellHotkeys`), derived hierarchically by the live-tree
+   `HotkeyController`. The theme toggle writes `data-theme` on `<html>` (R8).
+   The **project-scope Picker is data-driven**: a static `projects` **query**
+   (`card.select_with_attributes`, `card_type_name='project'`) loads the real
+   project cards on mount; the `landProjects` sink renders the `<select>` options
+   from each project's `title` attribute, default-selects the project named by
+   `defaultProjectLabel` (else the first), and writes `scope.projectId` into the
+   tree — which refires the descendant Kanban's `{ signal: 'scope.projectId' }`
+   queries. The `<select>` re-renders reactively from the `shell.projects` tree
+   path. Picking another project in the dropdown sets `scope.projectId` the same
+   way. This is the project → scope → board data path, proven live.
+2. **ScreenHost** (`src/shell/screen-host.ts`) — mirrors
+   `client/src/screens/ScreenHost.svelte`'s switch-on-`layout`: it maps the
+   screen's `layout` to a body control TYPE (`kanban→Kanban`, `list→Inbox`,
+   `grid→Grid`, `project→Project`) and dispatches via `Control.New`. Unbuilt
+   layouts and unknown layouts resolve to the visible **NotFound** placeholder
+   (never throws). Structured so a screen-card lookup `(project_id, slug)` drives
+   it later; for this slice the screen is configured inline.
+3. **ScreenFilterBar** (`src/shell/screen-filter-bar.ts`) — the v1 SUBSET: a
+   GROUP-by Picker (default `milestone`), a search `Field`, and Clear, writing
+   one-way to `screen.group` / `screen.search`. The full saved-view / named-
+   filter / per-attribute-Picker row is a documented TODO rendered as a
+   placeholder so it slots in later.
+4. **Kanban + Column + TaskCard** (`src/kanban/kanban.ts`) — the board grouped
+   by the axis (default `milestone_ref`). Its **declarative data table**: two
+   static **queries** load tasks AND the axis value-cards (milestones), BOTH via
+   `card.select_with_attributes`, project-scoped, refiring on `scope.projectId`.
+   The milestones query uses `select_with_attributes` (NOT the lighter
+   `card.select`, which the real handler returns with `title: null`) so the
+   column header gets the milestone's real `title` attribute — matching the
+   Svelte `KanbanLayout`. Both queries carry `skipWhenNull: ['parentCardId']`
+   (§11) so they stay idle until a project scope resolves rather than firing an
+   unscoped, cross-project read. One static **action** `moveTask`
+   (`attribute.update` of the axis attribute) applies an **optimistic** tree
+   patch that re-buckets the moved card and **auto-rolls-back on fault**, routing
+   the fault to the top-level handler. The render reads `kanban.tasks` /
+   `kanban.milestones` reactively and buckets via the lifted pure helpers
+   (`src/kanban/kanban-helpers.ts`); drag-drop fires `this.intent('moveTask', …)`.
+   Columns are keyed by the value-card id plus a trailing `(unset)` bucket. The
+   move value crosses the wire as a bigint (`stringifyBigInt` → JSON string,
+   which the card_ref handler accepts) or `null` for the `(unset)` column (the
+   handler treats JSON null as "clear the attribute").
+5. The kanban screen config declares an **unknown** `SparkleChart` child → the
+   **NotFound** placeholder renders next to the board (graceful degradation
+   demonstrably still working).
 
-There are **no promises, no `.then`, no `await`** anywhere in `main.ts`, the
-proof controls, or the framework surface — the framework drives the async
-(§11). It `esbuild`-builds cleanly to `dist/` and loads by opening `index.html`
-(after a build) or via `npm run dev`.
+There are **no promises, no `.then`, no `await`** anywhere in `main.ts`, any
+control, or the framework surface — the framework drives the async (§11). The
+only promise is inside the dispatcher's `flush()` / the transport. It
+`esbuild`-builds cleanly to `dist/` and loads by opening `index.html` (after a
+build) or via `npm run dev`.
 
-### What's stubbed / deferred to the next pass
+### Backend mode — `USE_REAL_BACKEND` flip
 
-- **Real backend transport.** The proof uses a mock transport with canned
-  rows for `card.list_tasks` / `card.create_task` (success) and
-  `card.create_task_broken` (forced fault). Flip `USE_REAL_BACKEND` in
-  `main.ts` (or pass a fetch transport) to hit `/api/v1/batch`. The wire
-  encode/decode is the real thing; only the network sink is mocked.
-- **Server-side auth.** §12 documents the SSO contract the client assumes; the
-  server side (the OIDC bounce, the authenticated app-shell route, 401/403
-  semantics) is owned by another agent and is NOT implemented here.
-- **Vendored `dompurify` + `marked`.** Noted as the markdown/XSS boundary;
-  `web/vendor/` exists but the `Markdown` control is not built this pass.
-  Reuse `client/src/util/markdown.ts` verbatim when it lands.
-- **`@floating-ui/dom`** (popover positioning) — deferred; not needed for the
-  proof.
-- **Real screen controls** (Kanban/Column/Card, Inbox/TaskRow, Grid,
-  FilterBar/PredicateEditor, TransitionBar) — the registry + NotFound mean
-  these can be added incrementally; each is registered and the screen config
-  starts resolving it instead of NotFound.
-- **Design tokens.** `web/design/tokens.css` (designer-owned) does not exist
-  yet; `src/styles.css` stubs a token layer with a clear TODO to reconcile.
-  We do not touch `web/design/`.
+`main.ts` has a single `const USE_REAL_BACKEND = true` (the app default after
+the live end-to-end verification). The API specs
+(`card.select_with_attributes`, `card.select`, `attribute.update`) are
+registered against the REAL `/api/v1/batch` wire either way — only the
+**transport** differs:
 
-### What the next pass needs
+- **`true` (app default):** `fetchTransport('')` POSTs to same-origin
+  `/api/v1/batch` (cookie-auth; SSO bounce on 401/403 via the boot fault
+  listener — §12). Verified end-to-end against live kitpd on seeded demo data:
+  dev-login → load the SPA → the picker loads 3 real projects, the board renders
+  project 31's M1/M2/M3 + `(unset)` columns with real task titles, a drag-move
+  fires `attribute.update` and PERSISTS across reload, no fault banners.
+- **`false`:** a `mockTransport()` (`src/kanban/mock-data.ts`) seeded with data
+  shaped exactly like the Go handlers return (one project, 6 tasks across 3
+  milestones + an unset bucket; **int64 ids as JSON strings**, an `attributes`
+  object with the milestone `title` and a `milestone_ref` card_ref the
+  dispatcher revives to `bigint`). A write to the sentinel `FAULT_CARD_ID`
+  returns a per-row error so the optimistic-rollback path is exercisable. The
+  unit tests inject their own `Dispatcher` + `mockTransport` directly, so the
+  `true` app default does NOT affect `node --test`.
 
-Build the real screen controls against the designer's `web/design/` mocks:
-register each control type, replace the proof's placeholder config with the
-real `ScreenHost` → layout-dispatch config (mirroring
-`client/src/ui/.../ScreenHost.svelte`'s `switch(layout)`), reuse the
-framework-agnostic helpers from `client/src/` (predicate AST,
-kanban/grid helpers, markdown), and align `styles.css` to
-`web/design/tokens.css` once it exists. The keyed-list reconciler
-(`src/core/keyed-list.ts`) is the one non-trivial rendering primitive those
-list screens need; it is included and unit-tested. Each real screen control
-declares its `static queries` / `static actions` table (§11) instead of
-hand-writing `call(...)` — that is the canonical pattern now.
+### What's done vs. stubbed in this slice
+
+DONE:
+- AppShell, ScreenHost, ScreenFilterBar (v1 subset), Kanban + Column + TaskCard
+  registered controls; the three real API specs; the optimistic move +
+  auto-rollback; the lifted pure kanban helpers; the `USE_REAL_BACKEND` switch;
+  `styles.css` extended against `web/design/tokens.css` for all of the above.
+- Verified: `tsgo --noEmit` clean, `node --test` green (50 tests incl. helper /
+  query-bucketing / optimistic-move-and-rollback / ScreenHost-dispatch +
+  NotFound), `npm run build` clean, AND a LIVE headless-Chrome drive against
+  kitpd on seeded demo data (`AUTH_MODE=off`, same-origin `WEB_DIR`): dev-login,
+  3 real projects in the picker (Default Project auto-selected), board scoped to
+  project 31 (columns `32/33/34` labelled M1/M2/M3 + `(unset)`, real task
+  titles, no cross-project leak), drag-move card 54 M1→M2 fires
+  `attribute.update` and persists across reload, no fault banners.
+
+STUBBED / deferred (documented in code TODOs):
+- **ScreenFilterBar** is a v1 subset (GROUP + search + Clear). The saved-view /
+  named-filter / per-attribute-Picker row + Show-closed-status are placeholders.
+- **Within-column reorder** — the `sort_order` rewrite. The helpers
+  (`planSortRewrite` / `computeMoveBatch`) are lifted and unit-tested and ready;
+  the drag UI does cross-column moves only for v1.
+- **Swim lanes** (the 2-D `group_by_attr` axis), the per-column `+`
+  QuickEntryOverlay, and keyboard `hjkl` / Shift-move card nav.
+- **Common controls** — `Picker`/`Field` are native `<select>`/`<input>` here;
+  the real `Picker`/`Field`/`Collection`/`Toast` controls land with later screens.
+- **Server-side auth.** §12's SSO contract is assumed; the server side is owned
+  by another agent and not implemented here.
+- **Vendored `dompurify` + `marked`** (`Markdown` control) and
+  `@floating-ui/dom` (popover positioning) — not needed for the board.
+
+## 10b. Project List screen + signal-driven outlet swap
+
+The **all-projects landing** (`web/design/mock-secondary.md` "Projects") is the
+second real screen. `src/main.ts` now LANDS the AppShell outlet on it (view
+`'projects'`); selecting a project (or a `g k`/`g i`/`g g` chord) swaps the
+outlet to the board.
+
+1. **ProjectList** (`src/projects/project-list.ts`) — breadcrumb "All
+   projects" + H1/`+ New project` + a search Field that filters by title +
+   one row per project (title · "open tasks: —" v1 dash placeholder, intentional
+   parity with the Svelte ProjectsScreen · a wired ✎ edit button) + the shared
+   project-properties dialog (Title Field + a "+ More details" disclosure with a
+   real **Description** textarea + Add & Another / Add & Close, with
+   `Enter`/`Mod+Enter`/`Esc`).
+   - **Template exclusion (list + picker together):** the AppShell `projects`
+     query input ships the where-leaf `{ attr:'is_template', op:'!=',
+     value:true }` (the shared `TEMPLATE_EXCLUSION_LEAF` in
+     `src/projects/project-helpers.ts`, mirroring the Svelte client). The
+     `card.select_with_attributes` spec encode forwards a `where` field, so the
+     batch request ships `where:[leaf]`. Because the list and the scope
+     `<select>` both read the ONE `shell.projects` path, the exclusion covers
+     BOTH at once. `!=` compiles server-side to `NOT EXISTS`, so a project that
+     never had `is_template` written still appears (correct — not filtered out
+     client-side).
+   - **Projects-data REUSE (no second fetch):** the AppShell `projects` query
+     (`card.select_with_attributes`, `card_type_name='project'`) lands rows at
+     the shared `shell.projects` tree path to drive its scope `<select>`.
+     ProjectList declares NO projects query — it READS the same path
+     reactively, so the list and the picker never diverge and there's one
+     round-trip. (`toOption` accepts both the picker option shape and raw card
+     rows so the path is robust to either landing there.) `landProjects` carries
+     the project's `description` onto the option so the ✎ editor prefills from
+     the same path with no refetch.
+   - **Shared create/edit form (one common control):** `buildDialog()` builds
+     ONE project-properties dialog (Title + Description) driven into either
+     CREATE mode (Add & Another / Add & Close → `card.insert`) or EDIT mode
+     (Save → `attribute.update`). `+ New project` calls `openCreate()`; the
+     per-row ✎ calls `openEdit(id, title, description)` prefilled from the row.
+   - **Create-project:** a static `createProject` `ActionBinding` →
+     `card.insert` (`card_type_name='project'`, `title`, optional
+     `attributes.description` when non-empty, NO parent — top-level) with an
+     **optimistic** append of a temp-`-N`-id row to `shell.projects` that
+     **auto-rolls-back on fault** (`onError:'top'`); the success sink
+     (`landCreated`) swaps the temp id for the server-returned id. Because the
+     picker reads the same path, the new project appears in both the list and
+     the scope `<select>` with no extra wiring. The `card.insert` spec lives in
+     `src/projects/specs.ts` — in `{ cardTypeName, parentCardId?, title,
+     attributes?, phase? }` (camelCase → snake_case) / out `{ id }` (wire
+     string → bigint), matching `server/internal/dom/card/insert.go`.
+   - **Edit-project:** two static `ActionBinding`s — `editTitle` /
+     `editDescription` — both REUSE the kanban `attribute.update` spec (one
+     attribute per call). Save fires only the CHANGED field(s); each
+     **optimistically** patches the matching `shell.projects` row in place and
+     **auto-rolls-back on fault** (`onError:'top'`). The row and the scope
+     `<select>` reflect the rename immediately.
+   - Hierarchical hotkeys (the `projects` scope of `web/design/hotkeys.md`):
+     `n` quick-create, `/` focus-search, `j`/`k` move selection, `Enter` open —
+     all raised as INTENTS via an overridden `hotkeys()`, never imperative API
+     calls.
+2. **Navigation (signal-driven, NO router):** the AppShell holds a `shell.view`
+   tree signal (`'projects' | 'board'`). A single cascade-safe effect reads ONLY
+   `shell.view` and imperatively spawns/destroys the body control (ProjectList
+   vs the board `ScreenHost`) — it never writes a signal it tracks. The rail
+   "Projects" link + `g p` raise `goProjects` → `view='projects'`; selecting a
+   project (ProjectList row click / `Enter`) writes `scope.projectId` (the path
+   Kanban's `{ signal: 'scope.projectId' }` watches) AND `view='board'`; the
+   per-project screen chords (`g k`/`g i`/`g g`/`g p` for project detail) flip
+   `view='board'`. NotFound still resolves unknown layouts/types.
+   `ScreenHost` now also mounts its declarative `children` into the body, so the
+   board's unknown `SparkleChart` child renders the NotFound placeholder when
+   the board view is active (graceful degradation preserved).
+3. **New core affordance:** `Control.registerIntent(name, fn)` lets a control
+   register its own UI-only intent handlers (open a dialog, move a selection)
+   the same way the DataController registers action/query intents — so a hotkey
+   or button raising `this.intent(name)` reaches a control method without an
+   imperative API call on the key path.
+
+Verified: `tsgo --noEmit` clean, `node --test` green (64 tests in this slice's
+file incl. the new projects-data-reuse / render+search / select→scope+view /
+create optimistic-commit + rollback / ScreenHost+NotFound regression / AppShell
+view-swap tests, PLUS the polish tests: the projects query ships the
+`is_template != true` leaf and a honoring transport excludes a seeded template
+from list + picker; create-with-description sends `attributes.description` (and
+a bare create sends no attributes); the shared form serves both create and edit;
+edit fires `attribute.update` for only the changed field(s) and optimistically
+patches + rolls back on a forced fault), `npm run build` clean. A LIVE smoke
+against kitpd is optional and was not run this pass (relying on the unit suite).
+
+### What the next screen (Inbox or Grid) reuses
+
+- The **Project List → board navigation** (`shell.view` signal + the
+  `scope.projectId` write) is the template for any landing→detail swap: add a
+  new view value + a body control, raise an intent that writes `shell.view`.
+- `Control.registerIntent` + the overridden `hotkeys()` pattern (intent-firing
+  bindings) for any screen with `j`/`k`/`n`/`/`/`Enter` keyboard nav.
+- The whole **AppShell + ScreenHost + ScreenFilterBar** frame: a new screen is
+  a new `layout` entry in ScreenHost's `LAYOUT_TO_CONTROL` map + a registered
+  body control. `list→Inbox` / `grid→Grid` already map; building those controls
+  makes the existing ScreenHost resolve them instead of NotFound.
+- The **specs** (`card.select_with_attributes` for both the task batch AND the
+  axis value-cards — use it, not `card.select`, whenever a `title` is needed:
+  the real `card.select` returns `title: null`) and the **declarative
+  query/action pattern** (static `queries`/`actions`, `{ signal:
+  'scope.projectId' }` reload, `skipWhenNull` scope guard, optimistic +
+  rollback) — Inbox's drag-reorder is the same `optimistic` + `computeMoveBatch`
+  shape (already lifted) with `with_personal_sort` on the read. NOTE for the
+  next screen going live: card_ref attribute values arrive in the `attributes`
+  object as JSON **numbers** and are only revived to `bigint` for card_ref attrs
+  registered via `registerCardRefAttr` (the kanban registers `milestone_ref`);
+  register each card_ref attr the screen keys on (e.g. `assignee`, `status`,
+  `component_ref`) or compare ids by canonical string form. The
+  `card.select_with_attributes` row also carries `created_at` /
+  `last_activity_at` (and `personal_sort_order` when `with_personal_sort`) that
+  Inbox/Grid will read.
+- The **lifted kanban helpers** (`bucketByColumn` / `sortByOrder` /
+  `planSortRewrite` / `computeMoveBatch`) for any grouped/ordered list.
+- `src/core/keyed-list.ts` (the unit-tested reconciler) for the list-body
+  controls. Each new screen control declares its `static queries`/`static
+  actions` table (§11) rather than hand-writing `call(...)`.
 
 ---
 
@@ -516,7 +694,7 @@ dispatcher.onFault('http', (f) => {
   if (f.status === 401 || f.status === 403) bounceToSso();
 });
 
-const SSO_START_PATH = '/auth/oidc/start';                 // single constant
+const SSO_START_PATH = '/api/v1/auth/oidc/start';          // single constant
 function bounceToSso() {
   const redirect = encodeURIComponent(location.pathname + location.search);
   location.assign(`${SSO_START_PATH}?redirect=${redirect}`);
@@ -538,8 +716,8 @@ assumptions the client is built against:
    route**. An unauthenticated request for the app shell is itself bounced to
    SSO by the server — the client never has to gate its own first paint.
 2. The **sole public surface** is the SSO bounce flow: `GET
-   /auth/oidc/start?redirect=<path>` begins the OIDC dance and, after the IdP
-   round-trip, lands the user back on `<path>` with a session cookie set.
+   /api/v1/auth/oidc/start?redirect=<path>` begins the OIDC dance and, after the
+   IdP round-trip, lands the user back on `<path>` with a session cookie set.
 3. `POST /api/v1/batch` is cookie-authenticated (same-origin; `fetchTransport`
    sends no Authorization header). On an expired/absent session it returns
    **HTTP 401** (or `403` for an authenticated-but-forbidden auth failure) so

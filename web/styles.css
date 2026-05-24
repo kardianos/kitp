@@ -1,27 +1,110 @@
 /* kitp web — hand-authored CSS, no Tailwind, no build.
  *
- * Aligns to the designer-owned token layer: web/design/tokens.css exists, so
- * we import it and reference only var(--…). We do NOT edit web/design/.
+ * Implements web/design/DESIGN-LANGUAGE.md against the designer-owned token
+ * layer (web/design/tokens.css): a One-UI-calm CHROME + Ubiquiti-dense DATA.
+ * The governing rule is "clean chrome, dense data" — two density registers,
+ * one language:
  *
- * TODO(reconcile): as the real screen controls land, fold their semantic
- * classes (.btn, .card, .col, .chip, …) here against the same tokens. This
- * file currently styles only the proof's controls.
+ *   COMFORTABLE chrome  — AppShell topbar/rail/user-chip, ProjectList cards,
+ *     the create/edit dialog, primary (pill) buttons, search Field.
+ *   COMPACT data        — ScreenFilterBar, Kanban columns + task cards,
+ *     hairline-bordered, tabular-nums, tight but never cramped.
+ *
+ * CSS-ONLY: every existing selector + data-* hook the controls/tests depend
+ * on is preserved; new classes are additive only.
  */
 
 @import url("./design/tokens.css");
 
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
+/* Full-height frame: html/body/#root all fill the viewport so the AppShell's
+   fixed rail + the Grid's virtual scroll body have a sized container to grow
+   into (layout fixes #6 + #8). The shell scrolls its own regions; the page
+   itself does not scroll (overflow hidden on the outer frame). */
+html {
+  height: 100%;
+}
 body {
   margin: 0;
-  min-height: 100vh;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#root {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-/* ---- shell ---- */
+/* Selection + a single, consistent focus treatment (soft One-UI halo +
+   crisp ring), shared by every interactive control via :focus-visible. */
+::selection {
+  background: var(--color-accent-soft);
+}
+
+:where(button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-md);
+}
+
+/* ---- visible, styled scrollbars (issues #10, #14, #15) ------------------
+ * The shared utility every scroll container wears: an ALWAYS-VISIBLE, tokened
+ * scrollbar (NOT the default overlay one) so scrollable surfaces read as such.
+ * Firefox gets `scrollbar-width: thin` + `scrollbar-color`; Chromium/WebKit get
+ * the explicit `::-webkit-scrollbar` rules (a ~10px rounded, tokened thumb on a
+ * sunken track). Both themes inherit the same tokens, so light + dark stay
+ * legible.
+ *
+ * The treatment is AXIS-AGNOSTIC — the WebKit rules size BOTH the `width` (the
+ * vertical bar) and `height` (the horizontal bar), and Firefox's `scrollbar-*`
+ * apply to whichever axes overflow. So the same visual works for:
+ *   - `.scroll-y`  — vertical-only viewports (grid body's rows, projects list,
+ *                    master-detail panes; the kanban column card pool).
+ *   - `.scroll-x`  — horizontal-only viewports (the kanban column row #14, the
+ *                    grid horizontal scroll container #15).
+ * Both classes share ONE rule set via the grouped selector below; the only
+ * difference is which `overflow-*` the element itself declares. */
+.scroll-y,
+.scroll-x {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) var(--color-surface-sunken);
+}
+.scroll-y::-webkit-scrollbar,
+.scroll-x::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.scroll-y::-webkit-scrollbar-track,
+.scroll-x::-webkit-scrollbar-track {
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-pill);
+}
+.scroll-y::-webkit-scrollbar-thumb,
+.scroll-x::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  /* A track-coloured border insets the thumb so it reads as a rounded pill
+     floating in the gutter rather than filling it edge-to-edge. */
+  border: 2px solid var(--color-surface-sunken);
+}
+.scroll-y::-webkit-scrollbar-thumb:hover,
+.scroll-x::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+}
+.scroll-y::-webkit-scrollbar-corner,
+.scroll-x::-webkit-scrollbar-corner {
+  background: var(--color-surface-sunken);
+}
+
+/* ---- dev footer strip (index.html chrome) ---- */
 .app-bar {
   display: flex;
   align-items: center;
@@ -37,10 +120,11 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-6);
-  padding: var(--space-3) var(--space-4);
-  border-top: 1px solid var(--color-border);
-  background: var(--color-surface);
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--color-hairline);
+  background: var(--color-surface-sunken);
   font-size: var(--text-xs);
+  color: var(--color-muted);
 }
 
 .app-foot code {
@@ -52,116 +136,1235 @@ body {
   color: var(--color-muted);
 }
 
-/* ---- buttons ---- */
+/* ==========================================================================
+   BUTTONS — comfortable register. Pill primary, soft neutral. Big targets
+   that work for both touch (Samsung) and precise pointer (Ubiquiti).
+   ========================================================================== */
 .btn {
   font: inherit;
-  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1x);
+  min-height: 2.25rem;
+  padding: var(--space-1x) var(--space-4);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
   color: var(--color-fg);
   cursor: pointer;
-  transition: background var(--duration-fast) var(--ease-standard);
+  white-space: nowrap;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard),
+    transform var(--duration-fast) var(--ease-standard);
 }
 .btn:hover {
-  background: var(--color-surface);
+  background: var(--color-fill-hover);
+  border-color: var(--color-border-strong);
+}
+.btn:active {
+  transform: translateY(0.5px);
 }
 .btn:focus-visible {
   outline: 2px solid var(--color-focus-ring);
-  outline-offset: 1px;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--color-focus-halo);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 .btn-primary {
   background: var(--color-accent);
   color: var(--color-accent-fg);
   border-color: transparent;
+  box-shadow: var(--shadow-xs);
 }
 .btn-primary:hover {
-  filter: brightness(0.95);
+  background: var(--color-accent-hover);
+  border-color: transparent;
+}
+.btn-primary:active {
+  background: var(--color-accent-strong);
 }
 
-/* ---- screen ---- */
-.screen {
-  padding: var(--space-6);
-  outline: none;
+/* ==========================================================================
+   AppShell — comfortable chrome frame (topbar + rail + outlet).
+   ========================================================================== */
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-width) 1fr;
+  /* minmax(0, 1fr) so the body row can shrink below content size — required so
+     the rail + outlet get a definite height to scroll within (fixes #6 + #8). */
+  grid-template-rows: var(--topbar-height) minmax(0, 1fr);
+  grid-template-areas:
+    "topbar topbar"
+    "rail   outlet";
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  background: var(--color-bg);
 }
-.screen__title {
-  margin: 0 0 var(--space-4);
-  font-size: var(--text-xl);
-  font-weight: var(--weight-semibold);
+.shell--rail-collapsed {
+  grid-template-columns: var(--rail-width-collapsed) 1fr;
 }
-.screen__header {
-  margin-bottom: var(--space-4);
-}
-.screen__body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+.shell--rail-collapsed .shell__rail {
+  display: none;
 }
 
-/* ---- toolbar ---- */
-.toolbar {
+/* ---- topbar ---- */
+.shell__topbar {
+  grid-area: topbar;
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+}
+.shell__brand {
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.01em;
+  color: var(--color-fg-strong);
+}
+.shell__collapse {
+  color: var(--color-muted);
+}
+.shell__scope-picker,
+.filterbar__select {
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  min-height: 2rem;
+  padding: var(--space-1) var(--space-2x);
+  padding-right: var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface)
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%236b7888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M3 4.5 6 7.5 9 4.5'/></svg>")
+    no-repeat right var(--space-2) center;
+  color: var(--color-fg);
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+.shell__scope-picker:hover,
+.filterbar__select:hover {
+  border-color: var(--color-border-strong);
+}
+.shell__scope-picker:focus-visible,
+.filterbar__select:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-focus-halo);
+}
+.shell__crumb {
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+.shell__topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
-/* ---- task list ---- */
-.task-list {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
-  padding: var(--space-3);
-  outline: none;
+/* ---- icon buttons (chrome) ---- */
+.iconbtn {
+  font: inherit;
+  font-size: var(--text-md);
+  width: 2.25rem;
+  height: 2.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
 }
-.task-list:focus-visible {
+.iconbtn:hover {
+  background: var(--color-fill-hover);
+  color: var(--color-fg);
+}
+.iconbtn:focus-visible {
   outline: 2px solid var(--color-focus-ring);
   outline-offset: 1px;
 }
-.task-list__items {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.iconbtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---- rail ---- */
+.shell__rail {
+  grid-area: rail;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-h);
+  padding: var(--space-3) var(--space-2x);
+  border-right: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+  /* Full-height fixed left rail: it spans the whole body row (top under the
+     topbar, bottom at the viewport edge) and scrolls independently of the
+     outlet. min-height:0 lets overflow-y:auto actually clip + scroll. */
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
 }
-.task-list__item {
+.shell__link {
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   display: flex;
-  align-items: baseline;
-  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  text-align: left;
   padding: var(--space-2) var(--space-3);
-  background: var(--color-bg);
-  border: 1px solid var(--color-border);
+  border: none;
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
+  background: transparent;
+  color: var(--color-fg);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
 }
-.task-list__id {
+.shell__link:hover {
+  background: var(--color-fill-hover);
+}
+.shell__link:active {
+  background: var(--color-accent-soft);
+}
+.shell__chord {
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  font-size: var(--text-2xs);
+  font-variant-numeric: var(--nums-tabular);
+  padding: var(--space-h) var(--space-1x);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+  color: var(--color-muted);
 }
-.task-list__title {
+.shell__section-label {
+  margin: var(--space-4) var(--space-3) var(--space-1);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.shell__user-chip {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2x) var(--space-2);
+  border-top: 1px solid var(--color-hairline);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.shell__avatar {
+  display: inline-flex;
+  width: 1.875rem;
+  height: 1.875rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
   font-size: var(--text-sm);
 }
-.task-list__empty {
+.shell__user-name {
+  flex: 1;
+}
+.shell__user-caret {
+  font-size: var(--text-xs);
+}
+
+/* ---- outlet + screen-host ---- */
+.shell__outlet {
+  grid-area: outlet;
+  overflow: auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: var(--color-bg);
+}
+.screen-host {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.screen-host__filterbar {
+  border-bottom: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+}
+.screen-host__body {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-4);
+}
+
+/* ==========================================================================
+   ScreenFilterBar — COMPACT data control bar (dense, hairline, tabular).
+   Opts the surface into the compact density track.
+   ========================================================================== */
+.filterbar {
+  --density: compact;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-compact);
+  padding: var(--pad-compact-y) var(--space-4);
+  font-size: var(--text-sm);
+}
+.filterbar__row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-compact);
+  flex-wrap: wrap;
+}
+.filterbar__group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1x);
+}
+.filterbar__label {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.filterbar__select {
+  min-height: 1.875rem;
+  padding-top: var(--space-1);
+  padding-bottom: var(--space-1);
+}
+.filterbar__search {
+  font: inherit;
+  font-size: var(--text-sm);
+  flex: 1;
+  min-width: 12rem;
+  min-height: 1.875rem;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  color: var(--color-fg);
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard),
+    background var(--duration-fast) var(--ease-standard);
+}
+.filterbar__search::placeholder {
+  color: var(--color-muted);
+}
+.filterbar__search:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  background: var(--color-surface);
+  box-shadow: 0 0 0 3px var(--color-focus-halo);
+}
+.filterbar__clear {
+  min-height: 1.875rem;
+  padding: var(--space-1) var(--space-3);
+}
+.filterbar__advanced {
+  min-height: 1.875rem;
+  padding: var(--space-1) var(--space-3);
+}
+.filterbar__advanced--open {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+/* The Advanced panel: the structured PredicateFilter, framed + sunken so it
+   reads as a secondary surface dropping out of the bar. */
+.filterbar__panel {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
   padding: var(--space-3);
 }
-/* Inline fault banner — the control self-represents an error here (the
- * `onError: 'self'` route). Dismissed with Escape (region hotkey). */
-.task-list__fault {
-  margin-bottom: var(--space-2);
+
+/* ==========================================================================
+   Kanban board — COMPACT, powerful data surface. Columns are elegant
+   hairline-framed lanes; cards are tight but breathable.
+   ========================================================================== */
+.kanban {
+  --density: compact;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  height: 100%;
+  outline: none;
+}
+.kanban__fault {
   padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border: 1px solid var(--color-danger-ring);
+  border-radius: var(--radius-md);
+}
+/* The horizontal flex row of columns. When more columns exist than fit (e.g.
+   M1–M5 + (unset)), the row scrolls HORIZONTALLY (issue #14) with the visible
+   `.scroll-x` styled scrollbar — nothing is clipped. Columns keep their fixed
+   width (flex: 0 0 var(--kanban-col-width)) and their OWN vertical virtual
+   scroll inside `.col__body`. `overflow-y: hidden` keeps this row strictly a
+   horizontal scroller (the per-column body owns the vertical axis). The
+   bottom padding leaves room for the horizontal scrollbar gutter. */
+.kanban__columns {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: var(--space-2);
+}
+
+/* ---- column ---- */
+.col {
+  flex: 0 0 var(--kanban-col-width);
+  width: var(--kanban-col-width);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-sunken);
+  transition:
+    box-shadow var(--duration-base) var(--ease-standard),
+    background var(--duration-base) var(--ease-standard);
+}
+/* Drop-target affordance ONLY appears during an active drag — the board
+   carries `kanban--dragging` for the lifetime of the drag, so the dashed/
+   highlighted drop strip never shows at rest. */
+.kanban--dragging .col--drop {
+  box-shadow:
+    inset 0 0 0 2px var(--color-accent),
+    0 0 0 4px var(--color-focus-halo);
+  background: var(--color-accent-soft);
+}
+.col__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-hairline);
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.col__label {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-fg-strong);
+}
+.col__count {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: var(--nums-tabular);
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 var(--space-1x);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+}
+.col__add {
+  margin-left: auto;
+  font: inherit;
+  font-size: var(--text-md);
+  line-height: 1;
+  width: 1.625rem;
+  height: 1.625rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  cursor: not-allowed;
+}
+/* The column body is the per-column virtualList scroll VIEWPORT: positioned +
+   overflow-y auto, with a max-height so a tall column scrolls (recycling its
+   card pool) instead of growing the page. The virtualList positions each card
+   slot absolutely (inline left/right/height); the body's side padding + the
+   card's own inset padding give the visual rhythm the old flex gap provided. */
+.col__body {
+  position: relative;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-2) 0;
+  min-height: var(--space-12);
+  max-height: calc(100vh - 16rem);
+}
+/* Each card is a virtualList slot (64px tall, positioned absolutely + sized
+   inline by the list). The vertical gap between cards is created by the card's
+   own bottom margin-equivalent: we shrink the visible card inside the slot via
+   padding so adjacent slots show a clear hairline gap. */
+.col__body .card {
+  /* The visible card sits inside the 64px slot with a bottom gutter so stacked
+     cards read as separated tiles (the recycling slots themselves abut). */
+  margin: 0 var(--space-2);
+  height: calc(100% - var(--space-2));
+}
+.col__empty {
+  padding: var(--space-5) var(--space-2);
+  text-align: center;
   font-size: var(--text-xs);
+  color: var(--color-muted);
+}
+
+/* ---- task card (compact) ---- */
+.card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  gap: var(--space-h) var(--space-2);
+  padding: var(--space-2) var(--space-2x);
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+  line-height: var(--leading-data);
+  cursor: grab;
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard),
+    transform var(--duration-fast) var(--ease-standard);
+}
+.card:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-sm);
+}
+.card:active {
+  cursor: grabbing;
+}
+.card--dragging {
+  opacity: 0.6;
+  box-shadow: var(--shadow-drag);
+  transform: scale(1.02) rotate(0.4deg);
+}
+.card__grip {
+  grid-row: 1 / span 2;
+  align-self: center;
+  cursor: grab;
+  font-size: var(--text-xs);
+  line-height: 1;
+  color: var(--color-border-strong);
+  letter-spacing: -0.1em;
+}
+.card__title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-fg-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card__meta {
+  grid-column: 2;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: var(--nums-tabular);
+  color: var(--color-muted);
+}
+
+/* ==========================================================================
+   Grid (table) — COMPACT, powerful data surface. The Ubiquiti register:
+   hairline-separated dense rows, a sticky header with a clear sortable
+   affordance, tabular numerals on id/date columns, per-column alignment,
+   small chips, and deliberate hover + selected states. Light AND dark.
+   ========================================================================== */
+.grid {
+  --density: compact;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  height: 100%;
+  min-height: 0;
+  outline: none;
+}
+.grid__filterbar {
+  flex: 0 0 auto;
+}
+.grid__fault {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
   color: var(--color-danger);
   background: var(--color-danger-soft);
   border: 1px solid var(--color-danger-ring);
   border-radius: var(--radius-md);
 }
 
-/* ---- NotFound placeholder (core requirement) ---- */
+/* The table is a hairline-framed surface: a NON-scrolling header pinned at the
+   top, then the body which is the virtualList scroll VIEWPORT. The grid uses
+   one shared column template so header + body cells line up exactly.
+
+   HORIZONTAL SCROLL (issue #15): when the total column width exceeds the
+   viewport, the BODY scrolls horizontally (the one scroll container that owns
+   both axes — vertical recycling + horizontal). The header lives OUTSIDE that
+   scroll container (so the virtualList's scrollTop math stays untouched) and is
+   kept column-aligned by a DOM-only `transform: translateX(-scrollLeft)` sync
+   driven from the body's scroll listener (cascade-safe: no signal writes). Both
+   header + body carry `min-width: var(--grid-min-width)` so columns line up and
+   the table only overflows when the viewport is narrower than that sum. The
+   outer `.grid__table` clips (`overflow: hidden`) so the translated header that
+   overflows the right edge is masked. */
+.grid__table {
+  --grid-cols:
+    4.5rem            /* ID            */
+    minmax(12rem, 2fr) /* Title        */
+    8rem              /* Status        */
+    9rem              /* Assignee      */
+    6.5rem            /* Priority      */
+    8rem              /* Milestone     */
+    9rem              /* Component     */
+    minmax(9rem, 1fr) /* Tags          */
+    7rem              /* Due           */
+    7rem              /* Created       */
+    8rem;             /* Last activity */
+  /* Sum of the column track MINIMUMS (the two minmax() mins, 12rem + 9rem, plus
+     the nine fixed widths): 4.5+12+8+9+6.5+8+9+9+7+7+8 = 88rem. Below this the
+     table overflows horizontally; at/above it the `1fr`/`2fr` columns flex to
+     fill and no horizontal scroll appears. */
+  --grid-min-width: 88rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+  font-variant-numeric: var(--nums-tabular);
+  line-height: var(--leading-data);
+}
+
+/* ---- header row (pinned, outside the scrolling body; translateX-synced) ---- */
+.grid__header {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: var(--grid-cols);
+  min-width: var(--grid-min-width);
+  /* Reserve the scrollbar gutter so header columns stay aligned with the body
+     rows even when the body's vertical scrollbar consumes width. */
+  scrollbar-gutter: stable;
+  z-index: var(--z-sticky);
+  background: var(--color-surface-sunken);
+  border-bottom: 1px solid var(--color-border-strong);
+  /* The control sets transform: translateX(-scrollLeft) on horizontal scroll;
+     `will-change` hints the compositor for the synced pan. */
+  will-change: transform;
+}
+
+/* ---- body = virtualList scroll viewport (recycling row pool, BOTH axes) ---- */
+.grid__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow-y: auto;
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+}
+/* The virtualList's sizing spacer is the body's scroll content; give IT the
+   min-width so the body overflows horizontally exactly when the columns don't
+   fit (the rows inside inherit the grid template + this width). The spacer is
+   the `[data-role="vlist-spacer"]` node the virtualList appends to the body. */
+.grid__body [data-role="vlist-spacer"] {
+  min-width: var(--grid-min-width);
+}
+.grid__head {
+  padding: 0;
+  min-width: 0;
+}
+
+/* ---- a cell: dense, hairline column separators, tight type ---- */
+.grid__cell {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--pad-compact-y) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-fg);
+  border-right: 1px solid var(--color-hairline);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.grid__cell:last-child {
+  border-right: none;
+}
+
+/* ---- sortable-header affordance ---- */
+.grid__sort {
+  font: inherit;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  min-width: 0;
+  padding: var(--pad-compact-y) var(--space-3);
+  border: none;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+.grid__sort:not(:disabled):hover {
+  color: var(--color-fg-strong);
+}
+.grid__sort:disabled {
+  cursor: default;
+}
+.grid__sort:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+  border-radius: var(--radius-xs);
+}
+.grid__head-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The sort caret: a muted glyph at rest on sortable columns, accent + bold
+   when this column is the active sort. The control writes ↑ / ↓ into it; this
+   styles the at-rest hint via the disabled/aria-sort state. */
+.grid__sort-arrow {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  line-height: 1;
+  color: var(--color-border-strong);
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+.grid__head[aria-sort="none"] .grid__sort-arrow::after {
+  content: "↕";
+  color: var(--color-border-strong);
+}
+.grid__head[data-sort-dir] .grid__sort-arrow {
+  color: var(--color-accent);
+}
+.grid__head[data-sort-dir] .grid__sort {
+  color: var(--color-fg-strong);
+}
+/* Non-sortable headers (disabled button) drop the at-rest caret entirely. */
+.grid__sort:disabled .grid__sort-arrow {
+  display: none;
+}
+
+/* ---- body rows: fixed-height (virtualList positions by this px height),
+   1px hairline separators, hover + selected states. The virtualList sets
+   position:absolute + an inline height of GRID_ROW_HEIGHT and translates each
+   row; the CSS height MUST equal that constant (34px) so rows tile exactly. */
+.grid__row {
+  display: grid;
+  grid-template-columns: var(--grid-cols);
+  height: 34px;
+  align-items: stretch;
+  border-bottom: 1px solid var(--color-hairline);
+  cursor: default;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.grid__row:last-child {
+  border-bottom: none;
+}
+.grid__row:hover {
+  background: var(--color-fill-hover);
+}
+.grid__row:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+.grid__row[aria-selected="true"],
+.grid__row--selected {
+  background: var(--color-accent-soft);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+/* ---- per-column alignment + numeric tabular treatment ---- */
+.grid-id,
+.grid-due,
+.grid-created,
+.grid-last_activity {
+  font-variant-numeric: var(--nums-tabular);
+}
+.grid-id {
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.grid-due,
+.grid-created,
+.grid-last_activity {
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  justify-content: flex-end;
+}
+.grid__head.grid-due .grid__sort,
+.grid__head.grid-created .grid__sort,
+.grid__head.grid-last_activity .grid__sort {
+  flex-direction: row-reverse;
+}
+.grid__head.grid-due .grid__sort-arrow,
+.grid__head.grid-created .grid__sort-arrow,
+.grid__head.grid-last_activity .grid__sort-arrow {
+  margin-left: 0;
+  margin-right: auto;
+}
+.grid-title {
+  color: var(--color-fg-strong);
+  font-weight: var(--weight-medium);
+}
+.grid-priority {
+  justify-content: center;
+}
+.grid__head.grid-priority .grid__sort {
+  justify-content: center;
+}
+.grid-tags {
+  flex-wrap: nowrap;
+  gap: var(--space-1);
+}
+
+/* ---- a resolved ref label (assignee / status / milestone / component) ---- */
+.grid__ref {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- priority tone pill (compact, near-square chip) ---- */
+.grid__pill {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  text-transform: capitalize;
+  padding: var(--space-h) var(--space-1x);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+}
+.grid__pill[data-priority="high"] {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+.grid__pill[data-priority="med"],
+.grid__pill[data-priority="medium"] {
+  background: var(--color-warning);
+  color: var(--color-warning-fg);
+}
+.grid__pill[data-priority="low"] {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+/* ---- muted em-dash for empty cells ---- */
+.grid__dash {
+  color: var(--color-muted);
+}
+
+/* ---- empty state ---- */
+.grid__empty {
+  padding: var(--space-10) var(--space-4);
+  text-align: center;
+  font-size: var(--text-base);
+  color: var(--color-muted);
+}
+
+/* ==========================================================================
+   TagChip — small, crisp data chip (compact register). Leaf label, full path
+   as tooltip; an optional × remove affordance for editable lists.
+   ========================================================================== */
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-h);
+  max-width: 100%;
+  padding: var(--space-h) var(--space-1x);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-fg);
+  line-height: 1.4;
+}
+.tag-chip__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tag-chip__remove {
+  font: inherit;
+  font-size: var(--text-xs);
+  line-height: 1;
+  display: inline-flex;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+.tag-chip__remove:hover {
+  color: var(--color-danger);
+}
+
+/* ==========================================================================
+   Fault toast — a minimal, unobtrusive fixed-corner surface the centralized
+   fault funnel routes to (the `top` error route + the 401/403 bounce). NOT a
+   full toast system; one element, auto-dismissed, dismissible.
+   ========================================================================== */
+.fault-toast {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: var(--z-toast);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: min(28rem, calc(100vw - 2 * var(--space-4)));
+  padding: var(--space-2x) var(--space-3);
+  border: 1px solid var(--color-danger-ring);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-lg);
+  color: var(--color-fg);
+  font-size: var(--text-sm);
+  opacity: 0;
+  transform: translateY(0.5rem);
+  pointer-events: none;
+  transition:
+    opacity var(--duration-base) var(--ease-standard),
+    transform var(--duration-base) var(--ease-standard);
+}
+.fault-toast--show {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.fault-toast__dot {
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-danger);
+}
+.fault-toast__msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fault-toast__close {
+  font: inherit;
+  font-size: var(--text-md);
+  line-height: 1;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+.fault-toast__close:hover {
+  background: var(--color-fill-hover);
+  color: var(--color-fg);
+}
+
+/* ==========================================================================
+   ProjectList — COMFORTABLE chrome. Breadcrumb + H1 + primary action +
+   search, then a soft elevated card framing a list of generous rows.
+   ========================================================================== */
+.projects {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  height: 100%;
+  outline: none;
+  max-width: 56rem;
+  /* Comfortable left (+ top/right) padding so the title + list region isn't
+     flush against the rail / outlet edge (layout fix #7). The outlet mounts
+     ProjectList directly (no screen-host body padding), so the screen owns it. */
+  padding: var(--space-6) var(--space-6) var(--space-4);
+}
+.projects__breadcrumb {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.01em;
+  color: var(--color-muted);
+}
+.projects__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.projects__title {
+  margin: 0;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.02em;
+  color: var(--color-fg-strong);
+}
+.projects__new {
+  margin-left: auto;
+}
+.projects__search {
+  font: inherit;
+  font-size: var(--text-base);
+  min-height: 2.5rem;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  box-shadow: var(--shadow-xs);
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+.projects__search::placeholder {
+  color: var(--color-muted);
+}
+.projects__search:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 4px var(--color-focus-halo);
+}
+.projects__fault {
+  padding: var(--space-2x) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border: 1px solid var(--color-danger-ring);
+  border-radius: var(--radius-md);
+}
+/* The list is the virtualList scroll VIEWPORT: positioned + overflow-y auto so
+   the recycling row pool tiles inside it, and flex:1 so it fills the remaining
+   ProjectList height (the recycling needs a sized scroll container). */
+.projects__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+/* Fixed-height row (virtualList positions by PROJECT_ROW_HEIGHT = 64px). The
+   absolute positioning + inline height come from the virtualList; the CSS
+   height MUST equal that constant so rows tile exactly. */
+.projects__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 64px;
+  border-bottom: 1px solid var(--color-hairline);
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.projects__row:last-child {
+  border-bottom: none;
+}
+.projects__row:hover,
+.projects__row--selected {
+  background: var(--color-fill-hover);
+}
+.projects__row--selected {
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+.projects__row--pending {
+  opacity: 0.6;
+}
+.projects__open {
+  font: inherit;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-h);
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+  border: none;
+  background: transparent;
+  color: var(--color-fg);
+  cursor: pointer;
+}
+.projects__open:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+  border-radius: var(--radius-md);
+}
+.projects__row-title {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--color-fg-strong);
+}
+.projects__row-desc {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+.projects__row-meta {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  font-variant-numeric: var(--nums-tabular);
+  color: var(--color-muted);
+}
+.projects__edit {
+  margin-right: var(--space-2);
+  flex-shrink: 0;
+}
+.projects__empty {
+  padding: var(--space-10) var(--space-4);
+  text-align: center;
+  font-size: var(--text-base);
+  color: var(--color-muted);
+}
+
+/* ==========================================================================
+   New/Edit project dialog — COMFORTABLE chrome. Soft floating surface,
+   large radius, generous padding, One-UI calm.
+   ========================================================================== */
+.qe-dialog {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: var(--color-scrim);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  z-index: var(--z-modal);
+}
+.qe-dialog__panel {
+  width: min(32rem, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+}
+.qe-dialog__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.01em;
+  color: var(--color-fg-strong);
+}
+.qe-dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1x);
+}
+.qe-dialog__label {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.qe-dialog__input {
+  font: inherit;
+  font-size: var(--text-base);
+  min-height: 2.5rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+.qe-dialog__input::placeholder {
+  color: var(--color-muted);
+}
+.qe-dialog__input:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 4px var(--color-focus-halo);
+}
+.qe-dialog__textarea {
+  resize: vertical;
+  min-height: 5rem;
+  line-height: var(--leading-normal);
+}
+.qe-dialog__more {
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  align-self: flex-start;
+  padding: var(--space-1) 0;
+  border: none;
+  background: transparent;
+  color: var(--color-accent);
+  cursor: pointer;
+}
+.qe-dialog__more:hover {
+  color: var(--color-accent-hover);
+  text-decoration: underline;
+}
+.qe-dialog__more-region {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.qe-dialog__hint {
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+}
+.qe-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+/* ==========================================================================
+   NotFound placeholder (load-bearing graceful-degradation surface).
+   ========================================================================== */
 .control-not-found {
   border: 1px dashed var(--color-danger-ring);
   background: var(--color-danger-soft);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   padding: var(--space-3);
 }
 .control-not-found__title {
@@ -180,10 +1383,350 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--color-fg);
-  background: var(--color-bg);
+  background: var(--color-surface-sunken);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   padding: var(--space-2);
   max-height: 12rem;
   overflow: auto;
+}
+
+/* ==========================================================================
+   MasterDetail — the reusable search-list-detail admin screen (issue #11).
+   Two panes fill the outlet: a ~320px list pane (COMFORTABLE chrome: search
+   Field + recycling virtualList with the visible .scroll-y scrollbar) and a
+   flex:1 detail pane. Contacts + Users are each JUST a config of this layout.
+   ========================================================================== */
+.masterdetail {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  outline: none;
+  background: var(--color-bg);
+}
+
+/* ---- left list pane ---- */
+.masterdetail__list-pane {
+  flex: 0 0 20rem;            /* ~320px */
+  width: 20rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  padding: var(--space-5) var(--space-4) var(--space-4);
+  border-right: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+}
+.masterdetail__heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.masterdetail__title {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.02em;
+  color: var(--color-fg-strong);
+}
+.masterdetail__search {
+  font: inherit;
+  font-size: var(--text-sm);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+.masterdetail__search:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 4px var(--color-focus-halo);
+}
+/* The optional structured predicate filter, framed above the search on
+   card-backed admin screens. Scrolls within itself when the tree grows. */
+.masterdetail__predicate {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  padding: var(--space-2);
+  max-height: 18rem;
+  overflow: auto;
+}
+.masterdetail__fault {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border: 1px solid var(--color-danger-ring);
+  border-radius: var(--radius-md);
+}
+
+/* The list is the virtualList scroll VIEWPORT: positioned + overflow-y, the
+   recycling row pool tiles inside it, flex:1 fills the remaining height. The
+   visible scrollbar comes from the .scroll-y utility (issue #10). */
+.masterdetail__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+.masterdetail__list-empty {
+  padding: var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+
+/* Fixed-height row (virtualList positions by rowHeight; the CSS height MUST
+   match the config rowHeight = 56px so rows tile exactly). */
+.masterdetail__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 56px;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--color-hairline);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.masterdetail__row:hover {
+  background: var(--color-fill-hover);
+}
+.masterdetail__row--selected {
+  background: var(--color-fill-hover);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+.masterdetail__row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-h);
+}
+.masterdetail__row-title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-fg-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.masterdetail__row-subtitle {
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.masterdetail__row-badge {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  padding: var(--space-h) var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-tint);
+  color: var(--color-accent);
+}
+
+/* ---- right detail pane ---- */
+.masterdetail__detail-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-6);
+}
+.masterdetail__empty {
+  font-size: var(--text-md);
+  color: var(--color-muted);
+  padding: var(--space-6) 0;
+}
+.masterdetail__detail-title {
+  margin: 0 0 var(--space-5);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.02em;
+  color: var(--color-fg-strong);
+}
+.masterdetail__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-width: 36rem;
+  margin-bottom: var(--space-4);
+}
+.masterdetail__field-label {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.masterdetail__field-value {
+  font-size: var(--text-md);
+  color: var(--color-fg);
+}
+.masterdetail__field-input,
+.masterdetail__field-select {
+  font: inherit;
+  font-size: var(--text-md);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+.masterdetail__field-input:focus-visible,
+.masterdetail__field-select:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 4px var(--color-focus-halo);
+}
+.masterdetail__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.masterdetail__badge {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  padding: var(--space-h) var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-tint);
+  color: var(--color-accent);
+  border: 1px solid var(--color-accent-ring);
+}
+
+/* -------------------------------------------------------------------------- */
+/* PredicateFilter — structured filter tree editor (groups + leaves).          */
+/* Compact-data surface: reuses the field/select/button rhythm of the rest of  */
+/* the app. Structural only; no new tokens.                                    */
+/* -------------------------------------------------------------------------- */
+.predfilter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  color: var(--color-fg);
+}
+.predfilter__fault {
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+  padding: var(--space-1) var(--space-2);
+}
+.predfilter__tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+/* A connective group: a bordered, slightly sunken card with a header row and a
+   recursive list of children. Nested groups indent via the child wrapper. */
+.predfilter__group {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  padding: var(--space-2);
+}
+.predfilter__group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.predfilter__children {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1x);
+  padding-left: var(--space-3);
+}
+.predfilter__empty {
+  font-size: var(--text-xs);
+  padding: var(--space-h) var(--space-1);
+}
+/* One leaf row: attribute -> operator -> value editor -> remove, wrapping on
+   narrow surfaces. */
+.predfilter__leaf {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1x);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.predfilter__select,
+.predfilter__input {
+  font: inherit;
+  font-size: var(--text-md);
+  padding: var(--space-1) var(--space-2x);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+.predfilter__select:focus-visible,
+.predfilter__input:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 4px var(--color-focus-halo);
+}
+.predfilter__connective {
+  min-width: 4.5rem;
+}
+.predfilter__attr {
+  min-width: 9rem;
+}
+.predfilter__op {
+  min-width: 7rem;
+}
+.predfilter__value {
+  flex: 1 1 9rem;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.predfilter__value .predfilter__input,
+.predfilter__value .predfilter__select {
+  width: 100%;
+}
+.predfilter__ref[multiple] {
+  min-height: 4.5rem;
+}
+.predfilter__novalue {
+  font-size: var(--text-xs);
+}
+.predfilter__bool,
+.predfilter__phase {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.predfilter__phases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+/* The compact "+ leaf" / "+ group" / remove buttons reuse .btn sizing but tuck
+   in tighter for the dense editor. */
+.predfilter__add,
+.predfilter__remove {
+  padding: var(--space-h) var(--space-2);
+  font-size: var(--text-xs);
+}
+.predfilter__remove {
+  margin-left: auto;
+  line-height: 1;
 }
