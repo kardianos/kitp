@@ -99,23 +99,20 @@ func (m *Manager) Config() Config {
 	return m.cfg
 }
 
-// Start launches the batched-touch goroutine. It returns immediately;
-// the goroutine exits when ctx is cancelled. A final flush runs on
-// exit so in-flight touches aren't lost on graceful shutdown.
-func (m *Manager) Start(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(m.cfg.TouchInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				_ = m.flush(context.Background())
-				return
-			case <-ticker.C:
-				_ = m.flush(ctx)
-			}
-		}
-	}()
+// RunTouch flushes any buffered last_active_at touches to the DB.
+// Designed for the [job.Scheduler]: register it as a periodic job
+// in main with `Interval: cfg.TouchInterval`. The scheduler owns
+// the ticker; the caller is responsible for invoking [Manager.Flush]
+// after the scheduler stops so in-flight touches aren't lost.
+func (m *Manager) RunTouch(ctx context.Context) error {
+	return m.flush(ctx)
+}
+
+// Flush forces an immediate flush of buffered touches. Call once
+// during shutdown (after [job.Scheduler.Wait] returns) so the final
+// batch of touches lands in the DB.
+func (m *Manager) Flush(ctx context.Context) error {
+	return m.flush(ctx)
 }
 
 // ErrNotFound is returned by Lookup when the cookie value names no

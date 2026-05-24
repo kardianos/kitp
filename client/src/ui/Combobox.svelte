@@ -7,6 +7,13 @@
   interface Option {
     value: T;
     label: string;
+    /**
+     * Optional alternate label used when the option is the *selected*
+     * value (rendered in the trigger or as a multi-select Chip). Lets
+     * callers show one format inside the dropdown (e.g. "#42 Title")
+     * and another once chosen ("Title #42"). Falls back to `label`.
+     */
+    selectedLabel?: string;
     disabled?: boolean;
   }
 
@@ -96,11 +103,30 @@
 
   const visibleIds = $derived.by(() => filtered.map((_, i) => `${baseId}-opt-${i}`));
 
+  /**
+   * Look [val] up in the static `options` prop first, then in
+   * `asyncOptions` (the latest loader response). Async pickers pass
+   * `options={[]}` and rely on the loader for everything, so without
+   * this fallback the trigger could only render the muted "#<id>"
+   * placeholder after a pick. Returns the option's `selectedLabel`
+   * if set, else its `label`, else null.
+   */
+  function labelFor(val: T): string | null {
+    const fromOptions = options.find((o) => o.value === val);
+    if (fromOptions !== undefined) {
+      return fromOptions.selectedLabel ?? fromOptions.label;
+    }
+    const fromAsync = asyncOptions.find((o) => o.value === val);
+    if (fromAsync !== undefined) {
+      return fromAsync.selectedLabel ?? fromAsync.label;
+    }
+    return null;
+  }
+
   /** Trigger label for single-select, or fall back to placeholder. */
   const singleLabel = $derived.by(() => {
     if (selectedSingle === null) return '';
-    const found = options.find((o) => o.value === selectedSingle);
-    return found?.label ?? '';
+    return labelFor(selectedSingle) ?? '';
   });
 
   function emit(v: T | T[] | null) {
@@ -135,7 +161,12 @@
     emit(selectedMulti.filter((x) => x !== v));
   }
 
-  async function openMenu() {
+  // Exported so a parent can imperatively pop the menu (and, when
+  // searchable, focus the search input) via `bind:this`. Useful for
+  // keyboard chords that open a picker — e.g. RelatedTasksPanel's
+  // parent / child pickers when triggered by `e p` / `e a` on
+  // TaskDetailScreen.
+  export async function openMenu() {
     if (disabled) return;
     open = true;
     highlightIdx = 0;
@@ -351,9 +382,9 @@
           <span class="text-muted">{placeholder}</span>
         {:else}
           {#each selectedMulti as v (v)}
-            {@const opt = options.find((o) => o.value === v)}
+            {@const lbl = labelFor(v)}
             <Chip
-              label={opt?.label ?? String(v)}
+              label={lbl ?? String(v)}
               removable
               onRemove={() => removeMulti(v)}
             />
@@ -386,8 +417,7 @@
   {#if open}
     <div
       bind:this={popupEl}
-      class="z-50 flex flex-col overflow-hidden rounded-md border border-border bg-bg shadow-lg"
-      style="position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none;"
+      class="kf-float-anchor-fade z-50 flex flex-col overflow-hidden rounded-md border border-border bg-bg shadow-lg"
     >
       {#if searchable}
         <div class="border-b border-border p-1.5">

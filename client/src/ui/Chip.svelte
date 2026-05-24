@@ -24,7 +24,7 @@
       case 'accent':
         return 'bg-accent text-accent-fg border-transparent';
       case 'danger':
-        return 'bg-danger text-white border-transparent';
+        return 'bg-danger text-danger-fg border-transparent';
       default:
         return 'bg-surface text-fg border-border';
     }

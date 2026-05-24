@@ -31,7 +31,9 @@
   Ports `client/lib/ui/screens/kanban_screen.dart` (973 LOC).
 -->
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
+  import { flip } from 'svelte/animate';
+  import { prefersReducedMotion } from 'svelte/motion';
   import { getDispatcher } from '../dispatch/context';
   import { BatchAbortedError, SubRequestError } from '../dispatch/errors';
   import {
@@ -51,13 +53,14 @@
   } from '../filter/predicate';
   import {
     readColumnAttr,
-    readLaneAttr,
+    readGroupByAttr,
   } from '../filter/screen_preset.svelte';
   import DragHandle from '../dnd/DragHandle.svelte';
   import DropZone from '../dnd/DropZone.svelte';
   import { setActiveScope, useShortcut } from '../keys/shortcut';
   import { projectScope } from '../shell/project_scope.svelte';
   import { useQuickEntry } from '../quick_entry/use_quick_entry.svelte';
+  import { isAssignablePerson } from '../util/person';
   import QuickEntryOverlay from '../quick_entry/QuickEntryOverlay.svelte';
   import {
     attributeUpdate,
@@ -80,8 +83,8 @@
   import { cx } from '../util/class_names';
   import {
     computeMoveBatch,
-    computeNewSortOrder,
     nextColumnIndex,
+    planSortRewrite,
     sortByOrder,
     type UpdateOp,
   } from './kanban_helpers';
@@ -154,19 +157,21 @@
     untrack(() => getFilter(slug, projectScope.projectId)),
   );
   // The active filter card, bound from <ScreenFilterBar>. Kanban reads
-  // its `column_attr` / `lane_attr` attributes off this card via an
+  // its `column_attr` (primary axis) and `group_by_attr` (secondary
+  // axis — what we call "lane" in this layout) off this card via an
   // effect so the axis combobox updates whenever the user picks a
   // different preset (or one is applied on first visit).
   let activeFilter = $state<CardWithAttrs | null>(null);
   let columnAttr = $state<string>('milestone_ref');
   let laneAttr = $state<string>(NO_LANE);
   // The active filter card OWNS the axes. Reset to defaults whenever a
-  // preset omits column_attr / lane_attr so switching from a 2-axis preset
-  // to a 1-axis preset doesn't leave the lane stuck on the previous value.
+  // preset omits column_attr / group_by_attr so switching from a 2-axis
+  // preset to a 1-axis preset doesn't leave the lane stuck on the
+  // previous value.
   $effect(() => {
     if (activeFilter === null) return;
     columnAttr = readColumnAttr(activeFilter) ?? 'milestone_ref';
-    laneAttr = readLaneAttr(activeFilter) ?? NO_LANE;
+    laneAttr = readGroupByAttr(activeFilter) ?? NO_LANE;
   });
 
   /** Keyboard navigation focus. */
@@ -515,7 +520,7 @@
     targetColumnKey: string,
     targetLaneKey: string,
   ): Promise<void> {
-    const newSortOrder = computeNewSortOrder(destStack, slot);
+    const sortUpdates = planSortRewrite(destStack, card, slot);
     const targetColVal = valueForKey(columnAttr, targetColumnKey);
     const targetLaneVal =
       laneAttr === NO_LANE ? null : valueForKey(laneAttr, targetLaneKey);
@@ -523,24 +528,34 @@
       card,
       targetColVal,
       targetLaneVal,
-      newSortOrder,
+      sortUpdates,
       columnAttr,
       laneAttr === NO_LANE ? null : laneAttr,
     );
     if (ops.length === 0) return;
 
-    // Optimistic update. Patch the card's attributes so the re-bucket
-    // happens immediately — Promise.all will replace `tasks` on success
-    // (next refresh() tick) or rollback on failure.
+    // Optimistic update. Patch sort_order across every card the rewrite
+    // touched (the cell gets renumbered, not just the moved card) and
+    // apply the moved card's column/lane changes so the re-bucket
+    // happens immediately. Refresh will replace `tasks` on success or
+    // rollback on failure.
+    const sortByCardId = new Map<bigint, number>();
+    for (const u of sortUpdates) sortByCardId.set(u.cardId, u.sortOrder);
     const original = tasks;
     const patched: CardWithAttrs[] = tasks.map((t) => {
-      if (t.id !== card.id) return t;
+      const newSort = sortByCardId.get(t.id);
+      const isMoved = t.id === card.id;
+      if (newSort === undefined && !isMoved) return t;
       const next = { ...t.attributes };
-      for (const op of ops) {
-        if (op.value === null || op.value === undefined) {
-          delete next[op.attributeName];
-        } else {
-          next[op.attributeName] = op.value;
+      if (newSort !== undefined) next['sort_order'] = newSort;
+      if (isMoved) {
+        for (const op of ops) {
+          if (op.cardId !== card.id || op.attributeName === 'sort_order') continue;
+          if (op.value === null || op.value === undefined) {
+            delete next[op.attributeName];
+          } else {
+            next[op.attributeName] = op.value;
+          }
         }
       }
       return { ...t, attributes: next };
@@ -729,6 +744,42 @@
     fireInInputs: false,
   });
 
+  /* -------------------------------------------------- search ⇄ list nav -- */
+
+  /** Focus the FilterBar's search input; bound to `/`. */
+  async function focusSearch(): Promise<void> {
+    await tick();
+    const el = document.querySelector<HTMLInputElement>(
+      '[data-testid="text-search-input"]',
+    );
+    if (el !== null) {
+      el.focus();
+      el.select();
+    }
+  }
+  useShortcut('kanban', '/', () => void focusSearch(), 'Focus search', {
+    fireInInputs: false,
+  });
+
+  /** Focus the first card in the focused column when ArrowDown is
+   *  pressed in the search input. The card's title button carries
+   *  tabindex=0; scope to `[data-kanban-column]` rows so we don't
+   *  jump across lanes. */
+  async function focusFirstCard(): Promise<void> {
+    await tick();
+    const card = document.querySelector<HTMLElement>(
+      '[data-kanban-column] [data-card-id] button[tabindex="0"]',
+    );
+    if (card === null) return;
+    // Reset focus to row 0 of column 0 / lane 0 so subsequent j/k
+    // moves are coherent.
+    focused = { columnIdx: 0, laneIdx: 0, rowIdxWithinColumn: 0 };
+    card.focus();
+  }
+  function onSearchNavigateOut(direction: 'down' | 'up'): void {
+    if (direction === 'down') void focusFirstCard();
+  }
+
   /* ---------------------------------------------------------- quick entry */
 
   /**
@@ -783,7 +834,9 @@
     defaultCardType: 'task',
     prefill: qePrefill,
     // assignee is a card_ref → person card, so options are person cards.
-    assigneeOptions: persons.map((p) => {
+    // Excludes contact-kind persons (email-only contacts materialised
+    // by the comm recipient picker) from the assignment dropdown.
+    assigneeOptions: persons.filter(isAssignablePerson).map((p) => {
       const t = p.attributes['title'];
       return {
         value: p.id,
@@ -791,6 +844,15 @@
       };
     }),
     candidateStatuses: () => statuses,
+    attributePalette: () => filterAttributes,
+    tagOptions: () =>
+      tagsRows.map((r) => {
+        const p = r.attributes['path'];
+        return {
+          value: r.id,
+          label: typeof p === 'string' && p !== '' ? p : `#${r.id}`,
+        };
+      }),
     onCreated: () => {
       void refresh();
     },
@@ -926,9 +988,10 @@
     bind:filterReady
     extraAttributes={{
       column_attr: columnAttr,
-      lane_attr: laneAttr === NO_LANE ? null : laneAttr,
+      group_by_attr: laneAttr === NO_LANE ? null : laneAttr,
     }}
     onchange={onFilterChange}
+    onNavigateOut={onSearchNavigateOut}
   >
     {#snippet trailing()}
       <span>{tasks.length} task{tasks.length === 1 ? '' : 's'}</span>
@@ -957,7 +1020,18 @@
       </button>
     </div>
   {:else}
-    <div class="flex flex-1 flex-col gap-4 overflow-auto">
+    <div
+      class={cx(
+        'flex flex-1 flex-col gap-4',
+        // With swim lanes active we let the outer area scroll because
+        // each lane row carries its own per-column max-height cap (so
+        // many cards in one column don't push the next lane row down).
+        // With a single (NO_LANE) row, we drop both the outer scroll
+        // and the inner column cap so the columns themselves fill the
+        // remaining viewport height and each scrolls independently.
+        laneAttr === NO_LANE ? 'min-h-0 overflow-hidden' : 'overflow-auto',
+      )}
+    >
       {#each laneKeys as laneKey, laneIdx (laneKey)}
         {#if laneAttr !== NO_LANE}
           <div
@@ -968,7 +1042,12 @@
             <span>{labelFor(laneAttr, laneKey)}</span>
           </div>
         {/if}
-        <div class="flex min-h-[16rem] gap-3">
+        <div
+          class={cx(
+            'flex gap-3',
+            laneAttr === NO_LANE ? 'min-h-0 flex-1' : 'min-h-[16rem]',
+          )}
+        >
           {#each columnKeys as columnKey, columnIdx (columnKey)}
             {@const stack = cells[laneKey]?.[columnKey] ?? []}
             <section
@@ -996,14 +1075,19 @@
               <div
                 class={cx(
                   'flex flex-1 flex-col gap-1 overflow-y-auto p-2',
-                  // The cap is what stops a column with many cards from
-                  // pushing its swim-lane row past the next one — without
-                  // it the lane rows below get bumped down off-screen
-                  // (and visually "overlap" because the outer `gap-4` is
-                  // smaller than the overflow). 28rem ≈ 10-12 cards;
-                  // anything longer scrolls inside the cell.
-                  'max-h-[28rem] min-h-0',
-                  stack.length === 0 && 'min-h-[200px]',
+                  // With swim lanes active, the cap keeps a column with
+                  // many cards from pushing its lane row past the next
+                  // one — without it the lane rows below get bumped
+                  // down off-screen (and visually "overlap" because the
+                  // outer `gap-4` is smaller than the overflow). 28rem
+                  // ≈ 10-12 cards; anything longer scrolls inside the
+                  // cell.
+                  //
+                  // With NO_LANE we drop the cap: the single lane row
+                  // is `flex-1` so the column body fills the viewport
+                  // and scrolls independently. No second lane to crowd.
+                  laneAttr === NO_LANE ? 'min-h-0' : 'max-h-[28rem] min-h-0',
+                  stack.length === 0 && laneAttr !== NO_LANE && 'min-h-[200px]',
                 )}
               >
                 <DropZone
@@ -1016,6 +1100,10 @@
                     focused.columnIdx === columnIdx &&
                     focused.laneIdx === laneIdx &&
                     focused.rowIdxWithinColumn === slot}
+                  <!-- Wrapper exists so animate:flip has a single top-level
+                       child of the keyed each block; the trailing DropZone
+                       below rides along inside it. -->
+                  <div animate:flip={{ duration: prefersReducedMotion.current ? 0 : 420 }}>
                   <!-- svelte-ignore a11y_click_events_have_key_events -->
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
@@ -1073,6 +1161,7 @@
                       onZoneDrop(payload, columnKey, laneKey, slot + 1)}
                     padding={24}
                   />
+                  </div>
                 {/each}
                 {#if stack.length === 0}
                   <DropZone

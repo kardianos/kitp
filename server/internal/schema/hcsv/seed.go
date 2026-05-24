@@ -60,6 +60,15 @@ type SeedOptions struct {
 	// returns early when the card table already has rows. Used for
 	// demo.hcsv where re-applying must be a no-op.
 	GuardDemo bool
+
+	// KnownAttrTypes pre-seeds the loader's attribute_name → value_type
+	// map with entries harvested from upstream files. demo.hcsv doesn't
+	// declare its own attribute_defs — those live in seed.hcsv — so
+	// without this map the demo loader can't tell `tags` is a
+	// card_ref[] attribute and falls through to cross-product
+	// expansion on `[…]` cells (duplicating rows with 2+ tags,
+	// silently dropping rows with `[]`).
+	KnownAttrTypes map[string]string
 }
 
 // GenerateOptions controls GenerateAll.
@@ -83,7 +92,16 @@ func GenerateAll(opts GenerateOptions) (string, error) {
 		return "", err
 	}
 	seedPath, demoPath := SeedPaths()
-	seedSQL, err := LoadSeed(seedPath, schema, SeedOptions{})
+	seedBuf, err := os.ReadFile(seedPath)
+	if err != nil {
+		return "", fmt.Errorf("hcsv: read %s: %w", seedPath, err)
+	}
+	seedDoc, err := Parse(seedBuf)
+	if err != nil {
+		return "", err
+	}
+	seedAttrTypes := collectAttributeValueTypes(seedDoc.Root)
+	seedSQL, err := BuildSeed(seedDoc, schema, SeedOptions{})
 	if err != nil {
 		return "", err
 	}
@@ -100,7 +118,10 @@ func GenerateAll(opts GenerateOptions) (string, error) {
 		if opts.DemoPath != "" {
 			path = opts.DemoPath
 		}
-		demoSQL, err := LoadSeed(path, schema, SeedOptions{GuardDemo: true})
+		demoSQL, err := LoadSeed(path, schema, SeedOptions{
+			GuardDemo:      true,
+			KnownAttrTypes: seedAttrTypes,
+		})
 		if err != nil {
 			return "", err
 		}
@@ -170,11 +191,17 @@ func BuildSeed(doc *Document, schema *Schema, opts SeedOptions) (string, error) 
 	default:
 		return "", fmt.Errorf("hcsv: root section must be `# seed` or `# demo`, got %q at line %d", root.Kind, root.Line)
 	}
+	attrTypes := collectAttributeValueTypes(root)
+	for name, vt := range opts.KnownAttrTypes {
+		if _, ok := attrTypes[name]; !ok {
+			attrTypes[name] = vt
+		}
+	}
 	l := &seedLoader{
-		schema:          schema,
-		tables:          indexTables(schema),
-		aliases:         map[string]*seedRow{},
-		attrValueType:    collectAttributeValueTypes(root),
+		schema:        schema,
+		tables:        indexTables(schema),
+		aliases:       map[string]*seedRow{},
+		attrValueType: attrTypes,
 	}
 	if err := l.walk(root, nil); err != nil {
 		return "", err

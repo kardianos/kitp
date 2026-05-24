@@ -24,6 +24,18 @@ type CookieOptions struct {
 
 // Set writes the kitp_session cookie with the supplied id.
 // HttpOnly + SameSite=Strict + Path=/. Secure unless InsecureCookie.
+//
+// SameSite=Strict note: Strict blocks the cookie from being sent on
+// top-level cross-site navigations, including the redirect from the
+// OIDC provider back to /api/v1/auth/oidc/callback. That callback
+// works anyway because it CREATES the session (Set-Cookie on the
+// redirect response — no need to READ a pre-existing cookie). If a
+// future feature ever needs to READ the session inside an
+// OP-initiated callback (e.g. a "link my second provider" flow that
+// expects an already-signed-in user), this constant becomes a
+// silent foot-gun — switch that single endpoint's cookie read to
+// Lax, or relax the default here. See
+// issues/backend/11-low-samesite-strict-oidc.md.
 func Set(w http.ResponseWriter, id string, opts CookieOptions) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,

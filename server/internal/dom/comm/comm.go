@@ -111,10 +111,11 @@ type ChannelListOutput struct {
 
 // CommCreateInput is the wire shape for comm.create.
 type CommCreateInput struct {
-	TaskID         int64  `json:"task_id,string" mcp:"required,desc=task card id this comm attaches to"`
-	ChannelID      int64  `json:"channel_id,string" mcp:"required,desc=comm_channel card id this comm uses"`
-	Subject        string `json:"subject,omitempty" mcp:"desc=display subject; defaults to the task's title when empty"`
-	InitialMessage string `json:"initial_message,omitempty" mcp:"desc=optional inbound message text; when set, a reply_body row with delivery_status='received' is created and appended to the comm's replies attribute"`
+	TaskID             int64   `json:"task_id,string" mcp:"required,desc=task card id this comm attaches to"`
+	ChannelID          int64   `json:"channel_id,string" mcp:"required,desc=comm_channel card id this comm uses"`
+	Subject            string  `json:"subject,omitempty" mcp:"desc=display title on the comm card; defaults to the task's title when empty (outbound replies always use {thread_id} + task.title for the email Subject header at send time, regardless of this value)"`
+	InitialMessage     string  `json:"initial_message,omitempty" mcp:"desc=optional inbound message text; when set, a reply_body row with delivery_status='received' is created and appended to the comm's replies attribute"`
+	RecipientPersonIDs reg.IDs `json:"recipient_person_ids,omitempty" mcp:"desc=initial participants; each id must reference a person card. Stored in the comm_recipients attribute and used as the To: list when an operator authors a reply"`
 }
 
 // CommCreateOutput carries the new comm card id and the generated
@@ -138,6 +139,7 @@ type CommRow struct {
 	ThreadID   string     `json:"thread_id" mcp:"desc=10-char base62 thread id"`
 	ChannelID  int64      `json:"channel_id,string" mcp:"desc=comm_channel card id"`
 	CommStatus int64      `json:"comm_status,string" mcp:"desc=value-card id of the comm's comm_status attribute"`
+	Recipients reg.IDs    `json:"recipients" mcp:"desc=person card ids on the comm_recipients attribute; current thread-level To: list for outbound replies"`
 	Replies    []ReplyRow `json:"replies" mcp:"desc=reply_body rows attached via the replies card_ref[] attribute"`
 }
 
@@ -165,11 +167,23 @@ type CommListForTaskOutput struct {
 // tick and ships them. The handler itself only writes the reply_body
 // card and appends its id to the comm's replies attribute — no
 // network I/O happens here.
+//
+// The To: list and Subject line are derived server-side from the
+// comm's recipient and thread_id state, not supplied by the caller:
+//   - To: comma-joined emails from comm.comm_recipients (person.email)
+//   - Subject: "{thread_id} {task.title}" of the comm's parent task
+//
+// Editing recipients goes through comm.set_recipients; subject is
+// always derived from the thread / task and not separately editable.
 type ReplyPostInput struct {
-	CommID  int64  `json:"comm_id,string" mcp:"required,desc=comm card id to reply on"`
-	To      string `json:"to" mcp:"required,desc=outbound To: address"`
-	Subject string `json:"subject,omitempty" mcp:"desc=subject line; threading suffix [#<thread_id>] is appended at send time"`
-	Body    string `json:"body" mcp:"required,desc=plain-text body"`
+	CommID int64  `json:"comm_id,string" mcp:"required,desc=comm card id to reply on"`
+	Body   string `json:"body" mcp:"required,desc=plain-text body"`
+	// AttachmentIDs lists existing attachment rows on the comm's
+	// parent task to send alongside the reply. SMTP joins through
+	// reply_body_attachment on send; IMAP joins on receive to skip
+	// duplicate ingestion when the reply round-trips back. Empty list
+	// means a body-only reply (the pre-V2 behaviour).
+	AttachmentIDs reg.IDs `json:"attachment_ids,omitempty" mcp:"desc=existing attachment ids on the parent task to include"`
 }
 
 // ReplyPostOutput carries the new reply_body card id so the caller
@@ -223,7 +237,12 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[ChannelSetOutput](),
 		AllowedRoles: []string{"admin"},
 		Authz:        authzAdmin,
-		Run:          runChannelSet(p),
+		// Unified handler — body lives in
+		// db/schema/functions/comm_channel_set_batch.sql. Per Phase 4
+		// of docs/UNIFIED_HANDLER_PLAN.md the SQL function owns the
+		// full validate + INSERT/UPDATE + comm_secret pgcrypto upsert
+		// pipeline. Authz still runs in Go (admin global gate).
+		SQLFunc: "comm_channel_set_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "comm_channel",
@@ -233,17 +252,27 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[ChannelListOutput](),
 		AllowedRoles: []string{"admin"},
 		Authz:        authzAdmin,
-		Run:          runChannelList(p),
+		// Unified handler — body lives in
+		// db/schema/functions/comm_channel_list_batch.sql.
+		SQLFunc: "comm_channel_list_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "comm",
 		Action:       "create",
-		Doc:          "Admin-only: create a comm card under a task. Generates a 10-char base62 thread_id, sets channel_ref + comm_status (the project's comm flow default_create_status_id), appends the new comm to the task's comms attribute, and (when initial_message is provided) creates a received-direction reply_body row.",
+		Doc:          "Admin-only: create a comm card under a task. Generates a 10-char alphanumeric thread_id, sets channel_ref + comm_status (the project's comm flow default_create_status_id), appends the new comm to the task's comms attribute, and (when initial_message is provided) creates a received-direction reply_body row.",
 		InputType:    reflect.TypeFor[CommCreateInput](),
 		OutputType:   reflect.TypeFor[CommCreateOutput](),
 		AllowedRoles: []string{"admin"},
 		Authz:        authzAdmin,
-		Run:          runCommCreate(p),
+		// Unified handler — body lives in
+		// db/schema/functions/comm_create_batch.sql. Per Phase 4 of
+		// docs/UNIFIED_HANDLER_PLAN.md the SQL function owns the full
+		// validate + write pipeline. The Go-side generateThreadID /
+		// uniqueThreadID / loadTaskAndChannel / commFlowDefaultStatus /
+		// appendCardRefList / insertReceivedReply helpers stay because
+		// imap.go materialises new comms from inbound mail inside its
+		// own tx (not via the dispatcher).
+		SQLFunc: "comm_create_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "comm",
@@ -252,7 +281,9 @@ func Register(p *store.Pool) {
 		InputType:    reflect.TypeFor[CommListForTaskInput](),
 		OutputType:   reflect.TypeFor[CommListForTaskOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
-		Run:          runCommListForTask(p),
+		// Unified handler — body lives in
+		// db/schema/functions/comm_list_for_task_batch.sql.
+		SQLFunc: "comm_list_for_task_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "reply",
@@ -261,7 +292,15 @@ func Register(p *store.Pool) {
 		InputType:    reflect.TypeFor[ReplyPostInput](),
 		OutputType:   reflect.TypeFor[ReplyPostOutput](),
 		AllowedRoles: []string{"worker", "manager", "admin"},
-		Run:          runReplyPost(p),
+		ProcessName:  "card.update",
+		CardTypeID:   cardTypeFromReplyPostInput,
+		// Unified handler — body lives in
+		// db/schema/functions/reply_post_batch.sql. Per Phase 3 of
+		// docs/UNIFIED_HANDLER_PLAN.md the SQL function now owns the
+		// full validate + write pipeline (lookup comm, resolve
+		// recipients / from_address, insert reply_body + 5 attrs,
+		// append to comm.replies, optional attachment link).
+		SQLFunc: "reply_post_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "comm_log",
@@ -271,8 +310,39 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[CommLogListOutput](),
 		AllowedRoles: []string{"admin"},
 		Authz:        authzAdmin,
-		Run:          runCommLogList(p),
+		// Unified handler — body lives in
+		// db/schema/functions/comm_log_list_batch.sql.
+		SQLFunc: "comm_log_list_batch",
 	})
+	registerPersonUpsertByEmail(p)
+	registerPersonCreate(p)
+	registerCommSetRecipients(p)
+}
+
+// cardTypeFromReplyPostInput walks comm → parent task and returns the
+// task's card_type so the dispatcher can scope-check against the
+// actor's task-level grant. Workers are granted `card.update` on
+// task only (not on comm directly — see db/schema/seed.hcsv); gating
+// on the parent task lets a project-scoped worker still author
+// replies on tasks they own without giving them blanket comm
+// access. Returns 0 (skip authz) on a missing comm — the handler's
+// validation surfaces the proper not-found error.
+func cardTypeFromReplyPostInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+	commID := raw.(ReplyPostInput).CommID
+	var parentCardTypeID int64
+	err := pool.QueryRow(ctx, `
+		SELECT parent.card_type_id
+		FROM card c
+		JOIN card parent ON parent.id = c.parent_card_id
+		WHERE c.id = $1
+	`, commID).Scan(&parentCardTypeID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return parentCardTypeID, nil
 }
 
 // authzAdmin requires the actor to hold the admin or system role
@@ -287,7 +357,7 @@ func authzAdmin(ctx context.Context, _ any) error {
 		SELECT count(*)
 		FROM user_role ur
 		JOIN role r ON r.id = ur.role_id
-		WHERE ur.user_id = $1 AND r.name IN ('admin','system') AND ur.scope_card_id IS NULL
+		WHERE ur.user_id = $1 AND r.name = 'admin' AND ur.scope_card_id IS NULL
 	`, userID).Scan(&n); err != nil {
 		return fmt.Errorf("comm.authz: %w", err)
 	}
@@ -363,36 +433,6 @@ func resolveAttr(snap *schema.Snapshot, name string) (int64, error) {
 	return a.ID, nil
 }
 
-// projectIDOfCard walks the parent_card_id chain upward from cardID and
-// returns the id of the first ancestor (including cardID itself) whose
-// card_type is 'project'. Returns 0 if none is found. Mirrors the
-// equivalent helper in dom/flow.
-func projectIDOfCard(ctx context.Context, tx pgx.Tx, cardID int64) (int64, error) {
-	var pid int64
-	row := tx.QueryRow(ctx, `
-		WITH RECURSIVE chain AS (
-			SELECT id, parent_card_id, card_type_id
-			FROM card WHERE id = $1
-			UNION ALL
-			SELECT c.id, c.parent_card_id, c.card_type_id
-			FROM card c
-			JOIN chain ch ON ch.parent_card_id = c.id
-		)
-		SELECT chain.id
-		FROM chain
-		JOIN card_type ct ON ct.id = chain.card_type_id
-		WHERE ct.name = 'project'
-		LIMIT 1
-	`, cardID)
-	if err := row.Scan(&pid); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	return pid, nil
-}
-
 // writeCardCreateActivity inserts a card_create activity row. Mirrors
 // the in-tx helper in dom/projectstamp.
 func writeCardCreateActivity(ctx context.Context, tx pgx.Tx, cardID, actorID int64) error {
@@ -452,546 +492,23 @@ func readAttributeValueRaw(ctx context.Context, tx pgx.Tx, cardID int64, attrNam
 	return json.RawMessage(raw), true, nil
 }
 
-// ---- comm_channel.set implementation ----
+// comm_channel.set is migrated to
+// db/schema/functions/comm_channel_set_batch.sql per Phase 4 of
+// docs/UNIFIED_HANDLER_PLAN.md. The Go-side runChannelSet /
+// validateChannelSet / channelFieldWrites / upsertCommSecret bodies
+// are gone; the SQL function owns the full validate + write +
+// pgcrypto secret upsert pipeline.
 
-func runChannelSet(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-		snap, err := schema.Load(ctx, tx)
-		if err != nil {
-			return nil, err
-		}
-		channelCTID, err := resolveCardType(snap, "comm_channel")
-		if err != nil {
-			return nil, err
-		}
+// comm_channel.list is migrated to
+// db/schema/functions/comm_channel_list_batch.sql per Phase 5 of
+// docs/UNIFIED_HANDLER_PLAN.md. The Go-side runChannelList is gone.
 
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(ChannelSetInput)
-			if err := validateChannelSet(ctx, tx, i, in, snap); err != nil {
-				return nil, err
-			}
-
-			channelID := in.ID
-			if channelID == 0 {
-				// Insert new comm_channel card under project.
-				project := in.ProjectID
-				if err := tx.QueryRow(ctx, `
-					INSERT INTO card (card_type_id, parent_card_id) VALUES ($1, $2) RETURNING id
-				`, channelCTID, project).Scan(&channelID); err != nil {
-					return nil, fmt.Errorf("comm_channel.set: insert card: %w", err)
-				}
-				if err := writeCardCreateActivity(ctx, tx, channelID, actorID); err != nil {
-					return nil, fmt.Errorf("comm_channel.set: activity: %w", err)
-				}
-			}
-
-			// Write each non-zero field via attribute_value. On update,
-			// fields left at the zero value are skipped — the admin UI
-			// drives the full payload, but PATCH-style partial updates
-			// must not clobber existing rows.
-			writes := channelFieldWrites(in, snap, channelID == in.ID)
-			for _, w := range writes {
-				if err := writeAttributeValue(ctx, tx, channelID, w.attrDefID, w.value, actorID); err != nil {
-					return nil, fmt.Errorf("comm_channel.set: write %s: %w", w.attrName, err)
-				}
-			}
-
-			// Upsert comm_secret. Always run; encrypts only the fields
-			// the caller provided, COALESCE preserves the rest. Uses
-			// pgcrypto's pgp_sym_encrypt with the per-connection
-			// `app.comm_secret_key` GUC as the symmetric key.
-			if err := upsertCommSecret(ctx, tx, channelID, in.IMAPPassword, in.SMTPPassword); err != nil {
-				return nil, fmt.Errorf("comm_channel.set: comm_secret: %w", err)
-			}
-
-			outs[i] = ChannelSetOutput{ChannelID: channelID}
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		return outs, nil
-	}
-}
-
-func validateChannelSet(ctx context.Context, tx pgx.Tx, idx int, in ChannelSetInput, snap *schema.Snapshot) error {
-	if in.Name == "" {
-		return &reg.HandlerError{InputIndex: idx, Code: "validation",
-			Message: "comm_channel.set: name is required"}
-	}
-	if in.ChannelType == "" {
-		return &reg.HandlerError{InputIndex: idx, Code: "validation",
-			Message: "comm_channel.set: channel_type is required"}
-	}
-	if in.ChannelType != "email" {
-		return &reg.HandlerError{InputIndex: idx, Code: "validation",
-			Message: fmt.Sprintf("comm_channel.set: channel_type %q is not supported (v1: email only)", in.ChannelType)}
-	}
-	if in.ProjectID == 0 {
-		return &reg.HandlerError{InputIndex: idx, Code: "validation",
-			Message: "comm_channel.set: project_id is required"}
-	}
-
-	// Verify the parent card is a project.
-	var parentKind string
-	row := tx.QueryRow(ctx, `
-		SELECT ct.name FROM card c JOIN card_type ct ON ct.id = c.card_type_id WHERE c.id = $1
-	`, in.ProjectID)
-	if err := row.Scan(&parentKind); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return &reg.HandlerError{InputIndex: idx, Code: "project_not_found",
-				Message: fmt.Sprintf("comm_channel.set: project_id %d not found", in.ProjectID)}
-		}
-		return fmt.Errorf("comm_channel.set: load project: %w", err)
-	}
-	if parentKind != "project" {
-		return &reg.HandlerError{InputIndex: idx, Code: "parent_not_project",
-			Message: fmt.Sprintf("comm_channel.set: project_id %d is a %q card, not a project", in.ProjectID, parentKind)}
-	}
-
-	if in.ID != 0 {
-		// Updating: the card must exist and be a comm_channel under the
-		// supplied project.
-		var ctName string
-		var parentID *int64
-		row := tx.QueryRow(ctx, `
-			SELECT ct.name, c.parent_card_id
-			FROM card c JOIN card_type ct ON ct.id = c.card_type_id
-			WHERE c.id = $1
-		`, in.ID)
-		if err := row.Scan(&ctName, &parentID); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return &reg.HandlerError{InputIndex: idx, Code: "channel_not_found",
-					Message: fmt.Sprintf("comm_channel.set: channel %d not found", in.ID)}
-			}
-			return fmt.Errorf("comm_channel.set: load channel: %w", err)
-		}
-		if ctName != "comm_channel" {
-			return &reg.HandlerError{InputIndex: idx, Code: "wrong_card_type",
-				Message: fmt.Sprintf("comm_channel.set: card %d is %q, not comm_channel", in.ID, ctName)}
-		}
-		if parentID == nil || *parentID != in.ProjectID {
-			return &reg.HandlerError{InputIndex: idx, Code: "wrong_project",
-				Message: fmt.Sprintf("comm_channel.set: channel %d is not under project %d", in.ID, in.ProjectID)}
-		}
-	}
-
-	if in.Status != "" && !ValidChannelStatus(in.Status) {
-		return &reg.HandlerError{InputIndex: idx, Code: "validation",
-			Message: fmt.Sprintf("comm_channel.set: channel_status %q is not one of 'enabled' / 'disabled-admin' / 'disabled-fault'", in.Status)}
-	}
-
-	if in.IntakeStatusID != 0 {
-		// Optional: must point at a value-card of card_type=status. The
-		// scope check (must be same project) is enforced by the
-		// attribute_value writer's reference-scope hook in the canonical
-		// path, but we go direct here so the bare existence + type
-		// check lives in validate so the response is clean.
-		var ctName string
-		row := tx.QueryRow(ctx, `
-			SELECT ct.name FROM card c JOIN card_type ct ON ct.id = c.card_type_id WHERE c.id = $1
-		`, in.IntakeStatusID)
-		if err := row.Scan(&ctName); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return &reg.HandlerError{InputIndex: idx, Code: "intake_status_not_found",
-					Message: fmt.Sprintf("comm_channel.set: intake_status_id %d not found", in.IntakeStatusID)}
-			}
-			return fmt.Errorf("comm_channel.set: load intake status: %w", err)
-		}
-		if ctName != "status" {
-			return &reg.HandlerError{InputIndex: idx, Code: "intake_status_wrong_type",
-				Message: fmt.Sprintf("comm_channel.set: intake_status_id %d is %q, not status", in.IntakeStatusID, ctName)}
-		}
-	}
-	return nil
-}
-
-// channelFieldWrite captures one attribute_value write the channel.set
-// handler needs to land.
-type channelFieldWrite struct {
-	attrDefID int64
-	attrName  string
-	value     json.RawMessage
-}
-
-// channelFieldWrites returns the writes the channel.set handler will
-// emit. The title attribute (Name) is always written. Other text
-// fields are written only when the caller supplied a non-empty value
-// (on update, omitted fields stay unchanged; the spec calls this out
-// for password fields but the same rule applies to host / port /
-// username etc. so PATCH-style updates work). On create, the same
-// rule applies because zero values represent "not provided".
-//
-// isUpdate is true when the caller is updating an existing channel. We
-// keep the parameter even though the per-field logic is the same on
-// create vs update — clarifying the intent makes audits easier.
-func channelFieldWrites(in ChannelSetInput, snap *schema.Snapshot, isUpdate bool) []channelFieldWrite {
-	_ = isUpdate
-	jstr := func(s string) json.RawMessage {
-		b, _ := json.Marshal(s)
-		return b
-	}
-	jint := func(n int) json.RawMessage {
-		b, _ := json.Marshal(n)
-		return b
-	}
-	jid := func(n int64) json.RawMessage {
-		b, _ := json.Marshal(n)
-		return b
-	}
-	out := []channelFieldWrite{}
-	push := func(name string, val json.RawMessage) {
-		ad, ok := snap.AttrByName[name]
-		if !ok {
-			return
-		}
-		out = append(out, channelFieldWrite{attrDefID: ad.ID, attrName: name, value: val})
-	}
-	// title is always written on insert; on update we only overwrite
-	// when Name is non-empty.
-	push("title", jstr(in.Name))
-	push("channel_type", jstr(in.ChannelType))
-	if in.IMAPHost != "" {
-		push("imap_host", jstr(in.IMAPHost))
-	}
-	if in.IMAPPort != 0 {
-		push("imap_port", jint(in.IMAPPort))
-	}
-	if in.IMAPUsername != "" {
-		push("imap_username", jstr(in.IMAPUsername))
-	}
-	if in.SMTPHost != "" {
-		push("smtp_host", jstr(in.SMTPHost))
-	}
-	if in.SMTPPort != 0 {
-		push("smtp_port", jint(in.SMTPPort))
-	}
-	if in.SMTPUsername != "" {
-		push("smtp_username", jstr(in.SMTPUsername))
-	}
-	if in.FromAddress != "" {
-		push("from_address", jstr(in.FromAddress))
-	}
-	if in.IntakeStatusID != 0 {
-		push("intake_status", jid(in.IntakeStatusID))
-	}
-	if in.Status != "" {
-		push("channel_status", jstr(in.Status))
-		// When the admin explicitly re-enables a channel, clear the
-		// stale fault reason so the UI doesn't keep showing a stale
-		// "IMAP dial failed" message next to a healthy channel. Other
-		// status transitions don't touch the reason.
-		if in.Status == ChannelStatusEnabled {
-			push("channel_fault_reason", jstr(""))
-		}
-	}
-	return out
-}
-
-// upsertCommSecret writes / updates the comm_secret row for a channel
-// using pgcrypto's pgp_sym_encrypt. The encryption key comes from the
-// per-connection `app.comm_secret_key` GUC. Passwords left as nil
-// pointers preserve the stored value via COALESCE (omit-on-update
-// semantics); empty-string passwords explicitly clear via NULL.
-func upsertCommSecret(ctx context.Context, tx pgx.Tx, channelID int64, imap, smtp *string) error {
-	// pgp_sym_encrypt(text, text) returns bytea — the standard pgcrypto
-	// idiom. We pass NULL through unchanged so the COALESCE on update
-	// keeps the existing encrypted value.
-	var imapArg, smtpArg any
-	if imap != nil {
-		imapArg = *imap
-	}
-	if smtp != nil {
-		smtpArg = *smtp
-	}
-	_, err := tx.Exec(ctx, `
-		INSERT INTO comm_secret (channel_card_id, imap_password, smtp_password)
-		VALUES (
-			$1,
-			CASE WHEN $2::text IS NULL THEN NULL
-			     ELSE pgp_sym_encrypt($2::text, current_setting('app.comm_secret_key')) END,
-			CASE WHEN $3::text IS NULL THEN NULL
-			     ELSE pgp_sym_encrypt($3::text, current_setting('app.comm_secret_key')) END
-		)
-		ON CONFLICT (channel_card_id) DO UPDATE SET
-			imap_password = COALESCE(
-				CASE WHEN $2::text IS NULL THEN NULL
-				     ELSE pgp_sym_encrypt($2::text, current_setting('app.comm_secret_key')) END,
-				comm_secret.imap_password),
-			smtp_password = COALESCE(
-				CASE WHEN $3::text IS NULL THEN NULL
-				     ELSE pgp_sym_encrypt($3::text, current_setting('app.comm_secret_key')) END,
-				comm_secret.smtp_password),
-			updated_at = now()
-	`, channelID, imapArg, smtpArg)
-	return err
-}
-
-// ---- comm_channel.list implementation ----
-
-func runChannelList(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(ChannelListInput)
-			if in.ProjectID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "comm_channel.list: project_id is required"}
-			}
-			rows, err := tx.Query(ctx, `
-				WITH channel_attrs AS (
-					SELECT c.id AS channel_id, c.created_at,
-					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='title'),'')                AS title,
-					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='channel_type'),'')         AS channel_type,
-					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='imap_host'),'')            AS imap_host,
-					       COALESCE((SELECT (value)::text::int FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='imap_port' AND jsonb_typeof(value)='number'), 0) AS imap_port,
-					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='imap_username'),'')         AS imap_username,
-					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='smtp_host'),'')             AS smtp_host,
-					       COALESCE((SELECT (value)::text::int FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='smtp_port' AND jsonb_typeof(value)='number'), 0) AS smtp_port,
-					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='smtp_username'),'')         AS smtp_username,
-					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='from_address'),'')          AS from_address,
-					       COALESCE((SELECT (value)::text::bigint FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='intake_status' AND jsonb_typeof(value)='number'), 0) AS intake_status_id,
-					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='channel_status'),'enabled') AS channel_status,
-					       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='channel_fault_reason'),'') AS channel_fault_reason
-					FROM card c
-					JOIN card_type ct ON ct.id = c.card_type_id
-					WHERE ct.name = 'comm_channel'
-					  AND c.parent_card_id = $1
-					  AND c.deleted_at IS NULL
-				)
-				SELECT ca.channel_id,
-				       ca.title, ca.channel_type,
-				       ca.imap_host, ca.imap_port, ca.imap_username,
-				       ca.smtp_host, ca.smtp_port, ca.smtp_username,
-				       ca.from_address, ca.intake_status_id,
-				       ca.channel_status, ca.channel_fault_reason,
-				       (cs.imap_password IS NOT NULL) AS has_imap_password,
-				       (cs.smtp_password IS NOT NULL) AS has_smtp_password,
-				       to_char(ca.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
-				FROM channel_attrs ca
-				LEFT JOIN comm_secret cs ON cs.channel_card_id = ca.channel_id
-				ORDER BY ca.title, ca.channel_id
-			`, in.ProjectID)
-			if err != nil {
-				return nil, fmt.Errorf("comm_channel.list: %w", err)
-			}
-			var out []ChannelRow
-			for rows.Next() {
-				var r ChannelRow
-				if err := rows.Scan(
-					&r.ID, &r.Name, &r.ChannelType,
-					&r.IMAPHost, &r.IMAPPort, &r.IMAPUsername,
-					&r.SMTPHost, &r.SMTPPort, &r.SMTPUsername,
-					&r.FromAddress, &r.IntakeStatusID,
-					&r.Status, &r.FaultReason,
-					&r.HasIMAPPassword, &r.HasSMTPPassword,
-					&r.CreatedAt,
-				); err != nil {
-					rows.Close()
-					return nil, err
-				}
-				out = append(out, r)
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-			outs[i] = ChannelListOutput{Rows: out}
-		}
-		if p != nil {
-			p.NoteRead()
-		}
-		return outs, nil
-	}
-}
-
-// ---- comm.create implementation ----
-
-func runCommCreate(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-		snap, err := schema.Load(ctx, tx)
-		if err != nil {
-			return nil, err
-		}
-		commCTID, err := resolveCardType(snap, "comm")
-		if err != nil {
-			return nil, err
-		}
-		replyCTID, err := resolveCardType(snap, "reply_body")
-		if err != nil {
-			return nil, err
-		}
-		commStatusAttrID, err := resolveAttr(snap, "comm_status")
-		if err != nil {
-			return nil, err
-		}
-
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(CommCreateInput)
-
-			// Validate task + channel exist and live in the same project.
-			taskProject, channelProject, taskTitle, err := loadTaskAndChannel(ctx, tx, in.TaskID, in.ChannelID)
-			if err != nil {
-				return nil, err
-			}
-			if taskProject == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "task_no_project",
-					Message: fmt.Sprintf("comm.create: task %d has no enclosing project", in.TaskID)}
-			}
-			if taskProject != channelProject {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "project_mismatch",
-					Message: fmt.Sprintf("comm.create: task %d (project %d) and channel %d (project %d) are not in the same project",
-						in.TaskID, taskProject, in.ChannelID, channelProject)}
-			}
-
-			// Resolve comm_status default from the comm flow on this
-			// project. Fall back to error if missing — Gate 2's seed
-			// guarantees the row, but a test fixture without the
-			// template will fail with a clear message.
-			defaultStatusID, err := commFlowDefaultStatus(ctx, tx, taskProject, commStatusAttrID)
-			if err != nil {
-				return nil, err
-			}
-			if defaultStatusID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "no_comm_flow",
-					Message: fmt.Sprintf("comm.create: project %d has no comm flow / default_create_status_id; seed a comm flow first", taskProject)}
-			}
-
-			// Generate a unique thread_id (retry on the astronomically
-			// rare collision). After 5 attempts we surface the error —
-			// 58 bits of entropy means we'd need ~2^29 existing rows
-			// to hit a collision once; 5 retries comfortably cover
-			// well past that.
-			threadID, err := uniqueThreadID(ctx, tx)
-			if err != nil {
-				return nil, err
-			}
-
-			// Insert the comm card under the task.
-			subject := in.Subject
-			if subject == "" {
-				subject = taskTitle
-			}
-			var commID int64
-			if err := tx.QueryRow(ctx, `
-				INSERT INTO card (card_type_id, parent_card_id) VALUES ($1, $2) RETURNING id
-			`, commCTID, in.TaskID).Scan(&commID); err != nil {
-				return nil, fmt.Errorf("comm.create: insert card: %w", err)
-			}
-			if err := writeCardCreateActivity(ctx, tx, commID, actorID); err != nil {
-				return nil, fmt.Errorf("comm.create: activity: %w", err)
-			}
-
-			// Initial attributes: title, channel_ref, thread_id, comm_status.
-			jstr := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
-			jid := func(n int64) json.RawMessage { b, _ := json.Marshal(n); return b }
-			titleAD, _ := snap.AttrByName["title"]
-			channelRefAD, _ := snap.AttrByName["channel_ref"]
-			threadAD, _ := snap.AttrByName["thread_id"]
-			for _, w := range []struct {
-				adID  int64
-				value json.RawMessage
-			}{
-				{titleAD.ID, jstr(subject)},
-				{channelRefAD.ID, jid(in.ChannelID)},
-				{threadAD.ID, jstr(threadID)},
-				{commStatusAttrID, jid(defaultStatusID)},
-			} {
-				if err := writeAttributeValue(ctx, tx, commID, w.adID, w.value, actorID); err != nil {
-					return nil, fmt.Errorf("comm.create: write attr: %w", err)
-				}
-			}
-
-			// Append commID to the task's comms attribute. Read current,
-			// append, write back. Empty / null current value becomes
-			// `[commID]`. Duplicates aren't a concern (fresh card).
-			if err := appendCardRefList(ctx, tx, in.TaskID, "comms", commID, snap, actorID); err != nil {
-				return nil, fmt.Errorf("comm.create: append to comms: %w", err)
-			}
-
-			// Optional initial inbound message → reply_body card with
-			// delivery_status='received'.
-			if in.InitialMessage != "" {
-				replyID, err := insertReceivedReply(ctx, tx, replyCTID, snap, actorID, subject, in.InitialMessage)
-				if err != nil {
-					return nil, fmt.Errorf("comm.create: insert initial reply: %w", err)
-				}
-				if err := appendCardRefList(ctx, tx, commID, "replies", replyID, snap, actorID); err != nil {
-					return nil, fmt.Errorf("comm.create: append to replies: %w", err)
-				}
-			}
-
-			outs[i] = CommCreateOutput{CommID: commID, ThreadID: threadID}
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		return outs, nil
-	}
-}
-
-// loadTaskAndChannel resolves the enclosing project of task + channel,
-// surfacing a structured error if either id is missing or the channel
-// row isn't a comm_channel. Returns (taskProject, channelProject,
-// taskTitle, err) so the caller can derive a default subject.
-func loadTaskAndChannel(ctx context.Context, tx pgx.Tx, taskID, channelID int64) (int64, int64, string, error) {
-	if taskID == 0 || channelID == 0 {
-		return 0, 0, "", &reg.HandlerError{Code: "validation",
-			Message: "comm.create: task_id and channel_id are required"}
-	}
-
-	// Task: exists + card_type=task.
-	var taskKind string
-	var taskTitle string
-	row := tx.QueryRow(ctx, `
-		SELECT ct.name,
-		       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='title'), '')
-		FROM card c JOIN card_type ct ON ct.id = c.card_type_id
-		WHERE c.id = $1 AND c.deleted_at IS NULL
-	`, taskID)
-	if err := row.Scan(&taskKind, &taskTitle); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, 0, "", &reg.HandlerError{Code: "task_not_found",
-				Message: fmt.Sprintf("comm.create: task %d not found", taskID)}
-		}
-		return 0, 0, "", fmt.Errorf("comm.create: load task: %w", err)
-	}
-	if taskKind != "task" {
-		return 0, 0, "", &reg.HandlerError{Code: "task_wrong_type",
-			Message: fmt.Sprintf("comm.create: card %d is %q, not task", taskID, taskKind)}
-	}
-
-	// Channel: exists + card_type=comm_channel.
-	var channelKind string
-	row = tx.QueryRow(ctx, `
-		SELECT ct.name FROM card c JOIN card_type ct ON ct.id = c.card_type_id
-		WHERE c.id = $1 AND c.deleted_at IS NULL
-	`, channelID)
-	if err := row.Scan(&channelKind); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, 0, "", &reg.HandlerError{Code: "channel_not_found",
-				Message: fmt.Sprintf("comm.create: channel %d not found", channelID)}
-		}
-		return 0, 0, "", fmt.Errorf("comm.create: load channel: %w", err)
-	}
-	if channelKind != "comm_channel" {
-		return 0, 0, "", &reg.HandlerError{Code: "channel_wrong_type",
-			Message: fmt.Sprintf("comm.create: card %d is %q, not comm_channel", channelID, channelKind)}
-	}
-
-	taskProject, err := projectIDOfCard(ctx, tx, taskID)
-	if err != nil {
-		return 0, 0, "", err
-	}
-	channelProject, err := projectIDOfCard(ctx, tx, channelID)
-	if err != nil {
-		return 0, 0, "", err
-	}
-	return taskProject, channelProject, taskTitle, nil
-}
+// comm.create is migrated to db/schema/functions/comm_create_batch.sql
+// per Phase 4 of docs/UNIFIED_HANDLER_PLAN.md. The Go-side runCommCreate
+// is gone; the SQL function owns the full validate + write pipeline.
+// The helpers below (commFlowDefaultStatus, uniqueThreadID,
+// appendCardRefList) stay because imap.go materialises new comms from
+// inbound mail inside its own tx (not via the dispatcher).
 
 // commFlowDefaultStatus reads the default_create_status_id of the comm
 // flow (the flow on attribute_def comm_status) scoped to projectID.
@@ -1080,131 +597,12 @@ func appendCardRefList(ctx context.Context, tx pgx.Tx, cardID int64, attrName st
 	return writeAttributeValue(ctx, tx, cardID, ad.ID, newVal, actorID)
 }
 
-// insertReceivedReply creates one reply_body card with the inbound
-// message text and a delivery_status of 'received'. Returns its id.
-//
-// reply_body cards are global (no parent_card_id). The required edges
-// per Gate 1's seed are reply_to / reply_from / reply_subject /
-// reply_body_text / delivery_status, plus the empty `title` edge — but
-// reply_body doesn't have a title edge in the install seed, so we
-// don't write one. We DO write the five required text attributes;
-// reply_to / reply_from are empty strings on a received message (no
-// outbound envelope was constructed for an inbound capture).
-func insertReceivedReply(ctx context.Context, tx pgx.Tx, replyCTID int64, snap *schema.Snapshot, actorID int64, subject, body string) (int64, error) {
-	var id int64
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO card (card_type_id) VALUES ($1) RETURNING id
-	`, replyCTID).Scan(&id); err != nil {
-		return 0, fmt.Errorf("comm: insert reply_body card: %w", err)
-	}
-	if err := writeCardCreateActivity(ctx, tx, id, actorID); err != nil {
-		return 0, err
-	}
-	jstr := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
-	writes := []struct {
-		name string
-		val  json.RawMessage
-	}{
-		{"reply_to", jstr("")},
-		{"reply_from", jstr("")},
-		{"reply_subject", jstr(subject)},
-		{"reply_body_text", jstr(body)},
-		{"delivery_status", jstr("received")},
-	}
-	for _, w := range writes {
-		ad, ok := snap.AttrByName[w.name]
-		if !ok {
-			return 0, fmt.Errorf("comm: insertReceivedReply: missing attribute_def %q", w.name)
-		}
-		if err := writeAttributeValue(ctx, tx, id, ad.ID, w.val, actorID); err != nil {
-			return 0, err
-		}
-	}
-	return id, nil
-}
-
-// ---- comm.list_for_task implementation ----
-
-func runCommListForTask(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(CommListForTaskInput)
-			if in.TaskID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "comm.list_for_task: task_id is required"}
-			}
-			rows, err := tx.Query(ctx, `
-				SELECT c.id,
-				       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='title'),'')      AS title,
-				       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='thread_id'),'')  AS thread_id,
-				       COALESCE((SELECT (value)::text::bigint FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='channel_ref' AND jsonb_typeof(value)='number'), 0)   AS channel_ref,
-				       COALESCE((SELECT (value)::text::bigint FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='comm_status' AND jsonb_typeof(value)='number'), 0)  AS comm_status,
-				       COALESCE((SELECT value FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='replies'), '[]'::jsonb) AS replies_json
-				FROM card c
-				JOIN card_type ct ON ct.id = c.card_type_id
-				WHERE ct.name = 'comm'
-				  AND c.parent_card_id = $1
-				  AND c.deleted_at IS NULL
-				ORDER BY c.id
-			`, in.TaskID)
-			if err != nil {
-				return nil, fmt.Errorf("comm.list_for_task: %w", err)
-			}
-			type commRowRaw struct {
-				CommRow
-				RepliesJSON []byte
-			}
-			var raws []commRowRaw
-			for rows.Next() {
-				var r commRowRaw
-				if err := rows.Scan(&r.ID, &r.Title, &r.ThreadID, &r.ChannelID, &r.CommStatus, &r.RepliesJSON); err != nil {
-					rows.Close()
-					return nil, err
-				}
-				raws = append(raws, r)
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-
-			// Collect all reply_body ids referenced by these comms in
-			// one pass, then fetch their attributes in one query. This
-			// keeps the list endpoint at O(2) queries regardless of
-			// reply count.
-			var allReplyIDs []int64
-			perCommReplyIDs := make(map[int64][]int64, len(raws))
-			for _, r := range raws {
-				ids := decodeCardRefArray(r.RepliesJSON)
-				perCommReplyIDs[r.ID] = ids
-				allReplyIDs = append(allReplyIDs, ids...)
-			}
-			replyByID, err := loadRepliesByID(ctx, tx, allReplyIDs)
-			if err != nil {
-				return nil, fmt.Errorf("comm.list_for_task: load replies: %w", err)
-			}
-
-			out := make([]CommRow, 0, len(raws))
-			for _, r := range raws {
-				row := r.CommRow
-				ids := perCommReplyIDs[r.ID]
-				row.Replies = make([]ReplyRow, 0, len(ids))
-				for _, rid := range ids {
-					if rep, ok := replyByID[rid]; ok {
-						row.Replies = append(row.Replies, rep)
-					}
-				}
-				out = append(out, row)
-			}
-			outs[i] = CommListForTaskOutput{Rows: out}
-		}
-		if p != nil {
-			p.NoteRead()
-		}
-		return outs, nil
-	}
-}
+// comm.list_for_task is migrated to
+// db/schema/functions/comm_list_for_task_batch.sql per Phase 5 of
+// docs/UNIFIED_HANDLER_PLAN.md. The SQL function inlines the
+// loadRepliesByID hydration in a single jsonb aggregate. The
+// decodeCardRefArray helper stays — recipients.go still calls it on
+// the inbound IMAP path (outside the dispatcher).
 
 // decodeCardRefArray pulls bigints out of a stored card_ref[] jsonb
 // value, tolerating both string and numeric forms (the canonicaliser
@@ -1235,215 +633,10 @@ func decodeCardRefArray(raw []byte) []int64 {
 	return out
 }
 
-// loadRepliesByID fetches all reply_body cards (and their attributes)
-// for the supplied ids in one query, returning a map keyed by id so
-// the caller can preserve the per-comm ordering from the replies
-// attribute. ids may contain duplicates; we de-dup at the SQL layer.
-func loadRepliesByID(ctx context.Context, tx pgx.Tx, ids []int64) (map[int64]ReplyRow, error) {
-	out := map[int64]ReplyRow{}
-	if len(ids) == 0 {
-		return out, nil
-	}
-	rows, err := tx.Query(ctx, `
-		SELECT c.id,
-		       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='reply_to'), '')         AS reply_to,
-		       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='reply_from'), '')       AS reply_from,
-		       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='reply_subject'), '')    AS reply_subject,
-		       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='reply_body_text'), '')  AS reply_body_text,
-		       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='delivery_status'), '')  AS delivery_status,
-		       to_char(c.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at
-		FROM card c
-		WHERE c.id = ANY($1::bigint[]) AND c.deleted_at IS NULL
-	`, ids)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var r ReplyRow
-		if err := rows.Scan(&r.ID, &r.To, &r.From, &r.Subject, &r.BodyText, &r.DeliveryStatus, &r.CreatedAt); err != nil {
-			return nil, err
-		}
-		out[r.ID] = r
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
+// reply.post is migrated to db/schema/functions/reply_post_batch.sql
+// per Phase 3 of docs/UNIFIED_HANDLER_PLAN.md. The Go-side runReplyPost
+// is gone; the SQL function owns lookup + validation + writes.
 
-// ---- reply.post implementation ----
-
-func runReplyPost(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-		snap, err := schema.Load(ctx, tx)
-		if err != nil {
-			return nil, err
-		}
-		replyCTID, err := resolveCardType(snap, "reply_body")
-		if err != nil {
-			return nil, err
-		}
-
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(ReplyPostInput)
-			if in.CommID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "reply.post: comm_id is required"}
-			}
-			if in.To == "" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "reply.post: to is required"}
-			}
-			if in.Body == "" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "reply.post: body is required"}
-			}
-
-			// Verify the target is a comm card and grab its channel_ref so
-			// we can copy the channel's from_address into reply_from.
-			var commKind string
-			var channelRef int64
-			row := tx.QueryRow(ctx, `
-				SELECT ct.name,
-				       COALESCE((SELECT (value)::text::bigint FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = c.id AND ad.name='channel_ref' AND jsonb_typeof(value)='number'), 0)
-				FROM card c JOIN card_type ct ON ct.id = c.card_type_id
-				WHERE c.id = $1 AND c.deleted_at IS NULL
-			`, in.CommID)
-			if err := row.Scan(&commKind, &channelRef); err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					return nil, &reg.HandlerError{InputIndex: i, Code: "comm_not_found",
-						Message: fmt.Sprintf("reply.post: comm %d not found", in.CommID)}
-				}
-				return nil, fmt.Errorf("reply.post: load comm: %w", err)
-			}
-			if commKind != "comm" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "comm_wrong_type",
-					Message: fmt.Sprintf("reply.post: card %d is %q, not comm", in.CommID, commKind)}
-			}
-
-			// Resolve the channel's configured from_address (best-effort:
-			// channels need not have one configured yet — the SMTP sender
-			// will refuse to ship a row that has an empty reply_from).
-			var fromAddress string
-			if channelRef != 0 {
-				if err := tx.QueryRow(ctx, `
-					SELECT COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = $1 AND ad.name='from_address'), '')
-				`, channelRef).Scan(&fromAddress); err != nil {
-					return nil, fmt.Errorf("reply.post: load channel from_address: %w", err)
-				}
-			}
-
-			// Insert the reply_body card (global; no parent).
-			var replyID int64
-			if err := tx.QueryRow(ctx, `
-				INSERT INTO card (card_type_id) VALUES ($1) RETURNING id
-			`, replyCTID).Scan(&replyID); err != nil {
-				return nil, fmt.Errorf("reply.post: insert reply_body card: %w", err)
-			}
-			if err := writeCardCreateActivity(ctx, tx, replyID, actorID); err != nil {
-				return nil, fmt.Errorf("reply.post: activity: %w", err)
-			}
-
-			// Write the five required attributes. The threading suffix
-			// [#<thread_id>] is NOT appended here; the SMTP sender builds
-			// the final subject at send time.
-			jstr := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
-			writes := []struct {
-				name string
-				val  json.RawMessage
-			}{
-				{"reply_to", jstr(in.To)},
-				{"reply_from", jstr(fromAddress)},
-				{"reply_subject", jstr(in.Subject)},
-				{"reply_body_text", jstr(in.Body)},
-				{"delivery_status", jstr("pending")},
-			}
-			for _, w := range writes {
-				ad, ok := snap.AttrByName[w.name]
-				if !ok {
-					return nil, fmt.Errorf("reply.post: attribute_def %q missing", w.name)
-				}
-				if err := writeAttributeValue(ctx, tx, replyID, ad.ID, w.val, actorID); err != nil {
-					return nil, fmt.Errorf("reply.post: write %s: %w", w.name, err)
-				}
-			}
-
-			// Append the new reply_body id to the comm's replies attribute.
-			if err := appendCardRefList(ctx, tx, in.CommID, "replies", replyID, snap, actorID); err != nil {
-				return nil, fmt.Errorf("reply.post: append to replies: %w", err)
-			}
-
-			outs[i] = ReplyPostOutput{ReplyID: replyID}
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		return outs, nil
-	}
-}
-
-// ---- comm_log.list implementation ----
-
-func runCommLogList(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(CommLogListInput)
-			if in.ProjectID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "comm_log.list: project_id is required"}
-			}
-			limit := in.Limit
-			if limit <= 0 {
-				limit = 200
-			}
-			if limit > 1000 {
-				limit = 1000
-			}
-			rows, err := tx.Query(ctx, `
-				SELECT cl.id, COALESCE(cl.channel_id, 0), cl.kind, cl.detail,
-				       to_char(cl.at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
-				       COALESCE((
-				         SELECT av.value #>> '{}'
-				         FROM attribute_value av
-				         JOIN attribute_def ad ON ad.id = av.attribute_def_id
-				         WHERE av.card_id = cl.channel_id AND ad.name = 'title'
-				       ), '') AS channel_name
-				FROM comm_log cl
-				WHERE cl.project_id = $1
-				  AND ($2::text = '' OR cl.kind = $2)
-				  AND cl.at >= COALESCE(NULLIF($3, '')::timestamptz, now() - interval '24 hours')
-				ORDER BY cl.at DESC, cl.id DESC
-				LIMIT $4
-			`, in.ProjectID, in.Kind, in.Since, limit)
-			if err != nil {
-				return nil, fmt.Errorf("comm_log.list: %w", err)
-			}
-			var out []CommLogRow
-			for rows.Next() {
-				var r CommLogRow
-				var detail []byte
-				if err := rows.Scan(&r.ID, &r.ChannelID, &r.Kind, &detail, &r.At, &r.ChannelName); err != nil {
-					rows.Close()
-					return nil, err
-				}
-				if len(detail) > 0 {
-					r.Detail = json.RawMessage(detail)
-				}
-				out = append(out, r)
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-			outs[i] = CommLogListOutput{Rows: out}
-		}
-		if p != nil {
-			p.NoteRead()
-		}
-		return outs, nil
-	}
-}
+// comm_log.list is migrated to
+// db/schema/functions/comm_log_list_batch.sql per Phase 5 of
+// docs/UNIFIED_HANDLER_PLAN.md. The Go-side runCommLogList is gone.

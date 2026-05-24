@@ -20,6 +20,15 @@ import (
 	"github.com/kitp/kitp/server/internal/store"
 )
 
+// DefaultHandlerTimeout caps the wall-clock time the dispatcher
+// allows for any one handler's Run call when the handler doesn't
+// override via `reg.Handler.Timeout`. 6s is generous for the
+// typical sub-second batch shapes; heavy handlers (import.commit,
+// project.stamp, export) declare a larger Timeout explicitly.
+// Pool-wide `statement_timeout=600s` is the absolute hard cap.
+// See issues/sql/01-med-no-statement-timeout.md.
+const DefaultHandlerTimeout = 6 * time.Second
+
 // requestIDKeyT is a context key for the request id. The obs package
 // stores the same value under the same key (see internal/obs/logger.go);
 // using a shared, exported key lets both packages read/write without
@@ -140,24 +149,97 @@ func (s *Server) logSubrequest(ctx context.Context, sr SubResponse, endpoint, ac
 // that doesn't match a real file is routed to index.html so client-side
 // routes like /project/42 work). When webDir is empty, GET / returns a
 // small JSON describing the service.
+//
+// Production uses the split mount points below (MountBatch on the
+// apiRouter, MountSPA on the top-level mux). This `Mount` helper
+// keeps the previous mux-based contract intact for tests that wire a
+// dispatcher up to a plain http.ServeMux without an apiRouter — they
+// hit HandleBatch directly so they don't need a session resolver.
 func (s *Server) Mount(mux *http.ServeMux, webDir string) {
 	mux.HandleFunc("POST /api/v1/batch", s.HandleBatch)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}` + "\n"))
+	s.MountSPA(mux, webDir)
+}
+
+// AuthedDecorator wraps an AuthedHandler with cross-cutting
+// behaviour (idempotency, rate-limiting, …) without baking the
+// dependency into the api package. main.go passes the active set to
+// MountBatch as a variadic tail; decorators apply in the order
+// given so the first is the outermost wrap.
+type AuthedDecorator = func(AuthedHandler) AuthedHandler
+
+// MountBatch installs POST /api/v1/batch on the apiRouter. The router
+// resolves the session cookie and attaches the user to the context
+// before the handler runs, so the dispatcher's per-handler authz
+// hooks (role_gate.go, authz.go) see the authenticated actor exactly
+// as they did under the old session.Middleware chain.
+//
+// Body decode errors collapse into a 400 via api.BadRequest; everything
+// else flows through Dispatch as before.
+//
+// Optional `decorators` wrap the batch handler from outside-in: the
+// first decorator runs outermost, the last innermost. Used by main.go
+// to apply idempotency caching scoped to the batch route only.
+func (s *Server) MountBatch(rt *Router, decorators ...AuthedDecorator) {
+	h := AuthedHandler(func(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.UserCtx) error {
+		defer r.Body.Close()
+		var req BatchRequest
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			return BadRequest("bad_request", fmt.Sprintf("malformed json: %v", err))
+		}
+		resp := s.Dispatch(ctx, req)
+		writeJSON(w, http.StatusOK, resp)
+		return nil
+	})
+	// Apply in reverse so decorators[0] ends up outermost — caller
+	// intuition is "decorator order matches request flow direction".
+	for i := len(decorators) - 1; i >= 0; i-- {
+		h = decorators[i](h)
+	}
+	rt.Authed("POST /api/v1/batch", h)
+}
+
+// MountSPA installs the SPA fallback (or the JSON root when webDir is
+// empty / missing) and /healthz on the top-level mux. These do not go
+// through the apiRouter — they're outside /api/* and don't need a
+// session.
+//
+// Pointer receiver kept for symmetry with the other Mount methods even
+// though this one doesn't touch *Server state — keeping the receiver
+// preserves the existing `srv.Mount(...)` test ergonomics.
+func (s *Server) MountSPA(mux *http.ServeMux, webDir string) {
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, struct {
+			OK bool `json:"ok"`
+		}{OK: true})
 	})
 
 	if webDir != "" {
 		if st, err := os.Stat(webDir); err == nil && st.IsDir() {
-			mux.Handle("GET /", spaHandler(webDir))
+			// Pattern "/" (no method restriction) so it doesn't
+			// conflict with "/api/" — Go 1.22's mux treats
+			// "GET /" + "/api/" as ambiguous (different methods +
+			// different paths, neither dominates). spaHandler
+			// itself rejects non-GET methods with 405.
+			mux.Handle("/", spaHandler(webDir))
 			return
 		}
 		// webDir was set but missing — fall through to the JSON root and
 		// log once at startup; main.go is the place that logs.
 	}
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"service":"kitp","endpoints":{"batch":"POST /api/v1/batch","health":"GET /healthz","mcp":"run kitpd mcp (stdio)"}}` + "\n"))
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, struct {
+			Service   string            `json:"service"`
+			Endpoints map[string]string `json:"endpoints"`
+		}{
+			Service: "kitp",
+			Endpoints: map[string]string{
+				"batch":  "POST /api/v1/batch",
+				"health": "GET /healthz",
+				"mcp":    "run kitpd mcp (stdio)",
+			},
+		})
 	})
 }
 
@@ -168,6 +250,14 @@ func spaHandler(webDir string) http.Handler {
 	fs := http.FileServer(http.Dir(webDir))
 	indexPath := filepath.Join(webDir, "index.html")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Static bundle is GET-only. The pattern dropped its method
+		// restriction (see MountSPA) to side-step Go 1.22 mux's
+		// "GET / vs /api/" ambiguity, so the method gate moved here.
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		// Map the URL path to a filesystem path under webDir.
 		clean := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
 		if clean == "." || clean == "/" {
@@ -259,9 +349,8 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 	}()
 
 	// Pass 1: expand processes and decode every leaf sub-request. A failure
-	// here aborts the whole batch (N-API-4). Per-handler Validate runs here
-	// too, before any tx opens. Role-based authorization is deferred to
-	// pass 2 so we can preload referenced cards in one query.
+	// here aborts the whole batch (N-API-4). Role-based authorization is
+	// deferred to pass 2 so we can preload referenced cards in one query.
 	var prepped []prepared
 	for i, sr := range req.Subrequests {
 		expanded, err := s.expandSubrequest(ctx, i, sr)
@@ -309,7 +398,29 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 		for i, p := range group {
 			ins[i] = p.Input
 		}
-		outs, err := group[0].Handler.Run(ctx, tx, ins)
+		// Per-handler wall-clock cap (S1). Zero Timeout means
+		// DefaultHandlerTimeout (6s). pgx's Query/Exec accept the
+		// derived ctx natively; on expiry it sends a wire-protocol
+		// CancelRequest on a side channel, so the backend stops
+		// processing rather than the client just walking away. The
+		// pool-wide `statement_timeout=600s` is a hard upper bound
+		// even when a handler's Timeout is larger.
+		timeout := group[0].Handler.Timeout
+		if timeout <= 0 {
+			timeout = DefaultHandlerTimeout
+		}
+		runCtx, runCancel := context.WithTimeout(ctx, timeout)
+		var outs []any
+		var err error
+		if group[0].Handler.SQLFunc != "" {
+			// Unified handler path (docs/UNIFIED_HANDLER_PLAN.md):
+			// one PL/pgSQL function call per group, returns one
+			// row per input.
+			outs, err = s.runSQLFunc(runCtx, tx, group, ins)
+		} else {
+			outs, err = group[0].Handler.Run(runCtx, tx, ins)
+		}
+		runCancel()
 		if err != nil {
 			offender := group[0].OuterIdx
 			code := "handler_error"
@@ -373,8 +484,8 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 // expandSubrequest resolves a SubRequest to one or more prepared records.
 // If (endpoint, action) hits a registered handler directly, returns one
 // record; if it matches a process row instead, returns one record per
-// process_step (the last record IsLast=true). Decoding, authorization,
-// and Validate hooks all run here, before any tx opens.
+// process_step (the last record IsLast=true). Decoding and authorization
+// hooks all run here, before any tx opens.
 func (s *Server) expandSubrequest(ctx context.Context, outerIdx int, sr SubRequest) ([]prepared, error) {
 	// Direct handler lookup.
 	if h, ok := reg.Lookup(sr.Endpoint, sr.Action); ok {
@@ -438,27 +549,6 @@ func (s *Server) prepareLeaf(ctx context.Context, outerIdx int, h reg.Handler, d
 	if h.Authz != nil {
 		if err := h.Authz(ctx, input); err != nil {
 			return prepared{}, &reg.HandlerError{Code: "unauthorized", Message: err.Error()}
-		}
-	}
-
-	if h.Validate != nil {
-		if err := h.Validate(ctx, s.Pool.P, input); err != nil {
-			// Preserve Detail when the validator returned a structured
-			// *reg.HandlerError (Gate 5: flow_disallowed /
-			// flow_role_required carry from / attempted_to / available[]).
-			if he, ok := err.(*reg.HandlerError); ok {
-				code := he.Code
-				if code == "" {
-					code = "validation"
-				}
-				return prepared{}, &reg.HandlerError{
-					Code:    code,
-					Message: he.Message,
-					Detail:  he.Detail,
-				}
-			}
-			code := errCode(err, "validation")
-			return prepared{}, &reg.HandlerError{Code: code, Message: err.Error()}
 		}
 	}
 

@@ -19,7 +19,9 @@
   (alice) — same as the Dart screen.
 -->
 <script lang="ts">
-  import { getContext, untrack } from 'svelte';
+  import { getContext, tick, untrack } from 'svelte';
+  import { flip } from 'svelte/animate';
+  import { prefersReducedMotion } from 'svelte/motion';
 
   import type { AuthState } from '../auth/auth_state.svelte';
   import { getDispatcher } from '../dispatch/context';
@@ -42,6 +44,8 @@
   } from '../reg/types';
 
   import ScreenFilterBar from '../filter/ScreenFilterBar.svelte';
+  import { readSort } from '../filter/screen_preset.svelte';
+  import { sortStatesFromFilter } from './grid_helpers';
   import {
     sharedSchemaCache,
     type FilterAttribute,
@@ -197,6 +201,13 @@
     untrack(() =>
       getFilter(slug === '' ? 'inbox' : slug, projectScope.projectId),
     ),
+  );
+  /** Full active filter card — its persisted `sort` array overrides the
+   *  default personal_sort_order/created_at ordering when non-empty.
+   *  Bound from ScreenFilterBar below. */
+  let activeFilter = $state<CardWithAttrs | null>(null);
+  const filterSortStates = $derived(
+    activeFilter === null ? [] : sortStatesFromFilter(readSort(activeFilter)),
   );
   let selectedIndex = $state(0);
 
@@ -387,6 +398,15 @@
     defaultCardType: 'task',
     prefill: { assigneeUserId: meId },
     candidateStatuses: () => statuses,
+    attributePalette: () => filterAttributes,
+    tagOptions: () =>
+      tagsRows.map((r) => {
+        const p = r.attributes['path'];
+        return {
+          value: r.id,
+          label: typeof p === 'string' && p !== '' ? p : `#${r.id}`,
+        };
+      }),
     onCreated: () => {
       void refresh();
     },
@@ -460,14 +480,27 @@
     // `routed_to_me` flag so the result is the parent's routings to
     // this agent rather than tasks the agent is itself assigned to.
     const userTree = buildTree();
+    // When the active filter has a persisted sort, it replaces the
+    // default personal_sort_order / created_at ordering. Drag-drop still
+    // writes user_card_sort, but the rows won't reshuffle until the
+    // user clears the filter sort — that's the correct trade-off: a
+    // user who set "sort by status" is asking for status order, not
+    // their personal arrangement.
+    const order =
+      filterSortStates.length > 0
+        ? filterSortStates.map((s) => ({
+            field: s.field,
+            direction: s.direction === 'asc' ? ('ASC' as const) : ('DESC' as const),
+          }))
+        : [
+            { field: 'personal_sort_order', direction: 'ASC' as const },
+            { field: 'created_at', direction: 'DESC' as const },
+          ];
     const taskInput: CardSelectWithAttributesInput = {
       cardTypeName: 'task',
       limit: 200,
       withPersonalSort: true,
-      order: [
-        { field: 'personal_sort_order', direction: 'ASC' },
-        { field: 'created_at', direction: 'DESC' },
-      ],
+      order,
     };
     if (isCommsScreen) {
       // Comms screen is project-wide: every task carrying a comm is
@@ -750,6 +783,7 @@
   $effect(() => {
     void projectScope.projectId;
     void filterReady;
+    void filterSortStates;
     untrack(() => {
       if (!filterReady) return;
       void refresh();
@@ -902,6 +936,48 @@
     void reorderSelected(-1);
   }, 'Move row up');
 
+  /* -------------------------------------------------- search ⇄ list nav -- */
+
+  /** Focus the FilterBar's text search input. The input is rendered
+   *  by TextSearchBar with a stable `data-testid` so we can find it
+   *  without threading a binding through three layers. */
+  async function focusSearch(): Promise<void> {
+    await tick();
+    const el = document.querySelector<HTMLInputElement>(
+      '[data-testid="text-search-input"]',
+    );
+    if (el !== null) {
+      el.focus();
+      el.select();
+    }
+  }
+  useShortcut('inbox', '/', () => void focusSearch(), 'Focus search', {
+    fireInInputs: false,
+  });
+
+  /** ArrowDown on the search input lands focus on the first task row
+   *  so the user can drive the list with the keyboard. We seek the
+   *  first `<button tabindex="0">` inside the first `[data-row-id]`
+   *  in the inbox list (TaskRow's own tabbable element). */
+  async function focusFirstRow(): Promise<void> {
+    await tick();
+    const list = document.querySelector(
+      '[data-testid="inbox-list"]',
+    );
+    if (list === null) return;
+    const row = list.querySelector<HTMLElement>(
+      '[data-row-id] [tabindex="0"]',
+    );
+    if (row === null) return;
+    selectedIndex = 0;
+    row.focus();
+  }
+  function onSearchNavigateOut(direction: 'down' | 'up'): void {
+    if (direction === 'down') void focusFirstRow();
+    // ArrowUp from search has no useful destination above the bar —
+    // leave focus where it is so the user can keep typing.
+  }
+
   /* ------------------------------------------------------------- helpers */
 
   function previewLabelFor(row: CardWithAttrs): string {
@@ -939,8 +1015,10 @@
       {dispatcher}
       {filterAttributes}
       bind:predicate
+      bind:activeFilter
       bind:filterReady
       onchange={onFilterChange}
+      onNavigateOut={onSearchNavigateOut}
     >
       {#snippet trailing()}
         {#if isCommsScreen}
@@ -990,6 +1068,7 @@
               }}
               onOpen={() => openTaskById(pair.task.id)}
               personNames={personNames}
+              persons={persons}
               cardTitles={cardTitles}
               tagPaths={tagPaths}
               transitions={transitionsFor(pair.task)}
@@ -1008,12 +1087,18 @@
   {:else}
     <div class="flex-1 overflow-auto px-4 py-2" data-testid="inbox-list">
       {#each rows as row, i (row.id)}
+        <!-- Wrapper exists so animate:flip has a single top-level child of
+             the keyed each block; the leading DropZone rides along inside it. -->
+        <div animate:flip={{ duration: prefersReducedMotion.current ? 0 : 420 }}>
         <DropZone
           id={`inbox-before-${row.id}`}
           onDrop={onSlotDrop(i)}
           accepts={acceptsInboxRow}
         />
-        <div class="my-1 flex items-stretch gap-1" data-row-id={row.id}>
+        <div
+          class="my-1 flex items-stretch gap-1"
+          data-row-id={row.id}
+        >
           <DragHandle
             payload={row}
             previewLabel={previewLabelFor(row)}
@@ -1060,6 +1145,7 @@
               </select>
             </label>
           {/if}
+        </div>
         </div>
       {/each}
       <DropZone

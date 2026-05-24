@@ -144,13 +144,46 @@ export function _resetDispatcherState(): void {
  * prefix (e.g. `'g'` when bindings include `'g p'`, `'g i'`, …).
  */
 function hasChordWithPrefix(prefix: string): boolean {
-  const visible = shortcuts.entries.filter(
-    (e) => e.scope === 'global' || e.scope === shortcuts.activeScope,
-  );
-  for (const e of visible) {
+  // `e !== undefined` guards the Svelte 5 reactive-array splice quirk
+  // that the registry's unregister calls out — a concurrent splice can
+  // surface an undefined index mid-iteration through the proxy.
+  for (const e of shortcuts.entries) {
+    if (e === undefined) continue;
+    if (!scopeIsActive(e.scope)) continue;
     if (e.binding.startsWith(prefix + ' ')) return true;
   }
   return false;
+}
+
+/**
+ * True when [scope] currently participates in shortcut dispatch.
+ * Three tiers: `overlay` (always on; absorbs input while any
+ * overlay is registered), the active scope, and `global`. Anything
+ * else is dormant.
+ */
+function scopeIsActive(scope: string): boolean {
+  return (
+    scope === 'overlay' ||
+    scope === 'global' ||
+    scope === shortcuts.activeScope
+  );
+}
+
+/**
+ * Effective ordering rank for [entry]. The dispatcher picks the
+ * highest-rank match. Base ranks per tier are spaced so a custom
+ * `priority` set by an entry stays inside its tier (no overlay
+ * with priority -1 can lose to an active-scope binding):
+ *
+ *   overlay     : 2_000 + priority
+ *   active scope: 1_000 + priority
+ *   global      :     0 + priority
+ */
+function entryRank(entry: ShortcutEntry): number {
+  const pri = entry.priority ?? 0;
+  if (entry.scope === 'overlay') return 2000 + pri;
+  if (entry.scope === shortcuts.activeScope) return 1000 + pri;
+  return pri;
 }
 
 /**
@@ -160,13 +193,27 @@ function hasChordWithPrefix(prefix: string): boolean {
  * `Esc` without having to unregister the global handler first).
  */
 function findMatch(binding: string): ShortcutEntry | undefined {
-  let globalHit: ShortcutEntry | undefined;
+  // Pick the highest-ranked entry whose scope is currently active.
+  // `entryRank` encodes the tier precedence (overlay > active >
+  // global) plus the optional `priority` override. Ties resolve to
+  // the most recently registered entry (later index in `entries`),
+  // matching the "last in wins" semantics callers expect when they
+  // register a temporary overlay binding on top of a long-lived
+  // one (e.g. a nested confirm dialog).
+  // See `hasChordWithPrefix` for the undefined-guard rationale.
+  let best: ShortcutEntry | undefined;
+  let bestRank = -Infinity;
   for (const e of shortcuts.entries) {
+    if (e === undefined) continue;
     if (e.binding !== binding) continue;
-    if (e.scope === shortcuts.activeScope) return e;
-    if (e.scope === 'global' && globalHit === undefined) globalHit = e;
+    if (!scopeIsActive(e.scope)) continue;
+    const r = entryRank(e);
+    if (r >= bestRank) {
+      best = e;
+      bestRank = r;
+    }
   }
-  return globalHit;
+  return best;
 }
 
 /**
@@ -204,7 +251,7 @@ export function handleKey(event: KeyEventLike): boolean {
     // Fall through: try the single key as a fresh binding.
   }
 
-  // Try single-key match against active + global.
+  // Try single-key match against overlay + active + global.
   const single_match = findMatch(single);
   if (single_match) {
     if (!shouldFireInInputs(single_match) && isEditableTarget(event.target)) {
@@ -238,7 +285,11 @@ let helpInstalled = false;
 /**
  * Register the always-on help shortcuts:
  *   - `Mod+/` and `?` toggle the help overlay
- *   - `Esc` closes it (without preventing default if already closed)
+ *
+ * Closing the overlay with Esc is owned by ShortcutHelp itself,
+ * which registers an `overlay`-tier binding while it's open. The
+ * overlay tier out-ranks active-scope bindings (e.g.
+ * task_detail's "back to list" Esc) so the close fires reliably.
  */
 function installHelpShortcuts(): void {
   if (helpInstalled) return;
@@ -257,14 +308,6 @@ function installHelpShortcuts(): void {
     binding: '?',
     handler: toggle,
     label: 'Show keyboard shortcuts',
-  });
-  shortcuts.register({
-    scope: 'global',
-    binding: 'Esc',
-    handler: () => {
-      if (shortcuts.helpOpen) shortcuts.helpOpen = false;
-    },
-    label: 'Close help / dismiss',
   });
 }
 

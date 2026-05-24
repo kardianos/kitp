@@ -216,18 +216,18 @@ interface PendingBinding {
 type Pending = PendingPromise | PendingBinding;
 
 /* -------------------------------------------------------------------------- */
-/* Schedule fn: rAF when available (coalesces a render burst), microtask     */
-/* fallback for tests / non-DOM environments.                                 */
+/* Schedule fn: microtask. Coalesces the synchronous burst of `request()`    */
+/* calls inside one event handler / effect into a single batch — same as     */
+/* rAF gave us — but without rAF's hidden-tab throttling. Chrome pauses or   */
+/* clamps rAF to ~1Hz on backgrounded tabs; a microtask still fires at the   */
+/* end of the current task regardless, so a request issued while the tab    */
+/* is hidden no longer stalls until focus returns.                          */
 /* -------------------------------------------------------------------------- */
 
 export type Schedule = (cb: () => void) => void;
 
 const defaultSchedule: Schedule = (cb) => {
-  if (typeof globalThis.requestAnimationFrame === 'function') {
-    globalThis.requestAnimationFrame(() => cb());
-  } else {
-    queueMicrotask(cb);
-  }
+  queueMicrotask(cb);
 };
 
 /* -------------------------------------------------------------------------- */
@@ -393,6 +393,48 @@ export class Dispatcher {
         kind: 'promise',
         sub,
         decode: spec.decode as Decode<unknown>,
+        resolve: resolve as (v: unknown) => void,
+        reject,
+      });
+      this.maybeScheduleFlush();
+    });
+  }
+
+  /**
+   * Submit one sub-request bypassing the HandlerRegistry. Used by the
+   * data-bound form kernel where the draft is already in wire shape
+   * (snake_case keys matching the server's published JSON Schema) so
+   * the spec.encode step would be a no-op or worse, destructive.
+   *
+   * Caller passes `data` already in the JSON shape the server's
+   * dispatcher expects. Response decoding is also bypassed — caller
+   * receives the raw unknown that the dispatcher delivered.
+   *
+   * Use plain `request()` for typed reads + writes where the wire
+   * shape differs from the TypeScript interface.
+   */
+  requestRaw(args: {
+    endpoint: string;
+    action: string;
+    data?: unknown;
+    type?: string;
+    ref?: Record<string, unknown>;
+    key?: Record<string, unknown>;
+  }): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const sub: SubRequest = {
+        id: uuid(),
+        type: args.type ?? 'data',
+        endpoint: args.endpoint,
+        action: args.action,
+        ref: args.ref ?? {},
+        key: args.key ?? {},
+        data: args.data ?? null,
+      };
+      this.queue.push({
+        kind: 'promise',
+        sub,
+        decode: (raw: unknown) => raw,
         resolve: resolve as (v: unknown) => void,
         reject,
       });

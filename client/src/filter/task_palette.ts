@@ -15,6 +15,7 @@
  */
 
 import type { CardWithAttrs, UserRow } from '../reg/types';
+import { isAssignablePerson } from '../util/person';
 import type {
   AttributeSchemaCache,
   FilterAttribute,
@@ -79,9 +80,21 @@ export interface TaskPaletteInputs {
 const DEFAULT_NAMES: readonly string[] = [
   'status',
   'assignee',
+  'originator',
   'milestone_ref',
   'component_ref',
   'tags',
+  // Surfaced for the advanced filter editor. Quick-filter dropdown
+  // skips ref:task because there's no per-project task option list,
+  // but the advanced "Add filter" path picks it up via the palette and
+  // exposes `parent_status_phase` (the 2-hop traversal that lets
+  // power users express "open tasks at the head of their chain").
+  'parent_task',
+  // Built-in `date`-typed attribute. Carries the `beforeToday` /
+  // `withinDays` ops so the seeded "Overdue" / "Due within 3 days"
+  // snippets render in the advanced editor instead of falling through
+  // to the "#due_date / attribute not loaded" branch.
+  'due_date',
 ];
 
 /**
@@ -135,7 +148,13 @@ export function buildTaskFilterPalette(
   if (!schema.loaded) return [];
 
   const refResolver = (cardTypeName: string): FilterAttributeOption[] => {
-    if (cardTypeName === 'person') return buildRefOptions(persons);
+    // Assignee filter excludes contact-kind persons (email-only
+    // contacts the comm recipient picker auto-created). Other person
+    // refs reuse the same list — comm recipient filtering doesn't
+    // currently exist as a separate palette entry.
+    if (cardTypeName === 'person') {
+      return buildRefOptions(persons.filter(isAssignablePerson));
+    }
     if (cardTypeName === 'user') return buildUserOptions(users ?? []);
     if (cardTypeName === 'milestone') return buildRefOptions(milestones);
     if (cardTypeName === 'component') return buildRefOptions(components);
@@ -158,6 +177,30 @@ export function buildTaskFilterPalette(
       fa.valueType = 'ref:person';
       const opts = buildRefOptions(persons);
       if (opts.length > 0) fa.options = opts;
+    }
+    // `originator` follows the same shape as `assignee` — card_ref →
+    // person, inferred as `ref:card` by the schema cache. Patch in
+    // place so the picker resolves person labels.
+    if (fa.name === 'originator' && fa.valueType === 'ref:card') {
+      fa.valueType = 'ref:person';
+      const opts = buildRefOptions(persons);
+      if (opts.length > 0) fa.options = opts;
+    }
+    // `parent_task` is card_ref → task. The palette has no per-project
+    // task option list (the screen feeds milestones, statuses, etc. but
+    // never every task), so the value-picker ops (eq / ne / in / notIn)
+    // would render an empty Combobox. Keep only the ops that don't
+    // need a task picker:
+    //   - `parentStatusPhase`: phase-checkbox picker; 2-hop traversal.
+    //   - `exists` / `notExists`: structural — "any parent" / "no parent".
+    // We also drop `hasPhase`, which on `parent_task` would inspect the
+    // parent task's own `card.phase` (always default 'triage' for
+    // non-value cards — useless filter). `parentStatusPhase` is the
+    // useful equivalent. Listed first so the editor's default op is
+    // immediately useful instead of falling back to `eq` with an empty
+    // picker. See `where.go: parent_status_phase`.
+    if (fa.name === 'parent_task') {
+      fa.ops = ['parentStatusPhase', 'exists', 'notExists'];
     }
     out.push(fa);
   }

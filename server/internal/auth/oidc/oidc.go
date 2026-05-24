@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"strings"
@@ -31,7 +32,10 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kitp/kitp/server/internal/textnorm"
 )
 
 // Config holds the runtime knobs read from the environment at startup.
@@ -51,6 +55,17 @@ type Config struct {
 	ClientSecret string
 	RedirectURI  string
 	Scopes       string // space-separated; default "openid profile email"
+
+	// TrustUnverifiedEmail disables the `email_verified == true`
+	// requirement on the pre-created-account email fallback (see
+	// provisionUser). Default false — only flip when the OP is
+	// known to verify emails out-of-band (corporate AAD, Google
+	// Workspace, etc.). Leaving the gate ON for a self-service OP
+	// blocks the bootstrap-by-email attack: an attacker who knows
+	// the env-supplied admin email would otherwise sign in first,
+	// claim the email without verification, and attach their sub
+	// to the pre-created admin row.
+	TrustUnverifiedEmail bool
 }
 
 // FromEnv builds a Config from the standard env vars. Returns nil when
@@ -88,6 +103,7 @@ func FromEnv(env func(string) string) *Config {
 			}
 		}
 	}
+	cfg.TrustUnverifiedEmail = env("KITP_OIDC_TRUST_UNVERIFIED_EMAIL") == "1"
 	return cfg
 }
 
@@ -418,36 +434,96 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		displayName = sub
 	}
 	email, _ := claims["email"].(string)
+	// Normalize OIDC-claim strings at ingress so the same human gets
+	// the same person card regardless of how their IdP serialises
+	// combining marks / case. Same helpers used by person.create +
+	// person.upsert_by_email so all three ingress paths converge.
+	displayName = textnorm.Name(displayName)
+	email = textnorm.Email(email)
+
+	// All provisioning happens in one tx (S2): the sub lookup, the
+	// email fallback / pre-created attach, the fresh-insert OR
+	// update branch, role mapping, default role, and the init-mode
+	// admin grant. A failure anywhere rolls back to a clean state;
+	// the old shape had the post-insert role grants on the bare
+	// pool and left users half-provisioned on failure mid-block.
+	tx, err := v.pool.Begin(ctx)
+	if err != nil {
+		return 0, "", fmt.Errorf("oidc: provision begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
 
 	var userID int64
-	row := v.pool.QueryRow(ctx, `SELECT id FROM user_account WHERE oidc_sub = $1`, sub)
-	err := row.Scan(&userID)
-	if err != nil {
-		// Not found: insert. We also create the matching person card and
-		// the user_account_person link in the same tx so an assignee
-		// dropdown immediately shows the new login. card_type and
-		// attribute_def lookups go through the in-table names (cheap;
-		// these rows are seed-stable).
-		tx, err := v.pool.Begin(ctx)
-		if err != nil {
-			return 0, "", fmt.Errorf("oidc: provision begin: %w", err)
+	row := tx.QueryRow(ctx, `SELECT id FROM user_account WHERE oidc_sub = $1`, sub)
+	subErr := row.Scan(&userID)
+	if subErr != nil && !errors.Is(subErr, pgx.ErrNoRows) {
+		return 0, "", fmt.Errorf("oidc: sub lookup: %w", subErr)
+	}
+	// `attached` true when we resolved to an existing row (either via
+	// sub or via the pre-created-by-email fallback) and therefore
+	// SKIP the fresh-insert + person-card creation block below.
+	attached := subErr == nil
+	// Gate the email fallback on `email_verified == true` unless the
+	// operator has explicitly opted into trusting an OP that doesn't
+	// verify emails (KITP_OIDC_TRUST_UNVERIFIED_EMAIL=1).
+	//
+	// Without this gate, an attacker who knows a pre-created admin's
+	// email could sign into an OP that lets users self-claim emails
+	// (consumer Google, etc.) and the fallback would attach their
+	// sub to the admin's user_account row. See
+	// issues/backend/04-high-oidc-email-fallback-unverified.md.
+	emailVerified, _ := claims["email_verified"].(bool)
+	emailTrusted := emailVerified || v.cfg.TrustUnverifiedEmail
+	if subErr != nil && email != "" && emailTrusted {
+		// Sub didn't match. Before we insert a fresh row, check
+		// whether an admin pre-created a user_account by email (see
+		// person.create with tier='user') — those rows carry the
+		// expected email but a NULL oidc_sub. If we find one, attach
+		// our sub to it. We deliberately match only rows with
+		// oidc_sub IS NULL so we don't rebind a row owned by a
+		// different OIDC subject that happens to share an email.
+		var preID int64
+		preErr := tx.QueryRow(ctx, `
+			SELECT id FROM user_account
+			WHERE lower(email) = $1 AND oidc_sub IS NULL
+			ORDER BY id
+			LIMIT 1
+		`, email).Scan(&preID)
+		if preErr != nil && !errors.Is(preErr, pgx.ErrNoRows) {
+			return 0, "", fmt.Errorf("oidc: email-fallback lookup: %w", preErr)
 		}
-		defer tx.Rollback(ctx)
-		row = tx.QueryRow(ctx, `
+		if preErr == nil {
+			if _, uErr := tx.Exec(ctx, `
+				UPDATE user_account
+				SET oidc_sub = $1,
+				    display_name = CASE WHEN coalesce(display_name, '') = '' THEN $2 ELSE display_name END
+				WHERE id = $3
+			`, sub, displayName, preID); uErr != nil {
+				return 0, "", fmt.Errorf("oidc: attach sub to pre-created: %w", uErr)
+			}
+			userID = preID
+			attached = true
+		}
+	}
+	if !attached {
+		// No row matched by sub OR by pre-created email. Insert a
+		// fresh user_account + matching person card +
+		// user_account_person link. card_type and attribute_def
+		// lookups go through the in-table names (cheap; these rows
+		// are seed-stable).
+		if err := tx.QueryRow(ctx, `
 			INSERT INTO user_account (oidc_sub, display_name, email)
 			VALUES ($1, $2, NULLIF($3, ''))
 			RETURNING id
-		`, sub, displayName, email)
-		if err := row.Scan(&userID); err != nil {
+		`, sub, displayName, email).Scan(&userID); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision insert: %w", err)
 		}
 		var personCardID int64
-		row = tx.QueryRow(ctx, `
+		if err := tx.QueryRow(ctx, `
 			INSERT INTO card (card_type_id, parent_card_id)
 			SELECT id, NULL FROM card_type WHERE name = 'person'
 			RETURNING id
-		`)
-		if err := row.Scan(&personCardID); err != nil {
+		`).Scan(&personCardID); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision person card: %w", err)
 		}
 		// card_create + title + (optional) email activity rows mirror
@@ -497,52 +573,113 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		`, userID, personCardID); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision link: %w", err)
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return 0, "", fmt.Errorf("oidc: provision commit: %w", err)
-		}
 	} else {
 		// Update display_name + email if they changed (cheap upsert-ish).
-		_, err = v.pool.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			UPDATE user_account
 			SET display_name = $2,
 			    email = CASE WHEN $3 = '' THEN email ELSE $3 END
 			WHERE id = $1
-		`, userID, displayName, email)
-		if err != nil {
+		`, userID, displayName, email); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision update: %w", err)
 		}
 	}
 
-	// Apply role mapping.
+	// Apply role mapping. Errors fall into three buckets:
+	//   - ErrNoRows on role_mapping lookup: that claim value just
+	//     isn't mapped, fall through to the next value.
+	//   - Real DB error on the lookup: propagate (rollback).
+	//   - Insert error: propagate.
 	values := claimValues(claims, v.cfg.RoleClaim)
 	matched := false
 	if len(values) > 0 {
 		for _, val := range values {
 			var roleID int64
-			row := v.pool.QueryRow(ctx, `SELECT role_id FROM role_mapping WHERE claim_value = $1`, val)
-			if err := row.Scan(&roleID); err == nil {
-				if _, err := v.pool.Exec(ctx, `
-					INSERT INTO user_role (user_id, role_id, scope_card_id)
-					VALUES ($1, $2, NULL)
-					ON CONFLICT DO NOTHING
-				`, userID, roleID); err != nil {
-					return 0, "", fmt.Errorf("oidc: apply role: %w", err)
-				}
-				matched = true
+			err := tx.QueryRow(ctx, `SELECT role_id FROM role_mapping WHERE claim_value = $1`, val).Scan(&roleID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
 			}
+			if err != nil {
+				return 0, "", fmt.Errorf("oidc: role_mapping lookup %q: %w", val, err)
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO user_role (user_id, role_id, scope_card_id)
+				VALUES ($1, $2, NULL)
+				ON CONFLICT DO NOTHING
+			`, userID, roleID); err != nil {
+				return 0, "", fmt.Errorf("oidc: apply role: %w", err)
+			}
+			matched = true
 		}
 	}
 	if !matched && v.cfg.DefaultRole != "" {
 		var roleID int64
-		row := v.pool.QueryRow(ctx, `SELECT id FROM role WHERE name = $1`, v.cfg.DefaultRole)
-		if err := row.Scan(&roleID); err == nil {
-			_, _ = v.pool.Exec(ctx, `
+		err := tx.QueryRow(ctx, `SELECT id FROM role WHERE name = $1`, v.cfg.DefaultRole).Scan(&roleID)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// Configured default_role doesn't exist in the role table —
+			// a misconfiguration, not a runtime failure. Log and move on
+			// so the user still ends up provisioned (just without a
+			// default role).
+			slog.Default().LogAttrs(ctx, slog.LevelWarn, "oidc default role not found",
+				slog.String("role", v.cfg.DefaultRole))
+		case err != nil:
+			return 0, "", fmt.Errorf("oidc: default role lookup: %w", err)
+		default:
+			if _, err := tx.Exec(ctx, `
 				INSERT INTO user_role (user_id, role_id, scope_card_id)
 				VALUES ($1, $2, NULL) ON CONFLICT DO NOTHING
-			`, userID, roleID)
+			`, userID, roleID); err != nil {
+				return 0, "", fmt.Errorf("oidc: apply default role: %w", err)
+			}
 		}
 	}
+
+	// Init-mode bootstrap. If no non-system user holds the admin role
+	// globally yet, the first OIDC sign-in is the one that elevates
+	// themselves to admin. This is the "bring-your-own-key" path that
+	// fires when KITP_INIT_ADMIN_EMAIL was NOT set at startup
+	// (otherwise the bootstrap already created and granted an admin,
+	// so this branch is a no-op for subsequent users).
+	if err := grantAdminIfInitMode(ctx, tx, userID); err != nil {
+		return 0, "", fmt.Errorf("oidc: init-mode grant: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, "", fmt.Errorf("oidc: provision commit: %w", err)
+	}
 	return userID, displayName, nil
+}
+
+// grantAdminIfInitMode grants [userID] the global admin role iff no
+// other non-system user (id != 1) already holds it.
+//
+// Called from `provisionUser` inside the request's provisioning tx
+// (S2), so the predicate evaluates under the same MVCC snapshot as
+// the rest of the provisioning steps. The `NOT EXISTS` subquery +
+// INSERT is one statement; two concurrent first-time sign-ins
+// cannot both pass the gate and both self-elevate. Documented in
+// issues/backend/02-high-init-admin-race-oidc.md.
+//
+// ON CONFLICT DO NOTHING covers the "already an admin" case for
+// the same user (rerunning the function with the same userID).
+func grantAdminIfInitMode(ctx context.Context, tx pgx.Tx, userID int64) error {
+	const systemUserID = 1
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO user_role (user_id, role_id, scope_card_id)
+		SELECT $1, r.id, NULL
+		FROM role r
+		WHERE r.name = 'admin'
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM user_role ur
+		    JOIN role r2 ON r2.id = ur.role_id
+		    WHERE r2.name = 'admin' AND ur.user_id <> $2
+		  )
+		ON CONFLICT DO NOTHING
+	`, userID, systemUserID); err != nil {
+		return fmt.Errorf("init-admin grant: %w", err)
+	}
+	return nil
 }
 
 // claimValues returns every value of the named claim. Handles both single-

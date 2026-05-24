@@ -3,10 +3,7 @@
 package cardtype
 
 import (
-	"context"
 	"reflect"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/reg"
 )
@@ -40,32 +37,8 @@ func Register() {
 		InputType:    reflect.TypeFor[SelectInput](),
 		OutputType:   reflect.TypeFor[SelectOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
-		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-			rows, err := tx.Query(ctx, `
-				SELECT id, name, parent_card_type_id, allow_self_parent, is_built_in
-				FROM card_type
-				ORDER BY id
-			`)
-			if err != nil {
-				return nil, err
-			}
-			defer rows.Close()
-			var out []Row
-			for rows.Next() {
-				var r Row
-				if err := rows.Scan(&r.ID, &r.Name, &r.ParentCardTypeID, &r.AllowSelfParent, &r.IsBuiltIn); err != nil {
-					return nil, err
-				}
-				out = append(out, r)
-			}
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-			outs := make([]any, len(ins))
-			for i := range ins {
-				outs[i] = SelectOutput{Rows: out}
-			}
-			return outs, nil
-		},
+		// Unified handler — body lives in
+		// db/schema/functions/card_type_select_batch.sql.
+		SQLFunc: "card_type_select_batch",
 	})
 }

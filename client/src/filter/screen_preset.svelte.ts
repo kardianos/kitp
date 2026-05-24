@@ -37,13 +37,13 @@ export type Layout =
   | 'list'
   | 'grid'
   | 'kanban'
-  | 'pair';
+  | 'project';
 
 export const LAYOUTS: readonly Layout[] = [
   'list',
   'grid',
   'kanban',
-  'pair',
+  'project',
 ] as const;
 
 /** Result of {@link loadScreenAndFilters}. */
@@ -179,9 +179,141 @@ export function readColumnAttr(filter: CardWithAttrs): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
-export function readLaneAttr(filter: CardWithAttrs): string | null {
-  const v = filter.attributes['lane_attr'];
+/**
+ * Attribute name to partition rows by. Universal across layouts:
+ *   - List / Grid render one section per distinct value (section header
+ *     + rows within).
+ *   - Kanban renders one swimlane per distinct value (lane header + the
+ *     full column set within).
+ * Null = no partitioning. Within each partition the rows order by the
+ * filter's `sort` predicates (or the layout's default fallback).
+ *
+ * This is the "row chooser" / "lane" / "group-by" axis — all the same
+ * idea. Kanban additionally has `column_attr` for its primary axis,
+ * which has no analogue on List / Grid.
+ */
+export function readGroupByAttr(filter: CardWithAttrs): string | null {
+  const v = filter.attributes['group_by_attr'];
   return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/** One row of a persisted sort: attribute name + direction. */
+export interface SortPredicate {
+  attr: string;
+  dir: 'asc' | 'desc';
+}
+
+/**
+ * Read the `sort` attribute as a typed list. Stored as a JSON-encoded
+ * array on the wire (same shape readPredicate uses for `predicate`).
+ *
+ * Malformed entries are dropped silently so a half-written value never
+ * crashes the screen — the renderer just sees a shorter list.
+ */
+export function readSort(filter: CardWithAttrs): SortPredicate[] {
+  const raw = filter.attributes['sort'];
+  if (typeof raw !== 'string' || raw.trim() === '') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: SortPredicate[] = [];
+  for (const e of parsed) {
+    if (e === null || typeof e !== 'object') continue;
+    const o = e as { attr?: unknown; dir?: unknown };
+    if (typeof o.attr !== 'string' || o.attr.length === 0) continue;
+    if (o.dir !== 'asc' && o.dir !== 'desc') continue;
+    out.push({ attr: o.attr, dir: o.dir });
+  }
+  return out;
+}
+
+/** JSON-encode a sort list for write back to the filter card. */
+export function sortToJson(predicates: readonly SortPredicate[]): string {
+  if (predicates.length === 0) return '';
+  return JSON.stringify(predicates);
+}
+
+/**
+ * Read the `tag_prefix_columns` attribute as a list of tag-path prefixes
+ * (e.g. `["priority", "team"]`). Stored as a JSON array of strings in the
+ * filter card's text-valued attribute, mirroring the convention used by
+ * `predicate`, `sort`, and `toggle_groups`.
+ *
+ * GridLayout consumes this to materialize one column per prefix: each
+ * task's tags-array is scanned for a path beginning with `<prefix>/`,
+ * the matching value is shown with the prefix stripped, and the
+ * remaining tags fall through to the catch-all Tags column.
+ *
+ * Returns `[]` on missing / malformed / empty input so callers can
+ * fold over the result without guarding.
+ */
+export function readTagPrefixColumns(filter: CardWithAttrs): string[] {
+  const raw = filter.attributes['tag_prefix_columns'];
+  if (typeof raw !== 'string' || raw.trim() === '') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  // Tolerate two shapes — a JSON array of strings, or a bare JSON
+  // string. The bare-string form covers older seed data that stored
+  // the value as a quoted scalar instead of a single-element array.
+  let arr: unknown[];
+  if (Array.isArray(parsed)) arr = parsed;
+  else if (typeof parsed === 'string') arr = [parsed];
+  else return [];
+  const out: string[] = [];
+  for (const e of arr) {
+    if (typeof e !== 'string') continue;
+    const trimmed = e.replace(/\/+$/, '');
+    if (trimmed === '') continue;
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * Read the `extra_columns` screen-level attribute as a list of
+ * additional attribute / virtual-field names to surface as Grid
+ * columns. Stored as a JSON array of strings (same convention as
+ * `tag_prefix_columns`). Each entry is one of:
+ *   - an attribute_def name (`due_date`, `milestone_ref`, …) — the
+ *     Grid renders its value via the FilterAttribute label resolver;
+ *   - a row-level virtual field (`created_at`, `last_activity_at`) —
+ *     the Grid reads it directly off the row (these already have
+ *     dedicated columns; listing them here is currently a no-op but
+ *     reserved for future per-screen toggling).
+ *
+ * Returns `[]` on missing / malformed / empty input.
+ */
+export function readExtraColumns(screen: CardWithAttrs): string[] {
+  const raw = screen.attributes['extra_columns'];
+  if (typeof raw !== 'string' || raw.trim() === '') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  // Same lenient shape handling as readTagPrefixColumns: JSON array
+  // OR bare JSON string (treat as one-element list).
+  let arr: unknown[];
+  if (Array.isArray(parsed)) arr = parsed;
+  else if (typeof parsed === 'string') arr = [parsed];
+  else return [];
+  const out: string[] = [];
+  for (const e of arr) {
+    if (typeof e !== 'string') continue;
+    const trimmed = e.trim();
+    if (trimmed === '') continue;
+    out.push(trimmed);
+  }
+  return out;
 }
 
 /**

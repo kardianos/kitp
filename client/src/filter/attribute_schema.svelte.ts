@@ -73,7 +73,13 @@ function defaultOpsForType(valueType: string): Op[] {
     // scalars. Server validates `value ∈ {triage|active|terminal}`.
     return ['eq', 'ne', 'in', 'notIn', 'hasPhase', 'exists', 'notExists'];
   }
-  // text / number / date / unknown
+  if (valueType === 'date') {
+    // Relative-date ops are scoped to `date`-typed attributes so the
+    // operator dropdown is short on every other attribute. The server
+    // compiler resolves "today" against now()::date at query time.
+    return ['eq', 'ne', 'exists', 'notExists', 'beforeToday', 'withinDays'];
+  }
+  // text / number / unknown
   return ['eq', 'ne', 'exists', 'notExists'];
 }
 

@@ -85,6 +85,15 @@ lint:
 web-build:
 	cd client && pnpm install --frozen-lockfile && pnpm build
 
+# Same as web-build but with no minification, no name mangling, and
+# inline sourcemaps. The output lands in client/dist exactly like the
+# regular build, so kitpd serves it without any path tweaks. Use this
+# when a production stack trace points at minified frames (e.g.
+# `ai @ ScreenHost-...js:2`) and you need readable function names.
+web-build-debug:
+	cd client && pnpm install --frozen-lockfile && pnpm exec vite build \
+		--mode development --minify false --sourcemap inline
+
 # Alias for the README quickstart.
 web: web-build
 

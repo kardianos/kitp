@@ -80,6 +80,7 @@ function makeStubCache(): AttributeSchemaCache {
     { id: 3n, name: 'milestone_ref', value_type: 'card_ref', bound_to: [] },
     { id: 4n, name: 'component_ref', value_type: 'card_ref', bound_to: [] },
     { id: 5n, name: 'tags', value_type: 'card_ref', bound_to: [] },
+    { id: 6n, name: 'parent_task', value_type: 'card_ref', bound_to: [] },
   ];
 
   function friendly(name: string): string {
@@ -111,6 +112,10 @@ function makeStubCache(): AttributeSchemaCache {
         if (target.length > 0) return `ref:${target}`;
       }
       if (name === 'tags') return 'ref:tag';
+      // `parent_task` doesn't follow the `_ref` suffix convention but
+      // production resolves it via the def's target_card_type. The
+      // stub special-cases it to match.
+      if (name === 'parent_task') return 'ref:task';
       return 'ref:card';
     }
     return rawType;
@@ -197,12 +202,40 @@ describe('buildTaskFilterPalette', () => {
       'milestone_ref',
       'component_ref',
       'tags',
+      'parent_task',
       // Synthetic — driven by the TextSearchBar and the Add filter /
       // Advanced editor; not surfaced as quick-filter dropdowns.
       'title',
       'description',
       'comments',
     ]);
+  });
+
+  it('exposes a no-picker op set on parent_task', () => {
+    const fa = buildTaskFilterPalette({
+      schema: makeStubCache(),
+      persons: PERSONS,
+      milestones: MILESTONES,
+      components: COMPONENTS,
+      tags: TAGS,
+    });
+    const parentTask = fa.find((a) => a.name === 'parent_task');
+    expect(parentTask).toBeDefined();
+    // The palette has no per-project task option list, so any op that
+    // would render a value-picker Combobox (eq / ne / in / notIn) is
+    // dropped — the picker would be empty. `hasPhase` on parent_task
+    // is also dropped because the parent task's own `card.phase` is
+    // always the schema default 'triage' for non-value cards.
+    // `parentStatusPhase` (the 2-hop op) and the structural
+    // exists / notExists checks remain. `parentStatusPhase` is listed
+    // first so the editor defaults to a useful op on Add filter.
+    expect(parentTask?.ops).toEqual([
+      'parentStatusPhase',
+      'exists',
+      'notExists',
+    ]);
+    expect(parentTask?.ops).not.toContain('hasPhase');
+    expect(parentTask?.ops).not.toContain('eq');
   });
 
   it('normalizes wire types into ref:* and produces friendly labels', () => {

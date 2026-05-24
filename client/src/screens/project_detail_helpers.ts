@@ -74,15 +74,16 @@ function matchPredicate(card: CardWithAttrs, p: Predicate): boolean {
         return value !== undefined && value !== null;
       case 'notExists':
         return value === undefined || value === null;
-      case 'contains':
-      case 'notTerminal':
-        // These ops require server context the in-memory matcher
-        // doesn't have (target card row for `notTerminal`, full-text
-        // index for `contains`). The server has already filtered the
-        // task list against them; the in-memory pass is just
-        // resorting, so we trust the row and pass it through.
-        return true;
     }
+    // Any other op (contains / notTerminal / hasPhase / beforeToday /
+    // withinDays / snippet / parentStatusPhase) needs server context the
+    // in-memory matcher doesn't have. The server has already filtered
+    // the row set against them; the client-side pass is just re-sorting
+    // and re-applying for inline edits, so trust the row and pass it
+    // through. MUST return from the leaf branch — falling through to
+    // the flat-AND block below would recurse on the same leaf forever
+    // (isFlatAndOfLeaves treats a bare leaf as flat-AND).
+    return true;
   }
   if (isFlatAndOfLeaves(p)) {
     for (const leaf of flattenLeaves(p)) {

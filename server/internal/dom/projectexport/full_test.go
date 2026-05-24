@@ -52,18 +52,21 @@ func setupFull(t *testing.T, schemaName string) (http.Handler, *api.Server) {
 	file.Register(sp)
 
 	srv := api.NewServer(sp)
-	mux := http.NewServeMux()
-	srv.Mount(mux, "")
-	storage := cas.New(cas.NewPgBackend(pool))
-	cas.RegisterHTTP(mux, cas.HTTPConfig{Pool: sp, Storage: storage, MaxBytes: 4 * 1024 * 1024})
-	attachment.RegisterHTTP(mux, attachment.Config{Pool: sp, Storage: storage})
-	projectexport.RegisterHTTP(mux, projectexport.Config{Pool: sp, Storage: storage})
-
 	user, err := auth.NewSystemUser(context.Background(), pool, "dev", auth.ModeOff)
 	if err != nil {
 		t.Fatalf("system user: %v", err)
 	}
-	return auth.Middleware(user)(mux), srv
+
+	storage := cas.New(cas.NewPgBackend(pool))
+	rt := api.NewTestRouter(user)
+	cas.Mount(rt, cas.HTTPConfig{Pool: sp, Storage: storage, MaxBytes: 4 * 1024 * 1024})
+	attachment.Mount(rt, attachment.Config{Pool: sp, Storage: storage})
+	projectexport.Mount(rt, projectexport.Config{Pool: sp, Storage: storage})
+	srv.MountBatch(rt)
+
+	mux := http.NewServeMux()
+	mux.Handle("/api/", rt.Mux())
+	return mux, srv
 }
 
 // fetchZip downloads the ZIP and returns the parsed archive entries

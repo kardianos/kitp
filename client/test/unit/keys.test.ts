@@ -412,6 +412,80 @@ describe('preventDefault and stopPropagation on match', () => {
   });
 });
 
+describe('scope tier precedence: overlay > active > global', () => {
+  it('overlay-scope handler wins over both active-scope and global', () => {
+    const globalH = vi.fn();
+    const activeH = vi.fn();
+    const overlayH = vi.fn();
+    shortcuts.register({ scope: 'global', binding: 'Esc', handler: globalH, label: 'g' });
+    shortcuts.register({ scope: 'inbox', binding: 'Esc', handler: activeH, label: 'a' });
+    shortcuts.register({ scope: 'overlay', binding: 'Esc', handler: overlayH, label: 'o' });
+    shortcuts.activeScope = 'inbox';
+
+    expect(dispatchKey({ key: 'Esc' })).toBe(true);
+    expect(overlayH).toHaveBeenCalledTimes(1);
+    expect(activeH).not.toHaveBeenCalled();
+    expect(globalH).not.toHaveBeenCalled();
+  });
+
+  it('after the overlay handler is unregistered the active-scope handler wins again', () => {
+    const activeH = vi.fn();
+    const overlayH = vi.fn();
+    shortcuts.register({ scope: 'inbox', binding: 'Esc', handler: activeH, label: 'a' });
+    const overlayId = shortcuts.register({
+      scope: 'overlay', binding: 'Esc', handler: overlayH, label: 'o',
+    });
+    shortcuts.activeScope = 'inbox';
+
+    dispatchKey({ key: 'Esc' });
+    expect(overlayH).toHaveBeenCalledTimes(1);
+    expect(activeH).not.toHaveBeenCalled();
+
+    shortcuts.unregister(overlayId);
+    dispatchKey({ key: 'Esc' });
+    expect(overlayH).toHaveBeenCalledTimes(1);
+    expect(activeH).toHaveBeenCalledTimes(1);
+  });
+
+  it('within a tier, higher priority wins; ties go to the most recent', () => {
+    const low = vi.fn();
+    const high = vi.fn();
+    shortcuts.register({ scope: 'overlay', binding: 'Esc', handler: low, label: 'low', priority: 0 });
+    shortcuts.register({ scope: 'overlay', binding: 'Esc', handler: high, label: 'high', priority: 5 });
+    shortcuts.activeScope = 'global';
+
+    dispatchKey({ key: 'Esc' });
+    expect(high).toHaveBeenCalledTimes(1);
+    expect(low).not.toHaveBeenCalled();
+  });
+
+  it('an overlay binding stays distinct from an active-scope binding using the same key', () => {
+    // Regression for the original bug: TaskDetail's "Esc → goBack"
+    // (active scope) shouldn't fire while a modal's "Esc → close"
+    // (overlay) is registered.
+    const goBack = vi.fn();
+    const closeModal = vi.fn();
+    shortcuts.register({ scope: 'task_detail', binding: 'Esc', handler: goBack, label: 'back' });
+    shortcuts.activeScope = 'task_detail';
+
+    dispatchKey({ key: 'Esc' });
+    expect(goBack).toHaveBeenCalledTimes(1);
+    expect(closeModal).not.toHaveBeenCalled();
+
+    const overlayId = shortcuts.register({
+      scope: 'overlay', binding: 'Esc', handler: closeModal, label: 'close',
+    });
+    dispatchKey({ key: 'Esc' });
+    expect(goBack).toHaveBeenCalledTimes(1);
+    expect(closeModal).toHaveBeenCalledTimes(1);
+
+    shortcuts.unregister(overlayId);
+    dispatchKey({ key: 'Esc' });
+    expect(goBack).toHaveBeenCalledTimes(2);
+    expect(closeModal).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('installGlobalKeydown', () => {
   it('attaches and detaches a keydown listener on a provided EventTarget', () => {
     const handler = vi.fn();

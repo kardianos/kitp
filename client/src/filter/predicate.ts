@@ -31,7 +31,11 @@ export type Op =
   | 'notExists'
   | 'contains'
   | 'notTerminal'
-  | 'hasPhase';
+  | 'hasPhase'
+  | 'parentStatusPhase'
+  | 'snippet'
+  | 'beforeToday'
+  | 'withinDays';
 
 /**
  * Wire-string for each operator. The values here MUST match the server's
@@ -48,6 +52,10 @@ export const OP_TO_WIRE: Readonly<Record<Op, string>> = {
   contains: 'contains',
   notTerminal: 'not terminal',
   hasPhase: 'has_phase',
+  parentStatusPhase: 'parent_status_phase',
+  snippet: 'snippet',
+  beforeToday: 'before_today',
+  withinDays: 'within_days',
 };
 
 const WIRE_TO_OP: Readonly<Record<string, Op>> = {
@@ -60,6 +68,10 @@ const WIRE_TO_OP: Readonly<Record<string, Op>> = {
   contains: 'contains',
   'not terminal': 'notTerminal',
   has_phase: 'hasPhase',
+  parent_status_phase: 'parentStatusPhase',
+  snippet: 'snippet',
+  before_today: 'beforeToday',
+  within_days: 'withinDays',
 };
 
 /** Returns the wire string for [op]. Inverse of {@link opFromWire}. */
@@ -88,14 +100,18 @@ export function opArity(op: Op): OpArity {
     case 'eq':
     case 'ne':
     case 'contains':
+    case 'snippet':
+    case 'withinDays':
       return 'single';
     case 'in':
     case 'notIn':
     case 'hasPhase':
+    case 'parentStatusPhase':
       return 'multi';
     case 'exists':
     case 'notExists':
     case 'notTerminal':
+    case 'beforeToday':
       return 'none';
   }
 }
@@ -300,6 +316,38 @@ export function exists(attr: string): PredicateLeaf {
 
 export function notExists(attr: string): PredicateLeaf {
   return { kind: 'leaf', attr, op: 'notExists' };
+}
+
+/**
+ * Reference to a stored predicate-snippet card. The server compiler
+ * looks up the card by id, decodes its predicate, and inlines the
+ * compiled SQL (with cycle detection). Use the `_snippet` sentinel
+ * `attr` so the editor's attribute combobox can distinguish snippet
+ * leaves from real attribute leaves.
+ */
+export const SNIPPET_ATTR = '_snippet';
+
+export function snippetRef(snippetCardId: unknown): PredicateLeaf {
+  return { kind: 'leaf', attr: SNIPPET_ATTR, op: 'snippet', values: [snippetCardId] };
+}
+
+/**
+ * Relative-date ops. The server compiler resolves "today" against
+ * `now()::date` at query time so the result keeps moving with the
+ * clock instead of getting frozen at save time. `attr` is the text
+ * attribute holding an ISO 8601 date string (sorts lexically, which
+ * is enough for date math).
+ *
+ *   beforeToday(attr)      → attr < today (overdue when attr=due_date)
+ *   withinDays(attr, n)    → today <= attr <= today + n
+ *                            (n=0 is "due today"; n=3 is "next 3 days")
+ */
+export function beforeToday(attr: string): PredicateLeaf {
+  return { kind: 'leaf', attr, op: 'beforeToday' };
+}
+
+export function withinDays(attr: string, n: number): PredicateLeaf {
+  return { kind: 'leaf', attr, op: 'withinDays', values: [n] };
 }
 
 export function andOf(children: Predicate[]): PredicateGroup {

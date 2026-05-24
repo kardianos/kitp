@@ -505,9 +505,10 @@ func TestFlow_RoleGated_AllowedForProjectScopedManager(t *testing.T) {
 	}
 }
 
-// TestFlow_SystemBypassesRoleGate: the seeded System User holds the
-// 'system' role globally and bypasses every flow_step requires_role
-// check. Mirrors the dispatcher's gate behaviour.
+// TestFlow_SystemBypassesRoleGate: the seeded System User holds
+// admin + manager + worker globally, so every flow_step requires_role
+// resolves through one of those grants. No wildcard short-circuit
+// anymore — System passes by literal role match.
 func TestFlow_SystemBypassesRoleGate(t *testing.T) {
 	srv, sp := setupFlow(t, "kitp_test_flow_system_bypass")
 	f := makeFlowFixture(t, srv, sp)

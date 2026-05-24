@@ -107,14 +107,13 @@ func (s *Server) checkLeafRoles(
 		}
 	}
 
-	// 4. Otherwise we need at least one of the declared roles, OR the
-	//    seeded `system` wildcard (dev-mode bypass).
+	// 4. Otherwise we need at least one of the declared roles. The
+	//    seeded System user holds admin + manager + worker explicitly
+	//    (see db/schema/seed.hcsv) so no wildcard short-circuit is
+	//    needed — dev-mode and prod resolve through identical paths.
 	have, err := loadRoles()
 	if err != nil {
 		return &reg.HandlerError{Code: "internal", Message: err.Error()}
-	}
-	if _, isSystem := have[reg.RoleSystem]; isSystem {
-		return nil
 	}
 	for _, r := range h.AllowedRoles {
 		if _, ok := have[r]; ok {

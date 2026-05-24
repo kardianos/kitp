@@ -3,22 +3,23 @@
  *
  * Extracted into a TypeScript module so the helpers can be unit-tested
  * under the node-only vitest runner without mounting a Svelte component.
- * Mirrors the math from the Dart `_KanbanScreenState` (see
- * `client/lib/ui/screens/kanban_screen.dart`).
  *
- * The five helpers exported here cover the kanban's pure logic surface:
+ * Surface:
  *
  *   - {@link groupCardsByColumn} / {@link groupCardsByLane} bucket cards
  *     by attribute value (nulls land in the `''` bucket).
- *   - {@link computeNewSortOrder} computes a halfway sort_order for a
- *     drop slot — same shape as `inbox_helpers.computeNewSortOrder`.
+ *   - {@link planSortRewrite} returns the `sort_order` rewrites for one
+ *     drop into a (lane, column) cell — same "rewrite the destination"
+ *     strategy as `inbox_helpers.planReorder`. Replaces the older
+ *     `computeNewSortOrder` halfway approach, which silently no-op'd
+ *     against NULL or float-collapsed neighbours.
  *   - {@link computeMoveBatch} builds the array of `attribute.update`
  *     ops for one drop, omitting updates whose value did not change.
  *   - {@link nextColumnIndex} clamps `current + dir` into
  *     `[0, columnsLen-1]` for `Mod+Arrow` column navigation.
  */
 
-import type { AttributeUpdateInput, CardWithAttrs } from '../reg/types.js';
+import type { AttributeUpdateInput, CardWithAttrs, ID } from '../reg/types.js';
 
 /* -------------------------------------------------------------------------- */
 /* Constants                                                                  */
@@ -85,7 +86,7 @@ export function groupCardsByLane(
 }
 
 /* -------------------------------------------------------------------------- */
-/* computeNewSortOrder                                                        */
+/* planSortRewrite                                                            */
 /* -------------------------------------------------------------------------- */
 
 /** Pull the `sort_order` attribute off a card; non-numeric → undefined. */
@@ -95,43 +96,66 @@ function sortOrderOf(c: CardWithAttrs): number | undefined {
   return undefined;
 }
 
+/** One pending `sort_order` write produced by {@link planSortRewrite}. */
+export interface SortUpdate {
+  cardId: ID;
+  sortOrder: number;
+}
+
 /**
- * Compute the new sort_order for a card dropped at [slotIndex] (0..N) in
- * [stack]. The list must already be in display order (sort_order ASC).
+ * Build the minimal list of `(card_id, sort_order)` writes that places
+ * [movedCard] into slot [slot] of [destStack] and leaves the rest of
+ * the (lane, column) cell in canonical `(i+1) * STEP` spacing.
  *
- * Rules (mirror `inbox_helpers.computeNewSortOrder` and the Dart
- * `_newSortOrderAt`):
- *   - empty stack:                                       0
- *   - top   (slotIndex <= 0):                            (first ?? STEP) - STEP
- *   - bottom (slotIndex >= stack.length):                (last  ?? 0)    + STEP
- *   - between A and B (both have a sort_order):          (a + b) / 2
- *   - between with A nullish:                            b - STEP
- *   - between with B nullish:                            a + STEP
- *   - between both nullish:                              slotIndex * STEP
+ * [destStack] is the cell's current display order with [movedCard]
+ * already excluded (so the moved card can come from another cell — the
+ * cross-column move case). [slot] sits BEFORE the slot-th remaining
+ * card; `slot === destStack.length` means "drop at the bottom" of the
+ * cell.
+ *
+ * Why we rewrite the whole cell instead of halfway-between math (the
+ * old `computeNewSortOrder` approach):
+ *
+ *   - Halfway math silently no-op'd against NULL siblings. The numeric
+ *     value would land somewhere, but `ORDER BY sort_order ASC NULLS
+ *     LAST` ranks the moved row before the unranked rest regardless of
+ *     where the user dropped it.
+ *   - Repeated halfway-between-the-same-two-cards drops converge in
+ *     floating point and eventually collide, so subsequent drops into
+ *     the same gap become no-ops (`currentSort === newSortOrder`).
+ *   - Same-self drops compute the same value the moved card already
+ *     held, so the move emitted zero ops and the card didn't visibly
+ *     move.
+ *
+ * This mirrors `inbox_helpers.planReorder` — see its doc comment for
+ * the original motivation. Cost is N writes worst-case for an N-card
+ * cell, all coalesced into a single batch.
  */
-export function computeNewSortOrder(
-  stack: readonly CardWithAttrs[],
-  slotIndex: number,
-): number {
-  if (stack.length === 0) return 0;
-  if (slotIndex <= 0) {
-    const firstCard = stack[0];
-    const first = firstCard !== undefined ? sortOrderOf(firstCard) : undefined;
-    return (first ?? SORT_ORDER_STEP) - SORT_ORDER_STEP;
+export function planSortRewrite(
+  destStack: readonly CardWithAttrs[],
+  movedCard: CardWithAttrs,
+  slot: number,
+): SortUpdate[] {
+  let target = slot;
+  if (target < 0) target = 0;
+  if (target > destStack.length) target = destStack.length;
+
+  const finalOrder: CardWithAttrs[] = [
+    ...destStack.slice(0, target),
+    movedCard,
+    ...destStack.slice(target),
+  ];
+
+  const updates: SortUpdate[] = [];
+  for (let i = 0; i < finalOrder.length; i++) {
+    const card = finalOrder[i];
+    if (card === undefined) continue;
+    const desired = (i + 1) * SORT_ORDER_STEP;
+    if (sortOrderOf(card) !== desired) {
+      updates.push({ cardId: card.id, sortOrder: desired });
+    }
   }
-  if (slotIndex >= stack.length) {
-    const lastCard = stack[stack.length - 1];
-    const last = lastCard !== undefined ? sortOrderOf(lastCard) : undefined;
-    return (last ?? 0) + SORT_ORDER_STEP;
-  }
-  const aCard = stack[slotIndex - 1];
-  const bCard = stack[slotIndex];
-  const a = aCard !== undefined ? sortOrderOf(aCard) : undefined;
-  const b = bCard !== undefined ? sortOrderOf(bCard) : undefined;
-  if (a !== undefined && b !== undefined) return (a + b) / 2;
-  if (a !== undefined) return a + SORT_ORDER_STEP;
-  if (b !== undefined) return b - SORT_ORDER_STEP;
-  return slotIndex * SORT_ORDER_STEP;
+  return updates;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -153,37 +177,32 @@ export type UpdateOp = Pick<
 /**
  * Build the array of `attribute.update` ops for one drag-drop. ONE batch
  * combines:
- *   1. The new `sort_order` for the dragged card. Always emitted unless
- *      the card's existing sort_order already matches [newSortOrder]
- *      exactly (rare; same-cell, unchanged-position drops).
+ *   1. One `sort_order` op per entry in [sortUpdates] (already
+ *      filtered by {@link planSortRewrite} to omit cards whose
+ *      existing sort_order matches the desired slot).
  *   2. The new column attribute value, if it changed.
  *   3. The new lane attribute value, if [laneAttrName] is non-null and
  *      the value changed.
  *
- * Updates whose value did not change are OMITTED — the spec ("changing
- * only sort returns 1 op; changing column + sort returns 2 ops; changing
- * all three returns 3") asserts this directly.
- *
- * The dispatcher batches these into ONE `POST /api/v1/batch` when issued
- * synchronously in the same tick.
+ * Updates whose value did not change are OMITTED. The dispatcher batches
+ * these into ONE `POST /api/v1/batch` when issued synchronously in the
+ * same tick.
  */
 export function computeMoveBatch(
   card: CardWithAttrs,
   targetColumnAttrValue: unknown,
   targetLaneAttrValue: unknown,
-  newSortOrder: number,
+  sortUpdates: readonly SortUpdate[],
   columnAttrName: string,
   laneAttrName: string | null,
 ): UpdateOp[] {
   const ops: UpdateOp[] = [];
 
-  // sort_order — emit unless the existing value already matches.
-  const currentSort = sortOrderOf(card);
-  if (currentSort !== newSortOrder) {
+  for (const u of sortUpdates) {
     ops.push({
-      cardId: card.id,
+      cardId: u.cardId,
       attributeName: 'sort_order',
-      value: newSortOrder,
+      value: u.sortOrder,
     });
   }
 

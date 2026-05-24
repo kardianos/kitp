@@ -23,6 +23,25 @@
 //   KITP_COMM_IMAP_INSECURE   — when "1", allow plaintext IMAP (no TLS); dev only
 //   KITP_COMM_LOG_RETENTION_DAYS — days to keep comm_log rows; default 30
 //   KITP_COMM_LOG_PRUNE_HOURS — comm_log prune cadence in hours; default 24
+//   KITP_CSP_REPORT_ONLY      — when "1", flips CSP to soft-launch mode
+//                               (Content-Security-Policy-Report-Only)
+//   KITP_CSP_REPORT_URI       — when set, emits a report-uri directive
+//                               pointing browsers at this URL for CSP
+//                               violation reports
+//   KITP_OIDC_TRUST_UNVERIFIED_EMAIL — when "1", disables the
+//                               `email_verified` gate on the OIDC
+//                               pre-created-account email fallback.
+//                               Leave OFF for self-service OPs; flip
+//                               ON for trusted corporate OPs that
+//                               verify emails out-of-band.
+//   KITP_INIT_ADMIN_EMAIL     — when set AND the DB is in init mode
+//                               (no non-System admin exists), create a
+//                               user_account + person card with this
+//                               email and grant the admin role. OIDC
+//                               sign-in attaches the sub to that row
+//                               on first login. When unset and init
+//                               mode applies, the first OIDC user to
+//                               sign in self-elevates to admin.
 //
 // In production the server refuses to start if AUTH_MODE=off (N-SEC-5).
 package main
@@ -37,6 +56,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -50,6 +70,7 @@ import (
 	"github.com/kitp/kitp/server/internal/auth/token"
 	"github.com/kitp/kitp/server/internal/cas"
 	"github.com/kitp/kitp/server/internal/dom/activity"
+	"github.com/kitp/kitp/server/internal/dom/activitysink"
 	"github.com/kitp/kitp/server/internal/dom/agent"
 	"github.com/kitp/kitp/server/internal/dom/attachment"
 	domcas "github.com/kitp/kitp/server/internal/dom/cas"
@@ -78,6 +99,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/userrole"
 	"github.com/kitp/kitp/server/internal/dom/usertoken"
 	"github.com/kitp/kitp/server/internal/mcp"
+	"github.com/kitp/kitp/server/internal/job"
 	"github.com/kitp/kitp/server/internal/obs"
 	"github.com/kitp/kitp/server/internal/schema/hcsv"
 	"github.com/kitp/kitp/server/internal/store"
@@ -120,6 +142,7 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 	attribute.Register(pool)
 	attributedef.Register(pool)
 	activity.Register(pool)
+	activitysink.Register(pool)
 	attachment.Register(pool)
 	domcas.Register(pool)
 	comm.Register(pool)
@@ -150,11 +173,25 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 // connection is bound to the resolved KITP_COMM_SECRET_KEY so the
 // comm package's sym_encrypt/sym_decrypt SQL references via
 // current_setting('app.comm_secret_key') resolve correctly.
+//
+// Pool-wide timeouts (S1, per DT direction):
+//   - statement_timeout=600s  — hard cap on any single statement.
+//     A handler that needs longer overrides per-call via
+//     SET LOCAL statement_timeout inside its tx.
+//   - lock_timeout=5s — bail rather than hang on a contended row.
+//   - idle_in_transaction_session_timeout=60s — abort tx that's
+//     been idle (e.g. handler crashed mid-tx without rollback).
 func buildPgxPool(ctx context.Context, dsn string, logger *slog.Logger) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, err
 	}
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "600000"
+	cfg.ConnConfig.RuntimeParams["lock_timeout"] = "5000"
+	cfg.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = "60000"
 	if obs.PGTraceEnabled() {
 		cfg.ConnConfig.Tracer = &obs.QueryTracer{Logger: logger}
 	}
@@ -224,6 +261,16 @@ func runHTTP() error {
 		return fmt.Errorf("auth: %w", err)
 	}
 
+	// Bootstrap a named admin from KITP_INIT_ADMIN_EMAIL when set.
+	// No-op once any non-System admin exists, so this is safe to
+	// run unconditionally on every startup.
+	if email := strings.TrimSpace(os.Getenv("KITP_INIT_ADMIN_EMAIL")); email != "" {
+		if err := auth.BootstrapInitAdmin(ctx, pgPool, email); err != nil {
+			return fmt.Errorf("init admin bootstrap: %w", err)
+		}
+		log.Printf("init admin: ensured user_account for %s (admin role granted if no admin existed)", email)
+	}
+
 	pool := store.NewPool(pgPool)
 
 	// CAS storage is built before handler registration so the
@@ -262,15 +309,29 @@ func runHTTP() error {
 		AbsoluteCap:   time.Duration(envInt("KITP_SESSION_ABSOLUTE_DAYS", 45)) * 24 * time.Hour,
 		TouchInterval: time.Duration(envInt("KITP_SESSION_TOUCH_SECONDS", 180)) * time.Second,
 	})
-	sessionMgr.Start(ctx)
+	// (Periodic touch flush is registered on the job.Scheduler below.)
 	// Cookie security: default Secure on; flip with KITP_INSECURE_COOKIE=1
 	// for plain-http dev (Chrome refuses Secure cookies on http).
 	insecureCookie := os.Getenv("KITP_INSECURE_COOKIE") == "1"
 
-	// Mount the auth surface BEFORE srv.Mount so the dispatcher's
-	// "POST /api/v1/batch" registration coexists; the AuthRequired
-	// wrapper below gates that batch route.
-	session.RegisterHTTP(mux, session.HTTPConfig{
+	// Bearer-token manager for the remote MCP transport. Built early
+	// so the apiRouter's BearerResolver can close over it below.
+	tokenMgr := token.New(pgPool, token.Config{})
+	// (Periodic touch flush is registered on the job.Scheduler below.)
+
+	// apiRouter — the typed sub-router that owns every /api/* route.
+	// Two resolvers: session cookies for the browser SPA, bearer
+	// tokens for MCP. Registering an Authed route without a session
+	// resolver, or a Bearer route without a bearer resolver, panics
+	// at startup so the misconfiguration trips early.
+	apiRouter := api.NewRouter(api.RouterConfig{
+		SessionResolver: newSessionResolver(sessionMgr, insecureCookie),
+		BearerResolver:  newBearerResolver(tokenMgr),
+		Logger:          logger,
+	})
+
+	// Auth surface (login + me + logout + optional dev-impersonate).
+	session.Mount(apiRouter, session.HTTPConfig{
 		Manager:         sessionMgr,
 		Pool:            pgPool,
 		SystemUserID:    auth.SystemUserID,
@@ -278,55 +339,66 @@ func runHTTP() error {
 		InsecureCookie:  insecureCookie,
 	})
 
-	srv.Mount(mux, webDir)
-
 	// Remote MCP transport (Streamable HTTP). Same dispatcher as the
 	// JSON batch endpoint — tools/call routes a one-element batch
 	// through srv so per-handler authz hooks fire just like an HTTP
-	// caller. Authentication is via Authorization: Bearer <user_token>;
-	// the session.GateAPI exempt list (below) skips the cookie gate so
-	// the bearer-only path is reachable.
-	tokenMgr := token.New(pgPool, token.Config{})
-	tokenMgr.Start(ctx)
+	// caller. Bearer-token authentication is owned by the router's
+	// BearerResolver; the handler itself just reads the body and
+	// dispatches.
 	mcpHTTPSrv := mcp.NewServer(srv, nil, nil)
-	mcp.RegisterHTTP(mux, mcp.HTTPConfig{
-		Server: mcpHTTPSrv,
-		Tokens: tokenMgr,
-		Logger: logger,
-	})
+	mcp.Mount(apiRouter, mcp.HTTPConfig{Server: mcpHTTPSrv})
 
-	// CAS chunked-upload + attachment download routes.
+	// CAS chunked-upload + attachment download routes (Authed).
 	//
 	//   - The pg backend is the only configured backend in v1; future
 	//     S3 / GCS backends prepend onto the chain.
-	//   - cas.RegisterHTTP mounts POST /api/v1/cas/chunk for the per-
-	//     chunk multipart upload (cap = ATTACHMENT_CHUNK_MAX_MB).
-	//   - attachment.RegisterHTTP mounts GET /api/v1/attachment/{id}/
+	//   - cas.Mount installs POST /api/v1/cas/chunk for the per-chunk
+	//     upload (cap = ATTACHMENT_CHUNK_MAX_MB).
+	//   - attachment.Mount installs GET /api/v1/attachment/{id}/
 	//     download which streams the chunks back in order.
 	//   - file.create / attachment.create / attachment.list /
 	//     attachment.delete go through the JSON batch dispatcher (see
 	//     registerHandlers).
-	cas.RegisterHTTP(mux, cas.HTTPConfig{
+	cas.Mount(apiRouter, cas.HTTPConfig{
 		Pool:     pool,
 		Storage:  storage,
 		MaxBytes: chunkMaxBytes,
-		Logger:   logger,
 	})
-	attachment.RegisterHTTP(mux, attachment.Config{
+	attachment.Mount(apiRouter, attachment.Config{
 		Pool:    pool,
 		Storage: storage,
-		Logger:  logger,
 	})
 	// Project export (phases 3 + 4 of PROJECT_PORTABILITY_PLAN.md) —
-	// streams text/csv or application/zip via dedicated HTTP routes.
-	// Authz is checked inline against the dispatcher's role /
-	// role_grant tables. The full-zip endpoint reads attachment bytes
-	// from CAS when the include_attachments toggle is on.
-	projectexport.RegisterHTTP(mux, projectexport.Config{
+	// streams text/csv, .xlsx, or application/zip via dedicated HTTP
+	// routes. Per-resource authz (caller must hold card.update on
+	// the project) lives inline in each handler; the router's session
+	// gate runs before the handler.
+	projectexport.Mount(apiRouter, projectexport.Config{
 		Pool:    pool,
 		Storage: storage,
-		Logger:  logger,
 	})
+
+	// Idempotency cache. Mounted as a decorator on the batch route
+	// (NOT as outer middleware) so the cache key is partitioned by
+	// the user the apiRouter has just resolved — see
+	// issues/backend/01-critical-idempotency-cross-user.md for the
+	// bug this avoids. The cleanup goroutine runs for the lifetime
+	// of the process.
+	idem := obs.NewIdempotencyStore(pgPool, logger)
+	// (Cleanup is registered on the job.Scheduler below.)
+
+	// JSON batch dispatcher. The session resolver attaches the user
+	// to the context before HandleBatch runs, so the per-handler
+	// AllowedRoles + role_grant checks see the authenticated actor.
+	// The idem decorator scopes idempotency to /api/v1/batch only —
+	// the auth dance / MCP / CAS upload routes don't need it (and
+	// the old "wrap-the-entire-mux" path was caching their
+	// responses too).
+	srv.MountBatch(apiRouter, idem.WrapAuthed)
+
+	// SPA + /healthz live on the top-level mux, outside /api/*.
+	srv.MountSPA(mux, webDir)
+	mux.Handle("/api/", apiRouter.Mux())
 	// Hand the dispatcher's attachment.create handler the CAS storage so
 	// it can build a thumbnail server-side for image attachments. Wiring
 	// is optional — leaving thumbDeps unset (e.g. in tests) just skips
@@ -342,7 +414,7 @@ func runHTTP() error {
 
 	// CAS reaper. Sweeps at the configured cadence, dropping cas_blob
 	// (and bytes via every backend) for orphans older than the grace
-	// period. Stops when ctx is cancelled.
+	// period. Scheduling is owned by the job.Scheduler below.
 	reaper := &cas.Reaper{
 		Pool:        pgPool,
 		Storage:     storage,
@@ -350,7 +422,6 @@ func runHTTP() error {
 		GracePeriod: time.Duration(envInt("CAS_REAPER_GRACE_SEC", 3600)) * time.Second,
 		Logger:      logger,
 	}
-	reaper.Start(ctx)
 
 	// SMTP senders. One goroutine per configured comm_channel card;
 	// each polls for pending reply_body rows and ships them via SMTP.
@@ -386,72 +457,132 @@ func runHTTP() error {
 			envOr("KITP_COMM_IMAP_INSECURE", "0"))
 	}
 
-	// comm_log retention prune. A single background goroutine
-	// periodically deletes comm_log rows older than the configured
-	// retention window (default 30d). Cadence is independent of
-	// retention so a small install can prune nightly without changing
-	// how long it keeps records.
+	// Activity sink pumpers. One goroutine per configured activity_sink
+	// card; each polls the activity stream for the sink's project and
+	// pushes matching rows to its configured external destination
+	// (MS Graph → Teams in v1). Adding a new sink currently requires a
+	// kitpd restart — mirrors the SMTP / IMAP pools.
+	activityTick := time.Duration(envInt("KITP_ACTIVITY_SINK_TICK_SEC", 30)) * time.Second
+	activityPumpers, err := activitysink.StartMSGraphPumperPool(ctx, pool, activityTick, logger)
+	if err != nil {
+		return fmt.Errorf("activity_sink pumpers: %w", err)
+	}
+	if len(activityPumpers) > 0 {
+		log.Printf("started %d activity_sink pumper(s) (tick=%s, dry_run=%s)",
+			len(activityPumpers), activityTick, envOr("KITP_ACTIVITY_SINK_DRY_RUN", "0"))
+	}
+
+	// comm_log retention prune. Deletes comm_log rows older than the
+	// configured retention window (default 30d). The cadence is set
+	// by the job.Scheduler registration below; retention here is just
+	// the age cutoff the SQL applies.
 	retentionDays := envInt("KITP_COMM_LOG_RETENTION_DAYS", 30)
 	pruneHours := envInt("KITP_COMM_LOG_PRUNE_HOURS", 24)
-	pruner := comm.StartLogPruner(pool,
-		time.Duration(retentionDays)*24*time.Hour,
-		time.Duration(pruneHours)*time.Hour)
+	pruneInterval := time.Duration(pruneHours) * time.Hour
+	pruner := comm.NewLogPruner(pool, time.Duration(retentionDays)*24*time.Hour)
 	pruner.SetLogger(logger)
-	log.Printf("started comm_log pruner (retention=%dd, interval=%dh)", retentionDays, pruneHours)
 
-	idem := obs.NewIdempotencyStore(pgPool, logger)
-	idem.StartCleanup(ctx)
+	// ----- background job scheduler -----
+	// All periodic ticker work is declared here so the cadence,
+	// timeout, and metrics live in one table. Pool-style workers
+	// (IMAP / SMTP / activitysink — per-row, persistent connection)
+	// are NOT a fit and keep their existing shape above.
+	sched := job.New[struct{}](pgPool, struct{}{}, logger)
+	for _, j := range []job.Job[struct{}]{
+		{
+			Name:     "idempotency.cleanup",
+			Interval: 10 * time.Minute,
+			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
+				return idem.Cleanup(ctx)
+			},
+		},
+		{
+			Name:      "cas.reaper",
+			OnStartup: true, // catch abandoned uploads from a previous boot
+			Interval:  reaper.Interval,
+			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
+				return reaper.RunOnce(ctx)
+			},
+		},
+		{
+			Name:     "session.touch",
+			Interval: time.Duration(envInt("KITP_SESSION_TOUCH_SECONDS", 180)) * time.Second,
+			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
+				return sessionMgr.RunTouch(ctx)
+			},
+		},
+		{
+			Name:     "token.touch",
+			Interval: 3 * time.Minute, // mirrors token.Config default
+			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
+				return tokenMgr.RunTouch(ctx)
+			},
+		},
+		{
+			Name:     "comm.log_prune",
+			Interval: pruneInterval,
+			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
+				_, err := pruner.RunOnce(ctx)
+				return err
+			},
+		},
+	} {
+		if err := sched.Add(j); err != nil {
+			return fmt.Errorf("scheduler: %w", err)
+		}
+	}
+	sched.Start(ctx)
+	log.Printf("started job scheduler with %d job(s) (comm_log retention=%dd, prune=%dh)",
+		len(sched.Metrics()), retentionDays, pruneHours)
 
-	// Wrap order from outermost in: CORS -> request id -> logging ->
-	// idempotency -> auth (System User OR OIDC) -> dispatcher. CORS lives at
-	// the outer layer so OPTIONS preflights short-circuit before doing any
-	// real work; the rest of the chain still executes for POSTs.
-	// BFF middleware chain:
-	//   session.Middleware  → attach UserCtx if cookie is valid (no 401)
-	//   session.GateAPI    → 401 for /api/* except the auth surface
-	//
-	// OIDC mode previously short-circuited to oidc.Middleware (bearer
-	// header only); that path is gone now that the OIDC dance is
-	// driven server-side and lands in a session cookie. The legacy
-	// auth.Middleware (auto-System-User) is also gone — in BFF mode
-	// nothing implicitly attaches a user, the only path in is the
-	// session cookie.
+	// OIDC mode: register the redirect dance on the apiRouter as
+	// Public routes (browsers are mid-redirect with no cookie yet).
+	// In AUTH_MODE=off mode the routes are simply not registered —
+	// dev-login on the session surface is the only login path.
 	if mode == auth.ModeOIDC {
 		oidcCfg := oidc.FromEnv(os.Getenv)
 		if oidcCfg == nil {
 			return errors.New("AUTH_MODE=oidc but OIDC_ISSUER is empty")
 		}
 		validator := oidc.NewValidator(oidcCfg, pgPool)
-		if err := oidc.RegisterBFF(mux, oidc.BFFConfig{
+		bffCfg := oidc.BFFConfig{
 			Validator:      validator,
 			Pool:           pgPool,
 			SessionManager: sessionMgr,
 			InsecureCookie: insecureCookie,
-		}); err != nil {
+		}
+		if err := bffCfg.Validate(); err != nil {
 			return fmt.Errorf("oidc/bff: %w", err)
 		}
+		oidc.Mount(apiRouter, bffCfg)
 		log.Printf("OIDC enabled (issuer=%s aud=%s redirect_uri=%s)",
 			oidcCfg.Issuer, oidcCfg.Audience, oidcCfg.RedirectURI)
 	}
-	authMW := session.Middleware(sessionMgr)
-	gateMW := session.GateAPI(session.GateConfig{
-		Prefix: "/api/",
-		Exempt: []string{
-			"/api/v1/auth/dev-login",
-			"/api/v1/auth/logout",
-			"/api/v1/auth/oidc/start",
-			"/api/v1/auth/oidc/callback",
-			// Remote MCP uses bearer-token auth instead of the BFF
-			// session cookie — skip the cookie gate so a token-bearing
-			// MCP client reaches the handler.
-			"/api/v1/mcp",
-		},
+
+	// Outer middleware chain from outermost in:
+	//   CORS → request id → logging → CSP → mux
+	//
+	// Auth no longer lives in the chain — the apiRouter resolves the
+	// session cookie (or bearer token) per route and 401s when needed.
+	// Idempotency is now a per-handler decorator on the batch route
+	// (applied above via srv.MountBatch) rather than an outer
+	// middleware, so the cache key is partitioned by the resolved
+	// user. The previous "wrap-the-entire-mux" placement collapsed
+	// every request to SystemUserID because the resolver hadn't run
+	// yet.
+	//
+	// CSP is set unconditionally on every response (SPA HTML, static
+	// assets, /api/ JSON, /healthz). Defence-in-depth — see
+	// internal/api/csp.go for the policy. KITP_CSP_REPORT_ONLY=1
+	// switches to a soft-launch posture; KITP_CSP_REPORT_URI=… emits
+	// a report-uri directive.
+	cspMW := api.CSP(api.CSPConfig{
+		ReportOnly: os.Getenv("KITP_CSP_REPORT_ONLY") == "1",
+		Reporter:   os.Getenv("KITP_CSP_REPORT_URI"),
 	})
 	var inner http.Handler = obs.RequestIDMiddleware(
 		obs.LoggingMiddleware(logger,
-			idem.Middleware(srv,
-				authMW(gateMW(mux)),
-			),
+			cspMW(mux),
 		),
 	)
 	httpHandler := inner
@@ -489,7 +620,23 @@ func runHTTP() error {
 	for _, poller := range imapPollers {
 		poller.Stop()
 	}
-	pruner.Stop()
+	for _, pumper := range activityPumpers {
+		pumper.Stop()
+	}
+	// Job scheduler: cancel the root ctx so every job goroutine sees
+	// parent.Done() and exits. Without this Wait() blocks forever —
+	// httpSrv.Shutdown only bounds its own draining, it doesn't
+	// propagate cancellation back to the parent.
+	cancel()
+	sched.Wait()
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer flushCancel()
+	if err := sessionMgr.Flush(flushCtx); err != nil {
+		log.Printf("session flush: %v", err)
+	}
+	if err := tokenMgr.Flush(flushCtx); err != nil {
+		log.Printf("token flush: %v", err)
+	}
 	return nil
 }
 
@@ -539,19 +686,6 @@ func runMCP() error {
 	srv := api.NewServer(pool)
 	srv.Logger = logger
 
-	// Pick the MCP tool surface. `minimal` (default) lists only
-	// proc.search so clients with tight per-conversation tool budgets
-	// can discover + call other handlers on demand. `full` surfaces
-	// every registered handler — set MCP_TOOLSET=full when the client
-	// has no per-tool cap and wants the auto-completion ergonomic of
-	// every endpoint visible up front.
-	switch envOr("MCP_TOOLSET", "minimal") {
-	case "full":
-		mcp.SetToolset(mcp.ToolsetFull)
-	default:
-		mcp.SetToolset(mcp.ToolsetMinimal)
-	}
-
 	// Resolve the acting user. By default the MCP entry runs as the
 	// System User (back-compat: nothing changed for callers that don't
 	// set KITP_TOKEN). When KITP_TOKEN is non-empty, look it up via
@@ -562,7 +696,10 @@ func runMCP() error {
 	actor := user
 	if tok := os.Getenv("KITP_TOKEN"); tok != "" {
 		mgr := token.New(pgPool, token.Config{})
-		mgr.Start(ctx) // batched touch on token usage
+		// MCP subprocess mode is short-lived enough that we skip the
+		// periodic touch-flush goroutine; last_used_at gets stamped
+		// at Create / Revoke time anyway. The job.Scheduler is for
+		// the long-running BFF process.
 		resolved, err := mgr.Lookup(ctx, tok)
 		if err != nil {
 			return fmt.Errorf("KITP_TOKEN: %w", err)
@@ -575,4 +712,75 @@ func runMCP() error {
 
 	mcpSrv := mcp.NewServer(srv, os.Stdin, os.Stdout)
 	return mcpSrv.Run(mcpCtx)
+}
+
+// newSessionResolver returns the api.Router SessionResolver closure
+// for browser SPA requests. Reads the kitp_session cookie via the
+// session package's Read helper, looks the id up via the Manager,
+// and clears a bad cookie so the browser stops sending the dead
+// value on every request.
+//
+// Returning (nil, nil) means "no credential present" — the router
+// renders that as a 401 with `unauthenticated`.
+func newSessionResolver(mgr *session.Manager, insecureCookie bool) api.Resolver {
+	return func(r *http.Request) (*auth.UserCtx, error) {
+		id := session.Read(r)
+		if id == "" {
+			return nil, nil
+		}
+		u, err := mgr.Lookup(r.Context(), id)
+		if err != nil {
+			// Resolver runs before the handler so we can't clear
+			// the bad cookie from here. The router logs the cause
+			// and renders 401; the previous Middleware-based path
+			// did clear the cookie, but reading-then-clearing on
+			// every 401 wasn't actually catching anything user-
+			// visible (the SPA's auth probe re-derives state
+			// either way). If the dead-cookie storm becomes
+			// noticeable, plumb a clearing hook through Router.
+			_ = insecureCookie
+			return nil, err
+		}
+		return &auth.UserCtx{ID: u.ID, DisplayName: u.DisplayName}, nil
+	}
+}
+
+// newBearerResolver returns the api.Router BearerResolver closure
+// for MCP requests. Extracts the bearer credential from the
+// Authorization header and resolves it via the token Manager.
+//
+// The MCP spec calls for a Bearer realm on 401 responses; the router
+// emits a plain JSON 401 today (matching the rest of the API surface)
+// and the MCP client treats either form as auth failure. If we want
+// to add a WWW-Authenticate header, the router would need a hook —
+// not worth the complexity for one route.
+func newBearerResolver(mgr *token.Manager) api.Resolver {
+	return func(r *http.Request) (*auth.UserCtx, error) {
+		tok := extractBearer(r.Header.Get("Authorization"))
+		if tok == "" {
+			return nil, nil
+		}
+		u, err := mgr.Lookup(r.Context(), tok)
+		if err != nil {
+			return nil, err
+		}
+		return &auth.UserCtx{ID: u.ID, DisplayName: u.DisplayName}, nil
+	}
+}
+
+// extractBearer pulls the bearer credential out of an Authorization
+// header. Returns "" when the scheme is missing, wrong, or the value
+// is empty. Comparison is case-insensitive per RFC 7235.
+func extractBearer(header string) string {
+	if header == "" {
+		return ""
+	}
+	const prefix = "Bearer "
+	if len(header) <= len(prefix) {
+		return ""
+	}
+	if !strings.EqualFold(header[:len(prefix)], prefix) {
+		return ""
+	}
+	return strings.TrimSpace(header[len(prefix):])
 }

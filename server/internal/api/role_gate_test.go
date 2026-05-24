@@ -59,6 +59,10 @@ func registerGateProbe(endpoint, action string, allowed []string) {
 		InputType:    reflect.TypeFor[gateInput](),
 		OutputType:   reflect.TypeFor[gateOutput](),
 		AllowedRoles: allowed,
+		// Probe handlers don't operate on real rows; the test
+		// exercises ONLY the role-name gate, not the per-row scope
+		// check. Opt out so the register-time guard doesn't fire.
+		GlobalScope: true,
 		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 			outs := make([]any, len(ins))
 			for i, raw := range ins {

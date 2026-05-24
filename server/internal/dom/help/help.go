@@ -33,12 +33,22 @@ var contentFS embed.FS
 // separate "admin.filters" topic is intentionally absent — the
 // admin_screens.md body covers both halves of that workflow.
 var topicFiles = map[string]string{
-	"admin.screens": "content/admin_screens.md",
-	"admin.flows":   "content/admin_flows.md",
-	"layout.list":   "content/layout_list.md",
-	"layout.grid":   "content/layout_grid.md",
-	"layout.kanban": "content/layout_kanban.md",
-	"layout.pair":   "content/layout_pair.md",
+	"admin.screens":        "content/admin_screens.md",
+	"admin.named_filters":  "content/admin_named_filters.md",
+	"admin.flows":          "content/admin_flows.md",
+	"admin.projects":       "content/admin_projects.md",
+	"admin.attributes":     "content/admin_attributes.md",
+	"admin.users":          "content/admin_users.md",
+	"admin.contacts":       "content/admin_contacts.md",
+	"admin.agents":         "content/admin_agents.md",
+	"admin.comm_channels":  "content/admin_comm_channels.md",
+	"admin.comm_log":       "content/admin_comm_log.md",
+	"admin.activity_sinks": "content/admin_activity_sinks.md",
+	"task_detail":          "content/task_detail.md",
+	"layout.list":          "content/layout_list.md",
+	"layout.grid":          "content/layout_grid.md",
+	"layout.kanban":        "content/layout_kanban.md",
+	"layout.pair":          "content/layout_pair.md",
 }
 
 // GetTopicInput is the wire shape for help.get_topic.

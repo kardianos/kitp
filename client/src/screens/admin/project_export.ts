@@ -11,6 +11,8 @@
  * for surfacing a toast / inline message.
  */
 import type { AuthState } from '../../auth/auth_state.svelte';
+import { stringifyBigInt } from '../../dispatch/dispatcher';
+import { predicateToJson, type Predicate } from '../../filter/predicate';
 import { KITP_API_BASE } from '../../env';
 import type { ID } from '../../reg/types';
 
@@ -22,6 +24,15 @@ export interface ExportOptions {
   includeDeleted: boolean;
   /** Auth state; the Authorization header is set when a token is present. */
   authState: AuthState | null;
+  /**
+   * Optional predicate AST — the active screen filter. When set, the
+   * server's task query is narrowed via the same compiler that powers
+   * `card.select_with_attributes` (`tree` query param). Bigint
+   * card-ref values are stringified via {@link stringifyBigInt} so
+   * they survive JSON round-trip; the server's predicate compiler
+   * accepts both string and number id shapes.
+   */
+  predicate?: Predicate | null;
   /** Optional fetch override for tests. Defaults to `globalThis.fetch`. */
   fetchImpl?: typeof fetch;
 }
@@ -41,8 +52,13 @@ export interface ExportZipOptions extends ExportOptions {
  */
 export async function downloadProjectExportCsv(opts: ExportOptions): Promise<void> {
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
-  const params = opts.includeDeleted ? '?include_deleted=1' : '';
-  const url = `${KITP_API_BASE}/api/v1/project/${opts.projectId.toString()}/export.csv${params}`;
+  const params = new URLSearchParams();
+  if (opts.includeDeleted) params.set('include_deleted', '1');
+  appendTreeParam(params, opts.predicate);
+  const query = params.toString();
+  const url = `${KITP_API_BASE}/api/v1/project/${opts.projectId.toString()}/export.csv${
+    query !== '' ? `?${query}` : ''
+  }`;
 
   // BFF cookie-only: the kitp_session cookie rides on same-origin
   // GETs automatically, so we don't add an Authorization header.
@@ -79,6 +95,7 @@ export async function downloadProjectExportZip(opts: ExportZipOptions): Promise<
   if (opts.includeDeleted) params.set('include_deleted', '1');
   if (opts.includeAttachments) params.set('include_attachments', '1');
   if (opts.includeActivity) params.set('include_activity', '1');
+  appendTreeParam(params, opts.predicate);
   const query = params.toString();
   const url = `${KITP_API_BASE}/api/v1/project/${opts.projectId.toString()}/export.zip${
     query !== '' ? `?${query}` : ''
@@ -101,6 +118,52 @@ export async function downloadProjectExportZip(opts: ExportZipOptions): Promise<
     ?? `project-${opts.projectId.toString()}.zip`;
   const blob = await resp.blob();
   triggerBrowserDownload(blob, filename);
+}
+
+/**
+ * Issue the .xlsx export request (`GET /api/v1/project/{id}/export.xlsx`)
+ * and trigger a browser download. Same shape as the CSV (one row per
+ * task) but rendered as an Excel workbook so the user can open it
+ * directly in Sheets / Excel without a CSV import dance.
+ */
+export async function downloadProjectExportXlsx(opts: ExportOptions): Promise<void> {
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const params = new URLSearchParams();
+  if (opts.includeDeleted) params.set('include_deleted', '1');
+  appendTreeParam(params, opts.predicate);
+  const query = params.toString();
+  const url = `${KITP_API_BASE}/api/v1/project/${opts.projectId.toString()}/export.xlsx${
+    query !== '' ? `?${query}` : ''
+  }`;
+  const resp = await fetchImpl(url, { method: 'GET', credentials: 'same-origin' });
+  if (!resp.ok) {
+    let detail = `${resp.status} ${resp.statusText}`;
+    try {
+      const body = await resp.text();
+      if (body !== '') detail = body;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`export failed: ${detail}`);
+  }
+  const filename = parseAttachmentFilename(resp.headers.get('Content-Disposition'))
+    ?? `project-${opts.projectId.toString()}.xlsx`;
+  const blob = await resp.blob();
+  triggerBrowserDownload(blob, filename);
+}
+
+/**
+ * Append a `tree=` URL parameter encoding the predicate AST. Bigint
+ * card-ref values are stringified through {@link stringifyBigInt}; the
+ * server's predicate compiler accepts both string and number id
+ * shapes (see `card.search` and `where.go: parent_status_phase`).
+ */
+function appendTreeParam(
+  params: URLSearchParams,
+  predicate: Predicate | null | undefined,
+): void {
+  if (predicate === null || predicate === undefined) return;
+  params.set('tree', stringifyBigInt(predicateToJson(predicate)));
 }
 
 /**

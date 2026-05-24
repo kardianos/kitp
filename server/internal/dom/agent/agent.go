@@ -18,11 +18,15 @@
 // Role-grant and token mint flows are NOT here. user_role.set already
 // implements the parent-grants-subset-of-own-roles rule; user_token.*
 // lives in its own package (#45).
+//
+// Phase 3 of docs/UNIFIED_HANDLER_PLAN.md migrated both handlers to the
+// unified PL/pgSQL shape — bodies live in
+// db/schema/functions/agent_{create,delete}_batch.sql.
 package agent
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -67,7 +71,7 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[CreateOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
 		Authz:        authzCreate,
-		Run:          runCreate(p),
+		SQLFunc:      "agent_create_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "agent",
@@ -77,7 +81,7 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[DeleteOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
 		Authz:        authzDelete,
-		Run:          runDelete(p),
+		SQLFunc:      "agent_delete_batch",
 	})
 }
 
@@ -116,7 +120,7 @@ func authzDelete(ctx context.Context, in any) error {
 		row.UserID,
 	).Scan(&isAgent, &parentID)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return &reg.HandlerError{Code: "not_found",
 				Message: fmt.Sprintf("agent.delete: user %d not found", row.UserID)}
 		}
@@ -133,7 +137,7 @@ func authzDelete(ctx context.Context, in any) error {
 	var n int
 	row2 := pool.P.QueryRow(ctx, `
 		SELECT count(*) FROM user_role ur JOIN role r ON r.id = ur.role_id
-		WHERE ur.user_id = $1 AND r.name IN ('admin','system') AND ur.scope_card_id IS NULL
+		WHERE ur.user_id = $1 AND r.name = 'admin' AND ur.scope_card_id IS NULL
 	`, actor)
 	if err := row2.Scan(&n); err != nil {
 		return fmt.Errorf("agent.delete: admin check: %w", err)
@@ -162,142 +166,4 @@ func rejectAgentActor(ctx context.Context, pool *store.Pool, actor int64) error 
 			Message: fmt.Sprintf("agent: agent actor %d cannot manage the agent lifecycle", actor)}
 	}
 	return nil
-}
-
-// runCreate inserts one user_account row per input. Agents have no
-// person card — they are routed-to via user_card_agent, not via the
-// assignee attribute — so this is a single INSERT … RETURNING with
-// ord preserved through the input json.
-func runCreate(_ *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-		type jsonRow struct {
-			Ord         int    `json:"ord"`
-			DisplayName string `json:"display_name"`
-		}
-		payload := make([]jsonRow, len(ins))
-		for i, raw := range ins {
-			in := raw.(CreateInput)
-			payload[i] = jsonRow{Ord: i, DisplayName: in.DisplayName}
-		}
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, err
-		}
-		const q = `
-			WITH input AS (
-				SELECT ord, display_name FROM jsonb_to_recordset($1::jsonb)
-				AS x(ord int, display_name text)
-			),
-			ins_user AS (
-				INSERT INTO user_account (display_name, parent_user_id, is_agent)
-				SELECT display_name, $2, TRUE FROM input ORDER BY ord
-				RETURNING id, display_name
-			),
-			user_numbered AS (
-				SELECT id, row_number() OVER (ORDER BY id) AS rn FROM ins_user
-			),
-			input_numbered AS (
-				SELECT ord, row_number() OVER (ORDER BY ord) AS rn FROM input
-			)
-			SELECT i.ord, u.id
-			FROM input_numbered i JOIN user_numbered u ON u.rn = i.rn
-			ORDER BY i.ord
-		`
-		rows, err := tx.Query(ctx, q, buf, actorID)
-		if err != nil {
-			return nil, fmt.Errorf("agent.create: %w", err)
-		}
-		defer rows.Close()
-		outs := make([]any, len(ins))
-		for rows.Next() {
-			var ord int
-			var userID int64
-			if err := rows.Scan(&ord, &userID); err != nil {
-				return nil, err
-			}
-			if ord < 0 || ord >= len(ins) {
-				return nil, fmt.Errorf("agent.create: ord %d out of range", ord)
-			}
-			outs[ord] = CreateOutput{UserID: userID}
-		}
-		return outs, rows.Err()
-	}
-}
-
-// runDelete removes agent user_account rows. Cascade wipes session,
-// user_token, user_card_agent, and user_card_sort. We null out
-// attribute_value.last_activity_id and clear activity rows whose
-// actor_id points at any deleted agent — those FKs are NO ACTION and
-// would otherwise block the user_account delete.
-//
-// Order:
-//   1. Null attribute_value.last_activity_id for activity rows we are
-//      about to remove (rows where the agent was the actor).
-//   2. Delete activity rows where actor_id = any-agent.
-//   3. Delete user_account (gated on is_agent=TRUE).
-func runDelete(_ *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		ids := make([]int64, len(ins))
-		for i, raw := range ins {
-			ids[i] = raw.(DeleteInput).UserID
-		}
-
-		// 1. Null any attribute_value.last_activity_id pointing at
-		//    activity rows we are about to delete. The column is
-		//    nullable so this is safe — losing the last-actor pointer
-		//    is a small price for being able to remove the agent.
-		if _, err := tx.Exec(ctx, `
-			UPDATE attribute_value SET last_activity_id = NULL
-			WHERE last_activity_id IN (
-				SELECT id FROM activity WHERE actor_id = ANY($1)
-			)
-		`, ids); err != nil {
-			return nil, fmt.Errorf("agent.delete: null last_activity_id: %w", err)
-		}
-
-		// 2. Wipe activity rows where the agent was the actor.
-		if _, err := tx.Exec(ctx, `
-			DELETE FROM activity WHERE actor_id = ANY($1)
-		`, ids); err != nil {
-			return nil, fmt.Errorf("agent.delete: clear activity: %w", err)
-		}
-
-		// 3. Delete user_account rows. Cascade clears session,
-		//    user_token, user_card_agent (both sides), and
-		//    user_card_sort. Gate on is_agent=TRUE so a stray id is
-		//    reported as 0.
-		delRows, err := tx.Query(ctx, `
-			DELETE FROM user_account
-			WHERE id = ANY($1) AND is_agent = TRUE
-			RETURNING id
-		`, ids)
-		if err != nil {
-			return nil, fmt.Errorf("agent.delete: delete user_account: %w", err)
-		}
-		deleted := map[int64]bool{}
-		for delRows.Next() {
-			var id int64
-			if err := delRows.Scan(&id); err != nil {
-				delRows.Close()
-				return nil, err
-			}
-			deleted[id] = true
-		}
-		delRows.Close()
-		if err := delRows.Err(); err != nil {
-			return nil, err
-		}
-
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(DeleteInput)
-			n := 0
-			if deleted[in.UserID] {
-				n = 1
-			}
-			outs[i] = DeleteOutput{OK: n > 0, Deleted: n}
-		}
-		return outs, nil
-	}
 }

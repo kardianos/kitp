@@ -29,8 +29,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -39,22 +41,24 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth/session"
 )
 
 // BFFConfig wires the redirect handlers.
 type BFFConfig struct {
-	Validator       *Validator
-	Pool            *pgxpool.Pool
-	SessionManager  *session.Manager
-	InsecureCookie  bool
-	StateTTL        time.Duration // default 10 minutes
+	Validator      *Validator
+	Pool           *pgxpool.Pool
+	SessionManager *session.Manager
+	InsecureCookie bool
+	StateTTL       time.Duration // default 10 minutes
 }
 
-// RegisterBFF mounts the two OIDC redirect endpoints on mux. Returns
-// an error when the supplied config is missing required fields so
-// main.go can fail fast at startup rather than 500 in production.
-func RegisterBFF(mux *http.ServeMux, cfg BFFConfig) error {
+// Validate returns an error when [cfg] is missing required fields.
+// Split out from Mount so main.go can fail fast at startup while
+// auth-audit tooling (which doesn't connect to an OP) can mount the
+// routes for inventory without standing up a real Validator.
+func (cfg *BFFConfig) Validate() error {
 	if cfg.Validator == nil {
 		return fmt.Errorf("oidc/bff: Validator required")
 	}
@@ -70,32 +74,51 @@ func RegisterBFF(mux *http.ServeMux, cfg BFFConfig) error {
 	if cfg.Validator.cfg.RedirectURI == "" {
 		return fmt.Errorf("oidc/bff: OIDC_REDIRECT_URI is empty")
 	}
+	return nil
+}
+
+// Mount registers the two OIDC redirect endpoints on the apiRouter as
+// Public routes (the OIDC dance is the path TO authentication; the
+// browser is mid-redirect and has no cookie yet). Mount is pure
+// registration — call cfg.Validate() before Mount in production
+// startup so missing config trips before the listener opens.
+func Mount(rt *api.Router, cfg BFFConfig) {
 	if cfg.StateTTL <= 0 {
 		cfg.StateTTL = 10 * time.Minute
 	}
-	mux.HandleFunc("GET /api/v1/auth/oidc/start", func(w http.ResponseWriter, r *http.Request) {
+	// Both handlers always write a response (either a 302 to the OP /
+	// back to /login, or a 302 to / after session creation), so they
+	// return nil unconditionally — the router's error translator
+	// would only kick in for an unexpected panic/bug. We surface
+	// failures via redirectLogin instead, matching the existing
+	// browser-driven contract.
+	rt.Public("GET /api/v1/auth/oidc/start", func(_ context.Context, w http.ResponseWriter, r *http.Request) error {
 		handleStart(w, r, cfg)
+		return nil
 	})
-	mux.HandleFunc("GET /api/v1/auth/oidc/callback", func(w http.ResponseWriter, r *http.Request) {
+	rt.Public("GET /api/v1/auth/oidc/callback", func(_ context.Context, w http.ResponseWriter, r *http.Request) error {
 		handleCallback(w, r, cfg)
+		return nil
 	})
-	return nil
 }
 
 func handleStart(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 	authURL, err := cfg.Validator.AuthorizationEndpoint(r.Context())
 	if err != nil {
-		redirectLogin(w, r, fmt.Sprintf("discovery failed: %v", err))
+		logRedirect(r, "oidc.start: discovery", err)
+		redirectLogin(w, r, "could not start sign-in")
 		return
 	}
 	state, err := randomURLString(24)
 	if err != nil {
-		redirectLogin(w, r, "rng failed")
+		logRedirect(r, "oidc.start: rng_state", err)
+		redirectLogin(w, r, "could not start sign-in")
 		return
 	}
 	verifier, err := randomURLString(48)
 	if err != nil {
-		redirectLogin(w, r, "rng failed")
+		logRedirect(r, "oidc.start: rng_verifier", err)
+		redirectLogin(w, r, "could not start sign-in")
 		return
 	}
 	challenge := s256Challenge(verifier)
@@ -105,7 +128,8 @@ func handleStart(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 		VALUES ($1, $2, $3, now() + $4 * INTERVAL '1 second')
 	`, state, verifier, "/", int(cfg.StateTTL.Seconds()))
 	if err != nil {
-		redirectLogin(w, r, fmt.Sprintf("state insert: %v", err))
+		logRedirect(r, "oidc.start: state_insert", err)
+		redirectLogin(w, r, "could not start sign-in")
 		return
 	}
 
@@ -145,17 +169,19 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 		RETURNING verifier
 	`, state)
 	if err := row.Scan(&verifier); err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			redirectLogin(w, r, "state expired")
 			return
 		}
-		redirectLogin(w, r, fmt.Sprintf("state lookup: %v", err))
+		logRedirect(r, "oidc.callback: state_lookup", err)
+		redirectLogin(w, r, "could not complete sign-in")
 		return
 	}
 
 	tokenURL, err := cfg.Validator.TokenEndpoint(r.Context())
 	if err != nil {
-		redirectLogin(w, r, fmt.Sprintf("discovery: %v", err))
+		logRedirect(r, "oidc.callback: discovery", err)
+		redirectLogin(w, r, "could not complete sign-in")
 		return
 	}
 	idToken, err := exchangeCode(r.Context(), tokenURL, exchangeParams{
@@ -166,21 +192,24 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 		Verifier:     verifier,
 	})
 	if err != nil {
-		redirectLogin(w, r, fmt.Sprintf("token exchange: %v", err))
+		logRedirect(r, "oidc.callback: token_exchange", err)
+		redirectLogin(w, r, "could not complete sign-in")
 		return
 	}
 
 	// Reuse Validator.Resolve to verify the id_token + upsert user.
 	userID, _, err := cfg.Validator.Resolve(r.Context(), idToken)
 	if err != nil {
-		redirectLogin(w, r, fmt.Sprintf("token validate: %v", err))
+		logRedirect(r, "oidc.callback: token_validate", err)
+		redirectLogin(w, r, "could not complete sign-in")
 		return
 	}
 
 	sub, _ := peekSub(idToken)
 	sid, err := cfg.SessionManager.Create(r.Context(), userID, sub)
 	if err != nil {
-		redirectLogin(w, r, fmt.Sprintf("session create: %v", err))
+		logRedirect(r, "oidc.callback: session_create", err)
+		redirectLogin(w, r, "could not complete sign-in")
 		return
 	}
 	session.Set(w, sid, session.CookieOptions{
@@ -272,6 +301,16 @@ func redirectLogin(w http.ResponseWriter, r *http.Request, reason string) {
 	q := url.Values{}
 	q.Set("error", reason)
 	http.Redirect(w, r, "/login?"+q.Encode(), http.StatusFound)
+}
+
+// logRedirect records the verbose underlying error to slog while the
+// caller emits a generic message to the redirect query string. Keeps
+// schema names, constraint names, and other DB-derived info off the
+// wire to unauthenticated visitors (S7).
+func logRedirect(r *http.Request, where string, err error) {
+	slog.Default().LogAttrs(r.Context(), slog.LevelError, "oidc redirect",
+		slog.String("where", where),
+		slog.String("err", err.Error()))
 }
 
 // randomURLString returns a base64url-encoded random string of the

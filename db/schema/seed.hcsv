@@ -10,10 +10,9 @@ id, display_name, email
 1, System,
 
 
-## table role | doc="Built-in roles. 'system' holds every grant for AUTH_MODE=off; the others are the OIDC role model." | on_conflict="name"
+## table role | doc="Built-in roles. The OIDC role model; no wildcard role — every grant is explicit so production and dev resolve through identical code paths." | on_conflict="name"
 ### rows
 name
-system
 viewer
 commenter
 worker
@@ -21,11 +20,12 @@ manager
 admin
 
 
-## table user_role | doc="System User gets both 'system' (every grant; AUTH_MODE=off) and 'admin' (so the BFF dev session unlocks Admin UI affordances). Demo / dev team grants live in demo.hcsv." | on_conflict="*"
+## table user_role | doc="System User holds admin + manager + worker globally — explicit grants instead of the old 'system' wildcard, so the role-gate / LoadUserRoles paths don't carry a special case. Demo / dev team grants live in demo.hcsv." | on_conflict="*"
 ### rows
-user_id, role_id, scope_card_id
-1, $role.system, null
-1, $role.admin,  null
+user_id, role_id,         scope_card_id
+1,       $role.admin,     null
+1,       $role.manager,   null
+1,       $role.worker,    null
 
 
 ## table role_mapping | doc="Default OIDC group → role mappings for the dex dev stack." | on_conflict="claim_value"
@@ -36,22 +36,24 @@ kitp.manager, $role.manager
 kitp.worker,  $role.worker
 
 
-## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task." | on_conflict="name"
+## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel / activity_sink are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task. uses_phase=true marks card_types whose instances are flow-bound value-cards — the `phase` column on those rows is consulted by the predicate compiler (has_phase op) and the TransitionBar UI. Tasks / projects / etc. carry the column but never read it." | on_conflict="name"
 ### rows
-name, is_built_in, allow_self_parent, parent_card_type_id
-project,      true,  false, null
-task,         true,  true,  $card_type.project
-milestone,    true,  false, $card_type.project
-component,    true,  false, $card_type.project
-tag,          true,  true,  $card_type.project
-status,       true,  false, $card_type.project
-comment_body, true,  false, null
-person,       true,  false, null
-screen,       true,  false, $card_type.project
-filter,       true,  false, $card_type.screen
-comm_channel, true,  false, $card_type.project
-comm,         true,  false, $card_type.task
-reply_body,   true,  false, null
+name,              is_built_in, allow_self_parent, parent_card_type_id,    uses_phase
+project,           true,        false,             null,                   false
+task,              true,        true,              $card_type.project,     false
+milestone,         true,        false,             $card_type.project,     false
+component,         true,        false,             $card_type.project,     false
+tag,               true,        true,              $card_type.project,     false
+status,            true,        false,             $card_type.project,     true
+comment_body,      true,        false,             null,                   false
+person,            true,        false,             null,                   false
+screen,            true,        false,             $card_type.project,     false
+filter,            true,        false,             $card_type.screen,      false
+comm_channel,      true,        false,             $card_type.project,     false
+comm,              true,        false,             $card_type.task,        false
+reply_body,        true,        false,             null,                   false
+activity_sink,     true,        false,             $card_type.project,     false
+predicate_snippet, true,        false,             $card_type.project,     false
 
 
 ## table attribute_def | doc="Built-in attribute definitions. Each pick-from-a-list attribute is a card_ref with target_card_type_id pointing at the card_type whose cards are the valid values." | on_conflict="name"
@@ -79,7 +81,10 @@ toggle_groups,         text,        true, null
 predicate,             text,        true, null
 default_filter,        card_ref,    true, $card_type.filter
 column_attr,           text,        true, null
-lane_attr,             text,        true, null
+sort,                  text,        true, null
+group_by_attr,         text,        true, null
+tag_prefix_columns,    text,        true, null
+extra_columns,         text,        true, null
 is_template,           bool,        true, null
 comms,                 card_ref[],  true, $card_type.comm
 channel_type,          text,        true, null
@@ -102,6 +107,18 @@ reply_from,            text,        true, null
 reply_subject,         text,        true, null
 reply_body_text,       text,        true, null
 delivery_status,       text,        true, null
+comm_recipients,       card_ref[],  true, $card_type.person
+person_kind,           text,        true, null
+sink_kind,             text,        true, null
+msgraph_tenant_id,     text,        true, null
+msgraph_client_id,     text,        true, null
+msgraph_team_id,       text,        true, null
+msgraph_channel_id,    text,        true, null
+activity_filter,       text,        true, null
+parent_task,           card_ref,    true, $card_type.task
+parent_relationship,   text,        true, null
+due_date,              date,        true, null
+originator,            card_ref,    true, $card_type.person
 
 
 ## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"
@@ -128,6 +145,10 @@ $card_type.component, $attribute_def.tags,              false, 4
 $card_type.task,      $attribute_def.description,       false, 5
 $card_type.project,   $attribute_def.description,       false, 5
 $card_type.task,      $attribute_def.sort_order,        false, 6
+$card_type.task,      $attribute_def.parent_task,         false, 7
+$card_type.task,      $attribute_def.parent_relationship, false, 8
+$card_type.task,      $attribute_def.due_date,            false, 9
+$card_type.task,      $attribute_def.originator,          false, 10
 $card_type.milestone, $attribute_def.sort_order,        false, 4
 $card_type.component, $attribute_def.sort_order,        false, 4
 $card_type.tag,       $attribute_def.sort_order,        false, 4
@@ -137,6 +158,7 @@ $card_type.tag,       $attribute_def.is_active,         false, 5
 $card_type.person,    $attribute_def.title,             true,  0
 $card_type.person,    $attribute_def.email,             false, 1
 $card_type.person,    $attribute_def.is_active,         false, 2
+$card_type.person,    $attribute_def.person_kind,       false, 3
 $card_type.screen,    $attribute_def.title,                 true,  0
 $card_type.screen,    $attribute_def.layout,                true,  1
 $card_type.screen,    $attribute_def.slug,                  true,  2
@@ -146,14 +168,17 @@ $card_type.screen,    $attribute_def.default_create_status, false, 5
 $card_type.screen,    $attribute_def.view_requires_role,    false, 6
 $card_type.screen,    $attribute_def.toggle_groups,         false, 7
 $card_type.screen,    $attribute_def.default_filter,        false, 8
-$card_type.screen,    $attribute_def.sort_order,            false, 9
-$card_type.screen,    $attribute_def.is_active,             false, 10
+$card_type.screen,    $attribute_def.tag_prefix_columns,    false, 9
+$card_type.screen,    $attribute_def.extra_columns,         false, 10
+$card_type.screen,    $attribute_def.sort_order,            false, 11
+$card_type.screen,    $attribute_def.is_active,             false, 12
 $card_type.filter,    $attribute_def.title,             true,  0
 $card_type.filter,    $attribute_def.predicate,         false, 1
-$card_type.filter,    $attribute_def.column_attr,       false, 2
-$card_type.filter,    $attribute_def.lane_attr,         false, 3
-$card_type.filter,    $attribute_def.sort_order,        false, 4
-$card_type.filter,    $attribute_def.is_active,         false, 5
+$card_type.filter,    $attribute_def.sort,              false, 2
+$card_type.filter,    $attribute_def.group_by_attr,     false, 3
+$card_type.filter,    $attribute_def.column_attr,       false, 4
+$card_type.filter,    $attribute_def.sort_order,        false, 5
+$card_type.filter,    $attribute_def.is_active,         false, 6
 $card_type.task,         $attribute_def.comms,             false, 7
 $card_type.comm_channel, $attribute_def.title,             true,  0
 $card_type.comm_channel, $attribute_def.channel_type,      true,  1
@@ -172,11 +197,23 @@ $card_type.comm,         $attribute_def.channel_ref,       true,  1
 $card_type.comm,         $attribute_def.thread_id,         true,  2
 $card_type.comm,         $attribute_def.comm_status,       true,  3
 $card_type.comm,         $attribute_def.replies,           false, 4
-$card_type.reply_body,   $attribute_def.reply_to,          true,  0
+$card_type.comm,         $attribute_def.comm_recipients,   false, 5
+$card_type.reply_body,   $attribute_def.reply_to,          false, 0
 $card_type.reply_body,   $attribute_def.reply_from,        true,  1
-$card_type.reply_body,   $attribute_def.reply_subject,     true,  2
+$card_type.reply_body,   $attribute_def.reply_subject,     false, 2
 $card_type.reply_body,   $attribute_def.reply_body_text,   true,  3
 $card_type.reply_body,   $attribute_def.delivery_status,   true,  4
+$card_type.activity_sink, $attribute_def.title,                true,  0
+$card_type.activity_sink, $attribute_def.sink_kind,            true,  1
+$card_type.activity_sink, $attribute_def.msgraph_tenant_id,    false, 2
+$card_type.activity_sink, $attribute_def.msgraph_client_id,    false, 3
+$card_type.activity_sink, $attribute_def.msgraph_team_id,      false, 4
+$card_type.activity_sink, $attribute_def.msgraph_channel_id,   false, 5
+$card_type.activity_sink, $attribute_def.activity_filter,      false, 6
+$card_type.activity_sink, $attribute_def.channel_status,       false, 7
+$card_type.activity_sink, $attribute_def.channel_fault_reason, false, 8
+$card_type.predicate_snippet, $attribute_def.title,     true,  0
+$card_type.predicate_snippet, $attribute_def.predicate, true,  1
 
 
 ## table process | doc="Built-in processes (workflows)." | on_conflict="name"
@@ -217,35 +254,25 @@ user_account_id, person_card_id
 -- role_grant. Cross-products are expressed with array-expansion in
 -- attribute cells; the loader emits one INSERT per element-tuple.
 
-## table role_grant | doc="system role: every (card_type, process) tuple. Carries every grant for AUTH_MODE=off." | on_conflict="role_id, card_type_id, process_id"
-### rows
-role_id, card_type_id, process_id
-$role.system, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.status, $card_type.comment_body, $card_type.person, $card_type.screen, $card_type.filter, $card_type.comm_channel, $card_type.comm, $card_type.reply_body]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."task.update_with_comment", $process."user_card_sort.set"]`
-
-
 ## table role_grant | doc="commenter grants: only comment.post on task." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
 $role.commenter, $card_type.task, $process."comment.post"
 
 
-## table role_grant | doc="worker grants: act on task (update/comment/personal-sort)." | on_conflict="role_id, card_type_id, process_id"
+## table role_grant | doc="worker / manager (merged): the two roles now carry identical grants. Anyone non-admin writing into the system gets the full surface — task create + update + comment + sort, comm create + update + comment + sort (so workers can set a comm channel on a task and reply via reply.post which gates on (comm, card.update)), full CRUD on the structural cards (project / milestone / component / tag / screen / filter / status / predicate_snippet), and person create + update (so adding a teammate / contact doesn't require admin). comm_channel / reply_body / activity_sink stay admin-only configuration surface." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
-$role.worker, $card_type.task, `[$process."card.update", $process."comment.post", $process."user_card_sort.set"]`
-
-
-## table role_grant | doc="manager grants: worker grants on task + create/update/delete on project/milestone/component/tag/screen/filter/status. Comm gets a lighter footprint (update/comment/sort only) — comm_channel + reply_body stay admin-only." | on_conflict="role_id, card_type_id, process_id"
-### rows
-role_id, card_type_id, process_id
-$role.manager, `[$card_type.task, $card_type.comm]`, `[$process."card.update", $process."comment.post", $process."user_card_sort.set"]`
-$role.manager, `[$card_type.project, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.screen, $card_type.filter, $card_type.status]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
+`[$role.worker, $role.manager]`, $card_type.task,              `[$process."card.create", $process."card.update", $process."comment.post", $process."user_card_sort.set"]`
+`[$role.worker, $role.manager]`, $card_type.comm,              `[$process."card.create", $process."card.update", $process."comment.post", $process."user_card_sort.set"]`
+`[$role.worker, $role.manager]`, $card_type.person,            `[$process."card.create", $process."card.update"]`
+`[$role.worker, $role.manager]`, `[$card_type.project, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.screen, $card_type.filter, $card_type.status, $card_type.predicate_snippet]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
 
 
 ## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references). The three comm card_types (comm_channel, comm, reply_body) are admin-only configuration surface; managers get a lighter cut on comm via the manager grant." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
-$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status, $card_type.comm_channel, $card_type.comm, $card_type.reply_body]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
+$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status, $card_type.comm_channel, $card_type.comm, $card_type.reply_body, $card_type.activity_sink, $card_type.predicate_snippet]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
 
 
 -- ---------------------------------------------------------------------
@@ -344,10 +371,10 @@ id, card_type_id,     parent_card_id, title,   layout, slug,  hotkey, sort_order
 17, $card_type.screen, parent,         "Inbox", list,   inbox, i,      1,          @tpl_flow_status,  @tpl_s_todo,           `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true}]},{"name":"scope","operator":"and","mode":"multi","items":[{"name":"mine_only","label":"Mine","predicate":{"attr":"assignee","op":"=","values":["__actor__"]},"default_on":true}]}]`
 
 
-## table card | under=tpl_project | doc="Grid screen. Phase items are independent checkboxes so the user can flip triage / terminal on alongside the active default." | on_conflict="id"
+## table card | under=tpl_project | doc="Grid screen. Phase items are independent checkboxes so the user can flip triage / terminal on alongside the active default. extra_columns seeds 'due_date' as an additional Grid column out of the box; admins can add more attribute names via the Screens admin." | on_conflict="id"
 ### rows
-id, card_type_id,     parent_card_id, title,  layout, slug, hotkey, sort_order, flow_ref,          toggle_groups
-18, $card_type.screen, parent,         "Grid", grid,   grid, g,      2,          @tpl_flow_status, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+id, card_type_id,     parent_card_id, title,  layout, slug, hotkey, sort_order, flow_ref,          extra_columns,   toggle_groups
+18, $card_type.screen, parent,         "Grid", grid,   grid, g,      2,          @tpl_flow_status, `["due_date"]`,  `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 
 ## table card | under=tpl_project | doc="Kanban screen. Columns are status value-cards; toggle the terminal phase item to include Done/Cancelled columns." | on_conflict="id"
@@ -356,10 +383,10 @@ id, card_type_id,     parent_card_id, title,    layout, slug,   hotkey, sort_ord
 19, $card_type.screen, parent,         "Kanban", kanban, kanban, k,      3,          @tpl_flow_status, status,      `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 
-## table card | under=tpl_project | doc="Project detail (pair layout). No hotkey — entered via the project list." | on_conflict="id"
+## table card | under=tpl_project | doc="Project detail (project layout). No hotkey — entered via the project list." | on_conflict="id"
 ### rows
 id, card_type_id,     parent_card_id, title,     layout, slug,    sort_order, flow_ref,          toggle_groups
-20, $card_type.screen, parent,         "Project", pair,   project, 4,          @tpl_flow_status, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true}]}]`
+20, $card_type.screen, parent,         "Project", project,project, 4,          @tpl_flow_status, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true}]}]`
 
 
 ## table card | under=tpl_project | doc="Ideas screen (NEW in Gate 11). Triage-phase rows only; default_create_status overrides the flow default so a 'g n' quick-entry lands as 'New idea'." | on_conflict="id"
@@ -384,3 +411,13 @@ id, card_type_id,     parent_card_id, title,   layout, slug,  hotkey, sort_order
 ### rows
 id, card_type_id,     parent_card_id, title,             predicate
 27, $card_type.filter, parent,         "Comms attached",  `{"attr":"comms","op":"exists"}`
+
+
+## table card | under=tpl_project | doc="Template predicate-snippet cards — every newly stamped project inherits 'Overdue', 'Due within 3 days', and 'Heads' as named filters. The two date snippets reference the relative-date ops (before_today / within_days) which the server compiler resolves against now()::date at query time so the result keeps moving with the clock instead of going stale on save. The non-terminal status check is expressed as has_phase [triage, active] (the kernel form) so the advanced filter editor renders the operator with its friendly label. 'Heads' surfaces tasks with no parent OR whose parent has reached terminal, i.e. the current 'head of chain' view." | on_conflict="id"
+### rows
+id, card_type_id,                 parent_card_id, title,                  predicate
+28, $card_type.predicate_snippet, parent,         "Overdue",              `{"connective":"and","children":[{"attr":"status","op":"has_phase","values":["triage","active"]},{"attr":"due_date","op":"before_today"}]}`
+29, $card_type.predicate_snippet, parent,         "Due within 3 days",    `{"connective":"and","children":[{"attr":"status","op":"has_phase","values":["triage","active"]},{"attr":"due_date","op":"within_days","values":[3]}]}`
+30, $card_type.predicate_snippet, parent,         "Heads",                `{"connective":"or","children":[{"attr":"parent_task","op":"not exists"},{"attr":"parent_task","op":"has_phase","values":["terminal"]}]}`
+
+

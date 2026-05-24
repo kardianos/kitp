@@ -14,13 +14,8 @@
    * instead of forcing the user through "+ Add filter".
    */
   import { tick } from 'svelte';
-  import {
-    autoUpdate,
-    computePosition,
-    flip,
-    offset,
-  } from '@floating-ui/dom';
   import { cx } from '../util/class_names';
+  import Popover from '../ui/Popover.svelte';
   import type { FilterAttribute } from './attribute_schema.svelte';
   import {
     eq,
@@ -144,9 +139,7 @@
   let open = $state(false);
   let query = $state('');
   let triggerEl: HTMLButtonElement | null = $state(null);
-  let popupEl: HTMLDivElement | null = $state(null);
   let searchEl: HTMLInputElement | null = $state(null);
-  let cleanupFloat: (() => void) | null = null;
 
   const options = $derived(attribute.options ?? []);
   const filteredOptions = $derived.by(() => {
@@ -159,56 +152,12 @@
     open = true;
     query = '';
     await tick();
-    if (!triggerEl || !popupEl) return;
-    cleanupFloat?.();
-    cleanupFloat = autoUpdate(triggerEl, popupEl, () => {
-      if (!triggerEl || !popupEl) return;
-      void computePosition(triggerEl, popupEl, {
-        placement: 'bottom-start',
-        middleware: [offset(4), flip()],
-      }).then(({ x, y }) => {
-        if (!popupEl) return;
-        Object.assign(popupEl.style, {
-          left: `${x}px`,
-          top: `${y}px`,
-          opacity: '1',
-          pointerEvents: 'auto',
-        });
-      });
-    });
     if (options.length > 8) searchEl?.focus();
   }
 
   function closeMenu(): void {
     open = false;
-    cleanupFloat?.();
-    cleanupFloat = null;
   }
-
-  function onDocPointerDown(e: PointerEvent): void {
-    if (!open) return;
-    const t = e.target as Node | null;
-    if (!t) return;
-    if (popupEl?.contains(t)) return;
-    if (triggerEl?.contains(t)) return;
-    closeMenu();
-  }
-
-  $effect(() => {
-    if (open) {
-      document.addEventListener('pointerdown', onDocPointerDown, true);
-      return () => {
-        document.removeEventListener('pointerdown', onDocPointerDown, true);
-      };
-    }
-    return undefined;
-  });
-
-  $effect(() => {
-    return () => {
-      cleanupFloat?.();
-    };
-  });
 
   function isChecked(v: unknown): boolean {
     return currentValues.includes(v);
@@ -245,14 +194,14 @@
     </svg>
   </button>
 
-  {#if open}
-    <div
-      bind:this={popupEl}
-      class="z-50 flex w-64 flex-col overflow-hidden rounded-md border border-border bg-bg shadow-lg"
-      style="position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none;"
-      role="dialog"
-      aria-label="Filter {attribute.label}"
-    >
+  <Popover
+    bind:open
+    anchor={triggerEl}
+    placement="bottom-start"
+    aria-label={`Filter ${attribute.label}`}
+    class="flex w-64 flex-col overflow-hidden"
+  >
+    {#snippet children()}
       {#if options.length > 8}
         <div class="border-b border-border p-1.5">
           <input
@@ -317,6 +266,6 @@
           >Clear</button>
         </div>
       {/if}
-    </div>
-  {/if}
+    {/snippet}
+  </Popover>
 </div>

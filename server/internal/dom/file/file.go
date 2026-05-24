@@ -13,16 +13,12 @@
 package file
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
 	"reflect"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
+	"github.com/kitp/kitp/server/internal/textnorm"
 )
 
 // Chunk is one entry in CreateInput.Chunks.
@@ -33,10 +29,49 @@ type Chunk struct {
 
 // CreateInput inserts a new logical file from a previously-uploaded
 // chunk list.
+//
+// A custom UnmarshalJSON runs textnorm.Filename on the incoming
+// filename so the value the dispatcher hands the PL/pgSQL function is
+// already NFC-normalised + sanitised (bidi/zero-width strip, path
+// separator removal, trailing-dot trim, …). The richer Unicode work
+// can't be ported to PL/pgSQL — keeping it on the Go side preserves
+// the existing Filename guarantees while letting file_create_batch
+// stay pure-DB. The SQL function reapplies the cheap presence/
+// extension gates so a malformed payload that somehow bypasses this
+// hook still gets caught.
 type CreateInput struct {
 	Filename string  `json:"filename" mcp:"required,desc=display filename"`
 	MimeType string  `json:"mime_type,omitempty" mcp:"desc=MIME type; defaults to application/octet-stream"`
 	Chunks   []Chunk `json:"chunks" mcp:"required,desc=ordered chunk list (each cas_blob row must already exist)"`
+}
+
+// createInputWire mirrors CreateInput field-for-field but without the
+// custom UnmarshalJSON so we can decode the raw JSON into it without
+// recursing into ourselves.
+type createInputWire struct {
+	Filename string  `json:"filename"`
+	MimeType string  `json:"mime_type,omitempty"`
+	Chunks   []Chunk `json:"chunks"`
+}
+
+// UnmarshalJSON normalises the Filename field via textnorm.Filename
+// before populating the struct. Errors from the normaliser surface as
+// JSON unmarshal errors, which the dispatcher maps to a
+// `bad_input` HandlerError. Empty filenames also fail here rather
+// than falling through to the SQL function's gate.
+func (c *CreateInput) UnmarshalJSON(b []byte) error {
+	var w createInputWire
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	clean, err := textnorm.Filename(w.Filename)
+	if err != nil {
+		return err
+	}
+	c.Filename = clean
+	c.MimeType = w.MimeType
+	c.Chunks = w.Chunks
+	return nil
 }
 
 // CreateOutput surfaces the freshly-created file row's metadata.
@@ -56,92 +91,15 @@ func Register(p *store.Pool) {
 		InputType:    reflect.TypeFor[CreateInput](),
 		OutputType:   reflect.TypeFor[CreateOutput](),
 		AllowedRoles: []string{"worker", "manager", "admin"},
-		Run:          runCreate(p),
+		// file rows have no project anchor — they're contentless
+		// blobs until a downstream domain (attachment.create, future
+		// avatar uploads, …) links them to a card. The downstream
+		// link IS scope-checked. Marking GlobalScope here so the
+		// register-time guard doesn't reject the handler.
+		GlobalScope: true,
+		// Unified handler — body lives in
+		// db/schema/functions/file_create_batch.sql. See
+		// docs/UNIFIED_HANDLER_PLAN.md Phase 2.
+		SQLFunc: "file_create_batch",
 	})
-}
-
-func runCreate(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(CreateInput)
-			if in.Filename == "" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "file.create: filename is required"}
-			}
-			if len(in.Chunks) == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "file.create: at least one chunk is required"}
-			}
-			var totalBytes int64
-			for j, c := range in.Chunks {
-				if c.Address == "" {
-					return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-						Message: fmt.Sprintf("file.create: chunks[%d].address is required", j)}
-				}
-				if c.Size < 0 {
-					return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-						Message: fmt.Sprintf("file.create: chunks[%d].size_bytes must be non-negative", j)}
-				}
-				totalBytes += c.Size
-			}
-			mime := in.MimeType
-			if mime == "" {
-				mime = "application/octet-stream"
-			}
-
-			// Insert the file row and the file_chunk list in a single CTE
-			// so they land or fail together.
-			//
-			// The chunk list is fed via jsonb_to_recordset rather than
-			// looping in Go — one round-trip per file regardless of how
-			// many chunks. The FK on file_chunk.cas_address surfaces a
-			// foreign_key_violation if the caller forgot to upload a
-			// chunk first.
-			type chunkRow struct {
-				Seq        int    `json:"seq"`
-				Address    string `json:"cas_address"`
-				ChunkSize  int64  `json:"chunk_size"`
-			}
-			rows := make([]chunkRow, len(in.Chunks))
-			for j, c := range in.Chunks {
-				rows[j] = chunkRow{Seq: j, Address: c.Address, ChunkSize: c.Size}
-			}
-			buf, err := json.Marshal(rows)
-			if err != nil {
-				return nil, fmt.Errorf("file.create: marshal chunks: %w", err)
-			}
-			var id int64
-			err = tx.QueryRow(ctx, `
-				WITH ins_file AS (
-					INSERT INTO file (filename, size_bytes, mime_type, created_by)
-					VALUES ($1, $2, $3, $4)
-					RETURNING id
-				),
-				ins_chunks AS (
-					INSERT INTO file_chunk (file_id, seq, cas_address, chunk_size)
-					SELECT (SELECT id FROM ins_file), seq, cas_address, chunk_size
-					FROM jsonb_to_recordset($5::jsonb)
-					AS x(seq int, cas_address text, chunk_size bigint)
-					RETURNING file_id
-				)
-				SELECT id FROM ins_file
-			`, in.Filename, totalBytes, mime, actorID, buf).Scan(&id)
-			if err != nil {
-				return nil, fmt.Errorf("file.create: %w", err)
-			}
-
-			outs[i] = CreateOutput{
-				ID:        id,
-				Filename:  in.Filename,
-				MimeType:  mime,
-				SizeBytes: totalBytes,
-			}
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		return outs, nil
-	}
 }

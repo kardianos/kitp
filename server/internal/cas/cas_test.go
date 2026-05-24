@@ -3,7 +3,7 @@ package cas_test
 import (
 	"bytes"
 	"context"
-	"io"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,7 +11,7 @@ import (
 	"github.com/kitp/kitp/server/internal/store"
 )
 
-// TestPgRoundtrip exercises the basic path: Put, Has, Get back out.
+// TestPgRoundtrip exercises the basic path: Put, Has, GetAll back out.
 func TestPgRoundtrip(t *testing.T) {
 	pool := store.TestPool(t, "kitp_test_cas_pg")
 	ctx := context.Background()
@@ -32,17 +32,72 @@ func TestPgRoundtrip(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected has=true after put")
 	}
-	rc, err := storage.Get(ctx, address)
-	if err != nil {
-		t.Fatalf("get: %v", err)
+	var got bytes.Buffer
+	if err := storage.GetAll(ctx, []string{address}, &got); err != nil {
+		t.Fatalf("get_all: %v", err)
 	}
-	defer rc.Close()
-	got, err := io.ReadAll(rc)
-	if err != nil {
-		t.Fatalf("read: %v", err)
+	if !bytes.Equal(got.Bytes(), data) {
+		t.Fatalf("get returned %q, want %q", got.Bytes(), data)
 	}
-	if !bytes.Equal(got, data) {
-		t.Fatalf("get returned %q, want %q", got, data)
+}
+
+// TestGetAll_StreamsInOrder verifies the multi-address path: bytes
+// arrive in the order requested regardless of insert order, and a
+// single GetAll call replaces N per-blob round-trips (S8).
+func TestGetAll_StreamsInOrder(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_cas_getall_order")
+	ctx := context.Background()
+	be := cas.NewPgBackend(pool)
+	storage := cas.New(be)
+
+	chunks := [][]byte{
+		[]byte("aaaaaa"),
+		[]byte("bbbb"),
+		[]byte("ccccccccc"),
+	}
+	addrs := make([]string, len(chunks))
+	// Insert in reverse so address order != insertion order — the
+	// `array_position` ORDER BY is what makes the test meaningful.
+	for i := len(chunks) - 1; i >= 0; i-- {
+		addrs[i] = cas.AddressOf(chunks[i])
+		if err := be.Put(ctx, addrs[i], "application/octet-stream", int64(len(chunks[i])), chunks[i]); err != nil {
+			t.Fatalf("put %d: %v", i, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := storage.GetAll(ctx, addrs, &buf); err != nil {
+		t.Fatalf("get_all: %v", err)
+	}
+	want := append(append(append([]byte{}, chunks[0]...), chunks[1]...), chunks[2]...)
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("concat = %q, want %q", buf.Bytes(), want)
+	}
+}
+
+// TestGetAll_MissingAddressReturnsErrNotFound — a partial chunk set
+// is treated as ErrNotFound. The PG backend's row-count check is
+// what surfaces this; without it a corrupted file would silently
+// download with missing bytes.
+func TestGetAll_MissingAddressReturnsErrNotFound(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_cas_getall_miss")
+	ctx := context.Background()
+	be := cas.NewPgBackend(pool)
+	storage := cas.New(be)
+
+	good := []byte("present")
+	goodAddr := cas.AddressOf(good)
+	if err := be.Put(ctx, goodAddr, "text/plain", int64(len(good)), good); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err := storage.GetAll(ctx, []string{goodAddr, "deadbeef"}, &buf)
+	if err == nil {
+		t.Fatalf("expected ErrNotFound for missing address; buf=%q", buf.Bytes())
+	}
+	if !errors.Is(err, cas.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
 
@@ -81,11 +136,12 @@ func TestGetNotFound(t *testing.T) {
 	pool := store.TestPool(t, "kitp_test_cas_404")
 	ctx := context.Background()
 	storage := cas.New(cas.NewPgBackend(pool))
-	_, err := storage.Get(ctx, "00ff")
+	var buf bytes.Buffer
+	err := storage.GetAll(ctx, []string{"00ff"}, &buf)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	if err != cas.ErrNotFound {
+	if !errors.Is(err, cas.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }

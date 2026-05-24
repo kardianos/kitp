@@ -15,8 +15,9 @@ import (
 // seed by selecting one of the seeded screens. Useful for tests that need
 // a screen card under a project without hand-crafting the entire chain.
 //
-// Project seeding writes four screens (slugs inbox/grid/kanban/project)
-// each with a hotkey. Tests use the inbox screen as their starting point.
+// Project seeding graph-copies the install-seed template, which carries
+// seven screens (inbox/grid/kanban/project/ideas/archive/comms). Tests
+// use the inbox screen as their starting point.
 func mustGetSeededInboxScreen(t *testing.T, srv *api.Server, ctx context.Context, projectID int64) card.CardWithAttrs {
 	t.Helper()
 	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{

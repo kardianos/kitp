@@ -4,10 +4,7 @@
 package role
 
 import (
-	"context"
 	"reflect"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/reg"
 )
@@ -46,67 +43,9 @@ func Register() {
 		// client needs to render any role-selection UI; it's not
 		// sensitive (just names + docs).
 		AllowedRoles: []string{reg.RoleAuthenticated},
-		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-			rows, err := tx.Query(ctx, `
-				SELECT r.id, r.name, COALESCE(r.doc, '')
-				FROM role r
-				ORDER BY r.id
-			`)
-			if err != nil {
-				return nil, err
-			}
-			byID := map[int64]*Row{}
-			ordered := []*Row{}
-			for rows.Next() {
-				var rr Row
-				if err := rows.Scan(&rr.ID, &rr.Name, &rr.Doc); err != nil {
-					rows.Close()
-					return nil, err
-				}
-				cp := rr
-				ordered = append(ordered, &cp)
-				byID[cp.ID] = &cp
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-
-			gRows, err := tx.Query(ctx, `
-				SELECT rg.role_id, ct.name, p.name
-				FROM role_grant rg
-				JOIN card_type ct ON ct.id = rg.card_type_id
-				JOIN process p   ON p.id  = rg.process_id
-				ORDER BY rg.role_id, ct.name, p.name
-			`)
-			if err != nil {
-				return nil, err
-			}
-			for gRows.Next() {
-				var roleID int64
-				var ctName, procName string
-				if err := gRows.Scan(&roleID, &ctName, &procName); err != nil {
-					gRows.Close()
-					return nil, err
-				}
-				if r, ok := byID[roleID]; ok {
-					r.Grants = append(r.Grants, Grant{CardType: ctName, Process: procName})
-				}
-			}
-			gRows.Close()
-			if err := gRows.Err(); err != nil {
-				return nil, err
-			}
-
-			out := SelectOutput{Rows: make([]Row, len(ordered))}
-			for i, p := range ordered {
-				out.Rows[i] = *p
-			}
-			outs := make([]any, len(ins))
-			for i := range ins {
-				outs[i] = out
-			}
-			return outs, nil
-		},
+		// Unified handler — body lives in
+		// db/schema/functions/role_list_batch.sql per Phase 5 of
+		// docs/UNIFIED_HANDLER_PLAN.md.
+		SQLFunc: "role_list_batch",
 	})
 }

@@ -61,15 +61,22 @@
 </script>
 
 {#if row.kind === 'comment'}
-  <div class={cx('', klass)} data-activity-id={row.id}>
-    <div class="flex items-baseline gap-1.5">
-      <span class="font-medium text-fg">{actor}</span>
-      <span class="text-muted">commented</span>
-      <span class="ml-auto shrink-0 text-[11px] tabular-nums text-muted">{relative}</span>
-    </div>
-    <div class="ml-0.5 whitespace-pre-wrap border-l-2 border-fg/15 pl-2 text-fg">
-      {row.comment_body ?? ''}
-    </div>
+  <!-- Comment bodies render in the dedicated Comments section above
+       the composer; this row is the one-line audit entry. -->
+  <div class={cx('flex items-baseline gap-1.5', klass)} data-activity-id={row.id}>
+    <span class="font-medium text-fg">{actor}</span>
+    <span class="text-muted">commented</span>
+    <span class="font-mono text-[10px] text-muted">c{row.id}</span>
+    <span class="ml-auto shrink-0 text-[11px] tabular-nums text-muted">{relative}</span>
+  </div>
+{:else if row.kind === 'comment_edit'}
+  <div class={cx('flex items-baseline gap-1.5', klass)} data-activity-id={row.id}>
+    <span class="font-medium text-fg">{actor}</span>
+    <span class="text-muted">edited a comment</span>
+    {#if row.value_new !== undefined && row.value_new !== null && typeof (row.value_new as { activity_id?: unknown }).activity_id !== 'undefined'}
+      <span class="font-mono text-[10px] text-muted">c{(row.value_new as { activity_id: unknown }).activity_id}</span>
+    {/if}
+    <span class="ml-auto shrink-0 text-[11px] tabular-nums text-muted">{relative}</span>
   </div>
 {:else if isCardLink}
   <div

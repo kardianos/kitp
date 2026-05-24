@@ -6,7 +6,7 @@
       "description": "name of the attribute_def to write"
     },
     "card_id": {
-      "type": "integer",
+      "type": "string",
       "description": "id of the card whose attribute is being updated"
     },
     "value": {

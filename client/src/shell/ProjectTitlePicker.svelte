@@ -209,8 +209,7 @@
   {#if open}
     <div
       bind:this={popupEl}
-      class="z-50 flex w-64 flex-col overflow-hidden rounded-md border border-border bg-bg shadow-lg"
-      style="position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none;"
+      class="kf-float-anchor-fade z-50 flex w-64 flex-col overflow-hidden rounded-md border border-border bg-bg shadow-lg"
     >
       {#if inAdminMode}
         <!-- Admin-only template toggle. Flipping it bumps

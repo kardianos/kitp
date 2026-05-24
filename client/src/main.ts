@@ -18,6 +18,7 @@ import { HandlerRegistry } from './reg/handler_registry';
 import { registerBuiltInHandlers } from './reg/handlers';
 import { AuthState, loadSession } from './auth/auth_state.svelte';
 import { sharedSchemaCache } from './filter/attribute_schema.svelte';
+import { loadHandlerCatalog } from './schema/store.svelte';
 import { navigate } from './routing/router.svelte';
 import { notify } from './ui/toast.svelte';
 import { KITP_API_BASE } from './env';
@@ -90,7 +91,16 @@ dispatcher.onFault('aborted', (f) => {
 let appHandle: ReturnType<typeof mount> | null = null;
 void (async () => {
   const ok = await loadSession(authState, KITP_API_BASE);
-  if (ok) await sharedSchemaCache(dispatcher).load();
+  if (ok) {
+    // Both caches are session-gated: schemaCache primes card_ref
+    // attribute names for bigint revival; handlerCatalog primes the
+    // form kernel with every handler's input/output JSON Schema.
+    // Fired in parallel — they hit independent server endpoints.
+    await Promise.all([
+      sharedSchemaCache(dispatcher).load(),
+      loadHandlerCatalog(dispatcher),
+    ]);
+  }
   appHandle = mount(App, {
     target,
     props: { dispatcher, authState },

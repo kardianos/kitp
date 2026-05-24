@@ -94,6 +94,26 @@ async function sha256Hex(blob: Blob): Promise<string> {
 }
 
 /**
+ * Run steps 1–5 of the upload protocol — slice, hash, fill missing chunks,
+ * commit the `file` row — and return the resolved `file_id`. The caller
+ * decides what to do next: bind it to a card via `attachment.create`
+ * (the usual final step) or use it elsewhere (e.g. avatar pickers).
+ *
+ * Used by QuickEntryOverlay so the chunked + non-batchable HTTP POSTs
+ * run before the New-Task batch, and the in-batch attachment.create rides
+ * the same transaction as the card.insert.
+ */
+export async function prepareAttachmentFile(
+  dispatcher: Dispatcher,
+  file: File,
+  authState?: AuthState | null,
+  opts: UploadOptions = {},
+): Promise<ID> {
+  const fileOut = await runUploadAndCreateFile(dispatcher, file, authState ?? null, opts);
+  return fileOut.id;
+}
+
+/**
  * Upload one file as an attachment on `cardId`. Slices, hashes, asks
  * the server which chunks are missing, parallel-uploads the missing
  * ones, then commits a `file` row + an `attachment` row through the
@@ -106,6 +126,27 @@ export async function uploadAttachment(
   authState?: AuthState | null,
   opts: UploadOptions = {},
 ): Promise<AttachmentCreateOutput> {
+  const fileOut = await runUploadAndCreateFile(dispatcher, file, authState ?? null, opts);
+  const attOut = await dispatcher.request<AttachmentCreateInput, AttachmentCreateOutput>({
+    endpoint: attachmentCreate.endpoint,
+    action: attachmentCreate.action,
+    data: { cardId, fileId: fileOut.id },
+  });
+  return attOut;
+}
+
+/**
+ * Shared upload pipeline: slice → hash → preflight → fill missing chunks
+ * → `file.create`. Returns the committed file row so callers can either
+ * bind it to a card (`uploadAttachment` does that) or hand it off to
+ * another flow (`prepareAttachmentFile` returns just the id).
+ */
+async function runUploadAndCreateFile(
+  dispatcher: Dispatcher,
+  file: File,
+  authState: AuthState | null,
+  opts: UploadOptions,
+): Promise<FileCreateOutput> {
   const chunkBytes =
     opts.chunkBytes && opts.chunkBytes > 0 ? opts.chunkBytes : FALLBACK_CHUNK_BYTES;
   const onProgress = opts.onProgress;
@@ -172,7 +213,7 @@ export async function uploadAttachment(
       if (next >= missingIdx.length) return;
       const idx = missingIdx[next]!;
       const blob = blobs[idx]!;
-      const got = await uploadOneChunk(blob, authState ?? null);
+      const got = await uploadOneChunk(blob, authState);
       if (got.address !== addresses[idx]) {
         // Sanity: if Web Crypto and Go's sha256 disagree we have bigger
         // problems. Surface it loudly rather than silently writing the
@@ -196,7 +237,7 @@ export async function uploadAttachment(
   for (let i = 0; i < workerCount; i++) workers.push(worker());
   await Promise.all(workers);
 
-  // 5. Commit the file + attachment via the JSON dispatcher.
+  // 5. Commit the file row via the JSON dispatcher.
   reportProgress('saving');
   const chunks = addresses.map((address, i) => ({
     address,
@@ -211,12 +252,7 @@ export async function uploadAttachment(
       chunks,
     },
   });
-  const attOut = await dispatcher.request<AttachmentCreateInput, AttachmentCreateOutput>({
-    endpoint: attachmentCreate.endpoint,
-    action: attachmentCreate.action,
-    data: { cardId, fileId: fileOut.id },
-  });
-  return attOut;
+  return fileOut;
 }
 
 async function uploadOneChunk(

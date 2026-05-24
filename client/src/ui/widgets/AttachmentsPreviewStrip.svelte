@@ -287,16 +287,16 @@
       data-testid="attachment-gallery"
     >
       <!-- Header bar -->
-      <div class="flex items-center justify-between gap-2 text-white">
+      <div class="flex items-center justify-between gap-2 text-on-image">
         <span class="truncate text-sm font-medium" title={galleryRow.filename}>
           {galleryRow.filename}
         </span>
-        <span class="shrink-0 text-xs text-white/70">
+        <span class="shrink-0 text-xs text-on-image/70">
           {galleryIndex + 1} / {previewable.length}
         </span>
         <button
           type="button"
-          class="ml-2 inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+          class="ml-2 inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-on-image hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
           onclick={closeGallery}
           aria-label="Close gallery"
         >
@@ -327,7 +327,7 @@
         {#if previewable.length > 1}
           <button
             type="button"
-            class="absolute left-1 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            class="absolute left-1 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-on-image hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
             onclick={() => step(-1)}
             aria-label="Previous"
           >
@@ -344,7 +344,7 @@
           </button>
           <button
             type="button"
-            class="absolute right-1 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            class="absolute right-1 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-on-image hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
             onclick={() => step(1)}
             aria-label="Next"
           >

@@ -1,6 +1,10 @@
 {
   "type": "object",
   "properties": {
+    "assign_to_me": {
+      "type": "boolean",
+      "description": "after insert, route the card to the calling user's inbox: agents self-route via user_card_agent; humans get assignee set to their linked person card"
+    },
     "attributes": {
       "type": "object",
       "description": "optional map of additional attribute name to JSON value",
@@ -11,7 +15,7 @@
       "description": "name of the card_type to create (e.g. project, task)"
     },
     "parent_card_id": {
-      "type": "integer",
+      "type": "string",
       "description": "parent card id; nil for top-level project cards"
     },
     "phase": {

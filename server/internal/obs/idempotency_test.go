@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -113,6 +114,95 @@ func TestIdempotencyKey_NoKeyPassthrough(t *testing.T) {
 	}
 	if r.Header.Get("Idempotency-Replay") != "" {
 		t.Errorf("unexpected Idempotency-Replay header without a key")
+	}
+}
+
+// TestIdempotency_WrapAuthed_PartitionsByUser is the regression
+// test for the original cache-cross-user bug (issues/backend/
+// 01-critical-idempotency-cross-user.md). Two distinct users post
+// the same key+body. With the wrong implementation (the legacy
+// Middleware path that reads auth.ActorOrSystem(ctx) before the
+// router has resolved the user), both calls partition under
+// SystemUserID and the second user sees the first user's cached
+// response. With WrapAuthed, the user is supplied directly, so the
+// keys partition correctly.
+func TestIdempotency_WrapAuthed_PartitionsByUser(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_idem_partition")
+	logger := obs.NewLoggerTo("warn", io.Discard)
+	idem := obs.NewIdempotencyStore(pool, logger)
+
+	alice := &auth.UserCtx{ID: 9001, DisplayName: "alice"}
+	bob := &auth.UserCtx{ID: 9002, DisplayName: "bob"}
+
+	// Inner handler echoes the calling user's id so the test can
+	// tell whose cached body it's getting back.
+	calls := 0
+	inner := api.AuthedHandler(func(_ context.Context, w http.ResponseWriter, _ *http.Request, u *auth.UserCtx) error {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, `{"user_id":%d}`, u.ID)
+		return nil
+	})
+	wrapped := idem.WrapAuthed(inner)
+
+	body := []byte(`{"shared":"body"}`)
+
+	doPost := func(u *auth.UserCtx) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/api/v1/batch", bytes.NewReader(body))
+		req.Header.Set("Idempotency-Key", "shared-key")
+		rec := httptest.NewRecorder()
+		if err := wrapped(context.Background(), rec, req, u); err != nil {
+			t.Fatalf("wrapped: %v", err)
+		}
+		return rec
+	}
+
+	// Alice POSTs first — miss, handler runs, response stored under
+	// Alice's user_id.
+	r1 := doPost(alice)
+	if r1.Code != http.StatusOK {
+		t.Fatalf("alice first: status %d", r1.Code)
+	}
+	if !bytes.Contains(r1.Body.Bytes(), []byte(`9001`)) {
+		t.Fatalf("alice first: body %q", r1.Body.String())
+	}
+	if r1.Header().Get("Idempotency-Replay") == "true" {
+		t.Fatal("alice first should NOT be a replay")
+	}
+
+	// Bob POSTs the same key+body. Different user — must NOT replay
+	// alice's stored body. Must run the handler against Bob and emit
+	// Bob's user_id.
+	r2 := doPost(bob)
+	if r2.Code != http.StatusOK {
+		t.Fatalf("bob: status %d", r2.Code)
+	}
+	if r2.Header().Get("Idempotency-Replay") == "true" {
+		t.Fatal("bob saw alice's cached response — cross-user partition broken")
+	}
+	if !bytes.Contains(r2.Body.Bytes(), []byte(`9002`)) {
+		t.Fatalf("bob: expected user_id=9002 in body, got %q", r2.Body.String())
+	}
+
+	// Alice POSTs again — same key+body, same user. SHOULD replay.
+	r3 := doPost(alice)
+	if r3.Code != http.StatusOK {
+		t.Fatalf("alice second: status %d", r3.Code)
+	}
+	if r3.Header().Get("Idempotency-Replay") != "true" {
+		t.Fatal("alice second: expected replay, got fresh response")
+	}
+	if !bytes.Contains(r3.Body.Bytes(), []byte(`9001`)) {
+		t.Fatalf("alice second: replay body wrong: %q", r3.Body.String())
+	}
+
+	// Handler should have run exactly TWICE: once for alice's first
+	// call, once for bob's call. Alice's second call replays without
+	// invoking the inner.
+	if calls != 2 {
+		t.Errorf("inner handler ran %d times; want 2 (alice + bob, no replay-invocation)", calls)
 	}
 }
 

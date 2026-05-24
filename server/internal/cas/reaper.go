@@ -69,33 +69,27 @@ func DefaultChunkConsumers() []ConsumerColumn {
 	}
 }
 
-// Start kicks off the reaper loop in a goroutine. The loop honours ctx
-// cancellation. Safe to call once at startup.
-func (r *Reaper) Start(ctx context.Context) {
-	r.applyDefaults()
-	go func() {
-		t := time.NewTicker(r.Interval)
-		defer t.Stop()
-		// Run once at startup so a freshly-restarted server cleans up
-		// abandoned uploads without waiting a full interval.
-		r.SweepOnce(ctx)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				r.SweepOnce(ctx)
-			}
-		}
-	}()
-}
-
-// SweepOnce runs one pass synchronously. Exported for tests / CLI.
-func (r *Reaper) SweepOnce(ctx context.Context) {
+// RunOnce runs one reaper pass synchronously. Designed for the
+// [job.Scheduler]: register it as a periodic job in main with
+// `OnStartup: true` so a freshly-restarted server cleans up
+// abandoned uploads without waiting a full interval. The scheduler
+// owns the ticker, logging, and metrics. Honours ctx via the inner
+// pgx Query/Exec calls.
+//
+// Returns nil — individual sweep failures are logged via the
+// reaper's own logger (per-row context — chunk address, file id —
+// is more useful than a single rollup error). The scheduler still
+// records the call in its success counter.
+func (r *Reaper) RunOnce(ctx context.Context) error {
 	r.applyDefaults()
 	r.sweepFiles(ctx)
 	r.sweepBlobs(ctx)
+	return nil
 }
+
+// SweepOnce is the legacy alias kept so tests and any CLI tooling
+// that called the old name keep working.
+func (r *Reaper) SweepOnce(ctx context.Context) { _ = r.RunOnce(ctx) }
 
 func (r *Reaper) applyDefaults() {
 	if r.Interval <= 0 {

@@ -53,15 +53,25 @@
   } from '../reg/types';
   import { notify } from '../ui/toast.svelte';
   import FilterBar from './FilterBar.svelte';
+  import ExportMenu from './ExportMenu.svelte';
   import FilterPresetSelector from './FilterPresetSelector.svelte';
   import type { FilterAttribute } from './attribute_schema.svelte';
   import { predicateToJson, type Predicate } from './predicate';
   import {
     loadScreenAndFilters,
     readDefaultFilterID,
+    readGroupByAttr,
     readPredicate,
     readTitle,
   } from './screen_preset.svelte';
+  import {
+    getCachedSnippets,
+    getSelectedSnippetIds,
+    loadSnippets,
+    readSnippetTitle,
+    setSelectedSnippets,
+  } from './snippet_store.svelte';
+  import Combobox from '../ui/Combobox.svelte';
 
   interface Props {
     /**
@@ -82,16 +92,30 @@
     /** Active filter predicate (two-way bound). */
     predicate: Predicate | null;
     /** Active filter CARD (two-way bound). Screens that need screen-
-     *  specific knobs (e.g. kanban's column_attr / lane_attr) read
-     *  them off this card via the accessors in screen_preset. */
+     *  specific knobs (e.g. kanban's column_attr, the universal
+     *  group_by_attr) read them off this card via the accessors in
+     *  screen_preset. */
     activeFilter?: CardWithAttrs | null;
+    /** Resolved screen card for (project, slug) (two-way bound). Carries
+     *  the screen-definition attributes (layout, tag_prefix_columns, ...)
+     *  that screens need but that don't live on the filter preset. Null
+     *  until the screen probe resolves (or when projectId === null). */
+    screen?: CardWithAttrs | null;
     /** Screen-specific attributes to embed in the filter card on
-     *  "+ Save filter" (e.g. Kanban passes {column_attr, lane_attr}).
+     *  "+ Save filter" (e.g. Kanban passes {column_attr, group_by_attr}).
      *  Keys must match attribute_def names bound to `filter`. */
     extraAttributes?: Record<string, unknown>;
     /** Fired when the predicate or active preset changes; the screen
      *  usually re-issues its data fetch from this. */
     onchange?: (p: Predicate | null) => void;
+    /**
+     * Optional hook fired when the user presses ArrowDown / ArrowUp on
+     * the text search input. Forwarded to FilterBar → TextSearchBar.
+     * Screens wire this to "focus the first row of the visible list"
+     * so the keyboard flow goes search → list without a hand off the
+     * keyboard.
+     */
+    onNavigateOut?: (direction: 'down' | 'up') => void;
     /**
      * True once the default-filter probe has finished (whether or not a
      * default was applied) — or immediately when `projectId === null`,
@@ -116,13 +140,21 @@
     filterAttributes,
     predicate = $bindable(),
     activeFilter = $bindable(null),
+    screen: screenBinding = $bindable(null),
     extraAttributes = {},
     onchange,
+    onNavigateOut,
     filterReady = $bindable(false),
     trailing,
   }: Props = $props();
 
   let screenCard = $state<CardWithAttrs | null>(null);
+  // Mirror screenCard into the bindable `screen` prop whenever the
+  // loader rebinds it. Keeps the parent in sync without forcing callers
+  // who don't care about the screen card to wire anything up.
+  $effect(() => {
+    screenBinding = screenCard;
+  });
   let presets = $state<CardWithAttrs[]>([]);
   let activeId = $state<ID | null>(null);
 
@@ -183,19 +215,32 @@
           screenCard = set.screen;
           presets = set.filters;
           if (wasFirstVisit) {
-            if (set.defaultFilter !== null) {
-              predicate = readPredicate(set.defaultFilter);
-              activeId = set.defaultFilter.id;
+            // First-visit filter selection — pick in this order:
+            //   1. The screen's explicit default_filter (if set).
+            //   2. The first available preset (when no default exists
+            //      but the screen has *any* filter card). This is the
+            //      common shape for screens created via the demo seed
+            //      or admin UI before the admin has explicitly picked a
+            //      default — without this, activeFilter stays null and
+            //      layouts can't read attrs like group_by_attr or sort
+            //      off the filter card the user has clearly intended
+            //      to use.
+            //   3. Fall back to a seeded `status notTerminal` predicate
+            //      when the screen has zero filter cards at all.
+            const chosen = set.defaultFilter ?? set.filters[0] ?? null;
+            if (chosen !== null) {
+              predicate = readPredicate(chosen);
+              activeId = chosen.id;
               setFilter(st, pid, predicate);
               setActivePreset(st, pid, activeId);
               onchange?.(predicate);
             } else {
-              // No default filter on the screen → hide terminal-phase
-              // statuses by default so the user lands on a useful view
-              // (matches the FilterBar pill's "Show closed status" off
-              // state). The pill flips the leaf on/off; we just seed
-              // the leaf so the screen's first paint isn't drowned in
-              // Done / Cancelled rows.
+              // No filter cards at all → hide terminal-phase statuses
+              // by default so the user lands on a useful view (matches
+              // the FilterBar pill's "Show closed status" off state).
+              // The pill flips the leaf on/off; we just seed the leaf
+              // so the screen's first paint isn't drowned in Done /
+              // Cancelled rows.
               const seeded: Predicate = {
                 kind: 'leaf',
                 attr: 'status',
@@ -236,6 +281,42 @@
     });
   });
 
+  /* ---------------------------------------------- named snippets ---------- */
+
+  /** Load (or rehydrate from cache) the project's snippet cards
+   *  whenever the project flips. Errors fall through silently — the
+   *  dispatcher's fault registry surfaces them — and the dropdown
+   *  just stays empty. */
+  $effect(() => {
+    const pid = projectId;
+    untrack(() => {
+      if (pid === null) return;
+      void loadSnippets(dispatcher, pid).catch(() => {});
+    });
+  });
+
+  /** Snippets visible to this screen. Reactive: reads the shared
+   *  rune-state cache so a save / delete in another component refreshes
+   *  this list automatically. */
+  const snippets = $derived(getCachedSnippets(projectId));
+
+  /** Options for the multi-select Combobox. */
+  const snippetOptions = $derived(
+    snippets.map((s) => ({ value: s.id, label: readSnippetTitle(s) })),
+  );
+
+  /** Currently-checked snippet ids, derived from the predicate's
+   *  top-level snippet leaves. */
+  const selectedSnippetIds = $derived(getSelectedSnippetIds(predicate));
+
+  /** User toggled the multi-select. Replace the top-level snippet
+   *  leaves with the new set; emit. */
+  function onSnippetsChange(v: ID | ID[] | null): void {
+    const ids = Array.isArray(v) ? v : [];
+    predicate = setSelectedSnippets(predicate, ids);
+    onchange?.(predicate);
+  }
+
   function onPresetPick(id: ID | null): void {
     activeId = id;
     setActivePreset(screenSlug, projectId, id);
@@ -247,13 +328,14 @@
   }
 
   function onFilterChange(p: Predicate | null): void {
-    // The user edited the predicate by hand; the active preset is no
-    // longer faithful so we drop it (the combobox falls back to
-    // "(no preset)" until the user picks one).
-    if (activeId !== null) {
-      activeId = null;
-      setActivePreset(screenSlug, projectId, null);
-    }
+    // The user edited the predicate by hand. The active preset is
+    // still the one they're working *from* — its sort, group_by_attr,
+    // column_attr, etc. are independent of the predicate and should
+    // keep applying. We only flag the predicate as dirty (callers can
+    // surface "modified" via `activeIsDirty` if they want); activeId
+    // stays put so layouts that read attributes off `activeFilter`
+    // (Grid's group headers, Kanban's column axis) don't lose their
+    // configuration the moment the user touches a filter chip.
     onchange?.(p);
   }
 
@@ -360,6 +442,56 @@
     }
   }
 
+  /** Options for the in-screen Group-by combobox. Built from the
+   *  caller-supplied filter palette so it matches the per-screen
+   *  task-relevant attribute set (no comm/imap/smtp noise). Multi-
+   *  valued refs (tags) ARE included: the renderer expands such a row
+   *  to one entry per element, so a task with multiple tags lands
+   *  under every matching bucket. */
+  const groupByOptions = $derived<{ value: string; label: string }[]>([
+    { value: '', label: '(no grouping)' },
+    ...filterAttributes.map((a) => ({ value: a.name, label: a.label })),
+  ]);
+
+  /** Current group_by_attr on the active filter, or '' for none. */
+  const currentGroupBy = $derived<string>(
+    resolvedActive === null ? '' : (readGroupByAttr(resolvedActive) ?? ''),
+  );
+
+
+  /**
+   * Persist a new group_by_attr value onto the active filter card and
+   * reload the preset list so the parent's `activeFilter` binding picks
+   * up the change reactively. No-op when no filter is active (the
+   * combobox itself is hidden in that case).
+   */
+  async function setGroupBy(value: string): Promise<void> {
+    if (resolvedActive === null) return;
+    const next = value === '' ? null : value;
+    // Idempotent: skip the round-trip when the active filter already
+    // carries this value. Combobox can fire onchange a second time
+    // when its value prop re-syncs from the parent after the round
+    // trip completes; without this guard we'd double-write and
+    // double-reload for one user click.
+    const current = readGroupByAttr(resolvedActive);
+    if ((current ?? null) === next) return;
+    try {
+      await dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
+        endpoint: attributeUpdate.endpoint,
+        action: attributeUpdate.action,
+        data: {
+          cardId: resolvedActive.id,
+          attributeName: 'group_by_attr',
+          value: next,
+        },
+      });
+      await reload();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: `Group-by update failed: ${msg}` });
+    }
+  }
+
   async function setActiveAsDefault(): Promise<void> {
     if (screenCard === null || activeId === null) return;
     try {
@@ -451,17 +583,59 @@
 <div class="flex flex-col gap-2">
   <FilterBar
     attributes={filterAttributes}
+    {snippets}
     bind:predicate
     onchange={onFilterChange}
+    {...(onNavigateOut !== undefined ? { onNavigateOut } : {})}
     {...(trailing !== undefined ? { trailing } : {})}
   >
     {#snippet leading()}
       {#if projectId !== null}
+        <ExportMenu {projectId} {predicate} />
         <FilterPresetSelector
           filters={presets}
           activeId={activeId}
           onchange={onPresetPick}
         />
+        {#if snippetOptions.length > 0}
+          <span
+            class="inline-flex items-center gap-1.5 text-xs text-muted"
+            data-testid="screen-named-filters"
+          >
+            <span class="uppercase tracking-wide">Named</span>
+            <span class="inline-block min-w-[10rem]">
+              <Combobox
+                aria-label="Named filters"
+                multiple
+                options={snippetOptions}
+                value={selectedSnippetIds}
+                searchable={snippetOptions.length > 8}
+                placeholder="(none)"
+                onchange={onSnippetsChange}
+              />
+            </span>
+          </span>
+        {/if}
+        {#if resolvedActive !== null}
+          <span
+            class="inline-flex items-center gap-1.5 text-xs text-muted"
+            data-testid="screen-groupby"
+          >
+            <span class="uppercase tracking-wide">Group</span>
+            <span class="inline-block min-w-[8rem]">
+              <Combobox
+                aria-label="Group rows by attribute"
+                options={groupByOptions}
+                value={currentGroupBy}
+                searchable={groupByOptions.length > 8}
+                placeholder="(no grouping)"
+                onchange={(v) => {
+                  if (typeof v === 'string') void setGroupBy(v);
+                }}
+              />
+            </span>
+          </span>
+        {/if}
         <div class="relative inline-block">
           <button
             bind:this={menuTrigger}
@@ -485,8 +659,7 @@
             <div
               bind:this={menuPopup}
               role="menu"
-              class="z-50 flex w-48 flex-col overflow-hidden rounded-md border border-border bg-bg py-1 text-sm shadow-lg"
-              style="position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none;"
+              class="kf-float-anchor-fade z-50 flex w-48 flex-col overflow-hidden rounded-md border border-border bg-bg py-1 text-sm shadow-lg"
             >
               <button
                 type="button"

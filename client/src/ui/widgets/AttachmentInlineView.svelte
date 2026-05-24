@@ -61,9 +61,9 @@
 </script>
 
 {#if loading}
-  <div class="text-sm text-white/80">Loading…</div>
+  <div class="text-sm text-on-image/80">Loading…</div>
 {:else if error !== null}
-  <div role="alert" class="text-sm text-white">Failed to load: {error}</div>
+  <div role="alert" class="text-sm text-on-image">Failed to load: {error}</div>
 {:else if url !== null && kind === 'pdf'}
   <iframe title={filename} src={url} class="h-[85vh] w-full bg-white"></iframe>
 {:else if url !== null}

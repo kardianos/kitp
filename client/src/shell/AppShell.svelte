@@ -30,7 +30,7 @@
   import { useShortcut } from '../keys/shortcut';
   import { readHotkey, readSlug, readTitle } from '../filter/screen_preset.svelte';
   import HelpButton from '../help/HelpButton.svelte';
-  import { navigate, routerState } from '../routing/router.svelte';
+  import { goBackOrFallback, navigate, routerState } from '../routing/router.svelte';
   import { screenUrl } from '../routing/routes';
   import ThemeToggle from './ThemeToggle.svelte';
   import { cx } from '../util/class_names';
@@ -153,7 +153,7 @@
    * Project / Foo / Inbox". The literal `screen` segment between the id
    * and the slug is skipped the same way; the slug crumb is enough.
    */
-  type Crumb = { label: string; href?: string };
+  type Crumb = { label: string; href?: string; onClick?: () => void };
   const crumbs: Crumb[] = $derived.by(() => {
     const segs = routerState.path.split('/').filter(Boolean);
     if (segs.length === 0) return [{ label: 'Home' }];
@@ -183,7 +183,18 @@
         else label = s.charAt(0).toUpperCase() + s.slice(1);
       } else label = s.charAt(0).toUpperCase() + s.slice(1);
       const isLast = i === segs.length - 1;
-      out.push(isLast ? { label } : { label, href: cum });
+      if (isLast) {
+        out.push({ label });
+      } else if (s === 'task') {
+        // `/task` is not a route — `/task/:id` is. Clicking the literal
+        // `task` crumb should pop back to whichever list view the user
+        // came from (same effect as Esc / q in TaskDetailScreen).
+        const pid = projectScope.projectId;
+        const fallback = pid !== null ? screenUrl(pid, 'project') : '/projects';
+        out.push({ label, onClick: () => goBackOrFallback(fallback) });
+      } else {
+        out.push({ label, href: cum });
+      }
     }
     return out;
   });
@@ -243,6 +254,14 @@
             >
               {crumb.label}
             </a>
+          {:else if crumb.onClick}
+            <button
+              type="button"
+              class="truncate text-muted hover:text-fg hover:underline"
+              onclick={crumb.onClick}
+            >
+              {crumb.label}
+            </button>
           {:else}
             <span class={cx('truncate', i === crumbs.length - 1 ? 'font-medium' : 'text-muted')}>
               {crumb.label}

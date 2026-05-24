@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -28,8 +27,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/cas"
+	"github.com/kitp/kitp/server/internal/dom/card"
+	"github.com/kitp/kitp/server/internal/named"
+	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
@@ -39,14 +42,15 @@ import (
 //   - Storage is the CAS storage chain; required for the full-zip
 //     endpoint (which streams attachment bytes). The simple-csv
 //     endpoint never reads from Storage and tolerates nil.
-//   - Logger is optional (defaults to slog.Default).
+//
+// Logging for 5xx is owned by the apiRouter; this config no longer
+// carries a Logger field.
 type Config struct {
 	Pool    *store.Pool
 	Storage *cas.Storage
-	Logger  *slog.Logger
 }
 
-// RegisterHTTP mounts the export routes on `mux`:
+// Mount registers the export routes on the apiRouter as Authed:
 //
 //   - GET /api/v1/project/{id}/export.csv?include_deleted=1
 //     One CSV, one row per task.
@@ -54,16 +58,22 @@ type Config struct {
 //     A streamed ZIP containing project / tasks / comments /
 //     milestones / components / tags / persons CSVs, plus an
 //     optional activity.csv and attachments/ folder.
-func RegisterHTTP(mux *http.ServeMux, cfg Config) {
-	mux.HandleFunc("GET /api/v1/project/{id}/export.csv", func(w http.ResponseWriter, r *http.Request) {
-		if err := handleSimpleCSV(r.Context(), w, r, cfg); err != nil {
-			writeErr(w, cfg.Logger, err)
-		}
+//   - GET /api/v1/project/{id}/export.xlsx
+//     Same shape as the .csv but emitted as a single-sheet workbook.
+//
+// Per-resource authz (the caller must hold card.update on the project's
+// card_type, scoped or global) lives inline in each handler — see
+// isAuthorized below. The wrap layer's session cookie check happens
+// before any of the handlers run.
+func Mount(rt *api.Router, cfg Config) {
+	rt.Authed("GET /api/v1/project/{id}/export.csv", func(ctx context.Context, w http.ResponseWriter, r *http.Request, u *auth.UserCtx) error {
+		return handleSimpleCSV(ctx, w, r, cfg, u)
 	})
-	mux.HandleFunc("GET /api/v1/project/{id}/export.zip", func(w http.ResponseWriter, r *http.Request) {
-		if err := handleFullZip(r.Context(), w, r, cfg); err != nil {
-			writeErr(w, cfg.Logger, err)
-		}
+	rt.Authed("GET /api/v1/project/{id}/export.zip", func(ctx context.Context, w http.ResponseWriter, r *http.Request, u *auth.UserCtx) error {
+		return handleFullZip(ctx, w, r, cfg, u)
+	})
+	rt.Authed("GET /api/v1/project/{id}/export.xlsx", func(ctx context.Context, w http.ResponseWriter, r *http.Request, u *auth.UserCtx) error {
+		return handleSimpleXLSX(ctx, w, r, cfg, u)
 	})
 }
 
@@ -71,18 +81,17 @@ func RegisterHTTP(mux *http.ServeMux, cfg Config) {
 // up-front and the body follows; on a streaming failure mid-response
 // the connection just closes with a truncated payload (logged) —
 // there is no graceful way to undo a 200 once bytes are out.
-func handleSimpleCSV(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg Config) error {
-	user, ok := auth.FromContext(ctx)
-	if !ok || user == nil || user.ID == 0 {
-		return httpError(http.StatusUnauthorized, "login required")
-	}
-
+func handleSimpleCSV(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg Config, user *auth.UserCtx) error {
 	idStr := r.PathValue("id")
 	projectID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || projectID <= 0 {
-		return httpError(http.StatusBadRequest, "invalid project id")
+		return api.BadRequest("validation", "invalid project id")
 	}
 	includeDeleted := r.URL.Query().Get("include_deleted") == "1"
+	tree, err := parseTreeParam(r.URL.Query().Get("tree"))
+	if err != nil {
+		return err
+	}
 
 	// Verify the project exists and pick up its title (drives the
 	// Content-Disposition filename). A single row tells us both whether
@@ -97,13 +106,13 @@ func handleSimpleCSV(ctx context.Context, w http.ResponseWriter, r *http.Request
 	// scoped to this project. system / admin / manager all pass.
 	auth, err := isAuthorized(ctx, cfg.Pool, user.ID, projectID)
 	if err != nil {
-		return httpError(http.StatusInternalServerError, "authz: "+err.Error())
+		return api.Internal(fmt.Errorf("authz: %w", err))
 	}
 	if !auth {
 		return httpError(http.StatusForbidden, "not authorized to export this project")
 	}
 
-	tasks, err := loadTaskRows(ctx, cfg.Pool, projectID, includeDeleted)
+	tasks, err := loadTaskRows(ctx, cfg.Pool, projectID, includeDeleted, tree)
 	if err != nil {
 		return err
 	}
@@ -130,6 +139,20 @@ func handleSimpleCSV(ctx context.Context, w http.ResponseWriter, r *http.Request
 		return err
 	}
 
+	// Dynamic columns — any attribute_def bound to 'task' that isn't
+	// already in the built-in column set gets its own column. Resolves
+	// card_refs through a generic title lookup against the union of
+	// extra-column references.
+	attrCols, err := loadTaskAttrCols(ctx, cfg.Pool)
+	if err != nil {
+		return err
+	}
+	extraCols := extraExportCols(attrCols)
+	extraTitles, err := loadTitleLookup(ctx, cfg.Pool, collectExtraRefIDs(tasks, extraCols))
+	if err != nil {
+		return err
+	}
+
 	// Headers go before any bytes; csv.Writer flushes lazily, so we
 	// drive Flush() explicitly to avoid buffering the whole project in
 	// memory for very large exports.
@@ -144,8 +167,11 @@ func handleSimpleCSV(ctx context.Context, w http.ResponseWriter, r *http.Request
 		"milestone", "component", "tags", "description", "sort_order",
 		"created_at", "deleted_at", "comments",
 	}
+	for _, c := range extraCols {
+		header = append(header, c.Name)
+	}
 	if err := cw.Write(header); err != nil {
-		return httpError(http.StatusInternalServerError, "write header: "+err.Error())
+		return api.Internal(fmt.Errorf("write header: %w", err))
 	}
 	for _, t := range tasks {
 		row := []string{
@@ -162,8 +188,11 @@ func handleSimpleCSV(ctx context.Context, w http.ResponseWriter, r *http.Request
 			isoOrEmpty(t.DeletedAt),
 			strings.Join(commentsByTask[t.ID], "\n---\n"),
 		}
+		for _, c := range extraCols {
+			row = append(row, renderExtraCell(c, t.Attrs[c.Name], extraTitles))
+		}
 		if err := cw.Write(row); err != nil {
-			return httpError(http.StatusInternalServerError, "write row: "+err.Error())
+			return api.Internal(fmt.Errorf("write row: %w", err))
 		}
 	}
 	cw.Flush()
@@ -173,6 +202,12 @@ func handleSimpleCSV(ctx context.Context, w http.ResponseWriter, r *http.Request
 // taskRow holds the data we need for one CSV line. Pointer-ish ids
 // (assignee / milestone_ref / component_ref) are 0 when the attribute
 // is unset; tagIDs is nil when the tags list is empty.
+//
+// `Attrs` is the raw, unmodified attribute map straight off the LATERAL
+// aggregate. The hardcoded columns above are populated from it for
+// type-safety / clarity; dynamic ("extra") columns appended by the
+// exporter use Attrs directly so a freshly-bound attribute_def gets a
+// column with no code change.
 type taskRow struct {
 	ID          int64
 	Title       string
@@ -184,6 +219,132 @@ type taskRow struct {
 	TagIDs      []int64
 	CreatedAt   *time.Time
 	DeletedAt   *time.Time
+	Attrs       map[string]json.RawMessage
+}
+
+// taskAttrCol carries one attribute_def bound (via the `edge` table)
+// to the task card_type. Exporters enumerate these to drive their
+// header / per-row value loops so adding a new attribute_def grows
+// the export automatically.
+type taskAttrCol struct {
+	Name           string // attribute_def.name
+	ValueType      string // 'text' | 'number' | 'bool' | 'date' | 'card_ref' | 'card_ref[]'
+	TargetCardType string // card_type.name when ValueType is card_ref / card_ref[]; "" otherwise
+	Ordering       int    // edge.ordering — drives column order in the export
+}
+
+// builtinExportAttrs lists the attribute names already covered by the
+// hardcoded export columns. Any attribute_def NOT in this set gets a
+// dynamic column appended at the tail of the export by the helpers
+// below. Keep the membership in sync with the header literal at the
+// top of handleSimpleCSV / handleSimpleXLSX.
+var builtinExportAttrs = map[string]bool{
+	"title":       true,
+	"description": true,
+	"sort_order":  true,
+	"assignee":    true, // emitted as the assignee_email + assignee_name pair
+	"milestone_ref": true,
+	"component_ref": true,
+	"tags":          true,
+}
+
+// loadTaskAttrCols returns every attribute_def bound (via the `edge`
+// table) to the task card_type, ordered by edge.ordering so the
+// emitted columns track the same visual order users see in the
+// AttributeSidePanel.
+func loadTaskAttrCols(ctx context.Context, pool *store.Pool) ([]taskAttrCol, error) {
+	rows, err := pool.P.Query(ctx, `
+		SELECT ad.name, ad.value_type,
+		       coalesce(target_ct.name, ''),
+		       e.ordering
+		FROM edge e
+		JOIN card_type ct ON ct.id = e.card_type_id AND ct.name = 'task'
+		JOIN attribute_def ad ON ad.id = e.attribute_def_id
+		LEFT JOIN card_type target_ct ON target_ct.id = ad.target_card_type_id
+		ORDER BY e.ordering, ad.name
+	`)
+	if err != nil {
+		return nil, api.Internal(fmt.Errorf("load attr cols: %w", err))
+	}
+	defer rows.Close()
+	var out []taskAttrCol
+	for rows.Next() {
+		var c taskAttrCol
+		if err := rows.Scan(&c.Name, &c.ValueType, &c.TargetCardType, &c.Ordering); err != nil {
+			return nil, api.Internal(fmt.Errorf("scan attr col: %w", err))
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// extraExportCols filters [cols] down to the subset NOT already
+// covered by the hardcoded built-in columns. Returned slice preserves
+// the input order (edge.ordering then name).
+func extraExportCols(cols []taskAttrCol) []taskAttrCol {
+	out := make([]taskAttrCol, 0, len(cols))
+	for _, c := range cols {
+		if builtinExportAttrs[c.Name] {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// collectExtraRefIDs walks the loaded tasks and collects every card
+// id referenced by an extra (non-built-in) card_ref / card_ref[]
+// attribute. Returned as a sorted slice so the SQL ANY($1) lookup is
+// deterministic.
+func collectExtraRefIDs(tasks []taskRow, extras []taskAttrCol) []int64 {
+	set := map[int64]struct{}{}
+	for _, t := range tasks {
+		for _, c := range extras {
+			switch c.ValueType {
+			case "card_ref":
+				if id := jsonAsCardID(t.Attrs[c.Name]); id != 0 {
+					set[id] = struct{}{}
+				}
+			case "card_ref[]":
+				for _, id := range jsonAsCardIDArray(t.Attrs[c.Name]) {
+					if id != 0 {
+						set[id] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	return keys(set)
+}
+
+// renderExtraCell renders one task's value for one extra column,
+// resolving card_ref / card_ref[] to titles via [titleLookup]. Scalar
+// attributes (text / number / date / bool) round-trip through
+// jsonAsText, which strips the JSON quoting and stringifies the
+// underlying value.
+func renderExtraCell(c taskAttrCol, raw json.RawMessage, titleLookup map[int64]string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	switch c.ValueType {
+	case "card_ref":
+		id := jsonAsCardID(raw)
+		if id == 0 {
+			return ""
+		}
+		return titleLookup[id]
+	case "card_ref[]":
+		ids := jsonAsCardIDArray(raw)
+		parts := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if t := titleLookup[id]; t != "" {
+				parts = append(parts, t)
+			}
+		}
+		return strings.Join(parts, ", ")
+	default:
+		return jsonAsText(raw)
+	}
 }
 
 // loadProjectTitle returns the project's title attribute. Errors with
@@ -205,7 +366,7 @@ func loadProjectTitle(ctx context.Context, pool *store.Pool, projectID int64) (s
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", httpError(http.StatusNotFound, "project not found")
 		}
-		return "", httpError(http.StatusInternalServerError, "lookup project: "+err.Error())
+		return "", api.Internal(fmt.Errorf("lookup project: %w", err))
 	}
 	if title == nil {
 		return "", nil
@@ -236,8 +397,38 @@ func isAuthorized(ctx context.Context, pool *store.Pool, userID, projectID int64
 // loadTaskRows pulls every task under projectID, hydrated with the
 // flattened attribute values needed for the CSV. One query, one
 // LATERAL aggregate — same pattern as card.select_with_attributes.
-func loadTaskRows(ctx context.Context, pool *store.Pool, projectID int64, includeDeleted bool) ([]taskRow, error) {
-	rows, err := pool.P.Query(ctx, `
+//
+// When `tree` is non-nil, it's compiled through card.CompileTree (the
+// same predicate compiler the dispatcher uses) and ANDed into the
+// WHERE clause — so the export matches whatever the user's screen
+// filter is showing. A read-only transaction wraps the call because
+// CompileTree consults the live schema snapshot and may dereference
+// `snippet` leaves via a SELECT on predicate_snippet cards.
+func loadTaskRows(ctx context.Context, pool *store.Pool, projectID int64, includeDeleted bool, tree *card.CardWhereGroup) ([]taskRow, error) {
+	tx, err := pool.P.Begin(ctx)
+	if err != nil {
+		return nil, api.Internal(fmt.Errorf("begin tx: %w", err))
+	}
+	defer tx.Rollback(ctx)
+
+	b := named.New()
+	b.Set("project_id", projectID)
+	b.Set("include_deleted", includeDeleted)
+
+	extraClause := ""
+	if tree != nil {
+		snap, sErr := schema.Load(ctx, tx)
+		if sErr != nil {
+			return nil, api.Internal(fmt.Errorf("schema load: %w", sErr))
+		}
+		clause, cErr := card.CompileTree(ctx, tx, *tree, b.Bind, snap)
+		if cErr != nil {
+			return nil, httpError(http.StatusBadRequest, "bad filter: "+cErr.Error())
+		}
+		extraClause = " AND (" + clause + ")"
+	}
+
+	sql, args, err := b.Compile(`
 		SELECT c.id, c.created_at, c.deleted_at,
 		       coalesce(attrs.values, '{}'::jsonb) AS attrs
 		FROM card c
@@ -248,12 +439,16 @@ func loadTaskRows(ctx context.Context, pool *store.Pool, projectID int64, includ
 			JOIN attribute_def ad ON ad.id = av.attribute_def_id
 			WHERE av.card_id = c.id
 		) attrs ON TRUE
-		WHERE ct.name = 'task' AND c.parent_card_id = $1
-		  AND ($2 OR c.deleted_at IS NULL)
+		WHERE ct.name = 'task' AND c.parent_card_id = :project_id
+		  AND (:include_deleted OR c.deleted_at IS NULL)` + extraClause + `
 		ORDER BY c.id
-	`, projectID, includeDeleted)
+	`)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, "load tasks: "+err.Error())
+		return nil, api.Internal(fmt.Errorf("load tasks: compile: %w", err))
+	}
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, api.Internal(fmt.Errorf("load tasks: %w", err))
 	}
 	defer rows.Close()
 
@@ -262,12 +457,12 @@ func loadTaskRows(ctx context.Context, pool *store.Pool, projectID int64, includ
 		var t taskRow
 		var attrsRaw []byte
 		if err := rows.Scan(&t.ID, &t.CreatedAt, &t.DeletedAt, &attrsRaw); err != nil {
-			return nil, httpError(http.StatusInternalServerError, "scan task: "+err.Error())
+			return nil, api.Internal(fmt.Errorf("scan task: %w", err))
 		}
 		attrs := map[string]json.RawMessage{}
 		if len(attrsRaw) > 0 {
 			if err := json.Unmarshal(attrsRaw, &attrs); err != nil {
-				return nil, httpError(http.StatusInternalServerError, "decode attrs: "+err.Error())
+				return nil, api.Internal(fmt.Errorf("decode attrs: %w", err))
 			}
 		}
 		t.Title = jsonAsText(attrs["title"])
@@ -277,6 +472,9 @@ func loadTaskRows(ctx context.Context, pool *store.Pool, projectID int64, includ
 		t.MilestoneID = jsonAsCardID(attrs["milestone_ref"])
 		t.ComponentID = jsonAsCardID(attrs["component_ref"])
 		t.TagIDs = jsonAsCardIDArray(attrs["tags"])
+		// Retain the raw attrs so the export can drive dynamic
+		// (non-builtin) columns without an extra round-trip per task.
+		t.Attrs = attrs
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -337,14 +535,14 @@ func loadPersonLookup(ctx context.Context, pool *store.Pool, ids []int64) (map[i
 		WHERE c.id = ANY($1::bigint[])
 	`, ids)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, "load persons: "+err.Error())
+		return nil, api.Internal(fmt.Errorf("load persons: %w", err))
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id int64
 		var title, email *string
 		if err := rows.Scan(&id, &title, &email); err != nil {
-			return nil, httpError(http.StatusInternalServerError, "scan person: "+err.Error())
+			return nil, api.Internal(fmt.Errorf("scan person: %w", err))
 		}
 		out[id] = personInfo{Title: derefStr(title), Email: derefStr(email)}
 	}
@@ -367,14 +565,14 @@ func loadTitleLookup(ctx context.Context, pool *store.Pool, ids []int64) (map[in
 		WHERE c.id = ANY($1::bigint[])
 	`, ids)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, "load titles: "+err.Error())
+		return nil, api.Internal(fmt.Errorf("load titles: %w", err))
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id int64
 		var title *string
 		if err := rows.Scan(&id, &title); err != nil {
-			return nil, httpError(http.StatusInternalServerError, "scan title: "+err.Error())
+			return nil, api.Internal(fmt.Errorf("scan title: %w", err))
 		}
 		out[id] = derefStr(title)
 	}
@@ -398,14 +596,14 @@ func loadTagPaths(ctx context.Context, pool *store.Pool, ids []int64) (map[int64
 		WHERE c.id = ANY($1::bigint[])
 	`, ids)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, "load tag paths: "+err.Error())
+		return nil, api.Internal(fmt.Errorf("load tag paths: %w", err))
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id int64
 		var path *string
 		if err := rows.Scan(&id, &path); err != nil {
-			return nil, httpError(http.StatusInternalServerError, "scan tag path: "+err.Error())
+			return nil, api.Internal(fmt.Errorf("scan tag path: %w", err))
 		}
 		out[id] = derefStr(path)
 	}
@@ -428,14 +626,14 @@ func loadComments(ctx context.Context, pool *store.Pool, taskIDs []int64) (map[i
 		ORDER BY a.card_id, a.created_at, a.id
 	`, taskIDs)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, "load comments: "+err.Error())
+		return nil, api.Internal(fmt.Errorf("load comments: %w", err))
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var cardID int64
 		var body string
 		if err := rows.Scan(&cardID, &body); err != nil {
-			return nil, httpError(http.StatusInternalServerError, "scan comment: "+err.Error())
+			return nil, api.Internal(fmt.Errorf("scan comment: %w", err))
 		}
 		out[cardID] = append(out[cardID], body)
 	}
@@ -603,36 +801,61 @@ func derefStr(p *string) string {
 	return *p
 }
 
-// httpErr is the typed error the handler returns; writeErr maps it to
-// the wire response. Mirrors attachment/http.go.
-type httpErr struct {
-	status int
-	msg    string
-}
-
-func (e *httpErr) Error() string { return e.msg }
-
-func httpError(status int, msg string) error {
-	return &httpErr{status: status, msg: msg}
-}
-
-func writeErr(w http.ResponseWriter, logger *slog.Logger, err error) {
-	status := http.StatusInternalServerError
-	msg := err.Error()
-	var he *httpErr
-	if errors.As(err, &he) {
-		status = he.status
-		msg = he.msg
+// parseTreeParam decodes the optional `tree` query parameter into a
+// CardWhereGroup. Empty input → nil (no filter). Malformed input
+// returns a 400 so the client knows to fix the request rather than
+// silently exporting unfiltered rows.
+func parseTreeParam(raw string) (*card.CardWhereGroup, error) {
+	if raw == "" {
+		return nil, nil
 	}
-	if status >= 500 {
-		l := logger
-		if l == nil {
-			l = slog.Default()
+	var g card.CardWhereGroup
+	if err := json.Unmarshal([]byte(raw), &g); err != nil {
+		return nil, httpError(http.StatusBadRequest, "invalid tree: "+err.Error())
+	}
+	if g.Connective == "" {
+		// Bare-leaf shape ({attr, op, values}) — wrap in a single-leaf AND
+		// so the compiler's entry point (compileTree on a group) accepts it.
+		var leaf card.CardWhereTreeNode
+		if err := json.Unmarshal([]byte(raw), &leaf); err != nil {
+			return nil, httpError(http.StatusBadRequest, "invalid tree: "+err.Error())
 		}
-		l.LogAttrs(context.Background(), slog.LevelError, "project export",
-			slog.Int("status", status), slog.String("err", msg))
+		g = card.CardWhereGroup{
+			Connective: "and",
+			Children:   []card.CardWhereTreeNode{leaf},
+		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = fmt.Fprintf(w, `{"error":%q}`, msg)
+	return &g, nil
+}
+
+// httpError adapts the previous package-local helper to the apiRouter
+// contract: returns an *api.HTTPError so the router's writeErr maps
+// it to the wire response. Centralising here lets the rest of the
+// package keep its call shape `return httpError(http.StatusFoo, "…")`
+// while the router owns logging + JSON encoding.
+func httpError(status int, msg string) error {
+	return &api.HTTPError{
+		Status:  status,
+		Code:    codeForStatus(status),
+		Message: msg,
+	}
+}
+
+func codeForStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "validation"
+	case http.StatusUnauthorized:
+		return "unauthenticated"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusRequestEntityTooLarge:
+		return "request_too_large"
+	default:
+		return "internal"
+	}
 }

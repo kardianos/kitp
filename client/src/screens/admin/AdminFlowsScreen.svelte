@@ -50,7 +50,6 @@
     flowSet,
     flowStepDelete,
     flowStepList,
-    flowStepSet,
     roleList,
   } from '../../reg/handlers_admin';
   import type {
@@ -74,8 +73,6 @@
     FlowStepListInput,
     FlowStepListOutput,
     FlowStepRow,
-    FlowStepSetInput,
-    FlowStepSetOutput,
     ID,
     RoleListInput,
     RoleListOutput,
@@ -87,9 +84,21 @@
   import Combobox from '../../ui/Combobox.svelte';
   import ConfirmDialog from '../../ui/ConfirmDialog.svelte';
   import EmptyState from '../../ui/EmptyState.svelte';
+  import ErrorAlert from '../../ui/ErrorAlert.svelte';
   import IconButton from '../../ui/IconButton.svelte';
   import Modal from '../../ui/Modal.svelte';
+  import PageShell from '../../ui/PageShell.svelte';
   import Spinner from '../../ui/Spinner.svelte';
+  import TextInput from '../../ui/inputs/TextInput.svelte';
+  import {
+    Form,
+    FormErrors,
+    NumberInput,
+    Select,
+    SubmitButton,
+    TextInput as FormTextInput,
+    Textarea as FormTextarea,
+  } from '../../forms';
   import { notify } from '../../ui/toast.svelte';
   import { projectScope } from '../../shell/project_scope.svelte';
   import { projectsStore, watchProjects } from '../../shell/projects_store.svelte';
@@ -100,13 +109,8 @@
     formatRoleBadge,
     groupStepsByFrom,
     lookupCardTitle,
-    parseSortOrder,
     valueCardCacheKey,
     valueCardTitleMap,
-    validateFlow,
-    validateFlowStep,
-    type FlowDraft,
-    type FlowStepDraft,
   } from './admin_flows_helpers';
 
   setActiveScope('admin_flows');
@@ -154,18 +158,14 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
 
-  /** "+ New flow" dialog. */
+  /** "+ New flow" dialog. <Form> kernel owns the draft. */
   let creating = $state(false);
-  let createDraft = $state<FlowDraft>(emptyFlowDraft());
-  let createErrors = $state<Record<string, string>>({});
-  let saving = $state(false);
 
-  /** "+ New transition" / edit-step dialog. */
+  /** "+ New transition" / edit-step dialog. <Form> kernel owns the
+   *  draft; the screen tracks which step (if any) is being edited so
+   *  the dialog title and initial seed flip. */
   let stepDialogOpen = $state(false);
-  let stepDraft = $state<FlowStepDraft>(emptyStepDraft());
-  let stepDraftErrors = $state<Record<string, string>>({});
-  let editingStepId = $state<ID | null>(null);
-  let savingStep = $state(false);
+  let editingStep = $state<FlowStepRow | null>(null);
 
   /** Preview-delete dialog state. */
   let previewOpen = $state(false);
@@ -177,27 +177,44 @@
   let stepConfirmOpen = $state(false);
   let pendingDeleteStep = $state<FlowStepRow | null>(null);
 
-  let searchEl: HTMLInputElement | null = $state(null);
+  const SEARCH_INPUT_ID = 'admin-flows-search';
 
-  function emptyFlowDraft(): FlowDraft {
-    return {
-      name: '',
-      doc: '',
-      attributeDefId: null,
-      scopeCardId: selectedProjectId,
-      defaultCreateStatusId: null,
-    };
-  }
+  /* ------------------------------------------- form initial seeds */
 
-  function emptyStepDraft(): FlowStepDraft {
+  /** flow.set initial draft for the create dialog. snake_case keys match
+   *  the handler's JSON Schema. */
+  const newFlowInitial = $derived.by((): Record<string, unknown> => ({
+    name: '',
+    doc: '',
+    attribute_def_id: 0n,
+    scope_card_id: selectedProjectId ?? 0n,
+    default_create_status_id: 0n,
+  }));
+
+  /** flow_step.set initial draft for the new / edit transition dialog.
+   *  For new transitions, suggest a sort_order at the next step bucket. */
+  const stepInitial = $derived.by((): Record<string, unknown> => {
+    if (selectedFlowId === null) return {};
+    if (editingStep === null) {
+      return {
+        flow_id: selectedFlowId,
+        from_card_id: 0n,
+        to_card_id: 0n,
+        label: '',
+        sort_order: (steps.length + 1) * 10,
+        requires_role_id: 0n,
+      };
+    }
     return {
-      fromCardId: null,
-      toCardId: null,
-      label: '',
-      sortOrder: '',
-      requiresRoleId: null,
+      id: editingStep.id,
+      flow_id: selectedFlowId,
+      from_card_id: editingStep.from_card_id,
+      to_card_id: editingStep.to_card_id,
+      label: editingStep.label,
+      sort_order: editingStep.sort_order,
+      requires_role_id: editingStep.requires_role_id,
     };
-  }
+  });
 
   /* ------------------------------------------------------------ derivations */
 
@@ -253,10 +270,12 @@
     ),
   );
 
-  /* Combobox options. Cast bigints to strings — Combobox uses `===`
-   * which won't match across separate bigint allocations once round-tripped
-   * through option arrays. */
-  const projectOptions = $derived(
+  /* Combobox options. The inline header pickers (default_create_status
+   * etc.) still use the legacy string-stringified pattern because they
+   * fire single-field updates through the raw dispatcher. The dialog
+   * pickers use the bigint pattern so the form draft holds wire-ready
+   * ids. */
+  const projectOptionsStr = $derived(
     projects.map((p) => ({
       value: p.id.toString(),
       label: typeof p.attributes['title'] === 'string'
@@ -265,28 +284,49 @@
     })),
   );
 
-  const attrDefOptions = $derived(
-    cardRefDefs.map((d) => ({
-      value: d.id.toString(),
+  const attrDefOptions = $derived<{ value: ID; label: string }[]>([
+    { value: 0n, label: 'Pick an attribute…' },
+    ...cardRefDefs.map((d) => ({
+      value: d.id,
       label:
         d.target_card_type_name !== undefined
           ? `${d.name} (${d.target_card_type_name})`
           : d.name,
     })),
-  );
+  ]);
 
-  const valueCardOptions = $derived(
+  const projectOptionsId = $derived<{ value: ID; label: string }[]>([
+    { value: 0n, label: 'Pick a project…' },
+    ...projects.map((p) => ({
+      value: p.id,
+      label: typeof p.attributes['title'] === 'string'
+        ? (p.attributes['title'] as string)
+        : `#${p.id}`,
+    })),
+  ]);
+
+  const valueCardOptionsId = $derived<{ value: ID; label: string }[]>([
+    { value: 0n, label: 'Pick a value…' },
+    ...valueCards.map((c) => ({
+      value: c.id,
+      label: lookupCardTitle(valueTitles, c.id),
+    })),
+  ]);
+
+  /** Inline default-create picker still uses string values (single-field
+   *  update path, not part of any <Form>). */
+  const valueCardOptionsStr = $derived(
     valueCards.map((c) => ({
       value: c.id.toString(),
       label: lookupCardTitle(valueTitles, c.id),
     })),
   );
 
-  const roleOptions = $derived([
-    { value: '', label: '(any authenticated user)' },
+  const roleOptionsId = $derived<{ value: ID; label: string }[]>([
+    { value: 0n, label: '(any authenticated user)' },
     ...roles
       .filter((r) => r.name !== 'system')
-      .map((r) => ({ value: r.id.toString(), label: r.name })),
+      .map((r) => ({ value: r.id, label: r.name })),
   ]);
 
   /* ------------------------------------------------------------- data fetch */
@@ -444,20 +484,6 @@
     }
   }
 
-  async function saveStep(input: FlowStepSetInput, failLabel: string): Promise<ID | null> {
-    try {
-      const out = await dispatcher.request<FlowStepSetInput, FlowStepSetOutput>({
-        endpoint: flowStepSet.endpoint,
-        action: flowStepSet.action,
-        data: input,
-      });
-      return out.id;
-    } catch (e) {
-      notify({ type: 'error', message: `${failLabel}: ${errMsg(e)}` });
-      return null;
-    }
-  }
-
   /* ----- Inline-edit on the flow header -------------------------------- */
 
   /** Build a FlowSetInput from a current flow row + the field being edited,
@@ -526,43 +552,16 @@
   /* ----- Create flow --------------------------------------------------- */
 
   function openCreate(): void {
-    createDraft = emptyFlowDraft();
-    createErrors = {};
     creating = true;
   }
 
-  async function saveCreate(): Promise<void> {
-    const result = validateFlow(createDraft);
-    createErrors = result.errors;
-    if (!result.ok) return;
-    saving = true;
-    const ad = createDraft.attributeDefId;
-    const sc = createDraft.scopeCardId;
-    if (ad === null || sc === null) {
-      saving = false;
-      return;
-    }
-    const input: FlowSetInput = {
-      name: createDraft.name.trim(),
-      attributeDefId: ad,
-      scopeCardId: sc,
-    };
-    if (createDraft.doc.trim() !== '') input.doc = createDraft.doc.trim();
-    if (
-      createDraft.defaultCreateStatusId !== null &&
-      createDraft.defaultCreateStatusId !== undefined &&
-      createDraft.defaultCreateStatusId !== 0n
-    ) {
-      input.defaultCreateStatusId = createDraft.defaultCreateStatusId;
-    }
-    const newId = await saveFlow(input, 'Create flow failed');
-    saving = false;
-    if (newId !== null) {
-      creating = false;
-      notify({ type: 'success', message: `Flow "${input.name}" created.` });
-      await loadFlowsFor(sc);
-      selectedFlowId = newId;
-    }
+  function onFlowCreated(out: unknown): void {
+    const r = (out ?? {}) as { id?: unknown };
+    const newId = typeof r.id === 'bigint' ? r.id : null;
+    creating = false;
+    notify({ type: 'success', message: `Flow created.` });
+    if (selectedProjectId !== null) void loadFlowsFor(selectedProjectId);
+    if (newId !== null) selectedFlowId = newId;
   }
 
   /* ----- Delete flow with preview -------------------------------------- */
@@ -620,65 +619,24 @@
 
   function openNewStep(): void {
     if (selectedFlow === null) return;
-    editingStepId = null;
-    stepDraftErrors = {};
-    stepDraft = {
-      ...emptyStepDraft(),
-      sortOrder: ((steps.length + 1) * 10).toString(),
-    };
+    editingStep = null;
     stepDialogOpen = true;
   }
 
   function openEditStep(s: FlowStepRow): void {
-    editingStepId = s.id;
-    stepDraftErrors = {};
-    stepDraft = {
-      fromCardId: s.from_card_id,
-      toCardId: s.to_card_id,
-      label: s.label,
-      sortOrder: s.sort_order.toString(),
-      requiresRoleId: s.requires_role_id === 0n ? null : s.requires_role_id,
-    };
+    editingStep = s;
     stepDialogOpen = true;
   }
 
-  async function saveStepDraft(): Promise<void> {
-    const f = selectedFlow;
-    if (f === null) return;
-    const result = validateFlowStep(stepDraft);
-    stepDraftErrors = result.errors;
-    if (!result.ok) return;
-    const from = stepDraft.fromCardId;
-    const to = stepDraft.toCardId;
-    if (from === null || to === null) return;
-    savingStep = true;
-    const input: FlowStepSetInput = {
-      flowId: f.id,
-      fromCardId: from,
-      toCardId: to,
-      label: stepDraft.label.trim(),
-    };
-    if (editingStepId !== null) input.id = editingStepId;
-    const sortValue = parseSortOrder(stepDraft.sortOrder);
-    if (sortValue !== 0) input.sortOrder = sortValue;
-    if (
-      stepDraft.requiresRoleId !== null &&
-      stepDraft.requiresRoleId !== undefined &&
-      stepDraft.requiresRoleId !== 0n
-    ) {
-      input.requiresRoleId = stepDraft.requiresRoleId;
-    }
-    const id = await saveStep(input, 'Save transition failed');
-    savingStep = false;
-    if (id !== null) {
-      stepDialogOpen = false;
-      editingStepId = null;
-      await loadStepsFor(f.id);
-      notify({
-        type: 'success',
-        message: input.id === undefined ? 'Transition added.' : 'Transition updated.',
-      });
-    }
+  function onStepSaved(): void {
+    const wasEdit = editingStep !== null;
+    stepDialogOpen = false;
+    editingStep = null;
+    if (selectedFlowId !== null) void loadStepsFor(selectedFlowId);
+    notify({
+      type: 'success',
+      message: wasEdit ? 'Transition updated.' : 'Transition added.',
+    });
   }
 
   /* ----- Step delete --------------------------------------------------- */
@@ -716,30 +674,12 @@
 
   /* ------------------------------------------------------ combobox glue */
 
-  function pickCreateAttr(v: unknown): void {
-    if (typeof v !== 'string' || v === '') {
-      createDraft = { ...createDraft, attributeDefId: null };
-      return;
-    }
-    try {
-      createDraft = { ...createDraft, attributeDefId: BigInt(v) };
-    } catch {
-      /* ignore */
-    }
-  }
-
-  function pickCreateProject(v: unknown): void {
-    if (typeof v !== 'string' || v === '') {
-      createDraft = { ...createDraft, scopeCardId: null };
-      return;
-    }
-    try {
-      createDraft = { ...createDraft, scopeCardId: BigInt(v) };
-    } catch {
-      /* ignore */
-    }
-  }
-
+  /**
+   * Inline default-status picker — still wired to the raw dispatcher
+   * because the screen treats it as a single-field update (no other
+   * fields are co-edited at this point). The dialog form pickers below
+   * use Select + form context instead.
+   */
   function pickDefaultStatus(v: unknown): void {
     if (typeof v !== 'string' || v === '') {
       void setSelectedFlowDefault(null);
@@ -752,46 +692,15 @@
     }
   }
 
-  function pickStepFrom(v: unknown): void {
-    if (typeof v !== 'string' || v === '') {
-      stepDraft = { ...stepDraft, fromCardId: null };
-      return;
-    }
-    try {
-      stepDraft = { ...stepDraft, fromCardId: BigInt(v) };
-    } catch {
-      /* ignore */
-    }
-  }
-  function pickStepTo(v: unknown): void {
-    if (typeof v !== 'string' || v === '') {
-      stepDraft = { ...stepDraft, toCardId: null };
-      return;
-    }
-    try {
-      stepDraft = { ...stepDraft, toCardId: BigInt(v) };
-    } catch {
-      /* ignore */
-    }
-  }
-  function pickStepRole(v: unknown): void {
-    if (typeof v !== 'string' || v === '') {
-      stepDraft = { ...stepDraft, requiresRoleId: null };
-      return;
-    }
-    try {
-      stepDraft = { ...stepDraft, requiresRoleId: BigInt(v) };
-    } catch {
-      /* ignore */
-    }
-  }
-
   /* ------------------------------------------------------ keyboard glue */
 
   async function focusSearch(): Promise<void> {
     await tick();
-    searchEl?.focus();
-    searchEl?.select();
+    const el = document.getElementById(SEARCH_INPUT_ID);
+    if (el instanceof HTMLInputElement) {
+      el.focus();
+      el.select();
+    }
   }
 
   function moveSelection(delta: number): void {
@@ -824,53 +733,37 @@
   });
 </script>
 
-<div class="flex h-full flex-col">
-  <header
-    class="flex items-center justify-between gap-3 border-b border-border px-4 py-2"
-  >
-    <h1 class="text-lg font-semibold">Admin · Flows</h1>
+<PageShell title="Admin · Flows" pad="none">
+  {#snippet actions()}
     <Button variant="primary" size="sm" onclick={openCreate}>
       {#snippet children()}+ New flow{/snippet}
     </Button>
-  </header>
-
+  {/snippet}
+  {#snippet children()}
   {#if loading && flows.length === 0 && projects.length === 0}
-    <div class="flex flex-1 items-center justify-center">
+    <div class="flex h-full items-center justify-center">
       <Spinner size="lg" />
     </div>
   {:else if error !== null}
-    <div
-      role="alert"
-      class="m-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger"
-    >
-      Failed to load: {error}
-      <button
-        type="button"
-        class="ml-3 underline"
-        onclick={() => void loadInitial()}
-      >
-        Retry
-      </button>
-    </div>
+    <ErrorAlert
+      class="m-4"
+      message={`Failed to load: ${error}`}
+      onRetry={() => void loadInitial()}
+    />
   {:else}
-    <div class="grid flex-1 min-h-0 grid-cols-[280px_1fr]">
+    <div class="grid h-full min-h-0 grid-cols-[280px_1fr]">
       <!-- LEFT: flow list -->
       <aside
         class="flex flex-col border-r border-border min-h-0"
         aria-label="Flow list"
       >
         <div class="flex flex-col gap-2 border-b border-border p-2">
-          <input
+          <TextInput
+            id={SEARCH_INPUT_ID}
             type="search"
-            bind:this={searchEl}
             bind:value={search}
             placeholder="Search flows (press /)"
             aria-label="Search flows"
-            class={cx(
-              'w-full rounded-md border border-border bg-bg px-2 py-1 text-sm',
-              'text-fg placeholder:text-muted',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-            )}
           />
         </div>
         <div class="min-h-0 flex-1 overflow-y-auto" data-testid="flow-list">
@@ -940,25 +833,21 @@
               <div class="flex min-w-0 flex-1 flex-col gap-2">
                 <label class="flex flex-col gap-1 text-sm">
                   <span class="text-muted">Flow name</span>
-                  <input
-                    type="text"
-                    value={f.name}
-                    data-testid="flow-name"
-                    class={cx(
-                      'rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg',
-                      'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-                    )}
-                    onblur={(e) =>
-                      void renameSelectedFlow((e.target as HTMLInputElement).value)}
-                    onkeydown={(e) => {
-                      if (e.key === 'Enter') {
-                        (e.target as HTMLInputElement).blur();
-                      } else if (e.key === 'Escape') {
-                        (e.target as HTMLInputElement).value = f.name;
-                        (e.target as HTMLInputElement).blur();
-                      }
-                    }}
-                  />
+                  <span data-testid="flow-name">
+                    <TextInput
+                      value={f.name}
+                      onblur={(e) =>
+                        void renameSelectedFlow((e.target as HTMLInputElement).value)}
+                      onkeydown={(e) => {
+                        if (e.key === 'Enter') {
+                          (e.target as HTMLInputElement).blur();
+                        } else if (e.key === 'Escape') {
+                          (e.target as HTMLInputElement).value = f.name;
+                          (e.target as HTMLInputElement).blur();
+                        }
+                      }}
+                    />
+                  </span>
                 </label>
                 <label class="flex flex-col gap-1 text-sm">
                   <span class="text-muted">Description (optional)</span>
@@ -1002,13 +891,13 @@
                 <span class="flex-1">
                   <Combobox
                     aria-label="Default status on task create"
-                    options={[{ value: '', label: '(none)' }, ...valueCardOptions]}
+                    options={[{ value: '', label: '(none)' }, ...valueCardOptionsStr]}
                     value={
                       f.default_create_status_id === 0n
                         ? ''
                         : f.default_create_status_id.toString()
                     }
-                    searchable={valueCardOptions.length > 8}
+                    searchable={valueCardOptionsStr.length > 8}
                     placeholder="(none)"
                     onchange={pickDefaultStatus}
                   />
@@ -1085,176 +974,110 @@
       </section>
     </div>
   {/if}
-</div>
+  {/snippet}
+</PageShell>
 
 <!-- New-flow dialog -->
 <Modal bind:open={creating} title="New flow" size="md" onClose={() => (creating = false)}>
-  <div class="flex flex-col gap-3" data-testid="new-flow-dialog">
-    <label class="flex flex-col gap-1 text-sm">
-      <span class="text-muted">Name</span>
-      <input
-        type="text"
-        bind:value={createDraft.name}
-        data-testid="new-flow-name"
-        class={cx(
-          'rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-        )}
-      />
-      {#if createErrors.name}
-        <span class="text-xs text-danger">{createErrors.name}</span>
-      {/if}
-    </label>
-
-    <label class="flex flex-col gap-1 text-sm">
-      <span class="text-muted">Description (optional)</span>
-      <textarea
-        bind:value={createDraft.doc}
-        rows="2"
-        class={cx(
-          'rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-        )}
-      ></textarea>
-    </label>
-
-    <label class="flex flex-col gap-1 text-sm">
-      <span class="text-muted">Project</span>
-      <Combobox
-        aria-label="Project for new flow"
-        options={projectOptions}
-        value={createDraft.scopeCardId === null ? null : createDraft.scopeCardId.toString()}
-        searchable={projectOptions.length > 8}
-        placeholder="Pick a project…"
-        onchange={pickCreateProject}
-      />
-      {#if createErrors.scopeCardId}
-        <span class="text-xs text-danger">{createErrors.scopeCardId}</span>
-      {/if}
-    </label>
-
-    <label class="flex flex-col gap-1 text-sm">
-      <span class="text-muted">Attribute (card_ref-typed only)</span>
-      <Combobox
-        aria-label="Attribute"
-        options={attrDefOptions}
-        value={createDraft.attributeDefId === null
-          ? null
-          : createDraft.attributeDefId.toString()}
-        searchable={attrDefOptions.length > 8}
-        placeholder="Pick an attribute…"
-        onchange={pickCreateAttr}
-      />
-      {#if createErrors.attributeDefId}
-        <span class="text-xs text-danger">{createErrors.attributeDefId}</span>
-      {/if}
-      <span class="text-xs text-muted">
-        Typically "status". One flow per attribute per project.
-      </span>
-    </label>
-  </div>
-  {#snippet footer()}
-    <Button variant="ghost" onclick={() => (creating = false)}>
-      {#snippet children()}Cancel{/snippet}
-    </Button>
-    <Button variant="primary" loading={saving} onclick={() => void saveCreate()}>
-      {#snippet children()}Create{/snippet}
-    </Button>
+  {#snippet children()}
+    {#key creating}
+      <Form
+        spec="flow.set"
+        initial={newFlowInitial}
+        onSaved={onFlowCreated}
+        class="flex flex-col gap-3"
+      >
+        <div data-testid="new-flow-dialog" class="flex flex-col gap-3">
+          <FormErrors />
+          <span data-testid="new-flow-name">
+            <FormTextInput path="name" label="Name" />
+          </span>
+          <FormTextarea path="doc" label="Description (optional)" rows={2} />
+          <Select
+            path="scope_card_id"
+            label="Project"
+            options={projectOptionsId}
+            searchable={projectOptionsId.length > 8}
+            placeholder="Pick a project…"
+            aria-label="Project for new flow"
+          />
+          <Select
+            path="attribute_def_id"
+            label="Attribute (card_ref-typed only)"
+            options={attrDefOptions}
+            searchable={attrDefOptions.length > 8}
+            placeholder="Pick an attribute…"
+            aria-label="Attribute"
+          />
+          <span class="text-xs text-muted">
+            Typically "status". One flow per attribute per project.
+          </span>
+          <div class="mt-2 flex items-center justify-end gap-2 border-t border-border pt-3">
+            <Button variant="ghost" onclick={() => (creating = false)}>
+              {#snippet children()}Cancel{/snippet}
+            </Button>
+            <SubmitButton>Create</SubmitButton>
+          </div>
+        </div>
+      </Form>
+    {/key}
   {/snippet}
 </Modal>
 
 <!-- New / edit transition dialog -->
 <Modal
   bind:open={stepDialogOpen}
-  title={editingStepId === null ? 'New transition' : 'Edit transition'}
+  title={editingStep === null ? 'New transition' : 'Edit transition'}
   size="md"
   onClose={() => (stepDialogOpen = false)}
 >
-  <div class="flex flex-col gap-3" data-testid="step-dialog">
-    <label class="flex flex-col gap-1 text-sm">
-      <span class="text-muted">From</span>
-      <Combobox
-        aria-label="From value"
-        options={valueCardOptions}
-        value={stepDraft.fromCardId === null ? null : stepDraft.fromCardId.toString()}
-        searchable={valueCardOptions.length > 8}
-        placeholder="Pick a starting value…"
-        onchange={pickStepFrom}
-      />
-      {#if stepDraftErrors.fromCardId}
-        <span class="text-xs text-danger">{stepDraftErrors.fromCardId}</span>
-      {/if}
-    </label>
-
-    <label class="flex flex-col gap-1 text-sm">
-      <span class="text-muted">To</span>
-      <Combobox
-        aria-label="To value"
-        options={valueCardOptions}
-        value={stepDraft.toCardId === null ? null : stepDraft.toCardId.toString()}
-        searchable={valueCardOptions.length > 8}
-        placeholder="Pick a destination value…"
-        onchange={pickStepTo}
-      />
-      {#if stepDraftErrors.toCardId}
-        <span class="text-xs text-danger">{stepDraftErrors.toCardId}</span>
-      {/if}
-    </label>
-
-    <label class="flex flex-col gap-1 text-sm">
-      <span class="text-muted">Button label</span>
-      <input
-        type="text"
-        bind:value={stepDraft.label}
-        data-testid="step-label"
-        class={cx(
-          'rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-        )}
-      />
-      {#if stepDraftErrors.label}
-        <span class="text-xs text-danger">{stepDraftErrors.label}</span>
-      {/if}
-    </label>
-
-    <label class="flex flex-col gap-1 text-sm">
-      <span class="text-muted">Requires role (optional)</span>
-      <Combobox
-        aria-label="Requires role"
-        options={roleOptions}
-        value={
-          stepDraft.requiresRoleId === null || stepDraft.requiresRoleId === undefined
-            ? ''
-            : stepDraft.requiresRoleId.toString()
-        }
-        searchable={roleOptions.length > 8}
-        placeholder="(any authenticated user)"
-        onchange={pickStepRole}
-      />
-    </label>
-
-    <label class="flex flex-col gap-1 text-sm">
-      <span class="text-muted">Sort order (optional)</span>
-      <input
-        type="number"
-        bind:value={stepDraft.sortOrder}
-        class={cx(
-          'w-32 rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-        )}
-      />
-      {#if stepDraftErrors.sortOrder}
-        <span class="text-xs text-danger">{stepDraftErrors.sortOrder}</span>
-      {/if}
-    </label>
-  </div>
-  {#snippet footer()}
-    <Button variant="ghost" onclick={() => (stepDialogOpen = false)}>
-      {#snippet children()}Cancel{/snippet}
-    </Button>
-    <Button variant="primary" loading={savingStep} onclick={() => void saveStepDraft()}>
-      {#snippet children()}Save{/snippet}
-    </Button>
+  {#snippet children()}
+    {#key editingStep?.id ?? 'new'}
+      <Form
+        spec="flow_step.set"
+        initial={stepInitial}
+        onSaved={onStepSaved}
+        class="flex flex-col gap-3"
+      >
+        <div data-testid="step-dialog" class="flex flex-col gap-3">
+          <FormErrors />
+          <Select
+            path="from_card_id"
+            label="From"
+            options={valueCardOptionsId}
+            searchable={valueCardOptionsId.length > 8}
+            placeholder="Pick a starting value…"
+            aria-label="From value"
+          />
+          <Select
+            path="to_card_id"
+            label="To"
+            options={valueCardOptionsId}
+            searchable={valueCardOptionsId.length > 8}
+            placeholder="Pick a destination value…"
+            aria-label="To value"
+          />
+          <span data-testid="step-label">
+            <FormTextInput path="label" label="Button label" />
+          </span>
+          <Select
+            path="requires_role_id"
+            label="Requires role (optional)"
+            options={roleOptionsId}
+            searchable={roleOptionsId.length > 8}
+            placeholder="(any authenticated user)"
+            aria-label="Requires role"
+          />
+          <NumberInput path="sort_order" label="Sort order (optional)" />
+          <div class="mt-2 flex items-center justify-end gap-2 border-t border-border pt-3">
+            <Button variant="ghost" onclick={() => (stepDialogOpen = false)}>
+              {#snippet children()}Cancel{/snippet}
+            </Button>
+            <SubmitButton>Save</SubmitButton>
+          </div>
+        </div>
+      </Form>
+    {/key}
   {/snippet}
 </Modal>
 

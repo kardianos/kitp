@@ -11,11 +11,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/auth/token"
 	"github.com/kitp/kitp/server/internal/dom/activity"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
@@ -45,10 +47,6 @@ func setupHTTPMCP(t *testing.T, schemaName string) *httpFixture {
 	reg.Reset()
 	pool := store.TestPool(t, schemaName)
 	sp := store.NewPool(pool)
-
-	// Force the full toolset so tools/list returns more than proc.search;
-	// the assertions below need echo__ping to be visible.
-	t.Setenv("MCP_TOOLSET", "full")
 
 	echo.Register()
 	cardtype.Register()
@@ -80,12 +78,28 @@ func setupHTTPMCP(t *testing.T, schemaName string) *httpFixture {
 		t.Fatalf("mint token: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mcp.RegisterHTTP(mux, mcp.HTTPConfig{
-		Server: mcpSrv,
-		Tokens: tokenMgr,
+	// Build an apiRouter with a bearer resolver that consults the
+	// test's token manager — mirrors what main.go wires up in
+	// production. The MCP handler itself doesn't see the token
+	// anymore; the router resolves the user before the handler runs.
+	rt := api.NewRouter(api.RouterConfig{
+		BearerResolver: func(r *http.Request) (*auth.UserCtx, error) {
+			h := r.Header.Get("Authorization")
+			const prefix = "Bearer "
+			if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+				return nil, nil
+			}
+			u, err := tokenMgr.Lookup(r.Context(), strings.TrimSpace(h[len(prefix):]))
+			if err != nil {
+				return nil, err
+			}
+			return &auth.UserCtx{ID: u.ID, DisplayName: u.DisplayName}, nil
+		},
 	})
-	ts := httptest.NewServer(mux)
+	mcp.Mount(rt, mcp.HTTPConfig{Server: mcpSrv})
+	top := http.NewServeMux()
+	top.Handle("/api/", rt.Mux())
+	ts := httptest.NewServer(top)
 	t.Cleanup(ts.Close)
 	return &httpFixture{ts: ts, bearer: tok, pool: pool, agentID: agentID}
 }

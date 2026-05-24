@@ -43,6 +43,8 @@ func installFixtureRegistry(t *testing.T) reg.Handler {
 			InputType:    reflect.TypeFor[fakeIn](),
 			OutputType:   reflect.TypeFor[fakeOut](),
 			AllowedRoles: allowed,
+			// Fixture handler — no row-level authz exercised here.
+			GlobalScope: true,
 			Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 				return ins, nil
 			},
@@ -321,11 +323,6 @@ func TestSearchFiltersByCallerRoles(t *testing.T) {
 		t.Errorf("viewer+include_unavailable search = %v, want [probe__admin_write probe__read]", got)
 	}
 
-	// 4. system-roled user wildcards (matches the dispatcher gate).
-	out = asUserWithRole("filter_sys", "system", proc.SearchInput{Endpoint: "probe"})
-	if got := names(out); !equalSlices(got, []string{"probe__admin_write", "probe__read"}) {
-		t.Errorf("system search = %v, want [probe__admin_write probe__read]", got)
-	}
 }
 
 func equalSlices(a, b []string) bool {

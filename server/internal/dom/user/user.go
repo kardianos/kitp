@@ -9,11 +9,7 @@
 package user
 
 import (
-	"context"
-	"encoding/json"
 	"reflect"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/reg"
 )
@@ -26,17 +22,17 @@ import (
 // non-parents by filtering `IsAgent=false`. Other callers pass nothing
 // and get the full list (sorted by display_name) — the v1 behaviour.
 type SelectInput struct {
-	IDs            []int64 `json:"ids,omitempty"             mcp:"desc=optional explicit id filter; combined via AND"`
-	ParentUserID   *int64  `json:"parent_user_id,string,omitempty" mcp:"desc=optional parent_user_id filter; useful to list a user's owned agents"`
-	IsAgent        *bool   `json:"is_agent,omitempty"        mcp:"desc=optional is_agent filter; true = only agent rows, false = only humans"`
+	IDs          []int64 `json:"ids,omitempty"                   mcp:"desc=optional explicit id filter; combined via AND"`
+	ParentUserID *int64  `json:"parent_user_id,string,omitempty" mcp:"desc=optional parent_user_id filter; useful to list a user's owned agents"`
+	IsAgent      *bool   `json:"is_agent,omitempty"              mcp:"desc=optional is_agent filter; true = only agent rows, false = only humans"`
 }
 
 // Row is one user_account row — only the fields the UI needs.
 type Row struct {
-	ID            int64  `json:"id,string"                      mcp:"desc=user account id"`
-	DisplayName   string `json:"display_name"                    mcp:"desc=user display name"`
-	ParentUserID  *int64 `json:"parent_user_id,string,omitempty" mcp:"desc=human owner when is_agent=true; null for humans"`
-	IsAgent       bool   `json:"is_agent"                        mcp:"desc=true when this row is an agent owned by parent_user_id"`
+	ID           int64  `json:"id,string"                      mcp:"desc=user account id"`
+	DisplayName  string `json:"display_name"                    mcp:"desc=user display name"`
+	ParentUserID *int64 `json:"parent_user_id,string,omitempty" mcp:"desc=human owner when is_agent=true; null for humans"`
+	IsAgent      bool   `json:"is_agent"                        mcp:"desc=true when this row is an agent owned by parent_user_id"`
 }
 
 // SelectOutput is the per-input payload — every input gets the same
@@ -62,6 +58,7 @@ type RowWithRoles struct {
 	OIDCSub      *string          `json:"oidc_sub,omitempty"                mcp:"desc=OIDC subject (sub claim) when provisioned"`
 	ParentUserID *int64           `json:"parent_user_id,string,omitempty"   mcp:"desc=human owner when is_agent=true; null for humans"`
 	IsAgent      bool             `json:"is_agent"                          mcp:"desc=true when this row is an agent"`
+	PersonCardID *int64           `json:"person_card_id,string,omitempty"   mcp:"desc=linked person card id when this user_account is associated with a person card (member tier); null for login-only accounts and agents"`
 	Roles        []RoleAssignment `json:"roles"                             mcp:"desc=role assignments held by this user"`
 }
 
@@ -82,7 +79,10 @@ func Register() {
 		InputType:    reflect.TypeFor[SelectInput](),
 		OutputType:   reflect.TypeFor[SelectOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
-		Run:          runSelect,
+		// Unified handler — body lives in
+		// db/schema/functions/user_select_batch.sql per Phase 5 of
+		// docs/UNIFIED_HANDLER_PLAN.md.
+		SQLFunc: "user_select_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "user",
@@ -91,151 +91,35 @@ func Register() {
 		InputType:    reflect.TypeFor[ListWithRolesInput](),
 		OutputType:   reflect.TypeFor[ListWithRolesOutput](),
 		AllowedRoles: []string{"admin"},
-		Run:          runListWithRoles,
+		// Unified handler — body lives in
+		// db/schema/functions/user_list_with_roles_batch.sql per Phase
+		// 5 of docs/UNIFIED_HANDLER_PLAN.md.
+		SQLFunc: "user_list_with_roles_batch",
+	})
+	reg.Register(reg.Handler{
+		Endpoint:     "user",
+		Action:       "unlink_person",
+		Doc:          "Delete the user_account_person link between a user_account row and a person card. The user_account row itself stays — they can still sign in, they just no longer correspond to an assignable person card (demotes 'user' tier to 'login-only'). Idempotent: deleting an absent link succeeds with deleted=false.",
+		InputType:    reflect.TypeFor[UnlinkPersonInput](),
+		OutputType:   reflect.TypeFor[UnlinkPersonOutput](),
+		AllowedRoles: []string{"admin"},
+		// Unified handler — body lives in
+		// db/schema/functions/user_unlink_person_batch.sql per Phase 3
+		// of docs/UNIFIED_HANDLER_PLAN.md.
+		SQLFunc: "user_unlink_person_batch",
 	})
 }
 
-// runSelect handles user.select. We coalesce concurrent inputs by
-// taking the UNION of every input's filter — one SQL pass, then
-// per-input we slice the row set down to that input's filter. Empty
-// filters mean "match everything", so an empty SelectInput pulls the
-// full table the way v1 used to.
-func runSelect(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	// All inputs share the same column set; we just need to run ONE
-	// query that's permissive enough to satisfy every caller, then
-	// filter per-input below.
-	rows, err := tx.Query(ctx, `
-		SELECT id, display_name, parent_user_id, is_agent
-		FROM user_account
-		ORDER BY display_name, id
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	all := []Row{}
-	for rows.Next() {
-		var r Row
-		if err := rows.Scan(&r.ID, &r.DisplayName, &r.ParentUserID, &r.IsAgent); err != nil {
-			return nil, err
-		}
-		all = append(all, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	outs := make([]any, len(ins))
-	for i, raw := range ins {
-		in := raw.(SelectInput)
-		out := make([]Row, 0, len(all))
-		idSet := buildIDSet(in.IDs)
-		for _, r := range all {
-			if idSet != nil {
-				if _, ok := idSet[r.ID]; !ok {
-					continue
-				}
-			}
-			if in.ParentUserID != nil {
-				if r.ParentUserID == nil || *r.ParentUserID != *in.ParentUserID {
-					continue
-				}
-			}
-			if in.IsAgent != nil && r.IsAgent != *in.IsAgent {
-				continue
-			}
-			out = append(out, r)
-		}
-		outs[i] = SelectOutput{Rows: out}
-	}
-	return outs, nil
+// UnlinkPersonInput addresses the user_account row whose person link
+// is being removed. We key on user_account_id rather than the person
+// card id because admins land on this action from the user-centric
+// view; the link is 1:1 so either key would work.
+type UnlinkPersonInput struct {
+	UserAccountID int64 `json:"user_account_id,string" mcp:"required,desc=user_account row whose user_account_person link is being deleted"`
 }
 
-func buildIDSet(ids []int64) map[int64]struct{} {
-	if len(ids) == 0 {
-		return nil
-	}
-	set := make(map[int64]struct{}, len(ids))
-	for _, id := range ids {
-		set[id] = struct{}{}
-	}
-	return set
-}
-
-// runListWithRoles loads every user + their role assignments + scope project
-// titles in two queries (no N+1). The scope title is fetched via a LATERAL
-// lookup against attribute_value.title.
-func runListWithRoles(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	users := []RowWithRoles{}
-	rows, err := tx.Query(ctx, `
-		SELECT id, display_name, email, oidc_sub, parent_user_id, is_agent
-		FROM user_account
-		ORDER BY display_name, id
-	`)
-	if err != nil {
-		return nil, err
-	}
-	idx := map[int64]int{}
-	for rows.Next() {
-		var r RowWithRoles
-		if err := rows.Scan(&r.ID, &r.DisplayName, &r.Email, &r.OIDCSub, &r.ParentUserID, &r.IsAgent); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		r.Roles = []RoleAssignment{}
-		idx[r.ID] = len(users)
-		users = append(users, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	roleRows, err := tx.Query(ctx, `
-		SELECT ur.user_id, r.name, ur.scope_card_id, title.value
-		FROM user_role ur
-		JOIN role r ON r.id = ur.role_id
-		LEFT JOIN LATERAL (
-			SELECT av.value
-			FROM attribute_value av
-			JOIN attribute_def ad ON ad.id = av.attribute_def_id
-			WHERE av.card_id = ur.scope_card_id AND ad.name = 'title'
-			LIMIT 1
-		) title ON ur.scope_card_id IS NOT NULL
-		ORDER BY ur.user_id, r.name
-	`)
-	if err != nil {
-		return nil, err
-	}
-	for roleRows.Next() {
-		var userID int64
-		var roleName string
-		var scope *int64
-		var titleRaw []byte
-		if err := roleRows.Scan(&userID, &roleName, &scope, &titleRaw); err != nil {
-			roleRows.Close()
-			return nil, err
-		}
-		ra := RoleAssignment{RoleName: roleName, ScopeProjectID: scope}
-		if scope != nil && len(titleRaw) > 0 {
-			var s string
-			if err := json.Unmarshal(titleRaw, &s); err == nil {
-				ra.ScopeProjectTitle = &s
-			}
-		}
-		if pos, ok := idx[userID]; ok {
-			users[pos].Roles = append(users[pos].Roles, ra)
-		}
-	}
-	roleRows.Close()
-	if err := roleRows.Err(); err != nil {
-		return nil, err
-	}
-
-	outs := make([]any, len(ins))
-	out := ListWithRolesOutput{Rows: users}
-	for i := range ins {
-		outs[i] = out
-	}
-	return outs, nil
+// UnlinkPersonOutput reports whether a row was actually deleted (so
+// the caller can distinguish a real demotion from a no-op repeat).
+type UnlinkPersonOutput struct {
+	Deleted bool `json:"deleted" mcp:"desc=true when a row was removed; false when the link was already absent"`
 }

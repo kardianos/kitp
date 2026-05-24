@@ -157,7 +157,7 @@ func TestProcessRollback(t *testing.T) {
 	_ = json.Unmarshal(buf, &tOut)
 
 	// The process: step 1 inserts a project. Step 2's input has
-	// attribute_name="not_a_real_attr" — this fails Validate at decode time.
+	// attribute_name="not_a_real_attr" — the SQL function rejects it.
 	// Step 3 never runs. Step 1 must be rolled back.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "wf", Endpoint: "task", Action: "test_workflow", Data: json.RawMessage(

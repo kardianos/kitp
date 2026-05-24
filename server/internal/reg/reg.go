@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -20,10 +21,7 @@ import (
 // Handler is the canonical descriptor for a single batch action.
 //
 // Authz runs once per sub-request before the batch transaction opens
-// (F-ROLE-2). Validate also runs before the transaction opens, but unlike
-// Authz it gets a pgxpool.Pool so it can do read-only metadata lookups —
-// e.g. F-ATTR-3 ("Attribute writes that violate the EDGE schema … are
-// rejected at sub-request validation, before the transaction opens").
+// (F-ROLE-2).
 //
 // AllowedRoles is the declarative role gate. The dispatcher loads the
 // calling user's roles from `user_role` and rejects the sub-request with
@@ -65,10 +63,73 @@ type Handler struct {
 	OutputType   reflect.Type
 	AllowedRoles []string
 	Authz        func(ctx context.Context, in any) error
-	Validate     func(ctx context.Context, pool ValidationPool, in any) error
 	ProcessName  string
 	CardTypeID   func(ctx context.Context, pool ValidationPool, in any) (int64, error)
-	Run          func(ctx context.Context, tx pgx.Tx, ins []any) (outs []any, err error)
+	// GlobalScope marks a handler as intentionally NOT subject to the
+	// per-row scope check. Set true ONLY when the handler operates on
+	// rows that have no project anchor (CAS chunks, person cards
+	// before they're attached to a project, file rows before they
+	// attach to a card). Without this opt-out the register-time
+	// guard panics on any handler that lists `worker` or `manager` in
+	// AllowedRoles without supplying CardTypeID + ProcessName — the
+	// bug class spelled out in
+	// issues/backend/06-med-handlers-skip-scope-check.md.
+	GlobalScope bool
+	// Timeout caps the wall-clock time the dispatcher allows for one
+	// invocation of Run (the entire arrayPath batch — every input
+	// in the group). Zero means "use the dispatcher's default"
+	// (currently 6s). Heavy handlers (`project.import.commit`,
+	// `project.stamp`, `project.export.*`) override with a larger
+	// value; cheap reads stay at the default. The pool-wide
+	// `statement_timeout=600s` is the absolute hard cap. See
+	// issues/sql/01-med-no-statement-timeout.md.
+	Timeout time.Duration
+	// SQLFunc is the name of the PL/pgSQL function that implements
+	// this handler under the unified shape (see
+	// docs/UNIFIED_HANDLER_PLAN.md). When set, the dispatcher calls
+	// `<SQLFunc>(actor_id bigint, inputs jsonb)` and decodes the
+	// returned `(idx, ok, code, message, result)` rows directly;
+	// Run is ignored. Handlers that genuinely can't move to PL/pgSQL
+	// (help.*, proc.search, echo.ping, config.get) keep Run instead.
+	SQLFunc string
+	// IsRead marks an SQLFunc handler as read-shaped. The dispatcher
+	// notes the round-trip on Pool.NoteRead instead of NoteWrite so
+	// LATERAL-read benches that assert `LastReads()==1` keep working
+	// across the migration. Ignored for Run-style handlers (whose
+	// bodies own their own NoteRead / NoteWrite calls).
+	IsRead bool
+	// PostRun runs AFTER the SQL function returns successfully,
+	// inside the same request tx. Used for Go-side side effects
+	// that can't move to PL/pgSQL — image decode (attachment.create
+	// thumbnails), future indexing or webhook fan-out, etc. The
+	// hook receives the original inputs and the decoded outputs;
+	// it may mutate output values in place (e.g. fill in a
+	// thumb_file_id) but MUST NOT modify the inputs.
+	//
+	// Errors from PostRun abort the batch and roll back the tx —
+	// same semantics as a SQL function failure.
+	//
+	// Only invoked when SQLFunc is set AND the function call
+	// succeeded. Ignored for Run-style handlers.
+	PostRun func(ctx context.Context, tx pgx.Tx, ins []any, outs []any) error
+	// PreRun runs BEFORE the SQL function is invoked, inside the
+	// same request tx. Used for Go-side input normalisation that
+	// genuinely needs DB access (e.g. project.import reading CSV
+	// bytes from file_chunk + parsing them before the SQL function
+	// walks the rows). The hook receives the typed inputs and
+	// returns a transformed slice — same length, same order, same
+	// types — that the dispatcher then JSONB-encodes for the SQL
+	// function. Hooks that don't need DB access should use
+	// UnmarshalJSON on the input type instead (cheaper, runs
+	// pre-tx).
+	//
+	// Errors from PreRun abort the batch and roll back the tx —
+	// a returned *reg.HandlerError pins the failure to its InputIndex.
+	//
+	// Only invoked when SQLFunc is set. Ignored for Run-style
+	// handlers.
+	PreRun func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error)
+	Run    func(ctx context.Context, tx pgx.Tx, ins []any) (outs []any, err error)
 }
 
 // Sentinel role names recognised by the dispatcher's gate. They are not
@@ -81,11 +142,6 @@ const (
 	RolePublic = "$public"
 	// RoleAuthenticated requires a valid login but no specific role.
 	RoleAuthenticated = "$authenticated"
-	// RoleSystem is the seeded dev-mode role; the gate hard-codes a
-	// bypass for it so dev-mode (AUTH_MODE=off) hits every endpoint
-	// without listing it in every handler's AllowedRoles. Exported as
-	// a constant so tests can reference the same string.
-	RoleSystem = "system"
 )
 
 // Unauthorized returns a *HandlerError with the canonical permission
@@ -127,13 +183,36 @@ func Register(h Handler) {
 	if h.Endpoint == "" || h.Action == "" {
 		panic("reg.Register: empty endpoint or action")
 	}
-	if h.Run == nil {
-		panic(fmt.Sprintf("reg.Register: nil Run for %s.%s", h.Endpoint, h.Action))
+	if h.Run == nil && h.SQLFunc == "" {
+		panic(fmt.Sprintf("reg.Register: %s.%s needs either Run or SQLFunc", h.Endpoint, h.Action))
+	}
+	if h.Run != nil && h.SQLFunc != "" {
+		panic(fmt.Sprintf("reg.Register: %s.%s sets both Run and SQLFunc — exactly one", h.Endpoint, h.Action))
 	}
 	if len(h.AllowedRoles) == 0 {
 		panic(fmt.Sprintf(
 			"reg.Register: %s.%s missing AllowedRoles — declare reg.RolePublic / reg.RoleAuthenticated / explicit role names",
 			h.Endpoint, h.Action))
+	}
+	// Per-row scope guard: if AllowedRoles names a non-admin tier
+	// (worker / manager), the handler MUST supply CardTypeID and
+	// ProcessName so the dispatcher can compare the actor's scoped
+	// grant against the target's project. Admin-only handlers and
+	// the special role tokens ($public / $authenticated / system)
+	// are exempt — admin is conventionally a global grant, and the
+	// special tokens skip the row-scope pass by design.
+	//
+	// Set GlobalScope=true on handlers that legitimately operate on
+	// rows without a project anchor (CAS chunks, persons before
+	// they're attached, file rows). Anything else risks the bug
+	// class in issues/backend/06-med-handlers-skip-scope-check.md.
+	if needsRowScope(h.AllowedRoles) && !h.GlobalScope {
+		if h.CardTypeID == nil || h.ProcessName == "" {
+			panic(fmt.Sprintf(
+				"reg.Register: %s.%s has worker/manager in AllowedRoles but no CardTypeID + ProcessName (and GlobalScope is false). "+
+					"Per-row scope check would silently skip — see issues/backend/06-med-handlers-skip-scope-check.md.",
+				h.Endpoint, h.Action))
+		}
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -142,6 +221,22 @@ func Register(h Handler) {
 		panic(fmt.Sprintf("reg.Register: duplicate handler %s.%s", h.Endpoint, h.Action))
 	}
 	handlers[k] = h
+}
+
+// needsRowScope returns true if AllowedRoles names a tier whose
+// access is scoped per-project (worker, manager). The bare role
+// gate doesn't verify scope; the dispatcher's row-level pass in
+// internal/api/authz.go does — but only when CardTypeID and
+// ProcessName are wired up. Admin is treated as conventionally
+// global; the special role tokens are pass-through.
+func needsRowScope(roles []string) bool {
+	for _, r := range roles {
+		switch r {
+		case "worker", "manager":
+			return true
+		}
+	}
+	return false
 }
 
 // Lookup fetches the handler by (endpoint, action).

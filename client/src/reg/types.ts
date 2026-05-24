@@ -194,6 +194,19 @@ export interface CardWithAttrs {
    */
   phase: 'triage' | 'active' | 'terminal';
   attributes: Record<string, unknown>;
+  /**
+   * Card row's created_at (NOT an attribute). Surfaced so list
+   * screens can render and sort by creation time without a follow-up
+   * read. ISO 8601 string. Optional on the type because in-memory
+   * test fixtures often skip it; the server always populates it on
+   * the wire.
+   */
+  created_at?: string;
+  /**
+   * Virtual: MAX(activity.created_at) for this card. Undefined when
+   * the card has no activity rows yet. ISO 8601 string when present.
+   */
+  last_activity_at?: string;
   deleted_at?: string;
   /**
    * Populated when the request set `withPersonalSort:true`. Null /
@@ -706,6 +719,19 @@ export interface CommentInsertOutput {
   comment_body_id: ID;
 }
 
+export interface CommentUpdateInput {
+  /** Id of the kind='comment' activity row whose body is being edited. */
+  activityId: ID;
+  /** New comment body text — replaces the linked comment_body row in place. */
+  body: string;
+}
+
+export interface CommentUpdateOutput {
+  ok: boolean;
+  /** Id of the audit activity row of kind='comment_edit' inserted by the server. */
+  edit_activity_id: ID;
+}
+
 // ============================================================================
 // user.select
 // ============================================================================
@@ -794,10 +820,14 @@ export interface UserCardSortSetOutput {
 // comm.create / comm.list_for_task / reply.post — Comm Gate 8 client surface.
 //
 // Mirrors `server/internal/dom/comm/comm.go`:
-//   - comm.create    { task_id, channel_id, subject?, initial_message? }
-//                    → { comm_id, thread_id }
-//   - comm.list_for_task { task_id } → { rows: CommRow[] }
-//   - reply.post     { comm_id, to, subject?, body } → { reply_id }
+//   - comm.create          { task_id, channel_id, subject?, initial_message?,
+//                            recipient_person_ids? }
+//                          → { comm_id, thread_id }
+//   - comm.list_for_task   { task_id } → { rows: CommRow[] }
+//   - comm.set_recipients  { comm_id, recipient_person_ids } → { count }
+//   - reply.post           { comm_id, body } → { reply_id }
+//   - person.upsert_by_email { email, display_name?, kind? }
+//                            → { person_id, created }
 // ============================================================================
 
 export interface CommCreateInput {
@@ -805,6 +835,12 @@ export interface CommCreateInput {
   channelId: ID;
   subject?: string;
   initialMessage?: string;
+  /**
+   * Initial participants. Each id must reference a `person` card.
+   * Persisted on the comm's `comm_recipients` attribute and used as
+   * the To: list when an operator authors a reply.
+   */
+  recipientPersonIds?: ID[];
 }
 
 export interface CommCreateOutput {
@@ -821,6 +857,10 @@ export interface CommListForTaskInput {
  *
  * `delivery_status` is a closed set:
  *   `pending` / `sent` / `bounced` / `failed` / `received`.
+ *
+ * `to` and `subject` are snapshots captured at write time — they
+ * reflect what was sent / received, not the current comm.recipients
+ * or task title (those may evolve after the reply lands).
  */
 export interface ReplyRow {
   id: ID;
@@ -835,7 +875,9 @@ export interface ReplyRow {
 /**
  * One comm card with its replies hydrated. `comm_status` is the value-card
  * id (not the status title); callers resolve titles through a status map
- * loaded separately.
+ * loaded separately. `recipients` is the current thread-level participant
+ * list (person card ids); the SMTP sender resolves them to email
+ * addresses at send time.
  */
 export interface CommRow {
   id: ID;
@@ -843,6 +885,7 @@ export interface CommRow {
   thread_id: string;
   channel_id: ID;
   comm_status: ID;
+  recipients: ID[];
   replies: ReplyRow[];
 }
 
@@ -850,15 +893,119 @@ export interface CommListForTaskOutput {
   rows: CommRow[];
 }
 
+export interface CommSetRecipientsInput {
+  commId: ID;
+  /** Replaces the entire participant list. Pass [] to clear. */
+  recipientPersonIds: ID[];
+}
+
+export interface CommSetRecipientsOutput {
+  count: number;
+}
+
 export interface ReplyPostInput {
   commId: ID;
-  to: string;
-  subject?: string;
   body: string;
+  /**
+   * Existing attachment ids on the comm's parent task to attach to
+   * the outgoing reply. Optional — empty means a body-only reply
+   * (the pre-V2 behaviour). The server validates that every id
+   * belongs to the parent task before persisting the link.
+   */
+  attachmentIds?: ID[];
 }
 
 export interface ReplyPostOutput {
   reply_id: ID;
+}
+
+/**
+ * task.move — bump a task to a different project and (optionally)
+ * re-classify it in the destination. Per-project attributes
+ * (status / milestone_ref / component_ref / tags) on the moved task
+ * are cleared in the same tx; the picked replacements land in the
+ * destination project. Sub-task strategy controls whether descendants
+ * ride along (cascade, default) or stay behind with parent_task
+ * cleared (break).
+ *
+ * Attachments come along automatically — they're keyed on card_id,
+ * not project, so nothing to specify here.
+ */
+export interface TaskMoveInput {
+  /** Task card id to move. */
+  cardId: ID;
+  /** Destination project id. */
+  newProjectId: ID;
+  /** Optional status in the destination. Omit / 0n to let the server
+   *  pick the destination project's first intake-style status. */
+  newStatusId?: ID;
+  /** Optional milestone in the destination. Omit / 0n to leave unset. */
+  newMilestoneId?: ID;
+  /** Optional component in the destination. Omit / 0n to leave unset. */
+  newComponentId?: ID;
+  /** Optional tags in the destination. */
+  newTagIds?: ID[];
+  /** 'cascade' (default) carries every parent_task descendant;
+   *  'break' leaves children behind and clears their parent_task. */
+  subtaskStrategy?: 'cascade' | 'break';
+}
+
+/**
+ * task.purge — permanently delete a task and its dependent rows
+ * (attribute_value, activity, attachment, child comms + reply
+ * bodies). The UI must gate this behind a strong confirm; the
+ * server refuses on live sub-tasks or flow_step references.
+ */
+export interface TaskPurgeInput {
+  cardId: ID;
+}
+
+export interface TaskPurgeOutput {
+  ok: boolean;
+  /** Every card id removed — the task plus any cascaded comms and
+   *  reply_body cards. */
+  purgedCardIds: ID[];
+  /** Reply_body card ids removed because their parent comm was
+   *  cascaded. */
+  purgedReplyBodyIds: ID[];
+}
+
+export interface TaskMoveOutput {
+  /** Every card whose parent_card_id changed (the task plus any
+   *  cascaded descendants). */
+  movedCardIds: ID[];
+  /** Direct children whose parent_task was cleared (break mode only). */
+  brokenChildIds: ID[];
+  /** The status the server applied — useful when the caller let the
+   *  server choose the intake default. */
+  resolvedStatusId: ID;
+}
+
+export interface PersonUpsertByEmailInput {
+  email: string;
+  /** Used as the title when a new person card is created. */
+  displayName?: string;
+  /** One of `'member'` | `'contact'`; default `'contact'`. */
+  kind?: 'member' | 'contact';
+}
+
+export interface PersonUpsertByEmailOutput {
+  person_id: ID;
+  /** True when a new person card was inserted; false on existing match. */
+  created: boolean;
+}
+
+export interface PersonCreateInput {
+  title: string;
+  email?: string;
+  /** One of 'contact' | 'assignee' | 'user'. Email is required for 'user'. */
+  tier: 'contact' | 'assignee' | 'user';
+}
+
+export interface PersonCreateOutput {
+  person_card_id: ID;
+  /** Newly inserted user_account id when tier='user'; absent otherwise. */
+  user_account_id?: ID;
 }
 
 // ============================================================================
@@ -988,6 +1135,120 @@ export interface ChannelListOutput {
   rows: ChannelRow[];
 }
 
+// ============================================================================
+// proc.search — handler-catalogue introspection. The form kernel fetches
+// every registered handler at app boot via `{all: true}` and caches the
+// JSON Schemas to drive data-bound controls. Each control declares a
+// path; the kernel reads the field's type / required / format from the
+// schema and validates against it on submit.
+// ============================================================================
+
+export interface ProcSearchInput {
+  query?: string;
+  endpoint?: string;
+  action?: string;
+  all?: boolean;
+  includeUnavailable?: boolean;
+}
+
+/** Minimal subset of JSON Schema 2020-12 the kernel consumes — mirrors
+ *  the server's mcp.Schema struct (see server/internal/mcp/schema.go). */
+export interface JSONSchema {
+  type?: 'string' | 'integer' | 'number' | 'boolean' | 'array' | 'object';
+  description?: string;
+  properties?: Record<string, JSONSchema>;
+  required?: string[];
+  items?: JSONSchema;
+  enum?: string[];
+  additionalProperties?: boolean;
+  format?: string;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  minimum?: number;
+  maximum?: number;
+}
+
+export interface HandlerDescriptor {
+  name: string;
+  endpoint: string;
+  action: string;
+  doc?: string;
+  allowed_roles?: string[];
+  input_schema?: JSONSchema;
+  output_schema?: JSONSchema;
+}
+
+export interface ProcSearchOutput {
+  handlers: HandlerDescriptor[];
+}
+
+// ============================================================================
+// Activity sink: admin-only authoring + visibility surface for
+// activity_sink cards. Mirrors the comm_channel shape — a per-project
+// card with a client_secret stored encrypted via pgcrypto, status
+// gates that reuse the channel_status / channel_fault_reason
+// attributes from the comm subsystem, and a runtime pump that pushes
+// matching activity rows to an external destination (MS Graph → Teams
+// in v1). The state row (last_activity_id pointer + last_pushed_at +
+// last_error) is surfaced via SinkRow so the admin can see how far the
+// pump has advanced and whether the last tick failed.
+// ============================================================================
+
+export interface SinkSetInput {
+  /** Existing sink card id; 0 / undefined inserts a new sink. */
+  id?: ID;
+  projectId: ID;
+  name: string;
+  /** v1: 'msgraph_teams'. */
+  sinkKind: string;
+  msgraphTenantId?: string;
+  msgraphClientId?: string;
+  /** Omit to leave the stored secret unchanged on update. */
+  msgraphClientSecret?: string;
+  msgraphTeamId?: string;
+  msgraphChannelId?: string;
+  /** JSON predicate. Empty string clears the stored filter. */
+  activityFilter?: string;
+  /** Tri-state status. Same semantics as ChannelStatus on a comm_channel. */
+  channelStatus?: ChannelStatus;
+}
+
+export interface SinkSetOutput {
+  sink_id: ID;
+}
+
+export interface SinkListInput {
+  projectId: ID;
+}
+
+export interface SinkRow {
+  id: ID;
+  name: string;
+  sink_kind: string;
+  msgraph_tenant_id: string;
+  msgraph_client_id: string;
+  msgraph_team_id: string;
+  msgraph_channel_id: string;
+  activity_filter: string;
+  channel_status: ChannelStatus;
+  channel_fault_reason: string;
+  has_client_secret: boolean;
+  /** Largest activity.id this sink has pushed; 0 when never pushed. */
+  last_activity_id: ID;
+  /** RFC3339 timestamp of the most recent successful push; empty when never pushed. */
+  last_pushed_at: string;
+  /** Cumulative number of rows the pump has pushed downstream. */
+  last_pushed_count: ID;
+  /** Most recent push error from the pump; cleared on next success. */
+  last_error: string;
+  created_at: string;
+}
+
+export interface SinkListOutput {
+  rows: SinkRow[];
+}
+
 export interface CommLogListInput {
   projectId: ID;
   /** One of the eight CommLogKind values; empty / undefined = no filter. */
@@ -1036,7 +1297,23 @@ export interface UserListWithRolesRow {
   display_name: string;
   email?: string;
   oidc_sub?: string;
+  /**
+   * Linked person card id when this user_account is associated with
+   * a person card (the "User" tier). Absent for login-only accounts
+   * and for agents (agents never carry a person link by design).
+   */
+  person_card_id?: ID;
   roles: RoleAssignmentRow[];
+}
+
+export interface UserUnlinkPersonInput {
+  /** user_account row whose user_account_person link to delete. */
+  userAccountId: ID;
+}
+
+export interface UserUnlinkPersonOutput {
+  /** True when a row was removed; false when the link was already absent. */
+  deleted: boolean;
 }
 
 export interface UserListWithRolesOutput {
@@ -1091,6 +1368,19 @@ export interface UserRoleRevokeInput {
 export interface UserRoleRevokeOutput {
   ok: boolean;
   deleted: number;
+}
+
+export interface UserRoleListInput {
+  userId: ID;
+}
+
+export interface UserRoleListRow {
+  role_name: string;
+  scope_project_id?: ID;
+}
+
+export interface UserRoleListOutput {
+  rows: UserRoleListRow[];
 }
 
 // ============================================================================

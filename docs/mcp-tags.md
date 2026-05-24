@@ -1,12 +1,15 @@
-# kitp MCP Tag Schema (v1, locked)
+# kitp MCP Tag Schema (v2, locked)
 
 This document describes the struct-tag schema kitp's MCP auto-publish
 (`internal/mcp`) reads off handler input/output types to generate JSON
-Schemas for MCP tools (Phase 19, REQUIREMENTS §3.5).
+Schemas for MCP tools (Phase 19, REQUIREMENTS §3.5) and for the
+client-side data-bound form kernel that consumes the same catalogue
+via the `meta.handlers` HTTP endpoint.
 
-The schema is versioned. **v1 is locked**: tag keys, tag values, and the
-JSON Schema mapping below are stable for v1. Adding new tag keys later
-must keep the v1 keys interpreted unchanged.
+The schema is versioned. **v2 is locked**: tag keys, tag values, and
+the JSON Schema mapping below are stable for v2. v1 readers
+(pre-v2) still parse v1 tags (`desc`, `required`, `enum`) unchanged —
+v2 only adds new keys, never reinterprets existing ones.
 
 ## Locked tag keys (v1)
 
@@ -27,9 +30,16 @@ Recognised keys:
 | `desc`     | input + output      | Human-readable description copied to JSON Schema `description`. **Greedy**: `desc=` consumes the entire remainder of the tag (so commas, parentheses, and slashes inside the description are fine). Always put `desc=` last. |
 | `required` | input only          | Marks the field as required in the generated `required` array. Boolean flag (no value). |
 | `enum`     | input only          | Pipe-separated list of allowed string values, e.g. `enum=ASC|DESC`. Mapped to JSON Schema `enum`. |
+| `format`   | input + output (v2) | Token copied to JSON Schema `format`. Common values: `email`, `url`, `uuid`, `date`, `date-time`, `json`. Drives client form-kernel validation + native HTML input `type=` selection. |
+| `minlen`   | input only (v2)     | Integer, mapped to JSON Schema `minLength` on string fields. |
+| `maxlen`   | input only (v2)     | Integer, mapped to JSON Schema `maxLength` on string fields. |
+| `pattern`  | input only (v2)     | Regex string, mapped to JSON Schema `pattern`. Cannot contain commas (the tag parser splits on commas); use character classes if needed. |
+| `min`      | input only (v2)     | Number, mapped to JSON Schema `minimum` on integer/number fields. |
+| `max`      | input only (v2)     | Number, mapped to JSON Schema `maximum` on integer/number fields. |
 
-Tag-key ordering: `required` and `enum` come before `desc=`. The
-canonical layout is `mcp:"required,enum=A|B,desc=human readable text"`.
+Tag-key ordering: structural keys (`required`, `enum`, `format`,
+`minlen`, `maxlen`, `min`, `max`, `pattern`) come before `desc=`. The
+canonical layout is `mcp:"required,maxlen=200,format=email,desc=human readable text"`.
 
 Other keys are reserved and may be added in future tag schema versions.
 
@@ -97,8 +107,11 @@ collide on the MCP side.
 ## Versioning policy
 
 * v1 tag keys (`desc`, `required`, `enum`) and the type mapping above
-  are frozen for all of v1.
-* Adding a new tag key in a v2 schema bump must keep v1-only readers
-  parsing v1 tags unchanged.
+  are frozen — v2 only ADDS keys.
+* v2 adds `format`, `minlen`, `maxlen`, `pattern`, `min`, `max`. v1
+  readers ignoring unknown keys still produce valid (less-rich) JSON
+  Schema.
+* Adding new tag keys in a future bump must keep prior readers
+  parsing existing tags unchanged.
 * Removing a tag key is a backwards-incompatible change and requires a
   schema-version bump.

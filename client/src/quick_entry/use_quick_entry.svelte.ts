@@ -18,6 +18,7 @@
  * ```
  */
 
+import type { FilterAttribute } from '../filter/attribute_schema.svelte.js';
 import { useShortcut } from '../keys/shortcut.js';
 import type { ShortcutScope } from '../keys/scopes.js';
 import type { CardWithAttrs, ID } from '../reg/types.js';
@@ -44,6 +45,21 @@ export interface UseQuickEntryOptions {
   screenCard?: CardWithAttrs | null | (() => CardWithAttrs | null);
   flow?: FlowRow | null | (() => FlowRow | null);
   candidateStatuses?: CardWithAttrs[] | (() => CardWithAttrs[]);
+  /**
+   * Attribute palette feeding the "+ Add field" picker in the
+   * expanded dialog. Same FilterAttribute shape the FilterBar / Advanced
+   * editor consume, so screens that already build a palette can pass it
+   * straight through. Provided as a getter so async-loaded palette
+   * entries become visible mid-session without rebuilding the rune.
+   */
+  attributePalette?: FilterAttribute[] | (() => FilterAttribute[]);
+  /**
+   * Available tag cards, surfaced as a multi-select in the dialog's
+   * "More details" section. Each option is `{value: tagCardId, label: path}`.
+   * Getter form keeps the list reactive to the screen's per-project
+   * tag fetch.
+   */
+  tagOptions?: { value: ID; label: string }[] | (() => { value: ID; label: string }[]);
   onCreated?: (id: ID) => void;
 }
 
@@ -64,6 +80,10 @@ export interface UseQuickEntryProps {
   flow?: FlowRow | null;
   /** Resolved (not a getter) — the rune unwraps any function form. */
   candidateStatuses?: CardWithAttrs[];
+  /** Resolved (not a getter) — the rune unwraps any function form. */
+  attributePalette?: FilterAttribute[];
+  /** Resolved (not a getter) — the rune unwraps any function form. */
+  tagOptions?: { value: ID; label: string }[];
   onCreated?: (id: ID) => void;
   onClose: () => void;
 }
@@ -127,6 +147,16 @@ export function useQuickEntry(opts: UseQuickEntryOptions): UseQuickEntry {
         p.candidateStatuses = typeof opts.candidateStatuses === 'function'
           ? (opts.candidateStatuses as () => CardWithAttrs[])()
           : opts.candidateStatuses;
+      }
+      if (opts.attributePalette !== undefined) {
+        p.attributePalette = typeof opts.attributePalette === 'function'
+          ? (opts.attributePalette as () => FilterAttribute[])()
+          : opts.attributePalette;
+      }
+      if (opts.tagOptions !== undefined) {
+        p.tagOptions = typeof opts.tagOptions === 'function'
+          ? (opts.tagOptions as () => { value: ID; label: string }[])()
+          : opts.tagOptions;
       }
       if (opts.onCreated !== undefined) p.onCreated = opts.onCreated;
       return p;

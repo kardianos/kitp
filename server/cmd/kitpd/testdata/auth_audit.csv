@@ -1,0 +1,86 @@
+kind,tier,pattern,endpoint_action,roles,doc
+dispatcher,,,activity.select,$authenticated,Read paged activity for one card in chronological order; comments include their body inline.
+dispatcher,,,activity_sink.list,admin,"Admin-only: list activity_sink cards under a project, joined with activity_sink_secret (so has_client_secret reflects storage without exposing the encrypted bytes) and activity_sink_state (last_activity_id pointer + last_pushed_at + last_error from the pump)."
+dispatcher,,,activity_sink.set,admin,Admin-only: create or update an activity_sink card (id=0 to insert) plus its paired activity_sink_secret row holding the pgcrypto-encrypted client_secret. Password-style fields are optional on update — omitted leaves the stored value unchanged.
+dispatcher,,,agent.create,$authenticated,"Create an agent owned by the calling user. Inserts a user_account row (is_agent=true, parent_user_id=actor). Agents are NOT assignable through the assignee picker; the parent routes tasks to them via user_card_agent.set. Rejects when the actor is itself an agent."
+dispatcher,,,agent.delete,$authenticated,"Delete an agent owned by the calling user (or by any admin). Cascades sessions, tokens, and user_card_agent rows. Rejects when the actor is itself an agent."
+dispatcher,,,attachment.create,admin;manager;worker,Link an existing file (created via file.create) to a card. Inserts the attachment row + an attachment_create activity in one tx.
+dispatcher,,,attachment.delete,admin;manager;worker,Soft-delete an attachment. The file + chunks linger until the CAS reaper sweeps them.
+dispatcher,,,attachment.list,$authenticated,"List active attachments for a card, newest first."
+dispatcher,,,attribute.update,admin;manager;worker,Set an attribute value on a card; emits one activity row and one upsert per write.
+dispatcher,,,attribute_def.insert,admin,"Admin-only: insert a new attribute_def with optional initial edges, in one tx."
+dispatcher,,,attribute_def.select,$authenticated,List every attribute_def with the card_types it is bound to via edge.
+dispatcher,,,card.delete,admin;manager;worker,Soft-delete a card; the row is hidden from default selects but kept for activity history.
+dispatcher,,,card.insert,admin;manager;worker,"Insert a new card with the given card_type, optional parent, and initial title plus attributes."
+dispatcher,,,card.move,admin;manager;worker,Re-parent a card under a different parent of a compatible card_type.
+dispatcher,,,card.search,$authenticated,"Lightweight typeahead read for ref:* picker dropdowns. Returns (id, title) of cards in card_type_name that match query (substring) and/or ids."
+dispatcher,,,card.select,$authenticated,List cards filtered by optional parent and card_type; soft-deleted rows are excluded.
+dispatcher,,,card.select_with_attributes,$authenticated,Select cards plus their full attribute set in one round-trip; supports filters and ordering for grids and kanbans.
+dispatcher,,,card.set_phase,admin;manager;worker,Set the structural phase column on a value-card (triage|active|terminal); emits an activity row recording the change.
+dispatcher,,,card.undelete,admin;manager;worker,Undo a previous soft-delete by clearing deleted_at on the card.
+dispatcher,,,card_type.select,$authenticated,List every card_type row known to the server (built-in types are seeded via migration).
+dispatcher,,,cas.missing_chunks,admin;manager;worker,"Given a list of cas_blob addresses, return the subset NOT currently stored. Used by the client as an upload pre-flight: bytes for the missing addresses are POSTed to /api/v1/cas/chunk; everything else is skipped."
+dispatcher,,,comm.create,admin,"Admin-only: create a comm card under a task. Generates a 10-char alphanumeric thread_id, sets channel_ref + comm_status (the project's comm flow default_create_status_id), appends the new comm to the task's comms attribute, and (when initial_message is provided) creates a received-direction reply_body row."
+dispatcher,,,comm.list_for_task,$authenticated,"Return every comm card under the task, hydrated with its replies (reply_body cards listed in the comm's replies attribute). Read-side affordance for the task detail screen; any authenticated user may call."
+dispatcher,,,comm.set_recipients,admin;manager;worker,Replace the comm_recipients participant list on a comm card. Pass an empty array to clear. Each id must reference a person card. Authz: worker / manager / admin (matches the manager grant on comm).
+dispatcher,,,comm_channel.list,admin,"Admin-only: list comm_channel cards configured under a project, joined with their comm_secret row so has_imap_password / has_smtp_password indicate which passwords have been set without exposing the encrypted bytes."
+dispatcher,,,comm_channel.set,admin,Admin-only: create or update a comm_channel card (id=0 to insert) plus its paired comm_secret row holding pgcrypto-encrypted IMAP + SMTP passwords. Password fields are optional on update; omitted passwords leave the stored value unchanged.
+dispatcher,,,comm_log.list,admin,"Admin-only: paginated read of comm_log rows for a project, optionally filtered by kind and a since timestamp (defaults to last 24h)."
+dispatcher,,,comment.insert,admin;manager;worker,Post a comment on a card; writes one comment_body row and one activity row of kind=comment.
+dispatcher,,,comment.update,admin;manager;worker,Edit the body of an existing comment. Updates the linked comment_body row in place and inserts a new activity row of kind='comment_edit' for the audit trail. Only the original author may edit.
+dispatcher,,,config.get,$authenticated,Return server-driven configuration values the client needs (e.g. attachment size caps).
+dispatcher,,,echo.ping,$public,Echo the input back unchanged; used to smoke-test the dispatcher.
+dispatcher,,,edge.delete,admin,Admin-only: unbind an attribute_def from a card_type. Refuses with usage_count if any attribute_value rows reference it.
+dispatcher,,,edge.insert,admin,Admin-only: bind an existing attribute_def to a card_type. Idempotent (re-binding is a no-op).
+dispatcher,,,file.create,admin;manager;worker,Insert a logical file (filename + size + mime + chunk list) from a chunk list previously uploaded via POST /api/v1/cas/chunk.
+dispatcher,,,flow.delete,admin,"Admin-only: delete one flow row. Refuses with code='flow_disallowed' and a {blockers[], count} payload when any flow_step row still references the flow; admins must clear steps first."
+dispatcher,,,flow.list,$authenticated,"List flow rows, optionally filtered by scope_card_id (project) and / or attribute_def_id. Available to any authenticated user."
+dispatcher,,,flow.preview_delete,admin,"Admin-only: dry-run preview for flow.delete. Returns step count, affected-task counts (total + phase breakdown), and up to 5 sample step labels so the admin dialog can show consequences before the destructive call (V16)."
+dispatcher,,,flow.set,admin,Admin-only: upsert one flow row (per-project state machine on an attribute_def). id=0 inserts; id>0 updates by id.
+dispatcher,,,flow_step.delete,admin,Admin-only: delete one flow_step row by id.
+dispatcher,,,flow_step.list,$authenticated,"List flow_step rows for one flow, joined to the optional requires_role name. Sorted by sort_order then label."
+dispatcher,,,flow_step.list_for_card,$authenticated,"Read-side affordance API: return every flow_step the given card may currently fire — one row per (flow, attribute_def, from_card_id=card's value) match — pre-joined with from/to titles + phases, optional requires_role name, and a per-actor allowed bit. Gate 5's attribute.update rejection envelope reuses the same query."
+dispatcher,,,flow_step.set,admin,"Admin-only: upsert one flow_step row. id=0 inserts; id>0 updates by id. Without id, the (flow_id, from_card_id, to_card_id, label) unique key rejects duplicates."
+dispatcher,,,help.get_screen,$authenticated,Compose per-screen help: layout primer + plain-English description of the default filter.
+dispatcher,,,help.get_topic,$authenticated,"Return the authored markdown for a named help topic (admin.screens, layout.kanban, ...)."
+dispatcher,,,person.create,admin,"Create a new person card with the given title, optional email, and tier ('contact' | 'assignee' | 'user'). When tier='user' a user_account row is also created (oidc_sub NULL — attached on first sign-in) and linked via user_account_person. Admin-only."
+dispatcher,,,person.upsert_by_email,admin;manager;worker,"Find a person card by case-insensitive email match, or create a new global person card with the supplied display name + email + kind. Used by the comm recipient picker (kind='contact') so typing a fresh email materialises a contact card in one round trip. Authz: worker / manager / admin."
+dispatcher,,,proc.search,$authenticated,"Search the registered handler catalogue. Defaults to handlers the caller can actually invoke; pass include_unavailable=true to see every match regardless of role. Combine with {all:true} or {query, endpoint, action} filters."
+dispatcher,,,project.stamp,admin;manager;worker,"Create a fresh project by graph-copying a template project's value cards, screens, filters, flows, and flow_steps with ID remapping. Tasks, comments, activity, and per-user state are not copied (FLOW_AND_SCREEN_KERNEL §Project templates / Gate 10)."
+dispatcher,,,reply.post,admin;manager;worker,"Author an outbound reply on a comm. Inserts a reply_body card with delivery_status='pending', inherits reply_from from the comm's channel from_address attribute, and appends the new id to the comm's replies attribute. The SMTP sender (Gate 5) picks up pending rows on its next tick. worker / manager / admin may author."
+dispatcher,,,role.list,$authenticated,"List every role and its granted (card_type, process) pairs. The admin UI uses this to populate the role picker."
+dispatcher,,,role_mapping.delete,admin,Admin-only: delete one role_mapping row by claim_value.
+dispatcher,,,role_mapping.list,admin,List every role_mapping row (claim value -> role).
+dispatcher,,,role_mapping.set,admin,Admin-only: upsert one role_mapping row.
+dispatcher,,,tag.apply,admin;manager;worker,Apply a tag card to a target card; mutually-exclusive sibling tags at the same root are removed atomically.
+dispatcher,,,tag.remove,admin;manager;worker,Remove a tag card from a target card.
+dispatcher,,,task.move,admin;manager;worker,"Bump a task (and optionally its sub-tree) to a different project, clearing per-project classification so the user re-classifies in the destination."
+dispatcher,,,task.purge,admin;manager;worker,Permanently delete a task (and its comms / reply_bodies / attachments / activity). Refuses when live sub-tasks or flow references exist. UI must gate this behind a strong confirm.
+dispatcher,,,user.list_with_roles,admin,List every user_account row with role assignments and resolved project titles for scoped grants. Used by the admin UI.
+dispatcher,,,user.select,$authenticated,List every user_account row sorted by display_name.
+dispatcher,,,user.unlink_person,admin,"Delete the user_account_person link between a user_account row and a person card. The user_account row itself stays — they can still sign in, they just no longer correspond to an assignable person card (demotes 'user' tier to 'login-only'). Idempotent: deleting an absent link succeeds with deleted=false."
+dispatcher,,,user_card_agent.clear,admin;manager;worker,Remove the calling user's routing for one card. Idempotent.
+dispatcher,,,user_card_agent.list,$authenticated,"List the calling user's routings, optionally scoped to one parent (e.g. a project)."
+dispatcher,,,user_card_agent.set,admin;manager;worker,"Route a card to one of the calling user's agents. Upsert keyed on (actor, card). The agent_user_id must be an agent owned by the calling user."
+dispatcher,,,user_card_sort.set,admin;manager;worker,Upsert the calling user's personal sort_order for one card. Used by the inbox drag-drop reorder; per-user ordering is independent of the global sort_order attribute.
+dispatcher,,,user_role.list,$authenticated,List role grants held by one user. Anyone authenticated may query themselves; the parent of an agent may query that agent; admins may query anyone.
+dispatcher,,,user_role.revoke,$authenticated,Revoke a role from a user (with matching scope). Admin-only EXCEPT when the target is an agent — then the agent's parent_user_id may also revoke.
+dispatcher,,,user_role.set,$authenticated,"Grant a role to a user, optionally scoped to a project. Admin-only EXCEPT when the target is an agent — then the agent's parent_user_id may also grant any non-admin role they hold themselves. Coalesces N inputs into one upsert statement."
+dispatcher,,,user_token.create,$authenticated,"Mint an opaque bearer token bound to user_id. The plaintext value is returned ONCE in the response — store it immediately. Authz: caller is the target's parent_user_id, or a global admin."
+dispatcher,,,user_token.list,$authenticated,"List every token bound to user_id (label + timestamps; the secret value is never returned). Authz: caller is the target's parent_user_id, or a global admin."
+dispatcher,,,user_token.revoke,$authenticated,"Revoke one token by (user_id, label). Idempotent. Authz: caller is the target's parent_user_id, or a global admin."
+http_route,authed,GET /api/v1/attachment/{id}/download,,,
+http_route,authed,GET /api/v1/attachment/{id}/thumb,,,
+http_route,authed,GET /api/v1/attachment/{id}/view,,,
+http_route,authed,GET /api/v1/project/{id}/export.csv,,,
+http_route,authed,GET /api/v1/project/{id}/export.xlsx,,,
+http_route,authed,GET /api/v1/project/{id}/export.zip,,,
+http_route,authed,POST /api/v1/auth/dev-impersonate,,,
+http_route,authed,POST /api/v1/batch,,,
+http_route,authed,POST /api/v1/cas/chunk,,,
+http_route,bearer,POST /api/v1/mcp,,,
+http_route,public,GET /api/v1/auth/me,,,
+http_route,public,GET /api/v1/auth/oidc/callback,,,
+http_route,public,GET /api/v1/auth/oidc/start,,,
+http_route,public,POST /api/v1/auth/dev-login,,,
+http_route,public,POST /api/v1/auth/logout,,,

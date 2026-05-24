@@ -11,7 +11,6 @@ import (
 	_ "image/gif"  // register GIF decoder
 	"image/jpeg"
 	_ "image/png" // register PNG decoder
-	"io"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -104,21 +103,12 @@ func generateThumb(
 		return 0, fmt.Errorf("thumb: source file %d has no chunks", srcFileID)
 	}
 
-	// 2. Concatenate every chunk into one buffer. image.Decode needs
-	//    the whole stream in memory anyway; for the size cap (~250 MB
-	//    by default) this is the same memory budget the download path
-	//    already runs at.
+	// 2. Concatenate every chunk into one buffer via a single
+	//    cas.GetAll. image.Decode needs the whole stream in memory
+	//    anyway; the size cap (~250 MB) bounds the buffer.
 	var raw bytes.Buffer
-	for _, a := range addrs {
-		rc, err := storage.Get(ctx, a)
-		if err != nil {
-			return 0, fmt.Errorf("thumb: cas get %s: %w", a, err)
-		}
-		_, err = io.Copy(&raw, rc)
-		rc.Close()
-		if err != nil {
-			return 0, fmt.Errorf("thumb: cas read %s: %w", a, err)
-		}
+	if err := storage.GetAll(ctx, addrs, &raw); err != nil {
+		return 0, fmt.Errorf("thumb: cas get_all: %w", err)
 	}
 
 	src, _, err := image.Decode(&raw)

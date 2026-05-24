@@ -22,7 +22,7 @@ describe('layout body imports (post-rename)', () => {
     { name: 'InboxLayout', path: '../../src/screens/InboxLayout.svelte' },
     { name: 'GridLayout', path: '../../src/screens/GridLayout.svelte' },
     { name: 'KanbanLayout', path: '../../src/screens/KanbanLayout.svelte' },
-    { name: 'PairLayout', path: '../../src/screens/PairLayout.svelte' },
+    { name: 'ProjectLayout', path: '../../src/screens/ProjectLayout.svelte' },
   ])('$name loads', async ({ path }) => {
     const m = await import(path);
     expect(m.default).toBeDefined();

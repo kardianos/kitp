@@ -20,9 +20,17 @@
   import Combobox from '../ui/Combobox.svelte';
   import DatePicker from '../ui/DatePicker.svelte';
   import type { FilterAttribute } from './attribute_schema.svelte.js';
+  import type { Op } from './predicate.js';
 
   interface Props {
     attribute: FilterAttribute;
+    /**
+     * Predicate op the leaf carries. Most ops let the attribute's
+     * value_type drive the input; `withinDays` is the exception — it
+     * needs a number even when the attribute is `date`, since the
+     * value is a day count, not a calendar date.
+     */
+    op?: Op;
     value: unknown;
     multiple?: boolean;
     onchange?: (v: unknown) => void;
@@ -40,6 +48,7 @@
 
   let {
     attribute,
+    op,
     value = $bindable(),
     multiple = false,
     onchange,
@@ -81,7 +90,32 @@
   const comboOptions = $derived.by(() => attribute.options ?? []);
 </script>
 
-{#if attribute.valueType === 'text'}
+{#if op === 'withinDays'}
+  <!-- Day-count input for the within-days op. Overrides the
+       attribute's value_type because the leaf value is a number of
+       days, not a calendar date. Negative values are rejected
+       server-side; this UI clamps at 0. -->
+  <input
+    type="number"
+    min="0"
+    aria-label={attribute.label}
+    value={asInputString(value)}
+    class="h-9 w-full rounded-md border border-border bg-bg px-2.5 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    oninput={(e) => {
+      const raw = (e.currentTarget as HTMLInputElement).value;
+      if (raw === '') {
+        emit(null);
+        return;
+      }
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) {
+        emit(null);
+        return;
+      }
+      emit(Math.floor(n));
+    }}
+  />
+{:else if attribute.valueType === 'text'}
   <input
     type="text"
     aria-label={attribute.label}

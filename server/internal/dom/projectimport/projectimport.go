@@ -1,47 +1,61 @@
 // Package projectimport implements the wizard-driven CSV import
 // (phase 5 of docs/PROJECT_PORTABILITY_PLAN.md). The wizard is five
-// steps; this phase ships everything up to and including the dry-run
-// preview — the commit step lands separately.
+// steps; the four batch handlers below cover upload + set_mapping +
+// preview + commit.
 //
 // Steps and handlers:
 //
-//	1. (UI only)              Pick existing project.
-//	2. project.import.upload  Multipart-uploaded CSV is now stored as a
-//	                          `file` row. Create import_job and return
-//	                          (job_id, headers, preview_rows).
-//	3. project.import.set_mapping  Persist the per-column wire shape
-//	                               header → target_attr | "_ignore_".
-//	4. project.import.preview Dry-run. Apply mapping + resolution to
-//	                          every row, return would_create counts
-//	                          and a per-row error log.
-//	5. project.import.commit  (out of scope for phase 5).
+//  1. (UI only)              Pick existing project.
+//  2. project.import.upload  Multipart-uploaded CSV is now stored as a
+//     `file` row. Create import_job and return
+//     (job_id, headers, preview_rows).
+//  3. project.import.set_mapping  Persist the per-column wire shape
+//     header → target_attr | "_ignore_".
+//  4. project.import.preview Dry-run. Apply mapping + resolution to
+//     every row, return would_create counts
+//     and a per-row error log.
+//  5. project.import.commit  Apply the import irrevocably.
+//
+// All four are unified handlers (docs/UNIFIED_HANDLER_PLAN.md Phase 4):
+// each is a thin Go wrapper around a PL/pgSQL function whose body
+// lives in `db/schema/functions/project_import_*_batch.sql`. CSV
+// parsing remains on the Go side via a `PreRun` hook that runs inside
+// the dispatcher's tx — encoding/csv handles quoting + ragged rows
+// cleanly, and porting that to PL/pgSQL adds risk without benefit.
+// The hook reads file bytes by file_id, parses the CSV, and injects
+// the structured `_parsed_header` / `_parsed_rows` / `_parsed_preview_rows`
+// / `_parsed_row_count` fields into each input so the SQL function
+// walks JSON arrays instead of bytes.
 //
 // Authz: each handler verifies the user has card.update grant on the
-// target project (manager / admin / system roles in v1).
+// target project (manager / admin / system roles in v1) via the
+// standard CardTypeID + ProcessName route.
 package projectimport
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/cas"
 	"github.com/kitp/kitp/server/internal/reg"
+	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
 // ImportConfig threads the CAS storage through the package. Register
-// stores it for preview.go to read CSV bytes by file_id.
+// stores it for the preview / commit hooks to read CSV bytes by
+// file_id without standing up a separate channel.
 type ImportConfig struct {
 	Pool    *store.Pool
 	Storage *cas.Storage
 }
 
-// pkg holds the singletons each handler needs. The "set once at
+// pkg holds the singletons the PreRun hooks need. The "set once at
 // Register, read in handlers" pattern matches what attachment does
 // with SetThumbDeps; routing the storage through the registry would
 // otherwise require a wide handler-signature change.
@@ -61,8 +75,11 @@ func Register(cfg ImportConfig) {
 		Doc:          "Begin a CSV import: create the job row, parse the header + first 20 rows for preview.",
 		InputType:    reflect.TypeFor[UploadInput](),
 		OutputType:   reflect.TypeFor[UploadOutput](),
-		AllowedRoles: []string{"manager", "admin"},
-		Run:          runUpload(cfg.Pool),
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		ProcessName:  "card.update",
+		CardTypeID:   cardTypeFromUploadInput,
+		SQLFunc:      "project_import_upload_batch",
+		PreRun:       preRunUpload,
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "project.import",
@@ -70,8 +87,10 @@ func Register(cfg ImportConfig) {
 		Doc:          "Persist the column→attribute mapping for a job; transitions status to 'mapped'.",
 		InputType:    reflect.TypeFor[SetMappingInput](),
 		OutputType:   reflect.TypeFor[SetMappingOutput](),
-		AllowedRoles: []string{"manager", "admin"},
-		Run:          runSetMapping(cfg.Pool),
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		ProcessName:  "card.update",
+		CardTypeID:   cardTypeFromJobID(func(in any) int64 { return in.(SetMappingInput).JobID }),
+		SQLFunc:      "project_import_set_mapping_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "project.import",
@@ -79,8 +98,12 @@ func Register(cfg ImportConfig) {
 		Doc:          "Dry-run the import: returns would_create counts and a per-row error log; persists the resolution.",
 		InputType:    reflect.TypeFor[PreviewInput](),
 		OutputType:   reflect.TypeFor[PreviewOutput](),
-		AllowedRoles: []string{"manager", "admin"},
-		Run:          runPreview(cfg.Pool),
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		ProcessName:  "card.update",
+		CardTypeID:   cardTypeFromJobID(func(in any) int64 { return in.(PreviewInput).JobID }),
+		Timeout:      60 * time.Second, // scans every row of the CSV; per S1
+		SQLFunc:      "project_import_preview_batch",
+		PreRun:       preRunPreview,
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "project.import",
@@ -88,9 +111,46 @@ func Register(cfg ImportConfig) {
 		Doc:          "Run the import in one transaction: auto-create persons / milestones / components / tags as configured, insert every task, mark the job 'completed'. Idempotent via the standard Idempotency-Key middleware.",
 		InputType:    reflect.TypeFor[CommitInput](),
 		OutputType:   reflect.TypeFor[CommitOutput](),
-		AllowedRoles: []string{"manager", "admin"},
-		Run:          runCommit(cfg.Pool),
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		ProcessName:  "card.update",
+		CardTypeID:   cardTypeFromJobID(func(in any) int64 { return in.(CommitInput).JobID }),
+		Timeout:      60 * time.Second, // bulk insert path; per S1
+		SQLFunc:      "project_import_commit_batch",
+		PreRun:       preRunCommit,
 	})
+}
+
+// cardTypeFromUploadInput resolves the target project's card_type so
+// the dispatcher can scope-check the actor's `card.update` grant on
+// that project.
+func cardTypeFromUploadInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+	return schema.CardTypeIDByCardID(ctx, pool, raw.(UploadInput).ProjectID)
+}
+
+// cardTypeFromJobID returns an extractor that walks import_job.id →
+// project_id → card.card_type_id. set_mapping / preview / commit
+// only carry a job_id; resolve the project transitively so authz
+// matches the actor's scoped grant on the same project upload was
+// authorised for. Returns 0 (skip authz) on a missing job — the
+// handler's own validation surfaces the proper not-found error.
+func cardTypeFromJobID(jobIDOf func(any) int64) func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+	return func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+		jobID := jobIDOf(raw)
+		var cardTypeID int64
+		err := pool.QueryRow(ctx, `
+			SELECT c.card_type_id
+			FROM import_job j
+			JOIN card c ON c.id = j.project_id
+			WHERE j.id = $1
+		`, jobID).Scan(&cardTypeID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return 0, nil
+			}
+			return 0, fmt.Errorf("project.import: card_type lookup: %w", err)
+		}
+		return cardTypeID, nil
+	}
 }
 
 /* -------------------------------------------------------------------------- */
@@ -164,11 +224,11 @@ type PreviewError struct {
 
 // PreviewOutput is the dry-run summary.
 type PreviewOutput struct {
-	WouldCreate    WouldCreate    `json:"would_create"`
-	Errors         []PreviewError `json:"errors"`
-	SkippedRows    int            `json:"skipped_rows"`
-	ProcessedRows  int            `json:"processed_rows"`
-	Status         string         `json:"status"`
+	WouldCreate   WouldCreate    `json:"would_create"`
+	Errors        []PreviewError `json:"errors"`
+	SkippedRows   int            `json:"skipped_rows"`
+	ProcessedRows int            `json:"processed_rows"`
+	Status        string         `json:"status"`
 }
 
 // CommitInput triggers the irrevocable import. The handler reads the
@@ -183,11 +243,11 @@ type CommitInput struct {
 // (not 'would'); status is 'completed' on success, 'failed' if the
 // transaction rolled back.
 type CommitOutput struct {
-	Created    WouldCreate    `json:"created"`
-	Errors     []PreviewError `json:"errors"`
-	Status     string         `json:"status"`
-	SkippedRows   int         `json:"skipped_rows"`
-	ProcessedRows int         `json:"processed_rows"`
+	Created       WouldCreate    `json:"created"`
+	Errors        []PreviewError `json:"errors"`
+	Status        string         `json:"status"`
+	SkippedRows   int            `json:"skipped_rows"`
+	ProcessedRows int            `json:"processed_rows"`
 }
 
 /* -------------------------------------------------------------------------- */
@@ -203,129 +263,155 @@ const (
 	IgnoreColumnSentinel = "_ignore_"
 )
 
-func validResolutionMode(s string, allowAutoCreate, allowLeaveBlank bool) bool {
-	switch s {
-	case ModeMatchExisting, ModeSkip:
-		return true
-	case ModeAutoCreate:
-		return allowAutoCreate
-	case ModeLeaveBlank:
-		return allowLeaveBlank
-	default:
-		return false
+/* -------------------------------------------------------------------------- */
+/* PreRun hooks: CSV parse + augment inputs                                   */
+/* -------------------------------------------------------------------------- */
+
+// preRunUpload reads the CSV bytes referenced by FileID, parses the
+// header + first 20 data rows + total row count, and returns a slice
+// of pre-augmented maps that the dispatcher marshals straight to the
+// SQL function. The choice of `map[string]any` over a typed struct
+// keeps the SQL contract decoupled from Go's exported field shape:
+// the function reads from `_parsed_*` keys that don't appear on
+// UploadInput, so wrapping each input in a generic map is the
+// cleanest way to fit through the `[]any` channel.
+func preRunUpload(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+	out := make([]any, len(ins))
+	for i, raw := range ins {
+		in := raw.(UploadInput)
+		if in.ProjectID == 0 || in.FileID == 0 {
+			// Let the SQL function emit the canonical validation error;
+			// pass an empty parse so the function still has the keys.
+			out[i] = map[string]any{
+				"project_id":           formatInt64(in.ProjectID),
+				"file_id":              formatInt64(in.FileID),
+				"_parsed_headers":      []string{},
+				"_parsed_preview_rows": [][]string{},
+				"_parsed_row_count":    0,
+			}
+			continue
+		}
+		body, err := readFileBytes(ctx, tx, in.FileID)
+		if err != nil {
+			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_read", Message: err.Error()}
+		}
+		parsed, err := parseCSVPreview(body, 20)
+		if err != nil {
+			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: err.Error()}
+		}
+		out[i] = map[string]any{
+			"project_id":           formatInt64(in.ProjectID),
+			"file_id":              formatInt64(in.FileID),
+			"_parsed_headers":      parsed.Headers,
+			"_parsed_preview_rows": parsed.PreviewRows,
+			"_parsed_row_count":    parsed.RowCount,
+		}
 	}
+	return out, nil
 }
 
-/* -------------------------------------------------------------------------- */
-/* upload                                                                     */
-/* -------------------------------------------------------------------------- */
-
-func runUpload(p *store.Pool) func(context.Context, pgx.Tx, []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(UploadInput)
-			if in.ProjectID == 0 || in.FileID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "project.import.upload: project_id and file_id are required"}
+// preRunPreview reads the CSV bytes + parses every row (no preview
+// truncation), then augments the input. The PL/pgSQL function walks
+// `_parsed_header` + `_parsed_rows` directly.
+func preRunPreview(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+	out := make([]any, len(ins))
+	for i, raw := range ins {
+		in := raw.(PreviewInput)
+		if in.JobID == 0 {
+			// Let SQL handle validation.
+			out[i] = map[string]any{
+				"job_id":         "0",
+				"resolution":     in.Resolution,
+				"_parsed_header": []string{},
+				"_parsed_rows":   [][]string{},
 			}
-			// Verify the project exists. We don't recheck authz here —
-			// the dispatcher's role gate has already restricted the
-			// handler to manager / admin / system; the per-project
-			// scope check is layered on top by future work.
-			var ok bool
-			err := tx.QueryRow(ctx, `
-				SELECT EXISTS (SELECT 1 FROM card c
-				               JOIN card_type ct ON ct.id = c.card_type_id AND ct.name = 'project'
-				               WHERE c.id = $1)
-			`, in.ProjectID).Scan(&ok)
-			if err != nil {
-				return nil, fmt.Errorf("project.import.upload: project lookup: %w", err)
-			}
-			if !ok {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "project_not_found",
-					Message: fmt.Sprintf("project.import.upload: project %d not found", in.ProjectID)}
-			}
-
-			// Read the CSV bytes + parse just enough for the preview.
-			body, err := readFileBytes(ctx, tx, in.FileID)
-			if err != nil {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "csv_read",
-					Message: err.Error()}
-			}
-			parsed, err := parseCSVPreview(body, 20)
-			if err != nil {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse",
-					Message: err.Error()}
-			}
-
-			var jobID int64
-			err = tx.QueryRow(ctx, `
-				INSERT INTO import_job (project_id, file_id, status, created_by)
-				VALUES ($1, $2, 'uploaded', $3)
-				RETURNING id
-			`, in.ProjectID, in.FileID, actorID).Scan(&jobID)
-			if err != nil {
-				return nil, fmt.Errorf("project.import.upload: insert job: %w", err)
-			}
-			outs[i] = UploadOutput{
-				JobID:       jobID,
-				Headers:     parsed.Headers,
-				PreviewRows: parsed.PreviewRows,
-				RowCount:    parsed.RowCount,
-			}
+			continue
 		}
-		if p != nil {
-			p.NoteWrite()
+		fileID, err := lookupJobFileID(ctx, tx, in.JobID)
+		if err != nil {
+			return nil, err
 		}
-		return outs, nil
+		body, err := readFileBytes(ctx, tx, fileID)
+		if err != nil {
+			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_read", Message: err.Error()}
+		}
+		header, rows, err := readAllCSV(body)
+		if err != nil {
+			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: err.Error()}
+		}
+		out[i] = map[string]any{
+			"job_id":         formatInt64(in.JobID),
+			"resolution":     in.Resolution,
+			"_parsed_header": header,
+			"_parsed_rows":   rows,
+		}
 	}
+	return out, nil
 }
 
-/* -------------------------------------------------------------------------- */
-/* set_mapping                                                                */
-/* -------------------------------------------------------------------------- */
-
-func runSetMapping(p *store.Pool) func(context.Context, pgx.Tx, []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(SetMappingInput)
-			if in.JobID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "project.import.set_mapping: job_id is required"}
+// preRunCommit mirrors preRunPreview but for CommitInput.
+func preRunCommit(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+	out := make([]any, len(ins))
+	for i, raw := range ins {
+		in := raw.(CommitInput)
+		if in.JobID == 0 {
+			out[i] = map[string]any{
+				"job_id":         "0",
+				"_parsed_header": []string{},
+				"_parsed_rows":   [][]string{},
 			}
-			payload, err := json.Marshal(in.Mapping)
-			if err != nil {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "project.import.set_mapping: mapping not JSON-encodable"}
-			}
-			ct, err := tx.Exec(ctx, `
-				UPDATE import_job
-				   SET mapping = $1::jsonb,
-				       status  = CASE WHEN status IN ('previewed','running','completed','failed')
-				                      THEN status ELSE 'mapped' END
-				 WHERE id = $2
-			`, payload, in.JobID)
-			if err != nil {
-				return nil, fmt.Errorf("project.import.set_mapping: %w", err)
-			}
-			if ct.RowsAffected() == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "job_not_found",
-					Message: fmt.Sprintf("project.import.set_mapping: job %d not found", in.JobID)}
-			}
-			var status string
-			if err := tx.QueryRow(ctx,
-				`SELECT status FROM import_job WHERE id = $1`, in.JobID,
-			).Scan(&status); err != nil {
-				return nil, fmt.Errorf("project.import.set_mapping: read status: %w", err)
-			}
-			outs[i] = SetMappingOutput{OK: true, Status: status}
+			continue
 		}
-		if p != nil {
-			p.NoteWrite()
+		fileID, err := lookupJobFileID(ctx, tx, in.JobID)
+		if err != nil {
+			return nil, err
 		}
-		return outs, nil
+		body, err := readFileBytes(ctx, tx, fileID)
+		if err != nil {
+			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_read", Message: err.Error()}
+		}
+		header, rows, err := readAllCSV(body)
+		if err != nil {
+			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: err.Error()}
+		}
+		out[i] = map[string]any{
+			"job_id":         formatInt64(in.JobID),
+			"_parsed_header": header,
+			"_parsed_rows":   rows,
+		}
 	}
+	return out, nil
 }
+
+// lookupJobFileID resolves the file_id for an import_job. Returns a
+// `job_not_found` *reg.HandlerError when the row is missing — the
+// SQL function would surface the same code on its own loop, but the
+// PreRun hook needs to short-circuit the file read.
+func lookupJobFileID(ctx context.Context, tx pgx.Tx, jobID int64) (int64, error) {
+	var fileID int64
+	err := tx.QueryRow(ctx, `SELECT file_id FROM import_job WHERE id = $1`, jobID).Scan(&fileID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, &reg.HandlerError{Code: "job_not_found",
+				Message: fmt.Sprintf("import_job %d not found", jobID)}
+		}
+		return 0, fmt.Errorf("project.import: file_id lookup: %w", err)
+	}
+	return fileID, nil
+}
+
+// formatInt64 stringifies a bigint so the json tag `,string` round-trip
+// preserves the value when we hand it through the map shape. The
+// dispatcher's input encoding goes through json.Marshal on the slice,
+// which writes maps verbatim — without the explicit string cast the
+// SQL function's NULLIF(...,'')::bigint chain would fight a JSON number.
+func formatInt64(v int64) string {
+	if v == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%d", v)
+}
+
+// (We retain the JSON struct definitions above purely for the
+// dispatcher's reflection-based InputType machinery + the MCP tool
+// surface; runtime payload assembly goes through the PreRun maps.)

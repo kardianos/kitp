@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/card"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // seedTasks bootstraps one project + tasks; each task spec carries the
@@ -327,6 +329,379 @@ func TestTree_HasPhase(t *testing.T) {
 	if got := rowIDs(rows); len(got) != 0 {
 		t.Errorf("has_phase=[]: got %v, want empty", got)
 	}
+}
+
+// TestTree_ParentStatusPhase exercises the 2-hop `parent_status_phase`
+// op: a row qualifies when its `parent_task` ref points at a task whose
+// `status` ref points at a value-card with one of the listed phases.
+//
+// Setup builds two parent tasks (one with status='Open', one with
+// status='Done' — phase flipped to terminal via UPDATE) and two child
+// tasks pointing at each parent, then runs the op for each phase set
+// and confirms the row sets. Caps with the "heads" expression the
+// op was introduced for: `parent_task not exists OR
+// parent_status_phase=[terminal]`.
+func TestTree_ParentStatusPhase(t *testing.T) {
+	srv, sp := setupAttr(t, "kitp_test_card_tree_parent_status_phase")
+	ctx := auth.WithSystemUser(context.Background())
+
+	// Project + two status cards with distinct phases.
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "p", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			`{"card_type_name":"project","title":"P"}`)},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("project insert: %+v", resp.Subresponses[0])
+	}
+	projID := idsOf(t, resp.Subresponses[0])
+
+	openID := mkStatusUnder(t, srv, projID)
+	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "sd", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Done"}`,
+				projID))},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("status Done insert: %+v", resp.Subresponses[0])
+	}
+	doneID := idsOf(t, resp.Subresponses[0])
+
+	// Status cards default to phase='triage'. Flip Open→active and
+	// Done→terminal directly so the parent_status_phase predicate has
+	// distinct buckets to gate on.
+	if _, err := sp.P.Exec(ctx.(context.Context),
+		`UPDATE card SET phase = 'active' WHERE id = $1`, openID); err != nil {
+		t.Fatalf("flip Open phase: %v", err)
+	}
+	if _, err := sp.P.Exec(ctx.(context.Context),
+		`UPDATE card SET phase = 'terminal' WHERE id = $1`, doneID); err != nil {
+		t.Fatalf("flip Done phase: %v", err)
+	}
+
+	// Four tasks: two roots (one Open, one Done) and two children
+	// pointing at each.
+	insertTask := func(name, parentTask string, status int64) int64 {
+		t.Helper()
+		body := fmt.Sprintf(
+			`{"card_type_name":"task","parent_card_id":"%d","title":%q,"attributes":{"status":%d`,
+			projID, name, status)
+		if parentTask != "" {
+			body += `,"parent_task":` + parentTask
+		}
+		body += `}}`
+		r := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: name, Endpoint: "card", Action: "insert", Data: json.RawMessage(body)},
+		}})
+		if !r.Subresponses[0].OK {
+			t.Fatalf("insert %s: %+v", name, r.Subresponses[0])
+		}
+		return idsOf(t, r.Subresponses[0])
+	}
+
+	rootOpen := insertTask("root_open", "", openID)
+	rootDone := insertTask("root_done", "", doneID)
+	childOfOpen := insertTask("child_of_open", fmt.Sprintf("%d", rootOpen), openID)
+	childOfDone := insertTask("child_of_done", fmt.Sprintf("%d", rootDone), openID)
+
+	parent := parentOf(t, srv, rootOpen)
+
+	// parent_status_phase=['terminal'] → only the child whose parent
+	// is the Done-status root.
+	rows := queryTree(t, srv, parent,
+		`{"connective":"and","children":[{"attr":"parent_task","op":"parent_status_phase","values":["terminal"]}]}`)
+	if got, want := rowIDs(rows), sortedInts(childOfDone); !equalIDs(got, want) {
+		t.Errorf("parent_status_phase=[terminal]: got %v, want %v", got, want)
+	}
+
+	// parent_status_phase=['active'] → only the child whose parent
+	// is the Open-status root.
+	rows = queryTree(t, srv, parent,
+		`{"connective":"and","children":[{"attr":"parent_task","op":"parent_status_phase","values":["active"]}]}`)
+	if got, want := rowIDs(rows), sortedInts(childOfOpen); !equalIDs(got, want) {
+		t.Errorf("parent_status_phase=[active]: got %v, want %v", got, want)
+	}
+
+	// parent_status_phase=['terminal','active'] → both children, never
+	// the root tasks (they have no parent_task at all).
+	rows = queryTree(t, srv, parent,
+		`{"connective":"and","children":[{"attr":"parent_task","op":"parent_status_phase","values":["terminal","active"]}]}`)
+	if got, want := rowIDs(rows), sortedInts(childOfOpen, childOfDone); !equalIDs(got, want) {
+		t.Errorf("parent_status_phase=[terminal,active]: got %v, want %v", got, want)
+	}
+
+	// Empty values → vacuously false: nothing matches.
+	rows = queryTree(t, srv, parent,
+		`{"connective":"and","children":[{"attr":"parent_task","op":"parent_status_phase","values":[]}]}`)
+	if got := rowIDs(rows); len(got) != 0 {
+		t.Errorf("parent_status_phase=[]: got %v, want empty", got)
+	}
+
+	// "Heads" expression: tasks with no parent OR whose parent's
+	// status is terminal. This is the filter the op was introduced
+	// for — both roots qualify (no parent), childOfDone qualifies
+	// (parent's status is terminal), childOfOpen does not.
+	rows = queryTree(t, srv, parent, `{
+		"connective":"or",
+		"children":[
+			{"attr":"parent_task","op":"not exists"},
+			{"attr":"parent_task","op":"parent_status_phase","values":["terminal"]}
+		]
+	}`)
+	want := sortedInts(rootOpen, rootDone, childOfDone)
+	if got := rowIDs(rows); !equalIDs(got, want) {
+		t.Errorf("heads expression: got %v, want %v", got, want)
+	}
+
+	// Validation: op only legal on `parent_task`. Wrong attr → server
+	// returns a handler error.
+	bad := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "x", Endpoint: "card", Action: "select_with_attributes", Data: json.RawMessage(
+			fmt.Sprintf(`{"parent_card_id":"%d","card_type_name":"task","tree":{"connective":"and","children":[{"attr":"milestone_ref","op":"parent_status_phase","values":["terminal"]}]}}`, parent))},
+	}})
+	if bad.Subresponses[0].OK {
+		t.Fatalf("expected parent_status_phase on milestone_ref to be rejected, got OK: %+v", bad.Subresponses[0])
+	}
+}
+
+// TestTree_BeforeToday + TestTree_WithinDays cover the relative-date
+// ops that the "Overdue" and "Due soon" named-filter snippets rely
+// on. The server resolves `today` via now()::date so the same
+// predicate keeps producing different row sets across days — no
+// stale absolute dates in saved filters.
+func TestTree_BeforeToday(t *testing.T) {
+	srv, sp := setupAttr(t, "kitp_test_card_tree_before_today")
+	ctx := context.Background()
+
+	// Seed a `due_date` attribute_def (text, ISO date strings) so
+	// tasks can carry a comparable date. setupAttr already loaded
+	// the install seed; we add the def + edge here so the
+	// attribute.update path accepts it on tasks.
+	if _, err := sp.P.Exec(ctx, `
+		INSERT INTO attribute_def (name, value_type, is_built_in)
+		VALUES ('due_date', 'text', false)
+		ON CONFLICT (name) DO NOTHING
+	`); err != nil {
+		t.Fatalf("seed due_date def: %v", err)
+	}
+	if _, err := sp.P.Exec(ctx, `
+		INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+		SELECT (SELECT id FROM card_type WHERE name='task'),
+		       (SELECT id FROM attribute_def WHERE name='due_date'),
+		       false, 99
+		ON CONFLICT DO NOTHING
+	`); err != nil {
+		t.Fatalf("seed due_date edge: %v", err)
+	}
+
+	// Anchor "today" to the DB's own clock so the test is stable across
+	// local vs server timezone drift. The SQL compiler resolves
+	// `before_today` / `within_days` against now()::date in Postgres'
+	// TimeZone; comparing against Go's time.Now() in the test process
+	// flakes near any TZ midnight boundary.
+	today := serverToday(t, sp)
+	yesterday := today.AddDate(0, 0, -1).Format("2006-01-02")
+	tomorrow := today.AddDate(0, 0, 1).Format("2006-01-02")
+	_, ids, _ := seedTasks(t, srv, []map[string]any{
+		{"due_date": yesterday}, // overdue
+		{"due_date": tomorrow},  // not overdue
+		{},                       // no due_date — predicate skips
+	})
+
+	rows := queryTree(t, srv, parentOf(t, srv, ids[0]),
+		`{"connective":"and","children":[{"attr":"due_date","op":"before_today"}]}`)
+	if got, want := rowIDs(rows), sortedInts(ids[0]); !equalIDs(got, want) {
+		t.Errorf("before_today: got %v, want %v", got, want)
+	}
+}
+
+// serverToday returns the DB's notion of today (now()::date) parsed as
+// a Go time.Time at UTC midnight. Used by the relative-date tests so
+// "today" is consistent with the SQL compiler's reference.
+func serverToday(t *testing.T, sp *store.Pool) time.Time {
+	t.Helper()
+	var s string
+	if err := sp.P.QueryRow(context.Background(), `SELECT now()::date::text`).Scan(&s); err != nil {
+		t.Fatalf("server today: %v", err)
+	}
+	d, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		t.Fatalf("parse server today %q: %v", s, err)
+	}
+	return d
+}
+
+func TestTree_WithinDays(t *testing.T) {
+	srv, sp := setupAttr(t, "kitp_test_card_tree_within_days")
+	ctx := context.Background()
+	if _, err := sp.P.Exec(ctx, `
+		INSERT INTO attribute_def (name, value_type, is_built_in)
+		VALUES ('due_date', 'text', false)
+		ON CONFLICT (name) DO NOTHING;
+		INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+		SELECT (SELECT id FROM card_type WHERE name='task'),
+		       (SELECT id FROM attribute_def WHERE name='due_date'),
+		       false, 99
+		ON CONFLICT DO NOTHING;
+	`); err != nil {
+		t.Fatalf("seed due_date schema: %v", err)
+	}
+
+	anchor := serverToday(t, sp)
+	today := anchor.Format("2006-01-02")
+	twoDaysOut := anchor.AddDate(0, 0, 2).Format("2006-01-02")
+	tenDaysOut := anchor.AddDate(0, 0, 10).Format("2006-01-02")
+	yesterday := anchor.AddDate(0, 0, -1).Format("2006-01-02")
+	_, ids, _ := seedTasks(t, srv, []map[string]any{
+		{"due_date": today},      // in [today, +3]
+		{"due_date": twoDaysOut}, // in [today, +3]
+		{"due_date": tenDaysOut}, // out (too far)
+		{"due_date": yesterday},  // out (past)
+	})
+
+	rows := queryTree(t, srv, parentOf(t, srv, ids[0]),
+		`{"connective":"and","children":[{"attr":"due_date","op":"within_days","values":[3]}]}`)
+	if got, want := rowIDs(rows), sortedInts(ids[0], ids[1]); !equalIDs(got, want) {
+		t.Errorf("within_days=3: got %v, want %v", got, want)
+	}
+
+	// Negative N is rejected at compile time.
+	bad := srv.Dispatch(auth.WithSystemUser(context.Background()), api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "g", Endpoint: "card", Action: "select_with_attributes", Data: json.RawMessage(
+			fmt.Sprintf(`{"parent_card_id":"%d","card_type_name":"task","tree":{"connective":"and","children":[{"attr":"due_date","op":"within_days","values":[-1]}]}}`,
+				parentOf(t, srv, ids[0])))},
+	}})
+	if bad.Subresponses[0].OK {
+		t.Errorf("within_days=-1: expected rejection, got OK")
+	}
+}
+
+// TestTree_Snippet exercises the `snippet` leaf op: a leaf carrying a
+// predicate_snippet card id is expanded at compile time by fetching
+// the snippet's stored predicate JSON and inlining the compiled SQL.
+//
+// Coverage:
+//   - Bare snippet ref resolves to the stored predicate.
+//   - AND-composing a snippet with a sibling leaf narrows correctly
+//     (the "Named dropdown checks Heads + something else" path).
+//   - Nested snippet (snippet A references snippet B) expands both hops.
+//   - Cycle (A → B → A) surfaces as a compile error, not a stack
+//     overflow / loop.
+//   - Dangling reference (snippet id doesn't exist) compiles to FALSE
+//     so a stale reference can't widen the result set.
+func TestTree_Snippet(t *testing.T) {
+	srv, _ := setupAttr(t, "kitp_test_card_tree_snippet")
+	ctx := auth.WithSystemUser(context.Background())
+
+	// Three tasks under one project, distinguished by milestone_ref so
+	// we can write a snippet that picks a known subset.
+	projID, ids, sm := seedTasks(t, srv, []map[string]any{
+		{"milestone_ref": "open"},
+		{"milestone_ref": "done"},
+		{"milestone_ref": "open"},
+	})
+
+	// Insert a snippet under the project. The `predicate` attribute is
+	// the JSON-encoded predicate tree the snippet stands for. Here:
+	// milestone_ref = open  →  matches ids[0] and ids[2].
+	insertSnippet := func(name, predicateJSON string) int64 {
+		t.Helper()
+		body := fmt.Sprintf(
+			`{"card_type_name":"predicate_snippet","parent_card_id":"%d","title":%q,"attributes":{"predicate":%s}}`,
+			projID, name, mustJSONString(predicateJSON))
+		r := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "snip_" + name, Endpoint: "card", Action: "insert", Data: json.RawMessage(body)},
+		}})
+		if !r.Subresponses[0].OK {
+			t.Fatalf("snippet %q insert: %+v", name, r.Subresponses[0])
+		}
+		return idsOf(t, r.Subresponses[0])
+	}
+
+	openPred := fmt.Sprintf(
+		`{"attr":"milestone_ref","op":"=","values":["%d"]}`, sm["open"])
+	openSnip := insertSnippet("OpenSet", openPred)
+
+	parent := parentOf(t, srv, ids[0])
+
+	// Bare snippet ref: same row set as the stored predicate.
+	rows := queryTree(t, srv, parent, fmt.Sprintf(
+		`{"connective":"and","children":[{"attr":"_snippet","op":"snippet","values":["%d"]}]}`,
+		openSnip))
+	if got, want := rowIDs(rows), sortedInts(ids[0], ids[2]); !equalIDs(got, want) {
+		t.Errorf("bare snippet: got %v, want %v", got, want)
+	}
+
+	// Compose with a sibling leaf via AND — the "Named dropdown + extra
+	// constraint" path. Adds milestone_ref filter that matches NOTHING
+	// in the snippet's set, so the AND must come back empty.
+	rows = queryTree(t, srv, parent, fmt.Sprintf(`{
+		"connective":"and",
+		"children":[
+			{"attr":"_snippet","op":"snippet","values":["%d"]},
+			{"attr":"milestone_ref","op":"=","values":["%d"]}
+		]
+	}`, openSnip, sm["done"]))
+	if got := rowIDs(rows); len(got) != 0 {
+		t.Errorf("AND-composed snippet (conflicting): got %v, want empty", got)
+	}
+
+	// Nested snippet (A references B). The outer snippet's predicate is
+	// itself a snippet ref to OpenSet.
+	nestedJSON := fmt.Sprintf(
+		`{"attr":"_snippet","op":"snippet","values":["%d"]}`, openSnip)
+	nestedSnip := insertSnippet("Wrapper", nestedJSON)
+	rows = queryTree(t, srv, parent, fmt.Sprintf(
+		`{"connective":"and","children":[{"attr":"_snippet","op":"snippet","values":["%d"]}]}`,
+		nestedSnip))
+	if got, want := rowIDs(rows), sortedInts(ids[0], ids[2]); !equalIDs(got, want) {
+		t.Errorf("nested snippet: got %v, want %v", got, want)
+	}
+
+	// Cycle: edit Wrapper's predicate to point at a third snippet that
+	// points back at Wrapper. The select must return an error, not
+	// loop forever. Build C first (pointing at Wrapper), then update
+	// Wrapper to point at C.
+	cyclePoint := insertSnippet("CycleC", fmt.Sprintf(
+		`{"attr":"_snippet","op":"snippet","values":["%d"]}`, nestedSnip))
+	updateBody := fmt.Sprintf(
+		`{"card_id":"%d","attribute_name":"predicate","value":%s}`,
+		nestedSnip,
+		mustJSONString(fmt.Sprintf(
+			`{"attr":"_snippet","op":"snippet","values":["%d"]}`, cyclePoint)))
+	if r := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "u", Endpoint: "attribute", Action: "update", Data: json.RawMessage(updateBody)},
+	}}); !r.Subresponses[0].OK {
+		t.Fatalf("rewire Wrapper for cycle: err=%v data=%+v body=%s",
+			r.Subresponses[0].Error, r.Subresponses[0], updateBody)
+	}
+	cyc := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "g", Endpoint: "card", Action: "select_with_attributes", Data: json.RawMessage(
+			fmt.Sprintf(`{"parent_card_id":"%d","card_type_name":"task","tree":{"connective":"and","children":[{"attr":"_snippet","op":"snippet","values":["%d"]}]}}`,
+				parent, nestedSnip))},
+	}})
+	if cyc.Subresponses[0].OK {
+		t.Fatalf("expected cycle to be rejected, got OK: %+v", cyc.Subresponses[0])
+	}
+
+	// Dangling reference: an id that doesn't name any predicate_snippet
+	// compiles to FALSE — zero rows, no error, so the rest of the
+	// surrounding AND stays evaluable.
+	rows = queryTree(t, srv, parent,
+		`{"connective":"and","children":[{"attr":"_snippet","op":"snippet","values":["999999"]}]}`)
+	if got := rowIDs(rows); len(got) != 0 {
+		t.Errorf("dangling snippet: got %v, want empty", got)
+	}
+}
+
+// mustJSONString JSON-encodes [s] as a string literal so it can be
+// embedded inside another JSON document — used to nest a predicate
+// tree as the value of the `predicate` text attribute.
+func mustJSONString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 // TestTree_NotTerminal_PhaseSemantics confirms the legacy "not terminal"

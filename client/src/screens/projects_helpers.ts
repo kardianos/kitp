@@ -82,6 +82,13 @@ function matchPredicate(card: CardWithAttrs, p: Predicate): boolean {
       case 'notExists':
         return value === undefined || value === null;
     }
+    // Any other op (contains / notTerminal / hasPhase / beforeToday /
+    // withinDays / snippet / parentStatusPhase) needs server context the
+    // client matcher doesn't have. Server has already filtered; trust
+    // the row. MUST return here — falling through into the flat-AND
+    // block recurses on the same leaf forever, since
+    // isFlatAndOfLeaves(leaf) is true by definition.
+    return true;
   }
   // Flat AND. Anything else (OR / NOT / nested) we conservatively pass —
   // the FilterBar's quick-bar can only emit flat-AND, and the advanced

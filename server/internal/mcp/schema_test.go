@@ -119,3 +119,69 @@ func TestSchemaForType_TagParse(t *testing.T) {
 		t.Errorf("required: %v, want [a]", s.Required)
 	}
 }
+
+// TestSchemaForType_TagParseV2 covers the v2 additions: format,
+// minlen, maxlen, min, max, pattern. Each maps to a JSON Schema
+// keyword the client form kernel can consume directly.
+func TestSchemaForType_TagParseV2(t *testing.T) {
+	type In struct {
+		Email   string  `json:"email" mcp:"required,format=email,maxlen=200,desc=user email"`
+		Slug    string  `json:"slug" mcp:"minlen=3,maxlen=64,pattern=^[a-z0-9-]+$"`
+		JSONStr string  `json:"json_str,omitempty" mcp:"format=json,desc=raw JSON string"`
+		Port    int     `json:"port" mcp:"min=1,max=65535,desc=tcp port"`
+		Score   float64 `json:"score" mcp:"min=0,max=1"`
+	}
+	s := SchemaForType(reflect.TypeFor[In](), true)
+
+	email := s.Properties["email"]
+	if email == nil || email.Format != "email" {
+		t.Errorf("email format: %+v", email)
+	}
+	if email == nil || email.MaxLength == nil || *email.MaxLength != 200 {
+		t.Errorf("email maxlen: %+v", email)
+	}
+
+	slug := s.Properties["slug"]
+	if slug == nil || slug.MinLength == nil || *slug.MinLength != 3 {
+		t.Errorf("slug minlen: %+v", slug)
+	}
+	if slug == nil || slug.MaxLength == nil || *slug.MaxLength != 64 {
+		t.Errorf("slug maxlen: %+v", slug)
+	}
+	if slug == nil || slug.Pattern != "^[a-z0-9-]+$" {
+		t.Errorf("slug pattern: %+v", slug)
+	}
+
+	jstr := s.Properties["json_str"]
+	if jstr == nil || jstr.Format != "json" {
+		t.Errorf("json_str format: %+v", jstr)
+	}
+
+	port := s.Properties["port"]
+	if port == nil || port.Type != "integer" {
+		t.Errorf("port type: %+v", port)
+	}
+	if port == nil || port.Minimum == nil || *port.Minimum != 1 {
+		t.Errorf("port min: %+v", port)
+	}
+	if port == nil || port.Maximum == nil || *port.Maximum != 65535 {
+		t.Errorf("port max: %+v", port)
+	}
+
+	score := s.Properties["score"]
+	if score == nil || score.Type != "number" {
+		t.Errorf("score type: %+v", score)
+	}
+	if score == nil || score.Minimum == nil || *score.Minimum != 0 {
+		t.Errorf("score min: %+v", score)
+	}
+}
+
+// TestSchemaVersionBump verifies the constant moved to v2 — guards
+// against silent regressions if the version is rolled back without
+// removing the v2 directives.
+func TestSchemaVersionBump(t *testing.T) {
+	if SchemaVersion != "2" {
+		t.Errorf("SchemaVersion = %q, want %q", SchemaVersion, "2")
+	}
+}

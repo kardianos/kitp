@@ -29,7 +29,7 @@ func TestLogPruneRemovesOldRows(t *testing.T) {
 		t.Fatalf("seed comm_log rows: %v", err)
 	}
 
-	p := comm.NewLogPrunerForTest(f.sp, 30*24*time.Hour, 24*time.Hour)
+	p := comm.NewLogPruner(f.sp, 30*24*time.Hour)
 	deleted, err := p.RunOnce(ctx)
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
@@ -73,7 +73,7 @@ func TestLogPruneEmpty(t *testing.T) {
 		t.Fatalf("expected empty comm_log, got %d rows", count)
 	}
 
-	p := comm.NewLogPrunerForTest(f.sp, 30*24*time.Hour, 24*time.Hour)
+	p := comm.NewLogPruner(f.sp, 30*24*time.Hour)
 	deleted, err := p.RunOnce(ctx)
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
@@ -113,7 +113,7 @@ func TestLogPruneRetentionBoundary(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	p := comm.NewLogPrunerForTest(f.sp, retention, time.Hour)
+	p := comm.NewLogPruner(f.sp, retention)
 	deleted, err := p.RunOnce(ctx)
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
@@ -152,7 +152,7 @@ func TestLogPruneRespectsContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled before RunOnce
 
-	p := comm.NewLogPrunerForTest(f.sp, 30*24*time.Hour, 24*time.Hour)
+	p := comm.NewLogPruner(f.sp, 30*24*time.Hour)
 	_, err := p.RunOnce(ctx)
 	if err == nil {
 		t.Fatalf("RunOnce on cancelled ctx: want error, got nil")

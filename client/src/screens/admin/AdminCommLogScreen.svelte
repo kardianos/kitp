@@ -26,6 +26,7 @@
 
   import { BatchAbortedError, SubRequestError } from '../../dispatch/errors';
   import { getDispatcher } from '../../dispatch/context';
+  import { clearHelpTopic, setHelpTopic } from '../../help/help_context.svelte';
   import { setActiveScope } from '../../keys/shortcut';
   import { projectScope } from '../../shell/project_scope.svelte';
   import { projectsStore, watchProjects } from '../../shell/projects_store.svelte';
@@ -39,7 +40,11 @@
   import Button from '../../ui/Button.svelte';
   import Chip from '../../ui/Chip.svelte';
   import EmptyState from '../../ui/EmptyState.svelte';
+  import ErrorAlert from '../../ui/ErrorAlert.svelte';
+  import PageShell from '../../ui/PageShell.svelte';
   import Spinner from '../../ui/Spinner.svelte';
+  import Checkbox from '../../ui/inputs/Checkbox.svelte';
+  import TextInput from '../../ui/inputs/TextInput.svelte';
   import { cx } from '../../util/class_names';
 
   import {
@@ -53,6 +58,11 @@
   } from './admin_comm_log_helpers';
 
   setActiveScope('admin_comm_log');
+
+  $effect(() => {
+    setHelpTopic({ kind: 'topic', topic: 'admin.comm_log' });
+    return () => clearHelpTopic();
+  });
 
   const dispatcher = getDispatcher();
   // Keep the shared project cache warm so the title-bar picker has
@@ -220,29 +230,22 @@
   }
 </script>
 
-<div class="flex h-full flex-col" data-testid="admin-comm-log-screen">
-  <header
+<PageShell title="Admin · Comm log" testid="admin-comm-log-screen" pad="none">
+  {#snippet actions()}
+    <span class="text-xs text-muted">{rows.length} rows</span>
+    <label class="inline-flex items-center gap-2 text-sm text-fg">
+      <Checkbox bind:checked={autoRefresh} aria-label="Auto-refresh" />
+      Auto-refresh
+    </label>
+    <Button variant="secondary" size="sm" onclick={() => void loadRows()}>
+      {#snippet children()}Refresh{/snippet}
+    </Button>
+  {/snippet}
+  {#snippet children()}
+  <div
     class="flex flex-col gap-3 border-b border-border px-4 py-3"
     aria-label="Comm log filters"
   >
-    <div class="flex flex-wrap items-center gap-3">
-      <h1 class="text-lg font-semibold">Admin · Comm log</h1>
-      <span class="text-xs text-muted">{rows.length} rows</span>
-
-      <label class="ml-auto flex items-center gap-2 text-sm text-fg">
-        <input
-          type="checkbox"
-          bind:checked={autoRefresh}
-          data-testid="comm-log-auto-refresh-toggle"
-          class="h-4 w-4 rounded border-border"
-        />
-        <span>Auto-refresh</span>
-      </label>
-      <Button variant="secondary" size="sm" onclick={() => void loadRows()}>
-        {#snippet children()}Refresh{/snippet}
-      </Button>
-    </div>
-
     <!-- Kind chips -->
     <div class="flex flex-wrap items-center gap-2" data-testid="comm-log-kind-chips">
       <span class="text-sm text-muted">Kind:</span>
@@ -298,44 +301,34 @@
         </button>
       {/each}
       {#if windowKey === 'custom'}
-        <input
-          type="text"
+        <TextInput
           bind:value={customSince}
           placeholder="ISO timestamp e.g. 2026-05-01T00:00:00Z"
-          data-testid="comm-log-window-custom"
-          class={cx(
-            'rounded-md border border-border bg-bg px-2 py-1 text-xs',
-            'text-fg placeholder:text-muted',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-          )}
+          class="w-auto"
         />
       {/if}
     </div>
-  </header>
+  </div>
 
   {#if loading && rows.length === 0}
-    <div class="flex flex-1 items-center justify-center">
+    <div class="flex h-full items-center justify-center">
       <Spinner size="lg" />
     </div>
   {:else if error !== null}
-    <div
-      role="alert"
-      class="m-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger"
-    >
-      Failed to load: {error}
-      <button type="button" class="ml-3 underline" onclick={() => void loadRows()}>
-        Retry
-      </button>
-    </div>
+    <ErrorAlert
+      class="m-4"
+      message={`Failed to load: ${error}`}
+      onRetry={() => void loadRows()}
+    />
   {:else if rows.length === 0}
-    <div class="flex flex-1 items-center justify-center" data-testid="comm-log-empty">
+    <div class="flex h-full items-center justify-center" data-testid="comm-log-empty">
       <EmptyState
         title="No log entries"
         description="The IMAP poller and SMTP sender write here on every cycle. Configure a comm channel and ensure it has IMAP / SMTP passwords set."
       />
     </div>
   {:else}
-    <div class="flex-1 overflow-auto px-4 pb-4">
+    <div class="px-4 pb-4">
       <table class="w-full text-sm" data-testid="comm-log-table">
         <thead class="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
           <tr>
@@ -372,4 +365,5 @@
       </table>
     </div>
   {/if}
-</div>
+  {/snippet}
+</PageShell>

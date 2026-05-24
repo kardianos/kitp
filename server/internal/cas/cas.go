@@ -47,8 +47,21 @@ type Backend interface {
 	// pg backend; future streaming backends (S3 multipart) can wrap the
 	// slice in `bytes.NewReader` if they want streaming semantics.
 	Put(ctx context.Context, address string, mimeType string, sizeBytes int64, data []byte) error
-	// Get returns a stream of the blob bytes. The caller must Close.
-	Get(ctx context.Context, address string) (io.ReadCloser, error)
+	// GetAll fetches every address in `addresses` (a single chunk list,
+	// in order) and streams the bytes to `w` in the order supplied. One
+	// round-trip total; chunks are written as they come off the wire so
+	// peak memory is one chunk regardless of file size.
+	//
+	// Single-blob callers pass a one-element slice — there is no `Get`
+	// shortcut by design (S8 of the security audit called out the
+	// per-chunk N+1 the old per-blob API encouraged).
+	//
+	// If any requested address is not present in this backend, GetAll
+	// MUST return ErrNotFound and SHOULD NOT have written anything to
+	// `w`. After the first row is written the response is committed and
+	// a mid-stream failure can only surface as a truncated stream + an
+	// error return — log and bail at the call site.
+	GetAll(ctx context.Context, addresses []string, w io.Writer) error
 	// Delete removes the bytes (used by the reaper). Implementations must
 	// be idempotent — deleting an absent address is a no-op.
 	Delete(ctx context.Context, address string) error
@@ -117,27 +130,38 @@ func (r *HashingReader) BytesRead() int64 {
 	return r.n
 }
 
-// Get reads bytes for address. Walks the configured backends in order
-// and returns the first hit; the chain is short-circuited on the first
-// non-ErrNotFound error so callers see real failures.
-func (s *Storage) Get(ctx context.Context, address string) (io.ReadCloser, error) {
+// GetAll fetches every address in `addresses` and streams the bytes
+// to `w` in the order supplied. The chain walks backends in order;
+// on ErrNotFound it falls through to the next backend, on any other
+// error it short-circuits. v1 has one backend ('pg') so addresses
+// must all live there; a future multi-backend setup will need to
+// group `addresses` by `cas_blob.storage_kind` before dispatch
+// (otherwise a backend will see addresses it doesn't own and return
+// ErrNotFound for them).
+//
+// Returns ErrNotFound only when no backend successfully served the
+// addresses. Single-blob callers pass a one-element slice.
+func (s *Storage) GetAll(ctx context.Context, addresses []string, w io.Writer) error {
 	if len(s.backends) == 0 {
-		return nil, ErrNotFound
+		return ErrNotFound
+	}
+	if len(addresses) == 0 {
+		return nil
 	}
 	var firstErr error
 	for _, b := range s.backends {
-		rc, err := b.Get(ctx, address)
+		err := b.GetAll(ctx, addresses, w)
 		if err == nil {
-			return rc, nil
+			return nil
 		}
 		if !errors.Is(err, ErrNotFound) {
-			return nil, fmt.Errorf("cas: %s: %w", b.Kind(), err)
+			return fmt.Errorf("cas: %s: %w", b.Kind(), err)
 		}
 		if firstErr == nil {
 			firstErr = err
 		}
 	}
-	return nil, firstErr
+	return firstErr
 }
 
 // Has reports whether any backend holds address.

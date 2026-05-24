@@ -7,10 +7,10 @@
   `(parent_card_id=projectId, slug)`, reads its `layout` attribute, and
   mounts one of four body components:
 
-    - `list`   -> InboxLayout      (the per-user task list)
-    - `grid`   -> GridLayout       (dense sortable table)
-    - `kanban` -> KanbanLayout     (column board)
-    - `pair`   -> PairLayout       (project header + task list)
+    - `list`    -> InboxLayout      (the per-user task list)
+    - `grid`    -> GridLayout       (dense sortable table)
+    - `kanban`  -> KanbanLayout     (column board)
+    - `project` -> ProjectLayout    (project header + task list)
 
   The body components were the former top-level screens before the
   rename. They still own their data fetch / filter bar / quick-entry —
@@ -54,7 +54,7 @@
   import InboxLayout from './InboxLayout.svelte';
   import GridLayout from './GridLayout.svelte';
   import KanbanLayout from './KanbanLayout.svelte';
-  import PairLayout from './PairLayout.svelte';
+  import ProjectLayout from './ProjectLayout.svelte';
 
   /* ----------------------------------------------------------------- props */
 
@@ -214,17 +214,17 @@
         return GridLayout as AnyComponent;
       case 'kanban':
         return KanbanLayout as AnyComponent;
-      case 'pair':
-        return PairLayout as AnyComponent;
+      case 'project':
+        return ProjectLayout as AnyComponent;
       default:
         return null;
     }
   });
 
   /**
-   * The Pair layout's existing data fetch keys off `params.id`
+   * The Project layout's existing data fetch keys off `params.id`
    * (project id). Every other layout reads `projectScope.projectId`
-   * implicitly. We forward the `params` record so PairLayout stays a
+   * implicitly. We forward the `params` record so ProjectLayout stays a
    * drop-in body; the other three layouts ignore the prop today and
    * still pick up the project scope we set above.
    */

@@ -1,13 +1,13 @@
 // File api/authz.go: scope-aware authorization for the batch dispatcher.
 //
 // The dispatcher resolves three things per HTTP request:
-//   1. The actor's effective grants — `(card_type_id, process_name, scope_card_id?)`
-//      tuples loaded once for the whole batch.
-//   2. The target project id for each sub-request — the project a write
-//      acts on (walked via parent_card_id, capped at depth 16). Walks for
-//      the whole batch coalesce into one `WHERE id = ANY($1)` lookup.
-//   3. A boolean per sub-request: any grant matches `(card_type, process)`
-//      AND (scope is global OR scope == target project).
+//  1. The actor's effective grants — `(card_type_id, process_name, scope_card_id?)`
+//     tuples loaded once for the whole batch.
+//  2. The target project id for each sub-request — the project a write
+//     acts on (walked via parent_card_id, capped at depth 16). Walks for
+//     the whole batch coalesce into one `WHERE id = ANY($1)` lookup.
+//  3. A boolean per sub-request: any grant matches `(card_type, process)`
+//     AND (scope is global OR scope == target project).
 //
 // On deny we emit `unauthorized` and abort the batch. The System User
 // (auth.SystemUserID) keeps every grant via the seeded `system` role and
@@ -16,6 +16,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -64,25 +65,10 @@ func loadActorGrants(ctx context.Context, pool *store.Pool, userID int64) ([]gra
 	return out, rows.Err()
 }
 
-// authzCache holds the per-request shared state. The dispatcher fills it on
-// first use and reuses it for every sub-request in the same Dispatch call.
-type authzCache struct {
-	grants     []grantRow
-	loaded     bool
-	cardLookup map[int64]cardInfo
-}
-
 // cardInfo is the cached card row used by parent walks.
 type cardInfo struct {
 	parentCardID *int64
 	cardTypeID   int64
-}
-
-// projectCardTypeID is the id of the 'project' card_type. Lazy-loaded
-// once per request via cardLookup.
-type cardTypeKindCache struct {
-	projectID int64
-	loaded    bool
 }
 
 // resolveTargetProject walks parent_card_id from startCardID until it hits
@@ -242,7 +228,11 @@ func (s *Server) authorizeLeaf(ctx context.Context, h reg.Handler, input any, gr
 	}
 	// Verify the process is actually seeded; if not, we skip authz like the
 	// pre-Phase-20 dispatcher used to (this keeps the test/echo flows alive).
-	if !processExists(ctx, s.Pool.P, h.ProcessName) {
+	exists, err := processExists(ctx, s.Pool.P, h.ProcessName)
+	if err != nil {
+		return &reg.HandlerError{Code: "internal", Message: err.Error()}
+	}
+	if !exists {
 		return nil
 	}
 
@@ -271,17 +261,22 @@ func (s *Server) authorizeLeaf(ctx context.Context, h reg.Handler, input any, gr
 	}
 }
 
-// processExists returns true if a process row by that name exists. Cached at
-// the pool level would be ideal; for now it's a single point query per
-// sub-request, but cheap (process is a small table).
-func processExists(ctx context.Context, q reg.ValidationPool, name string) bool {
+// processExists returns true if a process row by that name exists.
+// Cached at the pool level would be ideal; for now it's a single
+// point query per sub-request, but cheap (process is a small table).
+//
+// Returns (false, nil) when the row is genuinely absent and
+// (false, err) on any other DB error so the caller can abort the
+// batch instead of misreading a transient failure as "no such
+// process" (S3).
+func processExists(ctx context.Context, q reg.ValidationPool, name string) (bool, error) {
 	var id int64
 	row := q.QueryRow(ctx, `SELECT id FROM process WHERE name = $1`, name)
 	if err := row.Scan(&id); err != nil {
-		if err == pgx.ErrNoRows {
-			return false
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
 		}
-		return false
+		return false, fmt.Errorf("process lookup %q: %w", name, err)
 	}
-	return true
+	return true, nil
 }

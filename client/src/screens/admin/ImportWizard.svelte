@@ -21,6 +21,7 @@
   import type { AuthState } from '../../auth/auth_state.svelte';
   import { getDispatcher } from '../../dispatch/context';
   import type { ID } from '../../reg/types';
+  import ErrorAlert from '../../ui/ErrorAlert.svelte';
   import Modal from '../../ui/Modal.svelte';
   import { notify } from '../../ui/toast.svelte';
   import {
@@ -204,9 +205,7 @@
     </ol>
 
     {#if errorMsg !== null}
-      <div role="alert" class="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-danger">
-        {errorMsg}
-      </div>
+      <ErrorAlert message={errorMsg} />
     {/if}
 
     {#if step === 'upload'}

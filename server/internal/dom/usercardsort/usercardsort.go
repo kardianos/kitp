@@ -10,19 +10,15 @@
 // in dev mode it falls back to the System User.)
 //
 // Coalescing: N user_card_sort.set sub-requests in one batch produce ONE
-// SQL statement-group. The CTE ingests a JSON array of (card_id,
-// sort_order) tuples and upserts every row in one pass.
+// SQL statement-group. The unified PL/pgSQL function ingests the JSONB
+// array of (card_id, sort_order) tuples and upserts every row in one
+// pass — see db/schema/functions/user_card_sort_set_batch.sql.
 package usercardsort
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"reflect"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
@@ -44,7 +40,7 @@ type SetOutput struct {
 }
 
 // Register installs the handler.
-func Register(p *store.Pool) {
+func Register(_ *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "user_card_sort",
 		Action:       "set",
@@ -54,7 +50,10 @@ func Register(p *store.Pool) {
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		ProcessName:  "user_card_sort.set",
 		CardTypeID:   cardTypeFromInput,
-		Run:          runSet(p),
+		// Unified handler — body lives in
+		// db/schema/functions/user_card_sort_set_batch.sql. See
+		// docs/UNIFIED_HANDLER_PLAN.md Phase 2.
+		SQLFunc: "user_card_sort_set_batch",
 	})
 }
 
@@ -64,61 +63,4 @@ func Register(p *store.Pool) {
 // "drag a milestone in your personal view" works without a code change.
 func cardTypeFromInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	return schema.CardTypeIDByCardID(ctx, pool, raw.(SetInput).CardID)
-}
-
-// jsonRow is the per-row payload fed into jsonb_to_recordset. We do not
-// include user_id in the payload — the caller never supplies it; the
-// handler stamps it from ctx, so a malicious client cannot fake it.
-type jsonRow struct {
-	CardID    int64   `json:"card_id,string"`
-	SortOrder float64 `json:"sort_order"`
-}
-
-// runSet is an arrayPath writer. // arrayPath
-func runSet(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-
-		payload := make([]jsonRow, len(ins))
-		for i, raw := range ins {
-			in := raw.(SetInput)
-			if in.CardID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "user_card_sort.set: card_id is required"}
-			}
-			payload[i] = jsonRow{CardID: in.CardID, SortOrder: in.SortOrder}
-		}
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, err
-		}
-
-		// Single CTE: read N (card_id, sort_order) tuples from the JSON
-		// array, upsert each into user_card_sort with the calling user's
-		// id stamped from ctx. The PRIMARY KEY (user_id, card_id) ensures
-		// re-setting the same card is a clean idempotent update.
-		const q = `
-			WITH input AS (
-				SELECT * FROM jsonb_to_recordset($1::jsonb)
-				AS x(card_id bigint, sort_order double precision)
-			)
-			INSERT INTO user_card_sort (user_id, card_id, sort_order, updated_at)
-			SELECT $2::bigint, i.card_id, i.sort_order, now() FROM input i
-			ON CONFLICT (user_id, card_id) DO UPDATE
-				SET sort_order = EXCLUDED.sort_order,
-				    updated_at = now()
-		`
-		if _, err := tx.Exec(ctx, q, buf, actorID); err != nil {
-			return nil, fmt.Errorf("user_card_sort.set: %w", err)
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-
-		outs := make([]any, len(ins))
-		for i := range ins {
-			outs[i] = SetOutput{OK: true}
-		}
-		return outs, nil
-	}
 }

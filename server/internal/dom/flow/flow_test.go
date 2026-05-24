@@ -247,8 +247,14 @@ func TestFlowSetValidation(t *testing.T) {
 	}
 }
 
-func TestFlowDeleteCascadesSteps(t *testing.T) {
-	f := setup(t, "kitp_test_flow_cascade")
+// TestFlowDeleteBlockedByFlowSteps verifies the new flow_delete_batch
+// contract: a flow is only deletable when no flow_step references it.
+// The legacy Go-side body cascaded via ON DELETE CASCADE; the unified
+// handler now refuses with code='flow_disallowed' and a structured
+// {blockers[], count} payload so the admin UI can render the offender
+// list before letting the user explicitly clear the steps.
+func TestFlowDeleteBlockedByFlowSteps(t *testing.T) {
+	f := setup(t, "kitp_test_flow_blockers")
 
 	// Create flow + 2 flow_steps.
 	var setOut flow.SetOutput
@@ -265,33 +271,47 @@ func TestFlowDeleteCascadesSteps(t *testing.T) {
 		}, nil)
 	}
 
-	// Verify steps exist.
-	var listOut flow.StepListOutput
-	dispatch(t, f, api.SubRequest{
-		ID: "l1", Endpoint: "flow_step", Action: "list", Data: json.RawMessage(
-			fmt.Sprintf(`{"flow_id":"%d"}`, setOut.ID)),
-	}, &listOut)
-	if len(listOut.Rows) != 2 {
-		t.Fatalf("expected 2 steps before delete, got %d", len(listOut.Rows))
-	}
-
-	// Delete flow.
-	var delOut flow.DeleteOutput
-	dispatch(t, f, api.SubRequest{
+	// Delete must refuse with the blocker payload.
+	errEnv := dispatchExpectErr(t, f, api.SubRequest{
 		ID: "d", Endpoint: "flow", Action: "delete", Data: json.RawMessage(
 			fmt.Sprintf(`{"flow_id":"%d"}`, setOut.ID)),
-	}, &delOut)
-	if !delOut.OK || delOut.Deleted != 1 {
-		t.Errorf("delete: %+v", delOut)
+	})
+	if errEnv.Code != "flow_disallowed" {
+		t.Fatalf("flow_disallowed expected, got %q: %s", errEnv.Code, errEnv.Message)
+	}
+	// Detail carries the structured blocker list.
+	detail, ok := errEnv.Detail.(map[string]any)
+	if !ok || detail == nil {
+		t.Fatalf("detail missing or not an object: %#v", errEnv.Detail)
+	}
+	if c, _ := detail["count"].(float64); int(c) != 2 {
+		t.Errorf("count=%v want 2", detail["count"])
+	}
+	blockers, _ := detail["blockers"].([]any)
+	if len(blockers) != 2 {
+		t.Fatalf("blockers len=%d want 2: %#v", len(blockers), blockers)
 	}
 
-	// Both flow_step rows are gone.
+	// Both flow_step rows still exist; the flow itself is still present.
 	var n int
 	if err := f.sp.P.QueryRow(context.Background(), `SELECT count(*) FROM flow_step WHERE flow_id = $1`, setOut.ID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Errorf("expected 0 flow_step rows after cascade, got %d", n)
+	if n != 2 {
+		t.Errorf("expected 2 flow_step rows after refused delete, got %d", n)
+	}
+
+	// After clearing steps, the same flow.delete now succeeds.
+	if _, err := f.sp.P.Exec(context.Background(), `DELETE FROM flow_step WHERE flow_id = $1`, setOut.ID); err != nil {
+		t.Fatalf("clear steps: %v", err)
+	}
+	var delOut flow.DeleteOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "d2", Endpoint: "flow", Action: "delete", Data: json.RawMessage(
+			fmt.Sprintf(`{"flow_id":"%d"}`, setOut.ID)),
+	}, &delOut)
+	if !delOut.OK || delOut.Deleted != 1 {
+		t.Errorf("delete after clear: %+v", delOut)
 	}
 }
 

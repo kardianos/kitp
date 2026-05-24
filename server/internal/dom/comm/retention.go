@@ -28,51 +28,25 @@ import (
 	"github.com/kitp/kitp/server/internal/store"
 )
 
-// LogPruner owns the comm_log prune loop. Construct with
-// StartLogPruner; the returned value's Stop() drains the goroutine
-// cleanly. RunOnce is exposed so tests can drive one iteration
-// synchronously without waiting on the ticker.
+// LogPruner deletes comm_log rows older than the configured retention
+// window. Construct with [NewLogPruner] and register its [RunOnce]
+// method (via a thin closure) with the [job.Scheduler]. The
+// scheduler owns the ticker, the per-tick timeout, logging, and
+// metrics.
 type LogPruner struct {
 	pool      *store.Pool
 	retention time.Duration
-	interval  time.Duration
 	logger    *slog.Logger
-	stop      chan struct{}
-	done      chan struct{}
 }
 
-// StartLogPruner spawns the prune goroutine. retention is the age cutoff
-// (rows older than now-retention are eligible) and interval is the
-// sweep cadence. Both are clamped to a sensible minimum to keep a
-// misconfigured env var from busy-looping over the table. Call Stop()
-// to drain.
-func StartLogPruner(pool *store.Pool, retention, interval time.Duration) *LogPruner {
-	p := newLogPruner(pool, retention, interval)
-	go p.run()
-	return p
-}
-
-// NewLogPrunerForTest builds an unstarted LogPruner so tests can drive
-// RunOnce synchronously. Production callers go through StartLogPruner.
-func NewLogPrunerForTest(pool *store.Pool, retention, interval time.Duration) *LogPruner {
-	return newLogPruner(pool, retention, interval)
-}
-
-func newLogPruner(pool *store.Pool, retention, interval time.Duration) *LogPruner {
-	// Clamp interval but never clamp retention to anything that would
-	// make a test useless: tests build a pruner with retention=24h and
-	// hand-insert rows at now()-31d / now()-1d. A floor on retention
-	// would silently swallow those expectations.
-	if interval < time.Second {
-		interval = time.Second
-	}
+// NewLogPruner constructs a pruner. retention is the age cutoff
+// (rows older than now-retention are eligible). Hand the returned
+// value's [LogPruner.RunOnce] to the job scheduler.
+func NewLogPruner(pool *store.Pool, retention time.Duration) *LogPruner {
 	return &LogPruner{
 		pool:      pool,
 		retention: retention,
-		interval:  interval,
 		logger:    slog.Default(),
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
 	}
 }
 
@@ -81,42 +55,6 @@ func newLogPruner(pool *store.Pool, retention, interval time.Duration) *LogPrune
 func (p *LogPruner) SetLogger(l *slog.Logger) {
 	if l != nil {
 		p.logger = l
-	}
-}
-
-// Stop signals the goroutine to exit and waits for it to drain. Safe
-// to call multiple times.
-func (p *LogPruner) Stop() {
-	select {
-	case <-p.stop:
-		// already stopped
-	default:
-		close(p.stop)
-	}
-	<-p.done
-}
-
-func (p *LogPruner) run() {
-	defer close(p.done)
-	t := time.NewTicker(p.interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-p.stop:
-			return
-		case <-t.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			deleted, err := p.RunOnce(ctx)
-			if err != nil {
-				p.logger.LogAttrs(ctx, slog.LevelError, "comm_log pruner RunOnce",
-					slog.String("err", err.Error()))
-			} else if deleted > 0 {
-				p.logger.LogAttrs(ctx, slog.LevelInfo, "comm_log pruner swept",
-					slog.Int64("deleted", deleted),
-					slog.Duration("retention", p.retention))
-			}
-			cancel()
-		}
 	}
 }
 

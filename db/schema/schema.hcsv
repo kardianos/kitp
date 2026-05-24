@@ -109,13 +109,14 @@ name
 
 ### columns
 name, type, pk, unique, nullable, default, references
-id, bigserial, true, , , , 
-name, text, , true, false, , 
+id, bigserial, true, , , ,
+name, text, , true, false, ,
 parent_card_type_id, bigint, , , , , card_type.id
-allow_self_parent, boolean, , , false, false, 
-is_built_in, boolean, , , false, false, 
+allow_self_parent, boolean, , , false, false,
+is_built_in, boolean, , , false, false,
+uses_phase, boolean, , , false, false,
 
-## table attribute_def | doc="An attribute definition (title, assignee, …). value_type is one of text|number|bool|card_ref|card_ref[]. For card_ref / card_ref[] value_types target_card_type_id names the card_type whose cards are the valid values — that is what unifies every pick-from-a-list attribute (assignee / milestone / component / tag plus any custom card_type a project admin defines): each is a card_ref to value-cards of a specific card_type. There is no enum table and no privileged workflow attribute baked into the schema."
+## table attribute_def | doc="An attribute definition (title, assignee, …). value_type is one of text|number|bool|date|card_ref|card_ref[]. `date` is stored as a JSON string holding an ISO 8601 calendar date ('YYYY-MM-DD'); the predicate compiler's before_today / within_days ops compare these as text (ISO dates sort lexically as chronologically). For card_ref / card_ref[] value_types target_card_type_id names the card_type whose cards are the valid values — that is what unifies every pick-from-a-list attribute (assignee / milestone / component / tag plus any custom card_type a project admin defines): each is a card_ref to value-cards of a specific card_type. There is no enum table and no privileged workflow attribute baked into the schema."
 
 ### meta
 name_column
@@ -287,16 +288,21 @@ name, type, pk, nullable, references, on_delete
 address, text, true, , cas_blob.address, cascade
 data, bytea, , false, , 
 
-## table file | doc="Logical file (filename + size + mime). Bytes are stored as ordered file_chunk rows pointing at cas_blob addresses."
+## table file | doc="Logical file (filename + size + mime). Bytes are stored as ordered file_chunk rows pointing at cas_blob addresses. sha256 mirrors the single-chunk file's CAS address (or NULL for multi-chunk files); populated on file.create so dedup queries can index on it without walking file_chunk."
 
 ### columns
 name, type, pk, nullable, default, references
-id, bigserial, true, , , 
-filename, text, , false, , 
-size_bytes, bigint, , false, , 
-mime_type, text, , false, 'application/octet-stream', 
-created_at, timestamptz, , false, now(), 
+id, bigserial, true, , ,
+filename, text, , false, ,
+size_bytes, bigint, , false, ,
+mime_type, text, , false, 'application/octet-stream',
+created_at, timestamptz, , false, now(),
 created_by, bigint, , false, , user_account.id
+sha256, text, , true, ,
+
+### indexes
+name, columns, where
+idx_file_sha256, "sha256", "sha256 IS NOT NULL"
 
 ## table file_chunk | doc="Ordered CAS-address list per file. Reaper walks (file_chunk.cas_address) to keep cas_blob rows live." | primary_key="file_id, seq"
 
@@ -315,10 +321,10 @@ idx_file_chunk_cas_address, "cas_address"
 
 ### columns
 name, type, pk, nullable, default, references
-id, bigserial, true, , , 
+id, bigserial, true, , ,
 card_id, bigint, , false, , card.id
-created_at, timestamptz, , false, now(), 
-deleted_at, timestamptz, , , , 
+created_at, timestamptz, , false, now(),
+deleted_at, timestamptz, , , ,
 file_id, bigint, , false, , file.id
 thumb_file_id, bigint, , , , file.id
 
@@ -327,6 +333,17 @@ name, columns, where
 idx_attachment_card_id_active, "card_id", "deleted_at IS NULL"
 idx_attachment_file_id, "file_id", "deleted_at IS NULL"
 idx_attachment_thumb_file_id, "thumb_file_id", "deleted_at IS NULL AND thumb_file_id IS NOT NULL"
+
+## table reply_body_attachment | doc="Join table — which existing task attachments ride along with which outgoing (or round-tripped) reply. The reply_body card itself is global (no project parent), so attachments are referenced by id rather than embedded as a card_ref attribute. SMTP joins this on send; IMAP joins it on receive to recognise round-trip attachments and skip duplicate ingestion." | primary_key="reply_body_id, attachment_id"
+
+### columns
+name, type, nullable, references, on_delete
+reply_body_id, bigint, false, card.id, cascade
+attachment_id, bigint, false, attachment.id, cascade
+
+### indexes
+name, columns
+idx_reply_body_attachment_attachment_id, "attachment_id"
 
 ## table user_account_person | doc="Optional 1:1 link between a user_account (the login) and a person card (the assignable entity). A person may exist without a user_account (imported assignee, project manager who never logs in); a user_account may exist briefly before its person card is provisioned (OIDC first-sight)."
 
@@ -411,3 +428,107 @@ at, timestamptz, , false, now(), ,
 name, columns
 idx_comm_log_project_at, "project_id, at desc"
 idx_comm_log_project_kind_at, "project_id, kind, at desc"
+
+
+## table activity_sink_secret | doc="Encrypted MS Graph (or future provider) client_secret for an activity_sink card. One row per sink; sink_card_id is the PK + FK with ON DELETE CASCADE so deleting the sink drops the secret. client_secret is a bytea cell written via pgcrypto's pgp_sym_encrypt (key from KITP_COMM_SECRET_KEY env var — same GUC the comm_secret table uses, kept singular to avoid a second secret-key surface)."
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+sink_card_id, bigint, true, , , card.id, cascade
+client_secret, bytea, , , , ,
+updated_at, timestamptz, , false, now(), ,
+
+
+## table activity_sink_state | doc="Per-sink high-water mark + last-error for the activity pump. Separated from the sink card's attributes so the pointer can advance every push without writing a fresh attr_update activity row on the sink itself (which would re-enter the activity stream and cause feedback). last_activity_id is the largest activity.id this sink has successfully delivered downstream; the pump scans WHERE id > last_activity_id."
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+sink_card_id, bigint, true, , , card.id, cascade
+last_activity_id, bigint, , false, 0, ,
+last_pushed_at, timestamptz, , , , ,
+last_pushed_count, bigint, , false, 0, ,
+last_error, text, , , , ,
+updated_at, timestamptz, , false, now(), ,
+
+-- ---------------------------------------------------------------------
+-- Handler functions (unified handler model — docs/UNIFIED_HANDLER_PLAN.md).
+-- Every batch handler with `reg.Handler.SQLFunc` set has its body here.
+-- Signature is `(actor_id bigint, inputs jsonb) RETURNS TABLE(idx int,
+-- ok boolean, code text, message text, result jsonb)` — uniform so the
+-- dispatcher's wrapper code is one shape.
+-- ---------------------------------------------------------------------
+
+## function comment_insert_batch | doc="comment.insert — validate + write per row." | path="functions/comment_insert_batch.sql"
+## function build_flow_available_array | doc="V13 helper: emits the available[] JSONB array for a flow rejection envelope. Mirrors flow.listAvailableTransitions in PL/pgSQL." | path="functions/build_flow_available_array.sql" | arg_types="bigint, bigint, bigint"
+## function attribute_update_batch | doc="attribute.update — validate (card / edge / required-removal / project-scope / screen-uniqueness / flow gate) and write per row." | path="functions/attribute_update_batch.sql"
+## function attachment_delete_batch | doc="attachment.delete — soft-delete + activity row per input." | path="functions/attachment_delete_batch.sql"
+## function attachment_create_batch | doc="attachment.create — validate + link existing file to card + activity row per input; thumb_file_id is NULL at SQL level and the dispatcher's PostRun hook (doThumbnails) fills it in after Go-side image decode." | path="functions/attachment_create_batch.sql"
+## function remap_predicate_tree | doc="Walk a predicate-tree JSONB value and rewrite card_ref ids on every leaf whose attr names a card_ref / card_ref[] attribute. Recurses into children[] (connective nodes) and items[].predicate (toggle_groups). Used by copy_project_template." | path="functions/remap_predicate_tree.sql" | arg_types="jsonb, jsonb, text[]"
+## function copy_project_template | doc="Graph-copy a template project's descendants (cards + flows + flow_steps + attribute_values with ID remap, including predicate-tree card-ref remap via remap_predicate_tree) into a fresh new_project_id. Used by card.insert(project) and project_stamp_batch." | path="functions/copy_project_template.sql" | arg_types="bigint, bigint, bigint"
+## function card_insert_batch | doc="card.insert — validate (card_type / parent / required-edges / scope) and write card + activities + initial attribute values per input. Seeds built-in screens for projects." | path="functions/card_insert_batch.sql"
+## function card_delete_batch | doc="card.delete — soft-delete + activity row per input, with flow_step reference guard." | path="functions/card_delete_batch.sql"
+## function card_move_batch | doc="card.move — re-parent + activity row per input, with parent-type compatibility check." | path="functions/card_move_batch.sql"
+## function card_set_phase_batch | doc="card.set_phase — write the structural phase column + activity row per input." | path="functions/card_set_phase_batch.sql"
+## function project_stamp_batch | doc="project.stamp — INSERT a fresh project card + title + is_template=FALSE attribute_values, then PERFORM copy_project_template to graph-copy the template's descendants (status / milestone / screen / filter / predicate_snippet cards + flows + flow_steps + attribute_values with full ID remap). Emits V24 warnings (template_empty / template_no_flows)." | path="functions/project_stamp_batch.sql"
+## function task_move_batch | doc="task.move — bump task (and optionally its parent_task subtree) to a different project, clearing per-project classification." | path="functions/task_move_batch.sql"
+## function task_purge_batch | doc="task.purge — hard delete a task and cascade comms / reply_bodies / attachments / activity." | path="functions/task_purge_batch.sql"
+## function comment_update_batch | doc="comment.update — validate + author-check + body update + audit row per input." | path="functions/comment_update_batch.sql"
+## function user_card_sort_set_batch | doc="user_card_sort.set — validate + per-user upsert per input." | path="functions/user_card_sort_set_batch.sql"
+## function user_card_agent_set_batch | doc="user_card_agent.set — validate + ownership check + upsert per input." | path="functions/user_card_agent_set_batch.sql"
+## function user_card_agent_unset_batch | doc="user_card_agent.clear — per-input scoped DELETE returning deleted count." | path="functions/user_card_agent_unset_batch.sql"
+## function tag_apply_batch | doc="tag.apply — validate + mutually-exclusive sibling removal + per-row apply." | path="functions/tag_apply_batch.sql"
+## function tag_remove_batch | doc="tag.remove — validate + per-row remove with activity row." | path="functions/tag_remove_batch.sql"
+## function attribute_def_insert_batch | doc="attribute_def.insert — admin-only INSERT of one attribute_def row + idempotent bind_to[] edges per input." | path="functions/attribute_def_insert_batch.sql"
+## function edge_insert_batch | doc="edge.insert — admin-only idempotent (card_type, attribute_def) edge insert." | path="functions/edge_insert_batch.sql"
+## function edge_delete_batch | doc="edge.delete — admin-only edge unbind. Soft-refuses with usage_count when attribute_value rows reference the pair; hard-refuses ('built_in') for migration-seeded edges." | path="functions/edge_delete_batch.sql"
+## function agent_create_batch | doc="agent.create — insert a user_account (is_agent=TRUE, parent_user_id=actor) per input." | path="functions/agent_create_batch.sql"
+## function agent_delete_batch | doc="agent.delete — null attribute_value.last_activity_id then delete activity rows + delete user_account (gated on is_agent=TRUE) per input." | path="functions/agent_delete_batch.sql"
+## function user_unlink_person_batch | doc="user.unlink_person — admin-only delete of the user_account_person link; idempotent." | path="functions/user_unlink_person_batch.sql"
+## function user_token_create_batch | doc="user_token.create — mint a 32-byte base64url bearer token bound to (user_id, label) and surface it once in the result." | path="functions/user_token_create_batch.sql"
+## function user_token_revoke_batch | doc="user_token.revoke — set revoked_at = now() on the matching (user_id, label) row; idempotent." | path="functions/user_token_revoke_batch.sql"
+## function user_role_set_batch | doc="user_role.set — upsert a (user_id, role, scope_card_id) grant against the partial unique indexes." | path="functions/user_role_set_batch.sql"
+## function user_role_revoke_batch | doc="user_role.revoke — delete a (user_id, role, scope_card_id) grant matching NULL-or-equal scope." | path="functions/user_role_revoke_batch.sql"
+## function user_role_list_batch | doc="user_role.list — list (role_name, scope_project_id) tuples held by one user." | path="functions/user_role_list_batch.sql"
+## function role_mapping_set_batch | doc="role_mapping.set — upsert one (claim_value -> role_id) mapping on the claim_value PK." | path="functions/role_mapping_set_batch.sql"
+## function role_mapping_delete_batch | doc="role_mapping.delete — delete one role_mapping row by claim_value; reports per-row deleted count." | path="functions/role_mapping_delete_batch.sql"
+## function file_create_batch | doc="file.create — validate filename + chunk list and INSERT file row + file_chunk[] per input. Filename normalisation (NFC + bidi/zero-width strip + trim) runs Go-side via CreateInput.UnmarshalJSON; the function handles only the cheap presence/extension gates + DB writes." | path="functions/file_create_batch.sql"
+## function comm_set_recipients_batch | doc="comm.set_recipients — validate (comm exists, every person_id is a person card) + replace the comm_recipients attribute_value with the deduped, canonicalised list." | path="functions/comm_set_recipients_batch.sql"
+## function reply_post_batch | doc="reply.post — validate (comm exists, has recipients) + insert reply_body card with 5 attributes (set-based via ordinality join) + append to comm.replies + optional attachment linking." | path="functions/reply_post_batch.sql"
+## function person_upsert_by_email_batch | doc="person.upsert_by_email — case-insensitive email match against existing person cards; on miss create a fresh global person card with title / email / person_kind." | path="functions/person_upsert_by_email_batch.sql"
+## function flow_set_batch | doc="flow.set — admin-only upsert of one flow row. Validates attribute_def + project scope + optional default_create_status_id target type; maps unique_violation to flow_duplicate_scope." | path="functions/flow_set_batch.sql"
+## function flow_delete_batch | doc="flow.delete — admin-only delete of one flow row. Refuses with code='flow_disallowed' and a structured {blockers[], count} payload when any flow_step row still references the flow (admins must clear steps first)." | path="functions/flow_delete_batch.sql"
+## function flow_step_set_batch | doc="flow_step.set — admin-only upsert of one flow_step row. Validates flow existence, from/to cards are value-cards of the flow's attribute_def target_card_type, and label uniqueness." | path="functions/flow_step_set_batch.sql"
+## function flow_step_delete_batch | doc="flow_step.delete — admin-only delete of one flow_step row by id." | path="functions/flow_step_delete_batch.sql"
+## function activity_sink_set_batch | doc="activity_sink.set — admin-only upsert of one activity_sink card + paired activity_sink_secret row (pgp_sym_encrypt of client_secret with the app.comm_secret_key GUC). Set-based attribute writes via the ordinality-join idiom." | path="functions/activity_sink_set_batch.sql"
+## function person_create_batch | doc="person.create — admin-only insert of a global person card with title + person_kind + optional email; tier='user' also provisions a user_account row + user_account_person link." | path="functions/person_create_batch.sql"
+## function comm_channel_set_batch | doc="comm_channel.set — admin-only INSERT/UPDATE of a comm_channel card plus multi-attribute writes (title/channel_type/imap_*/smtp_*/from_address/intake_status/channel_status) and the paired comm_secret row (pgcrypto pgp_sym_encrypt with app.comm_secret_key GUC; omitted passwords preserved via COALESCE)." | path="functions/comm_channel_set_batch.sql"
+## function comm_create_batch | doc="comm.create — admin-only insert of a comm card under a task. Mints a unique 10-char alphanumeric thread_id, writes title/channel_ref/thread_id/comm_status via the ordinality-join idiom, optional comm_recipients + initial_message → reply_body, appends to task.comms." | path="functions/comm_create_batch.sql"
+## function card_undelete_batch | path="functions/card_undelete_batch.sql"
+## function project_import_upload_batch | doc="project.import.upload — validate project + persist import_job row. CSV parsing runs Go-side via the PreRun hook; this function receives pre-parsed header/preview/row_count under reserved `_parsed_*` keys." | path="functions/project_import_upload_batch.sql"
+## function project_import_set_mapping_batch | doc="project.import.set_mapping — UPDATE the job's mapping JSONB; advance status to 'mapped' (unless already past 'mapped' in which case mapping changes but status holds)." | path="functions/project_import_set_mapping_batch.sql"
+## function project_import_preview_batch | doc="project.import.preview — dry-run pass that walks the pre-parsed CSV rows, applies the mapping + resolution config, returns would_create counts + per-row error log, and persists resolution + summary on the job row." | path="functions/project_import_preview_batch.sql"
+## function project_import_commit_batch | doc="project.import.commit — apply the import: auto-create persons / milestones / components / tags via card_insert_batch, insert tasks via a single card_insert_batch call, mark the job 'completed'. Fail the tx on any row resolution error." | path="functions/project_import_commit_batch.sql"
+## function role_list_batch | doc="role.list — list every role row with its (card_type, process) grant set. One input → one result row; same global snapshot replicated per input." | path="functions/role_list_batch.sql"
+## function role_mapping_list_batch | doc="role_mapping.list — list every role_mapping row joined to its role. One input → one result row; same global snapshot per input." | path="functions/role_mapping_list_batch.sql"
+## function user_select_batch | doc="user.select — list user_account rows with optional per-input filters (ids[], parent_user_id, is_agent). Empty filters return the full list sorted by (display_name, id)." | path="functions/user_select_batch.sql"
+## function user_list_with_roles_batch | doc="user.list_with_roles — list every user_account row with role assignments and resolved scope_project_title for scoped grants. Admin-only read; single snapshot per input." | path="functions/user_list_with_roles_batch.sql"
+## function user_card_agent_list_batch | doc="user_card_agent.list — list per-user agent routings owned by the calling actor, optionally narrowed to one parent (typically a project) via parent_card_id." | path="functions/user_card_agent_list_batch.sql"
+## function user_token_list_batch | doc="user_token.list — list every user_token row for input.user_id (labels + timestamps ONLY; the secret value is never surfaced after the create-time mint)." | path="functions/user_token_list_batch.sql"
+## function activity_sink_list_batch | doc="activity_sink.list — list activity_sink cards under input.project_id joined with activity_sink_secret (has_client_secret only) and activity_sink_state (pump pointer + last error). Admin-only." | path="functions/activity_sink_list_batch.sql"
+## function attribute_def_select_batch | doc="attribute_def.select — list every attribute_def with bound (card_type, is_required, ordering) edges. Optional input filters by id or name for symmetry with future single-row lookups." | path="functions/attribute_def_select_batch.sql"
+## function attachment_list_batch | doc="attachment.list — list active attachments for a card (joined with file row), newest first; result.rows is a JSONB array shaped like attachment.Row." | path="functions/attachment_list_batch.sql"
+## function card_select_batch | doc="card.select — list cards filtered by optional parent_card_id / card_type_name; soft-deleted excluded; per-actor visibility predicate (B7) applied. Title is null in this lighter read path." | path="functions/card_select_batch.sql"
+## function card_search_batch | doc="card.search — typeahead read returning (id, title) hits within a card_type; supports substring query, numeric-id fast-path, explicit ids[] filter, optional parent_card_id; per-actor visibility predicate (B7) applied." | path="functions/card_search_batch.sql"
+## function comm_list_for_task_batch | doc="comm.list_for_task — list comm cards under a task, hydrated with replies (reply_body rows from the replies card_ref[] attribute) + recipients (comm_recipients card_ref[] as []string ids). Per-actor visibility predicate (B7) applied." | path="functions/comm_list_for_task_batch.sql"
+## function comm_channel_list_batch | doc="comm_channel.list — admin-only list of comm_channel cards under a project, with multi-attribute hoisting + comm_secret join to surface has_imap_password / has_smtp_password without exposing encrypted bytes." | path="functions/comm_channel_list_batch.sql"
+## function comm_log_list_batch | doc="comm_log.list — admin-only paginated read of comm_log rows for a project, optionally filtered by kind + since timestamp (defaults to last 24h); channel_name joined via the channel card's title attribute." | path="functions/comm_log_list_batch.sql"
+## function activity_select_batch | doc="activity.select — paged activity for one card (or cross-card when card_id is omitted) with comment_body bodies hydrated for kind=comment rows; per-actor visibility predicate (B7) applied in both modes." | path="functions/activity_select_batch.sql"
+## function cas_missing_chunks_batch | doc="cas.missing_chunks — anti-join input addresses against cas_blob; result.missing[] preserves input ordinality so duplicated input addresses appear duplicated in the output (matches the legacy Go-side unnest behaviour). Empty / missing addresses[] returns missing=[]." | path="functions/cas_missing_chunks_batch.sql"
+## function _canon_card_ref | doc="Canonicalise a jsonb value against an attribute_def.value_type. card_ref string-of-digits becomes a JSON number; card_ref[] applies elementwise; other shapes pass through. Mirrors schema.Snapshot.CanonicalizeValue." | path="functions/canon_card_ref.sql" | arg_types="jsonb, text"
+## function card_compile_predicate | doc="Recursive predicate-tree compiler used by card_select_with_attributes_batch. Walks the v2 tree (connective / leaf / snippet) and emits a SQL boolean fragment plus an accumulated JSONB params bag. Mirrors the Go-side card.CompileTree." | path="functions/card_compile_predicate.sql" | arg_types="jsonb, jsonb, bigint[]"
+## function card_select_with_attributes_batch | doc="card.select_with_attributes — SPA's main read path. Compiles the v1 where[] / v2 tree via card_compile_predicate, layers in optional personal_sort / routed_to_me joins + ordering LATERALs, EXECUTEs the dynamic SQL, returns each input's rows as a JSONB array under result.rows. Per-actor visibility predicate (B7) AND-joined." | path="functions/card_select_with_attributes_batch.sql"
+## function flow_list_batch | doc="flow.list — list flow rows, optionally filtered by scope_card_id (project) and / or attribute_def_id. Joined to attribute_def for the display name." | path="functions/flow_list_batch.sql"
+## function flow_preview_delete_batch | doc="flow.preview_delete — read-shaped V16 dry-run preview for flow.delete. Returns flow_name + step_count + affected-task counts bucketed by phase + up to 5 sample step labels in sort order." | path="functions/flow_preview_delete_batch.sql"
+## function flow_step_list_batch | doc="flow_step.list — list flow_step rows for one flow, joined LEFT to role for the optional requires_role name. Sorted by (sort_order, label, id)." | path="functions/flow_step_list_batch.sql"
+## function flow_step_list_for_card_batch | doc="flow_step.list_for_card — read-side affordance API: walk parent_card_id (RECURSIVE depth<16) to find the enclosing project, then list every flow_step the card may currently fire — one row per (flow, attribute_def, from_card_id=card's value) match — pre-joined with from/to titles+phases, optional requires_role name, and a per-actor allowed bit (system bypass + project-or-global scope check)." | path="functions/flow_step_list_for_card_batch.sql"
+## function card_type_select_batch | doc="card_type.select — list every card_type row (global reference data; no per-input filter today). One input → one result row; same snapshot replicated per input." | path="functions/card_type_select_batch.sql"

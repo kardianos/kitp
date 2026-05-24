@@ -22,8 +22,10 @@
   Ports `client/lib/ui/screens/task_detail_screen.dart` (759 LOC).
 -->
 <script lang="ts">
-  import { tick, untrack } from 'svelte';
+  import { getContext, tick, untrack } from 'svelte';
+  import type { AuthState } from '../auth/auth_state.svelte';
   import { getDispatcher } from '../dispatch/context';
+  import { clearHelpTopic, setHelpTopic } from '../help/help_context.svelte';
   import { setActiveScope, useShortcut } from '../keys/shortcut';
   import { goBackOrFallback, navigate } from '../routing/router.svelte';
   import { taskNavList } from '../routing/task_nav_list.svelte';
@@ -31,19 +33,24 @@
   import Button from '../ui/Button.svelte';
   import IconButton from '../ui/IconButton.svelte';
   import Markdown from '../ui/Markdown.svelte';
+  import AutoGrowTextarea from '../ui/inputs/AutoGrowTextarea.svelte';
+  import { formatRelativeTime } from '../ui/widgets/time';
   import Spinner from '../ui/Spinner.svelte';
   import Combobox from '../ui/Combobox.svelte';
+  import RecipientsPicker from '../ui/RecipientsPicker.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
   import ActivityRowView from '../ui/widgets/ActivityRow.svelte';
   import TagChip from '../ui/widgets/TagChip.svelte';
   import AttachmentsSection from '../ui/widgets/AttachmentsSection.svelte';
+  import MoveTaskDialog from '../ui/widgets/MoveTaskDialog.svelte';
+  import PurgeTaskDialog from '../ui/widgets/PurgeTaskDialog.svelte';
+  import RelatedTasksPanel from '../ui/widgets/RelatedTasksPanel.svelte';
+  import QuickEntryOverlay from '../quick_entry/QuickEntryOverlay.svelte';
+  import { useQuickEntry } from '../quick_entry/use_quick_entry.svelte';
   import AttachmentsPreviewStrip from '../ui/widgets/AttachmentsPreviewStrip.svelte';
   import AttributeSidePanel from '../ui/widgets/AttributeSidePanel.svelte';
   import TransitionBar from '../ui/widgets/TransitionBar.svelte';
-  import MilkdownComposer from '../composer/MilkdownComposer.svelte';
-  import { uploadAttachment } from '../attachments/upload';
-  import type { AuthState } from '../auth/auth_state.svelte';
-  import { getContext } from 'svelte';
+  import { isAssignablePerson } from '../util/person';
   import { sharedSchemaCache } from '../filter/attribute_schema.svelte';
   import type { FilterAttribute } from '../filter/attribute_schema.svelte';
   import type {
@@ -57,11 +64,18 @@
     CardSelectWithAttributesInput,
     CardSelectWithAttributesOutput,
     CardWithAttrs,
+    ChannelListInput,
+    ChannelListOutput,
+    ChannelRow,
+    CommCreateInput,
+    CommCreateOutput,
     CommListForTaskInput,
     CommListForTaskOutput,
     CommRow,
     CommentInsertInput,
     CommentInsertOutput,
+    CommentUpdateInput,
+    CommentUpdateOutput,
     FlowStepListForCardInput,
     FlowStepListForCardOutput,
     ID,
@@ -74,7 +88,12 @@
     UserSelectInput,
     UserSelectOutput,
   } from '../reg/types';
-  import { commListForTask, flowStepListForCard } from '../reg/handlers';
+  import {
+    commChannelList,
+    commCreate,
+    commListForTask,
+    flowStepListForCard,
+  } from '../reg/handlers';
   import {
     commStatusLabel,
     commStatusTone,
@@ -90,6 +109,7 @@
     cardTitleMap,
     commentInsert,
     commentInsertPayload,
+    commentUpdate,
     commitDescriptionPayload,
     commitTitlePayload,
     personNameMap,
@@ -105,6 +125,11 @@
   } from './task_detail_helpers';
 
   setActiveScope('task_detail');
+
+  $effect(() => {
+    setHelpTopic({ kind: 'topic', topic: 'task_detail' });
+    return () => clearHelpTopic();
+  });
 
   /* -------------------------------------------------------------------- */
   /* Props + dispatcher                                                   */
@@ -129,12 +154,18 @@
 
   const dispatcher = getDispatcher();
   const schemaCache = sharedSchemaCache(dispatcher);
+  const authState = getContext<AuthState | undefined>('authState');
 
   /* -------------------------------------------------------------------- */
   /* Reactive state                                                       */
   /* -------------------------------------------------------------------- */
 
   let task = $state<CardWithAttrs | null>(null);
+  /** Every task card visible to the user. Sourced from the same
+   *  `card.select_with_attributes(card_type=task)` request that fetches
+   *  the focal task, so feeding the RelatedTasksPanel costs zero extra
+   *  round-trips. Parent + children are derived from this list. */
+  let allTasks = $state<readonly CardWithAttrs[]>([]);
   let activity = $state<readonly ActivityRow[]>([]);
   let milestones = $state<readonly CardWithAttrs[]>([]);
   let components = $state<readonly CardWithAttrs[]>([]);
@@ -148,6 +179,29 @@
    * thread id, and the reply chain here.
    */
   let comms = $state<readonly CommRow[]>([]);
+  /**
+   * Two-way bound to RelatedTasksPanel so the `e p` chord can pop the
+   * parent picker from anywhere on the screen. The panel also flips
+   * this on its "+ Set parent" button click, so click and chord share
+   * one state.
+   */
+  let parentPickerOpen = $state(false);
+  /**
+   * Two-way bound for the "Add existing child" picker. `e a` flips
+   * this so the search Combobox auto-opens with focus on its query
+   * input.
+   */
+  let childPickerOpen = $state(false);
+  /** Open / close state for the cross-project move dialog. */
+  let moveDialogOpen = $state(false);
+  /** Open / close state for the hard-delete (task.purge) confirm
+   *  dialog. Reachable only from the header kebab; gated by a
+   *  type-the-title confirm inside the dialog itself. */
+  let purgeDialogOpen = $state(false);
+  /** Open / close state for the header kebab. Tiny menu — just hosts
+   *  "Move to project…" today, but the surface is in place for any
+   *  future task-level actions. */
+  let headerMenuOpen = $state(false);
   /**
    * Available state transitions for this task — drives the header
    * `<TransitionBar>`. Refreshed on every load + after every successful
@@ -183,46 +237,149 @@
   let descDraft = $state('');
   let descEl: HTMLTextAreaElement | null = $state(null);
 
+
   // Comment composer.
   let commentDraft = $state('');
   let commentEl: HTMLTextAreaElement | null = $state(null);
   let postingComment = $state(false);
 
+  // Per-comment edit state. Keyed by stringified activity id. `draft`
+  // holds the in-flight body; `busy` blocks duplicate submits.
+  let commentEdits = $state<Record<string, { draft: string; busy: boolean }>>({});
+  function startCommentEdit(id: ID, currentBody: string): void {
+    commentEdits = {
+      ...commentEdits,
+      [id.toString()]: { draft: currentBody, busy: false },
+    };
+  }
+  function cancelCommentEdit(id: ID): void {
+    const next = { ...commentEdits };
+    delete next[id.toString()];
+    commentEdits = next;
+  }
+  function setCommentDraft(id: ID, draft: string): void {
+    const key = id.toString();
+    const cur = commentEdits[key];
+    if (cur === undefined) return;
+    commentEdits = { ...commentEdits, [key]: { ...cur, draft } };
+  }
+
   // Bumped each time the right-rail AttachmentsSection commits an upload
   // or delete; the preview strip listens to it via a $effect to refetch.
   let attachmentsVersion = $state(0);
 
-  /**
-   * Rich-text comment composer behind a flag. When true, the textarea is
-   * replaced with a Milkdown editor (slash commands + tables + image
-   * upload). Flip to false to fall back to the textarea while we shake
-   * out edge cases. Eventually this becomes the only path.
-   */
-  const RICH_COMPOSER = true;
-
-  const authState = getContext<AuthState | null>('authState') ?? null;
-
-  /**
-   * Image uploader for the rich composer. Reuses the existing
-   * attachment pipeline: chunk-upload to CAS → file.create →
-   * attachment.create (parented to the current task). The resulting
-   * attachment id becomes the inline image src
-   * `/api/v1/attachment/{id}/view`, which the server streams with
-   * `Content-Disposition: inline` so `<img>` renders directly.
+  /* ---- "Start comm" form on the Comms section ----
    *
-   * Inline images therefore *also* show up in the right-rail
-   * AttachmentsSection — by design: every uploaded asset is reachable
-   * through both surfaces. The activity stream gets one
-   * attachment_create row per upload.
+   * Admin-gated affordance for attaching a new outbound email thread to
+   * a task that did NOT come in through email — the inbound IMAP path
+   * mints task+comm together; this surfaces the equivalent for tasks
+   * authored in-app. Calls `comm.create` with a user-picked channel +
+   * optional initial message. Channels are loaded lazily on first open
+   * to avoid an extra request on every task detail load.
    */
-  async function uploadImage(file: File): Promise<{ src: string; alt: string }> {
-    const att = await uploadAttachment(dispatcher, taskId, file, authState);
-    attachmentsVersion += 1;
-    return {
-      src: `/api/v1/attachment/${att.id.toString()}/view`,
-      alt: file.name,
-    };
+  let channels = $state<readonly ChannelRow[]>([]);
+  let channelsLoaded = $state(false);
+  let loadingChannels = $state(false);
+  let newCommOpen = $state(false);
+  let newCommChannelId = $state<ID | null>(null);
+  let newCommRecipients = $state<ID[]>([]);
+  let creatingComm = $state(false);
+
+  async function ensureChannelsLoaded(): Promise<void> {
+    if (channelsLoaded || loadingChannels) return;
+    if (task === null || task.parent_card_id === undefined) return;
+    const pid = task.parent_card_id;
+    loadingChannels = true;
+    try {
+      const out = await dispatcher.request<ChannelListInput, ChannelListOutput>({
+        endpoint: commChannelList.endpoint,
+        action: commChannelList.action,
+        data: { projectId: pid },
+      });
+      channels = out.rows;
+      channelsLoaded = true;
+    } catch (e) {
+      notify({
+        type: 'error',
+        message: `Load comm channels failed: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    } finally {
+      loadingChannels = false;
+    }
   }
+
+  function openNewCommForm(): void {
+    newCommOpen = true;
+    newCommChannelId = null;
+    newCommRecipients = [];
+    void ensureChannelsLoaded();
+  }
+
+  function closeNewCommForm(): void {
+    newCommOpen = false;
+    newCommChannelId = null;
+    newCommRecipients = [];
+  }
+
+  async function submitNewComm(): Promise<void> {
+    if (task === null || newCommChannelId === null) return;
+    if (newCommRecipients.length === 0) return;
+    creatingComm = true;
+    try {
+      const input: CommCreateInput = {
+        taskId: task.id,
+        channelId: newCommChannelId,
+        recipientPersonIds: newCommRecipients,
+      };
+      await dispatcher.request<CommCreateInput, CommCreateOutput>({
+        endpoint: commCreate.endpoint,
+        action: commCreate.action,
+        data: input,
+      });
+      // Refresh the comm list so the new thread shows immediately.
+      const out = await dispatcher.request<
+        CommListForTaskInput,
+        CommListForTaskOutput
+      >({
+        endpoint: commListForTask.endpoint,
+        action: commListForTask.action,
+        data: { taskId: task.id },
+      });
+      comms = out.rows;
+      closeNewCommForm();
+      notify({ type: 'success', message: 'Comm thread started.' });
+    } catch (e) {
+      notify({
+        type: 'error',
+        message: `Start comm failed: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    } finally {
+      creatingComm = false;
+    }
+  }
+
+  /** Combobox options for the channel picker. Disabled rows for channels
+   *  whose SMTP password isn't set — outbound replies will fail until
+   *  the admin configures them — so we surface the state but block the
+   *  pick to avoid silently-broken threads. */
+  const channelOptions = $derived<
+    { value: ID; label: string; disabled?: boolean }[]
+  >(
+    channels.map((c) => {
+      const status =
+        c.channel_status === 'enabled' && c.has_smtp_password
+          ? ''
+          : c.channel_status !== 'enabled'
+            ? ` (${c.channel_status})`
+            : ' (smtp not configured)';
+      return {
+        value: c.id,
+        label: `${c.name}${status}`,
+        disabled:
+          c.channel_status !== 'enabled' || !c.has_smtp_password,
+      };
+    }),
+  );
 
   // Tag picker (Combobox toggled by `t` shortcut and the "+ Add tag" btn).
   let tagPickerOpen = $state(false);
@@ -273,6 +430,50 @@
   });
 
   /**
+   * Status label + phase lookup for the RelatedTasksPanel chips. Keyed
+   * by status card id (stringified) so the panel can render a "Doing"
+   * pill with phase-coloured tone without a separate fetch.
+   */
+  const statusLabels = $derived.by((): Record<string, { label: string; phase: 'triage' | 'active' | 'terminal' }> => {
+    const out: Record<string, { label: string; phase: 'triage' | 'active' | 'terminal' }> = {};
+    for (const s of statusCards) {
+      const t = s.attributes['title'];
+      out[s.id.toString()] = {
+        label: typeof t === 'string' && t !== '' ? t : `#${s.id}`,
+        phase: s.phase,
+      };
+    }
+    return out;
+  });
+
+  /** The current task's parent (or null when standalone). Pulled from
+   *  the in-memory `allTasks` set so we don't issue a second fetch for
+   *  it — the dispatcher already has every task in the response. */
+  const parentTask = $derived.by((): CardWithAttrs | null => {
+    if (task === null) return null;
+    const pid = task.attributes['parent_task'];
+    if (typeof pid !== 'bigint') return null;
+    return allTasks.find((t) => t.id === pid) ?? null;
+  });
+
+  /** Relationship label this task stores about its parent link. */
+  const selfRelationship = $derived.by((): string | null => {
+    if (task === null) return null;
+    const v = task.attributes['parent_relationship'];
+    return typeof v === 'string' && v !== '' ? v : null;
+  });
+
+  /** Tasks whose `parent_task` points back at this card. */
+  const childTasks = $derived.by((): readonly CardWithAttrs[] => {
+    const me = task;
+    if (me === null) return [];
+    return allTasks.filter((t) => {
+      const p = t.attributes['parent_task'];
+      return typeof p === 'bigint' && p === me.id;
+    });
+  });
+
+  /**
    * Comm-status phase lookup keyed by value-card id-as-string. Comm-status
    * value-cards share the `status` card_type with task statuses; both
    * loads share the `scopedStatuses` set. For the read-only Comms
@@ -296,6 +497,53 @@
 
   const orderedActivity = $derived(sortActivityDesc(activity));
 
+  /**
+   * Comment threads derived from the activity stream. A comment is an
+   * activity row of `kind='comment'` carrying its body inline (see
+   * server/internal/dom/comment). Newest-first to match the activity
+   * stream's reverse-chronological order; the composer below the list
+   * makes "scroll back to see history" the natural read order.
+   */
+  type CommentEntry = {
+    id: ID;
+    body: string;
+    actorId: ID;
+    createdAt: string;
+    edited: boolean;
+  };
+  const comments = $derived.by((): CommentEntry[] => {
+    // Latest comment_edit for a given comment id wins; we surface its
+    // body in place of the original. The activity stream is ordered
+    // newest-first so we iterate in that order.
+    const editedBodies = new Map<string, string>();
+    for (const a of orderedActivity) {
+      if (a.kind !== 'comment_edit') continue;
+      const vn = a.value_new as { activity_id?: unknown; new_body?: unknown } | null;
+      if (vn === null || typeof vn !== 'object') continue;
+      const target = vn.activity_id;
+      const body = vn.new_body;
+      const key = typeof target === 'bigint' ? target.toString() : String(target);
+      if (typeof body === 'string' && !editedBodies.has(key)) {
+        editedBodies.set(key, body);
+      }
+    }
+    const out: CommentEntry[] = [];
+    for (const a of orderedActivity) {
+      if (a.kind !== 'comment') continue;
+      const key = a.id.toString();
+      const edited = editedBodies.has(key);
+      const body = edited ? (editedBodies.get(key) ?? '') : (a.comment_body ?? '');
+      out.push({
+        id: a.id,
+        body,
+        actorId: a.actor_id,
+        createdAt: a.created_at,
+        edited,
+      });
+    }
+    return out;
+  });
+
   /** Schema we feed to AttributeSidePanel. Filtered to the bound-on-task set. */
   const schema = $derived.by((): FilterAttribute[] => {
     if (!schemaCache.loaded) return [];
@@ -304,11 +552,14 @@
       // Skip the title / description / tags / sort_order built-ins — title
       // and description have dedicated editors above; `tags` has its own
       // section below the panel; `sort_order` is reorder UI only.
+      // parent_task / parent_relationship are owned by RelatedTasksPanel.
       if (
         def.name === 'title' ||
         def.name === 'description' ||
         def.name === 'tags' ||
-        def.name === 'sort_order'
+        def.name === 'sort_order' ||
+        def.name === 'parent_task' ||
+        def.name === 'parent_relationship'
       ) {
         continue;
       }
@@ -340,7 +591,15 @@
    */
   const refOptions = $derived.by((): Record<string, { value: unknown; label: string }[]> => {
     const out: Record<string, { value: unknown; label: string }[]> = {};
-    out['assignee'] = persons.map((p) => ({ value: p.id, label: personLabel(p) }));
+    out['assignee'] = persons
+      .filter(isAssignablePerson)
+      .map((p) => ({ value: p.id, label: personLabel(p) }));
+    // originator is also a card_ref → person; unlike assignee it may
+    // legitimately point at a contact (e.g. the inbound email sender
+    // when a task spawned from a comm), so we don't filter to
+    // assignable members here. Without this entry the side panel
+    // can't resolve the stored id to a name and shows a raw bigint.
+    out['originator'] = persons.map((p) => ({ value: p.id, label: personLabel(p) }));
     out['milestone_ref'] = scopedMilestones.map((m) => ({
       value: m.id,
       label:
@@ -540,6 +799,7 @@
 
       const found = pickTaskById(tOut.rows, taskId);
       task = found;
+      allTasks = tOut.rows;
       activity = aOut.rows;
       milestones = mOut.rows;
       components = cOut.rows;
@@ -729,6 +989,35 @@
     }
   }
 
+  async function commitCommentEdit(activityId: ID): Promise<void> {
+    const key = activityId.toString();
+    const state = commentEdits[key];
+    if (state === undefined || state.busy) return;
+    const body = state.draft.trim();
+    if (body === '') return;
+    commentEdits = { ...commentEdits, [key]: { ...state, busy: true } };
+    try {
+      await dispatcher.request<CommentUpdateInput, CommentUpdateOutput>({
+        endpoint: commentUpdate.endpoint,
+        action: commentUpdate.action,
+        data: { activityId, body },
+      });
+      cancelCommentEdit(activityId);
+      notify({ type: 'success', message: 'Comment updated' });
+      await refresh();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({
+        type: 'error',
+        message: msg.length > 0 ? msg : 'Failed to update comment',
+      });
+      const cur = commentEdits[key];
+      if (cur !== undefined) {
+        commentEdits = { ...commentEdits, [key]: { ...cur, busy: false } };
+      }
+    }
+  }
+
   function onCommentKeydown(e: KeyboardEvent): void {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
@@ -871,6 +1160,21 @@
   useShortcut('task_detail', 'e t', () => void focusTitleEdit(), 'Edit title');
   useShortcut('task_detail', 'e d', () => void focusDescriptionEdit(), 'Edit description');
   useShortcut('task_detail', 'e c', () => void focusComment(), 'Edit a comment');
+  // `e p` opens the parent picker on RelatedTasksPanel; if a parent is
+  // already set the picker overrides the chip so the user can re-bind
+  // in one keystroke (Save overwrites, Cancel falls back). `e s`
+  // triggers the existing "+ New sub-task" path via the QuickEntry
+  // overlay (parent_task pre-stamped to the focal task). `e a` opens
+  // the "Add child" picker to link an existing task as a child — the
+  // panel auto-opens the search Combobox and focuses its input so the
+  // user can start typing the child's name immediately.
+  //
+  // `e a` (not `e d`, the natural "add" mnemonic) is used because `e
+  // d` is already bound to "Edit description"; `a` reads cleanly as
+  // "add child" without disturbing the description chord.
+  useShortcut('task_detail', 'e p', () => { parentPickerOpen = true; }, 'Set parent');
+  useShortcut('task_detail', 'e s', openNewSubtask, 'New sub-task');
+  useShortcut('task_detail', 'e a', () => { childPickerOpen = true; }, 'Add existing child');
   useShortcut('task_detail', 't', toggleTags, 'Toggle tag picker');
   // V14: close bucket of TransitionBar replaces the old TerminalActionButton.
   // `c` fires the first transition in the close bucket (active→terminal),
@@ -895,6 +1199,53 @@
   useShortcut('task_detail', ['Esc', 'q'], goBack, 'Back to previous screen', {
     fireInInputs: false,
   });
+
+  /**
+   * QuickEntry overlay — feeds the "+ New sub-task" affordance on
+   * RelatedTasksPanel. The rune binds `n` to the task_detail scope so
+   * the standard "new task" shortcut works here too. The sub-task
+   * prefill is supplied at click time via `qe.open(override)` from
+   * `openNewSubtask` — that way prev/next navigation always stamps
+   * the *current* taskId rather than the one captured at mount.
+   */
+  const taskTagOptions = $derived(
+    scopedTagCards.map((tc) => {
+      const p = tc.attributes['path'];
+      return {
+        value: tc.id,
+        label: typeof p === 'string' && p !== '' ? p : `#${tc.id}`,
+      };
+    }),
+  );
+  const qe = useQuickEntry({
+    scope: 'task_detail',
+    defaultCardType: 'task',
+    // Must be SCOPED — feeding the full statusCards list (every
+    // project's statuses) lets the default-create-status resolver
+    // pick a status that belongs to a different project than the
+    // sub-task will land in. The server then rejects the insert
+    // with "value card N belongs to project X but target is in
+    // project Y". `scopedStatuses` filters to the focal task's
+    // parent project, which is also the new sub-task's project.
+    candidateStatuses: () => [...scopedStatuses],
+    attributePalette: () => schema,
+    tagOptions: () => taskTagOptions,
+    onCreated: () => {
+      void refresh();
+    },
+  });
+
+  /** Open QuickEntry with `parent_task = currentTaskId` stamped via a
+   *  one-shot override. Re-resolves `taskId` on every click so it always
+   *  matches the focal task. */
+  function openNewSubtask(): void {
+    qe.open({
+      extraAttributes: [
+        { name: 'parent_task', value: taskId },
+        { name: 'parent_relationship', value: 'subtask' },
+      ],
+    });
+  }
 
   /* -------------------------------------------------------------------- */
   /* Display helpers                                                      */
@@ -972,17 +1323,33 @@
               onblur={() => void commitTitle()}
             />
           {:else}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-            <h1
-              data-testid="task-title"
-              class="cursor-text truncate px-1 text-lg font-semibold text-fg hover:bg-surface/60"
-              title="Click to edit (or press e)"
-              onclick={() => void focusTitleEdit()}
-            >
-              {displayTitle}
-            </h1>
+            <div class="group flex items-center gap-1">
+              <h1
+                data-testid="task-title"
+                class="truncate px-1 text-lg font-semibold text-fg"
+              >
+                {displayTitle}
+              </h1>
+              <IconButton
+                aria-label="Edit title"
+                title="Edit title (e t)"
+                size="sm"
+                variant="ghost"
+                onclick={() => void focusTitleEdit()}
+              >
+                {#snippet children()}
+                  <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" aria-hidden="true">
+                    <path
+                      d="M11.5 1.5 L14.5 4.5 L5 14 L1.5 14.5 L2 11 L11.5 1.5 Z"
+                      stroke="currentColor"
+                      stroke-width="1.2"
+                      stroke-linejoin="round"
+                      fill="none"
+                    />
+                  </svg>
+                {/snippet}
+              </IconButton>
+            </div>
           {/if}
           <p class="mt-0.5 px-1 font-mono text-[11px] text-muted">#{taskId}</p>
         </div>
@@ -1054,38 +1421,123 @@
             </span>
           </div>
         {/if}
+        <!-- Header kebab: per-task actions that don't fit elsewhere.
+             Anchored to the right edge so the prev/next chevrons stay
+             flush against the title row. -->
+        {#if task !== null}
+          <div class="relative shrink-0 self-start pt-0.5">
+            <button
+              type="button"
+              class="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-bg text-muted hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              aria-haspopup="menu"
+              aria-expanded={headerMenuOpen}
+              aria-label="Task actions"
+              title="Task actions"
+              data-testid="task-actions-trigger"
+              onclick={() => (headerMenuOpen = !headerMenuOpen)}
+            >
+              <svg viewBox="0 0 12 12" class="h-3.5 w-3.5" aria-hidden="true">
+                <circle cx="6" cy="2" r="1" fill="currentColor" />
+                <circle cx="6" cy="6" r="1" fill="currentColor" />
+                <circle cx="6" cy="10" r="1" fill="currentColor" />
+              </svg>
+            </button>
+            {#if headerMenuOpen}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="fixed inset-0 z-40"
+                onclick={() => (headerMenuOpen = false)}
+              ></div>
+              <div
+                role="menu"
+                class="absolute right-0 top-full z-50 mt-1 flex w-56 flex-col overflow-hidden rounded-md border border-border bg-bg py-1 text-sm shadow-lg"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="px-3 py-1.5 text-left text-fg hover:bg-surface focus:outline-none focus-visible:bg-surface"
+                  onclick={() => {
+                    headerMenuOpen = false;
+                    moveDialogOpen = true;
+                  }}
+                >
+                  Move to another project…
+                </button>
+                <div class="my-1 border-t border-border"></div>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="px-3 py-1.5 text-left text-danger hover:bg-surface focus:outline-none focus-visible:bg-surface"
+                  data-testid="task-purge-trigger"
+                  onclick={() => {
+                    headerMenuOpen = false;
+                    purgeDialogOpen = true;
+                  }}
+                >
+                  Delete forever…
+                </button>
+              </div>
+            {/if}
+          </div>
+        {/if}
       </header>
 
       <!-- Description -->
       <section aria-labelledby="desc-heading" class="border-t border-section">
-        <h2
-          id="desc-heading"
-          class="border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
-        >
-          Description
-        </h2>
+        <div class="flex items-center justify-between border-b border-fg/40 bg-surface/40 px-3 py-1">
+          <h2
+            id="desc-heading"
+            class="text-[11px] font-semibold uppercase tracking-wide text-fg"
+          >
+            Description
+          </h2>
+          {#if !editingDescription}
+            <IconButton
+              aria-label="Edit description"
+              title="Edit description (e d)"
+              size="sm"
+              variant="ghost"
+              onclick={() => void focusDescriptionEdit()}
+            >
+              {#snippet children()}
+                <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" aria-hidden="true">
+                  <path
+                    d="M11.5 1.5 L14.5 4.5 L5 14 L1.5 14.5 L2 11 L11.5 1.5 Z"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                    stroke-linejoin="round"
+                    fill="none"
+                  />
+                </svg>
+              {/snippet}
+            </IconButton>
+          {/if}
+        </div>
         {#if editingDescription}
-          <textarea
-            bind:this={descEl}
+          <AutoGrowTextarea
+            bind:el={descEl}
             bind:value={descDraft}
             data-testid="task-description-input"
-            rows="6"
-            class="block w-full bg-bg px-3 py-2 text-sm text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            rows={6}
+            class="min-h-[9rem] bg-bg px-3 py-2 text-sm text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
             placeholder="Write a description… (Mod+Enter to save, Esc to cancel)"
             onkeydown={onDescriptionKeydown}
             onblur={() => void commitDescription()}
-          ></textarea>
+          />
         {:else}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             data-testid="task-description"
-            class="min-h-[3rem] cursor-text px-3 py-2 text-sm text-fg hover:bg-surface/40"
-            title="Click to edit"
-            onclick={() => void focusDescriptionEdit()}
+            class="min-h-[3rem] px-3 py-2 text-sm text-fg"
           >
             {#if displayDescription === ''}
-              <span class="text-muted">Click to add a description…</span>
+              <button
+                type="button"
+                class="text-muted hover:text-fg hover:underline focus:outline-none focus-visible:underline"
+                onclick={() => void focusDescriptionEdit()}
+              >
+                + Add a description…
+              </button>
             {:else}
               <!-- View mode renders the description as markdown (sanitized
                    server-side… well, client-side via DOMPurify in the
@@ -1096,6 +1548,24 @@
           </div>
         {/if}
       </section>
+
+      <!-- Related tasks (parent + children). Lives in the main column
+           — not the right rail — so the chips have full width for
+           comfortably long task titles. Sits directly under Description
+           so the structural relationship is visible right after the
+           task body. -->
+      <RelatedTasksPanel
+        cardId={taskId}
+        parent={parentTask}
+        selfRelationship={selfRelationship}
+        children={childTasks}
+        projectId={task.parent_card_id ?? null}
+        {statusLabels}
+        onChanged={() => void refresh()}
+        onCreateSubtask={openNewSubtask}
+        bind:parentPickerOpen
+        bind:childPickerOpen
+      />
 
       <!-- Image / PDF preview strip — sits between Description and Activity
            per spec. Filters its own list to known-previewable kinds; if the
@@ -1111,24 +1581,95 @@
       <section aria-labelledby="comms-heading" class="flex flex-col border-t border-section">
         <h2
           id="comms-heading"
-          class="flex items-center justify-between border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
+          class="flex items-center justify-between gap-2 border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
         >
           <span>Comms ({comms.length})</span>
-          {#if task !== null && typeof task.parent_card_id === 'bigint'}
-            <a
-              href="/project/{task.parent_card_id}/screen/comms"
-              data-testid="task-comms-goto-link"
-              class="rounded-md border border-border bg-bg px-2 py-0.5 text-[10px] font-normal text-fg hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              onclick={(e) => {
-                e.preventDefault();
-                const pid = task?.parent_card_id;
-                if (typeof pid === 'bigint') navigate(`/project/${pid}/screen/comms`);
-              }}
-            >
-              Go to Comms
-            </a>
-          {/if}
+          <span class="inline-flex shrink-0 items-center gap-2">
+            {#if authState?.isAdmin}
+              <button
+                type="button"
+                data-testid="task-comms-start"
+                class="rounded-md border border-border bg-bg px-2 py-0.5 text-[10px] font-normal text-fg hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                disabled={newCommOpen}
+                onclick={openNewCommForm}
+              >
+                + Start comm
+              </button>
+            {/if}
+            {#if task !== null && typeof task.parent_card_id === 'bigint'}
+              <a
+                href="/project/{task.parent_card_id}/screen/comms"
+                data-testid="task-comms-goto-link"
+                class="rounded-md border border-border bg-bg px-2 py-0.5 text-[10px] font-normal text-fg hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                onclick={(e) => {
+                  e.preventDefault();
+                  const pid = task?.parent_card_id;
+                  if (typeof pid === 'bigint') navigate(`/project/${pid}/screen/comms`);
+                }}
+              >
+                Go to Comms
+              </a>
+            {/if}
+          </span>
         </h2>
+        {#if newCommOpen}
+          <div
+            class="flex flex-col gap-2 border-b border-fg/15 bg-bg/40 px-3 py-2"
+            data-testid="task-comms-start-form"
+          >
+            <div class="flex flex-col gap-0.5 text-xs text-muted">
+              <span>Channel</span>
+              {#if loadingChannels && channels.length === 0}
+                <span class="inline-flex items-center gap-2"><Spinner size="sm" /> Loading channels…</span>
+              {:else if channels.length === 0}
+                <span class="text-fg">
+                  No comm channels configured for this project. Set one up in Admin → Comm channels.
+                </span>
+              {:else}
+                <Combobox
+                  aria-label="Comm channel"
+                  options={channelOptions}
+                  value={newCommChannelId}
+                  searchable={channelOptions.length > 8}
+                  placeholder="Pick a channel…"
+                  onchange={(v) => {
+                    if (v === null || v === undefined) newCommChannelId = null;
+                    else if (typeof v === 'bigint') newCommChannelId = v;
+                  }}
+                />
+              {/if}
+            </div>
+            <div class="flex flex-col gap-0.5 text-xs text-muted">
+              <span>
+                Recipients
+                <span class="font-normal text-muted/80">
+                  — pick existing people or type an email to add a new contact. The reply Subject is always the thread id + task title.
+                </span>
+              </span>
+              <RecipientsPicker
+                bind:value={newCommRecipients}
+                persons={[...persons]}
+                placeholder="alice@example.com…"
+                aria-label="Comm recipients"
+              />
+            </div>
+            <div class="flex items-center justify-end gap-2">
+              <Button size="sm" variant="ghost" onclick={closeNewCommForm} disabled={creatingComm}>
+                {#snippet children()}Cancel{/snippet}
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                onclick={() => void submitNewComm()}
+                disabled={creatingComm || newCommChannelId === null || newCommRecipients.length === 0}
+              >
+                {#snippet children()}
+                  {creatingComm ? 'Starting…' : 'Start comm'}
+                {/snippet}
+              </Button>
+            </div>
+          </div>
+        {/if}
         {#if comms.length === 0}
           <p class="px-3 py-2 text-sm text-muted" data-testid="task-comms-empty">
             No comms attached.
@@ -1143,6 +1684,13 @@
               <li class="flex flex-col gap-1 px-3 py-2" data-testid="task-comms-row" data-comm-id={c.id}>
                 <div class="flex flex-wrap items-center gap-2">
                   <span class="truncate text-sm font-medium text-fg">{c.title}</span>
+                  <span
+                    class="shrink-0 rounded bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted"
+                    data-testid="task-comms-id"
+                    title="Comm id"
+                  >
+                    m{c.id}
+                  </span>
                   {#if c.comm_status !== 0n}
                     <span
                       class="inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-medium {commStatusBadgeClass(c.comm_status)}"
@@ -1195,38 +1743,129 @@
         {/if}
       </section>
 
+      <!-- Comments — bodies inline. The activity stream below this
+           section only carries the audit line per comment / edit. -->
+      <section aria-labelledby="comments-heading" class="flex flex-col border-t border-section">
+        <h2
+          id="comments-heading"
+          class="border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
+        >
+          Comments ({comments.length})
+        </h2>
+        {#if comments.length === 0}
+          <p class="px-3 py-2 text-sm text-muted" data-testid="task-comments-empty">
+            No comments yet.
+          </p>
+        {:else}
+          <ul class="flex flex-col divide-y divide-fg/15">
+            {#each comments as c (c.id)}
+              {@const key = c.id.toString()}
+              {@const edit = commentEdits[key]}
+              {@const canEdit = authState?.userId === c.actorId.toString()}
+              {@const actorLabel = userNames[c.actorId.toString()] ?? `user#${c.actorId}`}
+              <li class="px-3 py-2" data-testid="task-comment-row" data-comment-id={c.id}>
+                <div class="flex items-baseline gap-2 text-xs">
+                  <span class="font-medium text-fg">{actorLabel}</span>
+                  <span class="font-mono text-[10px] text-muted" data-testid="task-comment-id">
+                    c{c.id}
+                  </span>
+                  {#if c.edited}
+                    <span class="text-[10px] italic text-muted">(edited)</span>
+                  {/if}
+                  <span class="ml-auto text-[11px] tabular-nums text-muted">
+                    {formatRelativeTime(c.createdAt)}
+                  </span>
+                  {#if canEdit && edit === undefined}
+                    <IconButton
+                      aria-label="Edit comment"
+                      title="Edit comment"
+                      size="sm"
+                      variant="ghost"
+                      onclick={() => startCommentEdit(c.id, c.body)}
+                    >
+                      {#snippet children()}
+                        <svg viewBox="0 0 16 16" class="h-3 w-3" aria-hidden="true">
+                          <path
+                            d="M11.5 1.5 L14.5 4.5 L5 14 L1.5 14.5 L2 11 L11.5 1.5 Z"
+                            stroke="currentColor"
+                            stroke-width="1.2"
+                            stroke-linejoin="round"
+                            fill="none"
+                          />
+                        </svg>
+                      {/snippet}
+                    </IconButton>
+                  {/if}
+                </div>
+                {#if edit !== undefined}
+                  <div class="mt-1 flex flex-col gap-1">
+                    <AutoGrowTextarea
+                      value={edit.draft}
+                      onValueChange={(v) => setCommentDraft(c.id, v)}
+                      data-testid="task-comment-edit-input"
+                      rows={3}
+                      class="border border-fg/40 bg-bg px-2 py-1 text-sm text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                      disabled={edit.busy}
+                      onkeydown={(e) => {
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          cancelCommentEdit(c.id);
+                        } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                          e.preventDefault();
+                          void commitCommentEdit(c.id);
+                        }
+                      }}
+                    />
+                    <div class="flex justify-end gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={edit.busy}
+                        onclick={() => cancelCommentEdit(c.id)}
+                      >
+                        {#snippet children()}Cancel{/snippet}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        loading={edit.busy}
+                        disabled={edit.busy || edit.draft.trim() === ''}
+                        onclick={() => void commitCommentEdit(c.id)}
+                      >
+                        {#snippet children()}Save{/snippet}
+                      </Button>
+                    </div>
+                  </div>
+                {:else}
+                  <div class="mt-1 text-sm text-fg">
+                    <Markdown source={c.body} />
+                  </div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+
       <!-- Comment composer -->
       <section aria-labelledby="comment-heading" class="flex flex-col border-t border-section">
         <h2
           id="comment-heading"
           class="border-b border-fg/40 bg-surface/40 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-fg"
         >
-          Comment
+          Add comment
         </h2>
         <div class="flex flex-col gap-2 px-3 py-2">
-          {#if RICH_COMPOSER}
-            <!-- Milkdown-based editor: slash commands for headings,
-                 lists, tables, code; drop/paste images upload through
-                 the existing attachment pipeline. Same Markdown
-                 source on the wire as the textarea. -->
-            <MilkdownComposer
-              bind:value={commentDraft}
-              placeholder="Add a comment… (type / for formatting)"
-              disabled={postingComment}
-              onUploadImage={uploadImage}
-            />
-          {:else}
-            <textarea
-              bind:this={commentEl}
-              bind:value={commentDraft}
-              data-testid="task-comment-input"
-              rows="3"
-              class="w-full border border-fg/40 bg-bg px-2 py-1 text-sm text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-              placeholder="Add a comment… (Mod+Enter to post)"
-              disabled={postingComment}
-              onkeydown={onCommentKeydown}
-            ></textarea>
-          {/if}
+          <AutoGrowTextarea
+            bind:el={commentEl}
+            bind:value={commentDraft}
+            data-testid="task-comment-input"
+            rows={3}
+            class="border border-fg/40 bg-bg px-2 py-1 text-sm text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            placeholder="Add a comment… (Markdown supported · Mod+Enter to post)"
+            disabled={postingComment}
+            onkeydown={onCommentKeydown}
+          />
           <div class="flex justify-end">
             <Button
               variant="primary"
@@ -1357,3 +1996,30 @@
     </aside>
   {/if}
 </div>
+
+<QuickEntryOverlay {...qe.props} />
+
+<MoveTaskDialog
+  bind:open={moveDialogOpen}
+  cardId={task !== null ? taskId : null}
+  sourceProjectId={task?.parent_card_id ?? null}
+  onMoved={(out) => {
+    // The task moved; navigate to the destination project's task view
+    // so the user immediately lands on the now-up-to-date detail. The
+    // task id itself is unchanged, so the same URL works — we just
+    // force a refresh through the existing refresh() path.
+    void refresh(false);
+  }}
+/>
+
+<PurgeTaskDialog
+  bind:open={purgeDialogOpen}
+  cardId={task !== null ? taskId : null}
+  taskTitle={displayTitle}
+  onPurged={() => {
+    // The card no longer exists; bail out before the screen tries to
+    // re-render against a missing row. goBack falls through to a sane
+    // default (the source list) when the history stack is empty.
+    goBack();
+  }}
+/>

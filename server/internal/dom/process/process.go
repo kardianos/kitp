@@ -5,6 +5,7 @@ package process
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 
@@ -31,7 +32,7 @@ func Lookup(ctx context.Context, tx pgx.Tx, name string) (*Process, error) {
 	var p Process
 	row := tx.QueryRow(ctx, `SELECT id, name FROM process WHERE name = $1`, name)
 	if err := row.Scan(&p.ID, &p.Name); err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
@@ -64,7 +65,7 @@ func LookupValidation(ctx context.Context, pool reg.ValidationPool, name string)
 	var p Process
 	row := pool.QueryRow(ctx, `SELECT id, name FROM process WHERE name = $1`, name)
 	if err := row.Scan(&p.ID, &p.Name); err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err

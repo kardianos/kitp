@@ -236,7 +236,17 @@ func (rt *recordingTransport) fn(ctx context.Context, host string, port int, use
 
 // seedPendingReply seeds a channel + comm + reply_body row in pending
 // state under the fixture's task. Returns the channel and reply ids.
+// Auto-seeds alice@example.com as the comm's recipient so reply.post
+// can resolve the To: list.
 func seedPendingReply(t *testing.T, f *fixture, fromAddress string) (channelID, replyID int64) {
+	t.Helper()
+	return seedPendingReplyWithRecipients(t, f, fromAddress, []string{"alice@example.com"})
+}
+
+// seedPendingReplyWithRecipients is the explicit variant used by tests
+// that need a specific recipient set (e.g. multi-recipient SMTP RCPT
+// expansion).
+func seedPendingReplyWithRecipients(t *testing.T, f *fixture, fromAddress string, recipientEmails []string) (channelID, replyID int64) {
 	t.Helper()
 	body := fmt.Sprintf(`{"project_id":"%d","name":"Support","channel_type":"email","smtp_host":"127.0.0.1","smtp_port":587,"smtp_username":"u","smtp_password":"p"`, f.projectID)
 	if fromAddress != "" {
@@ -247,17 +257,33 @@ func seedPendingReply(t *testing.T, f *fixture, fromAddress string) (channelID, 
 	dispatch(t, f, api.SubRequest{
 		ID: "ch", Endpoint: "comm_channel", Action: "set", Data: json.RawMessage(body),
 	}, &setOut)
+
+	// Resolve each recipient email to a person id, then create the
+	// comm with that initial recipient set.
+	idsJSON := "["
+	for i, email := range recipientEmails {
+		var pOut comm.PersonUpsertByEmailOutput
+		dispatch(t, f, api.SubRequest{
+			ID: fmt.Sprintf("p%d", i), Endpoint: "person", Action: "upsert_by_email",
+			Data: json.RawMessage(fmt.Sprintf(`{"email":%q,"kind":"contact"}`, email)),
+		}, &pOut)
+		if i > 0 {
+			idsJSON += ","
+		}
+		idsJSON += fmt.Sprintf(`"%d"`, pOut.PersonID)
+	}
+	idsJSON += "]"
+
 	var ccOut comm.CommCreateOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "c", Endpoint: "comm", Action: "create", Data: json.RawMessage(
-			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Bug report"}`,
-				f.taskID, setOut.ChannelID)),
+			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Bug report","recipient_person_ids":%s}`,
+				f.taskID, setOut.ChannelID, idsJSON)),
 	}, &ccOut)
 	var rpOut comm.ReplyPostOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "r", Endpoint: "reply", Action: "post", Data: json.RawMessage(
-			fmt.Sprintf(`{"comm_id":"%d","to":"alice@example.com","subject":"Re: Bug report","body":"The body text."}`,
-				ccOut.CommID)),
+			fmt.Sprintf(`{"comm_id":"%d","body":"The body text."}`, ccOut.CommID)),
 	}, &rpOut)
 	return setOut.ChannelID, rpOut.ReplyID
 }
@@ -363,7 +389,9 @@ func TestSMTPSenderMIMEHeaders(t *testing.T) {
 	msg := string(rt.calls[0].msg)
 	t.Logf("MIME message:\n%s", msg)
 
-	wantSubject := "Subject: Re: Bug report [#" + threadID + "]"
+	// Subject is now derived server-side as "{thread_id} {task.title}"
+	// (see runReplyPost); the SMTP builder appends the threading suffix.
+	wantSubject := "Subject: " + threadID + " Issue 1 [#" + threadID + "]"
 	wantThreadHdr := "X-Kitp-Thread-Id: " + threadID
 	wantRef := "Ref: " + threadID
 
@@ -474,15 +502,21 @@ func TestSMTPSenderIgnoresOtherChannel(t *testing.T) {
 	dispatch(t, f, api.SubRequest{
 		ID: "chB", Endpoint: "comm_channel", Action: "set", Data: json.RawMessage(body),
 	}, &chB)
+	var pB comm.PersonUpsertByEmailOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "pB", Endpoint: "person", Action: "upsert_by_email",
+		Data: json.RawMessage(`{"email":"bob@example.com","kind":"contact"}`),
+	}, &pB)
 	var ccB comm.CommCreateOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "ccB", Endpoint: "comm", Action: "create", Data: json.RawMessage(
-			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Other thread"}`, t2Out.ID, chB.ChannelID)),
+			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Other thread","recipient_person_ids":["%d"]}`,
+				t2Out.ID, chB.ChannelID, pB.PersonID)),
 	}, &ccB)
 	var rpB comm.ReplyPostOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "rB", Endpoint: "reply", Action: "post", Data: json.RawMessage(
-			fmt.Sprintf(`{"comm_id":"%d","to":"bob@example.com","subject":"Re: Other","body":"hello"}`, ccB.CommID)),
+			fmt.Sprintf(`{"comm_id":"%d","body":"hello"}`, ccB.CommID)),
 	}, &rpB)
 
 	// Run channel B's sender; channel A's pending row MUST stay pending.
@@ -547,17 +581,21 @@ func TestSMTPSenderEndToEnd(t *testing.T) {
 	dispatch(t, f, api.SubRequest{
 		ID: "ch", Endpoint: "comm_channel", Action: "set", Data: json.RawMessage(body),
 	}, &setOut)
+	var pE comm.PersonUpsertByEmailOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "pE", Endpoint: "person", Action: "upsert_by_email",
+		Data: json.RawMessage(`{"email":"alice@example.com","kind":"contact"}`),
+	}, &pE)
 	var ccOut comm.CommCreateOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "c", Endpoint: "comm", Action: "create", Data: json.RawMessage(
-			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"E2E"}`,
-				f.taskID, setOut.ChannelID)),
+			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"E2E","recipient_person_ids":["%d"]}`,
+				f.taskID, setOut.ChannelID, pE.PersonID)),
 	}, &ccOut)
 	var rpOut comm.ReplyPostOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "r", Endpoint: "reply", Action: "post", Data: json.RawMessage(
-			fmt.Sprintf(`{"comm_id":"%d","to":"alice@example.com","subject":"Re: E2E","body":"end-to-end"}`,
-				ccOut.CommID)),
+			fmt.Sprintf(`{"comm_id":"%d","body":"end-to-end"}`, ccOut.CommID)),
 	}, &rpOut)
 
 	// Use the production transport (sendSMTP) — do NOT call SetTransport.

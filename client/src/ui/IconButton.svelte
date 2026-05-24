@@ -38,7 +38,7 @@
       case 'ghost':
         return 'bg-transparent text-fg hover:bg-surface';
       case 'danger':
-        return 'bg-danger text-white hover:opacity-90';
+        return 'bg-danger text-danger-fg hover:opacity-90';
     }
   });
 

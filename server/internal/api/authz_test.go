@@ -171,13 +171,14 @@ func TestViewerDeniedEveryWrite(t *testing.T) {
 	}
 }
 
-// TestWorkerCanUpdateTaskNotInsertProject: a global-scope worker can update
-// task attributes but is denied when trying to create a project (which is
-// outside their grant set).
-func TestWorkerCanUpdateTaskNotInsertProject(t *testing.T) {
+// TestWorkerCanUpdateTaskNotInsertCommChannel: a global-scope worker
+// can update task attributes (and post-merge with manager can also
+// create projects / tasks / structural cards / persons) but is still
+// denied admin-only configuration surface like creating
+// `comm_channel`.
+func TestWorkerCanUpdateTaskNotInsertCommChannel(t *testing.T) {
 	srv, sp := setupAuthz(t, "kitp_test_authz_worker")
 	projID, taskID := makeProjectAndTask(t, srv, "P-worker")
-	_ = projID
 	uid := grantRole(t, sp, "worker-user", "worker", nil)
 	ctx := asUser(uid, "worker-user")
 
@@ -190,13 +191,14 @@ func TestWorkerCanUpdateTaskNotInsertProject(t *testing.T) {
 		t.Fatalf("worker attribute.update should succeed: %+v", resp.Subresponses[0])
 	}
 
-	// Denied: card.insert with card_type_name=project (top-level).
+	// Denied: card.insert with card_type_name=comm_channel — channels
+	// are admin-only configuration surface.
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "p2", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			`{"card_type_name":"project","title":"forbidden"}`)},
+			fmt.Sprintf(`{"card_type_name":"comm_channel","parent_card_id":"%d","title":"forbidden"}`, projID))},
 	}})
 	if resp.Subresponses[0].OK {
-		t.Errorf("worker should not insert top-level project: %+v", resp.Subresponses[0])
+		t.Errorf("worker should not insert comm_channel: %+v", resp.Subresponses[0])
 	}
 	if resp.Subresponses[0].Error == nil || resp.Subresponses[0].Error.Code != "unauthorized" {
 		t.Errorf("expected unauthorized, got %+v", resp.Subresponses[0].Error)

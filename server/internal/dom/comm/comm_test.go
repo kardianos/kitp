@@ -113,16 +113,28 @@ func setupAdmin(t *testing.T, schemaName string) *fixture {
 		t.Fatalf("attribute_def.comms: %v", err)
 	}
 
-	// Insert a comm flow on this project.
+	// A comm-status flow is auto-created on every new project by
+	// card.insert (via copy_project_template, which graph-copies the
+	// install-seed template's "Standard comm flow"). Re-bind that
+	// flow's default_create_status to this fixture's commOpen and
+	// rename it via flow.set with the existing id — the unique
+	// (attribute_def_id, scope_card_id) constraint refuses a second
+	// row, and overwriting the auto-stamped one is what the rest of
+	// the comm tests expect.
+	var fOut flow.SetOutput
+	if err := sp.P.QueryRow(ctx, `
+		SELECT id FROM flow WHERE attribute_def_id = $1 AND scope_card_id = $2
+	`, commStatusAttrID, pOut.ID).Scan(&fOut.ID); err != nil {
+		t.Fatalf("lookup auto-stamped comm flow: %v", err)
+	}
 	resp = srv.Dispatch(adminCtx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "f", Endpoint: "flow", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"name":"Test comm flow","attribute_def_id":"%d","scope_card_id":"%d","default_create_status_id":"%d"}`,
-				commStatusAttrID, pOut.ID, commOpen))},
+			fmt.Sprintf(`{"id":"%d","name":"Test comm flow","attribute_def_id":"%d","scope_card_id":"%d","default_create_status_id":"%d"}`,
+				fOut.ID, commStatusAttrID, pOut.ID, commOpen))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("flow.set: %+v", resp.Subresponses[0])
 	}
-	var fOut flow.SetOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &fOut)
 
@@ -160,7 +172,11 @@ func dispatch(t *testing.T, f *fixture, sub api.SubRequest, v any) {
 	t.Helper()
 	resp := f.srv.Dispatch(f.ctx, api.BatchRequest{Subrequests: []api.SubRequest{sub}})
 	if !resp.Subresponses[0].OK {
-		t.Fatalf("%s.%s: %+v", sub.Endpoint, sub.Action, resp.Subresponses[0])
+		errStr := "<nil>"
+		if e := resp.Subresponses[0].Error; e != nil {
+			errStr = fmt.Sprintf("code=%s msg=%s", e.Code, e.Message)
+		}
+		t.Fatalf("%s.%s failed: %s", sub.Endpoint, sub.Action, errStr)
 	}
 	if v != nil {
 		buf, _ := json.Marshal(resp.Subresponses[0].Data)
@@ -718,7 +734,20 @@ func TestPermission(t *testing.T) {
 
 // createCommForReply creates one comm under the fixture's task and
 // returns its id. Optionally configures the channel's from_address.
+// Always seeds a single contact recipient (customer@example.com) so
+// reply.post can resolve the To: list without the caller threading
+// recipients through every test.
 func createCommForReply(t *testing.T, f *fixture, fromAddress string) (channelID, commID int64) {
+	t.Helper()
+	return createCommForReplyWithRecipients(t, f, fromAddress, []string{"customer@example.com"})
+}
+
+// createCommForReplyWithRecipients is the explicit variant used by
+// tests that need a specific recipient set (e.g. multi-recipient To:
+// header assertions). Seeds the channel, upserts a person card per
+// supplied email, calls comm.create with the resolved ids, and
+// returns the channel + comm ids.
+func createCommForReplyWithRecipients(t *testing.T, f *fixture, fromAddress string, recipientEmails []string) (channelID, commID int64) {
 	t.Helper()
 	body := fmt.Sprintf(`{"project_id":"%d","name":"Support","channel_type":"email"`, f.projectID)
 	if fromAddress != "" {
@@ -729,11 +758,29 @@ func createCommForReply(t *testing.T, f *fixture, fromAddress string) (channelID
 	dispatch(t, f, api.SubRequest{
 		ID: "ch", Endpoint: "comm_channel", Action: "set", Data: json.RawMessage(body),
 	}, &setOut)
+
+	// Resolve each recipient email to a person card id via the
+	// upsert handler so the path through this fixture matches what
+	// the UI does.
+	idsJSON := "["
+	for i, email := range recipientEmails {
+		var pOut comm.PersonUpsertByEmailOutput
+		dispatch(t, f, api.SubRequest{
+			ID: fmt.Sprintf("p%d", i), Endpoint: "person", Action: "upsert_by_email",
+			Data: json.RawMessage(fmt.Sprintf(`{"email":%q,"kind":"contact"}`, email)),
+		}, &pOut)
+		if i > 0 {
+			idsJSON += ","
+		}
+		idsJSON += fmt.Sprintf(`"%d"`, pOut.PersonID)
+	}
+	idsJSON += "]"
+
 	var ccOut comm.CommCreateOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "c", Endpoint: "comm", Action: "create", Data: json.RawMessage(
-			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Help!"}`,
-				f.taskID, setOut.ChannelID)),
+			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Help!","recipient_person_ids":%s}`,
+				f.taskID, setOut.ChannelID, idsJSON)),
 	}, &ccOut)
 	return setOut.ChannelID, ccOut.CommID
 }
@@ -764,15 +811,16 @@ func TestReplyPost(t *testing.T) {
 	var rpOut comm.ReplyPostOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "r", Endpoint: "reply", Action: "post", Data: json.RawMessage(
-			fmt.Sprintf(`{"comm_id":"%d","to":"customer@example.com","subject":"Re: Help!","body":"Hello, here is a fix."}`,
-				commID)),
+			fmt.Sprintf(`{"comm_id":"%d","body":"Hello, here is a fix."}`, commID)),
 	}, &rpOut)
 
 	if rpOut.ReplyID == 0 {
 		t.Fatal("expected reply_id > 0")
 	}
 
-	// reply_body card carries the five attributes.
+	// reply_body card carries the five attributes — reply_to and
+	// reply_subject are now SERVER-derived snapshots (joined recipient
+	// emails + "{thread_id} {task.title}" respectively).
 	ctx := context.Background()
 	var to, from, subject, bodyText, status string
 	if err := f.sp.P.QueryRow(ctx, `
@@ -786,13 +834,15 @@ func TestReplyPost(t *testing.T) {
 		t.Fatalf("read reply attrs: %v", err)
 	}
 	if to != "customer@example.com" {
-		t.Errorf("reply_to=%q want customer@example.com", to)
+		t.Errorf("reply_to=%q want customer@example.com (resolved from comm.recipients)", to)
 	}
 	if from != "" {
 		t.Errorf("reply_from=%q want empty (channel has no from_address)", from)
 	}
-	if subject != "Re: Help!" {
-		t.Errorf("reply_subject=%q want 'Re: Help!'", subject)
+	// Subject = "{thread_id} {task.title}". Task title is whatever the
+	// fixture seeded; verify the thread_id prefix + a trailing space.
+	if len(subject) < 11 || subject[10] != ' ' {
+		t.Errorf("reply_subject=%q want '{thread_id} {task.title}' shape (11+ chars, space after the 10-char thread_id)", subject)
 	}
 	if bodyText != "Hello, here is a fix." {
 		t.Errorf("reply_body_text=%q want 'Hello, here is a fix.'", bodyText)
@@ -840,8 +890,7 @@ func TestReplyPostInheritsFromAddress(t *testing.T) {
 	var rpOut comm.ReplyPostOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "r", Endpoint: "reply", Action: "post", Data: json.RawMessage(
-			fmt.Sprintf(`{"comm_id":"%d","to":"customer@example.com","subject":"Re: Help","body":"Hi"}`,
-				commID)),
+			fmt.Sprintf(`{"comm_id":"%d","body":"Hi"}`, commID)),
 	}, &rpOut)
 
 	var from string
@@ -864,9 +913,8 @@ func TestReplyPostValidation(t *testing.T) {
 		code string
 		desc string
 	}{
-		{fmt.Sprintf(`{"comm_id":"%d","to":"","body":"x"}`, commID), "validation", "empty to"},
-		{fmt.Sprintf(`{"comm_id":"%d","to":"a@b.c","body":""}`, commID), "validation", "empty body"},
-		{`{"comm_id":"0","to":"a@b.c","body":"x"}`, "validation", "missing comm_id"},
+		{fmt.Sprintf(`{"comm_id":"%d","body":""}`, commID), "validation", "empty body"},
+		{`{"comm_id":"0","body":"x"}`, "validation", "missing comm_id"},
 	} {
 		errEnv := dispatchExpectErr(t, f, api.SubRequest{
 			ID: "x", Endpoint: "reply", Action: "post", Data: json.RawMessage(c.body),
@@ -877,12 +925,37 @@ func TestReplyPostValidation(t *testing.T) {
 	}
 }
 
+// TestReplyPostNoRecipientsRejects guards the "comm has no recipients"
+// path — reply.post must fail loudly rather than queue a hopeless row
+// the SMTP sender can't actually ship.
+func TestReplyPostNoRecipientsRejects(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_reply_post_no_recipients")
+	// Build a comm with NO recipients (skip the seeding helper).
+	var setOut comm.ChannelSetOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "ch", Endpoint: "comm_channel", Action: "set", Data: json.RawMessage(
+			fmt.Sprintf(`{"project_id":"%d","name":"Empty","channel_type":"email"}`, f.projectID)),
+	}, &setOut)
+	var ccOut comm.CommCreateOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "c", Endpoint: "comm", Action: "create", Data: json.RawMessage(
+			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"silent"}`, f.taskID, setOut.ChannelID)),
+	}, &ccOut)
+	errEnv := dispatchExpectErr(t, f, api.SubRequest{
+		ID: "r", Endpoint: "reply", Action: "post", Data: json.RawMessage(
+			fmt.Sprintf(`{"comm_id":"%d","body":"hello"}`, ccOut.CommID)),
+	})
+	if errEnv.Code != "no_recipients" {
+		t.Errorf("code=%q want no_recipients (%s)", errEnv.Code, errEnv.Message)
+	}
+}
+
 func TestReplyPostNonCommRejects(t *testing.T) {
 	f := setupAdmin(t, "kitp_test_reply_post_non_comm")
 	// Pass the fixture's task id as comm_id — wrong card_type.
 	errEnv := dispatchExpectErr(t, f, api.SubRequest{
 		ID: "x", Endpoint: "reply", Action: "post", Data: json.RawMessage(
-			fmt.Sprintf(`{"comm_id":"%d","to":"a@b.c","body":"x"}`, f.taskID)),
+			fmt.Sprintf(`{"comm_id":"%d","body":"x"}`, f.taskID)),
 	})
 	if errEnv.Code != "comm_wrong_type" {
 		t.Errorf("code=%q want comm_wrong_type: %s", errEnv.Code, errEnv.Message)
@@ -893,7 +966,7 @@ func TestReplyPostPermission(t *testing.T) {
 	f := setupAdmin(t, "kitp_test_reply_post_permission")
 	_, commID := createCommForReply(t, f, "")
 
-	body := json.RawMessage(fmt.Sprintf(`{"comm_id":"%d","to":"a@b.c","body":"x"}`, commID))
+	body := json.RawMessage(fmt.Sprintf(`{"comm_id":"%d","body":"x"}`, commID))
 
 	// viewer rejected.
 	resp := dispatchAs(t, f, "viewer", "reply-viewer", api.SubRequest{
@@ -945,5 +1018,169 @@ func TestChannelValidation(t *testing.T) {
 		if errEnv.Code != c.code {
 			t.Errorf("body %q: code=%q want %q", c.body, errEnv.Code, c.code)
 		}
+	}
+}
+
+// ---- person.upsert_by_email ----
+
+// TestPersonUpsertByEmail covers the find-or-create path used by the
+// recipient picker. New rows land at global scope (parent_card_id
+// NULL), get title + email + person_kind attributes, and the second
+// upsert with the same email returns the same id.
+func TestPersonUpsertByEmail(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_person_upsert")
+
+	var out1 comm.PersonUpsertByEmailOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "p1", Endpoint: "person", Action: "upsert_by_email",
+		Data: json.RawMessage(`{"email":"Alice@Example.com","display_name":"Alice"}`),
+	}, &out1)
+	if out1.PersonID == 0 || !out1.Created {
+		t.Fatalf("expected new person row, got id=%d created=%v", out1.PersonID, out1.Created)
+	}
+
+	// Verify title + email + person_kind attributes landed.
+	ctx := context.Background()
+	var title, email, kind string
+	if err := f.sp.P.QueryRow(ctx, `
+		SELECT
+			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='title'),
+			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='email'),
+			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='person_kind')
+	`, out1.PersonID).Scan(&title, &email, &kind); err != nil {
+		t.Fatalf("read attrs: %v", err)
+	}
+	if title != "Alice" {
+		t.Errorf("title=%q want Alice", title)
+	}
+	// Email is normalized at ingress (textnorm.Email lowercases +
+	// NFC) so two visually identical addresses collapse to the same
+	// person card. The user-supplied "Alice@Example.com" is stored
+	// as its lowercase form.
+	if email != "alice@example.com" {
+		t.Errorf("email=%q want alice@example.com (normalized)", email)
+	}
+	if kind != "contact" {
+		t.Errorf("person_kind=%q want contact (default for new upserts)", kind)
+	}
+
+	// Case-insensitive re-lookup returns the same id without inserting.
+	var out2 comm.PersonUpsertByEmailOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "p2", Endpoint: "person", Action: "upsert_by_email",
+		Data: json.RawMessage(`{"email":"alice@example.com"}`),
+	}, &out2)
+	if out2.PersonID != out1.PersonID {
+		t.Errorf("upsert by lowercase=%d want %d (same id)", out2.PersonID, out1.PersonID)
+	}
+	if out2.Created {
+		t.Errorf("second upsert created=true; expected false on match")
+	}
+
+	// An existing person card with kind='member' is NOT re-classified.
+	// Insert one directly, then upsert with kind='contact' and confirm
+	// the person_kind stays 'member'.
+	var bobID int64
+	if err := f.sp.P.QueryRow(ctx, `INSERT INTO card (card_type_id, parent_card_id) SELECT id, NULL FROM card_type WHERE name='person' RETURNING id`).Scan(&bobID); err != nil {
+		t.Fatalf("insert bob: %v", err)
+	}
+	if _, err := f.sp.P.Exec(ctx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		SELECT $1, ad.id, to_jsonb($2::text) FROM attribute_def ad WHERE ad.name=$3
+	`, bobID, "Bob", "title"); err != nil {
+		t.Fatalf("bob title: %v", err)
+	}
+	if _, err := f.sp.P.Exec(ctx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		SELECT $1, ad.id, to_jsonb($2::text) FROM attribute_def ad WHERE ad.name=$3
+	`, bobID, "bob@example.com", "email"); err != nil {
+		t.Fatalf("bob email: %v", err)
+	}
+	if _, err := f.sp.P.Exec(ctx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		SELECT $1, ad.id, to_jsonb($2::text) FROM attribute_def ad WHERE ad.name=$3
+	`, bobID, "member", "person_kind"); err != nil {
+		t.Fatalf("bob kind: %v", err)
+	}
+	var bobOut comm.PersonUpsertByEmailOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "pb", Endpoint: "person", Action: "upsert_by_email",
+		Data: json.RawMessage(`{"email":"bob@example.com","kind":"contact"}`),
+	}, &bobOut)
+	if bobOut.PersonID != bobID || bobOut.Created {
+		t.Errorf("bob upsert: id=%d created=%v, want %d, false", bobOut.PersonID, bobOut.Created, bobID)
+	}
+	var bobKind string
+	if err := f.sp.P.QueryRow(ctx, `
+		SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='person_kind'
+	`, bobID).Scan(&bobKind); err != nil {
+		t.Fatalf("read bob kind: %v", err)
+	}
+	if bobKind != "member" {
+		t.Errorf("bob kind after upsert=%q; existing persons must NOT be reclassified", bobKind)
+	}
+}
+
+// ---- comm.set_recipients ----
+
+// TestCommSetRecipients verifies the replace + validation behaviour
+// of the editor handler used by the inline recipient picker.
+func TestCommSetRecipients(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_comm_set_recipients")
+	_, commID := createCommForReply(t, f, "")
+
+	// Upsert two persons we'll use as new recipients.
+	var p1, p2 comm.PersonUpsertByEmailOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "p1", Endpoint: "person", Action: "upsert_by_email",
+		Data: json.RawMessage(`{"email":"x@example.com","kind":"contact"}`),
+	}, &p1)
+	dispatch(t, f, api.SubRequest{
+		ID: "p2", Endpoint: "person", Action: "upsert_by_email",
+		Data: json.RawMessage(`{"email":"y@example.com","kind":"contact"}`),
+	}, &p2)
+
+	// Replace the seeded customer with [x, y].
+	var setOut comm.CommSetRecipientsOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "s", Endpoint: "comm", Action: "set_recipients",
+		Data: json.RawMessage(fmt.Sprintf(`{"comm_id":"%d","recipient_person_ids":["%d","%d"]}`,
+			commID, p1.PersonID, p2.PersonID)),
+	}, &setOut)
+	if setOut.Count != 2 {
+		t.Errorf("count=%d want 2", setOut.Count)
+	}
+
+	// Re-read via comm.list_for_task to confirm the wire surfaces the
+	// new list (the recipient ids replace the prior single recipient).
+	var listOut comm.CommListForTaskOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "l", Endpoint: "comm", Action: "list_for_task",
+		Data: json.RawMessage(fmt.Sprintf(`{"task_id":"%d"}`, f.taskID)),
+	}, &listOut)
+	if len(listOut.Rows) != 1 {
+		t.Fatalf("rows: %+v", listOut.Rows)
+	}
+	got := listOut.Rows[0].Recipients
+	if len(got) != 2 || got[0] != p1.PersonID || got[1] != p2.PersonID {
+		t.Errorf("recipients=%v want [%d,%d]", got, p1.PersonID, p2.PersonID)
+	}
+
+	// Empty list clears the field.
+	dispatch(t, f, api.SubRequest{
+		ID: "s2", Endpoint: "comm", Action: "set_recipients",
+		Data: json.RawMessage(fmt.Sprintf(`{"comm_id":"%d","recipient_person_ids":[]}`, commID)),
+	}, &setOut)
+	if setOut.Count != 0 {
+		t.Errorf("count after clear=%d want 0", setOut.Count)
+	}
+
+	// Pointing at a non-person id is rejected.
+	errEnv := dispatchExpectErr(t, f, api.SubRequest{
+		ID: "bad", Endpoint: "comm", Action: "set_recipients",
+		Data: json.RawMessage(fmt.Sprintf(`{"comm_id":"%d","recipient_person_ids":["%d"]}`, commID, f.taskID)),
+	})
+	if errEnv.Code != "invalid_recipient" {
+		t.Errorf("code=%q want invalid_recipient (%s)", errEnv.Code, errEnv.Message)
 	}
 }

@@ -51,11 +51,11 @@
 
 <span
   class={cx(
-    'inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white select-none',
+    'inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-on-image select-none',
     sizeClass,
     klass,
   )}
-  style="background-color: {bg}"
+  style:background-color={bg}
   title={name}
   aria-label={name}
 >

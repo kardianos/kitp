@@ -40,8 +40,10 @@ func TestUserSelect(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	// Migrations 0002 (System) and 0004 (alice/bob/carol/dave/eve) seed 6 rows.
-	want := []string{"System", "alice", "bob", "carol", "dave", "eve"}
+	// Seed: System + alice/bob/carol/dave/eve + AG1 = 7 rows.
+	// AG1 sorts after the lower-case humans because Postgres' default
+	// collation puts uppercase before lowercase ("AG1" < "alice").
+	want := []string{"AG1", "System", "alice", "bob", "carol", "dave", "eve"}
 	if len(out.Rows) != len(want) {
 		t.Fatalf("rows: got %d, want %d: %+v", len(out.Rows), len(want), out.Rows)
 	}
@@ -55,8 +57,9 @@ func TestUserSelect(t *testing.T) {
 }
 
 // TestUserListWithRoles verifies the new admin handler returns every user
-// with their role assignments. The seeded System User holds the 'system'
-// role globally; everyone else has no roles in the freshly-migrated DB.
+// with their role assignments. The seeded System User holds admin +
+// manager + worker globally; everyone else has no roles in the
+// freshly-migrated DB.
 func TestUserListWithRoles(t *testing.T) {
 	srv := setup(t, "kitp_test_user_lwr")
 	ctx := auth.WithSystemUser(context.Background())
@@ -74,7 +77,7 @@ func TestUserListWithRoles(t *testing.T) {
 	if len(out.Rows) < 6 {
 		t.Fatalf("rows: got %d (want >= 6)", len(out.Rows))
 	}
-	// Find the System User row and verify it has the 'system' role.
+	// Find the System User row and verify it has the 'admin' role.
 	foundSystem := false
 	for _, r := range out.Rows {
 		if r.DisplayName == "System" {
@@ -82,14 +85,14 @@ func TestUserListWithRoles(t *testing.T) {
 			if len(r.Roles) == 0 {
 				t.Errorf("System User should have at least one role")
 			}
-			hasSystem := false
+			hasAdmin := false
 			for _, ra := range r.Roles {
-				if ra.RoleName == "system" {
-					hasSystem = true
+				if ra.RoleName == "admin" {
+					hasAdmin = true
 				}
 			}
-			if !hasSystem {
-				t.Errorf("System User missing 'system' role; got %+v", r.Roles)
+			if !hasAdmin {
+				t.Errorf("System User missing 'admin' role; got %+v", r.Roles)
 			}
 		}
 	}

@@ -23,10 +23,9 @@ export async function run(driver: WebDriver): Promise<void> {
   await firstProject.click();
   await waitForUrl(driver, '/project/', 10_000);
 
-  // 2. Open the first task in that project. The PairLayout (formerly
-  //    ProjectDetailScreen, renamed in Gate 9) lists tasks under
-  //    [data-testid="project-tasks-list"] with TaskRow children
-  //    carrying [data-card-id].
+  // 2. Open the first task in that project. The ProjectLayout lists
+  //    tasks under [data-testid="project-tasks-list"] with TaskRow
+  //    children carrying [data-card-id].
   await waitFor(driver, '[data-testid="project-tasks-list"]', 15_000);
   await waitForCountAtLeast(
     driver,

@@ -115,6 +115,13 @@ export const routes: Route[] = [
     scope: 'admin_users',
   },
   {
+    path: '/admin/contacts',
+    component: () => import('../screens/admin/AdminContactsScreen.svelte'),
+    guard: 'requireAdmin',
+    shell: true,
+    scope: 'admin_contacts',
+  },
+  {
     path: '/admin/projects',
     component: () => import('../screens/admin/AdminProjectsScreen.svelte'),
     guard: 'requireAdmin',
@@ -134,6 +141,13 @@ export const routes: Route[] = [
     guard: 'requireAdmin',
     shell: true,
     scope: 'admin_screens',
+  },
+  {
+    path: '/admin/named-filters',
+    component: () => import('../screens/admin/AdminNamedFiltersScreen.svelte'),
+    guard: 'requireAdmin',
+    shell: true,
+    scope: 'admin_named_filters',
   },
   {
     path: '/admin/flows',
@@ -165,6 +179,13 @@ export const routes: Route[] = [
     guard: 'requireAdmin',
     shell: true,
     scope: 'admin_comm_channels',
+  },
+  {
+    path: '/admin/activity-sinks',
+    component: () => import('../screens/admin/AdminActivitySinksScreen.svelte'),
+    guard: 'requireAdmin',
+    shell: true,
+    scope: 'admin_activity_sinks',
   },
   {
     path: '/_dev/components',

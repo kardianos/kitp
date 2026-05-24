@@ -40,7 +40,7 @@ func TestRoleListIncludesAllSeeded(t *testing.T) {
 	if err := json.Unmarshal(buf, &out); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"system", "viewer", "worker", "manager", "admin"}
+	want := []string{"viewer", "commenter", "worker", "manager", "admin"}
 	got := []string{}
 	for _, r := range out.Rows {
 		got = append(got, r.Name)

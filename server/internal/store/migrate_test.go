@@ -31,13 +31,16 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// 1 System person + 1 template project + 6 template statuses +
 		// 3 template comm statuses (Gate 2 of email_comm_spec) +
 		// 6 template screens + 1 Comms screen + 1 "Comms attached"
-		// filter card (Gate 7 of email_comm_spec) = 19.
-		{`SELECT count(*) FROM card`, 19},
-		{`SELECT count(*) FROM user_role`, 2}, // system + admin on user 1
-		{`SELECT count(*) FROM role`, 6},
-		{`SELECT count(*) FROM card_type`, 13},
-		{`SELECT count(*) FROM attribute_def`, 43},
-		{`SELECT count(*) FROM edge`, 68},
+		// filter card (Gate 7 of email_comm_spec) + 3 more seeded
+		// in later gates = 22.
+		{`SELECT count(*) FROM card`, 22},
+		{`SELECT count(*) FROM user_role`, 3}, // admin + manager + worker on user 1
+		{`SELECT count(*) FROM role`, 5},      // viewer, commenter, worker, manager, admin (no wildcard 'system')
+		// 14 built-in card_types + the predicate_snippet card_type
+		// introduced for named filters = 15.
+		{`SELECT count(*) FROM card_type`, 15},
+		{`SELECT count(*) FROM attribute_def`, 60},
+		{`SELECT count(*) FROM edge`, 90},
 		{`SELECT count(*) FROM process`, 6},
 		{`SELECT count(*) FROM process_step`, 7},
 		// Template's status flow + 12 transitions (Gate 11), plus the
@@ -75,18 +78,19 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		// System + frank
 		{`SELECT count(*) FROM user_account`, 2},
 		{`SELECT count(*) FROM user_account_person`, 2},
-		// System: system+admin. frank: admin.
-		{`SELECT count(*) FROM user_role`, 3},
-		// 18 seed cards (template project + 6 statuses + 3 comm statuses
+		// System: admin+manager+worker. frank: admin.
+		{`SELECT count(*) FROM user_role`, 4},
+		// 21 seed cards (template project + 6 statuses + 3 comm statuses
 		// from Gate 2 of email_comm_spec + 6 screens + 1 Comms screen
-		// + 1 "Comms attached" filter from Gate 7 of email_comm_spec)
+		// + 1 "Comms attached" filter from Gate 7 of email_comm_spec
+		// + 3 more seeded in later gates)
 		// + 9 test_demo cards (2 persons + 1 project + 1 milestone
-		// + 1 status + 2 tasks + 1 screen + 1 filter) = 27.
-		{`SELECT count(*) FROM card`, 27},
-		{`SELECT count(*) FROM role`, 6},
-		{`SELECT count(*) FROM card_type`, 13},
-		{`SELECT count(*) FROM attribute_def`, 43},
-		{`SELECT count(*) FROM edge`, 68},
+		// + 1 status + 2 tasks + 1 screen + 1 filter) = 30.
+		{`SELECT count(*) FROM card`, 30},
+		{`SELECT count(*) FROM role`, 5},
+		{`SELECT count(*) FROM card_type`, 15},
+		{`SELECT count(*) FROM attribute_def`, 60},
+		{`SELECT count(*) FROM edge`, 90},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -146,12 +150,11 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		query string
 		want  int64
 	}{
-		{`SELECT count(*) FROM card_type`, 13},
-		// 18 seed (template + 3 comm statuses from Gate 2 + Gate 7's
-		// Comms screen + "Comms attached" filter) + 9 test_demo = 27.
-		{`SELECT count(*) FROM card`, 27},
+		{`SELECT count(*) FROM card_type`, 15},
+		// 21 seed cards + 9 test_demo cards = 30 (see TestApplySchemaWithTestDemo).
+		{`SELECT count(*) FROM card`, 30},
 		{`SELECT count(*) FROM user_account`, 2},
-		{`SELECT count(*) FROM role`, 6},
+		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM flow`, 2},
 		{`SELECT count(*) FROM flow_step`, 15},
 	}

@@ -9,11 +9,8 @@ package rolemapping
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/reg"
@@ -67,7 +64,10 @@ func Register(p *store.Pool) {
 		InputType:    reflect.TypeFor[ListInput](),
 		OutputType:   reflect.TypeFor[ListOutput](),
 		AllowedRoles: []string{"admin"},
-		Run:          runList(p),
+		// Unified handler — body lives in
+		// db/schema/functions/role_mapping_list_batch.sql per Phase 5
+		// of docs/UNIFIED_HANDLER_PLAN.md.
+		SQLFunc: "role_mapping_list_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "role_mapping",
@@ -77,7 +77,10 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[SetOutput](),
 		AllowedRoles: []string{"admin"},
 		Authz:        authzAdmin,
-		Run:          runSet(p),
+		// Unified handler — body lives in
+		// db/schema/functions/role_mapping_set_batch.sql per Phase 3
+		// of docs/UNIFIED_HANDLER_PLAN.md.
+		SQLFunc: "role_mapping_set_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "role_mapping",
@@ -87,7 +90,10 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[DeleteOutput](),
 		AllowedRoles: []string{"admin"},
 		Authz:        authzAdmin,
-		Run:          runDelete(p),
+		// Unified handler — body lives in
+		// db/schema/functions/role_mapping_delete_batch.sql per Phase 3
+		// of docs/UNIFIED_HANDLER_PLAN.md.
+		SQLFunc: "role_mapping_delete_batch",
 	})
 }
 
@@ -115,119 +121,4 @@ func authzAdmin(ctx context.Context, _ any) error {
 	return nil
 }
 
-func runList(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		rows, err := tx.Query(ctx, `
-			SELECT rm.claim_value, r.id, r.name
-			FROM role_mapping rm
-			JOIN role r ON r.id = rm.role_id
-			ORDER BY rm.claim_value
-		`)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		var out []ListRow
-		for rows.Next() {
-			var r ListRow
-			if err := rows.Scan(&r.ClaimValue, &r.RoleID, &r.RoleName); err != nil {
-				return nil, err
-			}
-			out = append(out, r)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		if p != nil {
-			p.NoteRead()
-		}
-		outs := make([]any, len(ins))
-		for i := range ins {
-			outs[i] = ListOutput{Rows: out}
-		}
-		return outs, nil
-	}
-}
 
-// jsonSetRow is the per-input shape fed to jsonb_to_recordset.
-type jsonSetRow struct {
-	ClaimValue string `json:"claim_value"`
-	RoleName   string `json:"role_name"`
-	Ord        int    `json:"ord"`
-}
-
-// runSet is an arrayPath writer. // arrayPath
-func runSet(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		payload := make([]jsonSetRow, len(ins))
-		for i, raw := range ins {
-			in := raw.(SetInput)
-			if in.ClaimValue == "" || in.RoleName == "" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "role_mapping.set: claim_value and role_name are required"}
-			}
-			payload[i] = jsonSetRow{ClaimValue: in.ClaimValue, RoleName: in.RoleName, Ord: i}
-		}
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, err
-		}
-		const q = `
-			WITH input AS (
-				SELECT i.ord, i.claim_value, r.id AS role_id
-				FROM jsonb_to_recordset($1::jsonb)
-					AS i(ord int, claim_value text, role_name text)
-				JOIN role r ON r.name = i.role_name
-			),
-			ups AS (
-				INSERT INTO role_mapping (claim_value, role_id)
-				SELECT claim_value, role_id FROM input
-				ON CONFLICT (claim_value) DO UPDATE SET role_id = EXCLUDED.role_id
-				RETURNING claim_value
-			)
-			SELECT count(*) FROM ups
-		`
-		var n int
-		if err := tx.QueryRow(ctx, q, buf).Scan(&n); err != nil {
-			return nil, fmt.Errorf("role_mapping.set: %w", err)
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		outs := make([]any, len(ins))
-		for i := range ins {
-			outs[i] = SetOutput{OK: true}
-		}
-		return outs, nil
-	}
-}
-
-// runDelete is an arrayPath writer. // arrayPath
-func runDelete(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		vals := make([]string, len(ins))
-		for i, raw := range ins {
-			in := raw.(DeleteInput)
-			if in.ClaimValue == "" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "role_mapping.delete: claim_value required"}
-			}
-			vals[i] = in.ClaimValue
-		}
-		ct, err := tx.Exec(ctx, `DELETE FROM role_mapping WHERE claim_value = ANY($1::text[])`, vals)
-		if err != nil {
-			return nil, fmt.Errorf("role_mapping.delete: %w", err)
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		// We don't get per-row counts back from pgx for ANY; we return the
-		// total and split it across slots — the client only needs OK.
-		total := int(ct.RowsAffected())
-		outs := make([]any, len(ins))
-		for i := range ins {
-			outs[i] = DeleteOutput{OK: total > 0, Deleted: total}
-		}
-		return outs, nil
-	}
-}

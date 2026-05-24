@@ -7,41 +7,33 @@
  *
  * Responsibilities:
  *   1. Compose dispatcher inputs for `comm.list_for_task` and
- *      `reply.post`.
- *   2. Derive the default reply composer fields from the comm's last
- *      reply (To: from the most recent received-direction reply; Subject:
- *      with a "Re: " prefix when missing).
- *   3. Sort replies oldest-first for the inline display, then slice the
- *      last N for the row variant.
- *   4. Compute a comm_status badge: title from the status lookup map +
- *      phase-based colour ('active' = blue, 'terminal' = green, 'triage' =
- *      muted).
+ *      `reply.post` (To: + Subject are derived server-side from
+ *      comm.recipients + parent task title, so reply.post only ships
+ *      the body).
+ *   2. Sort replies oldest-first for the inline display, then slice
+ *      the last N for the row variant.
+ *   3. Compute a comm_status badge: title from the status lookup map +
+ *      phase-based colour ('active' = blue, 'terminal' = green,
+ *      'triage' = muted).
  */
 
 import type { ReplyPostInput, CommListForTaskInput } from '../reg/types.js';
-import type {
-  CommRow,
-  ID,
-  ReplyRow,
-} from '../reg/types.js';
+import type { ID, ReplyRow } from '../reg/types.js';
 
 /** Build the dispatcher input for `comm.list_for_task`. */
 export function commListForTaskPayload(taskId: ID): CommListForTaskInput {
   return { taskId };
 }
 
-/** Build the dispatcher input for `reply.post`. The body is trimmed; the
- *  composer's send button is disabled when the trimmed body is empty so
- *  this helper assumes the caller has already validated. */
-export function replyPostPayload(
-  commId: ID,
-  to: string,
-  subject: string,
-  body: string,
-): ReplyPostInput {
-  const out: ReplyPostInput = { commId, to, body };
-  if (subject !== '') out.subject = subject;
-  return out;
+/**
+ * Build the dispatcher input for `reply.post`. The body is trimmed; the
+ * composer's send button is disabled when the trimmed body is empty so
+ * this helper assumes the caller has already validated. The To: list
+ * and Subject line are derived server-side from comm.recipients and
+ * the parent task's title — not supplied by the caller.
+ */
+export function replyPostPayload(commId: ID, body: string): ReplyPostInput {
+  return { commId, body };
 }
 
 /**
@@ -68,46 +60,6 @@ export function lastNReplies(rows: readonly ReplyRow[], n: number): ReplyRow[] {
   const sorted = sortRepliesAsc(rows);
   if (sorted.length <= n) return sorted;
   return sorted.slice(sorted.length - n);
-}
-
-/**
- * Derive the default `To:` field for a fresh reply composer.
- *
- * Strategy: walk the replies newest-first and return the first
- * `received` reply's `from` field. Falls back to the last outbound
- * reply's `to` so a thread with only outbound mail still gets a useful
- * default. Empty string when the comm has no replies yet (the operator
- * must type the recipient by hand in that case).
- */
-export function defaultReplyTo(replies: readonly ReplyRow[]): string {
-  const newestFirst = [...sortRepliesAsc(replies)].reverse();
-  for (const r of newestFirst) {
-    if (r.delivery_status === 'received' && r.from !== '') return r.from;
-  }
-  for (const r of newestFirst) {
-    if (r.to !== '') return r.to;
-  }
-  return '';
-}
-
-/**
- * Derive the default `Subject:` field for a fresh reply composer.
- *
- * Strategy: take the most-recent reply's subject and ensure it starts
- * with "Re: " (case-insensitive). Replies on a thread with no prior
- * subject default to the comm's title with a "Re: " prefix.
- */
-export function defaultReplySubject(
-  comm: { title: string },
-  replies: readonly ReplyRow[],
-): string {
-  const newestFirst = [...sortRepliesAsc(replies)].reverse();
-  const base =
-    newestFirst.find((r) => r.subject !== '')?.subject ?? comm.title ?? '';
-  if (base === '') return '';
-  // Already prefixed (any case, optionally with whitespace): leave alone.
-  if (/^re:\s/i.test(base)) return base;
-  return `Re: ${base}`;
 }
 
 /** Closed set of phase values mirrored from `TransitionPhase`. */

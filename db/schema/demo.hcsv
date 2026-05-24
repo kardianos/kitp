@@ -70,6 +70,25 @@ user_account_id, person_card_id
 6, @person_eve
 
 
+## table user_account | doc="AG1 — stable demo agent under System. Seeded so make db-reset doesn't churn its id / bearer across runs; the MCP client's bearer in ~/.claude.json stays valid across resets." | on_conflict="id" | reset_sequence=user_account_id_seq
+### rows
+id, display_name, is_agent, parent_user_id, email
+7, AG1, true, 1, null
+
+
+## table user_token | doc="Stable bearer for AG1. Fixed across db-reset so the MCP client config doesn't have to rotate every time the schema is re-applied." | on_conflict="id"
+### rows
+id,                                            user_id, label
+XYknbPSNroEGwF2Zwq3GwX49A4sDJEY8guVfXPRt5ZY,   7,       demo
+
+
+## table user_role | doc="Worker grant on both System (id=1) and AG1 (id=7). System gets it explicitly (alongside its existing system+admin) so AG1's runtime role intersection passes literally on 'worker' — no reliance on the system-wildcard fallback. AG1 gets worker directly so a fresh MCP smoke-test can create tasks + comms out of the box." | on_conflict="*"
+### rows
+user_id, role_id,        scope_card_id
+1,       $role.worker,   null
+7,       $role.worker,   null
+
+
 ## table card | alias=proj_default
 ### rows
 card_type_id, title
@@ -118,34 +137,66 @@ $card_type.status, parent,         terminal, "Done",      4,         s_done
 $card_type.status, parent,         terminal, "Cancelled", 5,         s_cancel
 
 
-## table card | under=proj_default | doc="25 dense tasks. status is round-robin so every state has at least a few rows; 'Closed:'-prefixed titles force Done so a manually-curated terminal example survives the rotation. sort_order is task_idx * 100 (the loader can't compute that, so each row carries its literal value)."
+## table flow | doc="Standard task flow for Default Project, mirroring the template's shape but bound to this project's status cards. Name is project-suffixed because the loader's flow ref-lookup is by name alone (the table doesn't expose a name+scope composite lookup), so multiple flows sharing 'Standard task' across the template + the demo projects would collide. Without a flow, TransitionBar renders nothing and the task-detail status pickers can't show labelled transitions." | on_conflict="attribute_def_id, scope_card_id"
 ### rows
-card_type_id,    parent_card_id, title,                       status,    assignee,             milestone_ref, component_ref, tags,                                 description,                                                                              sort_order
-$card_type.task, parent,         "Wire pickers (dense#1)",    @s_todo,   $user_account.alice,  @m_m1,         @c_fe,         `[@t_pri_high]`,                       "Replace ad-hoc pickers in the dense table with the shared component.",                   700
-$card_type.task, parent,         "API rate limits",           @s_doing,  $user_account.alice,  @m_m1,         @c_be,         `[@t_pri_high, @t_area_be]`,           "Cap per-IP request rate at the gateway and return a structured 429 with retry-after.",   800
-$card_type.task, parent,         "Empty state copy",          @s_review, $user_account.bob,    @m_m1,         @c_fe,         `[@t_pri_med]`,                        "Rewrite the empty-state strings on Projects, Inbox, and Grid to match the voice guide.", 900
-$card_type.task, parent,         "Connection pool tuning",    @s_doing,  $user_account.bob,    @m_m2,         @c_db,         `[@t_pri_low]`,                        null,                                                                                      1000
-$card_type.task, parent,         "OIDC callback URL",         @s_todo,   $user_account.carol,  @m_m2,         @c_auth,       `[@t_pri_high]`,                       "Allow the redirect URL to be configured per environment without rebuilding the client.", 1100
-$card_type.task, parent,         "Triage backlog",            @s_review, $user_account.dave,   null,          null,          `[@t_pri_med]`,                        null,                                                                                      1200
-$card_type.task, parent,         "Onboarding checklist v2",   @s_done,   $user_account.eve,    @m_m3,         @c_ui,         `[@t_pri_low, @t_team_grow]`,          null,                                                                                      1300
-$card_type.task, parent,         "Theme tokens",              @s_doing,  $user_account.alice,  @m_m2,         @c_fe,         `[@t_pri_high, @t_team_prod]`,         null,                                                                                      1400
-$card_type.task, parent,         "Activity feed pagination",  @s_todo,   $user_account.alice,  @m_m1,         @c_be,         `[@t_pri_high]`,                       "Page the activity stream by activity id so older comments load on demand.",             1500
-$card_type.task, parent,         "Read replica failover",     @s_doing,  $user_account.bob,    @m_m2,         @c_db,         `[@t_pri_med, @t_area_be]`,            null,                                                                                      1600
-$card_type.task, parent,         "Component editor refactor", @s_review, $user_account.carol,  @m_m2,         @c_fe,         `[@t_pri_high, @t_area_fe]`,           "Split the component editor into a header/body pair and isolate the autosave timer.",    1700
-$card_type.task, parent,         "JWKS cache",                @s_todo,   $user_account.dave,   @m_m3,         @c_auth,       `[@t_pri_med]`,                        "Cache the OP's JWKS for an hour with stale-while-revalidate on signature failures.",     1800
-$card_type.task, parent,         "Onboarding analytics",      @s_doing,  $user_account.eve,    @m_m1,         @c_ui,         `[@t_team_grow]`,                      null,                                                                                      1900
-$card_type.task, parent,         "Audit log retention",       @s_done,   $user_account.alice,  null,          null,          `[@t_pri_low, @t_team_prod]`,          null,                                                                                      2000
-$card_type.task, parent,         "Empty grid placeholder",    @s_todo,   $user_account.alice,  @m_m3,         @c_fe,         `[@t_pri_med]`,                        null,                                                                                      2100
-$card_type.task, parent,         "Idempotency-Key store",     @s_doing,  $user_account.bob,    @m_m2,         @c_be,         `[@t_pri_high]`,                       "Persist responses keyed by (user, key) for 24h and replay on duplicate submission.",     2200
-$card_type.task, parent,         "Schema migration runner",   @s_review, $user_account.carol,  @m_m3,         @c_db,         `[@t_pri_low, @t_area_be]`,            "Tighten the migration runner: per-file transactions, lock to serialise concurrent boots.", 2300
-$card_type.task, parent,         "PKCE refresh",              @s_todo,   $user_account.dave,   @m_m1,         @c_auth,       `[@t_pri_high, @t_team_plat]`,         null,                                                                                      2400
-$card_type.task, parent,         "Kanban swim lane DnD",      @s_doing,  $user_account.eve,    @m_m2,         @c_ui,         `[@t_pri_med]`,                        "Drag-drop across both column and lane should issue exactly one batch with two attribute writes.", 2500
-$card_type.task, parent,         "Set up CI cache",           @s_done,   $user_account.alice,  @m_m1,         @c_fe,         `[@t_pri_high, @t_team_plat]`,         null,                                                                                      2600
-$card_type.task, parent,         "Migrate to pgx v5",         @s_todo,   $user_account.alice,  @m_m2,         @c_be,         `[@t_pri_high]`,                       null,                                                                                      2700
-$card_type.task, parent,         "Bigserial primary keys",    @s_doing,  $user_account.bob,    @m_m1,         @c_db,         `[@t_pri_med]`,                        null,                                                                                      2800
-$card_type.task, parent,         "Repo bootstrap docs",       @s_review, $user_account.carol,  @m_m3,         null,          `[@t_pri_med]`,                        null,                                                                                      2900
-$card_type.task, parent,         "Linter rule for INSERT",    @s_cancel, $user_account.dave,   @m_m2,         null,          `[@t_pri_low, @t_team_plat]`,          null,                                                                                      3000
-$card_type.task, parent,         "Closed: dispatcher MVP",    @s_done,   $user_account.carol,  null,          @c_ui,         `[]`,                                  null,                                                                                      3100
+name,                            attribute_def_id,      scope_card_id, default_create_status_id, alias
+"Default Project status flow",   $attribute_def.status, @proj_default, @s_new_idea,              flow_default
+
+
+## table flow_step | doc="12 transitions copied from the template's task flow. Buckets (from.phase, to.phase) drive the TransitionBar's UI category: triage→active = Accept, triage→terminal = Reject, active→active = progress, active→terminal = Close, terminal→active = Reopen." | on_conflict="flow_id, from_card_id, to_card_id, label"
+### rows
+flow_id,         from_card_id,  to_card_id,  label,            sort_order
+@flow_default,   @s_new_idea,   @s_todo,     "Accept",         1
+@flow_default,   @s_new_idea,   @s_cancel,   "Reject",         2
+@flow_default,   @s_todo,       @s_doing,    "Start",          1
+@flow_default,   @s_doing,      @s_review,   "Send to review", 1
+@flow_default,   @s_review,     @s_done,     "Approve",        1
+@flow_default,   @s_doing,      @s_done,     "Done",           2
+@flow_default,   @s_todo,       @s_done,     "Done",           3
+@flow_default,   @s_todo,       @s_cancel,   "Cancel",         4
+@flow_default,   @s_doing,      @s_cancel,   "Cancel",         5
+@flow_default,   @s_review,     @s_cancel,   "Cancel",         6
+@flow_default,   @s_done,       @s_todo,     "Reopen",         1
+@flow_default,   @s_cancel,     @s_todo,     "Reopen",         2
+
+
+## table card | under=proj_default | doc="25 dense tasks. status is round-robin so every state has at least a few rows; 'Closed:'-prefixed titles force Done so a manually-curated terminal example survives the rotation. sort_order is task_idx * 100 (the loader can't compute that, so each row carries its literal value). due_date is the demo-only non-built-in attribute defined above; a mix of past, today-ish, and future ISO dates exercises overdue / upcoming display."
+### rows
+card_type_id,    parent_card_id, title,                       status,    assignee,             milestone_ref, component_ref, tags,                                 description,                                                                              sort_order, due_date
+$card_type.task, parent,         "Wire pickers (dense#1)",    @s_todo,   $user_account.alice,  @m_m1,         @c_fe,         `[@t_pri_high]`,                       "Replace ad-hoc pickers in the dense table with the shared component.",                   700,        "2026-05-20"
+$card_type.task, parent,         "API rate limits",           @s_doing,  $user_account.alice,  @m_m1,         @c_be,         `[@t_pri_high, @t_area_be]`,           "Cap per-IP request rate at the gateway and return a structured 429 with retry-after.",   800,        "2026-05-18"
+$card_type.task, parent,         "Empty state copy",          @s_review, $user_account.bob,    @m_m1,         @c_fe,         `[@t_pri_med]`,                        "Rewrite the empty-state strings on Projects, Inbox, and Grid to match the voice guide.", 900,        "2026-05-10"
+$card_type.task, parent,         "Connection pool tuning",    @s_doing,  $user_account.bob,    @m_m2,         @c_db,         `[@t_pri_low]`,                        null,                                                                                      1000,       null
+$card_type.task, parent,         "OIDC callback URL",         @s_todo,   $user_account.carol,  @m_m2,         @c_auth,       `[@t_pri_high]`,                       "Allow the redirect URL to be configured per environment without rebuilding the client.", 1100,       "2026-06-01"
+$card_type.task, parent,         "Triage backlog",            @s_review, $user_account.dave,   null,          null,          `[@t_pri_med]`,                        null,                                                                                      1200,       "2026-05-15"
+$card_type.task, parent,         "Onboarding checklist v2",   @s_done,   $user_account.eve,    @m_m3,         @c_ui,         `[@t_pri_low, @t_team_grow]`,          null,                                                                                      1300,       null
+$card_type.task, parent,         "Theme tokens",              @s_doing,  $user_account.alice,  @m_m2,         @c_fe,         `[@t_pri_high, @t_team_prod]`,         null,                                                                                      1400,       "2026-05-25"
+$card_type.task, parent,         "Activity feed pagination",  @s_todo,   $user_account.alice,  @m_m1,         @c_be,         `[@t_pri_high]`,                       "Page the activity stream by activity id so older comments load on demand.",             1500,       "2026-06-15"
+$card_type.task, parent,         "Read replica failover",     @s_doing,  $user_account.bob,    @m_m2,         @c_db,         `[@t_pri_med, @t_area_be]`,            null,                                                                                      1600,       "2026-05-30"
+$card_type.task, parent,         "Component editor refactor", @s_review, $user_account.carol,  @m_m2,         @c_fe,         `[@t_pri_high, @t_area_fe]`,           "Split the component editor into a header/body pair and isolate the autosave timer.",    1700,       "2026-07-01"
+$card_type.task, parent,         "JWKS cache",                @s_todo,   $user_account.dave,   @m_m3,         @c_auth,       `[@t_pri_med]`,                        "Cache the OP's JWKS for an hour with stale-while-revalidate on signature failures.",     1800,       "2026-06-10"
+$card_type.task, parent,         "Onboarding analytics",      @s_doing,  $user_account.eve,    @m_m1,         @c_ui,         `[@t_team_grow]`,                      null,                                                                                      1900,       null
+$card_type.task, parent,         "Audit log retention",       @s_done,   $user_account.alice,  null,          null,          `[@t_pri_low, @t_team_prod]`,          null,                                                                                      2000,       null
+$card_type.task, parent,         "Empty grid placeholder",    @s_todo,   $user_account.alice,  @m_m3,         @c_fe,         `[@t_pri_med]`,                        null,                                                                                      2100,       "2026-06-05"
+$card_type.task, parent,         "Idempotency-Key store",     @s_doing,  $user_account.bob,    @m_m2,         @c_be,         `[@t_pri_high]`,                       "Persist responses keyed by (user, key) for 24h and replay on duplicate submission.",     2200,       "2026-05-28"
+$card_type.task, parent,         "Schema migration runner",   @s_review, $user_account.carol,  @m_m3,         @c_db,         `[@t_pri_low, @t_area_be]`,            "Tighten the migration runner: per-file transactions, lock to serialise concurrent boots.", 2300,     null
+$card_type.task, parent,         "PKCE refresh",              @s_todo,   $user_account.dave,   @m_m1,         @c_auth,       `[@t_pri_high, @t_team_plat]`,         null,                                                                                      2400,       "2026-05-22"
+$card_type.task, parent,         "Kanban swim lane DnD",      @s_doing,  $user_account.eve,    @m_m2,         @c_ui,         `[@t_pri_med]`,                        "Drag-drop across both column and lane should issue exactly one batch with two attribute writes.", 2500, "2026-06-20"
+$card_type.task, parent,         "Set up CI cache",           @s_done,   $user_account.alice,  @m_m1,         @c_fe,         `[@t_pri_high, @t_team_plat]`,         null,                                                                                      2600,       null
+$card_type.task, parent,         "Migrate to pgx v5",         @s_todo,   $user_account.alice,  @m_m2,         @c_be,         `[@t_pri_high]`,                       null,                                                                                      2700,       "2026-07-15"
+$card_type.task, parent,         "Bigserial primary keys",    @s_doing,  $user_account.bob,    @m_m1,         @c_db,         `[@t_pri_med]`,                        null,                                                                                      2800,       null
+$card_type.task, parent,         "Repo bootstrap docs",       @s_review, $user_account.carol,  @m_m3,         null,          `[@t_pri_med]`,                        null,                                                                                      2900,       "2026-05-12"
+$card_type.task, parent,         "Linter rule for INSERT",    @s_cancel, $user_account.dave,   @m_m2,         null,          `[@t_pri_low, @t_team_plat]`,          null,                                                                                      3000,       null
+$card_type.task, parent,         "Closed: dispatcher MVP",    @s_done,   $user_account.carol,  null,          @c_ui,         `[]`,                                  null,                                                                                      3100,       null
+
+
+## table card | under=proj_default | doc="Task-relations demo. Four tasks demonstrate the parent_task/parent_relationship pair: 'Auth rewrite' is a standalone head task; the next three reference it via parent_task with three different relationship tags (subtask / blocker / related). The 'Head tasks' filter on the grid uses (parent_task not exists OR parent_task has_phase terminal) so these children stay hidden until their parent reaches Done/Cancelled — that's the canonical 'current head tasks only' view."
+### rows
+card_type_id,    parent_card_id, title,                        status,   assignee,             parent_task,      parent_relationship, sort_order, alias
+$card_type.task, parent,         "Auth rewrite",               @s_doing, $user_account.alice,  null,             null,                50,         t_auth_root
+$card_type.task, parent,         "Migrate session storage",    @s_todo,  $user_account.bob,    @t_auth_root,     subtask,             60,         t_auth_session
+$card_type.task, parent,         "JWKS validation blocker",    @s_doing, $user_account.dave,   @t_auth_root,     blocker,             70,         t_auth_jwks
+$card_type.task, parent,         "Audit-log review (related)", @s_review,$user_account.carol,  @t_auth_root,     related,             80,         t_auth_audit
 
 
 -- Screens + their default filters. The screen→default_filter wiring
@@ -157,10 +208,10 @@ $card_type.task, parent,         "Closed: dispatcher MVP",    @s_done,   $user_a
 -- screen.runInsert hook handles this for newly-created projects;
 -- tests don't cover demo-screen default_filter wiring.
 
-## table card | under=proj_default | doc="Inbox screen."
+## table card | under=proj_default | doc="Inbox screen. flow_ref binds the screen to the project's task flow so the TransitionBar in the task-detail header surfaces labelled transitions (Accept / Start / Send to review / Approve / Cancel / Reopen). Without flow_ref the bar renders empty."
 ### rows
-card_type_id, parent_card_id, title,   layout, slug,  hotkey, sort_order, alias
-$card_type.screen, parent, "Inbox",  list,   inbox, i,      1,          sc_inbox
+card_type_id, parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,       alias
+$card_type.screen, parent, "Inbox",  list,   inbox, i,      1,          @flow_default,  sc_inbox
 
 ## table card | under=sc_inbox
 ### rows
@@ -168,21 +219,22 @@ card_type_id, parent_card_id, title,           predicate
 $card_type.filter, parent, "Default Inbox", `{"attr":"status","op":"not terminal"}`
 
 
-## table card | under=proj_default | doc="Grid screen."
+## table card | under=proj_default | doc="Grid screen. tag_prefix_columns defines which tag namespaces (e.g. 'priority/') break out into their own grid column; extra_columns lists attribute_def names to surface as additional columns (between Tags and Created). Both are configurable via the screen filter bar's Columns control."
 ### rows
-card_type_id, parent_card_id, title,  layout, slug, hotkey, sort_order, alias
-$card_type.screen, parent, "Grid",  grid,   grid, g,      2,          sc_grid
+card_type_id, parent_card_id, title,  layout, slug, hotkey, sort_order, flow_ref,       tag_prefix_columns, extra_columns,    alias
+$card_type.screen, parent, "Grid",  grid,   grid, g,      2,          @flow_default,  `["priority"]`,     `["due_date"]`,   sc_grid
 
 ## table card | under=sc_grid
 ### rows
 card_type_id, parent_card_id, title,          predicate
 $card_type.filter, parent, "Default Grid", `{"attr":"status","op":"not terminal"}`
+$card_type.filter, parent, "Head tasks",   `{"connective":"or","children":[{"attr":"parent_task","op":"not exists"},{"attr":"parent_task","op":"has_phase","values":["terminal"]}]}`
 
 
 ## table card | under=proj_default | doc="Kanban screen."
 ### rows
-card_type_id, parent_card_id, title,    layout, slug,   hotkey, sort_order, alias
-$card_type.screen, parent, "Kanban", kanban, kanban, k,      3,          sc_kanban
+card_type_id, parent_card_id, title,    layout, slug,   hotkey, sort_order, flow_ref,       alias
+$card_type.screen, parent, "Kanban", kanban, kanban, k,      3,          @flow_default,  sc_kanban
 
 ## table card | under=sc_kanban
 ### rows
@@ -192,10 +244,158 @@ $card_type.filter, parent, "Default Kanban", `{"attr":"status","op":"not termina
 
 ## table card | under=proj_default | doc="Project-detail screen."
 ### rows
-card_type_id, parent_card_id, title,            layout, slug,    sort_order, alias
-$card_type.screen, parent, "Project detail", pair,   project, 4,          sc_pd
+card_type_id, parent_card_id, title,            layout, slug,    sort_order, flow_ref,       alias
+$card_type.screen, parent, "Project detail", project, project, 4,          @flow_default,  sc_pd
 
 ## table card | under=sc_pd
 ### rows
 card_type_id, parent_card_id, title,                     predicate
 $card_type.filter, parent, "Default Project detail", `{"attr":"status","op":"not terminal"}`
+
+
+## table card | under=proj_default | doc="Named-filter snippets — reusable predicate chunks the user pulls into any screen's active filter via the 'Named' multi-select. The two date snippets reference the relative-date ops (before_today / within_days), which the server compiler resolves against now()::date at query time so the result keeps moving with the clock instead of going stale on save. The non-terminal status check uses has_phase [triage, active] (the kernel form) so the advanced filter editor renders the op label cleanly. 'Heads' surfaces top-level tasks (no parent OR parent terminal)."
+### rows
+card_type_id,               parent_card_id, title,                    predicate
+$card_type.predicate_snippet, parent,         "Overdue",                `{"connective":"and","children":[{"attr":"status","op":"has_phase","values":["triage","active"]},{"attr":"due_date","op":"before_today"}]}`
+$card_type.predicate_snippet, parent,         "Due within 3 days",      `{"connective":"and","children":[{"attr":"status","op":"has_phase","values":["triage","active"]},{"attr":"due_date","op":"within_days","values":[3]}]}`
+$card_type.predicate_snippet, parent,         "Heads",                  `{"connective":"or","children":[{"attr":"parent_task","op":"not exists"},{"attr":"parent_task","op":"has_phase","values":["terminal"]}]}`
+
+
+-- ---------------------------------------------------------------------
+-- Second demo project: "Mobile App"
+--
+-- A lighter second project so the project picker, cross-project task
+-- moves, the named-filter admin, and the global "All projects" inbox
+-- all have something to chew on in dev. Keeps the demo footprint
+-- modest (8 tasks vs Default Project's 29) — the goal is variety, not
+-- density. Every alias uses a `mob_` prefix to stay out of
+-- Default Project's `s_*` / `m_*` / `c_*` / `t_*` / `sc_*` namespace.
+-- ---------------------------------------------------------------------
+
+## table card | alias=proj_mobile
+### rows
+card_type_id, title
+$card_type.project, "Mobile App"
+
+
+## table card | under=proj_mobile | doc="Mobile App milestones — coarser than Default Project's three so 'group by milestone' looks different across the two projects."
+### rows
+card_type_id, parent_card_id, title, alias
+$card_type.milestone, parent, "MVP",  mob_m_mvp
+$card_type.milestone, parent, "v1.1", mob_m_v11
+
+
+## table card | under=proj_mobile | doc="Mobile App components — platform-split is the obvious axis for a mobile app, distinct from Default Project's frontend / backend / db split."
+### rows
+card_type_id, parent_card_id, title, alias
+$card_type.component, parent, "iOS",     mob_c_ios
+$card_type.component, parent, "Android", mob_c_and
+$card_type.component, parent, "Shared",  mob_c_shared
+
+
+## table card | under=proj_mobile | doc="Mobile App tags — same priority namespace + platform tags so the tag exclusivity logic stays exercised under a smaller surface."
+### rows
+card_type_id, parent_card_id, title,             path,             root_exclusive_at, alias
+$card_type.tag, parent, "priority/high",     "priority/high",     "priority", mob_t_pri_high
+$card_type.tag, parent, "priority/low",      "priority/low",      "priority", mob_t_pri_low
+$card_type.tag, parent, "platform/ios",      "platform/ios",      null,       mob_t_plat_ios
+$card_type.tag, parent, "platform/android",  "platform/android",  null,       mob_t_plat_and
+
+
+## table card | under=proj_mobile | doc="Mobile App status value-cards. Independent set from Default Project's — each project owns its own status cards, which is exactly the cross-project re-classification flow that task.move exercises."
+### rows
+card_type_id,     parent_card_id, phase,    title,       sort_order, alias
+$card_type.status, parent,         triage,   "New idea",  0,         mob_s_new_idea
+$card_type.status, parent,         active,   "Todo",      1,         mob_s_todo
+$card_type.status, parent,         active,   "Doing",     2,         mob_s_doing
+$card_type.status, parent,         active,   "Review",    3,         mob_s_review
+$card_type.status, parent,         terminal, "Done",      4,         mob_s_done
+$card_type.status, parent,         terminal, "Cancelled", 5,         mob_s_cancel
+
+
+## table flow | doc="Mobile App task flow, mirroring Default Project's shape but bound to Mobile App's status cards. See the loader-name-lookup note on the Default Project flow above — names must be globally unique." | on_conflict="attribute_def_id, scope_card_id"
+### rows
+name,                       attribute_def_id,      scope_card_id, default_create_status_id, alias
+"Mobile App status flow",   $attribute_def.status, @proj_mobile,  @mob_s_new_idea,          mob_flow
+
+
+## table flow_step | doc="Mobile App's 12 task transitions — same labels and shape as Default Project, just pointing at Mobile App's status cards." | on_conflict="flow_id, from_card_id, to_card_id, label"
+### rows
+flow_id,      from_card_id,     to_card_id,      label,            sort_order
+@mob_flow,    @mob_s_new_idea,  @mob_s_todo,     "Accept",         1
+@mob_flow,    @mob_s_new_idea,  @mob_s_cancel,   "Reject",         2
+@mob_flow,    @mob_s_todo,      @mob_s_doing,    "Start",          1
+@mob_flow,    @mob_s_doing,     @mob_s_review,   "Send to review", 1
+@mob_flow,    @mob_s_review,    @mob_s_done,     "Approve",        1
+@mob_flow,    @mob_s_doing,     @mob_s_done,     "Done",           2
+@mob_flow,    @mob_s_todo,      @mob_s_done,     "Done",           3
+@mob_flow,    @mob_s_todo,      @mob_s_cancel,   "Cancel",         4
+@mob_flow,    @mob_s_doing,     @mob_s_cancel,   "Cancel",         5
+@mob_flow,    @mob_s_review,    @mob_s_cancel,   "Cancel",         6
+@mob_flow,    @mob_s_done,      @mob_s_todo,     "Reopen",         1
+@mob_flow,    @mob_s_cancel,    @mob_s_todo,     "Reopen",         2
+
+
+## table card | under=proj_mobile | doc="Mobile App tasks. Smaller fixture than Default Project (8 tasks vs ~29) — variety more than density. status round-robin so every active state has at least one row; a closed task survives the rotation for terminal-state coverage."
+### rows
+card_type_id,    parent_card_id, title,                       status,         assignee,             milestone_ref, component_ref, tags,                                          description,                                                                              sort_order, due_date
+$card_type.task, parent,         "Push notification setup",   @mob_s_doing,   $user_account.alice,  @mob_m_mvp,    @mob_c_ios,    `[@mob_t_pri_high, @mob_t_plat_ios]`,          "Wire APNs token registration on cold-start; refresh on app foreground.",                  100,        "2026-06-01"
+$card_type.task, parent,         "FCM token registration",    @mob_s_doing,   $user_account.bob,    @mob_m_mvp,    @mob_c_and,    `[@mob_t_pri_high, @mob_t_plat_and]`,          "Symmetric Android-side FCM registration; keep the wire shape identical to APNs.",         200,        "2026-06-01"
+$card_type.task, parent,         "Onboarding flow",           @mob_s_review,  $user_account.carol,  @mob_m_mvp,    @mob_c_shared, `[@mob_t_pri_high]`,                            "Three-screen onboarding, shared between iOS and Android via the shared module.",          300,        "2026-05-25"
+$card_type.task, parent,         "Settings persistence",      @mob_s_todo,    $user_account.dave,   @mob_m_mvp,    @mob_c_shared, `[@mob_t_pri_low]`,                             null,                                                                                      400,        null
+$card_type.task, parent,         "Dark-mode polish",          @mob_s_todo,    $user_account.eve,    @mob_m_v11,    @mob_c_ios,    `[@mob_t_plat_ios, @mob_t_pri_low]`,           "Pass through all screens, ensure contrast on the secondary text and surfaces.",           500,        "2026-07-10"
+$card_type.task, parent,         "Camera permission UX",      @mob_s_new_idea,$user_account.alice,  @mob_m_v11,    @mob_c_shared, `[@mob_t_pri_low]`,                             "Pre-prompt sheet explaining why camera is needed, then OS prompt only on yes.",           600,        null
+$card_type.task, parent,         "App icon refresh",          @mob_s_done,    $user_account.bob,    @mob_m_mvp,    @mob_c_shared, `[]`,                                          null,                                                                                      700,        null
+$card_type.task, parent,         "Closed: prototype review",  @mob_s_cancel,  $user_account.carol,  null,          null,          `[]`,                                          null,                                                                                      800,        null
+
+
+## table card | under=proj_mobile | doc="Mobile App Inbox screen. No hotkey set — Default Project already claims the single-letter screen keys (i / g / k); Mobile App reaches its screens via the project picker + click. Symmetry across the two projects rather than chord collisions."
+### rows
+card_type_id, parent_card_id, title,   layout, slug,  sort_order, flow_ref,   alias
+$card_type.screen, parent, "Inbox",  list,   inbox, 1,          @mob_flow,  mob_sc_inbox
+
+## table card | under=mob_sc_inbox
+### rows
+card_type_id, parent_card_id, title,           predicate
+$card_type.filter, parent, "Default Inbox", `{"attr":"status","op":"not terminal"}`
+
+
+## table card | under=proj_mobile | doc="Mobile App Grid screen. No tag_prefix_columns — Default Project's grid already exercises that affordance, and the parser's backtick-cell cross-product treats a multi-element JSON array oddly under the alias path; safer to omit. extra_columns surfaces the due_date attribute as a Grid column."
+### rows
+card_type_id, parent_card_id, title,  layout, slug, sort_order, flow_ref,   extra_columns,   alias
+$card_type.screen, parent, "Grid",  grid,   grid, 2,          @mob_flow,  `["due_date"]`, mob_sc_grid
+
+## table card | under=mob_sc_grid
+### rows
+card_type_id, parent_card_id, title,          predicate
+$card_type.filter, parent, "Default Grid", `{"attr":"status","op":"not terminal"}`
+
+
+## table card | under=proj_mobile | doc="Mobile App Kanban screen."
+### rows
+card_type_id, parent_card_id, title,    layout, slug,   sort_order, flow_ref,   alias
+$card_type.screen, parent, "Kanban", kanban, kanban, 3,          @mob_flow,  mob_sc_kanban
+
+## table card | under=mob_sc_kanban
+### rows
+card_type_id, parent_card_id, title,             predicate,                                column_attr
+$card_type.filter, parent, "Default Kanban", `{"attr":"status","op":"not terminal"}`, milestone_ref
+
+
+## table card | under=proj_mobile | doc="Mobile App Project-detail screen."
+### rows
+card_type_id, parent_card_id, title,            layout, slug,    sort_order, flow_ref,   alias
+$card_type.screen, parent, "Project detail", project, project, 4,          @mob_flow,  mob_sc_pd
+
+## table card | under=mob_sc_pd
+### rows
+card_type_id, parent_card_id, title,                     predicate
+$card_type.filter, parent, "Default Project detail", `{"attr":"status","op":"not terminal"}`
+
+
+## table card | under=proj_mobile | doc="Same set of snippets as Default Project, scoped to Mobile App. Each project owns its own snippet cards — predicate_snippet is per-project. Listing them across both demo projects exercises the cross-project navigation: pick a project, see its named filters, pick another, see a different list."
+### rows
+card_type_id,               parent_card_id, title,                    predicate
+$card_type.predicate_snippet, parent,         "Overdue",                `{"connective":"and","children":[{"attr":"status","op":"has_phase","values":["triage","active"]},{"attr":"due_date","op":"before_today"}]}`
+$card_type.predicate_snippet, parent,         "Due within 3 days",      `{"connective":"and","children":[{"attr":"status","op":"has_phase","values":["triage","active"]},{"attr":"due_date","op":"within_days","values":[3]}]}`
+$card_type.predicate_snippet, parent,         "Heads",                  `{"connective":"or","children":[{"attr":"parent_task","op":"not exists"},{"attr":"parent_task","op":"has_phase","values":["terminal"]}]}`

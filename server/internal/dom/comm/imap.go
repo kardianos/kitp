@@ -32,15 +32,23 @@
 package comm
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/mail"
+	"net/textproto"
 	"os"
 	"regexp"
 	"strings"
@@ -141,9 +149,27 @@ type InboundMessage struct {
 	MessageID   string // RFC822 Message-ID header (informational)
 	From        string // address-list as a single text field
 	To          string
+	Cc          string // address-list; comma-joined like To
 	Subject     string
 	ThreadIDHdr string // X-Kitp-Thread-Id header value, if present
 	Body        string // plain-text body (text/html stripped to plain)
+	// Attachments captures every multipart part with a
+	// Content-Disposition of `attachment` (or any non-text part), so
+	// the ingest path can recognise round-trip attachments and skip
+	// duplicate storage. Empty when the message is single-part or
+	// has only text parts.
+	Attachments []InboundAttachment
+}
+
+// InboundAttachment is one extracted attachment payload. Bytes are
+// fully decoded (base64 / quoted-printable already applied by the
+// multipart reader). Filename falls back to "attachment-<n>" when the
+// Content-Disposition header is missing or unparseable so the file
+// row always has a non-empty name.
+type InboundAttachment struct {
+	Filename string
+	MimeType string
+	Bytes    []byte
 }
 
 // StartIMAPPoller spawns the poll goroutine for one channel. tick is
@@ -554,18 +580,30 @@ func (p *IMAPPoller) processOne(ctx context.Context, projectID, intakeStatusID i
 
 // logParseError writes a comm_log kind=parse_error row outside the
 // failed message's tx, then returns the original error so the loop
-// can surface it.
+// can surface it. The comm_log insert is best-effort: a failure here
+// can't shadow the original parse error (the caller already knows
+// the message is unusable), but we LOG the secondary failure
+// instead of silently dropping it so an operator can spot
+// "comm_log table broken" if it happens at scale.
 func (p *IMAPPoller) logParseError(ctx context.Context, projectID int64, m InboundMessage, origErr error) error {
 	detail := map[string]any{
 		"message_id": m.MessageID,
 		"subject":    m.Subject,
 		"error":      origErr.Error(),
 	}
-	d, _ := json.Marshal(detail)
-	_, _ = p.pool.P.Exec(ctx, `
+	d, err := json.Marshal(detail)
+	if err != nil {
+		slog.Default().LogAttrs(ctx, slog.LevelWarn, "imap parse_error log marshal",
+			slog.String("err", err.Error()))
+		return origErr
+	}
+	if _, err := p.pool.P.Exec(ctx, `
 		INSERT INTO comm_log (project_id, channel_id, kind, detail)
 		VALUES ($1, $2, 'parse_error', $3::jsonb)
-	`, projectID, p.channelID, d)
+	`, projectID, p.channelID, d); err != nil {
+		slog.Default().LogAttrs(ctx, slog.LevelWarn, "imap parse_error log insert",
+			slog.String("err", err.Error()))
+	}
 	return origErr
 }
 
@@ -634,7 +672,249 @@ func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx pgx.Tx, snap *s
 			return err
 		}
 	}
-	return appendCardRefList(ctx, tx, commID, "replies", replyID, snap, actorID)
+	if err := appendCardRefList(ctx, tx, commID, "replies", replyID, snap, actorID); err != nil {
+		return err
+	}
+	// Resolve the comm's parent task once so attachment ingest can
+	// dedup against existing attachments on that task (round-trip
+	// recognition) without re-querying per attachment.
+	var parentTaskID int64
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(parent_card_id, 0)
+		FROM card WHERE id = $1
+	`, commID).Scan(&parentTaskID); err != nil {
+		return fmt.Errorf("appendReceivedReply: load parent task: %w", err)
+	}
+	if parentTaskID != 0 && len(m.Attachments) > 0 {
+		if err := p.ingestInboundAttachments(ctx, tx, parentTaskID, replyID, m.Attachments, actorID); err != nil {
+			// One attachment row that fails to land shouldn't lose the
+			// whole reply — log loudly and keep going. The reply_body
+			// is already persisted at this point.
+			p.logger.LogAttrs(ctx, slog.LevelWarn, "imap attachment ingest failed",
+				slog.Int64("channel_id", p.channelID),
+				slog.Int64("comm_id", commID),
+				slog.Int64("reply_id", replyID),
+				slog.String("error", err.Error()))
+		}
+	}
+	if err := p.syncCommRecipientsFromInbound(ctx, tx, snap, commID, m, actorID); err != nil {
+		// Log but don't fail the whole inbound — the message + reply
+		// landed; participant tracking can be fixed up later by an
+		// operator editing recipients manually.
+		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap recipient sync failed",
+			slog.Int64("channel_id", p.channelID),
+			slog.Int64("comm_id", commID),
+			slog.String("error", err.Error()))
+	}
+	return nil
+}
+
+// ingestInboundAttachments persists every inbound attachment as a
+// task attachment (linked to the reply via reply_body_attachment)
+// while deduping against round-trips. The dedup contract: for each
+// inbound part, if the parent task already has a non-deleted
+// attachment whose file's sha256 matches, reuse the existing
+// attachment row and skip the new file/attachment inserts. This
+// catches the common case where the user attached a file from the
+// task, the mail round-trips back via IMAP, and the receiving end
+// shouldn't grow a duplicate copy.
+//
+// New attachments land via the same shape as the file.create handler:
+// cas_blob (ON CONFLICT on the digest), cas_blob_data (idem), file
+// row with sha256 set, single file_chunk pointing at the blob,
+// attachment row on the parent task.
+func (p *IMAPPoller) ingestInboundAttachments(
+	ctx context.Context,
+	tx pgx.Tx,
+	parentTaskID int64,
+	replyID int64,
+	atts []InboundAttachment,
+	actorID int64,
+) error {
+	for _, a := range atts {
+		sum := sha256.Sum256(a.Bytes)
+		digest := hex.EncodeToString(sum[:])
+		mt := a.MimeType
+		if mt == "" {
+			mt = "application/octet-stream"
+		}
+		filename := a.Filename
+		if filename == "" {
+			filename = "attachment"
+		}
+
+		// Round-trip dedup: same digest on the same parent task ⇒
+		// reuse the existing attachment row, just link it to the
+		// inbound reply via reply_body_attachment.
+		var existingAttID int64
+		err := tx.QueryRow(ctx, `
+			SELECT a.id
+			FROM attachment a
+			JOIN file f ON f.id = a.file_id
+			WHERE a.card_id = $1
+			  AND a.deleted_at IS NULL
+			  AND f.sha256 = $2
+			LIMIT 1
+		`, parentTaskID, digest).Scan(&existingAttID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("ingestInboundAttachments: dedup lookup: %w", err)
+		}
+		if existingAttID != 0 {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO reply_body_attachment (reply_body_id, attachment_id)
+				VALUES ($1, $2)
+				ON CONFLICT DO NOTHING
+			`, replyID, existingAttID); err != nil {
+				return fmt.Errorf("ingestInboundAttachments: link existing: %w", err)
+			}
+			continue
+		}
+
+		// Novel content. The cas_blob inserts are gated by ON
+		// CONFLICT — the same digest may already live in CAS from
+		// another card's attachment, in which case we just reuse
+		// those bytes. file + attachment rows are always new.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO cas_blob (address, size_bytes, mime_type, storage_kind)
+			VALUES ($1, $2, $3, 'pg')
+			ON CONFLICT (address) DO NOTHING
+		`, digest, int64(len(a.Bytes)), mt); err != nil {
+			return fmt.Errorf("ingestInboundAttachments: cas_blob: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO cas_blob_data (address, data)
+			VALUES ($1, $2)
+			ON CONFLICT (address) DO NOTHING
+		`, digest, a.Bytes); err != nil {
+			return fmt.Errorf("ingestInboundAttachments: cas_blob_data: %w", err)
+		}
+		var fileID int64
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO file (filename, size_bytes, mime_type, created_by, sha256)
+			VALUES ($1, $2, $3, $4, $5)
+			RETURNING id
+		`, filename, int64(len(a.Bytes)), mt, actorID, digest).Scan(&fileID); err != nil {
+			return fmt.Errorf("ingestInboundAttachments: file insert: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO file_chunk (file_id, seq, cas_address, chunk_size)
+			VALUES ($1, 0, $2, $3)
+		`, fileID, digest, int64(len(a.Bytes))); err != nil {
+			return fmt.Errorf("ingestInboundAttachments: file_chunk insert: %w", err)
+		}
+		var newAttID int64
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO attachment (card_id, file_id)
+			VALUES ($1, $2) RETURNING id
+		`, parentTaskID, fileID).Scan(&newAttID); err != nil {
+			return fmt.Errorf("ingestInboundAttachments: attachment insert: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO reply_body_attachment (reply_body_id, attachment_id)
+			VALUES ($1, $2)
+		`, replyID, newAttID); err != nil {
+			return fmt.Errorf("ingestInboundAttachments: link new: %w", err)
+		}
+	}
+	return nil
+}
+
+// Silence the unused-import lints when the file is built without the
+// new attachment path active (e.g. during a partial cherry-pick).
+var _ = textproto.MIMEHeader{}
+
+// syncCommRecipientsFromInbound parses From + To + Cc on the inbound
+// message, drops the channel's own from_address (case-insensitive),
+// upserts each remaining address as a person card with kind='contact'
+// (existing person cards keep whatever kind they already have), and
+// unions the resulting person ids into comm.comm_recipients.
+//
+// Union semantics — never remove participants. If someone drops off
+// the thread, an operator can edit recipients via the UI.
+func (p *IMAPPoller) syncCommRecipientsFromInbound(
+	ctx context.Context,
+	tx pgx.Tx,
+	snap *schema.Snapshot,
+	commID int64,
+	m InboundMessage,
+	actorID int64,
+) error {
+	channelFrom, err := loadChannelFromAddress(ctx, tx, p.channelID)
+	if err != nil {
+		return fmt.Errorf("load channel from_address: %w", err)
+	}
+	channelLower := strings.ToLower(strings.TrimSpace(channelFrom))
+
+	type addr struct {
+		email string
+		name  string
+	}
+	var found []addr
+	seen := make(map[string]struct{})
+	addOne := func(a *mail.Address) {
+		if a == nil {
+			return
+		}
+		email := strings.TrimSpace(a.Address)
+		if email == "" {
+			return
+		}
+		key := strings.ToLower(email)
+		if channelLower != "" && key == channelLower {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		found = append(found, addr{email: email, name: strings.TrimSpace(a.Name)})
+	}
+	for _, raw := range []string{m.From, m.To, m.Cc} {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		// mail.ParseAddressList tolerates name + bare-email forms.
+		// Best-effort: if parsing fails for one header we still try
+		// the others rather than abort the sync.
+		list, perr := mail.ParseAddressList(raw)
+		if perr != nil {
+			continue
+		}
+		for _, a := range list {
+			addOne(a)
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(found))
+	for _, a := range found {
+		id, _, uerr := upsertPersonByEmail(ctx, tx, snap, a.email, a.name, PersonKindContact, actorID)
+		if uerr != nil {
+			return fmt.Errorf("upsert %s: %w", a.email, uerr)
+		}
+		ids = append(ids, id)
+	}
+	if _, err := mergeCommRecipients(ctx, tx, snap, commID, ids, actorID); err != nil {
+		return fmt.Errorf("merge recipients: %w", err)
+	}
+	return nil
+}
+
+// loadChannelFromAddress returns the comm_channel's configured
+// from_address attribute, or "" when none is set. Used by the
+// inbound recipient sync to exclude the channel's own envelope
+// from the participant list.
+func loadChannelFromAddress(ctx context.Context, tx pgx.Tx, channelID int64) (string, error) {
+	var out string
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = $1 AND ad.name='from_address'), '')
+	`, channelID).Scan(&out)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	return out, nil
 }
 
 // createTaskAndComm covers the intake path: no existing thread match,
@@ -822,6 +1102,7 @@ func ParseInboundMessage(uid uint32, raw []byte) (InboundMessage, error) {
 	out.MessageID = strings.TrimSpace(msg.Header.Get("Message-ID"))
 	out.From = strings.TrimSpace(msg.Header.Get("From"))
 	out.To = strings.TrimSpace(msg.Header.Get("To"))
+	out.Cc = strings.TrimSpace(msg.Header.Get("Cc"))
 	out.Subject = strings.TrimSpace(msg.Header.Get("Subject"))
 	out.ThreadIDHdr = strings.TrimSpace(msg.Header.Get("X-Kitp-Thread-Id"))
 
@@ -837,10 +1118,15 @@ func ParseInboundMessage(uid uint32, raw []byte) (InboundMessage, error) {
 
 	switch {
 	case strings.HasPrefix(ctypeLow, "multipart/"):
-		// Multipart: prefer text/plain part; fall back to text/html with
-		// tags stripped. The v1 spec says "keep it simple" — we don't
-		// chase nested multipart/alternative structures recursively.
-		out.Body = extractPreferredPart(body, ctypeRaw)
+		// Walk every part: pick a text body (prefer text/plain, fall
+		// back to text/html with tags stripped) and harvest every
+		// attachment part. One level of nested multipart is unwound
+		// here so a typical multipart/mixed { multipart/alternative
+		// { text/plain, text/html }, attachment, ... } message yields
+		// both the plain body and the attachment list.
+		bodyText, atts := walkMultipart(body, ctypeRaw)
+		out.Body = bodyText
+		out.Attachments = atts
 	case strings.HasPrefix(ctypeLow, "text/html"):
 		out.Body = stripHTMLTags(string(body))
 	default:
@@ -850,77 +1136,122 @@ func ParseInboundMessage(uid uint32, raw []byte) (InboundMessage, error) {
 	return out, nil
 }
 
-// boundaryRegex extracts the boundary= parameter from a Content-Type
-// header. We do this by hand rather than via mime.ParseMediaType
-// because the spec says "keep it simple" and our outbound mail (which
-// this parser will most often see in reply chains) uses plain text.
-var boundaryRegex = regexp.MustCompile(`boundary="?([^";]+)"?`)
-
-// extractPreferredPart picks the text/plain section of a multipart
-// body. Falls back to a tag-stripped text/html section. If neither is
-// present we return the raw body so we still ingest *something*.
-func extractPreferredPart(body []byte, contentType string) string {
-	match := boundaryRegex.FindStringSubmatch(contentType)
-	if len(match) != 2 {
-		// No boundary parameter — treat as plain text.
-		return string(body)
+// walkMultipart parses a multipart body via stdlib `mime/multipart`
+// and returns (body text, attachments). text/plain wins over
+// text/html for the body; non-text parts (or any part with a
+// `Content-Disposition: attachment` header) are appended to the
+// attachments list. One level of nested multipart is unwound — most
+// real-world messages stop at depth 1 (multipart/mixed wrapping a
+// multipart/alternative).
+func walkMultipart(body []byte, contentType string) (string, []InboundAttachment) {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return string(body), nil
 	}
-	boundary := match[1]
-	separator := "--" + boundary
-	// Use byte semantics through strings.Split — body may contain
-	// arbitrary 8-bit content, but mail clients quote-encode that.
-	sections := strings.Split(string(body), separator)
-
-	var htmlPart string
-	for _, s := range sections {
-		s = strings.TrimPrefix(s, "\r\n")
-		s = strings.TrimPrefix(s, "\n")
-		if strings.HasPrefix(strings.TrimSpace(s), "--") {
-			// Closing boundary marker; skip.
+	boundary, ok := params["boundary"]
+	if !ok || boundary == "" {
+		return string(body), nil
+	}
+	var plain, htmlFallback string
+	var atts []InboundAttachment
+	mr := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// Stop early on malformed input; surface whatever we've
+			// collected so the caller still gets a body (and a partial
+			// attachment list) rather than nothing.
+			break
+		}
+		partCT := p.Header.Get("Content-Type")
+		partCTLow := strings.ToLower(partCT)
+		raw, _ := io.ReadAll(p)
+		decoded := decodeTransferEncoding(raw, p.Header.Get("Content-Transfer-Encoding"))
+		disp, dispParams, _ := mime.ParseMediaType(p.Header.Get("Content-Disposition"))
+		dispLow := strings.ToLower(disp)
+		if strings.HasPrefix(partCTLow, "multipart/") {
+			nestedBody, nestedAtts := walkMultipart(decoded, partCT)
+			if plain == "" && nestedBody != "" {
+				// Prefer nested text body when we haven't found one yet.
+				plain = nestedBody
+			}
+			atts = append(atts, nestedAtts...)
 			continue
 		}
-		headerEnd := strings.Index(s, "\r\n\r\n")
-		if headerEnd < 0 {
-			headerEnd = strings.Index(s, "\n\n")
-			if headerEnd < 0 {
-				continue
+		if dispLow == "attachment" || (dispLow == "" && !strings.HasPrefix(partCTLow, "text/")) {
+			filename := dispParams["filename"]
+			if filename == "" {
+				// Some clients put the filename only in the
+				// Content-Type's name= parameter (e.g. older Outlook).
+				if _, ctParams, err := mime.ParseMediaType(partCT); err == nil {
+					filename = ctParams["name"]
+				}
 			}
-			headers := s[:headerEnd]
-			content := s[headerEnd+2:]
-			if isPlainTextPart(headers) {
-				return strings.TrimSpace(content)
+			if filename == "" {
+				filename = fmt.Sprintf("attachment-%d", len(atts)+1)
 			}
-			if isHTMLPart(headers) {
-				htmlPart = content
+			mt, _, _ := mime.ParseMediaType(partCT)
+			if mt == "" {
+				mt = "application/octet-stream"
 			}
+			atts = append(atts, InboundAttachment{
+				Filename: filename,
+				MimeType: mt,
+				Bytes:    decoded,
+			})
 			continue
 		}
-		headers := s[:headerEnd]
-		content := s[headerEnd+4:]
-		if isPlainTextPart(headers) {
-			return strings.TrimSpace(content)
-		}
-		if isHTMLPart(headers) {
-			htmlPart = content
+		if strings.HasPrefix(partCTLow, "text/plain") {
+			if plain == "" {
+				plain = string(decoded)
+			}
+		} else if strings.HasPrefix(partCTLow, "text/html") {
+			if htmlFallback == "" {
+				htmlFallback = string(decoded)
+			}
 		}
 	}
-	if htmlPart != "" {
-		return stripHTMLTags(htmlPart)
+	bodyText := plain
+	if bodyText == "" && htmlFallback != "" {
+		bodyText = stripHTMLTags(htmlFallback)
 	}
-	return string(body)
+	if bodyText == "" {
+		bodyText = ""
+	}
+	return strings.TrimSpace(bodyText), atts
 }
 
-// isPlainTextPart returns true when the part's headers declare a
-// text/plain Content-Type. Tolerates whitespace + charset parameters.
-func isPlainTextPart(headers string) bool {
-	low := strings.ToLower(headers)
-	return strings.Contains(low, "content-type:") && strings.Contains(low, "text/plain")
-}
-
-// isHTMLPart mirrors isPlainTextPart for text/html.
-func isHTMLPart(headers string) bool {
-	low := strings.ToLower(headers)
-	return strings.Contains(low, "content-type:") && strings.Contains(low, "text/html")
+// decodeTransferEncoding undoes the Content-Transfer-Encoding wrapping
+// of a part. Recognises base64 and quoted-printable; passes 7bit /
+// 8bit / binary through unchanged.
+func decodeTransferEncoding(raw []byte, encoding string) []byte {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "base64":
+		decoded, err := base64.StdEncoding.DecodeString(
+			strings.Map(func(r rune) rune {
+				// base64 ignores whitespace per RFC but the std encoder is
+				// strict — strip CRLF / spaces before decoding.
+				if r == '\r' || r == '\n' || r == ' ' || r == '\t' {
+					return -1
+				}
+				return r
+			}, string(raw)))
+		if err != nil {
+			return raw
+		}
+		return decoded
+	case "quoted-printable":
+		b, err := io.ReadAll(quotedprintable.NewReader(bytes.NewReader(raw)))
+		if err != nil {
+			return raw
+		}
+		return b
+	default:
+		return raw
+	}
 }
 
 // htmlTagRegex strips HTML tags. Greedy on the content between < and >.

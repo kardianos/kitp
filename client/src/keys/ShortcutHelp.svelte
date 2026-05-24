@@ -76,6 +76,24 @@
   function close(): void {
     shortcuts.helpOpen = false;
   }
+
+  // Register Esc on the overlay tier while the shortcuts help is
+  // open. Same pattern as the shared Modal — the overlay tier
+  // out-ranks any active-scope Esc binding, so closing the help
+  // works regardless of which screen is underneath. Replaces the
+  // older `installHelpShortcuts` global Esc handler which couldn't
+  // win the scope race against active-scope bindings (e.g.
+  // task_detail's "back to list").
+  $effect(() => {
+    if (!shortcuts.helpOpen) return;
+    const id = shortcuts.register({
+      scope: 'overlay',
+      binding: 'Esc',
+      handler: close,
+      label: 'Close shortcuts help',
+    });
+    return () => shortcuts.unregister(id);
+  });
 </script>
 
 {#if shortcuts.helpOpen}

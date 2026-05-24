@@ -17,10 +17,13 @@ import {
   loadScreenAndFilters,
   readColumnAttr,
   readDefaultFilterID,
-  readLaneAttr,
+  readGroupByAttr,
   readLayout,
   readPredicate,
+  readSort,
+  readTagPrefixColumns,
   readTitle,
+  sortToJson,
 } from '../../src/filter/screen_preset.svelte.js';
 import type { Dispatcher } from '../../src/dispatch/dispatcher.js';
 
@@ -51,7 +54,7 @@ describe('LAYOUTS', () => {
       'list',
       'grid',
       'kanban',
-      'pair',
+      'project',
     ]);
   });
 });
@@ -67,7 +70,7 @@ describe.each<{
 }>([
   { name: 'readLayout', fn: readLayout, attr: 'layout' },
   { name: 'readColumnAttr', fn: readColumnAttr, attr: 'column_attr' },
-  { name: 'readLaneAttr', fn: readLaneAttr, attr: 'lane_attr' },
+  { name: 'readGroupByAttr', fn: readGroupByAttr, attr: 'group_by_attr' },
 ])('$name (string accessor on `$attr`)', ({ fn, attr }) => {
   it.each<{
     label: string;
@@ -201,6 +204,99 @@ describe('readPredicate', () => {
       op: 'eq',
       values: ['123'],
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* readSort / sortToJson                                                      */
+/* -------------------------------------------------------------------------- */
+
+describe('readSort', () => {
+  it.each<{
+    label: string;
+    raw: unknown;
+    want: Array<{ attr: string; dir: 'asc' | 'desc' }>;
+  }>([
+    { label: 'absent', raw: undefined, want: [] },
+    { label: 'empty string', raw: '', want: [] },
+    { label: 'invalid JSON', raw: 'not-json', want: [] },
+    { label: 'wrong type (object)', raw: '{"attr":"x","dir":"asc"}', want: [] },
+    {
+      label: 'one valid entry',
+      raw: '[{"attr":"status","dir":"asc"}]',
+      want: [{ attr: 'status', dir: 'asc' }],
+    },
+    {
+      label: 'multiple entries preserve order',
+      raw: '[{"attr":"status","dir":"asc"},{"attr":"title","dir":"desc"}]',
+      want: [
+        { attr: 'status', dir: 'asc' },
+        { attr: 'title', dir: 'desc' },
+      ],
+    },
+    {
+      label: 'drops malformed entries (missing attr / bad dir)',
+      raw: '[{"attr":"status","dir":"asc"},{"dir":"asc"},{"attr":"x","dir":"sideways"},{"attr":"","dir":"asc"}]',
+      want: [{ attr: 'status', dir: 'asc' }],
+    },
+  ])('$label', ({ raw, want }) => {
+    const c = card(1n, raw === undefined ? {} : { sort: raw });
+    expect(readSort(c)).toEqual(want);
+  });
+});
+
+describe('sortToJson', () => {
+  it('returns empty string for an empty list (so the attribute clears)', () => {
+    expect(sortToJson([])).toBe('');
+  });
+  it('encodes a non-empty list as JSON', () => {
+    expect(
+      sortToJson([
+        { attr: 'status', dir: 'asc' },
+        { attr: 'title', dir: 'desc' },
+      ]),
+    ).toBe('[{"attr":"status","dir":"asc"},{"attr":"title","dir":"desc"}]');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* readTagPrefixColumns                                                       */
+/* -------------------------------------------------------------------------- */
+
+describe('readTagPrefixColumns', () => {
+  it.each<{
+    label: string;
+    raw: unknown;
+    want: string[];
+  }>([
+    { label: 'absent', raw: undefined, want: [] },
+    { label: 'empty string', raw: '', want: [] },
+    { label: 'whitespace string', raw: '   ', want: [] },
+    { label: 'invalid JSON', raw: 'not-json', want: [] },
+    { label: 'wrong type (number)', raw: 7, want: [] },
+    { label: 'wrong-shape JSON (object, not array)', raw: '{"priority":true}', want: [] },
+    { label: 'single prefix', raw: '["priority"]', want: ['priority'] },
+    {
+      label: 'preserves order across multiple prefixes',
+      raw: '["priority","team","area"]',
+      want: ['priority', 'team', 'area'],
+    },
+    {
+      label: 'trims trailing slashes (`priority/` → `priority`)',
+      raw: '["priority/","team//"]',
+      want: ['priority', 'team'],
+    },
+    {
+      label: 'drops empty / non-string entries silently',
+      raw: '["priority","",null,42,"team"]',
+      want: ['priority', 'team'],
+    },
+  ])('$label', ({ raw, want }) => {
+    const c = card(
+      1n,
+      raw === undefined ? {} : { tag_prefix_columns: raw },
+    );
+    expect(readTagPrefixColumns(c)).toEqual(want);
   });
 });
 

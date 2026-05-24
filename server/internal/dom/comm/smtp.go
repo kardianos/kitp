@@ -27,13 +27,17 @@
 package comm
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime/multipart"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"net/textproto"
 	"os"
@@ -41,9 +45,17 @@ import (
 	"time"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
 )
+
+// MaxReplyAttachmentBytes caps the *raw* size of attachments per
+// outgoing reply. Base64 inflates roughly 4/3 on the wire, so 20 MB
+// of raw payload lands at ~27 MB encoded — comfortably under the
+// 25/30 MB ceiling most receiving providers enforce on raw MIME but
+// the user-facing cap is on payload (predictable) not wire size.
+const MaxReplyAttachmentBytes int64 = 20 * 1024 * 1024
 
 // SMTPSender owns the per-channel poll loop. Construct with
 // StartSMTPSender; the returned value's Stop() drains the goroutine
@@ -105,7 +117,7 @@ func NewSMTPSenderForTest(pool *store.Pool, channelID int64, tick time.Duration)
 // reply_body card. Internal callers (processOne) use buildMIME
 // directly.
 func BuildMIMEForTest(from, to, subject, body, threadID string) []byte {
-	return buildMIME(from, to, subject, body, threadID)
+	return buildMIME(from, to, subject, body, threadID, nil)
 }
 
 // newSMTPSender builds the struct without starting the goroutine.
@@ -244,7 +256,29 @@ func (s *SMTPSender) RunOnce(ctx context.Context) error {
 // state mutations happen in a single dedicated tx after the network
 // call returns.
 func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
-	msg := buildMIME(r.from, r.to, r.subject, r.body, r.threadID)
+	atts, err := s.loadReplyAttachments(ctx, r.replyID)
+	if err != nil {
+		// Couldn't read attachment bytes — fail the row loudly rather
+		// than ship a body-only message the user didn't intend.
+		_ = s.recordResult(ctx, r, "failed", "send_fail",
+			map[string]any{"error": "load attachments: " + err.Error()})
+		return fmt.Errorf("smtp sender: load attachments for reply %d: %w", r.replyID, err)
+	}
+	var total int64
+	for _, a := range atts {
+		total += int64(len(a.Bytes))
+	}
+	if total > MaxReplyAttachmentBytes {
+		_ = s.recordResult(ctx, r, "failed", "send_fail", map[string]any{
+			"error":    "attachments exceed per-reply size cap",
+			"cap":      MaxReplyAttachmentBytes,
+			"total":    total,
+			"reply_id": r.replyID,
+		})
+		return fmt.Errorf("smtp sender: reply %d attachments %d > cap %d",
+			r.replyID, total, MaxReplyAttachmentBytes)
+	}
+	msg := buildMIME(r.from, r.to, r.subject, r.body, r.threadID, atts)
 
 	var sendErr error
 	if s.dryRun {
@@ -298,6 +332,9 @@ func classifySendResult(sendErr error, recipient string) (string, string, map[st
 // a project per the seed schema. Keeps the queue scan at one round-
 // trip per tick regardless of pending depth.
 func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply, error) {
+	b := named.New()
+	b.Set("channel_id", s.channelID)
+	b.Set("limit", limit)
 	q := `
 		SELECT
 			rb.id                                                                                                                                                       AS reply_id,
@@ -335,11 +372,15 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 		WHERE rb.deleted_at IS NULL
 		  AND cm.deleted_at IS NULL
 		  AND ch.deleted_at IS NULL
-		  AND ch.id = $1
+		  AND ch.id = :channel_id
 		ORDER BY rb.id
-		LIMIT $2
+		LIMIT :limit
 	`
-	pgRows, err := s.pool.P.Query(ctx, q, s.channelID, limit)
+	sql, args, err := b.Compile(q)
+	if err != nil {
+		return nil, fmt.Errorf("loadPending: compile: %w", err)
+	}
+	pgRows, err := s.pool.P.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -431,7 +472,7 @@ func (s *SMTPSender) recordResult(ctx context.Context, r pendingReply, newStatus
 // the wire protocol) and emit a single Content-Type header for
 // plain-text UTF-8. Quoted-printable / multipart MIME is out of scope
 // for v1 (the spec calls out "plain text only").
-func buildMIME(from, to, subject, body, threadID string) []byte {
+func buildMIME(from, to, subject, body, threadID string, atts []mimeAttachment) []byte {
 	suffix := "[#" + threadID + "]"
 	subjectFinal := subject
 	switch {
@@ -448,18 +489,136 @@ func buildMIME(from, to, subject, body, threadID string) []byte {
 	bodyNorm := strings.TrimRight(body, "\r\n")
 	bodyNorm = strings.ReplaceAll(bodyNorm, "\r\n", "\n")
 	bodyNorm = strings.ReplaceAll(bodyNorm, "\n", "\r\n")
+	bodyWithRef := bodyNorm + "\r\n\r\nRef: " + threadID + "\r\n"
 
-	var b strings.Builder
-	fmt.Fprintf(&b, "From: %s\r\n", from)
-	fmt.Fprintf(&b, "To: %s\r\n", to)
-	fmt.Fprintf(&b, "Subject: %s\r\n", subjectFinal)
-	fmt.Fprintf(&b, "X-Kitp-Thread-Id: %s\r\n", threadID)
-	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-	b.WriteString("\r\n") // header / body separator
-	b.WriteString(bodyNorm)
-	fmt.Fprintf(&b, "\r\n\r\nRef: %s\r\n", threadID)
-	return []byte(b.String())
+	// Common headers.
+	var hdr strings.Builder
+	fmt.Fprintf(&hdr, "From: %s\r\n", from)
+	fmt.Fprintf(&hdr, "To: %s\r\n", to)
+	fmt.Fprintf(&hdr, "Subject: %s\r\n", subjectFinal)
+	fmt.Fprintf(&hdr, "X-Kitp-Thread-Id: %s\r\n", threadID)
+	hdr.WriteString("MIME-Version: 1.0\r\n")
+
+	if len(atts) == 0 {
+		// Plain-text single-part — unchanged shape from the pre-V2 path.
+		hdr.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+		hdr.WriteString("\r\n")
+		hdr.WriteString(bodyWithRef)
+		return []byte(hdr.String())
+	}
+
+	// Multipart/mixed: one text part + one base64 part per attachment.
+	// Use mime/multipart to handle boundary generation + part headers
+	// so we don't hand-roll RFC2046 framing.
+	var body64 bytes.Buffer
+	mw := multipart.NewWriter(&body64)
+	fmt.Fprintf(&hdr, "Content-Type: multipart/mixed; boundary=\"%s\"\r\n", mw.Boundary())
+	hdr.WriteString("\r\n")
+
+	// Body part.
+	textHdr := textproto.MIMEHeader{}
+	textHdr.Set("Content-Type", "text/plain; charset=utf-8")
+	if w, err := mw.CreatePart(textHdr); err == nil {
+		_, _ = w.Write([]byte(bodyWithRef))
+	}
+
+	for _, a := range atts {
+		ah := textproto.MIMEHeader{}
+		ctype := a.MimeType
+		if ctype == "" {
+			ctype = "application/octet-stream"
+		}
+		ah.Set("Content-Type", ctype)
+		ah.Set("Content-Transfer-Encoding", "base64")
+		// Strip embedded quotes so the filename always sits in a clean
+		// quoted-string. mime.FormatMediaType returns "" for an empty
+		// media type, so build the disposition by hand.
+		safeName := strings.ReplaceAll(a.Filename, `"`, ``)
+		ah.Set("Content-Disposition",
+			fmt.Sprintf(`attachment; filename="%s"`, safeName))
+		w, err := mw.CreatePart(ah)
+		if err != nil {
+			continue
+		}
+		// base64 wrapped at 76 chars per RFC 2045.
+		encoded := base64.StdEncoding.EncodeToString(a.Bytes)
+		for i := 0; i < len(encoded); i += 76 {
+			end := i + 76
+			if end > len(encoded) {
+				end = len(encoded)
+			}
+			_, _ = w.Write([]byte(encoded[i:end] + "\r\n"))
+		}
+	}
+	_ = mw.Close()
+
+	out := make([]byte, 0, len(hdr.String())+body64.Len())
+	out = append(out, hdr.String()...)
+	out = append(out, body64.Bytes()...)
+	return out
+}
+
+// mimeAttachment is one attachment payload bound for an outgoing
+// reply. Fields mirror the file row that backs it; Bytes holds the
+// inlined chunk content (CAS bytes joined in seq order).
+type mimeAttachment struct {
+	Filename string
+	MimeType string
+	Bytes    []byte
+}
+
+// loadReplyAttachments resolves every attachment linked to [replyID]
+// (via reply_body_attachment) into in-memory bytes. Joins through
+// attachment → file → file_chunk → cas_blob_data; multi-chunk files
+// are reassembled in seq order. Returns an empty slice when the
+// reply has no linked attachments.
+func (s *SMTPSender) loadReplyAttachments(ctx context.Context, replyID int64) ([]mimeAttachment, error) {
+	rows, err := s.pool.P.Query(ctx, `
+		SELECT a.id, f.filename, f.mime_type, fc.seq,
+		       coalesce(cd.data, ''::bytea)
+		FROM reply_body_attachment rba
+		JOIN attachment a    ON a.id = rba.attachment_id AND a.deleted_at IS NULL
+		JOIN file f          ON f.id = a.file_id
+		JOIN file_chunk fc   ON fc.file_id = f.id
+		LEFT JOIN cas_blob_data cd ON cd.address = fc.cas_address
+		WHERE rba.reply_body_id = $1
+		ORDER BY a.id, fc.seq
+	`, replyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type acc struct {
+		filename, mime string
+		buf            *bytes.Buffer
+	}
+	byAttachment := map[int64]*acc{}
+	order := []int64{}
+	for rows.Next() {
+		var aID int64
+		var filename, mt string
+		var seq int
+		var chunk []byte
+		if err := rows.Scan(&aID, &filename, &mt, &seq, &chunk); err != nil {
+			return nil, err
+		}
+		entry, ok := byAttachment[aID]
+		if !ok {
+			entry = &acc{filename: filename, mime: mt, buf: &bytes.Buffer{}}
+			byAttachment[aID] = entry
+			order = append(order, aID)
+		}
+		_, _ = entry.buf.Write(chunk)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]mimeAttachment, 0, len(order))
+	for _, id := range order {
+		e := byAttachment[id]
+		out = append(out, mimeAttachment{Filename: e.filename, MimeType: e.mime, Bytes: e.buf.Bytes()})
+	}
+	return out, nil
 }
 
 // ---- transport ----
@@ -515,8 +674,17 @@ func sendSMTP(ctx context.Context, host string, port int, username, password, fr
 	if err := client.Mail(from); err != nil {
 		return wrapSMTPError(err, "smtp MAIL FROM")
 	}
-	if err := client.Rcpt(to); err != nil {
-		return wrapSMTPError(err, "smtp RCPT TO")
+	rcpts, err := parseRecipients(to)
+	if err != nil {
+		return fmt.Errorf("smtp parse recipients %q: %w", to, err)
+	}
+	if len(rcpts) == 0 {
+		return fmt.Errorf("smtp: no recipients parsed from %q", to)
+	}
+	for _, rc := range rcpts {
+		if err := client.Rcpt(rc); err != nil {
+			return wrapSMTPError(err, "smtp RCPT TO")
+		}
 	}
 	w, err := client.Data()
 	if err != nil {
@@ -535,6 +703,39 @@ func sendSMTP(ctx context.Context, host string, port int, username, password, fr
 		_ = err
 	}
 	return nil
+}
+
+// parseRecipients splits a To: header value into bare RFC 5321
+// envelope addresses. Tries net/mail.ParseAddressList first so
+// "Alice <alice@x>, bob@y" works; falls back to a comma split so a
+// loosely-formatted value still produces RCPT entries rather than
+// failing the whole send. Empty input returns an empty slice (the
+// caller treats that as a hard error).
+func parseRecipients(to string) ([]string, error) {
+	trimmed := strings.TrimSpace(to)
+	if trimmed == "" {
+		return nil, nil
+	}
+	if addrs, err := mail.ParseAddressList(trimmed); err == nil {
+		out := make([]string, 0, len(addrs))
+		for _, a := range addrs {
+			if a.Address != "" {
+				out = append(out, a.Address)
+			}
+		}
+		if len(out) > 0 {
+			return out, nil
+		}
+	}
+	parts := strings.Split(trimmed, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		s := strings.TrimSpace(p)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 // wrapSMTPError converts net/smtp's *textproto.Error (5xx vs 4xx)

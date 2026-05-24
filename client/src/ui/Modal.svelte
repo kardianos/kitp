@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { tick } from 'svelte';
+  import { shortcuts } from '../keys/registry.svelte.js';
   import { cx } from '../util/class_names.js';
 
   interface Props {
@@ -64,35 +65,50 @@
     onClose?.();
   }
 
+  /**
+   * Tab-trap only — Esc is handled via the shortcut registry's
+   * overlay tier (see the $effect below) so it wins cleanly over
+   * any active-scope Esc binding (e.g. TaskDetail's "back" chord)
+   * instead of relying on listener-order races.
+   */
   function onKeydown(e: KeyboardEvent) {
     if (!open || !dialogEl) return;
-    if (e.key === 'Escape') {
-      e.stopPropagation();
-      close();
+    if (e.key !== 'Tab') return;
+    const focusables = focusableInside(dialogEl);
+    if (focusables.length === 0) {
+      e.preventDefault();
       return;
     }
-    if (e.key === 'Tab') {
-      const focusables = focusableInside(dialogEl);
-      if (focusables.length === 0) {
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    const active = document.activeElement as HTMLElement | null;
+    if (e.shiftKey) {
+      if (active === first || !dialogEl.contains(active)) {
         e.preventDefault();
-        return;
+        last.focus();
       }
-      const first = focusables[0]!;
-      const last = focusables[focusables.length - 1]!;
-      const active = document.activeElement as HTMLElement | null;
-      if (e.shiftKey) {
-        if (active === first || !dialogEl.contains(active)) {
-          e.preventDefault();
-          last.focus();
-        }
-      } else {
-        if (active === last) {
-          e.preventDefault();
-          first.focus();
-        }
+    } else {
+      if (active === last) {
+        e.preventDefault();
+        first.focus();
       }
     }
   }
+
+  // Register Esc on the overlay tier while open. The overlay tier
+  // out-ranks active-scope bindings in the dispatcher's findMatch,
+  // so an open dialog reliably absorbs Esc no matter what screen
+  // owns the active scope underneath.
+  $effect(() => {
+    if (!open || !dismissable) return;
+    const id = shortcuts.register({
+      scope: 'overlay',
+      binding: 'Esc',
+      handler: close,
+      label: title ? `Close ${title}` : 'Close dialog',
+    });
+    return () => shortcuts.unregister(id);
+  });
 
   $effect(() => {
     if (open) {

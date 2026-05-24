@@ -1,22 +1,16 @@
 <script lang="ts">
   /**
-   * Render a markdown string as sanitized HTML.
+   * Render a Markdown string as sanitized HTML.
    *
-   * Pipeline: marked → DOMPurify. Both are required:
-   *   - marked converts CommonMark + GFM extensions to HTML.
-   *   - DOMPurify strips anything that could execute or escape (script
-   *     tags, javascript: hrefs, on* handlers, foreign-namespace
-   *     elements). The card description is user-supplied — we trust no
-   *     part of it.
-   *
-   * The {@html ...} below is what ships the sanitized HTML to the DOM.
-   * Treat it like a security boundary: any future edit that bypasses
-   * DOMPurify (e.g. swapping the sanitizer or rendering raw `marked`
-   * output) re-introduces XSS.
+   * The marked + DOMPurify pipeline lives in `util/markdown.ts` so
+   * its global configuration (link-safety hook, allowlist, marked
+   * options) is installed exactly once at module load rather than
+   * re-applied per component instance. Treat `renderMarkdown` as a
+   * security boundary: any future caller that wants Markdown
+   * rendering must go through it.
    */
-  import DOMPurify from 'dompurify';
-  import { marked } from 'marked';
   import { cx } from '../util/class_names';
+  import { renderMarkdown } from '../util/markdown';
 
   interface Props {
     /** Markdown source. */
@@ -27,18 +21,7 @@
 
   let { source, class: klass = '' }: Props = $props();
 
-  // marked's parse() can return Promise<string> when async extensions are
-  // installed; we don't install any, so the synchronous overload is what
-  // we want. The `async: false` config also forces the sync return.
-  marked.setOptions({ async: false, gfm: true, breaks: true });
-
-  const rawHtml = $derived.by((): string => {
-    if (source === '') return '';
-    const out = marked.parse(source);
-    return typeof out === 'string' ? out : '';
-  });
-
-  const safeHtml = $derived(DOMPurify.sanitize(rawHtml));
+  const safeHtml = $derived(renderMarkdown(source));
 </script>
 
 <!--

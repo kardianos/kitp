@@ -32,9 +32,17 @@
   interface Props {
     predicate: Predicate | null;
     onchange: (next: Predicate | null) => void;
+    /**
+     * Optional hook fired when the user presses ArrowDown or ArrowUp
+     * while the search input has focus. Callers wire it to "focus the
+     * first row of the list below" so the keyboard flow goes input →
+     * list without a hand off the keyboard. The default behaviour (no
+     * hook) leaves the keys at native input semantics (caret nav).
+     */
+    onNavigateOut?: (direction: 'down' | 'up') => void;
   }
 
-  let { predicate, onchange }: Props = $props();
+  let { predicate, onchange, onNavigateOut }: Props = $props();
 
   /* ---------------------------------------------------- scope catalogue */
 
@@ -315,6 +323,15 @@
         if (e.key === 'Enter') {
           e.preventDefault();
           flushNow();
+          return;
+        }
+        if (onNavigateOut !== undefined && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+          // Don't compete with caret motion — most users care about
+          // the row list, not navigating the (typically short) search
+          // text. preventDefault keeps the caret pinned while focus
+          // moves out via the callback.
+          e.preventDefault();
+          onNavigateOut(e.key === 'ArrowDown' ? 'down' : 'up');
         }
       }}
       placeholder="Search tasks…"
@@ -374,8 +391,7 @@
       <div
         bind:this={scopePopup}
         role="menu"
-        class="z-50 flex w-48 flex-col gap-1 rounded-md border border-border bg-bg p-2 text-sm shadow-lg"
-        style="position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none;"
+        class="kf-float-anchor-fade z-50 flex w-48 flex-col gap-1 rounded-md border border-border bg-bg p-2 text-sm shadow-lg"
       >
         <div class="px-1 pb-1 text-xs uppercase tracking-wide text-muted">
           Search in

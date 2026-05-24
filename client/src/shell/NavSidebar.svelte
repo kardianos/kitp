@@ -44,12 +44,15 @@
 
   const adminItems: Array<{ href: string; label: string }> = [
     { href: '/admin/users', label: 'Users' },
+    { href: '/admin/contacts', label: 'People' },
     { href: '/admin/projects', label: 'Projects' },
     { href: '/admin/attributes', label: 'Attributes' },
     { href: '/admin/screens', label: 'Screens' },
+    { href: '/admin/named-filters', label: 'Named filters' },
     { href: '/admin/flows', label: 'Flows' },
     { href: '/admin/agents', label: 'Agents' },
     { href: '/admin/comm-channels', label: 'Comm channels' },
+    { href: '/admin/activity-sinks', label: 'Activity sinks' },
     { href: '/admin/comm-log', label: 'Comm log' },
   ];
 

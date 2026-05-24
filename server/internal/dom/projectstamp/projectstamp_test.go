@@ -656,12 +656,14 @@ func TestPredicateRemap(t *testing.T) {
 	}
 }
 
-// TestStampPermissionWorker covers V26: workers cannot stamp projects.
+// TestStampPermissionWorker: after the worker/manager merge, a worker
+// user can stamp a project the same as a manager. (Pre-merge this was
+// V26: "workers cannot stamp"; the merge collapsed manager-only project
+// surface into worker.)
 func TestStampPermissionWorker(t *testing.T) {
 	f := setup(t, "kitp_test_projectstamp_permission")
 	f.seedTemplate(t)
 
-	// Create a worker user, no manager / admin role.
 	var workerID int64
 	if err := f.sp.P.QueryRow(f.ctx, `INSERT INTO user_account (display_name) VALUES ('stamp-worker') RETURNING id`).Scan(&workerID); err != nil {
 		t.Fatalf("worker user: %v", err)
@@ -673,16 +675,13 @@ func TestStampPermissionWorker(t *testing.T) {
 	}
 	workerCtx := auth.WithUser(context.Background(), &auth.UserCtx{ID: workerID, DisplayName: "stamp-worker"})
 
-	body := json.RawMessage(fmt.Sprintf(`{"template_project_id":"%d","name":"nope"}`, f.templateID))
+	body := json.RawMessage(fmt.Sprintf(`{"template_project_id":"%d","name":"worker-stamp"}`, f.templateID))
 	resp := f.srv.Dispatch(workerCtx, api.BatchRequest{Subrequests: []api.SubRequest{{
 		ID: "s", Endpoint: "project", Action: "stamp", Data: body,
 	}}})
 	sub := resp.Subresponses[0]
-	if sub.OK {
-		t.Fatalf("expected worker stamp to be rejected; got OK: %+v", sub)
-	}
-	if sub.Error == nil || sub.Error.Code != "unauthorized" {
-		t.Errorf("error = %+v, want code=unauthorized", sub.Error)
+	if !sub.OK {
+		t.Fatalf("expected worker stamp to succeed post-merge; got %+v", sub)
 	}
 }
 
@@ -776,18 +775,19 @@ func TestStampFromInstallSeedTemplate(t *testing.T) {
 		t.Errorf("new status flow_step count = %d, want 12", statusStepN)
 	}
 
-	// The new project is NOT marked is_template (the attribute simply
-	// isn't copied, so the default false applies via attribute absence).
-	var n int
+	// The new project is explicitly marked is_template=FALSE. The
+	// PL/pgSQL handler writes the attribute on stamp so the stamped
+	// project is not itself picked up as a future stamp source.
+	var isTemplate bool
 	if err := f.sp.P.QueryRow(f.ctx, `
-		SELECT count(*) FROM attribute_value av
+		SELECT (av.value)::text::boolean FROM attribute_value av
 		JOIN attribute_def ad ON ad.id = av.attribute_def_id
 		WHERE av.card_id = $1 AND ad.name = 'is_template'
-	`, out.NewProjectID).Scan(&n); err != nil {
-		t.Fatalf("is_template count: %v", err)
+	`, out.NewProjectID).Scan(&isTemplate); err != nil {
+		t.Fatalf("is_template lookup: %v", err)
 	}
-	if n != 0 {
-		t.Errorf("new project has is_template attribute rows (got %d); should not be copied", n)
+	if isTemplate {
+		t.Errorf("new project is_template = true; should be false")
 	}
 }
 

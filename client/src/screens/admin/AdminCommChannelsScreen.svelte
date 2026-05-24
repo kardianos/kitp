@@ -16,12 +16,17 @@
     - card.select_with_attributes  (project picker + intake-status options)
     - comm_channel.list             (per-project channel rows)
     - comm_channel.set              (create / update; encrypts passwords)
+
+  The create / edit form is driven by the data-bound <Form> kernel
+  (src/forms). The list, status toggle buttons, and intake-status
+  combobox source are still direct dispatcher reads — those are not
+  forms.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
 
-  import { BatchAbortedError, SubRequestError } from '../../dispatch/errors';
   import { getDispatcher } from '../../dispatch/context';
+  import { clearHelpTopic, setHelpTopic } from '../../help/help_context.svelte';
   import { setActiveScope } from '../../keys/shortcut';
   import { projectScope } from '../../shell/project_scope.svelte';
   import { projectsStore, watchProjects } from '../../shell/projects_store.svelte';
@@ -43,24 +48,34 @@
     ID,
   } from '../../reg/types';
   import Button from '../../ui/Button.svelte';
-  import Combobox from '../../ui/Combobox.svelte';
   import EmptyState from '../../ui/EmptyState.svelte';
+  import ErrorAlert from '../../ui/ErrorAlert.svelte';
   import Modal from '../../ui/Modal.svelte';
+  import PageShell from '../../ui/PageShell.svelte';
   import Spinner from '../../ui/Spinner.svelte';
+  import {
+    Form,
+    FormErrors,
+    NumberInput,
+    PasswordInput,
+    Select,
+    SubmitButton,
+    TextInput,
+  } from '../../forms';
   import { notify } from '../../ui/toast.svelte';
   import { cx } from '../../util/class_names';
 
   import {
-    channelRowToDraft,
-    draftToSetInput,
-    emptyChannelDraft,
     errMsg,
     hostPortLabel,
-    validateChannelDraft,
-    type ChannelDraft,
   } from './admin_comm_channels_helpers';
 
   setActiveScope('admin_comm_channels');
+
+  $effect(() => {
+    setHelpTopic({ kind: 'topic', topic: 'admin.comm_channels' });
+    return () => clearHelpTopic();
+  });
 
   const dispatcher = getDispatcher();
   // Keep the shared project cache warm so the title-bar picker has
@@ -81,25 +96,58 @@
   const selectedProjectId = $derived(projectScope.projectId);
   const projects = $derived(projectsStore.projects);
 
-  /** Form draft. `formOpen` flag governs visibility (so type narrowing
-   *  inside the modal snippet works — Svelte's check doesn't propagate
-   *  the outer `{#if draft !== null}` into snippet children). */
-  let draft = $state<ChannelDraft>(emptyChannelDraft());
+  /** Form open + which channel (null for create) is being edited. */
+  let editing = $state<ChannelRow | null>(null);
   let formOpen = $state(false);
-  let draftErrors = $state<Record<string, string>>({});
-  let saving = $state(false);
 
   /* --------------------------------------------------- derived options */
 
-  const statusOptions = $derived([
-    { value: '0', label: '(no intake status — use flow default)' },
+  const statusOptions = $derived<{ value: ID; label: string }[]>([
+    { value: 0n, label: '(no intake status — use flow default)' },
     ...statuses.map((s) => ({
-      value: s.id.toString(),
+      value: s.id,
       label: typeof s.attributes['title'] === 'string'
         ? (s.attributes['title'] as string)
         : `#${s.id}`,
     })),
   ]);
+
+  /**
+   * Initial draft seed for <Form>. snake_case keys to match the
+   * handler's JSON Schema. For edit, hydrate from `editing`; passwords
+   * always start blank (write-only — spec L94). intake_status_id is
+   * stringified so the Combobox compares correctly.
+   */
+  const formInitial = $derived.by((): Record<string, unknown> => {
+    if (selectedProjectId === null) return {};
+    if (editing === null) {
+      return {
+        project_id: selectedProjectId,
+        channel_type: 'email',
+        imap_port: 0,
+        smtp_port: 0,
+        imap_password: null,
+        smtp_password: null,
+        intake_status_id: 0n,
+      };
+    }
+    return {
+      id: editing.id,
+      project_id: selectedProjectId,
+      name: editing.name,
+      channel_type: editing.channel_type === '' ? 'email' : editing.channel_type,
+      imap_host: editing.imap_host,
+      imap_port: editing.imap_port,
+      imap_username: editing.imap_username,
+      imap_password: null,
+      smtp_host: editing.smtp_host,
+      smtp_port: editing.smtp_port,
+      smtp_username: editing.smtp_username,
+      smtp_password: null,
+      from_address: editing.from_address,
+      intake_status_id: editing.intake_status_id,
+    };
+  });
 
   /* ----------------------------------------------------------- data fetch */
 
@@ -169,54 +217,42 @@
   /* ----------------------------------------------------------- mutations */
 
   function openCreateForm(): void {
-    draft = emptyChannelDraft();
-    draftErrors = {};
+    editing = null;
     formOpen = true;
   }
 
   function openEditForm(row: ChannelRow): void {
-    draft = channelRowToDraft(row);
-    draftErrors = {};
+    editing = row;
     formOpen = true;
   }
 
   function cancelForm(): void {
     formOpen = false;
-    draftErrors = {};
+    editing = null;
   }
 
-  async function saveDraft(): Promise<void> {
-    if (selectedProjectId === null) {
-      notify({ type: 'error', message: 'Pick a project first.' });
-      return;
+  /** Pre-submit transform: blank password inputs become null in the wire
+   *  payload, matching the server's *string convention (null = keep
+   *  stored secret; "" = explicit clear). Without this the kernel would
+   *  send "" and clobber rotated passwords every time an admin saves
+   *  unrelated fields. Runs after validation, before dispatch. */
+  function blankPasswordsToNull(draft: Record<string, unknown>): Record<string, unknown> {
+    for (const key of ['imap_password', 'smtp_password']) {
+      if (draft[key] === '') draft[key] = null;
     }
-    const errors = validateChannelDraft(draft);
-    if (Object.keys(errors).length > 0) {
-      draftErrors = errors;
-      return;
-    }
-    draftErrors = {};
-    saving = true;
-    try {
-      const input: ChannelSetInput = draftToSetInput(draft, selectedProjectId);
-      const out = await dispatcher.request<ChannelSetInput, ChannelSetOutput>({
-        endpoint: commChannelSet.endpoint,
-        action: commChannelSet.action,
-        data: input,
-      });
-      notify({
-        type: 'success',
-        message: input.id === undefined
-          ? `Channel created (#${out.channel_id})`
-          : `Channel updated`,
-      });
-      formOpen = false;
-      if (selectedProjectId !== null) await loadChannelsFor(selectedProjectId);
-    } catch (e) {
-      notify({ type: 'error', message: `Save failed: ${errMsg(e)}` });
-    } finally {
-      saving = false;
-    }
+    return draft;
+  }
+
+  function onChannelSaved(): void {
+    notify({
+      type: 'success',
+      message: editing !== null ? 'Channel updated' : 'Channel created',
+    });
+    formOpen = false;
+    const wasEditing = editing !== null;
+    editing = null;
+    if (selectedProjectId !== null) void loadChannelsFor(selectedProjectId);
+    void wasEditing;
   }
 
   /**
@@ -287,11 +323,6 @@
 
   /* ----------------------------------------------------------- helpers */
 
-  function pickIntakeStatus(v: string | string[] | null): void {
-    if (typeof v === 'string') draft.intakeStatusId = v;
-    else draft.intakeStatusId = '0';
-  }
-
   function statusTitle(id: ID): string {
     if (id === 0n) return '';
     const s = statuses.find((x) => x.id === id);
@@ -301,11 +332,8 @@
   }
 </script>
 
-<div class="flex h-full flex-col" data-testid="admin-comm-channels-screen">
-  <header
-    class="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3"
-  >
-    <h1 class="text-lg font-semibold">Admin · Comm channels</h1>
+<PageShell title="Admin · Comm channels" testid="admin-comm-channels-screen" pad="none">
+  {#snippet actions()}
     <Button
       variant="primary"
       size="sm"
@@ -314,35 +342,27 @@
     >
       {#snippet children()}+ New channel{/snippet}
     </Button>
-  </header>
-
+  {/snippet}
+  {#snippet children()}
   {#if loading && channels.length === 0 && projects.length === 0}
-    <div class="flex flex-1 items-center justify-center">
+    <div class="flex h-full items-center justify-center">
       <Spinner size="lg" />
     </div>
   {:else if error !== null}
-    <div
-      role="alert"
-      class="m-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger"
-    >
-      Failed to load: {error}
-      <button
-        type="button"
-        class="ml-3 underline"
-        onclick={() => void loadInitial()}
-      >
-        Retry
-      </button>
-    </div>
+    <ErrorAlert
+      class="m-4"
+      message={`Failed to load: ${error}`}
+      onRetry={() => void loadInitial()}
+    />
   {:else if selectedProjectId === null}
-    <div class="flex flex-1 items-center justify-center">
+    <div class="flex h-full items-center justify-center">
       <EmptyState
         title="Pick a project"
         description="Comm channels are scoped to a project. Pick one from the header to manage its channels."
       />
     </div>
   {:else if channels.length === 0}
-    <div class="flex flex-1 items-center justify-center" data-testid="comm-channels-empty">
+    <div class="flex h-full items-center justify-center" data-testid="comm-channels-empty">
       <EmptyState
         title="No channels"
         description="Click '+ New channel' to configure the first email channel for this project."
@@ -350,7 +370,7 @@
       />
     </div>
   {:else}
-    <div class="flex-1 overflow-auto px-4 pb-4">
+    <div class="px-4 pb-4">
       <table class="w-full text-sm" data-testid="comm-channels-table">
         <thead class="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
           <tr>
@@ -443,191 +463,84 @@
       </table>
     </div>
   {/if}
-</div>
+  {/snippet}
+</PageShell>
 
 <!-- =================================================== Channel form modal -->
 <Modal
   bind:open={formOpen}
-  title={draft.id !== '0' ? 'Edit channel' : 'New channel'}
+  title={editing !== null ? 'Edit channel' : 'New channel'}
   size="md"
   onClose={cancelForm}
 >
   {#snippet children()}
-      <div class="flex flex-col gap-3 text-sm text-fg" data-testid="channel-form">
-        <!-- Name -->
-        <label class="flex flex-col gap-1">
-          <span class="text-xs font-medium text-muted">Name</span>
-          <input
-            type="text"
-            bind:value={draft.name}
-            data-testid="channel-form-name"
-            class={cx(
-              'rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-            )}
-          />
-          {#if draftErrors.name}
-            <span class="text-xs text-danger">{draftErrors.name}</span>
-          {/if}
-        </label>
-
-        <!-- Channel type — locked to 'email' in v1 -->
-        <label class="flex flex-col gap-1">
-          <span class="text-xs font-medium text-muted">Channel type</span>
-          <input
-            type="text"
-            bind:value={draft.channelType}
-            disabled
-            data-testid="channel-form-type"
-            class="rounded-md border border-border bg-surface px-3 py-2 text-sm text-muted"
-          />
-          <span class="text-xs text-muted">v1 supports email only.</span>
-        </label>
+    <Form
+      spec="comm_channel.set"
+      initial={formInitial}
+      onSaved={onChannelSaved}
+      transform={blankPasswordsToNull}
+      class="flex flex-col gap-3 text-sm text-fg"
+    >
+      <div data-testid="channel-form" class="flex flex-col gap-3">
+        <FormErrors />
+        <TextInput path="name" label="Name" />
+        <TextInput
+          path="channel_type"
+          label="Channel type"
+          caption="v1 supports email only."
+          disabled
+        />
 
         <!-- IMAP block -->
-        <fieldset class="flex flex-col gap-2 rounded-md border border-border p-3">
-          <legend class="px-1 text-xs font-semibold uppercase text-muted">IMAP (inbound)</legend>
+        <div class="flex flex-col gap-2 rounded border border-border p-3">
+          <div class="text-xs uppercase tracking-wide text-muted">IMAP (inbound)</div>
           <div class="grid grid-cols-[2fr_1fr] gap-2">
-            <label class="flex flex-col gap-1">
-              <span class="text-xs font-medium text-muted">Host</span>
-              <input
-                type="text"
-                bind:value={draft.imapHost}
-                placeholder="imap.example.com"
-                data-testid="channel-form-imap-host"
-                class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg"
-              />
-            </label>
-            <label class="flex flex-col gap-1">
-              <span class="text-xs font-medium text-muted">Port</span>
-              <input
-                type="text"
-                bind:value={draft.imapPort}
-                placeholder="993"
-                data-testid="channel-form-imap-port"
-                class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg"
-              />
-              {#if draftErrors.imapPort}
-                <span class="text-xs text-danger">{draftErrors.imapPort}</span>
-              {/if}
-            </label>
+            <TextInput path="imap_host" label="Host" placeholder="imap.example.com" />
+            <NumberInput path="imap_port" label="Port" placeholder="993" />
           </div>
-          <label class="flex flex-col gap-1">
-            <span class="text-xs font-medium text-muted">Username</span>
-            <input
-              type="text"
-              bind:value={draft.imapUsername}
-              data-testid="channel-form-imap-username"
-              class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg"
-            />
-          </label>
-          <label class="flex flex-col gap-1">
-            <span class="text-xs font-medium text-muted">
-              Password
-              {#if draft.id !== '0'}
-                <span class="ml-1 text-muted">(blank = keep stored)</span>
-              {/if}
-            </span>
-            <input
-              type="password"
-              bind:value={draft.imapPassword}
-              data-testid="channel-form-imap-password"
-              placeholder={draft.id !== '0' ? 'Leave blank to keep stored value' : ''}
-              class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg"
-            />
-          </label>
-        </fieldset>
+          <TextInput path="imap_username" label="Username" />
+          <PasswordInput
+            path="imap_password"
+            label="Password"
+            caption={editing !== null ? '(blank = keep stored)' : undefined}
+            placeholder={editing !== null ? 'Leave blank to keep stored value' : ''}
+          />
+        </div>
 
         <!-- SMTP block -->
-        <fieldset class="flex flex-col gap-2 rounded-md border border-border p-3">
-          <legend class="px-1 text-xs font-semibold uppercase text-muted">SMTP (outbound)</legend>
+        <div class="flex flex-col gap-2 rounded border border-border p-3">
+          <div class="text-xs uppercase tracking-wide text-muted">SMTP (outbound)</div>
           <div class="grid grid-cols-[2fr_1fr] gap-2">
-            <label class="flex flex-col gap-1">
-              <span class="text-xs font-medium text-muted">Host</span>
-              <input
-                type="text"
-                bind:value={draft.smtpHost}
-                placeholder="smtp.example.com"
-                data-testid="channel-form-smtp-host"
-                class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg"
-              />
-            </label>
-            <label class="flex flex-col gap-1">
-              <span class="text-xs font-medium text-muted">Port</span>
-              <input
-                type="text"
-                bind:value={draft.smtpPort}
-                placeholder="587"
-                data-testid="channel-form-smtp-port"
-                class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg"
-              />
-              {#if draftErrors.smtpPort}
-                <span class="text-xs text-danger">{draftErrors.smtpPort}</span>
-              {/if}
-            </label>
+            <TextInput path="smtp_host" label="Host" placeholder="smtp.example.com" />
+            <NumberInput path="smtp_port" label="Port" placeholder="587" />
           </div>
-          <label class="flex flex-col gap-1">
-            <span class="text-xs font-medium text-muted">Username</span>
-            <input
-              type="text"
-              bind:value={draft.smtpUsername}
-              data-testid="channel-form-smtp-username"
-              class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg"
-            />
-          </label>
-          <label class="flex flex-col gap-1">
-            <span class="text-xs font-medium text-muted">
-              Password
-              {#if draft.id !== '0'}
-                <span class="ml-1 text-muted">(blank = keep stored)</span>
-              {/if}
-            </span>
-            <input
-              type="password"
-              bind:value={draft.smtpPassword}
-              data-testid="channel-form-smtp-password"
-              placeholder={draft.id !== '0' ? 'Leave blank to keep stored value' : ''}
-              class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg"
-            />
-          </label>
-        </fieldset>
+          <TextInput path="smtp_username" label="Username" />
+          <PasswordInput
+            path="smtp_password"
+            label="Password"
+            caption={editing !== null ? '(blank = keep stored)' : undefined}
+            placeholder={editing !== null ? 'Leave blank to keep stored value' : ''}
+          />
+        </div>
 
-        <!-- From + intake -->
-        <label class="flex flex-col gap-1">
-          <span class="text-xs font-medium text-muted">From address</span>
-          <input
-            type="text"
-            bind:value={draft.fromAddress}
-            placeholder="support@example.com"
-            data-testid="channel-form-from"
-            class="rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg"
-          />
-        </label>
-        <label class="flex flex-col gap-1">
-          <span class="text-xs font-medium text-muted">Intake status</span>
-          <Combobox
-            aria-label="Intake status"
-            options={statusOptions}
-            value={draft.intakeStatusId}
-            searchable={statusOptions.length > 8}
-            onchange={pickIntakeStatus}
-          />
-        </label>
+        <TextInput
+          path="from_address"
+          label="From address"
+          placeholder="support@example.com"
+        />
+        <Select
+          path="intake_status_id"
+          label="Intake status"
+          options={statusOptions}
+          searchable={statusOptions.length > 8}
+        />
+        <div class="mt-2 flex items-center justify-end gap-2 border-t border-border pt-3">
+          <Button variant="ghost" size="sm" onclick={cancelForm}>
+            {#snippet children()}Cancel{/snippet}
+          </Button>
+          <SubmitButton size="sm">Save</SubmitButton>
+        </div>
       </div>
-  {/snippet}
-  {#snippet footer()}
-    <Button variant="ghost" size="sm" onclick={cancelForm}>
-      {#snippet children()}Cancel{/snippet}
-    </Button>
-    <Button
-      variant="primary"
-      size="sm"
-      loading={saving}
-      disabled={saving}
-      onclick={() => void saveDraft()}
-    >
-      {#snippet children()}Save{/snippet}
-    </Button>
+    </Form>
   {/snippet}
 </Modal>
-

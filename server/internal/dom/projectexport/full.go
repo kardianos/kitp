@@ -9,7 +9,7 @@
 //     up to that point is appended sequentially, so wrapping
 //     http.ResponseWriter works without buffering.
 //   - Once headers are flushed (status 200 + Content-Type), any
-//     mid-stream failure leaves a truncated body. We log via cfg.Logger
+//     mid-stream failure leaves a truncated body. We log via slog.Default()
 //     and return nil so writeErr doesn't try to write a second status.
 package projectexport
 
@@ -29,39 +29,48 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
 // fullExportOptions bundles the three toggles the endpoint exposes.
+// `Tree` is the optional predicate AST the client sends as the wire
+// shape of the active screen filter; when non-nil the task query and
+// every per-task lookup (comments, attachments, activity) is scoped
+// to the matching task ids. Other per-project datasets (milestones,
+// components, tags, persons, project metadata) are NOT filtered —
+// they're global to the project and including them in full lets the
+// downstream user re-build references.
 type fullExportOptions struct {
 	IncludeDeleted     bool
 	IncludeAttachments bool
 	IncludeActivity    bool
+	Tree               *card.CardWhereGroup
 }
 
 // handleFullZip orchestrates the streamed ZIP build. Same authz
 // contract as handleSimpleCSV — card.update on the project, plus a
 // valid login.
-func handleFullZip(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg Config) error {
-	user, ok := auth.FromContext(ctx)
-	if !ok || user == nil || user.ID == 0 {
-		return httpError(http.StatusUnauthorized, "login required")
-	}
-
+func handleFullZip(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg Config, user *auth.UserCtx) error {
 	idStr := r.PathValue("id")
 	projectID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || projectID <= 0 {
 		return httpError(http.StatusBadRequest, "invalid project id")
 	}
+	tree, err := parseTreeParam(r.URL.Query().Get("tree"))
+	if err != nil {
+		return err
+	}
 	opts := fullExportOptions{
 		IncludeDeleted:     r.URL.Query().Get("include_deleted") == "1",
 		IncludeAttachments: r.URL.Query().Get("include_attachments") == "1",
 		IncludeActivity:    r.URL.Query().Get("include_activity") == "1",
+		Tree:               tree,
 	}
 	if opts.IncludeAttachments && cfg.Storage == nil {
-		return httpError(http.StatusInternalServerError,
-			"export: include_attachments=1 requires a configured CAS storage")
+		return api.Internal(fmt.Errorf("export: include_attachments=1 requires a configured CAS storage"))
 	}
 
 	projectTitle, err := loadProjectTitle(ctx, cfg.Pool, projectID)
@@ -70,7 +79,7 @@ func handleFullZip(ctx context.Context, w http.ResponseWriter, r *http.Request, 
 	}
 	authOK, err := isAuthorized(ctx, cfg.Pool, user.ID, projectID)
 	if err != nil {
-		return httpError(http.StatusInternalServerError, "authz: "+err.Error())
+		return api.Internal(fmt.Errorf("authz: %w", err))
 	}
 	if !authOK {
 		return httpError(http.StatusForbidden, "not authorized to export this project")
@@ -94,40 +103,40 @@ func handleFullZip(ctx context.Context, w http.ResponseWriter, r *http.Request, 
 	defer zw.Close()
 
 	if err := writeProjectCSV(zw, projectID, projectTitle, bundle); err != nil {
-		logStream(cfg.Logger, "project.csv", err)
+		logStream(ctx, slog.Default(), "project.csv", err)
 		return nil
 	}
 	if err := writeTasksCSV(zw, bundle); err != nil {
-		logStream(cfg.Logger, "tasks.csv", err)
+		logStream(ctx, slog.Default(), "tasks.csv", err)
 		return nil
 	}
 	if err := writeCommentsCSV(zw, bundle); err != nil {
-		logStream(cfg.Logger, "comments.csv", err)
+		logStream(ctx, slog.Default(), "comments.csv", err)
 		return nil
 	}
 	if err := writeValueCardCSV(zw, "milestones.csv", []string{"id", "title", "is_active"},
 		bundle.milestones, milestoneRow); err != nil {
-		logStream(cfg.Logger, "milestones.csv", err)
+		logStream(ctx, slog.Default(), "milestones.csv", err)
 		return nil
 	}
 	if err := writeValueCardCSV(zw, "components.csv", []string{"id", "title", "is_active"},
 		bundle.components, componentRow); err != nil {
-		logStream(cfg.Logger, "components.csv", err)
+		logStream(ctx, slog.Default(), "components.csv", err)
 		return nil
 	}
 	if err := writeValueCardCSV(zw, "tags.csv",
 		[]string{"id", "title", "path", "root_exclusive_at", "is_active"},
 		bundle.tags, tagRow); err != nil {
-		logStream(cfg.Logger, "tags.csv", err)
+		logStream(ctx, slog.Default(), "tags.csv", err)
 		return nil
 	}
 	if err := writePersonsCSV(zw, bundle); err != nil {
-		logStream(cfg.Logger, "persons.csv", err)
+		logStream(ctx, slog.Default(), "persons.csv", err)
 		return nil
 	}
 	if opts.IncludeActivity {
 		if err := writeActivityCSV(zw, bundle); err != nil {
-			logStream(cfg.Logger, "activity.csv", err)
+			logStream(ctx, slog.Default(), "activity.csv", err)
 			return nil
 		}
 	}
@@ -140,12 +149,12 @@ func handleFullZip(ctx context.Context, w http.ResponseWriter, r *http.Request, 
 		var err error
 		digests, err = streamAttachments(ctx, cfg, zw, bundle)
 		if err != nil {
-			logStream(cfg.Logger, "attachments", err)
+			logStream(ctx, slog.Default(), "attachments", err)
 			return nil
 		}
 	}
 	if err := writeAttachmentsCSV(zw, bundle, digests); err != nil {
-		logStream(cfg.Logger, "attachments.csv", err)
+		logStream(ctx, slog.Default(), "attachments.csv", err)
 		return nil
 	}
 	return nil
@@ -238,7 +247,9 @@ func loadFullBundle(ctx context.Context, pool *store.Pool, projectID int64, opts
 	b.deletedAt = projDeleted
 
 	// 2. Tasks (with attrs flattened — reuse the simple-export helper).
-	tasks, err := loadTaskRows(ctx, pool, projectID, opts.IncludeDeleted)
+	//    The optional predicate tree from the screen filter narrows the
+	//    list to the rows the user actually saw before clicking Export.
+	tasks, err := loadTaskRows(ctx, pool, projectID, opts.IncludeDeleted, opts.Tree)
 	if err != nil {
 		return nil, err
 	}
@@ -343,12 +354,12 @@ func loadProjectFull(ctx context.Context, pool *store.Pool, projectID int64) (ma
 		WHERE c.id = $1
 	`, projectID).Scan(&createdAt, &deletedAt, &attrsRaw)
 	if err != nil {
-		return nil, nil, nil, httpError(http.StatusInternalServerError, "load project: "+err.Error())
+		return nil, nil, nil, api.Internal(fmt.Errorf("load project: %w", err))
 	}
 	out := map[string]json.RawMessage{}
 	if len(attrsRaw) > 0 {
 		if err := json.Unmarshal(attrsRaw, &out); err != nil {
-			return nil, nil, nil, httpError(http.StatusInternalServerError, "decode project attrs: "+err.Error())
+			return nil, nil, nil, api.Internal(fmt.Errorf("decode project attrs: %w", err))
 		}
 	}
 	return out, &createdAt, deletedAt, nil
@@ -372,7 +383,7 @@ func loadValueCards(ctx context.Context, pool *store.Pool, typeName string, proj
 		ORDER BY c.id
 	`, typeName, projectID)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, "load "+typeName+": "+err.Error())
+		return nil, api.Internal(fmt.Errorf("load %s: %w", typeName, err))
 	}
 	defer rows.Close()
 	var out []valueCardRow
@@ -380,12 +391,12 @@ func loadValueCards(ctx context.Context, pool *store.Pool, typeName string, proj
 		var v valueCardRow
 		var raw []byte
 		if err := rows.Scan(&v.ID, &raw); err != nil {
-			return nil, httpError(http.StatusInternalServerError, "scan "+typeName+": "+err.Error())
+			return nil, api.Internal(fmt.Errorf("scan %s: %w", typeName, err))
 		}
 		v.Attributes = map[string]json.RawMessage{}
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &v.Attributes); err != nil {
-				return nil, httpError(http.StatusInternalServerError, "decode "+typeName+": "+err.Error())
+				return nil, api.Internal(fmt.Errorf("decode %s: %w", typeName, err))
 			}
 		}
 		out = append(out, v)
@@ -416,7 +427,7 @@ func loadPersons(ctx context.Context, pool *store.Pool, ids []int64) ([]personRo
 		ORDER BY c.id
 	`, ids)
 	if err != nil {
-		return nil, nil, httpError(http.StatusInternalServerError, "load persons: "+err.Error())
+		return nil, nil, api.Internal(fmt.Errorf("load persons: %w", err))
 	}
 	defer rows.Close()
 	var out []personRow
@@ -425,12 +436,12 @@ func loadPersons(ctx context.Context, pool *store.Pool, ids []int64) ([]personRo
 		var raw []byte
 		var hl bool
 		if err := rows.Scan(&p.ID, &raw, &hl); err != nil {
-			return nil, nil, httpError(http.StatusInternalServerError, "scan person: "+err.Error())
+			return nil, nil, api.Internal(fmt.Errorf("scan person: %w", err))
 		}
 		p.Attributes = map[string]json.RawMessage{}
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &p.Attributes); err != nil {
-				return nil, nil, httpError(http.StatusInternalServerError, "decode person: "+err.Error())
+				return nil, nil, api.Internal(fmt.Errorf("decode person: %w", err))
 			}
 		}
 		out = append(out, p)
@@ -455,14 +466,14 @@ func loadCommentRows(ctx context.Context, pool *store.Pool, taskIDs []int64) ([]
 		ORDER BY a.card_id, a.created_at, a.id
 	`, taskIDs)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, "load comments: "+err.Error())
+		return nil, api.Internal(fmt.Errorf("load comments: %w", err))
 	}
 	defer rows.Close()
 	var out []commentRow
 	for rows.Next() {
 		var c commentRow
 		if err := rows.Scan(&c.TaskID, &c.Body, &c.CreatedAt, &c.AuthorEmail); err != nil {
-			return nil, httpError(http.StatusInternalServerError, "scan comment: "+err.Error())
+			return nil, api.Internal(fmt.Errorf("scan comment: %w", err))
 		}
 		out = append(out, c)
 	}
@@ -488,7 +499,7 @@ func loadActivityRows(ctx context.Context, pool *store.Pool, projectID int64, in
 		ORDER BY a.id
 	`, projectID, includeDeleted)
 	if err != nil {
-		return nil, nil, httpError(http.StatusInternalServerError, "load activity: "+err.Error())
+		return nil, nil, api.Internal(fmt.Errorf("load activity: %w", err))
 	}
 	defer rows.Close()
 	var out []activityRow
@@ -499,7 +510,7 @@ func loadActivityRows(ctx context.Context, pool *store.Pool, projectID int64, in
 		var oldRaw, newRaw []byte
 		if err := rows.Scan(&a.ID, &a.CardID, &a.Kind, &a.AttributeName,
 			&oldRaw, &newRaw, &a.ActorEmail, &actorID, &a.CreatedAt); err != nil {
-			return nil, nil, httpError(http.StatusInternalServerError, "scan activity: "+err.Error())
+			return nil, nil, api.Internal(fmt.Errorf("scan activity: %w", err))
 		}
 		a.ValueOld = oldRaw
 		a.ValueNew = newRaw
@@ -536,7 +547,7 @@ func loadAttachmentRows(ctx context.Context, pool *store.Pool, taskIDs []int64) 
 		ORDER BY a.id
 	`, taskIDs)
 	if err != nil {
-		return nil, nil, httpError(http.StatusInternalServerError, "load attachments: "+err.Error())
+		return nil, nil, api.Internal(fmt.Errorf("load attachments: %w", err))
 	}
 	defer rows.Close()
 	var out []attachmentRow
@@ -547,7 +558,7 @@ func loadAttachmentRows(ctx context.Context, pool *store.Pool, taskIDs []int64) 
 		if err := rows.Scan(&r.ID, &r.TaskID, &r.CreatedAt, &thumb,
 			&r.Filename, &r.SizeBytes, &r.MimeType, &r.CreatedByEmail,
 			&createdByID, &r.ChunkAddresses); err != nil {
-			return nil, nil, httpError(http.StatusInternalServerError, "scan attachment: "+err.Error())
+			return nil, nil, api.Internal(fmt.Errorf("scan attachment: %w", err))
 		}
 		if thumb != nil {
 			r.ThumbFileID = *thumb
@@ -785,17 +796,12 @@ func streamAttachments(ctx context.Context, cfg Config, zw *zip.Writer, b *fullB
 		if err != nil {
 			return nil, fmt.Errorf("zip create %s: %w", path, err)
 		}
+		// Single GetAll for every chunk address — one round-trip per
+		// attachment regardless of chunk count, with the bytes
+		// streamed straight into the zip + sha256 fan-out. Closes S8.
 		h := sha256.New()
-		for _, addr := range a.ChunkAddresses {
-			rc, err := cfg.Storage.Get(ctx, addr)
-			if err != nil {
-				return nil, fmt.Errorf("cas %s: %w", addr, err)
-			}
-			if _, err := io.Copy(io.MultiWriter(w, h), rc); err != nil {
-				rc.Close()
-				return nil, fmt.Errorf("copy %s: %w", path, err)
-			}
-			rc.Close()
+		if err := cfg.Storage.GetAll(ctx, a.ChunkAddresses, io.MultiWriter(w, h)); err != nil {
+			return nil, fmt.Errorf("cas get_all %s: %w", path, err)
 		}
 		out[a.ID] = hex.EncodeToString(h.Sum(nil))
 	}
@@ -806,12 +812,12 @@ func streamAttachments(ctx context.Context, cfg Config, zw *zip.Writer, b *fullB
 /* Helpers                                                                     */
 /* -------------------------------------------------------------------------- */
 
-func logStream(logger *slog.Logger, name string, err error) {
+func logStream(ctx context.Context, logger *slog.Logger, name string, err error) {
 	l := logger
 	if l == nil {
 		l = slog.Default()
 	}
-	l.LogAttrs(context.Background(), slog.LevelError, "project export stream",
+	l.LogAttrs(ctx, slog.LevelError, "project export stream",
 		slog.String("entry", name), slog.String("err", err.Error()))
 }
 

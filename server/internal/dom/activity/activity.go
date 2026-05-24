@@ -3,12 +3,9 @@
 package activity
 
 import (
-	"context"
 	"encoding/json"
 	"reflect"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
@@ -54,77 +51,9 @@ func Register(p *store.Pool) {
 		InputType:    reflect.TypeFor[SelectInput](),
 		OutputType:   reflect.TypeFor[SelectOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
-		Run:          runSelect(p),
+		// Unified handler — body lives in
+		// db/schema/functions/activity_select_batch.sql.
+		SQLFunc: "activity_select_batch",
 	})
-}
-
-func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(SelectInput)
-			limit := 200
-			if in.Limit != nil && *in.Limit > 0 && *in.Limit < 1000 {
-				limit = *in.Limit
-			}
-			// One static query handles both modes. CardID == 0 → cross-card
-			// (the IS-NULL gate collapses) and we sort newest-first; for a
-			// per-card read we keep chronological-ascending. Direction is
-			// switched by a sort_asc bool parameter that drives two CASEs in
-			// ORDER BY — the column literal is fixed in SQL, no string
-			// interpolation.
-			var cardIDArg any = in.CardID
-			sortAsc := true
-			if in.CardID == 0 {
-				cardIDArg = nil
-				sortAsc = false
-			}
-			rows, err := tx.Query(ctx, `
-				SELECT a.id, a.card_id, a.kind, ad.name, a.value_old, a.value_new,
-				       cb.body,
-				       a.actor_id, a.created_at
-				FROM activity a
-				LEFT JOIN attribute_def ad ON ad.id = a.attribute_def_id
-				LEFT JOIN comment_body cb ON cb.id = (a.value_new->>'comment_body_id')::bigint
-				WHERE ($1::bigint IS NULL OR a.card_id = $1)
-				  AND ($2::bigint IS NULL OR a.id < $2)
-				ORDER BY
-				  CASE WHEN $4 THEN a.id END ASC,
-				  CASE WHEN NOT $4 THEN a.id END DESC
-				LIMIT $3
-			`, cardIDArg, in.BeforeActivityID, limit, sortAsc)
-			if err != nil {
-				return nil, err
-			}
-			if p != nil {
-				p.NoteRead()
-			}
-			var out []Row
-			for rows.Next() {
-				var r Row
-				var attrName *string
-				var oldRaw, newRaw []byte
-				var body *string
-				if err := rows.Scan(&r.ID, &r.CardID, &r.Kind, &attrName, &oldRaw, &newRaw, &body, &r.ActorID, &r.CreatedAt); err != nil {
-					rows.Close()
-					return nil, err
-				}
-				r.AttributeName = attrName
-				if oldRaw != nil {
-					r.ValueOld = json.RawMessage(oldRaw)
-				}
-				if newRaw != nil {
-					r.ValueNew = json.RawMessage(newRaw)
-				}
-				r.CommentBody = body
-				out = append(out, r)
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-			outs[i] = SelectOutput{Rows: out}
-		}
-		return outs, nil
-	}
+	_ = p
 }

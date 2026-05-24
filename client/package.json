@@ -16,15 +16,6 @@
   },
   "dependencies": {
     "@floating-ui/dom": "^1.7.6",
-    "@milkdown/core": "^7.21.1",
-    "@milkdown/ctx": "^7.21.1",
-    "@milkdown/plugin-listener": "^7.21.1",
-    "@milkdown/plugin-slash": "^7.21.1",
-    "@milkdown/plugin-upload": "^7.21.1",
-    "@milkdown/preset-commonmark": "^7.21.1",
-    "@milkdown/preset-gfm": "^7.21.1",
-    "@milkdown/transformer": "^7.21.1",
-    "@milkdown/utils": "^7.21.1",
     "dompurify": "^3.4.2",
     "marked": "^18.0.3",
     "uuid": "^10.0.0"

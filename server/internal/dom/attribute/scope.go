@@ -4,10 +4,9 @@
 // chain to its enclosing project and asserts equality with the target
 // card's enclosing project.
 //
-// Callers — attribute.update.Validate, card.insert.runInsert, and
-// tag.apply.runApply — pre-filter on IsProjectScopedAttr and pre-parse
-// JSON values via ParseCardRefValue, then hand a batch of
-// ProjectScopeCheck rows to ValidateProjectScope for a single read.
+// Pre-filter on IsProjectScopedAttr and pre-parse JSON values via
+// ParseCardRefValue, then hand a batch of ProjectScopeCheck rows to
+// ValidateProjectScope for a single read.
 //
 // `assignee` (card_ref to a global `person` card) is deliberately out of
 // scope — persons have no enclosing project, so the rule cannot apply.

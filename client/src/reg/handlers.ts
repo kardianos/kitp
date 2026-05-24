@@ -68,6 +68,15 @@ import type {
   ChannelSetInput,
   ChannelStatus,
   ChannelSetOutput,
+  ProcSearchInput,
+  ProcSearchOutput,
+  JSONSchema,
+  HandlerDescriptor,
+  SinkListInput,
+  SinkListOutput,
+  SinkRow,
+  SinkSetInput,
+  SinkSetOutput,
   CommCreateInput,
   CommCreateOutput,
   CommListForTaskInput,
@@ -76,8 +85,12 @@ import type {
   CommLogListOutput,
   CommLogRow,
   CommRow,
+  CommSetRecipientsInput,
+  CommSetRecipientsOutput,
   CommentInsertInput,
   CommentInsertOutput,
+  CommentUpdateInput,
+  CommentUpdateOutput,
   EchoPingInput,
   EchoPingOutput,
   EdgeDeleteInput,
@@ -88,10 +101,18 @@ import type {
   HelpGetScreenOutput,
   HelpGetTopicInput,
   HelpGetTopicOutput,
+  PersonCreateInput,
+  PersonCreateOutput,
+  PersonUpsertByEmailInput,
+  PersonUpsertByEmailOutput,
   ProjectStampInput,
   ProjectStampOutput,
   ReplyPostInput,
   ReplyPostOutput,
+  TaskMoveInput,
+  TaskMoveOutput,
+  TaskPurgeInput,
+  TaskPurgeOutput,
   ReplyRow,
   TagApplyInput,
   TagApplyOutput,
@@ -375,6 +396,10 @@ function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
   };
   const parent = asIdOpt(j.parent_card_id);
   if (parent !== undefined) out.parent_card_id = parent;
+  const createdAt = asStrOpt(j.created_at);
+  if (createdAt !== undefined) out.created_at = createdAt;
+  const lastActivityAt = asStrOpt(j.last_activity_at);
+  if (lastActivityAt !== undefined) out.last_activity_at = lastActivityAt;
   const deletedAt = asStrOpt(j.deleted_at);
   if (deletedAt !== undefined) out.deleted_at = deletedAt;
   const personalSort = asNumOpt(j.personal_sort_order);
@@ -418,6 +443,46 @@ const cardSelectWithAttributes: HandlerSpec<
 // card.search — typeahead read for ref:* picker dropdowns. Returns only
 // (id, title) so it stays cheap as the picker fires per keystroke.
 // ============================================================================
+
+// proc.search — schema-catalogue fetch for the form kernel. Decoded
+// payload is the raw JSON Schema document the server published; we
+// pass it through unchanged for the kernel to consume.
+const procSearch: HandlerSpec<ProcSearchInput, ProcSearchOutput> = {
+  endpoint: 'proc',
+  action: 'search',
+  encode: (i) => {
+    const m: Record<string, unknown> = {};
+    if (i.query !== undefined && i.query !== '') m.query = i.query;
+    if (i.endpoint !== undefined && i.endpoint !== '') m.endpoint = i.endpoint;
+    if (i.action !== undefined && i.action !== '') m.action = i.action;
+    if (i.all !== undefined) m.all = i.all;
+    if (i.includeUnavailable !== undefined) m.include_unavailable = i.includeUnavailable;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    const handlers = asArray(j.handlers).map((h): HandlerDescriptor => {
+      const o = asObj(h);
+      const desc: HandlerDescriptor = {
+        name: asStrOrEmpty(o.name),
+        endpoint: asStrOrEmpty(o.endpoint),
+        action: asStrOrEmpty(o.action),
+      };
+      const doc = asStrOrEmpty(o.doc);
+      if (doc !== '') desc.doc = doc;
+      const roles = asArray(o.allowed_roles).map((r) => String(r));
+      if (roles.length > 0) desc.allowed_roles = roles;
+      if (o.input_schema && typeof o.input_schema === 'object') {
+        desc.input_schema = o.input_schema as JSONSchema;
+      }
+      if (o.output_schema && typeof o.output_schema === 'object') {
+        desc.output_schema = o.output_schema as JSONSchema;
+      }
+      return desc;
+    });
+    return { handlers };
+  },
+};
 
 const cardSearch: HandlerSpec<CardSearchInput, CardSearchOutput> = {
   endpoint: 'card',
@@ -804,6 +869,19 @@ const commentInsert: HandlerSpec<CommentInsertInput, CommentInsertOutput> = {
   },
 };
 
+const commentUpdate: HandlerSpec<CommentUpdateInput, CommentUpdateOutput> = {
+  endpoint: 'comment',
+  action: 'update',
+  encode: (i) => ({ activity_id: i.activityId, body: i.body }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: asBoolOrFalse(j.ok),
+      edit_activity_id: asIdOrZero(j.edit_activity_id),
+    };
+  },
+};
+
 // ============================================================================
 // user.select
 // ============================================================================
@@ -973,6 +1051,9 @@ const commCreate: HandlerSpec<CommCreateInput, CommCreateOutput> = {
     if (i.initialMessage !== undefined && i.initialMessage !== '') {
       m.initial_message = i.initialMessage;
     }
+    if (i.recipientPersonIds !== undefined && i.recipientPersonIds.length > 0) {
+      m.recipient_person_ids = i.recipientPersonIds;
+    }
     return m;
   },
   decode: (raw) => {
@@ -981,6 +1062,56 @@ const commCreate: HandlerSpec<CommCreateInput, CommCreateOutput> = {
       comm_id: asId(j.comm_id),
       thread_id: asStrOrEmpty(j.thread_id),
     };
+  },
+};
+
+const commSetRecipients: HandlerSpec<CommSetRecipientsInput, CommSetRecipientsOutput> = {
+  endpoint: 'comm',
+  action: 'set_recipients',
+  encode: (i) => ({
+    comm_id: i.commId,
+    recipient_person_ids: i.recipientPersonIds,
+  }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { count: asNum(j.count) };
+  },
+};
+
+const personUpsertByEmail: HandlerSpec<PersonUpsertByEmailInput, PersonUpsertByEmailOutput> = {
+  endpoint: 'person',
+  action: 'upsert_by_email',
+  encode: (i) => {
+    const m: Record<string, unknown> = { email: i.email };
+    if (i.displayName !== undefined && i.displayName !== '') m.display_name = i.displayName;
+    if (i.kind !== undefined) m.kind = i.kind;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      person_id: asId(j.person_id),
+      created: j.created === true,
+    };
+  },
+};
+
+const personCreate: HandlerSpec<PersonCreateInput, PersonCreateOutput> = {
+  endpoint: 'person',
+  action: 'create',
+  encode: (i) => {
+    const m: Record<string, unknown> = { title: i.title, tier: i.tier };
+    if (i.email !== undefined && i.email !== '') m.email = i.email;
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    const out: PersonCreateOutput = { person_card_id: asId(j.person_card_id) };
+    // user_account_id is omitted by the server for non-user tiers.
+    if (j.user_account_id !== undefined && j.user_account_id !== null) {
+      out.user_account_id = asId(j.user_account_id);
+    }
+    return out;
   },
 };
 
@@ -1003,6 +1134,7 @@ function decodeCommRow(j: Record<string, unknown>): CommRow {
     thread_id: asStrOrEmpty(j.thread_id),
     channel_id: asIdOrZero(j.channel_id),
     comm_status: asIdOrZero(j.comm_status),
+    recipients: asIdArray(j.recipients),
     replies: asArray(j.replies).map((r) => decodeReplyRow(asObj(r))),
   };
 }
@@ -1023,17 +1155,67 @@ const replyPost: HandlerSpec<ReplyPostInput, ReplyPostOutput> = {
   endpoint: 'reply',
   action: 'post',
   encode: (i) => {
-    const m: Record<string, unknown> = {
+    const out: Record<string, unknown> = {
       comm_id: i.commId,
-      to: i.to,
       body: i.body,
     };
-    if (i.subject !== undefined && i.subject !== '') m.subject = i.subject;
-    return m;
+    if (i.attachmentIds !== undefined && i.attachmentIds.length > 0) {
+      out['attachment_ids'] = i.attachmentIds;
+    }
+    return out;
   },
   decode: (raw) => {
     const j = asObj(raw);
     return { reply_id: asId(j.reply_id) };
+  },
+};
+
+const taskPurge: HandlerSpec<TaskPurgeInput, TaskPurgeOutput> = {
+  endpoint: 'task',
+  action: 'purge',
+  encode: (i) => ({ card_id: i.cardId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      ok: j['ok'] === true,
+      purgedCardIds: asIdArray(j['purged_card_ids']),
+      purgedReplyBodyIds: asIdArray(j['purged_reply_body_ids']),
+    };
+  },
+};
+
+const taskMove: HandlerSpec<TaskMoveInput, TaskMoveOutput> = {
+  endpoint: 'task',
+  action: 'move',
+  encode: (i) => {
+    const out: Record<string, unknown> = {
+      card_id: i.cardId,
+      new_project_id: i.newProjectId,
+    };
+    if (i.newStatusId !== undefined && i.newStatusId !== 0n) {
+      out['new_status_id'] = i.newStatusId;
+    }
+    if (i.newMilestoneId !== undefined && i.newMilestoneId !== 0n) {
+      out['new_milestone_id'] = i.newMilestoneId;
+    }
+    if (i.newComponentId !== undefined && i.newComponentId !== 0n) {
+      out['new_component_id'] = i.newComponentId;
+    }
+    if (i.newTagIds !== undefined && i.newTagIds.length > 0) {
+      out['new_tag_ids'] = i.newTagIds;
+    }
+    if (i.subtaskStrategy !== undefined) {
+      out['subtask_strategy'] = i.subtaskStrategy;
+    }
+    return out;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return {
+      movedCardIds: asIdArray(j['moved_card_ids']),
+      brokenChildIds: asIdArray(j['broken_child_ids']),
+      resolvedStatusId: asId(j['resolved_status_id']),
+    };
   },
 };
 
@@ -1129,6 +1311,84 @@ const commChannelList: HandlerSpec<ChannelListInput, ChannelListOutput> = {
   decode: (raw) => {
     const j = asObj(raw);
     return { rows: asArray(j.rows).map((r) => decodeChannelRow(asObj(r))) };
+  },
+};
+
+// ============================================================================
+// Activity sink. Same patterns as comm_channel above: write-only secret
+// (msgraphClientSecret omitted = preserve, non-empty = rotate), tri-state
+// channel_status reusing the comm subsystem's three values, and a
+// last_activity_id pointer surfaced on the row so the admin sees how
+// far the pump has advanced.
+// ============================================================================
+
+const activitySinkSet: HandlerSpec<SinkSetInput, SinkSetOutput> = {
+  endpoint: 'activity_sink',
+  action: 'set',
+  encode: (i) => {
+    const m: Record<string, unknown> = {
+      project_id: i.projectId,
+      name: i.name,
+      sink_kind: i.sinkKind,
+    };
+    if (i.id !== undefined && i.id !== 0n) m.id = i.id;
+    if (i.msgraphTenantId !== undefined && i.msgraphTenantId !== '') {
+      m.msgraph_tenant_id = i.msgraphTenantId;
+    }
+    if (i.msgraphClientId !== undefined && i.msgraphClientId !== '') {
+      m.msgraph_client_id = i.msgraphClientId;
+    }
+    if (i.msgraphClientSecret !== undefined && i.msgraphClientSecret !== '') {
+      m.msgraph_client_secret = i.msgraphClientSecret;
+    }
+    if (i.msgraphTeamId !== undefined && i.msgraphTeamId !== '') {
+      m.msgraph_team_id = i.msgraphTeamId;
+    }
+    if (i.msgraphChannelId !== undefined && i.msgraphChannelId !== '') {
+      m.msgraph_channel_id = i.msgraphChannelId;
+    }
+    if (i.activityFilter !== undefined) {
+      m.activity_filter = i.activityFilter;
+    }
+    if (i.channelStatus !== undefined) {
+      m.channel_status = i.channelStatus;
+    }
+    return m;
+  },
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { sink_id: asId(j.sink_id) };
+  },
+};
+
+function decodeSinkRow(j: Record<string, unknown>): SinkRow {
+  return {
+    id: asId(j.id),
+    name: asStrOrEmpty(j.name),
+    sink_kind: asStrOrEmpty(j.sink_kind),
+    msgraph_tenant_id: asStrOrEmpty(j.msgraph_tenant_id),
+    msgraph_client_id: asStrOrEmpty(j.msgraph_client_id),
+    msgraph_team_id: asStrOrEmpty(j.msgraph_team_id),
+    msgraph_channel_id: asStrOrEmpty(j.msgraph_channel_id),
+    activity_filter: asStrOrEmpty(j.activity_filter),
+    channel_status: asChannelStatus(j.channel_status),
+    channel_fault_reason: asStrOrEmpty(j.channel_fault_reason),
+    has_client_secret: asBoolOrFalse(j.has_client_secret),
+    last_activity_id: asIdOrZero(j.last_activity_id),
+    last_pushed_at: asStrOrEmpty(j.last_pushed_at),
+    last_pushed_count: asIdOrZero(j.last_pushed_count),
+    last_error: asStrOrEmpty(j.last_error),
+    created_at: asStrOrEmpty(j.created_at),
+  };
+}
+
+const activitySinkList: HandlerSpec<SinkListInput, SinkListOutput> = {
+  endpoint: 'activity_sink',
+  action: 'list',
+  encode: (i) => ({ project_id: i.projectId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { rows: asArray(j.rows).map((r) => decodeSinkRow(asObj(r))) };
   },
 };
 
@@ -1240,6 +1500,7 @@ export {
   flowStepListForCard,
   activitySelect,
   commentInsert,
+  commentUpdate,
   userSelect,
   tagApply,
   tagRemove,
@@ -1249,9 +1510,17 @@ export {
   projectStamp,
   commCreate,
   commListForTask,
+  commSetRecipients,
+  personCreate,
+  personUpsertByEmail,
   replyPost,
+  taskMove,
+  taskPurge,
   commChannelSet,
   commChannelList,
+  activitySinkSet,
+  activitySinkList,
+  procSearch,
   commLogList,
   helpGetTopic,
   helpGetScreen,
@@ -1286,6 +1555,7 @@ export function registerBuiltInHandlers(r: HandlerRegistry): void {
   r.register(flowStepListForCard);
   r.register(activitySelect);
   r.register(commentInsert);
+  r.register(commentUpdate);
   r.register(userSelect);
   r.register(tagApply);
   r.register(tagRemove);
@@ -1295,9 +1565,17 @@ export function registerBuiltInHandlers(r: HandlerRegistry): void {
   r.register(projectStamp);
   r.register(commCreate);
   r.register(commListForTask);
+  r.register(commSetRecipients);
+  r.register(personUpsertByEmail);
+  r.register(personCreate);
   r.register(replyPost);
+  r.register(taskMove);
+  r.register(taskPurge);
   r.register(commChannelSet);
   r.register(commChannelList);
+  r.register(activitySinkSet);
+  r.register(activitySinkList);
+  r.register(procSearch);
   r.register(commLogList);
   r.register(helpGetTopic);
   r.register(helpGetScreen);

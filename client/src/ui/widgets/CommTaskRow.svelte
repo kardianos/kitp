@@ -22,13 +22,18 @@
    */
 
   import { getDispatcher } from '../../dispatch/context';
-  import { replyPost } from '../../reg/handlers';
+  import { attachmentList, commSetRecipients, replyPost } from '../../reg/handlers';
   import type {
+    AttachmentListInput,
+    AttachmentListOutput,
+    AttachmentRow,
+    CardWithAttrs,
     CommRow,
+    CommSetRecipientsInput,
+    CommSetRecipientsOutput,
     ID,
     ReplyPostInput,
     ReplyPostOutput,
-    ReplyRow,
     TransitionRow,
   } from '../../reg/types';
   import { notify } from '../toast.svelte';
@@ -36,14 +41,13 @@
   import {
     commStatusLabel,
     commStatusTone,
-    defaultReplySubject,
-    defaultReplyTo,
     lastNReplies,
-    replyPostPayload,
     type CommStatusPhase,
   } from '../../screens/comm_helpers';
   import Avatar from '../Avatar.svelte';
   import Button from '../Button.svelte';
+  import Chip from '../Chip.svelte';
+  import RecipientsPicker from '../RecipientsPicker.svelte';
   import TagChip from './TagChip.svelte';
   import AttributeChip from './AttributeChip.svelte';
   import TransitionBar from './TransitionBar.svelte';
@@ -68,6 +72,12 @@
     onOpen?: () => void;
     /** person card id -> display name. */
     personNames?: Record<string, string>;
+    /**
+     * All person cards (CardWithAttrs[]) the recipient picker should
+     * see. Required for editing recipients inline; if omitted, the
+     * Edit-recipients affordance hides.
+     */
+    persons?: readonly CardWithAttrs[];
     /** milestone / component ref id -> title. */
     cardTitles?: Record<string, string>;
     /** tag id -> path. */
@@ -94,6 +104,7 @@
     onSelect,
     onOpen,
     personNames,
+    persons = [],
     cardTitles,
     tagPaths,
     transitions,
@@ -167,42 +178,142 @@
   /* ----------------------------------------------------- reply composer */
 
   let composerOpen = $state(false);
-  let toField = $state('');
-  let subjectField = $state('');
   let bodyField = $state('');
   let sending = $state(false);
 
+  // Attachment-picker state. The list is lazy-loaded on first compose
+  // so a screen rendering many comm rows pays nothing until the user
+  // actually opens a composer. SHA-based round-trip dedup lives
+  // entirely on the server side (file.sha256 + IMAP ingest path); the
+  // client just submits the chosen attachment ids.
+  let taskAttachments = $state<readonly AttachmentRow[]>([]);
+  let attachmentsLoading = $state(false);
+  let attachmentsLoaded = $state(false);
+  let selectedAttachmentIds = $state<ID[]>([]);
+
+  async function loadTaskAttachments(): Promise<void> {
+    if (attachmentsLoaded || attachmentsLoading) return;
+    attachmentsLoading = true;
+    try {
+      const out = await dispatcher.request<AttachmentListInput, AttachmentListOutput>({
+        endpoint: attachmentList.endpoint,
+        action: attachmentList.action,
+        data: { cardId: card.id },
+      });
+      taskAttachments = out.rows;
+      attachmentsLoaded = true;
+    } catch (e) {
+      // Don't toast on this — the composer still works for body-only
+      // replies. The user just won't see the attachment picker.
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn('comm reply: load attachments failed', msg);
+    } finally {
+      attachmentsLoading = false;
+    }
+  }
+
+  function toggleAttachment(id: ID): void {
+    if (selectedAttachmentIds.includes(id)) {
+      selectedAttachmentIds = selectedAttachmentIds.filter((x) => x !== id);
+    } else {
+      selectedAttachmentIds = [...selectedAttachmentIds, id];
+    }
+  }
+
+  function formatBytes(n: number): string {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  // Recipient editor state — mirrors comm.recipients while open so the
+  // user can revise the list before committing via comm.set_recipients.
+  let editingRecipients = $state(false);
+  let recipientsDraft = $state<ID[]>([]);
+  let savingRecipients = $state(false);
+
+  // Local copy of the comm's recipient list. Bumped from the comm prop
+  // and from successful comm.set_recipients writes so the chip strip +
+  // Send button reflect the latest state without waiting for the parent
+  // to refetch.
+  let localRecipients = $derived<ID[]>([...comm.recipients]);
+
   function openComposer(): void {
     if (composerOpen) return;
-    toField = defaultReplyTo(comm.replies);
-    subjectField = defaultReplySubject(comm, comm.replies);
     bodyField = '';
+    selectedAttachmentIds = [];
     composerOpen = true;
+    // Lazy-load the task's existing attachments so the picker has
+    // something to render. Cached for the lifetime of the row; a
+    // refresh after sending re-fetches if the count looks stale.
+    void loadTaskAttachments();
   }
 
   function closeComposer(): void {
     composerOpen = false;
-    toField = '';
-    subjectField = '';
     bodyField = '';
+    selectedAttachmentIds = [];
+    closeRecipientEditor();
+  }
+
+  function openRecipientEditor(): void {
+    recipientsDraft = [...localRecipients];
+    editingRecipients = true;
+  }
+
+  function closeRecipientEditor(): void {
+    editingRecipients = false;
+    recipientsDraft = [];
+  }
+
+  async function saveRecipients(): Promise<void> {
+    if (savingRecipients) return;
+    savingRecipients = true;
+    try {
+      await dispatcher.request<CommSetRecipientsInput, CommSetRecipientsOutput>({
+        endpoint: commSetRecipients.endpoint,
+        action: commSetRecipients.action,
+        data: { commId: comm.id, recipientPersonIds: recipientsDraft },
+      });
+      // Mirror back into the live view so the chip strip + Send-disabled
+      // state both reflect the new list immediately.
+      localRecipients = [...recipientsDraft];
+      closeRecipientEditor();
+      onReplySent?.();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      notify({ type: 'error', message: msg.length > 0 ? msg : 'Failed to update recipients' });
+    } finally {
+      savingRecipients = false;
+    }
   }
 
   async function sendReply(): Promise<void> {
     if (sending) return;
-    const to = toField.trim();
     const body = bodyField.trim();
-    if (to === '' || body === '') {
-      notify({ type: 'error', message: 'Recipient and body are required.' });
+    if (body === '') {
+      notify({ type: 'error', message: 'Body is required.' });
+      return;
+    }
+    if (localRecipients.length === 0) {
+      notify({ type: 'error', message: 'Add at least one recipient before sending.' });
       return;
     }
     sending = true;
     try {
+      const data: ReplyPostInput = { commId: comm.id, body };
+      if (selectedAttachmentIds.length > 0) {
+        data.attachmentIds = selectedAttachmentIds;
+      }
       await dispatcher.request<ReplyPostInput, ReplyPostOutput>({
         endpoint: replyPost.endpoint,
         action: replyPost.action,
-        data: replyPostPayload(comm.id, to, subjectField.trim(), body),
+        data,
       });
-      notify({ type: 'success', message: 'Reply sent' });
+      const summary = selectedAttachmentIds.length > 0
+        ? `Reply sent (${selectedAttachmentIds.length} attachment${selectedAttachmentIds.length === 1 ? '' : 's'})`
+        : 'Reply sent';
+      notify({ type: 'success', message: summary });
       closeComposer();
       onReplySent?.();
     } catch (e) {
@@ -390,26 +501,59 @@
         class="flex flex-col gap-2 rounded-md border border-border bg-surface/30 p-2"
         data-testid="comm-reply-composer"
       >
-        <label class="flex flex-col gap-1 text-xs text-muted">
-          <span>To</span>
-          <input
-            bind:value={toField}
-            type="text"
-            data-testid="comm-reply-to"
-            placeholder="recipient@example.com"
-            class="rounded-md border border-border bg-bg px-2 py-1 text-sm text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-          />
-        </label>
-        <label class="flex flex-col gap-1 text-xs text-muted">
-          <span>Subject</span>
-          <input
-            bind:value={subjectField}
-            type="text"
-            data-testid="comm-reply-subject"
-            placeholder="Re: …"
-            class="rounded-md border border-border bg-bg px-2 py-1 text-sm text-fg focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-          />
-        </label>
+        <div class="flex flex-col gap-1 text-xs text-muted">
+          <div class="flex items-baseline justify-between gap-2">
+            <span>To</span>
+            {#if persons.length > 0 && !editingRecipients}
+              <button
+                type="button"
+                class="text-xs text-accent hover:underline"
+                onclick={openRecipientEditor}
+                data-testid="comm-reply-edit-recipients"
+              >
+                Edit
+              </button>
+            {/if}
+          </div>
+          {#if editingRecipients}
+            <RecipientsPicker
+              bind:value={recipientsDraft}
+              persons={[...persons]}
+              aria-label="Comm recipients"
+            />
+            <div class="flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                onclick={closeRecipientEditor}
+                disabled={savingRecipients}
+              >
+                {#snippet children()}Cancel{/snippet}
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                onclick={() => void saveRecipients()}
+                loading={savingRecipients}
+              >
+                {#snippet children()}Save recipients{/snippet}
+              </Button>
+            </div>
+          {:else if localRecipients.length === 0}
+            <span class="text-fg" data-testid="comm-reply-no-recipients">
+              No recipients yet — click <em>Edit</em> to add one.
+            </span>
+          {:else}
+            <div class="flex flex-wrap gap-1" data-testid="comm-reply-to">
+              {#each localRecipients as pid (pid)}
+                <Chip label={personNames?.[pid.toString()] ?? `#${pid}`} />
+              {/each}
+            </div>
+          {/if}
+        </div>
+        <div class="text-xs text-muted">
+          Subject: <span class="font-mono">{comm.thread_id}</span> · {title}
+        </div>
         <label class="flex flex-col gap-1 text-xs text-muted">
           <span>Body</span>
           <textarea
@@ -421,6 +565,40 @@
             onkeydown={onBodyKeydown}
           ></textarea>
         </label>
+        <!--
+          Attachment picker. Lists existing attachments on the parent
+          task; checking one sends a wire reference to the server,
+          which joins through reply_body_attachment + cas_blob_data to
+          ship the bytes as MIME parts. Round-trip dedup happens on
+          IMAP ingest via file.sha256 — the user can't accidentally
+          create a duplicate by selecting an attachment that already
+          rode this thread.
+        -->
+        {#if attachmentsLoading}
+          <div class="text-xs text-muted">Loading attachments…</div>
+        {:else if taskAttachments.length > 0}
+          <div class="flex flex-col gap-1" data-testid="comm-reply-attachments">
+            <div class="text-xs text-muted">Attach from this task</div>
+            <ul class="flex max-h-32 flex-col gap-0.5 overflow-auto rounded-md border border-border bg-bg p-1 text-sm">
+              {#each taskAttachments as a (a.id)}
+                {@const checked = selectedAttachmentIds.includes(a.id)}
+                <li class="flex items-center gap-2 px-1 py-0.5 hover:bg-surface">
+                  <label class="flex flex-1 cursor-pointer items-center gap-2 truncate">
+                    <input
+                      type="checkbox"
+                      class="h-3.5 w-3.5 accent-current text-accent"
+                      {checked}
+                      onchange={() => toggleAttachment(a.id)}
+                      data-testid="comm-reply-attachment-{a.id}"
+                    />
+                    <span class="truncate text-fg">{a.filename}</span>
+                  </label>
+                  <span class="shrink-0 text-xs text-muted">{formatBytes(a.size_bytes)}</span>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
         <div class="flex justify-end gap-2">
           <span data-testid="comm-reply-cancel">
             <Button
@@ -438,7 +616,7 @@
               variant="primary"
               onclick={() => void sendReply()}
               loading={sending}
-              disabled={toField.trim() === '' || bodyField.trim() === ''}
+              disabled={bodyField.trim() === '' || localRecipients.length === 0}
             >
               {#snippet children()}Send{/snippet}
             </Button>

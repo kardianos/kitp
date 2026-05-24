@@ -21,6 +21,8 @@
                                     flow_ref / predicate / default_filter)
 -->
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import { getDispatcher } from '../../dispatch/context';
   import { stringifyBigInt } from '../../dispatch/dispatcher';
   import { BatchAbortedError, SubRequestError } from '../../dispatch/errors';
@@ -36,13 +38,18 @@
     readColumnAttr,
     readDefaultFilterID,
     readFlowRef,
+    readGroupByAttr,
     readHotkey,
-    readLaneAttr,
     readLayout,
     readPredicate,
     readSlug,
+    readSort,
+    readExtraColumns,
+    readTagPrefixColumns,
     readTitle,
+    sortToJson,
     type Layout,
+    type SortPredicate,
   } from '../../filter/screen_preset.svelte';
   import { clearHelpTopic, setHelpTopic } from '../../help/help_context.svelte';
   import { setActiveScope } from '../../keys/shortcut';
@@ -74,8 +81,11 @@
   import Chip from '../../ui/Chip.svelte';
   import Combobox from '../../ui/Combobox.svelte';
   import EmptyState from '../../ui/EmptyState.svelte';
+  import ErrorAlert from '../../ui/ErrorAlert.svelte';
   import IconButton from '../../ui/IconButton.svelte';
+  import PageShell from '../../ui/PageShell.svelte';
   import Spinner from '../../ui/Spinner.svelte';
+  import TextInput from '../../ui/inputs/TextInput.svelte';
   import { notify } from '../../ui/toast.svelte';
   import { cx } from '../../util/class_names';
 
@@ -388,7 +398,24 @@
     }
     void loadScreensFor(pid);
     void loadFlowsFor(pid);
-    paletteLoadedForProject = null;
+    // Eagerly load the palette so the per-row "Tag-prefix columns"
+    // picker has its option list ready as soon as the grid rows
+    // render — otherwise the dropdown would stay empty until the
+    // user opened the visual filter editor.
+    //
+    // `untrack` is load-bearing: loadPaletteFor's synchronous guard
+    // reads `paletteLoadedForProject` and `paletteLoading`, and the
+    // async tail writes them. Without untrack, those reads make this
+    // effect a subscriber of its own loader's state, the write-back
+    // re-fires us, we re-fire the load, and the cycle multiplies
+    // until the browser exhausts HTTP connections
+    // (ERR_INSUFFICIENT_RESOURCES). loadPaletteFor already handles
+    // staleness via `if (selectedProjectId !== projectId) return;`
+    // inside, so we don't need to invalidate paletteLoadedForProject
+    // here either.
+    untrack(() => {
+      void loadPaletteFor(pid);
+    });
   });
 
   /**
@@ -412,6 +439,60 @@
   const visualEditorPredicate = $derived<Predicate | null>(
     visualEditorFilter === null ? null : readPredicate(visualEditorFilter),
   );
+
+  // The sort editor renders an attribute combobox per row, so we need
+  // the schema list up front. `load()` is dedup'd and idempotent — if
+  // the visual builder already kicked it off, this is a no-op.
+  $effect(() => {
+    void schemaCache.load();
+  });
+
+  /** Attribute names eligible for sort, derived from the schema
+   *  cache. Filters apply to *tasks*, so we only expose attrs an edge
+   *  actually binds to the `task` card_type. Card-ref arrays (tags)
+   *  are dropped from sort because a single row can have many tag
+   *  values — there's no scalar key to sort by. */
+  const sortAttrOptions = $derived(
+    schemaCache.defs
+      .filter((d) => d.value_type !== 'card_ref[]')
+      .filter((d) => d.bound_to.some((b) => b.card_type_name === 'task'))
+      .map((d) => ({ value: d.name, label: d.name }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+  );
+
+  /** Attribute names eligible for group-by. Same task-bound filter as
+   *  sort, but card_ref[] is *included*: grouping by tags is a
+   *  meaningful gesture — a task with multiple tags shows up under
+   *  each tag bucket (handled by the renderer's multi-occurrence
+   *  expansion). */
+  const groupAttrOptions = $derived(
+    schemaCache.defs
+      .filter((d) => d.bound_to.some((b) => b.card_type_name === 'task'))
+      .map((d) => ({ value: d.name, label: d.name }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+  );
+
+  /**
+   * Persist a new sort array onto filter `f`. Empty list clears the
+   * attribute (server treats null as "no sort"). Reloads filters so
+   * the right pane re-renders from authoritative state.
+   */
+  async function saveSort(
+    f: CardWithAttrs,
+    next: readonly SortPredicate[],
+  ): Promise<void> {
+    const value = next.length === 0 ? null : sortToJson(next);
+    await updateAttr(
+      f.id,
+      'sort',
+      value,
+      async () => {
+        const sid = selectedScreenId;
+        if (sid !== null) await loadFiltersFor(sid);
+      },
+      'Sort update failed',
+    );
+  }
 
   // Reload filters when the screen selection flips.
   $effect(() => {
@@ -625,6 +706,156 @@
     );
   }
 
+  /**
+   * Persist a new tag_prefix_columns list onto the screen card. Empty
+   * list clears the attribute (so the grid renders without any tag
+   * prefix columns). Idempotent: skips the round-trip when the
+   * persisted list already matches.
+   *
+   * Unlike the other screen-attribute updaters we don't run a full
+   * `loadScreensFor` reload on success — the Combobox is a multi-
+   * select that the user is mid-interaction with, and a full reassign
+   * of the `screens` array unmounts the Combobox and closes its
+   * dropdown. Patching the one row in place keeps the keyed component
+   * instance stable so the dropdown stays open across multiple
+   * selections.
+   */
+  /**
+   * Persist a new extra_columns list onto the screen card. Same
+   * idempotency / in-place-mutation posture as
+   * updateScreenTagPrefixColumns (above) — the Combobox stays open
+   * across multiple selections.
+   */
+  async function updateScreenExtraColumns(
+    s: CardWithAttrs,
+    next: string[],
+  ): Promise<void> {
+    const cur = readExtraColumns(s);
+    if (cur.length === next.length && cur.every((v, i) => v === next[i])) {
+      return;
+    }
+    const project = selectedProject;
+    if (project === null) return;
+    const value = next.length === 0 ? null : JSON.stringify(next);
+    try {
+      await dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
+        endpoint: attributeUpdate.endpoint,
+        action: attributeUpdate.action,
+        data: { cardId: s.id, attributeName: 'extra_columns', value },
+      });
+      const target = screens.find((r) => r.id === s.id);
+      if (target !== undefined) {
+        if (value === null) {
+          delete target.attributes['extra_columns'];
+        } else {
+          target.attributes['extra_columns'] = value;
+        }
+      }
+    } catch (e) {
+      notify({
+        type: 'error',
+        message: `Extra columns update failed: ${errMsg(e)}`,
+      });
+    }
+  }
+
+  /** Combobox options for the extra-columns picker. Every task-bound
+   *  attribute_def whose name isn't already a dedicated Grid column
+   *  (title / assignee / milestone_ref / component_ref / tags) qualifies.
+   *  The label is the attribute_def name — admins see exactly what
+   *  lands in the JSON. */
+  const extraColumnsOptions = $derived(
+    schemaCache.defs
+      .filter((d) => d.bound_to.some((b) => b.card_type_name === 'task'))
+      .filter(
+        (d) =>
+          d.name !== 'title' &&
+          d.name !== 'assignee' &&
+          d.name !== 'milestone_ref' &&
+          d.name !== 'component_ref' &&
+          d.name !== 'tags' &&
+          d.name !== 'sort_order' &&
+          d.name !== 'description',
+      )
+      .map((d) => ({ value: d.name, label: d.name }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+  );
+
+  async function updateScreenTagPrefixColumns(
+    s: CardWithAttrs,
+    next: string[],
+  ): Promise<void> {
+    const cur = readTagPrefixColumns(s);
+    if (cur.length === next.length && cur.every((v, i) => v === next[i])) {
+      return;
+    }
+    const project = selectedProject;
+    if (project === null) return;
+    const value = next.length === 0 ? null : JSON.stringify(next);
+    try {
+      await dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
+        endpoint: attributeUpdate.endpoint,
+        action: attributeUpdate.action,
+        data: { cardId: s.id, attributeName: 'tag_prefix_columns', value },
+      });
+      // Mutate the screens array element in-place rather than
+      // reloading. Svelte 5 $state is deep-reactive, so this single
+      // attribute change re-runs the row snippet (and the Combobox's
+      // `value` prop re-derives) without re-keying the each block.
+      const target = screens.find((r) => r.id === s.id);
+      if (target !== undefined) {
+        if (value === null) {
+          delete target.attributes['tag_prefix_columns'];
+        } else {
+          target.attributes['tag_prefix_columns'] = value;
+        }
+      }
+    } catch (e) {
+      notify({
+        type: 'error',
+        message: `Tag-prefix columns update failed: ${errMsg(e)}`,
+      });
+    }
+  }
+
+  /** Tag namespaces (e.g. `priority`, `team`) auto-derived from the
+   *  loaded `paletteTags` — anything before the first `/` in a tag
+   *  path. Order: insertion-order of first appearance. */
+  const availableTagPrefixes = $derived<string[]>(
+    (() => {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const r of paletteTags) {
+        const p = r.attributes['path'];
+        if (typeof p !== 'string') continue;
+        const slash = p.indexOf('/');
+        if (slash <= 0) continue;
+        const prefix = p.slice(0, slash);
+        if (seen.has(prefix)) continue;
+        seen.add(prefix);
+        out.push(prefix);
+      }
+      return out;
+    })(),
+  );
+
+  /**
+   * Combobox options for the tag-prefix column picker on one screen
+   * row. Union of project-wide derived prefixes and the prefixes
+   * already saved on this screen, so a stale prefix (whose tags were
+   * archived) still shows up rather than vanishing silently.
+   */
+  function tagPrefixOptionsFor(s: CardWithAttrs): { value: string; label: string }[] {
+    const seen = new Set<string>();
+    const merged: string[] = [];
+    for (const p of [...availableTagPrefixes, ...readTagPrefixColumns(s)]) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      merged.push(p);
+    }
+    return merged.map((p) => ({ value: p, label: p }));
+  }
+
   async function updateScreenFlow(
     s: CardWithAttrs,
     nextFlowId: ID | null,
@@ -822,37 +1053,30 @@
 
 </script>
 
-<div class="flex h-full flex-col">
-  <header class="flex items-center justify-between border-b border-border px-4 py-2">
-    <h1 class="text-lg font-semibold">Admin · Screens</h1>
-  </header>
-
+<PageShell title="Admin · Screens" pad="none">
+  {#snippet children()}
   {#if loading && projects.length === 0}
-    <div class="flex flex-1 items-center justify-center">
+    <div class="flex h-full items-center justify-center">
       <Spinner size="lg" />
     </div>
   {:else if error !== null}
-    <div
-      role="alert"
-      class="m-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger"
-    >
-      Failed to load: {error}
-      <button type="button" class="ml-3 underline" onclick={retryProjects}>
-        Retry
-      </button>
-    </div>
+    <ErrorAlert
+      class="m-4"
+      message={`Failed to load: ${error}`}
+      onRetry={retryProjects}
+    />
   {:else if selectedProject === null}
     <!-- No project pinned. The title-bar picker is the only project
          picker on this screen; surface the affordance so admins don't
          hunt for it. -->
-    <div class="flex flex-1 items-center justify-center p-6">
+    <div class="flex h-full items-center justify-center p-6">
       <EmptyState
         title="Pick a project"
         description="Use the project picker in the breadcrumb above to choose which project's screens to manage."
       />
     </div>
   {:else}
-    <div class="grid flex-1 min-h-0 grid-cols-[1fr_360px]">
+    <div class="grid h-full min-h-0 grid-cols-[1fr_360px]">
       <!-- CENTER -->
       <CardListPane
         ariaLabel="Screens for project"
@@ -875,36 +1099,54 @@
           {@const layout = readLayout(s) ?? ''}
           {@const flowId = readFlowRef(s)}
           {@const defaultId = readDefaultFilterID(s)}
-          <!-- onfocusin captures any focus inside the row (title, slug, etc.)
-               so the right pane re-targets to the focused screen without
-               needing a separate select gesture. -->
+          <!-- A 4px left bar makes the focused screen obvious at a glance,
+               and the dot button next to the title is the explicit click
+               target when the user wants to "select this card" without
+               tabbing into one of its inputs. onfocusin still captures
+               keyboard focus drifting into any child input so the right
+               pane re-targets without a separate select gesture. -->
           <div
             data-testid={`screen-row-${s.id}`}
+            data-focused={s.id === selectedScreenId ? '' : undefined}
             class={cx(
-              'mx-3 my-1 flex flex-col gap-2 rounded border border-border px-3 py-2',
-              s.id === selectedScreenId ? 'bg-surface' : 'bg-bg',
+              'mx-3 my-1 flex flex-col gap-2 rounded border border-l-4 border-border px-3 py-2 transition-colors',
+              s.id === selectedScreenId
+                ? 'border-l-accent bg-surface shadow-sm'
+                : 'border-l-border/40 bg-bg hover:bg-surface/40',
             )}
             onfocusin={() => (selectedScreenId = s.id)}
           >
             <!-- Title row + delete -->
             <div class="flex items-center gap-2">
-              <input
-                type="text"
-                value={titleStr}
-                aria-label="Screen title"
-                data-testid={`screen-title-${s.id}`}
-                class="flex-1 rounded border border-transparent bg-bg px-1 py-0.5 text-sm font-medium text-fg hover:border-border focus:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                onblur={(e) =>
-                  void renameScreen(s, (e.target as HTMLInputElement).value)}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter') {
-                    (e.target as HTMLInputElement).blur();
-                  } else if (e.key === 'Escape') {
-                    (e.target as HTMLInputElement).value = titleStr;
-                    (e.target as HTMLInputElement).blur();
-                  }
-                }}
-              />
+              <button
+                type="button"
+                aria-label={`Select ${titleStr} screen card`}
+                data-testid={`screen-select-${s.id}`}
+                aria-pressed={s.id === selectedScreenId}
+                class={cx(
+                  'inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                  s.id === selectedScreenId
+                    ? 'border-accent bg-accent'
+                    : 'border-border bg-bg hover:border-accent',
+                )}
+                onclick={() => (selectedScreenId = s.id)}
+              ></button>
+              <div class="flex-1" data-testid={`screen-title-${s.id}`}>
+                <TextInput
+                  value={titleStr}
+                  aria-label="Screen title"
+                  onblur={(e) =>
+                    void renameScreen(s, (e.target as HTMLInputElement).value)}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter') {
+                      (e.target as HTMLInputElement).blur();
+                    } else if (e.key === 'Escape') {
+                      (e.target as HTMLInputElement).value = titleStr;
+                      (e.target as HTMLInputElement).blur();
+                    }
+                  }}
+                />
+              </div>
               <IconButton
                 aria-label={`Delete ${titleStr} screen`}
                 size="sm"
@@ -919,44 +1161,39 @@
             <div class="grid grid-cols-2 gap-2">
               <label class="flex flex-col gap-0.5 text-xs text-muted">
                 <span>Slug</span>
-                <input
-                  type="text"
-                  value={slugStr}
-                  aria-label="Slug"
-                  data-testid={`screen-slug-${s.id}`}
-                  spellcheck="false"
-                  class="rounded border border-border bg-bg px-1.5 py-0.5 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                  onblur={(e) =>
-                    void updateScreenSlug(s, (e.target as HTMLInputElement).value)}
-                  onkeydown={(e) => {
-                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                    else if (e.key === 'Escape') {
-                      (e.target as HTMLInputElement).value = slugStr;
-                      (e.target as HTMLInputElement).blur();
-                    }
-                  }}
-                />
+                <span data-testid={`screen-slug-${s.id}`}>
+                  <TextInput
+                    value={slugStr}
+                    aria-label="Slug"
+                    onblur={(e) =>
+                      void updateScreenSlug(s, (e.target as HTMLInputElement).value)}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                      else if (e.key === 'Escape') {
+                        (e.target as HTMLInputElement).value = slugStr;
+                        (e.target as HTMLInputElement).blur();
+                      }
+                    }}
+                  />
+                </span>
               </label>
               <label class="flex flex-col gap-0.5 text-xs text-muted">
                 <span>Hotkey (g …)</span>
-                <input
-                  type="text"
-                  value={hotkeyStr}
-                  aria-label="Hotkey"
-                  data-testid={`screen-hotkey-${s.id}`}
-                  maxlength="1"
-                  spellcheck="false"
-                  class="w-16 rounded border border-border bg-bg px-1.5 py-0.5 text-sm text-fg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                  onblur={(e) =>
-                    void updateScreenHotkey(s, (e.target as HTMLInputElement).value)}
-                  onkeydown={(e) => {
-                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                    else if (e.key === 'Escape') {
-                      (e.target as HTMLInputElement).value = hotkeyStr;
-                      (e.target as HTMLInputElement).blur();
-                    }
-                  }}
-                />
+                <span data-testid={`screen-hotkey-${s.id}`} class="inline-block w-16">
+                  <TextInput
+                    value={hotkeyStr}
+                    aria-label="Hotkey"
+                    onblur={(e) =>
+                      void updateScreenHotkey(s, (e.target as HTMLInputElement).value)}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                      else if (e.key === 'Escape') {
+                        (e.target as HTMLInputElement).value = hotkeyStr;
+                        (e.target as HTMLInputElement).blur();
+                      }
+                    }}
+                  />
+                </span>
               </label>
             </div>
 
@@ -989,6 +1226,86 @@
                 </span>
               </label>
             </div>
+
+            {#if layout === 'grid'}
+              {@const tagPrefixOpts = tagPrefixOptionsFor(s)}
+              {@const currentTagPrefixes = readTagPrefixColumns(s)}
+              <!--
+                NOT a `<label>`. An HTML label fires a synthetic click on
+                its first labelable descendant whenever ANY non-focusable
+                descendant is clicked — including option `<li>`s in the
+                Combobox popup, since `<li role="option">` is not itself
+                focusable. The synthetic click hits the Combobox's
+                trigger `<button>`, which toggles `open` and closes the
+                dropdown after every multi-select pick. The Layout / Flow
+                rows above are also wrapped in `<label>` but never noticed
+                because they are single-select and close-on-pick is the
+                intended behavior there.
+              -->
+              <div class="flex flex-col gap-0.5 text-xs text-muted">
+                <span id="screen-tag-prefix-columns-label-{s.id}">
+                  Tag-prefix columns
+                  <span class="font-normal text-muted/80">
+                    — tag namespaces (e.g. priority, team) broken out into their own grid column. Sortable; the prefix is stripped from the cell value.
+                  </span>
+                </span>
+                <span data-testid={`screen-tag-prefix-columns-${s.id}`}>
+                  <Combobox
+                    aria-label="Tag-prefix columns"
+                    options={tagPrefixOpts}
+                    value={currentTagPrefixes}
+                    multiple={true}
+                    searchable={tagPrefixOpts.length > 8}
+                    placeholder="(none)"
+                    onchange={(v) => {
+                      if (Array.isArray(v)) {
+                        const strings = v.filter(
+                          (x): x is string => typeof x === 'string',
+                        );
+                        void updateScreenTagPrefixColumns(s, strings);
+                      } else if (v === null || v === undefined) {
+                        void updateScreenTagPrefixColumns(s, []);
+                      } else if (typeof v === 'string') {
+                        void updateScreenTagPrefixColumns(s, [v]);
+                      }
+                    }}
+                  />
+                </span>
+              </div>
+
+              {@const currentExtras = readExtraColumns(s)}
+              <!-- Wrap in a <div> (NOT <label>) — see Tag-prefix block above for the rationale. -->
+              <div class="flex flex-col gap-0.5 text-xs text-muted">
+                <span id="screen-extra-columns-label-{s.id}">
+                  Extra columns
+                  <span class="font-normal text-muted/80">
+                    — additional attributes to show as Grid columns (e.g. due_date). Picks from every task-bound attribute that isn't already a built-in column.
+                  </span>
+                </span>
+                <span data-testid={`screen-extra-columns-${s.id}`}>
+                  <Combobox
+                    aria-label="Extra columns"
+                    options={extraColumnsOptions}
+                    value={currentExtras}
+                    multiple={true}
+                    searchable={extraColumnsOptions.length > 8}
+                    placeholder="(none)"
+                    onchange={(v) => {
+                      if (Array.isArray(v)) {
+                        const strings = v.filter(
+                          (x): x is string => typeof x === 'string',
+                        );
+                        void updateScreenExtraColumns(s, strings);
+                      } else if (v === null || v === undefined) {
+                        void updateScreenExtraColumns(s, []);
+                      } else if (typeof v === 'string') {
+                        void updateScreenExtraColumns(s, [v]);
+                      }
+                    }}
+                  />
+                </span>
+              </div>
+            {/if}
 
             {#if defaultId !== null}
               {@const def = filters.find((f) => f.id === defaultId)}
@@ -1064,7 +1381,8 @@
         {#snippet row(f)}
           {@const titleStr = readTitle(f)}
           {@const colAttr = readColumnAttr(f)}
-          {@const laneAttr = readLaneAttr(f)}
+          {@const sortList = readSort(f)}
+          {@const groupByAttr = readGroupByAttr(f)}
           {@const isDefault =
             selectedScreen !== null && readDefaultFilterID(selectedScreen) === f.id}
           <div
@@ -1072,39 +1390,152 @@
             class="flex flex-col gap-1 border-b border-border px-3 py-2 text-sm"
           >
             <div class="flex items-center gap-2">
-              <input
-                type="text"
-                value={titleStr}
-                placeholder="Title"
-                class="flex-1 rounded border border-transparent bg-bg px-1 py-0.5 text-sm hover:border-border focus:border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                onblur={(e) => void renameFilter(f, (e.target as HTMLInputElement).value)}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter') {
-                    (e.target as HTMLInputElement).blur();
-                  } else if (e.key === 'Escape') {
-                    (e.target as HTMLInputElement).value = titleStr;
-                    (e.target as HTMLInputElement).blur();
-                  }
-                }}
-              />
+              <div class="flex-1">
+                <TextInput
+                  value={titleStr}
+                  placeholder="Title"
+                  onblur={(e) => void renameFilter(f, (e.target as HTMLInputElement).value)}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter') {
+                      (e.target as HTMLInputElement).blur();
+                    } else if (e.key === 'Escape') {
+                      (e.target as HTMLInputElement).value = titleStr;
+                      (e.target as HTMLInputElement).blur();
+                    }
+                  }}
+                />
+              </div>
               {#if isDefault}
                 <Chip label="default" size="sm" />
               {/if}
             </div>
-            {#if colAttr !== null || laneAttr !== null}
-              <div class="flex flex-wrap gap-1 pl-1">
-                {#if colAttr !== null}
-                  <span class="rounded border border-border px-1 text-[10px] uppercase tracking-wide text-muted">
-                    col: {colAttr}
+            <!-- Column attribute (kanban-only primary axis). Stored
+                 on every filter but only rendered when the screen's
+                 layout is `kanban`. The secondary axis (kanban lane /
+                 list+grid grouping) lives on Group by below — same
+                 attribute name across all layouts. -->
+            <div class="flex items-center gap-1.5 pl-1" data-testid={`filter-column-${f.id}`}>
+              <span class="w-16 text-[10px] uppercase tracking-wide text-muted">Column</span>
+              <span class="w-44">
+                <Combobox
+                  aria-label="Kanban column attribute"
+                  options={[{ value: '', label: '(none)' }, ...sortAttrOptions]}
+                  value={colAttr ?? ''}
+                  searchable={sortAttrOptions.length > 8}
+                  placeholder="(none)"
+                  onchange={(v) => {
+                    const next = typeof v === 'string' && v !== '' ? v : null;
+                    void updateAttr(
+                      f.id,
+                      'column_attr',
+                      next,
+                      async () => {
+                        const sid = selectedScreenId;
+                        if (sid !== null) await loadFiltersFor(sid);
+                      },
+                      'Column update failed',
+                    );
+                  }}
+                />
+              </span>
+            </div>
+            <!-- Group-by selector. Uses groupAttrOptions (which keeps
+                 card_ref[] entries like `tags`) — a task with multiple
+                 tags appears once per tag bucket in the renderer. -->
+            <div class="flex items-center gap-1.5 pl-1" data-testid={`filter-groupby-${f.id}`}>
+              <span class="w-16 text-[10px] uppercase tracking-wide text-muted">Group by</span>
+              <span class="w-44">
+                <Combobox
+                  aria-label="Group by attribute"
+                  options={[{ value: '', label: '(none)' }, ...groupAttrOptions]}
+                  value={groupByAttr ?? ''}
+                  searchable={groupAttrOptions.length > 8}
+                  placeholder="(none)"
+                  onchange={(v) => {
+                    const next = typeof v === 'string' && v !== '' ? v : null;
+                    void updateAttr(
+                      f.id,
+                      'group_by_attr',
+                      next,
+                      async () => {
+                        const sid = selectedScreenId;
+                        if (sid !== null) await loadFiltersFor(sid);
+                      },
+                      'Group-by update failed',
+                    );
+                  }}
+                />
+              </span>
+            </div>
+            <!-- Sort editor: list of (attr, dir) rows with append/remove.
+                 Each interaction writes the whole array back via saveSort
+                 so the right pane always reflects authoritative state. -->
+            <div class="flex flex-col gap-1 pl-1" data-testid={`filter-sort-${f.id}`}>
+              <div class="text-[10px] uppercase tracking-wide text-muted">Sort</div>
+              {#if sortList.length === 0}
+                <div class="text-[11px] italic text-muted">no sort — server default order</div>
+              {/if}
+              {#each sortList as s, i (`${i}-${s.attr}`)}
+                <div class="flex items-center gap-1.5">
+                  <span class="w-44">
+                    <Combobox
+                      aria-label="Sort attribute"
+                      options={sortAttrOptions}
+                      value={s.attr}
+                      searchable={sortAttrOptions.length > 8}
+                      placeholder="attribute…"
+                      onchange={(v) => {
+                        if (typeof v !== 'string' || v === '') return;
+                        const next = sortList.slice();
+                        next[i] = { attr: v, dir: s.dir };
+                        void saveSort(f, next);
+                      }}
+                    />
                   </span>
-                {/if}
-                {#if laneAttr !== null}
-                  <span class="rounded border border-border px-1 text-[10px] uppercase tracking-wide text-muted">
-                    lane: {laneAttr}
-                  </span>
-                {/if}
+                  <button
+                    type="button"
+                    data-testid={`filter-sort-dir-${f.id}-${i}`}
+                    aria-label={`Toggle direction (currently ${s.dir})`}
+                    title={s.dir === 'asc' ? 'Ascending' : 'Descending'}
+                    class="rounded border border-border bg-bg px-1.5 py-0.5 text-xs font-mono text-fg hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                    onclick={() => {
+                      const next = sortList.slice();
+                      next[i] = { attr: s.attr, dir: s.dir === 'asc' ? 'desc' : 'asc' };
+                      void saveSort(f, next);
+                    }}
+                  >
+                    {s.dir === 'asc' ? '↑ asc' : '↓ desc'}
+                  </button>
+                  <IconButton
+                    aria-label="Remove sort row"
+                    size="sm"
+                    variant="danger"
+                    onclick={() => {
+                      const next = sortList.slice();
+                      next.splice(i, 1);
+                      void saveSort(f, next);
+                    }}
+                  >
+                    {#snippet children()}×{/snippet}
+                  </IconButton>
+                </div>
+              {/each}
+              <div>
+                <button
+                  type="button"
+                  data-testid={`filter-sort-add-${f.id}`}
+                  disabled={sortAttrOptions.length === 0}
+                  class="rounded border border-border bg-bg px-2 py-0.5 text-xs text-fg hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+                  onclick={() => {
+                    const first = sortAttrOptions[0];
+                    if (first === undefined) return;
+                    void saveSort(f, [...sortList, { attr: first.value, dir: 'asc' }]);
+                  }}
+                >
+                  + Add sort
+                </button>
               </div>
-            {/if}
+            </div>
             <div class="flex items-center gap-2 pl-1">
               <button
                 type="button"
@@ -1141,7 +1572,8 @@
       </CardListPane>
     </div>
   {/if}
-</div>
+  {/snippet}
+</PageShell>
 
 <!--
   Visual predicate builder. Mounted only while a filter is selected so

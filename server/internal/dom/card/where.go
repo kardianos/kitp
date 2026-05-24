@@ -20,9 +20,14 @@
 package card
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/schema"
 )
@@ -35,8 +40,8 @@ import (
 // Children carry both shapes; the compiler picks based on whether
 // `connective` is set.
 type CardWhereGroup struct {
-	Connective string                `json:"connective" mcp:"required,enum=and|or|not,desc=group connective"`
-	Children   []CardWhereTreeNode   `json:"children,omitempty" mcp:"desc=child predicates (leaves or groups)"`
+	Connective string              `json:"connective" mcp:"required,enum=and|or|not,desc=group connective"`
+	Children   []CardWhereTreeNode `json:"children,omitempty" mcp:"desc=child predicates (leaves or groups)"`
 }
 
 // CardWhereTreeNode is one tree node. Either Connective is set (it's a
@@ -53,43 +58,64 @@ type CardWhereTreeNode struct {
 	Values []json.RawMessage `json:"values,omitempty" mcp:"desc=values for the leaf operator"`
 }
 
+// compileCtx threads the per-compile environment through every recursive
+// call: the SQL parameter binder (`addArg`), the schema snapshot for
+// card_ref value canonicalisation, plus the pgx ctx/tx and a `visited`
+// set used by the `snippet` leaf to detect reference cycles between
+// predicate_snippet cards. `tx` may be nil for tests / call sites that
+// don't need snippet expansion — leaves with op="snippet" then fail
+// with a clear error.
+type compileCtx struct {
+	ctx     context.Context
+	tx      pgx.Tx
+	addArg  func(any) string
+	snap    *schema.Snapshot
+	visited map[int64]bool
+}
+
 // CompileTree is the exported entry point used by other domain packages
 // that need to layer the same v2 predicate-tree compilation on top of
-// their own queries. It is a thin alias around compileTree; the addArg
-// callback hands back the parameter placeholder string (e.g. "$3") for
-// one bound argument, mirroring the per-handler counter. `snap` lets the
-// compiler look up attribute_def.value_type so it can canonicalise
-// card_ref values to JSON numbers before they hit jsonb comparison
-// (clients ship bigint ids as JSON strings, seeded storage uses JSON
-// numbers — without the snap lookup the two never match). Pass nil to
-// skip the lookup (legacy callers / tests that ship number-form values
-// directly).
-func CompileTree(g CardWhereGroup, addArg func(any) string, snap *schema.Snapshot) (string, error) {
-	return compileTree(g, addArg, snap)
+// their own queries. The addArg callback hands back the parameter
+// placeholder string for one bound argument; the returned token is
+// spliced verbatim into the SQL. Callers using `internal/named`
+// pass `b.Bind` here (returns `:_bN`); legacy callers pass a
+// `$N`-emitting closure backed by their own `[]any`. `snap` lets the
+// compiler look up
+// attribute_def.value_type so it can canonicalise card_ref values to
+// JSON numbers before they hit jsonb comparison (clients ship bigint
+// ids as JSON strings, seeded storage uses JSON numbers — without the
+// snap lookup the two never match). Pass nil to skip the lookup
+// (legacy callers / tests that ship number-form values directly).
+//
+// `ctx` and `tx` are needed when the predicate references a
+// predicate_snippet card (op="snippet") so the compiler can dereference
+// the stored predicate at compile time. Callers that don't pass these
+// and hit a snippet leaf get an explicit error.
+func CompileTree(ctx context.Context, tx pgx.Tx, g CardWhereGroup, addArg func(any) string, snap *schema.Snapshot) (string, error) {
+	c := &compileCtx{ctx: ctx, tx: tx, addArg: addArg, snap: snap, visited: map[int64]bool{}}
+	return compileTree(g, c)
 }
 
 // compileTree turns a CardWhereGroup into a SQL boolean expression
-// suitable for the outer WHERE. addArg threads through the parameter
-// counter shared with the rest of queryOne; snap threads through to the
-// leaf compiler for card_ref value canonicalisation.
-func compileTree(g CardWhereGroup, addArg func(any) string, snap *schema.Snapshot) (string, error) {
+// suitable for the outer WHERE.
+func compileTree(g CardWhereGroup, c *compileCtx) (string, error) {
 	conn := strings.ToLower(g.Connective)
 	switch conn {
 	case "and":
 		if len(g.Children) == 0 {
 			return "TRUE", nil
 		}
-		return joinChildren(g.Children, " AND ", "TRUE", addArg, snap)
+		return joinChildren(g.Children, " AND ", "TRUE", c)
 	case "or":
 		if len(g.Children) == 0 {
 			return "FALSE", nil
 		}
-		return joinChildren(g.Children, " OR ", "FALSE", addArg, snap)
+		return joinChildren(g.Children, " OR ", "FALSE", c)
 	case "not":
 		if len(g.Children) != 1 {
 			return "", fmt.Errorf("not group must have exactly one child (got %d)", len(g.Children))
 		}
-		s, err := compileNode(g.Children[0], addArg, snap)
+		s, err := compileNode(g.Children[0], c)
 		if err != nil {
 			return "", fmt.Errorf("not.0: %w", err)
 		}
@@ -101,10 +127,10 @@ func compileTree(g CardWhereGroup, addArg func(any) string, snap *schema.Snapsho
 
 // joinChildren compiles every child and joins them with sep; identity is
 // the empty-list result.
-func joinChildren(children []CardWhereTreeNode, sep, identity string, addArg func(any) string, snap *schema.Snapshot) (string, error) {
+func joinChildren(children []CardWhereTreeNode, sep, identity string, c *compileCtx) (string, error) {
 	parts := make([]string, len(children))
-	for i, c := range children {
-		s, err := compileNode(c, addArg, snap)
+	for i, ch := range children {
+		s, err := compileNode(ch, c)
 		if err != nil {
 			return "", fmt.Errorf("[%d]: %w", i, err)
 		}
@@ -117,14 +143,14 @@ func joinChildren(children []CardWhereTreeNode, sep, identity string, addArg fun
 }
 
 // compileNode dispatches over the leaf-vs-group shape of a node.
-func compileNode(n CardWhereTreeNode, addArg func(any) string, snap *schema.Snapshot) (string, error) {
+func compileNode(n CardWhereTreeNode, c *compileCtx) (string, error) {
 	if n.Connective != "" {
 		return compileTree(CardWhereGroup{
 			Connective: n.Connective,
 			Children:   n.Children,
-		}, addArg, snap)
+		}, c)
 	}
-	return compileLeaf(n, addArg, snap)
+	return compileLeaf(n, c)
 }
 
 // compileLeaf turns one leaf into a SQL boolean expression. Operators
@@ -147,12 +173,57 @@ func compileNode(n CardWhereTreeNode, addArg func(any) string, snap *schema.Snap
 // inbox-style queries (a missing assignee never matches "assignee=alice"
 // nor "assignee != alice"). Switch to a stricter "attribute exists AND
 // is not equal" by combining `exists` and `ne` in an AND group.
-func compileLeaf(n CardWhereTreeNode, addArg func(any) string, snap *schema.Snapshot) (string, error) {
+func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
+	addArg := c.addArg
+	snap := c.snap
 	if !validIdent(n.Attr) {
 		return "", fmt.Errorf("bad attribute name %q", n.Attr)
 	}
 	op := strings.ToLower(n.Op)
 	switch op {
+	case "snippet":
+		return compileSnippet(n, c)
+	case "before_today":
+		// Relative-date op: matches when the stored ISO-date text is
+		// strictly less than today (server-side now()::date). Used
+		// for "Overdue" snippets on the due_date attribute. No
+		// values; comparison is text-to-text because ISO 8601 dates
+		// sort lexically as chronologically.
+		return fmt.Sprintf(`EXISTS (
+			SELECT 1
+			FROM attribute_value av
+			JOIN attribute_def ad ON ad.id = av.attribute_def_id
+			WHERE av.card_id = c.id
+			  AND ad.name = %s
+			  AND av.value #>> '{}' <> ''
+			  AND av.value #>> '{}' < to_char(now()::date, 'YYYY-MM-DD')
+		)`, addArg(n.Attr)), nil
+	case "within_days":
+		// Relative-date op: matches when the stored ISO-date text
+		// sits in [today, today + N days]. N comes from values[0]
+		// and must be a non-negative int (negative N would be
+		// "overdue this far back"; we forbid it for clarity — use
+		// before_today for past dates). Used for "Due soon" snippets.
+		days, derr := withinDaysValue(n.Values)
+		if derr != nil {
+			return "", derr
+		}
+		// `days` flows through addArg as a pgx parameter (the only
+		// %-substitution is the placeholder string addArg returns).
+		// Multiplying by INTERVAL '1 day' lets us bind the count as a
+		// plain int — no string interpolation inside the predicate.
+		// Closes S5 (defence-in-depth: no value escapes the
+		// "every user value is a pgx parameter" contract).
+		return fmt.Sprintf(`EXISTS (
+			SELECT 1
+			FROM attribute_value av
+			JOIN attribute_def ad ON ad.id = av.attribute_def_id
+			WHERE av.card_id = c.id
+			  AND ad.name = %s
+			  AND av.value #>> '{}' <> ''
+			  AND av.value #>> '{}' >= to_char(now()::date, 'YYYY-MM-DD')
+			  AND av.value #>> '{}' <= to_char((now() + %s * interval '1 day')::date, 'YYYY-MM-DD')
+		)`, addArg(n.Attr), addArg(days)), nil
 	case "=", "eq":
 		val := CanonicalizeFilterValue(n.Attr, snap, singleValue(n.Values))
 		return fmt.Sprintf(`EXISTS (
@@ -221,6 +292,57 @@ func compileLeaf(n CardWhereTreeNode, addArg func(any) string, snap *schema.Snap
 			  AND target.phase = 'terminal'
 			  AND target.deleted_at IS NULL
 		)`, addArg(n.Attr)), nil
+	case "parent_status_phase":
+		// 2-hop traversal: gate the row on its `parent_task` ref's
+		// STATUS card's phase. Unlike `has_phase`, which inspects the
+		// referenced card's own `phase` column, this walks one
+		// additional attribute hop because tasks themselves carry the
+		// default `phase='triage'` (schema.hcsv:142) — only value-cards
+		// like `status` have meaningful phases. Closes the gap that
+		// blocked the "open tasks at the head of an in-progress chain"
+		// filter: combine `parent_task not exists` OR `parent_task
+		// parent_status_phase [terminal]` to express "no parent or
+		// parent's status is done."
+		//
+		// `n.Attr` is required to be `parent_task` (the only attribute
+		// shape this op is wired into in the client palette); the SQL
+		// hard-codes the second hop as `status` since that's the
+		// flow-bearing attribute every task carries.
+		if n.Attr != "parent_task" {
+			return "", fmt.Errorf(
+				"parent_status_phase: attr must be 'parent_task' (got %q)", n.Attr)
+		}
+		if len(n.Values) == 0 {
+			return "FALSE", nil
+		}
+		placeholders := make([]string, len(n.Values))
+		for j, v := range n.Values {
+			var s string
+			if err := json.Unmarshal(v, &s); err != nil {
+				return "", fmt.Errorf("parent_status_phase: value[%d] must be a string: %w", j, err)
+			}
+			if s != "triage" && s != "active" && s != "terminal" {
+				return "", fmt.Errorf("parent_status_phase: value[%d] %q: must be triage|active|terminal", j, s)
+			}
+			placeholders[j] = addArg(s)
+		}
+		return fmt.Sprintf(`EXISTS (
+			SELECT 1
+			FROM attribute_value pav
+			JOIN attribute_def pad ON pad.id = pav.attribute_def_id
+			JOIN card parent ON parent.id = (pav.value)::text::bigint
+			JOIN attribute_value sav ON sav.card_id = parent.id
+			JOIN attribute_def sad ON sad.id = sav.attribute_def_id
+			JOIN card status_card ON status_card.id = (sav.value)::text::bigint
+			WHERE pav.card_id = c.id
+			  AND pad.name = 'parent_task'
+			  AND sad.name = 'status'
+			  AND jsonb_typeof(pav.value) = 'number'
+			  AND jsonb_typeof(sav.value) = 'number'
+			  AND parent.deleted_at IS NULL
+			  AND status_card.deleted_at IS NULL
+			  AND status_card.phase = ANY(ARRAY[%s])
+		)`, strings.Join(placeholders, ", ")), nil
 	case "has_phase":
 		// Show cards whose `<attr>` ref points at a value-card whose
 		// phase is one of the given values. Mirror "not terminal"'s
@@ -308,6 +430,43 @@ func CanonicalizeFilterValue(attr string, snap *schema.Snapshot, raw json.RawMes
 	return snap.CanonicalizeValue(attr, raw)
 }
 
+// withinDaysValue parses the `within_days` op's single integer value
+// (the "N" in "next N days"). Accepts either a JSON number or a
+// quoted-string number to be friendly to the dispatcher's bigint
+// stringifier on the client side; rejects negative N so the op stays
+// semantically distinct from before_today.
+func withinDaysValue(vs []json.RawMessage) (int, error) {
+	if len(vs) == 0 {
+		return 0, fmt.Errorf("within_days: missing day count")
+	}
+	raw := vs[0]
+	var n int
+	if err := json.Unmarshal(raw, &n); err == nil {
+		if n < 0 {
+			return 0, fmt.Errorf("within_days: negative N (%d); use before_today for past dates", n)
+		}
+		if n > 3650 {
+			return 0, fmt.Errorf("within_days: %d days is unreasonable (>10y)", n)
+		}
+		return n, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		parsed, perr := strconv.Atoi(strings.TrimSpace(s))
+		if perr != nil {
+			return 0, fmt.Errorf("within_days: not an int: %q", s)
+		}
+		if parsed < 0 {
+			return 0, fmt.Errorf("within_days: negative N (%d); use before_today for past dates", parsed)
+		}
+		if parsed > 3650 {
+			return 0, fmt.Errorf("within_days: %d days is unreasonable (>10y)", parsed)
+		}
+		return parsed, nil
+	}
+	return 0, fmt.Errorf("within_days: value must be int or string-int")
+}
+
 // singleValue returns the first element of vs (normalised) or `null`
 // when the list is empty. Used by eq / ne; the wire shape is the same
 // `values: [...]` field as in/not-in for symmetry.
@@ -316,4 +475,112 @@ func singleValue(vs []json.RawMessage) json.RawMessage {
 		return json.RawMessage(`null`)
 	}
 	return normalizeJSON(vs[0])
+}
+
+// validIdent screens attribute names so they cannot inject SQL when they
+// flow through ad.name = $N comparisons. We only allow [A-Za-z0-9_].
+func validIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeJSON returns the input unchanged if non-empty; "null" otherwise.
+func normalizeJSON(b json.RawMessage) json.RawMessage {
+	if len(b) == 0 {
+		return json.RawMessage(`null`)
+	}
+	return b
+}
+
+// compileSnippet expands a `snippet` leaf by fetching the referenced
+// predicate_snippet card's stored predicate JSON and recursively
+// compiling it as if it had been written inline. Cycles between
+// snippets are detected via `c.visited` and surface as an error
+// instead of looping. A missing or soft-deleted snippet compiles to
+// FALSE: a stale reference shouldn't widen the result set, and FALSE
+// makes the failure visible (zero rows) rather than silent (any-rows).
+func compileSnippet(n CardWhereTreeNode, c *compileCtx) (string, error) {
+	if c.tx == nil {
+		return "", fmt.Errorf("snippet: compiler has no tx (call site didn't pass ctx/tx)")
+	}
+	if len(n.Values) == 0 {
+		return "", fmt.Errorf("snippet: missing snippet id")
+	}
+	id, err := snippetIDFromRaw(n.Values[0])
+	if err != nil {
+		return "", fmt.Errorf("snippet: value[0]: %w", err)
+	}
+	if c.visited[id] {
+		return "", fmt.Errorf("snippet: cycle detected at snippet id %d", id)
+	}
+
+	// Fetch the snippet card's `predicate` attribute value. The card
+	// type gate keeps a misused snippet id (pointing at a non-snippet
+	// card) from being decoded as a tree.
+	var raw string
+	err = c.tx.QueryRow(c.ctx, `
+		SELECT COALESCE(av.value #>> '{}', '')
+		FROM card c
+		JOIN card_type ct ON ct.id = c.card_type_id
+		LEFT JOIN LATERAL (
+			SELECT av.value
+			FROM attribute_value av
+			JOIN attribute_def ad ON ad.id = av.attribute_def_id
+			WHERE av.card_id = c.id AND ad.name = 'predicate'
+			LIMIT 1
+		) av ON TRUE
+		WHERE c.id = $1
+		  AND c.deleted_at IS NULL
+		  AND ct.name = 'predicate_snippet'
+	`, id).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "FALSE", nil
+		}
+		return "", fmt.Errorf("snippet: lookup id=%d: %w", id, err)
+	}
+	if strings.TrimSpace(raw) == "" {
+		// Snippet exists but carries no predicate — treat as no-op
+		// (TRUE so it doesn't mask the rest of the AND it lives in).
+		return "TRUE", nil
+	}
+
+	// Snippets can be either a bare leaf or a group. Decode as the
+	// general node shape and route accordingly.
+	var node CardWhereTreeNode
+	if err := json.Unmarshal([]byte(raw), &node); err != nil {
+		return "", fmt.Errorf("snippet id=%d: decode predicate: %w", id, err)
+	}
+
+	// Push id onto visited for the recursive expansion; pop on return.
+	c.visited[id] = true
+	defer delete(c.visited, id)
+	return compileNode(node, c)
+}
+
+// snippetIDFromRaw decodes a snippet id from the wire shape. Clients
+// send bigint ids as JSON strings via the dispatcher's outgoing
+// replacer; legacy callers / tests may also send a JSON number.
+// Accept both shapes.
+func snippetIDFromRaw(r json.RawMessage) (int64, error) {
+	var s string
+	if err := json.Unmarshal(r, &s); err == nil {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("not an int: %q", s)
+		}
+		return n, nil
+	}
+	var n int64
+	if err := json.Unmarshal(r, &n); err != nil {
+		return 0, fmt.Errorf("must be a JSON string or number")
+	}
+	return n, nil
 }

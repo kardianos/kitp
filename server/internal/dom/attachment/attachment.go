@@ -5,10 +5,10 @@
 // Two JSON dispatcher endpoints:
 //   - attachment.list  — list active attachments for a card
 //   - attachment.delete — soft-delete one attachment (the file + chunks
-//                         linger until the CAS reaper sweeps them)
+//     linger until the CAS reaper sweeps them)
 //   - attachment.create — link an existing file to a card. The client
-//                         calls file.create first (with the chunk list)
-//                         and feeds the resulting id here.
+//     calls file.create first (with the chunk list)
+//     and feeds the resulting id here.
 //
 // Plus one HTTP route outside the dispatcher: GET
 // /api/v1/attachment/{id}/download streams the chunks back in order.
@@ -16,16 +16,17 @@ package attachment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/cas"
 	"github.com/kitp/kitp/server/internal/reg"
+	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
@@ -110,7 +111,9 @@ func Register(p *store.Pool) {
 		InputType:    reflect.TypeFor[ListInput](),
 		OutputType:   reflect.TypeFor[ListOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
-		Run:          runList(p),
+		// Unified handler — body lives in
+		// db/schema/functions/attachment_list_batch.sql.
+		SQLFunc: "attachment_list_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:   "attachment",
@@ -122,7 +125,12 @@ func Register(p *store.Pool) {
 		// further restrict by ownership (e.g. only the uploader can
 		// delete) — see reg.Unauthorized for the canonical error code.
 		AllowedRoles: []string{"worker", "manager", "admin"},
-		Run:          runDelete(p),
+		ProcessName:  "card.update",
+		CardTypeID:   cardTypeFromDeleteInput(p),
+		// Unified handler — body lives in
+		// db/schema/functions/attachment_delete_batch.sql. See
+		// docs/UNIFIED_HANDLER_PLAN.md Phase 2.
+		SQLFunc: "attachment_delete_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "attachment",
@@ -131,207 +139,120 @@ func Register(p *store.Pool) {
 		InputType:    reflect.TypeFor[CreateInput](),
 		OutputType:   reflect.TypeFor[CreateOutput](),
 		AllowedRoles: []string{"worker", "manager", "admin"},
-		Run:          runCreate(p),
+		ProcessName:  "card.update",
+		CardTypeID:   cardTypeFromCreateInput,
+		// Unified handler — body lives in
+		// db/schema/functions/attachment_create_batch.sql. The SQL
+		// function writes the attachment + activity rows with
+		// thumb_file_id=NULL; PostRun decodes any image bytes Go-side,
+		// inserts a thumbnail `file` row, and UPDATEs the attachment
+		// row to point at it — all within the same request tx.
+		// See docs/UNIFIED_HANDLER_PLAN.md "Go-side post-write side
+		// effects (PostRun hook needed)".
+		SQLFunc: "attachment_create_batch",
+		PostRun: doThumbnails(p),
 	})
 }
 
-func runList(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(ListInput)
-			if in.CardID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "attachment.list: card_id is required"}
+// cardTypeFromCreateInput resolves the attaching card's card_type so the
+// dispatcher can scope-check the actor's `card.update` grant against
+// that card's project. attachment.create takes a card_id in input.
+func cardTypeFromCreateInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+	return schema.CardTypeIDByCardID(ctx, pool, raw.(CreateInput).CardID)
+}
+
+// cardTypeFromDeleteInput resolves the card_type of the attachment's
+// owning card. Delete input only carries the attachment id, so we
+// join through attachment → card to find the card_type. Returns 0
+// (skip authz) if the attachment doesn't resolve — the handler will
+// surface a not-found error from runDelete.
+func cardTypeFromDeleteInput(p *store.Pool) func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+	return func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+		id := raw.(DeleteInput).ID
+		var cardTypeID int64
+		err := pool.QueryRow(ctx, `
+			SELECT c.card_type_id
+			FROM attachment a
+			JOIN card c ON c.id = a.card_id
+			WHERE a.id = $1
+		`, id).Scan(&cardTypeID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return 0, nil
 			}
-			rows, err := tx.Query(ctx, `
-				SELECT a.id, a.card_id, a.file_id,
-				       f.filename, f.mime_type, f.size_bytes,
-				       a.created_at,
-				       COALESCE(a.thumb_file_id, 0)
-				FROM attachment a
-				JOIN file f ON f.id = a.file_id
-				WHERE a.card_id = $1 AND a.deleted_at IS NULL
-				ORDER BY a.id DESC
-			`, in.CardID)
-			if err != nil {
-				return nil, fmt.Errorf("attachment.list: %w", err)
-			}
-			var out []Row
-			for rows.Next() {
-				var r Row
-				var createdAt time.Time
-				if err := rows.Scan(&r.ID, &r.CardID, &r.FileID,
-					&r.Filename, &r.MimeType, &r.SizeBytes, &createdAt,
-					&r.ThumbFileID); err != nil {
-					rows.Close()
-					return nil, fmt.Errorf("attachment.list: scan: %w", err)
-				}
-				r.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
-				r.Kind = string(KindFromMime(r.MimeType))
-				out = append(out, r)
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-			if p != nil {
-				p.NoteRead()
-			}
-			outs[i] = ListOutput{Rows: out}
+			return 0, fmt.Errorf("attachment.delete: card_type lookup: %w", err)
 		}
-		return outs, nil
+		return cardTypeID, nil
 	}
 }
 
-func runDelete(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(DeleteInput)
-			if in.ID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "attachment.delete: id is required"}
-			}
-			var deletedID int64
-			err := tx.QueryRow(ctx, `
-				WITH upd AS (
-					UPDATE attachment a
-					SET deleted_at = now()
-					FROM file f
-					WHERE a.id = $1 AND a.deleted_at IS NULL AND f.id = a.file_id
-					RETURNING a.id, a.card_id, a.file_id, f.filename
-				),
-				ins_act AS (
-					INSERT INTO activity (card_id, kind, value_old, actor_id)
-					SELECT card_id, 'attachment_delete',
-					       jsonb_build_object(
-					           'attachment_id', id,
-					           'file_id', file_id,
-					           'filename', filename
-					       ),
-					       $2
-					FROM upd
-					RETURNING id
-				)
-				SELECT id FROM upd
-			`, in.ID, actorID).Scan(&deletedID)
-			if err != nil {
-				if err == pgx.ErrNoRows {
-					return nil, &reg.HandlerError{InputIndex: i, Code: "not_found",
-						Message: "attachment.delete: attachment not found or already deleted"}
-				}
-				return nil, fmt.Errorf("attachment.delete: %w", err)
-			}
-			outs[i] = DeleteOutput{OK: true}
+// attachment.list is migrated to
+// db/schema/functions/attachment_list_batch.sql per Phase 5 of
+// docs/UNIFIED_HANDLER_PLAN.md. The Go-side runList is gone; the SQL
+// function returns rows shaped to ListOutput / Row, including the
+// 'kind' display bucket (KindFromMime stays Go-side for the HTTP
+// download route + tests).
+
+// doThumbnails is the PostRun hook for attachment.create. It runs
+// after the SQL function (attachment_create_batch) has written the
+// attachment + activity rows with thumb_file_id=NULL, in the same
+// request tx. For each output we generated, if the source MIME is a
+// supported image, we decode + downscale + JPEG-encode the bytes
+// Go-side, insert a new `file` row for the thumb, then UPDATE the
+// attachment row's thumb_file_id to point at it. The output struct
+// is mutated in place so the dispatcher's wire response carries the
+// freshly-minted thumb id.
+//
+// Side-effect / orphan-risk note (see UNIFIED_HANDLER_PLAN.md):
+// `generateThumb` opens its OWN pgxpool tx for the thumb's
+// `file` + `file_chunk` rows so the CPU-heavy decode doesn't widen
+// the dispatcher's tx. If the outer request tx commits, the thumb
+// is referenced by the attachment row and isn't reaper-eligible. If
+// the outer tx rolls back, both the attachment INSERT and the
+// thumb UPDATE are undone — but the thumb's `file` row is already
+// committed via the separate pool tx, becoming a reaper-eligible
+// orphan. Same risk profile as the pre-migration code.
+//
+// Best-effort: a generation failure logs + leaves thumb_file_id=0,
+// rather than aborting the batch. The attachment row stays valid.
+// Storage absence (tests) is treated the same as a non-image MIME —
+// we just leave thumb_file_id=0.
+func doThumbnails(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any, outs []any) error {
+	return func(ctx context.Context, tx pgx.Tx, ins []any, outs []any) error {
+		// Test mode (or before SetThumbDeps fires from main): nothing
+		// to do. The legacy runCreate behaved the same way.
+		if p == nil || thumbDeps.storage == nil {
+			return nil
 		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		return outs, nil
-	}
-}
-
-func runCreate(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 		actorID := auth.ActorOrSystem(ctx)
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(CreateInput)
-			if in.CardID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "attachment.create: card_id is required"}
+		for i := range outs {
+			out, ok := outs[i].(CreateOutput)
+			if !ok {
+				continue
 			}
-			if in.FileID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "attachment.create: file_id is required"}
+			if !canThumb(out.MimeType) {
+				continue
 			}
-
-			// 1. Pull the source file's metadata up front. We need the
-			// mime to decide whether to attempt a thumbnail, and the
-			// filename / size for the activity payload + response.
-			var (
-				filename  string
-				mimeType  string
-				sizeBytes int64
-			)
-			err := tx.QueryRow(ctx,
-				`SELECT filename, mime_type, size_bytes FROM file WHERE id = $1`,
-				in.FileID,
-			).Scan(&filename, &mimeType, &sizeBytes)
-			if err != nil {
-				if err == pgx.ErrNoRows {
-					return nil, &reg.HandlerError{InputIndex: i, Code: "not_found",
-						Message: fmt.Sprintf("attachment.create: file %d not found", in.FileID)}
-				}
-				return nil, fmt.Errorf("attachment.create: file lookup: %w", err)
-			}
-
-			// 2. Best-effort thumbnail generation. Runs in its own tx
-			// (via the pool, not our dispatcher tx) so a CPU-heavy
-			// decode doesn't extend the dispatcher's lock window. If
-			// the storage isn't wired (tests) or the source isn't an
-			// image, skip; if generation errors, log and continue —
-			// the attachment still commits, just without a thumb.
-			var thumbFileID int64
-			if canThumb(mimeType) && p != nil && thumbDeps.storage != nil {
-				if id, terr := generateThumb(ctx, p.P, thumbDeps.storage, in.FileID, actorID); terr == nil {
-					thumbFileID = id
-				} else if thumbDeps.logger != nil {
+			thumbID, terr := generateThumb(ctx, p.P, thumbDeps.storage, out.FileID, actorID)
+			if terr != nil {
+				if thumbDeps.logger != nil {
 					thumbDeps.logger.LogAttrs(ctx, slog.LevelWarn,
 						"attachment thumb generation failed",
-						slog.Int64("file_id", in.FileID),
-						slog.String("mime", mimeType),
+						slog.Int64("file_id", out.FileID),
+						slog.String("mime", out.MimeType),
 						slog.String("err", terr.Error()))
 				}
+				continue
 			}
-
-			// 3. Insert the attachment row + matching activity in one
-			// CTE. thumb_file_id is NULL when we couldn't (or didn't)
-			// build a thumb — the column is nullable.
-			var thumbArg any
-			if thumbFileID != 0 {
-				thumbArg = thumbFileID
+			if _, err := tx.Exec(ctx,
+				`UPDATE attachment SET thumb_file_id = $1 WHERE id = $2`,
+				thumbID, out.ID,
+			); err != nil {
+				return fmt.Errorf("attachment.create: post_run set thumb_file_id: %w", err)
 			}
-			var id int64
-			err = tx.QueryRow(ctx, `
-				WITH ins_attach AS (
-					INSERT INTO attachment (card_id, file_id, thumb_file_id)
-					VALUES ($1, $2, $3)
-					RETURNING id, card_id, file_id
-				),
-				ins_act AS (
-					INSERT INTO activity (card_id, kind, value_new, actor_id)
-					SELECT a.card_id, 'attachment_create',
-					       jsonb_build_object(
-					           'attachment_id', a.id,
-					           'file_id', a.file_id,
-					           'filename', $4::text
-					       ),
-					       $5
-					FROM ins_attach a
-					RETURNING id
-				)
-				SELECT id FROM ins_attach
-			`, in.CardID, in.FileID, thumbArg, filename, actorID).Scan(&id)
-			if err != nil {
-				return nil, fmt.Errorf("attachment.create: %w", err)
-			}
-			outs[i] = CreateOutput{
-				ID:          id,
-				CardID:      in.CardID,
-				FileID:      in.FileID,
-				Filename:    filename,
-				MimeType:    mimeType,
-				SizeBytes:   sizeBytes,
-				ThumbFileID: thumbFileID,
-				Kind:        string(KindFromMime(mimeType)),
-			}
+			out.ThumbFileID = thumbID
+			outs[i] = out
 		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		return outs, nil
+		return nil
 	}
 }

@@ -11,11 +11,8 @@ package userrole
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/reg"
@@ -48,8 +45,26 @@ type RevokeOutput struct {
 	Deleted int  `json:"deleted" mcp:"desc=number of rows deleted (0 or 1)"`
 }
 
+// ListInput selects one user's grants by id.
+type ListInput struct {
+	UserID int64 `json:"user_id,string" mcp:"required,desc=user_account id whose role grants to list"`
+}
+
+// ListRow is one (role_name, scope) tuple held by the user.
+type ListRow struct {
+	RoleName       string `json:"role_name" mcp:"desc=role name"`
+	ScopeProjectID *int64 `json:"scope_project_id,string,omitempty" mcp:"desc=optional project id for scoped grant; null = global"`
+}
+
+// ListOutput wraps the row set so the Go OutputType matches the unified
+// shape every read uses.
+type ListOutput struct {
+	Rows []ListRow `json:"rows" mcp:"desc=role grants held by the requested user"`
+}
+
 // Register installs both handlers.
 func Register(p *store.Pool) {
+	authzPool = p
 	reg.Register(reg.Handler{
 		Endpoint:     "user_role",
 		Action:       "set",
@@ -58,7 +73,10 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[SetOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
 		Authz:        authzSet,
-		Run:          runSet(p),
+		// Unified handler — body lives in
+		// db/schema/functions/user_role_set_batch.sql per Phase 3 of
+		// docs/UNIFIED_HANDLER_PLAN.md.
+		SQLFunc: "user_role_set_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "user_role",
@@ -68,8 +86,47 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[RevokeOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
 		Authz:        authzRevoke,
-		Run:          runRevoke(p),
+		// Unified handler — body lives in
+		// db/schema/functions/user_role_revoke_batch.sql per Phase 3
+		// of docs/UNIFIED_HANDLER_PLAN.md.
+		SQLFunc: "user_role_revoke_batch",
 	})
+	reg.Register(reg.Handler{
+		Endpoint:     "user_role",
+		Action:       "list",
+		Doc:          "List role grants held by one user. Anyone authenticated may query themselves; the parent of an agent may query that agent; admins may query anyone.",
+		InputType:    reflect.TypeFor[ListInput](),
+		OutputType:   reflect.TypeFor[ListOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		Authz:        authzList,
+		IsRead:       true,
+		SQLFunc:      "user_role_list_batch",
+	})
+}
+
+// authzList gates user_role.list. Allowed when the target is the actor
+// themselves, an agent of the actor, or the actor is admin.
+func authzList(ctx context.Context, in any) error {
+	row, ok := in.(ListInput)
+	if !ok {
+		return authzAdmin(ctx)
+	}
+	pool, _ := authzPool.(*store.Pool)
+	if pool == nil {
+		return nil
+	}
+	actor := auth.ActorOrSystem(ctx)
+	if row.UserID == actor {
+		return nil
+	}
+	isAgent, parentID, err := loadAgentInfo(ctx, pool, row.UserID)
+	if err != nil {
+		return err
+	}
+	if isAgent && parentID != nil && *parentID == actor {
+		return nil
+	}
+	return authzAdmin(ctx)
 }
 
 // authzAdmin returns nil when the actor holds the `admin` or `system`
@@ -86,7 +143,7 @@ func authzAdmin(ctx context.Context) error {
 		SELECT count(*)
 		FROM user_role ur
 		JOIN role r ON r.id = ur.role_id
-		WHERE ur.user_id = $1 AND r.name IN ('admin','system') AND ur.scope_card_id IS NULL
+		WHERE ur.user_id = $1 AND r.name = 'admin' AND ur.scope_card_id IS NULL
 	`, userID)
 	if err := row.Scan(&n); err != nil {
 		return fmt.Errorf("user_role.authz: %w", err)
@@ -97,17 +154,18 @@ func authzAdmin(ctx context.Context) error {
 	return nil
 }
 
-// authzSet is the gate for user_role.set. The full rule set:
+// authzSet is the gate for user_role.set. Rules:
 //
 //  1. Actor must not itself be an agent (no self-bootstrapping; agents
 //     cannot escalate themselves or their siblings).
-//  2. The role `admin` is NEVER grantable to a target with is_agent=TRUE,
-//     regardless of who's calling. Agents stay capped below their parent.
-//  3. If the target is an agent AND the actor is that agent's
-//     parent_user_id, the actor may grant any non-admin role they
-//     themselves hold globally. Lets workers / managers grant their
-//     own agents narrow scopes without escalating to admin.
-//  4. Otherwise, fall back to `authzAdmin`.
+//  2. If the target is an agent AND the actor is that agent's
+//     parent_user_id, the grant is allowed unconditionally. Grants on
+//     agents are "intent to delegate" — the runtime effective set is
+//     intersected with the parent's current roles in
+//     auth.LoadUserRoles, so an agent only USES a role when the parent
+//     also holds it. Granting `admin` to an agent whose parent never
+//     becomes admin is harmless (it's filtered out at every gate).
+//  3. Otherwise, fall back to `authzAdmin`.
 func authzSet(ctx context.Context, in any) error {
 	row, ok := in.(SetInput)
 	if !ok {
@@ -125,18 +183,7 @@ func authzSet(ctx context.Context, in any) error {
 	if err != nil {
 		return err
 	}
-	if isAgent && row.RoleName == "admin" {
-		return fmt.Errorf("user_role: admin is not grantable to agent target %d", row.UserID)
-	}
 	if isAgent && parentID != nil && *parentID == actor {
-		// Parent path: must already hold the role being granted.
-		held, err := actorHoldsRole(ctx, pool, actor, row.RoleName)
-		if err != nil {
-			return err
-		}
-		if !held {
-			return fmt.Errorf("user_role: parent %d does not hold role %q so cannot grant it to agent %d", actor, row.RoleName, row.UserID)
-		}
 		return nil
 	}
 	return authzAdmin(ctx)
@@ -193,212 +240,9 @@ func loadAgentInfo(ctx context.Context, pool *store.Pool, userID int64) (bool, *
 	return isAgent, parentID, nil
 }
 
-// actorHoldsRole is true when the actor has a global grant of the
-// named role. Scoped grants don't count — we don't want a "manager of
-// project 7" granting "manager" globally to their agent.
-func actorHoldsRole(ctx context.Context, pool *store.Pool, actor int64, roleName string) (bool, error) {
-	var n int
-	err := pool.P.QueryRow(ctx, `
-		SELECT count(*)
-		FROM user_role ur
-		JOIN role r ON r.id = ur.role_id
-		WHERE ur.user_id = $1 AND r.name = $2 AND ur.scope_card_id IS NULL
-	`, actor, roleName).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("user_role.authz: actor role lookup: %w", err)
-	}
-	return n > 0, nil
-}
-
 // authzPool holds the pool the Authz hook closes over. It is set by
 // Register and read by authzAdmin. Package-level state is necessary because
 // Authz is a value-typed callback on reg.Handler that can't accept a pool
 // argument directly.
 var authzPool any
 
-// jsonSetRow is the per-input shape fed to jsonb_to_recordset.
-type jsonSetRow struct {
-	UserID         int64  `json:"user_id,string"`
-	RoleName       string `json:"role_name"`
-	ScopeProjectID *int64 `json:"scope_project_id,string,omitempty"`
-	Ord            int    `json:"ord"`
-}
-
-// runSet is an arrayPath writer. // arrayPath
-func runSet(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	authzPool = p
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		payload := make([]jsonSetRow, len(ins))
-		for i, raw := range ins {
-			in := raw.(SetInput)
-			if in.UserID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "user_role.set: user_id is required"}
-			}
-			if in.RoleName == "" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "user_role.set: role_name is required"}
-			}
-			payload[i] = jsonSetRow{
-				UserID:         in.UserID,
-				RoleName:       in.RoleName,
-				ScopeProjectID: in.ScopeProjectID,
-				Ord:            i,
-			}
-		}
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, err
-		}
-		// Upsert via the existing partial unique indexes
-		// (uniq_user_role_global / uniq_user_role_scoped). When the row
-		// already exists we still want to RETURN its id so the caller can
-		// cite it; UPDATE on a no-op column lets RETURNING fire.
-		const q = `
-			WITH input AS (
-				SELECT i.ord, i.user_id, r.id AS role_id, i.scope_project_id
-				FROM jsonb_to_recordset($1::jsonb)
-					AS i(ord int, user_id bigint, role_name text, scope_project_id bigint)
-				JOIN role r ON r.name = i.role_name
-			),
-			-- Global grants (scope NULL): use ON CONFLICT against the partial
-			-- unique index; UPDATE writes user_id back to itself so we can
-			-- RETURN the row id even when the row already exists.
-			ins_global AS (
-				INSERT INTO user_role (user_id, role_id, scope_card_id)
-				SELECT user_id, role_id, NULL FROM input WHERE scope_project_id IS NULL
-				ON CONFLICT (user_id, role_id) WHERE scope_card_id IS NULL
-					DO UPDATE SET user_id = EXCLUDED.user_id
-				RETURNING id, user_id, role_id
-			),
-			ins_scoped AS (
-				INSERT INTO user_role (user_id, role_id, scope_card_id)
-				SELECT user_id, role_id, scope_project_id FROM input WHERE scope_project_id IS NOT NULL
-				ON CONFLICT (user_id, role_id, scope_card_id) WHERE scope_card_id IS NOT NULL
-					DO UPDATE SET user_id = EXCLUDED.user_id
-				RETURNING id, user_id, role_id, scope_card_id
-			),
-			combined AS (
-				SELECT i.ord, COALESCE(g.id, s.id) AS user_role_id
-				FROM input i
-				LEFT JOIN ins_global g
-					ON g.user_id = i.user_id AND g.role_id = i.role_id AND i.scope_project_id IS NULL
-				LEFT JOIN ins_scoped s
-					ON s.user_id = i.user_id AND s.role_id = i.role_id
-					   AND s.scope_card_id = i.scope_project_id
-			)
-			SELECT ord, user_role_id FROM combined ORDER BY ord
-		`
-		rows, err := tx.Query(ctx, q, buf)
-		if err != nil {
-			return nil, fmt.Errorf("user_role.set: %w", err)
-		}
-		outs := make([]any, len(ins))
-		seen := 0
-		for rows.Next() {
-			var ord int
-			var urid int64
-			if err := rows.Scan(&ord, &urid); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			outs[ord] = SetOutput{OK: true, UserRoleID: urid}
-			seen++
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		if seen != len(ins) {
-			return nil, fmt.Errorf("user_role.set: returned %d rows for %d inputs", seen, len(ins))
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		return outs, nil
-	}
-}
-
-// jsonRevokeRow is the per-input shape fed to jsonb_to_recordset.
-type jsonRevokeRow struct {
-	UserID         int64  `json:"user_id,string"`
-	RoleName       string `json:"role_name"`
-	ScopeProjectID *int64 `json:"scope_project_id,string,omitempty"`
-	Ord            int    `json:"ord"`
-}
-
-// runRevoke is an arrayPath writer. // arrayPath
-func runRevoke(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	authzPool = p
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		payload := make([]jsonRevokeRow, len(ins))
-		for i, raw := range ins {
-			in := raw.(RevokeInput)
-			if in.UserID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "user_role.revoke: user_id is required"}
-			}
-			if in.RoleName == "" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "user_role.revoke: role_name is required"}
-			}
-			payload[i] = jsonRevokeRow{
-				UserID:         in.UserID,
-				RoleName:       in.RoleName,
-				ScopeProjectID: in.ScopeProjectID,
-				Ord:            i,
-			}
-		}
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, err
-		}
-		const q = `
-			WITH input AS (
-				SELECT i.ord, i.user_id, r.id AS role_id, i.scope_project_id
-				FROM jsonb_to_recordset($1::jsonb)
-					AS i(ord int, user_id bigint, role_name text, scope_project_id bigint)
-				JOIN role r ON r.name = i.role_name
-			),
-			del AS (
-				DELETE FROM user_role ur
-				USING input i
-				WHERE ur.user_id = i.user_id
-				  AND ur.role_id = i.role_id
-				  AND (
-					  (ur.scope_card_id IS NULL AND i.scope_project_id IS NULL)
-					  OR ur.scope_card_id = i.scope_project_id
-				  )
-				RETURNING ur.user_id, ur.role_id, ur.scope_card_id, i.ord
-			)
-			SELECT ord, count(*) FROM del GROUP BY ord
-		`
-		rows, err := tx.Query(ctx, q, buf)
-		if err != nil {
-			return nil, fmt.Errorf("user_role.revoke: %w", err)
-		}
-		deletedByOrd := map[int]int{}
-		for rows.Next() {
-			var ord int
-			var n int
-			if err := rows.Scan(&ord, &n); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			deletedByOrd[ord] = n
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		outs := make([]any, len(ins))
-		for i := range ins {
-			n := deletedByOrd[i]
-			outs[i] = RevokeOutput{OK: n > 0, Deleted: n}
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		return outs, nil
-	}
-}

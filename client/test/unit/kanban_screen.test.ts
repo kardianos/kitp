@@ -4,14 +4,13 @@
  * Vitest runs node-only (no jsdom), so the .svelte component is not
  * mounted here — we exercise the extracted helpers in
  * `src/screens/kanban_helpers.ts`. Real-DOM coverage of the screen
- * itself lands with the e2e journey suite (task #6 of the migration
- * plan, kanban_drag.ts).
+ * itself lands with the e2e journey suite.
  *
- * Coverage targets per task #15:
+ * Coverage targets:
  *   1. `groupCardsByColumn` — buckets by attribute value; nulls go to ''.
  *   2. `groupCardsByLane`   — same shape, on a different attribute.
- *   3. `computeNewSortOrder` — empty / top / bottom / between / nulls.
- *   4. `computeMoveBatch`   — 1 / 2 / 3 op count and payload shape.
+ *   3. `planSortRewrite`    — rewrites the destination cell's sort_orders.
+ *   4. `computeMoveBatch`   — combines sort + column + lane ops.
  *   5. `nextColumnIndex`    — clamps to [0, columnsLen-1].
  */
 
@@ -20,12 +19,13 @@ import { describe, expect, it } from 'vitest';
 import type { CardWithAttrs } from '../../src/reg/types.js';
 import {
   computeMoveBatch,
-  computeNewSortOrder,
   groupCardsByColumn,
   groupCardsByLane,
   nextColumnIndex,
+  planSortRewrite,
   SORT_ORDER_STEP,
   sortByOrder,
+  type SortUpdate,
   type UpdateOp,
 } from '../../src/screens/kanban_helpers.js';
 
@@ -118,76 +118,97 @@ describe('groupCardsByLane', () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* computeNewSortOrder                                                        */
+/* planSortRewrite                                                            */
 /* -------------------------------------------------------------------------- */
 
-describe('computeNewSortOrder', () => {
-  it('returns 0 for an empty stack', () => {
-    expect(computeNewSortOrder([], 0)).toBe(0);
-    expect(computeNewSortOrder([], 5)).toBe(0);
+describe('planSortRewrite', () => {
+  const STEP = SORT_ORDER_STEP;
+
+  it('drops the moved card into an empty cell with sort_order = STEP', () => {
+    const moved = task(42n, {});
+    expect(planSortRewrite([], moved, 0)).toEqual([
+      { cardId: 42n, sortOrder: STEP },
+    ]);
   });
 
-  it('top of stack: first.sort_order - STEP', () => {
-    const stack = [
-      task(1n, { sort_order: 200 }),
-      task(2n, { sort_order: 300 }),
+  it('renumbers every card whose existing sort_order does not match its slot', () => {
+    // destStack already canonical: 100, 200, 300. Insert moved at top.
+    const moved = task(42n, {});
+    const destStack = [
+      task(1n, { sort_order: STEP }),
+      task(2n, { sort_order: 2 * STEP }),
+      task(3n, { sort_order: 3 * STEP }),
     ];
-    expect(computeNewSortOrder(stack, 0)).toBe(100);
-    // Negative slotIndex behaves like top-of-stack.
-    expect(computeNewSortOrder(stack, -1)).toBe(100);
+    // Final order: [42, 1, 2, 3] → slots 100, 200, 300, 400.
+    // Only 42 (new) and 1 (was 100, now 200) and 2 (was 200, now 300)
+    // and 3 (was 300, now 400) change — all four need a rewrite.
+    expect(planSortRewrite(destStack, moved, 0)).toEqual([
+      { cardId: 42n, sortOrder: STEP },
+      { cardId: 1n, sortOrder: 2 * STEP },
+      { cardId: 2n, sortOrder: 3 * STEP },
+      { cardId: 3n, sortOrder: 4 * STEP },
+    ]);
   });
 
-  it('bottom of stack: last.sort_order + STEP', () => {
-    const stack = [
-      task(1n, { sort_order: 100 }),
-      task(2n, { sort_order: 200 }),
+  it('emits ONE op (just the moved card) when appending to a canonical cell', () => {
+    const moved = task(42n, {});
+    const destStack = [
+      task(1n, { sort_order: STEP }),
+      task(2n, { sort_order: 2 * STEP }),
     ];
-    expect(computeNewSortOrder(stack, 2)).toBe(300);
-    // Past the end behaves like bottom-of-stack.
-    expect(computeNewSortOrder(stack, 99)).toBe(300);
+    // Final order: [1, 2, 42] → slots 100, 200, 300.
+    // Only 42 needs a write; 1 and 2 already match.
+    expect(planSortRewrite(destStack, moved, destStack.length)).toEqual([
+      { cardId: 42n, sortOrder: 3 * STEP },
+    ]);
   });
 
-  it('between two cards: arithmetic mean', () => {
-    const stack = [
-      task(1n, { sort_order: 100 }),
-      task(2n, { sort_order: 200 }),
-      task(3n, { sort_order: 300 }),
+  it('emits TWO ops for a simple middle swap in a canonical cell', () => {
+    // Move card 1 from position 0 to between 2 and 3.
+    // destStack (without moved): [2, 3] at 200, 300.
+    // Insert moved (id=1) at slot 1 → final [2, 1, 3] → slots 100, 200, 300.
+    // 2: was 200 now 100 → write. 1: gets 200 → write. 3: was 300 stays 300.
+    const moved = task(1n, { sort_order: STEP });
+    const destStack = [
+      task(2n, { sort_order: 2 * STEP }),
+      task(3n, { sort_order: 3 * STEP }),
     ];
-    expect(computeNewSortOrder(stack, 1)).toBe(150);
-    expect(computeNewSortOrder(stack, 2)).toBe(250);
+    expect(planSortRewrite(destStack, moved, 1)).toEqual([
+      { cardId: 2n, sortOrder: STEP },
+      { cardId: 1n, sortOrder: 2 * STEP },
+    ]);
   });
 
-  it('between with nullish prev: next - STEP', () => {
-    const stack = [
-      task(1n, {}), // no sort_order
-      task(2n, { sort_order: 200 }),
-    ];
-    expect(computeNewSortOrder(stack, 1)).toBe(100);
+  it('rewrites every card in an all-NULL cell (regression: NULL siblings)', () => {
+    // The bug the inbox's planReorder doc comment calls out: halfway
+    // math produced a numeric value while siblings stayed NULL, and
+    // ASC NULLS LAST sorted the moved card before the unranked rest.
+    // Rewriting every slot fixes it.
+    const moved = task(42n, {});
+    const destStack = [task(1n, {}), task(2n, {})];
+    // Final order: [1, 42, 2] → slots 100, 200, 300.
+    expect(planSortRewrite(destStack, moved, 1)).toEqual([
+      { cardId: 1n, sortOrder: STEP },
+      { cardId: 42n, sortOrder: 2 * STEP },
+      { cardId: 2n, sortOrder: 3 * STEP },
+    ]);
   });
 
-  it('between with nullish next: prev + STEP', () => {
-    const stack = [
-      task(1n, { sort_order: 100 }),
-      task(2n, {}), // no sort_order
-    ];
-    expect(computeNewSortOrder(stack, 1)).toBe(200);
+  it('clamps an out-of-range slot to the tail', () => {
+    const moved = task(42n, {});
+    const destStack = [task(1n, { sort_order: STEP })];
+    expect(planSortRewrite(destStack, moved, 999)).toEqual([
+      { cardId: 42n, sortOrder: 2 * STEP },
+    ]);
   });
 
-  it('between two nullish cards: slotIndex * STEP fallback', () => {
-    const stack = [task(1n, {}), task(2n, {}), task(3n, {})];
-    expect(computeNewSortOrder(stack, 1)).toBe(SORT_ORDER_STEP);
-    expect(computeNewSortOrder(stack, 2)).toBe(2 * SORT_ORDER_STEP);
-  });
-
-  it('top of an all-nullish stack: 0 ((STEP ?? STEP) - STEP)', () => {
-    // (first.sort_order ?? STEP) - STEP === 0 when sort_order is missing.
-    const stack = [task(1n, {}), task(2n, {})];
-    expect(computeNewSortOrder(stack, 0)).toBe(0);
-  });
-
-  it('bottom of an all-nullish stack: +STEP (last ?? 0) + STEP', () => {
-    const stack = [task(1n, {}), task(2n, {})];
-    expect(computeNewSortOrder(stack, 2)).toBe(SORT_ORDER_STEP);
+  it('clamps a negative slot to the head', () => {
+    const moved = task(42n, {});
+    const destStack = [task(1n, { sort_order: 2 * STEP })];
+    // Final: [42, 1] → slots 100, 200. 42 new, 1 already matches.
+    expect(planSortRewrite(destStack, moved, -3)).toEqual([
+      { cardId: 42n, sortOrder: STEP },
+    ]);
   });
 });
 
@@ -196,13 +217,18 @@ describe('computeNewSortOrder', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('computeMoveBatch', () => {
+  /** Convenience: a single SortUpdate for [card], sortOrder = [v]. */
+  function sortFor(cardId: bigint, v: number): SortUpdate[] {
+    return [{ cardId, sortOrder: v }];
+  }
+
   it('changing only sort returns ONE op (sort_order)', () => {
     const card = task(42n, { status: 'doing', sort_order: 100 });
     const ops: UpdateOp[] = computeMoveBatch(
       card,
       'doing', // same column value
       null, // no lane axis
-      150, // new sort
+      sortFor(42n, 150),
       'status',
       null, // lane disabled
     );
@@ -213,7 +239,14 @@ describe('computeMoveBatch', () => {
 
   it('changing column + sort returns TWO ops', () => {
     const card = task(42n, { status: 'doing', sort_order: 100 });
-    const ops = computeMoveBatch(card, 'review', null, 150, 'status', null);
+    const ops = computeMoveBatch(
+      card,
+      'review',
+      null,
+      sortFor(42n, 150),
+      'status',
+      null,
+    );
     expect(ops).toHaveLength(2);
     expect(ops[0]).toEqual({
       cardId: 42n,
@@ -237,7 +270,7 @@ describe('computeMoveBatch', () => {
       card,
       'review',
       9,
-      150,
+      sortFor(42n, 150),
       'status',
       'assignee',
     );
@@ -259,16 +292,49 @@ describe('computeMoveBatch', () => {
     });
   });
 
+  it('fans the sortUpdates array out into one op per entry', () => {
+    // Multi-card rewrite case — the moved card and one renumbered neighbour.
+    const card = task(42n, { status: 'doing', sort_order: 100 });
+    const ops = computeMoveBatch(
+      card,
+      'doing',
+      null,
+      [
+        { cardId: 42n, sortOrder: 200 },
+        { cardId: 7n, sortOrder: 300 },
+      ],
+      'status',
+      null,
+    );
+    expect(ops).toEqual([
+      { cardId: 42n, attributeName: 'sort_order', value: 200 },
+      { cardId: 7n, attributeName: 'sort_order', value: 300 },
+    ]);
+  });
+
   it('omits column op when the column value did not change', () => {
     const card = task(42n, { status: 'doing', sort_order: 100 });
-    const ops = computeMoveBatch(card, 'doing', null, 200, 'status', null);
+    const ops = computeMoveBatch(
+      card,
+      'doing',
+      null,
+      sortFor(42n, 200),
+      'status',
+      null,
+    );
     expect(ops.map((o) => o.attributeName)).toEqual(['sort_order']);
   });
 
   it('omits lane op when the lane axis is null even if value differs', () => {
     const card = task(42n, { status: 'doing', assignee: 7n, sort_order: 100 });
-    // laneAttrName=null disables the lane axis entirely.
-    const ops = computeMoveBatch(card, 'review', 9, 150, 'status', null);
+    const ops = computeMoveBatch(
+      card,
+      'review',
+      9,
+      sortFor(42n, 150),
+      'status',
+      null,
+    );
     expect(ops).toHaveLength(2);
     expect(ops.map((o) => o.attributeName)).toEqual(['sort_order', 'status']);
   });
@@ -279,21 +345,36 @@ describe('computeMoveBatch', () => {
       assignee: 7n,
       sort_order: 100,
     });
-    const ops = computeMoveBatch(card, 'review', 7, 150, 'status', 'assignee');
+    const ops = computeMoveBatch(
+      card,
+      'review',
+      7,
+      sortFor(42n, 150),
+      'status',
+      'assignee',
+    );
     expect(ops).toHaveLength(2);
     expect(ops.map((o) => o.attributeName)).toEqual(['sort_order', 'status']);
   });
 
-  it('omits sort op when the existing sort_order already equals the target', () => {
+  it('emits zero sort ops when the rewrite plan is empty (column-only move)', () => {
+    // The destination cell was already canonical and the moved card kept
+    // its slot — planSortRewrite returns []. Only the column change lands.
     const card = task(42n, { status: 'doing', sort_order: 200 });
-    // Drop computed exactly the same value (same slot, no neighbours moved).
-    const ops = computeMoveBatch(card, 'review', null, 200, 'status', null);
+    const ops = computeMoveBatch(card, 'review', null, [], 'status', null);
     expect(ops.map((o) => o.attributeName)).toEqual(['status']);
   });
 
   it('emits a clear-attribute write when the target column is null', () => {
     const card = task(42n, { status: 'doing', sort_order: 100 });
-    const ops = computeMoveBatch(card, null, null, 150, 'status', null);
+    const ops = computeMoveBatch(
+      card,
+      null,
+      null,
+      sortFor(42n, 150),
+      'status',
+      null,
+    );
     expect(ops).toHaveLength(2);
     expect(ops[1]).toEqual({
       cardId: 42n,
@@ -305,7 +386,14 @@ describe('computeMoveBatch', () => {
   it('does not emit a column op when both current and target are unset', () => {
     // Card has no `status` attr; target value is null. Both bucket to ''.
     const card = task(42n, { sort_order: 100 });
-    const ops = computeMoveBatch(card, null, null, 150, 'status', null);
+    const ops = computeMoveBatch(
+      card,
+      null,
+      null,
+      sortFor(42n, 150),
+      'status',
+      null,
+    );
     expect(ops.map((o) => o.attributeName)).toEqual(['sort_order']);
   });
 });

@@ -11,20 +11,14 @@
 // stays strictly within the parent's tree of agents.
 //
 // Coalescing: N sub-requests in one batch produce one statement-group
-// per action. set ingests a JSON array and UPSERTs in one CTE; clear
-// and list each scope to a single deletion / read statement.
+// per action. set / clear / list are all unified PL/pgSQL functions
+// (db/schema/functions/user_card_agent_{set,unset,list}_batch.sql).
 package usercardagent
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"reflect"
-	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
@@ -64,8 +58,8 @@ type ListInput struct {
 
 // ListRow is one routing record.
 type ListRow struct {
-	CardID      int64 `json:"card_id,string" mcp:"desc=routed card id"`
-	AgentUserID int64 `json:"agent_user_id,string" mcp:"desc=user_account id of the agent the card is routed to"`
+	CardID      int64  `json:"card_id,string" mcp:"desc=routed card id"`
+	AgentUserID int64  `json:"agent_user_id,string" mcp:"desc=user_account id of the agent the card is routed to"`
 	CreatedAt   string `json:"created_at" mcp:"desc=RFC3339 timestamp when the routing was set"`
 }
 
@@ -75,7 +69,7 @@ type ListOutput struct {
 }
 
 // Register installs all three handlers.
-func Register(p *store.Pool) {
+func Register(_ *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "user_card_agent",
 		Action:       "set",
@@ -85,7 +79,10 @@ func Register(p *store.Pool) {
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		ProcessName:  "user_card_sort.set", // shares the routing/reorder process bucket
 		CardTypeID:   cardTypeFromSet,
-		Run:          runSet(p),
+		// Unified handler — body lives in
+		// db/schema/functions/user_card_agent_set_batch.sql. See
+		// docs/UNIFIED_HANDLER_PLAN.md Phase 2.
+		SQLFunc: "user_card_agent_set_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "user_card_agent",
@@ -96,7 +93,11 @@ func Register(p *store.Pool) {
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		ProcessName:  "user_card_sort.set",
 		CardTypeID:   cardTypeFromClear,
-		Run:          runClear(p),
+		// Unified handler — body lives in
+		// db/schema/functions/user_card_agent_unset_batch.sql.
+		// (SQL function name is `unset` per the Phase 2 task list;
+		// the Go-side action stays `clear` for wire compatibility.)
+		SQLFunc: "user_card_agent_unset_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "user_card_agent",
@@ -105,7 +106,12 @@ func Register(p *store.Pool) {
 		InputType:    reflect.TypeFor[ListInput](),
 		OutputType:   reflect.TypeFor[ListOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
-		Run:          runList(p),
+		// Unified handler — body lives in
+		// db/schema/functions/user_card_agent_list_batch.sql per Phase
+		// 5 of docs/UNIFIED_HANDLER_PLAN.md. actor_id is wired by the
+		// dispatcher from auth.ActorOrSystem(ctx); the function scopes
+		// the result rows to that actor (legacy behaviour).
+		SQLFunc: "user_card_agent_list_batch",
 	})
 }
 
@@ -117,182 +123,4 @@ func cardTypeFromClear(ctx context.Context, pool reg.ValidationPool, raw any) (i
 	return schema.CardTypeIDByCardID(ctx, pool, raw.(ClearInput).CardID)
 }
 
-// jsonSetRow is the per-row payload fed to jsonb_to_recordset. user_id
-// is stamped from ctx, not the wire.
-type jsonSetRow struct {
-	CardID      int64 `json:"card_id,string"`
-	AgentUserID int64 `json:"agent_user_id,string"`
-}
 
-// runSet upserts every (actor, card_id) → agent_user_id row in one
-// CTE. Validates first that every named agent_user_id is owned by the
-// actor; rejects the whole batch on the first mismatch so a single
-// bad input doesn't half-write a multi-card route.
-func runSet(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-
-		payload := make([]jsonSetRow, len(ins))
-		agentIDs := make([]int64, 0, len(ins))
-		for i, raw := range ins {
-			in := raw.(SetInput)
-			if in.CardID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "user_card_agent.set: card_id is required"}
-			}
-			if in.AgentUserID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "user_card_agent.set: agent_user_id is required"}
-			}
-			payload[i] = jsonSetRow{CardID: in.CardID, AgentUserID: in.AgentUserID}
-			agentIDs = append(agentIDs, in.AgentUserID)
-		}
-
-		// Validate ownership of every referenced agent in a single
-		// roundtrip. The set of agent ids the actor owns must be a
-		// superset of the agent ids the batch references.
-		var ownedCount int
-		if err := tx.QueryRow(ctx, `
-			SELECT count(DISTINCT id)
-			FROM user_account
-			WHERE id = ANY($1) AND is_agent = TRUE AND parent_user_id = $2
-		`, agentIDs, actorID).Scan(&ownedCount); err != nil {
-			return nil, fmt.Errorf("user_card_agent.set: validate ownership: %w", err)
-		}
-		// uniqueAgents := distinct count of agentIDs.
-		seen := map[int64]bool{}
-		for _, id := range agentIDs {
-			seen[id] = true
-		}
-		if ownedCount != len(seen) {
-			return nil, &reg.HandlerError{Code: "forbidden",
-				Message: fmt.Sprintf("user_card_agent.set: one or more agent_user_ids are not agents owned by actor %d", actorID)}
-		}
-
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, err
-		}
-		const q = `
-			WITH input AS (
-				SELECT * FROM jsonb_to_recordset($1::jsonb)
-				AS x(card_id bigint, agent_user_id bigint)
-			)
-			INSERT INTO user_card_agent (user_id, card_id, agent_user_id)
-			SELECT $2::bigint, i.card_id, i.agent_user_id FROM input i
-			ON CONFLICT (user_id, card_id) DO UPDATE
-				SET agent_user_id = EXCLUDED.agent_user_id
-		`
-		if _, err := tx.Exec(ctx, q, buf, actorID); err != nil {
-			return nil, fmt.Errorf("user_card_agent.set: %w", err)
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-
-		outs := make([]any, len(ins))
-		for i := range ins {
-			outs[i] = SetOutput{OK: true}
-		}
-		return outs, nil
-	}
-}
-
-// runClear deletes the (actor, card_id) row. Idempotent.
-func runClear(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-		cardIDs := make([]int64, len(ins))
-		for i, raw := range ins {
-			in := raw.(ClearInput)
-			if in.CardID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "user_card_agent.clear: card_id is required"}
-			}
-			cardIDs[i] = in.CardID
-		}
-		rows, err := tx.Query(ctx, `
-			DELETE FROM user_card_agent
-			WHERE user_id = $1 AND card_id = ANY($2)
-			RETURNING card_id
-		`, actorID, cardIDs)
-		if err != nil {
-			return nil, fmt.Errorf("user_card_agent.clear: %w", err)
-		}
-		deleted := map[int64]bool{}
-		for rows.Next() {
-			var c int64
-			if err := rows.Scan(&c); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			deleted[c] = true
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			n := 0
-			if deleted[raw.(ClearInput).CardID] {
-				n = 1
-			}
-			outs[i] = ClearOutput{OK: n > 0, Deleted: n}
-		}
-		return outs, nil
-	}
-}
-
-// runList returns the calling user's routings. ParentCardID filters
-// down to one parent (typically a project) via a JOIN on card.parent_card_id.
-func runList(_ *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(ListInput)
-			var rows pgx.Rows
-			var err error
-			if in.ParentCardID != nil {
-				rows, err = tx.Query(ctx, `
-					SELECT uca.card_id, uca.agent_user_id, uca.created_at
-					FROM user_card_agent uca
-					JOIN card c ON c.id = uca.card_id
-					WHERE uca.user_id = $1 AND c.parent_card_id = $2
-					ORDER BY uca.created_at DESC
-				`, actorID, *in.ParentCardID)
-			} else {
-				rows, err = tx.Query(ctx, `
-					SELECT card_id, agent_user_id, created_at
-					FROM user_card_agent
-					WHERE user_id = $1
-					ORDER BY created_at DESC
-				`, actorID)
-			}
-			if err != nil {
-				return nil, fmt.Errorf("user_card_agent.list: %w", err)
-			}
-			var out ListOutput
-			for rows.Next() {
-				var r ListRow
-				var createdAt time.Time
-				if err := rows.Scan(&r.CardID, &r.AgentUserID, &createdAt); err != nil {
-					rows.Close()
-					return nil, err
-				}
-				r.CreatedAt = createdAt.Format(time.RFC3339)
-				out.Rows = append(out.Rows, r)
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-			outs[i] = out
-		}
-		return outs, nil
-	}
-}

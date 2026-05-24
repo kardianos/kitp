@@ -26,11 +26,14 @@
   import { type AuthState } from '../../auth/auth_state.svelte';
   import { useBag } from '../../dispatch/bag.svelte';
   import { getDispatcher } from '../../dispatch/context';
+  import { clearHelpTopic, setHelpTopic } from '../../help/help_context.svelte';
   import { setActiveScope } from '../../keys/shortcut';
   import {
-    agentCreate,
     agentDelete,
-    userTokenCreate,
+    roleList,
+    userRoleList,
+    userRoleRevoke,
+    userRoleSet,
     userTokenList,
     userTokenRevoke,
   } from '../../reg/handlers_admin';
@@ -43,9 +46,20 @@
   import Button from '../../ui/Button.svelte';
   import EmptyState from '../../ui/EmptyState.svelte';
   import Spinner from '../../ui/Spinner.svelte';
+  import {
+    Form,
+    FormErrors,
+    SubmitButton,
+    TextInput,
+  } from '../../forms';
   import { notify } from '../../ui/toast.svelte';
 
   setActiveScope('admin_agents');
+
+  $effect(() => {
+    setHelpTopic({ kind: 'topic', topic: 'admin.agents' });
+    return () => clearHelpTopic();
+  });
 
   const dispatcher = getDispatcher();
   const bag = useBag(dispatcher);
@@ -60,14 +74,16 @@
   let tokensByAgent = $state<Record<string, UserTokenListRow[]>>({});
   let tokensLoading = $state<Record<string, boolean>>({});
 
-  // New-agent inline form.
-  let newName = $state('');
-
-  // Per-agent token-mint form (keyed by agent.id string).
-  let mintLabelByAgent = $state<Record<string, string>>({});
-
   // Freshly-minted secret to show ONCE.
   let pendingMint = $state<{ agentId: ID; label: string; token: string } | null>(null);
+
+  /** Initial draft for the per-agent token-mint <Form>. `user_id` is the
+   *  current selection; `label` starts blank. Re-derived on selection
+   *  swap so the form remounts under a `{#key}` wrap. */
+  const mintInitial = $derived.by((): Record<string, unknown> => {
+    if (selectedId === null) return {};
+    return { user_id: selectedId, label: '' };
+  });
 
   const loadAgents = bag.bind(userSelect, 'admin_agents.list', (r) => {
     if (r.ok) {
@@ -78,14 +94,6 @@
     loading = false;
   });
 
-  // bag.bind closes over `selectedId` etc. via the calling helpers below.
-  const create = bag.bind(agentCreate, 'admin_agents.create', (r) => {
-    if (r.ok) {
-      notify({ type: 'success', message: `Created agent "${r.data.user_id}"` });
-      newName = '';
-      refresh();
-    }
-  });
   const remove = bag.bind(agentDelete, 'admin_agents.delete', (r) => {
     if (r.ok) {
       notify({ type: 'success', message: 'Agent deleted' });
@@ -98,24 +106,103 @@
     }
   });
 
-  const mintToken = bag.bind(userTokenCreate, 'admin_agents.token.create', (r) => {
-    if (r.ok && selectedId !== null) {
-      pendingMint = { agentId: selectedId, label: r.data.label, token: r.data.token };
-      // Reset the input + reload that agent's token list. Property
-      // writes on $state objects are reactive on their own — do NOT
-      // do `mintLabelByAgent = { ...mintLabelByAgent }`, that read +
-      // write pair re-fires any $effect that calls this code path
-      // and produces a depth-exceeded loop.
-      mintLabelByAgent[String(selectedId)] = '';
-      loadTokensFor(selectedId);
-    }
-  });
   const revokeToken = bag.bind(userTokenRevoke, 'admin_agents.token.revoke', (r) => {
     if (r.ok) {
       notify({ type: 'success', message: 'Token revoked' });
       if (selectedId !== null) loadTokensFor(selectedId);
     }
   });
+
+  /**
+   * agent.create + user_token.create flow through the data-bound <Form>
+   * kernel. Both handlers' outputs are surfaced via onSaved callbacks
+   * below: agent.create kicks a list refresh; user_token.create stashes
+   * the one-shot secret in pendingMint for the copy banner.
+   */
+  /** Ticks on each successful create so the Form remounts and the
+   *  display_name input clears for the next agent. */
+  let createFormKey = $state(0);
+  function onAgentCreated(): void {
+    notify({ type: 'success', message: 'Agent created' });
+    refresh();
+    createFormKey++;
+  }
+
+  function onTokenMinted(out: unknown): void {
+    if (selectedId === null) return;
+    const r = (out ?? {}) as { token?: unknown; label?: unknown };
+    const token = typeof r.token === 'string' ? r.token : '';
+    const label = typeof r.label === 'string' ? r.label : '';
+    pendingMint = { agentId: selectedId, label, token };
+    loadTokensFor(selectedId);
+  }
+
+  // Role wiring:
+  //  - `allRoles` is the full catalogue (role.list). The parent may
+  //    grant ANY of these to their agent — the runtime cap is enforced
+  //    by auth.LoadUserRoles intersecting with the parent's current
+  //    role set, so granting `admin` to an agent whose parent never
+  //    becomes admin is harmless.
+  //  - `parentRoles` is the parent's own global grants. Drives the
+  //    "effective" badge — a role granted to the agent is only
+  //    effective at runtime when the parent also holds it.
+  //  - `agentRolesByAgent` maps agent_id → Set of role names currently
+  //    granted to that agent.
+  let allRoles = $state<string[]>([]);
+  let parentRoles = $state<Set<string>>(new Set<string>());
+  let agentRolesByAgent = $state<Record<string, Set<string>>>({});
+
+  const loadAllRoles = bag.bind(roleList, 'admin_agents.role_catalogue', (r) => {
+    if (r.ok) {
+      allRoles = r.data.rows.map((row) => row.name);
+    }
+  });
+
+  const loadParentRoles = bag.bind(userRoleList, 'admin_agents.parent_roles', (r) => {
+    if (r.ok) {
+      const next = new Set<string>();
+      for (const row of r.data.rows) {
+        if (row.scope_project_id === undefined) next.add(row.role_name);
+      }
+      parentRoles = next;
+    }
+  });
+
+  const agentRoleLoadFor = new Map<string, ID>();
+  const loadAgentRoles = bag.bind(userRoleList, 'admin_agents.agent_roles', (r) => {
+    if (r.ok && selectedId !== null) {
+      // Same caveat as loadTokens: bag callback has no input echo so
+      // we accept that a fast selection swap may key the response to
+      // the latest selection. For the common path (one agent
+      // selected) this is correct.
+      const key = String(selectedId);
+      const next = new Set<string>();
+      for (const row of r.data.rows) {
+        if (row.scope_project_id === undefined) next.add(row.role_name);
+      }
+      agentRolesByAgent[key] = next;
+    }
+  });
+
+  function loadAgentRolesFor(id: ID): void {
+    agentRoleLoadFor.set(String(id), id);
+    loadAgentRoles({ userId: id });
+  }
+
+  const grantRole = bag.bind(userRoleSet, 'admin_agents.role.grant', (r) => {
+    if (r.ok && selectedId !== null) loadAgentRolesFor(selectedId);
+  });
+  const revokeRole = bag.bind(userRoleRevoke, 'admin_agents.role.revoke', (r) => {
+    if (r.ok && selectedId !== null) loadAgentRolesFor(selectedId);
+  });
+
+  function toggleRole(agentId: ID, roleName: string, current: boolean): void {
+    if (current) {
+      revokeRole({ userId: agentId, roleName });
+    } else {
+      grantRole({ userId: agentId, roleName });
+    }
+  }
 
   // Per-agent token list calls are keyed by a stable token handler bound
   // once at script init. The handler resolves which agent the response
@@ -141,12 +228,6 @@
     loadAgents({ parentUserId: me, isAgent: true });
   }
 
-  function createAgent(): void {
-    const name = newName.trim();
-    if (name.length === 0) return;
-    create({ displayName: name });
-  }
-
   function deleteAgent(id: ID): void {
     if (!confirm('Delete this agent? Active tokens will be revoked.')) return;
     remove({ userId: id });
@@ -155,21 +236,11 @@
   function loadTokensFor(id: ID): void {
     const key = String(id);
     tokenLoadFor.set(key, id);
-    // Property write only — see comment in mintToken handler about
-    // why a `tokensLoading = { ...tokensLoading }` reassignment here
-    // causes effect_update_depth_exceeded.
+    // Property write only — re-assigning the whole map here trips
+    // effect_update_depth_exceeded when paired with the $effect that
+    // reloads tokens on selection change.
     tokensLoading[key] = true;
     loadTokens({ userId: id });
-  }
-
-  function mint(): void {
-    if (selectedId === null) return;
-    const label = (mintLabelByAgent[String(selectedId)] ?? '').trim();
-    if (label.length === 0) {
-      notify({ type: 'error', message: 'Label is required' });
-      return;
-    }
-    mintToken({ userId: selectedId, label });
   }
 
   function revoke(label: string): void {
@@ -219,9 +290,22 @@
     }
   }
 
-  // Reload tokens whenever the selected agent changes.
+  // Reload tokens + roles whenever the selected agent changes.
   $effect(() => {
-    if (selectedId !== null) loadTokensFor(selectedId);
+    if (selectedId !== null) {
+      loadTokensFor(selectedId);
+      loadAgentRolesFor(selectedId);
+    }
+  });
+
+  // Parent's own roles + the full role catalogue are session-scoped
+  // (don't change per agent). Load both once and reuse across
+  // selection swaps.
+  $effect(() => {
+    if (me !== null) {
+      loadParentRoles({ userId: me });
+      loadAllRoles({});
+    }
   });
 
   function titleFor(a: UserRow): string {
@@ -240,27 +324,23 @@
       <h1 class="text-lg font-semibold">Your agents</h1>
     </header>
 
-    <form
-      class="flex flex-col gap-2"
-      onsubmit={(e) => {
-        e.preventDefault();
-        createAgent();
-      }}
-    >
-      <label for="agent-new-name" class="text-xs uppercase tracking-wide text-muted">
-        New agent
-      </label>
-      <input
-        id="agent-new-name"
-        type="text"
-        bind:value={newName}
-        placeholder="Display name (e.g. research-agent)"
-        class="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-      />
-      <Button variant="primary" size="md" type="submit">
-        {#snippet children()}Create{/snippet}
-      </Button>
-    </form>
+    {#key createFormKey}
+      <Form
+        spec="agent.create"
+        initial={{ display_name: '' }}
+        onSaved={onAgentCreated}
+        class="flex flex-col gap-2"
+      >
+        <span class="text-xs uppercase tracking-wide text-muted">New agent</span>
+        <FormErrors />
+        <TextInput
+          path="display_name"
+          label=""
+          placeholder="Display name (e.g. research-agent)"
+        />
+        <SubmitButton size="md">Create</SubmitButton>
+      </Form>
+    {/key}
 
     {#if loading && agents.length === 0}
       <div class="flex flex-1 items-center justify-center">
@@ -350,28 +430,70 @@
           </section>
         {/if}
 
+        <!-- ---------------------------------- roles -->
+        <section class="flex flex-col gap-2">
+          <h3 class="text-sm font-semibold uppercase tracking-wide text-muted">
+            Roles
+          </h3>
+          <p class="text-xs text-muted">
+            Assign any role; the runtime effective set is the intersection
+            with your own roles. A granted role you don't hold yourself
+            still won't let this agent do anything until you (or an admin)
+            grants it to you too.
+          </p>
+          {#if allRoles.length === 0}
+            <p class="text-xs text-muted">Loading roles…</p>
+          {:else}
+            <ul class="flex flex-col gap-1">
+              {#each allRoles as roleName (roleName)}
+                {@const granted = (agentRolesByAgent[String(a.id)] ?? new Set<string>()).has(roleName)}
+                {@const parentHolds = parentRoles.has(roleName)}
+                {@const effective = granted && parentHolds}
+                <li class="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    id={`role-${a.id}-${roleName}`}
+                    checked={granted}
+                    onchange={() => toggleRole(a.id, roleName, granted)}
+                  />
+                  <label for={`role-${a.id}-${roleName}`} class="flex-1">
+                    {roleName}
+                  </label>
+                  {#if effective}
+                    <span class="text-xs text-success">effective</span>
+                  {:else if granted}
+                    <span class="text-xs text-warning" title="Granted to agent but you don't hold this role, so it's inactive at runtime.">
+                      inactive (you don't hold {roleName})
+                    </span>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+
         <!-- ---------------------------------- mint form -->
         <section class="flex flex-col gap-2">
           <h3 class="text-sm font-semibold uppercase tracking-wide text-muted">
             Mint new token
           </h3>
-          <form
-            class="flex items-center gap-2"
-            onsubmit={(e) => {
-              e.preventDefault();
-              mint();
-            }}
-          >
-            <input
-              type="text"
-              bind:value={mintLabelByAgent[String(a.id)]}
-              placeholder="Token label (unique per agent, e.g. laptop)"
-              class="flex-1 rounded-md border border-border bg-bg px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            />
-            <Button variant="primary" size="md" type="submit">
-              {#snippet children()}Mint{/snippet}
-            </Button>
-          </form>
+          {#key a.id}
+            <Form
+              spec="user_token.create"
+              initial={mintInitial}
+              onSaved={onTokenMinted}
+              class="flex items-end gap-2"
+            >
+              <div class="flex-1">
+                <TextInput
+                  path="label"
+                  label=""
+                  placeholder="Token label (unique per agent, e.g. laptop)"
+                />
+              </div>
+              <SubmitButton size="md">Mint</SubmitButton>
+            </Form>
+          {/key}
         </section>
 
         <!-- ---------------------------------- token list -->

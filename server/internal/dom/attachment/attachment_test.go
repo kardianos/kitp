@@ -45,19 +45,23 @@ func setup(t *testing.T, schema string) (http.Handler, *api.Server, *store.Pool)
 	file.Register(sp)
 
 	srv := api.NewServer(sp)
-	mux := http.NewServeMux()
-	srv.Mount(mux, "")
+	user, err := auth.NewSystemUser(context.Background(), pool, "dev", auth.ModeOff)
+	if err != nil {
+		t.Fatalf("system user: %v", err)
+	}
 
 	storage := cas.New(cas.NewPgBackend(pool))
-	cas.RegisterHTTP(mux, cas.HTTPConfig{
+	rt := api.NewTestRouter(user)
+	cas.Mount(rt, cas.HTTPConfig{
 		Pool:     sp,
 		Storage:  storage,
 		MaxBytes: 4 * 1024 * 1024, // 4 MB per chunk for tests
 	})
-	attachment.RegisterHTTP(mux, attachment.Config{
+	attachment.Mount(rt, attachment.Config{
 		Pool:    sp,
 		Storage: storage,
 	})
+	srv.MountBatch(rt)
 	// Server-side thumb generation is opt-in (main wires this); tests
 	// that exercise the image pipeline rely on it being present, while
 	// the text-only tests don't fire the thumbnailer because canThumb
@@ -65,12 +69,9 @@ func setup(t *testing.T, schema string) (http.Handler, *api.Server, *store.Pool)
 	attachment.SetThumbDeps(storage, nil)
 	t.Cleanup(func() { attachment.SetThumbDeps(nil, nil) })
 
-	user, err := auth.NewSystemUser(context.Background(), pool, "dev", auth.ModeOff)
-	if err != nil {
-		t.Fatalf("system user: %v", err)
-	}
-	handler := auth.Middleware(user)(mux)
-	return handler, srv, sp
+	mux := http.NewServeMux()
+	mux.Handle("/api/", rt.Mux())
+	return mux, srv, sp
 }
 
 // uploadChunk POSTs one chunk via the multipart route and returns the
@@ -272,20 +273,21 @@ func TestChunkOversizeRejected(t *testing.T) {
 	activity.Register(sp)
 	attachment.Register(sp)
 	file.Register(sp)
-	srv := api.NewServer(sp)
-	mux := http.NewServeMux()
-	srv.Mount(mux, "")
-	storage := cas.New(cas.NewPgBackend(pool))
-	cas.RegisterHTTP(mux, cas.HTTPConfig{
-		Pool:     sp,
-		Storage:  storage,
-		MaxBytes: 64,
-	})
+	_ = api.NewServer(sp) // dispatcher registry warmed up
 	user, err := auth.NewSystemUser(context.Background(), pool, "dev", auth.ModeOff)
 	if err != nil {
 		t.Fatalf("system user: %v", err)
 	}
-	handler := auth.Middleware(user)(mux)
+	storage := cas.New(cas.NewPgBackend(pool))
+	rt := api.NewTestRouter(user)
+	cas.Mount(rt, cas.HTTPConfig{
+		Pool:     sp,
+		Storage:  storage,
+		MaxBytes: 64,
+	})
+	mux := http.NewServeMux()
+	mux.Handle("/api/", rt.Mux())
+	handler := http.Handler(mux)
 
 	body := bytes.Repeat([]byte("x"), 256)
 	req := httptest.NewRequest("POST", "/api/v1/cas/chunk", bytes.NewReader(body))
@@ -296,7 +298,6 @@ func TestChunkOversizeRejected(t *testing.T) {
 		got, _ := io.ReadAll(rr.Body)
 		t.Fatalf("expected 413, got %d: %s", rr.Code, got)
 	}
-	_ = srv
 }
 
 // TestImageThumbnailGenerated uploads a small PNG, then asserts:
@@ -436,3 +437,4 @@ func TestActivityRows(t *testing.T) {
 		t.Fatalf("delete payload filename = %v, want notes.txt", payload["filename"])
 	}
 }
+

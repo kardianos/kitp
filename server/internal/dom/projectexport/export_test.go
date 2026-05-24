@@ -44,17 +44,18 @@ func setup(t *testing.T, schemaName string) (http.Handler, *api.Server) {
 	comment.Register(sp)
 	tag.Register(sp)
 	srv := api.NewServer(sp)
-
-	mux := http.NewServeMux()
-	srv.Mount(mux, "")
-	projectexport.RegisterHTTP(mux, projectexport.Config{Pool: sp})
-
 	user, err := auth.NewSystemUser(context.Background(), pool, "dev", auth.ModeOff)
 	if err != nil {
 		t.Fatalf("system user: %v", err)
 	}
-	handler := auth.Middleware(user)(mux)
-	return handler, srv
+
+	rt := api.NewTestRouter(user)
+	projectexport.Mount(rt, projectexport.Config{Pool: sp})
+	srv.MountBatch(rt)
+
+	mux := http.NewServeMux()
+	mux.Handle("/api/", rt.Mux())
+	return mux, srv
 }
 
 // seedSimpleProject builds a project with one milestone, one component,
@@ -160,13 +161,33 @@ func TestExportCSV_PopulatedProject(t *testing.T) {
 	if len(records) != 2 {
 		t.Fatalf("rows: got %d, want 2 (header + 1 task)", len(records))
 	}
-	wantHeader := []string{
+	// The CSV header always begins with the built-in columns; any
+	// attribute_def bound to task that isn't in that built-in set gets
+	// appended dynamically. Asserting on the prefix lets us evolve the
+	// seeded attribute_defs without churning this test, while still
+	// pinning the existing column shape consumers rely on.
+	wantPrefix := []string{
 		"id", "title", "assignee_email", "assignee_name",
 		"milestone", "component", "tags", "description", "sort_order",
 		"created_at", "deleted_at", "comments",
 	}
-	if !equalSlices(records[0], wantHeader) {
-		t.Fatalf("header: got %v, want %v", records[0], wantHeader)
+	if len(records[0]) < len(wantPrefix) {
+		t.Fatalf("header: got %v, want >=%v", records[0], wantPrefix)
+	}
+	if !equalSlices(records[0][:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("header prefix: got %v, want %v", records[0][:len(wantPrefix)], wantPrefix)
+	}
+	// The originator attribute_def is bound to task (see seed.hcsv) so
+	// every export must surface it as a dynamic column.
+	foundOriginator := false
+	for _, h := range records[0] {
+		if h == "originator" {
+			foundOriginator = true
+			break
+		}
+	}
+	if !foundOriginator {
+		t.Errorf("expected 'originator' column in dynamic tail; full header: %v", records[0])
 	}
 	row := records[1]
 	if row[0] != fmt.Sprintf("%d", s.TaskID) {

@@ -58,11 +58,38 @@ type Table struct {
 	Meta map[string]string
 }
 
+// Function is one named PL/pgSQL function declared in the schema.
+// The body lives in an external `.sql` file (resolved relative to
+// the schema.hcsv file) so multi-line PL/pgSQL stays readable and
+// can be syntax-highlighted by editors as SQL. The file must
+// contain a complete `CREATE OR REPLACE FUNCTION …` statement.
+//
+// The schema emitter precedes each function with
+// `DROP FUNCTION IF EXISTS <name>(<arg-types>) CASCADE;` so a
+// re-apply across signature changes is safe — `CREATE OR REPLACE`
+// alone rejects RETURNS-TABLE shape changes.
+//
+// The unified handler convention (docs/UNIFIED_HANDLER_PLAN.md)
+// fixes every handler function's signature to `(bigint, jsonb)`;
+// the emitter uses that for the DROP. Helper / non-handler
+// functions can override via the `arg_types` modifier on the
+// hcsv heading.
+type Function struct {
+	Name     string
+	Path     string // path relative to schema.hcsv's directory
+	ArgTypes string // for DROP FUNCTION IF EXISTS …(<arg_types>)
+	Doc      string
+	// Body is the file contents resolved at Load time so GenerateSQL
+	// is pure-in-memory.
+	Body string
+}
+
 // Schema is a fully-parsed hcsv schema document, ready to render to SQL.
 type Schema struct {
 	Doc        string
 	Extensions []string
 	Tables     []Table
+	Functions  []Function
 }
 
 // Path returns the canonical location of db/schema/schema.hcsv. Walks
@@ -80,7 +107,9 @@ func Path() string {
 	panic("hcsv: schema.hcsv not found above package source")
 }
 
-// Load reads and parses db/schema/schema.hcsv.
+// Load reads and parses db/schema/schema.hcsv. Function bodies (when
+// the schema declares `## function … path="…"` sections) are loaded
+// eagerly from the resolved paths so GenerateSQL stays pure-in-memory.
 func Load(path string) (*Schema, error) {
 	if path == "" {
 		path = Path()
@@ -93,7 +122,24 @@ func Load(path string) (*Schema, error) {
 	if err != nil {
 		return nil, err
 	}
-	return BuildSchema(doc)
+	schema, err := BuildSchema(doc)
+	if err != nil {
+		return nil, err
+	}
+	// Resolve function body files relative to the schema.hcsv dir.
+	schemaDir := filepath.Dir(path)
+	for i, fn := range schema.Functions {
+		full := fn.Path
+		if !filepath.IsAbs(full) {
+			full = filepath.Join(schemaDir, fn.Path)
+		}
+		body, err := os.ReadFile(full)
+		if err != nil {
+			return nil, fmt.Errorf("hcsv: function %q: read %s: %w", fn.Name, full, err)
+		}
+		schema.Functions[i].Body = string(body)
+	}
+	return schema, nil
 }
 
 // BuildSchema validates the parsed AST is schema-shaped and projects
@@ -119,6 +165,12 @@ func BuildSchema(doc *Document) (*Schema, error) {
 				return nil, err
 			}
 			s.Tables = append(s.Tables, t)
+		case "function":
+			fn, err := readFunction(child)
+			if err != nil {
+				return nil, err
+			}
+			s.Functions = append(s.Functions, fn)
 		default:
 			return nil, fmt.Errorf("hcsv: line %d: unsupported top-level section %q", child.Line, child.Kind)
 		}
@@ -143,6 +195,34 @@ func readProps(sec *Section, s *Schema) error {
 		}
 	}
 	return nil
+}
+
+// readFunction converts a `## function <name>` section into a Function.
+// The body file is loaded later (in Load) so this function can be
+// unit-tested without touching disk.
+func readFunction(sec *Section) (Function, error) {
+	if sec.Name == "" {
+		return Function{}, fmt.Errorf("hcsv: line %d: `function` heading missing name", sec.Line)
+	}
+	fn := Function{
+		Name:     sec.Name,
+		Path:     sec.Modifiers["path"],
+		ArgTypes: sec.Modifiers["arg_types"],
+		Doc:      sec.Modifiers["doc"],
+	}
+	if fn.Path == "" {
+		return Function{}, fmt.Errorf("hcsv: line %d: function %q missing `path=` modifier", sec.Line, fn.Name)
+	}
+	if fn.ArgTypes == "" {
+		// Default: the unified handler convention (bigint, jsonb).
+		// Override via `arg_types="…"` for helper functions with a
+		// different signature.
+		fn.ArgTypes = "bigint, jsonb"
+	}
+	if len(sec.Children) != 0 {
+		return Function{}, fmt.Errorf("hcsv: line %d: function sections take no child blocks", sec.Line)
+	}
+	return fn, nil
 }
 
 // readTable converts a `## table <name>` section into a Table.
@@ -344,7 +424,37 @@ func GenerateSQL(s *Schema) string {
 		}
 		b.WriteByte('\n')
 	}
+	if len(s.Functions) > 0 {
+		// DROP FUNCTION IF EXISTS emits NOTICE on every fresh-DB run
+		// when the function isn't there yet. Mute it so make db-reset
+		// stays quiet; real errors still propagate (psql ON_ERROR_STOP).
+		b.WriteString("SET client_min_messages = WARNING;\n\n")
+		for _, fn := range s.Functions {
+			emitFunction(&b, fn)
+		}
+		b.WriteString("RESET client_min_messages;\n")
+	}
 	return b.String()
+}
+
+// emitFunction writes the DROP + CREATE pair for one named function.
+// DROP precedes CREATE OR REPLACE because pgsql rejects RETURNS-TABLE
+// shape changes when REPLACEing — DROP+CREATE survives signature
+// changes safely. `arg_types` defaults to the unified handler
+// convention (`bigint, jsonb`) so most functions never set it.
+func emitFunction(b *strings.Builder, fn Function) {
+	if fn.Doc != "" {
+		b.WriteString("-- ")
+		b.WriteString(fn.Doc)
+		b.WriteByte('\n')
+	}
+	fmt.Fprintf(b, "DROP FUNCTION IF EXISTS %s(%s) CASCADE;\n", fn.Name, fn.ArgTypes)
+	body := strings.TrimSpace(fn.Body)
+	b.WriteString(body)
+	if !strings.HasSuffix(body, ";") {
+		b.WriteByte(';')
+	}
+	b.WriteString("\n\n")
 }
 
 // topoSortTables orders tables so that for any FK from A to B, B comes

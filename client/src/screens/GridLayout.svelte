@@ -28,6 +28,7 @@
   } from '@floating-ui/dom';
 
   import type { AuthState } from '../auth/auth_state.svelte';
+  import { isAssignablePerson } from '../util/person';
   import { getDispatcher } from '../dispatch/context.js';
   import {
     BatchAbortedError,
@@ -75,16 +76,32 @@
   import IconButton from '../ui/IconButton.svelte';
   import Spinner from '../ui/Spinner.svelte';
   import { notify } from '../ui/toast.svelte.js';
-  import AttributeChip from '../ui/widgets/AttributeChip.svelte';
   import TagChip from '../ui/widgets/TagChip.svelte';
   import { cx } from '../util/class_names.js';
+  import BulkActionBar from './BulkActionBar.svelte';
 
   import {
     applyFilterToTree,
     buildOrderClauses,
+    compareTagPrefixValue,
     cycleSort,
+    effectiveSort,
+    expandRowsForArrayGroup,
+    isTagPrefixSortField,
+    pickTagForPrefix,
+    sortStatesFromFilter,
+    stripTagPrefix,
     type SortState,
+    tagPrefixFromSortField,
+    tagPrefixSortField,
+    walkGrouped,
   } from './grid_helpers.js';
+  import {
+    readExtraColumns,
+    readGroupByAttr,
+    readSort,
+    readTagPrefixColumns,
+  } from '../filter/screen_preset.svelte.js';
 
   /* ------------------------------------------------------------------ props */
 
@@ -125,48 +142,99 @@
   /* ----------------------------------------------------------------- columns */
 
   /**
-   * Column descriptor. `field` is the wire `order.field` value (`null`
-   * means non-sortable; today only Priority and Tags are non-sortable
-   * because they are derived from the `tags` array).
+   * Column descriptor. `kind` tags how the row cell should render;
+   * `field` is the wire `order.field` value the server understands
+   * (`null` means the column is non-sortable in any form, e.g. the
+   * catch-all Tags column whose value is a JSONB array). Tag-prefix
+   * columns carry a synthetic field (`tag_prefix:<prefix>`) that the
+   * grid intercepts and applies as a client-side resort — the value
+   * is derived from each row's tag-path lookup, which the server
+   * can't usefully order against.
    *
    * `attrName` is the matching `attribute_def.name`; we use it to look
    * up the per-column filter Combobox options. `null` means no filter
    * dropdown (ID, Created, Title etc).
+   *
+   * `prefix` is set on `kind: 'tag_prefix'` columns and gives the
+   * leading tag-path segment to break out (e.g. `priority` → the
+   * column lights up for any tag whose path starts with `priority/`).
    */
+  type ColumnKind =
+    | 'id'
+    | 'title'
+    | 'assignee'
+    | 'milestone'
+    | 'component'
+    | 'tags'
+    | 'created'
+    | 'last_activity'
+    | 'tag_prefix'
+    | 'attr';
+
   interface ColumnDef {
+    kind: ColumnKind;
     label: string;
     field: string | null;
     attrName: string | null;
     width: number;
+    prefix?: string;
+    /**
+     * Stable, unique-per-column key for `{#each}` blocks. Built so two
+     * `kind: 'attr'` columns (e.g. due_date + a custom attribute) never
+     * collide — Svelte's each_key_duplicate error fires otherwise.
+     * Defaults to `kind` for the singletons; derived per-row for the
+     * polymorphic kinds.
+     */
+    key: string;
   }
 
-  const columns: ColumnDef[] = [
-    { label: 'ID', field: null, attrName: null, width: 60 },
-    { label: 'Title', field: 'attributes.title', attrName: null, width: 320 },
-    {
+  function columnKey(c: Omit<ColumnDef, 'key'>): string {
+    if (c.kind === 'tag_prefix') return `tp:${c.prefix ?? ''}`;
+    if (c.kind === 'attr') return `attr:${c.attrName ?? ''}`;
+    return c.kind;
+  }
+
+  function makeColumn(c: Omit<ColumnDef, 'key'>): ColumnDef {
+    return { ...c, key: columnKey(c) };
+  }
+
+  const BASE_COLUMNS_BEFORE_PREFIX: ColumnDef[] = [
+    makeColumn({ kind: 'id', label: 'ID', field: null, attrName: null, width: 60 }),
+    makeColumn({ kind: 'title', label: 'Title', field: 'attributes.title', attrName: null, width: 320 }),
+    makeColumn({
+      kind: 'assignee',
       label: 'Assignee',
       field: 'attributes.assignee',
       attrName: 'assignee',
       width: 140,
-    },
-    { label: 'Priority', field: null, attrName: null, width: 110 },
-    {
+    }),
+  ];
+
+  const BASE_COLUMNS_AFTER_PREFIX: ColumnDef[] = [
+    makeColumn({
+      kind: 'milestone',
       label: 'Milestone',
       field: 'attributes.milestone_ref',
       attrName: 'milestone_ref',
       width: 130,
-    },
-    {
+    }),
+    makeColumn({
+      kind: 'component',
       label: 'Component',
       field: 'attributes.component_ref',
       attrName: 'component_ref',
       width: 130,
-    },
-    { label: 'Tags', field: null, attrName: null, width: 220 },
-    { label: 'Created', field: 'created_at', attrName: null, width: 170 },
+    }),
+    makeColumn({ kind: 'tags', label: 'Tags', field: null, attrName: null, width: 220 }),
+    makeColumn({ kind: 'created', label: 'Created', field: 'created_at', attrName: null, width: 110 }),
+    makeColumn({ kind: 'last_activity', label: 'Last activity', field: 'last_activity_at', attrName: null, width: 130 }),
   ];
 
-  const totalWidth = columns.reduce((sum, c) => sum + c.width, 0);
+  function prefixColumnLabel(prefix: string): string {
+    if (prefix.length === 0) return prefix;
+    return prefix.charAt(0).toUpperCase() + prefix.slice(1);
+  }
+
   const ROW_HEIGHT = 36;
   const PAGE_LIMIT = 200;
 
@@ -223,6 +291,10 @@
       const t = r.attributes['title'] ?? r.attributes['name'];
       if (typeof t === 'string') out[r.id.toString()] = t;
     }
+    for (const r of statusRows) {
+      const t = r.attributes['title'] ?? r.attributes['name'];
+      if (typeof t === 'string') out[r.id.toString()] = t;
+    }
     return out;
   });
   const tagPaths = $derived.by((): Record<string, string> => {
@@ -238,6 +310,88 @@
   let exhausted = $state(false);
   let error = $state<string | null>(null);
   let sort = $state<SortState | null>(null);
+  /** The full filter card we resolved through ScreenFilterBar — its
+   *  persisted `sort` array seeds the initial order until the user
+   *  header-clicks. Bound below in the markup. */
+  let activeFilter = $state<CardWithAttrs | null>(null);
+  /** The screen card itself (resolved via ScreenFilterBar). Carries
+   *  screen-definition attributes that are shared across every filter
+   *  preset on the screen — specifically `tag_prefix_columns`. Bound
+   *  below in the markup. */
+  let activeScreen = $state<CardWithAttrs | null>(null);
+  /** Persisted sort projected to the grid's SortState shape. Recomputes
+   *  whenever the active filter changes (filter swap, default filter
+   *  resolves on first paint). */
+  const filterSortStates = $derived(
+    activeFilter === null ? [] : sortStatesFromFilter(readSort(activeFilter)),
+  );
+  /** Attribute the renderer should bucket rows by, or null for a flat
+   *  list. Driven by the active filter card's `group_by_attr`. */
+  const groupByAttr = $derived(
+    activeFilter === null ? null : readGroupByAttr(activeFilter),
+  );
+  /** True when the group attribute is array-shaped (card_ref[] —
+   *  today only `tags` qualifies). Array grouping needs client-side
+   *  expansion (one synthetic row per element) because the server
+   *  can't usefully `ORDER BY` a JSONB array value. */
+  const isArrayGroup = $derived.by((): boolean => {
+    if (groupByAttr === null) return false;
+    const def = schemaCache.defByName(groupByAttr);
+    return def?.value_type === 'card_ref[]';
+  });
+  /** Ephemeral direction for the group sort key (the first entry in
+   *  the effective order when grouping is active). Reset to 'asc'
+   *  whenever the group attr changes so the toggle starts predictable
+   *  for a fresh column. */
+  let groupDir = $state<'asc' | 'desc'>('asc');
+  let lastGroupByAttr: string | null = null;
+  $effect(() => {
+    if (groupByAttr !== lastGroupByAttr) {
+      groupDir = 'asc';
+      lastGroupByAttr = groupByAttr;
+    }
+  });
+  /** Server-side order under the unified pipeline. When grouping is
+   *  active the group key is the first entry — that's what makes rows
+   *  cluster — and the secondary keys come from the header-click sort
+   *  (if any) or the filter's persisted sort. Dedup against the group
+   *  key so we never emit the same field twice. */
+  const effectiveOrder = $derived.by((): SortState[] => {
+    const out: SortState[] = [];
+    // Array groups (tags) are sorted client-side after row expansion,
+    // so we omit the group key from the server order — `ORDER BY` on
+    // a JSONB array yields the array's lexical encoding, not anything
+    // useful per-element.
+    const groupField =
+      groupByAttr === null || isArrayGroup
+        ? null
+        : `attributes.${groupByAttr}`;
+    if (groupField !== null) {
+      out.push({ field: groupField, direction: groupDir });
+    }
+    const tail = effectiveSort(sort, filterSortStates);
+    for (const t of tail) {
+      if (t.field === groupField) continue;
+      out.push(t);
+    }
+    return out;
+  });
+
+  /** Server slice of the effective order — what we hand to the wire
+   *  `order[]` array. Tag-prefix synthetic fields are excluded because
+   *  the server can't usefully sort by a derived tag-array element.
+   */
+  const serverOrder = $derived(
+    effectiveOrder.filter((o) => !isTagPrefixSortField(o.field)),
+  );
+  /** Client slice — at most one tag-prefix sort key applied after the
+   *  server returns. Multi-key client sort would compound poorly with
+   *  the pagination shape (we only see the loaded page), so we keep
+   *  it to a single override. */
+  const clientTagPrefixSort = $derived.by((): SortState | null => {
+    const found = effectiveOrder.find((o) => isTagPrefixSortField(o.field));
+    return found ?? null;
+  });
   // Predicate starts from the persisted cache for this scope/project,
   // or null when there's nothing cached yet. On first visit we apply
   // the data-side default filter (see the effect below).
@@ -246,6 +400,97 @@
   );
   let selectedIndex = $state(0);
   let focusedColumn = $state<string | null>(null);
+
+  /* ----------------------------------------------------- bulk selection */
+  // Card ids the user has checked for bulk operations. Keyed by
+  // stringified id so `Set` membership works for `bigint`.
+  let bulkSelected = $state<Set<string>>(new Set());
+  // Index of the last interactively-toggled row; shift-click selects
+  // the contiguous range from this anchor to the new row.
+  let selectionAnchor: number | null = $state(null);
+
+  function isBulkSelected(id: ID): boolean {
+    return bulkSelected.has(id.toString());
+  }
+
+  function clearBulkSelection(): void {
+    bulkSelected = new Set();
+    selectionAnchor = null;
+  }
+
+  function toggleOne(idx: number, id: ID): void {
+    const key = id.toString();
+    const next = new Set(bulkSelected);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    bulkSelected = next;
+    selectionAnchor = idx;
+  }
+
+  /** Shift-click: select every row from the anchor (inclusive) to
+   *  `idx` (inclusive). The anchor index is preserved so a follow-up
+   *  shift-click extends the range from the same starting point. */
+  function selectRangeTo(idx: number): void {
+    if (selectionAnchor === null) {
+      const r = rows[idx];
+      if (r !== undefined) toggleOne(idx, r.id);
+      return;
+    }
+    const lo = Math.min(selectionAnchor, idx);
+    const hi = Math.max(selectionAnchor, idx);
+    const next = new Set(bulkSelected);
+    for (let i = lo; i <= hi; i++) {
+      const r = rows[i];
+      if (r !== undefined) next.add(r.id.toString());
+    }
+    bulkSelected = next;
+  }
+
+  /** Bulk-selected ids in the order they appear in the current
+   *  filtered/sorted `rows` list. Filtering by current row identity
+   *  drops stale ids whose card was removed by a refresh. */
+  const bulkSelectedIds = $derived.by((): ID[] => {
+    if (bulkSelected.size === 0) return [];
+    const out: ID[] = [];
+    for (const r of rows) {
+      if (bulkSelected.has(r.id.toString())) out.push(r.id);
+    }
+    return out;
+  });
+
+  /** Header checkbox tri-state: 'none' | 'some' | 'all'. Drives both
+   *  the visual indeterminate flag and the click behavior (clear vs.
+   *  select-all-visible). */
+  const headerCheckState = $derived.by((): 'none' | 'some' | 'all' => {
+    if (rows.length === 0 || bulkSelected.size === 0) return 'none';
+    let hits = 0;
+    for (const r of rows) if (bulkSelected.has(r.id.toString())) hits += 1;
+    if (hits === 0) return 'none';
+    if (hits === rows.length) return 'all';
+    return 'some';
+  });
+
+  function toggleHeaderCheck(): void {
+    if (headerCheckState === 'all') {
+      clearBulkSelection();
+      return;
+    }
+    const next = new Set(bulkSelected);
+    for (const r of rows) next.add(r.id.toString());
+    bulkSelected = next;
+    selectionAnchor = rows.length > 0 ? 0 : null;
+  }
+
+  const CHECKBOX_COL_WIDTH = 32;
+
+  // The header checkbox needs its `.indeterminate` JS property set —
+  // there's no equivalent HTML attribute, so we drive it via a ref.
+  let headerCheckEl: HTMLInputElement | null = $state(null);
+  $effect(() => {
+    if (headerCheckEl !== null) {
+      headerCheckEl.indeterminate = headerCheckState === 'some';
+    }
+  });
 
   let bodyEl: HTMLDivElement | null = $state(null);
 
@@ -261,7 +506,7 @@
     exhausted = false;
 
     const tree = applyFilterToTree(predicate, undefined);
-    const order = buildOrderClauses(sort);
+    const order = buildOrderClauses(serverOrder);
 
     const taskInput: CardSelectWithAttributesInput = {
       cardTypeName: 'task',
@@ -378,7 +623,7 @@
     loadingMore = true;
     try {
       const tree = applyFilterToTree(predicate, undefined);
-      const order = buildOrderClauses(sort);
+      const order = buildOrderClauses(serverOrder);
       const input: CardSelectWithAttributesInput = {
         cardTypeName: 'task',
         limit: PAGE_LIMIT,
@@ -421,7 +666,7 @@
   let filterReady = $state(false);
   $effect(() => {
     void predicate;
-    void sort;
+    void effectiveOrder;
     void scopedProjectId;
     if (!filterReady) return;
     void refresh();
@@ -436,7 +681,7 @@
    */
   function resolveOptionsFor(name: string): { value: unknown; label: string }[] {
     if (name === 'assignee') {
-      return personRows.map((p) => {
+      return personRows.filter(isAssignablePerson).map((p) => {
         const t = p.attributes['title'];
         return {
           value: p.id,
@@ -645,6 +890,15 @@
 
   function onHeaderClick(col: ColumnDef): void {
     if (col.field === null) return;
+    // When the user clicks the header for the current group column,
+    // they're asking to flip the group direction — the section header
+    // does the same thing. Route both gestures through one handler so
+    // they can't disagree (the cycleSort path would otherwise write a
+    // secondary sort key that effectiveOrder then dedups away).
+    if (groupByAttr !== null && col.field === `attributes.${groupByAttr}`) {
+      toggleGroupDir();
+      return;
+    }
     sort = cycleSort(sort, col.field);
   }
 
@@ -697,6 +951,15 @@
     scope: 'grid',
     defaultCardType: 'task',
     candidateStatuses: () => statusRows,
+    attributePalette: () => filterAttributes,
+    tagOptions: () =>
+      tagRows.map((r) => {
+        const p = r.attributes['path'];
+        return {
+          value: r.id,
+          label: typeof p === 'string' && p !== '' ? p : `#${r.id}`,
+        };
+      }),
     onCreated: () => {
       void refresh();
     },
@@ -705,6 +968,13 @@
   useShortcut('grid', ['j', 'ArrowDown'], () => selectAt(selectedIndex + 1), 'Down');
   useShortcut('grid', ['k', 'ArrowUp'], () => selectAt(selectedIndex - 1), 'Up');
   useShortcut('grid', 'Enter', openSelected, 'Open selected task');
+  // Space toggles the bulk-select checkbox on the focused row.
+  // Mirrors the spreadsheet / Gmail convention so the user can build
+  // a bulk selection with j/k + Space without leaving the keyboard.
+  useShortcut('grid', 'Space', () => {
+    const r = rows[selectedIndex];
+    if (r !== undefined) toggleOne(selectedIndex, r.id);
+  }, 'Toggle selection on focused row');
   useShortcut(
     'grid',
     's',
@@ -715,6 +985,38 @@
     },
     'Cycle sort on focused column',
   );
+  /* -------------------------------------------------- search ⇄ list nav -- */
+
+  async function focusSearch(): Promise<void> {
+    await tick();
+    const el = document.querySelector<HTMLInputElement>(
+      '[data-testid="text-search-input"]',
+    );
+    if (el !== null) {
+      el.focus();
+      el.select();
+    }
+  }
+  useShortcut('grid', '/', () => void focusSearch(), 'Focus search', {
+    fireInInputs: false,
+  });
+
+  /** Move focus from search to the first row in the grid body. Each
+   *  row is a `<tr data-testid="grid-row" tabindex="0">` — the
+   *  tabindex sits on the row element itself, not a child. */
+  async function focusFirstRow(): Promise<void> {
+    await tick();
+    const row = document.querySelector<HTMLElement>(
+      '[data-testid="grid-row"]',
+    );
+    if (row === null) return;
+    selectAt(0);
+    row.focus();
+  }
+  function onSearchNavigateOut(direction: 'down' | 'up'): void {
+    if (direction === 'down') void focusFirstRow();
+  }
+
   useShortcut(
     'grid',
     'f',
@@ -762,6 +1064,21 @@
     return cardTitles[k] ?? `#${k}`;
   }
 
+  /** Tag paths to hide from the catch-all Tags column — they're already
+   *  surfaced in dedicated prefix columns, so duplicating them would
+   *  just spam chips. Computed from the active filter's prefix list. */
+  const tagPathPrefixesHidden = $derived.by((): string[] => {
+    return tagPrefixColumns.map((c) => c.prefix as string);
+  });
+
+  function pathHiddenByPrefix(path: string): boolean {
+    for (const prefix of tagPathPrefixesHidden) {
+      if (path === prefix) return true;
+      if (path.startsWith(`${prefix}/`)) return true;
+    }
+    return false;
+  }
+
   function tagsOf(row: CardWithAttrs): string[] {
     const ids = row.attributes['tags'];
     if (!Array.isArray(ids)) return [];
@@ -770,34 +1087,191 @@
       if (typeof id !== 'bigint') continue;
       const p = tagPaths[id.toString()];
       if (p === undefined) continue;
-      if (p.startsWith('priority/')) continue; // priority lives in its own column
+      if (pathHiddenByPrefix(p)) continue;
       out.push(p);
     }
     return out;
   }
 
-  function priorityOf(row: CardWithAttrs): string | undefined {
-    const ids = row.attributes['tags'];
-    if (!Array.isArray(ids)) return undefined;
-    for (const id of ids) {
-      if (typeof id !== 'bigint') continue;
-      const p = tagPaths[id.toString()];
-      if (typeof p === 'string' && p.startsWith('priority/')) return p;
-    }
-    return undefined;
+  function prefixTagOf(row: CardWithAttrs, prefix: string): string | undefined {
+    return pickTagForPrefix(row.attributes['tags'], tagPaths, prefix);
   }
 
   function createdOf(row: CardWithAttrs): string | undefined {
-    const v = row.attributes['created_at'];
+    // created_at lives at the top level of the wire row (NOT in
+    // `attributes`) — the server sets it from the card.created_at
+    // column. Earlier versions read row.attributes which silently
+    // produced an empty column.
+    const v = row.created_at;
     if (typeof v === 'string' && v.length >= 10) return v.slice(0, 10);
     return undefined;
   }
+
+  function lastActivityOf(row: CardWithAttrs): string | undefined {
+    // Virtual field — MAX(activity.created_at) for this card. Undefined
+    // when the card has no activity rows yet (fresh insert).
+    const v = row.last_activity_at;
+    if (typeof v === 'string' && v.length >= 10) return v.slice(0, 10);
+    return undefined;
+  }
+
+  /* ----------------------------------------------------------- columns (derived) */
+
+  /** Tag-prefix columns derived from the active SCREEN's
+   *  `tag_prefix_columns` attribute (it's a screen-definition property,
+   *  shared across every filter preset on the screen). Each prefix
+   *  produces one column positioned between Assignee and Milestone
+   *  (the historical home of the hardcoded Priority column). The
+   *  synthetic sort field `tag_prefix:<prefix>` flags the column as
+   *  client-side-sortable; see {@link clientTagPrefixSort} for the
+   *  resort that consumes it. */
+  const tagPrefixColumns = $derived.by((): ColumnDef[] => {
+    if (activeScreen === null) return [];
+    const prefixes = readTagPrefixColumns(activeScreen);
+    return prefixes.map((prefix) =>
+      makeColumn({
+        kind: 'tag_prefix' as const,
+        label: prefixColumnLabel(prefix),
+        field: tagPrefixSortField(prefix),
+        attrName: null,
+        width: 110,
+        prefix,
+      }),
+    );
+  });
+
+  /** Extra attribute columns derived from the active SCREEN's
+   *  `extra_columns` attribute. Each entry names an attribute_def
+   *  (or one of the row-level virtual fields, which already have
+   *  dedicated columns and are silently skipped here). Columns are
+   *  inserted between Tags and Created so the Title / Assignee /
+   *  Tag-prefix block on the left and the timestamp block on the
+   *  right both stay anchored to their familiar positions. */
+  const extraColumns = $derived.by((): ColumnDef[] => {
+    if (activeScreen === null) return [];
+    const names = readExtraColumns(activeScreen);
+    const out: ColumnDef[] = [];
+    for (const name of names) {
+      // Skip names that already have a dedicated column — listing
+      // 'created_at' / 'last_activity_at' in extra_columns is currently
+      // a no-op (reserved for future toggling).
+      if (
+        name === 'created_at' ||
+        name === 'last_activity_at' ||
+        name === 'assignee' ||
+        name === 'milestone_ref' ||
+        name === 'component_ref' ||
+        name === 'tags' ||
+        name === 'title'
+      ) {
+        continue;
+      }
+      const fa = filterAttributes.find((a) => a.name === name);
+      const label = fa?.label ?? name;
+      out.push(
+        makeColumn({
+          kind: 'attr' as const,
+          label,
+          field: `attributes.${name}`,
+          attrName: name,
+          width: 130,
+        }),
+      );
+    }
+    return out;
+  });
+
+  const columns = $derived<ColumnDef[]>([
+    ...BASE_COLUMNS_BEFORE_PREFIX,
+    ...tagPrefixColumns,
+    ...BASE_COLUMNS_AFTER_PREFIX.filter((c) => c.kind !== 'created' && c.kind !== 'last_activity'),
+    ...extraColumns,
+    ...BASE_COLUMNS_AFTER_PREFIX.filter((c) => c.kind === 'created' || c.kind === 'last_activity'),
+  ]);
+
+  const totalWidth = $derived(
+    CHECKBOX_COL_WIDTH + columns.reduce((sum, c) => sum + c.width, 0),
+  );
 
   /* ------------------------------------------------------------- visible rows */
 
   // Simple virtualization: render up to PAGE_LIMIT rows. Browsers handle 200
   // rows of plain DOM well; full window virtualization is a follow-up.
-  const visibleRows = $derived(rows.slice(0, PAGE_LIMIT));
+  const visibleRows = $derived.by((): CardWithAttrs[] => {
+    const page = rows.slice(0, PAGE_LIMIT);
+    if (clientTagPrefixSort === null) return page;
+    const prefix = tagPrefixFromSortField(clientTagPrefixSort.field);
+    if (prefix === null) return page;
+    const dir = clientTagPrefixSort.direction;
+    // Group + client-sort don't combine cleanly: the server already
+    // ordered by the group key, and resorting the whole page would
+    // shred bucket order. Skip the client resort while a group is
+    // active — the header click still toggles a sort state, but the
+    // visual order stays group-first. Users can clear grouping to
+    // get the prefix-column sort.
+    if (groupByAttr !== null) return page;
+    return [...page].sort((a, b) => {
+      const av = pickTagForPrefix(a.attributes['tags'], tagPaths, prefix);
+      const bv = pickTagForPrefix(b.attributes['tags'], tagPaths, prefix);
+      const cmp = compareTagPrefixValue(av, bv, prefix);
+      return dir === 'asc' ? cmp : -cmp;
+    });
+  });
+
+  /**
+   * Walk visibleRows into a sequence of headers + rows when the active
+   * filter sets `group_by_attr`. Server returns rows already ordered
+   * by [group_attr, ...secondary keys], so we just walk and emit a
+   * header whenever the group_attr value changes — no client-side
+   * bucketing. `labelOf` resolves card_ref-valued keys to the same
+   * display title the row cells use, so a milestone bucket reads
+   * "API v2" instead of "#742".
+   */
+  /** Resolve a group key (the raw attribute value) to a display label.
+   *  Card_ref values arrive as bigints; we look them up in the merged
+   *  title map (milestones + components + statuses), the personNames
+   *  map (assignee), and the tagPaths map (tags) before falling back
+   *  to `#id`. */
+  function labelForGroupKey(v: unknown): string {
+    if (typeof v === 'bigint') {
+      const k = v.toString();
+      return cardTitles[k] ?? personNames[k] ?? tagPaths[k] ?? `#${k}`;
+    }
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    return String(v);
+  }
+
+  /** Input to walkGrouped. For scalar group attrs this is just the
+   *  server-ordered visibleRows. For array group attrs (tags) we
+   *  expand one synthetic row per element and resort client-side so
+   *  a multi-tagged task appears under each of its tag buckets. */
+  const rowsForGrouping = $derived(
+    isArrayGroup && groupByAttr !== null
+      ? expandRowsForArrayGroup(visibleRows, groupByAttr, groupDir)
+      : visibleRows,
+  );
+  const groupedItems = $derived(
+    walkGrouped(rowsForGrouping, groupByAttr, labelForGroupKey),
+  );
+
+  /** Friendly label for the grouping attribute. The FilterAttribute
+   *  palette carries human labels (`Component` for `component_ref`);
+   *  fall back to the raw attr name when the palette hasn't loaded or
+   *  doesn't know it. */
+  const groupByLabel = $derived.by((): string => {
+    if (groupByAttr === null) return '';
+    const fa = filterAttributes.find((a) => a.name === groupByAttr);
+    return fa?.label ?? groupByAttr;
+  });
+
+
+  /** Toggle the group sort direction. Wired to both the section
+   *  header and the group column's table header so the two gestures
+   *  map to the same action. */
+  function toggleGroupDir(): void {
+    groupDir = groupDir === 'asc' ? 'desc' : 'asc';
+  }
 
   /* --------------------------------------------------------- col-filter UI */
 
@@ -808,25 +1282,35 @@
 </script>
 
 <div class="flex h-full w-full flex-col">
-  <div class="shrink-0 border-b border-border px-4 py-2">
-    <ScreenFilterBar
-      screenSlug={slug}
-      projectId={scopedProjectId ?? null}
-      {dispatcher}
-      {filterAttributes}
-      bind:predicate
-      bind:filterReady
-    >
-      {#snippet trailing()}
-        <span data-testid="grid-row-count">
-          {rows.length}
-          row{rows.length === 1 ? '' : 's'}
-        </span>
-        {#if loading}
-          <Spinner size="sm" />
-        {/if}
-      {/snippet}
-    </ScreenFilterBar>
+  <div class="flex shrink-0 items-center gap-3 border-b border-border px-4 py-2">
+    <div class="flex-1">
+      <ScreenFilterBar
+        screenSlug={slug}
+        projectId={scopedProjectId ?? null}
+        {dispatcher}
+        {filterAttributes}
+        bind:predicate
+        bind:activeFilter
+        bind:screen={activeScreen}
+        bind:filterReady
+        onNavigateOut={onSearchNavigateOut}
+      >
+        {#snippet trailing()}
+          <span data-testid="grid-row-count">
+            {rows.length}
+            row{rows.length === 1 ? '' : 's'}
+          </span>
+          {#if loading}
+            <Spinner size="sm" />
+          {/if}
+        {/snippet}
+      </ScreenFilterBar>
+    </div>
+    <span data-testid="grid-new-issue">
+      <Button size="sm" variant="secondary" onclick={() => qe.open()}>
+        {#snippet children()}+ New issue{/snippet}
+      </Button>
+    </span>
   </div>
 
   {#if error !== null}
@@ -858,19 +1342,40 @@
           class="sticky top-0 z-10 flex border-b border-border bg-surface text-xs font-semibold"
           role="row"
         >
-          {#each columns as col (col.label)}
-            {@const sortActive = sort !== null && sort.field === col.field}
-            {@const arrow = sortActive
-              ? sort?.direction === 'asc'
-                ? '↑'
-                : '↓'
-              : ''}
+          <!-- Bulk-select checkbox column (header). Tri-state: clears
+               when all visible rows are checked, otherwise checks all
+               visible rows. Indeterminate flag set imperatively so
+               we can avoid wiring an extra rune. -->
+          <div
+            class="flex shrink-0 items-center justify-center"
+            style:width="{CHECKBOX_COL_WIDTH}px"
+            role="columnheader"
+          >
+            <input
+              bind:this={headerCheckEl}
+              type="checkbox"
+              class="h-4 w-4 cursor-pointer rounded border-border text-accent focus:ring-2 focus:ring-accent"
+              aria-label="Select all visible rows"
+              data-testid="grid-bulk-select-all"
+              checked={headerCheckState === 'all'}
+              onchange={toggleHeaderCheck}
+            />
+          </div>
+          {#each columns as col (col.key)}
+            {@const isGroupCol =
+              groupByAttr !== null && col.field === `attributes.${groupByAttr}`}
+            {@const sortActive =
+              isGroupCol || (sort !== null && sort.field === col.field)}
+            {@const colDir = isGroupCol
+              ? groupDir
+              : (sort?.field === col.field ? sort.direction : null)}
+            {@const arrow = colDir === 'asc' ? '↑' : colDir === 'desc' ? '↓' : ''}
             <div
               class="flex shrink-0 items-center gap-1 px-2 py-2"
               style:width="{col.width}px"
               role="columnheader"
               aria-sort={sortActive
-                ? sort?.direction === 'asc'
+                ? colDir === 'asc'
                   ? 'ascending'
                   : 'descending'
                 : 'none'}
@@ -935,116 +1440,192 @@
           role="rowgroup"
           data-testid="grid-body"
         >
-          {#each visibleRows as row, i (row.id)}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class={cx(
-                'flex shrink-0 cursor-pointer border-b border-border text-sm',
-                'hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-                i === selectedIndex ? 'bg-surface' : '',
-              )}
-              style:height="{ROW_HEIGHT}px"
-              data-testid="grid-row"
-              data-card-id={row.id}
-              role="row"
-              tabindex="0"
-              onclick={() => {
-                selectedIndex = i;
-                openRow(row);
-              }}
-              onfocus={() => {
-                selectedIndex = i;
-              }}
-            >
-              <!-- ID -->
-              <div
-                class="flex shrink-0 items-center px-2 font-mono text-xs text-muted"
-                style:width="{columns[0]!.width}px"
+          {#each groupedItems as item, slot (item.kind === 'header' ? `h:${slot}:${item.key}` : `r:${item.idx}:${item.row.id}`)}
+            {#if item.kind === 'header'}
+              <!-- Group section header. Clicking toggles the group
+                   sort direction — under the unified pipeline that
+                   means flipping the first key in the server `order`
+                   array, which reverses bucket order in the next
+                   response. The same toggle is wired on the group
+                   attribute's column header so users can drive it
+                   from either affordance. `sticky top-0` is relative
+                   to the body's scroll container; the table column
+                   header sits outside it. -->
+              <button
+                type="button"
+                class="sticky top-0 z-[5] flex w-full items-center gap-2 border-y border-accent/40 bg-accent/10 px-3 py-1.5 text-left text-xs font-semibold text-fg hover:bg-accent/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                style:width="{totalWidth}px"
+                data-testid="grid-group-header"
+                data-group-key={item.key}
+                data-group-dir={groupDir}
+                aria-label={`${groupByLabel}: ${item.label} (click to toggle ${groupDir === 'asc' ? 'descending' : 'ascending'})`}
+                onclick={toggleGroupDir}
               >
-                #{row.id}
+                <span class="uppercase tracking-wide text-muted">{groupByLabel}</span>
+                <span class="text-accent">{groupDir === 'asc' ? '↑' : '↓'}</span>
+                <span>{item.label}</span>
+              </button>
+            {:else}
+              {@const row = item.row}
+              {@const i = item.idx}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class={cx(
+                  'flex shrink-0 cursor-pointer border-b border-border text-sm',
+                  'hover:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                  i === selectedIndex ? 'bg-surface' : '',
+                  isBulkSelected(row.id) ? 'bg-accent/5' : '',
+                )}
+                style:height="{ROW_HEIGHT}px"
+                data-testid="grid-row"
+                data-card-id={row.id}
+                role="row"
+                tabindex="0"
+                onclick={() => {
+                  selectedIndex = i;
+                  openRow(row);
+                }}
+                onfocus={() => {
+                  selectedIndex = i;
+                }}
+              >
+              <!-- Checkbox cell. Click handler stops propagation so
+                   the row's open-task click doesn't fire. Shift-click
+                   extends the range from the selection anchor. -->
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="flex shrink-0 items-center justify-center"
+                style:width="{CHECKBOX_COL_WIDTH}px"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  if (e.shiftKey) selectRangeTo(i);
+                  else toggleOne(i, row.id);
+                }}
+              >
+                <input
+                  type="checkbox"
+                  class="h-4 w-4 cursor-pointer rounded border-border text-accent focus:ring-2 focus:ring-accent"
+                  aria-label="Select row #{row.id}"
+                  data-testid="grid-bulk-select-row"
+                  checked={isBulkSelected(row.id)}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    if (e.shiftKey) selectRangeTo(i);
+                    else toggleOne(i, row.id);
+                  }}
+                />
               </div>
-              <!-- Title -->
-              <div
-                class="flex shrink-0 items-center truncate px-2"
-                style:width="{columns[1]!.width}px"
-              >
-                <span class="truncate">
-                  {(() => {
-                    const t = row.attributes['title'];
-                    return typeof t === 'string' && t !== ''
-                      ? t
-                      : '(untitled)';
-                  })()}
-                </span>
-              </div>
-              <!-- Assignee -->
-              <div
-                class="flex shrink-0 items-center px-2"
-                style:width="{columns[2]!.width}px"
-              >
-                {#if assigneeOf(row) !== undefined}
-                  <AttributeChip label="assignee" value={assigneeOf(row)!} />
-                {:else}
-                  <span class="text-muted">—</span>
+              {#each columns as col (col.key)}
+                {#if col.kind === 'id'}
+                  <div
+                    class="flex shrink-0 items-center px-2 font-mono text-xs text-muted"
+                    style:width="{col.width}px"
+                  >
+                    #{row.id}
+                  </div>
+                {:else if col.kind === 'title'}
+                  <div
+                    class="flex shrink-0 items-center truncate px-2"
+                    style:width="{col.width}px"
+                  >
+                    <span class="truncate">
+                      {(() => {
+                        const t = row.attributes['title'];
+                        return typeof t === 'string' && t !== ''
+                          ? t
+                          : '(untitled)';
+                      })()}
+                    </span>
+                  </div>
+                {:else if col.kind === 'assignee'}
+                  <div
+                    class="flex shrink-0 items-center truncate px-2 text-sm"
+                    style:width="{col.width}px"
+                  >
+                    {#if assigneeOf(row) !== undefined}
+                      <span class="truncate">{assigneeOf(row)!}</span>
+                    {:else}
+                      <span class="text-muted">—</span>
+                    {/if}
+                  </div>
+                {:else if col.kind === 'tag_prefix'}
+                  {@const tagPath = prefixTagOf(row, col.prefix!)}
+                  <div
+                    class="flex shrink-0 items-center px-2"
+                    style:width="{col.width}px"
+                  >
+                    {#if tagPath !== undefined}
+                      <TagChip label={stripTagPrefix(tagPath, col.prefix!)} />
+                    {:else}
+                      <span class="text-muted">—</span>
+                    {/if}
+                  </div>
+                {:else if col.kind === 'milestone'}
+                  <div
+                    class="flex shrink-0 items-center truncate px-2 text-sm"
+                    style:width="{col.width}px"
+                  >
+                    {#if refTitle(row, 'milestone_ref') !== undefined}
+                      <span class="truncate">{refTitle(row, 'milestone_ref')!}</span>
+                    {:else}
+                      <span class="text-muted">—</span>
+                    {/if}
+                  </div>
+                {:else if col.kind === 'component'}
+                  <div
+                    class="flex shrink-0 items-center truncate px-2 text-sm"
+                    style:width="{col.width}px"
+                  >
+                    {#if refTitle(row, 'component_ref') !== undefined}
+                      <span class="truncate">{refTitle(row, 'component_ref')!}</span>
+                    {:else}
+                      <span class="text-muted">—</span>
+                    {/if}
+                  </div>
+                {:else if col.kind === 'tags'}
+                  <div
+                    class="flex shrink-0 items-center gap-1 overflow-hidden px-2"
+                    style:width="{col.width}px"
+                  >
+                    {#each tagsOf(row) as t (t)}
+                      <TagChip label={t} />
+                    {/each}
+                  </div>
+                {:else if col.kind === 'created'}
+                  <div
+                    class="flex shrink-0 items-center px-2 text-xs text-muted"
+                    style:width="{col.width}px"
+                  >
+                    {createdOf(row) ?? '—'}
+                  </div>
+                {:else if col.kind === 'last_activity'}
+                  <div
+                    class="flex shrink-0 items-center px-2 text-xs text-muted"
+                    style:width="{col.width}px"
+                  >
+                    {lastActivityOf(row) ?? '—'}
+                  </div>
+                {:else if col.kind === 'attr' && col.attrName !== null}
+                  {@const attr = filterAttributeFor(col.attrName)}
+                  {@const raw = row.attributes[col.attrName]}
+                  <div
+                    class="flex shrink-0 items-center truncate px-2 text-sm"
+                    style:width="{col.width}px"
+                  >
+                    {#if raw === null || raw === undefined || raw === ''}
+                      <span class="text-muted">—</span>
+                    {:else if attr !== null}
+                      <span class="truncate">{resolveAttributeLabel(attr, raw)}</span>
+                    {:else}
+                      <span class="truncate">{String(raw)}</span>
+                    {/if}
+                  </div>
                 {/if}
-              </div>
-              <!-- Priority -->
-              <div
-                class="flex shrink-0 items-center px-2"
-                style:width="{columns[3]!.width}px"
-              >
-                {#if priorityOf(row) !== undefined}
-                  <TagChip label={priorityOf(row)!} />
-                {:else}
-                  <span class="text-muted">—</span>
-                {/if}
-              </div>
-              <!-- Milestone -->
-              <div
-                class="flex shrink-0 items-center px-2"
-                style:width="{columns[4]!.width}px"
-              >
-                {#if refTitle(row, 'milestone_ref') !== undefined}
-                  <AttributeChip
-                    label="milestone"
-                    value={refTitle(row, 'milestone_ref')!}
-                  />
-                {:else}
-                  <span class="text-muted">—</span>
-                {/if}
-              </div>
-              <!-- Component -->
-              <div
-                class="flex shrink-0 items-center px-2"
-                style:width="{columns[5]!.width}px"
-              >
-                {#if refTitle(row, 'component_ref') !== undefined}
-                  <AttributeChip
-                    label="component"
-                    value={refTitle(row, 'component_ref')!}
-                  />
-                {:else}
-                  <span class="text-muted">—</span>
-                {/if}
-              </div>
-              <!-- Tags -->
-              <div
-                class="flex shrink-0 items-center gap-1 overflow-hidden px-2"
-                style:width="{columns[6]!.width}px"
-              >
-                {#each tagsOf(row) as t (t)}
-                  <TagChip label={t} />
-                {/each}
-              </div>
-              <!-- Created -->
-              <div
-                class="flex shrink-0 items-center px-2 text-xs text-muted"
-                style:width="{columns[7]!.width}px"
-              >
-                {createdOf(row) ?? '—'}
-              </div>
+              {/each}
             </div>
+            {/if}
           {/each}
 
           {#if !exhausted && rows.length > 0}
@@ -1067,6 +1648,25 @@
   {/if}
 </div>
 
+<BulkActionBar
+  selectedIds={bulkSelectedIds}
+  attributePalette={filterAttributes}
+  sourceProjectId={scopedProjectId ?? null}
+  onClear={clearBulkSelection}
+  onApplied={() => {
+    clearBulkSelection();
+    void refresh();
+  }}
+  onPurged={() => {
+    clearBulkSelection();
+    void refresh();
+  }}
+  onMoved={() => {
+    clearBulkSelection();
+    void refresh();
+  }}
+/>
+
 {#if colFilter !== null && colFilterAttribute !== null}
   {@const fa = colFilterAttribute}
   {@const isCombobox = fa.valueType.startsWith('ref:')}
@@ -1074,11 +1674,10 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     bind:this={colFilterPopup}
-    class="z-50 flex w-72 flex-col gap-2 rounded-md border border-border bg-bg p-3 shadow-lg"
+    class="kf-float-anchor z-50 flex w-72 flex-col gap-2 rounded-md border border-border bg-bg p-3 shadow-lg"
     role="dialog"
     aria-label="Filter {fa.label}"
     tabindex="-1"
-    style="position: fixed; left: 0; top: 0; visibility: hidden;"
     onkeydown={(e) => {
       if (e.key === 'Escape') {
         e.preventDefault();

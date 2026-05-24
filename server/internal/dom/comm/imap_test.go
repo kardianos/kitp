@@ -596,3 +596,148 @@ func TestIMAPPollerPollLogged(t *testing.T) {
 		t.Errorf("comm_log latest kind=%q want poll", kind)
 	}
 }
+
+// ---- inbound recipient extraction ----
+
+// recipientIDsOf returns the comm_recipients person ids stored on
+// commID via comm.list_for_task — the canonical wire shape the UI
+// reads.
+func recipientIDsOf(t *testing.T, f *fixture, commID int64) []int64 {
+	t.Helper()
+	var listOut comm.CommListForTaskOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "l", Endpoint: "comm", Action: "list_for_task", Data: json.RawMessage(
+			fmt.Sprintf(`{"task_id":"%d"}`, f.taskID)),
+	}, &listOut)
+	for _, c := range listOut.Rows {
+		if c.ID == commID {
+			return c.Recipients
+		}
+	}
+	return nil
+}
+
+// personIDByEmail returns the person card id whose email attribute
+// matches `email` (case-insensitive). 0 when none.
+func personIDByEmail(t *testing.T, f *fixture, email string) int64 {
+	t.Helper()
+	var id int64
+	err := f.sp.P.QueryRow(context.Background(), `
+		SELECT av.card_id
+		FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		JOIN card c ON c.id = av.card_id
+		JOIN card_type ct ON ct.id = c.card_type_id
+		WHERE ad.name='email' AND ct.name='person'
+		  AND lower(av.value #>> '{}') = lower($1)
+		LIMIT 1
+	`, email).Scan(&id)
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
+// TestIMAPRecipientSyncExtractsAddresses confirms an inbound message
+// with From + To + Cc populates comm.recipients with one person card
+// per non-channel address. Auto-creates contact-kind person cards
+// when no existing card matches the email.
+func TestIMAPRecipientSyncExtractsAddresses(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_imap_recipients_extract")
+	channelID := seedChannelForIMAP(t, f, "kitp@example.com", 0)
+	commID, threadID := seedCommForIMAP(t, f, channelID, "Multi")
+
+	stub := &stubIMAPClient{
+		messages: []comm.InboundMessage{{
+			UID:         1,
+			From:        "Alice <alice@example.com>",
+			To:          "kitp@example.com, watch@example.com",
+			Cc:          "bob@example.com, KITP@EXAMPLE.COM",
+			Subject:     "Re: Multi",
+			ThreadIDHdr: threadID,
+			Body:        "hi",
+		}},
+	}
+	p := comm.NewIMAPPollerForTest(f.sp, channelID, 5*time.Second)
+	p.SetDialFunc(func(ctx context.Context, _ comm.IMAPConfig) (comm.InboundClient, error) {
+		return stub, nil
+	})
+	if err := p.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	got := recipientIDsOf(t, f, commID)
+	// Expected: alice + watch + bob (channel address kitp@... excluded,
+	// case-insensitive — both forms removed).
+	wantEmails := []string{"alice@example.com", "watch@example.com", "bob@example.com"}
+	if len(got) != len(wantEmails) {
+		t.Fatalf("recipients=%v (count=%d), want 3 (alice, watch, bob)", got, len(got))
+	}
+	for _, email := range wantEmails {
+		id := personIDByEmail(t, f, email)
+		if id == 0 {
+			t.Errorf("person card for %q was not created", email)
+			continue
+		}
+		found := false
+		for _, g := range got {
+			if g == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("recipient list missing person %d (%s); got %v", id, email, got)
+		}
+	}
+
+	// The auto-created persons must be person_kind='contact'.
+	for _, email := range wantEmails {
+		id := personIDByEmail(t, f, email)
+		var kind string
+		if err := f.sp.P.QueryRow(context.Background(), `
+			SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='person_kind'
+		`, id).Scan(&kind); err != nil {
+			t.Fatalf("read kind for %s: %v", email, err)
+		}
+		if kind != "contact" {
+			t.Errorf("%s kind=%q want contact", email, kind)
+		}
+	}
+}
+
+// TestIMAPRecipientSyncUnion confirms a second inbound message adds
+// any newly-seen address into comm.recipients without removing the
+// participants that landed via the first message.
+func TestIMAPRecipientSyncUnion(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_imap_recipients_union")
+	channelID := seedChannelForIMAP(t, f, "kitp@example.com", 0)
+	commID, threadID := seedCommForIMAP(t, f, channelID, "Union")
+
+	deliver := func(msg comm.InboundMessage) {
+		stub := &stubIMAPClient{messages: []comm.InboundMessage{msg}}
+		p := comm.NewIMAPPollerForTest(f.sp, channelID, 5*time.Second)
+		p.SetDialFunc(func(ctx context.Context, _ comm.IMAPConfig) (comm.InboundClient, error) {
+			return stub, nil
+		})
+		if err := p.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+	}
+	deliver(comm.InboundMessage{
+		UID: 10, From: "alice@example.com", To: "kitp@example.com",
+		Subject: "Re: Union", ThreadIDHdr: threadID, Body: "1",
+	})
+	deliver(comm.InboundMessage{
+		UID: 11, From: "alice@example.com", To: "kitp@example.com",
+		Cc: "bob@example.com", Subject: "Re: Union", ThreadIDHdr: threadID, Body: "2",
+	})
+
+	got := recipientIDsOf(t, f, commID)
+	if len(got) != 2 {
+		t.Fatalf("recipients after union=%v, want 2 (alice + bob); both inbound messages must contribute", got)
+	}
+	if personIDByEmail(t, f, "alice@example.com") == 0 || personIDByEmail(t, f, "bob@example.com") == 0 {
+		t.Errorf("alice / bob person cards missing")
+	}
+}

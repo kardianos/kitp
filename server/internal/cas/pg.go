@@ -1,9 +1,7 @@
 package cas
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 
@@ -85,23 +83,54 @@ func (p *PgBackend) Put(
 	return tx.Commit(ctx)
 }
 
-// Get returns a ReadCloser over the bytes for address. We materialise the
-// row into memory and hand back an in-memory reader — fine for v1 with
-// a 250 MB cap; switch to a streaming pgx large-object path later if we
-// raise the cap.
-func (p *PgBackend) Get(ctx context.Context, address string) (io.ReadCloser, error) {
-	var data []byte
-	err := p.pool.QueryRow(ctx,
-		`SELECT data FROM cas_blob_data WHERE address = $1`,
-		address,
-	).Scan(&data)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("cas/pg: get: %w", err)
+// GetAll fetches every address in `addresses` in one query and writes
+// the chunk bytes to `w` in the order supplied. Each row is written
+// as it comes off the wire so peak memory is one chunk; nothing is
+// re-buffered between rows. `array_position` on the `$1` text array
+// preserves the caller's chunk order regardless of the DB's row
+// ordering.
+//
+// Returns ErrNotFound when the query yields fewer rows than
+// `addresses` — partial-set is treated as a corruption signal, not
+// a soft miss.
+func (p *PgBackend) GetAll(ctx context.Context, addresses []string, w io.Writer) error {
+	if len(addresses) == 0 {
+		return nil
 	}
-	return io.NopCloser(bytes.NewReader(data)), nil
+	// `unnest WITH ORDINALITY` emits one row per input position, so
+	// duplicate chunk addresses (e.g. a file with three identical
+	// 1MB blocks dedupped to one CAS row) replay the same bytes
+	// once per occurrence. A naive `WHERE address = ANY($1)` would
+	// collapse those duplicates and silently truncate the file.
+	rows, err := p.pool.Query(ctx, `
+		SELECT d.data
+		FROM unnest($1::text[]) WITH ORDINALITY AS req(address, ord)
+		JOIN cas_blob_data d ON d.address = req.address
+		ORDER BY req.ord
+	`, addresses)
+	if err != nil {
+		return fmt.Errorf("cas/pg: get_all: %w", err)
+	}
+	defer rows.Close()
+	got := 0
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return fmt.Errorf("cas/pg: scan: %w", err)
+		}
+		if _, err := w.Write(data); err != nil {
+			return fmt.Errorf("cas/pg: write: %w", err)
+		}
+		got++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("cas/pg: rows: %w", err)
+	}
+	if got != len(addresses) {
+		return fmt.Errorf("cas/pg: get_all: requested %d, served %d: %w",
+			len(addresses), got, ErrNotFound)
+	}
+	return nil
 }
 
 // Delete removes the row from cas_blob_data. Idempotent. Note we leave

@@ -207,9 +207,6 @@ func callerCanInvoke(ctx context.Context, h reg.Handler, roles map[string]struct
 	if slices.Contains(h.AllowedRoles, reg.RoleAuthenticated) {
 		return true
 	}
-	if _, sys := roles[reg.RoleSystem]; sys {
-		return true
-	}
 	for _, r := range h.AllowedRoles {
 		if _, ok := roles[r]; ok {
 			return true

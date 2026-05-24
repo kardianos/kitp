@@ -46,15 +46,22 @@ func setup(t *testing.T) (http.Handler, *api.Server, *store.Pool) {
 	projectimport.Register(projectimport.ImportConfig{Pool: sp, Storage: storage})
 
 	srv := api.NewServer(sp)
-	mux := http.NewServeMux()
-	srv.Mount(mux, "")
-	cas.RegisterHTTP(mux, cas.HTTPConfig{Pool: sp, Storage: storage, MaxBytes: 4 * 1024 * 1024})
-
 	user, err := auth.NewSystemUser(context.Background(), pool, "dev", auth.ModeOff)
 	if err != nil {
 		t.Fatalf("system user: %v", err)
 	}
-	return auth.Middleware(user)(mux), srv, sp
+
+	// Build an apiRouter pre-resolved to the System user so the
+	// batch + cas chunk routes both see an authenticated actor.
+	// Mirrors the production wiring without standing up a session
+	// Manager.
+	rt := api.NewTestRouter(user)
+	cas.Mount(rt, cas.HTTPConfig{Pool: sp, Storage: storage, MaxBytes: 4 * 1024 * 1024})
+	srv.MountBatch(rt)
+
+	mux := http.NewServeMux()
+	mux.Handle("/api/", rt.Mux())
+	return mux, srv, sp
 }
 
 // uploadCSV uploads `body` as a single-chunk file and returns the

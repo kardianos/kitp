@@ -12,12 +12,9 @@ package usertoken
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -87,7 +84,10 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[CreateOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
 		Authz:        authzCreate,
-		Run:          runCreate(p),
+		// Unified handler — body lives in
+		// db/schema/functions/user_token_create_batch.sql per Phase 3
+		// of docs/UNIFIED_HANDLER_PLAN.md.
+		SQLFunc: "user_token_create_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "user_token",
@@ -97,7 +97,11 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[ListOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
 		Authz:        authzList,
-		Run:          runList(p),
+		// Unified handler — body lives in
+		// db/schema/functions/user_token_list_batch.sql per Phase 5 of
+		// docs/UNIFIED_HANDLER_PLAN.md. Labels + timestamps ONLY; the
+		// secret value is never surfaced after the create-time mint.
+		SQLFunc: "user_token_list_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "user_token",
@@ -107,7 +111,10 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[RevokeOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
 		Authz:        authzRevoke,
-		Run:          runRevoke(p),
+		// Unified handler — body lives in
+		// db/schema/functions/user_token_revoke_batch.sql per Phase 3
+		// of docs/UNIFIED_HANDLER_PLAN.md.
+		SQLFunc: "user_token_revoke_batch",
 	})
 }
 
@@ -138,7 +145,7 @@ func authzParentOrAdmin(ctx context.Context, targetUserID int64) error {
 	if err := pool.P.QueryRow(ctx,
 		`SELECT parent_user_id FROM user_account WHERE id = $1`, targetUserID,
 	).Scan(&parentID); err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return &reg.HandlerError{Code: "not_found",
 				Message: fmt.Sprintf("user_token: target user %d not found", targetUserID)}
 		}
@@ -185,120 +192,4 @@ func authzRevoke(ctx context.Context, in any) error {
 	return authzParentOrAdmin(ctx, row.UserID)
 }
 
-// runCreate mints one token per input. Each insert is its own
-// statement (32 random bytes are generated per row; pgx can't share a
-// jsonb_to_recordset path with crypto/rand cheaply). The handler
-// remains coalesced at the batch envelope level — N create requests
-// in one batch arrive as one runCreate call.
-func runCreate(_ *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(CreateInput)
-			if in.Label == "" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "user_token.create: label is required"}
-			}
-			var expires *time.Time
-			if in.ExpiresAt != "" {
-				t, err := time.Parse(time.RFC3339, in.ExpiresAt)
-				if err != nil {
-					return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-						Message: fmt.Sprintf("user_token.create: bad expires_at: %v", err)}
-				}
-				expires = &t
-			}
-			id, err := newTokenID()
-			if err != nil {
-				return nil, fmt.Errorf("user_token.create: %w", err)
-			}
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO user_token (id, user_id, label, expires_at)
-				VALUES ($1, $2, $3, $4)
-			`, id, in.UserID, in.Label, expires); err != nil {
-				return nil, fmt.Errorf("user_token.create: insert: %w", err)
-			}
-			outs[i] = CreateOutput{Token: id, Label: in.Label}
-		}
-		return outs, nil
-	}
-}
 
-func runList(_ *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(ListInput)
-			rows, err := tx.Query(ctx, `
-				SELECT label, created_at, last_used_at, expires_at, revoked_at
-				FROM user_token
-				WHERE user_id = $1
-				ORDER BY created_at DESC
-			`, in.UserID)
-			if err != nil {
-				return nil, fmt.Errorf("user_token.list: %w", err)
-			}
-			var out ListOutput
-			for rows.Next() {
-				var r ListRow
-				var createdAt, lastUsedAt time.Time
-				var expiresAt, revokedAt *time.Time
-				if err := rows.Scan(&r.Label, &createdAt, &lastUsedAt, &expiresAt, &revokedAt); err != nil {
-					rows.Close()
-					return nil, err
-				}
-				r.CreatedAt = createdAt.Format(time.RFC3339)
-				r.LastUsedAt = lastUsedAt.Format(time.RFC3339)
-				if expiresAt != nil {
-					s := expiresAt.Format(time.RFC3339)
-					r.ExpiresAt = &s
-				}
-				if revokedAt != nil {
-					s := revokedAt.Format(time.RFC3339)
-					r.RevokedAt = &s
-				}
-				out.Rows = append(out.Rows, r)
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-			outs[i] = out
-		}
-		return outs, nil
-	}
-}
-
-func runRevoke(_ *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(RevokeInput)
-			tag, err := tx.Exec(ctx, `
-				UPDATE user_token SET revoked_at = now()
-				WHERE user_id = $1 AND label = $2 AND revoked_at IS NULL
-			`, in.UserID, in.Label)
-			if err != nil {
-				return nil, fmt.Errorf("user_token.revoke: %w", err)
-			}
-			n := int(tag.RowsAffected())
-			outs[i] = RevokeOutput{OK: n > 0, Deleted: n}
-		}
-		return outs, nil
-	}
-}
-
-// newTokenID returns 32 random bytes base64url-encoded. Same shape as
-// session.id / token.newTokenID — nothing meaningful embedded.
-func newTokenID() (string, error) {
-	var buf [32]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf[:]), nil
-}
-
-// Encoding helpers for tests / introspection. Not used at runtime but
-// keep the json import live so `go vet` doesn't grumble in future
-// edits.
-var _ = json.Marshal

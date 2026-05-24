@@ -66,13 +66,16 @@ func TestSearch(t *testing.T) {
 	// stable regardless of the ambient row count.
 	idsBody := fmt.Sprintf(`%d,%d,%d,%d`, taskIDs[0], taskIDs[1], taskIDs[2], taskIDs[3])
 
-	t.Run("empty query returns the seeded tasks ordered by title", func(t *testing.T) {
+	t.Run("empty query returns the seeded tasks ordered by created_at DESC", func(t *testing.T) {
+		// Inserts above run in order Alpha, Beta, Gamma, Delta — the
+		// picker shows the most recently created first so the user
+		// can quickly link a fresh sub-task without typing.
 		out := dispatchSearch(t, fmt.Sprintf(
 			`{"card_type_name":"task","ids":[%s]}`, idsBody))
 		if len(out.Rows) != 4 {
 			t.Fatalf("expected 4 rows, got %d: %+v", len(out.Rows), out.Rows)
 		}
-		want := []string{"Alpha task", "Beta task", "Delta task", "Gamma quest"}
+		want := []string{"Delta task", "Gamma quest", "Beta task", "Alpha task"}
 		for i, w := range want {
 			if out.Rows[i].Title != w {
 				t.Errorf("row %d: title %q, want %q", i, out.Rows[i].Title, w)
@@ -99,8 +102,9 @@ func TestSearch(t *testing.T) {
 		if len(out.Rows) != 2 {
 			t.Fatalf("expected 2 rows, got %+v", out.Rows)
 		}
-		// Ordered by title — Alpha then Gamma.
-		if out.Rows[0].Title != "Alpha task" || out.Rows[1].Title != "Gamma quest" {
+		// Ordered by created_at DESC — Gamma (inserted 3rd) precedes
+		// Alpha (inserted 1st).
+		if out.Rows[0].Title != "Gamma quest" || out.Rows[1].Title != "Alpha task" {
 			t.Errorf("unexpected order: %+v", out.Rows)
 		}
 	})
@@ -157,6 +161,37 @@ func TestSearch(t *testing.T) {
 			`{"card_type_name":"task","query":"alpha","parent_card_id":"%d"}`, pOut.ID))
 		if len(out.Rows) != 1 || out.Rows[0].Title != "Alpha task" {
 			t.Fatalf("parent-scoped search: expected single Alpha task; got %+v", out.Rows)
+		}
+	})
+
+	t.Run("numeric query matches by id even when no title contains it", func(t *testing.T) {
+		// Pick a task whose title definitely doesn't contain its own
+		// id-as-string. Search by that id ⇒ the id-match OR-arm fires
+		// and the row surfaces alongside any incidental title hits.
+		idStr := fmt.Sprintf("%d", taskIDs[0])
+		out := dispatchSearch(t, fmt.Sprintf(
+			`{"card_type_name":"task","query":%q}`, idStr))
+		found := false
+		for _, r := range out.Rows {
+			if r.ID == taskIDs[0] && r.Title == "Alpha task" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected id-as-query to surface card %d ('Alpha task'); got %+v",
+				taskIDs[0], out.Rows)
+		}
+	})
+
+	t.Run("non-numeric query leaves the id OR-arm dormant", func(t *testing.T) {
+		// Sanity: a non-numeric query that happens to coincide with no
+		// title substring returns zero rows — confirming the id-match
+		// branch only triggers on numeric input.
+		out := dispatchSearch(t, fmt.Sprintf(
+			`{"card_type_name":"task","ids":[%s],"query":"nonsense-xyz"}`, idsBody))
+		if len(out.Rows) != 0 {
+			t.Fatalf("expected zero rows for non-matching non-numeric query, got %+v", out.Rows)
 		}
 	})
 

@@ -3,15 +3,13 @@
 //
 // Today there's just one: cas.missing_chunks — the pre-flight a client
 // uses before uploading a multi-chunk file to skip any chunks the server
-// already holds.
+// already holds. Unified-handler shape (Phase 5 of
+// docs/UNIFIED_HANDLER_PLAN.md); function body lives in
+// db/schema/functions/cas_missing_chunks_batch.sql.
 package cas
 
 import (
-	"context"
-	"fmt"
 	"reflect"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
@@ -24,13 +22,15 @@ type MissingChunksInput struct {
 
 // MissingChunksOutput is the subset of the input that's NOT already in
 // cas_blob. The client uploads only these chunks; everything else dedups
-// against the existing rows.
+// against the existing rows. Duplicated input addresses come back
+// duplicated in the missing list when absent — clients that want
+// uniqueness dedupe their input.
 type MissingChunksOutput struct {
 	Missing []string `json:"missing" mcp:"desc=addresses not currently in cas_blob"`
 }
 
 // Register installs cas.missing_chunks.
-func Register(p *store.Pool) {
+func Register(_ *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "cas",
 		Action:       "missing_chunks",
@@ -38,50 +38,12 @@ func Register(p *store.Pool) {
 		InputType:    reflect.TypeFor[MissingChunksInput](),
 		OutputType:   reflect.TypeFor[MissingChunksOutput](),
 		AllowedRoles: []string{"worker", "manager", "admin"},
-		Run:          runMissingChunks(p),
+		// CAS addresses are content-addressed blobs with no project
+		// anchor — the upload pre-flight check is necessarily global.
+		// Per-row authz happens downstream at attachment.create /
+		// file.create when the blob gets linked to a card.
+		GlobalScope: true,
+		SQLFunc:     "cas_missing_chunks_batch",
+		IsRead:      true,
 	})
-}
-
-func runMissingChunks(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(MissingChunksInput)
-			if len(in.Addresses) == 0 {
-				outs[i] = MissingChunksOutput{Missing: []string{}}
-				continue
-			}
-			// Anti-join unnest($1) against cas_blob — the missing set is
-			// "addresses we asked about that aren't in the table". One
-			// round-trip regardless of the input length.
-			rows, err := tx.Query(ctx, `
-				SELECT a.address
-				FROM unnest($1::text[]) AS a(address)
-				WHERE NOT EXISTS (
-					SELECT 1 FROM cas_blob WHERE address = a.address
-				)
-			`, in.Addresses)
-			if err != nil {
-				return nil, fmt.Errorf("cas.missing_chunks: %w", err)
-			}
-			missing := []string{}
-			for rows.Next() {
-				var a string
-				if err := rows.Scan(&a); err != nil {
-					rows.Close()
-					return nil, err
-				}
-				missing = append(missing, a)
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-			if p != nil {
-				p.NoteRead()
-			}
-			outs[i] = MissingChunksOutput{Missing: missing}
-		}
-		return outs, nil
-	}
 }

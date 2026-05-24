@@ -4,21 +4,31 @@
  * Lives in a plain `.ts` module (not a .svelte file) so it can be unit-tested
  * without DOM. The rule is "issue every sub-request synchronously in the same
  * tick" — the Dispatcher's per-tick batching takes care of folding the calls
- * into a single `POST /api/v1/batch` (REQUIREMENTS N-CLI-1/2/3).
+ * into a single `POST /api/v1/batch`, and the server runs that batch inside
+ * one transaction (N-SRV-1), so a New-Task submission is one round-trip and
+ * one transaction even with attachments + tags + arbitrary attributes.
+ *
+ * The wire shape is built around `card.insert`'s `attributes` map: every
+ * scalar value the dialog collects (description, assignee, status, milestone
+ * etc.) goes inline on the insert so we don't emit redundant attribute.update
+ * calls. Tags use `tag.apply` (which enforces root-exclusive semantics that
+ * setting `attributes.tags` directly would bypass). Attachments use
+ * `attachment.create` against pre-uploaded file ids.
  */
-
 import type { Dispatcher } from '../dispatch/dispatcher.js';
 import type {
-  AttributeUpdateInput,
-  AttributeUpdateOutput,
+  AttachmentCreateInput,
+  AttachmentCreateOutput,
   CardInsertInput,
   CardInsertOutput,
   ID,
+  TagApplyInput,
+  TagApplyOutput,
 } from '../reg/types.js';
 
 /** Optional prefill values that the screen passes down to the overlay. */
 export interface QuickEntryPrefill {
-  /** Inbox prefills "me"; results in an `attribute.update` for `assignee`. */
+  /** Inbox prefills "me"; stamped as `assignee` on the card.insert. */
   assigneeUserId?: ID;
   /** Column-axis attribute prefill (kanban "+ in this column" button). */
   laneAttribute?: { name: string; value: unknown };
@@ -54,6 +64,33 @@ export interface QuickEntrySubmitInput {
    *     user intent wins over the chain default.
    */
   defaultStatusCardId?: ID;
+  /**
+   * User-entered attribute rows from the "More details" disclosure.
+   * Each row is `{name, value}`; values are JSON-encodable scalars
+   * (bigint for card_ref, string for text/date/enum, number for
+   * number, boolean for bool, or an array of those for card_ref[]).
+   * Forwarded verbatim into the card.insert attributes map after the
+   * built-in slots so the user can override e.g. an assignee prefill
+   * by setting the same attribute explicitly.
+   */
+  additionalAttributes?: { name: string; value: unknown }[];
+  /**
+   * Tag cards to apply after the insert resolves. Each entry triggers
+   * one `tag.apply` sub-request chained off the insert's promise so
+   * the new card id is known. tag.apply enforces root-exclusive
+   * mutual-exclusion across the same tag root, which a direct
+   * `attributes.tags = [...]` write would bypass — that's why we
+   * route tags through this handler rather than setting them inline.
+   */
+  tagIds?: ID[];
+  /**
+   * File ids (already uploaded to CAS + materialised via `file.create`)
+   * to attach to the new card. The dialog runs the chunked upload +
+   * file.create pass *before* calling submitQuickEntry, so by the time
+   * we're here every entry already has a stable file_id. Each entry
+   * triggers one `attachment.create` chained off the insert.
+   */
+  attachmentFileIds?: ID[];
 }
 
 /** Card types that the schema makes top-level (no parent_card_id required). */
@@ -104,9 +141,62 @@ export function resolveParentForInsert(
 }
 
 /**
- * Issue the card.insert (and optional attribute.update calls) for one
- * quick-entry submission. Every request is queued synchronously so the
- * dispatcher batches them into ONE POST.
+ * Assemble the `attributes` payload that rides on the `card.insert`.
+ *
+ * The precedence order, low to high: default-status → prefill axes →
+ * additionalAttributes. The user's explicit edits in the More-details
+ * disclosure win over a screen prefill, mirroring "screen override
+ * beats flow override" one level up.
+ *
+ * Exported so the unit tests can pin the merging contract without
+ * mounting the overlay.
+ */
+export function buildInsertAttributes(
+  input: QuickEntrySubmitInput,
+): Record<string, unknown> {
+  const attrs: Record<string, unknown> = {};
+  const pf = input.prefill;
+  const pinsStatusViaPrefill =
+    pf?.laneAttribute?.name === 'status' ||
+    (pf?.extraAttributes ?? []).some((a) => a.name === 'status');
+
+  if (input.defaultStatusCardId !== undefined && !pinsStatusViaPrefill) {
+    attrs.status = input.defaultStatusCardId;
+  }
+  if (input.description !== '') {
+    attrs.description = input.description;
+  }
+  if (pf?.assigneeUserId !== undefined) {
+    attrs.assignee = pf.assigneeUserId;
+  }
+  if (pf?.laneAttribute !== undefined) {
+    attrs[pf.laneAttribute.name] = pf.laneAttribute.value;
+  }
+  if (pf?.extraAttributes !== undefined) {
+    for (const a of pf.extraAttributes) {
+      attrs[a.name] = a.value;
+    }
+  }
+  if (input.additionalAttributes !== undefined) {
+    for (const a of input.additionalAttributes) {
+      // Drop empties so a half-filled row doesn't clobber an inherited
+      // prefill value. The dialog already filters these out before
+      // calling us, but the guard keeps the contract clean for tests
+      // and direct callers.
+      if (a.value === undefined || a.value === '') continue;
+      attrs[a.name] = a.value;
+    }
+  }
+  return attrs;
+}
+
+/**
+ * Issue every sub-request a New-Task submission needs in one dispatcher tick.
+ *
+ * Sequence (one batch, one transaction):
+ *   1. card.insert           — title + parent + the merged attributes map
+ *   2. tag.apply (×N)        — one per chosen tag, chained off card.insert
+ *   3. attachment.create (×M) — one per pre-uploaded file_id
  *
  * Resolves with the new card id once every request has resolved successfully.
  * Rejects with the first error if any sub-request fails — callers should keep
@@ -123,26 +213,9 @@ export async function submitQuickEntry(
   if (input.parentCardId !== undefined) {
     insertData.parentCardId = input.parentCardId;
   }
-
-  // Gate 6: stamp the resolved default-create-status into the insert's
-  // attributes payload when the caller threaded one through. The
-  // overlay decides whether to call the resolver and what to do on
-  // error; we just forward the value here. An explicit prefill that
-  // pins `status` (e.g. kanban column "+" with a column attr of
-  // `status`) takes precedence — the explicit user intent wins over
-  // the chain default, mirroring the spec's "screen override beats
-  // flow override" ordering one level up.
-  const pinsStatusViaPrefill =
-    input.prefill?.laneAttribute?.name === 'status' ||
-    (input.prefill?.extraAttributes ?? []).some((a) => a.name === 'status');
-  if (
-    input.defaultStatusCardId !== undefined &&
-    !pinsStatusViaPrefill
-  ) {
-    insertData.attributes = {
-      ...(insertData.attributes ?? {}),
-      status: input.defaultStatusCardId,
-    };
+  const attrs = buildInsertAttributes(input);
+  if (Object.keys(attrs).length > 0) {
+    insertData.attributes = attrs;
   }
 
   const insertP = dispatcher.request<CardInsertInput, CardInsertOutput>({
@@ -151,75 +224,37 @@ export async function submitQuickEntry(
     data: insertData,
   });
 
-  // The follow-up attribute.update calls need the new card id. We chain off
-  // `insertP` so they're enqueued as soon as it resolves — but to keep them in
-  // the SAME batch we must enqueue them within the same microtask the
-  // dispatcher used to flush. We do that by awaiting the insert id and then
-  // emitting all attribute.updates together.
-  //
-  // Note: in the typical happy path the Dispatcher's rAF schedule fires after
-  // every queued request returns from a single Promise resolution chain. Tests
-  // can drive this deterministically via `flushNow()`.
-  const updatesPromise = insertP.then(({ id: newCardId }) => {
-    const ps: Promise<AttributeUpdateOutput>[] = [];
-    if (input.description !== '') {
-      ps.push(
-        dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
-          endpoint: 'attribute',
-          action: 'update',
-          data: {
-            cardId: newCardId,
-            attributeName: 'description',
-            value: input.description,
-          },
-        }),
-      );
-    }
-    const pf = input.prefill;
-    if (pf?.assigneeUserId !== undefined) {
-      ps.push(
-        dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
-          endpoint: 'attribute',
-          action: 'update',
-          data: {
-            cardId: newCardId,
-            attributeName: 'assignee',
-            value: pf.assigneeUserId,
-          },
-        }),
-      );
-    }
-    if (pf?.laneAttribute !== undefined) {
-      ps.push(
-        dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
-          endpoint: 'attribute',
-          action: 'update',
-          data: {
-            cardId: newCardId,
-            attributeName: pf.laneAttribute.name,
-            value: pf.laneAttribute.value,
-          },
-        }),
-      );
-    }
-    if (pf?.extraAttributes !== undefined) {
-      for (const a of pf.extraAttributes) {
-        ps.push(
-          dispatcher.request<AttributeUpdateInput, AttributeUpdateOutput>({
-            endpoint: 'attribute',
-            action: 'update',
-            data: {
-              cardId: newCardId,
-              attributeName: a.name,
-              value: a.value,
-            },
+  // Tags + attachments need the new card id, so we chain off insertP.
+  // The dispatcher's per-tick batching keeps these in the same POST as
+  // the insert as long as they're enqueued from the same microtask the
+  // dispatcher used to flush — which `insertP.then(...)` is, since the
+  // mock + real dispatcher both resolve synchronously enough that the
+  // follow-ups land before the rAF tick fires.
+  return insertP.then(({ id: newCardId }) => {
+    const followUps: Promise<unknown>[] = [];
+    if (input.tagIds !== undefined) {
+      for (const tagCardId of input.tagIds) {
+        followUps.push(
+          dispatcher.request<TagApplyInput, TagApplyOutput>({
+            endpoint: 'tag',
+            action: 'apply',
+            data: { targetCardId: newCardId, tagCardId },
           }),
         );
       }
     }
-    if (ps.length === 0) return newCardId;
-    return Promise.all(ps).then(() => newCardId);
+    if (input.attachmentFileIds !== undefined) {
+      for (const fileId of input.attachmentFileIds) {
+        followUps.push(
+          dispatcher.request<AttachmentCreateInput, AttachmentCreateOutput>({
+            endpoint: 'attachment',
+            action: 'create',
+            data: { cardId: newCardId, fileId },
+          }),
+        );
+      }
+    }
+    if (followUps.length === 0) return newCardId;
+    return Promise.all(followUps).then(() => newCardId);
   });
-
-  return updatesPromise;
 }

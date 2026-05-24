@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/reg"
 )
 
@@ -32,64 +33,96 @@ type Tool struct {
 	OutputSchema *Schema `json:"output_schema,omitempty"`
 }
 
-// Toolset selects which handlers `tools/list` advertises. Some MCP
-// clients (notably LLMs) cap the number of tools they'll accept at
-// session start; ToolsetMinimal exposes only `proc__search` so the
-// model discovers + calls everything else on demand. ToolsetFull is
-// the legacy "every endpoint is a tool" surface.
+// ToolsFor returns every handler the actor on ctx is allowed to
+// invoke. The filter mirrors api/role_gate.go's logic:
 //
-// Note: tools/call works for any registered handler regardless of
-// the active toolset — the filter only narrows what's listed.
-type Toolset string
-
-const (
-	ToolsetMinimal Toolset = "minimal"
-	ToolsetFull    Toolset = "full"
-)
-
-// activeToolset is the package-level choice the server reads at
-// tools/list time. Set by main.go before serving.
-var activeToolset Toolset = ToolsetMinimal
-
-// SetToolset chooses the tools/list filter. Safe to call once at
-// startup; not thread-safe afterward (no real reason to flip it
-// mid-stream, and tests use SetToolset in their setup helper).
-func SetToolset(t Toolset) {
-	switch t {
-	case ToolsetFull, ToolsetMinimal:
-		activeToolset = t
-	default:
-		activeToolset = ToolsetMinimal
-	}
-}
-
-// Tools returns one Tool per registered handler, filtered by the
-// active toolset. With ToolsetMinimal the result is just the
-// proc__search descriptor — the model discovers + calls everything
-// else on demand. With ToolsetFull every registered handler is
-// listed.
-func Tools() []Tool {
+//   - `$public` handlers are always included.
+//   - `$authenticated` handlers are included when the request carries
+//     a resolved user.
+//   - Any other AllowedRoles entry is included when the actor either
+//     holds the named role or the seeded `system` wildcard.
+//
+// This drives `tools/list`: every Claude Code MCP client picks up the
+// full catalogue at session start, so the model never has to
+// "discover + call on demand" through a separate proc.search hop.
+//
+// `pool` may be nil when the caller has no DB handy (e.g. stdio mode
+// tests that pre-resolved the actor's roles or don't gate by role).
+// A nil pool means role-gated handlers are omitted for any
+// non-`$public` / non-`$authenticated` tools.
+func ToolsFor(ctx context.Context, pool auth.RolesPool) []Tool {
 	hs := reg.All()
-	switch activeToolset {
-	case ToolsetMinimal:
-		for _, h := range hs {
-			if h.Endpoint == "proc" && h.Action == "search" {
-				return []Tool{toolFromHandler(h)}
-			}
+	user, signedIn := auth.FromContext(ctx)
+	signedIn = signedIn && user != nil && user.ID != 0
+
+	// Role lookup is lazy — a fully `$public` registry doesn't pay for
+	// a DB round-trip.
+	var (
+		rolesLoaded bool
+		rolesSet    map[string]struct{}
+	)
+	loadRoles := func() map[string]struct{} {
+		if rolesLoaded {
+			return rolesSet
 		}
-		// Fallback: if proc.search wasn't registered (a misconfigured
-		// init in a test), surface the whole catalogue rather than an
-		// empty list — an empty list would silently strand the client.
-		fallthrough
-	case ToolsetFull:
-		fallthrough
-	default:
-		out := make([]Tool, 0, len(hs))
-		for _, h := range hs {
+		rolesLoaded = true
+		if !signedIn || pool == nil {
+			rolesSet = map[string]struct{}{}
+			return rolesSet
+		}
+		names, err := auth.LoadUserRoles(ctx, pool, user.ID)
+		if err != nil {
+			// Treat a transient lookup failure as "no roles" — we'd
+			// rather omit role-gated tools than crash tools/list.
+			rolesSet = map[string]struct{}{}
+			return rolesSet
+		}
+		rolesSet = make(map[string]struct{}, len(names))
+		for _, n := range names {
+			rolesSet[n] = struct{}{}
+		}
+		return rolesSet
+	}
+
+	out := make([]Tool, 0, len(hs))
+	for _, h := range hs {
+		if allowedForActor(h, signedIn, loadRoles) {
 			out = append(out, toolFromHandler(h))
 		}
-		return out
 	}
+	return out
+}
+
+func allowedForActor(h reg.Handler, signedIn bool, loadRoles func() map[string]struct{}) bool {
+	hasPublic := false
+	hasAuthed := false
+	for _, r := range h.AllowedRoles {
+		switch r {
+		case reg.RolePublic:
+			hasPublic = true
+		case reg.RoleAuthenticated:
+			hasAuthed = true
+		}
+	}
+	if hasPublic {
+		return true
+	}
+	if !signedIn {
+		return false
+	}
+	if hasAuthed {
+		return true
+	}
+	have := loadRoles()
+	for _, r := range h.AllowedRoles {
+		if r == reg.RolePublic || r == reg.RoleAuthenticated {
+			continue
+		}
+		if _, ok := have[r]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func toolFromHandler(h reg.Handler) Tool {
@@ -177,7 +210,7 @@ func (s *Server) handle(ctx context.Context, req jsonrpcRequest) {
 	case "initialize":
 		s.handleInitialize(req)
 	case "tools/list":
-		s.handleToolsList(req)
+		s.handleToolsList(ctx, req)
 	case "tools/call":
 		s.handleToolsCall(ctx, req)
 	default:
@@ -189,12 +222,41 @@ func (s *Server) handle(ctx context.Context, req jsonrpcRequest) {
 	}
 }
 
-// initializeResult is the minimum shape MCP clients accept.
+// initializeResult is the minimum shape MCP clients accept. The
+// optional `Instructions` field carries the server-authored guidance
+// the MCP client surfaces to the LLM at session start; we use it to
+// pin defaults that the handlers themselves don't enforce (e.g.
+// "filter terminal-phase cards by default when reading tasks").
 type initializeResult struct {
 	ProtocolVersion string         `json:"protocolVersion"`
 	Capabilities    map[string]any `json:"capabilities"`
 	ServerInfo      map[string]any `json:"serverInfo"`
+	Instructions    string         `json:"instructions,omitempty"`
 }
+
+// serverInstructions is the prose the LLM reads at session start.
+// Soft conventions only — the handlers don't enforce these. Keep it
+// short; MCP clients render this verbatim.
+const serverInstructions = `kitp MCP conventions
+
+Default filters for card reads (card.select_with_attributes, card.search):
+
+- When listing task cards, default to active-phase rows only. Compose
+  this via the predicate tree:
+    tree: { connective: "and", children: [
+      { attr: "status", op: "has_phase", values: ["active"] }
+    ] }
+  Add "triage" or "terminal" to the values array only when the user
+  explicitly asks for inbox / closed / archived items. The handler
+  does not apply this default itself — callers that omit a phase
+  predicate get every phase back.
+
+- routed_to_me=true returns cards routed to the calling agent via
+  user_card_agent. Pair it with the active-only predicate above for
+  the standard "my open work" view.
+
+ID encoding: every bigint id (card_id, parent_card_id, etc.) crosses
+the wire as a JSON string. Pass "114" not 114.`
 
 func (s *Server) handleInitialize(req jsonrpcRequest) {
 	result := initializeResult{
@@ -208,17 +270,22 @@ func (s *Server) handleInitialize(req jsonrpcRequest) {
 			"name":    "kitp",
 			"version": "v1-phase19",
 		},
+		Instructions: serverInstructions,
 	}
 	s.writeResult(req.ID, result)
 }
 
-func (s *Server) handleToolsList(req jsonrpcRequest) {
+func (s *Server) handleToolsList(ctx context.Context, req jsonrpcRequest) {
 	type wireTool struct {
 		Name        string  `json:"name"`
 		Description string  `json:"description"`
 		InputSchema *Schema `json:"inputSchema"`
 	}
-	tools := Tools()
+	var pool auth.RolesPool
+	if s.dispatcher != nil && s.dispatcher.Pool != nil {
+		pool = s.dispatcher.Pool.P
+	}
+	tools := ToolsFor(ctx, pool)
 	wire := make([]wireTool, 0, len(tools))
 	for _, t := range tools {
 		wire = append(wire, wireTool{

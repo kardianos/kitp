@@ -41,6 +41,7 @@
 
   import { BatchAbortedError, SubRequestError } from '../../dispatch/errors';
   import { getDispatcher } from '../../dispatch/context';
+  import { clearHelpTopic, setHelpTopic } from '../../help/help_context.svelte';
   import { setActiveScope, useShortcut } from '../../keys/shortcut';
   import { useQuickEntry } from '../../quick_entry/use_quick_entry.svelte';
   import QuickEntryOverlay from '../../quick_entry/QuickEntryOverlay.svelte';
@@ -48,7 +49,6 @@
   import {
     attributeUpdate,
     cardSelectWithAttributes,
-    projectStamp,
   } from '../../reg/handlers';
   import type {
     AttributeUpdateInput,
@@ -57,14 +57,23 @@
     CardSelectWithAttributesOutput,
     CardWithAttrs,
     ID,
-    ProjectStampInput,
     ProjectStampOutput,
   } from '../../reg/types';
   import { navigate } from '../../routing/router.svelte';
   import Button from '../../ui/Button.svelte';
   import EmptyState from '../../ui/EmptyState.svelte';
+  import ErrorAlert from '../../ui/ErrorAlert.svelte';
   import Modal from '../../ui/Modal.svelte';
+  import PageShell from '../../ui/PageShell.svelte';
   import Spinner from '../../ui/Spinner.svelte';
+  import Checkbox from '../../ui/inputs/Checkbox.svelte';
+  import TextInput from '../../ui/inputs/TextInput.svelte';
+  import {
+    Form,
+    FormErrors,
+    SubmitButton,
+    TextInput as FormTextInput,
+  } from '../../forms';
   import { notify } from '../../ui/toast.svelte';
   import { cx } from '../../util/class_names';
 
@@ -73,10 +82,14 @@
     errMsg,
     isTemplate,
     projectTitle,
-    validateStampName,
   } from './admin_projects_helpers';
 
   setActiveScope('admin_projects');
+
+  $effect(() => {
+    setHelpTopic({ kind: 'topic', topic: 'admin.projects' });
+    return () => clearHelpTopic();
+  });
 
   const dispatcher = getDispatcher();
 
@@ -96,14 +109,21 @@
    *  let the operator double-toggle while the round-trip is in flight. */
   let togglingId = $state<ID | null>(null);
 
-  /** Stamp dialog state. */
+  /** Stamp dialog state — the <Form> kernel owns the draft + submitting
+   *  state; the screen only tracks which template the dialog is for. */
   let stampOpen = $state(false);
   let stampSourceId = $state<ID | null>(null);
-  let stampName = $state('');
-  let stampSubmitting = $state(false);
-  let stampError = $state<string | null>(null);
+  let stampSourceTitle = $state('');
 
-  let searchEl: HTMLInputElement | null = $state(null);
+  const stampInitial = $derived.by((): Record<string, unknown> => {
+    if (stampSourceId === null) return {};
+    return {
+      template_project_id: stampSourceId,
+      name: `Copy of ${stampSourceTitle}`,
+    };
+  });
+
+  const SEARCH_INPUT_ID = 'admin-projects-search';
 
   /* ----------------------------------------------------------- data fetch */
 
@@ -190,71 +210,53 @@
 
   function openStampDialog(card: CardWithAttrs): void {
     stampSourceId = card.id;
-    stampName = `Copy of ${projectTitle(card)}`;
-    stampError = null;
+    stampSourceTitle = projectTitle(card);
     stampOpen = true;
   }
 
   function closeStampDialog(): void {
     stampOpen = false;
-    stampSubmitting = false;
     stampSourceId = null;
-    stampName = '';
-    stampError = null;
+    stampSourceTitle = '';
   }
 
-  async function submitStamp(): Promise<void> {
-    if (stampSourceId === null) return;
-    const v = validateStampName(stampName);
-    if (!v.ok) {
-      stampError = v.error;
-      return;
-    }
-    stampError = null;
-    stampSubmitting = true;
-    try {
-      const data: ProjectStampInput = {
-        templateProjectId: stampSourceId,
-        name: v.name,
-      };
-      const out = await dispatcher.request<
-        ProjectStampInput,
-        ProjectStampOutput
-      >({
-        endpoint: projectStamp.endpoint,
-        action: projectStamp.action,
-        data,
-      });
-      notify({
-        type: 'success',
-        message: `Stamped new project "${v.name}"`,
-      });
-      const warnings = out.warnings;
-      if (warnings !== undefined) {
-        for (const w of warnings) {
-          if (w === '') continue;
-          notify({ type: 'info', message: w });
-        }
+  function onStampSaved(out: unknown): void {
+    // Cast: the server output decoder returned ProjectStampOutput-shaped
+    // data. requestRaw doesn't run the registered decoder, so we narrow
+    // by hand. Missing fields surface as the structural-type checks
+    // below (warnings? new_project_id?).
+    const r = (out ?? {}) as Partial<ProjectStampOutput> & {
+      new_project_id?: unknown;
+      warnings?: unknown;
+    };
+    const newId = typeof r.new_project_id === 'bigint'
+      ? r.new_project_id
+      : 0n;
+    const nameDraft = stampSourceTitle;
+    notify({
+      type: 'success',
+      message: `Stamped new project from "${nameDraft}"`,
+    });
+    if (Array.isArray(r.warnings)) {
+      for (const w of r.warnings) {
+        if (typeof w !== 'string' || w === '') continue;
+        notify({ type: 'info', message: w });
       }
-      const newId = out.new_project_id;
-      closeStampDialog();
-      // Refresh in the background so the freshly-stamped project shows
-      // up on the next admin visit; meanwhile navigate to the project's
-      // default screen so the user lands on the new card.
-      void refresh();
-      navigate(`/project/${newId.toString()}`);
-    } catch (e) {
-      stampError = errMsg(e);
-      stampSubmitting = false;
     }
+    closeStampDialog();
+    void refresh();
+    if (newId !== 0n) navigate(`/project/${newId.toString()}`);
   }
 
   /* ---------------------------------------------------- keyboard helpers */
 
   async function focusSearch(): Promise<void> {
     await tick();
-    searchEl?.focus();
-    searchEl?.select();
+    const el = document.getElementById(SEARCH_INPUT_ID);
+    if (el instanceof HTMLInputElement) {
+      el.focus();
+      el.select();
+    }
   }
 
   useShortcut('admin_projects', '/', () => void focusSearch(), 'Focus search', {
@@ -288,64 +290,45 @@
   });
 </script>
 
-<div class="flex h-full flex-col">
-  <header class="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
-    <div class="flex items-center gap-3">
-      <h1 class="text-xl font-semibold">Admin &middot; Projects</h1>
-      <span class="text-xs text-muted">
-        {projects.length} total &middot; {templateCount} template{templateCount === 1 ? '' : 's'}
-      </span>
-    </div>
-    <div class="flex items-center gap-4">
-      <label class="flex items-center gap-2 text-sm text-fg">
-        <input
-          type="checkbox"
-          bind:checked={showTemplates}
-          class="h-4 w-4 rounded border-border"
-          data-testid="show-templates-toggle"
-        />
-        <span>Show templates</span>
-      </label>
-      <span data-testid="admin-projects-new">
-        <Button variant="primary" size="sm" onclick={() => qe.open()}>
-          {#snippet children()}+ New project{/snippet}
-        </Button>
-      </span>
-    </div>
-  </header>
-
+<PageShell title="Admin · Projects" pad="none">
+  {#snippet actions()}
+    <span class="text-xs text-muted">
+      {projects.length} total &middot; {templateCount} template{templateCount === 1 ? '' : 's'}
+    </span>
+    <label class="inline-flex items-center gap-2 text-sm text-fg" data-testid="show-templates-toggle">
+      <Checkbox bind:checked={showTemplates} />
+      Show templates
+    </label>
+    <span data-testid="admin-projects-new">
+      <Button variant="primary" size="sm" onclick={() => qe.open()}>
+        {#snippet children()}+ New project{/snippet}
+      </Button>
+    </span>
+  {/snippet}
+  {#snippet children()}
   {#if loading && projects.length === 0}
-    <div class="flex flex-1 items-center justify-center">
+    <div class="flex h-full items-center justify-center">
       <Spinner size="lg" />
     </div>
   {:else if error !== null}
-    <div
-      role="alert"
-      class="m-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger"
-    >
-      Failed to load: {error}
-      <button type="button" class="ml-3 underline" onclick={() => void refresh()}>
-        Retry
-      </button>
-    </div>
+    <ErrorAlert
+      class="m-4"
+      message={`Failed to load: ${error}`}
+      onRetry={() => void refresh()}
+    />
   {:else}
     <div class="flex flex-col gap-2 px-4 py-3">
-      <input
+      <TextInput
+        id={SEARCH_INPUT_ID}
         type="search"
-        bind:this={searchEl}
         bind:value={search}
-        placeholder="Search projects&hellip; (press / to focus)"
+        placeholder="Search projects… (press / to focus)"
         aria-label="Search projects by title"
-        class={cx(
-          'w-full rounded-md border border-border bg-bg px-3 py-2 text-sm',
-          'text-fg placeholder:text-muted',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-        )}
       />
     </div>
 
     {#if visible.length === 0}
-      <div class="flex flex-1 items-center justify-center">
+      <div class="flex h-full items-center justify-center">
         <EmptyState
           title={projects.length === 0 ? 'No projects' : 'No projects match'}
           description={projects.length === 0
@@ -354,7 +337,7 @@
         />
       </div>
     {:else}
-      <div class="flex-1 overflow-auto px-4 pb-4">
+      <div class="overflow-auto px-4 pb-4">
         <table class="w-full text-sm">
           <thead class="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
             <tr>
@@ -395,15 +378,14 @@
                 </td>
                 <td class="py-2 pr-3">
                   <label class="inline-flex items-center gap-2 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={tpl}
-                      disabled={togglingId !== null}
-                      data-testid="is-template-toggle"
-                      onchange={() => void toggleIsTemplate(project)}
-                      aria-label={`Toggle is_template on ${projectTitle(project)}`}
-                      class="h-4 w-4 rounded border-border"
-                    />
+                    <span data-testid="is-template-toggle">
+                      <Checkbox
+                        checked={tpl}
+                        disabled={togglingId !== null}
+                        onchange={() => void toggleIsTemplate(project)}
+                        aria-label={`Toggle is_template on ${projectTitle(project)}`}
+                      />
+                    </span>
                     <span class="text-muted">{tpl ? 'true' : 'false'}</span>
                   </label>
                 </td>
@@ -427,7 +409,8 @@
       </div>
     {/if}
   {/if}
-</div>
+  {/snippet}
+</PageShell>
 
 <!-- ============================================== Stamp-from-template dialog -->
 <Modal
@@ -437,53 +420,30 @@
   onClose={closeStampDialog}
 >
   {#snippet children()}
-    <div class="flex flex-col gap-3 text-sm text-fg">
-      <p class="text-muted">
-        Copies the template's value cards, flow, screens, and filters into
-        a fresh project. Tasks, comments, and per-user state are not
-        copied.
-      </p>
-      <label class="flex flex-col gap-1">
-        <span class="text-xs font-medium text-muted">New project name</span>
-        <input
-          type="text"
-          bind:value={stampName}
-          data-testid="stamp-name-input"
-          class={cx(
-            'rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-          )}
-          onkeydown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              void submitStamp();
-            }
-          }}
-        />
-      </label>
-      {#if stampError !== null}
-        <div
-          role="alert"
-          class="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger"
-        >
-          {stampError}
+    {#key stampSourceId}
+      <Form
+        spec="project.stamp"
+        initial={stampInitial}
+        onSaved={onStampSaved}
+        class="flex flex-col gap-3 text-sm text-fg"
+      >
+        <p class="text-muted">
+          Copies the template's value cards, flow, screens, and filters into
+          a fresh project. Tasks, comments, and per-user state are not
+          copied.
+        </p>
+        <FormErrors />
+        <span data-testid="stamp-name-input">
+          <FormTextInput path="name" label="New project name" />
+        </span>
+        <div class="mt-2 flex items-center justify-end gap-2 border-t border-border pt-3">
+          <Button variant="ghost" size="sm" onclick={closeStampDialog}>
+            {#snippet children()}Cancel{/snippet}
+          </Button>
+          <SubmitButton size="sm">Stamp</SubmitButton>
         </div>
-      {/if}
-    </div>
-  {/snippet}
-  {#snippet footer()}
-    <Button variant="ghost" size="sm" onclick={closeStampDialog}>
-      {#snippet children()}Cancel{/snippet}
-    </Button>
-    <Button
-      variant="primary"
-      size="sm"
-      loading={stampSubmitting}
-      disabled={stampSubmitting}
-      onclick={() => void submitStamp()}
-    >
-      {#snippet children()}Stamp{/snippet}
-    </Button>
+      </Form>
+    {/key}
   {/snippet}
 </Modal>
 

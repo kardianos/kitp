@@ -82,6 +82,14 @@
     return attr.valueType.startsWith('ref:');
   }
 
+  /** Returns true for editor types whose primary affordance is a popover
+   *  the user expects to see on first click of the row. Drives the
+   *  auto-click in `toggleRow` so the user doesn't need to click twice
+   *  (once to expand the row, once to open the picker). */
+  function isPopoverType(attr: FilterAttribute): boolean {
+    return isComboboxType(attr) || attr.valueType === 'date';
+  }
+
   /**
    * Resolve a value to a printed label. Uses `refOptions` when the attribute
    * is an enum or `ref:*` so the panel shows "alice" rather than "2".
@@ -174,12 +182,15 @@
   ) {
     if (nextOpen) {
       openRows = { ...openRows, [name]: true };
-      // Auto-pop the dropdown for combobox-style attributes so a single click
-      // on the row reveals the picker — no second click on the trigger needed.
-      if (isComboboxType(attr)) {
+      // Auto-pop the popover for picker-style attributes (Combobox /
+      // DatePicker) so a single click on the row reveals the picker —
+      // no second click on the trigger needed. Combobox triggers carry
+      // `role="combobox"`; DatePicker triggers carry
+      // `aria-haspopup="dialog"`.
+      if (isPopoverType(attr)) {
         await tick();
         const trigger = detailsEl.querySelector<HTMLButtonElement>(
-          'button[role="combobox"]',
+          'button[role="combobox"], button[aria-haspopup="dialog"]',
         );
         trigger?.click();
       }

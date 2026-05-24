@@ -1,23 +1,22 @@
 // Package attribute holds attribute.update — the canonical event-sourced
 // write path. Every attribute change generates an activity row and an
-// upsert into attribute_value, all within one CTE per Run.
+// upsert into attribute_value, both written by the PL/pgSQL function
+// `attribute_update_batch` (see db/schema/functions/...). All
+// validation (card existence, edge, required-removal, project-scope,
+// screen-uniqueness, flow gate) lives inside that function per Phase 2
+// of docs/UNIFIED_HANDLER_PLAN.md.
 package attribute
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"reflect"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
 )
-
 
 // UpdateInput is one row of attribute.update.
 type UpdateInput struct {
@@ -33,8 +32,9 @@ type UpdateOutput struct {
 	PrevValue  json.RawMessage `json:"prev_value,omitempty" mcp:"desc=previous JSON value, if any"`
 }
 
-// Register installs the handler.
-func Register(p *store.Pool) {
+// Register installs the handler. The `_ *store.Pool` arg is preserved
+// for call-site symmetry with the other domain Register functions.
+func Register(_ *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "attribute",
 		Action:       "update",
@@ -42,10 +42,13 @@ func Register(p *store.Pool) {
 		InputType:    reflect.TypeFor[UpdateInput](),
 		OutputType:   reflect.TypeFor[UpdateOutput](),
 		AllowedRoles: []string{"worker", "manager", "admin"},
-		Validate:     validateUpdate,
 		ProcessName:  "card.update",
 		CardTypeID:   cardTypeFromCardID,
-		Run:          runUpdate(p),
+		// Unified handler — body lives in
+		// db/schema/functions/attribute_update_batch.sql. Per Phase 2
+		// of docs/UNIFIED_HANDLER_PLAN.md the SQL function now owns the
+		// full validate + write pipeline.
+		SQLFunc: "attribute_update_batch",
 	})
 }
 
@@ -55,270 +58,10 @@ func cardTypeFromCardID(ctx context.Context, pool reg.ValidationPool, raw any) (
 	return schema.CardTypeIDByCardID(ctx, pool, raw.(UpdateInput).CardID)
 }
 
-// validateUpdate runs before the transaction opens. F-ATTR-3:
-//   - the card must exist;
-//   - the (card_type, attribute_def) edge must exist;
-//   - removal of a required attribute is rejected (we treat a JSON null
-//     payload as removal);
-//   - if the attribute_def has value_type='enum', the supplied value
-//     must be one of the rows in attribute_def_option (migration 0012).
-//     The check uses a single SELECT, builds a Go set, and rejects
-//     unknown values with code 'invalid_enum_value'.
-func validateUpdate(ctx context.Context, pool reg.ValidationPool, raw any) error {
-	in := raw.(UpdateInput)
-	if in.CardID == 0 {
-		return &reg.HandlerError{Code: "validation",
-			Message: "attribute.update: card_id is required"}
-	}
-	if in.AttributeName == "" {
-		return &reg.HandlerError{Code: "validation",
-			Message: "attribute.update: attribute_name is required"}
-	}
-
-	var cardTypeID int64
-	row := pool.QueryRow(ctx, `SELECT card_type_id FROM card WHERE id = $1`, in.CardID)
-	if err := row.Scan(&cardTypeID); err != nil {
-		if err == pgx.ErrNoRows {
-			return &reg.HandlerError{Code: "card_not_found",
-				Message: fmt.Sprintf("attribute.update: card %d not found", in.CardID)}
-		}
-		return fmt.Errorf("attribute.update: validate card lookup: %w", err)
-	}
-
-	// Look up the edge directly (cheap, single query). We also pull
-	// value_type so we can apply enum validation in the same pass.
-	var attrDefID int64
-	var isRequired bool
-	var valueType string
-	var targetCardTypeID *int64
-	row = pool.QueryRow(ctx, `
-		SELECT ad.id, e.is_required, ad.value_type, ad.target_card_type_id
-		FROM attribute_def ad
-		JOIN edge e ON e.attribute_def_id = ad.id
-		WHERE ad.name = $1 AND e.card_type_id = $2
-	`, in.AttributeName, cardTypeID)
-	if err := row.Scan(&attrDefID, &isRequired, &valueType, &targetCardTypeID); err != nil {
-		if err == pgx.ErrNoRows {
-			return &reg.HandlerError{Code: "edge_violation",
-				Message: fmt.Sprintf("attribute.update: attribute %q is not allowed on this card type",
-					in.AttributeName)}
-		}
-		return fmt.Errorf("attribute.update: validate edge lookup: %w", err)
-	}
-
-	// Treat literal JSON null as a removal request.
-	if isJSONNull(in.Value) {
-		if isRequired {
-			return &reg.HandlerError{Code: "edge_violation",
-				Message: fmt.Sprintf("attribute.update: attribute %q is required and cannot be removed",
-					in.AttributeName)}
-		}
-		// Removal request — no further checks needed.
-		return nil
-	}
-
-	// Reference scope: every card_ref / card_ref[] write goes through
-	// the same per-project check. Value-cards whose enclosing project
-	// matches the target are accepted; global cards (e.g. person) are
-	// wildcards (accepted against any target). There is no enum
-	// special case — pick-from-a-list attributes ARE card_refs.
-	if valueType == "card_ref" || valueType == "card_ref[]" {
-		valueIDs, err := ParseCardRefValue(in.AttributeName, in.Value)
-		if err != nil {
-			return &reg.HandlerError{Code: "validation",
-				Message: fmt.Sprintf("attribute.update: %v", err)}
-		}
-		if len(valueIDs) > 0 {
-			check := ProjectScopeCheck{
-				StartCardID:   in.CardID,
-				AttributeName: in.AttributeName,
-				ValueCardIDs:  valueIDs,
-			}
-			if targetCardTypeID != nil {
-				check.TargetCardTypeID = *targetCardTypeID
-			}
-			if err := ValidateProjectScope(ctx, pool, []ProjectScopeCheck{check}); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Gate 5: flow-aware authz. When the attribute has a flow bound in
-	// the card's enclosing project, tighten the write by flow_step
-	// existence + per-actor role satisfaction. role_grant remains the
-	// outer gate; the flow check is additive. See attribute/flow.go
-	// for the rejection envelope (V13) shape.
-	if err := validateFlow(ctx, pool, in.CardID, in.AttributeName, attrDefID, valueType, in.Value); err != nil {
-		return err
-	}
-	return nil
-}
-
-// jsonRow is the per-row payload fed to jsonb_to_recordset.
-type jsonRow struct {
-	CardID        int64           `json:"card_id,string"`
-	AttributeName string          `json:"attribute_name"`
-	Value         json.RawMessage `json:"value"`
-	Ord           int             `json:"ord"`
-}
-
-// runUpdate is an arrayPath writer. // arrayPath
-func runUpdate(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		actorID := auth.ActorOrSystem(ctx)
-
-		payload := make([]jsonRow, len(ins))
-		for i, raw := range ins {
-			in := raw.(UpdateInput)
-			value := in.Value
-			if len(value) == 0 {
-				value = json.RawMessage(`null`)
-			}
-			payload[i] = jsonRow{
-				CardID:        in.CardID,
-				AttributeName: in.AttributeName,
-				Value:         value,
-				Ord:           i,
-			}
-
-			// V2 in-tx uniqueness gate for screen.hotkey / screen.slug.
-			// Runs before the bulk UPSERT so a conflict aborts the whole
-			// run; coalescing two writes in the same batch never lands a
-			// duplicate value. The check is a no-op for any other
-			// attribute.
-			if rej, err := screenUniquenessCheck(ctx, tx, in.CardID, in.AttributeName, value); err != nil {
-				return nil, err
-			} else if rej != nil {
-				rej.InputIndex = i
-				return nil, rej
-			}
-		}
-
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, err
-		}
-
-		// One CTE per Run: read prev values, INSERT N activity rows ordered
-		// by ord, UPSERT N attribute_value rows. The id-vs-ord correlation
-		// works because Postgres allocates activity ids in INSERT order, and
-		// our INSERT is "ORDER BY ord"; row_number() windows align them.
-		//
-		// The CASE in the input CTE canonicalises card_ref / card_ref[]
-		// values to JSON numbers so the dispatcher's wire convention
-		// (bigint ids as JSON strings) doesn't poison the jsonb store.
-		// Reads canonicalise on the query side too, so this is the
-		// "close the loop" half: stored values and queried values share
-		// the same canonical shape, and equality filters match both
-		// seeded (numeric) and UI-written rows.
-		const q = `
-			WITH input AS (
-				SELECT i.ord, i.card_id, ad.id AS attribute_def_id,
-				       CASE
-				         WHEN ad.value_type = 'card_ref'
-				              AND jsonb_typeof(i.value) = 'string'
-				              AND (i.value #>> '{}') ~ '^-?\d+$'
-				           THEN to_jsonb(((i.value #>> '{}')::bigint))
-				         WHEN ad.value_type = 'card_ref[]'
-				              AND jsonb_typeof(i.value) = 'array'
-				           THEN COALESCE((
-				                  SELECT jsonb_agg(
-				                           CASE
-				                             WHEN jsonb_typeof(e.v) = 'string'
-				                                  AND (e.v #>> '{}') ~ '^-?\d+$'
-				                               THEN to_jsonb(((e.v #>> '{}')::bigint))
-				                             ELSE e.v
-				                           END
-				                           ORDER BY e.ord)
-				                  FROM jsonb_array_elements(i.value)
-				                       WITH ORDINALITY AS e(v, ord)),
-				                '[]'::jsonb)
-				         ELSE i.value
-				       END AS value
-				FROM jsonb_to_recordset($1::jsonb)
-				AS i(ord int, card_id bigint, attribute_name text, value jsonb)
-				JOIN attribute_def ad ON ad.name = i.attribute_name
-			),
-			prev AS (
-				SELECT i.ord, i.card_id, i.attribute_def_id,
-				       i.value AS value_new,
-				       av.value AS value_old
-				FROM input i
-				LEFT JOIN attribute_value av
-					ON av.card_id = i.card_id AND av.attribute_def_id = i.attribute_def_id
-			),
-			ins_act AS (
-				INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
-				SELECT card_id, 'attr_update', attribute_def_id, value_old, value_new, $2
-				FROM prev
-				ORDER BY ord
-				RETURNING id, card_id, attribute_def_id
-			),
-			act_numbered AS (
-				SELECT id, card_id, attribute_def_id,
-				       row_number() OVER (ORDER BY id) AS rn
-				FROM ins_act
-			),
-			prev_numbered AS (
-				SELECT ord, card_id, attribute_def_id, value_new, value_old,
-				       row_number() OVER (ORDER BY ord) AS rn
-				FROM prev
-			),
-			zipped AS (
-				SELECT p.ord, a.id AS activity_id, p.card_id, p.attribute_def_id,
-				       p.value_new, p.value_old
-				FROM act_numbered a
-				JOIN prev_numbered p ON p.rn = a.rn
-			),
-			upsert AS (
-				INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
-				SELECT card_id, attribute_def_id, value_new, activity_id FROM zipped
-				ON CONFLICT (card_id, attribute_def_id) DO UPDATE
-					SET value = EXCLUDED.value,
-					    last_activity_id = EXCLUDED.last_activity_id
-				RETURNING card_id, attribute_def_id
-			)
-			SELECT ord, activity_id, value_old FROM zipped ORDER BY ord
-		`
-		rows, err := tx.Query(ctx, q, buf, actorID)
-		if err != nil {
-			return nil, fmt.Errorf("attribute.update: %w", err)
-		}
-		outs := make([]any, len(ins))
-		seen := 0
-		for rows.Next() {
-			var ord int
-			var activityID int64
-			var prev []byte
-			if err := rows.Scan(&ord, &activityID, &prev); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			if ord < 0 || ord >= len(ins) {
-				rows.Close()
-				return nil, fmt.Errorf("attribute.update: ord %d out of range", ord)
-			}
-			outs[ord] = UpdateOutput{
-				OK:         true,
-				ActivityID: activityID,
-				PrevValue:  json.RawMessage(prev),
-			}
-			seen++
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		if seen != len(ins) {
-			return nil, fmt.Errorf("attribute.update: returned %d rows for %d inputs", seen, len(ins))
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		return outs, nil
-	}
-}
-
+// isJSONNull reports whether raw is a JSON null literal (or empty).
+// Still used by scope.go (ParseCardRefValue) and screen.go even though
+// validateUpdate/runUpdate are gone — keeps the helper close to its
+// remaining callers.
 func isJSONNull(b []byte) bool {
 	if len(b) == 0 {
 		return true

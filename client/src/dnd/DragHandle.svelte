@@ -19,14 +19,14 @@
   );
 </script>
 
-<div use:dragHandle={opts} class="dnd-handle {cls}" style="touch-action: none;">
+<div use:dragHandle={opts} class="dnd-handle {cls}">
   {@render children?.()}
 </div>
 
 <style>
   .dnd-handle {
-    /* Suppress text selection while a drag is starting. */
     user-select: none;
     -webkit-user-select: none;
+    touch-action: none;
   }
 </style>

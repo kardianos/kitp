@@ -43,11 +43,11 @@
   import { BatchAbortedError, SubRequestError } from '../../dispatch/errors';
   import DragHandle from '../../dnd/DragHandle.svelte';
   import DropZone from '../../dnd/DropZone.svelte';
+  import { clearHelpTopic, setHelpTopic } from '../../help/help_context.svelte';
   import { setActiveScope, useShortcut } from '../../keys/shortcut';
   import { navigate } from '../../routing/router.svelte';
   import { projectScope } from '../../shell/project_scope.svelte';
   import {
-    attributeDefInsert,
     attributeDefSelect,
     attributeUpdate,
     cardDelete,
@@ -59,8 +59,6 @@
     edgeInsert,
   } from '../../reg/handlers';
   import type {
-    AttributeDefInsertInput,
-    AttributeDefInsertOutput,
     AttributeDefRow,
     AttributeDefSelectInput,
     AttributeDefSelectOutput,
@@ -90,9 +88,19 @@
   import Chip from '../../ui/Chip.svelte';
   import Combobox from '../../ui/Combobox.svelte';
   import EmptyState from '../../ui/EmptyState.svelte';
+  import ErrorAlert from '../../ui/ErrorAlert.svelte';
   import IconButton from '../../ui/IconButton.svelte';
   import Modal from '../../ui/Modal.svelte';
+  import PageShell from '../../ui/PageShell.svelte';
   import Spinner from '../../ui/Spinner.svelte';
+  import TextInput from '../../ui/inputs/TextInput.svelte';
+  import {
+    Form,
+    FormErrors,
+    Select,
+    SubmitButton,
+    TextInput as FormTextInput,
+  } from '../../forms';
   import { notify } from '../../ui/toast.svelte';
   import { cx } from '../../util/class_names';
 
@@ -101,13 +109,16 @@
     boundMatrix,
     groupDefs,
     parseRefCardType,
-    validateNewAttr,
     type MatrixRow,
-    type NewAttrDraft,
   } from './admin_attributes_helpers';
   import { formatBlockedByMessage } from './admin_flows_helpers';
 
   setActiveScope('admin_attributes');
+
+  $effect(() => {
+    setHelpTopic({ kind: 'topic', topic: 'admin.attributes' });
+    return () => clearHelpTopic();
+  });
 
   /* ---------------------------------------------------------- dependencies */
 
@@ -122,13 +133,19 @@
   let search = $state('');
   let selectedDefId = $state<ID | null>(null);
   let creating = $state(false);
-  let draft = $state<NewAttrDraft>(blankDraft());
-  let draftErrors = $state<Record<string, string>>({});
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let saving = $state(false);
 
-  let searchEl: HTMLInputElement | null = $state(null);
+  /** Initial draft for the new-attribute <Form>. snake_case keys match
+   *  the handler's JSON Schema. value_type holds the final wire shape
+   *  directly (`text` | `number` | ... | `ref:<card_type>`) so no
+   *  post-submit transform is needed. */
+  const newAttrInitial: Record<string, unknown> = {
+    name: '',
+    value_type: 'text',
+  };
+
+  const SEARCH_INPUT_ID = 'admin-attrs-search';
   let newBtnEl: HTMLButtonElement | null = $state(null);
 
   /**
@@ -143,13 +160,6 @@
   let blockedByTitle = $state('');
   let blockedByMessage = $state('');
   let blockedByDetail = $state<FlowStepBlocker[]>([]);
-
-  function blankDraft(): NewAttrDraft {
-    return {
-      name: '',
-      valueType: 'text',
-    };
-  }
 
   /* ------------------------------------------------------------ derivations */
 
@@ -177,21 +187,21 @@
     boundMatrix(cardTypes, creating ? null : selectedDef),
   );
 
-  const cardTypeOptions = $derived(
-    cardTypes.map((t) => ({ value: t.name, label: t.name })),
-  );
-
-  const valueTypeOptions = [
+  /** Flat value_type options — wire-ready strings the form draft holds
+   *  directly. `ref:<card_type>` enumerated per card_type so there's no
+   *  two-stage selection. There is no separate "enum" type
+   *  post-refactor: pick-from-a-list attributes are card_refs to a
+   *  per-project value-card list. */
+  const valueTypeOptions = $derived<{ value: string; label: string }[]>([
     { value: 'text', label: 'text' },
     { value: 'number', label: 'number' },
     { value: 'bool', label: 'bool' },
     { value: 'date', label: 'date' },
-    // ref:<type> handled via the Combobox below selecting a card type;
-    // the form translates that into `ref:<name>` on save. There is no
-    // separate "enum" type post-refactor: pick-from-a-list attributes
-    // are card_refs to a per-project value-card list.
-    { value: 'ref', label: 'ref:<card type>' },
-  ];
+    ...cardTypes.map((t) => ({
+      value: `ref:${t.name}`,
+      label: `ref:${t.name}`,
+    })),
+  ]);
 
   /** Lock value_type when any card already carries a value for this def. */
   const valueTypeLocked = $derived<boolean>(
@@ -330,52 +340,22 @@
   function startCreate(): void {
     creating = true;
     selectedDefId = null;
-    draft = blankDraft();
-    draftErrors = {};
   }
 
   /* --------------------------------------------------- center pane: save */
 
-  async function saveCreate(): Promise<void> {
-    const result = validateNewAttr(draft);
-    draftErrors = result.errors;
-    if (!result.ok) return;
-    saving = true;
-    try {
-      // Translate `ref` placeholder into `ref:<card_type>` for the wire.
-      let valueType = draft.valueType.trim();
-      if (valueType === 'ref') {
-        const refTarget = (draft.refCardType ?? '').trim();
-        valueType = `ref:${refTarget}`;
-      }
-
-      const data: AttributeDefInsertInput = {
-        name: draft.name.trim(),
-        valueType,
-      };
-
-      await dispatcher.request<
-        AttributeDefInsertInput,
-        AttributeDefInsertOutput
-      >({
-        endpoint: attributeDefInsert.endpoint,
-        action: attributeDefInsert.action,
-        data,
-      });
-      notify({ type: 'success', message: `Attribute "${draft.name}" created.` });
-      creating = false;
-      draft = blankDraft();
-      draftErrors = {};
+  /** onSaved for the new-attribute <Form>. Closes the dialog, refreshes
+   *  the def list, and selects the newly created def by id from the
+   *  handler's response. */
+  function onAttrCreated(out: unknown): void {
+    const r = (out ?? {}) as { id?: unknown };
+    const newId = typeof r.id === 'bigint' ? r.id : null;
+    creating = false;
+    notify({ type: 'success', message: 'Attribute created.' });
+    void (async () => {
       await refreshDefs();
-      // Select the newly created def by name.
-      const created = defs.find((d) => d.name === data.name);
-      if (created) selectedDefId = created.id;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      draftErrors = { ...draftErrors, _form: msg };
-    } finally {
-      saving = false;
-    }
+      if (newId !== null) selectedDefId = newId;
+    })();
   }
 
   /* ----------------------------------------------- right pane: matrix ops */
@@ -738,8 +718,11 @@
 
   async function focusSearch(): Promise<void> {
     await tick();
-    searchEl?.focus();
-    searchEl?.select();
+    const el = document.getElementById(SEARCH_INPUT_ID);
+    if (el instanceof HTMLInputElement) {
+      el.focus();
+      el.select();
+    }
   }
 
   async function focusNew(): Promise<void> {
@@ -771,15 +754,9 @@
   useShortcut('admin_attributes', 'k', () => moveSelection(-1), 'Previous attribute', {
     fireInInputs: false,
   });
-  useShortcut(
-    'admin_attributes',
-    'Enter',
-    () => {
-      if (creating) void saveCreate();
-    },
-    'Save (create mode)',
-    { fireInInputs: false },
-  );
+  // Enter-to-save is now handled by the <Form>'s SubmitButton when
+  // focused; the dedicated screen-level shortcut is gone since it would
+  // need to reach into the form context from outside the Form tree.
 
   /* ------------------------------------------------------------- mount */
 
@@ -788,50 +765,32 @@
   });
 </script>
 
-<div class="flex h-full flex-col">
-  <header
-    class="flex items-center justify-between border-b border-border px-4 py-2"
-  >
-    <h1 class="text-lg font-semibold">Admin · Attributes</h1>
-  </header>
-
+<PageShell title="Admin · Attributes" pad="none">
+  {#snippet children()}
   {#if loading && defs.length === 0}
-    <div class="flex flex-1 items-center justify-center">
+    <div class="flex h-full items-center justify-center">
       <Spinner size="lg" />
     </div>
   {:else if error !== null}
-    <div
-      role="alert"
-      class="m-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger"
-    >
-      Failed to load: {error}
-      <button
-        type="button"
-        class="ml-3 underline"
-        onclick={() => void loadInitial()}
-      >
-        Retry
-      </button>
-    </div>
+    <ErrorAlert
+      class="m-4"
+      message={`Failed to load: ${error}`}
+      onRetry={() => void loadInitial()}
+    />
   {:else}
-    <div class="grid flex-1 min-h-0 grid-cols-[280px_1fr_460px]">
+    <div class="grid h-full min-h-0 grid-cols-[280px_1fr_460px]">
       <!-- ---------------------------------------------------- LEFT -->
       <aside
         class="flex flex-col border-r border-border min-h-0"
         aria-label="Attribute list"
       >
         <div class="flex flex-col gap-2 border-b border-border p-2">
-          <input
+          <TextInput
+            id={SEARCH_INPUT_ID}
             type="search"
-            bind:this={searchEl}
             bind:value={search}
             placeholder="Search attributes (press /)"
             aria-label="Search attributes"
-            class={cx(
-              'w-full rounded-md border border-border bg-bg px-2 py-1 text-sm',
-              'text-fg placeholder:text-muted',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-            )}
           />
           <button
             bind:this={newBtnEl}
@@ -855,7 +814,7 @@
               class="border-b border-border bg-surface px-3 py-2 text-sm"
               data-testid="draft-row"
             >
-              <span class="font-medium text-fg">{draft.name || '(new attribute)'}</span>
+              <span class="font-medium text-fg">(new attribute)</span>
               <Chip label="draft" size="sm" />
             </div>
           {/if}
@@ -929,88 +888,40 @@
         aria-label="Attribute detail"
       >
         {#if creating}
-          <div class="flex flex-col gap-3" data-testid="create-form">
-            <h2 class="text-base font-semibold">New attribute</h2>
-
-            <label class="flex flex-col gap-1 text-sm">
-              <span class="text-muted">Name</span>
-              <input
-                type="text"
-                data-testid="new-attr-name"
-                bind:value={draft.name}
-                class={cx(
-                  'rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg',
-                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-                )}
-              />
-              {#if draftErrors.name}
-                <span class="text-xs text-danger">{draftErrors.name}</span>
-              {/if}
-            </label>
-
-            <label class="flex flex-col gap-1 text-sm">
-              <span class="text-muted">Value type</span>
-              <Combobox
-                value={draft.valueType}
-                options={valueTypeOptions}
-                searchable={false}
-                onchange={(v) => {
-                  if (typeof v === 'string') {
-                    draft = { ...draft, valueType: v };
-                  }
-                }}
-              />
-              {#if draftErrors.valueType}
-                <span class="text-xs text-danger">{draftErrors.valueType}</span>
-              {/if}
-            </label>
-
-            {#if draft.valueType === 'ref'}
-              <label class="flex flex-col gap-1 text-sm">
-                <span class="text-muted">Card type</span>
-                <Combobox
-                  value={draft.refCardType ?? null}
-                  options={cardTypeOptions}
-                  onchange={(v) => {
-                    if (typeof v === 'string') {
-                      draft = { ...draft, refCardType: v };
-                    }
-                  }}
+          {#key creating}
+            <Form
+              spec="attribute_def.insert"
+              initial={newAttrInitial}
+              onSaved={onAttrCreated}
+              class="flex flex-col gap-3"
+            >
+              <div data-testid="create-form" class="flex flex-col gap-3">
+                <h2 class="text-base font-semibold">New attribute</h2>
+                <FormErrors />
+                <span data-testid="new-attr-name">
+                  <FormTextInput path="name" label="Name" />
+                </span>
+                <Select
+                  path="value_type"
+                  label="Value type"
+                  options={valueTypeOptions}
+                  searchable={false}
                 />
-                {#if draftErrors.refCardType}
-                  <span class="text-xs text-danger">{draftErrors.refCardType}</span>
-                {/if}
-              </label>
-            {/if}
-
-            {#if draftErrors._form}
-              <div class="rounded border border-danger/40 bg-danger/10 px-2 py-1 text-xs text-danger">
-                {draftErrors._form}
+                <div class="flex items-center gap-2">
+                  <SubmitButton size="md">Save</SubmitButton>
+                  <Button
+                    variant="ghost"
+                    size="md"
+                    onclick={() => {
+                      creating = false;
+                    }}
+                  >
+                    {#snippet children()}Cancel{/snippet}
+                  </Button>
+                </div>
               </div>
-            {/if}
-
-            <div class="flex items-center gap-2">
-              <Button
-                variant="primary"
-                size="md"
-                loading={saving}
-                onclick={() => void saveCreate()}
-              >
-                {#snippet children()}Save{/snippet}
-              </Button>
-              <Button
-                variant="ghost"
-                size="md"
-                onclick={() => {
-                  creating = false;
-                  draft = blankDraft();
-                  draftErrors = {};
-                }}
-              >
-                {#snippet children()}Cancel{/snippet}
-              </Button>
-            </div>
-          </div>
+            </Form>
+          {/key}
         {:else if selectedDef !== null}
           {@const def = selectedDef}
           <div class="flex flex-col gap-3" data-testid="edit-form">
@@ -1024,16 +935,7 @@
 
             <label class="flex flex-col gap-1 text-sm">
               <span class="text-muted">Name</span>
-              <input
-                type="text"
-                value={def.name}
-                disabled={def.is_built_in}
-                readonly
-                class={cx(
-                  'rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg',
-                  'disabled:opacity-50',
-                )}
-              />
+              <TextInput value={def.name} disabled={def.is_built_in} readonly />
               {#if def.is_built_in}
                 <span class="text-xs text-muted">Built-in defs cannot be renamed.</span>
               {/if}
@@ -1041,15 +943,7 @@
 
             <label class="flex flex-col gap-1 text-sm">
               <span class="text-muted">Value type</span>
-              <input
-                type="text"
-                value={def.value_type}
-                readonly
-                class={cx(
-                  'rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg',
-                  'opacity-70',
-                )}
-              />
+              <TextInput value={def.value_type} readonly />
               {#if valueTypeLocked}
                 <span class="text-xs text-muted">
                   Locked — cards already carry values for this attribute.
@@ -1064,12 +958,7 @@
             {#if selectedRefCardType !== null}
               <label class="flex flex-col gap-1 text-sm">
                 <span class="text-muted">Referenced card type</span>
-                <input
-                  type="text"
-                  value={selectedRefCardType}
-                  readonly
-                  class="rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg opacity-70"
-                />
+                <TextInput value={selectedRefCardType} readonly />
               </label>
             {/if}
           </div>
@@ -1291,7 +1180,8 @@
       </aside>
     </div>
   {/if}
-</div>
+  {/snippet}
+</PageShell>
 
 <!--
   V8 blocked_by dialog. Surfaces the server's `value_referenced_by_flow`

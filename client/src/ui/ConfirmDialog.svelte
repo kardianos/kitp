@@ -46,6 +46,10 @@
 <Modal bind:open {title} {...onCancel ? { onClose: onCancel } : {}} size="sm">
   <p class="text-sm leading-relaxed text-fg">{message}</p>
   {#snippet footer()}
+    <!-- Raw <button> so we can bind:this and autofocus the Cancel
+         action on open. Button.svelte deliberately doesn't expose its
+         element ref — keeping that surface clean shaves bytes off
+         every Button call site across the app. -->
     <button
       bind:this={cancelBtn}
       type="button"

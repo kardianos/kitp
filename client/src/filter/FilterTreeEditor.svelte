@@ -29,16 +29,26 @@
     OP_TO_WIRE,
     opArity,
     PHASES,
+    SNIPPET_ATTR,
     type Op,
     type Phase,
     type Predicate,
     type PredicateGroup,
     type PredicateLeaf,
   } from './predicate.js';
+  import { readSnippetTitle } from './snippet_store.svelte.js';
+  import type { CardWithAttrs, ID } from '../reg/types.js';
   import ValueInput from './ValueInput.svelte';
 
   interface Props {
     attributes: FilterAttribute[];
+    /**
+     * Project-scoped predicate snippets. When non-empty, the
+     * attribute picker grows a "Named filter" pseudo-entry that lets
+     * the user drop a snippet reference into the tree (wrap in NOT,
+     * compose with OR, etc.).
+     */
+    snippets?: CardWithAttrs[];
     predicate: Predicate | null;
     open: boolean;
     onSave: (p: Predicate | null) => void;
@@ -47,11 +57,30 @@
 
   let {
     attributes,
+    snippets = [],
     predicate,
     open = $bindable(),
     onSave,
     onCancel,
   }: Props = $props();
+
+  /** Options for the snippet value picker. Empty until [snippets] is
+   *  non-empty — the editor hides the "Named filter" attribute entry
+   *  in that case so the picker never opens empty. */
+  const snippetOptions = $derived(
+    snippets.map((s) => ({ value: s.id, label: readSnippetTitle(s) })),
+  );
+
+  /** Attribute combobox entries with the "Named filter" pseudo-entry
+   *  prepended when there are snippets to pick. */
+  const attributeOptions = $derived(
+    snippetOptions.length > 0
+      ? [
+          { value: SNIPPET_ATTR, label: 'Named filter' },
+          ...attributes.map((a) => ({ value: a.name, label: a.label })),
+        ]
+      : attributes.map((a) => ({ value: a.name, label: a.label })),
+  );
 
   /* ---- Editable mirror of the predicate ----------------------------------- */
 
@@ -198,6 +227,14 @@
 
   function setLeafAttr(leaf: EditNodeLeaf, attrName: string) {
     leaf.attr = attrName;
+    // The `_snippet` sentinel attribute pins the op to `snippet`:
+    // there's no other meaningful operator on a snippet ref, and the
+    // value picker swaps to the snippet Combobox.
+    if (attrName === SNIPPET_ATTR) {
+      leaf.op = 'snippet';
+      leaf.values = [];
+      return;
+    }
     // Reset op + values: the new attribute may not support the previous op,
     // and stale values from another attribute are confusing.
     const attr = attributes.find((a) => a.name === attrName);
@@ -210,10 +247,13 @@
     const prevOp = leaf.op;
     leaf.op = op;
     const newArity = opArity(op);
-    // `hasPhase` carries phase strings, not ref-target values, so values
-    // from any other op are meaningless. Same when leaving `hasPhase`
-    // for a normal value-picker op. Clear in both directions.
-    if (op === 'hasPhase' || prevOp === 'hasPhase') {
+    // `hasPhase` / `parentStatusPhase` carry phase strings, not
+    // ref-target values, so values from any other op are meaningless.
+    // Same when leaving one of those ops for a normal value-picker
+    // op. Clear in both directions.
+    const isPhaseOp = (o: Op): boolean =>
+      o === 'hasPhase' || o === 'parentStatusPhase';
+    if (isPhaseOp(op) || isPhaseOp(prevOp)) {
       leaf.values = [];
       return;
     }
@@ -231,14 +271,36 @@
   }
 
   /**
-   * Friendly label for an op in the operator combobox. Falls through to
-   * the wire string (`= / != / not in / has_phase / …`) which already
-   * reads as plain English; we then format `has_phase` → `has phase` so
-   * the leaf reads "Status has phase Terminal".
+   * Friendly display label for an op in the operator combobox. Every
+   * op gets a natural-English phrasing so a built leaf reads as a
+   * complete sentence — `status is open`, `milestone is any of (M1,
+   * M2)`, `parent_task parent's status is Terminal`. The wire string
+   * (`=`, `not in`, `has_phase`, …) is what crosses the network; this
+   * is purely the editor's display label.
    */
+  const OP_LABELS: Readonly<Record<Op, string>> = {
+    eq: 'is',
+    ne: 'is not',
+    in: 'is any of',
+    notIn: 'is none of',
+    exists: 'is set',
+    notExists: 'is not set',
+    contains: 'contains',
+    notTerminal: 'is open',
+    hasPhase: 'has phase',
+    parentStatusPhase: "parent's status is",
+    // `snippet` leaves render their own picker (the named-snippet
+    // combobox) instead of using the attribute+op pattern, but the
+    // op label still surfaces in the operator combobox if a user
+    // converts a snippet leaf back into a regular leaf.
+    snippet: 'named filter',
+    // Relative-date ops on text attributes that store ISO 8601
+    // dates. The server resolves "today" at query time.
+    beforeToday: 'is before today',
+    withinDays: 'within next (days)',
+  };
   function opLabel(op: Op): string {
-    if (op === 'hasPhase') return 'has phase';
-    return OP_TO_WIRE[op];
+    return OP_LABELS[op];
   }
 
   /**
@@ -408,7 +470,7 @@
     <div class="min-w-[10rem]">
       <Combobox
         aria-label="Attribute"
-        options={attributes.map((a) => ({ value: a.name, label: a.label }))}
+        options={attributeOptions}
         value={leaf.attr}
         onchange={(v) => {
           if (typeof v === 'string') setLeafAttr(leaf, v);
@@ -418,10 +480,14 @@
     <div class="min-w-[7rem]">
       <Combobox
         aria-label="Operator"
-        options={(attr?.ops ?? (['eq', 'ne'] as Op[])).map((o) => ({
-          value: o,
-          label: opLabel(o),
-        }))}
+        options={
+          leaf.attr === SNIPPET_ATTR
+            ? [{ value: 'snippet' as Op, label: opLabel('snippet') }]
+            : (attr?.ops ?? (['eq', 'ne'] as Op[])).map((o) => ({
+                value: o,
+                label: opLabel(o),
+              }))
+        }
         value={leaf.op}
         searchable={false}
         onchange={(v) => {
@@ -430,10 +496,27 @@
       />
     </div>
     <div class="min-w-[10rem] flex-1">
-      {#if leaf.op === 'hasPhase'}
-        <!-- Phase picker: closed three-checkbox set; works on any ref
-             attribute. Server matches the target card's `phase` column
-             against the chosen list. -->
+      {#if leaf.op === 'snippet'}
+        <!-- Snippet picker: single-select Combobox listing project
+             snippet cards. The leaf's value is the snippet card id. -->
+        <Combobox
+          aria-label="Named filter"
+          options={snippetOptions}
+          value={(leaf.values[0] as ID | undefined) ?? null}
+          searchable={snippetOptions.length > 8}
+          placeholder="Pick a named filter"
+          onchange={(v) => {
+            if (v === null || v === undefined) leaf.values = [];
+            else if (typeof v === 'bigint') leaf.values = [v];
+          }}
+        />
+      {:else if leaf.op === 'hasPhase' || leaf.op === 'parentStatusPhase'}
+        <!-- Phase picker: closed three-checkbox set. `hasPhase` gates
+             on the *ref target's* phase (e.g. status="Done" → terminal);
+             `parentStatusPhase` (only valid on `parent_task`) gates on
+             the parent task's STATUS card's phase — a 2-hop traversal
+             compiled by the server. Both ops share the same value
+             shape, so the picker is identical. -->
         <div class="flex flex-wrap items-center gap-3 px-1 py-0.5 text-sm">
           {#each PHASES as phase (phase)}
             {@const checked = leaf.values.filter(isPhase).includes(phase)}
@@ -451,6 +534,7 @@
       {:else if attr && arity !== 'none'}
         <ValueInput
           attribute={attr}
+          op={leaf.op}
           value={arity === 'multi' ? leaf.values : leaf.values[0]}
           multiple={arity === 'multi'}
           onchange={(v) => {

@@ -137,6 +137,10 @@ describe('predicate wire shape', () => {
       'contains',
       'notTerminal',
       'hasPhase',
+      'parentStatusPhase',
+      'snippet',
+      'beforeToday',
+      'withinDays',
     ] as const) {
       expect(opFromWire(opToWire(op))).toBe(op);
     }
@@ -307,6 +311,7 @@ describe('hasPhase op', () => {
     { op: 'hasPhase', wire: 'has_phase' },
     { op: 'notTerminal', wire: 'not terminal' },
     { op: 'contains', wire: 'contains' },
+    { op: 'parentStatusPhase', wire: 'parent_status_phase' },
   ])('opToWire($op) === $wire', ({ op, wire }) => {
     expect(opToWire(op)).toBe(wire);
   });
@@ -324,6 +329,53 @@ describe('hasPhase op', () => {
       attr: 'status',
       op: 'has_phase',
       values: ['triage', 'active'],
+    });
+  });
+});
+
+describe('snippet op', () => {
+  it('opArity is single (one snippet id per leaf)', () => {
+    expect(opArity('snippet' as Op)).toBe('single');
+  });
+
+  it('round-trips through JSON, carrying the snippet card id', () => {
+    // Use a small int here because the test asserts on JSON shape, not
+    // bigint serialisation (which the dispatcher's outgoing replacer
+    // handles separately by stringifying bigints).
+    const leaf: PredicateLeaf = {
+      kind: 'leaf',
+      attr: '_snippet',
+      op: 'snippet',
+      values: [42],
+    };
+    const out = predicateFromJson(predicateToJson(leaf));
+    expect(out).toEqual(leaf);
+    expect(predicateToJson(leaf)).toEqual({
+      attr: '_snippet',
+      op: 'snippet',
+      values: [42],
+    });
+  });
+});
+
+describe('parentStatusPhase op', () => {
+  it('opArity is multi (matches hasPhase shape)', () => {
+    expect(opArity('parentStatusPhase' as Op)).toBe('multi');
+  });
+
+  it('round-trips through JSON with values intact', () => {
+    const leaf: PredicateLeaf = {
+      kind: 'leaf',
+      attr: 'parent_task',
+      op: 'parentStatusPhase',
+      values: ['terminal'] satisfies Phase[],
+    };
+    const out = predicateFromJson(predicateToJson(leaf));
+    expect(out).toEqual(leaf);
+    expect(predicateToJson(leaf)).toEqual({
+      attr: 'parent_task',
+      op: 'parent_status_phase',
+      values: ['terminal'],
     });
   });
 });

@@ -39,6 +39,7 @@
   } from '../../reg/types';
   import SlideOver from '../SlideOver.svelte';
   import Spinner from '../Spinner.svelte';
+  import { isAssignablePerson } from '../../util/person';
   import { notify } from '../toast.svelte';
   import AttributeSidePanel from './AttributeSidePanel.svelte';
 
@@ -113,7 +114,9 @@
     // assignee is now a card_ref to a `person` card. We still pre-resolve
     // the option list here so the side-panel trigger button can render a
     // label for the currently-set value without a round-trip.
-    out['assignee'] = persons.map((p) => ({ value: p.id, label: personLabel(p) }));
+    out['assignee'] = persons
+      .filter(isAssignablePerson)
+      .map((p) => ({ value: p.id, label: personLabel(p) }));
     return out;
   });
 
@@ -138,9 +141,10 @@
       if (fa.name === 'assignee') {
         out[fa.name] = async (q: string) => {
           const needle = q.trim().toLowerCase();
+          const pool = persons.filter(isAssignablePerson);
           const matched = needle === ''
-            ? persons
-            : persons.filter((p) => personLabel(p).toLowerCase().includes(needle));
+            ? pool
+            : pool.filter((p) => personLabel(p).toLowerCase().includes(needle));
           return matched.slice(0, 50).map((p) => ({
             value: p.id,
             label: personLabel(p),

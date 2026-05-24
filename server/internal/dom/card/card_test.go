@@ -172,9 +172,9 @@ func TestEdgeViolationRejected(t *testing.T) {
 	}
 
 	// And nothing should have been written: re-listing projects shows just
-	// the one we made plus the two seeded projects ('Default Project' from
-	// the demo seed and 'Standard Project Template' from the install seed,
-	// Gate 11).
+	// the one we made plus the seeded projects from the install seed +
+	// demo loader ('Standard Project Template' is_template=true from
+	// the install seed, and the demo's 'Default Project' + 'Mobile App').
 	resp = srv.Dispatch(ctx, api.BatchRequest{
 		Subrequests: []api.SubRequest{
 			{ID: "list", Endpoint: "card", Action: "select", Data: json.RawMessage(
@@ -182,18 +182,18 @@ func TestEdgeViolationRejected(t *testing.T) {
 		},
 	})
 	rows := rowsOf(t, resp.Subresponses[0])
-	if len(rows) != 3 {
-		t.Errorf("project rollback: got %d projects, want 3 (our P + Default Project + Standard Project Template)", len(rows))
+	if len(rows) != 4 {
+		t.Errorf("project rollback: got %d projects, want 4 (our P + Default Project + Mobile App + Standard Project Template)", len(rows))
 	}
 }
 
 // TestTwoInsertsCoalesceToOneStatement asserts that two card.insert
 // sub-requests in one batch produce a small constant number of writer
-// statement groups regardless of N (N-SRV-2). card.insert runs two
-// statement groups: (1) the card INSERT, (2) a CTE that emits one
-// card_create activity per card plus one attr_update activity + one
-// attribute_value upsert per initial attribute. Both groups coalesce
-// across sub-requests.
+// statement groups regardless of N (N-SRV-2). Under the unified-handler
+// shape, card.insert is one PL/pgSQL function call per group — every
+// per-row INSERT + activity write fans out inside that single call.
+// LastWrites counts one NoteWrite per group, so two sub-requests
+// coalesce to exactly 1.
 func TestTwoInsertsCoalesceToOneStatement(t *testing.T) {
 	srv, sp := setup(t, "kitp_test_card_coalesce")
 	ctx := auth.WithSystemUser(context.Background())
@@ -210,8 +210,8 @@ func TestTwoInsertsCoalesceToOneStatement(t *testing.T) {
 	for _, sr := range resp.Subresponses {
 		mustOK(t, sr)
 	}
-	if got := sp.LastWrites(); got != 2 {
-		t.Fatalf("LastWrites: got %d, want 2 (two card.insert sub-requests must be one Run = 2 statement groups)", got)
+	if got := sp.LastWrites(); got != 1 {
+		t.Fatalf("LastWrites: got %d, want 1 (two card.insert sub-requests coalesce to one unified-handler call)", got)
 	}
 }
 
@@ -253,7 +253,7 @@ func TestTaskUnderTaskAllowed(t *testing.T) {
 // boundary doesn't over-reject when the caller threads the required
 // attribute through (the client's default-create-status chain).
 func TestRequiredAttributeOnInsert(t *testing.T) {
-	srv, _ := setup(t, "kitp_test_card_required_insert")
+	srv, sp := setup(t, "kitp_test_card_required_insert")
 	ctx := auth.WithSystemUser(context.Background())
 
 	// Project + status (under that project).
@@ -264,7 +264,16 @@ func TestRequiredAttributeOnInsert(t *testing.T) {
 	pid := idsOf(t, resp.Subresponses[0])
 	sid := mkStatusUnder(t, srv, pid)
 
-	t.Run("missing required status rejects with edge_violation", func(t *testing.T) {
+	// card.insert(project) graph-copies the template, which seeds a
+	// status flow with default_create_status_id pointing at the
+	// template's "New idea". To exercise the "no flow default →
+	// reject" path we strip the project's flows. Tasks created later
+	// (after the flow is dropped) have no default to fall back to.
+	if _, err := sp.P.Exec(ctx, `DELETE FROM flow WHERE scope_card_id = $1`, pid); err != nil {
+		t.Fatalf("drop project flow: %v", err)
+	}
+
+	t.Run("missing required status without flow rejects with edge_violation", func(t *testing.T) {
 		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: "bad", Endpoint: "card", Action: "insert", Data: rawf(
 				`{"card_type_name":"task","parent_card_id":"%d","title":"no-status"}`, pid)},

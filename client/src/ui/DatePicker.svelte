@@ -271,8 +271,7 @@
   {#if open}
     <div
       bind:this={popupEl}
-      class="z-50 w-64 rounded-md border border-border bg-bg p-2 text-fg shadow-lg"
-      style="position: fixed; left: 0; top: 0; visibility: hidden;"
+      class="kf-float-anchor z-50 w-64 rounded-md border border-border bg-bg p-2 text-fg shadow-lg"
       role="dialog"
       aria-label="Choose date"
     >

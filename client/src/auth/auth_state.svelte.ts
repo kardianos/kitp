@@ -116,15 +116,28 @@ export async function loadSession(state: AuthState, apiBase = ''): Promise<boole
       return false;
     }
     const body = (await r.json()) as {
-      user_id: string;
-      display_name: string;
+      authenticated: boolean;
+      user_id?: string;
+      display_name?: string;
       groups?: string[];
       roles?: string[];
       is_admin?: boolean;
       is_agent?: boolean;
       parent_user_id?: string;
     };
-    state.setFromMe(body);
+    if (!body.authenticated) {
+      state.signOut();
+      return false;
+    }
+    state.setFromMe({
+      user_id: body.user_id ?? '',
+      display_name: body.display_name ?? '',
+      ...(body.groups !== undefined && { groups: body.groups }),
+      ...(body.roles !== undefined && { roles: body.roles }),
+      ...(body.is_admin !== undefined && { is_admin: body.is_admin }),
+      ...(body.is_agent !== undefined && { is_agent: body.is_agent }),
+      ...(body.parent_user_id !== undefined && { parent_user_id: body.parent_user_id }),
+    });
     return true;
   } catch {
     state.signOut();

@@ -20,6 +20,18 @@ export interface ShortcutEntry {
   handler: () => void;
   label: string;
   fireInInputs?: boolean;
+  /**
+   * Optional fine-grained ordering within a scope tier. The
+   * dispatcher resolves matches by:
+   *   1. Scope tier — `overlay` > active > `global`.
+   *   2. Within a tier, higher `priority` wins; ties go to the
+   *      most recently registered entry.
+   * Most callers leave this undefined (treated as 0). Used by
+   * transient overlays that want to elbow past a peer overlay
+   * registered earlier (e.g. a nested confirm dialog inside a
+   * larger modal).
+   */
+  priority?: number;
   /** Unique id used by useShortcut to remove on unmount. */
   id: number;
 }
@@ -69,10 +81,20 @@ class ShortcutRegistry {
     });
   }
 
-  /** Entries visible for the current scope plus the always-on `global`. */
+  /** Entries visible for the current scope plus the always-on
+   * `global` tier and any open-overlay entries (so a help dialog's
+   * own Esc binding shows up in its own keyboard-shortcuts list).
+   *
+   * `e !== undefined` is the same Svelte 5 reactive-array splice guard
+   * that `unregister` uses — a concurrent splice can surface an
+   * undefined index mid-iteration through the proxy. */
   get visible(): ShortcutEntry[] {
     return this.entries.filter(
-      (e) => e.scope === 'global' || e.scope === this.activeScope,
+      (e) =>
+        e !== undefined &&
+        (e.scope === 'global' ||
+          e.scope === 'overlay' ||
+          e.scope === this.activeScope),
     );
   }
 

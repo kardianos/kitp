@@ -20,6 +20,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  buildInsertAttributes,
   resolveParentForInsert,
   submitQuickEntry,
   type QuickEntrySubmitInput,
@@ -73,6 +74,21 @@ function makeDispatcher(opts: {
     if (args.endpoint === 'attribute' && args.action === 'update') {
       return { ok: true, activity_id: 1 };
     }
+    if (args.endpoint === 'tag' && args.action === 'apply') {
+      return { ok: true, activity_id: 3, removed_tag_ids: [] };
+    }
+    if (args.endpoint === 'attachment' && args.action === 'create') {
+      return {
+        id: 999n,
+        card_id: insertedId,
+        file_id: (args.data as { fileId: bigint }).fileId,
+        filename: 'mock',
+        mime_type: 'application/octet-stream',
+        size_bytes: 0,
+        thumb_file_id: 0n,
+        kind: 'file',
+      };
+    }
     if (args.endpoint === 'card' && args.action === 'delete') {
       return { ok: true, activity_id: 2 };
     }
@@ -112,6 +128,9 @@ async function runSubmit(
     parentCardId?: bigint;
     prefill?: QuickEntrySubmitInput['prefill'];
     defaultStatusCardId?: bigint;
+    additionalAttributes?: QuickEntrySubmitInput['additionalAttributes'];
+    tagIds?: bigint[];
+    attachmentFileIds?: bigint[];
   },
 ): Promise<void> {
   if (state.submitting) return;
@@ -128,6 +147,13 @@ async function runSubmit(
     if (args.prefill !== undefined) submit.prefill = args.prefill;
     if (args.defaultStatusCardId !== undefined) {
       submit.defaultStatusCardId = args.defaultStatusCardId;
+    }
+    if (args.additionalAttributes !== undefined) {
+      submit.additionalAttributes = args.additionalAttributes;
+    }
+    if (args.tagIds !== undefined) submit.tagIds = args.tagIds;
+    if (args.attachmentFileIds !== undefined) {
+      submit.attachmentFileIds = args.attachmentFileIds;
     }
 
     const newId = await submitQuickEntry(dispatcher, submit);
@@ -181,7 +207,7 @@ afterEach(() => {
 /* -------------------------------------------------------------------------- */
 
 describe('QuickEntryOverlay: submit on Enter (title only)', () => {
-  it('issues card.insert + attribute.update for description; resolves; clears; stays open', async () => {
+  it('stamps description on the card.insert attributes payload; resolves; clears; stays open', async () => {
     const dispatcher = makeDispatcher({ insertedId: 101n });
     const state = freshState({
       title: 'Wire up logs',
@@ -190,20 +216,15 @@ describe('QuickEntryOverlay: submit on Enter (title only)', () => {
 
     await runSubmit(state, dispatcher, { closeAfter: false, cardTypeName: 'task' });
 
-    // The dispatcher saw exactly two sub-requests in this submit.
-    expect(dispatcher.calls).toHaveLength(2);
+    // Description now rides on card.insert; only one sub-request.
+    expect(dispatcher.calls).toHaveLength(1);
     expect(dispatcher.calls[0]).toMatchObject({
       endpoint: 'card',
       action: 'insert',
-      data: { cardTypeName: 'task', title: 'Wire up logs' },
-    });
-    expect(dispatcher.calls[1]).toMatchObject({
-      endpoint: 'attribute',
-      action: 'update',
       data: {
-        cardId: 101n,
-        attributeName: 'description',
-        value: 'Plumb structured logger through workers',
+        cardTypeName: 'task',
+        title: 'Wire up logs',
+        attributes: { description: 'Plumb structured logger through workers' },
       },
     });
 
@@ -216,7 +237,7 @@ describe('QuickEntryOverlay: submit on Enter (title only)', () => {
     expect(state.refocused).toBe(true);
   });
 
-  it('with no description, only one card.insert is issued', async () => {
+  it('with no description, only one card.insert is issued (no attributes payload)', async () => {
     const dispatcher = makeDispatcher({ insertedId: 7n });
     const state = freshState({ title: 'Fast path' });
 
@@ -227,9 +248,12 @@ describe('QuickEntryOverlay: submit on Enter (title only)', () => {
       endpoint: 'card',
       action: 'insert',
     });
+    expect(
+      (dispatcher.calls[0]!.data as { attributes?: unknown }).attributes,
+    ).toBeUndefined();
   });
 
-  it('with prefill.assigneeUserId, also issues attribute.update for assignee', async () => {
+  it('with prefill.assigneeUserId, stamps assignee on the same card.insert', async () => {
     const dispatcher = makeDispatcher({ insertedId: 11n });
     const state = freshState({ title: 'Assigned task', description: '' });
 
@@ -239,15 +263,19 @@ describe('QuickEntryOverlay: submit on Enter (title only)', () => {
       prefill: { assigneeUserId: 5n },
     });
 
-    expect(dispatcher.calls).toHaveLength(2);
-    expect(dispatcher.calls[1]).toMatchObject({
-      endpoint: 'attribute',
-      action: 'update',
-      data: { cardId: 11n, attributeName: 'assignee', value: 5n },
+    expect(dispatcher.calls).toHaveLength(1);
+    expect(dispatcher.calls[0]).toMatchObject({
+      endpoint: 'card',
+      action: 'insert',
+      data: {
+        cardTypeName: 'task',
+        title: 'Assigned task',
+        attributes: { assignee: 5n },
+      },
     });
   });
 
-  it('with laneAttribute + extraAttributes the kanban column + lane prefills both fire', async () => {
+  it('with laneAttribute + extraAttributes the kanban column + lane prefills land inline', async () => {
     const dispatcher = makeDispatcher({ insertedId: 50n });
     const state = freshState({ title: 'Kanban entry' });
 
@@ -260,12 +288,14 @@ describe('QuickEntryOverlay: submit on Enter (title only)', () => {
       },
     });
 
-    expect(dispatcher.calls).toHaveLength(3);
-    const attrUpdates = dispatcher.calls
-      .filter((c) => c.endpoint === 'attribute' && c.action === 'update')
-      .map((c) => (c.data as { attributeName: string }).attributeName);
-    expect(attrUpdates).toContain('status');
-    expect(attrUpdates).toContain('milestone_ref');
+    expect(dispatcher.calls).toHaveLength(1);
+    expect(dispatcher.calls[0]).toMatchObject({
+      endpoint: 'card',
+      action: 'insert',
+      data: {
+        attributes: { status: 11n, milestone_ref: 22n },
+      },
+    });
   });
 
   it('passes parentCardId on the card.insert sub-request when provided', async () => {
@@ -320,7 +350,8 @@ describe('QuickEntryOverlay: submit on Ctrl+Enter', () => {
 
     await runSubmit(state, dispatcher, { closeAfter: true, cardTypeName: 'task' });
 
-    expect(dispatcher.calls).toHaveLength(2);
+    // One card.insert: title + description both ride on it.
+    expect(dispatcher.calls).toHaveLength(1);
     expect(state.open).toBe(false);
     expect(state.closed).toBe(true);
     expect(state.refocused).toBe(false); // not relevant when closing
@@ -508,18 +539,21 @@ describe('QuickEntryOverlay: error path', () => {
     expect(state.createdIds).toHaveLength(0);
   });
 
-  it('rejects on a failing attribute.update too (and surfaces the error)', async () => {
+  it('rejects on a failing tag.apply (and surfaces the error)', async () => {
     const dispatcher = makeDispatcher({
-      failOn: [{ endpoint: 'attribute', action: 'update' }],
+      failOn: [{ endpoint: 'tag', action: 'apply' }],
     });
-    const state = freshState({ title: 'good title', description: 'desc-fails' });
+    const state = freshState({ title: 'good title' });
 
-    await runSubmit(state, dispatcher, { closeAfter: false, cardTypeName: 'task' });
+    await runSubmit(state, dispatcher, {
+      closeAfter: false,
+      cardTypeName: 'task',
+      tagIds: [99n],
+    });
 
-    expect(state.errorMessage).toContain('mock-fail:attribute.update');
+    expect(state.errorMessage).toContain('mock-fail:tag.apply');
     // Inputs preserved, overlay still open.
     expect(state.title).toBe('good title');
-    expect(state.description).toBe('desc-fails');
     expect(state.open).toBe(true);
   });
 });
@@ -590,11 +624,9 @@ describe('QuickEntryOverlay: Gate 6 default-create-status', () => {
 
   it('lets a kanban-prefill `status` lane override the resolved default', async () => {
     // The kanban column "+" button pins `status` via prefill.laneAttribute.
-    // The resolver in QuickEntryOverlay sees the pin and short-circuits, so
-    // submission.ts wouldn't ordinarily receive a defaultStatusCardId. The
-    // test belt-and-braces the lower layer: even if a defaultStatusCardId
-    // slipped through, the prefill wins and the insert payload's status
-    // matches the user's explicit choice.
+    // submission.ts honours that pin: the default-status falls away and
+    // the prefill value lands inline on the same card.insert. No separate
+    // attribute.update is issued — everything rides on the insert.
     const dispatcher = makeDispatcher({ insertedId: 125n });
     const state = freshState({ title: 'kanban-pin' });
 
@@ -608,21 +640,201 @@ describe('QuickEntryOverlay: Gate 6 default-create-status', () => {
       },
     });
 
-    const insertCall = dispatcher.calls[0];
-    // Insert payload's `status` attribute is OMITTED — the
-    // attribute.update for the lane attribute lands status on the task
-    // in the same batch, mirroring the legacy kanban behaviour.
-    expect(
-      (insertCall!.data as { attributes?: Record<string, unknown> }).attributes,
-    ).toBeUndefined();
-    // The follow-up attribute.update IS in the batch.
-    const laneUpdate = dispatcher.calls.find(
-      (c) =>
-        c.endpoint === 'attribute' &&
-        c.action === 'update' &&
-        (c.data as { attributeName: string }).attributeName === 'status',
+    expect(dispatcher.calls).toHaveLength(1);
+    expect(dispatcher.calls[0]).toMatchObject({
+      endpoint: 'card',
+      action: 'insert',
+      data: { attributes: { status: 77n } },
+    });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 8. additionalAttributes — user-entered "+ Add field" rows ride on insert    */
+/* -------------------------------------------------------------------------- */
+
+describe('QuickEntryOverlay: additionalAttributes', () => {
+  it('merges user-entered rows into the card.insert attributes payload', async () => {
+    const dispatcher = makeDispatcher({ insertedId: 200n });
+    const state = freshState({ title: 'with-attrs' });
+
+    await runSubmit(state, dispatcher, {
+      closeAfter: false,
+      cardTypeName: 'task',
+      additionalAttributes: [
+        { name: 'milestone_ref', value: 11n },
+        { name: 'component_ref', value: 22n },
+      ],
+    });
+
+    expect(dispatcher.calls).toHaveLength(1);
+    expect(dispatcher.calls[0]!.data).toMatchObject({
+      attributes: { milestone_ref: 11n, component_ref: 22n },
+    });
+  });
+
+  it('user-entered row overrides a prefill value for the same attribute', async () => {
+    const dispatcher = makeDispatcher();
+    const state = freshState({ title: 'override' });
+
+    await runSubmit(state, dispatcher, {
+      closeAfter: false,
+      cardTypeName: 'task',
+      prefill: { assigneeUserId: 1n },
+      additionalAttributes: [{ name: 'assignee', value: 9n }],
+    });
+
+    expect(dispatcher.calls[0]!.data).toMatchObject({
+      attributes: { assignee: 9n },
+    });
+  });
+
+  it('skips rows whose value is undefined or empty string', async () => {
+    const dispatcher = makeDispatcher();
+    const state = freshState({ title: 'half-filled' });
+
+    await runSubmit(state, dispatcher, {
+      closeAfter: false,
+      cardTypeName: 'task',
+      additionalAttributes: [
+        { name: 'milestone_ref', value: undefined },
+        { name: 'component_ref', value: '' },
+        { name: 'assignee', value: 3n },
+      ],
+    });
+
+    expect(dispatcher.calls[0]!.data).toMatchObject({
+      attributes: { assignee: 3n },
+    });
+    const attrs = (
+      dispatcher.calls[0]!.data as { attributes: Record<string, unknown> }
+    ).attributes;
+    expect(attrs.milestone_ref).toBeUndefined();
+    expect(attrs.component_ref).toBeUndefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 9. Tags + attachments chain off card.insert in the same batch              */
+/* -------------------------------------------------------------------------- */
+
+describe('QuickEntryOverlay: tags + attachments', () => {
+  it('issues one tag.apply per tagId after the insert', async () => {
+    const dispatcher = makeDispatcher({ insertedId: 300n });
+    const state = freshState({ title: 'tagged' });
+
+    await runSubmit(state, dispatcher, {
+      closeAfter: false,
+      cardTypeName: 'task',
+      tagIds: [11n, 22n],
+    });
+
+    expect(dispatcher.calls).toHaveLength(3);
+    expect(dispatcher.calls[0]).toMatchObject({ endpoint: 'card', action: 'insert' });
+    const tagCalls = dispatcher.calls.filter(
+      (c) => c.endpoint === 'tag' && c.action === 'apply',
     );
-    expect(laneUpdate).toBeDefined();
-    expect(laneUpdate!.data).toMatchObject({ value: 77n });
+    expect(tagCalls).toHaveLength(2);
+    for (const c of tagCalls) {
+      expect((c.data as { targetCardId: bigint }).targetCardId).toBe(300n);
+    }
+  });
+
+  it('issues one attachment.create per attachmentFileId after the insert', async () => {
+    const dispatcher = makeDispatcher({ insertedId: 400n });
+    const state = freshState({ title: 'with-files' });
+
+    await runSubmit(state, dispatcher, {
+      closeAfter: false,
+      cardTypeName: 'task',
+      attachmentFileIds: [501n, 502n, 503n],
+    });
+
+    expect(dispatcher.calls).toHaveLength(4);
+    const attCalls = dispatcher.calls.filter(
+      (c) => c.endpoint === 'attachment' && c.action === 'create',
+    );
+    expect(attCalls).toHaveLength(3);
+    expect(
+      attCalls.map((c) => (c.data as { fileId: bigint }).fileId),
+    ).toEqual([501n, 502n, 503n]);
+    for (const c of attCalls) {
+      expect((c.data as { cardId: bigint }).cardId).toBe(400n);
+    }
+  });
+
+  it('combines insert + tags + attachments into one chained batch', async () => {
+    const dispatcher = makeDispatcher({ insertedId: 500n });
+    const state = freshState({ title: 'everything', description: 'desc' });
+
+    await runSubmit(state, dispatcher, {
+      closeAfter: false,
+      cardTypeName: 'task',
+      tagIds: [7n],
+      attachmentFileIds: [70n],
+      additionalAttributes: [{ name: 'milestone_ref', value: 8n }],
+    });
+
+    expect(dispatcher.calls).toHaveLength(3);
+    expect(dispatcher.calls[0]).toMatchObject({
+      endpoint: 'card',
+      action: 'insert',
+      data: {
+        attributes: { description: 'desc', milestone_ref: 8n },
+      },
+    });
+    expect(dispatcher.calls.find((c) => c.endpoint === 'tag')).toBeDefined();
+    expect(dispatcher.calls.find((c) => c.endpoint === 'attachment')).toBeDefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* 10. buildInsertAttributes — direct unit tests for the merging contract     */
+/* -------------------------------------------------------------------------- */
+
+describe('buildInsertAttributes', () => {
+  it('returns an empty object when no inputs seed it', () => {
+    expect(
+      buildInsertAttributes({
+        cardTypeName: 'task',
+        title: 't',
+        description: '',
+      }),
+    ).toEqual({});
+  });
+
+  it('merges defaultStatusCardId, description, assignee, prefill, additional in order', () => {
+    expect(
+      buildInsertAttributes({
+        cardTypeName: 'task',
+        title: 't',
+        description: 'desc',
+        defaultStatusCardId: 1n,
+        prefill: {
+          assigneeUserId: 2n,
+          laneAttribute: { name: 'milestone_ref', value: 3n },
+          extraAttributes: [{ name: 'component_ref', value: 4n }],
+        },
+        additionalAttributes: [{ name: 'milestone_ref', value: 99n }],
+      }),
+    ).toEqual({
+      status: 1n,
+      description: 'desc',
+      assignee: 2n,
+      milestone_ref: 99n, // additional wins over prefill.laneAttribute
+      component_ref: 4n,
+    });
+  });
+
+  it('drops defaultStatusCardId when the prefill already pins status', () => {
+    expect(
+      buildInsertAttributes({
+        cardTypeName: 'task',
+        title: 't',
+        description: '',
+        defaultStatusCardId: 1n,
+        prefill: { laneAttribute: { name: 'status', value: 77n } },
+      }),
+    ).toEqual({ status: 77n });
   });
 });

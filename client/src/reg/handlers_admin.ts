@@ -61,8 +61,13 @@ import type {
   UserListWithRolesInput,
   UserListWithRolesOutput,
   UserListWithRolesRow,
+  UserRoleListInput,
+  UserRoleListOutput,
+  UserRoleListRow,
   UserRoleRevokeInput,
   UserRoleRevokeOutput,
+  UserUnlinkPersonInput,
+  UserUnlinkPersonOutput,
   UserRoleSetInput,
   UserRoleSetOutput,
   UserTokenCreateInput,
@@ -101,6 +106,12 @@ function decodeUserListWithRolesRow(
   if (email !== undefined) out.email = email;
   const oidcSub = asStrOpt(j.oidc_sub);
   if (oidcSub !== undefined) out.oidc_sub = oidcSub;
+  // Server omits `person_card_id` when the user has no linked person card
+  // (login-only account, agent). Surface as bigint when present so the
+  // admin UI can render the "User" tier with a person-card cross-link.
+  if (j.person_card_id !== undefined && j.person_card_id !== null) {
+    out.person_card_id = asId(j.person_card_id);
+  }
   return out;
 }
 
@@ -116,6 +127,16 @@ const userListWithRoles: HandlerSpec<
     return {
       rows: asArray(j.rows).map((r) => decodeUserListWithRolesRow(asObj(r))),
     };
+  },
+};
+
+const userUnlinkPerson: HandlerSpec<UserUnlinkPersonInput, UserUnlinkPersonOutput> = {
+  endpoint: 'user',
+  action: 'unlink_person',
+  encode: (i) => ({ user_account_id: i.userAccountId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    return { deleted: asBoolOrFalse(j.deleted) };
   },
 };
 
@@ -192,6 +213,27 @@ const userRoleRevoke: HandlerSpec<UserRoleRevokeInput, UserRoleRevokeOutput> = {
       ok: asBoolOrFalse(j.ok),
       deleted: asNumOrZero(j.deleted),
     };
+  },
+};
+
+const userRoleList: HandlerSpec<UserRoleListInput, UserRoleListOutput> = {
+  endpoint: 'user_role',
+  action: 'list',
+  encode: (i) => ({ user_id: i.userId }),
+  decode: (raw) => {
+    const j = asObj(raw);
+    const rawRows = Array.isArray(j.rows) ? j.rows : [];
+    const rows: UserRoleListRow[] = rawRows.map((r) => {
+      const o = asObj(r);
+      const row: UserRoleListRow = {
+        role_name: typeof o.role_name === 'string' ? o.role_name : '',
+      };
+      if (o.scope_project_id !== undefined && o.scope_project_id !== null) {
+        row.scope_project_id = asIdOrZero(o.scope_project_id);
+      }
+      return row;
+    });
+    return { rows };
   },
 };
 
@@ -551,9 +593,11 @@ const flowStepDelete: HandlerSpec<FlowStepDeleteInput, FlowStepDeleteOutput> = {
 
 export {
   userListWithRoles,
+  userUnlinkPerson,
   roleList,
   userRoleSet,
   userRoleRevoke,
+  userRoleList,
   roleMappingList,
   roleMappingSet,
   roleMappingDelete,
@@ -577,9 +621,11 @@ export {
 /** Register the admin handlers on top of the v1 set. */
 export function registerAdminHandlers(r: HandlerRegistry): void {
   r.register(userListWithRoles);
+  r.register(userUnlinkPerson);
   r.register(roleList);
   r.register(userRoleSet);
   r.register(userRoleRevoke);
+  r.register(userRoleList);
   r.register(roleMappingList);
   r.register(roleMappingSet);
   r.register(roleMappingDelete);

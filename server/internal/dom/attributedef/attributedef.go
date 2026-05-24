@@ -5,27 +5,26 @@
 //
 // Endpoints:
 //   - attribute_def.select — every def with the card_types it is bound to
-//     (built-in defs included). Single read.
+//     (built-in defs included). Unified handler — body in
+//     db/schema/functions/attribute_def_select_batch.sql.
 //   - attribute_def.insert — create one def and bind it to N card types in
 //     one tx. The created def is never marked is_built_in (only migrations
-//     install built-in defs).
-//   - edge.insert — bind an existing def to one more card type. Idempotent.
-//   - edge.delete — unbind a def from a card type. Refuses (returns
-//     "in_use") if any attribute_value rows reference (card_type, def)
-//     today. Built-in edges are protected (refuses with "built_in"). The
-//     admin must clear references first via attribute.update or move the
-//     deletion to a migration.
-//
-// All writers are arrayPath; reads run one SQL statement per Run.
+//     install built-in defs). Unified handler — body in
+//     db/schema/functions/attribute_def_insert_batch.sql.
+//   - edge.insert — bind an existing def to one more card type. Idempotent
+//     (ON CONFLICT DO NOTHING on the (card_type, def) UNIQUE constraint).
+//     Unified handler — db/schema/functions/edge_insert_batch.sql.
+//   - edge.delete — unbind a def from a card type. Refuses with a
+//     SUCCESSFUL response carrying usage_count when any attribute_value
+//     rows reference (card_type, def) today; refuses with an error of
+//     code='built_in' for built-in (def, card_type) pairs. Unified
+//     handler — db/schema/functions/edge_delete_batch.sql.
 package attributedef
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/reg"
@@ -48,12 +47,12 @@ type BoundCardType struct {
 
 // SelectRow is one attribute_def row plus its bindings.
 type SelectRow struct {
-	ID                  int64           `json:"id,string" mcp:"desc=attribute_def id"`
-	Name                string          `json:"name" mcp:"desc=attribute_def name"`
-	ValueType           string          `json:"value_type" mcp:"desc=value type label (text, bool, card_ref, card_ref[], number)"`
-	TargetCardTypeName  string          `json:"target_card_type_name,omitempty" mcp:"desc=for card_ref / card_ref[] value_types, the name of the card_type whose cards are valid values (status / milestone / person / …)"`
-	IsBuiltIn           bool            `json:"is_built_in" mcp:"desc=true if installed by a migration"`
-	BoundTo             []BoundCardType `json:"bound_to" mcp:"desc=card_types the attribute is bound to via edge"`
+	ID                 int64           `json:"id,string" mcp:"desc=attribute_def id"`
+	Name               string          `json:"name" mcp:"desc=attribute_def name"`
+	ValueType          string          `json:"value_type" mcp:"desc=value type label (text, bool, number, date, card_ref, card_ref[])"`
+	TargetCardTypeName string          `json:"target_card_type_name,omitempty" mcp:"desc=for card_ref / card_ref[] value_types, the name of the card_type whose cards are valid values (status / milestone / person / …)"`
+	IsBuiltIn          bool            `json:"is_built_in" mcp:"desc=true if installed by a migration"`
+	BoundTo            []BoundCardType `json:"bound_to" mcp:"desc=card_types the attribute is bound to via edge"`
 }
 
 // SelectOutput wraps the rows.
@@ -71,7 +70,7 @@ type EdgeInput struct {
 // InsertInput creates a new attribute_def and seeds initial edges.
 type InsertInput struct {
 	Name      string      `json:"name" mcp:"required,desc=attribute_def name (must be unique)"`
-	ValueType string      `json:"value_type" mcp:"required,desc=value type label (text, bool, card_ref, …)"`
+	ValueType string      `json:"value_type" mcp:"required,desc=value type label (text, bool, number, date, card_ref, card_ref[])"`
 	BindTo    []EdgeInput `json:"bind_to,omitempty" mcp:"desc=optional initial edges to seed"`
 }
 
@@ -117,7 +116,10 @@ func Register(p *store.Pool) {
 		InputType:    reflect.TypeFor[SelectInput](),
 		OutputType:   reflect.TypeFor[SelectOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
-		Run:          runSelect(p),
+		// Unified handler — body lives in
+		// db/schema/functions/attribute_def_select_batch.sql per Phase
+		// 5 of docs/UNIFIED_HANDLER_PLAN.md.
+		SQLFunc: "attribute_def_select_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "attribute_def",
@@ -127,7 +129,9 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[InsertOutput](),
 		AllowedRoles: []string{"admin"},
 		Authz:        authzAdmin,
-		Run:          runInsert(p),
+		// Unified handler — body lives in
+		// db/schema/functions/attribute_def_insert_batch.sql.
+		SQLFunc: "attribute_def_insert_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "edge",
@@ -137,7 +141,8 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[EdgeInsertOutput](),
 		AllowedRoles: []string{"admin"},
 		Authz:        authzAdmin,
-		Run:          runEdgeInsert(p),
+		// Unified handler — db/schema/functions/edge_insert_batch.sql.
+		SQLFunc: "edge_insert_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "edge",
@@ -147,7 +152,8 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[EdgeDeleteOutput](),
 		AllowedRoles: []string{"admin"},
 		Authz:        authzAdmin,
-		Run:          runEdgeDelete(p),
+		// Unified handler — db/schema/functions/edge_delete_batch.sql.
+		SQLFunc: "edge_delete_batch",
 	})
 }
 
@@ -173,339 +179,3 @@ func authzAdmin(ctx context.Context, _ any) error {
 	return nil
 }
 
-// runSelect issues three queries (defs + edges + options) and stitches
-// them in Go. We choose follow-up reads over a jsonb LATERAL to keep the
-// SQL small and the per-row scan trivial; in practice attribute_def has
-// well under 100 rows and only a handful are enum-typed.
-func runSelect(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		// One LEFT JOIN to card_type so card_ref defs surface the name of
-		// their target type — the client picker uses this to decide what
-		// to load + filter by parent project. No special-casing per
-		// attribute name; the kernel reads it straight from the row.
-		defRows, err := tx.Query(ctx, `
-			SELECT ad.id, ad.name, ad.value_type, COALESCE(ct.name, ''), ad.is_built_in
-			FROM attribute_def ad
-			LEFT JOIN card_type ct ON ct.id = ad.target_card_type_id
-			ORDER BY ad.name
-		`)
-		if err != nil {
-			return nil, fmt.Errorf("attribute_def.select: defs: %w", err)
-		}
-		var out []SelectRow
-		idx := map[int64]int{}
-		for defRows.Next() {
-			var r SelectRow
-			if err := defRows.Scan(&r.ID, &r.Name, &r.ValueType, &r.TargetCardTypeName, &r.IsBuiltIn); err != nil {
-				defRows.Close()
-				return nil, err
-			}
-			idx[r.ID] = len(out)
-			out = append(out, r)
-		}
-		defRows.Close()
-		if err := defRows.Err(); err != nil {
-			return nil, err
-		}
-
-		edgeRows, err := tx.Query(ctx, `
-			SELECT e.attribute_def_id, e.card_type_id, ct.name, ct.is_built_in,
-			       e.is_required, e.ordering
-			FROM edge e
-			JOIN card_type ct ON ct.id = e.card_type_id
-			ORDER BY e.attribute_def_id, e.ordering, ct.name
-		`)
-		if err != nil {
-			return nil, fmt.Errorf("attribute_def.select: edges: %w", err)
-		}
-		for edgeRows.Next() {
-			var defID int64
-			var b BoundCardType
-			if err := edgeRows.Scan(&defID, &b.CardTypeID, &b.CardTypeName, &b.IsBuiltIn, &b.IsRequired, &b.Ordering); err != nil {
-				edgeRows.Close()
-				return nil, err
-			}
-			if i, ok := idx[defID]; ok {
-				out[i].BoundTo = append(out[i].BoundTo, b)
-			}
-		}
-		edgeRows.Close()
-		if err := edgeRows.Err(); err != nil {
-			return nil, err
-		}
-
-		if p != nil {
-			p.NoteRead()
-		}
-		outs := make([]any, len(ins))
-		for i := range ins {
-			outs[i] = SelectOutput{Rows: out}
-		}
-		return outs, nil
-	}
-}
-
-// jsonInsertRow is the per-input shape fed to jsonb_to_recordset.
-type jsonInsertRow struct {
-	Ord       int    `json:"ord"`
-	Name      string `json:"name"`
-	ValueType string `json:"value_type"`
-}
-
-// jsonEdgeSeed represents one edge to seed alongside a freshly inserted
-// def. We carry the def's ord so the CTE can correlate it back to the
-// returning id.
-type jsonEdgeSeed struct {
-	Ord        int   `json:"ord"`
-	CardTypeID int64 `json:"card_type_id,string"`
-	IsRequired bool  `json:"is_required"`
-	Ordering   int32 `json:"ordering"`
-}
-
-// runInsert is an arrayPath writer. For each input we INSERT one
-// attribute_def row, then INSERT any seeded edges in a follow-up CTE that
-// joins back via row_number. We never set is_built_in=true. // arrayPath
-func runInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		defs := make([]jsonInsertRow, len(ins))
-		var edges []jsonEdgeSeed
-		for i, raw := range ins {
-			in := raw.(InsertInput)
-			if in.Name == "" || in.ValueType == "" {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "attribute_def.insert: name and value_type are required"}
-			}
-			defs[i] = jsonInsertRow{Ord: i, Name: in.Name, ValueType: in.ValueType}
-			for _, e := range in.BindTo {
-				if e.CardTypeID == 0 {
-					return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-						Message: "attribute_def.insert: bind_to[].card_type_id is required"}
-				}
-				edges = append(edges, jsonEdgeSeed{
-					Ord:        i,
-					CardTypeID: e.CardTypeID,
-					IsRequired: e.IsRequired,
-					Ordering:   e.Ordering,
-				})
-			}
-		}
-
-		defsBuf, err := json.Marshal(defs)
-		if err != nil {
-			return nil, err
-		}
-
-		// Insert defs in ord order; capture (ord, id).
-		const defQ = `
-			WITH input AS (
-				SELECT * FROM jsonb_to_recordset($1::jsonb)
-				AS x(ord int, name text, value_type text)
-			),
-			ins AS (
-				INSERT INTO attribute_def (name, value_type, is_built_in)
-				SELECT name, value_type, false FROM input ORDER BY ord
-				RETURNING id, name
-			),
-			ins_numbered AS (
-				SELECT id, name, row_number() OVER (ORDER BY id) AS rn FROM ins
-			),
-			input_numbered AS (
-				SELECT ord, name, row_number() OVER (ORDER BY ord) AS rn FROM input
-			)
-			SELECT i.ord, n.id
-			FROM ins_numbered n
-			JOIN input_numbered i ON i.rn = n.rn
-			ORDER BY i.ord
-		`
-		rows, err := tx.Query(ctx, defQ, defsBuf)
-		if err != nil {
-			return nil, fmt.Errorf("attribute_def.insert: %w", err)
-		}
-		outs := make([]any, len(ins))
-		idByOrd := make([]int64, len(ins))
-		for rows.Next() {
-			var ord int
-			var id int64
-			if err := rows.Scan(&ord, &id); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			if ord < 0 || ord >= len(ins) {
-				rows.Close()
-				return nil, fmt.Errorf("attribute_def.insert: ord %d out of range", ord)
-			}
-			idByOrd[ord] = id
-			outs[ord] = InsertOutput{ID: id}
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-
-		// If any seeded edges, do them in a second statement-group. Map ord
-		// to the freshly returned attribute_def_id, then ON CONFLICT DO
-		// NOTHING in case a duplicate slipped in.
-		if len(edges) > 0 {
-			type rendered struct {
-				AttributeDefID int64 `json:"attribute_def_id,string"`
-				CardTypeID     int64 `json:"card_type_id,string"`
-				IsRequired     bool  `json:"is_required"`
-				Ordering       int32 `json:"ordering"`
-			}
-			payload := make([]rendered, len(edges))
-			for i, e := range edges {
-				payload[i] = rendered{
-					AttributeDefID: idByOrd[e.Ord],
-					CardTypeID:     e.CardTypeID,
-					IsRequired:     e.IsRequired,
-					Ordering:       e.Ordering,
-				}
-			}
-			buf, err := json.Marshal(payload)
-			if err != nil {
-				return nil, err
-			}
-			const edgeQ = `
-				INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
-				SELECT card_type_id, attribute_def_id, is_required, ordering
-				FROM jsonb_to_recordset($1::jsonb)
-				AS x(card_type_id int, attribute_def_id int, is_required boolean, ordering int)
-				ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING
-			`
-			if _, err := tx.Exec(ctx, edgeQ, buf); err != nil {
-				return nil, fmt.Errorf("attribute_def.insert: edges: %w", err)
-			}
-			if p != nil {
-				p.NoteWrite()
-			}
-		}
-		return outs, nil
-	}
-}
-
-// jsonEdgeRow is the per-input shape for runEdgeInsert.
-type jsonEdgeRow struct {
-	AttributeDefID int64 `json:"attribute_def_id,string"`
-	CardTypeID     int64 `json:"card_type_id,string"`
-	IsRequired     bool  `json:"is_required"`
-	Ordering       int32 `json:"ordering"`
-}
-
-// runEdgeInsert is an arrayPath writer. // arrayPath
-func runEdgeInsert(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		payload := make([]jsonEdgeRow, len(ins))
-		for i, raw := range ins {
-			in := raw.(EdgeInsertInput)
-			if in.AttributeDefID == 0 || in.CardTypeID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "edge.insert: attribute_def_id and card_type_id are required"}
-			}
-			payload[i] = jsonEdgeRow{
-				AttributeDefID: in.AttributeDefID,
-				CardTypeID:     in.CardTypeID,
-				IsRequired:     in.IsRequired,
-				Ordering:       in.Ordering,
-			}
-		}
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return nil, err
-		}
-		const q = `
-			INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
-			SELECT card_type_id, attribute_def_id, is_required, ordering
-			FROM jsonb_to_recordset($1::jsonb)
-			AS x(card_type_id int, attribute_def_id int, is_required boolean, ordering int)
-			ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING
-		`
-		if _, err := tx.Exec(ctx, q, buf); err != nil {
-			return nil, fmt.Errorf("edge.insert: %w", err)
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		outs := make([]any, len(ins))
-		for i := range ins {
-			outs[i] = EdgeInsertOutput{OK: true}
-		}
-		return outs, nil
-	}
-}
-
-// runEdgeDelete deletes (or refuses to delete) one edge per input. We use
-// the array-path: one DELETE per input run as separate statements inside
-// the same Run. We also fan out a usage check per input — if any
-// attribute_value rows exist for (card_type, def), we mark that input as
-// blocked and skip the DELETE. The caller learns via usage_count > 0 and
-// can clear references first.
-//
-// We intentionally protect built-in edges (refuse with code "built_in").
-// Migrations install those; admins should not be able to silently rewire
-// the schema.
-func runEdgeDelete(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-		outs := make([]any, len(ins))
-		for i, raw := range ins {
-			in := raw.(EdgeDeleteInput)
-			if in.AttributeDefID == 0 || in.CardTypeID == 0 {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
-					Message: "edge.delete: attribute_def_id and card_type_id are required"}
-			}
-
-			// Refuse on built-in edges. We treat built-in as "the edge
-			// connects a built-in def to a built-in card_type" — matches
-			// what migrations seed today (the title edges, etc.).
-			var defBuiltIn, ctBuiltIn bool
-			row := tx.QueryRow(ctx, `
-				SELECT ad.is_built_in, ct.is_built_in
-				FROM attribute_def ad, card_type ct
-				WHERE ad.id = $1 AND ct.id = $2
-			`, in.AttributeDefID, in.CardTypeID)
-			if err := row.Scan(&defBuiltIn, &ctBuiltIn); err != nil {
-				if err == pgx.ErrNoRows {
-					return nil, &reg.HandlerError{InputIndex: i, Code: "not_found",
-						Message: fmt.Sprintf("edge.delete: def %d or card_type %d not found", in.AttributeDefID, in.CardTypeID)}
-				}
-				return nil, fmt.Errorf("edge.delete: lookup: %w", err)
-			}
-			if defBuiltIn && ctBuiltIn {
-				return nil, &reg.HandlerError{InputIndex: i, Code: "built_in",
-					Message: "edge.delete: refusing to remove a built-in (def + card_type) edge — change the migration instead"}
-			}
-
-			// Count usage. The (card_type, def) pair is in use if any card
-			// of that type carries an attribute_value for that def.
-			var usage int
-			row = tx.QueryRow(ctx, `
-				SELECT count(*)
-				FROM attribute_value av
-				JOIN card c ON c.id = av.card_id
-				WHERE av.attribute_def_id = $1 AND c.card_type_id = $2
-			`, in.AttributeDefID, in.CardTypeID)
-			if err := row.Scan(&usage); err != nil {
-				return nil, fmt.Errorf("edge.delete: usage check: %w", err)
-			}
-			if usage > 0 {
-				outs[i] = EdgeDeleteOutput{OK: false, UsageCount: usage}
-				continue
-			}
-
-			ct, err := tx.Exec(ctx, `
-				DELETE FROM edge
-				WHERE attribute_def_id = $1 AND card_type_id = $2
-			`, in.AttributeDefID, in.CardTypeID)
-			if err != nil {
-				return nil, fmt.Errorf("edge.delete: %w", err)
-			}
-			outs[i] = EdgeDeleteOutput{OK: ct.RowsAffected() > 0}
-		}
-		if p != nil {
-			p.NoteWrite()
-		}
-		return outs, nil
-	}
-}

@@ -561,8 +561,7 @@
       <div
         bind:this={closePopup}
         role="menu"
-        class="z-50 flex w-48 flex-col overflow-hidden rounded-md border border-border bg-bg py-1 text-sm shadow-lg"
-        style="position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none;"
+        class="kf-float-anchor-fade z-50 flex w-48 flex-col overflow-hidden rounded-md border border-border bg-bg py-1 text-sm shadow-lg"
         data-testid="transition-close-menu"
       >
         {#each closeRest as t (`close-item-${t.id}`)}
@@ -641,8 +640,7 @@
       <div
         bind:this={progressPopup}
         role="menu"
-        class="z-50 flex w-56 flex-col overflow-hidden rounded-md border border-border bg-bg py-1 text-sm shadow-lg"
-        style="position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none;"
+        class="kf-float-anchor-fade z-50 flex w-56 flex-col overflow-hidden rounded-md border border-border bg-bg py-1 text-sm shadow-lg"
         data-testid="transition-progress-menu"
       >
         {#each progressItems as item, i (`progress-item-${item.transition.id}`)}
@@ -759,8 +757,7 @@
       <div
         bind:this={reopenPopup}
         role="menu"
-        class="z-50 flex w-56 flex-col overflow-hidden rounded-md border border-border bg-bg py-1 text-sm shadow-lg"
-        style="position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none;"
+        class="kf-float-anchor-fade z-50 flex w-56 flex-col overflow-hidden rounded-md border border-border bg-bg py-1 text-sm shadow-lg"
         data-testid="transition-reopen-menu"
       >
         {#each reopenDropdownItems as item, i (`reopen-item-${item.transition.id}`)}

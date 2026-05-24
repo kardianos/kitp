@@ -73,21 +73,19 @@ func New(pool *pgxpool.Pool, cfg Config) *Manager {
 	}
 }
 
-// Start launches the flush goroutine.
-func (m *Manager) Start(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(m.cfg.TouchInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				_ = m.flush(context.Background())
-				return
-			case <-ticker.C:
-				_ = m.flush(ctx)
-			}
-		}
-	}()
+// RunTouch flushes any buffered last_used_at touches to the DB.
+// Designed for the [job.Scheduler]: register it as a periodic job
+// in main with `Interval: cfg.TouchInterval`. The scheduler owns
+// the ticker; the caller is responsible for invoking [Manager.Flush]
+// after the scheduler stops.
+func (m *Manager) RunTouch(ctx context.Context) error {
+	return m.flush(ctx)
+}
+
+// Flush forces an immediate flush of buffered touches. Call once
+// during shutdown (after [job.Scheduler.Wait] returns).
+func (m *Manager) Flush(ctx context.Context) error {
+	return m.flush(ctx)
 }
 
 // Create stages a new token bound to userID and returns the opaque

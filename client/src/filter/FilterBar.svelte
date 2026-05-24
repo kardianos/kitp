@@ -16,16 +16,11 @@
    */
 
   import { tick } from 'svelte';
-  import {
-    autoUpdate,
-    computePosition,
-    flip,
-    offset,
-  } from '@floating-ui/dom';
   import Button from '../ui/Button.svelte';
   import Chip from '../ui/Chip.svelte';
   import Combobox from '../ui/Combobox.svelte';
   import IconButton from '../ui/IconButton.svelte';
+  import Popover from '../ui/Popover.svelte';
   import { cx } from '../util/class_names.js';
   import type { FilterAttribute } from './attribute_schema.svelte.js';
   import FilterTreeEditor from './FilterTreeEditor.svelte';
@@ -37,18 +32,34 @@
     OP_TO_WIRE,
     opArity,
     predicateFromLeaves,
+    SNIPPET_ATTR,
     toText,
     type Op,
     type Predicate,
     type PredicateLeaf,
   } from './predicate.js';
   import { replaceLeafForAttr } from './quick_chips.js';
+  import { readSnippetTitle } from './snippet_store.svelte.js';
   import ValueInput from './ValueInput.svelte';
 
   interface Props {
     attributes: FilterAttribute[];
+    /**
+     * Project-scoped predicate snippets, surfaced as "Named filter"
+     * leaves inside the Advanced editor. Empty when no snippets are
+     * defined for the current project; ScreenFilterBar feeds the list
+     * in via the shared rune-state cache.
+     */
+    snippets?: import('../reg/types').CardWithAttrs[];
     predicate: Predicate | null;
     onchange?: (p: Predicate | null) => void;
+    /**
+     * Optional hook fired when the user presses ArrowDown / ArrowUp on
+     * the text search input. Forwarded verbatim to TextSearchBar.
+     * Screens wire this to "focus the first row of the visible list"
+     * so the keyboard flow runs from input straight into the list.
+     */
+    onNavigateOut?: (direction: 'down' | 'up') => void;
     /**
      * Optional snippet rendered as the prefix of the top row, before
      * the search input. ScreenFilterBar feeds in its View picker +
@@ -66,8 +77,10 @@
 
   let {
     attributes,
+    snippets = [],
     predicate = $bindable(),
     onchange,
+    onNavigateOut,
     leading,
     trailing,
   }: Props = $props();
@@ -78,10 +91,18 @@
    * Attributes promoted to the quick-filter row. Discrete-valued
    * (ref:* / enum) only; freeform inputs (text / number / date) stay
    * inside "+ Add filter".
+   *
+   * Also gates on a non-empty `options` list: a ref attribute with no
+   * pre-loaded options (e.g. `parent_task`, where the palette doesn't
+   * eagerly fetch every task in the project) would render an empty
+   * checkbox dropdown, so it stays in the Advanced editor where the
+   * useful no-picker ops live.
    */
   const quickAttributes = $derived.by((): FilterAttribute[] =>
     attributes.filter(
-      (a) => a.valueType.startsWith('ref:') || a.valueType === 'enum',
+      (a) =>
+        (a.valueType.startsWith('ref:') || a.valueType === 'enum') &&
+        (a.options?.length ?? 0) > 0,
     ),
   );
 
@@ -239,6 +260,19 @@
     return isFlatAndOfLeaves(predicate);
   });
 
+  /** Recursive count of leaf nodes in the predicate. Drives the
+   *  compact "Advanced filter · N conditions" pill on non-flat trees
+   *  so users see how complex the active filter is without expanding
+   *  the full toText description. */
+  function countLeaves(p: Predicate | null): number {
+    if (p === null) return 0;
+    if (p.kind === 'leaf') return 1;
+    let n = 0;
+    for (const c of p.children) n += countLeaves(c);
+    return n;
+  }
+  const leafCount = $derived(countLeaves(predicate));
+
   /** Flat list of leaves for the chip row. Empty when predicate is null.
    *  notTerminal leaves are surfaced via dedicated toggle pills above; we
    *  filter them out here so the same constraint isn't shown twice. */
@@ -264,6 +298,39 @@
     if (p === null) return [];
     if (!isFlatAndOfLeaves(p)) return [];
     return flattenLeaves(p).filter((l) => l.op === 'notTerminal');
+  }
+
+  /**
+   * Leaves to preserve when the user clicks "Clear" — broader than
+   * {@link hiddenLeaves} because here we treat any phase predicate
+   * that excludes `terminal` as a "hide closed X" intent. The toggle
+   * pill already mediates these, and the user's mental model of
+   * Clear is "drop my chips, don't unhide closed cards by surprise."
+   * Inbox / Ideas / Archive ship hasPhase leaves and would otherwise
+   * suddenly show terminal rows after Clear.
+   */
+  function clearPreservedLeaves(p: Predicate | null): PredicateLeaf[] {
+    if (p === null) return [];
+    if (!isFlatAndOfLeaves(p)) return [];
+    return flattenLeaves(p).filter((l) => {
+      if (l.op === 'notTerminal') return true;
+      if (l.op === 'hasPhase') {
+        const vs = (l.values ?? []).filter(
+          (v): v is string => typeof v === 'string',
+        );
+        return !vs.includes('terminal');
+      }
+      return false;
+    });
+  }
+
+  function onClearClick() {
+    const keep = clearPreservedLeaves(predicate);
+    if (keep.length === 0) {
+      emit(null);
+      return;
+    }
+    emit(predicateFromLeaves(keep));
   }
 
   function setLeaves(next: PredicateLeaf[]) {
@@ -296,9 +363,7 @@
   };
 
   let editor = $state<EditorState | null>(null);
-  let editorAnchor: HTMLElement | null = null;
-  let popupEl: HTMLDivElement | null = $state(null);
-  let cleanupFloat: (() => void) | null = null;
+  let editorAnchor = $state<HTMLElement | null>(null);
 
   async function openEditorForLeaf(idx: number, anchor: HTMLElement) {
     const leaf = leaves[idx];
@@ -311,7 +376,6 @@
     };
     editorAnchor = anchor;
     await tick();
-    setupFloating();
   }
 
   async function openEditorForAdd(anchor: HTMLElement) {
@@ -325,37 +389,11 @@
     };
     editorAnchor = anchor;
     await tick();
-    setupFloating();
   }
 
   function closeEditor() {
     editor = null;
     editorAnchor = null;
-    cleanupFloat?.();
-    cleanupFloat = null;
-  }
-
-  function setupFloating() {
-    const a = editorAnchor;
-    if (!a || !popupEl) return;
-    cleanupFloat?.();
-    cleanupFloat = autoUpdate(a, popupEl, () => {
-      if (!a || !popupEl) return;
-      void computePosition(a, popupEl, {
-        placement: 'bottom-start',
-        middleware: [offset(4), flip()],
-      }).then(({ x, y }) => {
-        if (!popupEl) return;
-        // Reveal only once positioned — the template's initial
-        // `left: 0; top: 0` would otherwise flash at the top-left of
-        // the screen between mount and first computePosition resolve.
-        Object.assign(popupEl.style, {
-          left: `${x}px`,
-          top: `${y}px`,
-          visibility: 'visible',
-        });
-      });
-    });
   }
 
   function commitEditor() {
@@ -460,31 +498,6 @@
     }
   }
 
-  function onDocPointerDown(e: PointerEvent) {
-    if (editor === null) return;
-    const t = e.target as Node | null;
-    if (!t) return;
-    if (popupEl?.contains(t)) return;
-    if (editorAnchor?.contains(t)) return;
-    closeEditor();
-  }
-
-  $effect(() => {
-    if (editor !== null) {
-      document.addEventListener('pointerdown', onDocPointerDown, true);
-      return () => {
-        document.removeEventListener('pointerdown', onDocPointerDown, true);
-      };
-    }
-    return undefined;
-  });
-
-  $effect(() => {
-    return () => {
-      cleanupFloat?.();
-    };
-  });
-
   /* ---- Advanced editor (Modal) ------------------------------------------ */
 
   let advancedOpen = $state(false);
@@ -512,6 +525,19 @@
    * registered (e.g. an option list still loading).
    */
   function chipText(leaf: PredicateLeaf): string {
+    // Snippet leaves carry a snippet card id; render the snippet's
+    // human title so the chip reads as the named filter ("Heads")
+    // instead of the wire shape (`_snippet snippet 98`). Falls back
+    // to a generic "Named filter" when the snippet isn't in the
+    // current project list (e.g. another project, freshly deleted).
+    if (leaf.attr === SNIPPET_ATTR && leaf.op === 'snippet') {
+      const v = leaf.values?.[0];
+      if (typeof v === 'bigint') {
+        const s = snippets.find((x) => x.id === v);
+        if (s !== undefined) return readSnippetTitle(s);
+      }
+      return 'Named filter';
+    }
     const a = attrFor(leaf.attr);
     if (a === undefined) return toText(leaf);
     const opTxt = OP_TO_WIRE[leaf.op];
@@ -544,7 +570,11 @@
       {@render leading()}
     {/if}
     <div class="min-w-0 flex-1">
-      <TextSearchBar {predicate} onchange={onQuickFilterChange} />
+      <TextSearchBar
+        {predicate}
+        onchange={onQuickFilterChange}
+        {...(onNavigateOut !== undefined ? { onNavigateOut } : {})}
+      />
     </div>
     {#each terminalAttributes as attr (attr.name)}
       {@const showing = !terminalHiddenForAttr(predicate, attr.name)}
@@ -612,15 +642,30 @@
         + Add filter
       </Button>
     {:else}
-      <span class="text-sm text-muted">
-        Advanced filter: {predicate ? toText(predicate) : ''}
-      </span>
+      <!--
+        Non-flat predicate: the full toText can be long (nested OR /
+        NOT trees), so we collapse it to a compact, highlighted pill
+        that opens the Advanced editor on click. The full
+        human-readable description sits in the title attribute for
+        hover, and the "Advanced" button below still exists for
+        consistency / keyboard users.
+      -->
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent hover:bg-accent/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        title={predicate ? toText(predicate) : ''}
+        aria-label="Edit advanced filter"
+        onclick={openAdvanced}
+        data-testid="advanced-filter-pill"
+      >
+        <span aria-hidden="true" class="inline-block h-1.5 w-1.5 rounded-full bg-accent"></span>
+        <span>Advanced filter · {leafCount} {leafCount === 1 ? 'condition' : 'conditions'}</span>
+      </button>
     {/if}
 
     <Button
       size="sm"
       variant="ghost"
-      disabled={!isFlat && predicate !== null ? false : false}
       title={isFlat
         ? 'Open advanced filter editor'
         : 'Predicate has nested groups; use the advanced editor to edit it.'}
@@ -630,7 +675,7 @@
     </Button>
 
     {#if predicate !== null}
-      <Button size="sm" variant="ghost" onclick={() => emit(null)}>
+      <Button size="sm" variant="ghost" onclick={onClearClick}>
         Clear
       </Button>
     {/if}
@@ -664,16 +709,19 @@
 {#if editor !== null}
   {@const editorAttr = attrFor(editor.attr)}
   {@const editorArity = opArity(editor.op)}
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div
-    bind:this={popupEl}
-    class="z-50 flex w-80 flex-col gap-2 rounded-md border border-border bg-bg p-3 shadow-lg"
-    role="dialog"
+  <Popover
+    open={true}
+    anchor={editorAnchor}
+    placement="bottom-start"
+    onClose={closeEditor}
     aria-label="Edit filter"
-    tabindex="-1"
-    style="position: fixed; left: 0; top: 0; visibility: hidden;"
-    onkeydown={onEditorKeydown}
+    class="flex w-80 flex-col gap-2 p-3"
   >
+    {#snippet children()}
+    {#if editor !== null}
+    {@const e = editor}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_no_static_element_interactions -->
+    <div role="presentation" onkeydown={onEditorKeydown}>
     <!--
       Use <div>, not <label>: clicking a Combobox option bubbles to the
       label, which forwards a synthetic click to the trigger button and
@@ -684,7 +732,7 @@
       <Combobox
         aria-label="Attribute"
         options={attributes.map((a) => ({ value: a.name, label: a.label }))}
-        value={editor.attr}
+        value={e.attr}
         onchange={(v) => {
           if (typeof v === 'string') onEditorAttrChange(v);
         }}
@@ -699,7 +747,7 @@
           value: o,
           label: o,
         }))}
-        value={editor.op}
+        value={e.op}
         searchable={false}
         onchange={(v) => {
           if (typeof v === 'string') onEditorOpChange(v as Op);
@@ -712,7 +760,8 @@
         <span>Value</span>
         <ValueInput
           attribute={editorAttr}
-          value={editorArity === 'multi' ? editor.values : editor.values[0]}
+          op={e.op}
+          value={editorArity === 'multi' ? e.values : e.values[0]}
           multiple={editorArity === 'multi'}
           onchange={onEditorValueChange}
         />
@@ -722,14 +771,18 @@
     <div class="mt-1 flex justify-end gap-2">
       <Button size="sm" variant="ghost" onclick={closeEditor}>Cancel</Button>
       <Button size="sm" variant="primary" onclick={commitEditor}>
-        {editor.idx === -1 ? 'Add' : 'Save'}
+        {e.idx === -1 ? 'Add' : 'Save'}
       </Button>
     </div>
-  </div>
+    </div>
+    {/if}
+    {/snippet}
+  </Popover>
 {/if}
 
 <FilterTreeEditor
   {attributes}
+  {snippets}
   {predicate}
   bind:open={advancedOpen}
   onSave={onAdvancedSave}

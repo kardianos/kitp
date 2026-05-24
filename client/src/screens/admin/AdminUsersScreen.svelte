@@ -23,14 +23,16 @@
     - `/`        focus the search input
     - `n`        open the "Assign role" form (focused on the role Combobox)
 
-  Ports `client/lib/ui/screens/admin_users_screen.dart` (225 LOC) but
-  swaps the dialog-per-user UX for an inline detail pane.
+  The inline assign-role form uses the data-bound <Form> kernel
+  (src/forms). Revoke + CSV export are direct dispatcher reads — not
+  forms.
 -->
 <script lang="ts">
   import { onMount, tick } from 'svelte';
 
   import { getDispatcher } from '../../dispatch/context';
   import { BatchAbortedError, SubRequestError } from '../../dispatch/errors';
+  import { clearHelpTopic, setHelpTopic } from '../../help/help_context.svelte';
   import { setActiveScope, useShortcut } from '../../keys/shortcut';
   import {
     cardSelectWithAttributes,
@@ -39,7 +41,6 @@
     roleList,
     userListWithRoles,
     userRoleRevoke,
-    userRoleSet,
   } from '../../reg/handlers_admin';
   import type {
     CardSelectWithAttributesInput,
@@ -55,27 +56,38 @@
     UserListWithRolesRow,
     UserRoleRevokeInput,
     UserRoleRevokeOutput,
-    UserRoleSetInput,
-    UserRoleSetOutput,
   } from '../../reg/types';
   import Button from '../../ui/Button.svelte';
   import Chip from '../../ui/Chip.svelte';
   import Combobox from '../../ui/Combobox.svelte';
   import ConfirmDialog from '../../ui/ConfirmDialog.svelte';
   import EmptyState from '../../ui/EmptyState.svelte';
+  import ErrorAlert from '../../ui/ErrorAlert.svelte';
   import IconButton from '../../ui/IconButton.svelte';
+  import PageShell from '../../ui/PageShell.svelte';
   import Spinner from '../../ui/Spinner.svelte';
+  import TextInput from '../../ui/inputs/TextInput.svelte';
+  import {
+    Form,
+    FormErrors,
+    Select,
+    SubmitButton,
+  } from '../../forms';
   import { notify } from '../../ui/toast.svelte';
   import { cx } from '../../util/class_names';
   import {
     applyUserFilters,
-    assignRolePayload,
     buildRolesCsv,
     downloadCsv,
     scopeLabel,
   } from './admin_users_helpers';
 
   setActiveScope('admin_users');
+
+  $effect(() => {
+    setHelpTopic({ kind: 'topic', topic: 'admin.users' });
+    return () => clearHelpTopic();
+  });
 
   const dispatcher = getDispatcher();
 
@@ -91,17 +103,14 @@
   let roleFilter = $state<string | null>(null);
   let selectedUserId = $state<ID | null>(null);
 
-  /** Inline assign-role form state. */
-  let assignRole = $state<string | null>(null);
-  let assignProject = $state<ID | null>(null);
-  let assigning = $state(false);
+  /** Inline assign-role form open flag. The <Form> kernel owns the draft. */
   let assignFormOpen = $state(false);
 
   /** Confirm-dialog state for revoke. */
   let confirmOpen = $state(false);
   let pendingRevoke = $state<{ user: UserListWithRolesRow; ra: RoleAssignmentRow } | null>(null);
 
-  let searchEl: HTMLInputElement | null = $state(null);
+  const SEARCH_INPUT_ID = 'admin-users-search';
   let listEl: HTMLUListElement | null = $state(null);
 
   /* -------------------------------------------------------- initial batch */
@@ -227,35 +236,30 @@
     })),
   );
 
+  /**
+   * Initial draft for the assign-role <Form>. Re-derived when the
+   * selected user changes; combined with a `{#key}` wrap so the Form
+   * remounts and rebuilds its draft for the new user.
+   */
+  const assignInitial = $derived.by((): Record<string, unknown> => {
+    if (selectedUser === null) return {};
+    return {
+      user_id: selectedUser.id,
+      role_name: '',
+      scope_project_id: null,
+    };
+  });
+
   /* ----------------------------------------------------- mutation: assign */
 
-  async function doAssign(): Promise<void> {
-    if (selectedUser === null) return;
-    if (assignRole === null) return;
-    assigning = true;
-    try {
-      const data: UserRoleSetInput = assignRolePayload(
-        selectedUser.id,
-        assignRole,
-        assignProject,
-      );
-      await dispatcher.request<UserRoleSetInput, UserRoleSetOutput>({
-        endpoint: userRoleSet.endpoint,
-        action: userRoleSet.action,
-        data,
-      });
-      notify({ type: 'success', message: 'Role assigned' });
-      // Reset the form and reload.
-      assignRole = null;
-      assignProject = null;
-      assignFormOpen = false;
-      await refresh();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      notify({ type: 'error', message: `Assign failed: ${msg}` });
-    } finally {
-      assigning = false;
-    }
+  function onAssignSaved(): void {
+    notify({ type: 'success', message: 'Role assigned' });
+    assignFormOpen = false;
+    void refresh();
+  }
+
+  function cancelAssign(): void {
+    assignFormOpen = false;
   }
 
   /* ----------------------------------------------------- mutation: revoke */
@@ -322,8 +326,11 @@
 
   async function focusSearch(): Promise<void> {
     await tick();
-    searchEl?.focus();
-    searchEl?.select();
+    const el = document.getElementById(SEARCH_INPUT_ID);
+    if (el instanceof HTMLInputElement) {
+      el.focus();
+      el.select();
+    }
   }
 
   async function openAssignForm(): Promise<void> {
@@ -354,43 +361,31 @@
   });
 </script>
 
-<div class="flex h-full flex-col">
-  <header class="flex items-center justify-between border-b border-border px-4 py-3">
-    <h1 class="text-xl font-semibold">Admin · Users &amp; Roles</h1>
-  </header>
-
+<PageShell title="Admin · Users & Roles" pad="none">
+  {#snippet children()}
   {#if loading && users.length === 0}
-    <div class="flex flex-1 items-center justify-center">
+    <div class="flex h-full items-center justify-center">
       <Spinner size="lg" />
     </div>
   {:else if error !== null}
-    <div
-      role="alert"
-      class="m-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger"
-    >
-      Failed to load: {error}
-      <button type="button" class="ml-3 underline" onclick={() => void refresh()}>
-        Retry
-      </button>
-    </div>
+    <ErrorAlert
+      class="m-4"
+      message={`Failed to load: ${error}`}
+      onRetry={() => void refresh()}
+    />
   {:else}
-    <div class="flex flex-1 min-h-0">
+    <div class="flex h-full min-h-0">
       <!-- ============================================== Master pane -->
       <aside
         class="flex w-[300px] shrink-0 flex-col gap-2 border-r border-border p-3"
         aria-label="User list"
       >
-        <input
+        <TextInput
+          id={SEARCH_INPUT_ID}
           type="search"
-          bind:this={searchEl}
           bind:value={search}
           placeholder="Search by display name… ( / )"
           aria-label="Search by display name"
-          class={cx(
-            'w-full rounded-md border border-border bg-bg px-3 py-1.5 text-sm',
-            'text-fg placeholder:text-muted',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-          )}
         />
 
         <div>
@@ -548,71 +543,52 @@
               </Button>
             {:else}
               <h4 class="mb-2 text-sm font-semibold text-fg">Assign role</h4>
-              <div class="flex flex-col gap-2 sm:flex-row sm:items-end">
-                <div class="flex-1">
-                  <label
-                    for="admin-users-assign-role"
-                    class="mb-1 block text-xs font-medium text-muted"
-                  >
-                    Role
-                  </label>
-                  <Combobox
-                    id="admin-users-assign-role"
-                    value={assignRole}
-                    options={roleAssignOptions}
-                    placeholder="Pick a role"
-                    onchange={(v) => {
-                      assignRole = v as string | null;
-                    }}
-                  />
-                </div>
-                <div class="flex-1">
-                  <label
-                    for="admin-users-assign-project"
-                    class="mb-1 block text-xs font-medium text-muted"
-                  >
-                    Scope (project)
-                  </label>
-                  <Combobox
-                    id="admin-users-assign-project"
-                    value={assignProject}
-                    options={projectAssignOptions}
-                    placeholder="Global (no scope)"
-                    onchange={(v) => {
-                      assignProject = v as ID | null;
-                    }}
-                  />
-                </div>
-                <div class="flex shrink-0 gap-2">
-                  <Button
-                    variant="primary"
-                    size="md"
-                    disabled={assignRole === null || assigning}
-                    loading={assigning}
-                    onclick={() => void doAssign()}
-                  >
-                    {#snippet children()}Add{/snippet}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="md"
-                    onclick={() => {
-                      assignFormOpen = false;
-                      assignRole = null;
-                      assignProject = null;
-                    }}
-                  >
-                    {#snippet children()}Cancel{/snippet}
-                  </Button>
-                </div>
-              </div>
+              {#key selectedUser.id}
+                <Form
+                  spec="user_role.set"
+                  initial={assignInitial}
+                  onSaved={onAssignSaved}
+                  class="flex flex-col gap-2"
+                >
+                  <FormErrors />
+                  <div class="flex flex-col gap-2 sm:flex-row sm:items-end">
+                    <div class="flex-1">
+                      <Select
+                        path="role_name"
+                        label="Role"
+                        options={roleAssignOptions}
+                        placeholder="Pick a role"
+                      />
+                    </div>
+                    <div class="flex-1">
+                      <Select
+                        path="scope_project_id"
+                        label="Scope (project)"
+                        options={projectAssignOptions}
+                        placeholder="Global (no scope)"
+                      />
+                    </div>
+                    <div class="flex shrink-0 gap-2">
+                      <SubmitButton size="md">Add</SubmitButton>
+                      <Button
+                        variant="ghost"
+                        size="md"
+                        onclick={cancelAssign}
+                      >
+                        {#snippet children()}Cancel{/snippet}
+                      </Button>
+                    </div>
+                  </div>
+                </Form>
+              {/key}
             {/if}
           </div>
         {/if}
       </section>
     </div>
   {/if}
-</div>
+  {/snippet}
+</PageShell>
 
 <ConfirmDialog
   bind:open={confirmOpen}

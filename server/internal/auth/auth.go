@@ -103,12 +103,42 @@ type RolesPool interface {
 // `user_role` table, joined to `role.name`. Returns an empty slice if
 // the user has no roles. The dispatcher calls this once per HTTP
 // request as part of the AllowedRoles gate.
+//
+// Agent semantics: when userID points at an agent row (is_agent=true
+// with a non-null parent_user_id), the returned set is the
+// intersection of the agent's own grants and the parent's grants.
+// This caps the agent's effective privileges at whatever the parent
+// currently holds — granting `manager` to an agent has no runtime
+// effect until the parent also holds `manager`, and the agent loses
+// `manager` automatically the moment the parent does. Grant-time
+// checks alone don't survive subsequent parent-role revocations.
 func LoadUserRoles(ctx context.Context, pool RolesPool, userID int64) ([]string, error) {
 	rows, err := pool.Query(ctx, `
-		SELECT r.name
-		FROM user_role ur
-		JOIN role r ON r.id = ur.role_id
-		WHERE ur.user_id = $1
+		WITH self AS (
+			SELECT id, is_agent, parent_user_id
+			FROM user_account WHERE id = $1
+		),
+		own AS (
+			SELECT r.name
+			FROM user_role ur
+			JOIN role r ON r.id = ur.role_id
+			WHERE ur.user_id = $1
+		),
+		parent_roles AS (
+			SELECT r.name
+			FROM self
+			JOIN user_role ur ON ur.user_id = self.parent_user_id
+			JOIN role r ON r.id = ur.role_id
+			WHERE self.is_agent AND self.parent_user_id IS NOT NULL
+		)
+		SELECT name FROM own
+		WHERE
+		    -- Non-agent target: return their grants verbatim.
+		    NOT EXISTS (SELECT 1 FROM self WHERE is_agent AND parent_user_id IS NOT NULL)
+		    -- Agent target: intersect literally with parent's current
+		    -- grants. No wildcard role anymore — every grant the parent
+		    -- holds must appear by name.
+		 OR name IN (SELECT name FROM parent_roles)
 	`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("auth: load user roles: %w", err)
