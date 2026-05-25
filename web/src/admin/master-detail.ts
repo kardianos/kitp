@@ -60,6 +60,105 @@ export type FieldOptions =
   | Array<{ value: string; label: string }>
   | { fromPath: string };
 
+/* -------------------------------------------------------------------------- */
+/* Create / delete / detail-action config (generic, opt-in per screen).        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One field in a create (or detail-action) form. `name` is the PAYLOAD key the
+ * declarative `input` InputSpec reads via `{ payload: name }`; `kind` chooses
+ * the editor (text | select). `required` gates the submit. `optionsLabel`
+ * lets a select show a placeholder option for the empty value.
+ */
+export interface MasterDetailFormField {
+  name: string;
+  label: string;
+  kind: 'text' | 'select';
+  options?: FieldOptions;
+  required?: boolean;
+  placeholder?: string;
+}
+
+/**
+ * Generic create config. A "+ New" button opens a dialog of `fields`; submit
+ * fires the `create` intent with the collected payload (the declarative
+ * `actionSpec` action reads it via `input`), OPTIMISTICALLY appending a row to
+ * `<scopeKey>.items` built by `optimisticRow` (auto-rollback on fault). The
+ * server-returned id (read at `resultIdField`) promotes the temp row.
+ */
+export interface MasterDetailCreate {
+  /** Spec key the create fires (e.g. 'card.insert', 'person.create'). */
+  spec: string;
+  /** Declarative input map (payload → wire). Reads the dialog payload. */
+  input: InputSpec;
+  /** The dialog's fields. Their `name`s are the payload keys. */
+  fields: MasterDetailFormField[];
+  /** Dialog heading. Default 'New item'. */
+  title?: string;
+  /** "+ New" button label. Default '+ New'. */
+  buttonLabel?: string;
+  /**
+   * Build the optimistic row's `raw` object from the submitted payload. The
+   * control wraps it in `{ id: <tempId>, raw }`. Default: a card-shaped row
+   * `{ id, attributes: { title } }` from the payload's `title` field.
+   */
+  optimisticRaw?: (payload: Record<string, unknown>) => Record<string, unknown>;
+  /** Dotted field in the success result carrying the new id (default 'id'). */
+  resultIdField?: string;
+}
+
+/**
+ * Generic delete config. A Delete button in the detail pane fires the `delete`
+ * intent with `{ id }` for the selected row, OPTIMISTICALLY removing it from
+ * `<scopeKey>.items` (auto-rollback on fault).
+ */
+export interface MasterDetailDelete {
+  /** Spec key the delete fires (e.g. 'card.delete'). */
+  spec: string;
+  /** Declarative input map (payload → wire). Reads `{ payload: 'id' }`. */
+  input: InputSpec;
+  /** Confirm prompt text; absent → no confirm gate (deletes immediately). */
+  confirm?: string;
+  /** Delete button label. Default 'Delete'. */
+  buttonLabel?: string;
+}
+
+/**
+ * A detail-pane relation editor section (Users role assign/revoke + person
+ * link/unlink). Renders a list of the selected row's existing relations (read
+ * from `listField`) each with a Revoke/Remove button, plus an optional inline
+ * "+ Add" form. Each action fires a declarative spec via an intent and then
+ * RELOADS the affected row (the list query refires) so the detail reflects the
+ * server truth.
+ */
+export interface MasterDetailRelation {
+  /** Section heading (e.g. 'Roles', 'Linked person'). */
+  title: string;
+  /** Dotted accessor (into the row's raw) for the existing relations array. */
+  listField?: string;
+  /**
+   * For a SINGULAR relation (e.g. a user's linked person card): a dotted
+   * accessor for the single value. When present + non-empty, one row renders
+   * with that value + the remove button; absent → '— (none)'. Mutually
+   * exclusive with `listField`.
+   */
+  valueField?: string;
+  /** Per-relation label field (dotted, into each relation entry). */
+  itemLabel?: string;
+  /** A second muted label field (e.g. the scope project title). */
+  itemSubLabel?: string;
+  /** The remove intent + spec + its declarative input (payload → wire). */
+  remove?: { intent: string; spec: string; label?: string; input: InputSpec };
+  /** Inline add form: an intent + spec + fields + its declarative input. */
+  add?: {
+    intent: string;
+    spec: string;
+    label?: string;
+    fields: MasterDetailFormField[];
+    input: InputSpec;
+  };
+}
+
 /** One detail-pane field descriptor. */
 export interface MasterDetailField {
   /** Dotted accessor INTO the row's `raw` object, e.g. 'attributes.title'. */
@@ -144,7 +243,42 @@ export interface MasterDetailConfig extends BaseControlConfig {
      * `{ cardId, attributeName, value }` — optimistic patch + rollback.
      */
     updateSpec?: string;
+    /**
+     * Optional relation editors rendered below the fields (Users role
+     * assign/revoke + person link/unlink). Each mutates the selected row and
+     * reloads it after — see {@link MasterDetailRelation}.
+     */
+    relations?: MasterDetailRelation[];
+    /**
+     * Optional richer nested-collection editor rendered below the fields
+     * (Workflows flow-step transitions, Attributes edge matrix, Screens filter
+     * cards). Mounts a `NestedEditor` of the given `kind` into the detail pane;
+     * it watches THIS screen's `<scopeKey>.selectedId` + `<scopeKey>.items` and
+     * fires its own reads/writes. `scopeKey` is the editor's own tree namespace
+     * (default `<screen scopeKey>.nested`). See `admin/nested-editor.ts`.
+     */
+    nested?: {
+      kind:
+        | 'flowSteps'
+        | 'edgeMatrix'
+        | 'screenFilters'
+        | 'commChannelConfig'
+        | 'activitySinkConfig'
+        | 'agentTokens'
+        | 'roleMappings';
+      scopeKey?: string;
+    };
   };
+  /**
+   * Opt-in generic create affordance ("+ New" button → dialog → optimistic
+   * add). Card-backed screens use `card.insert`; Contacts uses `person.create`.
+   */
+  create?: MasterDetailCreate;
+  /**
+   * Opt-in generic delete affordance (a Delete button on the selected detail →
+   * optimistic remove). Card-backed screens use `card.delete`.
+   */
+  delete?: MasterDetailDelete;
 }
 
 declare module '../core/control.js' {
@@ -212,6 +346,19 @@ export function filterItems(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Optimistic temp ids — a fresh negative bigint per pending create. Real ids   */
+/* are positive, so a negative temp id never collides with a server id; it is   */
+/* rendered as a string in the uniform item model (selection compares strings). */
+/* -------------------------------------------------------------------------- */
+
+let optimisticSeq = -1n;
+function nextOptimisticId(): string {
+  const id = optimisticSeq;
+  optimisticSeq -= 1n;
+  return id.toString();
+}
+
+/* -------------------------------------------------------------------------- */
 /* Binding builders — turn a config into declarative query/action tables.      */
 /* -------------------------------------------------------------------------- */
 
@@ -220,8 +367,21 @@ export function filterItems(
  * `landItems` handler (which normalises + writes `<scopeKey>.items`). Errors
  * self-represent (inline list fault).
  */
+export function needsReloadTrigger(cfg: MasterDetailConfig): boolean {
+  // The relation actions (Users role/person) RELOAD the list after mutating a
+  // row, so a non-predicate, non-scoped screen still needs the `listVersion`
+  // trigger to refire. Create/delete are optimistic (no reload), but harmless to
+  // include — the trigger fires once on mount either way.
+  return (cfg.detail.relations?.length ?? 0) > 0;
+}
+
 export function listQuery(cfg: MasterDetailConfig): QueryBinding {
   const hasPredicate = cfg.list.predicateFilter !== undefined;
+  // A predicate filter, OR a screen whose detail-relation actions reload the
+  // list, drives the list query off the `<scopeKey>.listVersion` leaf the
+  // control bumps. Project-scoped screens keep their `{ signal: scope }` trigger
+  // (none of them carry relations in this pass), so they're unaffected.
+  const useVersion = hasPredicate || needsReloadTrigger(cfg);
   const q: QueryBinding = {
     name: 'list',
     // With a structured predicate filter, the list query refires on a
@@ -229,7 +389,7 @@ export function listQuery(cfg: MasterDetailConfig): QueryBinding {
     // (a one-way query-version trigger, the same shape the task screens use).
     // Without one, the configured trigger (default 'mount') stands.
     spec: cfg.list.spec,
-    when: hasPredicate ? { signal: `${cfg.scopeKey}.listVersion` } : (cfg.list.when ?? 'mount'),
+    when: useVersion ? { signal: `${cfg.scopeKey}.listVersion` } : (cfg.list.when ?? 'mount'),
     result: { method: 'landItems' },
     onError: 'self',
   };
@@ -295,6 +455,106 @@ export function updateAction(cfg: MasterDetailConfig): ActionBinding | null {
   };
 }
 
+/** Default card-shaped optimistic raw from a payload (the `title` field). */
+function defaultOptimisticRaw(payload: Record<string, unknown>): Record<string, unknown> {
+  const title = payload['title'];
+  return { attributes: { title: typeof title === 'string' ? title : '' } };
+}
+
+/**
+ * Build the create ActionBinding. Fires on the 'createItem' intent with the
+ * dialog payload (which carries an `__optimisticId`). Optimistically appends a
+ * temp-id row to `<scopeKey>.items` (built by the config's `optimisticRaw`),
+ * auto-rolls-back on fault, and on success promotes the temp id to the
+ * server-returned id via the 'landCreated' handler. Returns null when no
+ * create is configured.
+ */
+export function createAction(cfg: MasterDetailConfig): ActionBinding | null {
+  const create = cfg.create;
+  if (!create) return null;
+  const itemsPath = `${cfg.scopeKey}.items`;
+  const buildRaw = create.optimisticRaw ?? defaultOptimisticRaw;
+  return {
+    intent: 'createItem',
+    spec: create.spec,
+    input: create.input,
+    optimistic: {
+      path: itemsPath,
+      patch: (current, payload): MasterDetailItem[] => {
+        const rows = Array.isArray(current) ? (current as MasterDetailItem[]) : [];
+        const p = (payload ?? {}) as Record<string, unknown>;
+        const id = typeof p['__optimisticId'] === 'string' ? (p['__optimisticId'] as string) : nextOptimisticId();
+        const raw = { ...buildRaw(p) };
+        raw['id'] = id;
+        return [...rows, { id, raw }];
+      },
+    },
+    result: { method: 'landCreated' },
+    onError: 'top',
+  };
+}
+
+/**
+ * Build the delete ActionBinding. Fires on the 'deleteItem' intent with
+ * `{ id }`; optimistically removes the matching `<scopeKey>.items` row and
+ * rolls back on fault. Returns null when no delete is configured.
+ */
+export function deleteAction(cfg: MasterDetailConfig): ActionBinding | null {
+  const del = cfg.delete;
+  if (!del) return null;
+  const itemsPath = `${cfg.scopeKey}.items`;
+  return {
+    intent: 'deleteItem',
+    spec: del.spec,
+    input: del.input,
+    optimistic: {
+      path: itemsPath,
+      patch: (current, payload): MasterDetailItem[] => {
+        const rows = Array.isArray(current) ? (current as MasterDetailItem[]) : [];
+        const id = (payload ?? {}) as { id?: string };
+        if (id.id === undefined) return rows;
+        return rows.filter((it) => it.id !== id.id);
+      },
+    },
+    onError: 'top',
+  };
+}
+
+/**
+ * Build the declarative actions for the detail relations (Users role
+ * assign/revoke + person unlink). Each relation's add/remove fires its own
+ * intent → spec; on success the 'reloadList' handler refires the list query so
+ * the mutated row reflects the server truth (these aren't simple in-place
+ * patches — a role grant can collapse a duplicate, an unlink touches a
+ * sibling table). NO optimistic patch: the reload is the source of truth.
+ */
+export function relationActions(cfg: MasterDetailConfig): ActionBinding[] {
+  const rels = cfg.detail.relations;
+  if (!rels) return [];
+  const out: ActionBinding[] = [];
+  for (const rel of rels) {
+    if (rel.add) {
+      out.push({
+        intent: rel.add.intent,
+        spec: rel.add.spec,
+        input: rel.add.input,
+        result: { method: 'reloadList' },
+        onError: 'top',
+      });
+    }
+    if (rel.remove) {
+      out.push({
+        intent: rel.remove.intent,
+        spec: rel.remove.spec,
+        input: rel.remove.input,
+        result: { method: 'reloadList' },
+        onError: 'top',
+      });
+    }
+  }
+  return out;
+}
+
 /* -------------------------------------------------------------------------- */
 /* The control.                                                                */
 /* -------------------------------------------------------------------------- */
@@ -303,6 +563,10 @@ const DEFAULT_ROW_HEIGHT = 56;
 
 export class MasterDetail extends Control<MasterDetailConfig> {
   private vlist: VirtualListHandle | null = null;
+  /** The create dialog (built when `config.create` is set), or null. */
+  private createDialog: CreateDialog | null = null;
+  /** Id of the most recent optimistic create so the success sink promotes it. */
+  private pendingCreateId: string | null = null;
 
   private get itemsPath(): string[] {
     return `${this.config.scopeKey}.items`.split('.');
@@ -350,6 +614,34 @@ export class MasterDetail extends Control<MasterDetailConfig> {
       this.ctx.tree.at(this.itemsPath).set(items);
     });
 
+    // Create success sink: promote the pending optimistic temp-id row to the
+    // server-returned id (read at the config's `resultIdField`, default 'id').
+    // Closes the dialog if it's still open. The optimistic txn already committed
+    // before this fires (DataController commits then deliverResult).
+    this.handler('landCreated', (out) => {
+      const tempId = this.pendingCreateId;
+      this.pendingCreateId = null;
+      if (tempId === null) return;
+      const idField = cfg.create?.resultIdField ?? 'id';
+      const realId = readPath(out, idField);
+      const node = this.ctx.tree.at(this.itemsPath);
+      const rows = (node.peek<MasterDetailItem[]>() ?? []) as MasterDetailItem[];
+      const realIdStr = realId === null || realId === undefined ? null : String(realId);
+      if (realIdStr === null || realIdStr === '' || realIdStr === '0') return;
+      node.set(
+        rows.map((it) => {
+          if (it.id !== tempId) return it;
+          const raw = { ...it.raw, id: realIdStr };
+          return { id: realIdStr, raw };
+        }),
+      );
+    });
+
+    // Relation reload sink: bump the listVersion leaf so the list query refires
+    // and the mutated row reflects server truth. A one-way tree write (outside
+    // any tracked effect) — cascade-safe.
+    this.handler('reloadList', () => this.bumpListVersion());
+
     /* ------------------------------ panes ----------------------------- */
     const listPane = document.createElement('div');
     listPane.className = 'masterdetail__list-pane';
@@ -360,6 +652,19 @@ export class MasterDetail extends Control<MasterDetailConfig> {
     h1.className = 'masterdetail__title';
     h1.textContent = cfg.title;
     heading.append(h1);
+
+    // The "+ New" create affordance (opt-in via config.create). Opens a dialog
+    // of the configured fields → fires the declarative `createItem` action
+    // (optimistic add). Built once; the dialog host is appended to the section.
+    if (cfg.create) {
+      const newBtn = document.createElement('button');
+      newBtn.type = 'button';
+      newBtn.className = 'btn btn-primary masterdetail__new';
+      newBtn.dataset.mdNew = '';
+      newBtn.textContent = cfg.create.buttonLabel ?? '+ New';
+      heading.append(newBtn);
+      this.listen(newBtn, 'click', () => this.createDialog?.open());
+    }
 
     const search = document.createElement('input');
     search.type = 'search';
@@ -395,7 +700,38 @@ export class MasterDetail extends Control<MasterDetailConfig> {
     detailPane.className = 'masterdetail__detail-pane scroll-y';
     detailPane.dataset.mdDetail = '';
 
+    // The scalar-field detail body that `renderDetail` rewrites on each
+    // selection/items change. A persistent nested-editor host (when configured)
+    // sits BELOW it so the spawned NestedEditor child survives detail repaints.
+    const detailFields = document.createElement('div');
+    detailFields.className = 'masterdetail__detail-fields';
+    detailFields.dataset.mdDetailFields = '';
+    detailPane.append(detailFields);
+
+    if (cfg.detail.nested) {
+      const nestedHost = document.createElement('div');
+      nestedHost.className = 'masterdetail__nested';
+      nestedHost.dataset.mdNested = '';
+      detailPane.append(nestedHost);
+      this.spawn(
+        'NestedEditor',
+        {
+          type: 'NestedEditor',
+          kind: cfg.detail.nested.kind,
+          parentScope: cfg.scopeKey,
+          scopeKey: cfg.detail.nested.scopeKey ?? `${cfg.scopeKey}.nested`,
+        },
+        nestedHost,
+      );
+    }
+
     this.el.append(listPane, detailPane);
+
+    // Build the create dialog host (hidden until opened) when create is set.
+    if (cfg.create) {
+      this.createDialog = this.buildCreateDialog(cfg.create);
+      this.el.append(this.createDialog.root);
+    }
 
     /* --------------------------- reactivity --------------------------- */
     const itemsNode = this.ctx.tree.at(this.itemsPath);
@@ -404,6 +740,12 @@ export class MasterDetail extends Control<MasterDetailConfig> {
     if (itemsNode.peek() === undefined) itemsNode.set([]);
     if (searchNode.peek<string>() === undefined) searchNode.set('');
     if (selectedNode.peek() === undefined) selectedNode.set(null);
+    // Seed the listVersion driver for a non-predicate screen whose detail
+    // relations reload the list (mountPredicateFilter seeds it on card screens).
+    if (cfg.list.predicateFilter === undefined && needsReloadTrigger(cfg)) {
+      const v = this.ctx.tree.at(this.listVersionPath);
+      if (v.peek<number>() === undefined) v.set(0);
+    }
 
     // Inline self-represented list fault (onError 'self' on the list query).
     this.effect(() => {
@@ -449,12 +791,14 @@ export class MasterDetail extends Control<MasterDetailConfig> {
       list.style.display = has ? '' : 'none';
     }, 'masterdetail.empty');
 
-    // The detail pane re-renders whenever the selection OR the items change
-    // (an optimistic edit patches the items leaf → the detail reflects it).
+    // The detail FIELDS re-render whenever the selection OR the items change
+    // (an optimistic edit patches the items leaf → the detail reflects it). The
+    // nested editor (when configured) is a persistent child host below; it is
+    // NOT cleared here and watches the selection itself.
     this.effect(() => {
       const sel = selectedNode.get<string | null>();
       const all = (itemsNode.get<MasterDetailItem[]>() ?? []) as MasterDetailItem[];
-      this.renderDetail(detailPane, sel ?? null, all);
+      this.renderDetail(detailFields, sel ?? null, all);
     }, 'masterdetail.detail');
 
     /* -------------------------- interactions ------------------------- */
@@ -533,6 +877,36 @@ export class MasterDetail extends Control<MasterDetailConfig> {
    *  both read `<scopeKey>.selectedId` and repaint. One-way write, cascade-safe. */
   private select(id: string): void {
     this.ctx.tree.at(this.selectedPath).set(id);
+  }
+
+  /* --------------------------- create / delete -------------------------- */
+
+  /** Bump the listVersion leaf so the `{ signal }` list query refires. */
+  private bumpListVersion(): void {
+    const node = this.ctx.tree.at(this.listVersionPath);
+    node.set((node.peek<number>() ?? 0) + 1);
+  }
+
+  /**
+   * Fire the declarative `createItem` action. Mint the optimistic temp id HERE
+   * (so the success sink promotes the right row) and ride it on the payload as
+   * `__optimisticId`; the optimistic patch appends a row with that id, then the
+   * spec fires. On fault the tree txn auto-rolls-back.
+   */
+  private fireCreate(payload: Record<string, unknown>): void {
+    const optimisticId = nextOptimisticId();
+    this.pendingCreateId = optimisticId;
+    this.intent('createItem', { ...payload, __optimisticId: optimisticId });
+  }
+
+  /** Fire the declarative `deleteItem` action for the selected row. */
+  private fireDelete(id: string): void {
+    // Clear the selection so the detail pane returns to its empty state once
+    // the optimistic removal lands (the removed id is no longer in items).
+    if ((this.ctx.tree.at(this.selectedPath).peek<string | null>() ?? null) === id) {
+      this.ctx.tree.at(this.selectedPath).set(null);
+    }
+    this.intent('deleteItem', { id });
   }
 
   /* ------------------------- predicate filter --------------------------- */
@@ -626,17 +1000,49 @@ export class MasterDetail extends Control<MasterDetailConfig> {
 
     const frag = document.createDocumentFragment();
 
+    // Header row: the title + (when delete is configured + the row is real) a
+    // Delete action on the right.
+    const headerRow = document.createElement('div');
+    headerRow.className = 'masterdetail__detail-header';
     const header = document.createElement('h2');
     header.className = 'masterdetail__detail-title';
     header.dataset.mdDetailTitle = '';
     header.textContent = fieldText(item.raw, cfg.detail.titleField) || '(untitled)';
-    frag.append(header);
+    headerRow.append(header);
+    if (cfg.delete) headerRow.append(this.buildDeleteButton(cfg.delete, item));
+    frag.append(headerRow);
 
     for (const f of cfg.detail.fields) {
       frag.append(this.buildField(item, f));
     }
 
+    // Relation editors (Users role assign/revoke + person unlink).
+    for (const rel of cfg.detail.relations ?? []) {
+      frag.append(this.buildRelation(item, rel));
+    }
+
     host.replaceChildren(frag);
+  }
+
+  /** The detail-pane Delete button: confirms (if configured) then fires the
+   *  declarative `deleteItem` action for the selected row. A pending optimistic
+   *  row (negative id) has no server id, so the delete is disabled for it. */
+  private buildDeleteButton(del: MasterDetailDelete, item: MasterDetailItem): HTMLElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-danger masterdetail__delete';
+    btn.dataset.mdDelete = '';
+    btn.textContent = del.buttonLabel ?? 'Delete';
+    btn.disabled = isPendingId(item.id);
+    this.listen(btn, 'click', () => {
+      if (isPendingId(item.id)) return;
+      if (del.confirm) {
+        const ok = typeof confirm === 'function' ? confirm(del.confirm) : true;
+        if (!ok) return;
+      }
+      this.fireDelete(item.id);
+    });
+    return btn;
   }
 
   /** Build one detail field row per its kind. */
@@ -770,11 +1176,314 @@ export class MasterDetail extends Control<MasterDetailConfig> {
   private fireEdit(id: string, attributeName: string, value: unknown): void {
     this.intent('editField', { id, attributeName, value });
   }
+
+  /* --------------------------- relation editors ------------------------- */
+
+  /**
+   * Build one relation section for the selected row (Users role assign/revoke +
+   * person unlink). Renders the existing relations from `rel.listField` (each
+   * with a Remove/Revoke button) plus an optional inline add form. Every action
+   * carries the selected row's id on its payload (`id`) so the declarative
+   * input can map it to the wire (e.g. `user_id`).
+   */
+  private buildRelation(item: MasterDetailItem, rel: MasterDetailRelation): HTMLElement {
+    const section = document.createElement('div');
+    section.className = 'masterdetail__relation';
+    section.dataset.mdRelation = rel.title;
+
+    const label = document.createElement('div');
+    label.className = 'masterdetail__field-label muted';
+    label.textContent = rel.title;
+    section.append(label);
+
+    const listEl = document.createElement('ul');
+    listEl.className = 'masterdetail__relation-list';
+    listEl.dataset.mdRelationList = '';
+
+    if (rel.valueField) {
+      // SINGULAR relation (e.g. linked person): one row when the value is set.
+      const value = fieldText(item.raw, rel.valueField);
+      if (value === '') {
+        listEl.append(noneRow());
+      } else {
+        // Synthesise an entry so buildRelationRow shows the value + remove btn.
+        listEl.append(this.buildRelationRow(item, rel, { __value: value }, value));
+      }
+    } else {
+      // LIST relation (e.g. roles): one row per existing entry.
+      const entries = rel.listField ? readPath(item.raw, rel.listField) : undefined;
+      const arr = Array.isArray(entries) ? entries : [];
+      if (arr.length === 0) {
+        listEl.append(noneRow());
+      } else {
+        for (const entry of arr) {
+          listEl.append(this.buildRelationRow(item, rel, entry as Record<string, unknown>));
+        }
+      }
+    }
+    section.append(listEl);
+
+    // Inline add form.
+    if (rel.add) section.append(this.buildRelationAdd(item, rel, rel.add));
+    return section;
+  }
+
+  /** One existing-relation row: a label (+ optional sub-label) + a Revoke btn. */
+  private buildRelationRow(
+    item: MasterDetailItem,
+    rel: MasterDetailRelation,
+    entry: Record<string, unknown>,
+    labelOverride?: string,
+  ): HTMLElement {
+    const li = document.createElement('li');
+    li.className = 'masterdetail__relation-row';
+    li.dataset.mdRelationRow = '';
+
+    const text = document.createElement('span');
+    text.className = 'masterdetail__relation-label';
+    const main = labelOverride ?? (rel.itemLabel ? fieldText(entry, rel.itemLabel) : '');
+    text.textContent = main || '(unnamed)';
+    li.append(text);
+
+    if (rel.itemSubLabel) {
+      const sub = fieldText(entry, rel.itemSubLabel);
+      if (sub) {
+        const subEl = document.createElement('span');
+        subEl.className = 'masterdetail__relation-sub muted';
+        subEl.textContent = sub;
+        li.append(subEl);
+      }
+    }
+
+    if (rel.remove) {
+      const remove = rel.remove;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn masterdetail__relation-remove';
+      btn.dataset.mdRelationRemove = '';
+      btn.textContent = remove.label ?? 'Revoke';
+      this.listen(btn, 'click', () => {
+        // Payload: the selected row id + the entry fields the input maps from.
+        this.intent(remove.intent, { id: item.id, entry, ...entry });
+      });
+      li.append(btn);
+    }
+    return li;
+  }
+
+  /** The inline "+ Add" form for a relation (e.g. assign role + scope). */
+  private buildRelationAdd(
+    item: MasterDetailItem,
+    rel: MasterDetailRelation,
+    add: NonNullable<MasterDetailRelation['add']>,
+  ): HTMLElement {
+    const form = document.createElement('div');
+    form.className = 'masterdetail__relation-add';
+    form.dataset.mdRelationAdd = rel.title;
+
+    const inputs = new Map<string, HTMLElement>();
+    for (const f of add.fields) {
+      inputs.set(f.name, this.buildFormField(form, f));
+    }
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn masterdetail__relation-submit';
+    btn.dataset.mdRelationSubmit = '';
+    btn.textContent = add.label ?? '+ Add';
+    this.listen(btn, 'click', () => {
+      const payload: Record<string, unknown> = { id: item.id };
+      let missingRequired = false;
+      for (const f of add.fields) {
+        const el = inputs.get(f.name);
+        const value = el ? readControlValue(el) : '';
+        if (f.required === true && value === '') missingRequired = true;
+        payload[f.name] = value;
+      }
+      if (missingRequired) return;
+      this.intent(add.intent, payload);
+      // Reset the form fields after a fire (selection-driven reload repaints).
+      for (const f of add.fields) {
+        const el = inputs.get(f.name);
+        if (el) (el as { value?: string }).value = '';
+      }
+    });
+    form.append(btn);
+    return form;
+  }
+
+  /* ----------------------------- create dialog -------------------------- */
+
+  /**
+   * Build the create dialog (a simple modal of the configured fields). Submit
+   * collects the field values into a payload and fires `fireCreate` (the
+   * declarative `createItem` action with optimistic add). Required-field gating
+   * keeps focus; Esc/Cancel closes.
+   */
+  private buildCreateDialog(create: MasterDetailCreate): CreateDialog {
+    const root = document.createElement('div');
+    root.className = 'qe-dialog masterdetail__create-dialog';
+    root.dataset.mdCreate = '';
+    root.style.display = 'none';
+
+    const panel = document.createElement('div');
+    panel.className = 'qe-dialog__panel';
+
+    const heading = document.createElement('h2');
+    heading.className = 'qe-dialog__title';
+    heading.textContent = create.title ?? 'New item';
+    panel.append(heading);
+
+    const inputs = new Map<string, HTMLElement>();
+    for (const f of create.fields) {
+      inputs.set(f.name, this.buildFormField(panel, f, 'qe-dialog'));
+    }
+
+    const footer = document.createElement('div');
+    footer.className = 'qe-dialog__footer';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn masterdetail__create-cancel';
+    cancel.dataset.mdCreateCancel = '';
+    cancel.textContent = 'Cancel';
+    const submit = document.createElement('button');
+    submit.type = 'button';
+    submit.className = 'btn btn-primary masterdetail__create-submit';
+    submit.dataset.mdCreateSubmit = '';
+    submit.textContent = 'Create';
+    footer.append(cancel, submit);
+    panel.append(footer);
+    root.append(panel);
+
+    const dialog: CreateDialog = {
+      root,
+      open: () => {
+        for (const f of create.fields) {
+          const el = inputs.get(f.name);
+          if (el) (el as { value?: string }).value = '';
+        }
+        root.style.display = '';
+        const first = inputs.get(create.fields[0]?.name ?? '');
+        if (first && typeof (first as { focus?: () => void }).focus === 'function') {
+          (first as { focus: () => void }).focus();
+        }
+      },
+      close: () => {
+        root.style.display = 'none';
+      },
+    };
+
+    const commit = (): void => {
+      const payload: Record<string, unknown> = {};
+      let missingRequired = false;
+      for (const f of create.fields) {
+        const el = inputs.get(f.name);
+        const value = el ? readControlValue(el) : '';
+        if (f.required === true && value === '') missingRequired = true;
+        payload[f.name] = value;
+      }
+      if (missingRequired) {
+        const firstReq = create.fields.find((f) => f.required === true);
+        const el = firstReq ? inputs.get(firstReq.name) : undefined;
+        if (el && typeof (el as { focus?: () => void }).focus === 'function') {
+          (el as { focus: () => void }).focus();
+        }
+        return;
+      }
+      this.fireCreate(payload);
+      dialog.close();
+    };
+
+    this.listen(cancel, 'click', () => dialog.close());
+    this.listen(submit, 'click', () => commit());
+    return dialog;
+  }
+
+  /**
+   * Build one form field (text or select) into `host`, returning the editable
+   * element (input/select) the form reads its value from. `cls` namespaces the
+   * field/label classes (default 'masterdetail__form').
+   */
+  private buildFormField(host: HTMLElement, f: MasterDetailFormField, cls = 'masterdetail__form'): HTMLElement {
+    const wrap = document.createElement('label');
+    wrap.className = `${cls}__field`;
+    const span = document.createElement('span');
+    span.className = `${cls}__label`;
+    span.textContent = f.label;
+    wrap.append(span);
+
+    let el: HTMLElement;
+    if (f.kind === 'select') {
+      const sel = document.createElement('select');
+      sel.className = `${cls}__input`;
+      sel.dataset.mdFormField = f.name;
+      // A placeholder empty option so 'no value' is selectable (optional scope).
+      if (f.required !== true) {
+        const blank = document.createElement('option');
+        blank.value = '';
+        blank.textContent = f.placeholder ?? '— none —';
+        sel.append(blank);
+      }
+      for (const o of this.resolveFormOptions(f)) {
+        const opt = document.createElement('option');
+        opt.value = o.value;
+        opt.textContent = o.label;
+        sel.append(opt);
+      }
+      el = sel;
+    } else {
+      const input = document.createElement('input');
+      (input as HTMLInputElement).type = 'text';
+      input.className = `${cls}__input`;
+      input.dataset.mdFormField = f.name;
+      if (f.placeholder) (input as HTMLInputElement).placeholder = f.placeholder;
+      el = input;
+    }
+    wrap.append(el);
+    host.append(wrap);
+    return el;
+  }
+
+  /** Resolve a form field's select options — static list or a `{ fromPath }`. */
+  private resolveFormOptions(f: MasterDetailFormField): Array<{ value: string; label: string }> {
+    const opts = f.options;
+    if (!opts) return [];
+    if (Array.isArray(opts)) return opts;
+    const v = this.ctx.tree.at(opts.fromPath.split('.')).peek();
+    return Array.isArray(v) ? (v as Array<{ value: string; label: string }>) : [];
+  }
 }
 
 /* -------------------------------------------------------------------------- */
 /* Helpers.                                                                    */
 /* -------------------------------------------------------------------------- */
+
+/** The create dialog handle (open/close). */
+interface CreateDialog {
+  root: HTMLElement;
+  open(): void;
+  close(): void;
+}
+
+/** A pending optimistic row carries a negative temp id; it has no server id. */
+function isPendingId(id: string): boolean {
+  return id.startsWith('-');
+}
+
+/** The '— (none)' placeholder row for an empty relation list. */
+function noneRow(): HTMLElement {
+  const none = document.createElement('li');
+  none.className = 'masterdetail__field-value muted';
+  none.dataset.mdRelationNone = '';
+  none.textContent = '— (none)';
+  return none;
+}
+
+/** Read the string value off a built form control (input/select). */
+function readControlValue(el: HTMLElement): string {
+  const v = (el as { value?: unknown }).value;
+  return typeof v === 'string' ? v : v === undefined || v === null ? '' : String(v);
+}
 
 /** Pull the rows array out of a list result (`{ rows: [...] }` or bare array). */
 function extractRows(out: unknown): unknown[] {
@@ -847,8 +1556,16 @@ function describeFault(f: ApiFault): string {
  */
 export function masterDetailScreen(cfg: MasterDetailConfig): MasterDetailConfig {
   const queries: QueryBinding[] = [listQuery(cfg), ...(cfg.queries ?? [])];
-  const action = updateAction(cfg);
-  const actions: ActionBinding[] = [...(action ? [action] : []), ...(cfg.actions ?? [])];
+  const update = updateAction(cfg);
+  const create = createAction(cfg);
+  const del = deleteAction(cfg);
+  const actions: ActionBinding[] = [
+    ...(update ? [update] : []),
+    ...(create ? [create] : []),
+    ...(del ? [del] : []),
+    ...relationActions(cfg),
+    ...(cfg.actions ?? []),
+  ];
   return { ...cfg, queries, actions };
 }
 

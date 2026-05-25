@@ -29,9 +29,10 @@ const common = {
   sourcemap: true,
   outdir: 'dist',
   logLevel: 'info',
-  // Vendored runtime deps (dompurify/marked) will resolve from web/vendor/
-  // via an import map / explicit alias when the Markdown control lands. None
-  // are imported yet, so nothing extra is needed yet.
+  // Vendored runtime deps (dompurify/marked) live as ESM under web/vendor/ and
+  // are imported by relative path from src/util/markdown.ts
+  // (../../vendor/dompurify.js, ../../vendor/marked.js). esbuild resolves and
+  // bundles them out of the box — no import map or alias is required.
 };
 
 // Emit a self-contained dist/index.html: the source index.html references

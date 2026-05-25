@@ -53,6 +53,7 @@ import type { QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { signal } from '../core/signal.js';
 import { virtualList } from '../core/virtual-list.js';
+import { navigate, taskUrl } from '../shell/router.js';
 import { SPEC } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import type { CardWherePredicate } from '../projects/project-helpers.js';
@@ -68,8 +69,12 @@ import {
   buildOrderClauses,
   cycleSort,
   effectiveSort,
+  groupAttrFromGroupValue,
   tagPathLeaf,
+  walkGrouped,
   type ColumnDef,
+  type GroupAttr,
+  type GroupItem,
   type SortState,
 } from './grid-helpers.js';
 
@@ -81,6 +86,10 @@ import {
  * CSS row height MUST equal it or rows overlap / gap.
  */
 const GRID_ROW_HEIGHT = 34;
+
+/** Tree paths the selection model lives at (tree-backed → recycling-safe). */
+const SELECTION_PATH = ['grid', 'selection'];
+const SELECTION_VERSION_PATH = ['grid', 'selectionVersion'];
 
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry types.                                */
@@ -112,6 +121,22 @@ type LabelMap = Record<string, string>;
 export class Grid extends Control<GridConfig> {
   /** Active header-click sort; null = server default (ORDER BY c.id). */
   private sort: SortState | null = null;
+
+  /**
+   * Active group-by attr (resolved from the GROUP picker's `screen.group`
+   * value), or null for a flat list. Drives BOTH the wire `order[]` (the group
+   * key is prepended so rows arrive bucketed) and the body's flat
+   * header+row item model the virtualList renders.
+   */
+  private group: GroupAttr | null = null;
+
+  /**
+   * Direction of the group sort key (asc/desc of the group attr). A group-header
+   * click flips it — which flips the first wire `order[]` key's direction, so
+   * the next response reverses bucket order; within-group row order stays the
+   * column sort. Reset to 'asc' whenever the group attr itself changes.
+   */
+  private groupDir: 'asc' | 'desc' = 'asc';
 
   private get tasksPath(): string[] {
     return (this.config.tasksPath ?? 'grid.tasks').split('.');
@@ -211,6 +236,21 @@ export class Grid extends Control<GridConfig> {
     this.ctx.tree.at(['grid', 'tree']).set(undefined);
     const versionNode = this.ctx.tree.at(['grid', 'queryVersion']);
     if (versionNode.peek<number>() === undefined) versionNode.set(0);
+    // groupVersion: a body-only re-walk trigger the group effect + group-dir
+    // flip bump; the virtualList's data() reads it so the flat item model
+    // re-derives without re-issuing the tasks query.
+    const groupVersionNode = this.ctx.tree.at(['grid', 'groupVersion']);
+    if (groupVersionNode.peek<number>() === undefined) groupVersionNode.set(0);
+
+    // Bulk-selection model: a Set<string> of stringified card ids in the TREE
+    // (so the recycling row `update` reads it to render each row's checked
+    // state — NEVER node-resident state). The version leaf is bumped on every
+    // selection change so the virtualList re-windows + the BulkActionBar's
+    // count/visibility effect re-runs. Seed both BEFORE the data layer wires.
+    const selectionNode = this.ctx.tree.at(SELECTION_PATH);
+    if (!(selectionNode.peek() instanceof Set)) selectionNode.set(new Set<string>());
+    const selectionVersionNode = this.ctx.tree.at(SELECTION_VERSION_PATH);
+    if (selectionVersionNode.peek<number>() === undefined) selectionVersionNode.set(0);
 
     /* ------------------------------ filter bar ----------------------------- */
     // Default: rely on the shared ScreenFilterBar that ScreenHost mounts above
@@ -270,6 +310,16 @@ export class Grid extends Control<GridConfig> {
 
     this.el.append(table);
 
+    /* --------------------------- bulk-action bar --------------------------- */
+    // The selection-driven bulk surface. It reads the SAME grid.selection /
+    // grid.selectionVersion leaves the rows write, so it stays in lock-step;
+    // it owns the assign / move / purge writes + the clear gesture. Mounted as
+    // a child (parent owns teardown).
+    const bulkHost = document.createElement('div');
+    bulkHost.className = 'grid__bulkbar';
+    this.el.append(bulkHost);
+    this.spawn('BulkActionBar', { type: 'BulkActionBar' }, bulkHost);
+
     /* ------------------------------ reactivity ----------------------------- */
     const tasksNode = this.ctx.tree.at(this.tasksPath);
 
@@ -293,28 +343,35 @@ export class Grid extends Control<GridConfig> {
 
     // Rows render through the recycling virtualList: `body` is the scroll
     // viewport, a fixed pool of row nodes is content-swapped on scroll (no
-    // churn → no flash). `data()` reads the tasks leaf reactively AND the
-    // lookups `tick` leaf so a late-landing lookup re-windows + re-resolves the
-    // visible cells. `create(el)` builds the empty cell shells ONCE per pooled
-    // node; `update(el, task, i)` swaps EVERY cell's content + re-resolves
-    // labels + sets `data-card-id` from the task — never from node state,
-    // because nodes recycle to different tasks on scroll. The key-skip fast
-    // NO key: a row's CONTENT changes while its task id + slot index stay fixed
-    // when a card_ref lookup lands late (the tick bumps). The key-skip fast path
-    // is only safe when content is a pure function of item identity; here it
-    // isn't, so update() runs for every visible slot on each render and the
-    // late-landing label always repaints the visible cells.
-    const vl = virtualList<CardWithAttrs>({
+    // churn → no flash). The list renders a FLAT `GroupItem` sequence — either
+    // plain rows (no grouping) or `[{kind:'group'}, {kind:'row'}, …]` when a
+    // group-by attr is active (see walkGrouped). Both shapes are one
+    // fixed-height slot each, so virtualization + recycling are intact; the
+    // single pooled-node `update` discriminates header vs data row.
+    //
+    // `data()` reads the tasks leaf reactively AND the lookups `tick` + the
+    // group `version` leaves so a late-landing lookup re-resolves cell + group
+    // labels, and a GROUP picker change re-windows. `create(el)` builds the
+    // (overlapping) header + data-row shells ONCE per pooled node; the
+    // `update` toggles which is shown. NO key: a row's CONTENT changes while
+    // its id + slot index stay fixed when a card_ref lookup lands late (the
+    // tick bumps), so update() runs for every visible slot on each render.
+    const vl = virtualList<GroupItem<CardWithAttrs>>({
       container: body,
       rowHeight: GRID_ROW_HEIGHT,
       data: () => {
         // Read the lookups tick so the single effect re-renders when a label
         // map lands; update() peeks the same leaves when it resolves cells.
         this.ctx.tree.at(['grid', 'lookups', 'tick']).get();
-        return (tasksNode.get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+        // Read the group version so a GROUP picker / group-dir change re-walks.
+        this.ctx.tree.at(['grid', 'groupVersion']).get();
+        // Read the selection version so a row toggle / select-all re-renders the
+        // visible window's checkboxes (recycling-safe — fillRow reads the set).
+        this.ctx.tree.at(SELECTION_VERSION_PATH).get();
+        return this.buildItems();
       },
       create: (el) => this.buildRowShell(el),
-      update: (el, row) => this.fillRow(el, row),
+      update: (el, item) => this.fillItem(el, item),
       name: 'grid.rows',
     });
     this.onDestroy(() => vl.dispose());
@@ -339,6 +396,21 @@ export class Grid extends Control<GridConfig> {
       this.applyFilter(search, predicate);
       this.bumpQuery();
     }, 'grid.filterWatch');
+
+    // GROUP picker → group-by attr. Reads ONLY the `screen.group` leaf and
+    // writes the group state + the wire `order[]` (group key prepended so rows
+    // arrive bucketed) + bumps the query version. One-way: never reads back a
+    // dep it writes — same cascade-safe shape as the sort/filter watchers.
+    this.effect(() => {
+      const groupValue = this.ctx.tree.at(['screen', 'group']).get<string>() ?? null;
+      const next = groupAttrFromGroupValue(groupValue);
+      // A fresh group column resets the direction so the toggle is predictable.
+      if ((next?.attr ?? null) !== (this.group?.attr ?? null)) this.groupDir = 'asc';
+      this.group = next;
+      this.applyOrder();
+      this.bumpGroup();
+      this.bumpQuery();
+    }, 'grid.groupWatch');
   }
 
   /* ----------------------------- result sinks --------------------------- */
@@ -377,6 +449,72 @@ export class Grid extends Control<GridConfig> {
     node.set((node.peek<number>() ?? 0) + 1);
   }
 
+  /* ------------------------------ selection ------------------------------- */
+
+  /**
+   * The selection model is a `Set<string>` of stringified card ids living in
+   * the TREE (`grid.selection`). It is the SINGLE source of truth: the row
+   * `update` reads it to render each pooled node's checkbox (recycling-safe —
+   * no per-node selection state), the header select-all reads it, and the
+   * BulkActionBar reads it for its count + the operations. Every mutation bumps
+   * `grid.selectionVersion` (a one-way write outside any tracked effect, so the
+   * cascade rules hold) which re-windows the virtualList + repaints the header.
+   */
+  private selection(): Set<string> {
+    const s = this.ctx.tree.at(SELECTION_PATH).peek<Set<string>>();
+    return s instanceof Set ? s : new Set<string>();
+  }
+
+  /** Is a card id currently selected? (Peek — callers read it inside fillRow.) */
+  private isSelected(id: bigint): boolean {
+    return this.selection().has(id.toString());
+  }
+
+  /** Replace the selection set + bump the version. One-way, cascade-safe. */
+  private setSelection(next: Set<string>): void {
+    this.ctx.tree.at(SELECTION_PATH).set(next);
+    const node = this.ctx.tree.at(SELECTION_VERSION_PATH);
+    node.set((node.peek<number>() ?? 0) + 1);
+  }
+
+  /** Toggle one row's selection by its live `data-card-id` (never node state). */
+  private toggleRowSelection(el: HTMLElement): void {
+    const idStr = el.dataset.cardId;
+    if (idStr === undefined || idStr === '') return;
+    const next = new Set(this.selection());
+    if (next.has(idStr)) next.delete(idStr);
+    else next.add(idStr);
+    this.setSelection(next);
+  }
+
+  /** All loaded task ids (stringified) — the select-all universe. */
+  private allTaskIds(): string[] {
+    const tasks = (this.ctx.tree.at(this.tasksPath).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+    return tasks.map((t) => t.id.toString());
+  }
+
+  /** Header tri-state over the loaded tasks: 'none' | 'some' | 'all'. */
+  private selectAllState(): 'none' | 'some' | 'all' {
+    const ids = this.allTaskIds();
+    if (ids.length === 0) return 'none';
+    const sel = this.selection();
+    let hits = 0;
+    for (const id of ids) if (sel.has(id)) hits += 1;
+    if (hits === 0) return 'none';
+    return hits === ids.length ? 'all' : 'some';
+  }
+
+  /** Select every loaded task, or clear when already all-selected. */
+  private toggleSelectAll(): void {
+    if (this.selectAllState() === 'all') {
+      this.setSelection(new Set<string>());
+      return;
+    }
+    const next = new Set(this.selection());
+    for (const id of this.allTaskIds()) next.add(id);
+    this.setSelection(next);
+  }
+
   /* ------------------------------- header ------------------------------- */
 
   private buildHeader(): HTMLElement {
@@ -385,10 +523,47 @@ export class Grid extends Control<GridConfig> {
     head.dataset.gridHeaderRow = '';
     head.setAttribute('role', 'row');
 
+    head.append(this.buildSelectAllCell());
     for (const col of GRID_COLUMNS) {
       head.append(this.buildHeaderCell(col));
     }
     return head;
+  }
+
+  /**
+   * The leading select-all/none header cell. Tri-state checkbox: checked when
+   * every loaded task is selected, indeterminate on a partial selection, off
+   * when none. Clicking selects ALL loaded tasks, or clears when already all.
+   * Reflects the selection version reactively (recycling-safe — reads the tree
+   * set, never node state).
+   */
+  private buildSelectAllCell(): HTMLElement {
+    const cell = document.createElement('div');
+    cell.className = 'grid__cell grid__head grid-select';
+    cell.dataset.gridHeader = '';
+    cell.dataset.gridCol = 'select';
+    cell.setAttribute('role', 'columnheader');
+
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.className = 'grid__select-box';
+    box.dataset.gridSelectAll = '';
+    box.setAttribute('aria-label', 'Select all rows');
+    this.listen(box, 'click', (ev) => {
+      ev.stopPropagation();
+      this.toggleSelectAll();
+    });
+    cell.append(box);
+
+    // Repaint the tri-state on every selection change (reads the version leaf).
+    this.effect(() => {
+      this.ctx.tree.at(SELECTION_VERSION_PATH).get(); // subscribe
+      const state = this.selectAllState();
+      box.checked = state === 'all';
+      box.indeterminate = state === 'some';
+    }, 'grid.selectAll');
+
+    return cell;
   }
 
   private buildHeaderCell(col: ColumnDef): HTMLElement {
@@ -420,9 +595,18 @@ export class Grid extends Control<GridConfig> {
     if (sortable) {
       // Reflect the current sort state on this header (data hooks + arrow), and
       // re-render reactively so a sort change on ANY column repaints all arrows.
+      // When this column IS the group column, the group direction drives the
+      // arrow (clicking it flips groupDir, not a column sort); reading the group
+      // version subscribes the effect so the arrow flips on a group-dir toggle.
       this.effect(() => {
         const active = this.sortSignal.get();
-        const dir = active && active.field === col.field ? active.direction : null;
+        this.ctx.tree.at(['grid', 'groupVersion']).get(); // subscribe to group changes
+        const isGroupCol = this.group !== null && col.field === `attributes.${this.group.attr}`;
+        const dir = isGroupCol
+          ? this.groupDir
+          : active && active.field === col.field
+            ? active.direction
+            : null;
         if (dir === null) {
           delete cell.dataset.sortDir;
           cell.dataset.sortField = String(col.field);
@@ -445,14 +629,51 @@ export class Grid extends Control<GridConfig> {
   /** Header click: cycle the sort and re-issue the tasks query with the new order. */
   private onHeaderClick(col: ColumnDef): void {
     if (col.field === null) return;
+    // Clicking the column the grid is grouped by is the same gesture as
+    // clicking its section header: flip the GROUP direction (which flips the
+    // first wire `order[]` key, reversing bucket order in the next response).
+    // Route both through one path so cycleSort can't write a secondary key
+    // that applyOrder would then dedup away.
+    if (this.group !== null && col.field === `attributes.${this.group.attr}`) {
+      this.toggleGroupDir();
+      return;
+    }
     const next = cycleSort(this.sort, col.field);
     this.sort = next;
     this.sortSignal.set(next); // repaint header arrows (read in the header effect)
-    // Project the effective sort to the wire `order[]` and stash it for the
-    // tasks query's input resolver to peek, then bump the version to refire.
-    const order = buildOrderClauses(effectiveSort(next, []));
-    this.ctx.tree.at(['grid', 'order']).set(order);
+    this.applyOrder();
     this.bumpQuery();
+  }
+
+  /**
+   * Flip the group sort direction (asc ⇄ desc of the group key). Re-issues the
+   * tasks query with the flipped first `order[]` key so the next response
+   * reverses bucket order; within-group order keeps the column sort. Wired to
+   * both the group-section header click and the group column's table header.
+   */
+  private toggleGroupDir(): void {
+    if (this.group === null) return;
+    this.groupDir = this.groupDir === 'asc' ? 'desc' : 'asc';
+    this.applyOrder();
+    this.bumpGroup(); // repaint header arrows (group column reads the version)
+    this.bumpQuery();
+  }
+
+  /**
+   * Project the effective sort + the active group key to the wire `order[]`.
+   * When grouping is active the group attr is the FIRST key (that's what makes
+   * rows cluster), at `groupDir`; the header-click sort follows as the
+   * within-group order. Dedup the group field so it's never emitted twice.
+   */
+  private applyOrder(): void {
+    const out: SortState[] = [];
+    const groupField = this.group !== null ? `attributes.${this.group.attr}` : null;
+    if (groupField !== null) out.push({ field: groupField, direction: this.groupDir });
+    for (const s of effectiveSort(this.sort, [])) {
+      if (s.field === groupField) continue;
+      out.push(s);
+    }
+    this.ctx.tree.at(['grid', 'order']).set(buildOrderClauses(out));
   }
 
   /** Reactive mirror of `this.sort` so every header cell repaints on a change. */
@@ -461,18 +682,84 @@ export class Grid extends Control<GridConfig> {
   /* -------------------------------- rows -------------------------------- */
 
   /**
-   * Build the empty cell shells for ONE pooled row node — runs ONCE per pool
-   * slot (virtualList `create`), never per task. Each cell carries its column's
-   * `data-grid-col` + class so the column template lines up; `fillRow` swaps the
-   * cell CONTENT for whatever task the slot later shows. The row's
-   * `data-card-id` is NOT set here (the slot has no task yet) — `fillRow` sets
-   * it per task, because the node recycles to a different card on scroll.
+   * Build a pooled node ONCE (virtualList `create`), never per item. Default
+   * shape is a DATA ROW (`.grid__row` + one empty cell per column); a pooled
+   * node recycles between a row and a GROUP HEADER as it scrolls, so `fillItem`
+   * reconfigures the node IN PLACE when its kind changes (clearing cells →
+   * header content, or vice-versa). Keeping `[data-grid-row]` present ONLY in
+   * row mode means parked / header slots correctly drop out of the visible-row
+   * set. The click listener (wired once) flips the group direction; it's inert
+   * unless the node is currently a group header.
    */
   private buildRowShell(el: HTMLElement): void {
+    this.makeRowMode(el);
+    // Click on a DATA row opens its task detail (`/task/:id`); click on a GROUP
+    // header flips the group direction (same gesture as the group column's
+    // table header). Wired ONCE; reads the live mode + `data-card-id` (set per
+    // fill, never stale). navigate() is a one-way History write outside any
+    // tracked effect — cascade-safe.
+    this.listen(el, 'click', () => {
+      if (el.dataset.gridGroupHeader !== undefined) {
+        this.toggleGroupDir();
+        return;
+      }
+      this.openRow(el);
+    });
+    // Keyboard open: Enter or `o` on the focused row navigates into the task;
+    // Space toggles the row's bulk selection (the spreadsheet / Gmail idiom, so
+    // a selection can be built with arrow-keys + Space without the mouse).
+    this.listen(el, 'keydown', (ev) => {
+      if (el.dataset.gridRow === undefined) return;
+      const k = (ev as KeyboardEvent).key;
+      if (k === 'Enter' || k === 'o') {
+        ev.preventDefault();
+        this.openRow(el);
+      } else if (k === ' ' || k === 'Spacebar' || k === 'Space') {
+        ev.preventDefault();
+        this.toggleRowSelection(el);
+      }
+    });
+  }
+
+  /** Navigate into a row's task detail (`/task/:id`), reading the live card id. */
+  private openRow(el: HTMLElement): void {
+    const idStr = el.dataset.cardId;
+    if (idStr === undefined || idStr === '') return;
+    navigate(taskUrl(idStr));
+  }
+
+  /** Reset a pooled node to ROW mode: the `.grid__row` cell grid (a leading
+   *  select cell + one cell per column). Rebuilds the cell shells only when the
+   *  node was previously a header (mode transition). The +1 child is the select
+   *  cell; the row's checkbox click handler is wired ONCE here (it reads the
+   *  live data-card-id, never stale node state). */
+  private makeRowMode(el: HTMLElement): void {
+    if (el.dataset.gridRow !== undefined && el.children.length === GRID_COLUMNS.length + 1) return;
+    delete el.dataset.gridGroupHeader;
     el.className = 'grid__row';
     el.dataset.gridRow = '';
     el.setAttribute('role', 'row');
     el.tabIndex = 0;
+    el.replaceChildren();
+
+    // Leading select cell: a checkbox whose checked state is read from the tree
+    // set in fillRow (recycling-safe). The click stops propagation so it never
+    // opens the row's task detail, and toggles by the row's live card id.
+    const selCell = document.createElement('div');
+    selCell.className = 'grid__cell grid-select';
+    selCell.dataset.gridCol = 'select';
+    selCell.setAttribute('role', 'cell');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.className = 'grid__select-box';
+    box.dataset.gridSelectRow = '';
+    this.listen(box, 'click', (ev) => {
+      ev.stopPropagation();
+      this.toggleRowSelection(el);
+    });
+    selCell.append(box);
+    el.append(selCell);
+
     for (const col of GRID_COLUMNS) {
       const cell = document.createElement('div');
       cell.className = `grid__cell grid-${col.kind}`;
@@ -482,21 +769,96 @@ export class Grid extends Control<GridConfig> {
     }
   }
 
+  /** Reconfigure a pooled node to GROUP-HEADER mode: a single full-width header
+   *  with an arrow (group dir), label, and `· count`. Rebuilds only on the
+   *  transition out of row mode; subsequent header fills reuse the children. */
+  private makeHeaderMode(el: HTMLElement): void {
+    if (el.dataset.gridGroupHeader !== undefined) return;
+    delete el.dataset.gridRow;
+    delete el.dataset.cardId;
+    el.className = 'grid__group-header';
+    el.dataset.gridGroupHeader = '';
+    el.setAttribute('role', 'row');
+    el.tabIndex = 0;
+    el.replaceChildren();
+    const arrow = document.createElement('span');
+    arrow.className = 'grid__group-arrow';
+    arrow.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.className = 'grid__group-label';
+    const count = document.createElement('span');
+    count.className = 'grid__group-count muted';
+    el.append(arrow, label, count);
+  }
+
+  /** Discriminate a flat GroupItem onto a pooled node: header content for a
+   *  `group` item, the data-row cells for a `row` item. */
+  private fillItem(el: HTMLElement, item: GroupItem<CardWithAttrs>): void {
+    if (item.kind === 'group') {
+      this.makeHeaderMode(el);
+      el.dataset.groupKey = item.key;
+      el.dataset.groupDir = this.groupDir;
+      const [arrow, label, count] = el.children as unknown as HTMLElement[];
+      if (arrow) arrow.textContent = this.groupDir === 'asc' ? '↑' : '↓';
+      if (label) label.textContent = item.label;
+      if (count) count.textContent = `· ${item.count}`;
+    } else {
+      this.makeRowMode(el);
+      this.fillRow(el, item.row);
+    }
+  }
+
   /**
    * Swap a pooled row's content for `row`. Sets `data-card-id` from the task
    * (NOT node state) and repopulates every cell, re-resolving card_ref labels
    * from the lookup tree paths. Called every time the slot shows a different
    * task (and whenever the lookups tick re-renders the window). Cells are
-   * cleared + rebuilt in place — the cell shells from `buildRowShell` persist.
+   * cleared + rebuilt in place — the cell shells from `makeRowMode` persist.
    */
   private fillRow(el: HTMLElement, row: CardWithAttrs): void {
     el.dataset.cardId = row.id.toString();
     const cells = el.children;
+    // Cell 0 is the leading select cell — render its checked state from the
+    // TREE set (recycling-safe: a pooled node shows a different task on scroll,
+    // so the checkbox is re-read here every fill, never carried on the node).
+    const selCell = cells[0] as HTMLElement | undefined;
+    if (selCell) {
+      const box = selCell.children[0] as (HTMLElement & { checked?: boolean }) | undefined;
+      if (box) box.checked = this.isSelected(row.id);
+      // Mark the row's selected state for styling + tests.
+      if (this.isSelected(row.id)) el.dataset.selected = '';
+      else delete el.dataset.selected;
+    }
+    // Data cells follow the select cell (offset by 1).
     for (let i = 0; i < GRID_COLUMNS.length; i++) {
-      const cell = cells[i] as HTMLElement | undefined;
+      const cell = cells[i + 1] as HTMLElement | undefined;
       if (!cell) continue;
       this.fillCell(cell, row, GRID_COLUMNS[i]!);
     }
+  }
+
+  /**
+   * Build the flat item sequence the virtualList renders. No group → plain rows
+   * (unchanged behaviour). A group attr active → walk the (server-ordered)
+   * tasks into `[{kind:'group'}, {kind:'row'}, …]` via walkGrouped, resolving
+   * card_ref group keys to their display label through the matching lookup map.
+   */
+  private buildItems(): GroupItem<CardWithAttrs>[] {
+    const tasks = (this.ctx.tree.at(this.tasksPath).get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+    const g = this.group;
+    if (g === null) return walkGrouped(tasks, null, () => '');
+    return walkGrouped(tasks, g.attr, (key) => this.labelForGroupKey(key, g.lookup));
+  }
+
+  /** Resolve a group key to its display label: a card_ref bigint goes through
+   *  the group attr's lookup map; scalars are their own label. */
+  private labelForGroupKey(key: unknown, lookup: string | null): string {
+    if (typeof key === 'bigint' && lookup !== null) {
+      const map = (this.ctx.tree.at(['grid', 'lookups', lookup]).peek<LabelMap>() ?? {}) as LabelMap;
+      const k = key.toString();
+      return map[k] ?? `#${k}`;
+    }
+    return String(key);
   }
 
   /** Repopulate one cell for a task + column, resolving ref labels from lookups. */
@@ -652,6 +1014,26 @@ export class Grid extends Control<GridConfig> {
   private bumpQuery(): void {
     const node = this.ctx.tree.at(['grid', 'queryVersion']);
     node.set((node.peek<number>() ?? 0) + 1);
+  }
+
+  /** Bump the group version leaf so the body's virtualList re-walks the items
+   *  (group attr / direction change) WITHOUT re-issuing the tasks query — and
+   *  the group column header repaints its arrow. One-way, cascade-safe. */
+  private bumpGroup(): void {
+    const node = this.ctx.tree.at(['grid', 'groupVersion']);
+    node.set((node.peek<number>() ?? 0) + 1);
+  }
+
+  /**
+   * Screen-tier hotkeys. `n` opens the global quick-entry overlay scoped to the
+   * current project (raised as the `quickCreateOpen` bus intent the AppShell's
+   * QuickEntry listens for).
+   */
+  override hotkeys(): readonly import('../core/hotkeys.js').HotkeyBinding[] {
+    return [
+      { binding: 'n', label: 'New task', run: () => this.ctx.bus?.emit('quickCreateOpen') },
+      ...(this.config.hotkeys ?? []),
+    ];
   }
 }
 

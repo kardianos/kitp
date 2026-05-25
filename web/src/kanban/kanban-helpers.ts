@@ -34,6 +34,15 @@ export interface CardWithAttrs {
   parent_card_id?: bigint;
   phase?: 'triage' | 'active' | 'terminal';
   attributes: Record<string, unknown>;
+  /**
+   * The signed-in user's personal sort order for this card — a TOP-LEVEL wire
+   * field (NOT an attribute), populated only when the request set
+   * `with_personal_sort: true`. `card_select_with_attributes_batch.sql` joins
+   * `user_card_sort` and emits `ucs.sort_order AS personal_sort_order` (NULL
+   * for rows the user has not personally ordered). The Inbox reads it to order
+   * the list and to rewrite it on a drag/keyboard reorder.
+   */
+  personal_sort_order?: number;
 }
 
 /** Sentinel column key for cards whose grouping attribute is unset. */

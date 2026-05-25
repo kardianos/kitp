@@ -1,12 +1,17 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildTestBundles } from './build-for-test.mjs';
+import { installDomShim } from './dom-shim.mjs';
 
 let M;
 
 before(async () => {
+  // The pure predicate model needs no DOM, but the app barrel now (via
+  // TaskDetail) transitively pulls in the markdown sink, whose DOMPurify hook
+  // registers at import-eval — that needs a window/document to exist. The light
+  // shim satisfies the init guard (no markdown is rendered in this file).
+  installDomShim();
   const outdir = await buildTestBundles();
-  // The pure predicate model lives in the app barrel (no DOM needed here).
   M = await import(`${outdir}/app.js`);
 });
 
@@ -177,6 +182,94 @@ test('fromWhereLeaves seeds an AND group (or a bare leaf) from where[]', () => {
   assert.equal(two.kind, 'group');
   assert.equal(two.connective, 'and');
   assert.equal(two.children.length, 2);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Quick-chip top-level leaf helpers (the chips' merge into screen.predicate).  */
+/* -------------------------------------------------------------------------- */
+
+test('upsertTopLevelLeaf: appends a chip leaf to null → bare leaf', () => {
+  const { upsertTopLevelLeaf, leaf } = M;
+  const next = upsertTopLevelLeaf(null, leaf('status', 'in', ['40', '41']));
+  assert.deepEqual(next, { kind: 'leaf', attr: 'status', op: 'in', values: ['40', '41'] });
+});
+
+test('upsertTopLevelLeaf: replaces the existing top-level leaf for the same attr', () => {
+  const { upsertTopLevelLeaf, leaf } = M;
+  const cur = leaf('status', 'in', ['40']);
+  const next = upsertTopLevelLeaf(cur, leaf('status', 'in', ['40', '41']));
+  // Still a single bare leaf (replaced, not duplicated).
+  assert.deepEqual(next, { kind: 'leaf', attr: 'status', op: 'in', values: ['40', '41'] });
+});
+
+test('upsertTopLevelLeaf: composes a chip leaf AND alongside an existing leaf for another attr', () => {
+  const { upsertTopLevelLeaf, leaf } = M;
+  const cur = leaf('milestone_ref', 'in', ['32']); // an Advanced/other-chip leaf
+  const next = upsertTopLevelLeaf(cur, leaf('status', 'in', ['40']));
+  assert.equal(next.kind, 'group');
+  assert.equal(next.connective, 'and');
+  assert.deepEqual(next.children, [
+    { kind: 'leaf', attr: 'milestone_ref', op: 'in', values: ['32'] },
+    { kind: 'leaf', attr: 'status', op: 'in', values: ['40'] },
+  ]);
+});
+
+test('upsertTopLevelLeaf: replaces only the matching child inside an AND group', () => {
+  const { upsertTopLevelLeaf, andOf, leaf } = M;
+  const cur = andOf([leaf('milestone_ref', 'in', ['32']), leaf('status', 'in', ['40'])]);
+  const next = upsertTopLevelLeaf(cur, leaf('status', 'eq', ['41']));
+  assert.deepEqual(next.children, [
+    { kind: 'leaf', attr: 'milestone_ref', op: 'in', values: ['32'] },
+    { kind: 'leaf', attr: 'status', op: 'eq', values: ['41'] },
+  ]);
+});
+
+test('upsertTopLevelLeaf: a top-level OR is preserved — the chip leaf ANDs alongside the whole tree', () => {
+  const { upsertTopLevelLeaf, orOf, leaf } = M;
+  const cur = orOf([leaf('title', 'contains', ['a']), leaf('title', 'contains', ['b'])]);
+  const next = upsertTopLevelLeaf(cur, leaf('status', 'in', ['40']));
+  assert.equal(next.kind, 'group');
+  assert.equal(next.connective, 'and');
+  assert.equal(next.children.length, 2);
+  assert.equal(next.children[0], cur, 'the OR subtree is left untouched as an AND child');
+  assert.deepEqual(next.children[1], { kind: 'leaf', attr: 'status', op: 'in', values: ['40'] });
+});
+
+test('removeTopLevelLeaf: drops the chip leaf; collapses to null / a bare leaf', () => {
+  const { removeTopLevelLeaf, upsertTopLevelLeaf, andOf, leaf } = M;
+  // Sole leaf → null.
+  assert.equal(removeTopLevelLeaf(leaf('status', 'in', ['40']), 'status'), null);
+  // One of two → the surviving bare leaf.
+  const two = andOf([leaf('milestone_ref', 'in', ['32']), leaf('status', 'in', ['40'])]);
+  assert.deepEqual(removeTopLevelLeaf(two, 'status'), {
+    kind: 'leaf',
+    attr: 'milestone_ref',
+    op: 'in',
+    values: ['32'],
+  });
+  // Removing a missing attr is a no-op-shaped result (kept children).
+  const kept = removeTopLevelLeaf(leaf('milestone_ref', 'in', ['32']), 'status');
+  assert.deepEqual(kept, { kind: 'leaf', attr: 'milestone_ref', op: 'in', values: ['32'] });
+  // Round-trip: upsert then remove returns to the original predicate shape.
+  const base = leaf('milestone_ref', 'in', ['32']);
+  const withChip = upsertTopLevelLeaf(base, leaf('status', 'in', ['40']));
+  assert.deepEqual(removeTopLevelLeaf(withChip, 'status'), base);
+});
+
+test('topLevelLeafForAttr: finds a bare/AND-child leaf; ignores nested-group leaves', () => {
+  const { topLevelLeafForAttr, andOf, orOf, leaf } = M;
+  assert.deepEqual(topLevelLeafForAttr(leaf('status', 'in', ['40']), 'status'), {
+    kind: 'leaf',
+    attr: 'status',
+    op: 'in',
+    values: ['40'],
+  });
+  const grp = andOf([leaf('milestone_ref', 'in', ['32']), leaf('status', 'eq', ['41'])]);
+  assert.equal(topLevelLeafForAttr(grp, 'status').op, 'eq');
+  // A leaf buried in a nested OR is NOT a top-level leaf (Advanced's domain).
+  const nested = andOf([orOf([leaf('status', 'eq', ['40'])])]);
+  assert.equal(topLevelLeafForAttr(nested, 'status'), null);
+  assert.equal(topLevelLeafForAttr(null, 'status'), null);
 });
 
 /* -------------------------------------------------------------------------- */

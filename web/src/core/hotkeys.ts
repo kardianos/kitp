@@ -35,11 +35,19 @@ export interface HotkeyBinding {
 }
 
 /** A binding resolved against its owning control (for shadowing + scope). */
-interface ResolvedBinding {
+export interface ResolvedBinding {
   run: () => void;
   fireInInputs: boolean;
   /** Depth in the chain (root=0). Deeper shadows shallower for the same key. */
   depth: number;
+  /** Human label for a help overlay (carried from the declared binding). */
+  label?: string;
+  /**
+   * Scope name for grouping in the help overlay. Tier 0 (the root scope) is
+   * 'global'; deeper tiers use the owning control's `type` (e.g. 'Kanban').
+   * Derived — not authoritative; purely for the help overlay's group headings.
+   */
+  scope: string;
 }
 
 /**
@@ -144,6 +152,9 @@ export class HotkeyController {
       }
 
       chain.forEach((control, depth) => {
+        // Tier 0 is the always-on global scope; deeper tiers group under the
+        // owning control's type in the help overlay.
+        const scope = depth === 0 ? 'global' : control.type;
         for (const b of control.hotkeys()) {
           const aliases = typeof b.binding === 'string' ? [b.binding] : b.binding;
           for (const alias of aliases) {
@@ -155,6 +166,8 @@ export class HotkeyController {
                 run: b.run,
                 fireInInputs: b.fireInInputs === true,
                 depth,
+                ...(b.label !== undefined ? { label: b.label } : {}),
+                scope,
               });
             }
           }

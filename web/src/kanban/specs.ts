@@ -64,6 +64,19 @@ export interface SelectWithAttributesInput {
   tree?: WireNode;
   order?: Array<{ field: string; direction?: string }>;
   limit?: number;
+  /**
+   * Join the per-user `user_card_sort` table and emit `personal_sort_order` on
+   * each row (`card_select_with_attributes_batch.sql` reads `with_personal_sort`).
+   * Required before `order` may sort by `personal_sort_order` — the server
+   * RAISEs otherwise. The Inbox sets this true.
+   */
+  withPersonalSort?: boolean;
+  /**
+   * Agent-perspective view: narrow to cards the caller's PARENT user routed to
+   * the caller (an agent) via `user_card_agent`. The server reads `routed_to_me`.
+   * The Inbox's routed-to-me toggle sets this true.
+   */
+  routedToMe?: boolean;
 }
 export interface SelectWithAttributesOutput {
   rows: CardWithAttrs[];
@@ -116,6 +129,12 @@ function asIdOpt(v: unknown): bigint | undefined {
   if (v === null || v === undefined) return undefined;
   return asId(v);
 }
+/** Coerce a wire number-ish value to a finite number, or undefined. */
+function asNumOpt(v: unknown): number | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+  return undefined;
+}
 
 function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
   const phaseRaw = j['phase'];
@@ -132,6 +151,10 @@ function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
   const parent = asIdOpt(j['parent_card_id']);
   if (parent !== undefined) out.parent_card_id = parent;
   if (phase !== undefined) out.phase = phase;
+  // personal_sort_order rides at the TOP level (not in attributes) and only
+  // appears when the request set with_personal_sort:true; NULL → undefined.
+  const personalSort = asNumOpt(j['personal_sort_order']);
+  if (personalSort !== undefined) out.personal_sort_order = personalSort;
   return out;
 }
 
@@ -176,6 +199,11 @@ export function registerKanbanSpecs(api: Api): void {
       if (i.tree !== undefined && i.tree !== null) m['tree'] = i.tree;
       if (i.order !== undefined && i.order.length > 0) m['order'] = i.order;
       if (i.limit !== undefined) m['limit'] = i.limit;
+      // Inbox-only flags: the per-user personal-sort join + the agent
+      // routed-to-me view. Omitted unless true so non-Inbox callers send the
+      // same wire shape as before.
+      if (i.withPersonalSort === true) m['with_personal_sort'] = true;
+      if (i.routedToMe === true) m['routed_to_me'] = true;
       return m;
     },
     decode: (raw): SelectWithAttributesOutput => ({

@@ -1,13 +1,14 @@
-import { test, before } from 'node:test';
+import { test, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildTestBundles } from './build-for-test.mjs';
 import { installDomShim } from './dom-shim.mjs';
 
 let M;
 let FakeElement;
+let setPath;
 
 before(async () => {
-  ({ FakeElement } = installDomShim());
+  ({ FakeElement, setPath } = installDomShim());
   const outdir = await buildTestBundles();
   M = await import(`${outdir}/app.js`);
   // Register the real screen controls once (Control.register throws on dup).
@@ -16,6 +17,13 @@ before(async () => {
   M.registerKanbanControls();
   M.registerAppShell();
   M.registerProjectList();
+});
+
+beforeEach(() => {
+  // Routing replaced shell.view: reset the URL to the projects landing + detach
+  // the router binding so each AppShell mount derives a deterministic outlet.
+  setPath('/projects');
+  M._resetRouterForTest?.();
 });
 
 function bootApi(transport) {
@@ -155,20 +163,25 @@ test('ProjectList renders a row per project and search filters the list', () => 
 });
 
 /* -------------------------------------------------------------------------- */
-/* Selecting a project sets scope.projectId AND flips shell.view to 'board'.   */
+/* Selecting a project NAVIGATES to /project/:id (the route leaf updates).      */
 /* -------------------------------------------------------------------------- */
 
-test('selecting a project sets scope.projectId and flips shell.view to board', () => {
+test('selecting a project navigates to /project/:id and lands the route', () => {
   const { api } = bootApi(M.mockTransport());
   const { ctrl, tree } = mountProjectList(api, SEED);
+  // The ProjectList navigates via the History-API router → install it against
+  // the same tree so navigate() writes the route leaf (the app installs once).
+  M._resetRouterForTest?.();
+  M.installRouter(tree);
 
   const rows = visibleProjectRows(ctrl.el);
   const openBtn = rows[1].querySelector('[data-project-open]'); // Mobile App (42)
   openBtn.dispatchEvent({ type: 'click', target: openBtn });
   M.flushSync?.();
 
-  assert.equal(tree.at(['scope', 'projectId']).peek(), 42n, 'scope.projectId set to the picked id');
-  assert.equal(tree.at(['shell', 'view']).peek(), 'board', 'view flipped to board');
+  const route = tree.at(['router', 'route']).peek();
+  assert.equal(route.name, 'project', 'selecting a project lands the project route');
+  assert.equal(route.params.id, '42', 'route carries the picked id');
 });
 
 /* -------------------------------------------------------------------------- */
@@ -273,40 +286,51 @@ test('ScreenHost still dispatches kanban → Kanban and unknown → NotFound', (
 });
 
 /* -------------------------------------------------------------------------- */
-/* AppShell view swap: g-nav intents flip the outlet between projects/board.   */
+/* AppShell outlet: g-nav intents NAVIGATE; the route effect swaps the outlet. */
 /* -------------------------------------------------------------------------- */
 
-test('AppShell swaps the outlet between ProjectList and the board on view change', () => {
+test('AppShell swaps the outlet between ProjectList and the board on navigation', () => {
   const { api } = bootApi(M.mockTransport());
   const tree = new M.TreeNode({}, []);
-  tree.at(['scope', 'projectId']).set(31n); // a scope so the board is happy
   const scope = {
     get projectId() {
       return tree.at(['scope', 'projectId']).peek() ?? null;
     },
   };
   const ctx = { api, tree, scope };
+  // The beforeEach reset the URL to /projects; install the router against this
+  // tree so the rail chords' navigate() writes the route leaf (app installs once).
+  M.installRouter(tree);
 
   const shell = M.Control.New(
     'AppShell',
     {
       type: 'AppShell',
-      view: 'projects',
       boardConfig: { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban' } },
     },
     ctx,
   );
   shell.mount(new FakeElement('div'));
 
-  // Landing: ProjectList present, no ScreenHost.
+  // Landing on /projects: ProjectList present, no ScreenHost, scope cleared.
   assert.equal(shell.el.findByControl('ProjectList').length, 1, 'lands on ProjectList');
   assert.equal(shell.el.findByControl('ScreenHost').length, 0, 'board not mounted yet');
+  assert.equal(tree.at(['scope', 'projectId']).peek(), null, 'projects route clears scope');
 
-  // Raise the Kanban nav intent → view flips to board → outlet swaps.
+  // Navigate into a project (the route effect mirrors :id into scope) so the
+  // `g k` chord has a project to screen against.
+  M.navigate('/project/31');
+  M.flushSync?.();
+  assert.equal(shell.el.findByControl('ScreenHost').length, 1, 'board mounted for the project');
+  assert.equal(tree.at(['scope', 'projectId']).peek(), 31n, 'scope mirrored from the project route');
+
+  // The Kanban chord navigates to /project/31/screen/kanban (route effect keeps
+  // the board mounted — same project; the key changes screen→kanban).
   shell.intent('goKanban');
   M.flushSync?.();
-  assert.equal(shell.el.findByControl('ProjectList').length, 0, 'ProjectList torn down');
-  assert.equal(shell.el.findByControl('ScreenHost').length, 1, 'board (ScreenHost) mounted');
+  assert.equal(tree.at(['router', 'route']).peek().name, 'screen', 'goKanban navigated to a screen');
+  assert.equal(tree.at(['router', 'route']).peek().params.slug, 'kanban', 'screen slug = kanban');
+  assert.equal(shell.el.findByControl('ScreenHost').length, 1, 'board still mounted');
 
   // Back to projects.
   shell.intent('goProjects');

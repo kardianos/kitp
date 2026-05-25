@@ -15,11 +15,20 @@
  *     sort-field mapping (which column is sortable and what wire field it
  *     orders on).
  *
+ * Grouping (group_by_attr): {@link walkGrouped} flattens the (server-ordered)
+ * rows into a `[{kind:'group'}, {kind:'row'}, …]` sequence the grid feeds to the
+ * recycling virtualList, and {@link groupAttrFromGroupValue} maps the GROUP
+ * picker's value (`screen.group`: 'milestone' / 'status' / …) to the matching
+ * card attribute + label-lookup name. The server prepends the group attr to the
+ * wire `order[]` so rows arrive bucketed; the walk just emits a header on each
+ * run boundary.
+ *
  * Deferred (the Svelte helper carried these; v1 of the web slice omits them but
  * the shape is preserved so they slot in later — see grid.ts TODOs):
  *   - tag-prefix synthetic columns (`tag_prefix:<prefix>` sort fields,
  *     pickTagForPrefix / stripTagPrefix / compareTagPrefixValue),
- *   - array-group row expansion + walkGrouped (grouping),
+ *   - array-group row expansion (one synthetic row per element of a card_ref[]
+ *     group attr like `tags`) — scalar grouping is wired here.
  *   - extra_columns / per-column filter state.
  */
 
@@ -239,4 +248,77 @@ export function tagPathSegments(path: string): string[] {
 export function tagPathLeaf(path: string): string {
   const segs = tagPathSegments(path);
   return segs.length > 0 ? (segs[segs.length - 1] as string) : path;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Grouping — group_by_attr (LIFTED from client/src/screens/grid_helpers.ts    */
+/* `walkGrouped` / `GroupItem`, re-expressed against the web card model).      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The GROUP-axis seam (`groupAttrFromGroupValue` + `GroupAttr`) now lives in the
+ * shared `filter/group-axis.ts` module — both the Grid (row grouping) and the
+ * Kanban board (column re-keying) read the same `screen.group` picker leaf and
+ * need the same translation. Re-exported here so the Grid's existing import
+ * path (`./grid-helpers.js`) keeps working unchanged.
+ */
+export { groupAttrFromGroupValue, type GroupAttr } from '../filter/group-axis.js';
+
+/**
+ * One entry in the flat sequence the recycling virtualList renders when a
+ * group-by attr is active: either a section HEADER (one per consecutive run of
+ * the same group-key value) or a data ROW. Headers don't consume a row index;
+ * each row carries its position in the rows-only sequence as `idx`.
+ */
+export type GroupItem<T> =
+  | { kind: 'group'; label: string; count: number; key: string }
+  | { kind: 'row'; row: T; idx: number };
+
+/** Sentinel group key for rows whose group attribute is unset / null / "". */
+export const GROUP_EMPTY_KEY = '__empty__';
+
+/**
+ * Walk pre-ordered `rows` and emit a HEADER whenever `attrName`'s value changes
+ * from the previous row, followed by that bucket's rows — a FLAT
+ * `[{kind:'group'}, {kind:'row'}, …]` list the virtualList renders without
+ * losing recycling (every entry is one fixed-height slot). Relies on the caller
+ * having pre-ordered rows by the group key (the server does this by prepending
+ * the group field to the wire `order[]`), so the walk is O(n) and never
+ * re-buckets.
+ *
+ * `attrName === null` → the rows pass through as a flat row-only sequence (the
+ * no-group case, identical to today's behaviour).
+ *
+ * Each header carries the bucket `count` (the run length) so the rendered label
+ * can read `Doing · 4`. Empty / null / "" values cluster into a single
+ * `(unset)` bucket. `labelOf` resolves a card_ref group value (bigint id) to a
+ * display title; it is NOT called for the unset bucket.
+ */
+export function walkGrouped<T extends { attributes: Record<string, unknown> }>(
+  rows: readonly T[],
+  attrName: string | null,
+  labelOf: (key: unknown) => string,
+): GroupItem<T>[] {
+  if (attrName === null) {
+    return rows.map((row, idx) => ({ kind: 'row', row, idx }) as GroupItem<T>);
+  }
+  const out: GroupItem<T>[] = [];
+  // Track the most recent header so we can stamp its run length once the run
+  // ends (we don't know a bucket's size until we hit the next key boundary).
+  let header: { kind: 'group'; label: string; count: number; key: string } | null = null;
+  let prevKey: string | undefined;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    const v = row.attributes[attrName];
+    const isEmpty = v === undefined || v === null || v === '';
+    const key = isEmpty ? GROUP_EMPTY_KEY : String(v);
+    if (key !== prevKey) {
+      header = { kind: 'group', label: isEmpty ? '(unset)' : labelOf(v), count: 0, key };
+      out.push(header);
+      prevKey = key;
+    }
+    if (header !== null) header.count += 1;
+    out.push({ kind: 'row', row, idx: i });
+  }
+  return out;
 }

@@ -52,6 +52,17 @@ const PERSON_KIND_OPTIONS = [
   { value: 'contact', label: 'Contact (inbound only)' },
 ];
 
+/**
+ * The TIER axis for the Contacts create dialog (person.create). Tier subsumes
+ * person_kind server-side: contact → kind 'contact'; assignee → kind 'member';
+ * user → kind 'member' PLUS a provisioned user_account (email REQUIRED there).
+ */
+const PERSON_TIER_OPTIONS = [
+  { value: 'contact', label: 'Contact (inbound only)' },
+  { value: 'assignee', label: 'Assignee (member, no login)' },
+  { value: 'user', label: 'User (member + login account)' },
+];
+
 export const CONTACTS_SCREEN: MasterDetailConfig = {
   type: 'MasterDetail',
   title: 'Contacts',
@@ -85,11 +96,52 @@ export const CONTACTS_SCREEN: MasterDetailConfig = {
       },
     ],
   },
+  // Create a person via person.create — the TIER select (contact/assignee/user)
+  // is the classification axis; the 'user' tier provisions a user_account
+  // server-side (email is required there). The tier passes through verbatim.
+  create: {
+    spec: 'person.create',
+    title: 'New contact',
+    buttonLabel: '+ New',
+    fields: [
+      { name: 'title', label: 'Name', kind: 'text', required: true, placeholder: 'Full name' },
+      { name: 'email', label: 'Email', kind: 'text', placeholder: 'name@example.com' },
+      { name: 'tier', label: 'Tier', kind: 'select', required: true, options: PERSON_TIER_OPTIONS },
+    ],
+    input: {
+      title: { payload: 'title' },
+      email: { payload: 'email' },
+      tier: { payload: 'tier' },
+    },
+    // The new card surfaces in the list immediately; person.create returns
+    // person_card_id, so promote the temp row to that id.
+    optimisticRaw: (p) => ({
+      attributes: {
+        title: typeof p['title'] === 'string' ? p['title'] : '',
+        email: typeof p['email'] === 'string' ? p['email'] : '',
+        person_kind: p['tier'] === 'contact' ? 'contact' : 'member',
+      },
+    }),
+    resultIdField: 'personCardId',
+  },
+  delete: {
+    spec: 'card.delete',
+    confirm: 'Delete this contact?',
+    input: { cardId: { payload: 'id' } },
+  },
 };
 
 /* -------------------------------------------------------------------------- */
 /* Users (NON-CARD source).                                                    */
 /* -------------------------------------------------------------------------- */
+
+/** The assignable roles (seed.hcsv: viewer / worker / manager / admin). */
+const USER_ROLE_OPTIONS = [
+  { value: 'viewer', label: 'Viewer' },
+  { value: 'worker', label: 'Worker' },
+  { value: 'manager', label: 'Manager' },
+  { value: 'admin', label: 'Admin' },
+];
 
 export const USERS_SCREEN: MasterDetailConfig = {
   type: 'MasterDetail',
@@ -104,12 +156,62 @@ export const USERS_SCREEN: MasterDetailConfig = {
   detail: {
     titleField: 'display_name',
     empty: 'Select a user to view their roles and account details.',
-    // No updateSpec: a read-only viewer (proving graceful degradation).
+    // Read-only profile fields; role + person relations are the editable surface.
     fields: [
       { name: 'display_name', label: 'Display name', kind: 'readonly' },
       { name: 'email', label: 'Email', kind: 'readonly' },
-      { name: 'roles', label: 'Roles', kind: 'badges', badgeField: 'role_name' },
       { name: 'is_agent', label: 'Is agent', kind: 'readonly' },
+    ],
+    // The detail-pane relation editors. Each fires a declarative spec and then
+    // RELOADS the user row (user.list_with_roles) so the detail reflects the
+    // server truth (a re-grant can collapse a duplicate; an unlink touches the
+    // sibling user_account_person table).
+    relations: [
+      {
+        title: 'Roles',
+        listField: 'roles',
+        itemLabel: 'role_name',
+        itemSubLabel: 'scope_project_title',
+        // Revoke fires user_role.revoke with the user id + the entry's role/scope.
+        remove: {
+          intent: 'revokeRole',
+          spec: 'user_role.revoke',
+          label: 'Revoke',
+          input: {
+            userId: { payload: 'id' },
+            roleName: { payload: 'role_name' },
+            scopeProjectId: { payload: 'scope_project_id' },
+          },
+        },
+        // Assign fires user_role.set (role + optional project scope id).
+        add: {
+          intent: 'assignRole',
+          spec: 'user_role.set',
+          label: '+ Assign role',
+          fields: [
+            { name: 'role_name', label: 'Role', kind: 'select', required: true, options: USER_ROLE_OPTIONS },
+            { name: 'scope_project_id', label: 'Project scope (optional)', kind: 'text', placeholder: 'project card id' },
+          ],
+          input: {
+            userId: { payload: 'id' },
+            roleName: { payload: 'role_name' },
+            scopeProjectId: { payload: 'scope_project_id' },
+          },
+        },
+      },
+      {
+        title: 'Linked person',
+        // A SINGULAR link: show the linked person card id with an Unlink button
+        // when present, else '— (none)'. Unlink fires user.unlink_person and
+        // reloads the row. (Linking a person to a user is a nested follow-up.)
+        valueField: 'person_card_id',
+        remove: {
+          intent: 'unlinkPerson',
+          spec: 'user.unlink_person',
+          label: 'Unlink person',
+          input: { userAccountId: { payload: 'id' } },
+        },
+      },
     ],
   },
 };
@@ -150,6 +252,23 @@ export const PROJECTS_SCREEN: MasterDetailConfig = {
       { name: 'attributes.description', label: 'Description', kind: 'textarea', editable: true },
       { name: 'attributes.is_template', label: 'Is template', kind: 'readonly' },
     ],
+  },
+  // Create a top-level project card (title is the key field; description is an
+  // inline edit after create). Delete soft-deletes the card.
+  create: {
+    spec: 'card.insert',
+    title: 'New project',
+    buttonLabel: '+ New',
+    fields: [{ name: 'title', label: 'Title', kind: 'text', required: true, placeholder: 'Project title' }],
+    input: {
+      cardTypeName: { lit: 'project' },
+      title: { payload: 'title' },
+    },
+  },
+  delete: {
+    spec: 'card.delete',
+    confirm: 'Delete this project? This cannot be undone.',
+    input: { cardId: { payload: 'id' } },
   },
 };
 
@@ -193,7 +312,7 @@ export const SCREENS_SCREEN: MasterDetailConfig = {
   },
   detail: {
     titleField: 'attributes.title',
-    empty: 'Select a screen to view its layout and routing.',
+    empty: 'Select a screen to view its layout, routing, and filters.',
     updateSpec: 'attribute.update',
     fields: [
       { name: 'attributes.title', label: 'Title', kind: 'text', editable: true },
@@ -208,6 +327,24 @@ export const SCREENS_SCREEN: MasterDetailConfig = {
       { name: 'attributes.hotkey', label: 'Hotkey', kind: 'text', editable: true },
       { name: 'attributes.sort_order', label: 'Sort order', kind: 'text', editable: true },
     ],
+    // Nested filter-card manager: the screen's filter cards (add / edit
+    // title+predicate / remove) + the screen's default_filter.
+    nested: { kind: 'screenFilters' },
+  },
+  create: {
+    spec: 'card.insert',
+    title: 'New screen',
+    buttonLabel: '+ New',
+    fields: [{ name: 'title', label: 'Title', kind: 'text', required: true, placeholder: 'Screen title' }],
+    input: {
+      cardTypeName: { lit: 'screen' },
+      title: { payload: 'title' },
+    },
+  },
+  delete: {
+    spec: 'card.delete',
+    confirm: 'Delete this screen?',
+    input: { cardId: { payload: 'id' } },
   },
 };
 
@@ -250,16 +387,46 @@ export const NAMED_FILTERS_SCREEN: MasterDetailConfig = {
       { name: 'attributes.group_by_attr', label: 'Group by', kind: 'text', editable: true },
     ],
   },
+  create: {
+    spec: 'card.insert',
+    title: 'New named filter',
+    buttonLabel: '+ New',
+    fields: [{ name: 'title', label: 'Title', kind: 'text', required: true, placeholder: 'Filter name' }],
+    input: {
+      cardTypeName: { lit: 'filter' },
+      title: { payload: 'title' },
+    },
+  },
+  delete: {
+    spec: 'card.delete',
+    confirm: 'Delete this named filter?',
+    input: { cardId: { payload: 'id' } },
+  },
 };
 
 /* -------------------------------------------------------------------------- */
 /* Attributes = attribute_def.select (NON-CARD source, read-only).             */
 /* -------------------------------------------------------------------------- */
 
+/** The value_type axis for the create-attribute dialog (mirrors the Go enum:
+ *  text / bool / number / date / card_ref / card_ref[]). The card_ref target is
+ *  configured via the bind matrix post-create (no target-on-insert path). */
+const ATTR_VALUE_TYPE_OPTIONS = [
+  { value: 'text', label: 'Text' },
+  { value: 'bool', label: 'Boolean' },
+  { value: 'number', label: 'Number' },
+  { value: 'date', label: 'Date' },
+  { value: 'card_ref', label: 'Card reference (single)' },
+  { value: 'card_ref[]', label: 'Card reference (multi)' },
+];
+
 /**
- * Attribute definitions. Read-only viewer (no inline update handler — defs are
- * structural). The bound card_types render as read-only badges; a structured
- * edge editor (bind / unbind to card_types) is a nested follow-up.
+ * Attribute definitions. Scalar fields read-only (defs are structural). The
+ * detail mounts the nested EDGE MATRIX: a bind/unbind toggle over every
+ * card_type with per-edge `required` + `ordering` (edge.insert / edge.delete) —
+ * see `admin/nested-editor.ts`. Create fires attribute_def.insert (name +
+ * value_type); initial binds are made via the matrix after create (the insert
+ * has no target-card-type path — the matrix is the bind surface).
  */
 export const ATTRIBUTES_SCREEN: MasterDetailConfig = {
   type: 'MasterDetail',
@@ -273,15 +440,39 @@ export const ATTRIBUTES_SCREEN: MasterDetailConfig = {
   },
   detail: {
     titleField: 'name',
-    empty: 'Select an attribute to view its type and bindings.',
+    empty: 'Select an attribute to bind / unbind it to card types.',
     fields: [
       { name: 'name', label: 'Name', kind: 'readonly' },
       { name: 'value_type', label: 'Value type', kind: 'readonly' },
       { name: 'target_card_type_name', label: 'Target card type', kind: 'readonly' },
       { name: 'is_built_in', label: 'Built-in', kind: 'readonly' },
-      // Bound card_types (edge rows) as read-only chips; edge editing = follow-up.
-      { name: 'bound_to', label: 'Bound to', kind: 'badges', badgeField: 'card_type_name' },
     ],
+    // Nested bind/unbind matrix over card_types (required + ordering per edge).
+    nested: { kind: 'edgeMatrix' },
+  },
+  // Create a custom attribute_def (name + value_type). The id lands in the
+  // result; promote the optimistic row to it. Binds happen via the matrix.
+  create: {
+    spec: 'attribute_def.insert',
+    title: 'New attribute',
+    buttonLabel: '+ New',
+    fields: [
+      { name: 'name', label: 'Name', kind: 'text', required: true, placeholder: 'attribute name' },
+      { name: 'value_type', label: 'Value type', kind: 'select', required: true, options: ATTR_VALUE_TYPE_OPTIONS },
+    ],
+    input: {
+      name: { payload: 'name' },
+      valueType: { payload: 'value_type' },
+    },
+    // attribute_def.select rows are flat (name/value_type at the top level), so
+    // the optimistic row is flat too — not card-shaped.
+    optimisticRaw: (p) => ({
+      name: typeof p['name'] === 'string' ? p['name'] : '',
+      value_type: typeof p['value_type'] === 'string' ? p['value_type'] : '',
+      is_built_in: false,
+      bound_to: [],
+    }),
+    resultIdField: 'id',
   },
 };
 
@@ -290,9 +481,12 @@ export const ATTRIBUTES_SCREEN: MasterDetailConfig = {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Flows (workflows). Read-only viewer; flow STEPS (the transition rows under a
- * flow, via flow_step.list) are a nested follow-up — listed here as a flag, not
- * a blocker.
+ * Flows (workflows). The scalar fields (name / attribute / scope) are read-only
+ * (a flow's governing attribute + project scope are structural), but the detail
+ * mounts the nested flow-step TRANSITION editor: the selected flow's steps
+ * grouped by `from` status, with add/edit/delete (flow_step.set/delete) and the
+ * flow-delete GUARD (flow.preview_delete → flow.delete) — see
+ * `admin/nested-editor.ts`.
  */
 export const WORKFLOWS_SCREEN: MasterDetailConfig = {
   type: 'MasterDetail',
@@ -306,7 +500,7 @@ export const WORKFLOWS_SCREEN: MasterDetailConfig = {
   },
   detail: {
     titleField: 'name',
-    empty: 'Select a workflow to view its governing attribute + scope.',
+    empty: 'Select a workflow to view its transitions.',
     fields: [
       { name: 'name', label: 'Name', kind: 'readonly' },
       { name: 'doc', label: 'Description', kind: 'readonly' },
@@ -314,6 +508,8 @@ export const WORKFLOWS_SCREEN: MasterDetailConfig = {
       { name: 'scope_card_id', label: 'Scope (project card id)', kind: 'readonly' },
       { name: 'default_create_status_id', label: 'Default create status', kind: 'readonly' },
     ],
+    // Nested flow-step transition editor (grouped by `from` + delete guard).
+    nested: { kind: 'flowSteps' },
   },
 };
 
@@ -321,6 +517,15 @@ export const WORKFLOWS_SCREEN: MasterDetailConfig = {
 /* Roles = role.list (NON-CARD source, read-only).                             */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Roles. The (card_type, process) GRANTS are READ-ONLY badges: no
+ * `role_grant.set` / `role_grant.revoke` handler exists in the backend — grants
+ * are seed-managed (db/schema declarative.json), so editing them here is out of
+ * scope (would need a new server handler). The editable surface is the nested
+ * `roleMappings` editor: the global OIDC claim_value → role mapping table
+ * (role_mapping.set / role_mapping.delete). The mapping editor renders
+ * independently of the role selection (the table is global, not per-role).
+ */
 export const ROLES_SCREEN: MasterDetailConfig = {
   type: 'MasterDetail',
   title: 'Roles',
@@ -333,13 +538,16 @@ export const ROLES_SCREEN: MasterDetailConfig = {
   },
   detail: {
     titleField: 'name',
-    empty: 'Select a role to view its granted (card_type, process) pairs.',
+    empty: 'Select a role to view its grants. Claim→role mappings are below.',
     fields: [
       { name: 'name', label: 'Name', kind: 'readonly' },
       { name: 'doc', label: 'Description', kind: 'readonly' },
       // Each grant is a {card_type, process} object; show the process verb.
-      { name: 'grants', label: 'Grants', kind: 'badges', badgeField: 'process' },
+      // Read-only: grants are seed-managed (no set/revoke handler exists).
+      { name: 'grants', label: 'Grants (read-only, seed-managed)', kind: 'badges', badgeField: 'process' },
     ],
+    // Nested OIDC claim_value → role mapping editor (global table).
+    nested: { kind: 'roleMappings' },
   },
 };
 
@@ -350,8 +558,11 @@ export const ROLES_SCREEN: MasterDetailConfig = {
 /**
  * Agents are user_account rows with is_agent=true owned by a parent user. There
  * is no dedicated agent-list handler; the lighter `user.select` read carries the
- * is_agent + parent_user_id columns this screen needs. Read-only (token mint /
- * revoke is a nested follow-up).
+ * is_agent + parent_user_id columns this screen needs. Create (agent.create) /
+ * delete (agent.delete) via the generic MasterDetail affordances; the nested
+ * `agentTokens` editor mints (secret surfaced ONCE) / lists / revokes API tokens.
+ * Role grants for an agent are managed on the Users screen (the parent-grants-
+ * subset rule is enforced server-side).
  */
 export const AGENTS_SCREEN: MasterDetailConfig = {
   type: 'MasterDetail',
@@ -366,12 +577,34 @@ export const AGENTS_SCREEN: MasterDetailConfig = {
   },
   detail: {
     titleField: 'display_name',
-    empty: 'Select an agent to view its owner.',
+    empty: 'Select an agent to manage its API tokens, or add one.',
     fields: [
-      { name: 'display_name', label: 'Display name', kind: 'readonly' },
       { name: 'parent_user_id', label: 'Owner (parent user id)', kind: 'readonly' },
       { name: 'email', label: 'Email', kind: 'readonly' },
     ],
+    // Nested token manager: mint (one-shot secret reveal) / list / revoke.
+    nested: { kind: 'agentTokens' },
+  },
+  // Create an agent owned by the calling user (agent.create → user_id). The
+  // optimistic row is a flat user.select-shaped row; promote to the server id.
+  create: {
+    spec: 'agent.create',
+    title: 'New agent',
+    buttonLabel: '+ New',
+    fields: [
+      { name: 'display_name', label: 'Display name', kind: 'text', required: true, placeholder: 'e.g. research-agent' },
+    ],
+    input: { displayName: { payload: 'display_name' } },
+    optimisticRaw: (p) => ({
+      display_name: typeof p['display_name'] === 'string' ? p['display_name'] : '',
+      is_agent: true,
+    }),
+    resultIdField: 'userId',
+  },
+  delete: {
+    spec: 'agent.delete',
+    confirm: 'Delete this agent? Active tokens will be revoked.',
+    input: { userId: { payload: 'id' } },
   },
 };
 
@@ -402,14 +635,15 @@ export const COMM_CHANNELS_SCREEN: MasterDetailConfig = {
   detail: {
     titleField: 'name',
     empty: 'Pick a project, then select a channel. (Secrets are write-only.)',
+    // The scalar header shows the at-a-glance summary; the nested config editor
+    // below owns the full editable form INCLUDING the write-only IMAP/SMTP
+    // passwords (blank on load; sent only when typed) + a "+ New channel" path.
     fields: [
-      { name: 'name', label: 'Name', kind: 'readonly' },
       { name: 'channel_type', label: 'Channel type', kind: 'readonly' },
-      { name: 'imap_host', label: 'IMAP host', kind: 'readonly' },
-      { name: 'smtp_host', label: 'SMTP host', kind: 'readonly' },
       { name: 'from_address', label: 'From address', kind: 'readonly' },
       { name: 'channel_status', label: 'Status', kind: 'readonly' },
     ],
+    nested: { kind: 'commChannelConfig' },
   },
 };
 
@@ -433,14 +667,13 @@ export const ACTIVITY_SINKS_SCREEN: MasterDetailConfig = {
   detail: {
     titleField: 'name',
     empty: 'Pick a project, then select a sink. (Client secret is write-only.)',
+    // Scalar header summary; the nested config editor owns the full form INCLUDING
+    // the write-only msgraph_client_secret + the activity-filter predicate editor.
     fields: [
-      { name: 'name', label: 'Name', kind: 'readonly' },
       { name: 'sink_kind', label: 'Sink kind', kind: 'readonly' },
-      { name: 'msgraph_tenant_id', label: 'MS Graph tenant', kind: 'readonly' },
-      { name: 'msgraph_team_id', label: 'MS Graph team', kind: 'readonly' },
-      { name: 'msgraph_channel_id', label: 'MS Graph channel', kind: 'readonly' },
       { name: 'channel_status', label: 'Status', kind: 'readonly' },
     ],
+    nested: { kind: 'activitySinkConfig' },
   },
 };
 

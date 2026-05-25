@@ -43,6 +43,10 @@ function bootApi(transport) {
   const dispatcher = new M.Dispatcher({ transport });
   const api = new M.Api(dispatcher);
   M.registerKanbanSpecs(api);
+  // Prime the non-milestone axis card_ref attrs (status / component_ref /
+  // assignee) so their values revive to bigint when grouping by those axes —
+  // exactly what main.ts does at boot. Idempotent (Set-backed in the dispatcher).
+  M.registerGridCardRefAttrs();
   return { dispatcher, api };
 }
 
@@ -389,4 +393,248 @@ test('ScreenHost dispatches an UNKNOWN layout to the NotFound placeholder', () =
   const nf = body.findByControl('NotFound');
   assert.equal(nf.length, 1, 'unknown layout fell through to a visible NotFound');
   assert.match(nf[0].textContent, /Unknown control/, 'NotFound names the unresolved control');
+});
+
+/* -------------------------------------------------------------------------- */
+/* GROUP picker drives the column axis: re-key by status / component / etc.    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A transport that serves tasks + every axis value-card type (milestone /
+ * status / component / person) so the GROUP-axis re-key can be exercised. Tasks
+ * carry BOTH a milestone_ref AND a status so the same task set buckets two ways.
+ * It records the tasks-query inputs so a test can assert the axis change does
+ * NOT re-issue the tasks query (re-key is a board-only re-render).
+ */
+function multiAxisKanbanTransport() {
+  const sent = { taskInputs: [] };
+  const row = (id, type, parent, attrs) => ({
+    id: String(id),
+    card_type_id: type === 'task' ? '5' : '9',
+    card_type_name: type,
+    parent_card_id: parent === null ? undefined : String(parent),
+    attributes: attrs,
+  });
+  // 4 tasks: two in status 50, one in status 51, one with no status.
+  const TASKS = [
+    row(201n, 'task', 100, { title: 'A', sort_order: 100, milestone_ref: '32', status: '50' }),
+    row(202n, 'task', 100, { title: 'B', sort_order: 200, milestone_ref: '33', status: '50' }),
+    row(203n, 'task', 100, { title: 'C', sort_order: 100, milestone_ref: '32', status: '51' }),
+    row(204n, 'task', 100, { title: 'D', sort_order: 300, milestone_ref: '34' }), // no status
+  ];
+  const MILESTONES = [row(32n, 'milestone', 100, { title: 'M1' }), row(33n, 'milestone', 100, { title: 'M2' }), row(34n, 'milestone', 100, { title: 'M3' })];
+  const STATUSES = [row(50n, 'status', 100, { title: 'To do' }), row(51n, 'status', 100, { title: 'Doing' })];
+  const COMPONENTS = [row(60n, 'component', 100, { title: 'API' })];
+  const PERSONS = [row(70n, 'person', null, { title: 'Ada' })];
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      const subresponses = req.subrequests.map((sr) => {
+        const key = `${sr.endpoint}.${sr.action}`;
+        if (key === 'card.select_with_attributes') {
+          const data = sr.data ?? {};
+          switch (data.card_type_name) {
+            case 'task':
+              sent.taskInputs.push(data);
+              return { id: sr.id, ok: true, data: { rows: TASKS } };
+            case 'milestone':
+              return { id: sr.id, ok: true, data: { rows: MILESTONES } };
+            case 'status':
+              return { id: sr.id, ok: true, data: { rows: STATUSES } };
+            case 'component':
+              return { id: sr.id, ok: true, data: { rows: COMPONENTS } };
+            case 'person':
+              return { id: sr.id, ok: true, data: { rows: PERSONS } };
+            default:
+              return { id: sr.id, ok: true, data: { rows: [] } };
+          }
+        }
+        if (key === 'attribute.update') {
+          return { id: sr.id, ok: true, data: { ok: true, activity_id: '70001' } };
+        }
+        return { id: sr.id, ok: false, error: { code: 'unknown_handler', message: `no ${key}` } };
+      });
+      return { status: 200, text: JSON.stringify({ subresponses }) };
+    },
+  };
+  transport.sent = sent;
+  return transport;
+}
+
+function bootMultiAxisKanban() {
+  const transport = multiAxisKanbanTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(100n);
+  const scope = {
+    get projectId() {
+      return tree.at(['scope', 'projectId']).peek() ?? null;
+    },
+  };
+  const ctx = { api, tree, scope };
+  const kanban = M.Control.New('Kanban', { type: 'Kanban' }, ctx);
+  kanban.mount(new FakeElement('div'));
+  return { transport, dispatcher, tree, kanban };
+}
+
+test('Kanban: no GROUP set → default milestone axis (unchanged)', async () => {
+  const { dispatcher, kanban } = bootMultiAxisKanban();
+  await settle(dispatcher);
+  // No screen.group → columns keyed by milestone value-cards (32/33/34) + unset.
+  const cols = kanban.el.querySelectorAll('[data-kanban-column]');
+  assert.deepEqual(
+    cols.map((c) => c.dataset.column),
+    ['32', '33', '34', '__unset__'],
+    'default axis buckets by milestone_ref',
+  );
+  // Column 32 holds the two milestone-32 tasks (201, 203).
+  assert.deepEqual(
+    visibleCards(cols[0]).map((c) => c.dataset.cardId),
+    ['201', '203'],
+    'milestone 32 column holds its tasks',
+  );
+});
+
+test('Kanban: GROUP=status re-keys columns to statuses + (unset)', async () => {
+  const { transport, dispatcher, tree, kanban } = bootMultiAxisKanban();
+  await settle(dispatcher);
+  const taskFiresBefore = transport.sent.taskInputs.length;
+
+  // Pick GROUP=status (what ScreenFilterBar's picker writes).
+  tree.at(['screen', 'group']).set('status');
+  await settle(dispatcher);
+
+  // Columns are now keyed by status value-cards (50 'To do', 51 'Doing') + unset.
+  const cols = kanban.el.querySelectorAll('[data-kanban-column]');
+  assert.deepEqual(
+    cols.map((c) => c.dataset.column),
+    ['50', '51', '__unset__'],
+    'columns re-keyed to status value-cards + (unset)',
+  );
+  // Header labels resolve from the status cards' title attribute.
+  assert.equal(cols[0].querySelector('.col__label').textContent, 'To do');
+  assert.equal(cols[1].querySelector('.col__label').textContent, 'Doing');
+  // Status 50 holds tasks 201 + 202; the no-status task (204) lands in (unset).
+  assert.deepEqual(visibleCards(cols[0]).map((c) => c.dataset.cardId), ['201', '202']);
+  assert.deepEqual(visibleCards(cols[2]).map((c) => c.dataset.cardId), ['204']);
+
+  // Re-keying is a board-only re-render — it must NOT re-issue the tasks query.
+  assert.equal(
+    transport.sent.taskInputs.length,
+    taskFiresBefore,
+    'GROUP change re-keys without re-fetching tasks',
+  );
+});
+
+test('Kanban: cross-column move updates the ACTIVE axis attr (status when grouped by status)', async () => {
+  const { dispatcher, tree, kanban } = bootMultiAxisKanban();
+  await settle(dispatcher);
+  tree.at(['screen', 'group']).set('status');
+  await settle(dispatcher);
+
+  // Drag task 201 (status 50) onto the 'Doing' column (status 51). Simulate the
+  // native DnD start so the module-level drag id is set, then drop on the body.
+  const cols = kanban.el.querySelectorAll('[data-kanban-column]');
+  const fromBody = cols[0].querySelector('[data-kanban-column-body]');
+  const card201 = visibleCards(cols[0]).find((c) => c.dataset.cardId === '201');
+  card201.dispatchEvent({ type: 'dragstart', target: card201 });
+  const toBody = cols[1].querySelector('[data-kanban-column-body]');
+  toBody.dispatchEvent({ type: 'drop', target: toBody, clientY: 0 });
+
+  // OPTIMISTIC: the dragged card's STATUS (the active axis attr) flips to 51 —
+  // NOT milestone_ref, which the card keeps.
+  const t201 = tree.at(['kanban', 'tasks']).peek().find((t) => t.id === 201n);
+  assert.equal(t201.attributes.status, 51n, 'cross-column drop re-keyed the status axis attr');
+  assert.equal(t201.attributes.milestone_ref, 32n, 'milestone_ref is untouched (status is the axis)');
+
+  await settle(dispatcher);
+  const after = tree.at(['kanban', 'tasks']).peek().find((t) => t.id === 201n);
+  assert.equal(after.attributes.status, 51n, 'committed status move persists');
+  // It re-bucketed: 201 now sits in the Doing column.
+  const colsAfter = kanban.el.querySelectorAll('[data-kanban-column]');
+  assert.ok(
+    visibleCards(colsAfter[1]).some((c) => c.dataset.cardId === '201'),
+    '201 re-bucketed into the Doing (status 51) column',
+  );
+});
+
+test('Kanban: within-column drag rewrites sort_order optimistically (planSortRewrite)', async () => {
+  const { dispatcher, tree, kanban } = bootMultiAxisKanban();
+  await settle(dispatcher);
+  // Default milestone axis. Column 32 holds 201 (sort 100) + 203 (sort 100).
+  // Add a third card to column 32 so a reorder produces visible rewrites.
+  const seeded = tree.at(['kanban', 'tasks']).peek();
+  assert.ok(seeded.find((t) => t.id === 201n), 'tasks seeded');
+
+  const cols = kanban.el.querySelectorAll('[data-kanban-column]');
+  const m1 = cols[0]; // milestone 32: cards 201, 203 (both sort_order 100)
+  const body = m1.querySelector('[data-kanban-column-body]');
+
+  // Drag card 203 to the TOP of its own column (slot 0). The shim has no
+  // layout, so drive the slot via the test seam data-drop-slot.
+  body.dataset.dropSlot = '0';
+  const card203 = visibleCards(m1).find((c) => c.dataset.cardId === '203');
+  card203.dispatchEvent({ type: 'dragstart', target: card203 });
+  body.dispatchEvent({ type: 'drop', target: body, clientY: 0 });
+
+  // OPTIMISTIC: planSortRewrite renumbers the destination cell to canonical
+  // (i+1)*STEP spacing with 203 first → 203:100, 201:200. status/milestone are
+  // unchanged (same column → no axis re-key).
+  const tasks = tree.at(['kanban', 'tasks']).peek();
+  const t203 = tasks.find((t) => t.id === 203n);
+  const t201 = tasks.find((t) => t.id === 201n);
+  assert.equal(t203.attributes.sort_order, 100, '203 rewritten to slot 0 (100)');
+  assert.equal(t201.attributes.sort_order, 200, '201 pushed to slot 1 (200)');
+  assert.equal(t203.attributes.milestone_ref, 32n, 'milestone_ref untouched (within-column)');
+
+  await settle(dispatcher);
+  // The re-order persists; 203 now renders before 201 in the column.
+  const colsAfter = kanban.el.querySelectorAll('[data-kanban-column]');
+  assert.deepEqual(
+    visibleCards(colsAfter[0]).map((c) => c.dataset.cardId),
+    ['203', '201'],
+    'within-column reorder placed 203 before 201',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* Card click / Enter / o navigates into the task detail (`/task/:id`).         */
+/* -------------------------------------------------------------------------- */
+
+test('Kanban: clicking a card navigates to /task/:id', async () => {
+  const { dispatcher, api } = bootApi(M.mockTransport());
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(M.DEMO_PROJECT_ID);
+  const scope = {
+    get projectId() {
+      return tree.at(['scope', 'projectId']).peek() ?? null;
+    },
+  };
+  const kanban = M.Control.New('Kanban', { type: 'Kanban' }, { api, tree, scope });
+  kanban.mount(new FakeElement('div'));
+  await settle(dispatcher);
+
+  const card = visibleCards(kanban.el.querySelectorAll('[data-kanban-column]')[0])[0];
+  const id = card.dataset.cardId;
+  card.dispatchEvent({ type: 'click', target: card });
+  assert.equal(location.pathname, `/task/${id}`, 'card click navigated to the task detail');
+});
+
+test('Kanban: Enter / o on a focused card opens the task detail', async () => {
+  const { dispatcher, api } = bootApi(M.mockTransport());
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(M.DEMO_PROJECT_ID);
+  const scope = {
+    get projectId() {
+      return tree.at(['scope', 'projectId']).peek() ?? null;
+    },
+  };
+  const kanban = M.Control.New('Kanban', { type: 'Kanban' }, { api, tree, scope });
+  kanban.mount(new FakeElement('div'));
+  await settle(dispatcher);
+
+  const card = visibleCards(kanban.el.querySelectorAll('[data-kanban-column]')[0])[0];
+  const id = card.dataset.cardId;
+  card.dispatchEvent({ type: 'keydown', key: 'Enter', target: card });
+  assert.equal(location.pathname, `/task/${id}`, '`Enter` opened the task detail');
 });

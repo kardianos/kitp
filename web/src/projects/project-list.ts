@@ -22,11 +22,12 @@
  * of its own, so the picker + the list never diverge and there is no second
  * batch round-trip. (Tests seed `shell.projects` directly.)
  *
- * Navigation: selecting a project fires `selectProject`, which writes
- * `scope.projectId` (the tree path Kanban's `{ signal: 'scope.projectId' }`
- * watches) AND `shell.view = 'board'` (the AppShell outlet swap). Both writes
- * happen in a plain handler — never inside a tracked effect — so the
- * one-way-load cascade rule holds.
+ * Navigation: selecting a project fires `selectProject`, which `navigate()`s to
+ * `/project/:id` (the History-API router). The AppShell's route effect derives
+ * the board outlet from the new route AND mirrors `:id` into `scope.projectId`
+ * (the tree path Kanban's `{ signal: 'scope.projectId' }` watches). The
+ * navigation happens in a plain handler — never inside a tracked effect — so
+ * the one-way-load cascade rule holds.
  *
  * Create-project: the `createProject` action fires `card.insert`
  * (card_type_name='project', title, optional `attributes.description`) with an
@@ -53,6 +54,7 @@ import type { ApiFault } from '../core/dispatch.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { SPEC as KANBAN_SPEC } from '../kanban/specs.js';
 import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
+import { navigate, projectUrl } from '../shell/router.js';
 import { PROJECT_SPEC } from './specs.js';
 import { clampIndex, projectDescription, projectTitle } from './project-helpers.js';
 
@@ -464,16 +466,17 @@ export class ProjectList extends Control<ProjectListConfig> {
   /* ----------------------------- navigation ----------------------------- */
 
   /**
-   * Land on a project: set the scope id (the tree path Kanban watches) AND
-   * flip the AppShell outlet to the board view. Both are plain tree writes
-   * outside any tracked effect, so the one-way-load rule holds. A pending
-   * (optimistic, not-yet-persisted) row is not selectable.
+   * Land on a project: NAVIGATE to its route (`/project/:id`). The History-API
+   * router writes the route leaf; the AppShell's route effect derives the
+   * outlet (the board) AND mirrors `:id` into `scope.projectId` (the tree path
+   * Kanban watches). A one-way navigation outside any tracked effect, so the
+   * one-way-load rule holds. A pending (optimistic, not-yet-persisted) row is
+   * not selectable.
    */
   private selectProject(idStr: string): void {
     const id = parseId(idStr);
     if (id === null) return;
-    this.ctx.tree.at(['scope', 'projectId']).set(id);
-    this.ctx.tree.at(['shell', 'view']).set('board');
+    navigate(projectUrl(id));
   }
 
   private visibleProjects(): ProjectOption[] {

@@ -179,10 +179,42 @@ test('card-backed admin screens carry an editField update action; read-only ones
       `${view} has an attribute.update editField action`,
     );
   }
-  // Read-only (no updateSpec): Attributes / Workflows / Roles / Agents / Comm* .
+  // No inline editField (the nested editors / create dialog are the write
+  // surface): Attributes / Workflows / Roles / Agents / Comm* .
   for (const view of ['attributes', 'workflows', 'roles', 'agents', 'comm_channels', 'activity_sinks', 'comm_log']) {
     const cfg = M.adminScreenConfig(view);
-    assert.equal(cfg.actions.length, 0, `${view} is a read-only viewer (no editField action)`);
+    assert.ok(!cfg.actions.some((a) => a.intent === 'editField'), `${view} has no inline editField action`);
+  }
+  // Attributes now carries a create action (attribute_def.insert); its edge
+  // matrix + Screens filters + Workflows transitions are nested editors that
+  // fire their own imperative calls (no MasterDetail-level action binding).
+  const attrs = M.adminScreenConfig('attributes');
+  assert.ok(
+    attrs.actions.some((a) => a.intent === 'createItem' && a.spec === 'attribute_def.insert'),
+    'attributes has an attribute_def.insert create action',
+  );
+  // Agents now carry create (agent.create) + delete (agent.delete); their token
+  // panel is a nested editor that fires its own imperative user_token.* calls.
+  const agents = M.adminScreenConfig('agents');
+  assert.ok(
+    agents.actions.some((a) => a.intent === 'createItem' && a.spec === 'agent.create'),
+    'agents has an agent.create create action',
+  );
+  assert.ok(
+    agents.actions.some((a) => a.intent === 'deleteItem' && a.spec === 'agent.delete'),
+    'agents has an agent.delete delete action',
+  );
+  assert.deepEqual(agents.detail.nested, { kind: 'agentTokens' }, 'agents mounts the token nested editor');
+  // Comm Channels / Activity Sinks / Roles mount config / mapping nested editors
+  // that fire their own imperative comm_channel.set / activity_sink.set /
+  // role_mapping.* calls — no MasterDetail-level action binding. Workflows /
+  // Comm Log stay pure read-only viewers.
+  assert.deepEqual(M.adminScreenConfig('comm_channels').detail.nested, { kind: 'commChannelConfig' });
+  assert.deepEqual(M.adminScreenConfig('activity_sinks').detail.nested, { kind: 'activitySinkConfig' });
+  assert.deepEqual(M.adminScreenConfig('roles').detail.nested, { kind: 'roleMappings' });
+  for (const view of ['workflows', 'roles', 'comm_channels', 'activity_sinks', 'comm_log']) {
+    const cfg = M.adminScreenConfig(view);
+    assert.equal(cfg.actions.length, 0, `${view} is a read-only viewer (no MasterDetail action)`);
   }
 });
 
@@ -208,18 +240,16 @@ test('Roles: grants render as read-only badges from the nested array', async () 
   assert.equal(ctrl.el.querySelector('[data-role="input"]'), null);
 });
 
-test('Attributes: bound_to renders as badges of card_type names', async () => {
-  const { dispatcher, api } = bootApi();
-  const { ctrl, tree } = mountView(api, 'attributes');
-  await settle(dispatcher);
+test('Attributes: the detail mounts the edge-matrix nested editor (replacing bound_to badges)', () => {
+  const cfg = M.adminScreenConfig('attributes');
+  // The scalar bound_to badges field is gone — the nested edge matrix is the
+  // bind/unbind surface now.
+  assert.ok(!cfg.detail.fields.some((f) => f.name === 'bound_to'), 'no bound_to scalar field');
+  assert.deepEqual(cfg.detail.nested, { kind: 'edgeMatrix' }, 'edge-matrix nested editor configured');
 
-  const items = tree.at(['admin', 'attributes', 'items']).peek();
-  tree.at(['admin', 'attributes', 'selectedId']).set(items[0].id);
-  M.flushSync?.();
-
-  const badges = ctrl.el.querySelectorAll('[data-role="badges"]');
-  assert.ok(badges.length > 0, 'bound_to badges rendered');
-  assert.match(badges[0].textContent, /task/);
+  // Workflows + Screens carry their nested editors too.
+  assert.deepEqual(M.adminScreenConfig('workflows').detail.nested, { kind: 'flowSteps' });
+  assert.deepEqual(M.adminScreenConfig('screens').detail.nested, { kind: 'screenFilters' });
 });
 
 /* -------------------------------------------------------------------------- */

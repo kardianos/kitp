@@ -213,17 +213,137 @@ class FakeResizeObserver {
 export function installDomShim() {
   const html = new FakeElement('html');
   html.setAttribute('data-theme', 'light');
+  // A minimal document-level event-listener surface so controls that wire a
+  // document-tier keydown listener (e.g. the HelpOverlay's overlay-tier Esc/`?`
+  // handler, the HotkeyController) work under the shim. dispatchEvent fires the
+  // registered listeners synchronously — a test drives it directly.
+  const docListeners = new Map();
   const doc = {
+    // DOMPurify's init guard (vendor/dompurify.js) checks
+    // `window.document.nodeType === 9` (DOCUMENT_NODE) + `window.Element`
+    // before it defines `addHook`. The markdown module registers a hook at
+    // import; any app.js test that transitively pulls it in (now incl.
+    // TaskDetail) would crash with "addHook is not a function" without these.
+    // The light shim never actually renders Markdown (only the jsdom-backed
+    // markdown.test.mjs does), so this just lets the hook register harmlessly.
+    nodeType: 9,
     createElement: (tag) => new FakeElement(tag),
     // A DocumentFragment is, for our purposes, just a transient container the
     // shim treats like an element: append() collects nodes, and append()-ing
     // the fragment elsewhere splices its children in.
     createDocumentFragment: () => new FakeElement('#fragment'),
     documentElement: html,
+    // The currently-focused element, if any (FakeElement.focus sets it).
+    activeElement: null,
+    addEventListener(t, h) {
+      if (!docListeners.has(t)) docListeners.set(t, []);
+      docListeners.get(t).push(h);
+    },
+    removeEventListener(t, h) {
+      const arr = docListeners.get(t);
+      if (arr) docListeners.set(t, arr.filter((x) => x !== h));
+    },
+    dispatchEvent(ev) {
+      const arr = docListeners.get(ev.type) ?? [];
+      if (ev.target === undefined) ev.target = doc;
+      if (typeof ev.preventDefault !== 'function') ev.preventDefault = () => {};
+      if (typeof ev.stopPropagation !== 'function') ev.stopPropagation = () => {};
+      for (const h of [...arr]) h(ev);
+      return true;
+    },
   };
+  // FakeElement.focus records the active element so controls can restore focus.
+  FakeElement.prototype.focus = function focus() {
+    doc.activeElement = this;
+  };
+
+  // ---- History-API + location shim for the URL router ----
+  // A minimal location/history pair so navigate()/popstate work under node
+  // --test without jsdom. history maintains an entry stack; back()/forward()
+  // move a cursor and dispatch a 'popstate' on the window. location reflects
+  // the current entry's path. pushState/replaceState parse the path into
+  // pathname + search. dispatchEvent fires window-level listeners synchronously.
+  const winListeners = new Map();
+  const win = {
+    // See the `doc.nodeType` note: DOMPurify's init guard also requires
+    // `window.document` + `window.Element` to be present to define addHook.
+    get document() {
+      return doc;
+    },
+    Element: FakeElement,
+    addEventListener(t, h) {
+      if (!winListeners.has(t)) winListeners.set(t, []);
+      winListeners.get(t).push(h);
+    },
+    removeEventListener(t, h) {
+      const arr = winListeners.get(t);
+      if (arr) winListeners.set(t, arr.filter((x) => x !== h));
+    },
+    dispatchEvent(ev) {
+      const arr = winListeners.get(ev.type) ?? [];
+      for (const h of [...arr]) h(ev);
+      return true;
+    },
+  };
+
+  const loc = { pathname: '/', search: '' };
+  const setLoc = (path) => {
+    const qIdx = path.indexOf('?');
+    if (qIdx === -1) {
+      loc.pathname = path || '/';
+      loc.search = '';
+    } else {
+      loc.pathname = path.slice(0, qIdx) || '/';
+      loc.search = path.slice(qIdx);
+    }
+  };
+
+  const stack = [{ state: null, path: '/' }];
+  let cursor = 0;
+  const hist = {
+    get state() {
+      return stack[cursor]?.state ?? null;
+    },
+    pushState(state, _title, path) {
+      // Truncate any forward entries (matching real history semantics).
+      stack.splice(cursor + 1);
+      stack.push({ state, path });
+      cursor = stack.length - 1;
+      setLoc(path);
+    },
+    replaceState(state, _title, path) {
+      stack[cursor] = { state, path };
+      setLoc(path);
+    },
+    back() {
+      if (cursor > 0) {
+        cursor--;
+        setLoc(stack[cursor].path);
+        win.dispatchEvent({ type: 'popstate', state: stack[cursor].state });
+      }
+    },
+    forward() {
+      if (cursor < stack.length - 1) {
+        cursor++;
+        setLoc(stack[cursor].path);
+        win.dispatchEvent({ type: 'popstate', state: stack[cursor].state });
+      }
+    },
+  };
+
   globalThis.document = doc;
   globalThis.HTMLElement = FakeElement;
+  globalThis.window = win;
+  globalThis.location = loc;
+  globalThis.history = hist;
   FakeResizeObserver.instances = [];
   globalThis.ResizeObserver = FakeResizeObserver;
-  return { FakeElement, FakeResizeObserver };
+  // Test helper: reset the URL to a starting path before a router test.
+  const setPath = (path) => {
+    setLoc(path);
+    stack.length = 0;
+    stack.push({ state: { path }, path });
+    cursor = 0;
+  };
+  return { FakeElement, FakeResizeObserver, location: loc, history: hist, window: win, setPath };
 }

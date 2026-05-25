@@ -1,9 +1,14 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildTestBundles } from './build-for-test.mjs';
+import { installDomShim } from './dom-shim.mjs';
 
 let M;
 before(async () => {
+  // The app barrel now (via TaskDetail) transitively imports the markdown sink,
+  // whose DOMPurify hook registers at import-eval and needs a window/document.
+  // The light shim satisfies that init guard (no markdown is rendered here).
+  installDomShim();
   const outdir = await buildTestBundles();
   M = await import(`${outdir}/app.js`);
 });

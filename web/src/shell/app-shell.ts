@@ -11,36 +11,48 @@
  *     muted chord hints; a DEFAULT PROJECT scope section (Inbox `g i`, Grid
  *     `g g`, Kanban `g k`, Project detail); an ADMIN section; a foot user chip.
  *     Collapses to icon-width via the topbar chevron.
- *   - outlet: a content region into which a child (ScreenHost) mounts.
+ *   - outlet: a content region into which the ROUTE-DERIVED body mounts.
+ *
+ * Routing (web/src/shell/router.ts): the route is the source of truth. The
+ * outlet effect READS the router's route leaf (`router.route`) and derives the
+ * body control + scope from it — one-way (it never writes a signal it tracks).
+ * Rail links / the scope picker / project selection / `g _` chords all call
+ * `navigate(path)`, which writes History + the route leaf; back/forward replay
+ * via popstate. This replaced the old `shell.view` signal swap.
  *
  * Hierarchical hotkeys (web/design/hotkeys.md): the shell declares global-tier
  * chords (`g p`, `g a`, `g i`, `g g`, `g k`, `?`) in its config.hotkeys, raised
  * as INTENTS — never imperative API calls. The HotkeyController derives the
  * active binding set from the live control tree; the shell is the root scope.
  *
- * The project-scope Picker writes `scope.projectId` into the shell's scope
- * object; the Kanban's `{ signal: 'scope.projectId' }` query trigger reloads on
- * change. (Scope lives on the DataHost.scope, resolved by `{ from: 'scope.…' }`.)
+ * The route effect mirrors the route's `:id` into `scope.projectId` (the tree
+ * leaf the Kanban's `{ signal: 'scope.projectId' }` query trigger reloads on);
+ * the scope picker navigates to `/project/:id` rather than writing scope
+ * directly. (Scope is resolved by `{ from: 'scope.…' }` inputs in descendants.)
  *
- * No promises; the shell only mounts children, toggles theme, and raises intents.
+ * No promises; the shell only mounts children, toggles theme, navigates, and
+ * raises intents.
  */
 
 import { Control, type BaseControlConfig, type ChildConfig } from '../core/control.js';
 import type { QueryBinding } from '../core/data.js';
-import type { HotkeyBinding } from '../core/hotkeys.js';
+import type { HotkeyBinding, ResolvedBinding } from '../core/hotkeys.js';
 import { formatBinding } from '../core/hotkeys.js';
+import { HelpOverlay } from './help-overlay.js';
+import type { QuickEntry } from '../quick-entry/quick-entry.js';
+import type { ImportWizard } from '../import/import-wizard.js';
+import type { ExportMenu } from '../export/export-menu.js';
 import { TEMPLATE_EXCLUSION_LEAF } from '../projects/project-helpers.js';
-
-/**
- * The outlet views the shell swaps between (signal-driven, no router). Beyond
- * the projects landing + the per-project board, the shell hosts ADMIN views —
- * each a `MasterDetail` screen identified by `admin:<key>` (e.g.
- * `admin:contacts`, `admin:users`). The view-swap effect maps an `admin:*`
- * view through `adminConfigFor` (a config resolver the boot wiring supplies) to
- * a MasterDetail config and mounts it — so adding an admin screen is a new
- * config entry + a rail link, never new control logic.
- */
-export type ShellView = 'projects' | 'board' | `admin:${string}`;
+import { AUTH_USER_PATH, type AuthUser } from '../auth/auth-state.js';
+import {
+  ROUTER_PATH,
+  navigate,
+  matchRoute,
+  screenLayoutForSlug,
+  adminUrl,
+  screenUrl,
+  type RouteMatch,
+} from './router.js';
 
 export interface ProjectScopeOption {
   /** bigint id as a string ('' = all projects). */
@@ -72,29 +84,53 @@ export interface AppShellConfig extends BaseControlConfig {
   user?: string;
   /** Nav links for the scope section (slug + label + chord). */
   scopeLinks?: Array<{ slug: string; label: string; chord: string; intent: string }>;
-  /** Admin links. Each `view` is the `admin:<key>` outlet view it navigates to. */
-  adminLinks?: Array<{ label: string; view: string }>;
+  /** Admin links. Each `key` is the `/admin/:key` route segment it navigates to. */
+  adminLinks?: Array<{ label: string; key: string }>;
   /**
-   * Resolve an `admin:<key>` view to a body control config (a MasterDetail
+   * Resolve an admin route `:key` to a body control config (a MasterDetail
    * config). Supplied by the boot wiring (main.ts) so the shell stays free of
    * any admin-screen knowledge — adding an admin screen is a new entry in this
    * resolver + a rail link, no shell change. Returns null for an unknown key
-   * (→ the view-swap mounts nothing / falls back).
+   * (→ the outlet renders its NotFound placeholder).
    */
   adminConfigFor?: (key: string) => ChildConfig | null;
   /**
-   * Initial outlet view. Default 'projects' (the all-projects landing). The
-   * shell swaps the outlet between the ProjectList ('projects') and the board
-   * ScreenHost ('board') via the `shell.view` tree signal — no full router.
-   */
-  view?: ShellView;
-  /**
-   * The board view's body config (a ScreenHost descriptor). Mounted lazily
-   * into the outlet when `shell.view === 'board'`. When absent, the shell
-   * falls back to the first declarative child (so existing `children`-based
-   * wiring still works).
+   * The board / per-project screen body config (a ScreenHost descriptor).
+   * Mounted into the outlet when the route is `/project/:id` or
+   * `/project/:id/screen/:slug`. The shell injects the route-derived
+   * `screen.layout` (slug→layout) so the SAME ScreenHost descriptor serves
+   * every screen slug. When absent, the shell falls back to the first
+   * declarative child (back-compat with the existing children wiring).
    */
   boardConfig?: ChildConfig;
+  /**
+   * Provider for the live keyboard-binding snapshot — wired to the boot's
+   * `HotkeyController.snapshot()` (created after the shell mounts, so this is
+   * a closure over the controller). Threaded into the HelpOverlay so the `?`
+   * overlay lists exactly the bindings active for the current scope chain.
+   */
+  helpSnapshot?: () => Map<string, ResolvedBinding>;
+  /**
+   * The global quick-entry overlay config (a QuickEntry descriptor). Mounted
+   * ONCE into the shell root and toggled by the `quickCreateOpen` intent (the
+   * `n` hotkey from any task screen + the per-column / "+ New task"
+   * affordances). Absent → no overlay is mounted (the intent is a no-op).
+   */
+  quickEntryConfig?: ChildConfig;
+  /**
+   * The CSV import-wizard config (an ImportWizard descriptor). Mounted ONCE into
+   * the shell root and opened by the `projectImport` intent (the Project
+   * detail's Import hook button, carrying `{ projectId }`). Absent → no wizard
+   * is mounted (the intent is a no-op).
+   */
+  importWizardConfig?: ChildConfig;
+  /**
+   * The project-export menu config (an ExportMenu descriptor). Mounted ONCE
+   * into the shell root and opened by the `projectExport` intent (the Project
+   * detail's Export hook button, carrying `{ projectId, anchor, predicate? }`).
+   * Absent → no menu is mounted (the intent is a no-op).
+   */
+  exportMenuConfig?: ChildConfig;
 }
 
 declare module '../core/control.js' {
@@ -118,6 +154,8 @@ export class AppShell extends Control<AppShellConfig> {
   /** Breadcrumb element + rail scope-section, toggled by the active view. */
   private crumbEl: HTMLElement | null = null;
   private scopeSectionEls: HTMLElement[] = [];
+  /** Rail ADMIN-section elements (heading + links), shown only for an admin. */
+  private adminSectionEls: HTMLElement[] = [];
 
   /** Expose the scope so the boot wiring can hand it to descendants' ctx. */
   scopeObject(): { projectId: bigint | null } {
@@ -286,19 +324,39 @@ export class AppShell extends Control<AppShellConfig> {
       this.scopeSectionEls.push(link);
     }
 
-    // ADMIN section. Each link navigates to its `admin:<key>` outlet view via
-    // the same `shell.view` swap the rest of the rail uses — the proof that an
-    // admin screen is config + a link, never new routing logic.
+    // ADMIN section. Each link NAVIGATES to its `/admin/:key` route via the
+    // History-API router — the same one-way navigate the rest of the rail uses.
+    // The proof that an admin screen is config + a link, never new routing
+    // logic: the outlet effect resolves `:key` through `adminConfigFor`.
+    //
+    // Role-gated: the whole section (heading + links) only shows when the
+    // signed-in user is an admin. We collect its elements and an effect reads
+    // `auth.user` reactively (the boot /auth/me probe lands it) to toggle their
+    // display — a one-way read of the identity leaf, cascade-safe. The router's
+    // requireAdmin guard backs this up so a typed `/admin/*` URL is redirected
+    // for a non-admin even though the rail link is hidden.
     const adminLinks = cfg.adminLinks ?? [
-      { label: 'Contacts', view: 'admin:contacts' },
-      { label: 'Users…', view: 'admin:users' },
+      { label: 'Contacts', key: 'contacts' },
+      { label: 'Users…', key: 'users' },
     ];
-    rail.append(sectionLabel('ADMIN'));
+    const adminHeading = sectionLabel('ADMIN');
+    adminHeading.dataset.adminSection = '';
+    rail.append(adminHeading);
+    this.adminSectionEls = [adminHeading];
     for (const l of adminLinks) {
-      const link = railLink(l.label, '', () => this.ctx.tree.at(['shell', 'view']).set(l.view));
-      link.dataset.adminView = l.view;
+      const link = railLink(l.label, '', () => navigate(adminUrl(l.key)));
+      link.dataset.adminKey = l.key;
+      link.dataset.adminSection = '';
       rail.append(link);
+      this.adminSectionEls.push(link);
     }
+    // Hide the ADMIN section until/unless the identity resolves to an admin.
+    const authUserNode = this.ctx.tree.at([...AUTH_USER_PATH]);
+    this.effect(() => {
+      const user = authUserNode.get<AuthUser | undefined>();
+      const show = user?.isAdmin === true;
+      for (const el of this.adminSectionEls) el.style.display = show ? '' : 'none';
+    }, 'shell.adminSection');
 
     // User chip (rail foot).
     const chip = document.createElement('div');
@@ -308,7 +366,15 @@ export class AppShell extends Control<AppShellConfig> {
     avatar.textContent = '⊙';
     const name = document.createElement('span');
     name.className = 'shell__user-name';
+    name.dataset.userName = '';
     name.textContent = cfg.user ?? 'System';
+    // Reflect the real signed-in display name once the /auth/me probe lands
+    // (reactive read of the same identity leaf the ADMIN section watches).
+    this.effect(() => {
+      const user = this.ctx.tree.at([...AUTH_USER_PATH]).get<AuthUser | undefined>();
+      const dn = user?.displayName ?? '';
+      name.textContent = dn.length > 0 ? dn : (cfg.user ?? 'System');
+    }, 'shell.userChip');
     const caret = document.createElement('span');
     caret.className = 'shell__user-caret muted';
     caret.textContent = '▾';
@@ -322,16 +388,20 @@ export class AppShell extends Control<AppShellConfig> {
 
     this.el.append(topbar, rail, outlet);
 
-    /* ----------------------- view-driven outlet swap ------------------ */
-    // The outlet swaps between the ProjectList ('projects') and the board
-    // ScreenHost ('board') based on the `shell.view` tree signal — a minimal
-    // signal-driven swap, NOT a full router. The effect READS only
-    // shell.view (and shell.crumb-derived nothing else) and IMPERATIVELY
-    // spawns/destroys the body control; it never writes a signal it tracks,
-    // so the one-way-load cascade rule holds.
-    const viewNode = this.ctx.tree.at(['shell', 'view']);
-    if (viewNode.peek<ShellView | null>() == null) {
-      viewNode.set(cfg.view ?? 'projects');
+    /* ----------------------- route-driven outlet ---------------------- */
+    // The outlet derives ENTIRELY from the router's route leaf (router.route).
+    // The route is the source of truth; this effect READS the leaf and
+    // IMPERATIVELY spawns/destroys the body control. It NEVER writes a signal
+    // it tracks (navigation is a one-way `navigate()` from a click / hotkey /
+    // popstate, outside this effect), so the one-way cascade rule holds.
+    //
+    // Seed the leaf from the live URL if no route has landed yet (so a shell
+    // mounted before installRouter — e.g. a unit test — still renders). The
+    // app's installRouter lands the deep-link route at boot.
+    const routeNode = this.ctx.tree.at([...ROUTER_PATH]);
+    if (routeNode.peek<RouteMatch | null>() == null) {
+      const initial = typeof location !== 'undefined' ? location.pathname : '/';
+      routeNode.set(matchRoute(initial));
     }
     // The board body config: explicit `boardConfig`, else the first
     // declarative child (back-compat with the existing children wiring).
@@ -339,34 +409,23 @@ export class AppShell extends Control<AppShellConfig> {
       cfg.boardConfig ?? (cfg.children ?? [])[0] ?? { type: 'ScreenHost' };
 
     let bodyControl: Control | null = null;
-    let currentView: ShellView | null = null;
+    let renderedKey: string | null = null;
     this.effect(() => {
-      const view = (viewNode.get<ShellView>() ?? 'projects') as ShellView;
-      if (view === currentView) return; // Object.is-style guard at the view level
-      currentView = view;
+      const route = (routeNode.get<RouteMatch>() ?? matchRoute('/')) as RouteMatch;
+      // A stable identity for the current outlet content: a screen re-render is
+      // only needed when the route name / params that drive the body change.
+      // (scope.projectId is mirrored separately and watched by the board's own
+      // query trigger — we don't re-spawn the ScreenHost on a scope change.)
+      const key = outletKey(route);
+      if (key === renderedKey) return;
+      renderedKey = key;
       // Tear down the previous body before mounting the next.
       if (bodyControl) {
         this.destroyChild(bodyControl);
         bodyControl = null;
       }
-      if (view === 'projects') {
-        bodyControl = this.spawn('ProjectList', { type: 'ProjectList' }, outlet);
-        this.setCrumb('Projects', true);
-      } else if (view.startsWith('admin:')) {
-        // ADMIN view: resolve the `admin:<key>` to a MasterDetail config and
-        // mount it. No admin-screen knowledge lives in the shell — the boot
-        // wiring's `adminConfigFor` resolver owns the config. An unknown key
-        // resolves to a NotFound placeholder (graceful degradation).
-        const key = view.slice('admin:'.length);
-        const adminCfg = cfg.adminConfigFor?.(key) ?? { type: `UnknownAdmin:${key}` };
-        bodyControl = this.spawn(adminCfg.type, adminCfg, outlet);
-        const crumb = (adminCfg as { title?: string }).title ?? 'Admin';
-        this.setCrumb(crumb, true);
-      } else {
-        bodyControl = this.spawn(boardConfig.type, boardConfig, outlet);
-        this.setCrumb(cfg.crumb ?? 'Kanban', false);
-      }
-    }, 'shell.view-swap');
+      bodyControl = this.renderRoute(route, boardConfig, outlet);
+    }, 'shell.outlet');
 
     /* --------------------------- interactions -------------------------- */
     this.listen(collapse, 'click', () => this.el.classList.toggle('shell--rail-collapsed'));
@@ -377,27 +436,177 @@ export class AppShell extends Control<AppShellConfig> {
     });
     this.listen(helpBtn, 'click', () => this.intent('toggleHelp'));
     this.listen(scopePicker, 'change', () => {
-      this.scope.projectId = parseId(scopePicker.value);
-      // Mirror into the tree so a `{ signal: 'scope.projectId' }` trigger that
-      // (in a later wiring) reads a tree path also fires. We keep the canonical
-      // scope on the scope object; the tree write is a one-way mirror.
-      this.ctx.tree.at(['scope', 'projectId']).set(this.scope.projectId);
-      this.intent('projectChanged', { projectId: this.scope.projectId });
+      const id = parseId(scopePicker.value);
+      // The scope picker is now a NAV control: picking a project navigates to
+      // its default screen (`/project/:id`); picking "all projects" goes to
+      // `/projects`. The route effect sets `scope.projectId` from the route, so
+      // the board's `{ signal: 'scope.projectId' }` query trigger refires. We
+      // raise `projectChanged` for any listener that wants the raw id.
+      navigate(id === null ? '/projects' : `/project/${id.toString()}`);
+      this.intent('projectChanged', { projectId: id });
     });
 
     /* --------------------------- nav intents --------------------------- */
-    // Rail links + global `g _` chords raise these intents; the shell maps
-    // them to the `shell.view` signal (the outlet swap). 'goProjects' lands
-    // the all-projects view; the per-project screen chords land the board.
-    // All are one-way tree writes outside any tracked effect (cascade-safe).
-    const goView = (view: ShellView): void => {
-      this.ctx.tree.at(['shell', 'view']).set(view);
+    // Rail links + global `g _` chords raise these intents; the shell maps each
+    // to a NAVIGATE call (History-API router). 'goProjects' lands the
+    // all-projects list; the per-project screen chords build a
+    // `/project/:id/screen/:slug` URL from the CURRENT project scope (the
+    // route is the source of truth — these read the live scope leaf at fire
+    // time). All are one-way navigations outside any tracked effect.
+    const goScreen = (slug: string): void => {
+      const id = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>();
+      // No project in scope yet → fall back to the projects list (nothing to
+      // screen against). Once a project resolves the chord lands its screen.
+      navigate(id == null ? '/projects' : screenUrl(id, slug));
     };
-    this.registerIntent('goProjects', () => goView('projects'));
-    this.registerIntent('goInbox', () => goView('board'));
-    this.registerIntent('goGrid', () => goView('board'));
-    this.registerIntent('goKanban', () => goView('board'));
-    this.registerIntent('goProject', () => goView('board'));
+    this.registerIntent('goProjects', () => navigate('/projects'));
+    this.registerIntent('goInbox', () => goScreen('inbox'));
+    this.registerIntent('goGrid', () => goScreen('grid'));
+    this.registerIntent('goKanban', () => goScreen('kanban'));
+    this.registerIntent('goProject', () => goScreen('project'));
+
+    /* --------------------------- help overlay -------------------------- */
+    // The `toggleHelp` intent (raised by the `?`/`Mod+/` chord AND the topbar
+    // `?` button) was previously DEAD — nothing handled it. Mount a hidden
+    // HelpOverlay into the shell root and toggle it here. Open/close is a pure
+    // DOM toggle inside the control (no signal write), so it stays cascade-safe.
+    const help = this.spawn(
+      'HelpOverlay',
+      { type: 'HelpOverlay', snapshot: cfg.helpSnapshot } as ChildConfig,
+      this.el,
+    ) as HelpOverlay;
+    this.registerIntent('toggleHelp', () => help.toggle());
+
+    /* -------------------------- quick-entry overlay ------------------------ */
+    // The global `n` fast-task-create overlay. Mounted ONCE into the shell root
+    // (like the HelpOverlay); the `quickCreateOpen` intent — raised by the `n`
+    // hotkey on any task screen + the kanban column `+` / project "+ New task"
+    // affordances — opens it scoped to the current project. The opener's detail
+    // (parentCardId / prefill) is forwarded to open(). A DOM toggle inside the
+    // control (no signal write), so it stays cascade-safe.
+    if (cfg.quickEntryConfig) {
+      const qe = this.spawn(cfg.quickEntryConfig.type, cfg.quickEntryConfig, this.el) as QuickEntry;
+      this.registerIntent('quickCreateOpen', (detail) => qe.open(detail));
+      this.registerIntent('quickCreateClose', () => qe.close());
+    }
+
+    /* --------------------------- import wizard -------------------------- */
+    // The CSV import wizard, mounted ONCE into the shell root (like the
+    // quick-entry overlay). The Project detail's Import hook raises the
+    // `projectImport` intent with `{ projectId }`; the shell opens the wizard
+    // scoped to that project. A DOM toggle inside the control (no signal write),
+    // so it stays cascade-safe. On a successful commit the wizard raises
+    // `projectImportDone` — re-broadcast as an intent so the focal project body
+    // (which listens) can refresh its tasks.
+    if (cfg.importWizardConfig) {
+      const wiz = this.spawn(cfg.importWizardConfig.type, cfg.importWizardConfig, this.el) as ImportWizard;
+      this.registerIntent('projectImport', (detail) => wiz.open(detail));
+      this.registerIntent('projectImportClose', () => wiz.close());
+    }
+
+    /* --------------------------- export menu --------------------------- */
+    // The project-export dropdown, mounted ONCE into the shell root (like the
+    // import wizard). The Project detail's Export hook raises the
+    // `projectExport` intent with `{ projectId, anchor, predicate? }`; the
+    // shell opens the menu anchored to the Export button. Choosing a format +
+    // toggles triggers a same-origin GET download (a DOM/navigation action,
+    // not a batch spec), so it stays cascade-safe.
+    if (cfg.exportMenuConfig) {
+      const xm = this.spawn(cfg.exportMenuConfig.type, cfg.exportMenuConfig, this.el) as ExportMenu;
+      this.registerIntent('projectExport', (detail) => xm.open(detail));
+      this.registerIntent('projectExportClose', () => xm.closeMenu());
+    }
+    // A commit lands new tasks: bump the shared `import.refreshNonce` leaf so any
+    // project body watching it reloads its scoped task collection. A one-way
+    // write outside any tracked effect (cascade-safe). Registered regardless of
+    // whether a wizard is mounted so the intent is never dead.
+    this.registerIntent('projectImportDone', () => {
+      const node = this.ctx.tree.at(['import', 'refreshNonce']);
+      node.set((node.peek<number>() ?? 0) + 1);
+    });
+  }
+
+  /**
+   * Spawn the outlet body for a matched route. The route is the source of
+   * truth: this maps `route.name` → a body control, sets `scope.projectId`
+   * from the route's `:id` (for project / screen routes), and derives the
+   * ScreenHost layout from the route's `:slug` via `screenLayoutForSlug`
+   * (the #29 seam). Pure spawn — the route leaf was already read by the caller
+   * effect; this writes only DOM + the scope mirror (a leaf no caller effect
+   * tracks), so the one-way cascade rule holds.
+   */
+  private renderRoute(route: RouteMatch, boardConfig: ChildConfig, outlet: HTMLElement): Control {
+    switch (route.name) {
+      case 'projects': {
+        this.setScope(null);
+        this.setCrumb('Projects', true);
+        return this.spawn('ProjectList', { type: 'ProjectList' }, outlet);
+      }
+      case 'project':
+      case 'screen': {
+        const id = parseId(route.params['id']);
+        this.setScope(id);
+        // The default screen for `/project/:id` is the board (kanban for now);
+        // `/project/:id/screen/:slug` SEEDS the body from the slug→layout
+        // fallback (#29), then the ScreenHost resolves the project's real
+        // `screen` card by slug and re-dispatches its body off the card's
+        // `layout` attribute. We do NOT carry the board's kanban `bodyConfig`
+        // across (that would pin every slug to Kanban).
+        const slug = route.name === 'screen' ? (route.params['slug'] ?? 'kanban') : 'kanban';
+        const layout = route.name === 'screen' ? screenLayoutForSlug(slug) : 'kanban';
+        const screen = { slug, layout, title: capitalise(slug) };
+        // Carry over the board descriptor's NON-screen fields (e.g. the
+        // declarative `children` that prove NotFound degradation), but replace
+        // the screen with the route-derived one. `resolveScreen` switches on the
+        // host's real screen-card resolution (off in unit tests via boardConfig).
+        const cfg: ChildConfig = {
+          ...boardConfig,
+          type: boardConfig.type,
+          screen,
+          resolveScreen: true,
+        };
+        this.setCrumb(screen.title, false);
+        return this.spawn(cfg.type, cfg, outlet);
+      }
+      case 'task': {
+        // #33 builds the real task-detail screen; for now a visible stub via
+        // the NotFound placeholder (graceful degradation, never throws).
+        this.setCrumb(`Task #${route.params['id'] ?? ''}`, true);
+        return this.spawn(
+          'TaskDetail',
+          { type: 'TaskDetail', taskId: route.params['id'] } as ChildConfig,
+          outlet,
+        );
+      }
+      case 'admin': {
+        // Resolve `/admin/:key` to a MasterDetail config via the boot resolver.
+        // No admin-screen knowledge lives in the shell. An unknown key resolves
+        // to a NotFound placeholder (graceful degradation).
+        const key = route.params['key'] ?? '';
+        const adminCfg = this.config.adminConfigFor?.(key) ?? { type: `UnknownAdmin:${key}` };
+        this.setCrumb((adminCfg as { title?: string }).title ?? 'Admin', true);
+        return this.spawn(adminCfg.type, adminCfg, outlet);
+      }
+      case 'notfound':
+      default: {
+        this.setCrumb('Not found', true);
+        return this.spawn(
+          `NoRoute:${route.path}`,
+          { type: `NoRoute:${route.path}`, path: route.path } as ChildConfig,
+          outlet,
+        );
+      }
+    }
+  }
+
+  /**
+   * Mirror the route-derived project id into the scope object + the
+   * `scope.projectId` tree leaf the board's query trigger watches. A one-way
+   * write (no caller effect reads scope.projectId), so cascade-safe.
+   */
+  private setScope(id: bigint | null): void {
+    this.scope.projectId = id;
+    this.ctx.tree.at(['scope', 'projectId']).set(id);
   }
 
   /** Mount a body child into the outlet imperatively (used by boot wiring). */
@@ -406,6 +615,33 @@ export class AppShell extends Control<AppShellConfig> {
     const host = outlet ?? this.el;
     return this.spawn(type, config, host);
   }
+}
+
+/**
+ * The outlet-content identity for a route — the route name plus the params
+ * that determine WHICH body control + config the outlet shows. The scope id
+ * is INCLUDED for project/screen routes (navigating between two projects' same
+ * screen re-spawns the ScreenHost so its mount-time scope is fresh), and the
+ * slug for screen routes. Used to skip a redundant re-spawn when the route
+ * object identity changes but the meaningful key does not.
+ */
+function outletKey(route: RouteMatch): string {
+  switch (route.name) {
+    case 'project':
+      return `project:${route.params['id'] ?? ''}`;
+    case 'screen':
+      return `screen:${route.params['id'] ?? ''}:${route.params['slug'] ?? ''}`;
+    case 'task':
+      return `task:${route.params['id'] ?? ''}`;
+    case 'admin':
+      return `admin:${route.params['key'] ?? ''}`;
+    default:
+      return route.name;
+  }
+}
+
+function capitalise(s: string): string {
+  return s.length === 0 ? s : s[0]!.toUpperCase() + s.slice(1);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -477,6 +713,11 @@ export function shellHotkeys(emit: (intent: string) => void): HotkeyBinding[] {
     { binding: 'g g', label: 'Go to Grid', run: () => emit('goGrid') },
     { binding: 'g k', label: 'Go to Kanban', run: () => emit('goKanban') },
     { binding: ['?', 'Mod+/'], label: 'Keyboard shortcuts', run: () => emit('toggleHelp') },
+    // Global `n` opens the quick-entry overlay scoped to the current project.
+    // Task screens (kanban/grid/inbox) layer their own `n` over this to pass a
+    // column/project prefill; ProjectList's deeper `n` shadows it (project
+    // create) on the all-projects landing.
+    { binding: 'n', label: 'New task', run: () => emit('quickCreateOpen') },
   ];
 }
 

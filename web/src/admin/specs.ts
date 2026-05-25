@@ -42,6 +42,34 @@ export const ADMIN_SPEC = {
   commChannelList: 'comm_channel.list',
   activitySinkList: 'activity_sink.list',
   commLogList: 'comm_log.list',
+  // Write specs the create/delete + Users role/person affordances issue.
+  personCreate: 'person.create',
+  userRoleSet: 'user_role.set',
+  userRoleRevoke: 'user_role.revoke',
+  userUnlinkPerson: 'user.unlink_person',
+  // Nested-editor specs (flow-step transitions, attribute edges, card_types).
+  cardTypeSelect: 'card_type.select',
+  flowStepList: 'flow_step.list',
+  flowStepSet: 'flow_step.set',
+  flowStepDelete: 'flow_step.delete',
+  flowPreviewDelete: 'flow.preview_delete',
+  flowDelete: 'flow.delete',
+  edgeInsert: 'edge.insert',
+  edgeDelete: 'edge.delete',
+  attributeDefInsert: 'attribute_def.insert',
+  // Comm-channel + activity-sink config writes (write-only secrets).
+  commChannelSet: 'comm_channel.set',
+  activitySinkSet: 'activity_sink.set',
+  // Agent create / delete + their tokens (mint-once / list / revoke).
+  agentCreate: 'agent.create',
+  agentDelete: 'agent.delete',
+  userTokenList: 'user_token.list',
+  userTokenCreate: 'user_token.create',
+  userTokenRevoke: 'user_token.revoke',
+  // Role mappings (claim_value → role) — set / delete.
+  roleMappingList: 'role_mapping.list',
+  roleMappingSet: 'role_mapping.set',
+  roleMappingDelete: 'role_mapping.delete',
 } as const;
 
 /* -------------------------------------------------------------------------- */
@@ -182,6 +210,308 @@ export interface CommLogListOutput {
   rows: CommLogRow[];
 }
 
+/* ---- person.create (Contacts create) ------------------------------------- */
+
+/**
+ * The Contacts create dialog tier axis. Maps to a `person_kind` server-side:
+ *   - contact  → kind 'contact'  (inbound-only)
+ *   - assignee → kind 'member'   (assignable, no login)
+ *   - user     → kind 'member' + a provisioned `user_account` (email REQUIRED).
+ */
+export type PersonTier = 'contact' | 'assignee' | 'user';
+
+export interface PersonCreateInput {
+  title: string;
+  email?: string;
+  tier: PersonTier;
+}
+
+export interface PersonCreateOutput {
+  /** The new person card id (wire string → bigint). */
+  personCardId: bigint;
+  /** The provisioned user_account id when tier='user', else 0n. */
+  userAccountId: bigint;
+}
+
+/* ---- user_role.set / user_role.revoke (Users role assign/revoke) --------- */
+
+export interface UserRoleSetInput {
+  userId: bigint | string;
+  roleName: string;
+  /** Optional project scope; blank/omitted → a global grant. The admin form
+   *  threads a string (the entered project card id) through the data layer. */
+  scopeProjectId?: bigint | string;
+}
+export interface UserRoleSetOutput {
+  ok: boolean;
+  userRoleId: bigint;
+}
+
+export interface UserRoleRevokeInput {
+  userId: bigint | string;
+  roleName: string;
+  scopeProjectId?: bigint | string;
+}
+export interface UserRoleRevokeOutput {
+  ok: boolean;
+  deleted: number;
+}
+
+/* ---- user.unlink_person (Users unlink) ----------------------------------- */
+
+export interface UserUnlinkPersonInput {
+  userAccountId: bigint | string;
+}
+export interface UserUnlinkPersonOutput {
+  deleted: boolean;
+}
+
+/* ---- card_type.select (edge matrix axis) --------------------------------- */
+
+export interface CardTypeRow {
+  id: string;
+  name: string;
+  parent_card_type_id?: string;
+  allow_self_parent: boolean;
+  is_built_in: boolean;
+}
+export interface CardTypeListOutput {
+  rows: CardTypeRow[];
+}
+
+/* ---- flow_step.list / set / delete (transition editor) ------------------- */
+
+export interface FlowStepRow {
+  id: string;
+  flow_id: string;
+  from_card_id: string;
+  to_card_id: string;
+  label: string;
+  requires_role_id: string;
+  requires_role_name: string;
+  sort_order: number;
+}
+export interface FlowStepListInput {
+  flowId: bigint | string;
+}
+export interface FlowStepListOutput {
+  rows: FlowStepRow[];
+}
+
+export interface FlowStepSetInput {
+  /** Omit / 0 to insert; >0 updates by id. */
+  id?: bigint | string;
+  flowId: bigint | string;
+  fromCardId: bigint | string;
+  toCardId: bigint | string;
+  label: string;
+  requiresRoleId?: bigint | string;
+  sortOrder?: number;
+}
+export interface FlowStepSetOutput {
+  id: string;
+}
+
+export interface FlowStepDeleteInput {
+  flowStepId: bigint | string;
+}
+export interface FlowStepDeleteOutput {
+  ok: boolean;
+  deleted: number;
+}
+
+/* ---- flow.preview_delete / flow.delete (flow delete guard) --------------- */
+
+export interface FlowPreviewDeleteInput {
+  flowId: bigint | string;
+}
+export interface FlowPreviewDeleteOutput {
+  flow_id: string;
+  flow_name: string;
+  step_count: number;
+  tasks_currently_in_flow_states: number;
+  tasks_by_phase: { triage: number; active: number; terminal: number };
+  sample_step_labels: string[];
+}
+
+export interface FlowDeleteInput {
+  flowId: bigint | string;
+}
+export interface FlowStepBlocker {
+  flow_step_id: string;
+  label: string;
+}
+export interface FlowDeleteOutput {
+  ok: boolean;
+  deleted: number;
+}
+
+/* ---- edge.insert / edge.delete (attribute edge matrix) ------------------- */
+
+export interface EdgeInsertInput {
+  attributeDefId: bigint | string;
+  cardTypeId: bigint | string;
+  isRequired?: boolean;
+  ordering?: number;
+}
+export interface EdgeInsertOutput {
+  ok: boolean;
+}
+export interface EdgeDeleteInput {
+  attributeDefId: bigint | string;
+  cardTypeId: bigint | string;
+}
+export interface EdgeDeleteOutput {
+  ok: boolean;
+  /** >0 when the delete was soft-refused (attribute_value rows still in use). */
+  usageCount?: number;
+}
+
+/* ---- attribute_def.insert (create attribute_def) ------------------------- */
+
+export interface AttributeDefBindInput {
+  cardTypeId: bigint | string;
+  isRequired?: boolean;
+  ordering?: number;
+}
+export interface AttributeDefInsertInput {
+  name: string;
+  valueType: string;
+  bindTo?: AttributeDefBindInput[];
+}
+export interface AttributeDefInsertOutput {
+  id: string;
+}
+
+/* ---- comm_channel.set (Comm Channels config + write-only passwords) ------ */
+
+/**
+ * The comm_channel.set wire payload. Secret fields use the OMIT-vs-CLEAR
+ * distinction the server reads: a missing key preserves the stored cipher
+ * (`imap_password === undefined` → omit), a present empty string clears it.
+ * The screen only ever omits — passwords are never echoed back, so the form
+ * field starts blank and a field is sent ONLY when the user typed a new value.
+ */
+export interface CommChannelSetInput {
+  /** 0 / omitted → insert; >0 → update by id. */
+  id?: bigint | string;
+  projectId: bigint | string;
+  name: string;
+  channelType: string;
+  imapHost?: string;
+  imapPort?: number;
+  imapUsername?: string;
+  /** Write-only — omit to preserve the stored value (never echoed on list). */
+  imapPassword?: string;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpUsername?: string;
+  /** Write-only — omit to preserve the stored value. */
+  smtpPassword?: string;
+  fromAddress?: string;
+  intakeStatusId?: bigint | string;
+  channelStatus?: string;
+}
+export interface CommChannelSetOutput {
+  channelId: string;
+}
+
+/* ---- activity_sink.set (Activity Sinks config + secret + filter) --------- */
+
+export interface ActivitySinkSetInput {
+  id?: bigint | string;
+  projectId: bigint | string;
+  name: string;
+  sinkKind: string;
+  msgraphTenantId?: string;
+  msgraphClientId?: string;
+  /** Write-only — omit to preserve the stored value (never echoed on list). */
+  msgraphClientSecret?: string;
+  msgraphTeamId?: string;
+  msgraphChannelId?: string;
+  /** The activity-filter predicate JSON string ('' → match every row). */
+  activityFilter?: string;
+  channelStatus?: string;
+}
+export interface ActivitySinkSetOutput {
+  sinkId: string;
+}
+
+/* ---- agent.create / agent.delete (Agents) -------------------------------- */
+
+export interface AgentCreateInput {
+  displayName: string;
+}
+export interface AgentCreateOutput {
+  userId: string;
+}
+export interface AgentDeleteInput {
+  userId: bigint | string;
+}
+export interface AgentDeleteOutput {
+  ok: boolean;
+  deleted: number;
+}
+
+/* ---- user_token.list / create / revoke (Agent tokens) -------------------- */
+
+export interface UserTokenRow {
+  label: string;
+  created_at: string;
+  last_used_at: string;
+  expires_at?: string;
+  revoked_at?: string;
+}
+export interface UserTokenListInput {
+  userId: bigint | string;
+}
+export interface UserTokenListOutput {
+  rows: UserTokenRow[];
+}
+export interface UserTokenCreateInput {
+  userId: bigint | string;
+  label: string;
+  expiresAt?: string;
+}
+export interface UserTokenCreateOutput {
+  /** The opaque secret — surfaced ONCE on this call; the server can't recover it. */
+  token: string;
+  label: string;
+}
+export interface UserTokenRevokeInput {
+  userId: bigint | string;
+  label: string;
+}
+export interface UserTokenRevokeOutput {
+  ok: boolean;
+  deleted: number;
+}
+
+/* ---- role_mapping.list / set / delete (Roles claim→role mapping) --------- */
+
+export interface RoleMappingRow {
+  claim_value: string;
+  role_id: string;
+  role_name: string;
+}
+export interface RoleMappingListOutput {
+  rows: RoleMappingRow[];
+}
+export interface RoleMappingSetInput {
+  claimValue: string;
+  roleName: string;
+}
+export interface RoleMappingSetOutput {
+  ok: boolean;
+}
+export interface RoleMappingDeleteInput {
+  claimValue: string;
+}
+export interface RoleMappingDeleteOutput {
+  ok: boolean;
+  deleted: number;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Decode helpers.                                                             */
 /* -------------------------------------------------------------------------- */
@@ -204,6 +534,18 @@ function asStrOpt(v: unknown): string | undefined {
 }
 function asBool(v: unknown): boolean {
   return v === true;
+}
+/** Coerce a wire id (bigint after revival, or number/string) to bigint. */
+function asId(v: unknown): bigint {
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'number' && Number.isInteger(v)) return BigInt(v);
+  if (typeof v === 'string' && /^-?\d+$/.test(v)) return BigInt(v);
+  return 0n;
+}
+function asNum(v: unknown): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string' && v !== '' && Number.isFinite(Number(v))) return Number(v);
+  return 0;
 }
 function asNumOpt(v: unknown): number | undefined {
   if (typeof v === 'number') return v;
@@ -350,6 +692,52 @@ function decodeCommLogRow(j: Record<string, unknown>): CommLogRow {
   return out;
 }
 
+function decodeCardTypeRow(j: Record<string, unknown>): CardTypeRow {
+  const out: CardTypeRow = {
+    id: asStr(j['id']),
+    name: asStr(j['name']),
+    allow_self_parent: asBool(j['allow_self_parent']),
+    is_built_in: asBool(j['is_built_in']),
+  };
+  const p = asStrOpt(j['parent_card_type_id']);
+  if (p !== undefined) out.parent_card_type_id = p;
+  return out;
+}
+
+function decodeUserTokenRow(j: Record<string, unknown>): UserTokenRow {
+  const out: UserTokenRow = {
+    label: asStr(j['label']),
+    created_at: asStr(j['created_at']),
+    last_used_at: asStr(j['last_used_at']),
+  };
+  const exp = asStrOpt(j['expires_at']);
+  if (exp !== undefined) out.expires_at = exp;
+  const rev = asStrOpt(j['revoked_at']);
+  if (rev !== undefined) out.revoked_at = rev;
+  return out;
+}
+
+function decodeRoleMappingRow(j: Record<string, unknown>): RoleMappingRow {
+  return {
+    claim_value: asStr(j['claim_value']),
+    role_id: asStr(j['role_id']),
+    role_name: asStr(j['role_name']),
+  };
+}
+
+function decodeFlowStepRow(j: Record<string, unknown>): FlowStepRow {
+  return {
+    id: asStr(j['id']),
+    flow_id: asStr(j['flow_id']),
+    from_card_id: asStr(j['from_card_id']),
+    to_card_id: asStr(j['to_card_id']),
+    label: asStr(j['label']),
+    requires_role_id: asStr(j['requires_role_id']),
+    requires_role_name: asStr(j['requires_role_name']),
+    sort_order: asNum(j['sort_order']),
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Registration.                                                               */
 /* -------------------------------------------------------------------------- */
@@ -370,13 +758,18 @@ export function registerAdminSpecs(api: Api): void {
     }),
   });
 
-  api.define<{ displayName?: string; isAgent?: boolean }, UserListOutput>({
+  api.define<{ displayName?: string; isAgent?: boolean; parentUserId?: bigint | string }, UserListOutput>({
     endpoint: 'user',
     action: 'select',
     encode: (i) => {
       const m: Record<string, unknown> = {};
       if (i.displayName !== undefined) m['display_name'] = i.displayName;
       if (i.isAgent !== undefined) m['is_agent'] = i.isAgent;
+      // Scope to a parent user's agents (the Inbox delegate picker passes the
+      // signed-in user's id; the server filters user_account.parent_user_id).
+      if (i.parentUserId !== undefined && i.parentUserId !== null && String(i.parentUserId) !== '') {
+        m['parent_user_id'] = i.parentUserId;
+      }
       return m;
     },
     decode: (raw): UserListOutput => ({
@@ -469,4 +862,408 @@ export function registerAdminSpecs(api: Api): void {
       rows: asArray(asObj(raw)['rows']).map((r) => decodeCommLogRow(asObj(r))),
     }),
   });
+
+  /* ---- Write specs (create / role / unlink). Idempotent-by-presence so a
+   *      double-register at boot is a no-op rather than a throw. ---- */
+
+  // person.create — Contacts create. The tier (contact/assignee/user) rides on
+  // the wire verbatim; the 'user' tier provisions a user_account server-side
+  // (email required there). bigint ids on the wire revive via asId.
+  if (!api.registry.has({ endpoint: 'person', action: 'create' })) {
+    api.define<PersonCreateInput, PersonCreateOutput>({
+      endpoint: 'person',
+      action: 'create',
+      encode: (i) => {
+        const m: Record<string, unknown> = { title: i.title, tier: i.tier };
+        if (i.email !== undefined && i.email !== '') m['email'] = i.email;
+        return m;
+      },
+      decode: (raw): PersonCreateOutput => {
+        const j = asObj(raw);
+        return {
+          personCardId: asId(j['person_card_id']),
+          userAccountId: asId(j['user_account_id']),
+        };
+      },
+    });
+  }
+
+  // user_role.set — Users role assign (optionally project-scoped).
+  if (!api.registry.has({ endpoint: 'user_role', action: 'set' })) {
+    api.define<UserRoleSetInput, UserRoleSetOutput>({
+      endpoint: 'user_role',
+      action: 'set',
+      encode: (i) => {
+        const m: Record<string, unknown> = { user_id: i.userId, role_name: i.roleName };
+        // An empty/blank scope (the optional scope field left blank) → a global
+        // grant: omit the key entirely rather than send '' (the server NULLIFs
+        // an empty string, but omitting keeps the wire honest).
+        if (i.scopeProjectId !== undefined && String(i.scopeProjectId) !== '') {
+          m['scope_project_id'] = i.scopeProjectId;
+        }
+        return m;
+      },
+      decode: (raw): UserRoleSetOutput => {
+        const j = asObj(raw);
+        return { ok: j['ok'] === true, userRoleId: asId(j['user_role_id']) };
+      },
+    });
+  }
+
+  // user_role.revoke — Users per-assigned-role Revoke (scope must match the
+  // grant: NULL clears the global grant, a project id clears that scoped one).
+  if (!api.registry.has({ endpoint: 'user_role', action: 'revoke' })) {
+    api.define<UserRoleRevokeInput, UserRoleRevokeOutput>({
+      endpoint: 'user_role',
+      action: 'revoke',
+      encode: (i) => {
+        const m: Record<string, unknown> = { user_id: i.userId, role_name: i.roleName };
+        if (i.scopeProjectId !== undefined && String(i.scopeProjectId) !== '') {
+          m['scope_project_id'] = i.scopeProjectId;
+        }
+        return m;
+      },
+      decode: (raw): UserRoleRevokeOutput => {
+        const j = asObj(raw);
+        return { ok: j['ok'] === true, deleted: asNum(j['deleted']) };
+      },
+    });
+  }
+
+  // user.unlink_person — Users unlink the linked person card. Idempotent
+  // server-side (an absent link returns deleted=false, not an error).
+  if (!api.registry.has({ endpoint: 'user', action: 'unlink_person' })) {
+    api.define<UserUnlinkPersonInput, UserUnlinkPersonOutput>({
+      endpoint: 'user',
+      action: 'unlink_person',
+      encode: (i) => ({ user_account_id: i.userAccountId }),
+      decode: (raw): UserUnlinkPersonOutput => ({ deleted: asObj(raw)['deleted'] === true }),
+    });
+  }
+
+  /* ---- Nested-editor specs (flow-step transitions, edge matrix, defs). ---- */
+
+  // card_type.select — the edge matrix axis (every card_type). Global reference
+  // data; no input fields.
+  if (!api.registry.has({ endpoint: 'card_type', action: 'select' })) {
+    api.define<Record<string, never>, CardTypeListOutput>({
+      endpoint: 'card_type',
+      action: 'select',
+      encode: () => ({}),
+      decode: (raw): CardTypeListOutput => ({
+        rows: asArray(asObj(raw)['rows']).map((r) => decodeCardTypeRow(asObj(r))),
+      }),
+    });
+  }
+
+  // flow_step.list — the selected flow's transition rows (grouped by `from`
+  // client-side). flow_id REQUIRED.
+  if (!api.registry.has({ endpoint: 'flow_step', action: 'list' })) {
+    api.define<FlowStepListInput, FlowStepListOutput>({
+      endpoint: 'flow_step',
+      action: 'list',
+      encode: (i) => ({ flow_id: i.flowId }),
+      decode: (raw): FlowStepListOutput => ({
+        rows: asArray(asObj(raw)['rows']).map((r) => decodeFlowStepRow(asObj(r))),
+      }),
+    });
+  }
+
+  // flow_step.set — upsert one transition (id omitted / 0 = insert). A 0
+  // requires_role_id / empty scope means "any authenticated user"; omit it.
+  if (!api.registry.has({ endpoint: 'flow_step', action: 'set' })) {
+    api.define<FlowStepSetInput, FlowStepSetOutput>({
+      endpoint: 'flow_step',
+      action: 'set',
+      encode: (i) => {
+        const m: Record<string, unknown> = {
+          flow_id: i.flowId,
+          from_card_id: i.fromCardId,
+          to_card_id: i.toCardId,
+          label: i.label,
+          sort_order: i.sortOrder ?? 0,
+        };
+        if (i.id !== undefined && String(i.id) !== '' && String(i.id) !== '0') m['id'] = i.id;
+        if (i.requiresRoleId !== undefined && String(i.requiresRoleId) !== '' && String(i.requiresRoleId) !== '0') {
+          m['requires_role_id'] = i.requiresRoleId;
+        }
+        return m;
+      },
+      decode: (raw): FlowStepSetOutput => ({ id: asStr(asObj(raw)['id']) }),
+    });
+  }
+
+  // flow_step.delete — remove one transition by id.
+  if (!api.registry.has({ endpoint: 'flow_step', action: 'delete' })) {
+    api.define<FlowStepDeleteInput, FlowStepDeleteOutput>({
+      endpoint: 'flow_step',
+      action: 'delete',
+      encode: (i) => ({ flow_step_id: i.flowStepId }),
+      decode: (raw): FlowStepDeleteOutput => {
+        const j = asObj(raw);
+        return { ok: j['ok'] === true, deleted: asNum(j['deleted']) };
+      },
+    });
+  }
+
+  // flow.preview_delete — read-shaped dry run for the flow-delete guard. Returns
+  // the step count + affected-task counts + sample labels.
+  if (!api.registry.has({ endpoint: 'flow', action: 'preview_delete' })) {
+    api.define<FlowPreviewDeleteInput, FlowPreviewDeleteOutput>({
+      endpoint: 'flow',
+      action: 'preview_delete',
+      encode: (i) => ({ flow_id: i.flowId }),
+      decode: (raw): FlowPreviewDeleteOutput => {
+        const j = asObj(raw);
+        const ph = asObj(j['tasks_by_phase']);
+        return {
+          flow_id: asStr(j['flow_id']),
+          flow_name: asStr(j['flow_name']),
+          step_count: asNum(j['step_count']),
+          tasks_currently_in_flow_states: asNum(j['tasks_currently_in_flow_states']),
+          tasks_by_phase: {
+            triage: asNum(ph['triage']),
+            active: asNum(ph['active']),
+            terminal: asNum(ph['terminal']),
+          },
+          sample_step_labels: asArray(j['sample_step_labels']).map((s) => asStr(s)),
+        };
+      },
+    });
+  }
+
+  // flow.delete — destructive; the dispatcher copies a `flow_disallowed` row's
+  // blocker payload into the fault's `detail`, so the editor can show them.
+  if (!api.registry.has({ endpoint: 'flow', action: 'delete' })) {
+    api.define<FlowDeleteInput, FlowDeleteOutput>({
+      endpoint: 'flow',
+      action: 'delete',
+      encode: (i) => ({ flow_id: i.flowId }),
+      decode: (raw): FlowDeleteOutput => {
+        const j = asObj(raw);
+        return { ok: j['ok'] === true, deleted: asNum(j['deleted']) };
+      },
+    });
+  }
+
+  // edge.insert — bind an attribute_def to a card_type (idempotent server-side).
+  if (!api.registry.has({ endpoint: 'edge', action: 'insert' })) {
+    api.define<EdgeInsertInput, EdgeInsertOutput>({
+      endpoint: 'edge',
+      action: 'insert',
+      encode: (i) => {
+        const m: Record<string, unknown> = {
+          attribute_def_id: i.attributeDefId,
+          card_type_id: i.cardTypeId,
+        };
+        if (i.isRequired !== undefined) m['is_required'] = i.isRequired;
+        if (i.ordering !== undefined) m['ordering'] = i.ordering;
+        return m;
+      },
+      decode: (raw): EdgeInsertOutput => ({ ok: asObj(raw)['ok'] === true }),
+    });
+  }
+
+  // edge.delete — unbind. A `usage_count` in the (ok=true) result is a SOFT
+  // refusal: attribute_value rows still reference the (card_type, def) pair.
+  if (!api.registry.has({ endpoint: 'edge', action: 'delete' })) {
+    api.define<EdgeDeleteInput, EdgeDeleteOutput>({
+      endpoint: 'edge',
+      action: 'delete',
+      encode: (i) => ({ attribute_def_id: i.attributeDefId, card_type_id: i.cardTypeId }),
+      decode: (raw): EdgeDeleteOutput => {
+        const j = asObj(raw);
+        const out: EdgeDeleteOutput = { ok: j['ok'] === true };
+        const uc = asNumOpt(j['usage_count']);
+        if (uc !== undefined) out.usageCount = uc;
+        return out;
+      },
+    });
+  }
+
+  // attribute_def.insert — create a custom attribute_def with optional initial
+  // edges. is_built_in is always false (only migrations install built-ins).
+  if (!api.registry.has({ endpoint: 'attribute_def', action: 'insert' })) {
+    api.define<AttributeDefInsertInput, AttributeDefInsertOutput>({
+      endpoint: 'attribute_def',
+      action: 'insert',
+      encode: (i) => {
+        const m: Record<string, unknown> = { name: i.name, value_type: i.valueType };
+        if (i.bindTo !== undefined && i.bindTo.length > 0) {
+          m['bind_to'] = i.bindTo.map((b) => {
+            const e: Record<string, unknown> = { card_type_id: b.cardTypeId };
+            if (b.isRequired !== undefined) e['is_required'] = b.isRequired;
+            if (b.ordering !== undefined) e['ordering'] = b.ordering;
+            return e;
+          });
+        }
+        return m;
+      },
+      decode: (raw): AttributeDefInsertOutput => ({ id: asStr(asObj(raw)['id']) }),
+    });
+  }
+
+  /* ---- Comm-channel + activity-sink config writes (write-only secrets). --- */
+
+  // comm_channel.set — Comm Channels config. The password fields ride the
+  // OMIT-vs-CLEAR distinction: a key absent from the JSON preserves the stored
+  // cipher (the screen only ever omits — secrets are never echoed). The encoder
+  // only writes a password key when the input field is a non-undefined string,
+  // so a blank-on-load form that the user never typed into omits it entirely.
+  if (!api.registry.has({ endpoint: 'comm_channel', action: 'set' })) {
+    api.define<CommChannelSetInput, CommChannelSetOutput>({
+      endpoint: 'comm_channel',
+      action: 'set',
+      encode: (i) => {
+        const m: Record<string, unknown> = {
+          project_id: i.projectId,
+          name: i.name,
+          channel_type: i.channelType,
+        };
+        if (i.id !== undefined && String(i.id) !== '' && String(i.id) !== '0') m['id'] = i.id;
+        if (i.imapHost !== undefined) m['imap_host'] = i.imapHost;
+        if (i.imapPort !== undefined) m['imap_port'] = i.imapPort;
+        if (i.imapUsername !== undefined) m['imap_username'] = i.imapUsername;
+        if (i.smtpHost !== undefined) m['smtp_host'] = i.smtpHost;
+        if (i.smtpPort !== undefined) m['smtp_port'] = i.smtpPort;
+        if (i.smtpUsername !== undefined) m['smtp_username'] = i.smtpUsername;
+        if (i.fromAddress !== undefined) m['from_address'] = i.fromAddress;
+        if (i.intakeStatusId !== undefined && String(i.intakeStatusId) !== '' && String(i.intakeStatusId) !== '0') {
+          m['intake_status_id'] = i.intakeStatusId;
+        }
+        if (i.channelStatus !== undefined && i.channelStatus !== '') m['channel_status'] = i.channelStatus;
+        // Secrets: send the key ONLY when the user typed a value. Omitting
+        // (undefined) leaves the stored cipher untouched server-side.
+        if (i.imapPassword !== undefined) m['imap_password'] = i.imapPassword;
+        if (i.smtpPassword !== undefined) m['smtp_password'] = i.smtpPassword;
+        return m;
+      },
+      decode: (raw): CommChannelSetOutput => ({ channelId: asStr(asObj(raw)['channel_id']) }),
+    });
+  }
+
+  // activity_sink.set — Activity Sinks config. Same write-only secret rule for
+  // msgraph_client_secret (omit → preserve), plus the activity_filter JSON.
+  if (!api.registry.has({ endpoint: 'activity_sink', action: 'set' })) {
+    api.define<ActivitySinkSetInput, ActivitySinkSetOutput>({
+      endpoint: 'activity_sink',
+      action: 'set',
+      encode: (i) => {
+        const m: Record<string, unknown> = {
+          project_id: i.projectId,
+          name: i.name,
+          sink_kind: i.sinkKind,
+        };
+        if (i.id !== undefined && String(i.id) !== '' && String(i.id) !== '0') m['id'] = i.id;
+        if (i.msgraphTenantId !== undefined) m['msgraph_tenant_id'] = i.msgraphTenantId;
+        if (i.msgraphClientId !== undefined) m['msgraph_client_id'] = i.msgraphClientId;
+        if (i.msgraphTeamId !== undefined) m['msgraph_team_id'] = i.msgraphTeamId;
+        if (i.msgraphChannelId !== undefined) m['msgraph_channel_id'] = i.msgraphChannelId;
+        if (i.activityFilter !== undefined) m['activity_filter'] = i.activityFilter;
+        if (i.channelStatus !== undefined && i.channelStatus !== '') m['channel_status'] = i.channelStatus;
+        // Write-only secret: send the key only when typed.
+        if (i.msgraphClientSecret !== undefined) m['msgraph_client_secret'] = i.msgraphClientSecret;
+        return m;
+      },
+      decode: (raw): ActivitySinkSetOutput => ({ sinkId: asStr(asObj(raw)['sink_id']) }),
+    });
+  }
+
+  /* ---- Agents: create / delete. ------------------------------------------- */
+
+  if (!api.registry.has({ endpoint: 'agent', action: 'create' })) {
+    api.define<AgentCreateInput, AgentCreateOutput>({
+      endpoint: 'agent',
+      action: 'create',
+      encode: (i) => ({ display_name: i.displayName }),
+      decode: (raw): AgentCreateOutput => ({ userId: asStr(asObj(raw)['user_id']) }),
+    });
+  }
+
+  if (!api.registry.has({ endpoint: 'agent', action: 'delete' })) {
+    api.define<AgentDeleteInput, AgentDeleteOutput>({
+      endpoint: 'agent',
+      action: 'delete',
+      encode: (i) => ({ user_id: i.userId }),
+      decode: (raw): AgentDeleteOutput => {
+        const j = asObj(raw);
+        return { ok: j['ok'] === true, deleted: asNum(j['deleted']) };
+      },
+    });
+  }
+
+  /* ---- Agent tokens: list (labels+timestamps), create (secret once), revoke. */
+
+  if (!api.registry.has({ endpoint: 'user_token', action: 'list' })) {
+    api.define<UserTokenListInput, UserTokenListOutput>({
+      endpoint: 'user_token',
+      action: 'list',
+      encode: (i) => ({ user_id: i.userId }),
+      decode: (raw): UserTokenListOutput => ({
+        rows: asArray(asObj(raw)['rows']).map((r) => decodeUserTokenRow(asObj(r))),
+      }),
+    });
+  }
+
+  if (!api.registry.has({ endpoint: 'user_token', action: 'create' })) {
+    api.define<UserTokenCreateInput, UserTokenCreateOutput>({
+      endpoint: 'user_token',
+      action: 'create',
+      encode: (i) => {
+        const m: Record<string, unknown> = { user_id: i.userId, label: i.label };
+        if (i.expiresAt !== undefined && i.expiresAt !== '') m['expires_at'] = i.expiresAt;
+        return m;
+      },
+      decode: (raw): UserTokenCreateOutput => {
+        const j = asObj(raw);
+        return { token: asStr(j['token']), label: asStr(j['label']) };
+      },
+    });
+  }
+
+  if (!api.registry.has({ endpoint: 'user_token', action: 'revoke' })) {
+    api.define<UserTokenRevokeInput, UserTokenRevokeOutput>({
+      endpoint: 'user_token',
+      action: 'revoke',
+      encode: (i) => ({ user_id: i.userId, label: i.label }),
+      decode: (raw): UserTokenRevokeOutput => {
+        const j = asObj(raw);
+        return { ok: j['ok'] === true, deleted: asNum(j['deleted']) };
+      },
+    });
+  }
+
+  /* ---- Role mappings: list / set / delete (claim_value → role). ----------- */
+
+  if (!api.registry.has({ endpoint: 'role_mapping', action: 'list' })) {
+    api.define<Record<string, never>, RoleMappingListOutput>({
+      endpoint: 'role_mapping',
+      action: 'list',
+      encode: () => ({}),
+      decode: (raw): RoleMappingListOutput => ({
+        rows: asArray(asObj(raw)['rows']).map((r) => decodeRoleMappingRow(asObj(r))),
+      }),
+    });
+  }
+
+  if (!api.registry.has({ endpoint: 'role_mapping', action: 'set' })) {
+    api.define<RoleMappingSetInput, RoleMappingSetOutput>({
+      endpoint: 'role_mapping',
+      action: 'set',
+      encode: (i) => ({ claim_value: i.claimValue, role_name: i.roleName }),
+      decode: (raw): RoleMappingSetOutput => ({ ok: asObj(raw)['ok'] === true }),
+    });
+  }
+
+  if (!api.registry.has({ endpoint: 'role_mapping', action: 'delete' })) {
+    api.define<RoleMappingDeleteInput, RoleMappingDeleteOutput>({
+      endpoint: 'role_mapping',
+      action: 'delete',
+      encode: (i) => ({ claim_value: i.claimValue }),
+      decode: (raw): RoleMappingDeleteOutput => {
+        const j = asObj(raw);
+        return { ok: j['ok'] === true, deleted: asNum(j['deleted']) };
+      },
+    });
+  }
 }

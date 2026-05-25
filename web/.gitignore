@@ -2,3 +2,12 @@ node_modules/
 dist/
 test/.build/
 *.log
+
+# Ad-hoc screenshot/diagnostic harness scratch (agents must not commit these)
+/probe*.mjs
+/shoot.mjs
+/shot.mjs
+/diag*.mjs
+/preview-harness.*
+/preview.html
+.scratch/

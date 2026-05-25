@@ -397,6 +397,89 @@ export function fromWhereLeaves(leaves: CardWherePredicate[]): Predicate {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Quick-chip leaves (top-level `attr in [...]` slots in the root AND)         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The quick-filter chips own one TOP-LEVEL leaf per attribute in the root AND
+ * group of `screen.predicate`. These helpers find / upsert / remove that leaf
+ * WITHOUT disturbing the rest of the tree (the Advanced editor's nested groups,
+ * other attrs' chip leaves, the search leaf, …), so the quick chips and the
+ * Advanced editor edit ONE consistent predicate.
+ *
+ * "Top-level" means: a bare leaf for [attr], or a direct child leaf of a root
+ * AND group whose `attr` matches. Nested-group leaves (inside an OR / NOT the
+ * Advanced editor built) are intentionally NOT touched — those are the Advanced
+ * surface's domain, and a chip only manages the flat AND slot.
+ */
+
+/** A normalised view of the root: the connective + its direct children. */
+interface RootView {
+  /** True when the predicate is already (or normalises to) a top-level AND. */
+  isAnd: boolean;
+  /** The direct children to treat as the flat AND members. */
+  children: Predicate[];
+}
+
+/** Project any predicate into a root-AND view (a bare leaf becomes `[leaf]`). */
+function rootView(p: Predicate | null): RootView {
+  if (p === null) return { isAnd: true, children: [] };
+  if (p.kind === 'leaf') return { isAnd: true, children: [p] };
+  if (p.connective === 'and') return { isAnd: true, children: p.children.slice() };
+  // A top-level OR / NOT — wrap it so a chip leaf ANDs alongside the whole tree.
+  return { isAnd: false, children: [p] };
+}
+
+/** Re-assemble a root view's children into a {@link Predicate} (or null). */
+function fromRootChildren(children: Predicate[]): Predicate | null {
+  if (children.length === 0) return null;
+  if (children.length === 1) return children[0]!;
+  return { kind: 'group', connective: 'and', children };
+}
+
+/**
+ * The TOP-LEVEL leaf for [attr] in [p] (a bare matching leaf, or a direct AND
+ * child leaf), or null. Used by the chips to read their current selection back
+ * out of the shared predicate — so an edit from ANY surface (Advanced, a named
+ * filter, another chip) reflects in the chip's active state.
+ */
+export function topLevelLeafForAttr(p: Predicate | null, attr: string): PredicateLeaf | null {
+  if (p === null) return null;
+  if (p.kind === 'leaf') return p.attr === attr ? p : null;
+  if (p.connective !== 'and') return null;
+  for (const c of p.children) {
+    if (c.kind === 'leaf' && c.attr === attr) return c;
+  }
+  return null;
+}
+
+/**
+ * Replace (or append) the top-level leaf for [newLeaf.attr] in [p]. Any other
+ * top-level leaf for the same attr is dropped first (so a chip owns exactly one
+ * slot); the rest of the tree is preserved verbatim. A non-AND root (OR / NOT)
+ * is wrapped so the new leaf ANDs alongside it. Backward-compatible with the
+ * flat-AND `where[]` shape: a flat-AND input stays flat-AND.
+ */
+export function upsertTopLevelLeaf(p: Predicate | null, newLeaf: PredicateLeaf): Predicate {
+  const { children } = rootView(p);
+  const kept = children.filter((c) => !(c.kind === 'leaf' && c.attr === newLeaf.attr));
+  kept.push(newLeaf);
+  return fromRootChildren(kept) as Predicate; // non-empty: we just pushed one
+}
+
+/**
+ * Drop the top-level leaf for [attr] from [p]. Returns null when the predicate
+ * becomes empty. Nested-group leaves for [attr] are left untouched (Advanced's
+ * domain). Inverse of {@link upsertTopLevelLeaf} for the clear-X / empty pick.
+ */
+export function removeTopLevelLeaf(p: Predicate | null, attr: string): Predicate | null {
+  if (p === null) return null;
+  const { children } = rootView(p);
+  const kept = children.filter((c) => !(c.kind === 'leaf' && c.attr === attr));
+  return fromRootChildren(kept);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Constructor helpers                                                        */
 /* -------------------------------------------------------------------------- */
 

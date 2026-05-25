@@ -1,61 +1,69 @@
 /**
  * Kanban board controls — Kanban + Column + TaskCard.
  *
- * The board groups tasks by an axis attribute (default `milestone_ref`),
- * rendering one Column per axis value-card id plus a trailing `(unset)` column.
- * A TaskCard drags between columns with an OPTIMISTIC move that auto-rolls-back
- * on fault — wired entirely through the declarative data layer (no promises,
- * no `await`, no `call(...)` in any control body).
+ * The board groups tasks by an AXIS attribute the GROUP picker (`screen.group`)
+ * selects: status / component / assignee / milestone. A one-way group-watch
+ * effect resolves the picker's vocabulary to the stored attr via the shared
+ * `groupAttrFromGroupValue` seam (filter/group-axis.ts — the same map the Grid
+ * uses for row grouping) and re-keys the columns by that attr's value-cards plus
+ * a trailing `(unset)` column. The default axis (no GROUP set) stays milestone.
+ *
+ * A TaskCard drags two ways, both OPTIMISTIC (auto-rollback on fault), wired
+ * through the declarative data layer (no promises, no `await`, no `call(...)`):
+ *   - CROSS-COLUMN  re-keys the dragged card's CURRENT axis attribute to the
+ *     target column's value-card id (or null for `(unset)`) via `attribute.update`
+ *     (intent 'moveTask' → SPEC.attributeUpdate). Generalised from the old
+ *     milestone-only move: the axis attr name rides in the intent payload.
+ *   - WITHIN-COLUMN reorders by rewriting `sort_order` across the destination
+ *     cell (planSortRewrite → the minimal `(i+1)*STEP` writes). Each write fires
+ *     one `attribute.update` (intent 'reorderTask'); same-tick fires coalesce
+ *     into ONE `POST /api/v1/batch` and each carries its own optimistic
+ *     sort_order patch so the column re-orders immediately.
  *
  * Data flow (declarative):
- *   - static query `tasks`      → card.select_with_attributes (card_type_name
- *     'task', parent = scope.projectId), result toPath 'kanban.tasks'. Refires
- *     on a `kanban.queryVersion` leaf the board bumps for scope changes AND
- *     filter changes (shared search + the Advanced structured predicate, ANDed
- *     into the query via where[]/tree — same contract the Grid uses).
- *   - static query `milestones` → card.select (card_type_name 'milestone',
- *     parent = scope.projectId), result method 'landMilestones' (which writes
- *     the axis value-card ids to 'kanban.milestones').
- *   - static action `moveTask` (intent 'moveTask') → attribute.update of the
- *     moved card's axis attribute, with an OPTIMISTIC patch that re-buckets the
- *     card in 'kanban.tasks' and an auto-rollback on fault, onError 'top'.
+ *   - static query `tasks`      → card.select_with_attributes (card_type 'task',
+ *     parent = scope.projectId). Refires on a `kanban.queryVersion` leaf the
+ *     board bumps for scope changes AND filter changes (shared search + the
+ *     Advanced structured predicate, ANDed into where[]/tree like the Grid).
+ *   - lookup queries milestones / statuses / components / persons → the axis
+ *     value-cards for each possible GROUP axis, each landing its `{id,label}`
+ *     card list at `kanban.axis.<lookup>`. (milestones also lands at the legacy
+ *     `kanban.milestones` path.)
+ *   - static actions 'moveTask' (cross-column re-key) + 'reorderTask'
+ *     (within-column sort_order), each with an optimistic tasks patch.
  *
- * The render reads `ctx.tree.at('kanban.tasks')` and `…('kanban.milestones')`
- * reactively; drag-drop fires `this.intent('moveTask', {...})`. The DataController
- * owns every async outcome.
+ * The render reads `kanban.tasks` + the active axis's value-card list + the
+ * `kanban.groupVersion` leaf reactively; a GROUP picker change bumps the group
+ * version and re-buckets WITHOUT re-issuing the tasks query.
  *
  * Each column's card list is a recycling `virtualList` (fixed card height). The
- * board re-renders on every tasks change (the optimistic move re-buckets); each
- * board render DISPOSES the prior columns' virtualLists and creates fresh ones,
- * so nothing leaks across re-renders. Drag/drop survives recycling: the
- * dragstart listener is attached ONCE per pooled card node and reads the dragged
- * card id from the node's `data-card-id` — which `update(el, card, i)` sets from
- * the ITEM, never from stale node state (a pooled node is reassigned to a
- * different card on scroll). The drop target stays the column body; the drop
- * resolves the target column key + the in-flight drag id into the declarative
- * `moveTask` intent exactly as before.
+ * board re-renders on tasks / axis / group changes; each render DISPOSES the
+ * prior columns' virtualLists and creates fresh ones, so nothing leaks. Drag/drop
+ * survives recycling: the dragstart listener is attached ONCE per pooled card
+ * node and reads the dragged id from `data-card-id` (set per-fill from the item).
  *
  * Stubbed / deferred (documented):
- *   - Within-column reorder (the sort_order rewrite via planSortRewrite/
- *     computeMoveBatch). The helpers are lifted + unit-tested and ready; the
- *     drag UI here only does cross-column moves for v1.
+ *   - QuickEntryOverlay per-column `+` (disabled with a TODO here).
  *   - Swim lanes (the 2-D group_by_attr axis).
- *   - QuickEntryOverlay per-column `+`, keyboard hjkl card nav.
+ *   - keyboard hjkl card nav.
  */
 
 import { Control, type BaseControlConfig, type ControlContext } from '../core/control.js';
 import type { ActionBinding, QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
+import { navigate, taskUrl } from '../shell/router.js';
 import { SPEC } from './specs.js';
 import {
   bucketByColumn,
   bucketKeyOf,
   columnOrder,
+  planSortRewrite,
   sortByOrder,
   UNSET_KEY,
   type CardWithAttrs,
 } from './kanban-helpers.js';
+import { groupAttrFromGroupValue, type GroupAttr } from '../filter/group-axis.js';
 import type { CardWherePredicate } from '../projects/project-helpers.js';
 import {
   type Predicate,
@@ -73,20 +81,18 @@ import {
  */
 const KANBAN_CARD_HEIGHT = 64;
 
+/** The default axis when no GROUP is picked: group columns by milestone. */
+const DEFAULT_AXIS_ATTR = 'milestone_ref';
+const DEFAULT_AXIS_LOOKUP = 'milestones';
+
 /* -------------------------------------------------------------------------- */
 /* Configs + declaration-merged registry types.                              */
 /* -------------------------------------------------------------------------- */
 
 export interface KanbanConfig extends BaseControlConfig {
   type: 'Kanban';
-  /** The grouping attribute (column axis). Default 'milestone_ref'. */
-  columnAttr?: string;
-  /** card_type to load as columns' value cards. Default 'milestone'. */
-  axisCardType?: string;
   /** Tree path the loaded tasks live at. Default 'kanban.tasks'. */
   tasksPath?: string;
-  /** Tree path the axis value-cards live at. Default 'kanban.milestones'. */
-  milestonesPath?: string;
 }
 
 export interface ColumnConfig extends BaseControlConfig {
@@ -106,7 +112,7 @@ declare module '../core/control.js' {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Axis value-card (a milestone the column is keyed by).                       */
+/* Axis value-card (the value-card a column is keyed by).                      */
 /* -------------------------------------------------------------------------- */
 
 interface AxisCard {
@@ -123,14 +129,21 @@ let draggingCardId: bigint | null = null;
 
 export class Kanban extends Control<KanbanConfig> {
   /**
-   * Default axis (the current demo board groups by milestone). The result tree
-   * paths are fixed at 'kanban.tasks' / 'kanban.milestones' to match the static
-   * binding tables and the landTasks/landMilestones handlers; `columnAttr` /
-   * `axisCardType` remain config-overridable for a future screen-card-driven
-   * board.
+   * The active grouping axis, resolved from the GROUP picker (`screen.group`)
+   * via the shared `groupAttrFromGroupValue` seam. `null` means no GROUP is set
+   * → the board falls back to its default milestone axis. Read through
+   * {@link axisAttr} / {@link axisLookup} so the default is in one place.
    */
-  private get columnAttr(): string {
-    return this.config.columnAttr ?? 'milestone_ref';
+  private axis: GroupAttr | null = null;
+
+  /** The active column attribute (the value the cards are bucketed by). */
+  private get axisAttr(): string {
+    return this.axis?.attr ?? DEFAULT_AXIS_ATTR;
+  }
+
+  /** The lookup-map name whose value-cards key the columns for the active axis. */
+  private get axisLookup(): string {
+    return this.axis?.lookup ?? DEFAULT_AXIS_LOOKUP;
   }
 
   /** The board element (`.kanban__columns`). Held so the drag handlers can
@@ -146,13 +159,14 @@ export class Kanban extends Control<KanbanConfig> {
 
   /**
    * CLASS-STATIC binding table. The instance config is merged on top, so a
-   * screen card could later override paths/axis without a code change.
+   * screen card could later override paths without a code change.
+   *
+   * One tasks query + four axis-value-card lookups (one per possible GROUP
+   * axis). The tasks query refires on a single `kanban.queryVersion` leaf the
+   * board bumps for scope/filter changes; the lookups refire on project switch.
    */
   static override queries: readonly QueryBinding[] = [
     {
-      // Tasks for the in-scope project. Refires on a single `kanban.queryVersion`
-      // leaf the board bumps for project switch AND filter (search + Advanced
-      // predicate) changes — the same one-way query-version pattern the Grid uses.
       name: 'tasks',
       spec: SPEC.selectWithAttributes,
       when: { signal: 'kanban.queryVersion' },
@@ -172,32 +186,57 @@ export class Kanban extends Control<KanbanConfig> {
       result: { method: 'landTasks' },
       onError: 'self',
     },
+    // Axis value-cards, one query per possible GROUP axis. All use
+    // select_with_attributes (NOT card.select) because the lighter read returns
+    // title:null — the column header needs the real `title` attribute. The
+    // board reads only the active axis's list; the others stay loaded so a GROUP
+    // switch re-keys instantly (no extra round-trip).
     {
-      // Axis value-cards (milestones) for the in-scope project. Uses
-      // select_with_attributes (NOT card.select) because the lighter card.select
-      // read returns title:null — the column header needs the real `title`
-      // attribute, which only select_with_attributes carries. (Matches the
-      // Svelte KanbanLayout, which loads every axis value-card with attributes.)
       name: 'milestones',
       spec: SPEC.selectWithAttributes,
       when: { signal: 'scope.projectId' },
-      input: {
-        cardTypeName: { lit: 'milestone' },
-        parentCardId: { from: 'scope.projectId' },
-      },
-      // Same scope guard as tasks: no axis cards until the project resolves.
+      input: { cardTypeName: { lit: 'milestone' }, parentCardId: { from: 'scope.projectId' } },
       skipWhenNull: ['parentCardId'],
       result: { method: 'landMilestones' },
+      onError: 'self',
+    },
+    {
+      name: 'statuses',
+      spec: SPEC.selectWithAttributes,
+      when: { signal: 'scope.projectId' },
+      input: { cardTypeName: { lit: 'status' }, parentCardId: { from: 'scope.projectId' } },
+      skipWhenNull: ['parentCardId'],
+      result: { method: 'landStatuses' },
+      onError: 'self',
+    },
+    {
+      name: 'components',
+      spec: SPEC.selectWithAttributes,
+      when: { signal: 'scope.projectId' },
+      input: { cardTypeName: { lit: 'component' }, parentCardId: { from: 'scope.projectId' } },
+      skipWhenNull: ['parentCardId'],
+      result: { method: 'landComponents' },
+      onError: 'self',
+    },
+    {
+      // person cards are NOT project-scoped (assignees span projects), so this
+      // omits parentCardId — same posture as the Grid's persons lookup.
+      name: 'persons',
+      spec: SPEC.selectWithAttributes,
+      when: { signal: 'scope.projectId' },
+      input: { cardTypeName: { lit: 'person' } },
+      result: { method: 'landPersons' },
       onError: 'self',
     },
   ];
 
   static override actions: readonly ActionBinding[] = [
     {
-      // Optimistic cross-column move. Patch re-buckets the moved card in the
-      // tasks array immediately; the spec fires attribute.update of the axis
-      // attribute; on fault the tree transaction auto-rolls-back and the fault
-      // funnels to the top-level handler.
+      // Optimistic CROSS-COLUMN move. Patch re-buckets the moved card in the
+      // tasks array immediately by setting its AXIS attribute (name + value ride
+      // in the payload — NOT hardcoded to milestone_ref); the spec fires
+      // attribute.update; on fault the tree transaction auto-rolls-back and the
+      // fault funnels to the top-level handler.
       intent: 'moveTask',
       spec: SPEC.attributeUpdate,
       input: {
@@ -220,7 +259,39 @@ export class Kanban extends Control<KanbanConfig> {
       },
       onError: 'top',
     },
+    {
+      // Optimistic WITHIN-COLUMN reorder. ONE per sort_order rewrite the drop
+      // plans (planSortRewrite); fired once per affected card in the same tick
+      // so the dispatcher coalesces them into one batch. Each carries its own
+      // optimistic patch that writes that card's sort_order in kanban.tasks, so
+      // the column re-orders immediately; rollback on fault restores it.
+      intent: 'reorderTask',
+      spec: SPEC.attributeUpdate,
+      input: {
+        cardId: { payload: 'cardId' },
+        attributeName: { lit: 'sort_order' },
+        value: { payload: 'sortOrder' },
+      },
+      optimistic: {
+        path: 'kanban.tasks',
+        patch: (current, payload): CardWithAttrs[] => {
+          const rows = Array.isArray(current) ? (current as CardWithAttrs[]) : [];
+          const p = (payload ?? {}) as { cardId?: bigint; sortOrder?: number };
+          if (p.cardId === undefined || p.sortOrder === undefined) return rows;
+          return rows.map((row) =>
+            row.id === p.cardId
+              ? { ...row, attributes: { ...row.attributes, sort_order: p.sortOrder as number } }
+              : row,
+          );
+        },
+      },
+      onError: 'top',
+    },
   ];
+
+  private get tasksPath(): string[] {
+    return (this.config.tasksPath ?? 'kanban.tasks').split('.');
+  }
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('section');
@@ -231,23 +302,7 @@ export class Kanban extends Control<KanbanConfig> {
   }
 
   protected render(): void {
-    // Named result sinks for the two queries (method-route demonstrates the
-    // decode → tree-write split; landMilestones derives the axis card list).
-    this.handler('landTasks', (out) => {
-      const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
-      this.ctx.tree.at(['kanban', 'tasks']).set(rows);
-    });
-    this.handler('landMilestones', (out) => {
-      const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
-      const axis: AxisCard[] = rows.map((r) => {
-        const t = r.attributes?.['title'];
-        return {
-          id: r.id,
-          label: typeof t === 'string' && t.length > 0 ? t : `#${r.id.toString()}`,
-        };
-      });
-      this.ctx.tree.at(['kanban', 'milestones']).set(axis);
-    });
+    this.registerResultHandlers();
 
     const fault = document.createElement('div');
     fault.className = 'kanban__fault';
@@ -264,15 +319,18 @@ export class Kanban extends Control<KanbanConfig> {
     this.el.append(fault, board);
 
     // Seed the query-driver leaves BEFORE the data layer wires (mount() wires
-    // after render). where/tree start empty; queryVersion starts at 0. Plain
-    // seeds — the Object.is gate makes a re-seed a no-op.
+    // after render). where/tree start empty; queryVersion / groupVersion start
+    // at 0. Plain seeds — the Object.is gate makes a re-seed a no-op.
     this.ctx.tree.at(['kanban', 'where']).set(undefined);
     this.ctx.tree.at(['kanban', 'tree']).set(undefined);
     const versionNode = this.ctx.tree.at(['kanban', 'queryVersion']);
     if (versionNode.peek<number>() === undefined) versionNode.set(0);
+    // groupVersion: a board-only re-render trigger the group-watch bumps so a
+    // GROUP picker change re-keys the columns WITHOUT re-issuing the tasks query.
+    const groupVersionNode = this.ctx.tree.at(['kanban', 'groupVersion']);
+    if (groupVersionNode.peek<number>() === undefined) groupVersionNode.set(0);
 
-    const tasksNode = this.ctx.tree.at(['kanban', 'tasks']);
-    const axisNode = this.ctx.tree.at(['kanban', 'milestones']);
+    const tasksNode = this.ctx.tree.at(this.tasksPath);
 
     // One-way query-version drivers — each reads ONLY the leaf it watches and
     // writes ONLY where/tree/version (never back into a watched dep), so the
@@ -289,6 +347,16 @@ export class Kanban extends Control<KanbanConfig> {
       this.bumpQuery();
     }, 'kanban.filterWatch');
 
+    // GROUP picker → column axis. Reads ONLY the `screen.group` leaf and writes
+    // the axis state + bumps the group version (board re-render trigger). One-way:
+    // never reads back a dep it writes. The board render reads the version leaf,
+    // so re-keying happens with no extra wiring and no tasks re-query.
+    this.effect(() => {
+      const groupValue = this.ctx.tree.at(['screen', 'group']).get<string>() ?? null;
+      this.axis = groupAttrFromGroupValue(groupValue);
+      this.bumpGroup();
+    }, 'kanban.groupWatch');
+
     // Inline self-represented load error (onError: 'self').
     this.effect(() => {
       const f = this.fault.get();
@@ -301,17 +369,60 @@ export class Kanban extends Control<KanbanConfig> {
       fault.textContent = `Failed to load kanban: ${describeFault(f)}`;
     }, 'kanban.fault');
 
-    // ONE effect renders the whole board reactively from the two tree paths.
-    // Re-bucketing on every tasks change is what makes the optimistic move (and
-    // its rollback) re-render the columns with no extra wiring.
+    // ONE effect renders the whole board reactively from the tasks leaf, the
+    // active axis's value-card list, and the group version. Re-bucketing on
+    // every tasks change is what makes the optimistic move/reorder (and their
+    // rollbacks) re-render the columns with no extra wiring; reading the group
+    // version re-keys the columns when the GROUP picker changes.
     this.effect(() => {
       const tasks = (tasksNode.get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
-      const axis = (axisNode.get<AxisCard[]>() ?? []) as AxisCard[];
+      this.ctx.tree.at(['kanban', 'groupVersion']).get(); // re-key on a GROUP change
+      const axis = this.activeAxisCards();
       this.renderBoard(board, tasks, axis);
     }, 'kanban.board');
 
     // Dispose any live column virtualLists when the Kanban itself is torn down.
     this.onDestroy(() => this.disposeColumnLists());
+  }
+
+  /* ----------------------------- result sinks --------------------------- */
+
+  /** Register the decode → tree-write sinks for the tasks + axis lookups. */
+  private registerResultHandlers(): void {
+    this.handler('landTasks', (out) => {
+      const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+      this.ctx.tree.at(this.tasksPath).set(rows);
+    });
+
+    // Each axis lookup lands an AxisCard[] (id + display label) at
+    // kanban.axis.<lookup>. The board reads only the active axis's list.
+    const landAxis = (lookup: string) => (out: unknown) => {
+      const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+      const axis: AxisCard[] = rows.map((r) => ({ id: r.id, label: labelOf(r) }));
+      this.ctx.tree.at(['kanban', 'axis', lookup]).set(axis);
+      // Re-key the columns when a late-landing axis list arrives for the active
+      // axis (the board render reads the group version).
+      this.bumpGroup();
+    };
+
+    // milestones ALSO lands at the legacy `kanban.milestones` path (existing
+    // tests + any external reader), in addition to the unified axis path.
+    this.handler('landMilestones', (out) => {
+      const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+      const axis: AxisCard[] = rows.map((r) => ({ id: r.id, label: labelOf(r) }));
+      this.ctx.tree.at(['kanban', 'milestones']).set(axis);
+      this.ctx.tree.at(['kanban', 'axis', 'milestones']).set(axis);
+      this.bumpGroup();
+    });
+    this.handler('landStatuses', landAxis('statuses'));
+    this.handler('landComponents', landAxis('components'));
+    this.handler('landPersons', landAxis('persons'));
+  }
+
+  /** The value-card list for the ACTIVE axis (peeked — the board render reads
+   *  the group version separately to subscribe to axis switches + late lands). */
+  private activeAxisCards(): AxisCard[] {
+    return (this.ctx.tree.at(['kanban', 'axis', this.axisLookup]).peek<AxisCard[]>() ?? []) as AxisCard[];
   }
 
   /** Dispose + clear the live per-column virtualLists (before a board rebuild
@@ -321,13 +432,13 @@ export class Kanban extends Control<KanbanConfig> {
     this.columnLists = [];
   }
 
-  /** Rebuild the column DOM from the current tasks + axis value-cards. */
+  /** Rebuild the column DOM from the current tasks + the active axis value-cards. */
   private renderBoard(board: HTMLElement, tasks: CardWithAttrs[], axis: AxisCard[]): void {
     // Dispose the prior render's column virtualLists before replacing the DOM
     // they were bound to (replaceChildren below detaches their containers).
     this.disposeColumnLists();
 
-    const attr = this.columnAttr;
+    const attr = this.axisAttr;
     const buckets = bucketByColumn(tasks, attr);
     const order = columnOrder(
       axis.map((a) => a.id),
@@ -363,9 +474,13 @@ export class Kanban extends Control<KanbanConfig> {
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'col__add';
+    add.dataset.kanbanColumnAdd = columnKey;
     add.textContent = '+';
-    add.title = 'Quick-add (not wired in v1)';
-    add.disabled = true;
+    // Per-column quick-add: open the quick-entry overlay prefilled to this
+    // column's axis value so the new task lands here (the `(unset)` column
+    // opens with no lane prefill).
+    add.title = 'Quick-add a task in this column';
+    this.listen(add, 'click', () => this.openQuickEntry(columnKey));
     header.append(labelEl, count, add);
 
     const body = document.createElement('div');
@@ -399,8 +514,8 @@ export class Kanban extends Control<KanbanConfig> {
       this.columnLists.push(vl);
     }
 
-    // The column body is a drop target. On drop we re-bucket the dragged card
-    // into THIS column by firing the declarative move intent.
+    // The column body is a drop target. On drop we distinguish a WITHIN-column
+    // reorder (sort_order rewrite) from a CROSS-column re-key (axis attr).
     this.listen(body, 'dragover', (ev) => {
       ev.preventDefault();
       col.classList.add('col--drop');
@@ -409,7 +524,7 @@ export class Kanban extends Control<KanbanConfig> {
     this.listen(body, 'drop', (ev) => {
       ev.preventDefault();
       col.classList.remove('col--drop');
-      this.onDropInto(columnKey);
+      this.onDropInto(columnKey, body, ev as DragEvent, cards);
     });
 
     col.append(header, body);
@@ -427,6 +542,7 @@ export class Kanban extends Control<KanbanConfig> {
     el.className = 'card';
     el.dataset.kanbanCard = '';
     el.draggable = true;
+    el.tabIndex = 0;
 
     const grip = document.createElement('span');
     grip.className = 'card__grip muted';
@@ -463,6 +579,26 @@ export class Kanban extends Control<KanbanConfig> {
       el.classList.remove('card--dragging');
       this.boardEl?.classList.remove('kanban--dragging');
     });
+
+    // Click / Enter / `o` opens the card's task detail (`/task/:id`). A native
+    // click does not fire after a drag, so this never collides with DnD. The id
+    // is read from `data-card-id` (set per fill) so it is never stale on a
+    // recycled node. navigate() is a one-way History write — cascade-safe.
+    this.listen(el, 'click', () => this.openCard(el));
+    this.listen(el, 'keydown', (ev) => {
+      const k = (ev as KeyboardEvent).key;
+      if (k === 'Enter' || k === 'o') {
+        ev.preventDefault();
+        this.openCard(el);
+      }
+    });
+  }
+
+  /** Navigate into a card's task detail (`/task/:id`), reading the live id. */
+  private openCard(el: HTMLElement): void {
+    const idStr = el.dataset.cardId;
+    if (idStr === undefined || idStr === '') return;
+    navigate(taskUrl(idStr));
   }
 
   /** Swap a pooled card's content for `card` (virtualList `update`). Sets
@@ -476,25 +612,53 @@ export class Kanban extends Control<KanbanConfig> {
   }
 
   /**
-   * Resolve the dragged card + target column key into a declarative move
-   * intent. The axis attribute value is the target column's value-card id
-   * (bigint), or `null` for the `(unset)` column (clears the attribute).
+   * Resolve a drop onto a column. The dragged card's CURRENT axis-attr key tells
+   * us cross-column vs within-column:
+   *   - DIFFERENT column → CROSS-COLUMN re-key: set the axis attribute to the
+   *     target column's value-card id (or null for `(unset)`) via `moveTask`.
+   *   - SAME column      → WITHIN-COLUMN reorder: rewrite `sort_order` across the
+   *     destination cell to place the card at the pointer's slot, firing one
+   *     `reorderTask` per affected card (coalesced into one batch).
+   *
+   * `cards` is THIS render's snapshot of the column's display-ordered cards
+   * (excluding nothing yet); `body` + the drop event give the insertion slot.
    */
-  private onDropInto(targetColumnKey: string): void {
+  private onDropInto(
+    targetColumnKey: string,
+    body: HTMLElement,
+    ev: DragEvent,
+    cards: readonly CardWithAttrs[],
+  ): void {
     const cardId = draggingCardId;
     draggingCardId = null;
     if (cardId === null) return;
 
-    const tasks = (this.ctx.tree.at(['kanban', 'tasks']).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+    const tasks = (this.ctx.tree.at(this.tasksPath).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
     const card = tasks.find((t) => t.id === cardId);
     if (!card) return;
 
-    const attr = this.columnAttr;
+    const attr = this.axisAttr;
     const currentKey = bucketKeyOf(card.attributes[attr]);
-    if (currentKey === targetColumnKey) return; // no-op drop (same column)
 
-    const value: bigint | null = targetColumnKey === UNSET_KEY ? null : BigInt(targetColumnKey);
-    this.intent('moveTask', { cardId, attributeName: attr, value });
+    if (currentKey !== targetColumnKey) {
+      // CROSS-COLUMN: re-key the dragged card's axis attribute.
+      const value: bigint | null = targetColumnKey === UNSET_KEY ? null : BigInt(targetColumnKey);
+      this.intent('moveTask', { cardId, attributeName: attr, value });
+      return;
+    }
+
+    // WITHIN-COLUMN: reorder by rewriting sort_order. The destination stack is
+    // this column's cards with the dragged card excluded; the slot is the
+    // insertion index under the pointer.
+    const destStack = sortByOrder(cards.filter((c) => c.id !== cardId).slice());
+    const slot = dropSlot(body, ev, cardId);
+    const updates = planSortRewrite(destStack, card, slot);
+    // Fire one reorderTask per write IN THE SAME TICK — the dispatcher coalesces
+    // them into a single POST /api/v1/batch, and each carries its own optimistic
+    // sort_order patch so the column re-orders immediately.
+    for (const u of updates) {
+      this.intent('reorderTask', { cardId: u.cardId, sortOrder: u.sortOrder });
+    }
   }
 
   /* ----------------------------- query driver --------------------------- */
@@ -530,10 +694,47 @@ export class Kanban extends Control<KanbanConfig> {
     this.ctx.tree.at(['kanban', 'tree']).set(tree);
   }
 
+  /* ------------------------------ keyboard ------------------------------ */
+
+  /**
+   * Screen-tier hotkeys. `n` opens the global quick-entry overlay scoped to the
+   * current project (raised as the `quickCreateOpen` bus intent the AppShell's
+   * QuickEntry listens for). The per-column `+` raises the same intent with a
+   * lane prefill (see {@link openQuickEntry}).
+   */
+  override hotkeys(): readonly import('../core/hotkeys.js').HotkeyBinding[] {
+    return [
+      { binding: 'n', label: 'New task', run: () => this.openQuickEntry() },
+      ...(this.config.hotkeys ?? []),
+    ];
+  }
+
+  /**
+   * Open the quick-entry overlay. When `columnKey` is given (the column `+`),
+   * prefill the dragged-onto axis value on the CURRENT axis attribute so the new
+   * task lands in that column (the `(unset)` column passes no prefill). The
+   * parent is scoped to the current project by the overlay itself.
+   */
+  private openQuickEntry(columnKey?: string): void {
+    const detail: { prefill?: { laneAttribute?: { name: string; value: unknown } } } = {};
+    if (columnKey !== undefined && columnKey !== UNSET_KEY) {
+      detail.prefill = { laneAttribute: { name: this.axisAttr, value: BigInt(columnKey) } };
+    }
+    this.ctx.bus?.emit('quickCreateOpen', detail);
+  }
+
   /** Bump the tasks-query version leaf so the `{ signal }` trigger refires. A
    *  plain write outside any tracked effect — one-way, cascade-safe. */
   private bumpQuery(): void {
     const node = this.ctx.tree.at(['kanban', 'queryVersion']);
+    node.set((node.peek<number>() ?? 0) + 1);
+  }
+
+  /** Bump the group version leaf so the board render re-keys the columns (GROUP
+   *  change or a late-landing axis list) WITHOUT re-issuing the tasks query.
+   *  One-way, cascade-safe. */
+  private bumpGroup(): void {
+    const node = this.ctx.tree.at(['kanban', 'groupVersion']);
     node.set((node.peek<number>() ?? 0) + 1);
   }
 }
@@ -582,6 +783,44 @@ function titleOf(card: CardWithAttrs): string {
   const t = card.attributes['title'];
   if (typeof t === 'string' && t.length > 0) return t;
   return `Task #${card.id.toString()}`;
+}
+
+/** An axis value-card's display label: its `title` attribute (statuses/persons
+ *  carry their name there too), else `#id`. */
+function labelOf(r: CardWithAttrs): string {
+  const t = r.attributes['title'] ?? r.attributes['name'];
+  return typeof t === 'string' && t.length > 0 ? t : `#${r.id.toString()}`;
+}
+
+/**
+ * Compute the insertion slot for a within-column drop. Walks the column body's
+ * card nodes (excluding the dragged card) and returns the index of the first
+ * card whose vertical midpoint sits BELOW the pointer — i.e. the card the
+ * dropped card should land in front of. Past the last card → the bottom slot.
+ *
+ * Robust to the test DOM shim (which has no real layout): when no node reports
+ * a usable rect, the slot falls back to the bottom of the stack, and a
+ * test-only override (`data-drop-slot` on the body) lets a test drive an exact
+ * insertion index deterministically without faking pointer geometry.
+ */
+function dropSlot(body: HTMLElement, ev: DragEvent, draggedId: bigint): number {
+  // Test seam: an explicit slot on the body wins (the shim can't lay out rects).
+  const forced = body.dataset?.dropSlot;
+  if (forced !== undefined && /^\d+$/.test(forced)) return Number(forced);
+
+  const y = ev.clientY;
+  const nodes = body.querySelectorAll?.('[data-kanban-card]') ?? [];
+  let slot = 0;
+  for (const node of nodes as unknown as HTMLElement[]) {
+    if (node.style?.display === 'none') continue;
+    if (node.dataset?.cardId === draggedId.toString()) continue;
+    const rect = node.getBoundingClientRect?.();
+    if (!rect || (rect.top === 0 && rect.bottom === 0)) continue;
+    const mid = rect.top + rect.height / 2;
+    if (y < mid) return slot;
+    slot += 1;
+  }
+  return slot;
 }
 
 /** Walk a node's descendants for the first with `dataset.role === role`. Works
