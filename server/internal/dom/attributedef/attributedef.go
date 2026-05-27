@@ -70,9 +70,13 @@ type EdgeInput struct {
 
 // InsertInput creates a new attribute_def and seeds initial edges.
 type InsertInput struct {
-	Name      string      `json:"name" mcp:"required,desc=attribute_def name (must be unique)"`
-	ValueType string      `json:"value_type" mcp:"required,desc=value type label (text, bool, number, date, card_ref, card_ref[])"`
-	BindTo    []EdgeInput `json:"bind_to,omitempty" mcp:"desc=optional initial edges to seed"`
+	Name      string `json:"name" mcp:"required,desc=attribute_def name (must be unique)"`
+	ValueType string `json:"value_type" mcp:"required,desc=value type label (text, bool, number, date, card_ref, card_ref[])"`
+	// TargetCardType, for card_ref / card_ref[] value types, names the card_type
+	// whose cards are the valid values (e.g. milestone / component). Ignored for
+	// scalar value types.
+	TargetCardType string      `json:"target_card_type,omitempty" mcp:"desc=for card_ref value types, the target card_type name (whose cards are valid values)"`
+	BindTo         []EdgeInput `json:"bind_to,omitempty" mcp:"desc=optional initial edges to seed"`
 }
 
 // InsertOutput surfaces the new id.

@@ -254,6 +254,9 @@ export interface MasterDetailConfig extends BaseControlConfig {
     rowHeight?: number;
     /** Client-side substring filter config. */
     search?: { field: string; placeholder?: string };
+    /** Client-side row predicate: keep only rows where it returns true (applied
+     *  before the search filter). E.g. the Attributes screen hides built-ins. */
+    rowFilter?: (raw: Record<string, unknown>) => boolean;
     /**
      * Row field accessors (dotted, into the row's `raw`). `badge` is either a
      * dotted field (rendered verbatim) or `{ field, labels }` — a data-driven
@@ -640,6 +643,17 @@ export class MasterDetail extends Control<MasterDetailConfig> {
   private get searchPath(): string[] {
     return `${this.config.scopeKey}.search`.split('.');
   }
+
+  /** Visible list rows: the config `rowFilter` (if any), then the search needle. */
+  private visibleItems(
+    all: MasterDetailItem[],
+    searchField: string | undefined,
+    needle: string,
+  ): MasterDetailItem[] {
+    const rf = this.config.list.rowFilter;
+    const kept = rf ? all.filter((it) => rf(it.raw)) : all;
+    return searchField ? filterItems(kept, searchField, needle) : kept;
+  }
   private get predicatePath(): string[] {
     return `${this.config.scopeKey}.predicate`.split('.');
   }
@@ -855,7 +869,7 @@ export class MasterDetail extends Control<MasterDetailConfig> {
         const all = (itemsNode.get<MasterDetailItem[]>() ?? []) as MasterDetailItem[];
         const needle = searchNode.get<string>() ?? '';
         selectedNode.get(); // subscribe so a selection move re-renders the window
-        return searchField ? filterItems(all, searchField, needle) : all;
+        return this.visibleItems(all, searchField, needle);
       },
       // NO key: a row's selected class can change while its id + slot stay
       // fixed, so update() must run for every visible slot on each render.
@@ -869,7 +883,7 @@ export class MasterDetail extends Control<MasterDetailConfig> {
     this.effect(() => {
       const all = (itemsNode.get<MasterDetailItem[]>() ?? []) as MasterDetailItem[];
       const needle = searchNode.get<string>() ?? '';
-      const has = (searchField ? filterItems(all, searchField, needle) : all).length > 0;
+      const has = this.visibleItems(all, searchField, needle).length > 0;
       empty.style.display = has ? 'none' : '';
       list.style.display = has ? '' : 'none';
     }, 'masterdetail.empty');

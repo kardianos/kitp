@@ -31,6 +31,8 @@ DECLARE
     _raw jsonb;
     _name text;
     _value_type text;
+    _target_name text;
+    _target_id bigint;
     _bind_to jsonb;
     _bind_el jsonb;
     _new_id bigint;
@@ -43,6 +45,7 @@ BEGIN
     LOOP
         _name := _raw->>'name';
         _value_type := _raw->>'value_type';
+        _target_name := _raw->>'target_card_type';
         _bind_to := _raw->'bind_to';
 
         IF _name IS NULL OR _name = '' OR _value_type IS NULL OR _value_type = '' THEN
@@ -50,6 +53,15 @@ BEGIN
                 'attribute_def.insert: name and value_type are required'::text,
                 NULL::jsonb;
             CONTINUE;
+        END IF;
+
+        -- Resolve the picker target (card_ref value types only). An unknown
+        -- target name leaves it NULL — a card_ref with no target is valid (it
+        -- references any card), and scalar types never carry a target.
+        _target_id := NULL;
+        IF _value_type IN ('card_ref', 'card_ref[]')
+           AND _target_name IS NOT NULL AND _target_name <> '' THEN
+            SELECT id INTO _target_id FROM card_type WHERE name = _target_name;
         END IF;
 
         -- bind_to[] entries must each carry a non-zero card_type_id.
@@ -76,9 +88,9 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 2. Insert the def row.
-        INSERT INTO attribute_def (name, value_type, is_built_in)
-        VALUES (_name, _value_type, false)
+        -- 2. Insert the def row (with the resolved picker target, if any).
+        INSERT INTO attribute_def (name, value_type, is_built_in, target_card_type_id)
+        VALUES (_name, _value_type, false, _target_id)
         RETURNING id INTO _new_id;
 
         -- 3. Seed bind_to[] edges (if any).

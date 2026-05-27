@@ -470,45 +470,56 @@ const ATTR_VALUE_TYPE_OPTIONS = [
  */
 export const ATTRIBUTES_SCREEN: MasterDetailConfig = {
   type: 'MasterDetail',
-  title: 'Attributes',
+  title: 'Custom attributes',
   scopeKey: 'admin.attributes',
+  // Card-type options for the "picker" target select in the create dialog.
+  prefetch: [
+    { spec: 'card_type.select', landAt: 'admin.attributes.cardTypeOptions', valueField: 'name', labelField: 'name' },
+  ],
   list: {
     spec: 'attribute_def.select',
     rowHeight: 56,
-    search: { field: 'name', placeholder: 'Search attributes…' },
+    // Hide built-in attributes (title/status/…): they're structural and just
+    // make this list confusing. Only user-defined CUSTOM attributes show here.
+    rowFilter: (raw) => raw['is_built_in'] !== true,
+    search: { field: 'name', placeholder: 'Search custom attributes…' },
     row: { title: 'name', subtitle: 'value_type', badge: 'target_card_type_name' },
   },
   detail: {
     titleField: 'name',
-    empty: 'Select an attribute to bind / unbind it to card types.',
+    empty: 'Select a custom attribute to bind / unbind it to card types.',
     fields: [
       { name: 'name', label: 'Name', kind: 'readonly' },
       { name: 'value_type', label: 'Value type', kind: 'readonly' },
       { name: 'target_card_type_name', label: 'Target card type', kind: 'readonly' },
-      { name: 'is_built_in', label: 'Built-in', kind: 'readonly' },
     ],
     // Nested bind/unbind matrix over card_types (required + ordering per edge).
     nested: { kind: 'edgeMatrix' },
   },
-  // Create a custom attribute_def (name + value_type). The id lands in the
-  // result; promote the optimistic row to it. Binds happen via the matrix.
+  // Create a custom attribute: a SCALAR (text/number/date/bool) or a PICKER
+  // (card_ref / card_ref[] → a target card type, like milestone / component).
+  // The target is only used for the card_ref value types (the server ignores it
+  // otherwise). Binds (which card types USE the attribute) happen via the matrix.
   create: {
     spec: 'attribute_def.insert',
-    title: 'New attribute',
+    title: 'New custom attribute',
     buttonLabel: '+ New',
     fields: [
       { name: 'name', label: 'Name', kind: 'text', required: true, placeholder: 'attribute name' },
       { name: 'value_type', label: 'Value type', kind: 'select', required: true, options: ATTR_VALUE_TYPE_OPTIONS },
+      { name: 'target_card_type', label: 'Picker target (card_ref only)', kind: 'select', options: { fromPath: 'admin.attributes.cardTypeOptions' } },
     ],
     input: {
       name: { payload: 'name' },
       valueType: { payload: 'value_type' },
+      targetCardType: { payload: 'target_card_type' },
     },
     // attribute_def.select rows are flat (name/value_type at the top level), so
     // the optimistic row is flat too — not card-shaped.
     optimisticRaw: (p) => ({
       name: typeof p['name'] === 'string' ? p['name'] : '',
       value_type: typeof p['value_type'] === 'string' ? p['value_type'] : '',
+      target_card_type_name: typeof p['target_card_type'] === 'string' ? p['target_card_type'] : '',
       is_built_in: false,
       bound_to: [],
     }),

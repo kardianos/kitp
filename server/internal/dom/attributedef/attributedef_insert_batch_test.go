@@ -224,3 +224,39 @@ func TestAttributeDefInsertBatch_Validation(t *testing.T) {
 		t.Errorf("bad_bind leaked: count=%d", n)
 	}
 }
+
+// TestAttributeDefInsertBatch_PickerTarget creates a card_ref attribute with a
+// target card type (#13) and verifies target_card_type_id is resolved + set.
+func TestAttributeDefInsertBatch_PickerTarget(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_ad_insert_picker_target")
+	taskID := cardTypeID(t, pool, "task")
+	milestoneID := cardTypeID(t, pool, "milestone")
+
+	rows := callSQLFunc(t, pool, "attribute_def_insert_batch", auth.SystemUserID, []map[string]any{
+		{
+			"name":             "sprint",
+			"value_type":       "card_ref",
+			"target_card_type": "milestone",
+			"bind_to":          []map[string]any{{"card_type_id": strconv.FormatInt(taskID, 10)}},
+		},
+	})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("want 1 ok row; got %+v", rows)
+	}
+	var got struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rows[0].Result, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	newID, _ := strconv.ParseInt(got.ID, 10, 64)
+
+	var targetID *int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT target_card_type_id FROM attribute_def WHERE id = $1`, newID).Scan(&targetID); err != nil {
+		t.Fatalf("target lookup: %v", err)
+	}
+	if targetID == nil || *targetID != milestoneID {
+		t.Fatalf("target_card_type_id = %v, want %d (milestone)", targetID, milestoneID)
+	}
+}

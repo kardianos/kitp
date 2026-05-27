@@ -59,7 +59,10 @@ function rowsFor(key, data) {
       // Agents screen passes is_agent:true.
       return [{ id: '3001', display_name: 'bot-1', parent_user_id: '2001', is_agent: true }];
     case 'attribute_def.select':
-      return [{ id: '40', name: 'status', value_type: 'card_ref', target_card_type_name: 'status', is_built_in: true, bound_to: [{ card_type_id: '5', card_type_name: 'task', is_required: false, ordering: 1 }] }];
+      return [
+        { id: '40', name: 'status', value_type: 'card_ref', target_card_type_name: 'status', is_built_in: true, bound_to: [{ card_type_id: '5', card_type_name: 'task', is_required: false, ordering: 1 }] },
+        { id: '41', name: 'severity', value_type: 'text', is_built_in: false, bound_to: [] },
+      ];
     case 'flow.list':
       return [{ id: '50', name: 'Default flow', doc: 'task status workflow', attribute_def_id: '40', attribute_def_name: 'status', scope_card_id: PROJECT_ID, default_create_status_id: '60', created_at: '2026-01-01T00:00:00Z' }];
     case 'role.list':
@@ -166,7 +169,7 @@ for (const [view, itemsPath] of Object.entries(SCREEN_SCOPE)) {
 
     const items = tree.at(itemsPath).peek();
     assert.ok(Array.isArray(items), `${view} items leaf is an array`);
-    assert.equal(items.length, 1, `${view} landed exactly the one sample row`);
+    assert.ok(items.length >= 1, `${view} landed at least the sample row`);
     const it = items[0];
     assert.ok(typeof it.id === 'string' && it.id.length > 0, `${view} row id normalised to a string`);
     assert.ok(it.raw && typeof it.raw === 'object', `${view} row carries a raw object`);
@@ -267,6 +270,26 @@ test('Attributes: the detail mounts the edge-matrix nested editor (replacing bou
   // Workflows + Screens carry their nested editors too.
   assert.deepEqual(M.adminScreenConfig('workflows').detail.nested, { kind: 'flowSteps' });
   assert.deepEqual(M.adminScreenConfig('screens').detail.nested, { kind: 'screenFilters' });
+});
+
+test('Custom attributes: hides built-ins (rowFilter) + offers a picker target (#13)', async () => {
+  const { dispatcher, api } = bootApi();
+  const { ctrl, cfg } = mountView(api, 'attributes');
+  await settle(dispatcher);
+
+  // Reframed + a picker-target field wired into the create input.
+  assert.equal(cfg.title, 'Custom attributes');
+  assert.ok(cfg.create.fields.some((f) => f.name === 'target_card_type'), 'create offers a picker target');
+  assert.deepEqual(cfg.create.input.targetCardType, { payload: 'target_card_type' });
+
+  // Behavior: only the CUSTOM attribute (41 severity) renders; the built-in
+  // (40 status) is hidden by the rowFilter. (Filter to visible pooled rows.)
+  const ids = ctrl.el
+    .querySelectorAll('[data-md-row]')
+    .filter((r) => r.style.display !== 'none')
+    .map((r) => r.dataset.mdId);
+  assert.ok(ids.includes('41'), 'custom attribute shows');
+  assert.ok(!ids.includes('40'), 'built-in attribute hidden');
 });
 
 test('Screens admin: list + create are scoped to the active project (#10)', () => {

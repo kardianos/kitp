@@ -410,6 +410,9 @@ export interface AttributeDefBindInput {
 export interface AttributeDefInsertInput {
   name: string;
   valueType: string;
+  /** For card_ref / card_ref[] value types: the target card_type NAME whose
+   *  cards are the valid values (e.g. 'milestone'). Ignored for scalar types. */
+  targetCardType?: string;
   bindTo?: AttributeDefBindInput[];
 }
 export interface AttributeDefInsertOutput {
@@ -1167,6 +1170,10 @@ export function registerAdminSpecs(api: Api): void {
       action: 'insert',
       encode: (i) => {
         const m: Record<string, unknown> = { name: i.name, value_type: i.valueType };
+        // Only meaningful for card_ref value types; harmless (server-ignored) otherwise.
+        if (i.targetCardType !== undefined && i.targetCardType !== '') {
+          m['target_card_type'] = i.targetCardType;
+        }
         if (i.bindTo !== undefined && i.bindTo.length > 0) {
           m['bind_to'] = i.bindTo.map((b) => {
             const e: Record<string, unknown> = { card_type_id: b.cardTypeId };

@@ -50,14 +50,16 @@ function nestedTransport(opts = {}) {
     { id: '102', card_type_name: 'status', parent_card_id: '31', attributes: { title: 'Doing' } },
     { id: '103', card_type_name: 'status', parent_card_id: '31', attributes: { title: 'Done' } },
   ];
+  // is_built_in:false so they show in the Custom-attributes list (#13's rowFilter
+  // hides built-ins). The edge-matrix behaviour is independent of built-in-ness.
   const attributeDefs = [
-    { id: '1', name: 'title', value_type: 'text', is_built_in: true, bound_to: [{ card_type_id: '9', card_type_name: 'person', ordering: 1 }] },
+    { id: '1', name: 'title', value_type: 'text', is_built_in: false, bound_to: [{ card_type_id: '9', card_type_name: 'person', ordering: 1 }] },
     {
       id: '2',
       name: 'status',
       value_type: 'card_ref',
       target_card_type_name: 'status',
-      is_built_in: true,
+      is_built_in: false,
       bound_to: [{ card_type_id: '5', card_type_name: 'task', is_required: true, ordering: 3 }],
     },
   ];
