@@ -260,13 +260,19 @@ role_id, card_type_id, process_id
 $role.commenter, $card_type.task, $process."comment.post"
 
 
-## table role_grant | doc="worker / manager (merged): the two roles now carry identical grants. Anyone non-admin writing into the system gets the full surface — task create + update + comment + sort, comm create + update + comment + sort (so workers can set a comm channel on a task and reply via reply.post which gates on (comm, card.update)), full CRUD on the structural cards (project / milestone / component / tag / screen / filter / status / predicate_snippet), and person create + update (so adding a teammate / contact doesn't require admin). comm_channel / reply_body / activity_sink stay admin-only configuration surface." | on_conflict="role_id, card_type_id, process_id"
+## table role_grant | doc="worker / manager: SHARED surface — task create + update + comment + sort, comm create + update + comment + sort (so workers can set a comm channel on a task and reply via reply.post which gates on (comm, card.update)), person create + update (so adding a teammate / contact doesn't require admin), and CRUD on the structural cards a worker legitimately authors (project / screen / filter / status / predicate_snippet). The MANAGER-ONLY grant below adds CRUD on the enum_managed VALUE cards (milestone / component / tag) — the 'Values' admin screen — so a plain worker can ASSIGN existing values to a task (card.update on the task) but cannot create / rename / delete the value cards themselves. comm_channel / reply_body / activity_sink stay admin-only configuration surface." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
 `[$role.worker, $role.manager]`, $card_type.task,              `[$process."card.create", $process."card.update", $process."comment.post", $process."user_card_sort.set"]`
 `[$role.worker, $role.manager]`, $card_type.comm,              `[$process."card.create", $process."card.update", $process."comment.post", $process."user_card_sort.set"]`
 `[$role.worker, $role.manager]`, $card_type.person,            `[$process."card.create", $process."card.update"]`
-`[$role.worker, $role.manager]`, `[$card_type.project, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.screen, $card_type.filter, $card_type.status, $card_type.predicate_snippet]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
+`[$role.worker, $role.manager]`, `[$card_type.project, $card_type.screen, $card_type.filter, $card_type.status, $card_type.predicate_snippet]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
+
+
+## table role_grant | doc="manager-only: CRUD on the enum_managed VALUE cards (milestone / component / tag) — the 'Values' admin screen. Workers are deliberately excluded (they assign existing values to tasks but don't curate the value set); admins get this via the admin grant below." | on_conflict="role_id, card_type_id, process_id"
+### rows
+role_id, card_type_id, process_id
+$role.manager, `[$card_type.milestone, $card_type.component, $card_type.tag]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
 
 
 ## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references). The three comm card_types (comm_channel, comm, reply_body) are admin-only configuration surface; managers get a lighter cut on comm via the manager grant." | on_conflict="role_id, card_type_id, process_id"

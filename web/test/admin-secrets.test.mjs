@@ -431,14 +431,21 @@ test('Agents: tokens list shows labels + status; minting surfaces the secret ONC
 /* Roles: role_mapping set / delete (claim_value → role).                      */
 /* -------------------------------------------------------------------------- */
 
-test('Roles: role mappings load + render; add fires role_mapping.set; remove fires role_mapping.delete', async () => {
+test('OIDC Claims: role mappings load + render; add fires role_mapping.set; remove fires role_mapping.delete', async () => {
   const transport = adminTransport();
   const { dispatcher, api } = bootApi(transport);
-  const { ctrl, tree } = mountView(api, 'roles');
+  // The mapping editor is now its own Workspace screen — a standalone
+  // roleMappings NestedEditor (not nested under Roles).
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  const cfg = M.adminScreenConfig('oidc_claims');
+  const ctrl = M.Control.New(cfg.type, cfg, { api, tree, scope });
+  ctrl.mount(new FakeElement('div'));
   await settle(dispatcher);
 
-  // The global mapping table loaded (independent of any role selection).
-  const mappings = tree.at(['admin', 'roles', 'nested', 'mappings']).peek();
+  // The global mapping table loaded (independent of any selection).
+  const mappings = tree.at(['admin', 'oidc_claims', 'mappings']).peek();
   assert.ok(Array.isArray(mappings) && mappings.length === 1, 'one mapping landed');
   assert.ok(ctrl.el.querySelector('[data-ne-mapping-row="kitp-admins"]'), 'the existing mapping renders');
 

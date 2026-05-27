@@ -38,6 +38,8 @@ var topicFiles = map[string]string{
 	"admin.flows":          "content/admin_flows.md",
 	"admin.projects":       "content/admin_projects.md",
 	"admin.attributes":     "content/admin_attributes.md",
+	"admin.roles":          "content/admin_roles.md",
+	"admin.oidc_claims":    "content/admin_oidc_claims.md",
 	"admin.users":          "content/admin_users.md",
 	"admin.contacts":       "content/admin_contacts.md",
 	"admin.agents":         "content/admin_agents.md",

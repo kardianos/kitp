@@ -48,7 +48,7 @@
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
-import type { ActionBinding } from '../core/data.js';
+import type { ActionBinding, QueryBinding } from '../core/data.js';
 import type { HotkeyBinding } from '../core/hotkeys.js';
 import type { ApiFault } from '../core/dispatch.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
@@ -56,7 +56,7 @@ import { SPEC as KANBAN_SPEC } from '../kanban/specs.js';
 import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
 import { navigate, projectUrl } from '../shell/router.js';
 import { PROJECT_SPEC } from './specs.js';
-import { clampIndex, projectDescription, projectTitle } from './project-helpers.js';
+import { clampIndex, projectDescription, projectTitle, TEMPLATE_INCLUSION_LEAF } from './project-helpers.js';
 
 /**
  * Fixed virtual-list row height (px) for a project row: a comfortable card with
@@ -71,6 +71,12 @@ export interface ProjectListConfig extends BaseControlConfig {
   projectsPath?: string;
   /** Tree path the search string lives at. Default 'projects.search'. */
   searchPath?: string;
+  /** Tree path the (template-only) supplementary rows live at.
+   *  Default 'shell.projectTemplates'. */
+  templatesPath?: string;
+  /** Tree path the "show templates" toggle lives at.
+   *  Default 'projects.showTemplates'. */
+  showTemplatesPath?: string;
 }
 
 declare module '../core/control.js' {
@@ -111,6 +117,26 @@ export class ProjectList extends Control<ProjectListConfig> {
   private get searchPath(): string[] {
     return (this.config.searchPath ?? 'projects.search').split('.');
   }
+  private get templatesPath(): string[] {
+    return (this.config.templatesPath ?? 'shell.projectTemplates').split('.');
+  }
+  private get showTemplatesPath(): string[] {
+    return (this.config.showTemplatesPath ?? 'projects.showTemplates').split('.');
+  }
+
+  /**
+   * The rows to show: the real projects at `projectsPath` (template-free, from
+   * the AppShell query) plus the template-only rows at `templatesPath` ONLY when
+   * the "show templates" toggle is on. Reads via `.get()` so the caller's effect
+   * subscribes (data() + the empty-state effect).
+   */
+  private combinedRows(): ProjectOption[] {
+    const base = (this.ctx.tree.at(this.projectsPath).get<ProjectOption[]>() ?? []) as ProjectOption[];
+    const showT = this.ctx.tree.at(this.showTemplatesPath).get<boolean>() ?? false;
+    if (!showT) return base;
+    const tmpl = (this.ctx.tree.at(this.templatesPath).get<ProjectOption[]>() ?? []) as ProjectOption[];
+    return [...base, ...tmpl];
+  }
 
   /**
    * CLASS-STATIC action table.
@@ -124,6 +150,27 @@ export class ProjectList extends Control<ProjectListConfig> {
    * All three patch the shared `shell.projects` path, so the list AND the scope
    * <select> reflect the change immediately (they read the same leaf).
    */
+  /**
+   * Supplementary TEMPLATE-only query (#7). The AppShell `projects` query ships
+   * `is_template != true`, so `shell.projects` is template-free; this loads the
+   * templates separately (once, on mount) into `shell.projectTemplates`. The
+   * list folds them in only while the "show templates" toggle is on, so the
+   * scope <select> (which reads `shell.projects`) is unaffected.
+   */
+  static override queries: readonly QueryBinding[] = [
+    {
+      name: 'templates',
+      spec: 'card.select_with_attributes',
+      when: 'mount',
+      input: {
+        cardTypeName: { lit: 'project' },
+        where: { lit: [TEMPLATE_INCLUSION_LEAF] },
+      },
+      result: { method: 'landTemplates' },
+      onError: 'self',
+    },
+  ];
+
   static override actions: readonly ActionBinding[] = [
     {
       intent: 'createProject',
@@ -217,6 +264,20 @@ export class ProjectList extends Control<ProjectListConfig> {
       );
     });
 
+    // Land the supplementary template rows as ProjectOptions flagged
+    // isTemplate (so fillRow can badge them). Written to the templates path the
+    // list folds in only when the toggle is on.
+    this.handler('landTemplates', (out) => {
+      const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+      const opts: ProjectOption[] = rows.map((r) => {
+        const opt: ProjectOption = { id: r.id.toString(), label: projectTitle(r), isTemplate: true };
+        const desc = projectDescription(r);
+        if (desc) opt.description = desc;
+        return opt;
+      });
+      this.ctx.tree.at(this.templatesPath).set(opts);
+    });
+
     /* ----------------------------- header ----------------------------- */
     const breadcrumb = document.createElement('div');
     breadcrumb.className = 'projects__breadcrumb muted';
@@ -228,12 +289,21 @@ export class ProjectList extends Control<ProjectListConfig> {
     const h1 = document.createElement('h1');
     h1.className = 'projects__title';
     h1.textContent = 'Projects';
+    // "Show templates" toggle — folds the template projects into the list
+    // (they're hidden by default). Reflects the `projects.showTemplates` leaf.
+    const showTemplates = document.createElement('button');
+    showTemplates.type = 'button';
+    showTemplates.className = 'btn projects__show-templates';
+    showTemplates.dataset.showTemplates = '';
+    showTemplates.textContent = 'Show templates';
+    showTemplates.setAttribute('aria-pressed', 'false');
+
     const newBtn = document.createElement('button');
     newBtn.type = 'button';
     newBtn.className = 'btn btn-primary projects__new';
     newBtn.dataset.newProject = '';
     newBtn.textContent = '+ New project';
-    headerRow.append(h1, newBtn);
+    headerRow.append(h1, showTemplates, newBtn);
 
     /* ----------------------------- search ----------------------------- */
     const search = document.createElement('input');
@@ -269,9 +339,18 @@ export class ProjectList extends Control<ProjectListConfig> {
     this.el.append(dialog.root);
 
     /* -------------------------- reactivity --------------------------- */
-    const projectsNode = this.ctx.tree.at(this.projectsPath);
     const searchNode = this.ctx.tree.at(this.searchPath);
     searchNode.set(searchNode.peek<string>() ?? '');
+
+    // "Show templates" toggle state: seed off, reflect the leaf on the button.
+    const showTemplatesNode = this.ctx.tree.at(this.showTemplatesPath);
+    if (showTemplatesNode.peek<boolean>() === undefined) showTemplatesNode.set(false);
+    this.effect(() => {
+      const on = showTemplatesNode.get<boolean>() ?? false;
+      showTemplates.classList.toggle('projects__show-templates--active', on);
+      showTemplates.setAttribute('aria-pressed', on ? 'true' : 'false');
+      showTemplates.textContent = on ? 'Hide templates' : 'Show templates';
+    }, 'projects.showTemplates');
 
     // Inline self-represented load fault (onError: 'self' on any future read).
     this.effect(() => {
@@ -303,7 +382,7 @@ export class ProjectList extends Control<ProjectListConfig> {
       container: list,
       rowHeight: PROJECT_ROW_HEIGHT,
       data: () => {
-        const all = (projectsNode.get<ProjectOption[]>() ?? []) as ProjectOption[];
+        const all = this.combinedRows(); // real projects + (toggle ? templates)
         const needle = searchNode.get<string>() ?? '';
         selTick.get(); // subscribe so a selection move re-renders the window
         const visible = filterOptions(all, needle);
@@ -328,7 +407,7 @@ export class ProjectList extends Control<ProjectListConfig> {
     // Empty-state toggle: reads the same two leaves, shows the placeholder when
     // no project matches. Cascade-safe (reads leaves, writes only DOM).
     this.effect(() => {
-      const all = (projectsNode.get<ProjectOption[]>() ?? []) as ProjectOption[];
+      const all = this.combinedRows();
       const needle = searchNode.get<string>() ?? '';
       const has = filterOptions(all, needle).length > 0;
       empty.style.display = has ? 'none' : '';
@@ -337,6 +416,10 @@ export class ProjectList extends Control<ProjectListConfig> {
 
     /* -------------------------- interactions ------------------------- */
     this.listen(newBtn, 'click', () => this.intent('quickCreateOpen'));
+    this.listen(showTemplates, 'click', () => {
+      const node = this.ctx.tree.at(this.showTemplatesPath);
+      node.set(!(node.peek<boolean>() ?? false));
+    });
     this.listen(search, 'input', () => {
       this.ctx.tree.at(this.searchPath).set(search.value);
     });
@@ -388,6 +471,14 @@ export class ProjectList extends Control<ProjectListConfig> {
     titleEl.className = 'projects__row-title';
     titleEl.dataset.role = 'title';
 
+    // Template badge — a SIBLING of the title (fillRow sets title.textContent,
+    // which would clobber a child). Shown only for template rows.
+    const badge = document.createElement('span');
+    badge.className = 'projects__row-badge';
+    badge.dataset.role = 'badge';
+    badge.textContent = 'Template';
+    badge.style.display = 'none';
+
     const descEl = document.createElement('p');
     descEl.className = 'projects__row-desc muted';
     descEl.dataset.role = 'desc';
@@ -399,7 +490,7 @@ export class ProjectList extends Control<ProjectListConfig> {
     // literal dash is intentional parity with the Svelte ProjectsScreen.
     meta.textContent = 'open tasks: —';
 
-    open.append(titleEl, descEl, meta);
+    open.append(titleEl, badge, descEl, meta);
 
     const edit = document.createElement('button');
     edit.type = 'button';
@@ -444,6 +535,9 @@ export class ProjectList extends Control<ProjectListConfig> {
     const title = childByRole(li, 'title');
     if (title) title.textContent = p.label;
 
+    const badge = childByRole(li, 'badge');
+    if (badge) badge.style.display = p.isTemplate ? '' : 'none';
+
     const desc = childByRole(li, 'desc');
     if (desc) {
       if (p.description) {
@@ -480,9 +574,13 @@ export class ProjectList extends Control<ProjectListConfig> {
   }
 
   private visibleProjects(): ProjectOption[] {
-    const all = (this.ctx.tree.at(this.projectsPath).peek<ProjectOption[]>() ?? []) as ProjectOption[];
+    const base = (this.ctx.tree.at(this.projectsPath).peek<ProjectOption[]>() ?? []) as ProjectOption[];
+    const showT = this.ctx.tree.at(this.showTemplatesPath).peek<boolean>() ?? false;
+    const tmpl = showT
+      ? ((this.ctx.tree.at(this.templatesPath).peek<ProjectOption[]>() ?? []) as ProjectOption[])
+      : [];
     const needle = this.ctx.tree.at(this.searchPath).peek<string>() ?? '';
-    return filterOptions(all, needle);
+    return filterOptions(showT ? [...base, ...tmpl] : base, needle);
   }
 
   /** Set the selected index and bump the selection tick so the virtualList
@@ -857,6 +955,8 @@ export interface ProjectOption {
   label: string;
   description?: string;
   pending?: boolean;
+  /** True for a template project (badged in the list; folded in by the toggle). */
+  isTemplate?: boolean;
 }
 
 /**
@@ -905,6 +1005,7 @@ function toOption(row: unknown): ProjectOption | null {
     const opt: ProjectOption = { id: String(r['id']), label: r['label'] as string };
     if (typeof r['description'] === 'string') opt.description = r['description'];
     if (r['pending'] === true) opt.pending = true;
+    if (r['isTemplate'] === true) opt.isTemplate = true;
     return opt;
   }
   // Raw card row shape: { id, attributes: { title, description? } }.
@@ -913,6 +1014,7 @@ function toOption(row: unknown): ProjectOption | null {
     const opt: ProjectOption = { id: card.id.toString(), label: projectTitle(card) };
     const desc = projectDescription(card);
     if (desc) opt.description = desc;
+    if (card.attributes?.['is_template'] === true) opt.isTemplate = true;
     return opt;
   }
   return null;

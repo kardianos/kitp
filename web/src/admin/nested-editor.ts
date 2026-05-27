@@ -83,6 +83,9 @@ export interface NestedEditorConfig extends BaseControlConfig {
   parentScope: string;
   /** This editor's own tree namespace for loaded data + draft state. */
   scopeKey: string;
+  /** Screen title — set when this editor IS the screen (e.g. the standalone
+   *  OIDC Claims Workspace screen) so the admin outlet's breadcrumb reads it. */
+  title?: string;
 }
 
 declare module '../core/control.js' {
@@ -2054,7 +2057,8 @@ export class NestedEditor extends Control<NestedEditorConfig> {
 
     const note = document.createElement('div');
     note.className = 'nested-editor__guard-note muted';
-    note.textContent = 'Each row maps an OIDC group/claim value to a role. Role grants (the card_type, process pairs above) are seed-managed and read-only.';
+    note.textContent =
+      'Each row maps an OIDC group/claim value to a role assigned at login. Role definitions and their grants live on the Roles screen (seed-managed, read-only).';
     frag.append(note);
 
     const mappings = (this.ctx.tree.at(this.p('mappings')).peek<RoleMappingRow[]>() ?? []) as RoleMappingRow[];

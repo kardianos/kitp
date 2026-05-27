@@ -26,6 +26,7 @@ before(async () => {
   M.registerMasterDetail();
   M.registerEnumManager(); // the Enums admin view is its own control, not a MasterDetail
   M.registerPeopleManager(); // the People admin view is its own control too
+  M.registerNestedEditor(); // the OIDC Claims admin view is a standalone NestedEditor
 });
 
 const PROJECT_ID = '31';
@@ -211,13 +212,16 @@ test('card-backed admin screens carry an editField update action; read-only ones
     'agents has an agent.delete delete action',
   );
   assert.deepEqual(agents.detail.nested, { kind: 'agentTokens' }, 'agents mounts the token nested editor');
-  // Comm Channels / Activity Sinks / Roles mount config / mapping nested editors
-  // that fire their own imperative comm_channel.set / activity_sink.set /
-  // role_mapping.* calls — no MasterDetail-level action binding. Workflows /
-  // Comm Log stay pure read-only viewers.
+  // Comm Channels / Activity Sinks mount config nested editors that fire their
+  // own imperative comm_channel.set / activity_sink.set calls — no MasterDetail-
+  // level action binding. Workflows / Comm Log stay pure read-only viewers.
   assert.deepEqual(M.adminScreenConfig('comm_channels').detail.nested, { kind: 'commChannelConfig' });
   assert.deepEqual(M.adminScreenConfig('activity_sinks').detail.nested, { kind: 'activitySinkConfig' });
-  assert.deepEqual(M.adminScreenConfig('roles').detail.nested, { kind: 'roleMappings' });
+  // Roles is now a pure overview — the OIDC claim→role mapping editor moved to
+  // its own Workspace screen (oidc_claims), a standalone roleMappings NestedEditor.
+  assert.equal(M.adminScreenConfig('roles').detail.nested, undefined, 'roles no longer nests the mapping editor');
+  assert.equal(M.adminScreenConfig('oidc_claims').type, 'NestedEditor', 'OIDC Claims is a standalone editor');
+  assert.equal(M.adminScreenConfig('oidc_claims').kind, 'roleMappings', 'it renders the role_mapping table');
   // Workflows now carries a create action (flow.set); rename lives in the nested
   // flow-step editor. The rest stay pure read-only viewers.
   const wf = M.adminScreenConfig('workflows');
@@ -340,7 +344,7 @@ test('ADMIN_SECTION classifies every admin view (Workspace global vs Project sco
   // Confirmed grouping: global-data screens are Workspace; the rest are Project
   // (always filtered to the active project).
   const inSection = (s) => M.ADMIN_VIEWS.filter((v) => M.ADMIN_SECTION[v] === s).sort();
-  assert.deepEqual(inSection('workspace'), ['agents', 'attributes', 'people', 'projects', 'roles']);
+  assert.deepEqual(inSection('workspace'), ['agents', 'attributes', 'oidc_claims', 'people', 'projects', 'roles']);
   assert.deepEqual(inSection('project'), ['activity_sinks', 'comm_channels', 'comm_log', 'enums', 'filters', 'screens', 'workflows']);
 });
 

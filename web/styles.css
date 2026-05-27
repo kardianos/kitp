@@ -2281,6 +2281,24 @@ body {
   font-size: var(--text-sm);
   color: var(--color-muted);
 }
+.projects__row-badge {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 0 var(--space-2);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill, 999px);
+  vertical-align: middle;
+}
+.projects__show-templates--active {
+  background: var(--color-accent-soft, var(--color-surface));
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
 .projects__row-meta {
   font-size: var(--text-2xs);
   font-weight: var(--weight-semibold);

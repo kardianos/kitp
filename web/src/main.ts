@@ -98,6 +98,7 @@ const ADMIN_LINK_LABELS: Record<AdminView, string> = {
   enums: 'Values',
   workflows: 'Workflows',
   roles: 'Roles',
+  oidc_claims: 'OIDC Claims',
   agents: 'Agents',
   comm_channels: 'Comm Channels',
   activity_sinks: 'Activity Sinks',

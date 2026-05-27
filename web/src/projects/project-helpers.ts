@@ -50,6 +50,18 @@ export const TEMPLATE_EXCLUSION_LEAF: CardWherePredicate = {
   value: true,
 };
 
+/**
+ * The inverse leaf: select ONLY template projects (`is_template = true`). Used
+ * by the ProjectList's supplementary "show templates" query — `op:'='` compiles
+ * to `EXISTS (… av.value = true)`, so only projects with the flag set match
+ * (unset projects, which have no attribute_value row, are excluded).
+ */
+export const TEMPLATE_INCLUSION_LEAF: CardWherePredicate = {
+  attr: 'is_template',
+  op: '=',
+  value: true,
+};
+
 /** Read a project card's `title` attribute (the real handler nests it under
  *  `attributes.title`), falling back to a `#id` when absent. */
 export function projectTitle(p: CardWithAttrs): string {

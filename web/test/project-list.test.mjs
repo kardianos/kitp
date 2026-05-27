@@ -428,10 +428,17 @@ test('AppShell projects query ships the is_template != true leaf, excluding temp
   await settle(dispatcher);
 
   // The shipped projects sub-request carried the exclusion leaf verbatim.
-  const projReq = sent.find(
+  // (ProjectList also ships a separate is_template = true query for its
+  // "show templates" toggle, so target the exclusion request specifically.)
+  const projReqs = sent.filter(
     (sr) => sr.endpoint === 'card' && sr.action === 'select_with_attributes',
   );
-  assert.ok(projReq, 'a card.select_with_attributes request was shipped');
+  const projReq = projReqs.find(
+    (sr) =>
+      Array.isArray(sr.data.where) &&
+      sr.data.where.some((l) => l.attr === 'is_template' && l.op === '!='),
+  );
+  assert.ok(projReq, 'a card.select_with_attributes request shipped the exclusion leaf');
   assert.deepEqual(
     projReq.data.where,
     [{ attr: 'is_template', op: '!=', value: true }],
@@ -645,4 +652,43 @@ test('edit optimistic title patch ROLLS BACK on fault', async () => {
 
   const rows = visibleProjectRows(ctrl.el);
   assert.match(rows[0].textContent, /Original Name/, 'the list row reverted too');
+});
+
+/* -------------------------------------------------------------------------- */
+/* "Show templates" toggle folds template projects into the list (#7).         */
+/* -------------------------------------------------------------------------- */
+
+test('ProjectList: "Show templates" toggle folds template rows in and badges them', async () => {
+  const { dispatcher, api } = bootApi(M.mockTransport());
+  const { ctrl, tree } = mountProjectList(api, SEED);
+  await settle(dispatcher);
+
+  // Deterministic template set at the supplementary path (overrides whatever
+  // the mount-time templates query landed).
+  tree.at(['shell', 'projectTemplates']).set([
+    { id: '10', label: 'Standard Project Template', isTemplate: true },
+  ]);
+  M.flushSync?.();
+
+  // Toggle off by default: the two real projects, no template.
+  let labels = visibleProjectRows(ctrl.el).map(
+    (r) => r.querySelectorAll('[data-role="title"]')[0].textContent,
+  );
+  assert.deepEqual(labels.sort(), ['Default Project', 'Mobile App'], 'templates hidden by default');
+
+  // Flip the toggle on.
+  const toggle = ctrl.el.querySelectorAll('[data-show-templates]')[0];
+  toggle.dispatchEvent({ type: 'click', target: toggle });
+  M.flushSync?.();
+
+  const rows = visibleProjectRows(ctrl.el);
+  labels = rows.map((r) => r.querySelectorAll('[data-role="title"]')[0].textContent);
+  assert.ok(labels.includes('Standard Project Template'), 'template row now shown');
+  assert.equal(toggle.getAttribute('aria-pressed'), 'true', 'toggle reflects pressed state');
+
+  // The template row carries a visible badge; the real ones do not.
+  const tmplRow = rows.find((r) => r.dataset.projectId === '10');
+  const realRow = rows.find((r) => r.dataset.projectId === '31');
+  assert.notEqual(tmplRow.querySelectorAll('[data-role="badge"]')[0].style.display, 'none', 'template badged');
+  assert.equal(realRow.querySelectorAll('[data-role="badge"]')[0].style.display, 'none', 'real project not badged');
 });

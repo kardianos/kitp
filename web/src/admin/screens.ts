@@ -39,9 +39,15 @@ import {
 } from './master-detail.js';
 import type { EnumManagerConfig } from './enum-manager.js';
 import type { PeopleManagerConfig } from './people-manager.js';
+import type { NestedEditorConfig } from './nested-editor.js';
 
-/** An admin screen is a MasterDetail or its own control (Enums / People). */
-type AdminScreenConfig = MasterDetailConfig | EnumManagerConfig | PeopleManagerConfig;
+/** An admin screen is a MasterDetail or its own control (Enums / People /
+ *  the standalone OIDC Claims editor). */
+type AdminScreenConfig =
+  | MasterDetailConfig
+  | EnumManagerConfig
+  | PeopleManagerConfig
+  | NestedEditorConfig;
 
 /* -------------------------------------------------------------------------- */
 /* Contacts = person cards (CARD source).                                      */
@@ -582,10 +588,9 @@ export const WORKFLOWS_SCREEN: MasterDetailConfig = {
  * Roles. The (card_type, process) GRANTS are READ-ONLY badges: no
  * `role_grant.set` / `role_grant.revoke` handler exists in the backend — grants
  * are seed-managed (db/schema declarative.json), so editing them here is out of
- * scope (would need a new server handler). The editable surface is the nested
- * `roleMappings` editor: the global OIDC claim_value → role mapping table
- * (role_mapping.set / role_mapping.delete). The mapping editor renders
- * independently of the role selection (the table is global, not per-role).
+ * scope (would need a new server handler). The OIDC claim_value → role mapping
+ * editor used to live nested in this screen; it now has its own Workspace screen
+ * ({@link OIDC_CLAIMS_SCREEN}), so this screen is a pure role OVERVIEW.
  */
 export const ROLES_SCREEN: MasterDetailConfig = {
   type: 'MasterDetail',
@@ -599,7 +604,7 @@ export const ROLES_SCREEN: MasterDetailConfig = {
   },
   detail: {
     titleField: 'name',
-    empty: 'Select a role to view its grants. Claim→role mappings are below.',
+    empty: 'Select a role to view its grants. Map OIDC claims to roles on the OIDC Claims screen.',
     fields: [
       { name: 'name', label: 'Name', kind: 'readonly' },
       { name: 'doc', label: 'Description', kind: 'readonly' },
@@ -607,9 +612,26 @@ export const ROLES_SCREEN: MasterDetailConfig = {
       // Read-only: grants are seed-managed (no set/revoke handler exists).
       { name: 'grants', label: 'Grants (read-only, seed-managed)', kind: 'badges', badgeField: 'process' },
     ],
-    // Nested OIDC claim_value → role mapping editor (global table).
-    nested: { kind: 'roleMappings' },
   },
+};
+
+/* -------------------------------------------------------------------------- */
+/* OIDC Claims = the standalone role_mapping editor (Workspace screen).         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * OIDC Claims. The global `role_mapping` table (claim_value → role) lifted out
+ * of the Roles screen into its own Workspace screen. It's the standalone use of
+ * the `roleMappings` NestedEditor — which loads independently of any selection,
+ * so it needs no parent MasterDetail. `parentScope`/`scopeKey` just namespace
+ * its own loaded data; no master row is ever read.
+ */
+export const OIDC_CLAIMS_SCREEN: NestedEditorConfig = {
+  type: 'NestedEditor',
+  kind: 'roleMappings',
+  title: 'OIDC Claims',
+  parentScope: 'admin.oidc_claims',
+  scopeKey: 'admin.oidc_claims',
 };
 
 /* -------------------------------------------------------------------------- */
@@ -801,6 +823,7 @@ export type AdminView =
   | 'enums'
   | 'workflows'
   | 'roles'
+  | 'oidc_claims'
   | 'agents'
   | 'comm_channels'
   | 'activity_sinks'
@@ -834,6 +857,7 @@ const ADMIN_SCREENS: Record<AdminView, AdminScreenConfig> = {
   enums: ENUMS_SCREEN,
   workflows: WORKFLOWS_SCREEN,
   roles: ROLES_SCREEN,
+  oidc_claims: OIDC_CLAIMS_SCREEN,
   agents: AGENTS_SCREEN,
   comm_channels: COMM_CHANNELS_SCREEN,
   activity_sinks: ACTIVITY_SINKS_SCREEN,
@@ -866,6 +890,7 @@ export const ADMIN_SECTION: Record<AdminView, AdminSection> = {
   people: 'workspace',
   projects: 'workspace',
   roles: 'workspace',
+  oidc_claims: 'workspace',
   attributes: 'workspace',
   agents: 'workspace',
   screens: 'project',
