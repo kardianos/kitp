@@ -24,6 +24,7 @@
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import type { ApiFault } from '../core/dispatch.js';
+import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
 import { readPath, fieldText, type MasterDetailItem } from './master-detail.js';
 import {
   type Predicate,
@@ -390,6 +391,13 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   private predChild: Control | null = null;
   private mountedFilterId: string | null = null;
 
+  /** flowSteps drag-reorder (shared DnD kit): the dragged step id + its
+   *  from_card_id (drag is constrained WITHIN a from-group). One placeholder per
+   *  from-group, recreated each renderFlowSteps. */
+  private draggingStepId: string | null = null;
+  private draggingStepFrom: string | null = null;
+  private stepPlaceholders: DropPlaceholder[] = [];
+
   private get selectedPath(): string[] {
     return `${this.config.parentScope}.selectedId`.split('.');
   }
@@ -409,6 +417,11 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   }
 
   protected render(): void {
+    // Tear down any flowSteps drop placeholders on control destroy.
+    this.onDestroy(() => {
+      for (const p of this.stepPlaceholders) p.destroy();
+      this.stepPlaceholders = [];
+    });
     // Re-render on selection OR items change (an optimistic parent edit, a
     // promoted create id). The data loads fire as a side effect keyed on the
     // selected id changing (tracked via loadSeq so a re-render without an id
@@ -642,6 +655,11 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   /* --------------------------- flow steps ------------------------------- */
 
   private renderFlowSteps(flow: MasterDetailItem): void {
+    // Discard the previous render's drop placeholders (their group hosts are
+    // about to be replaced); recreated per from-group below.
+    for (const p of this.stepPlaceholders) p.destroy();
+    this.stepPlaceholders = [];
+
     const frag = document.createDocumentFragment();
 
     const heading = document.createElement('div');
@@ -704,6 +722,32 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       for (const s of b.steps) {
         group.append(this.buildStepRow(flow.id, s, titleById));
       }
+
+      // Drag-reorder WITHIN this from-group (shared DnD kit). Container-level
+      // dragover/drop so releasing in the gap commits; constrained to the same
+      // from_card_id (cross-group moves would re-key from-status — a different
+      // edit). Commit reassigns the group's existing sort_order slots, leaving
+      // other groups' (globally-ordered) steps untouched.
+      const bucketSteps = b.steps;
+      const placeholder = new DropPlaceholder(group, { className: 'drop-placeholder--steps' });
+      this.stepPlaceholders.push(placeholder);
+      this.listen(group, 'dragover', (ev) => {
+        if (this.draggingStepId === null || this.draggingStepFrom !== b.fromCardId) return;
+        ev.preventDefault();
+        const t = computeDropTarget(group, (ev as DragEvent).clientY, this.draggingStepId, '[data-ne-step-row]');
+        placeholder.showAtY(t.y);
+      });
+      this.listen(group, 'drop', (ev) => {
+        if (this.draggingStepId === null || this.draggingStepFrom !== b.fromCardId) return;
+        ev.preventDefault();
+        placeholder.pulse();
+        const t = computeDropTarget(group, (ev as DragEvent).clientY, this.draggingStepId, '[data-ne-step-row]');
+        const movedId = this.draggingStepId;
+        this.draggingStepId = null;
+        this.draggingStepFrom = null;
+        this.reorderSteps(flow.id, bucketSteps, movedId, t.slot);
+      });
+
       list.append(group);
     }
     frag.append(list);
@@ -718,6 +762,32 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     const row = document.createElement('div');
     row.className = 'nested-editor__step-row';
     row.dataset.neStepRow = s.id;
+    // `data-card-id` lets the shared computeDropTarget skip the dragged row.
+    row.dataset.cardId = s.id;
+
+    // Drag handle (shared DnD kit) — reorders within the from-group.
+    const handle = document.createElement('span');
+    handle.className = 'nested-editor__step-drag';
+    handle.dataset.neStepDrag = s.id;
+    handle.draggable = true;
+    handle.setAttribute('aria-hidden', 'true');
+    handle.title = 'Drag to reorder';
+    handle.textContent = '⠿';
+    this.listen(handle, 'dragstart', (ev) => {
+      this.draggingStepId = s.id;
+      this.draggingStepFrom = s.from_card_id;
+      const dt = (ev as DragEvent).dataTransfer;
+      if (dt) {
+        dt.effectAllowed = 'move';
+        dt.setData('text/plain', s.id);
+      }
+    });
+    this.listen(handle, 'dragend', () => {
+      this.draggingStepId = null;
+      this.draggingStepFrom = null;
+      for (const p of this.stepPlaceholders) p.hide();
+    });
+    row.append(handle);
 
     const label = document.createElement('span');
     label.className = 'nested-editor__step-label';
@@ -890,6 +960,52 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       },
       { alive: () => this.isAlive(), onErr: (f) => this.showFault('flow_step.set', f) },
     );
+  }
+
+  /**
+   * Drag-reorder a step WITHIN its from-group to `slot` (insertion index with
+   * the dragged step removed). The group's existing sort_order values are its
+   * "slots" in the flow's global ordering; we reassign them to the steps in the
+   * new order so only this group's relative order changes (other groups, whose
+   * steps interleave in the global sequence, are untouched). Persists each
+   * changed step via flow_step.set, then reloads once.
+   */
+  private reorderSteps(flowId: string, bucketSteps: readonly FlowStepRow[], movedId: string, slot: number): void {
+    const idx = bucketSteps.findIndex((s) => s.id === movedId);
+    if (idx < 0) return;
+    const next = bucketSteps.slice();
+    const [moved] = next.splice(idx, 1);
+    next.splice(Math.max(0, Math.min(slot, next.length)), 0, moved!);
+    if (next.every((s, i) => s.id === bucketSteps[i]?.id)) return; // no change
+
+    // The group's sort_order slots, ascending, reassigned to the new order.
+    const slots = bucketSteps.map((s) => s.sort_order).slice().sort((a, b) => a - b);
+    const changes = next
+      .map((s, i) => ({ s, want: slots[i] ?? (i + 1) * 10 }))
+      .filter(({ s, want }) => s.sort_order !== want);
+    if (changes.length === 0) return;
+
+    this.clearFault();
+    let remaining = changes.length;
+    const done = (): void => {
+      if (this.isAlive() && --remaining <= 0) this.reload();
+    };
+    for (const { s, want } of changes) {
+      this.ctx.api.callByName(
+        'flow_step.set',
+        {
+          id: s.id,
+          flowId,
+          fromCardId: s.from_card_id,
+          toCardId: s.to_card_id,
+          label: s.label,
+          requiresRoleId: s.requires_role_id === '0' ? '' : s.requires_role_id,
+          sortOrder: want,
+        },
+        done,
+        { alive: () => this.isAlive(), onErr: (f) => this.showFault('flow_step.set', f) },
+      );
+    }
   }
 
   private deleteStep(_flowId: string, stepId: string): void {

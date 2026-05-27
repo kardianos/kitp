@@ -284,6 +284,30 @@ test('Workflows: steps load + render grouped by `from` status', async () => {
   assert.match(ctrl.el.querySelectorAll('[data-ne-step-row]')[1].textContent, /manager/);
 });
 
+test('Workflows: dragging a transition reorders within its from-group (#14)', async () => {
+  const transport = nestedTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountMD(api, M.adminScreenConfig('workflows'));
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+
+  // The from=101 group is [900 (sort 0), 901 (sort 1)]. Drag 901 by its handle
+  // and drop on the group container — the shim resolves the slot to 0 (front),
+  // so the two steps swap their sort_order slots (0 ↔ 1).
+  const handle = ctrl.el.querySelector('[data-ne-step-drag="901"]');
+  assert.ok(handle, 'each step row has a drag handle');
+  const group = ctrl.el.querySelector('[data-ne-from-group="101"]');
+  handle.dispatchEvent({ type: 'dragstart', target: handle, dataTransfer: { setData() {} } });
+  group.dispatchEvent({ type: 'drop', target: group, clientY: 0 });
+  await settle(dispatcher);
+
+  const sets = writesFor(transport, 'flow_step.set');
+  const byId = Object.fromEntries(sets.map((s) => [String(s.data.id), s.data.sort_order]));
+  assert.equal(byId['901'], 0, '901 took the first slot');
+  assert.equal(byId['900'], 1, '900 took the second slot');
+  assert.equal(byId['902'], undefined, 'a step in a DIFFERENT from-group is untouched');
+});
+
 test('Workflows: adding a transition fires flow_step.set with the draft', async () => {
   const transport = nestedTransport();
   const { dispatcher, api } = bootApi(transport);

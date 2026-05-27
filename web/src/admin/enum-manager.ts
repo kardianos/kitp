@@ -17,6 +17,7 @@ import { Control, type BaseControlConfig } from '../core/control.js';
 import { ADMIN_SPEC, type AttributeDefListOutput } from './specs.js';
 import { SPEC, type SelectWithAttributesOutput } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
+import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
 
 export interface EnumManagerConfig extends BaseControlConfig {
   type: 'EnumManager';
@@ -51,6 +52,13 @@ export class EnumManager extends Control<EnumManagerConfig> {
 
   private listHost!: HTMLElement;
 
+  /** In-flight value drag (shared DnD kit, same as Inbox/Kanban): the dragged
+   *  value-card id + its enum cardType (drag is constrained to one enum). */
+  private draggingValueId: bigint | null = null;
+  private draggingCardType: string | null = null;
+  /** One gliding placeholder per enum section; recreated each paint. */
+  private placeholders: DropPlaceholder[] = [];
+
   constructor(...args: ConstructorParameters<typeof Control<EnumManagerConfig>>) {
     super(...args);
     this.scopePath = (this.config.projectScopePath ?? 'scope.projectId').split('.');
@@ -80,6 +88,10 @@ export class EnumManager extends Control<EnumManagerConfig> {
     this.listHost = list;
 
     this.el.append(head, list);
+    this.onDestroy(() => {
+      for (const p of this.placeholders) p.destroy();
+      this.placeholders = [];
+    });
 
     this.loadSchema();
     // Reload value-cards when the active project resolves / changes. One-way:
@@ -150,6 +162,10 @@ export class EnumManager extends Control<EnumManagerConfig> {
 
   private paint(): void {
     const host = this.listHost;
+    // Discard the previous paint's placeholders (their host rows are about to be
+    // replaced); recreated per section below.
+    for (const p of this.placeholders) p.destroy();
+    this.placeholders = [];
     host.replaceChildren();
 
     if (this.projectId() === null) {
@@ -191,6 +207,29 @@ export class EnumManager extends Control<EnumManagerConfig> {
     }
     section.append(rows);
 
+    // Drag-and-drop reorder (shared DnD kit, same as Inbox/Kanban) — constrained
+    // to THIS enum (the ▲/▼ buttons stay for keyboard a11y). Container-level
+    // dragover/drop so releasing in the gap commits (#22's lesson). Commit reuses
+    // the same sort_order ladder rewrite as the buttons.
+    const placeholder = new DropPlaceholder(rows, { className: 'drop-placeholder--enum' });
+    this.placeholders.push(placeholder);
+    this.listen(rows, 'dragover', (ev) => {
+      if (this.draggingCardType !== e.cardType || this.draggingValueId === null) return;
+      ev.preventDefault();
+      const t = computeDropTarget(rows, (ev as DragEvent).clientY, this.draggingValueId.toString(), '[data-enum-value]');
+      placeholder.showAtY(t.y);
+    });
+    this.listen(rows, 'drop', (ev) => {
+      if (this.draggingCardType !== e.cardType || this.draggingValueId === null) return;
+      ev.preventDefault();
+      placeholder.pulse();
+      const t = computeDropTarget(rows, (ev as DragEvent).clientY, this.draggingValueId.toString(), '[data-enum-value]');
+      const movedId = this.draggingValueId;
+      this.draggingValueId = null;
+      this.draggingCardType = null;
+      this.moveValueToSlot(e, movedId, t.slot);
+    });
+
     // Add row: an input + button → card.insert under the active project.
     const addRow = document.createElement('div');
     addRow.className = 'enum-manager__add';
@@ -225,10 +264,35 @@ export class EnumManager extends Control<EnumManagerConfig> {
     const row = document.createElement('div');
     row.className = 'enum-manager__value';
     row.dataset.enumValue = card.id.toString();
+    // `data-card-id` lets the shared computeDropTarget skip the dragged row.
+    row.dataset.cardId = card.id.toString();
 
-    // Reorder handles: ▲/▼ rewrite sort_order across the list (see moveValue).
+    // Reorder handles: a drag handle (shared DnD) + ▲/▼ (keyboard a11y) — both
+    // rewrite the sort_order ladder (see moveValue / moveValueToSlot).
     const reorder = document.createElement('div');
     reorder.className = 'enum-manager__reorder';
+    const handle = document.createElement('span');
+    handle.className = 'enum-manager__drag-handle';
+    handle.dataset.enumDrag = card.id.toString();
+    handle.draggable = true;
+    handle.setAttribute('aria-hidden', 'true');
+    handle.title = 'Drag to reorder';
+    handle.textContent = '⠿';
+    this.listen(handle, 'dragstart', (ev) => {
+      this.draggingValueId = card.id;
+      this.draggingCardType = e.cardType;
+      const dt = (ev as DragEvent).dataTransfer;
+      if (dt) {
+        dt.effectAllowed = 'move';
+        dt.setData('text/plain', card.id.toString());
+      }
+    });
+    this.listen(handle, 'dragend', () => {
+      this.draggingValueId = null;
+      this.draggingCardType = null;
+      for (const p of this.placeholders) p.hide();
+    });
+    reorder.append(handle);
     const up = document.createElement('button');
     up.type = 'button';
     up.className = 'enum-manager__move';
@@ -298,9 +362,29 @@ export class EnumManager extends Control<EnumManagerConfig> {
     const next = list.slice();
     const [moved] = next.splice(idx, 1);
     next.splice(target, 0, moved!);
+    this.applyOrder(e, next);
+  }
+
+  /** Drag commit: move `cardId` to `slot` (insertion index in the list with the
+   *  dragged card removed — computeDropTarget already excludes it). Reuses the
+   *  same ladder rewrite as the ▲/▼ buttons. */
+  private moveValueToSlot(e: ManagedEnum, cardId: bigint, slot: number): void {
+    const list = this.cards[e.cardType] ?? [];
+    const idx = list.findIndex((c) => c.id === cardId);
+    if (idx < 0) return;
+    const next = list.slice();
+    const [moved] = next.splice(idx, 1);
+    next.splice(Math.max(0, Math.min(slot, next.length)), 0, moved!);
+    if (next.every((c, i) => c.id === list[i]?.id)) return; // no change
+    this.applyOrder(e, next);
+  }
+
+  /** Apply a new value order: repaint optimistically + persist the 10,20,30,…
+   *  sort_order ladder for every card whose value changed (one coalesced batch).
+   *  The next load reconciles from the server (select is ordered by sort_order). */
+  private applyOrder(e: ManagedEnum, next: CardWithAttrs[]): void {
     this.cards[e.cardType] = next;
     this.paint();
-
     next.forEach((c, i) => {
       const want = (i + 1) * 10;
       if (numAttr(c, 'sort_order') === want) return;

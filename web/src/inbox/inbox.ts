@@ -444,6 +444,36 @@ export class Inbox extends Control<InboxConfig> {
       this.placeholder = null;
     });
 
+    // CONTAINER-level drag wiring (the bug fix, #22): the per-row dragover/drop
+    // only fire when the pointer is OVER a row, so releasing in the insertion
+    // GAP between rows (exactly where the placeholder bar sits) lands on the
+    // body, which had no handler → the drop never committed. The body's dragover
+    // preventDefault makes the gap a valid drop target, and its drop resolves the
+    // insertion point geometrically. A drop ONTO a row is handled by the row
+    // (which stops propagation), so this only runs for true gap drops.
+    this.listen(body, 'dragover', (ev) => {
+      if (draggingRowId === null) return;
+      ev.preventDefault();
+      const t = computeDropTarget(body, (ev as DragEvent).clientY, draggingRowId.toString(), '[data-inbox-row]');
+      this.placeholder?.showAtY(t.y);
+    });
+    this.listen(body, 'drop', (ev) => {
+      ev.preventDefault();
+      if (draggingRowId === null) return;
+      this.placeholder?.pulse();
+      const before = this.dropBeforeRow(body, (ev as DragEvent).clientY);
+      if (before !== null) {
+        // Insert before the row the placeholder pointed at (row-based math is
+        // scroll-robust — it resolves the slot from the target's card id).
+        this.onRowDrop(before, ev as DragEvent);
+      } else {
+        // Released past the last row → move to the end.
+        const movedId = draggingRowId;
+        draggingRowId = null;
+        this.reorderTo(movedId, Math.max(0, this.currentRows().length - 1));
+      }
+    });
+
     /* -------------------- one-way query-version drivers -------------------- */
     // Bump the tasks query version whenever scope changes.
     this.effect(() => {
@@ -731,6 +761,10 @@ export class Inbox extends Control<InboxConfig> {
     });
     this.listen(el, 'drop', (ev) => {
       ev.preventDefault();
+      // Stop the drop from ALSO bubbling to the container `drop` (the gap
+      // handler) — otherwise a drop ONTO a row would commit twice in a real
+      // browser. (The test DOM shim doesn't bubble, so this is a no-op there.)
+      ev.stopPropagation();
       this.placeholder?.pulse();
       this.onRowDrop(el, ev as DragEvent);
     });
@@ -845,6 +879,26 @@ export class Inbox extends Control<InboxConfig> {
   }
 
   /* ------------------------------- reorder ------------------------------ */
+
+  /**
+   * The visible row the dragged row would land BEFORE for a pointer at `clientY`
+   * (the first non-dragged, non-parked row whose vertical midpoint is below the
+   * pointer). Returns null when released past the last row (an end drop). Mirrors
+   * computeDropTarget's iteration but returns the node so the commit can reuse
+   * the row-based onRowDrop (card-id → data index, scroll-robust).
+   */
+  private dropBeforeRow(body: HTMLElement, clientY: number): HTMLElement | null {
+    const moved = draggingRowId?.toString();
+    const nodes = (body.querySelectorAll?.('[data-inbox-row]') ?? []) as unknown as HTMLElement[];
+    for (const node of nodes) {
+      if (node.style?.display === 'none') continue;
+      if (node.dataset?.cardId === moved) continue;
+      const rect = node.getBoundingClientRect?.();
+      if (!rect || (rect.top === 0 && rect.bottom === 0)) continue;
+      if (clientY < rect.top + rect.height / 2) return node;
+    }
+    return null;
+  }
 
   /** Resolve a drop onto a row: reorder the dragged row to this row's slot. */
   private onRowDrop(targetRow: HTMLElement, _ev: DragEvent): void {

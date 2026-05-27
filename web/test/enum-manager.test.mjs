@@ -173,3 +173,25 @@ test('EnumManager reorder: ▼ moves a value down and persists a sort_order ladd
   assert.equal(byCard['501'], 10, 'the card now first gets the lowest sort_order');
   assert.equal(byCard['500'], 20);
 });
+
+test('EnumManager reorder: dragging a value commits via the shared drop kit (#12)', async () => {
+  const transport = recordingTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  // Order 500, 501. Drag the LAST value (501) by its handle and drop on the
+  // values container — with no layout in the shim the drop slot resolves to 0
+  // (front), so 501 moves to the top.
+  const handle = ctrl.el.querySelector('[data-enum-drag="501"]');
+  assert.ok(handle, 'each value renders a drag handle');
+  const container = ctrl.el.querySelector('[data-enum-value]').parentNode;
+  handle.dispatchEvent({ type: 'dragstart', target: handle, dataTransfer: { setData() {} } });
+  container.dispatchEvent({ type: 'drop', target: container, clientY: 0 });
+  await settle(dispatcher);
+
+  const order = ctrl.el.querySelectorAll('[data-enum-value]').map((v) => v.dataset.enumValue);
+  assert.deepEqual(order, ['501', '500'], 'drag-drop moved 501 to the front');
+  const sorts = transport.sent.updates.filter((u) => u.attribute_name === 'sort_order');
+  assert.ok(sorts.length >= 1, 'sort_order ladder persisted after the drag');
+});

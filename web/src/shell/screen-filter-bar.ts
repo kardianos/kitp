@@ -29,9 +29,10 @@
  * DEFAULT-FILTER-ON-FIRST-VISIT: when the screen resolves (the ScreenHost lands
  * `<statePath>.resolved`), an effect applies the screen's `default_filter`'s
  * predicate the FIRST time this (project, slug) is visited (no `activeFilterId`
- * cached). With no default it falls back to `status notTerminal` (a single
- * not-terminal leaf). The active filter is CACHED at `<statePath>.activeFilterId`
- * so back-nav restores the exact preset without re-applying the default.
+ * cached). With no default the predicate starts EMPTY (all phases visible) — what
+ * a screen hides by default is owned by its phase toggles' `default_on` flags,
+ * not a hardcoded "not terminal" leaf. The active filter is CACHED at
+ * `<statePath>.activeFilterId` so back-nav restores the exact preset.
  *
  * OPTIONS for the PredicateFilter's card_ref pickers project from the Grid's
  * `grid.lookups.<name>` maps into `screen.predicateOptions` (re-keyed by target
@@ -388,7 +389,8 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
 
     // DEFAULT-FILTER-ON-FIRST-VISIT. When the screen resolves, apply the
     // default's predicate the first time this (project, slug) is visited; with
-    // no default fall back to `status notTerminal`. Reads only the `resolved`
+    // no default start from an EMPTY predicate (phase toggles' default_on own
+    // what's hidden). Reads only the `resolved`
     // flag + peeks the (already-landed) state; writes the predicate/group leaves
     // + the active-id cache. One-way (never reads back a dep it writes).
     if (this.config.screenStatePath !== undefined) {
@@ -674,8 +676,9 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
   /**
    * First-visit default application. No-op once the (project, slug) cache has an
    * `activeFilterId` (back-nav restored a prior selection). Applies the screen's
-   * `default_filter` preset when present; otherwise the `status notTerminal`
-   * fallback. Marks the cache visited so it runs exactly once per first visit.
+   * `default_filter` preset when present; otherwise an EMPTY predicate (the phase
+   * toggles' `default_on` flags then seed what's hidden). Marks the cache visited
+   * so it runs exactly once per first visit.
    */
   private applyDefaultOnFirstVisit(statePath: string[]): void {
     const activeNode = this.ctx.tree.at([...statePath, 'activeFilterId']);

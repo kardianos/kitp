@@ -306,6 +306,30 @@ test('Inbox reorder: drag row 203 to the top rewrites personal_sort_order optimi
   assert.ok(!otherRow.classList.contains('inbox__row--settling'), 'an untouched row does not');
 });
 
+test('Inbox reorder: releasing in the gap (drop on the list container) commits (#22)', async () => {
+  const transport = recordingInboxTransport();
+  const { dispatcher, inbox } = bootInbox(transport);
+  await settle(dispatcher);
+
+  // Drag 201 (currently first) and release on the LIST CONTAINER, not a row —
+  // i.e. in the insertion gap. Before the fix this did nothing (the drop only
+  // listened on rows); now the container handler commits. With no layout in the
+  // shim the geometric target resolves to "past the end", so 201 moves last.
+  const r201 = visibleRows(inbox).find((r) => r.dataset.cardId === '201');
+  const listBody = inbox.el.querySelector('[data-inbox-list]');
+  assert.ok(listBody, 'the list container is present');
+  r201.dispatchEvent({ type: 'dragstart', target: r201 });
+  listBody.dispatchEvent({ type: 'drop', target: listBody, clientY: 9999 });
+
+  assert.deepEqual(
+    visibleRows(inbox).map((r) => r.dataset.cardId),
+    ['202', '203', '201'],
+    'gap drop committed: 201 moved to the end',
+  );
+  await settle(dispatcher);
+  assert.ok(transport.sent.sortSets.length >= 1, 'user_card_sort.set fired for the gap drop');
+});
+
 /* -------------------------------------------------------------------------- */
 /* Animated drop placeholder (#5): a gliding bar shows the insertion gap.       */
 /* -------------------------------------------------------------------------- */
