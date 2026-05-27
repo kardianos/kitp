@@ -24,6 +24,8 @@ before(async () => {
   const outdir = await buildTestBundles();
   M = await import(`${outdir}/app.js`);
   M.registerMasterDetail();
+  M.registerEnumManager(); // the Enums admin view is its own control, not a MasterDetail
+  M.registerPeopleManager(); // the People admin view is its own control too
 });
 
 const PROJECT_ID = '31';
@@ -112,7 +114,9 @@ function mountView(api, view) {
   const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
   const ctx = { api, tree, scope };
   const cfg = M.adminScreenConfig(view);
-  const ctrl = M.Control.New('MasterDetail', cfg, ctx);
+  // Mount as the config's own control type (most are MasterDetail; Enums is its
+  // own EnumManager control).
+  const ctrl = M.Control.New(cfg.type, cfg, ctx);
   ctrl.mount(new FakeElement('div'));
   return { ctrl, tree, cfg };
 }
@@ -121,16 +125,18 @@ function mountView(api, view) {
 /* Each admin view mounts as a registered MasterDetail.                        */
 /* -------------------------------------------------------------------------- */
 
-test('every admin view is config-only: mounts through Control.New as a MasterDetail', () => {
+test('every admin view is config-only: resolves to a registered control config', () => {
   const { api } = bootApi();
   for (const view of M.ADMIN_VIEWS) {
     const cfg = M.adminScreenConfig(view);
-    assert.equal(cfg.type, 'MasterDetail', `${view} resolves to a MasterDetail config`);
-    // The list query is built from the config (no per-screen control code).
-    assert.ok(cfg.queries.some((q) => q.name === 'list'), `${view} has a built list query`);
     const { ctrl } = mountView(api, view);
-    assert.equal(ctrl.type, 'MasterDetail', `${view} mounts as MasterDetail`);
+    assert.equal(ctrl.type, cfg.type, `${view} mounts as its config type (${cfg.type})`);
     assert.ok(ctrl.el, `${view} produced a root element`);
+    // Most admin views are MasterDetail (with a built list query); the Enums
+    // view is its own control (EnumManager) — no per-screen MasterDetail code.
+    if (cfg.type === 'MasterDetail') {
+      assert.ok(cfg.queries.some((q) => q.name === 'list'), `${view} has a built list query`);
+    }
   }
 });
 
@@ -212,7 +218,14 @@ test('card-backed admin screens carry an editField update action; read-only ones
   assert.deepEqual(M.adminScreenConfig('comm_channels').detail.nested, { kind: 'commChannelConfig' });
   assert.deepEqual(M.adminScreenConfig('activity_sinks').detail.nested, { kind: 'activitySinkConfig' });
   assert.deepEqual(M.adminScreenConfig('roles').detail.nested, { kind: 'roleMappings' });
-  for (const view of ['workflows', 'roles', 'comm_channels', 'activity_sinks', 'comm_log']) {
+  // Workflows now carries a create action (flow.set); rename lives in the nested
+  // flow-step editor. The rest stay pure read-only viewers.
+  const wf = M.adminScreenConfig('workflows');
+  assert.ok(
+    wf.actions.some((a) => a.intent === 'createItem' && a.spec === 'flow.set'),
+    'workflows has a flow.set create action',
+  );
+  for (const view of ['roles', 'comm_channels', 'activity_sinks', 'comm_log']) {
     const cfg = M.adminScreenConfig(view);
     assert.equal(cfg.actions.length, 0, `${view} is a read-only viewer (no MasterDetail action)`);
   }
@@ -252,6 +265,47 @@ test('Attributes: the detail mounts the edge-matrix nested editor (replacing bou
   assert.deepEqual(M.adminScreenConfig('screens').detail.nested, { kind: 'screenFilters' });
 });
 
+test('Screens admin: list + create are scoped to the active project (#10)', () => {
+  const cfg = M.adminScreenConfig('screens');
+  // The list filters screen cards by their parent project and refires on scope.
+  assert.deepEqual(cfg.list.input.parentCardId, { from: 'scope.projectId' });
+  assert.deepEqual(cfg.list.when, { signal: 'scope.projectId' });
+  assert.deepEqual(cfg.list.skipWhenNull, ['parentCardId']);
+  // New screens are parented to the active project (not orphaned globally).
+  assert.deepEqual(cfg.create.input.parentCardId, { from: 'scope.projectId' });
+});
+
+test('Projects admin: template badge maps to a label + Import/Export raise bus intents (#14)', async () => {
+  const cfg = M.adminScreenConfig('projects');
+  // The badge is the value→label form, so a template shows "Template" (not "TRUE").
+  assert.deepEqual(cfg.list.row.badge, { field: 'attributes.is_template', labels: { true: 'Template' } });
+  // Import / Export detail actions reuse the AppShell's global bus intents.
+  assert.deepEqual((cfg.detail.actions ?? []).map((a) => a.intent), ['projectImport', 'projectExport']);
+
+  // Mount with a bus spy, load the project row, select it, click Import.
+  const { api, dispatcher } = bootApi();
+  const emitted = [];
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  const bus = { emit: (type, detail) => emitted.push({ type, detail }) };
+  const ctrl = M.Control.New('MasterDetail', cfg, { api, tree, bus, scope });
+  ctrl.mount(new FakeElement('div'));
+  await settle(dispatcher);
+
+  const items = tree.at(['admin', 'projects', 'items']).peek();
+  assert.ok(items.length >= 1, 'a project row loaded');
+  tree.at(['admin', 'projects', 'selectedId']).set(items[0].id);
+  M.flushSync?.();
+
+  const importBtn = ctrl.el.querySelector('[data-md-action="projectImport"]');
+  assert.ok(importBtn, 'the Import action button renders in the project detail');
+  importBtn.dispatchEvent({ type: 'click', target: importBtn });
+  const ev = emitted.find((e) => e.type === 'projectImport');
+  assert.ok(ev, 'clicking Import raised the projectImport bus intent');
+  assert.equal(String(ev.detail.projectId), String(items[0].id), 'carries the selected project id');
+});
+
 /* -------------------------------------------------------------------------- */
 /* Project-scoped screen stays idle until the scope resolves.                  */
 /* -------------------------------------------------------------------------- */
@@ -276,4 +330,34 @@ test('Comm Channels: skips the list read until scope.projectId resolves, then fi
   const items = tree.at(['admin', 'comm_channels', 'items']).peek();
   assert.equal(items.length, 1, 'channel row loaded once the scope resolved');
   assert.match(M.fieldText(items[0].raw, 'name'), /Support inbox/);
+});
+
+test('ADMIN_SECTION classifies every admin view (Workspace global vs Project scoped)', () => {
+  // Every view is classified into exactly one section.
+  for (const v of M.ADMIN_VIEWS) {
+    assert.ok(M.ADMIN_SECTION[v] === 'workspace' || M.ADMIN_SECTION[v] === 'project', `${v} classified`);
+  }
+  // Confirmed grouping: global-data screens are Workspace; the rest are Project
+  // (always filtered to the active project).
+  const inSection = (s) => M.ADMIN_VIEWS.filter((v) => M.ADMIN_SECTION[v] === s).sort();
+  assert.deepEqual(inSection('workspace'), ['agents', 'attributes', 'people', 'projects', 'roles']);
+  assert.deepEqual(inSection('project'), ['activity_sinks', 'comm_channels', 'comm_log', 'enums', 'filters', 'screens', 'workflows']);
+});
+
+test('every PROJECT admin screen scopes its list to the active project', () => {
+  // A project-section screen must thread scope.projectId into its list query
+  // (parentCardId/projectId/scopeCardId from scope), so it can't leak rows from
+  // other projects. EnumManager (Values) is its own control (project-scoped by
+  // construction), so it's exempt from this MasterDetail-shaped check.
+  for (const v of M.ADMIN_VIEWS) {
+    if (M.ADMIN_SECTION[v] !== 'project' || v === 'enums') continue;
+    const cfg = M.adminScreenConfig(v);
+    const listQ = cfg.queries.find((q) => q.name === 'list');
+    assert.ok(listQ, `${v}: has a list query`);
+    const input = listQ.input ?? {};
+    const scoped = ['parentCardId', 'projectId', 'scopeCardId'].some(
+      (k) => input[k] && typeof input[k] === 'object' && input[k].from === 'scope.projectId',
+    );
+    assert.ok(scoped, `${v}: list query is scoped to scope.projectId (got ${JSON.stringify(input)})`);
+  }
 });

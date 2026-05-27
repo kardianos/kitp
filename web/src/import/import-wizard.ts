@@ -40,6 +40,7 @@
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
+import { trapFocus } from '../util/focus-trap.js';
 import type { ApiFault } from '../core/dispatch.js';
 import type { Combobox, ComboboxOption } from '../ui/combobox.js';
 import { uploadCsv, autoMapping } from './import-helpers.js';
@@ -148,6 +149,8 @@ export class ImportWizard extends Control<ImportWizardConfig> {
   private nextBtn!: HTMLButtonElement;
   private nextLabelEl!: HTMLSpanElement;
   private lastFocused: Element | null = null;
+  /** Focus-trap disposer while the wizard is open (#29). */
+  private untrap: (() => void) | null = null;
 
   /** Spawned mapping comboboxes, keyed by CSV header, torn down on reset. */
   private mapPickers = new Map<string, Combobox<string>>();
@@ -266,6 +269,8 @@ export class ImportWizard extends Control<ImportWizardConfig> {
     this.opened = true;
     this.lastFocused = activeElement();
     this.el.style.display = '';
+    this.untrap?.();
+    this.untrap = trapFocus(this.el); // keep Tab inside the modal (#29)
     // Repaint everything for the fresh state.
     this.renderSteps();
     this.renderBody();
@@ -275,6 +280,8 @@ export class ImportWizard extends Control<ImportWizardConfig> {
   close(): void {
     if (!this.opened) return;
     this.opened = false;
+    this.untrap?.();
+    this.untrap = null;
     this.el.style.display = 'none';
     this.resetState();
     focusEl(this.lastFocused);

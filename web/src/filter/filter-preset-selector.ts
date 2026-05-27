@@ -23,6 +23,7 @@
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { Combobox } from '../ui/combobox.js';
+import { Popover } from '../ui/popover.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { readTitle } from './screen-resolve.js';
 
@@ -85,21 +86,54 @@ export class FilterPresetSelector extends Control<FilterPresetSelectorConfig> {
       comboHost,
     ) as Combobox<string>;
 
-    // Action strip — Save (always), Set default / Rename / Delete (enabled only
-    // when a preset is active). The bar owns the actual writes via the callbacks.
-    const saveBtn = actionBtn('Save…', 'filter-preset__save', 'Save current filter as a new view');
-    const setDefaultBtn = actionBtn('Set default', 'filter-preset__set-default', 'Set the active view as the screen default');
-    const renameBtn = actionBtn('Rename', 'filter-preset__rename', 'Rename the active view');
-    const deleteBtn = actionBtn('Delete', 'filter-preset__delete', 'Delete the active view');
+    // Actions collapsed behind a "⋯" overflow menu (#4): Save (always) + the
+    // active-only Set default / Rename / Delete. The bar owns the writes via the
+    // callbacks; this control is presentation + intent only.
+    const kebab = document.createElement('button');
+    kebab.type = 'button';
+    kebab.className = 'btn btn--icon filter-preset__menu-trigger';
+    kebab.dataset.filterPresetMenu = '';
+    kebab.setAttribute('aria-haspopup', 'menu');
+    kebab.setAttribute('aria-expanded', 'false');
+    kebab.setAttribute('aria-label', 'View actions');
+    kebab.title = 'View actions';
+    kebab.textContent = '⋯';
+    this.el.append(kebab);
+
+    const menu = new Popover(kebab, {
+      placement: 'bottom-end',
+      onClose: () => kebab.setAttribute('aria-expanded', 'false'),
+    });
+    const panel = menu.element;
+    panel.classList.add('filter-preset__menu');
+    panel.setAttribute('role', 'menu');
+
+    const saveBtn = menuItem('Save current as new view…', 'filter-preset__save');
+    const setDefaultBtn = menuItem('Set as default', 'filter-preset__set-default');
+    const renameBtn = menuItem('Rename…', 'filter-preset__rename');
+    const deleteBtn = menuItem('Delete…', 'filter-preset__delete');
     this.setDefaultBtn = setDefaultBtn;
     this.renameBtn = renameBtn;
     this.deleteBtn = deleteBtn;
-    this.el.append(saveBtn, setDefaultBtn, renameBtn, deleteBtn);
+    panel.append(saveBtn, setDefaultBtn, renameBtn, deleteBtn);
 
-    this.listen(saveBtn, 'click', () => this.config.onSave?.());
-    this.listen(setDefaultBtn, 'click', () => this.config.onSetDefault?.());
-    this.listen(renameBtn, 'click', () => this.config.onRename?.());
-    this.listen(deleteBtn, 'click', () => this.config.onDelete?.());
+    const run = (fn?: () => void): void => {
+      menu.close();
+      fn?.();
+    };
+    this.listen(saveBtn, 'click', () => run(this.config.onSave));
+    this.listen(setDefaultBtn, 'click', () => run(this.config.onSetDefault));
+    this.listen(renameBtn, 'click', () => run(this.config.onRename));
+    this.listen(deleteBtn, 'click', () => run(this.config.onDelete));
+    this.listen(kebab, 'click', () => {
+      if (menu.isOpen) {
+        menu.close();
+      } else {
+        kebab.setAttribute('aria-expanded', 'true');
+        menu.open();
+      }
+    });
+    this.onDestroy(() => menu.destroy());
 
     // Reactively re-sync the Combobox options from the filters list AND the
     // active id from the cache leaf. One-way derive: reads the two leaves +
@@ -141,12 +175,12 @@ export class FilterPresetSelector extends Control<FilterPresetSelectorConfig> {
   }
 }
 
-function actionBtn(text: string, cls: string, title: string): HTMLButtonElement {
+function menuItem(text: string, cls: string): HTMLButtonElement {
   const b = document.createElement('button');
   b.type = 'button';
-  b.className = `btn btn--xs ${cls}`;
+  b.className = `filter-preset__menu-item ${cls}`;
+  b.setAttribute('role', 'menuitem');
   b.textContent = text;
-  b.title = title;
   return b;
 }
 

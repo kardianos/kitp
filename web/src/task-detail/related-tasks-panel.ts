@@ -163,12 +163,46 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
     childrenHost.dataset.relatedChildren = '';
     this.childrenHost = childrenHost;
     childrenBlock.append(childrenLabel, childrenHost);
+
+    // "+ New sub-task" — opens the global quick-entry overlay prefilled to parent
+    // THIS task (parent_task + parent_relationship='subtask'); on create the
+    // overlay bumps `tasks.createdNonce` and this panel reloads its children (#9).
+    const actions = document.createElement('div');
+    actions.className = 'related-tasks__actions';
+    const newSub = document.createElement('button');
+    newSub.type = 'button';
+    newSub.className = 'btn related-tasks__new-subtask';
+    newSub.dataset.relatedNewSubtask = '';
+    newSub.textContent = '+ New sub-task';
+    this.listen(newSub, 'click', () => this.openNewSubtask());
+    actions.append(newSub);
+    childrenBlock.append(actions);
     this.el.append(childrenBlock);
 
     this.paintParent();
     this.paintChildren();
     this.resolveParentLabel();
     this.loadChildren();
+
+    // Reload children when a task is created anywhere (the + New sub-task flow
+    // bumps this), so a freshly-created subtask appears without a manual reload.
+    this.effect(() => {
+      const nonce = this.ctx.tree.at(['tasks', 'createdNonce']).get<number>() ?? 0;
+      if (nonce > 0 && this.cardId !== null) this.loadChildren();
+    }, 'related.refreshOnCreate');
+  }
+
+  /** Open quick-entry prefilled to create a sub-task of the focal task. */
+  private openNewSubtask(): void {
+    if (this.cardId === null) return;
+    this.ctx.bus?.emit('quickCreateOpen', {
+      prefill: {
+        extraAttributes: [
+          { name: 'parent_task', value: this.cardId },
+          { name: 'parent_relationship', value: 'subtask' },
+        ],
+      },
+    });
   }
 
   /* -------------------------------- loads ------------------------------- */

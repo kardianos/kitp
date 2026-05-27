@@ -58,7 +58,9 @@ import type { ActionBinding, QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { AUTH_USER_PATH, peekCurrentUserId, type AuthUser } from '../auth/auth-state.js';
 import { virtualList } from '../core/virtual-list.js';
+import { DropPlaceholder, computeDropTarget, applySettle, FlipAnimator } from '../ui/drag-placeholder.js';
 import { navigate, taskUrl } from '../shell/router.js';
+import { publishTaskNav } from '../shell/task-nav.js';
 import { SPEC } from '../kanban/specs.js';
 import { INBOX_SPEC } from './specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
@@ -128,15 +130,25 @@ export class Inbox extends Control<InboxConfig> {
   /** Index of the keyboard-selected row (j/k cursor + Shift+j/k reorder). */
   private selectedIndex = 0;
 
-  /** Whether the routed-to-me (agent) view is active. */
-  private routedToMe = false;
-
-  /** Whether the mine_only scope toggle is active. */
-  private mineOnly = false;
+  /** The "Mine only" / "Routed to me" view state lives entirely in the
+   *  `inbox.mineOnly` / `inbox.routedToMe` tree leaves (flipped by the filter-bar
+   *  InboxViewToggles control); this control only watches them. */
 
   /** The viewport element (the virtualList scroll container) — held so reorder
    *  geometry + focus can find rows. */
   private listBody: HTMLElement | null = null;
+
+  /** The gliding drop placeholder (#5), one per list — glides to the insertion
+   *  gap during a row drag. */
+  private placeholder: DropPlaceholder | null = null;
+
+  /** The row id that just reordered (drag or keyboard), consumed by the next
+   *  fill to play a one-shot settle ring on the row in its new slot. */
+  private settleRowId: bigint | null = null;
+
+  /** FLIP slider: records row positions before a reorder and slides them to
+   *  their new slots after the in-place re-render. */
+  private readonly flip = new FlipAnimator(() => this.listBody, '[data-inbox-row]');
 
   private get tasksPath(): string[] {
     return (this.config.tasksPath ?? 'inbox.tasks').split('.');
@@ -209,6 +221,21 @@ export class Inbox extends Control<InboxConfig> {
       // fault — it just leaves the delegate picker hidden. Route to a named
       // no-op handler instead of 'self'/'top'.
       onError: { method: 'agentsLoadFailed' },
+    },
+    {
+      // The user's EXISTING delegations, scoped to the active project. Without
+      // this load the per-row picker only ever reflected an optimistic patch, so
+      // a saved delegation looked lost after reload — the actual bug. Refires on
+      // a project switch; idle until scope resolves.
+      name: 'routing',
+      spec: INBOX_SPEC.userCardAgentList,
+      when: { signal: 'scope.projectId' },
+      input: { parentCardId: { from: 'scope.projectId' } },
+      skipWhenNull: ['parentCardId'],
+      result: { method: 'landRouting' },
+      // A failed routing read shouldn't raise the screen fault — just leave the
+      // pickers unseeded (and must NOT clear the agents list).
+      onError: { method: 'routingLoadFailed' },
     },
   ];
 
@@ -298,7 +325,14 @@ export class Inbox extends Control<InboxConfig> {
     // after render). where/tree/routedToMe start empty; queryVersion at 0.
     this.ctx.tree.at(['inbox', 'where']).set(undefined);
     this.ctx.tree.at(['inbox', 'tree']).set(undefined);
-    this.ctx.tree.at(['inbox', 'routedToMe']).set(false);
+    // Toggle state (flipped by the filter-bar InboxViewToggles). Seed only when
+    // unset so a value carried over (e.g. a back-nav) isn't clobbered.
+    if (this.ctx.tree.at(['inbox', 'routedToMe']).peek() === undefined) {
+      this.ctx.tree.at(['inbox', 'routedToMe']).set(false);
+    }
+    if (this.ctx.tree.at(['inbox', 'mineOnly']).peek() === undefined) {
+      this.ctx.tree.at(['inbox', 'mineOnly']).set(false);
+    }
     // Seed the agents-query driver leaf to the resolvable identity (config
     // override first, else the already-landed auth.user) so the `{ signal:
     // 'inbox.parentUserId' }` trigger has a value to skip/fire on. The
@@ -328,23 +362,10 @@ export class Inbox extends Control<InboxConfig> {
     agentBanner.style.display = 'none';
     header.append(agentBanner);
 
-    const toggles = document.createElement('div');
-    toggles.className = 'inbox__toggles';
-
-    const routedToggle = this.buildToggle(
-      'inbox-routed-toggle',
-      'Routed to me',
-      'Show tasks routed to me as an agent',
-      () => this.toggleRoutedToMe(),
-    );
-    const mineToggle = this.buildToggle(
-      'inbox-mine-toggle',
-      'Mine only',
-      'Narrow to tasks assigned to me',
-      () => this.toggleMineOnly(),
-    );
-    toggles.append(mineToggle.el, routedToggle.el);
-    header.append(toggles);
+    // The "Mine only" / "Routed to me" toggles no longer live in the Inbox body
+    // — they're registered as filter-bar view actions (InboxViewToggles, #13)
+    // and flip the `inbox.mineOnly` / `inbox.routedToMe` leaves this control
+    // watches below.
     this.el.append(header);
 
     /* -------------------------------- fault -------------------------------- */
@@ -394,7 +415,6 @@ export class Inbox extends Control<InboxConfig> {
     this.effect(() => {
       const routed = this.ctx.tree.at(['inbox', 'routedToMe']).get<boolean>() ?? false;
       agentBanner.style.display = routed ? '' : 'none';
-      routedToggle.setActive(routed);
     }, 'inbox.agentBanner');
 
     // Rows render through the recycling virtualList. `data()` reads the tasks
@@ -416,6 +436,14 @@ export class Inbox extends Control<InboxConfig> {
     });
     this.onDestroy(() => vl.dispose());
 
+    // The shared gliding drop placeholder (#5), in the list viewport's content
+    // coordinate space (appended after the virtualList so it sits on top).
+    this.placeholder = new DropPlaceholder(body, { className: 'drop-placeholder--inbox' });
+    this.onDestroy(() => {
+      this.placeholder?.destroy();
+      this.placeholder = null;
+    });
+
     /* -------------------- one-way query-version drivers -------------------- */
     // Bump the tasks query version whenever scope changes.
     this.effect(() => {
@@ -429,9 +457,18 @@ export class Inbox extends Control<InboxConfig> {
     this.effect(() => {
       const search = this.ctx.tree.at(['screen', 'search']).get<string>() ?? '';
       const predicate = this.ctx.tree.at(['screen', 'predicate']).get<Predicate | null>() ?? null;
+      this.ctx.tree.at(['inbox', 'mineOnly']).get(); // subscribe — the toggle flips it
       this.applyFilter(search, predicate);
       this.bumpQuery();
     }, 'inbox.filterWatch');
+
+    // "Routed to me" flips `inbox.routedToMe` (the agent-perspective view); the
+    // tasks query reads it at fire time, so just refire on a change. The banner
+    // effect (above) repaints from the same leaf. One-way, cascade-safe.
+    this.effect(() => {
+      this.ctx.tree.at(['inbox', 'routedToMe']).get(); // subscribe
+      this.bumpQuery();
+    }, 'inbox.routedWatch');
 
     // Identity watch: when the boot /auth/me probe lands `auth.user` (or it
     // changes), mirror the user's id into `inbox.parentUserId` (drives the
@@ -444,13 +481,21 @@ export class Inbox extends Control<InboxConfig> {
       const me = this.resolveUserId();
       const node = this.ctx.tree.at(['inbox', 'parentUserId']);
       if (node.peek<bigint | null>() !== me) node.set(me);
-      if (this.mineOnly) {
+      if ((this.ctx.tree.at(['inbox', 'mineOnly']).peek<boolean>() ?? false)) {
         const search = this.ctx.tree.at(['screen', 'search']).peek<string>() ?? '';
         const predicate = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
         this.applyFilter(search, predicate);
         this.bumpQuery();
       }
     }, 'inbox.identityWatch');
+
+    // Refetch when a task is created anywhere (the quick-entry overlay bumps
+    // `tasks.createdNonce`), so a newly-added task shows up without a manual
+    // reload. One-way: reads the nonce, bumps the query version — cascade-safe.
+    this.effect(() => {
+      const nonce = this.ctx.tree.at(['tasks', 'createdNonce']).get<number>() ?? 0;
+      if (nonce > 0) this.bumpQuery();
+    }, 'inbox.refreshOnCreate');
   }
 
   /**
@@ -503,59 +548,25 @@ export class Inbox extends Control<InboxConfig> {
       this.ctx.tree.at(['inbox', 'agents']).set([]);
       this.tickLookups();
     });
+
+    // Land the user's existing delegations so the per-row pickers reflect saved
+    // routings (not just optimistic patches) on load / project switch.
+    this.handler('landRouting', (out) => {
+      const routing = ((out ?? {}) as { routing?: Record<string, bigint> }).routing ?? {};
+      this.ctx.tree.at(['inbox', 'routing']).set(routing);
+      this.tickLookups();
+    });
+
+    // A routing-read fault leaves the existing pickers untouched (it must NOT
+    // clobber the agents list like agentsLoadFailed does).
+    this.handler('routingLoadFailed', () => {
+      this.tickLookups();
+    });
   }
 
   private tickLookups(): void {
     const node = this.ctx.tree.at(['inbox', 'lookups', 'tick']);
     node.set((node.peek<number>() ?? 0) + 1);
-  }
-
-  /* ------------------------------- toggles ------------------------------ */
-
-  private buildToggle(
-    testId: string,
-    label: string,
-    title: string,
-    onToggle: () => void,
-  ): { el: HTMLElement; setActive(on: boolean): void } {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'inbox__toggle';
-    btn.dataset.inboxToggle = testId;
-    btn.title = title;
-    btn.setAttribute('aria-pressed', 'false');
-    btn.textContent = label;
-    this.listen(btn, 'click', () => onToggle());
-    return {
-      el: btn,
-      setActive(on: boolean): void {
-        btn.classList.toggle('inbox__toggle--active', on);
-        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-      },
-    };
-  }
-
-  private toggleRoutedToMe(): void {
-    this.routedToMe = !this.routedToMe;
-    // One-way write: the tasks query reads this leaf at fire time; bumping the
-    // version refires it. The agentBanner effect repaints from the same leaf.
-    this.ctx.tree.at(['inbox', 'routedToMe']).set(this.routedToMe);
-    this.bumpQuery();
-  }
-
-  private toggleMineOnly(): void {
-    this.mineOnly = !this.mineOnly;
-    const btn = this.el.querySelector('[data-inbox-toggle="inbox-mine-toggle"]') as HTMLElement | null;
-    if (btn) {
-      btn.classList.toggle('inbox__toggle--active', this.mineOnly);
-      btn.setAttribute('aria-pressed', this.mineOnly ? 'true' : 'false');
-    }
-    // Re-project the filter (the mine_only assignee leaf rides in applyFilter)
-    // and refire. Reads the live search/predicate via the tree.
-    const search = this.ctx.tree.at(['screen', 'search']).peek<string>() ?? '';
-    const predicate = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
-    this.applyFilter(search, predicate);
-    this.bumpQuery();
   }
 
   /* ----------------------------- query driver --------------------------- */
@@ -577,7 +588,8 @@ export class Inbox extends Control<InboxConfig> {
     // (null) this is a no-op refire; the identity-watch effect re-applies the
     // filter once the probe lands.
     const me = this.resolveUserId();
-    if (this.mineOnly && me !== null) {
+    const mineOnly = this.ctx.tree.at(['inbox', 'mineOnly']).peek<boolean>() ?? false;
+    if (mineOnly && me !== null) {
       leaves.push({ attr: 'assignee', op: '=', value: me });
     }
 
@@ -682,19 +694,20 @@ export class Inbox extends Control<InboxConfig> {
       const idStr = el.dataset.cardId;
       if (idStr === undefined) return;
       this.selectByCardId(BigInt(idStr));
-      navigate(taskUrl(idStr));
+      this.openTask(idStr);
     });
     this.listen(el, 'keydown', (ev) => {
       const k = (ev as KeyboardEvent).key;
       if (k === 'Enter' || k === 'o') {
         ev.preventDefault();
         const idStr = el.dataset.cardId;
-        if (idStr !== undefined) navigate(taskUrl(idStr));
+        if (idStr !== undefined) this.openTask(idStr);
       }
     });
     this.listen(el, 'dragstart', (ev) => {
       const idStr = el.dataset.cardId;
       draggingRowId = idStr !== undefined ? BigInt(idStr) : null;
+      this.settleRowId = null; // a fresh drag clears the prior move's settle
       el.classList.add('inbox__row--dragging');
       const dt = (ev as DragEvent).dataTransfer;
       if (dt && idStr !== undefined) {
@@ -705,15 +718,20 @@ export class Inbox extends Control<InboxConfig> {
     this.listen(el, 'dragend', () => {
       draggingRowId = null;
       el.classList.remove('inbox__row--dragging');
+      this.placeholder?.hide();
     });
     this.listen(el, 'dragover', (ev) => {
       ev.preventDefault();
-      el.classList.add('inbox__row--drop');
+      // Glide the shared placeholder to the insertion gap (#5), computed against
+      // the list viewport so the bar sits in the list's content coordinate space
+      // (and "drag to end" parks it below the last row).
+      if (draggingRowId === null || this.listBody === null) return;
+      const t = computeDropTarget(this.listBody, (ev as DragEvent).clientY, draggingRowId.toString(), '[data-inbox-row]');
+      this.placeholder?.showAtY(t.y);
     });
-    this.listen(el, 'dragleave', () => el.classList.remove('inbox__row--drop'));
     this.listen(el, 'drop', (ev) => {
       ev.preventDefault();
-      el.classList.remove('inbox__row--drop');
+      this.placeholder?.pulse();
       this.onRowDrop(el, ev as DragEvent);
     });
   }
@@ -728,6 +746,10 @@ export class Inbox extends Control<InboxConfig> {
   private fillRow(el: HTMLElement, row: CardWithAttrs, index: number): void {
     el.dataset.cardId = row.id.toString();
     el.dataset.index = String(index);
+    // The row that just reordered settles into its new slot; every other fill
+    // clears the class so a recycled node keeps no stale animation. The id
+    // persists past the optimistic re-render (cleared on the next dragstart).
+    applySettle(el, 'inbox__row--settling', this.settleRowId !== null && row.id === this.settleRowId);
     el.classList.toggle('inbox__row--selected', index === this.selectedIndex);
     el.setAttribute('aria-selected', index === this.selectedIndex ? 'true' : 'false');
     // Brighter leading indicator for a personally-ordered row vs server default.
@@ -858,6 +880,12 @@ export class Inbox extends Control<InboxConfig> {
     const rows = this.currentRows();
     const updates = planPersonalReorder(rows, movedId, insertAt);
     if (updates.length === 0) return;
+    // FLIP (#context): snapshot positions before the optimistic patch, slide
+    // rows to their new slots after the in-place re-render (drag OR keyboard).
+    // The moved row also gets a settle ring.
+    this.flip.capture();
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => this.flip.play());
+    this.settleRowId = movedId;
     // Up-front optimistic list patch so the order paints before the writes land
     // (the per-action patches reconcile each row's personal_sort_order, but the
     // whole-list patch also reseats rows whose value already matched).
@@ -891,6 +919,13 @@ export class Inbox extends Control<InboxConfig> {
     if (i < 0) return;
     this.selectedIndex = i;
     this.repaintSelection();
+  }
+
+  /** Open a task, publishing the inbox's row order first so task-detail
+   *  prev/next nav (#18) walks the same sequence. */
+  private openTask(idStr: string): void {
+    publishTaskNav(this.ctx.tree, this.currentRows().map((r) => r.id));
+    navigate(taskUrl(idStr));
   }
 
   private moveSelection(delta: number): void {

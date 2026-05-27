@@ -102,6 +102,32 @@ interface ControlCtor {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Element → owning Control registry (for focus-driven active-scope tracking). */
+/* -------------------------------------------------------------------------- */
+
+/** Each mounted control's root el → the control. Used by `controlForNode` so
+ *  the HotkeyController can resolve "which control owns the focused element"
+ *  and make its (and its ancestors') scoped hotkeys live. */
+const controlOwners = new WeakMap<HTMLElement, Control>();
+
+/**
+ * The DEEPEST mounted control whose root element is `node` or an ancestor of it
+ * — i.e. the control that "owns" the focused/clicked node. Walks up the DOM and
+ * returns the first registered root. null when the node is outside every
+ * control (or there's no DOM).
+ */
+export function controlForNode(node: Node | null): Control | null {
+  let el: HTMLElement | null =
+    node instanceof HTMLElement ? node : ((node?.parentElement ?? null) as HTMLElement | null);
+  while (el) {
+    const owner = controlOwners.get(el);
+    if (owner) return owner;
+    el = el.parentElement;
+  }
+  return null;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Control base class.                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -157,6 +183,7 @@ export abstract class Control<Cfg extends BaseControlConfig = BaseControlConfig>
     this.render();
     parent.appendChild(this.el);
     this.mounted = true;
+    controlOwners.set(this.el, this); // focus → active-scope resolution
     // Own + wire the declarative data layer AFTER render so render() has
     // registered any named handlers / inline-fault effect the bindings target.
     this.data = new DataController(this.dataHost(), this.ctx.tree);
@@ -334,6 +361,7 @@ export abstract class Control<Cfg extends BaseControlConfig = BaseControlConfig>
     this.data = null;
     this.intentListeners.clear();
     this.handlers.clear();
+    controlOwners.delete(this.el);
     this.el.remove();
     this.mounted = false;
     this.parent = null;

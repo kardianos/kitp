@@ -30,6 +30,7 @@ export const INBOX_SPEC = {
   userCardSortSet: 'user_card_sort.set',
   userCardAgentSet: 'user_card_agent.set',
   userCardAgentClear: 'user_card_agent.clear',
+  userCardAgentList: 'user_card_agent.list',
 } as const;
 
 export interface UserCardSortSetInput {
@@ -58,8 +59,23 @@ export interface UserCardAgentClearOutput {
   deleted: number;
 }
 
+export interface UserCardAgentListInput {
+  /** Optional project (parent) scope; only routings under it are returned. */
+  parentCardId?: bigint;
+}
+/** The decoded routing map: card id (string) → agent user id (bigint). */
+export interface UserCardAgentListOutput {
+  routing: Record<string, bigint>;
+}
+
 function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
+}
+function asId(v: unknown): bigint | null {
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'number' && Number.isInteger(v)) return BigInt(v);
+  if (typeof v === 'string' && /^\d+$/.test(v)) return BigInt(v);
+  return null;
 }
 
 /**
@@ -92,6 +108,26 @@ export function registerInboxSpecs(api: Api): void {
       const j = asObj(raw);
       const deleted = typeof j['deleted'] === 'number' ? (j['deleted'] as number) : 0;
       return { ok: j['ok'] === true, deleted };
+    },
+  });
+
+  // The Inbox LOADS the user's existing routings so delegations survive a
+  // reload / view switch (without this, `inbox.routing` was only ever patched
+  // optimistically, so a saved delegation looked lost after re-mount).
+  api.define<UserCardAgentListInput, UserCardAgentListOutput>({
+    endpoint: 'user_card_agent',
+    action: 'list',
+    encode: (i) => (i.parentCardId !== undefined ? { parent_card_id: i.parentCardId } : {}),
+    decode: (raw): UserCardAgentListOutput => {
+      const rows = Array.isArray(asObj(raw)['rows']) ? (asObj(raw)['rows'] as unknown[]) : [];
+      const routing: Record<string, bigint> = {};
+      for (const r of rows) {
+        const o = asObj(r);
+        const cardId = asId(o['card_id']);
+        const agentId = asId(o['agent_user_id']);
+        if (cardId !== null && agentId !== null) routing[cardId.toString()] = agentId;
+      }
+      return { routing };
     },
   });
 }

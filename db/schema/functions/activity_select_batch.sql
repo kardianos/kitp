@@ -28,6 +28,7 @@ DECLARE
     _idx int;
     _raw jsonb;
     _card_id bigint;
+    _project_id bigint;
     _before_id bigint;
     _limit int;
     _sort_asc boolean;
@@ -46,6 +47,17 @@ BEGIN
         EXCEPTION WHEN invalid_text_representation THEN
             _before_id := NULL;
         END;
+        -- Optional project scope: when set, only activity for cards within that
+        -- project (the project itself or a descendant) is returned — the
+        -- standalone Activity page is per-project. 0/empty means unscoped.
+        BEGIN
+            _project_id := NULLIF(_raw->>'project_id', '')::bigint;
+        EXCEPTION WHEN invalid_text_representation THEN
+            _project_id := NULL;
+        END;
+        IF _project_id = 0 THEN
+            _project_id := NULL;
+        END IF;
         _limit := COALESCE(NULLIF(_raw->>'limit', '')::int, 200);
         IF _limit <= 0 OR _limit >= 1000 THEN
             _limit := 200;
@@ -85,6 +97,19 @@ BEGIN
                     LEFT JOIN comment_body cb ON cb.id = (a.value_new->>'comment_body_id')::bigint
                     WHERE (_card_id IS NULL OR a.card_id = _card_id)
                       AND (_before_id IS NULL OR a.id < _before_id)
+                      -- Project scope: the card is the project or a descendant
+                      -- (walk parents up to the depth-16 cap, same as B7).
+                      AND (_project_id IS NULL OR EXISTS (
+                        WITH RECURSIVE pj(id, parent_card_id, depth) AS (
+                            SELECT card.id, card.parent_card_id, 0
+                            FROM card WHERE card.id = a.card_id
+                            UNION ALL
+                            SELECT p.id, p.parent_card_id, pj.depth + 1
+                            FROM card p JOIN pj ON p.id = pj.parent_card_id
+                            WHERE pj.depth < 16
+                        )
+                        SELECT 1 FROM pj WHERE pj.id = _project_id
+                      ))
                       AND EXISTS (
                         -- depth < 16 caps the parent walk (CLAUDE.md cap;
                         -- matches card_ancestors / scopeWalkDepth) so a

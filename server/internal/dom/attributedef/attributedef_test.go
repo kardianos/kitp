@@ -87,6 +87,47 @@ func TestSelectIncludesIsActiveBindings(t *testing.T) {
 	}
 }
 
+// TestSelectCarriesEnumManaged verifies the enum_managed flag survives the
+// SQLFunc dispatch round-trip (result jsonb → SelectOutput → wire). The "Manage
+// values" admin screen reads this flag to decide which attributes it edits; a
+// missing SelectRow.EnumManaged field silently drops it and the screen renders
+// empty ("No managed attributes").
+func TestSelectCarriesEnumManaged(t *testing.T) {
+	srv, _ := setup(t, "kitp_test_ad_enum_managed")
+	ctx := auth.WithSystemUser(context.Background())
+
+	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "s", Endpoint: "attribute_def", Action: "select"},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("select: %+v", resp.Subresponses[0])
+	}
+	var out attributedef.SelectOutput
+	buf, _ := json.Marshal(resp.Subresponses[0].Data)
+	_ = json.Unmarshal(buf, &out)
+
+	got := make(map[string]bool, len(out.Rows))
+	for _, r := range out.Rows {
+		got[r.Name] = r.EnumManaged
+	}
+	// Seed flags milestone_ref / component_ref / tags as enum_managed; others off.
+	want := map[string]bool{
+		"milestone_ref": true,
+		"component_ref": true,
+		"tags":          true,
+		"status":        false,
+		"assignee":      false,
+	}
+	for name, exp := range want {
+		if _, ok := got[name]; !ok {
+			t.Fatalf("attribute_def %q missing from select; rows=%+v", name, out.Rows)
+		}
+		if got[name] != exp {
+			t.Errorf("attribute_def %q enum_managed = %v, want %v", name, got[name], exp)
+		}
+	}
+}
+
 // TestInsertAndBindLifecycle exercises insert + edge.insert + edge.delete
 // (with usage gating) end-to-end as an admin.
 func TestInsertAndBindLifecycle(t *testing.T) {

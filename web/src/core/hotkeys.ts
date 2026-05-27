@@ -96,6 +96,55 @@ function chainToRoot(control: Control | null): Control[] {
   return chain;
 }
 
+/**
+ * Pure derivation of the active binding map for a scope chain: the root tier
+ * first, then the active control's chain (deepest wins on a shared token), then
+ * the overlay's chain at the deepest positions so it shadows all. Shared by the
+ * live `bindings` computed and the untracked {@link HotkeyController.snapshotFor}
+ * (which the help overlay uses to list a SPECIFIC scope's keys — e.g. the route
+ * screen — regardless of transient focus).
+ */
+function deriveBindings(
+  rootControl: Control | null,
+  activeControl: Control | null,
+  overlayControl: Control | null,
+): Map<string, ResolvedBinding> {
+  const map = new Map<string, ResolvedBinding>();
+  const chain = chainToRoot(activeControl);
+  // Ensure the root tier is represented even when nothing is active.
+  if (rootControl && !chain.includes(rootControl)) chain.unshift(rootControl);
+  // Overlay tier wins: append its chain at the deepest positions.
+  if (overlayControl) {
+    for (const c of chainToRoot(overlayControl)) {
+      if (!chain.includes(c)) chain.push(c);
+    }
+  }
+
+  chain.forEach((control, depth) => {
+    // Tier 0 is the always-on global scope; deeper tiers group under the owning
+    // control's type in the help overlay.
+    const scope = depth === 0 ? 'global' : control.type;
+    for (const b of control.hotkeys()) {
+      const aliases = typeof b.binding === 'string' ? [b.binding] : b.binding;
+      for (const alias of aliases) {
+        const token = normalizeToken(alias);
+        const existing = map.get(token);
+        // Deeper scope (higher depth) shadows shallower bindings.
+        if (!existing || depth >= existing.depth) {
+          map.set(token, {
+            run: b.run,
+            fireInInputs: b.fireInInputs === true,
+            depth,
+            ...(b.label !== undefined ? { label: b.label } : {}),
+            scope,
+          });
+        }
+      }
+    }
+  });
+  return map;
+}
+
 export interface HotkeyControllerOptions {
   /** The root control whose bindings are always in scope (global tier). */
   root: ReadonlySignal<Control | null>;
@@ -134,47 +183,10 @@ export class HotkeyController {
     this.overlay = opts.overlay ?? null;
     this.target = opts.target ?? document;
 
-    this.bindings = computed(() => {
-      const map = new Map<string, ResolvedBinding>();
-      // Build the scope chain: root tier first, then the active chain, then
-      // (highest depth) the topmost overlay's own chain so it shadows all.
-      const rootControl = this.root.get();
-      const activeControl = this.active.get();
-      const overlayControl = this.overlay?.get() ?? null;
-      const chain = chainToRoot(activeControl);
-      // Ensure the root tier is represented even when nothing is active.
-      if (rootControl && !chain.includes(rootControl)) chain.unshift(rootControl);
-      // Overlay tier wins: append its chain at the deepest positions.
-      if (overlayControl) {
-        for (const c of chainToRoot(overlayControl)) {
-          if (!chain.includes(c)) chain.push(c);
-        }
-      }
-
-      chain.forEach((control, depth) => {
-        // Tier 0 is the always-on global scope; deeper tiers group under the
-        // owning control's type in the help overlay.
-        const scope = depth === 0 ? 'global' : control.type;
-        for (const b of control.hotkeys()) {
-          const aliases = typeof b.binding === 'string' ? [b.binding] : b.binding;
-          for (const alias of aliases) {
-            const token = normalizeToken(alias);
-            const existing = map.get(token);
-            // Deeper scope (higher depth) shadows shallower bindings.
-            if (!existing || depth >= existing.depth) {
-              map.set(token, {
-                run: b.run,
-                fireInInputs: b.fireInInputs === true,
-                depth,
-                ...(b.label !== undefined ? { label: b.label } : {}),
-                scope,
-              });
-            }
-          }
-        }
-      });
-      return map;
-    }, 'hotkeys.binding-map');
+    this.bindings = computed(
+      () => deriveBindings(this.root.get(), this.active.get(), this.overlay?.get() ?? null),
+      'hotkeys.binding-map',
+    );
   }
 
   /** Start listening. Returns a disposer. */
@@ -192,6 +204,17 @@ export class HotkeyController {
   /** For tests/help overlays: snapshot the currently derived bindings. */
   snapshot(): Map<string, ResolvedBinding> {
     return new Map(this.bindings.peek());
+  }
+
+  /**
+   * Snapshot the bindings for a SPECIFIC control's scope chain (untracked). The
+   * help overlay uses this to list the keys active for the current SCREEN even
+   * when transient focus — e.g. clicking the topbar help button — has moved the
+   * live active control to the shell chrome. Falls back to the root tier (global
+   * only) when `control` is null.
+   */
+  snapshotFor(control: Control | null): Map<string, ResolvedBinding> {
+    return deriveBindings(this.root.peek(), control, this.overlay?.peek() ?? null);
   }
 
   private onKeydown(e: KeyboardEvent): void {
@@ -216,7 +239,11 @@ export class HotkeyController {
     const isChordPrefix = [...map.keys()].some((k) => k.startsWith(token + ' '));
     const direct = map.get(token);
 
-    if (isChordPrefix && !direct) {
+    // Don't capture a chord prefix while the user is typing in an editable
+    // element — otherwise a literal "g" (prefix of `g p`/`g k`/…) gets swallowed
+    // mid-word. Global nav chords aren't meant to fire from inside inputs; the
+    // single-binding `allowed()` gate below covers the non-chord keys.
+    if (isChordPrefix && !direct && !isEditable(e.target)) {
       this.beginChord(token);
       e.preventDefault();
       return;

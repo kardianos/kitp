@@ -30,6 +30,8 @@ import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import {
   type Predicate,
   type WireNode,
+  type Phase,
+  PHASES,
   fromWire,
 } from './predicate.js';
 
@@ -79,6 +81,51 @@ export function fallbackLayoutForSlug(slug: string): string {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Group-axis defaults (keep the filter bar's GROUP picker in sync with a      */
+/* board that REQUIRES a grouping axis — the Kanban).                          */
+/* -------------------------------------------------------------------------- */
+
+/** The Kanban's default group/column axis. Shared so the board's fallback axis
+ *  and the filter bar's default GROUP value can't drift apart (the bug where
+ *  the picker said "No group" while the board grouped by milestone). The Kanban
+ *  imports this as its `DEFAULT_AXIS_ATTR`. */
+export const KANBAN_DEFAULT_GROUP_ATTR = 'milestone_ref';
+
+/** Layouts that REQUIRE a grouping axis: a board has columns, so it can't be
+ *  "ungrouped". Only the Kanban — the Grid / Inbox render a flat list and keep
+ *  the "No group" option. Drives the filter bar's `requireGroup`. */
+export function layoutRequiresGroup(layout: string): boolean {
+  return layout === 'kanban';
+}
+
+/** The default GROUP-by attribute the filter bar seeds for a layout. A board
+ *  layout (Kanban) seeds its default axis so the picker shows the real grouping
+ *  from the first paint; a flat layout seeds '' (No group). */
+export function defaultGroupForLayout(layout: string): string {
+  return layout === 'kanban' ? KANBAN_DEFAULT_GROUP_ATTR : '';
+}
+
+/**
+ * The screen-specific view-action controls a layout registers on the filter
+ * bar's "View" row (right-aligned, via the ScreenFilterBar `viewActions` seam):
+ * the Inbox (list layout) → its "Mine only" / "Routed to me" toggles; the Grid
+ * → its "Columns" chooser (show/hide + reorder is a view concern). This is a
+ * data-driven config table kept OUT of ScreenHost so the host stays generic —
+ * adding a screen's view actions is an entry here, never a branch inside the
+ * control's render.
+ */
+export function viewActionsForLayout(layout: string): Array<{ type: string }> {
+  switch (layout) {
+    case 'list':
+      return [{ type: 'InboxViewToggles' }];
+    case 'grid':
+      return [{ type: 'GridColumns' }];
+    default:
+      return [];
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* Attribute accessors (parity with screen_preset.svelte.ts).                  */
 /* -------------------------------------------------------------------------- */
 
@@ -113,6 +160,139 @@ export function readDefaultFilterID(screen: CardWithAttrs): bigint | null {
 export function readGroupByAttr(filter: CardWithAttrs): string | null {
   const v = filter.attributes['group_by_attr'];
   return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/** Read a filter card's `column_attr` (the kanban primary column axis), or null. */
+export function readColumnAttr(filter: CardWithAttrs): string | null {
+  const v = filter.attributes['column_attr'];
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/**
+ * Read a filter card's `sort` (a JSON `{ attr, dir }[]`, the FilterSortEntry
+ * shape the grid + the predicate builder use). Tolerates a JSON string or an
+ * already-parsed array; drops attr-less / malformed entries (incl. older
+ * string-array `sort` values). Returns `[]` when absent so the view falls back
+ * to the server default order.
+ */
+export function readSortBy(filter: CardWithAttrs): Array<{ attr: string; dir: 'asc' | 'desc' }> {
+  const v = filter.attributes['sort'];
+  let arr: unknown = v;
+  if (typeof v === 'string') {
+    if (v.trim() === '') return [];
+    try {
+      arr = JSON.parse(v);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(arr)) return [];
+  const out: Array<{ attr: string; dir: 'asc' | 'desc' }> = [];
+  for (const e of arr) {
+    if (e !== null && typeof e === 'object') {
+      const o = e as Record<string, unknown>;
+      const attr = typeof o['attr'] === 'string' ? o['attr'] : '';
+      if (attr !== '') out.push({ attr, dir: o['dir'] === 'desc' ? 'desc' : 'asc' });
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse a JSON string-array screen/filter attribute (the convention `predicate`
+ * / `sort` / `extra_columns` / `tag_prefix_columns` share). Tolerates a bare
+ * JSON string (older seed rows stored a single value unwrapped) and drops
+ * non-string / empty entries. Returns `[]` on missing / malformed input so
+ * callers can fold without guarding. Ports the Svelte `screen_preset` readers.
+ */
+function readStringList(card: CardWithAttrs, name: string): string[] {
+  const raw = card.attributes[name];
+  if (typeof raw !== 'string' || raw.trim() === '') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const arr: unknown[] = Array.isArray(parsed) ? parsed : typeof parsed === 'string' ? [parsed] : [];
+  const out: string[] = [];
+  for (const e of arr) {
+    if (typeof e !== 'string') continue;
+    const trimmed = e.trim();
+    if (trimmed !== '') out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * Read a screen card's `extra_columns` — additional attribute / virtual-field
+ * names to surface as Grid columns (e.g. `["due_date"]`). Each entry is an
+ * attribute_def name the Grid renders by its value_type.
+ */
+export function readExtraColumns(screen: CardWithAttrs): string[] {
+  return readStringList(screen, 'extra_columns');
+}
+
+/**
+ * Read a screen card's `tag_prefix_columns` — tag-path prefixes (e.g.
+ * `["priority"]`) the Grid materialises as one synthetic column each: a task's
+ * tags are scanned for a path beginning `<prefix>/` and shown with the prefix
+ * stripped. Trailing slashes are normalised away.
+ */
+export function readTagPrefixColumns(screen: CardWithAttrs): string[] {
+  return readStringList(screen, 'tag_prefix_columns').map((p) => p.replace(/\/+$/, '')).filter((p) => p !== '');
+}
+
+/** One phase toggle in a screen's `phase_scope` toggle group. */
+export interface PhaseToggle {
+  /** UI label (e.g. "Active", "Closed"). */
+  label: string;
+  /** The phase this toggle scopes to. */
+  phase: Phase;
+  /** Whether it's ON by default (the seed's `default_on`). */
+  defaultOn: boolean;
+}
+
+/**
+ * Read a screen card's `phase_scope` toggle group from its `toggle_groups`
+ * attribute (a JSON spec — see the seed). Each item is a `status has_phase
+ * [<phase>]` predicate with a label + `default_on`; we surface them as
+ * {@link PhaseToggle}s the ScreenFilterBar renders. The bar composes the
+ * selected phases into ONE top-level `status has_phase [phases]` leaf
+ * (OR-semantics), hiding non-selected phases (terminal is off by default).
+ *
+ * Malformed / absent `toggle_groups` → no phase toggles (the screen shows every
+ * phase). We never throw on a half-written value.
+ */
+export function readPhaseToggles(screen: CardWithAttrs): PhaseToggle[] {
+  const raw = screen.attributes['toggle_groups'];
+  if (typeof raw !== 'string' || raw.trim() === '') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const group = parsed.find(
+    (g): g is { items?: unknown } => g !== null && typeof g === 'object' && (g as { name?: unknown }).name === 'phase_scope',
+  );
+  const items = group && Array.isArray((group as { items?: unknown }).items) ? (group as { items: unknown[] }).items : [];
+  const out: PhaseToggle[] = [];
+  for (const it of items) {
+    if (it === null || typeof it !== 'object') continue;
+    const item = it as { label?: unknown; default_on?: unknown; predicate?: { op?: unknown; values?: unknown } };
+    const pred = item.predicate;
+    if (!pred || typeof pred !== 'object' || pred.op !== 'has_phase') continue;
+    const ph = Array.isArray(pred.values) ? String(pred.values[0] ?? '') : '';
+    if (!(PHASES as readonly string[]).includes(ph)) continue;
+    out.push({
+      label: typeof item.label === 'string' && item.label !== '' ? item.label : ph,
+      phase: ph as Phase,
+      defaultOn: item.default_on === true,
+    });
+  }
+  return out;
 }
 
 /**

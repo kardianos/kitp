@@ -1,146 +1,126 @@
 # web/ Feature Gaps — vs the Svelte `client/`
 
-Date: 2026-05-24. The Svelte `client/` is the full feature reference; the new
-`web/` client has a solid framework + a slice of screens built. This is the
-screen-by-screen gap list (✅ done / 🟡 partial / ❌ missing in `web/`).
+Date: 2026-05-25 (revised after the data-driven sweep + UX punch-list). The
+Svelte `client/` remains the full feature reference. The `web/` client has closed
+every screen-level gap and is now ahead of `client/` in places (the filter/
+column vocabularies are fully data-driven from the server schema).
 
-**Built so far in `web/`:** framework (signal/control/data/dispatch/hotkeys/
-virtual-list), AppShell + rail (signal-driven `shell.view`, **not** URL routing),
-ProjectList, Kanban, Grid, ScreenFilterBar (group + search + Advanced predicate),
-PredicateFilter, MasterDetail (12 admin screens, mostly read-only).
-Many gaps below are **deliberately staged** — the source documents each deferral
-and several pure helpers are already ported + unit-tested, awaiting UI wiring.
+**Health:** `tsgo --noEmit` (the project typechecker; `src/**/*.ts` only) is
+clean; `npm test` is green (**460 tests**). Remaining gaps below are narrow
+richness/polish items, each documented inline at the cited source location.
 
----
-
-## 1. Task screens
-
-### Kanban (`web/src/kanban` vs `KanbanLayout.svelte`)
-- ✅ milestone columns, cross-column drag-move (optimistic+rollback), virtualized columns, h-scroll, empty-column drop.
-- ❌ **group-by-axis picker** (re-key columns by status/component/assignee — fixed to milestone).
-- ❌ **swim lanes** (2nd `group_by_attr` axis).
-- ❌ **within-column reorder** (`sort_order`) — helpers ported, drag UI is cross-column only.
-- ❌ **per-column quick-add `+`** (button present but disabled).
-- ❌ **card field richness** — cards show title+`#id` only; no assignee/tags on cards.
-- ❌ keyboard nav (hjkl / shift-move / Enter-open), open-card → task detail.
-
-### Grid (`web/src/grid` vs `GridLayout.svelte`)
-- ✅ full column set, sortable headers (asc→desc→off), tag chips, h+v scroll, virtualized rows.
-- 🟡 Created / Last-activity columns render `—` (shared decode doesn't carry those wire fields yet).
-- 🟡 persisted sort from a filter card — helpers ported but unused (no active-filter-card wiring).
-- ❌ **row grouping** (`group_by_attr` sections + headers) — `walkGrouped` not ported.
-- ❌ **per-column filter dropdowns** (header popover leaf).
-- ❌ **tag-prefix synthetic columns** (`priority` etc.).
-- ❌ **`extra_columns`** screen config.
-- ❌ **bulk selection + bulk actions** (assign attrs / move project / purge).
-- ❌ inline cell edit; column reorder/resize/show-hide; keyboard nav.
-
-### Inbox / List (`InboxLayout.svelte`) — ❌ **entire screen missing**
-`layout:'list'` → NotFound. Missing: personal sorted inbox (`personal_sort_order`),
-drag + keyboard manual reorder (`user_card_sort.set`), routed-to-me agent view,
-per-row delegate-to-agent (`user_card_agent.set`), in-row comm-status flow steps,
-`mine_only` toggle.
+> Status legend: ✅ done · 🟡 partial · ❌ missing in `web/`.
 
 ---
 
-## 2. Filter / View system (`web/src/filter` + ScreenFilterBar vs `client/src/filter/*`)
-- ✅ **structured predicate tree** (AND/OR/NOT, attr/op/value leaves) — `PredicateFilter`, op-catalog matches the backend.
-- 🟡 text search (title-only `contains`; Svelte has `in:` multi-scope OR).
-- 🟡 group-by picker writes `screen.group` but **nothing reads it** (kanban/grid ignore it).
-- ❌ **named / saved filters** (filter cards: pick / save / set-default / rename / delete — `FilterPresetSelector`). *(user-flagged)*
-- ❌ **default-filter-per-screen** (first-visit apply, fallback `status notTerminal`).
-- ❌ **quick filters / quick chips** (`QuickFilterDropdown`, one-tap per-attr). *(user-flagged)*
-- 🟡 **predicate snippets** — `snippet` op exists in the model, but no store/fetch/"Named" multi-select UI.
-- ❌ **screen presets / per-screen overrides** (`screen_preset`: layout/slug/hotkey/flow/default_filter/group_by/sort/tag_prefix/extra_columns accessors).
-- ❌ toggle_groups UI ("Show closed status").
-- 🟡 **view persistence** — predicate/search live only in-session; no (slug, project) cache, no URL, lost on reload.
-- ❌ **Export menu** (CSV/xlsx/zip).
+## Landed this session (2026-05-25)
+
+- **Data-driven vocabulary sweep** — group picker options, quick-filter chips,
+  the ref-picker option lists, the bulk-action-bar assignable attrs, AND the
+  Grid column set are all derived from the project's `attribute_def.select` /
+  `card_type.select` schema + the screen's `extra_columns` / `tag_prefix_columns`
+  config — no hardcoded attribute/role lists. New seams: `filter/vocabulary.ts`
+  (`refAxesForCardType`), `filter/group-axis.ts` (`groupAxisForAttr`),
+  `grid/grid-helpers.ts` (`buildGridColumns`/`tagPrefixValue`). Admin role-assign
+  options now come from `role.list` (a new MasterDetail `prefetch`).
+- **Grid columns data-driven** (#17) — ref columns from the schema axes, the
+  Priority column from `tag_prefix_columns`, Due from `extra_columns`; the table
+  rebuilds its header + list when the column set resolves.
+- **Task-detail UX** — flow/transition controls moved into the header beside the
+  title; description ✎ on its label row; auto-growing description + comment
+  textareas (`util/autosize.ts`); condensed comment meta (`author · time`);
+  click-an-attribute opens its picker directly; **+ New sub-task** (quick-entry
+  prefilled `parent_task`); `e t`/`e d`/`e c`/`e p` edit chords; `[`/`]` + `j`/`k`
+  prev/next **jump navigation** through the source list (`shell/task-nav.ts`).
+- **Filter/grid** — "No group" option; quick chips populated on every screen;
+  Grid refetches on task-create (`tasks.createdNonce`); View actions collapsed
+  into a "⋯" overflow menu; removed the `SparkleChart` demo child.
+- **Hotkeys** — a chord prefix (e.g. `g`) is no longer swallowed while typing in
+  an input/textarea/contenteditable.
+- **Dev auth** — on a 401 the client auto-`dev-login`s + reloads in
+  `AUTH_MODE=off`, else bounces to SSO (self-configuring, no env flag), so the
+  SPA is usable locally without an OIDC provider.
 
 ---
 
-## 3. Detail & collaboration
+## Built & wired (was ❌ in earlier revisions)
 
-### Task detail (`/task/:id`, `TaskDetailScreen.svelte` ~2000 LOC) — ❌ **the single biggest gap**
-No route, no control — clicking a card has no destination. Missing:
-- **Attribute side panel** — per-attribute inline edit by type (text/number/date/bool/card_ref pickers); needs `card.search`-backed ref pickers.
-- **Status changer / TransitionBar** (863 LOC) — phase-bucketed flow transitions, role-gating, `flow_disallowed` rejection banner; needs `flow_step.list_for_card`.
-- **Comments** (list + add + edit, markdown) — needs `comment.insert`/`comment.update` + activity derivation + a markdown renderer.
-- **Comms / email threads** — comm cards, replies, recipients, start-comm; needs `comm.create`/`comm.list_for_task`/`reply.post`.
-- **Attachments** — upload (CAS chunked), list, download, thumbnails, inline image/pdf gallery.
-- **Activity feed** — `activity.select` stream + row rendering.
-- **Tags editor**, **related/parent tasks** panel, title/description inline edit (markdown), keyboard chords, prev/next-in-list nav, move/delete dialogs.
-
-### Project detail (`/project/:id/screen/:slug`, `ProjectLayout.svelte`) — ❌ **missing** (→ NotFound)
-Project header, **ProjectPropertiesPanel** (attribute editor + **export** + **import wizard**), project-scoped task board, per-project screen routing, `n`/`j`/`k` keys.
-
-### Project list (`web/src/projects/project-list.ts`) — ✅ **near parity**
-List+search ✅, create ✅ (richer than Svelte), open-tasks `—` ✅, j/k/Enter ✅.
-🟡 ✎ edit covers only title/description (Svelte's panel edits all project attrs + export/import). 🟡 ArrowDown search→list focus handoff missing.
-
-### Quick entry (`client/src/quick_entry/*`) — ❌ **missing**
-The global `n` → fast task-create overlay (title/desc + assignee/tags/attachments/
-"+ Add field", attachments pre-uploaded, success-toast Undo, default-status chain).
-`web/` only has a project-create dialog.
-
-### Collaboration API specs not yet registered in `web/`
-`card.search`, `comment.insert/update`, `comm.create/list_for_task`, `reply.post`,
-`activity.select`, `tag.apply/remove`, `flow_step.list_for_card`, `attachment.create/
-list/delete`, `file.create`, `cas.missing_chunks` (+ raw `POST /api/v1/cas/chunk`).
+- **Routing** — History-API router: deep-links, back/forward,
+  `/project/:id/screen/:slug`, `/task/:id`, `/admin/:key`, `requireAdmin`.
+- **Task detail** — two-column layout; title/description inline markdown edit;
+  **attribute side panel** (inline edit by `value_type`); **TransitionBar**
+  (bucketed flow transitions + role-gating + rejection banner); **Comments +
+  Activity feed**; **Attachments** (chunked CAS upload + gallery); **Tags
+  editor**; **Related/parent tasks** + **+ New sub-task**.
+- **Inbox / List**, **Project detail** (+ ProjectPropertiesPanel), **Project
+  list**.
+- **Filter / view system** — structured predicate tree, data-driven quick chips,
+  named/saved filters + preset selector, group-by axis, default-filter-on-first-
+  visit.
+- **Admin (12 views on MasterDetail)** — list/search/predicate + create + delete
+  + inline edit + nested editors (flow steps, edge matrix, screen filters,
+  comm/activity-sink secrets, agent tokens, role mappings); role assign/revoke;
+  `person.create`.
+- **Quick-entry overlay**, **Import wizard** (#41), **Export menu** (#42).
+- **Primitives** — Combobox, DatePicker, RefPicker, Popover, markdown render+
+  sanitize, Help (`?`) overlay.
+- **Kanban** — group-by-axis picker, within-column reorder, generalized cross-
+  column move, virtualized columns.
+- **Grid** — **data-driven column set** (#17, ref + tag-prefix + extra columns),
+  **row grouping** (`group_by_attr` walk), sortable headers, tag chips,
+  virtualized rows, **bulk-action bar** (assign / move / purge).
 
 ---
 
-## 4. Admin screens (12 configs on `MasterDetail`)
-The control does list + search + (card screens) predicate filter + **inline edit of
-existing scalar fields only**. **No create, no delete, no nested-collection editors,
-no role/token/secret mgmt** anywhere. (The `card.insert` create pattern exists in
-ProjectList but isn't surfaced by MasterDetail.)
+## Recently closed (2026-05-25, second pass)
 
-| Screen | web/ status | Missing |
-|---|---|---|
-| Users | 🟡 read-only + roles badges | role assign/revoke, link/unlink person, token mint/revoke, agent mgmt |
-| Contacts | 🟡 edit name/email/kind | create person (AddPersonDialog), provision-as-user |
-| Attributes | 🟡 read-only | create attribute_def, **edge bind/unbind matrix** (required/ordering) |
-| Screens | 🟡 edit scalars | create, **nested filter-card management**, slug edit |
-| Named Filters | 🟡 edit title/sort/group | create, **predicate editor on the stored predicate**, column config |
-| Workflows | 🟡 read-only | create flow, **flow_step transition editor**, delete-with-guards |
-| Roles | 🟡 read-only badges | grant matrix edit, role_mapping (claim→role) |
-| Agents | 🟡 read-only | create/delete agent, token mint/revoke, per-card routing |
-| Comm Channels | 🟡 read-only | create/edit, IMAP/SMTP + **write-only secrets**, intake/status |
-| Activity Sinks | 🟡 read-only | create/edit, MS-Graph + secret, **activity filter editor** |
-| Comm Log | 🟡 read-only list | `since`/kind server filters, pagination, per-kind formatters |
-| Import Wizard | ❌ missing | the whole upload→map→preview→commit flow |
-| Export | ❌ missing | project CSV/xlsx/zip |
+- ✅ **Comms / email threads** (task detail) — `comm.list_for_task` / `comm.create`
+  / `comm.set_recipients` / `reply.post`; the `CommThreads` control (start-comm
+  form + per-comm recipients editor + reply composer) in the task-detail `comms` slot.
+- ✅ **Grid per-column filters** (ref-column header funnels → `attr in […]` leaf)
+  + **column show/hide/reorder** (a "Columns" menu, persisted to `screen.columnConfig`).
+- ✅ **Grid Created / Last-activity** now decode from the top-level wire fields.
+- ✅ **Kanban per-column quick-add `+`** (wired) + **card richness** (assignee +
+  tag chips) + **hjkl card nav** (h/l columns · j/k cards · Shift+H/L move-card).
+- ✅ **Workflow create + rename** (`flow.set`: MasterDetail create + nested-editor rename).
+- ✅ **Server-driven help** — the `?` overlay loads `help.get_topic` for a
+  route-derived topic and renders the markdown above the keybindings.
+- ✅ **Kanban swim lanes** — a 2nd LANE axis (filter-bar picker → `screen.laneAxis`)
+  splits the board into lanes × columns; cross-lane drag re-keys both axes.
 
----
+## Recently closed (2026-05-25, third pass — grid + a11y polish)
 
-## 5. Cross-cutting
-- ❌ **URL routing / deep-links / route guards** — `web/` uses a `shell.view` signal; no shareable URLs, no back/forward, no deep-link to screen/task/admin, no `requireAdmin` guard. Affects every screen.
-- 🟡 **keyboard** — strong chord engine + global `g p/a/i/g/k`/`?` ✅; per-screen/per-row `j/k/Enter/n//` ❌.
-- ❌ **Help (`?`) overlay** — `toggleHelp` intent is emitted but **unhandled** (no overlay control). Low-effort, high-value (the hotkey registry can render itself).
-- ❌ **Markdown render+sanitize** — `marked`/`dompurify` not even imported in `web/src` (needed for descriptions/comments/help).
-- ❌ **Popover / floating-ui** — native `<select>` everywhere; no anchored dropdowns/combobox/date-picker.
-- 🟡 **auth** — SSO-bounce only (intended); no dev-login path (harder local dev without an OIDC provider).
-- ❌ **attachment gallery** (no attachment code at all).
-- 🟡 **a11y** — some aria; no focus trap/restore, no roving tabindex.
-- ✅ toast/fault funnel, theme toggle.
-- (Idempotency keys on writes: neither client sends one — parity, but open if the server wants it.)
+- ✅ **Grid view persistence** — the active group/lane axis (and restored filter
+  state) caches per `(project, slug)` to `localStorage` (`filter/view-persistence.ts`)
+  and rehydrates on a cold reload to a bare URL.
+- ✅ **Grid column resize** — header grabber drags a column width, flushed to
+  `screen.columnConfig.widths`; the CSS grid tracks recompute from the dynamic set.
+- ✅ **a11y focus-trap/restore** — overlays trap Tab within their boundary and
+  restore focus to the opener on close (`util/focus-trap.ts`).
+- ✅ **Grid inline cell edit** — double-click an editable cell (ref → RefPicker,
+  date → DatePicker, scalar → input); commit optimistically patches `grid.tasks`
+  and fires `attribute.update`, reverting via refetch on error. Recycling-safe:
+  the editor survives re-renders of the same card and tears down when the pooled
+  row recycles to another card.
 
----
+## Genuinely remaining
 
-## Top gaps, ranked by user-visible impact
-1. **Task detail screen (`/task/:id`)** — the biggest single hole; everything below it (transitions, comments, attributes, attachments, activity) hangs off it.
-2. **Named/saved filters + default-per-screen + quick filters** — the backbone of the view system, explicitly flagged by the owner.
-3. **URL routing / deep-links / guards** — no shareable/navigable URLs across the whole app.
-4. **Inbox/List screen** — a whole primary screen renders NotFound.
-5. **Admin create/delete + nested editors** — 11/12 admin screens are view/edit-scalar only (edge matrix, flow steps, screen filters, role grants, secrets, agent/token mgmt).
-6. **Status changer / TransitionBar** — the core workflow-move action.
-7. **Grid row grouping + tag-prefix columns + bulk actions**; **Kanban group-by-axis + swim lanes + within-column reorder + quick-add**.
-8. **Quick-entry overlay**, **Import wizard**, **Export**.
-9. **Supporting primitives** blocking the above: markdown render, popover/combobox, attachment/CAS pipeline, `card.search`.
+### Backend capabilities with no web caller (from the wire-contract diff)
+Every `endpoint.action` the web client calls resolves to a backend handler (0
+mismatches). The remaining un-ported ones are minor:
+- 🟡 **Minor / verify** — `project.stamp`, `card.move` (reparent),
+  `card.set_phase`, `card.undelete`, `person.upsert_by_email`, `help.get_screen`
+  (the `?` overlay uses `help.get_topic`; the per-screen variant is unused).
 
-## Staged-deferral note
-Several gaps are wiring-not-rewrite: within-column reorder, `walkGrouped` (grid
-grouping), tag-prefix, `sortStatesFromFilter` are **already ported + tested** in
-`web/`, awaiting UI; the deferrals are documented inline (`kanban.ts:38-44`,
-`grid.ts:43-48`, `grid-helpers.ts:19-23`, `screen-filter-bar.ts:22-27`,
-`screens.ts:26-30`).
+### Cross-cutting polish
+- 🟡 **per-row keyboard nav** — task-detail jump nav (`[`/`]`,`j`/`k`) ✅; grid
+  rows open on Enter/`o` + select on Space ✅; per-row arrow-key cursor movement
+  on grid/inbox/list is still partial; **roving tabindex** across grid rows /
+  kanban cards not yet wired (focus-trap shipped).
+
+### Intentional non-ports / verify-only
+- **No dev-login screen** — SSO-only by design; the 401 auto-recovery (above)
+  covers local dev in `AUTH_MODE=off`.
+- **Standalone global ActivityScreen** — the old client carries it but does not
+  route to it; `activity.select` is fully used inside task-detail. Confirm before
+  porting.

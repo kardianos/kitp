@@ -45,6 +45,8 @@ before(async () => {
   M.registerRefPicker();
   M.registerBulkActionBar();
   M.registerGrid();
+  // The "Columns" chooser now lives on the filter bar (viewActions seam).
+  M.registerGridColumns();
 });
 
 /**
@@ -86,16 +88,21 @@ function gridMockTransport() {
 
   // Two tasks; one fully populated (refs + tags), one sparse (all unset).
   const TASKS = [
-    task(201n, 'Wire pickers', {
-      sort_order: 100,
-      status: '40', // → "Todo"
-      assignee: '10', // → "Alice"
-      priority: 'high',
-      milestone_ref: '32', // → "M1"
-      component_ref: '50', // → "Frontend"
-      tags: ['60', '61'], // → area/frontend/ui, priority/high
-      due_date: '2026-06-01',
-    }),
+    {
+      // Top-level audit timestamps (decoded by the shared CardWithAttrs decoder).
+      ...task(201n, 'Wire pickers', {
+        sort_order: 100,
+        status: '40', // → "Todo"
+        assignee: '10', // → "Alice"
+        priority: 'high',
+        milestone_ref: '32', // → "M1"
+        component_ref: '50', // → "Frontend"
+        tags: ['60', '61'], // → area/frontend/ui, priority/high
+        due_date: '2026-06-01',
+      }),
+      created_at: '2026-05-20T10:00:00Z',
+      last_activity_at: '2026-05-22T12:00:00Z',
+    },
     task(202n, 'API rate limits', { sort_order: 200 }),
   ];
 
@@ -192,6 +199,20 @@ async function settle(dispatcher) {
 
 function mountGrid(api, tree) {
   tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  // Data-driven grid columns (#17): seed the schema axes + screen column config
+  // the grid reads (the ScreenFilterBar publishes refAxes/attrSchema; ScreenHost
+  // lands extra_columns / tag_prefix_columns). This reproduces the seeded grid
+  // screen: ID · Title · Status · Assignee · Milestone · Component · Priority
+  // (tag-prefix) · Tags · Due (extra) · Created · Last activity.
+  tree.at(['screen', 'refAxes']).set([
+    { attr: 'status', label: 'Status', targetCardType: 'status', multi: false },
+    { attr: 'assignee', label: 'Assignee', targetCardType: 'person', multi: false },
+    { attr: 'milestone_ref', label: 'Milestone', targetCardType: 'milestone', multi: false },
+    { attr: 'component_ref', label: 'Component', targetCardType: 'component', multi: false },
+  ]);
+  tree.at(['screen', 'tagPrefixColumns']).set(['priority']);
+  tree.at(['screen', 'extraColumns']).set(['due_date']);
+  tree.at(['screen', 'attrSchema']).set([{ name: 'due_date', label: 'Due date', valueType: 'date' }]);
   const scope = {
     get projectId() {
       return tree.at(['scope', 'projectId']).peek() ?? null;
@@ -229,15 +250,15 @@ test('Grid: tasks query lands and rows render in declared column order', async (
       'attributes.title',
       'attributes.status',
       'attributes.assignee',
-      'attributes.priority',
       'attributes.milestone_ref',
       'attributes.component_ref',
+      'tag:priority',
       'tags',
       'attributes.due_date',
       'created_at',
       'last_activity_at',
     ],
-    'a leading select column then all 11 data columns in order',
+    'a leading select column then all 11 data-driven columns in order',
   );
 
   // Body rows render, keyed by card id.
@@ -337,7 +358,11 @@ test('Grid: resolves card_ref labels from the lookup tree paths', async () => {
   assert.equal(cellText('attributes.status'), 'Todo', 'status id → status name');
   assert.equal(cellText('attributes.milestone_ref'), 'M1', 'milestone id → title');
   assert.equal(cellText('attributes.component_ref'), 'Frontend', 'component id → title');
-  assert.equal(cellText('attributes.priority'), 'high', 'priority scalar pill');
+  // Priority is now a data-driven tag-prefix column (tag `priority/high` → "high").
+  assert.equal(cellText('tag:priority'), 'high', 'priority tag-prefix pill');
+  // Created / Last-activity now decode from the top-level wire fields (#20).
+  assert.equal(cellText('created_at'), '2026-05-20', 'created_at top-level → Created column');
+  assert.equal(cellText('last_activity_at'), '2026-05-22', 'last_activity_at → Last activity column');
 
   // The sparse row (202) shows em-dashes for every unset ref.
   const sparse = rows[1];
@@ -345,6 +370,99 @@ test('Grid: resolves card_ref labels from the lookup tree paths', async () => {
     sparse.querySelectorAll('[data-grid-col]').find((c) => c.dataset.gridCol === field).textContent;
   assert.equal(sparseText('attributes.assignee'), '—', 'unset assignee → dash');
   assert.equal(sparseText('attributes.milestone_ref'), '—', 'unset milestone → dash');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Inline cell edit (#30): double-click a scalar attribute cell to edit it in  */
+/* place; commit fires attribute.update and optimistically patches grid.tasks. */
+/* -------------------------------------------------------------------------- */
+
+test('Grid: double-click a scalar cell edits inline → attribute.update + optimistic patch', async () => {
+  const { transport, sent } = gridMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  // A minimal screen: no ref axes/tag prefixes, one scalar `attr` extra column.
+  tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  tree.at(['screen', 'refAxes']).set([]);
+  tree.at(['screen', 'tagPrefixColumns']).set([]);
+  tree.at(['screen', 'extraColumns']).set(['estimate']);
+  tree.at(['screen', 'attrSchema']).set([{ name: 'estimate', label: 'Estimate', valueType: 'text' }]);
+  const scope = {
+    get projectId() {
+      return tree.at(['scope', 'projectId']).peek() ?? null;
+    },
+  };
+  const grid = M.Control.New('Grid', { type: 'Grid' }, { api, tree, scope });
+  grid.mount(new FakeElement('div'));
+  await settle(dispatcher);
+
+  const row = visibleGridRows(grid.el).find((r) => r.dataset.cardId === '201');
+  const cell = row
+    .querySelectorAll('[data-grid-col]')
+    .find((c) => c.dataset.gridCol === 'attributes.estimate');
+  assert.ok(cell, 'the scalar estimate column rendered an editable cell');
+  assert.ok(cell.classList.contains('grid__cell--editable'), 'cell is marked editable');
+
+  // Double-click opens the inline editor.
+  cell.dispatchEvent({ type: 'dblclick', target: cell });
+  assert.ok(cell.classList.contains('grid__cell--editing'), 'cell entered edit mode');
+  const input = cell.querySelectorAll('input')[0];
+  assert.ok(input, 'a text input editor spawned in the cell');
+
+  // Type a value + Enter to commit.
+  input.value = '3d';
+  input.dispatchEvent({ type: 'keydown', key: 'Enter', target: input });
+  await settle(dispatcher);
+
+  // Optimistic patch: grid.tasks reflects the new value immediately.
+  const patched = tree.at(['grid', 'tasks']).peek().find((t) => t.id.toString() === '201');
+  assert.equal(patched.attributes.estimate, '3d', 'grid.tasks optimistically patched');
+
+  // attribute.update fired with the encoded wire payload.
+  const w = sent.writes.find((x) => x.kind === 'attribute.update');
+  assert.ok(w, 'attribute.update fired');
+  assert.equal(w.data.card_id, '201', 'targets the right card');
+  assert.equal(w.data.attribute_name, 'estimate', 'targets the right attribute');
+  assert.equal(w.data.value, '3d', 'sends the typed value');
+
+  // The editor is gone (cell back to read mode).
+  assert.ok(!cell.classList.contains('grid__cell--editing'), 'edit mode cleared after commit');
+});
+
+test('Grid: Escape cancels an inline edit without firing a write', async () => {
+  const { transport, sent } = gridMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  tree.at(['screen', 'refAxes']).set([]);
+  tree.at(['screen', 'tagPrefixColumns']).set([]);
+  tree.at(['screen', 'extraColumns']).set(['estimate']);
+  tree.at(['screen', 'attrSchema']).set([{ name: 'estimate', label: 'Estimate', valueType: 'text' }]);
+  const scope = {
+    get projectId() {
+      return tree.at(['scope', 'projectId']).peek() ?? null;
+    },
+  };
+  const grid = M.Control.New('Grid', { type: 'Grid' }, { api, tree, scope });
+  grid.mount(new FakeElement('div'));
+  await settle(dispatcher);
+
+  const cell = visibleGridRows(grid.el)
+    .find((r) => r.dataset.cardId === '201')
+    .querySelectorAll('[data-grid-col]')
+    .find((c) => c.dataset.gridCol === 'attributes.estimate');
+  cell.dispatchEvent({ type: 'dblclick', target: cell });
+  const input = cell.querySelectorAll('input')[0];
+  input.value = 'nope';
+  input.dispatchEvent({ type: 'keydown', key: 'Escape', target: input });
+  await settle(dispatcher);
+
+  assert.ok(!cell.classList.contains('grid__cell--editing'), 'edit mode cleared');
+  assert.equal(
+    sent.writes.filter((x) => x.kind === 'attribute.update').length,
+    0,
+    'no attribute.update fired on cancel',
+  );
 });
 
 /* -------------------------------------------------------------------------- */
@@ -510,15 +628,39 @@ test('grid-helpers buildOrderClauses + effectiveSort + sortStatesFromFilter', ()
   assert.deepEqual(effectiveSort(null, filterSort), filterSort);
 });
 
-test('grid-helpers GRID_COLUMNS has the expected sortable / non-sortable fields', () => {
-  const { GRID_COLUMNS } = M;
-  const byKind = Object.fromEntries(GRID_COLUMNS.map((c) => [c.kind, c]));
-  // ID and Tags are non-sortable (field null); the rest carry a wire field.
-  assert.equal(byKind.id.field, null);
-  assert.equal(byKind.tags.field, null);
-  assert.equal(byKind.title.field, 'attributes.title');
-  assert.equal(byKind.milestone.field, 'attributes.milestone_ref');
-  assert.equal(byKind.created.field, 'created_at');
+test('grid-helpers buildGridColumns: data-driven set from refAxes + screen config', () => {
+  const { buildGridColumns } = M;
+  const refAxes = [
+    { attr: 'status', label: 'Status', targetCardType: 'status', multi: false },
+    { attr: 'assignee', label: 'Assignee', targetCardType: 'person', multi: false },
+    { attr: 'tags', label: 'Tags', targetCardType: 'tag', multi: true }, // multi → skipped (Tags col)
+  ];
+  const schema = [{ name: 'due_date', label: 'Due date', valueType: 'date' }];
+  const cols = buildGridColumns(refAxes, schema, ['due_date'], ['priority']);
+  const byKey = Object.fromEntries(cols.map((c) => [c.key, c]));
+
+  // Order: id, title, ref(status), ref(assignee), tag_prefix(priority), tags, date(due_date), created, last_activity.
+  assert.deepEqual(
+    cols.map((c) => c.key),
+    ['id', 'title', 'status', 'assignee', 'tag:priority', 'tags', 'due_date', 'created', 'last_activity'],
+    'multi-ref tags axis is skipped; tag-prefix + extra columns slot in',
+  );
+  // ID / Tags / tag-prefix are non-sortable (field null); refs + date carry a field.
+  assert.equal(byKey.id.field, null);
+  assert.equal(byKey.tags.field, null);
+  assert.equal(byKey['tag:priority'].field, null);
+  assert.equal(byKey.status.kind, 'ref');
+  assert.equal(byKey.status.lookup, 'statuses'); // person→persons, status→statuses, …
+  assert.equal(byKey.assignee.lookup, 'persons');
+  assert.equal(byKey.due_date.kind, 'date');
+  assert.equal(byKey.due_date.field, 'attributes.due_date');
+  assert.equal(byKey.created.field, 'created_at');
+});
+
+test('grid-helpers tagPrefixValue extracts the segment after <prefix>/', () => {
+  const { tagPrefixValue } = M;
+  assert.equal(tagPrefixValue(['area/frontend/ui', 'priority/high'], 'priority'), 'high');
+  assert.equal(tagPrefixValue(['area/frontend'], 'priority'), null);
 });
 
 /* -------------------------------------------------------------------------- */
@@ -671,7 +813,7 @@ test('Grid: GROUP picker (screen.group) buckets the body into header + row secti
   );
 
   // Drive the GROUP picker: group by status.
-  tree.at(['screen', 'group']).set('status');
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
   await settle(dispatcher);
 
   const items = visibleItems(grid.el);
@@ -699,7 +841,7 @@ test('Grid: grouping prepends the group key to the wire order[] (rows arrive buc
   const grid = mountGrid(api, tree);
   await settle(dispatcher);
 
-  tree.at(['screen', 'group']).set('status');
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
   await settle(dispatcher);
   const last = sent.taskInputs[sent.taskInputs.length - 1];
   assert.deepEqual(last.order, [{ field: 'attributes.status', direction: 'ASC' }], 'group key first, asc');
@@ -711,7 +853,7 @@ test('Grid: group-header click flips the group direction (asc ⇄ desc)', async 
   const tree = new M.TreeNode({}, []);
   const grid = mountGrid(api, tree);
   await settle(dispatcher);
-  tree.at(['screen', 'group']).set('status');
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
   await settle(dispatcher);
 
   // First visible group header (Doing, asc).
@@ -741,7 +883,7 @@ test('Grid: grouped rows recycle through the fixed virtualList pool (no churn)',
 
   // Pool node count before grouping.
   const poolBefore = grid.el.querySelectorAll('[data-role="vlist-row"]').length;
-  tree.at(['screen', 'group']).set('status');
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
   await settle(dispatcher);
   const poolAfter = grid.el.querySelectorAll('[data-role="vlist-row"]').length;
   // Same fixed pool — grouping flows through the SAME recycled nodes (the flat
@@ -928,26 +1070,27 @@ test('BulkActionBar: assign fires attribute.update once per selected card, batch
   const grid = mountGrid(api, tree);
   await settle(dispatcher);
 
+  // The assignable fields are DATA-DRIVEN from `screen.refAxes` — mountGrid
+  // already seeds it (status/assignee/milestone/component), the same axes the
+  // bulk bar's attr picker offers.
+
   // Select both rows.
   const boxes = rowSelectBoxes(grid);
   boxes[0].dispatchEvent({ type: 'click', target: boxes[0] });
   boxes[1].dispatchEvent({ type: 'click', target: boxes[1] });
 
-  // Drive the bar: pick the `priority` attribute (its value editor is the
-  // fixed-choice Combobox), set a value, then click Apply. We reach the bar's
-  // attribute Combobox + the value editor via the control tree and invoke the
-  // onChange callbacks the bar wired (same path a user click takes).
+  // Drive the bar: pick the `status` ref attribute (its value editor is a
+  // RefPicker), set a value, then click Apply — invoking the onChange callbacks
+  // the bar wired (same path a user click takes).
   const bar = bulkBar(grid);
-  // The attribute picker is the Combobox whose options list the assignable
-  // fields (`priority` among them). (RefPickers each wrap a Combobox too, so we
-  // can't index blindly — match by option content.)
-  const hasOpt = (c, v) => (c.config.options ?? []).some((o) => o.value === v);
-  const attrCombo = findControls(bar, 'Combobox').find((c) => hasOpt(c, 'priority'));
+  // The attribute picker is the Combobox with the 'Field…' placeholder (its
+  // options come from setOptions(screen.refAxes), not config.options).
+  const attrCombo = findControls(bar, 'Combobox').find((c) => c.config.placeholder === 'Field…');
   assert.ok(attrCombo, 'the attribute picker is present');
-  attrCombo.config.onChange('priority'); // → builds the value editor
-  const valueCombo = findControls(bar, 'Combobox').find((c) => hasOpt(c, 'high'));
-  assert.ok(valueCombo, 'a value editor mounted for the picked attribute');
-  valueCombo.config.onChange('high');
+  attrCombo.config.onChange('status'); // → builds the RefPicker value editor
+  const valueRef = findControls(bar, 'RefPicker').find((c) => c.config.cardType === 'status');
+  assert.ok(valueRef, 'a RefPicker value editor mounted for the picked ref attribute');
+  valueRef.config.onChange(40n);
 
   const batchesBefore = sent.batches.length;
   const applyBtn = grid.el.querySelectorAll('[data-bulk-assign]')[0];
@@ -963,7 +1106,10 @@ test('BulkActionBar: assign fires attribute.update once per selected card, batch
     ['201', '202'],
     'targets both selected cards',
   );
-  assert.ok(updates.every((u) => u.data.attribute_name === 'priority' && u.data.value === 'high'));
+  assert.ok(
+    updates.every((u) => u.data.attribute_name === 'status' && String(u.data.value) === '40'),
+    'each update sets status = 40',
+  );
 
   // Coalesced: the two updates rode in ONE new batch (one POST).
   const newBatches = sent.batches.slice(batchesBefore);
@@ -977,6 +1123,98 @@ test('BulkActionBar: assign fires attribute.update once per selected card, batch
 
   // Selection cleared after the bulk op.
   assert.equal(tree.at(['grid', 'selection']).peek().size, 0, 'selection cleared after assign');
+
+  // The reconciling re-query rode in the SAME batch as the writes, AFTER them —
+  // so one server tx sees the writes and returns reconciled rows. (A separate,
+  // concurrent re-query POST could read a pre-write snapshot and land stale rows
+  // over the optimistic patch — the grid then wouldn't update until a re-nav.)
+  assert.ok(
+    assignBatch.includes('card.select_with_attributes'),
+    're-query coalesced into the SAME batch as the writes (no separate racing POST)',
+  );
+  assert.ok(
+    assignBatch.lastIndexOf('attribute.update') < assignBatch.indexOf('card.select_with_attributes'),
+    're-query select is ordered AFTER the writes within the batch',
+  );
+});
+
+test('BulkActionBar: Add stages a field so Apply sets several attributes at once', async () => {
+  const { transport, sent } = gridMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const grid = mountGrid(api, tree);
+  await settle(dispatcher);
+
+  // Select both rows.
+  const boxes = rowSelectBoxes(grid);
+  boxes[0].dispatchEvent({ type: 'click', target: boxes[0] });
+  boxes[1].dispatchEvent({ type: 'click', target: boxes[1] });
+
+  const bar = bulkBar(grid);
+  const attrCombo = findControls(bar, 'Combobox').find((c) => c.config.placeholder === 'Field…');
+
+  // Pick status = 40, then "Add" it (stages a chip + resets the editor).
+  attrCombo.config.onChange('status');
+  findControls(bar, 'RefPicker').find((c) => c.config.cardType === 'status').config.onChange(40n);
+  const addBtn = grid.el.querySelectorAll('[data-bulk-add-field]')[0];
+  assert.equal(addBtn.disabled, false, 'Add enabled once a field+value is set');
+  addBtn.dispatchEvent({ type: 'click', target: addBtn });
+  assert.ok(grid.el.querySelectorAll('[data-bulk-staged="status"]')[0], 'a staged chip for status appeared');
+
+  // Pick milestone = 32 and Apply WITHOUT adding it — the in-editor pair counts too.
+  attrCombo.config.onChange('milestone_ref');
+  findControls(bar, 'RefPicker').find((c) => c.config.cardType === 'milestone').config.onChange(32n);
+
+  const batchesBefore = sent.batches.length;
+  const applyBtn = grid.el.querySelectorAll('[data-bulk-assign]')[0];
+  assert.equal(applyBtn.disabled, false, 'Apply enabled with one staged + one in-editor field');
+  applyBtn.dispatchEvent({ type: 'click', target: applyBtn });
+  await settle(dispatcher);
+
+  // 2 cards × 2 fields = 4 attribute.update writes.
+  const updates = sent.writes.filter((w) => w.kind === 'attribute.update');
+  assert.equal(updates.length, 4, 'one attribute.update per (card × field)');
+  const byAttr = (name) =>
+    updates.filter((u) => u.data.attribute_name === name).map((u) => String(u.data.card_id)).sort();
+  assert.deepEqual(byAttr('status'), ['201', '202'], 'status set on both cards');
+  assert.deepEqual(byAttr('milestone_ref'), ['201', '202'], 'milestone set on both cards');
+
+  // All four rode in ONE batch (one POST), plus the reconciling re-query.
+  const newBatches = sent.batches.slice(batchesBefore);
+  const assignBatch = newBatches.find((b) => b.includes('attribute.update'));
+  assert.equal(
+    assignBatch.filter((k) => k === 'attribute.update').length,
+    4,
+    'all four updates coalesced into ONE batch',
+  );
+
+  // Selection cleared + the staged chips reset after apply.
+  assert.equal(tree.at(['grid', 'selection']).peek().size, 0, 'selection cleared after multi-assign');
+});
+
+test('BulkActionBar: project-scoped ref pickers are scoped to the active project; person is not', async () => {
+  const { transport } = gridMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const grid = mountGrid(api, tree);
+  await settle(dispatcher);
+
+  const bar = bulkBar(grid);
+  const attrCombo = findControls(bar, 'Combobox').find((c) => c.config.placeholder === 'Field…');
+
+  // A project-owned value-card type (milestone) → the picker is scoped to the
+  // active project, so a cross-project pick (→ cross_project_ref reject) can't
+  // be made.
+  attrCombo.config.onChange('milestone_ref');
+  const msRef = findControls(bar, 'RefPicker').find((c) => c.config.cardType === 'milestone');
+  assert.ok(msRef, 'milestone RefPicker mounted');
+  assert.equal(msRef.config.parentScopePath, 'scope.projectId', 'milestone picker scoped to the project');
+
+  // A global ref (assignee → person) stays UNSCOPED (persons aren't project-owned).
+  attrCombo.config.onChange('assignee');
+  const personRef = findControls(bar, 'RefPicker').find((c) => c.config.cardType === 'person');
+  assert.ok(personRef, 'assignee RefPicker mounted');
+  assert.equal(personRef.config.parentScopePath, undefined, 'person picker is not project-scoped');
 });
 
 test('BulkActionBar: move fires task.move over the selection', async () => {
@@ -1060,4 +1298,54 @@ test('BulkActionBar: Clear empties the selection without a write', async () => {
   clearBtn.dispatchEvent({ type: 'click', target: clearBtn });
   assert.equal(tree.at(['grid', 'selection']).peek().size, 0, 'Clear emptied the selection');
   assert.equal(sent.writes.length, writesBefore, 'Clear fired no write');
+});
+
+/* -------------------------------------------------------------------------- */
+/* #24 — per-column filter funnels + column show/hide/reorder.                  */
+/* -------------------------------------------------------------------------- */
+
+test('Grid: ref columns carry a per-column filter funnel', async () => {
+  const { transport } = gridMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const grid = mountGrid(api, tree);
+  await settle(dispatcher);
+  const funnels = grid.el.querySelectorAll('[data-grid-col-filter]').map((b) => b.dataset.gridColFilter);
+  assert.deepEqual(
+    funnels.sort(),
+    ['assignee', 'component_ref', 'milestone_ref', 'status'],
+    'a filter funnel on each ref column (not on tag-prefix / scalar / tags)',
+  );
+});
+
+test('Grid: screen.columnConfig hides + reorders columns', async () => {
+  const { transport } = gridMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const grid = mountGrid(api, tree);
+  await settle(dispatcher);
+
+  const headFields = () =>
+    grid.el.querySelectorAll('[data-grid-header]').map((h) => h.dataset.gridCol);
+
+  // Hide the Status + Priority columns.
+  tree.at(['screen', 'columnConfig']).set({ hidden: ['status', 'tag:priority'], order: [] });
+  await settle(dispatcher);
+  let fields = headFields();
+  assert.ok(!fields.includes('attributes.status'), 'status hidden');
+  assert.ok(!fields.includes('tag:priority'), 'priority hidden');
+  assert.ok(fields.includes('attributes.assignee'), 'assignee still visible');
+
+  // Reorder: put assignee first (after the always-present id/title order is by key).
+  tree.at(['screen', 'columnConfig']).set({
+    hidden: [],
+    order: ['assignee', 'id', 'title', 'status', 'milestone_ref', 'component_ref'],
+  });
+  await settle(dispatcher);
+  fields = headFields();
+  // assignee now precedes id/title.
+  assert.ok(
+    fields.indexOf('attributes.assignee') < fields.indexOf('id'),
+    'assignee reordered ahead of id',
+  );
 });

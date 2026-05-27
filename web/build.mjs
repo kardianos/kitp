@@ -35,13 +35,18 @@ const common = {
   // bundles them out of the box — no import map or alias is required.
 };
 
-// Emit a self-contained dist/index.html: the source index.html references
-// ./dist/app.js (so `npm run dev` serving web/ works), but inside dist/ the
-// served root IS dist/, so the script path becomes ./app.js. styles.css is
-// already ./styles.css (resolves to the bundled dist/styles.css).
+// Emit a self-contained dist/index.html. The source index.html references
+// ./dist/app.js + ./styles.css (so `npm run dev` serving web/ works). In the
+// shipped dist/ the bundle is served at GET / by kitpd with an SPA fallback:
+// any deep route (e.g. /project/1/screen/kanban) is served the SAME index.html.
+// RELATIVE asset paths would then resolve against the deep URL
+// (→ /project/1/screen/app.js → the fallback returns index.html as "JS" → the
+// module fails to parse → BLANK PAGE). So rewrite the asset refs to ABSOLUTE
+// (`/app.js`, `/styles.css`), which resolve to the bundle root regardless of
+// the current route depth.
 async function writeDistIndex() {
   const src = await readFile('index.html', 'utf8');
-  const out = src.replace('./dist/app.js', './app.js');
+  const out = src.replace('./dist/app.js', '/app.js').replace('./styles.css', '/styles.css');
   if (out === src) {
     throw new Error('build: index.html no longer references ./dist/app.js — update the rewrite');
   }

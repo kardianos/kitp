@@ -21,6 +21,19 @@ import type {
   AttributeDefBoundCardType,
   AttributeDefListOutput,
 } from '../admin/specs.js';
+import type { CardTypeRow } from './vocabulary.js';
+
+/** Output of `card_type.select` — the card_type registry rows. */
+export interface CardTypeListOutput {
+  rows: CardTypeRow[];
+}
+
+function decodeCardType(j: Record<string, unknown>): CardTypeRow {
+  const out: CardTypeRow = { id: asStr(j['id']), name: asStr(j['name']) };
+  const parent = asStrOpt(j['parent_card_type_id']);
+  if (parent !== undefined) out.parent_card_type_id = parent;
+  return out;
+}
 
 function asObj(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
@@ -78,13 +91,28 @@ function decodeRow(j: Record<string, unknown>): AttributeDefRow {
  * may have registered it first). Safe to call after `registerAdminSpecs`.
  */
 export function registerFilterSpecs(api: Api): void {
-  if (api.registry.has({ endpoint: 'attribute_def', action: 'select' })) return;
-  api.define<Record<string, never>, AttributeDefListOutput>({
-    endpoint: 'attribute_def',
-    action: 'select',
-    encode: () => ({}),
-    decode: (raw): AttributeDefListOutput => ({
-      rows: asArray(asObj(raw)['rows']).map((r) => decodeRow(asObj(r))),
-    }),
-  });
+  if (!api.registry.has({ endpoint: 'attribute_def', action: 'select' })) {
+    api.define<Record<string, never>, AttributeDefListOutput>({
+      endpoint: 'attribute_def',
+      action: 'select',
+      encode: () => ({}),
+      decode: (raw): AttributeDefListOutput => ({
+        rows: asArray(asObj(raw)['rows']).map((r) => decodeRow(asObj(r))),
+      }),
+    });
+  }
+  // `card_type.select` backs the data-driven vocabulary loader (filter/
+  // vocabulary.ts): `parent_card_type_id` distinguishes project-scoped value
+  // types (status/milestone/…) from global (person) for option scoping, and
+  // excludes child content types (comm under task) from the axis set.
+  if (!api.registry.has({ endpoint: 'card_type', action: 'select' })) {
+    api.define<Record<string, never>, CardTypeListOutput>({
+      endpoint: 'card_type',
+      action: 'select',
+      encode: () => ({}),
+      decode: (raw): CardTypeListOutput => ({
+        rows: asArray(asObj(raw)['rows']).map((r) => decodeCardType(asObj(r))),
+      }),
+    });
+  }
 }

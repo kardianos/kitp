@@ -268,12 +268,59 @@ test('accessors: slug / layout / title / default_filter / predicate decode', () 
   assert.equal(M.readPredicate({ id: 1n, attributes: { predicate: 'not json{' } }), null);
 });
 
+test('readPhaseToggles: parses the phase_scope group from toggle_groups (ignores other groups)', () => {
+  const screen = {
+    id: 700n,
+    card_type_name: 'screen',
+    attributes: {
+      toggle_groups: JSON.stringify([
+        {
+          name: 'phase_scope', operator: 'or', mode: 'multi', items: [
+            { name: 'triage', label: 'Triage', predicate: { attr: 'status', op: 'has_phase', values: ['triage'] }, default_on: false },
+            { name: 'active', label: 'Active', predicate: { attr: 'status', op: 'has_phase', values: ['active'] }, default_on: true },
+            { name: 'terminal', label: 'Closed', predicate: { attr: 'status', op: 'has_phase', values: ['terminal'] }, default_on: false },
+          ],
+        },
+        // A non-phase group (scope/mine_only) must be ignored here.
+        { name: 'scope', operator: 'and', mode: 'multi', items: [
+          { name: 'mine_only', label: 'Mine', predicate: { attr: 'assignee', op: '=', values: ['__actor__'] }, default_on: true },
+        ] },
+      ]),
+    },
+  };
+  assert.deepEqual(M.readPhaseToggles(screen), [
+    { label: 'Triage', phase: 'triage', defaultOn: false },
+    { label: 'Active', phase: 'active', defaultOn: true },
+    { label: 'Closed', phase: 'terminal', defaultOn: false },
+  ]);
+  // Absent / malformed → [] (never throws).
+  assert.deepEqual(M.readPhaseToggles({ id: 1n, attributes: {} }), []);
+  assert.deepEqual(M.readPhaseToggles({ id: 1n, attributes: { toggle_groups: 'nope{' } }), []);
+});
+
 test('fallbackLayoutForSlug: known slugs map; unknown → unknown', () => {
   assert.equal(M.fallbackLayoutForSlug('kanban'), 'kanban');
   assert.equal(M.fallbackLayoutForSlug('grid'), 'grid');
   assert.equal(M.fallbackLayoutForSlug('inbox'), 'list');
   assert.equal(M.fallbackLayoutForSlug('project'), 'project');
   assert.equal(M.fallbackLayoutForSlug('hologram'), 'unknown');
+});
+
+test('layoutRequiresGroup / defaultGroupForLayout: only the board (kanban) requires a group', () => {
+  assert.equal(M.layoutRequiresGroup('kanban'), true, 'kanban requires a group axis');
+  assert.equal(M.layoutRequiresGroup('grid'), false, 'grid does not');
+  assert.equal(M.layoutRequiresGroup('list'), false, 'inbox does not');
+  // The kanban's default group matches its board axis (one shared constant).
+  assert.equal(M.defaultGroupForLayout('kanban'), M.KANBAN_DEFAULT_GROUP_ATTR);
+  assert.equal(M.KANBAN_DEFAULT_GROUP_ATTR, 'milestone_ref');
+  assert.equal(M.defaultGroupForLayout('grid'), '', 'flat layouts default to No group');
+});
+
+test('viewActionsForLayout: list → InboxViewToggles, grid → GridColumns, others → none', () => {
+  assert.deepEqual(M.viewActionsForLayout('list'), [{ type: 'InboxViewToggles' }], 'inbox toggles on the list View row');
+  assert.deepEqual(M.viewActionsForLayout('grid'), [{ type: 'GridColumns' }], 'grid Columns chooser on the View row');
+  assert.deepEqual(M.viewActionsForLayout('kanban'), [], 'kanban registers no view actions');
+  assert.deepEqual(M.viewActionsForLayout('project'), [], 'project registers no view actions');
 });
 
 test('screenStatePath: keyed by (project, slug); null project → "none"', () => {
@@ -500,4 +547,14 @@ test('(slug, project) cache restores the active preset on re-mount (back-nav)', 
     { kind: 'leaf', attr: 'status', op: 'eq', values: ['40'] },
     "restored Mine's predicate (not the default's)",
   );
+});
+
+test('readSortBy parses the filter card `sort` JSON to { attr, dir }[]', () => {
+  assert.deepEqual(
+    M.readSortBy({ attributes: { sort: JSON.stringify([{ attr: 'priority', dir: 'desc' }, { attr: 'title', dir: 'asc' }]) } }),
+    [{ attr: 'priority', dir: 'desc' }, { attr: 'title', dir: 'asc' }],
+  );
+  assert.deepEqual(M.readSortBy({ attributes: {} }), [], 'absent → empty');
+  assert.deepEqual(M.readSortBy({ attributes: { sort: '["milestone_ref"]' } }), [], 'old string-array → dropped');
+  assert.deepEqual(M.readSortBy({ attributes: { sort: 'not json' } }), [], 'malformed → empty');
 });

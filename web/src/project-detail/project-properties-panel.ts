@@ -16,8 +16,9 @@
  *     `attribute_def.select` filtered to defs BOUND to the `project` card_type,
  *     minus the built-ins rendered above (title/description) + the ones never
  *     edited here (tags/sort_order).
- *   - Export / Import → HOOK buttons that fire a bus intent + log a TODO (#42 /
- *     #41 own the real flows; this panel only leaves the wired affordance).
+ *   - Export / Import → buttons that fire the `projectExport` / `projectImport`
+ *     bus intents the AppShell handles (#42 ExportMenu / #41 ImportWizard own the
+ *     real flows; this panel only raises the intent).
  *
  * Data flow ZERO-PROMISE (the TaskDetail posture): the project + the schema
  * load through `api.callByName(..., { alive })`; card_ref summaries resolve via
@@ -661,13 +662,15 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
   /* ---------------------------- export / import -------------------------- */
 
   private onExport(): void {
+    // The AppShell owns the single ExportMenu instance and opens it on this
+    // intent (#42 — CSV / xlsx / ZIP same-origin download).
     this.ctx.bus?.emit('projectExport', { projectId: this.projectId });
-    // TODO(#42): wire the CSV / full-ZIP export download flow here.
   }
 
   private onImport(): void {
+    // The AppShell owns the single ImportWizard instance and opens it on this
+    // intent (#41 — upload→map→preview→commit over the CAS pipeline).
     this.ctx.bus?.emit('projectImport', { projectId: this.projectId });
-    // TODO(#41): launch the import wizard here.
   }
 
   /* -------------------------------- helpers ------------------------------ */

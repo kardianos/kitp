@@ -44,6 +44,7 @@ export const ADMIN_SPEC = {
   commLogList: 'comm_log.list',
   // Write specs the create/delete + Users role/person affordances issue.
   personCreate: 'person.create',
+  personGrantAccount: 'person.grant_account',
   userRoleSet: 'user_role.set',
   userRoleRevoke: 'user_role.revoke',
   userUnlinkPerson: 'user.unlink_person',
@@ -113,6 +114,9 @@ export interface AttributeDefRow {
   value_type: string;
   target_card_type_name?: string;
   is_built_in: boolean;
+  /** True for card_ref attributes whose value-cards are editable on the Enums
+   *  admin screen (milestone / component / tag). */
+  enum_managed?: boolean;
   bound_to: AttributeDefBoundCardType[];
 }
 
@@ -129,7 +133,11 @@ export interface FlowRow {
   attribute_def_id?: string;
   attribute_def_name?: string;
   scope_card_id?: string;
+  /** Joined display name of the scope project card (its `title`). */
+  scope_project_title?: string;
   default_create_status_id?: string;
+  /** Joined display name of the default-create status card (its `title`). */
+  default_create_status_name?: string;
   created_at?: string;
 }
 
@@ -233,6 +241,18 @@ export interface PersonCreateOutput {
   userAccountId: bigint;
 }
 
+/* ---- person.grant_account (promote an existing person to a user) --------- */
+
+export interface PersonGrantAccountInput {
+  personCardId: bigint | string;
+  /** Email override; when blank the person's stored email is used (one required). */
+  email?: string;
+}
+export interface PersonGrantAccountOutput {
+  /** The linked (new or pre-existing) user_account id. */
+  userAccountId: bigint;
+}
+
 /* ---- user_role.set / user_role.revoke (Users role assign/revoke) --------- */
 
 export interface UserRoleSetInput {
@@ -332,6 +352,19 @@ export interface FlowPreviewDeleteOutput {
   tasks_currently_in_flow_states: number;
   tasks_by_phase: { triage: number; active: number; terminal: number };
   sample_step_labels: string[];
+}
+
+/** flow.set — upsert a flow row (id absent/0 inserts; id>0 updates/renames). */
+export interface FlowSetInput {
+  id?: bigint | string;
+  name: string;
+  doc?: string;
+  attributeDefId: bigint | string;
+  scopeCardId: bigint | string;
+  defaultCreateStatusId?: bigint | string;
+}
+export interface FlowSetOutput {
+  id: string;
 }
 
 export interface FlowDeleteInput {
@@ -598,6 +631,7 @@ function decodeAttributeDefRow(j: Record<string, unknown>): AttributeDefRow {
     name: asStr(j['name']),
     value_type: asStr(j['value_type']),
     is_built_in: asBool(j['is_built_in']),
+    enum_managed: asBool(j['enum_managed']),
     bound_to: asArray(j['bound_to']).map((b) => decodeAttributeDefBound(asObj(b))),
   };
   const tgt = asStrOpt(j['target_card_type_name']);
@@ -615,8 +649,12 @@ function decodeFlowRow(j: Record<string, unknown>): FlowRow {
   if (adn !== undefined) out.attribute_def_name = adn;
   const scope = asStrOpt(j['scope_card_id']);
   if (scope !== undefined) out.scope_card_id = scope;
+  const scopeTitle = asStrOpt(j['scope_project_title']);
+  if (scopeTitle !== undefined) out.scope_project_title = scopeTitle;
   const dcs = asStrOpt(j['default_create_status_id']);
   if (dcs !== undefined) out.default_create_status_id = dcs;
+  const dcsName = asStrOpt(j['default_create_status_name']);
+  if (dcsName !== undefined) out.default_create_status_name = dcsName;
   const at = asStrOpt(j['created_at']);
   if (at !== undefined) out.created_at = at;
   return out;
@@ -888,6 +926,22 @@ export function registerAdminSpecs(api: Api): void {
     });
   }
 
+  // person.grant_account — promote an existing person to a user (mint + link a
+  // user_account). Idempotent server-side; email optional (falls back to the
+  // person's stored email).
+  if (!api.registry.has({ endpoint: 'person', action: 'grant_account' })) {
+    api.define<PersonGrantAccountInput, PersonGrantAccountOutput>({
+      endpoint: 'person',
+      action: 'grant_account',
+      encode: (i) => {
+        const m: Record<string, unknown> = { person_card_id: i.personCardId };
+        if (i.email !== undefined && i.email !== '') m['email'] = i.email;
+        return m;
+      },
+      decode: (raw): PersonGrantAccountOutput => ({ userAccountId: asId(asObj(raw)['user_account_id']) }),
+    });
+  }
+
   // user_role.set — Users role assign (optionally project-scoped).
   if (!api.registry.has({ endpoint: 'user_role', action: 'set' })) {
     api.define<UserRoleSetInput, UserRoleSetOutput>({
@@ -1043,6 +1097,30 @@ export function registerAdminSpecs(api: Api): void {
         const j = asObj(raw);
         return { ok: j['ok'] === true, deleted: asNum(j['deleted']) };
       },
+    });
+  }
+
+  // flow.set — upsert a flow (create when id is absent; rename/update when set).
+  // ids may arrive as form strings, so they pass through verbatim (the wire is
+  // json:",string" anyway).
+  if (!api.registry.has({ endpoint: 'flow', action: 'set' })) {
+    api.define<FlowSetInput, FlowSetOutput>({
+      endpoint: 'flow',
+      action: 'set',
+      encode: (i) => {
+        const m: Record<string, unknown> = {
+          name: i.name,
+          attribute_def_id: i.attributeDefId,
+          scope_card_id: i.scopeCardId,
+        };
+        if (i.id !== undefined && String(i.id) !== '' && String(i.id) !== '0') m['id'] = i.id;
+        if (i.doc !== undefined && i.doc !== '') m['doc'] = i.doc;
+        if (i.defaultCreateStatusId !== undefined && String(i.defaultCreateStatusId) !== '0') {
+          m['default_create_status_id'] = i.defaultCreateStatusId;
+        }
+        return m;
+      },
+      decode: (raw): FlowSetOutput => ({ id: asStr(asObj(raw)['id']) }),
     });
   }
 

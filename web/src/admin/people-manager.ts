@@ -1,0 +1,497 @@
+/**
+ * PeopleManager — the unified "People" admin screen (#11). One screen for every
+ * person, with segment toggles (All / Users / Assignees / Contacts) and easy
+ * promote/demote between those tiers. Replaces the separate Contacts + Users
+ * admin screens.
+ *
+ * Tiers are derived, not stored as one field:
+ *   - contact  = person_kind 'contact', no user_account
+ *   - assignee = person_kind 'member', no user_account
+ *   - user     = person_kind 'member' + a linked user_account
+ *
+ * Promote/demote composes the existing handlers:
+ *   - kind change           → attribute.update(person_kind)
+ *   - grant a login         → person.grant_account (mint + link a user_account)
+ *   - revoke a login        → user.unlink_person
+ *
+ * "+ New" opens a modal dialog (Name / Email / Type) — no `prompt`. Type
+ * defaults to the active segment's tier; Email is required when Type='User'.
+ * Each row carries a Remove affordance that opens a confirm dialog and composes
+ * the removal: revoke the login first when the person is a user
+ * (user.unlink_person), then soft-delete the person card (card.delete).
+ * Zero-promise; reloads after each write.
+ */
+
+import { Control, type BaseControlConfig } from '../core/control.js';
+import { ADMIN_SPEC, type UserListOutput, type UserRow } from './specs.js';
+import { SPEC, type SelectWithAttributesOutput } from '../kanban/specs.js';
+import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
+import { trapFocus, captureFocus } from '../util/focus-trap.js';
+
+export interface PeopleManagerConfig extends BaseControlConfig {
+  type: 'PeopleManager';
+  /** Breadcrumb title (the AppShell reads it for the admin crumb). */
+  title?: string;
+}
+
+declare module '../core/control.js' {
+  interface ControlConfigMap {
+    PeopleManager: PeopleManagerConfig;
+  }
+}
+
+type Tier = 'contact' | 'assignee' | 'user';
+type Segment = 'all' | Tier;
+
+const SEGMENTS: ReadonlyArray<{ value: Segment; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'user', label: 'Users' },
+  { value: 'assignee', label: 'Assignees' },
+  { value: 'contact', label: 'Contacts' },
+];
+const TIER_LABEL: Record<Tier, string> = { contact: 'Contact', assignee: 'Assignee', user: 'User' };
+
+/** A person row joined with its account (when any) + its derived tier. */
+interface PersonRow {
+  id: bigint;
+  title: string;
+  email: string;
+  tier: Tier;
+  /** The linked user_account id (string), when this person is a user. */
+  accountId: string | null;
+}
+
+export class PeopleManager extends Control<PeopleManagerConfig> {
+  private persons: CardWithAttrs[] = [];
+  private accountByPerson: Map<string, UserRow> = new Map();
+  private segment: Segment = 'all';
+
+  private segHost!: HTMLElement;
+  private listHost!: HTMLElement;
+  /** The open modal (create / remove), with its focus trap + opener-restore. */
+  private modal: { overlay: HTMLElement; release: () => void; restore: () => void } | null = null;
+
+  protected override createRoot(): HTMLElement {
+    const el = document.createElement('section');
+    el.className = 'people-manager';
+    el.dataset.control = 'PeopleManager';
+    return el;
+  }
+
+  protected render(): void {
+    const head = document.createElement('header');
+    head.className = 'people-manager__head';
+    const title = document.createElement('h1');
+    title.className = 'people-manager__title';
+    title.textContent = 'People';
+
+    const seg = document.createElement('div');
+    seg.className = 'people-manager__segments';
+    seg.dataset.peopleSegments = '';
+    this.segHost = seg;
+
+    const newBtn = document.createElement('button');
+    newBtn.type = 'button';
+    newBtn.className = 'btn people-manager__new';
+    newBtn.dataset.peopleNew = '';
+    newBtn.textContent = '+ New';
+    this.listen(newBtn, 'click', () => this.openCreateDialog());
+
+    head.append(title, seg, newBtn);
+
+    const list = document.createElement('div');
+    list.className = 'people-manager__list';
+    list.dataset.peopleList = '';
+    this.listHost = list;
+
+    this.el.append(head, list);
+
+    this.onDestroy(() => this.closeModal());
+
+    this.paintSegments();
+    this.load();
+  }
+
+  private load(): void {
+    this.ctx.api.callByName(
+      SPEC.selectWithAttributes,
+      { cardTypeName: 'person' },
+      (out) => {
+        if (!this.isAlive()) return;
+        this.persons = (out as SelectWithAttributesOutput).rows ?? [];
+        this.paint();
+      },
+      { alive: () => this.isAlive() },
+    );
+    this.ctx.api.callByName(
+      ADMIN_SPEC.userListWithRoles,
+      {},
+      (out) => {
+        if (!this.isAlive()) return;
+        const map = new Map<string, UserRow>();
+        for (const u of (out as UserListOutput).rows ?? []) {
+          if (u.person_card_id !== undefined && u.person_card_id !== '') map.set(u.person_card_id, u);
+        }
+        this.accountByPerson = map;
+        this.paint();
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  private attr(card: CardWithAttrs, name: string): string {
+    const v = card.attributes[name];
+    return typeof v === 'string' ? v : '';
+  }
+
+  private rows(): PersonRow[] {
+    const out: PersonRow[] = [];
+    for (const p of this.persons) {
+      const account = this.accountByPerson.get(p.id.toString()) ?? null;
+      const kind = this.attr(p, 'person_kind');
+      const tier: Tier = account !== null ? 'user' : kind === 'contact' ? 'contact' : 'assignee';
+      out.push({
+        id: p.id,
+        title: this.attr(p, 'title'),
+        email: account?.email ?? this.attr(p, 'email'),
+        tier,
+        accountId: account?.id ?? null,
+      });
+    }
+    out.sort((a, b) => a.title.localeCompare(b.title));
+    return out;
+  }
+
+  private paintSegments(): void {
+    this.segHost.replaceChildren();
+    for (const s of SEGMENTS) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'people-manager__segment';
+      btn.dataset.peopleSegment = s.value;
+      btn.textContent = s.label;
+      btn.classList.toggle('people-manager__segment--active', s.value === this.segment);
+      btn.setAttribute('aria-pressed', s.value === this.segment ? 'true' : 'false');
+      this.listen(btn, 'click', () => {
+        this.segment = s.value;
+        this.paintSegments();
+        this.paint();
+      });
+      this.segHost.append(btn);
+    }
+  }
+
+  private paint(): void {
+    const host = this.listHost;
+    host.replaceChildren();
+    const rows = this.rows().filter((r) => this.segment === 'all' || r.tier === this.segment);
+    if (rows.length === 0) {
+      const p = document.createElement('p');
+      p.className = 'people-manager__empty muted';
+      p.textContent = 'No people in this view.';
+      host.append(p);
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const r of rows) frag.append(this.renderRow(r));
+    host.append(frag);
+  }
+
+  private renderRow(r: PersonRow): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'people-manager__row';
+    row.dataset.peopleRow = r.id.toString();
+    row.dataset.tier = r.tier;
+
+    const name = document.createElement('span');
+    name.className = 'people-manager__name';
+    name.dataset.peopleName = '';
+    name.textContent = r.title || `#${r.id.toString()}`;
+
+    const email = document.createElement('span');
+    email.className = 'people-manager__email muted';
+    email.textContent = r.email;
+
+    // Tier select — the promote/demote control.
+    const tierSel = document.createElement('select');
+    tierSel.className = 'people-manager__tier';
+    tierSel.dataset.peopleTier = '';
+    tierSel.setAttribute('aria-label', 'Tier');
+    for (const t of ['contact', 'assignee', 'user'] as Tier[]) {
+      const opt = document.createElement('option');
+      opt.value = t;
+      opt.textContent = TIER_LABEL[t];
+      if (t === r.tier) opt.selected = true;
+      tierSel.append(opt);
+    }
+    this.listen(tierSel, 'change', () => this.changeTier(r, tierSel.value as Tier));
+
+    // Remove: opens a confirm dialog → revoke login (if a user) + soft-delete.
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'people-manager__remove';
+    remove.dataset.peopleRemove = '';
+    remove.title = 'Remove';
+    remove.setAttribute('aria-label', `Remove ${r.title || `#${r.id.toString()}`}`);
+    remove.textContent = '✕';
+    this.listen(remove, 'click', () => this.openRemoveDialog(r));
+
+    row.append(name, email, tierSel, remove);
+    return row;
+  }
+
+  /** Promote / demote a person to a target tier by composing the needed writes. */
+  private changeTier(r: PersonRow, target: Tier): void {
+    if (target === r.tier) return;
+    const fired: string[] = [];
+    const done = (): void => {
+      // Reload once all fired writes have settled (each onOk calls this; a
+      // couple of extra reloads are harmless + idempotent).
+      if (this.isAlive()) this.load();
+    };
+
+    // 1. person_kind: 'contact' for the contact tier, 'member' otherwise.
+    const wantKind = target === 'contact' ? 'contact' : 'member';
+    fired.push('kind');
+    this.ctx.api.callByName(
+      SPEC.attributeUpdate,
+      { cardId: r.id, attributeName: 'person_kind', value: wantKind },
+      () => done(),
+      { alive: () => this.isAlive() },
+    );
+
+    // 2. account: grant when becoming a user; revoke when leaving 'user'.
+    if (target === 'user' && r.accountId === null) {
+      this.ctx.api.callByName(
+        ADMIN_SPEC.personGrantAccount,
+        { personCardId: r.id },
+        () => done(),
+        {
+          alive: () => this.isAlive(),
+          // A missing email is the common failure — surface it (the central
+          // funnel toasts) and leave the kind change in place.
+          onErr: () => done(),
+        },
+      );
+    } else if (target !== 'user' && r.accountId !== null) {
+      this.ctx.api.callByName(
+        ADMIN_SPEC.userUnlinkPerson,
+        { userAccountId: r.accountId },
+        () => done(),
+        { alive: () => this.isAlive() },
+      );
+    }
+  }
+
+  /* ------------------------------- modal ---------------------------------- */
+
+  /** Mount `panel` as a centered modal over a scrim, trapping Tab focus and
+   *  restoring focus to the opener on close. Backdrop click + Esc close it. */
+  private openModal(panel: HTMLElement, label: string): void {
+    this.closeModal();
+    const restore = captureFocus();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'pm-modal';
+    overlay.dataset.pmModal = '';
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'pm-modal__backdrop';
+    this.listen(backdrop, 'click', () => this.closeModal());
+
+    panel.classList.add('pm-modal__panel');
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-label', label);
+    this.listen(panel, 'keydown', (ev) => {
+      if ((ev as KeyboardEvent).key === 'Escape') {
+        ev.preventDefault();
+        this.closeModal();
+      }
+    });
+
+    overlay.append(backdrop, panel);
+    this.el.append(overlay);
+    const release = trapFocus(panel);
+    this.modal = { overlay, release, restore };
+  }
+
+  private closeModal(): void {
+    if (this.modal === null) return;
+    const { overlay, release, restore } = this.modal;
+    this.modal = null;
+    release();
+    overlay.remove();
+    restore();
+  }
+
+  /** Build one labelled field (label + control) for the modal forms. */
+  private field(labelText: string, control: HTMLElement): HTMLElement {
+    const field = document.createElement('label');
+    field.className = 'pm-modal__field';
+    const span = document.createElement('span');
+    span.className = 'pm-modal__label';
+    span.textContent = labelText;
+    control.classList.add('pm-modal__input');
+    field.append(span, control);
+    return field;
+  }
+
+  /* ------------------------------- create --------------------------------- */
+
+  /** "+ New": a modal with Name / Email / Type. Type defaults to the active
+   *  segment's tier; Email is required when Type='User' (the login key). */
+  private openCreateDialog(): void {
+    const panel = document.createElement('div');
+
+    const title = document.createElement('h2');
+    title.className = 'pm-modal__title';
+    title.textContent = 'Add person';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.dataset.peopleNewName = '';
+    nameInput.placeholder = 'Full name';
+
+    const emailInput = document.createElement('input');
+    emailInput.type = 'email';
+    emailInput.dataset.peopleNewEmail = '';
+    emailInput.placeholder = 'name@example.com';
+
+    const typeSel = document.createElement('select');
+    typeSel.dataset.peopleNewType = '';
+    for (const t of ['contact', 'assignee', 'user'] as Tier[]) {
+      const opt = document.createElement('option');
+      opt.value = t;
+      opt.textContent = TIER_LABEL[t];
+      typeSel.append(opt);
+    }
+    typeSel.value = this.segment === 'all' ? 'assignee' : this.segment;
+
+    const hint = document.createElement('p');
+    hint.className = 'pm-modal__hint muted';
+    hint.dataset.peopleNewHint = '';
+
+    const emailField = this.field('Email', emailInput);
+
+    const actions = document.createElement('div');
+    actions.className = 'pm-modal__actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn';
+    cancel.dataset.peopleNewCancel = '';
+    cancel.textContent = 'Cancel';
+    this.listen(cancel, 'click', () => this.closeModal());
+    const create = document.createElement('button');
+    create.type = 'button';
+    create.className = 'btn btn-primary';
+    create.dataset.peopleNewSubmit = '';
+    create.textContent = 'Create';
+    actions.append(cancel, create);
+
+    const validate = (): void => {
+      const tier = typeSel.value as Tier;
+      const userTier = tier === 'user';
+      hint.textContent = userTier ? 'A user needs an email — it’s the sign-in key.' : '';
+      emailField.classList.toggle('pm-modal__field--required', userTier);
+      const nameOk = nameInput.value.trim() !== '';
+      const emailOk = !userTier || emailInput.value.trim() !== '';
+      create.disabled = !(nameOk && emailOk);
+    };
+    this.listen(nameInput, 'input', validate);
+    this.listen(emailInput, 'input', validate);
+    this.listen(typeSel, 'change', validate);
+
+    this.listen(create, 'click', () => {
+      const tier = typeSel.value as Tier;
+      const name = nameInput.value.trim();
+      const email = emailInput.value.trim();
+      if (name === '' || (tier === 'user' && email === '')) return;
+      const input: Record<string, unknown> = { title: name, tier };
+      if (email !== '') input['email'] = email;
+      this.ctx.api.callByName(
+        ADMIN_SPEC.personCreate,
+        input,
+        () => {
+          if (!this.isAlive()) return;
+          this.closeModal();
+          this.load();
+        },
+        { alive: () => this.isAlive() },
+      );
+    });
+
+    panel.append(title, this.field('Name', nameInput), emailField, this.field('Type', typeSel), hint, actions);
+    this.openModal(panel, 'Add person');
+    validate();
+    nameInput.focus?.();
+  }
+
+  /* ------------------------------- remove --------------------------------- */
+
+  /** Per-row Remove: a confirm dialog explaining what happens (a user also
+   *  loses their login), then composes the removal on confirm. */
+  private openRemoveDialog(r: PersonRow): void {
+    const panel = document.createElement('div');
+
+    const title = document.createElement('h2');
+    title.className = 'pm-modal__title';
+    title.textContent = 'Remove person';
+
+    const name = r.title || `#${r.id.toString()}`;
+    const msg = document.createElement('p');
+    msg.className = 'pm-modal__msg';
+    msg.textContent =
+      r.tier === 'user'
+        ? `Remove ${name}? Their login is revoked and the person archived.`
+        : `Remove ${name}? The ${TIER_LABEL[r.tier].toLowerCase()} is archived.`;
+
+    const actions = document.createElement('div');
+    actions.className = 'pm-modal__actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn';
+    cancel.dataset.peopleRemoveCancel = '';
+    cancel.textContent = 'Cancel';
+    this.listen(cancel, 'click', () => this.closeModal());
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'btn btn-danger';
+    confirm.dataset.peopleRemoveConfirm = '';
+    confirm.textContent = 'Remove';
+    this.listen(confirm, 'click', () => this.removePerson(r));
+    actions.append(cancel, confirm);
+
+    panel.append(title, msg, actions);
+    this.openModal(panel, 'Remove person');
+    confirm.focus?.();
+  }
+
+  /** Compose a removal: revoke the login first when the person is a user, then
+   *  soft-delete the person card. Both ride one coalesced batch; the reload
+   *  fires when the card.delete settles. */
+  private removePerson(r: PersonRow): void {
+    if (r.tier === 'user' && r.accountId !== null) {
+      this.ctx.api.callByName(
+        ADMIN_SPEC.userUnlinkPerson,
+        { userAccountId: r.accountId },
+        () => {},
+        { alive: () => this.isAlive() },
+      );
+    }
+    this.ctx.api.callByName(
+      'card.delete',
+      { cardId: r.id },
+      () => {
+        if (!this.isAlive()) return;
+        this.closeModal();
+        this.load();
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+}
+
+export function registerPeopleManager(): void {
+  Control.register('PeopleManager', PeopleManager);
+}

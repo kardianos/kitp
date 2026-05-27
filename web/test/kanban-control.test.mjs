@@ -501,7 +501,7 @@ test('Kanban: GROUP=status re-keys columns to statuses + (unset)', async () => {
   const taskFiresBefore = transport.sent.taskInputs.length;
 
   // Pick GROUP=status (what ScreenFilterBar's picker writes).
-  tree.at(['screen', 'group']).set('status');
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
   await settle(dispatcher);
 
   // Columns are now keyed by status value-cards (50 'To do', 51 'Doing') + unset.
@@ -529,13 +529,12 @@ test('Kanban: GROUP=status re-keys columns to statuses + (unset)', async () => {
 test('Kanban: cross-column move updates the ACTIVE axis attr (status when grouped by status)', async () => {
   const { dispatcher, tree, kanban } = bootMultiAxisKanban();
   await settle(dispatcher);
-  tree.at(['screen', 'group']).set('status');
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
   await settle(dispatcher);
 
   // Drag task 201 (status 50) onto the 'Doing' column (status 51). Simulate the
   // native DnD start so the module-level drag id is set, then drop on the body.
   const cols = kanban.el.querySelectorAll('[data-kanban-column]');
-  const fromBody = cols[0].querySelector('[data-kanban-column-body]');
   const card201 = visibleCards(cols[0]).find((c) => c.dataset.cardId === '201');
   card201.dispatchEvent({ type: 'dragstart', target: card201 });
   const toBody = cols[1].querySelector('[data-kanban-column-body]');
@@ -555,6 +554,38 @@ test('Kanban: cross-column move updates the ACTIVE axis attr (status when groupe
   assert.ok(
     visibleCards(colsAfter[1]).some((c) => c.dataset.cardId === '201'),
     '201 re-bucketed into the Doing (status 51) column',
+  );
+});
+
+test('Kanban: a cross-column drop lands at the dropped slot (respects order)', async () => {
+  const { dispatcher, tree, kanban } = bootMultiAxisKanban();
+  await settle(dispatcher);
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
+  await settle(dispatcher);
+
+  // cols[0] = To do (50, holds 201+202), cols[1] = Doing (51, holds 203).
+  const cols = kanban.el.querySelectorAll('[data-kanban-column]');
+  const toBody = cols[1].querySelector('[data-kanban-column-body]');
+  toBody.dataset.dropSlot = '0'; // drop 201 at the TOP of Doing (before 203)
+  const card201 = visibleCards(cols[0]).find((c) => c.dataset.cardId === '201');
+  card201.dispatchEvent({ type: 'dragstart', target: card201 });
+  toBody.dispatchEvent({ type: 'drop', target: toBody, clientY: 0 });
+
+  const t = (id) => tree.at(['kanban', 'tasks']).peek().find((x) => x.id === id);
+  assert.equal(t(201n).attributes.status, 51n, '201 re-keyed into Doing');
+  // Cross-column drop now ALSO sets sort_order so it lands where dropped:
+  // dropped at slot 0 → 201 sorts before the existing Doing card (203).
+  assert.ok(
+    t(201n).attributes.sort_order < t(203n).attributes.sort_order,
+    `201 placed before 203 (sort ${t(201n).attributes.sort_order} < ${t(203n).attributes.sort_order})`,
+  );
+
+  await settle(dispatcher);
+  const doingAfter = kanban.el.querySelectorAll('[data-kanban-column]')[1];
+  assert.deepEqual(
+    visibleCards(doingAfter).map((c) => c.dataset.cardId),
+    ['201', '203'],
+    'Doing shows 201 (dropped at top) then 203',
   );
 });
 
@@ -598,6 +629,64 @@ test('Kanban: within-column drag rewrites sort_order optimistically (planSortRew
 });
 
 /* -------------------------------------------------------------------------- */
+/* Animated drop placeholder (#1): a gliding bar shows the insertion gap.       */
+/* -------------------------------------------------------------------------- */
+
+test('Kanban: drag shows a drop placeholder in the column, hidden on dragend (#1)', async () => {
+  const { dispatcher, kanban } = bootMultiAxisKanban();
+  await settle(dispatcher);
+
+  const cols = kanban.el.querySelectorAll('[data-kanban-column]');
+  const body = cols[0].querySelector('[data-kanban-column-body]');
+  const placeholder = body.querySelectorAll('[data-drop-placeholder]')[0];
+  assert.ok(placeholder, 'a placeholder bar lives in the column body');
+  assert.equal(placeholder.style.display, 'none', 'hidden at rest');
+
+  const card = visibleCards(cols[0])[0];
+  card.dispatchEvent({ type: 'dragstart', target: card });
+  body.dispatchEvent({ type: 'dragover', target: body, clientY: 10 });
+  assert.notEqual(placeholder.style.display, 'none', 'placeholder shown during dragover');
+
+  card.dispatchEvent({ type: 'dragend', target: card });
+  assert.equal(placeholder.style.display, 'none', 'placeholder hidden on dragend');
+});
+
+test('Kanban: the moved card settles into its new slot on drop (#context)', async () => {
+  const { dispatcher, kanban } = bootMultiAxisKanban();
+  await settle(dispatcher);
+
+  const m1 = kanban.el.querySelectorAll('[data-kanban-column]')[0];
+  const body = m1.querySelector('[data-kanban-column-body]');
+  body.dataset.dropSlot = '0';
+  const card203 = visibleCards(m1).find((c) => c.dataset.cardId === '203');
+  card203.dispatchEvent({ type: 'dragstart', target: card203 });
+  body.dispatchEvent({ type: 'drop', target: body, clientY: 0 });
+  await settle(dispatcher);
+
+  const after = visibleCards(kanban.el.querySelectorAll('[data-kanban-column]')[0]);
+  const moved = after.find((c) => c.dataset.cardId === '203');
+  const other = after.find((c) => c.dataset.cardId === '201');
+  assert.ok(moved.classList.contains('card--settling'), 'the moved card carries the settle class');
+  assert.ok(!other.classList.contains('card--settling'), 'an untouched card does not');
+});
+
+test('Kanban: a task created elsewhere (tasks.createdNonce) refetches the board', async () => {
+  const { transport, dispatcher, tree } = bootMultiAxisKanban();
+  await settle(dispatcher);
+  const before = transport.sent.taskInputs.length;
+
+  // Simulate the quick-entry overlay's post-create broadcast.
+  const nonce = tree.at(['tasks', 'createdNonce']);
+  nonce.set((nonce.peek() ?? 0) + 1);
+  await settle(dispatcher);
+
+  assert.ok(
+    transport.sent.taskInputs.length > before,
+    'createdNonce bump re-issued the kanban tasks query',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
 /* Card click / Enter / o navigates into the task detail (`/task/:id`).         */
 /* -------------------------------------------------------------------------- */
 
@@ -637,4 +726,66 @@ test('Kanban: Enter / o on a focused card opens the task detail', async () => {
   const id = card.dataset.cardId;
   card.dispatchEvent({ type: 'keydown', key: 'Enter', target: card });
   assert.equal(location.pathname, `/task/${id}`, '`Enter` opened the task detail');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Per-column "+" quick-add raises quickCreateOpen with the lane prefill.       */
+/* -------------------------------------------------------------------------- */
+
+test('Kanban: column "+" raises quickCreateOpen prefilled to that column axis', async () => {
+  const { dispatcher, api } = bootApi(M.mockTransport());
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(M.DEMO_PROJECT_ID);
+  const scope = {
+    get projectId() {
+      return tree.at(['scope', 'projectId']).peek() ?? null;
+    },
+  };
+  const intents = [];
+  const bus = { emit: (type, detail) => intents.push({ type, detail }) };
+  const ctx = { api, tree, scope, bus };
+
+  const kanban = M.Control.New('Kanban', { type: 'Kanban' }, ctx);
+  kanban.mount(new FakeElement('div'));
+  await settle(dispatcher);
+
+  // Click the "+" on the M1 milestone column (key '32'); default axis = milestone.
+  const add = kanban.el.querySelectorAll('[data-kanban-column-add]').find(
+    (b) => b.dataset.kanbanColumnAdd === '32',
+  );
+  assert.ok(add, 'the M1 column has a + quick-add button');
+  add.dispatchEvent({ type: 'click', target: add });
+
+  const open = intents.find((i) => i.type === 'quickCreateOpen');
+  assert.ok(open, 'clicking + raised quickCreateOpen');
+  assert.deepEqual(
+    open.detail.prefill.laneAttribute,
+    { name: 'milestone_ref', value: 32n },
+    'prefilled the column axis (milestone_ref = 32)',
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* #26 — a LANE axis splits the board into swim lanes (lanes × columns).        */
+/* -------------------------------------------------------------------------- */
+
+test('Kanban: a LANE axis splits the board into swim lanes', async () => {
+  const { dispatcher, tree, kanban } = bootMultiAxisKanban();
+  await settle(dispatcher);
+
+  // Columns by status, lanes by milestone.
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
+  tree.at(['screen', 'laneAxis']).set({ attr: 'milestone_ref', lookup: 'milestones' });
+  await settle(dispatcher);
+
+  const lanes = kanban.el.querySelectorAll('[data-kanban-lane]');
+  assert.ok(lanes.length >= 2, 'board split into one lane per milestone value');
+  // Each lane holds the column set (status columns).
+  const firstLaneCols = lanes[0].querySelectorAll('[data-kanban-column]');
+  assert.ok(firstLaneCols.length >= 1, 'a lane contains the status columns');
+
+  // Turning lanes off collapses back to a single column row (no lane wrappers).
+  tree.at(['screen', 'laneAxis']).set(null);
+  await settle(dispatcher);
+  assert.equal(kanban.el.querySelectorAll('[data-kanban-lane]').length, 0, 'no lanes when laneAxis cleared');
 });

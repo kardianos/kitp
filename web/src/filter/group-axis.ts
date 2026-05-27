@@ -40,3 +40,40 @@ export function groupAttrFromGroupValue(value: string | null | undefined): Group
       return null;
   }
 }
+
+/**
+ * Target card_type name → the (plural) lookup-map name each screen stores that
+ * type's `{id:label}` value-cards under (`grid.lookups.<name>` /
+ * `kanban.axis.<name>`). This is the ONLY residual naming convention; the axis
+ * SET itself is data-driven (see filter/vocabulary.ts). An unmapped target
+ * falls back to its own name, so a custom ref attr still resolves a lookup key
+ * (its labels just won't be pre-loaded by the built-in grid/kanban queries).
+ */
+const CARD_TYPE_TO_LOOKUP: Readonly<Record<string, string>> = {
+  person: 'persons',
+  status: 'statuses',
+  milestone: 'milestones',
+  component: 'components',
+  tag: 'tags',
+};
+
+/** The lookup-map name for a target card_type (see {@link CARD_TYPE_TO_LOOKUP}). */
+export function lookupNameForCardType(targetCardType: string): string {
+  return CARD_TYPE_TO_LOOKUP[targetCardType] ?? targetCardType;
+}
+
+/**
+ * Resolve a {@link GroupAttr} for a group axis identified by its ATTRIBUTE NAME
+ * (the data-driven group-picker value) plus the attribute's target card_type.
+ * Replaces the hardcoded {@link groupAttrFromGroupValue} switch on the
+ * data-driven path: the ScreenFilterBar resolves this from the loaded schema
+ * and publishes it at `screen.groupAxis` for the Grid / Kanban to consume.
+ * Returns null for an empty attr (→ no grouping).
+ */
+export function groupAxisForAttr(
+  attr: string | null | undefined,
+  targetCardType: string | null | undefined,
+): GroupAttr | null {
+  if (attr === null || attr === undefined || attr === '') return null;
+  return { attr, lookup: targetCardType ? lookupNameForCardType(targetCardType) : null };
+}

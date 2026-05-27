@@ -19,6 +19,7 @@ import (
 // page contains rows with id < cursor.
 type SelectInput struct {
 	CardID           int64  `json:"card_id,string,omitempty" mcp:"desc=card whose activity is being read; omit for cross-card mode"`
+	ProjectID        int64  `json:"project_id,string,omitempty" mcp:"desc=project scope; when set, only activity for cards within that project (the project or a descendant) is returned"`
 	Limit            *int   `json:"limit,omitempty" mcp:"desc=optional row cap; defaults to 200"`
 	BeforeActivityID *int64 `json:"before_activity_id,string,omitempty" mcp:"desc=cursor; only return activity rows with id < this"`
 }

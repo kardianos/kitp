@@ -20,8 +20,9 @@ import (
 
 // Snapshot is the wire shape returned by config.get.
 type Snapshot struct {
-	AttachmentMaxBytes int64 `json:"attachment_max_bytes" mcp:"desc=whole-file upload cap, in bytes (UI enforces before chunking)"`
-	ChunkMaxBytes      int64 `json:"chunk_max_bytes" mcp:"desc=per-chunk cap on POST /api/v1/cas/chunk, in bytes"`
+	AttachmentMaxBytes int64  `json:"attachment_max_bytes" mcp:"desc=whole-file upload cap, in bytes (UI enforces before chunking)"`
+	ChunkMaxBytes      int64  `json:"chunk_max_bytes" mcp:"desc=per-chunk cap on POST /api/v1/cas/chunk, in bytes"`
+	WorkspaceTitle     string `json:"workspace_title" mcp:"desc=operator-set workspace name shown in the web header + browser title"`
 }
 
 // GetInput is empty.

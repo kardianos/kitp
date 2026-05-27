@@ -71,9 +71,14 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     el.setAttribute('target', '_blank');
     el.setAttribute('rel', 'noopener noreferrer');
   }
-  // Disable any task-list checkbox so a viewer can't toggle it (the checkbox
-  // is informational; the canonical state is the source Markdown, not the DOM).
+  // GFM task-list checkbox. DOMPurify's `USE_PROFILES` allowlist drops the
+  // `type` attribute (even though it's in ALLOWED_ATTR), leaving a bare
+  // `<input disabled>` that the browser renders as a disabled TEXT box. marked
+  // only ever emits `<input>` for task-list items, so force it back to a
+  // disabled checkbox here (attributes set in the hook survive sanitization).
+  // It stays read-only — the canonical state is the source Markdown.
   if (el.tagName === 'INPUT') {
+    el.setAttribute('type', 'checkbox');
     el.setAttribute('disabled', '');
   }
 });

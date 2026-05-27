@@ -38,7 +38,7 @@
 
 import type { TreeNode } from '../core/tree.js';
 import { fallbackLayoutForSlug } from '../filter/screen-resolve.js';
-import { AUTH_USER_PATH, peekIsAdmin, type AuthUser } from '../auth/auth-state.js';
+import { AUTH_USER_PATH, peekIsAdmin, peekHasRole, type AuthUser } from '../auth/auth-state.js';
 
 /** Where the parsed current route lives in the data tree. */
 export const ROUTER_PATH = ['router', 'route'] as const;
@@ -49,6 +49,7 @@ export type RouteName =
   | 'project'
   | 'screen'
   | 'task'
+  | 'activity'
   | 'admin'
   | 'notfound';
 
@@ -87,8 +88,14 @@ const ROUTES: readonly RoutePattern[] = [
   { pattern: '/project/:id', name: 'project', guard: 'requireAuth' },
   { pattern: '/project/:id/screen/:slug', name: 'screen', guard: 'requireAuth' },
   { pattern: '/task/:id', name: 'task', guard: 'requireAuth' },
+  { pattern: '/activity', name: 'activity', guard: 'requireAuth' },
   { pattern: '/admin/:key', name: 'admin', guard: 'requireAdmin' },
 ];
+
+/** `/activity` — the active-project activity feed. */
+export function activityUrl(): string {
+  return '/activity';
+}
 
 /**
  * Resolve a URL slug to a ScreenHost layout — the SEED/FALLBACK layout only.
@@ -105,6 +112,36 @@ const ROUTES: readonly RoutePattern[] = [
  */
 export function screenLayoutForSlug(slug: string): string {
   return fallbackLayoutForSlug(slug);
+}
+
+/**
+ * The embedded-help TOPIC key for a route — what `help.get_topic` looks up to
+ * render the screen's authored prose in the help overlay. Maps to the server's
+ * `topicFiles` keys (see server/internal/dom/help):
+ *   - task                  → `task_detail`
+ *   - admin/:key            → `admin.<key>`
+ *   - project/:id/screen/:slug → `layout.<layout>`
+ *   - project/:id (default board) → `layout.kanban`
+ * null when there's no authored topic (the all-projects landing / not-found),
+ * which leaves the overlay showing keybindings only.
+ */
+export function helpTopicForRoute(route: RouteMatch): string | null {
+  switch (route.name) {
+    case 'task':
+      return 'task_detail';
+    case 'admin': {
+      const key = route.params['key'];
+      return key !== undefined && key !== '' ? `admin.${key}` : null;
+    }
+    case 'screen': {
+      const slug = route.params['slug'];
+      return slug !== undefined && slug !== '' ? `layout.${screenLayoutForSlug(slug)}` : null;
+    }
+    case 'project':
+      return 'layout.kanban'; // the default project screen is the board
+    default:
+      return null;
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -224,6 +261,13 @@ export function routeGuard(match: RouteMatch): GuardResult {
       // a non-admin is redirected away on the next route landing.
       if (user === undefined || user.userId === null) return { ok: true };
       if (peekIsAdmin(routerTree)) return { ok: true };
+      // A (project-scoped) manager may reach the manager-permitted admin keys
+      // (e.g. 'enums' / Manage values). The set is supplied by installRouter so
+      // the router stays generic; the backend enforces the per-project scope.
+      const key = match.params['key'];
+      if (key !== undefined && managerAdminKeys.has(key) && peekHasRole(routerTree, 'manager')) {
+        return { ok: true };
+      }
       return { ok: false, redirectTo: '/projects' };
     }
     default:
@@ -242,6 +286,10 @@ export function routeGuard(match: RouteMatch): GuardResult {
  * threading the tree through every call site.
  */
 let routerTree: TreeNode | null = null;
+
+/** Admin route keys (`/admin/:key`) a manager may also reach. Supplied by
+ *  installRouter; the requireAdmin guard consults it. Empty until installed. */
+let managerAdminKeys: ReadonlySet<string> = new Set();
 
 /** Read the current route reactively (subscribes the caller's effect). */
 export function currentRoute(tree: TreeNode): RouteMatch {
@@ -321,8 +369,12 @@ function samePath(path: string): boolean {
  * URL and re-land the route), and returns a disposer. Idempotent per tree —
  * the last installed tree wins (the app has one).
  */
-export function installRouter(tree: TreeNode): () => void {
+export function installRouter(
+  tree: TreeNode,
+  opts?: { managerAdminKeys?: Iterable<string> },
+): () => void {
   routerTree = tree;
+  managerAdminKeys = new Set(opts?.managerAdminKeys ?? []);
   // Initial route: parse the live URL so a cold deep-link renders the right
   // screen. replaceState seeds history.state without adding an entry.
   const initial = matchRoute(currentPathname());

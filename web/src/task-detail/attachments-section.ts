@@ -70,6 +70,13 @@ export interface AttachmentsSectionConfig extends BaseControlConfig {
   chunkBytes?: number;
   /** Called after every successful upload / delete so the parent can refresh. */
   onChanged?: () => void;
+  /**
+   * Optional MAIN-column host the section paints a preview STRIP into (image +
+   * PDF tiles → the same gallery), like the Svelte AttachmentsPreviewStrip. The
+   * section owns the data + thumb cache + gallery, so the strip stays in sync
+   * with the right-rail list for free; it's hidden when nothing is previewable.
+   */
+  previewHost?: HTMLElement;
 }
 
 declare module '../core/control.js' {
@@ -99,6 +106,8 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
   private readonly postChunk?: PostChunk;
   private readonly fetchBlob: (url: string, onDone: (b: Blob) => void, onError: (e: Error) => void) => void;
   private readonly onChanged?: () => void;
+  /** MAIN-column host for the preview strip (image + PDF tiles), or undefined. */
+  private readonly previewHost?: HTMLElement;
 
   /** The loaded attachment rows (newest-first). */
   private rows: AttachmentRow[] = [];
@@ -112,6 +121,9 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
 
   /** Thumb object-URL cache: attachment-id-as-string → blob URL. Revoked on destroy. */
   private readonly thumbUrls = new Map<string, string>();
+  /** In-flight thumb fetches → the <img> targets awaiting the blob, so the strip
+   *  tile + the list row for the same attachment share ONE fetch / object URL. */
+  private readonly thumbPending = new Map<string, HTMLImageElement[]>();
 
   /** The open gallery overlay (or null). Owns its own object URL. */
   private gallery: { root: HTMLElement; viewerHost: HTMLElement; index: number; objUrl: string | null } | null = null;
@@ -129,6 +141,7 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
     if (this.config.postChunk !== undefined) this.postChunk = this.config.postChunk;
     this.fetchBlob = this.config.fetchBlob ?? defaultFetchBlob;
     this.onChanged = this.config.onChanged;
+    this.previewHost = this.config.previewHost;
   }
 
   protected override createRoot(): HTMLElement {
@@ -210,6 +223,9 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
     this.closeGallery();
     for (const url of this.thumbUrls.values()) URL.revokeObjectURL(url);
     this.thumbUrls.clear();
+    this.thumbPending.clear();
+    // The strip lives in a host this control doesn't own — clear it on teardown.
+    this.previewHost?.replaceChildren();
     super.destroy();
   }
 
@@ -375,6 +391,8 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
   /* -------------------------------- list -------------------------------- */
 
   private paintList(): void {
+    // Keep the main-column preview strip in sync on every list repaint.
+    this.paintPreviews();
     this.listHost.replaceChildren();
     this.countEl.textContent = this.rows.length > 0 ? `(${this.rows.length})` : '';
 
@@ -467,7 +485,9 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
     return li;
   }
 
-  /** Fetch an image thumbnail blob → object URL and apply it to the <img>. */
+  /** Fetch an image thumbnail blob → object URL and apply it to the <img>.
+   *  Coalesces concurrent calls for the same attachment (the preview-strip tile
+   *  and the right-rail row request the same thumb) onto one fetch + URL. */
   private loadThumb(row: AttachmentRow, img: HTMLImageElement): void {
     const key = row.id.toString();
     const cached = this.thumbUrls.get(key);
@@ -475,17 +495,26 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
       img.src = cached;
       return;
     }
+    const pending = this.thumbPending.get(key);
+    if (pending !== undefined) {
+      pending.push(img);
+      return;
+    }
+    this.thumbPending.set(key, [img]);
     this.fetchBlob(
       thumbUrl(row.id),
       (blob) => {
+        const targets = this.thumbPending.get(key) ?? [];
+        this.thumbPending.delete(key);
         if (!this.isAlive()) return;
         const objUrl = URL.createObjectURL(blob);
         this.thumbUrls.set(key, objUrl);
-        // The <img> may have been re-rendered; only set if still attached.
-        if (img.isConnected) img.src = objUrl;
+        // Targets may have been re-rendered; only set if still attached.
+        for (const t of targets) if (t.isConnected) t.src = objUrl;
       },
       () => {
-        // Thumb missing/failed — leave the empty image; not fatal.
+        // Thumb missing/failed — leave the empty image(s); not fatal.
+        this.thumbPending.delete(key);
       },
     );
   }
@@ -497,6 +526,64 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
       URL.revokeObjectURL(url);
       this.thumbUrls.delete(key);
     }
+  }
+
+  /* ---------------------------- preview strip --------------------------- */
+
+  /**
+   * Paint the MAIN-column preview strip (image + PDF tiles) into `previewHost`,
+   * if one was provided. Reuses the section's rows + thumb cache + gallery, so
+   * it tracks the right-rail list automatically. Hidden when nothing previewable.
+   */
+  private paintPreviews(): void {
+    const host = this.previewHost;
+    if (host === undefined) return;
+    host.replaceChildren();
+    const previewable = this.viewableRows();
+    host.style.display = previewable.length === 0 ? 'none' : '';
+    if (previewable.length === 0) return;
+
+    const strip = document.createElement('div');
+    strip.className = 'attachments-strip';
+    strip.dataset.attachmentsStrip = '';
+    for (const row of previewable) strip.append(this.renderTile(row));
+    host.append(strip);
+  }
+
+  /** One preview tile: a thumbnail box (image thumb / PDF or fallback glyph) +
+   *  a truncated filename; clicking opens the shared gallery at that item. */
+  private renderTile(row: AttachmentRow): HTMLElement {
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = 'attachments-strip__tile';
+    tile.dataset.attachmentTile = row.id.toString();
+    tile.title = row.filename;
+    tile.setAttribute('aria-label', `View ${row.filename}`);
+    this.listen(tile, 'click', () => this.openGallery(row));
+
+    const box = document.createElement('div');
+    box.className = 'attachments-strip__box';
+    if (row.kind === 'image' && row.thumbFileId !== 0n) {
+      const img = document.createElement('img');
+      img.className = 'attachments-strip__img';
+      img.alt = '';
+      box.append(img);
+      this.loadThumb(row, img);
+    } else {
+      const glyph = document.createElement('span');
+      glyph.className = 'attachments-strip__glyph';
+      glyph.dataset.kind = row.kind;
+      // PDFs (and images whose server thumb failed) get a kind glyph.
+      glyph.textContent = row.kind === 'pdf' ? 'PDF' : '🖼';
+      box.append(glyph);
+    }
+    tile.append(box);
+
+    const name = document.createElement('span');
+    name.className = 'attachments-strip__name';
+    name.textContent = truncateFilename(row.filename);
+    tile.append(name);
+    return tile;
   }
 
   /* ------------------------------- uploads UI --------------------------- */
@@ -712,6 +799,20 @@ export function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+/** `prefix…suffix.ext` — keep the head + tail + extension so a long filename
+ *  stays recognisable under a tile (ports the Svelte strip's truncation). */
+export function truncateFilename(name: string, max = 20): string {
+  if (name.length <= max) return name;
+  const dot = name.lastIndexOf('.');
+  const ext = dot > 0 ? name.slice(dot) : '';
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const keep = max - 1 - ext.length; // 1 for the ellipsis
+  if (keep < 4) return `${name.slice(0, Math.max(1, max - 1))}…`;
+  const head = Math.ceil(keep * 0.6);
+  const tail = keep - head;
+  return `${base.slice(0, head)}…${base.slice(base.length - tail)}${ext}`;
 }
 
 /** The default same-origin blob fetcher (cookie auth). Callback surface. */

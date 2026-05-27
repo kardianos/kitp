@@ -139,7 +139,7 @@ async function settle(dispatcher) {
   await flushMicrotasks();
 }
 
-function mount(api, h) {
+function mount(api, h, previewHost) {
   const tree = new M.TreeNode({}, []);
   const ctx = { api, tree };
   const cfg = {
@@ -148,6 +148,7 @@ function mount(api, h) {
     postChunk: h.postChunk,
     fetchBlob: h.fetchBlob,
     chunkBytes: 4,
+    ...(previewHost ? { previewHost } : {}),
   };
   const c = M.Control.New('AttachmentsSection', cfg, ctx);
   c.mount(document.createElement('div'));
@@ -178,6 +179,74 @@ test('AttachmentsSection: attachment.list renders rows + an image requests its t
   );
   // Count badge shows the row count.
   assert.equal(c.el.querySelector('[data-attachments-count]').textContent, '(2)');
+});
+
+test('AttachmentsSection: paints a main-column preview strip of image + PDF tiles', async () => {
+  const h = attachmentsHarness({
+    rows: [
+      attachmentWire(2, 'spec.pdf', 'application/pdf', 2048, 'pdf'),
+      attachmentWire(1, 'photo.png', 'image/png', 4096, 'image', '500'),
+      attachmentWire(3, 'notes.txt', 'text/plain', 100, 'other'),
+    ],
+  });
+  const { dispatcher, api } = bootApi(h.transport);
+  const previewHost = document.createElement('section');
+  document.body.appendChild(previewHost);
+  mount(api, h, previewHost);
+  await settle(dispatcher);
+
+  // Only image + PDF are previewable (the .txt row stays in the list only).
+  const tiles = [...previewHost.querySelectorAll('[data-attachment-tile]')];
+  assert.equal(tiles.length, 2, 'image + PDF tiles only');
+  assert.deepEqual(
+    tiles.map((t) => t.dataset.attachmentTile),
+    ['2', '1'],
+    'tiles in list order (pdf then image)',
+  );
+  assert.notEqual(previewHost.style.display, 'none', 'strip visible when previewable');
+
+  // The image tile fetched its thumbnail (coalesced with the list row → one URL).
+  assert.ok(
+    h.fetched.some((u) => u.includes('/attachment/1/thumb')),
+    'image tile thumbnail fetched',
+  );
+  assert.equal(
+    h.fetched.filter((u) => u.includes('/attachment/1/thumb')).length,
+    1,
+    'thumb fetch coalesced across strip tile + list row (single fetch)',
+  );
+  // The PDF tile shows the PDF glyph (no server thumb for PDFs).
+  const pdfGlyph = previewHost.querySelector('[data-attachment-tile="2"] .attachments-strip__glyph');
+  assert.ok(pdfGlyph && pdfGlyph.textContent.includes('PDF'), 'PDF tile shows the PDF glyph');
+});
+
+test('AttachmentsSection: the preview strip hides when nothing is previewable', async () => {
+  const h = attachmentsHarness({
+    rows: [attachmentWire(3, 'notes.txt', 'text/plain', 100, 'other')],
+  });
+  const { dispatcher, api } = bootApi(h.transport);
+  const previewHost = document.createElement('section');
+  mount(api, h, previewHost);
+  await settle(dispatcher);
+
+  assert.equal(previewHost.querySelectorAll('[data-attachment-tile]').length, 0, 'no tiles');
+  assert.equal(previewHost.style.display, 'none', 'strip hidden');
+});
+
+test('AttachmentsSection: clicking a preview tile opens the gallery', async () => {
+  const h = attachmentsHarness({
+    rows: [attachmentWire(1, 'photo.png', 'image/png', 4096, 'image', '500')],
+  });
+  const { dispatcher, api } = bootApi(h.transport);
+  const previewHost = document.createElement('section');
+  document.body.appendChild(previewHost);
+  mount(api, h, previewHost);
+  await settle(dispatcher);
+
+  const tile = previewHost.querySelector('[data-attachment-tile="1"]');
+  tile.click();
+  await settle(dispatcher);
+  assert.ok(document.querySelector('[data-attachments-gallery]'), 'gallery overlay opened from the tile');
 });
 
 test('AttachmentsSection: delete fires attachment.delete and drops the row optimistically', async () => {

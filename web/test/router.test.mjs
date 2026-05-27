@@ -73,6 +73,11 @@ test('matchRoute: / and /projects → projects', () => {
   assert.equal(M.matchRoute('/projects').name, 'projects');
 });
 
+test('matchRoute: /activity → activity; activityUrl builds it', () => {
+  assert.equal(M.matchRoute('/activity').name, 'activity');
+  assert.equal(M.activityUrl(), '/activity');
+});
+
 test('matchRoute: /project/:id → project with the id param', () => {
   const m = M.matchRoute('/project/42');
   assert.equal(m.name, 'project');
@@ -101,6 +106,19 @@ test('matchRoute: /task/:id → task with the id', () => {
 test('matchRoute: unknown path → notfound', () => {
   assert.equal(M.matchRoute('/nope/here').name, 'notfound');
   assert.equal(M.matchRoute('/project').name, 'notfound'); // wrong segment count
+});
+
+test('helpTopicForRoute: each route maps to its embedded-help topic key', () => {
+  // The task + project routes used to fall through to null, so the task detail
+  // showed keybindings with no authored prose even though `task_detail` exists.
+  assert.equal(M.helpTopicForRoute(M.matchRoute('/task/7')), 'task_detail', 'task → task_detail prose');
+  assert.equal(M.helpTopicForRoute(M.matchRoute('/admin/users')), 'admin.users');
+  assert.equal(M.helpTopicForRoute(M.matchRoute('/project/9/screen/grid')), 'layout.grid');
+  assert.equal(M.helpTopicForRoute(M.matchRoute('/project/9/screen/kanban')), 'layout.kanban');
+  assert.equal(M.helpTopicForRoute(M.matchRoute('/project/9')), 'layout.kanban', 'project board default');
+  // No authored topic for the all-projects landing / not-found.
+  assert.equal(M.helpTopicForRoute(M.matchRoute('/projects')), null);
+  assert.equal(M.helpTopicForRoute(M.matchRoute('/nope')), null);
 });
 
 test('matchRoute: trailing slash + query string are normalised away', () => {
@@ -194,11 +212,11 @@ test('installRouter lands the deep-link route from the live URL', () => {
 /* requireAdmin guard: gates /admin/* on the landed auth.user identity.        */
 /* -------------------------------------------------------------------------- */
 
-function landAuth(tree, { userId = 5n, isAdmin = false } = {}) {
+function landAuth(tree, { userId = 5n, isAdmin = false, roles } = {}) {
   tree.at([...M.AUTH_USER_PATH]).set({
     userId,
     displayName: isAdmin ? 'Admin' : 'Worker',
-    roles: isAdmin ? ['admin'] : ['worker'],
+    roles: roles ?? (isAdmin ? ['admin'] : ['worker']),
     isAdmin,
     isAgent: false,
     parentUserId: null,
@@ -233,6 +251,32 @@ test('routeGuard: requireAdmin admits an admin, redirects a non-admin to /projec
   assert.deepEqual(M.routeGuard(M.matchRoute('/admin/users')), { ok: true });
   // requireAuth routes are unaffected by admin status.
   assert.deepEqual(M.routeGuard(M.matchRoute('/projects')), { ok: true });
+});
+
+test('routeGuard: a manager reaches manager-permitted admin keys, not the rest', () => {
+  const tree = new M.TreeNode({}, []);
+  M.installRouter(tree, { managerAdminKeys: ['enums'] });
+
+  // A manager (not admin) is admitted to the permitted key…
+  landAuth(tree, { isAdmin: false, roles: ['manager'] });
+  assert.deepEqual(M.routeGuard(M.matchRoute('/admin/enums')), { ok: true }, 'manager → Manage values');
+  // …but redirected from an admin-only key.
+  assert.deepEqual(M.routeGuard(M.matchRoute('/admin/roles')), {
+    ok: false,
+    redirectTo: '/projects',
+  }, 'manager → roles is admin-only');
+
+  // A plain worker is redirected even from the permitted key.
+  landAuth(tree, { isAdmin: false, roles: ['worker'] });
+  assert.deepEqual(M.routeGuard(M.matchRoute('/admin/enums')), {
+    ok: false,
+    redirectTo: '/projects',
+  }, 'worker → no admin access');
+
+  // An admin still reaches everything.
+  landAuth(tree, { isAdmin: true });
+  assert.deepEqual(M.routeGuard(M.matchRoute('/admin/enums')), { ok: true });
+  assert.deepEqual(M.routeGuard(M.matchRoute('/admin/roles')), { ok: true });
 });
 
 test('navigate to /admin/* redirects a non-admin away (lands /projects in the leaf)', () => {
@@ -283,12 +327,90 @@ function mountShell(opts = {}) {
       type: 'AppShell',
       boardConfig: { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban' } },
       adminConfigFor: (key) => (key === 'users' ? M.adminScreenConfig('users') : null),
+      ...(opts.adminLinks !== undefined ? { adminLinks: opts.adminLinks } : {}),
     },
     ctx,
   );
   shell.mount(new FakeElement('div'));
   return { shell, tree };
 }
+
+test('rail ADMIN section: a manager sees only manager-permitted links; an admin sees all', () => {
+  setPath('/projects');
+  const adminLinks = [
+    { label: 'Values', key: 'enums', minRole: 'manager' },
+    { label: 'Users…', key: 'users' },
+  ];
+  const { shell, tree } = mountShell({ adminLinks });
+  const shown = (key) =>
+    shell.el.querySelector(`[data-admin-key="${key}"]`).style.display !== 'none';
+  const sectionShown = () => shell.el.querySelector('[data-admin-toggle]').style.display !== 'none';
+
+  // A manager: the Values link + the section show; admin-only links stay hidden.
+  landAuth(tree, { isAdmin: false, roles: ['manager'] });
+  M.flushSync?.();
+  assert.equal(shown('enums'), true, 'manager sees Manage values');
+  assert.equal(shown('users'), false, 'manager does not see admin-only Users');
+  assert.equal(sectionShown(), true, 'ADMIN heading shows when any link is visible');
+
+  // A plain worker: nothing shows.
+  landAuth(tree, { isAdmin: false, roles: ['worker'] });
+  M.flushSync?.();
+  assert.equal(shown('enums'), false, 'worker sees no admin links');
+  assert.equal(sectionShown(), false, 'ADMIN heading hidden when no link is visible');
+
+  // An admin: everything shows.
+  landAuth(tree, { isAdmin: true });
+  M.flushSync?.();
+  assert.equal(shown('enums'), true);
+  assert.equal(shown('users'), true, 'admin sees every link');
+  assert.equal(sectionShown(), true);
+});
+
+test('rail ADMIN: Workspace + Project sub-sections render with their own links', () => {
+  setPath('/projects');
+  const adminLinks = [
+    { label: 'People', key: 'people', section: 'workspace' },
+    { label: 'Roles', key: 'roles', section: 'workspace' },
+    { label: 'Screens', key: 'screens', section: 'project' },
+    { label: 'Values', key: 'enums', section: 'project', minRole: 'manager' },
+  ];
+  const { shell, tree } = mountShell({ adminLinks });
+  landAuth(tree, { isAdmin: true });
+  M.flushSync?.();
+
+  // Two distinct section headings.
+  assert.ok(shell.el.querySelector('[data-admin-toggle="workspace"]'), 'Workspace heading');
+  assert.ok(shell.el.querySelector('[data-admin-toggle="project"]'), 'Project heading');
+
+  // Each link lives under its section's list.
+  const wsList = shell.el.querySelector('[data-admin-list="workspace"]');
+  const prList = shell.el.querySelector('[data-admin-list="project"]');
+  assert.ok(wsList.querySelector('[data-admin-key="people"]') && wsList.querySelector('[data-admin-key="roles"]'), 'workspace links');
+  assert.ok(prList.querySelector('[data-admin-key="screens"]') && prList.querySelector('[data-admin-key="enums"]'), 'project links');
+  assert.equal(wsList.querySelector('[data-admin-key="screens"]'), null, 'project link not in workspace list');
+});
+
+test('rail ADMIN: a manager sees the Project section but not Workspace', () => {
+  setPath('/projects');
+  const adminLinks = [
+    { label: 'People', key: 'people', section: 'workspace' },          // admin-only
+    { label: 'Screens', key: 'screens', section: 'project' },          // admin-only
+    { label: 'Values', key: 'enums', section: 'project', minRole: 'manager' },
+  ];
+  const { shell, tree } = mountShell({ adminLinks });
+  landAuth(tree, { isAdmin: false, roles: ['manager'] });
+  M.flushSync?.();
+
+  const shown = (key) => shell.el.querySelector(`[data-admin-key="${key}"]`).style.display !== 'none';
+  const sectionShown = (k) => shell.el.querySelector(`[data-admin-toggle="${k}"]`).style.display !== 'none';
+
+  assert.equal(sectionShown('workspace'), false, 'no manager-visible workspace links → Workspace hidden');
+  assert.equal(sectionShown('project'), true, 'Values visible → Project shown');
+  assert.equal(shown('enums'), true, 'manager sees Values');
+  assert.equal(shown('screens'), false, 'admin-only project link hidden from manager');
+  assert.equal(shown('people'), false, 'admin-only workspace link hidden from manager');
+});
 
 test('navigate swaps the outlet: /projects → ProjectList, /project/:id → ScreenHost', () => {
   setPath('/projects');
@@ -419,4 +541,104 @@ test('ADMIN rail section appears once the identity lands as admin (reactive)', (
   landAuth(tree, { isAdmin: true }); // the boot /auth/me probe resolves
   M.flushSync?.();
   assert.equal(adminRailVisible(shell), true, 'ADMIN section revealed reactively');
+});
+
+test('ADMIN disclosure (#4): collapsed by default, the heading toggles it open', () => {
+  setPath('/projects');
+  const { shell } = mountShell({ auth: { isAdmin: true } });
+  M.flushSync?.();
+  const list = shell.el.querySelectorAll('[data-admin-list]')[0];
+  const toggle = shell.el.querySelectorAll('[data-admin-toggle]')[0];
+  assert.ok(list && toggle, 'admin disclosure list + toggle render');
+  // Default collapsed.
+  assert.ok(list.classList.contains('shell__admin-list--collapsed'), 'collapsed by default');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  // Click the heading → expands.
+  toggle.dispatchEvent({ type: 'click', target: toggle });
+  assert.ok(!list.classList.contains('shell__admin-list--collapsed'), 'expanded after click');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  // Click again → collapses.
+  toggle.dispatchEvent({ type: 'click', target: toggle });
+  assert.ok(list.classList.contains('shell__admin-list--collapsed'), 'collapsed again');
+});
+
+/* -------------------------------------------------------------------------- */
+/* DEFAULT PROJECT screen-nav: reactive on the route + scope.projectId.         */
+/* -------------------------------------------------------------------------- */
+
+/** The per-project rail nav (Inbox/Grid/Kanban/Project) is visible iff none of
+ *  its `[data-slug]` links are display:none. */
+function scopeNavVisible(shell) {
+  const links = shell.el.querySelectorAll('[data-slug]');
+  assert.ok(links.length > 0, 'scope nav links present in the rail');
+  return links.every((el) => el.style.display !== 'none');
+}
+
+test('Task detail: project screen-nav reveals when the task publishes its project scope', () => {
+  setPath('/task/5');
+  const { shell, tree } = mountShell();
+  M.flushSync?.();
+  // Cold deep-link to a task with no prior project in scope → per-project nav hidden.
+  assert.equal(scopeNavVisible(shell), false, 'hidden with no project in scope');
+
+  // The TaskDetail publishes the task's parent project on load → nav reveals.
+  tree.at(['scope', 'projectId']).set(42n);
+  M.flushSync?.();
+  assert.equal(scopeNavVisible(shell), true, 'project screens visible on the task detail once scoped');
+});
+
+test('Per-project screen-nav stays visible on /projects when a project is active (#9)', () => {
+  setPath('/projects');
+  const { shell, tree } = mountShell();
+  // A project is always active (set here to stand in for the landed default);
+  // the rail keeps the project screen-nav even on the all-projects landing.
+  tree.at(['scope', 'projectId']).set(9n);
+  M.flushSync?.();
+  assert.equal(scopeNavVisible(shell), true, 'active project keeps the screen-nav visible on /projects');
+});
+
+test('Per-project screen-nav shows on a project screen route', () => {
+  setPath('/project/9/screen/grid');
+  const { shell } = mountShell();
+  M.flushSync?.();
+  assert.equal(scopeNavVisible(shell), true, 'screen route with a project in scope shows the nav');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Hotkey active scope follows the route body (onBodyMount) — so a screen's     */
+/* scoped chords (TaskDetail `e t`, …) go live on navigation, not just clicks.  */
+/* -------------------------------------------------------------------------- */
+
+test('onBodyMount reports the route body control (TaskDetail on /task)', () => {
+  setPath('/projects');
+  const { shell } = mountShell();
+  M.flushSync?.();
+  let activeBody = null;
+  shell.onBodyMount = (c) => {
+    activeBody = c;
+  };
+  M.navigate('/task/7');
+  M.flushSync?.();
+  assert.ok(activeBody, 'onBodyMount fired on navigation');
+  assert.equal(activeBody.type, 'TaskDetail', 'the active body is the TaskDetail (its `e _` chords go live)');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Header brand = the operator-set WORKSPACE TITLE (never the old 'kitp').      */
+/* -------------------------------------------------------------------------- */
+
+test('AppShell brand: defaults to "Workspace" (never "kitp") with no title configured', () => {
+  setPath('/projects');
+  const { shell } = mountShell();
+  const brand = shell.el.querySelector('[data-brand]');
+  assert.ok(brand, 'the brand element is present');
+  assert.equal(brand.textContent, 'Workspace');
+});
+
+test('AppShell brand: reflects config.workspaceTitle reactively', () => {
+  setPath('/projects');
+  const { shell, tree } = mountShell();
+  tree.at([...M.WORKSPACE_TITLE_PATH]).set('Acme HQ');
+  M.flushSync?.();
+  assert.equal(shell.el.querySelector('[data-brand]').textContent, 'Acme HQ');
 });

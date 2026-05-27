@@ -290,6 +290,11 @@ func runHTTP() error {
 	maxAttachBytes := int64(maxAttachMB) * 1024 * 1024
 	chunkMaxMB := envInt("ATTACHMENT_CHUNK_MAX_MB", 8)
 	chunkMaxBytes := int64(chunkMaxMB) * 1024 * 1024
+	// Operator-set workspace name shown in the web header + browser title.
+	// Settable via KITP_WORKSPACE_TITLE (directly or through an env file /
+	// compose / systemd EnvironmentFile); defaults to the neutral "Workspace"
+	// so the old "kitp" brand is never shown.
+	workspaceTitle := envOr("KITP_WORKSPACE_TITLE", "Workspace")
 	storage := cas.New(cas.NewPgBackend(pgPool))
 
 	registerHandlers(pool, storage)
@@ -428,6 +433,7 @@ func runHTTP() error {
 	domconfig.SetSnapshot(domconfig.Snapshot{
 		AttachmentMaxBytes: maxAttachBytes,
 		ChunkMaxBytes:      chunkMaxBytes,
+		WorkspaceTitle:     workspaceTitle,
 	})
 
 	// CAS reaper. Sweeps at the configured cadence, dropping cas_blob

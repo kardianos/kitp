@@ -57,6 +57,7 @@ type OrderClause struct {
 // otherwise Where is interpreted as a top-level AND (its v1 behaviour).
 type SelectWithAttributesInput struct {
 	ParentCardID     *int64          `json:"parent_card_id,string,omitempty" mcp:"desc=if set, return only cards with this parent_card_id"`
+	ProjectID        *int64          `json:"project_id,string,omitempty" mcp:"desc=if set, return only cards ENCLOSED BY this project (the project itself or any descendant) — scopes grandchild cards like filters (filter→screen→project) that parent_card_id can't reach"`
 	CardTypeName     *string         `json:"card_type_name,omitempty" mcp:"desc=if set, return only cards of this card_type"`
 	Where            []Predicate     `json:"where,omitempty" mcp:"desc=v1 flat list of predicates ANDed together (legacy; use tree for OR/NOT/nesting)"`
 	Tree             *CardWhereGroup `json:"tree,omitempty" mcp:"desc=v2 recursive predicate tree; takes precedence over where[] when set"`

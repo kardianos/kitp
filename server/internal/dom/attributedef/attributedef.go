@@ -52,6 +52,7 @@ type SelectRow struct {
 	ValueType          string          `json:"value_type" mcp:"desc=value type label (text, bool, number, date, card_ref, card_ref[])"`
 	TargetCardTypeName string          `json:"target_card_type_name,omitempty" mcp:"desc=for card_ref / card_ref[] value_types, the name of the card_type whose cards are valid values (status / milestone / person / …)"`
 	IsBuiltIn          bool            `json:"is_built_in" mcp:"desc=true if installed by a migration"`
+	EnumManaged        bool            `json:"enum_managed" mcp:"desc=true when this attribute's value-cards are user-managed via the Manage Values admin screen (milestone / component / tag / …)"`
 	BoundTo            []BoundCardType `json:"bound_to" mcp:"desc=card_types the attribute is bound to via edge"`
 }
 

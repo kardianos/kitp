@@ -65,6 +65,15 @@ function taskMockTransport() {
     parent_card_id: String(PROJECT_ID),
     attributes: attrs,
   });
+  // One task-bound card_ref attribute_def row (the data-driven chip/group axes).
+  const ref = (id, name, target, ordering) => ({
+    id,
+    name,
+    value_type: 'card_ref',
+    target_card_type_name: target,
+    is_built_in: true,
+    bound_to: [{ card_type_id: '5', card_type_name: 'task', ordering }],
+  });
 
   const TASKS = [
     task(201n, 'Wire pickers', { sort_order: 100, status: '40', milestone_ref: '32' }),
@@ -79,29 +88,34 @@ function taskMockTransport() {
         ok: true,
         data: {
           rows: [
-            {
-              id: '1',
-              name: 'status',
-              value_type: 'card_ref',
-              target_card_type_name: 'status',
-              is_built_in: true,
-              bound_to: [{ card_type_id: '5', card_type_name: 'task', ordering: 1 }],
-            },
-            {
-              id: '2',
-              name: 'milestone_ref',
-              value_type: 'card_ref',
-              target_card_type_name: 'milestone',
-              is_built_in: true,
-              bound_to: [{ card_type_id: '5', card_type_name: 'task', ordering: 2 }],
-            },
-            {
-              id: '3',
-              name: 'title',
-              value_type: 'text',
-              is_built_in: true,
-              bound_to: [{ card_type_id: '5', card_type_name: 'task', ordering: 3 }],
-            },
+            ref('1', 'status', 'status', 1),
+            ref('2', 'assignee', 'person', 2),
+            ref('3', 'milestone_ref', 'milestone', 3),
+            ref('4', 'component_ref', 'component', 4),
+            { id: '5', name: 'tags', value_type: 'card_ref[]', target_card_type_name: 'tag',
+              is_built_in: true, bound_to: [{ card_type_id: '5', card_type_name: 'task', ordering: 5 }] },
+            { id: '6', name: 'title', value_type: 'text', is_built_in: true,
+              bound_to: [{ card_type_id: '5', card_type_name: 'task', ordering: 6 }] },
+          ],
+        },
+      };
+    }
+    if (key === 'card_type.select') {
+      // project(1) is the parent of the value types (status/milestone/component/
+      // tag) → they're project-scoped; person is global; task(5) is self. None
+      // are children of task, so none are excluded from the axis set.
+      return {
+        id: sr.id,
+        ok: true,
+        data: {
+          rows: [
+            { id: '1', name: 'project' },
+            { id: '5', name: 'task', parent_card_type_id: '1' },
+            { id: '9', name: 'status', parent_card_type_id: '1' },
+            { id: '11', name: 'milestone', parent_card_type_id: '1' },
+            { id: '12', name: 'component', parent_card_type_id: '1' },
+            { id: '13', name: 'tag', parent_card_type_id: '1' },
+            { id: '8', name: 'person' },
           ],
         },
       };
@@ -229,6 +243,90 @@ test('ScreenFilterBar: the Advanced toggle expands a panel hosting a PredicateFi
   M.flushSync?.();
   assert.notEqual(panel.style.display, 'none', 'panel expanded on Advanced click');
   assert.equal(advanced.getAttribute('aria-expanded'), 'true');
+});
+
+test('ScreenFilterBar: the LANES picker is hidden on grid, shown on kanban (enableLanes)', async () => {
+  const { api } = bootApi(taskMockTransport());
+  const mountLayout = (layout) => {
+    const tree = new M.TreeNode({}, []);
+    tree.at(['scope', 'projectId']).set(PROJECT_ID);
+    const scope = {
+      get projectId() {
+        return tree.at(['scope', 'projectId']).peek() ?? null;
+      },
+    };
+    const host = M.Control.New(
+      'ScreenHost',
+      { type: 'ScreenHost', screen: { slug: layout, layout, title: layout }, resolveScreen: false },
+      { api, tree, scope },
+    );
+    host.mount(new FakeElement('div'));
+    return host;
+  };
+
+  const grid = mountLayout('grid');
+  assert.equal(grid.el.querySelectorAll('[data-filter-lane]').length, 0, 'grid: LANES picker hidden');
+
+  const inbox = mountLayout('list');
+  assert.equal(inbox.el.querySelectorAll('[data-filter-lane]').length, 0, 'inbox: LANES picker hidden');
+
+  const kanban = mountLayout('kanban');
+  assert.equal(kanban.el.querySelectorAll('[data-filter-lane]').length, 1, 'kanban: LANES picker shown');
+});
+
+test('ScreenFilterBar: screen-registered viewActions mount pulled-right on the View row (#8)', () => {
+  const { api } = bootApi(taskMockTransport());
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  // A stand-in view action (e.g. Grid would register its Columns control here).
+  // An unknown type mounts the NotFound placeholder — enough to prove the seam
+  // mounts whatever ChildConfig the host supplies, data-driven.
+  const bar = M.Control.New(
+    'ScreenFilterBar',
+    {
+      type: 'ScreenFilterBar',
+      screenStatePath: ['screen', 'kanban'],
+      viewActions: [{ type: 'GridColumnsDemo' }],
+    },
+    { api, tree, scope },
+  );
+  bar.mount(new FakeElement('div'));
+
+  const actions = bar.el.querySelector('[data-filterbar-view-actions]');
+  assert.ok(actions, 'the right-aligned view-actions container renders on the View row');
+  assert.ok((actions.children ?? []).length >= 1, 'the registered view action mounted into it');
+  // It lives on the presets (View) row, not row 2.
+  const row1 = bar.el.querySelector('.filterbar__row--presets');
+  assert.ok(row1 && row1.querySelector('[data-filterbar-view-actions]'), 'view actions sit on the View row');
+});
+
+test('ScreenFilterBar: kanban requires a group — picker defaults to milestone, no "No group" option', async () => {
+  const { dispatcher, api } = bootApi(taskMockTransport());
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  const scope = {
+    get projectId() {
+      return tree.at(['scope', 'projectId']).peek() ?? null;
+    },
+  };
+  const host = M.Control.New(
+    'ScreenHost',
+    { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban', title: 'Kanban' }, resolveScreen: false },
+    { api, tree, scope },
+  );
+  host.mount(new FakeElement('div'));
+  await settle(dispatcher);
+
+  // The board seeds the group to its default axis (milestone), so the picker is
+  // in sync with the board from the first paint (not "No group").
+  assert.equal(tree.at(['screen', 'group']).peek(), 'milestone_ref', 'group seeded to milestone');
+
+  // Once the data-driven axes land, the GROUP picker has no "No group" entry.
+  const groupEl = host.el.querySelectorAll('[data-filter-group]')[0];
+  assert.ok(groupEl, 'group picker present');
+  const labels = (groupEl.children ?? []).map((o) => o.textContent);
+  assert.ok(!labels.includes('No group'), `kanban group picker omits "No group" (got ${JSON.stringify(labels)})`);
 });
 
 /* -------------------------------------------------------------------------- */
@@ -683,4 +781,102 @@ test('NamedFilters: a snippet leaf composes with a quick-chip leaf + an Advanced
   // still reflects only its value — each surface owns its own slice of the tree.
   assert.deepEqual(namedFiltersControl(host).activeSnippetIds(), ['901'], 'named reflects its snippet');
   assert.deepEqual(quickChipControl(host).chipValues('status'), ['40'], 'chip reflects its value');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Phase-scope toggles — hide terminal by default, toggle to reveal all.        */
+/* -------------------------------------------------------------------------- */
+
+test('ScreenFilterBar: phase toggles render from screen.phaseToggles + toggle the has_phase scope', async () => {
+  const transport = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { host, tree } = mountScreen(api);
+  await settle(dispatcher);
+  const bar = host.el.findByControl('ScreenFilterBar')[0];
+
+  // Simulate what ScreenHost lands from the screen's toggle_groups.
+  tree.at(['screen', 'phaseToggles']).set([
+    { label: 'Triage', phase: 'triage', defaultOn: false },
+    { label: 'Active', phase: 'active', defaultOn: true },
+    { label: 'Closed', phase: 'terminal', defaultOn: false },
+  ]);
+  M.flushSync?.();
+
+  const row = bar.querySelector('[data-phase-toggles]');
+  assert.ok(row, 'phase toggle row rendered');
+  const byPhase = (p) => row.querySelector(`[data-phase-toggle="${p}"]`);
+  const isOn = (p) => byPhase(p).classList.contains('filterbar__phase-toggle--on');
+  assert.ok(byPhase('triage') && byPhase('active') && byPhase('terminal'), 'one button per phase');
+
+  // Unscoped (no has_phase leaf) → all phases visible → every toggle reads ON.
+  tree.at(['screen', 'predicate']).set(null);
+  M.flushSync?.();
+  for (const p of ['triage', 'active', 'terminal']) {
+    assert.ok(isOn(p), `${p} on when unscoped`);
+  }
+
+  // Scope to active only (what default-on seeds): Active on, others off.
+  tree.at(['screen', 'predicate']).set({ kind: 'leaf', attr: 'status', op: 'hasPhase', values: ['active'] });
+  M.flushSync?.();
+  assert.ok(isOn('active'), 'active on');
+  assert.ok(!isOn('terminal'), 'terminal hidden by default');
+  assert.ok(!isOn('triage'), 'triage hidden');
+
+  // Click "Closed" → reveal terminal too (active OR terminal).
+  byPhase('terminal').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  assert.deepEqual(
+    M.topLevelPhases(tree.at(['screen', 'predicate']).peek()).sort(),
+    ['active', 'terminal'],
+    'terminal added to the phase scope',
+  );
+
+  // Toggling every phase on collapses to no leaf (show all).
+  byPhase('triage').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  assert.deepEqual(M.topLevelPhases(tree.at(['screen', 'predicate']).peek()), [], 'all phases → no scope leaf');
+});
+
+test('ScreenFilterBar: a status quick-chip and the phase scope coexist (chip never clobbers has_phase)', async () => {
+  const transport = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { tree } = mountScreen(api);
+  await settle(dispatcher);
+
+  // Phase scope active; then a status chip picks a value — the has_phase leaf
+  // must survive (the whole reason for the chip-helper change).
+  tree.at(['screen', 'predicate']).set({ kind: 'leaf', attr: 'status', op: 'hasPhase', values: ['active'] });
+  M.flushSync?.();
+  const next = M.upsertTopLevelLeaf(tree.at(['screen', 'predicate']).peek(), M.leaf('status', 'in', ['40']));
+  tree.at(['screen', 'predicate']).set(next);
+  M.flushSync?.();
+
+  assert.deepEqual(M.topLevelPhases(tree.at(['screen', 'predicate']).peek()), ['active'], 'phase scope survived the status chip');
+});
+
+/* -------------------------------------------------------------------------- */
+/* "/" focuses the shared search input (provided by ScreenHost).               */
+/* -------------------------------------------------------------------------- */
+
+test('ScreenHost binds "/" to focus the filter bar search input', async () => {
+  const transport = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { host } = mountScreen(api);
+  await settle(dispatcher);
+
+  const search = host.el
+    .findByControl('ScreenFilterBar')[0]
+    .querySelector('[data-filter-search]');
+  assert.ok(search, 'the bar mounted a search input');
+
+  const slash = host.hotkeys().find((b) => b.binding === '/');
+  assert.ok(slash, 'ScreenHost declares a "/" hotkey');
+
+  slash.run();
+  assert.equal(document.activeElement, search, '"/" focused the search input');
+});
+
+test('focusScreenSearch returns false when no search input is present', () => {
+  const empty = new FakeElement('div');
+  assert.equal(M.focusScreenSearch(empty), false, 'no [data-filter-search] → no-op');
 });

@@ -126,9 +126,10 @@ name
 name, type, pk, unique, nullable, default, references
 id, bigserial, true, , , , 
 name, text, , true, false, , 
-value_type, text, , , false, , 
+value_type, text, , , false, ,
 target_card_type_id, bigint, , , , , card_type.id
-is_built_in, boolean, , , false, false, 
+is_built_in, boolean, , , false, false,
+enum_managed, boolean, , , false, false,
 
 ## table edge | doc="An attribute_def bound to a card_type, optionally required." | unique="card_type_id, attribute_def_id"
 
@@ -507,6 +508,7 @@ updated_at, timestamptz, , false, now(), ,
 ## function flow_step_delete_batch | doc="flow_step.delete — admin-only delete of one flow_step row by id." | path="functions/flow_step_delete_batch.sql"
 ## function activity_sink_set_batch | doc="activity_sink.set — admin-only upsert of one activity_sink card + paired activity_sink_secret row (pgp_sym_encrypt of client_secret with the app.comm_secret_key GUC). Set-based attribute writes via the ordinality-join idiom." | path="functions/activity_sink_set_batch.sql"
 ## function person_create_batch | doc="person.create — admin-only insert of a global person card with title + person_kind + optional email; tier='user' also provisions a user_account row + user_account_person link." | path="functions/person_create_batch.sql"
+## function person_grant_account_batch | doc="person.grant_account — admin-only promotion of an existing person card to a user: mint a user_account + user_account_person link (idempotent if already linked); email from the request override or the person's stored email." | path="functions/person_grant_account_batch.sql"
 ## function comm_channel_set_batch | doc="comm_channel.set — admin-only INSERT/UPDATE of a comm_channel card plus multi-attribute writes (title/channel_type/imap_*/smtp_*/from_address/intake_status/channel_status) and the paired comm_secret row (pgcrypto pgp_sym_encrypt with app.comm_secret_key GUC; omitted passwords preserved via COALESCE)." | path="functions/comm_channel_set_batch.sql"
 ## function comm_create_batch | doc="comm.create — admin-only insert of a comm card under a task. Mints a unique 10-char alphanumeric thread_id, writes title/channel_ref/thread_id/comm_status via the ordinality-join idiom, optional comm_recipients + initial_message → reply_body, appends to task.comms." | path="functions/comm_create_batch.sql"
 ## function card_undelete_batch | path="functions/card_undelete_batch.sql"

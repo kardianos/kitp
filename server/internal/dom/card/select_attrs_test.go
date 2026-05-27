@@ -32,6 +32,78 @@ func setupAttr(t *testing.T, schema string) (*api.Server, *store.Pool) {
 	return api.NewServer(sp), sp
 }
 
+// TestSelectWithAttributes_ProjectScope covers the enclosing-project filter:
+// project_id keeps cards the project encloses (itself or any descendant), so a
+// grandchild filter card (filter → screen → project) is reachable where
+// parent_card_id alone cannot reach it.
+func TestSelectWithAttributes_ProjectScope(t *testing.T) {
+	srv, _ := setupAttr(t, "kitp_test_card_lat_projscope")
+	ctx := auth.WithSystemUser(context.Background())
+
+	insert := func(typeName string, parent int64, title, attrs string) int64 {
+		fields := fmt.Sprintf(`"card_type_name":%q,"title":%q`, typeName, title)
+		if parent != 0 {
+			fields += fmt.Sprintf(`,"parent_card_id":"%d"`, parent)
+		}
+		if attrs != "" {
+			fields += `,"attributes":` + attrs
+		}
+		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "i", Endpoint: "card", Action: "insert", Data: json.RawMessage("{" + fields + "}")},
+		}})
+		if !resp.Subresponses[0].OK {
+			t.Fatalf("insert %s: %+v", typeName, resp.Subresponses[0])
+		}
+		var out card.InsertOutput
+		buf, _ := json.Marshal(resp.Subresponses[0].Data)
+		_ = json.Unmarshal(buf, &out)
+		return out.ID
+	}
+
+	// Project A → screen → filter (a grandchild). Plus project B's own filter.
+	// Screen cards require title + layout + slug.
+	pA := insert("project", 0, "A", "")
+	sA := insert("screen", pA, "Inbox", `{"layout":"list","slug":"inbox-a"}`)
+	fA := insert("filter", sA, "My filter", "")
+	pB := insert("project", 0, "B", "")
+	sB := insert("screen", pB, "Inbox", `{"layout":"list","slug":"inbox-b"}`)
+	fB := insert("filter", sB, "Other filter", "")
+
+	sel := func(data string) card.SelectWithAttributesOutput {
+		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "g", Endpoint: "card", Action: "select_with_attributes", Data: json.RawMessage(data)},
+		}})
+		if !resp.Subresponses[0].OK {
+			t.Fatalf("select: %+v", resp.Subresponses[0])
+		}
+		var out card.SelectWithAttributesOutput
+		buf, _ := json.Marshal(resp.Subresponses[0].Data)
+		_ = json.Unmarshal(buf, &out)
+		return out
+	}
+
+	// project_id=A + card_type=filter → A's filters (my grandchild filter plus
+	// any template-stamped defaults), and NEVER project B's filter.
+	scoped := sel(fmt.Sprintf(`{"card_type_name":"filter","project_id":"%d"}`, pA))
+	ids := map[int64]bool{}
+	for _, r := range scoped.Rows {
+		ids[r.ID] = true
+	}
+	if !ids[fA] {
+		t.Errorf("project_id scope should include A's grandchild filter %d; got %+v", fA, scoped.Rows)
+	}
+	if ids[fB] {
+		t.Errorf("project_id scope must exclude project B's filter %d; got %+v", fB, scoped.Rows)
+	}
+
+	// parent_card_id=A + card_type=filter → none: filters parent under screens,
+	// not the project. This is exactly why project_id is needed.
+	byParent := sel(fmt.Sprintf(`{"card_type_name":"filter","parent_card_id":"%d"}`, pA))
+	if len(byParent.Rows) != 0 {
+		t.Errorf("parent_card_id can't reach grandchild filters; got %+v", byParent.Rows)
+	}
+}
+
 // TestSelectWithAttributes_Predicate covers the where translation.
 func TestSelectWithAttributes_Predicate(t *testing.T) {
 	srv, _ := setupAttr(t, "kitp_test_card_lat_pred")

@@ -68,6 +68,7 @@ BEGIN
                         COALESCE((SELECT ct.name FROM card_type ct
                                   WHERE ct.id = ad.target_card_type_id), ''),
                     'is_built_in', ad.is_built_in,
+                    'enum_managed', ad.enum_managed,
                     'bound_to', COALESCE((
                         SELECT jsonb_agg(
                             jsonb_build_object(

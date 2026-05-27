@@ -46,6 +46,7 @@ import type { ApiFault } from '../core/dispatch.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import type { AttrSchema } from '../filter/attribute-schema.js';
 import { prepareFile, type PostChunk } from '../task-detail/upload.js';
+import { trapFocus } from '../util/focus-trap.js';
 import type { RefPicker } from '../ui/ref-picker.js';
 import type { DatePicker } from '../ui/datepicker.js';
 import {
@@ -165,6 +166,8 @@ export class QuickEntry extends Control<QuickEntryConfig> {
   ];
 
   private opened = false;
+  /** Focus-trap disposer while the overlay is open (#29). */
+  private untrap: (() => void) | null = null;
   private submitting = false;
   private detailsOpen = false;
 
@@ -490,6 +493,8 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     }
 
     this.el.style.display = '';
+    this.untrap?.();
+    this.untrap = trapFocus(this.el); // keep Tab inside the modal (#29)
     focusEl(this.titleInput);
   }
 
@@ -497,6 +502,8 @@ export class QuickEntry extends Control<QuickEntryConfig> {
   close(): void {
     if (!this.opened) return;
     this.opened = false;
+    this.untrap?.();
+    this.untrap = null;
     this.el.style.display = 'none';
     this.resetForm();
     focusEl(this.lastFocused);
@@ -1042,6 +1049,11 @@ export class QuickEntry extends Control<QuickEntryConfig> {
       onCreated: (newCardId) => {
         this.setSubmitting(false);
         this.showSuccessToast(newCardId);
+        // Broadcast a "task created" tick so open list/detail surfaces refresh
+        // without a manual re-search (Grid refetch #3, related-children reload
+        // for + New sub-task #9). One-way write — cascade-safe.
+        const nonce = this.ctx.tree.at(['tasks', 'createdNonce']);
+        nonce.set((nonce.peek<number>() ?? 0) + 1);
         if (closeAfter) this.close();
         else this.clearForNext();
       },

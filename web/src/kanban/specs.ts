@@ -48,6 +48,12 @@ export interface SelectWithAttributesInput {
   cardTypeName: string;
   parentCardId?: bigint;
   /**
+   * Enclosing-project scope: when set, only cards the project encloses (the
+   * project itself or any descendant) are returned. Scopes grandchild cards
+   * (filters → screen → project) that `parentCardId` can't reach.
+   */
+  projectId?: bigint;
+  /**
    * Flat-AND predicate leaves (compiled server-side by
    * `card_compile_predicate.sql`). User-facing project lists ship the
    * `is_template != true` leaf here (see projects/project-helpers.ts).
@@ -155,6 +161,10 @@ function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
   // appears when the request set with_personal_sort:true; NULL → undefined.
   const personalSort = asNumOpt(j['personal_sort_order']);
   if (personalSort !== undefined) out.personal_sort_order = personalSort;
+  // Row-level audit timestamps the wire carries at the top level (the Grid's
+  // Created / Last-activity columns read these — previously dropped).
+  if (typeof j['created_at'] === 'string') out.created_at = j['created_at'];
+  if (typeof j['last_activity_at'] === 'string') out.last_activity_at = j['last_activity_at'];
   return out;
 }
 
@@ -191,6 +201,7 @@ export function registerKanbanSpecs(api: Api): void {
     encode: (i) => {
       const m: Record<string, unknown> = { card_type_name: i.cardTypeName };
       if (i.parentCardId !== undefined) m['parent_card_id'] = i.parentCardId;
+      if (i.projectId !== undefined) m['project_id'] = i.projectId;
       // Forward the predicate leaves verbatim — same `where` field the Go
       // handler + Svelte client use (e.g. the `is_template != true` exclusion).
       if (i.where !== undefined && i.where.length > 0) m['where'] = i.where;

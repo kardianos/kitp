@@ -124,6 +124,22 @@ export interface MasterDetailDelete {
 }
 
 /**
+ * A detail-pane action button that raises a GLOBAL (bus) intent for the selected
+ * item — e.g. Import / Export a project (the AppShell's `projectImport` /
+ * `projectExport` intents). The MasterDetail emits `{ projectId, anchor }` where
+ * `projectId` is the selected item's id (bigint) and `anchor` is the button
+ * (popover-anchored intents like projectExport use it).
+ */
+export interface MasterDetailDetailAction {
+  /** Button label. */
+  label: string;
+  /** The bus intent to raise (e.g. 'projectImport' / 'projectExport'). */
+  intent: string;
+  /** Optional button class (default 'btn'). */
+  className?: string;
+}
+
+/**
  * A detail-pane relation editor section (Users role assign/revoke + person
  * link/unlink). Renders a list of the selected row's existing relations (read
  * from `listField`) each with a Revoke/Remove button, plus an optional inline
@@ -192,6 +208,21 @@ export interface MasterDetailConfig extends BaseControlConfig {
   title: string;
   /** Tree namespace holding `<scopeKey>.items` + `<scopeKey>.selectedId`. */
   scopeKey: string;
+  /**
+   * Auxiliary option lists to load on mount, so a select field's
+   * `options: { fromPath }` is DATA-DRIVEN from the server rather than hardcoded
+   * (e.g. the role-assign select loads `role.list` instead of a literal role
+   * list). Each entry calls `spec` and lands `{value,label}[]` (mapped from
+   * `valueField`/`labelField`) at the dotted tree path `landAt`.
+   */
+  prefetch?: Array<{
+    spec: string;
+    /** Optional input passed to the spec (e.g. `{ cardTypeName: 'project' }`). */
+    input?: Record<string, unknown>;
+    landAt: string;
+    valueField: string;
+    labelField: string;
+  }>;
   list: {
     /** Query spec key (e.g. 'card.select_with_attributes', 'user.list_with_roles'). */
     spec: string;
@@ -216,8 +247,15 @@ export interface MasterDetailConfig extends BaseControlConfig {
     rowHeight?: number;
     /** Client-side substring filter config. */
     search?: { field: string; placeholder?: string };
-    /** Row field accessors (dotted, into the row's `raw`). */
-    row: { title: string; subtitle?: string; badge?: string };
+    /**
+     * Row field accessors (dotted, into the row's `raw`). `badge` is either a
+     * dotted field (rendered verbatim) or `{ field, labels }` — a data-driven
+     * value→label map (case-insensitive on the stringified value). With a map,
+     * an unmapped/empty value hides the badge — e.g. `is_template` →
+     * `{ field: 'attributes.is_template', labels: { true: 'Template' } }` shows
+     * "Template" only for templates, never a bare "TRUE".
+     */
+    row: { title: string; subtitle?: string; badge?: string | { field: string; labels?: Record<string, string> } };
     /**
      * Optional STRUCTURED predicate filter, mounted above the list. ONLY for
      * card-backed admin screens (the list spec is `card.select_with_attributes`,
@@ -262,12 +300,22 @@ export interface MasterDetailConfig extends BaseControlConfig {
         | 'flowSteps'
         | 'edgeMatrix'
         | 'screenFilters'
+        | 'filterPredicate'
         | 'commChannelConfig'
         | 'activitySinkConfig'
         | 'agentTokens'
         | 'roleMappings';
       scopeKey?: string;
     };
+    /**
+     * Detail-pane action buttons that raise a GLOBAL (bus) intent for the
+     * selected item — e.g. the Projects screen's Import / Export, reusing the
+     * AppShell's `projectImport` / `projectExport` intents. The emitted payload
+     * carries the selected item's id as `projectId` (bigint) + the button as
+     * `anchor` (popover-anchored intents like projectExport use it). Hidden for
+     * a pending (un-persisted) row.
+     */
+    actions?: MasterDetailDetailAction[];
   };
   /**
    * Opt-in generic create affordance ("+ New" button → dialog → optimistic
@@ -602,6 +650,26 @@ export class MasterDetail extends Control<MasterDetailConfig> {
     const cfg = this.config;
     const rowHeight = cfg.list.rowHeight ?? DEFAULT_ROW_HEIGHT;
 
+    // Data-driven auxiliary option lists (e.g. role.list → the role-assign
+    // select). One callByName per entry; lands {value,label}[] at `landAt` for a
+    // select field's `options: { fromPath }`. One-way; cascade-safe.
+    for (const pf of cfg.prefetch ?? []) {
+      this.ctx.api.callByName(
+        pf.spec,
+        pf.input ?? {},
+        (out) => {
+          if (!this.isAlive()) return;
+          const rows = extractRows(out);
+          const opts = rows.map((r) => ({
+            value: String(readPath(r, pf.valueField) ?? ''),
+            label: String(readPath(r, pf.labelField) ?? ''),
+          }));
+          this.ctx.tree.at(pf.landAt.split('.')).set(opts);
+        },
+        { alive: () => this.isAlive() },
+      );
+    }
+
     // The list query lands its rows here: NORMALISE every decoded row to a
     // uniform { id, raw } and write `<scopeKey>.items` (one tree write outside
     // any tracked effect — cascade-safe). Handles both `{ rows: [...] }` and a
@@ -867,7 +935,7 @@ export class MasterDetail extends Control<MasterDetailConfig> {
 
     const badge = childByRole(li, 'badge');
     if (badge) {
-      const b = cfg.list.row.badge ? fieldText(it.raw, cfg.list.row.badge) : '';
+      const b = badgeTextFor(cfg.list.row.badge, it.raw);
       badge.textContent = b;
       badge.style.display = b ? '' : 'none';
     }
@@ -1021,7 +1089,33 @@ export class MasterDetail extends Control<MasterDetailConfig> {
       frag.append(this.buildRelation(item, rel));
     }
 
+    // Detail action buttons (e.g. Projects → Import / Export). Hidden for a
+    // pending (un-persisted) row, which has no server id to act on.
+    const actions = cfg.detail.actions ?? [];
+    if (actions.length > 0 && !isPendingId(item.id)) {
+      const actionsRow = document.createElement('div');
+      actionsRow.className = 'masterdetail__detail-actions';
+      actionsRow.dataset.mdActions = '';
+      for (const a of actions) actionsRow.append(this.buildDetailAction(a, item));
+      frag.append(actionsRow);
+    }
+
     host.replaceChildren(frag);
+  }
+
+  /** A detail-pane action button: raises the configured bus intent for the
+   *  selected item, carrying `{ projectId, anchor }`. */
+  private buildDetailAction(action: MasterDetailDetailAction, item: MasterDetailItem): HTMLElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = action.className ?? 'btn';
+    btn.dataset.mdAction = action.intent;
+    btn.textContent = action.label;
+    this.listen(btn, 'click', () => {
+      if (!/^\d+$/.test(item.id)) return; // pending / non-numeric id → no-op
+      this.ctx.bus?.emit(action.intent, { projectId: BigInt(item.id), anchor: btn });
+    });
+    return btn;
   }
 
   /** The detail-pane Delete button: confirms (if configured) then fires the
@@ -1417,18 +1511,38 @@ export class MasterDetail extends Control<MasterDetailConfig> {
       const sel = document.createElement('select');
       sel.className = `${cls}__input`;
       sel.dataset.mdFormField = f.name;
-      // A placeholder empty option so 'no value' is selectable (optional scope).
-      if (f.required !== true) {
-        const blank = document.createElement('option');
-        blank.value = '';
-        blank.textContent = f.placeholder ?? '— none —';
-        sel.append(blank);
-      }
-      for (const o of this.resolveFormOptions(f)) {
-        const opt = document.createElement('option');
-        opt.value = o.value;
-        opt.textContent = o.label;
-        sel.append(opt);
+      // Repaint the option set from the field's options. Preserves the current
+      // selection across repaints (no-op if it's gone).
+      const repaint = (): void => {
+        const prev = (sel as { value?: string }).value ?? '';
+        sel.replaceChildren();
+        if (f.required !== true) {
+          const blank = document.createElement('option');
+          blank.value = '';
+          blank.textContent = f.placeholder ?? '— none —';
+          sel.append(blank);
+        }
+        for (const o of this.resolveFormOptions(f)) {
+          const opt = document.createElement('option');
+          opt.value = o.value;
+          opt.textContent = o.label;
+          sel.append(opt);
+        }
+        (sel as { value?: string }).value = prev;
+      };
+      const opts = f.options;
+      if (opts && !Array.isArray(opts)) {
+        // Data-driven (`{ fromPath }`): the option list is loaded by a PREFETCH
+        // whose result lands AFTER mount. Subscribe to the path so the <select>
+        // populates the moment the prefetch lands (a build-time peek would catch
+        // an empty list and never refill). Writes only DOM — cascade-safe.
+        const fromPath = opts.fromPath;
+        this.effect(() => {
+          this.ctx.tree.at(fromPath.split('.')).get(); // subscribe
+          repaint();
+        }, `md.formField.${cls}.${f.name}`);
+      } else {
+        repaint();
       }
       el = sel;
     } else {
@@ -1503,6 +1617,26 @@ function extractRows(out: unknown): unknown[] {
  */
 function attributeNameOf(f: MasterDetailField): string {
   return f.name.startsWith('attributes.') ? f.name.slice('attributes.'.length) : f.name;
+}
+
+/**
+ * Resolve a list row's badge text from the `row.badge` config: a verbatim field
+ * value, or a `{ field, labels }` value→label map (case-insensitive on the
+ * stringified value; an unmapped/empty value → '' so the badge hides).
+ */
+function badgeTextFor(
+  badge: string | { field: string; labels?: Record<string, string> } | undefined,
+  raw: Record<string, unknown>,
+): string {
+  if (badge === undefined) return '';
+  if (typeof badge === 'string') return fieldText(raw, badge);
+  const value = fieldText(raw, badge.field);
+  if (badge.labels === undefined) return value;
+  const key = value.toLowerCase();
+  for (const [k, label] of Object.entries(badge.labels)) {
+    if (k.toLowerCase() === key) return label;
+  }
+  return '';
 }
 
 /** Render one badge entry: a string verbatim, or an object's `badgeField`. */

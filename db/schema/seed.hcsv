@@ -58,67 +58,67 @@ predicate_snippet, true,        false,             $card_type.project,     false
 
 ## table attribute_def | doc="Built-in attribute definitions. Each pick-from-a-list attribute is a card_ref with target_card_type_id pointing at the card_type whose cards are the valid values." | on_conflict="name"
 ### rows
-name, value_type, is_built_in, target_card_type_id
-title,                 text,        true, null
-assignee,              card_ref,    true, $card_type.person
-milestone_ref,         card_ref,    true, $card_type.milestone
-component_ref,         card_ref,    true, $card_type.component
-status,                card_ref,    true, $card_type.status
-path,                  text,        true, null
-root_exclusive_at,     text,        true, null
-tags,                  card_ref[],  true, $card_type.tag
-description,           text,        true, null
-sort_order,            number,      true, null
-is_active,             bool,        true, null
-email,                 text,        true, null
-layout,                text,        true, null
-slug,                  text,        true, null
-hotkey,                text,        true, null
-flow_ref,              number,      true, null
-default_create_status, card_ref,    true, $card_type.status
-view_requires_role,    text,        true, null
-toggle_groups,         text,        true, null
-predicate,             text,        true, null
-default_filter,        card_ref,    true, $card_type.filter
-column_attr,           text,        true, null
-sort,                  text,        true, null
-group_by_attr,         text,        true, null
-tag_prefix_columns,    text,        true, null
-extra_columns,         text,        true, null
-is_template,           bool,        true, null
-comms,                 card_ref[],  true, $card_type.comm
-channel_type,          text,        true, null
-imap_host,             text,        true, null
-imap_port,             number,      true, null
-imap_username,         text,        true, null
-smtp_host,             text,        true, null
-smtp_port,             number,      true, null
-smtp_username,         text,        true, null
-from_address,          text,        true, null
-intake_status,         card_ref,    true, $card_type.status
-channel_status,        text,        true, null
-channel_fault_reason,  text,        true, null
-channel_ref,           card_ref,    true, $card_type.comm_channel
-thread_id,             text,        true, null
-replies,               card_ref[],  true, $card_type.reply_body
-comm_status,           card_ref,    true, $card_type.status
-reply_to,              text,        true, null
-reply_from,            text,        true, null
-reply_subject,         text,        true, null
-reply_body_text,       text,        true, null
-delivery_status,       text,        true, null
-comm_recipients,       card_ref[],  true, $card_type.person
-person_kind,           text,        true, null
-sink_kind,             text,        true, null
-msgraph_tenant_id,     text,        true, null
-msgraph_client_id,     text,        true, null
-msgraph_team_id,       text,        true, null
-msgraph_channel_id,    text,        true, null
-activity_filter,       text,        true, null
-parent_task,           card_ref,    true, $card_type.task
-parent_relationship,   text,        true, null
-due_date,              date,        true, null
-originator,            card_ref,    true, $card_type.person
+name, value_type, is_built_in, target_card_type_id, enum_managed
+title,                 text,        true, null, false
+assignee,              card_ref,    true, $card_type.person, false
+milestone_ref,         card_ref,    true, $card_type.milestone, true
+component_ref,         card_ref,    true, $card_type.component, true
+status,                card_ref,    true, $card_type.status, false
+path,                  text,        true, null, false
+root_exclusive_at,     text,        true, null, false
+tags,                  card_ref[],  true, $card_type.tag, true
+description,           text,        true, null, false
+sort_order,            number,      true, null, false
+is_active,             bool,        true, null, false
+email,                 text,        true, null, false
+layout,                text,        true, null, false
+slug,                  text,        true, null, false
+hotkey,                text,        true, null, false
+flow_ref,              number,      true, null, false
+default_create_status, card_ref,    true, $card_type.status, false
+view_requires_role,    text,        true, null, false
+toggle_groups,         text,        true, null, false
+predicate,             text,        true, null, false
+default_filter,        card_ref,    true, $card_type.filter, false
+column_attr,           text,        true, null, false
+sort,                  text,        true, null, false
+group_by_attr,         text,        true, null, false
+tag_prefix_columns,    text,        true, null, false
+extra_columns,         text,        true, null, false
+is_template,           bool,        true, null, false
+comms,                 card_ref[],  true, $card_type.comm, false
+channel_type,          text,        true, null, false
+imap_host,             text,        true, null, false
+imap_port,             number,      true, null, false
+imap_username,         text,        true, null, false
+smtp_host,             text,        true, null, false
+smtp_port,             number,      true, null, false
+smtp_username,         text,        true, null, false
+from_address,          text,        true, null, false
+intake_status,         card_ref,    true, $card_type.status, false
+channel_status,        text,        true, null, false
+channel_fault_reason,  text,        true, null, false
+channel_ref,           card_ref,    true, $card_type.comm_channel, false
+thread_id,             text,        true, null, false
+replies,               card_ref[],  true, $card_type.reply_body, false
+comm_status,           card_ref,    true, $card_type.status, false
+reply_to,              text,        true, null, false
+reply_from,            text,        true, null, false
+reply_subject,         text,        true, null, false
+reply_body_text,       text,        true, null, false
+delivery_status,       text,        true, null, false
+comm_recipients,       card_ref[],  true, $card_type.person, false
+person_kind,           text,        true, null, false
+sink_kind,             text,        true, null, false
+msgraph_tenant_id,     text,        true, null, false
+msgraph_client_id,     text,        true, null, false
+msgraph_team_id,       text,        true, null, false
+msgraph_channel_id,    text,        true, null, false
+activity_filter,       text,        true, null, false
+parent_task,           card_ref,    true, $card_type.task, false
+parent_relationship,   text,        true, null, false
+due_date,              date,        true, null, false
+originator,            card_ref,    true, $card_type.person, false
 
 
 ## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"

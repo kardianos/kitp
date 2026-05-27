@@ -37,6 +37,11 @@ import {
   masterDetailScreen,
   type MasterDetailConfig,
 } from './master-detail.js';
+import type { EnumManagerConfig } from './enum-manager.js';
+import type { PeopleManagerConfig } from './people-manager.js';
+
+/** An admin screen is a MasterDetail or its own control (Enums / People). */
+type AdminScreenConfig = MasterDetailConfig | EnumManagerConfig | PeopleManagerConfig;
 
 /* -------------------------------------------------------------------------- */
 /* Contacts = person cards (CARD source).                                      */
@@ -135,18 +140,16 @@ export const CONTACTS_SCREEN: MasterDetailConfig = {
 /* Users (NON-CARD source).                                                    */
 /* -------------------------------------------------------------------------- */
 
-/** The assignable roles (seed.hcsv: viewer / worker / manager / admin). */
-const USER_ROLE_OPTIONS = [
-  { value: 'viewer', label: 'Viewer' },
-  { value: 'worker', label: 'Worker' },
-  { value: 'manager', label: 'Manager' },
-  { value: 'admin', label: 'Admin' },
-];
-
 export const USERS_SCREEN: MasterDetailConfig = {
   type: 'MasterDetail',
   title: 'Users',
   scopeKey: 'admin.users',
+  // The assignable roles are DATA-DRIVEN from `role.list` (not a hardcoded list
+  // that drifts — the old literal was already missing the seeded `commenter`
+  // role). Lands {value,label}[] at admin.users.roleOptions for the role select.
+  prefetch: [
+    { spec: 'role.list', landAt: 'admin.users.roleOptions', valueField: 'name', labelField: 'name' },
+  ],
   list: {
     spec: 'user.list_with_roles',
     rowHeight: 56,
@@ -189,7 +192,7 @@ export const USERS_SCREEN: MasterDetailConfig = {
           spec: 'user_role.set',
           label: '+ Assign role',
           fields: [
-            { name: 'role_name', label: 'Role', kind: 'select', required: true, options: USER_ROLE_OPTIONS },
+            { name: 'role_name', label: 'Role', kind: 'select', required: true, options: { fromPath: 'admin.users.roleOptions' } },
             { name: 'scope_project_id', label: 'Project scope (optional)', kind: 'text', placeholder: 'project card id' },
           ],
           input: {
@@ -238,7 +241,8 @@ export const PROJECTS_SCREEN: MasterDetailConfig = {
     row: {
       title: 'attributes.title',
       subtitle: 'attributes.description',
-      badge: 'attributes.is_template',
+      // Show "Template" (not a bare "TRUE") only for template projects.
+      badge: { field: 'attributes.is_template', labels: { true: 'Template' } },
     },
     // Structured filter over project attributes (card-backed screen).
     predicateFilter: { cardType: 'project' },
@@ -251,6 +255,12 @@ export const PROJECTS_SCREEN: MasterDetailConfig = {
       { name: 'attributes.title', label: 'Title', kind: 'text', editable: true },
       { name: 'attributes.description', label: 'Description', kind: 'textarea', editable: true },
       { name: 'attributes.is_template', label: 'Is template', kind: 'readonly' },
+    ],
+    // Per-project Import / Export — reuse the AppShell's wizard + export menu via
+    // the global bus intents (carry the selected project's id).
+    actions: [
+      { label: 'Import…', intent: 'projectImport' },
+      { label: 'Export…', intent: 'projectExport' },
     ],
   },
   // Create a top-level project card (title is the key field; description is an
@@ -299,7 +309,16 @@ export const SCREENS_SCREEN: MasterDetailConfig = {
   scopeKey: 'admin.screens',
   list: {
     spec: 'card.select_with_attributes',
-    input: { cardTypeName: { lit: 'screen' } },
+    // Screen cards are parented to their project (card_type_name='screen',
+    // parent=project), so scope the list to the active project — the admin
+    // Screens list is per-project, never a cross-project mix. Refires when the
+    // header project switches; idle until a project resolves.
+    input: {
+      cardTypeName: { lit: 'screen' },
+      parentCardId: { from: 'scope.projectId' },
+    },
+    when: { signal: 'scope.projectId' },
+    skipWhenNull: ['parentCardId'],
     rowHeight: 56,
     search: { field: 'attributes.title', placeholder: 'Search screens…' },
     row: {
@@ -336,8 +355,10 @@ export const SCREENS_SCREEN: MasterDetailConfig = {
     title: 'New screen',
     buttonLabel: '+ New',
     fields: [{ name: 'title', label: 'Title', kind: 'text', required: true, placeholder: 'Screen title' }],
+    // Parent the new screen to the active project (screens are project-owned).
     input: {
       cardTypeName: { lit: 'screen' },
+      parentCardId: { from: 'scope.projectId' },
       title: { payload: 'title' },
     },
   },
@@ -364,7 +385,12 @@ export const NAMED_FILTERS_SCREEN: MasterDetailConfig = {
   scopeKey: 'admin.filters',
   list: {
     spec: 'card.select_with_attributes',
-    input: { cardTypeName: { lit: 'filter' } },
+    // Scope to the active project like every project-admin screen. Filter cards
+    // are GRANDCHILDREN of the project (filter → screen → project), so they're
+    // reached via the enclosing-project `projectId` filter, not parentCardId.
+    input: { cardTypeName: { lit: 'filter' }, projectId: { from: 'scope.projectId' } },
+    when: { signal: 'scope.projectId' },
+    skipWhenNull: ['projectId'],
     rowHeight: 56,
     search: { field: 'attributes.title', placeholder: 'Search filters…' },
     row: {
@@ -372,20 +398,18 @@ export const NAMED_FILTERS_SCREEN: MasterDetailConfig = {
       subtitle: 'attributes.predicate',
       badge: 'attributes.group_by_attr',
     },
-    // Structured filter over filter-card attributes (card-backed screen).
-    predicateFilter: { cardType: 'filter' },
   },
   detail: {
     titleField: 'attributes.title',
-    empty: 'Select a named filter to view its predicate.',
+    empty: 'Select a named filter to edit its definition.',
     updateSpec: 'attribute.update',
     fields: [
       { name: 'attributes.title', label: 'Title', kind: 'text', editable: true },
-      // Predicate stays read-only (structured tree editor = nested follow-up).
-      { name: 'attributes.predicate', label: 'Predicate', kind: 'readonly' },
-      { name: 'attributes.sort', label: 'Sort', kind: 'text', editable: true },
-      { name: 'attributes.group_by_attr', label: 'Group by', kind: 'text', editable: true },
     ],
+    // The advanced visual builder edits the predicate + group + sort together
+    // (same PredicateFilter as the screen filter editor), committing back to the
+    // filter card. Replaces the old read-only predicate JSON + text fields.
+    nested: { kind: 'filterPredicate' },
   },
   create: {
     spec: 'card.insert',
@@ -492,11 +516,47 @@ export const WORKFLOWS_SCREEN: MasterDetailConfig = {
   type: 'MasterDetail',
   title: 'Workflows',
   scopeKey: 'admin.workflows',
+  // The project is IMPLICIT (the active scope), so no project option list is
+  // loaded. Only the governed attribute_def needs a populated select.
+  prefetch: [
+    {
+      spec: 'attribute_def.select',
+      landAt: 'admin.workflows.attrOptions',
+      valueField: 'id',
+      labelField: 'name',
+    },
+  ],
   list: {
     spec: 'flow.list',
     rowHeight: 56,
     search: { field: 'name', placeholder: 'Search workflows…' },
     row: { title: 'name', subtitle: 'doc', badge: 'attribute_def_name' },
+    // Scope to the active project like every other admin screen: flow.list
+    // filters on scope_card_id, refires on a project switch, and stays idle
+    // until a project resolves.
+    input: { scopeCardId: { from: 'scope.projectId' } },
+    when: { signal: 'scope.projectId' },
+    skipWhenNull: ['scopeCardId'],
+  },
+  // Create a flow (flow.set with id absent → insert). The governed attribute
+  // (typically status) is picked from the prefetched defs; the PROJECT is
+  // implicit — the flow is created under the ACTIVE project (scope.projectId),
+  // not chosen from a list.
+  create: {
+    spec: 'flow.set',
+    title: 'New workflow',
+    buttonLabel: '+ New',
+    resultIdField: 'id',
+    fields: [
+      { name: 'name', label: 'Name', kind: 'text', required: true, placeholder: 'Workflow name' },
+      { name: 'attribute_def_id', label: 'Governs attribute', kind: 'select', required: true, options: { fromPath: 'admin.workflows.attrOptions' } },
+    ],
+    input: {
+      name: { payload: 'name' },
+      // Implicit project scope — the active project, not a form field.
+      scopeCardId: { from: 'scope.projectId' },
+      attributeDefId: { payload: 'attribute_def_id' },
+    },
   },
   detail: {
     titleField: 'name',
@@ -505,8 +565,9 @@ export const WORKFLOWS_SCREEN: MasterDetailConfig = {
       { name: 'name', label: 'Name', kind: 'readonly' },
       { name: 'doc', label: 'Description', kind: 'readonly' },
       { name: 'attribute_def_name', label: 'Attribute', kind: 'readonly' },
-      { name: 'scope_card_id', label: 'Scope (project card id)', kind: 'readonly' },
-      { name: 'default_create_status_id', label: 'Default create status', kind: 'readonly' },
+      // Show the joined NAMES (project title / status title), not raw card ids.
+      { name: 'scope_project_title', label: 'Project', kind: 'readonly' },
+      { name: 'default_create_status_name', label: 'Default create status', kind: 'readonly' },
     ],
     // Nested flow-step transition editor (grouped by `from` + delete guard).
     nested: { kind: 'flowSteps' },
@@ -732,12 +793,12 @@ export function usersScreen(): MasterDetailConfig {
  * `masterDetailScreen`. No per-screen control code exists.
  */
 export type AdminView =
-  | 'contacts'
-  | 'users'
+  | 'people'
   | 'projects'
   | 'screens'
   | 'filters'
   | 'attributes'
+  | 'enums'
   | 'workflows'
   | 'roles'
   | 'agents'
@@ -745,13 +806,32 @@ export type AdminView =
   | 'activity_sinks'
   | 'comm_log';
 
-const ADMIN_SCREENS: Record<AdminView, MasterDetailConfig> = {
-  contacts: CONTACTS_SCREEN,
-  users: USERS_SCREEN,
+/** The data-driven "Enums" screen — NOT a MasterDetail (one screen spans many
+ *  card types). A plain control config; resolved as-is below. */
+export const ENUMS_SCREEN: EnumManagerConfig = {
+  type: 'EnumManager',
+  title: 'Values',
+  projectScopePath: 'scope.projectId',
+};
+
+/** The unified "People" screen (replaces Contacts + Users): one list with
+ *  Users / Assignees / Contacts segment toggles + promote/demote. Its own
+ *  control (it merges person cards + user accounts), not a MasterDetail. */
+export const PEOPLE_SCREEN: PeopleManagerConfig = {
+  type: 'PeopleManager',
+  title: 'People',
+};
+
+// Most admin screens are MasterDetail; a few (Enums) are their own control. The
+// registry holds ChildConfig so adding a non-MasterDetail admin screen is one
+// entry here + a control — no resolver branch.
+const ADMIN_SCREENS: Record<AdminView, AdminScreenConfig> = {
+  people: PEOPLE_SCREEN,
   projects: PROJECTS_SCREEN,
   screens: SCREENS_SCREEN,
   filters: NAMED_FILTERS_SCREEN,
   attributes: ATTRIBUTES_SCREEN,
+  enums: ENUMS_SCREEN,
   workflows: WORKFLOWS_SCREEN,
   roles: ROLES_SCREEN,
   agents: AGENTS_SCREEN,
@@ -763,9 +843,43 @@ const ADMIN_SCREENS: Record<AdminView, MasterDetailConfig> = {
 /** Every admin view key (drives the rail-link list + the resolver). */
 export const ADMIN_VIEWS = Object.keys(ADMIN_SCREENS) as AdminView[];
 
-export function adminScreenConfig(view: AdminView): MasterDetailConfig {
-  const cfg = ADMIN_SCREENS[view];
-  // Fall back to Contacts for an unknown key (NotFound is preserved upstream:
-  // the AppShell resolver returns null for keys not in ADMIN_VIEWS).
-  return masterDetailScreen(cfg ?? CONTACTS_SCREEN);
+/**
+ * Admin views a (project-scoped) MANAGER may open — not just an admin. Today
+ * only "Manage values" (enums): managers curate a project's milestone /
+ * component / tag value-cards. Everything else stays admin-only. The backend
+ * enforces the real per-project manager scope on every write (card.insert /
+ * attribute.update / card.delete are worker/manager/admin + project-anchored),
+ * so this set only governs UI reachability (rail link + route guard).
+ */
+export const MANAGER_ADMIN_VIEWS: ReadonlySet<AdminView> = new Set<AdminView>(['enums']);
+
+export type AdminSection = 'workspace' | 'project';
+
+/**
+ * Which rail section each admin view belongs to. WORKSPACE = install-wide global
+ * data (no project to filter by): People, Projects, Roles, Attributes, Agents.
+ * PROJECT = always scoped to the active project: Screens, Filters, Workflows,
+ * Values, and the per-project comm config. Single source of truth for the rail's
+ * two sections; every PROJECT view's list query already threads scope.projectId.
+ */
+export const ADMIN_SECTION: Record<AdminView, AdminSection> = {
+  people: 'workspace',
+  projects: 'workspace',
+  roles: 'workspace',
+  attributes: 'workspace',
+  agents: 'workspace',
+  screens: 'project',
+  filters: 'project',
+  enums: 'project',
+  workflows: 'project',
+  comm_channels: 'project',
+  activity_sinks: 'project',
+  comm_log: 'project',
+};
+
+export function adminScreenConfig(view: AdminView): AdminScreenConfig {
+  const cfg = ADMIN_SCREENS[view] ?? CONTACTS_SCREEN;
+  // MasterDetail configs are compiled (list query + actions); other control
+  // configs (e.g. EnumManager) pass through as-is.
+  return cfg.type === 'MasterDetail' ? masterDetailScreen(cfg) : cfg;
 }

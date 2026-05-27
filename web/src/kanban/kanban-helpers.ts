@@ -43,6 +43,11 @@ export interface CardWithAttrs {
    * the list and to rewrite it on a drag/keyboard reorder.
    */
   personal_sort_order?: number;
+  /** Row-level audit timestamps (ISO-8601), top-level wire fields — the server
+   *  sets them from `card.created_at` / `card.last_activity_at`. The Grid's
+   *  Created / Last-activity columns read these. */
+  created_at?: string;
+  last_activity_at?: string;
 }
 
 /** Sentinel column key for cards whose grouping attribute is unset. */

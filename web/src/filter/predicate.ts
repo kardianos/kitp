@@ -445,10 +445,13 @@ function fromRootChildren(children: Predicate[]): Predicate | null {
  */
 export function topLevelLeafForAttr(p: Predicate | null, attr: string): PredicateLeaf | null {
   if (p === null) return null;
-  if (p.kind === 'leaf') return p.attr === attr ? p : null;
+  // `has_phase` leaves are the phase-scope toggle's slot (see {@link
+  // topLevelPhases}); a chip owns the value-membership leaf for [attr], so we
+  // skip a same-attr `has_phase` leaf here and the two coexist.
+  if (p.kind === 'leaf') return p.attr === attr && p.op !== 'hasPhase' ? p : null;
   if (p.connective !== 'and') return null;
   for (const c of p.children) {
-    if (c.kind === 'leaf' && c.attr === attr) return c;
+    if (c.kind === 'leaf' && c.attr === attr && c.op !== 'hasPhase') return c;
   }
   return null;
 }
@@ -462,7 +465,10 @@ export function topLevelLeafForAttr(p: Predicate | null, attr: string): Predicat
  */
 export function upsertTopLevelLeaf(p: Predicate | null, newLeaf: PredicateLeaf): Predicate {
   const { children } = rootView(p);
-  const kept = children.filter((c) => !(c.kind === 'leaf' && c.attr === newLeaf.attr));
+  // Drop the existing value-membership leaf for this attr, but PRESERVE a
+  // same-attr `has_phase` leaf — that's the phase-scope toggle's slot, managed
+  // by {@link withTopLevelPhases}, so a chip pick never clobbers it.
+  const kept = children.filter((c) => !(c.kind === 'leaf' && c.attr === newLeaf.attr && c.op !== 'hasPhase'));
   kept.push(newLeaf);
   return fromRootChildren(kept) as Predicate; // non-empty: we just pushed one
 }
@@ -475,7 +481,41 @@ export function upsertTopLevelLeaf(p: Predicate | null, newLeaf: PredicateLeaf):
 export function removeTopLevelLeaf(p: Predicate | null, attr: string): Predicate | null {
   if (p === null) return null;
   const { children } = rootView(p);
-  const kept = children.filter((c) => !(c.kind === 'leaf' && c.attr === attr));
+  // Preserve a same-attr `has_phase` leaf (the phase-scope toggle's slot).
+  const kept = children.filter((c) => !(c.kind === 'leaf' && c.attr === attr && c.op !== 'hasPhase'));
+  return fromRootChildren(kept);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Phase-scope toggle slot — a single top-level `<attr> has_phase [phases]`     */
+/* leaf (OR-semantics over the phase set). Read/written by the filter bar's     */
+/* phase toggles; coexists with the value-membership chip leaf for the same     */
+/* attr (the chip helpers above skip `has_phase`).                              */
+/* -------------------------------------------------------------------------- */
+
+/** The selected phases from the top-level `<attr> has_phase […]` leaf (default
+ *  attr 'status'), or [] when no phase scope is active. */
+export function topLevelPhases(p: Predicate | null, attr = 'status'): Phase[] {
+  if (p === null) return [];
+  const { children } = rootView(p);
+  for (const c of children) {
+    if (c.kind === 'leaf' && c.attr === attr && c.op === 'hasPhase') {
+      return (c.values ?? []).filter((v): v is Phase => (PHASES as readonly string[]).includes(v as string));
+    }
+  }
+  return [];
+}
+
+/** Set the top-level `<attr> has_phase [phases]` leaf (empty → remove it),
+ *  preserving every other top-level leaf (incl. an `<attr> in […]` chip). */
+export function withTopLevelPhases(
+  p: Predicate | null,
+  phases: readonly Phase[],
+  attr = 'status',
+): Predicate | null {
+  const { children } = rootView(p);
+  const kept = children.filter((c) => !(c.kind === 'leaf' && c.attr === attr && c.op === 'hasPhase'));
+  if (phases.length > 0) kept.push(leaf(attr, 'hasPhase', phases.slice()));
   return fromRootChildren(kept);
 }
 

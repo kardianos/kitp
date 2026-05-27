@@ -312,10 +312,12 @@ test('AppShell swaps the outlet between ProjectList and the board on navigation'
   );
   shell.mount(new FakeElement('div'));
 
-  // Landing on /projects: ProjectList present, no ScreenHost, scope cleared.
+  // Landing on /projects: ProjectList present, no ScreenHost. Post-#9 the
+  // projects route no longer force-clears scope (a project is meant to stay
+  // active); with nothing landed yet here, there's simply no active project.
   assert.equal(shell.el.findByControl('ProjectList').length, 1, 'lands on ProjectList');
   assert.equal(shell.el.findByControl('ScreenHost').length, 0, 'board not mounted yet');
-  assert.equal(tree.at(['scope', 'projectId']).peek(), null, 'projects route clears scope');
+  assert.equal(tree.at(['scope', 'projectId']).peek() ?? null, null, 'no active project pinned on the bare /projects landing');
 
   // Navigate into a project (the route effect mirrors :id into scope) so the
   // `g k` chord has a project to screen against.

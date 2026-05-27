@@ -47,6 +47,9 @@
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { setMarkdown } from '../util/markdown-control.js';
+import { fitTextarea } from '../util/autosize.js';
+import { navigate, taskUrl, projectUrl } from '../shell/router.js';
+import { taskNavNeighbor, taskNavListUrl } from '../shell/task-nav.js';
 import { SPEC, type SelectWithAttributesOutput, type AttributeUpdateOutput } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { CARD_SEARCH_SPEC } from '../ui/specs.js';
@@ -59,6 +62,7 @@ import type { RefPicker } from '../ui/ref-picker.js';
 import type { DatePicker } from '../ui/datepicker.js';
 import type { TransitionBar } from './transition-bar.js';
 import type { TaskComments } from './task-comments.js';
+import type { CommThreads } from './task-comm-threads.js';
 import type { AttachmentsSection } from './attachments-section.js';
 import type { TagsEditor } from './tags-editor.js';
 import type { RelatedTasksPanel } from './related-tasks-panel.js';
@@ -144,6 +148,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private mainCol!: HTMLElement;
   private rightRail!: HTMLElement;
   private titleHost!: HTMLElement;
+  private taskNavHost!: HTMLElement;
   private descHost!: HTMLElement;
   private panelBody!: HTMLElement;
   /** Host the #34 TransitionBar mounts into (in the transitions slot). */
@@ -155,8 +160,13 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private activityHost!: HTMLElement;
   /** The mounted #35 comments+activity control, so an edit can reload its feed. */
   private taskComments: TaskComments | null = null;
+  /** Host + control for the COMMS (email-thread) section. */
+  private commsHost!: HTMLElement;
+  private commThreads: CommThreads | null = null;
   /** Hosts the #36 attachments / tags / related controls mount into (their slots). */
   private attachmentsHost!: HTMLElement;
+  /** Main-column host the AttachmentsSection paints its preview strip into. */
+  private attachmentsPreviewHost!: HTMLElement;
   private tagsHost!: HTMLElement;
   private relatedHost!: HTMLElement;
   /** The mounted #36 controls (idempotent mount; refresh hooks). */
@@ -168,6 +178,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private editingTitle = false;
   /** Description inline-edit state. */
   private editingDescription = false;
+  /** The ✎ button on the DESCRIPTION label row (hidden while editing). */
+  private descEditBtn: HTMLButtonElement | null = null;
 
   /** Per-row child editors (RefPicker / DatePicker) so we can dispose on rebuild. */
   private rowChildren: Control[] = [];
@@ -225,51 +237,101 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     main.style.display = 'none';
     this.mainCol = main;
 
-    // Title block (header).
+    // Title block (header). Top row puts the title (left, grows) BESIDE the flow
+    // / transition controls (right), so the status changer sits next to the
+    // title instead of in a separate block below it — reclaiming the wasted
+    // vertical whitespace (#10). The `#id` line sits under the title.
     const header = document.createElement('header');
     header.className = 'task-detail__header';
     header.dataset.region = 'detail.header';
+
+    // Visible "Back to list" affordance — mirrors the q/Esc chord: returns to
+    // the saved source list (inbox/grid/kanban), not a browser-history step.
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'task-detail__back';
+    back.dataset.taskBack = '';
+    back.title = 'Back to list (q or Esc)';
+    back.setAttribute('aria-label', 'Back to list');
+    back.textContent = '‹ Back to list';
+    this.listen(back, 'click', () => this.goBack());
+    header.append(back);
+
+    const headerTop = document.createElement('div');
+    headerTop.className = 'task-detail__header-top';
+
     const titleHost = document.createElement('div');
     titleHost.className = 'task-detail__title-host';
     this.titleHost = titleHost;
-    const idLine = document.createElement('p');
-    idLine.className = 'task-detail__id muted';
-    idLine.dataset.taskDetailId = '';
-    idLine.textContent = this.taskId === null ? '#—' : `#${this.taskId.toString()}`;
-    header.append(titleHost, idLine);
-    main.append(header);
 
     // #34 TransitionBar — the status changer. We keep the named `transitions`
     // slot element as the MOUNT HOST (so the slot contract is preserved) and
-    // spawn the TransitionBar into it once the task loads (showLoaded).
+    // spawn the TransitionBar into it once the task loads (showLoaded). It now
+    // lives in the header's top row (right of the title).
     const transitions = document.createElement('div');
     transitions.className = 'task-detail__transitions';
     transitions.dataset.slot = 'transitions';
     transitions.dataset.region = 'detail.transitions';
     this.transitionsHost = transitions;
-    main.append(transitions);
+
+    headerTop.append(titleHost, transitions);
+
+    const idLine = document.createElement('p');
+    idLine.className = 'task-detail__id muted';
+    idLine.dataset.taskDetailId = '';
+    idLine.textContent = this.taskId === null ? '#—' : `#${this.taskId.toString()}`;
+
+    header.append(headerTop, idLine);
+    main.append(header);
 
     // Description block.
     const descSection = document.createElement('section');
     descSection.className = 'task-detail__desc';
     descSection.dataset.region = 'detail.description';
+    // Label row: "DESCRIPTION" + the ✎ edit button sitting right next to the
+    // label (not floating in the body). Hidden while editing.
     const descLabel = document.createElement('div');
-    descLabel.className = 'task-detail__section-label muted';
-    descLabel.textContent = 'DESCRIPTION';
+    descLabel.className = 'task-detail__section-label task-detail__desc-label muted';
+    const descLabelText = document.createElement('span');
+    descLabelText.textContent = 'DESCRIPTION';
+    const descEdit = document.createElement('button');
+    descEdit.type = 'button';
+    descEdit.className = 'task-detail__edit-btn';
+    descEdit.dataset.taskDescEdit = '';
+    descEdit.title = 'Edit description';
+    descEdit.setAttribute('aria-label', 'Edit description');
+    descEdit.textContent = '✎';
+    this.listen(descEdit, 'click', () => this.startDescriptionEdit());
+    this.descEditBtn = descEdit;
+    descLabel.append(descLabelText, descEdit);
     const descHost = document.createElement('div');
     descHost.className = 'task-detail__desc-host';
     this.descHost = descHost;
     descSection.append(descLabel, descHost);
     main.append(descSection);
 
+    // Attachment preview strip (image + PDF tiles) — the AttachmentsSection
+    // (right rail) paints into this main-column host so the previews sit in the
+    // content flow like the Svelte version. Hidden until/unless there's
+    // something previewable. Held so showLoaded() can hand it to the section.
+    const previewHost = document.createElement('section');
+    previewHost.className = 'task-detail__attachments-preview';
+    previewHost.dataset.region = 'detail.attachmentsPreview';
+    previewHost.style.display = 'none';
+    this.attachmentsPreviewHost = previewHost;
+    main.append(previewHost);
+
     // #35 comments + activity slots. We hold the two host elements so the
     // showLoaded() path can spawn the TaskComments control into the comments
     // slot and hand it the activity slot to paint into.
+    // COMMS (email threads) — its own main-column section above Comments.
+    const commsSlot = this.makeSlot('comms', 'Comms');
+    this.commsHost = commsSlot;
     const commentsSlot = this.makeSlot('comments', 'Comments (#35)');
     const activitySlot = this.makeSlot('activity', 'Activity (#35)');
     this.commentsHost = commentsSlot;
     this.activityHost = activitySlot;
-    main.append(commentsSlot, activitySlot);
+    main.append(commsSlot, commentsSlot, activitySlot);
 
     /* ------------------------------- right rail ------------------------------ */
     const rail = document.createElement('aside');
@@ -278,6 +340,18 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     rail.style.display = 'none';
     rail.setAttribute('aria-label', 'Attributes');
     this.rightRail = rail;
+
+    // Prev/next task nav as a bubble ABOVE the attributes — same rail-bar style,
+    // no head: a single row with label "Task" and value `‹ N of M ›`. Walks the
+    // same list the user came from (`nav.taskList`, published by grid/inbox/
+    // kanban on open); mirrors the `[`/`]` + `j`/`k` jump chords. Hidden on a
+    // cold deep-link (no published list) or a single-item list.
+    const navPanel = document.createElement('div');
+    navPanel.className = 'task-detail__panel task-detail__nav-panel';
+    navPanel.dataset.taskNav = '';
+    this.taskNavHost = navPanel;
+    rail.append(navPanel);
+    this.paintTaskNav();
 
     const panel = document.createElement('div');
     panel.className = 'task-detail__panel';
@@ -354,9 +428,23 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         }
         this.showLoaded();
         this.resolveRefLabels();
+        this.publishProjectScope();
       },
       { alive: () => this.isAlive() },
     );
+  }
+
+  /**
+   * Mirror the task's parent (project) id into `scope.projectId` so the rail's
+   * DEFAULT PROJECT screen-nav reflects this task's project — keeping the
+   * project-specific screens visible on the task-detail screen, even on a cold
+   * deep-link to `/task/:id` where no project was previously in scope.
+   */
+  private publishProjectScope(): void {
+    const parent = this.task?.parent_card_id;
+    if (typeof parent === 'bigint' && parent > 0n) {
+      this.ctx.tree.at(['scope', 'projectId']).set(parent);
+    }
   }
 
   /**
@@ -421,6 +509,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.renderPanel();
     this.mountTransitionBar();
     this.mountComments();
+    this.mountComms();
     this.mountAttachments();
     this.mountTags();
     this.mountRelated();
@@ -473,6 +562,19 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * edit; the TaskDetail also tells it to {@link TaskComments.reload} after a
    * status transition / attribute edit so those rows appear.
    */
+  /** Spawn the COMMS (email-thread) control into the `comms` slot. Idempotent. */
+  private mountComms(): void {
+    if (this.task === null || this.taskId === null) return;
+    if (this.commThreads !== null) return;
+    this.commsHost.replaceChildren();
+    this.commsHost.classList.add('task-detail__slot--filled');
+    this.commThreads = this.spawn(
+      'CommThreads',
+      { type: 'CommThreads', taskId: this.taskId.toString(), projectScopePath: 'scope.projectId' },
+      this.commsHost,
+    ) as CommThreads;
+  }
+
   private mountComments(): void {
     if (this.task === null || this.taskId === null) return;
     if (this.taskComments !== null) return;
@@ -485,6 +587,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     const cfg: Record<string, unknown> = {
       type: 'TaskComments',
       cardId: this.taskId.toString(),
+      cardTypeName: this.cardTypeName,
       activityHost: this.activityHost,
     };
     if (this.config.currentUserId !== undefined) cfg['currentUserId'] = this.config.currentUserId;
@@ -506,6 +609,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     const cfg: Record<string, unknown> = {
       type: 'AttachmentsSection',
       cardId: this.taskId.toString(),
+      // Paint the image/PDF preview strip into the main-column host.
+      previewHost: this.attachmentsPreviewHost,
       onChanged: () => {
         if (this.isAlive()) this.taskComments?.reload();
       },
@@ -702,18 +807,24 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 
   private renderDescription(): void {
     this.descHost.replaceChildren();
+    // The label-row ✎ is hidden while editing (the textarea is the affordance).
+    if (this.descEditBtn) this.descEditBtn.style.display = this.editingDescription ? 'none' : '';
     if (this.editingDescription) {
       const ta = document.createElement('textarea');
       ta.className = 'task-detail__desc-input';
       ta.dataset.taskDescInput = '';
       ta.value = this.descriptionText();
-      ta.rows = 6;
+      ta.rows = 3; // a floor; the field auto-grows with content (fitTextarea)
       ta.setAttribute('aria-label', 'Task description');
       ta.placeholder = 'Markdown supported · Mod+Enter to save';
       this.descHost.append(ta);
       this.listen(ta, 'keydown', (e) => this.onDescriptionKeydown(e as KeyboardEvent, ta));
       this.listen(ta, 'blur', () => this.commitDescription(ta.value));
-      queueMicrotask(() => ta.focus());
+      this.listen(ta, 'input', () => fitTextarea(ta));
+      queueMicrotask(() => {
+        ta.focus();
+        fitTextarea(ta);
+      });
       return;
     }
 
@@ -728,15 +839,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       body.classList.add('muted');
       body.textContent = 'No description. Click ✎ to add one.';
     }
-    const edit = document.createElement('button');
-    edit.type = 'button';
-    edit.className = 'task-detail__edit-btn';
-    edit.dataset.taskDescEdit = '';
-    edit.title = 'Edit description';
-    edit.setAttribute('aria-label', 'Edit description');
-    edit.textContent = '✎';
-    this.listen(edit, 'click', () => this.startDescriptionEdit());
-    this.descHost.append(edit, body);
+    this.descHost.append(body);
   }
 
   private startDescriptionEdit(): void {
@@ -747,6 +850,132 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private cancelDescriptionEdit(): void {
     this.editingDescription = false;
     this.renderDescription();
+  }
+
+  /* ------------------------------- hotkeys ------------------------------ */
+
+  /**
+   * Task-detail scoped hotkeys (design/hotkeys.md TASK DETAIL scope). The `e _`
+   * edit chords + `[`/`]` (and `j`/`k`) prev/next jump nav. The HotkeyController
+   * collects these while the TaskDetail is in the active path; the engine now
+   * suppresses the chord prefix `e` (and bare `j`/`k`) inside editable elements
+   * (the #11 fix), so typing in a field stays literal.
+   */
+  override hotkeys(): readonly import('../core/hotkeys.js').HotkeyBinding[] {
+    return [
+      { binding: 'e t', label: 'Edit title', run: () => this.startTitleEdit() },
+      { binding: 'e d', label: 'Edit description', run: () => this.startDescriptionEdit() },
+      { binding: 'e c', label: 'Add comment', run: () => this.focusComposer() },
+      { binding: 'e p', label: 'Set parent', run: () => this.focusSetParent() },
+      { binding: '[', label: 'Previous task', run: () => this.jumpTask(-1) },
+      { binding: ']', label: 'Next task', run: () => this.jumpTask(1) },
+      { binding: 'k', label: 'Previous task', run: () => this.jumpTask(-1) },
+      { binding: 'j', label: 'Next task', run: () => this.jumpTask(1) },
+      // Back to the issue list the user came from. The engine suppresses bare
+      // `q`/`Escape` while focus is in an input/textarea (so they cancel inline
+      // edits / close pickers instead) — this only fires from the screen chrome.
+      { binding: ['q', 'Escape'], label: 'Back to list', run: () => this.goBack() },
+    ];
+  }
+
+  /**
+   * `q` / `Esc` / the Back button — return to the SAVED LIST SCREEN the user
+   * came from (the inbox / grid / kanban that published `nav.listUrl`), NOT a
+   * history step. Walking task→task preserves that URL, so this lands on the
+   * original list even after a chain of next/prev jumps. With no saved list (a
+   * cold deep-link to `/task/:id`) it falls back to the task's project board,
+   * or the all-projects list when the parent project isn't known.
+   */
+  private goBack(): void {
+    const listUrl = taskNavListUrl(this.ctx.tree);
+    if (listUrl !== null) {
+      navigate(listUrl);
+      return;
+    }
+    const parent = this.task?.parent_card_id;
+    navigate(typeof parent === 'bigint' && parent > 0n ? projectUrl(parent) : '/projects');
+  }
+
+  /** `e c` — focus the comment composer (in the #35 comments slot). */
+  private focusComposer(): void {
+    const ta = this.el.querySelector<HTMLTextAreaElement>('[data-comment-input]');
+    ta?.focus();
+  }
+
+  /** `e p` — trigger the related panel's Set-parent affordance, if present. */
+  private focusSetParent(): void {
+    // The related-tasks panel's "+ Set parent" button (correct attr is
+    // `data-related-set-parent`; the old `[data-rel-set-parent]` matched nothing,
+    // so `e p` was a no-op). Only present when no parent is set yet; clicking it
+    // reveals the parent picker.
+    const btn = this.el.querySelector<HTMLButtonElement>('[data-related-set-parent]');
+    btn?.click();
+  }
+
+  /** `[`/`]` (and `j`/`k`) — jump to the prev/next task in the source list the
+   *  user came from. No-op when there's no published list / no neighbor (#18). */
+  private jumpTask(dir: -1 | 1): void {
+    if (this.taskId === null) return;
+    const next = taskNavNeighbor(this.ctx.tree, this.taskId, dir);
+    if (next !== null) navigate(taskUrl(next));
+  }
+
+  /**
+   * Paint the prev/next task nav bubble (right rail, above attributes): a single
+   * row — label "Task", value `‹ N of M ›` — from the published `nav.taskList`.
+   * The whole bubble hides when there's no list / a single item / the task isn't
+   * in it. The arrows reuse jumpTask (same as the `[`/`]` chords) and disable at
+   * the ends.
+   */
+  private paintTaskNav(): void {
+    const host = this.taskNavHost;
+    host.replaceChildren();
+    const list = (this.ctx.tree.at(['nav', 'taskList']).peek<string[]>() ?? []) as string[];
+    const idx = this.taskId === null ? -1 : list.indexOf(this.taskId.toString());
+    if (idx < 0 || list.length <= 1) {
+      host.style.display = 'none';
+      return;
+    }
+    host.style.display = '';
+
+    const row = document.createElement('div');
+    row.className = 'task-detail__row task-detail__nav-row';
+
+    const label = document.createElement('span');
+    label.className = 'task-detail__row-label muted';
+    label.textContent = 'Task';
+
+    const value = document.createElement('span');
+    value.className = 'task-detail__row-value task-detail__nav';
+
+    const prev = document.createElement('button');
+    prev.type = 'button';
+    prev.className = 'task-detail__nav-btn';
+    prev.dataset.taskNavPrev = '';
+    prev.textContent = '‹';
+    prev.title = 'Previous task ([)';
+    prev.setAttribute('aria-label', 'Previous task');
+    prev.disabled = idx === 0;
+    this.listen(prev, 'click', () => this.jumpTask(-1));
+
+    const count = document.createElement('span');
+    count.className = 'task-detail__nav-count muted';
+    count.dataset.taskNavCount = '';
+    count.textContent = `${idx + 1} of ${list.length}`;
+
+    const next = document.createElement('button');
+    next.type = 'button';
+    next.className = 'task-detail__nav-btn';
+    next.dataset.taskNavNext = '';
+    next.textContent = '›';
+    next.title = 'Next task (])';
+    next.setAttribute('aria-label', 'Next task');
+    next.disabled = idx === list.length - 1;
+    this.listen(next, 'click', () => this.jumpTask(1));
+
+    value.append(prev, count, next);
+    row.append(label, value);
+    host.append(row);
   }
 
   private onDescriptionKeydown(e: KeyboardEvent, ta: HTMLTextAreaElement): void {
@@ -910,6 +1139,11 @@ export class TaskDetail extends Control<TaskDetailConfig> {
           editor,
         ) as RefPicker;
         this.rowChildren.push(rp);
+        // Open the picker immediately — the row was expanded specifically to
+        // edit it, so skip the extra click to drop the dropdown (#8).
+        queueMicrotask(() => {
+          if (this.isAlive()) rp.open();
+        });
         break;
       }
       case 'card_ref[]': {
@@ -932,6 +1166,11 @@ export class TaskDetail extends Control<TaskDetailConfig> {
           editor,
         ) as RefPicker;
         this.rowChildren.push(rp);
+        // Open the picker immediately — the row was expanded specifically to
+        // edit it, so skip the extra click to drop the dropdown (#8).
+        queueMicrotask(() => {
+          if (this.isAlive()) rp.open();
+        });
         break;
       }
       case 'date': {
@@ -946,6 +1185,10 @@ export class TaskDetail extends Control<TaskDetailConfig> {
           editor,
         ) as DatePicker;
         this.rowChildren.push(dp);
+        // Drop the calendar immediately on expand (#8).
+        queueMicrotask(() => {
+          if (this.isAlive()) dp.openMenu();
+        });
         break;
       }
       case 'bool': {
@@ -980,6 +1223,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         });
         this.listen(input, 'blur', () => commit());
         editor.append(input);
+        queueMicrotask(() => {
+          if (this.isAlive()) input.focus();
+        });
         break;
       }
       default: {
@@ -999,6 +1245,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         });
         this.listen(input, 'blur', () => commit());
         editor.append(input);
+        queueMicrotask(() => {
+          if (this.isAlive()) input.focus();
+        });
         break;
       }
     }

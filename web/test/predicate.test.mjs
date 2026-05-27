@@ -256,6 +256,35 @@ test('removeTopLevelLeaf: drops the chip leaf; collapses to null / a bare leaf',
   assert.deepEqual(removeTopLevelLeaf(withChip, 'status'), base);
 });
 
+test('phase scope: withTopLevelPhases / topLevelPhases round-trip + coexist with a status chip', () => {
+  const { withTopLevelPhases, topLevelPhases, upsertTopLevelLeaf, removeTopLevelLeaf, topLevelLeafForAttr, leaf } = M;
+
+  // Seed a phase scope on an empty predicate → a bare status has_phase leaf.
+  const scoped = withTopLevelPhases(null, ['active']);
+  assert.deepEqual(scoped, { kind: 'leaf', attr: 'status', op: 'hasPhase', values: ['active'] });
+  assert.deepEqual(topLevelPhases(scoped), ['active']);
+
+  // A status CHIP leaf must COEXIST with the has_phase leaf (different ops, same
+  // attr): upserting the chip preserves the phase leaf.
+  const withChip = upsertTopLevelLeaf(scoped, leaf('status', 'in', ['40']));
+  assert.equal(withChip.kind, 'group');
+  assert.deepEqual(topLevelPhases(withChip), ['active'], 'phase leaf survives a status chip pick');
+  // The chip read-back skips the has_phase leaf and finds its own `in` leaf.
+  assert.deepEqual(topLevelLeafForAttr(withChip, 'status'), { kind: 'leaf', attr: 'status', op: 'in', values: ['40'] });
+
+  // Clearing the chip leaves the phase scope intact.
+  const afterChipClear = removeTopLevelLeaf(withChip, 'status');
+  assert.deepEqual(topLevelPhases(afterChipClear), ['active'], 'phase leaf survives clearing the status chip');
+
+  // Adding terminal → both phases; clearing all phases → the leaf is dropped
+  // (every phase visible) while the chip stays.
+  const both = withTopLevelPhases(withChip, ['active', 'terminal']);
+  assert.deepEqual(topLevelPhases(both).sort(), ['active', 'terminal']);
+  const allVisible = withTopLevelPhases(both, []);
+  assert.deepEqual(topLevelPhases(allVisible), [], 'no phase leaf → all phases visible');
+  assert.deepEqual(topLevelLeafForAttr(allVisible, 'status'), { kind: 'leaf', attr: 'status', op: 'in', values: ['40'] }, 'chip preserved when phase scope cleared');
+});
+
 test('topLevelLeafForAttr: finds a bare/AND-child leaf; ignores nested-group leaves', () => {
   const { topLevelLeafForAttr, andOf, orOf, leaf } = M;
   assert.deepEqual(topLevelLeafForAttr(leaf('status', 'in', ['40']), 'status'), {

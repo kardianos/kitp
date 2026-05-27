@@ -36,6 +36,7 @@ DECLARE
     _idx int;
     _raw jsonb;
     _parent_card_id bigint;
+    _project_id bigint;
     _card_type_name text;
     _include_deleted boolean;
     _with_personal_sort boolean;
@@ -80,6 +81,11 @@ BEGIN
             _parent_card_id := NULLIF(_raw->>'parent_card_id', '')::bigint;
         EXCEPTION WHEN invalid_text_representation THEN
             _parent_card_id := NULL;
+        END;
+        BEGIN
+            _project_id := NULLIF(_raw->>'project_id', '')::bigint;
+        EXCEPTION WHEN invalid_text_representation THEN
+            _project_id := NULL;
         END;
         _card_type_name := NULLIF(_raw->>'card_type_name', '');
         _include_deleted := COALESCE((_raw->>'include_deleted')::boolean, false);
@@ -129,6 +135,22 @@ BEGIN
             _params := _params || jsonb_build_array(_parent_card_id);
             _clauses := array_append(_clauses, format(
                 'c.parent_card_id = ($1->>%s)::bigint',
+                (jsonb_array_length(_params) - 1)::text));
+        END IF;
+
+        -- Enclosing-project filter: keep only cards whose ancestor chain (the
+        -- card itself or any parent, up to the depth-16 cap) includes
+        -- _project_id. Scopes grandchild cards (filters → screen → project)
+        -- that parent_card_id can't reach — used by project-scoped admin screens.
+        IF _project_id IS NOT NULL THEN
+            _params := _params || jsonb_build_array(_project_id);
+            _clauses := array_append(_clauses, format(
+                'EXISTS (WITH RECURSIVE anc(id, parent_card_id, depth) AS (' ||
+                'SELECT card.id, card.parent_card_id, 0 FROM card WHERE card.id = c.id ' ||
+                'UNION ALL ' ||
+                'SELECT p.id, p.parent_card_id, anc.depth + 1 ' ||
+                'FROM card p JOIN anc ON p.id = anc.parent_card_id WHERE anc.depth < 16 ' ||
+                ') SELECT 1 FROM anc WHERE anc.id = ($1->>%s)::bigint)',
                 (jsonb_array_length(_params) - 1)::text));
         END IF;
         IF _card_type_name IS NOT NULL THEN

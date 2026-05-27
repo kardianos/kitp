@@ -58,7 +58,22 @@ BEGIN
                     'attribute_def_id',         f.attribute_def_id::text,
                     'attribute_def_name',       ad.name,
                     'scope_card_id',            f.scope_card_id::text,
+                    -- Joined display name for the scope project card (its `title`
+                    -- attribute), so the UI shows a name rather than a raw id.
+                    'scope_project_title',      COALESCE((
+                        SELECT av.value #>> '{}'
+                        FROM attribute_value av
+                        JOIN attribute_def adt ON adt.id = av.attribute_def_id
+                        WHERE av.card_id = f.scope_card_id AND adt.name = 'title'
+                    ), ''),
                     'default_create_status_id', COALESCE(f.default_create_status_id, 0)::text,
+                    -- Joined display name for the default-create status card.
+                    'default_create_status_name', COALESCE((
+                        SELECT av.value #>> '{}'
+                        FROM attribute_value av
+                        JOIN attribute_def adt ON adt.id = av.attribute_def_id
+                        WHERE av.card_id = f.default_create_status_id AND adt.name = 'title'
+                    ), ''),
                     'created_at',
                         to_char(f.created_at AT TIME ZONE 'UTC',
                                 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')

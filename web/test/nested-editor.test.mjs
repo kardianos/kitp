@@ -24,7 +24,7 @@ before(async () => {
 /* -------------------------------------------------------------------------- */
 
 function nestedTransport(opts = {}) {
-  const { blockFlowDelete = false, edgeUsage = 0 } = opts;
+  const { blockFlowDelete = false, edgeUsage = 0, filterPredicate = '' } = opts;
   const sent = { writes: [] };
   const rec = (key, data) => sent.writes.push({ key, data: data ?? {} });
 
@@ -70,7 +70,7 @@ function nestedTransport(opts = {}) {
     { id: '60', card_type_name: 'screen', parent_card_id: '31', attributes: { title: 'Board', slug: 'board', layout: 'kanban', default_filter: '70' } },
   ];
   let filterRows = [
-    { id: '70', card_type_name: 'filter', parent_card_id: '60', attributes: { title: 'Mine', predicate: '' } },
+    { id: '70', card_type_name: 'filter', parent_card_id: '60', attributes: { title: 'Mine', predicate: filterPredicate } },
     { id: '71', card_type_name: 'filter', parent_card_id: '60', attributes: { title: 'All', predicate: '' } },
   ];
 
@@ -185,7 +185,11 @@ async function settle(dispatcher) {
 
 function mountMD(api, screenCfg) {
   const tree = new M.TreeNode({}, []);
-  const ctx = { api, tree };
+  // Seed an active project so project-scoped admin lists (e.g. Screens, #10)
+  // fire instead of staying idle on null scope. Harmless for unscoped screens.
+  tree.at(['scope', 'projectId']).set(31n);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  const ctx = { api, tree, scope };
   const ctrl = M.Control.New('MasterDetail', screenCfg, ctx);
   ctrl.mount(new FakeElement('div'));
   return { ctrl, tree };
@@ -622,4 +626,88 @@ test('Screens: editing a filter title fires attribute.update on the filter card'
   assert.equal(updates.length, 1);
   assert.equal(String(updates[0].data.card_id), '70');
   assert.equal(updates[0].data.value, 'Just mine');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Named Filters: the advanced visual predicate builder (filterPredicate).      */
+/* -------------------------------------------------------------------------- */
+
+test('Named Filters: selecting a filter mounts the advanced builder; Save commits predicate+group+sort', async () => {
+  const transport = nestedTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountMD(api, M.adminScreenConfig('filters'));
+  await settle(dispatcher);
+
+  // The project's filter cards list; select the first.
+  const id = await selectFirstRow(ctrl, dispatcher);
+
+  // The advanced visual builder (PredicateFilter) mounted for that filter.
+  assert.ok(ctrl.el.querySelector('[data-ne-predicate]'), 'predicate builder slot mounted');
+  assert.equal(ctrl.el.findByControl('PredicateFilter').length, 1, 'one PredicateFilter builder');
+
+  // Save commits the full view definition (predicate + group + sort) to the card.
+  ctrl.el.querySelector('[data-ne-predicate-save]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  const updates = writesFor(transport, 'attribute.update');
+  assert.deepEqual(
+    updates.map((u) => u.data.attribute_name).sort(),
+    ['group_by_attr', 'predicate', 'sort'],
+    'one attribute.update per view-definition field',
+  );
+  assert.ok(updates.every((u) => String(u.data.card_id) === id), 'all target the selected filter card');
+});
+
+test('Named Filters: switching the selected filter re-mounts the builder (one live PredicateFilter)', async () => {
+  const transport = nestedTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountMD(api, M.adminScreenConfig('filters'));
+  await settle(dispatcher);
+
+  const rows = visibleRows(ctrl.el);
+  rows[0].dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  await settle(dispatcher);
+  rows[1].dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  await settle(dispatcher);
+
+  // The previous builder was torn down — exactly one PredicateFilter is live.
+  assert.equal(ctrl.el.findByControl('PredicateFilter').length, 1, 'old builder destroyed on reselect');
+  assert.equal(ctrl.el.querySelector('[data-ne-predicate]').dataset.nePredicate, rows[1].dataset.mdId);
+});
+
+test('Named Filters: a bare-leaf predicate (status has_phase) loads into the builder and saves canonically', async () => {
+  // The seed/runtime store a filter predicate as a BARE WIRE NODE (leaf or
+  // connective), read back by screen-resolve.readPredicate via fromWire. The
+  // builder must load that shape (not render empty) and save it back in the
+  // same shape (so the runtime can read it).
+  const stored = JSON.stringify({ attr: 'status', op: 'has_phase', values: ['active'] });
+  const transport = nestedTransport({ filterPredicate: stored });
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountMD(api, M.adminScreenConfig('filters'));
+  await settle(dispatcher);
+
+  // Select the filter whose predicate is the bare-leaf has_phase node (id 70).
+  const rows = visibleRows(ctrl.el).filter((r) => r.dataset.mdId === '70');
+  rows[0].dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  await settle(dispatcher);
+
+  // It loaded into the builder (a non-empty predicate → a leaf row + the
+  // has_phase phase checkboxes render, not an empty builder).
+  assert.ok(ctrl.el.findByControl('PredicateFilter').length === 1, 'builder mounted');
+  assert.ok(ctrl.el.querySelector('[data-pred-leaf]'), 'the stored predicate rendered as a leaf (not empty)');
+  assert.ok(ctrl.el.querySelector('[data-pred-phases]'), 'has_phase decoded → triage/active/terminal checkboxes');
+
+  // Save → the persisted predicate is the CANONICAL wire node readPredicate reads.
+  ctrl.el.querySelector('[data-ne-predicate-save]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  const pred = writesFor(transport, 'attribute.update').find((w) => w.data.attribute_name === 'predicate');
+  assert.ok(pred, 'predicate attribute.update fired');
+  const parsed = JSON.parse(pred.data.value);
+  assert.equal(parsed.where, undefined, 'no legacy {where} wrapper');
+  assert.equal(parsed.tree, undefined, 'no legacy {tree} wrapper');
+  // The runtime decoder reads it back to a non-null predicate.
+  const roundTrip = M.readPredicate({ attributes: { predicate: pred.data.value } });
+  assert.ok(roundTrip !== null, 'runtime readPredicate decodes the builder-saved predicate');
 });

@@ -197,6 +197,52 @@ func TestFlowSetAndList(t *testing.T) {
 	}
 }
 
+// TestFlowListJoinsScopeAndStatusNames verifies flow.list joins the scope
+// project card + the default-create status card to their `title` attribute, so
+// the admin Workflows detail shows NAMES rather than raw card ids. (Like the
+// enum_managed bug, a missing ListRow field would silently drop the joined name
+// at the Go struct boundary.)
+func TestFlowListJoinsScopeAndStatusNames(t *testing.T) {
+	f := setup(t, "kitp_test_flow_list_names")
+
+	var titleDef int64
+	if err := f.sp.P.QueryRow(f.ctx, `SELECT id FROM attribute_def WHERE name = 'title'`).Scan(&titleDef); err != nil {
+		t.Fatalf("title def: %v", err)
+	}
+	setTitle := func(cardID int64, title string) {
+		if _, err := f.sp.P.Exec(f.ctx,
+			`INSERT INTO attribute_value (card_id, attribute_def_id, value) VALUES ($1, $2, to_jsonb($3::text))`,
+			cardID, titleDef, title); err != nil {
+			t.Fatalf("set title %q: %v", title, err)
+		}
+	}
+	setTitle(f.projectID, "Acme Project")
+	setTitle(f.triageID, "Triage")
+
+	var setOut flow.SetOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "s", Endpoint: "flow", Action: "set", Data: json.RawMessage(
+			fmt.Sprintf(`{"name":"WF","attribute_def_id":"%d","scope_card_id":"%d","default_create_status_id":"%d"}`,
+				f.statusAttrID, f.projectID, f.triageID)),
+	}, &setOut)
+
+	var listOut flow.ListOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "l", Endpoint: "flow", Action: "list", Data: json.RawMessage(
+			fmt.Sprintf(`{"scope_card_id":"%d"}`, f.projectID)),
+	}, &listOut)
+	if len(listOut.Rows) != 1 {
+		t.Fatalf("want 1 row, got %d: %+v", len(listOut.Rows), listOut.Rows)
+	}
+	row := listOut.Rows[0]
+	if row.ScopeProjectTitle != "Acme Project" {
+		t.Errorf("ScopeProjectTitle=%q, want %q", row.ScopeProjectTitle, "Acme Project")
+	}
+	if row.DefaultCreateStatusName != "Triage" {
+		t.Errorf("DefaultCreateStatusName=%q, want %q", row.DefaultCreateStatusName, "Triage")
+	}
+}
+
 func TestFlowDuplicateScopeRejected(t *testing.T) {
 	f := setup(t, "kitp_test_flow_dup")
 	body := json.RawMessage(fmt.Sprintf(

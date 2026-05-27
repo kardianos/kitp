@@ -84,6 +84,20 @@ export interface PredicateFilterConfig extends BaseControlConfig {
    * pickers render an empty option list (still selectable once options land).
    */
   optionsPath?: string;
+  /**
+   * Optional tree path for a GROUP-BY attribute name (string; '' = no group).
+   * When set the editor renders a "Group by" <select> of the schema's card_ref
+   * attributes below the predicate. Makes this the universal view builder
+   * (predicate + group) reused by the task-screen Advanced + the admin view-def
+   * editor. Read/written reactively so an external group picker stays in sync.
+   */
+  groupPath?: string;
+  /**
+   * Optional tree path for a SORT spec — an array of `{ field, direction }`
+   * (direction 'asc' | 'desc'), matching the `card.select_with_attributes`
+   * `order` param. When set the editor renders an ordered "Sort by" list.
+   */
+  sortPath?: string;
 }
 
 declare module '../core/control.js' {
@@ -235,6 +249,167 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
       const options = this.readOptions(); // ref-picker option lists
       this.treeHost.replaceChildren(this.renderGroup(this.root, schema, options, true));
     }, 'predfilter.render');
+
+    // Optional GROUP-BY section (reactive on the schema + the group leaf, so an
+    // external group picker — e.g. the filter bar's GROUP <select> — stays in
+    // sync). The body only writes DOM; edits write the leaf from handlers.
+    if (this.config.groupPath !== undefined) {
+      const groupHost = document.createElement('div');
+      groupHost.className = 'predfilter__groupby';
+      groupHost.dataset.predGroupby = '';
+      this.el.append(groupHost);
+      const groupSegs = splitPath(this.config.groupPath);
+      this.effect(() => {
+        const schema = this.schemaSignal.get();
+        const cur = this.ctx.tree.at(groupSegs).get<string>() ?? '';
+        this.renderGroupBy(groupHost, schema, cur, groupSegs);
+      }, 'predfilter.groupby');
+    }
+
+    // Optional SORT-BY section (reactive on the schema + the sort leaf).
+    if (this.config.sortPath !== undefined) {
+      const sortHost = document.createElement('div');
+      sortHost.className = 'predfilter__sortby';
+      sortHost.dataset.predSortby = '';
+      this.el.append(sortHost);
+      const sortSegs = splitPath(this.config.sortPath);
+      this.effect(() => {
+        const schema = this.schemaSignal.get();
+        const cur = this.readSort(sortSegs);
+        this.renderSortBy(sortHost, schema, cur, sortSegs);
+      }, 'predfilter.sortby');
+    }
+  }
+
+  /* ------------------------------ group + sort --------------------------- */
+
+  /** Attributes offered for grouping: the card_ref (single) attrs, like the
+   *  filter bar's GROUP axes. */
+  private groupableAttrs(schema: readonly AttrSchema[]): AttrSchema[] {
+    return schema.filter((a) => a.valueType === 'card_ref');
+  }
+
+  private renderGroupBy(host: HTMLElement, schema: readonly AttrSchema[], cur: string, segs: readonly (string | number)[]): void {
+    host.replaceChildren();
+    const label = document.createElement('span');
+    label.className = 'predfilter__section-label muted';
+    label.textContent = 'Group by';
+    const sel = document.createElement('select');
+    sel.className = 'predfilter__select';
+    sel.dataset.predGroupSelect = '';
+    sel.setAttribute('aria-label', 'Group by');
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'No group';
+    if (cur === '') none.selected = true;
+    sel.append(none);
+    for (const a of this.groupableAttrs(schema)) {
+      const opt = document.createElement('option');
+      opt.value = a.name;
+      opt.textContent = a.label;
+      if (a.name === cur) opt.selected = true;
+      sel.append(opt);
+    }
+    this.listen(sel, 'change', () => this.ctx.tree.at(segs).set(sel.value));
+    host.append(label, sel);
+  }
+
+  /** Read the sort spec at a path as a normalised `{ attr, dir }[]` (the
+   *  FilterSortEntry shape the grid + filter card persist). */
+  private readSort(segs: readonly (string | number)[]): Array<{ attr: string; dir: 'asc' | 'desc' }> {
+    const raw = this.ctx.tree.at(segs).get<unknown>();
+    if (!Array.isArray(raw)) return [];
+    const out: Array<{ attr: string; dir: 'asc' | 'desc' }> = [];
+    for (const e of raw) {
+      if (e !== null && typeof e === 'object') {
+        const o = e as Record<string, unknown>;
+        const attr = typeof o['attr'] === 'string' ? o['attr'] : '';
+        if (attr !== '') out.push({ attr, dir: o['dir'] === 'desc' ? 'desc' : 'asc' });
+      }
+    }
+    return out;
+  }
+
+  private writeSort(segs: readonly (string | number)[], rows: Array<{ attr: string; dir: 'asc' | 'desc' }>): void {
+    // Drop attr-less rows; write null when empty so the host can omit the field.
+    const clean = rows.filter((r) => r.attr !== '');
+    this.ctx.tree.at(segs).set(clean.length === 0 ? null : clean);
+  }
+
+  private renderSortBy(
+    host: HTMLElement,
+    schema: readonly AttrSchema[],
+    cur: Array<{ attr: string; dir: 'asc' | 'desc' }>,
+    segs: readonly (string | number)[],
+  ): void {
+    host.replaceChildren();
+    const label = document.createElement('span');
+    label.className = 'predfilter__section-label muted';
+    label.textContent = 'Sort by';
+    host.append(label);
+
+    cur.forEach((entry, i) => {
+      const rowEl = document.createElement('div');
+      rowEl.className = 'predfilter__sort-row';
+      rowEl.dataset.predSortRow = '';
+
+      const attrSel = document.createElement('select');
+      attrSel.className = 'predfilter__select';
+      attrSel.dataset.predSortField = '';
+      attrSel.setAttribute('aria-label', 'Sort field');
+      for (const a of schema) {
+        const opt = document.createElement('option');
+        opt.value = a.name;
+        opt.textContent = a.label;
+        if (a.name === entry.attr) opt.selected = true;
+        attrSel.append(opt);
+      }
+      this.listen(attrSel, 'change', () => {
+        const next = cur.slice();
+        next[i] = { ...entry, attr: attrSel.value };
+        this.writeSort(segs, next);
+      });
+
+      const dirSel = document.createElement('select');
+      dirSel.className = 'predfilter__select';
+      dirSel.dataset.predSortDir = '';
+      dirSel.setAttribute('aria-label', 'Sort direction');
+      for (const d of [['asc', 'Asc'], ['desc', 'Desc']] as const) {
+        const opt = document.createElement('option');
+        opt.value = d[0];
+        opt.textContent = d[1];
+        if (d[0] === entry.dir) opt.selected = true;
+        dirSel.append(opt);
+      }
+      this.listen(dirSel, 'change', () => {
+        const next = cur.slice();
+        next[i] = { ...entry, dir: dirSel.value === 'desc' ? 'desc' : 'asc' };
+        this.writeSort(segs, next);
+      });
+
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'btn predfilter__remove';
+      rm.dataset.predSortRemove = '';
+      rm.setAttribute('aria-label', 'Remove sort');
+      rm.textContent = '×';
+      this.listen(rm, 'click', () => this.writeSort(segs, cur.filter((_, j) => j !== i)));
+
+      rowEl.append(attrSel, dirSel, rm);
+      host.append(rowEl);
+    });
+
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'btn predfilter__add';
+    add.dataset.predSortAdd = '';
+    add.textContent = '+ sort';
+    this.listen(add, 'click', () => {
+      const first = schema[0];
+      if (first === undefined) return;
+      this.writeSort(segs, [...cur, { attr: first.name, dir: 'asc' }]);
+    });
+    host.append(add);
   }
 
   /* ---------------------------- value <-> model -------------------------- */

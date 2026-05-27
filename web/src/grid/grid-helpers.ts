@@ -32,6 +32,10 @@
  *   - extra_columns / per-column filter state.
  */
 
+import type { RefAxis } from '../filter/vocabulary.js';
+import { friendlyLabel, type AttrSchema } from '../filter/attribute-schema.js';
+import { lookupNameForCardType } from '../filter/group-axis.js';
+
 /* -------------------------------------------------------------------------- */
 /* SortState.                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -144,13 +148,11 @@ export function effectiveSort(
 export type ColumnKind =
   | 'id'
   | 'title'
-  | 'status'
-  | 'assignee'
-  | 'priority'
-  | 'milestone'
-  | 'component'
-  | 'tags'
-  | 'due'
+  | 'ref' // a single card_ref attribute → label resolved via a lookup map
+  | 'tag_prefix' // synthetic: the tag whose path starts `<prefix>/`
+  | 'tags' // the catch-all tag chips
+  | 'date' // a date-typed attribute
+  | 'attr' // a scalar text/number attribute (rendered as its string value)
   | 'created'
   | 'last_activity';
 
@@ -171,62 +173,99 @@ export interface ColumnDef {
   label: string;
   field: string | null;
   attrName: string | null;
+  /** For `ref`: the lookup-map name (`grid.lookups.<lookup>`) the value resolves through. */
+  lookup?: string | null;
+  /** For `ref`: the target card_type — where per-column filter options live
+   *  (`screen.predicateOptions[targetCardType]`). */
+  targetCardType?: string;
+  /** For `tag_prefix`: the tag path prefix (no trailing slash). */
+  prefix?: string;
 }
 
 /**
- * The v1 column set, in render order (mock-inbox.md §Grid + screen-inventory
- * §4). ID + Title are not sortable in the demo; Status / Assignee / Priority /
- * Milestone / Component / Due / Created / Last activity carry a sortable wire
- * `field`. The Tags column is the catch-all array column (non-sortable).
+ * Build the Grid column set DATA-DRIVEN from the project's schema + the screen
+ * config (replacing the old hardcoded list). In render order:
  *
- * Priority is modelled here as a scalar `priority` attribute (tone pill in the
- * design). The Svelte demo surfaced priority via a synthetic tag-prefix column;
- * v1 reads a plain `priority` attribute so label resolution is uniform — the
- * tag-prefix variant is the documented deferral.
+ *   ID · Title · <one `ref` column per single card_ref axis> ·
+ *   <one `tag_prefix` column per screen `tag_prefix_columns`> · Tags ·
+ *   <one column per screen `extra_columns` attr (date vs scalar by schema)> ·
+ *   Created · Last activity
+ *
+ *   - Ref columns come from `refAxes` (the same card_ref vocab axes the group
+ *     picker / quick chips use); the multi-ref `tags` axis is skipped (it's the
+ *     catch-all Tags column). Each resolves its label via the target type's
+ *     lookup map (`lookupNameForCardType`).
+ *   - `tagPrefixColumns` (e.g. `["priority"]`) → synthetic columns showing the
+ *     tag value after `<prefix>/` (this is where the old hardcoded Priority
+ *     column now comes from).
+ *   - `extraColumns` (e.g. `["due_date"]`) → extra attribute columns, typed
+ *     `date` vs `attr` from the schema; ones already shown as a ref are skipped.
+ *
+ * Empty inputs yield the minimal base (ID · Title · Tags · Created · Last
+ * activity) — the cold/standalone fallback before the schema + screen config land.
  */
-export const GRID_COLUMNS: readonly ColumnDef[] = [
-  { kind: 'id', key: 'id', label: 'ID', field: null, attrName: null },
-  { kind: 'title', key: 'title', label: 'Title', field: 'attributes.title', attrName: null },
-  { kind: 'status', key: 'status', label: 'Status', field: 'attributes.status', attrName: 'status' },
-  {
-    kind: 'assignee',
-    key: 'assignee',
-    label: 'Assignee',
-    field: 'attributes.assignee',
-    attrName: 'assignee',
-  },
-  {
-    kind: 'priority',
-    key: 'priority',
-    label: 'Priority',
-    field: 'attributes.priority',
-    attrName: 'priority',
-  },
-  {
-    kind: 'milestone',
-    key: 'milestone',
-    label: 'Milestone',
-    field: 'attributes.milestone_ref',
-    attrName: 'milestone_ref',
-  },
-  {
-    kind: 'component',
-    key: 'component',
-    label: 'Component',
-    field: 'attributes.component_ref',
-    attrName: 'component_ref',
-  },
-  { kind: 'tags', key: 'tags', label: 'Tags', field: null, attrName: null },
-  { kind: 'due', key: 'due', label: 'Due', field: 'attributes.due_date', attrName: 'due_date' },
-  { kind: 'created', key: 'created', label: 'Created', field: 'created_at', attrName: null },
-  {
-    kind: 'last_activity',
-    key: 'last_activity',
-    label: 'Last activity',
-    field: 'last_activity_at',
-    attrName: null,
-  },
-];
+export function buildGridColumns(
+  refAxes: readonly RefAxis[],
+  schema: readonly AttrSchema[],
+  extraColumns: readonly string[],
+  tagPrefixColumns: readonly string[],
+): ColumnDef[] {
+  const cols: ColumnDef[] = [
+    { kind: 'id', key: 'id', label: 'ID', field: null, attrName: null },
+    { kind: 'title', key: 'title', label: 'Title', field: 'attributes.title', attrName: null },
+  ];
+  for (const ax of refAxes) {
+    if (ax.multi) continue; // the multi-ref tags axis is the catch-all Tags column
+    cols.push({
+      kind: 'ref',
+      key: ax.attr,
+      label: ax.label,
+      field: `attributes.${ax.attr}`,
+      attrName: ax.attr,
+      lookup: lookupNameForCardType(ax.targetCardType),
+      targetCardType: ax.targetCardType,
+    });
+  }
+  for (const prefix of tagPrefixColumns) {
+    cols.push({
+      kind: 'tag_prefix',
+      key: `tag:${prefix}`,
+      label: friendlyLabel(prefix),
+      field: null,
+      attrName: null,
+      prefix,
+    });
+  }
+  cols.push({ kind: 'tags', key: 'tags', label: 'Tags', field: null, attrName: null });
+  const shown = new Set(cols.map((c) => c.attrName).filter((n): n is string => n !== null));
+  for (const name of extraColumns) {
+    if (shown.has(name)) continue;
+    const sch = schema.find((a) => a.name === name);
+    cols.push({
+      kind: sch?.valueType === 'date' ? 'date' : 'attr',
+      key: name,
+      label: sch ? sch.label : friendlyLabel(name),
+      field: `attributes.${name}`,
+      attrName: name,
+    });
+    shown.add(name);
+  }
+  cols.push({ kind: 'created', key: 'created', label: 'Created', field: 'created_at', attrName: null });
+  cols.push({ kind: 'last_activity', key: 'last_activity', label: 'Last activity', field: 'last_activity_at', attrName: null });
+  return cols;
+}
+
+/**
+ * The tag value for a `tag_prefix` column: the segment after `<prefix>/` in the
+ * first matching resolved tag path, or null when no tag carries that prefix.
+ */
+export function tagPrefixValue(paths: readonly string[], prefix: string): string | null {
+  const pre = `${prefix}/`;
+  for (const p of paths) {
+    if (p.startsWith(pre)) return p.slice(pre.length);
+  }
+  return null;
+}
 
 /* -------------------------------------------------------------------------- */
 /* Tag-path → chip segments (LIFTED from client/src/ui/widgets/TagChip.svelte  */

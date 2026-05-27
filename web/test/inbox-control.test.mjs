@@ -14,6 +14,7 @@ before(async () => {
   M.registerScreenFilterBar();
   M.registerScreenHost();
   M.registerInbox();
+  M.registerInboxViewToggles();
 });
 
 beforeEach(() => {
@@ -49,6 +50,8 @@ function recordingInboxTransport(opts = {}) {
     agentClears: [],
   };
   const agents = opts.agents ?? [];
+  // Existing delegations the server returns for user_card_agent.list.
+  const routing = opts.routing ?? [];
   const row = (id, attrs, personalSort) => {
     const r = {
       id: String(id),
@@ -123,6 +126,9 @@ function recordingInboxTransport(opts = {}) {
         if (key === 'user_card_agent.clear') {
           sent.agentClears.push(data);
           return { id: sr.id, ok: true, data: { ok: true, deleted: 1 } };
+        }
+        if (key === 'user_card_agent.list') {
+          return { id: sr.id, ok: true, data: { rows: routing } };
         }
         return { id: sr.id, ok: false, error: { code: 'unknown_handler', message: `no ${key}` } };
       });
@@ -292,6 +298,52 @@ test('Inbox reorder: drag row 203 to the top rewrites personal_sort_order optimi
   const sortFor = (id) => transport.sent.sortSets.find((s) => String(s.card_id) === id).sort_order;
   assert.equal(sortFor('203'), 100, 'wire sort_order for 203 is 100');
   assert.equal(sortFor('201'), 200, 'wire sort_order for 201 is 200');
+
+  // The moved row settles into its new slot (#context); others don't.
+  const movedRow = visibleRows(inbox).find((r) => r.dataset.cardId === '203');
+  const otherRow = visibleRows(inbox).find((r) => r.dataset.cardId === '202');
+  assert.ok(movedRow.classList.contains('inbox__row--settling'), 'moved row carries the settle class');
+  assert.ok(!otherRow.classList.contains('inbox__row--settling'), 'an untouched row does not');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Animated drop placeholder (#5): a gliding bar shows the insertion gap.       */
+/* -------------------------------------------------------------------------- */
+
+test('Inbox: dragging a row shows the drop placeholder, hidden on dragend (#5)', async () => {
+  const transport = recordingInboxTransport();
+  const { dispatcher, inbox } = bootInbox(transport);
+  await settle(dispatcher);
+
+  const list = inbox.el.querySelectorAll('[data-inbox-list]')[0];
+  const placeholder = list.querySelectorAll('[data-drop-placeholder]')[0];
+  assert.ok(placeholder, 'a placeholder bar lives in the inbox list');
+  assert.equal(placeholder.style.display, 'none', 'hidden at rest');
+
+  const rows = visibleRows(inbox);
+  const r203 = rows.find((r) => r.dataset.cardId === '203');
+  r203.dispatchEvent({ type: 'dragstart', target: r203 });
+  r203.dispatchEvent({ type: 'dragover', target: r203, clientY: 5 });
+  assert.notEqual(placeholder.style.display, 'none', 'placeholder shown during dragover');
+
+  r203.dispatchEvent({ type: 'dragend', target: r203 });
+  assert.equal(placeholder.style.display, 'none', 'placeholder hidden on dragend');
+});
+
+test('Inbox: a task created elsewhere (tasks.createdNonce) refetches the list', async () => {
+  const transport = recordingInboxTransport();
+  const { dispatcher, tree } = bootInbox(transport);
+  await settle(dispatcher);
+  const before = transport.sent.taskInputs.length;
+
+  const nonce = tree.at(['tasks', 'createdNonce']);
+  nonce.set((nonce.peek() ?? 0) + 1);
+  await settle(dispatcher);
+
+  assert.ok(
+    transport.sent.taskInputs.length > before,
+    'createdNonce bump re-issued the inbox tasks query',
+  );
 });
 
 /* -------------------------------------------------------------------------- */
@@ -371,13 +423,13 @@ test('Inbox reorder optimistic patch ROLLS BACK on a user_card_sort.set fault', 
 
 test('Inbox mine_only ANDs assignee = the signed-in user id (auth.user)', async () => {
   const transport = recordingInboxTransport();
-  const { dispatcher, inbox } = bootInbox(transport); // auth.user landed with ME_ID
+  const { dispatcher, tree } = bootInbox(transport); // auth.user landed with ME_ID
   await settle(dispatcher);
   const before = transport.sent.taskInputs.length;
 
-  const toggle = inbox.el.querySelector('[data-inbox-toggle="inbox-mine-toggle"]');
-  assert.ok(toggle, 'mine_only toggle rendered');
-  toggle.dispatchEvent({ type: 'click', target: toggle });
+  // The toggles live on the filter bar now (InboxViewToggles) and flip this
+  // leaf; the Inbox reacts to it. Simulate the flip directly.
+  tree.at(['inbox', 'mineOnly']).set(true);
   await settle(dispatcher);
 
   assert.ok(transport.sent.taskInputs.length > before, 'mine_only refired the tasks query');
@@ -393,11 +445,10 @@ test('Inbox mine_only ANDs assignee = the signed-in user id (auth.user)', async 
 test('Inbox mine_only is a no-op leaf when the identity is unresolved', async () => {
   const transport = recordingInboxTransport();
   // noAuth: no auth.user landed → no resolvable identity.
-  const { dispatcher, inbox } = bootInbox(transport, { noAuth: true });
+  const { dispatcher, tree } = bootInbox(transport, { noAuth: true });
   await settle(dispatcher);
 
-  const toggle = inbox.el.querySelector('[data-inbox-toggle="inbox-mine-toggle"]');
-  toggle.dispatchEvent({ type: 'click', target: toggle });
+  tree.at(['inbox', 'mineOnly']).set(true);
   await settle(dispatcher);
 
   const last = transport.sent.taskInputs[transport.sent.taskInputs.length - 1];
@@ -436,13 +487,12 @@ test('Inbox agents query is scoped to the signed-in user (parent_user_id = me)',
 
 test('Inbox routed-to-me toggle sets routed_to_me on the tasks query', async () => {
   const transport = recordingInboxTransport();
-  const { dispatcher, inbox } = bootInbox(transport);
+  const { dispatcher, tree, inbox } = bootInbox(transport);
   await settle(dispatcher);
   const before = transport.sent.taskInputs.length;
 
-  const toggle = inbox.el.querySelector('[data-inbox-toggle="inbox-routed-toggle"]');
-  assert.ok(toggle, 'routed-to-me toggle rendered');
-  toggle.dispatchEvent({ type: 'click', target: toggle });
+  // The filter-bar "Routed to me" toggle flips this leaf; the Inbox reacts.
+  tree.at(['inbox', 'routedToMe']).set(true);
   await settle(dispatcher);
 
   assert.ok(transport.sent.taskInputs.length > before, 'toggle refired the tasks query');
@@ -451,6 +501,28 @@ test('Inbox routed-to-me toggle sets routed_to_me on the tasks query', async () 
   // The agent-view banner is now visible.
   const banner = inbox.el.querySelector('[data-inbox-agent-banner]');
   assert.notEqual(banner.style.display, 'none', 'agent-view banner shown');
+});
+
+test('InboxViewToggles flips the inbox.mineOnly / inbox.routedToMe leaves (#13)', () => {
+  const tree = new M.TreeNode({}, []);
+  const ctrl = M.Control.New('InboxViewToggles', { type: 'InboxViewToggles' }, { tree });
+  ctrl.mount(new FakeElement('div'));
+
+  const mine = ctrl.el.querySelector('[data-inbox-toggle="inbox-mine-toggle"]');
+  const routed = ctrl.el.querySelector('[data-inbox-toggle="inbox-routed-toggle"]');
+  assert.ok(mine && routed, 'both toggle buttons render in the view-actions control');
+
+  mine.dispatchEvent({ type: 'click', target: mine });
+  M.flushSync?.();
+  assert.equal(tree.at(['inbox', 'mineOnly']).peek(), true, 'click flips mineOnly on');
+  assert.equal(mine.getAttribute('aria-pressed'), 'true', 'pressed state reflects the leaf');
+  mine.dispatchEvent({ type: 'click', target: mine });
+  M.flushSync?.();
+  assert.equal(tree.at(['inbox', 'mineOnly']).peek(), false, 'second click flips it off');
+
+  routed.dispatchEvent({ type: 'click', target: routed });
+  M.flushSync?.();
+  assert.equal(tree.at(['inbox', 'routedToMe']).peek(), true, 'routed-to-me flips its leaf');
 });
 
 /* -------------------------------------------------------------------------- */
@@ -492,6 +564,23 @@ test('Inbox delegate-to-agent fires user_card_agent.set; clearing fires user_car
   await settle(dispatcher);
   assert.equal(transport.sent.agentClears.length, 1, 'one user_card_agent.clear fired');
   assert.equal(String(transport.sent.agentClears[0].card_id), '201');
+});
+
+test('Inbox loads existing routings via user_card_agent.list so a saved delegation survives reload (#12)', async () => {
+  const agents = [{ id: '90', display_name: 'Scout (agent)', is_agent: true }];
+  // The server already has card 201 routed to agent 90 (a prior delegation).
+  const routing = [{ card_id: '201', agent_user_id: '90' }];
+  const transport = recordingInboxTransport({ agents, routing });
+  const { dispatcher, tree, inbox } = bootInbox(transport);
+  await settle(dispatcher);
+
+  // The routing query landed the saved delegation into inbox.routing (not just
+  // an optimistic patch) — this is what was missing.
+  assert.equal(tree.at(['inbox', 'routing']).peek()['201'], 90n, 'saved routing loaded from the server');
+  // …and the per-row delegate picker reflects it.
+  const firstRow = visibleRows(inbox)[0];
+  const sel = firstRow.querySelectorAll('[data-inbox-delegate]')[0];
+  assert.equal(String(sel.value), '90', 'delegate picker shows the loaded agent');
 });
 
 /* -------------------------------------------------------------------------- */

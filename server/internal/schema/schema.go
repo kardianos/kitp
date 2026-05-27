@@ -28,6 +28,10 @@ type AttributeDef struct {
 	ValueType        string
 	IsBuiltIn        bool
 	TargetCardTypeID int64 // 0 when value_type is not card_ref / card_ref[]
+	// EnumManaged marks a card_ref attribute whose value-cards (the target
+	// card_type's cards) are editable by a manager on the data-driven "Enums"
+	// admin screen — e.g. milestone / component / tag.
+	EnumManaged bool
 }
 
 // Edge is one edge row, linking a card_type to an attribute_def.
@@ -81,13 +85,13 @@ func Load(ctx context.Context, tx pgx.Tx) (*Snapshot, error) {
 		return nil, err
 	}
 
-	rows, err = tx.Query(ctx, `SELECT id, name, value_type, is_built_in, COALESCE(target_card_type_id, 0) FROM attribute_def`)
+	rows, err = tx.Query(ctx, `SELECT id, name, value_type, is_built_in, COALESCE(target_card_type_id, 0), enum_managed FROM attribute_def`)
 	if err != nil {
 		return nil, fmt.Errorf("schema: load attribute_def: %w", err)
 	}
 	for rows.Next() {
 		var a AttributeDef
-		if err := rows.Scan(&a.ID, &a.Name, &a.ValueType, &a.IsBuiltIn, &a.TargetCardTypeID); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.ValueType, &a.IsBuiltIn, &a.TargetCardTypeID, &a.EnumManaged); err != nil {
 			rows.Close()
 			return nil, err
 		}

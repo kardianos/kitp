@@ -284,6 +284,186 @@ test('TaskDetail: description renders Markdown and edit fires attribute.update(d
 });
 
 /* -------------------------------------------------------------------------- */
+/* Edit chords (e t / e d / e c) open + FOCUS their text field.                 */
+/* -------------------------------------------------------------------------- */
+
+/** Invoke a declared hotkey binding's action by its chord string. */
+function runChord(td, binding) {
+  const b = td.hotkeys().find((x) => x.binding === binding);
+  assert.ok(b, `binding "${binding}" declared`);
+  b.run();
+}
+
+test('TaskDetail: `e t` opens + focuses the title input', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { td } = mountTaskDetail(api);
+  await settle(dispatcher);
+
+  runChord(td, 'e t');
+  await settle(dispatcher); // flush the queueMicrotask focus
+  const input = td.el.querySelector('[data-task-title-input]');
+  assert.ok(input, 'title input opened by `e t`');
+  assert.equal(document.activeElement, input, 'title input focused');
+});
+
+test('TaskDetail: `e d` opens + focuses the description textarea', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { td } = mountTaskDetail(api);
+  await settle(dispatcher);
+
+  runChord(td, 'e d');
+  await settle(dispatcher);
+  const ta = td.el.querySelector('[data-task-desc-input]');
+  assert.ok(ta, 'description textarea opened by `e d`');
+  assert.equal(ta.tagName, 'TEXTAREA');
+  assert.equal(document.activeElement, ta, 'description textarea focused');
+});
+
+test('TaskDetail: `e c` focuses the comment composer textarea', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { td } = mountTaskDetail(api);
+  await settle(dispatcher);
+
+  const composer = td.el.querySelector('[data-comment-input]');
+  assert.ok(composer, 'comment composer textarea present');
+  runChord(td, 'e c');
+  await settle(dispatcher);
+  assert.equal(document.activeElement, composer, 'comment composer focused by `e c`');
+});
+
+test('TaskDetail: `e` then `t` through the HotkeyController opens the title (live routing)', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { td } = mountTaskDetail(api);
+  await settle(dispatcher);
+
+  // Wire a real HotkeyController exactly like main.ts: the body (TaskDetail) is
+  // the baseline active scope, listening on document. This exercises the FULL
+  // chord routing (prefix `e` → `t` → the TaskDetail binding), not just run().
+  const rootSig = M.signal(td, 'root');
+  const activeSig = M.signal(td, 'active');
+  const hk = new M.HotkeyController({ root: rootSig, active: activeSig, target: document });
+  const dispose = hk.start();
+  try {
+    key(document.body, 'e');
+    key(document.body, 't');
+    await settle(dispatcher);
+    const input = td.el.querySelector('[data-task-title-input]');
+    assert.ok(input, '`e t` opened the title input via the controller');
+  } finally {
+    dispose();
+  }
+});
+
+test('controlForNode resolves an inner element to its owning control', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { td } = mountTaskDetail(api);
+  await settle(dispatcher);
+
+  // The focus tracker (main.ts) uses controlForNode to pick the active scope.
+  const inner = td.el.querySelector('[data-task-title]');
+  assert.ok(inner, 'an inner element exists');
+  assert.equal(M.controlForNode(inner), td, 'inner element resolves to the TaskDetail');
+  assert.equal(M.controlForNode(td.el), td, 'the root element resolves to itself');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Subtle prev/next task nav + "N of M" counter (from nav.taskList).            */
+/* -------------------------------------------------------------------------- */
+
+/** Mount a TaskDetail against a tree pre-seeded with a published nav list. */
+function mountWithNavList(api, ids, taskId = String(TASK_ID)) {
+  const tree = new M.TreeNode({}, []);
+  tree.at(['nav', 'taskList']).set(ids);
+  const td = M.Control.New('TaskDetail', { type: 'TaskDetail', taskId }, { api, tree });
+  td.mount(document.createElement('div'));
+  document.body.appendChild(td.el);
+  return { td, tree };
+}
+
+test('TaskDetail: nav shows "N of M" and enables both arrows mid-list', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  // 54 is the focal task; it sits 2nd of 3.
+  const { td } = mountWithNavList(api, ['53', '54', '55']);
+  await settle(dispatcher);
+
+  const nav = td.el.querySelector('[data-task-nav]');
+  assert.ok(nav && nav.style.display !== 'none', 'nav visible for a multi-item list');
+  assert.equal(td.el.querySelector('[data-task-nav-count]').textContent, '2 of 3');
+  assert.equal(td.el.querySelector('[data-task-nav-prev]').disabled, false, 'prev enabled (not first)');
+  assert.equal(td.el.querySelector('[data-task-nav-next]').disabled, false, 'next enabled (not last)');
+});
+
+test('TaskDetail: nav disables the edge arrow (first item → prev off)', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { td } = mountWithNavList(api, ['54', '55', '56']); // 54 is first
+  await settle(dispatcher);
+
+  assert.equal(td.el.querySelector('[data-task-nav-count]').textContent, '1 of 3');
+  assert.equal(td.el.querySelector('[data-task-nav-prev]').disabled, true, 'prev disabled at the start');
+  assert.equal(td.el.querySelector('[data-task-nav-next]').disabled, false);
+});
+
+test('TaskDetail: nav hides on a cold deep-link (no published list)', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { td } = mountTaskDetail(api); // nothing published to nav.taskList
+  await settle(dispatcher);
+  assert.equal(td.el.querySelector('[data-task-nav]').style.display, 'none', 'nav hidden with no list');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Back to list (q/Esc + the visible button) → the SAVED list screen, not back */
+/* -------------------------------------------------------------------------- */
+
+test('TaskDetail: the Back button returns to the saved source list URL (not history)', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  // The list the user came from published its ids + its own screen URL.
+  tree.at(['nav', 'taskList']).set(['53', '54', '55']);
+  tree.at(['nav', 'listUrl']).set('/project/9/screen/grid');
+  M.installRouter(tree); // navigate() lands the route into this tree's router leaf
+  const td = M.Control.New('TaskDetail', { type: 'TaskDetail', taskId: String(TASK_ID) }, { api, tree });
+  td.mount(document.createElement('div'));
+  document.body.appendChild(td.el);
+  await settle(dispatcher);
+
+  const back = td.el.querySelector('[data-task-back]');
+  assert.ok(back, 'the Back-to-list button renders');
+  back.click(); // jsdom HTMLElement.click() fires the listen('click') handler → goBack()
+
+  const route = tree.at([...M.ROUTER_PATH]).peek();
+  assert.equal(route.name, 'screen', 'navigated to a screen route');
+  assert.equal(route.params.id, '9');
+  assert.equal(route.params.slug, 'grid', 'returned to the saved grid list');
+  M._resetRouterForTest();
+});
+
+test('TaskDetail: Back falls back to the project board on a cold deep-link', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []); // nothing published → no saved list URL
+  M.installRouter(tree);
+  const td = M.Control.New('TaskDetail', { type: 'TaskDetail', taskId: String(TASK_ID) }, { api, tree });
+  td.mount(document.createElement('div'));
+  document.body.appendChild(td.el);
+  await settle(dispatcher);
+
+  td.el.querySelector('[data-task-back]').click();
+  const route = tree.at([...M.ROUTER_PATH]).peek();
+  // The mock task's parent project id drives the project-board fallback.
+  assert.equal(route.name, 'project', 'fell back to the task project board');
+  M._resetRouterForTest();
+});
+
+/* -------------------------------------------------------------------------- */
 /* Attribute panel: inline edit by value_type (RefPicker / DatePicker mount).   */
 /* -------------------------------------------------------------------------- */
 

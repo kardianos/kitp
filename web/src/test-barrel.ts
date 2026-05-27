@@ -77,6 +77,8 @@ export {
   topLevelLeafForAttr,
   upsertTopLevelLeaf,
   removeTopLevelLeaf,
+  topLevelPhases,
+  withTopLevelPhases,
   leaf,
   group,
   andOf,
@@ -129,26 +131,35 @@ export {
 export {
   loadScreenAndFilters,
   fallbackLayoutForSlug,
+  layoutRequiresGroup,
+  defaultGroupForLayout,
+  viewActionsForLayout,
+  KANBAN_DEFAULT_GROUP_ATTR,
   screenStatePath,
   readSlug,
   readLayout,
   readTitle as readScreenTitle,
   readDefaultFilterID,
   readGroupByAttr,
+  readSortBy,
   readPredicate,
+  readPhaseToggles,
   type ScreenPresetSet,
+  type PhaseToggle,
 } from './filter/screen-resolve.js';
 
 // Real screen controls + their registrars.
 export { Kanban, Column, TaskCard, registerKanbanControls, _resetDragState } from './kanban/kanban.js';
 export { ScreenHost, layoutToControlType, registerScreenHost } from './shell/screen-host.js';
-export { ScreenFilterBar, registerScreenFilterBar } from './shell/screen-filter-bar.js';
+export { ScreenFilterBar, registerScreenFilterBar, focusScreenSearch } from './shell/screen-filter-bar.js';
 export { Grid, registerGrid } from './grid/grid.js';
+export { GridColumns, registerGridColumns } from './grid/grid-columns.js';
 export { TagChip, registerTagChip } from './grid/tag-chip.js';
 
 // Inbox (list layout): the control + its registrar, the pure reorder helpers,
 // and the write specs (user_card_sort.set / user_card_agent.set|clear).
 export { Inbox, registerInbox, _resetInboxDragState } from './inbox/inbox.js';
+export { InboxViewToggles, registerInboxViewToggles } from './inbox/inbox-view-toggles.js';
 export {
   planPersonalReorder,
   applyPersonalReorder,
@@ -168,11 +179,13 @@ export { AppShell, registerAppShell, shellHotkeys } from './shell/app-shell.js';
 export {
   matchRoute,
   navigate,
+  activityUrl,
   installRouter,
   currentRoute,
   peekRoute,
   routeGuard,
   screenLayoutForSlug,
+  helpTopicForRoute,
   projectUrl,
   screenUrl,
   taskUrl,
@@ -190,6 +203,17 @@ export {
   type HelpOverlayConfig,
   type HotkeySnapshot,
 } from './shell/help-overlay.js';
+export {
+  registerConfigSpecs,
+  loadServerConfig,
+  CONFIG_GET_SPEC,
+  WORKSPACE_TITLE_PATH,
+  DEFAULT_WORKSPACE_TITLE,
+  type ServerConfig,
+} from './shell/config-specs.js';
+export { publishTaskNav, taskNavListUrl, taskNavNeighbor } from './shell/task-nav.js';
+export { attrNameToTargetType, collectRefIdsByType, loadActivityLabels } from './task-detail/activity-labels.js';
+export { Activity, registerActivity } from './activity/activity.js';
 export { ProjectList, registerProjectList } from './projects/project-list.js';
 
 // Project detail (the `project` layout body): the ProjectLayout control + its
@@ -212,6 +236,8 @@ export {
 
 // Admin: the reusable MasterDetail control + its config-building helpers + the
 // two proof-of-reuse screen configs + the user.* specs.
+export { EnumManager, registerEnumManager } from './admin/enum-manager.js';
+export { PeopleManager, registerPeopleManager } from './admin/people-manager.js';
 export {
   MasterDetail,
   registerMasterDetail,
@@ -280,6 +306,8 @@ export {
   usersScreen,
   adminScreenConfig,
   ADMIN_VIEWS,
+  ADMIN_SECTION,
+  MANAGER_ADMIN_VIEWS,
 } from './admin/screens.js';
 
 // Reusable anchored-UI primitives: the single floating impl + the two controls
@@ -348,6 +376,9 @@ export {
   type CommentUpdateInput,
   type CommentUpdateOutput,
 } from './task-detail/comment-specs.js';
+export { registerCommThreadSpecs } from './task-detail/comm-specs.js';
+export { loadView, saveView } from './filter/view-persistence.js';
+export { trapFocus, captureFocus } from './util/focus-trap.js';
 export {
   formatActivityText,
   humaniseAttribute,

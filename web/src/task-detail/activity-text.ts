@@ -16,10 +16,12 @@ import type { ActivityRow } from './comment-specs.js';
 /** Lookup map keyed by id.toString() (bigint can't be a plain object key). */
 export type IdMap = Record<string, string>;
 
-/** Coerce a candidate id value (bigint after revival, or number) to a string key. */
+/** Coerce a candidate id value to a string key: bigint, integer number, or a
+ *  digit string (activity jsonb stores card_ref ids as JSON strings). */
 function idKey(v: unknown): string | null {
   if (typeof v === 'bigint') return v.toString();
   if (typeof v === 'number' && Number.isInteger(v)) return v.toString();
+  if (typeof v === 'string' && /^\d+$/.test(v)) return v;
   return null;
 }
 
@@ -71,7 +73,13 @@ function formatAttrValue(
       return String(v);
   }
   const k = idKey(v);
-  if (k !== null) return cardTitles?.[k] ?? `#${k}`;
+  if (k !== null) {
+    const t = cardTitles?.[k];
+    if (t !== undefined) return t;
+    // Title not (yet) resolved, or this is a plain number/text value that only
+    // LOOKS like an id (e.g. a `number` attribute). Print it raw rather than
+    // inventing a "#id" — only true card_ref values land in cardTitles.
+  }
   if (typeof v === 'string') return v;
   if (typeof v === 'bigint') return String(v);
   if (typeof v === 'boolean') return String(v);

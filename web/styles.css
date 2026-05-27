@@ -245,9 +245,21 @@ body {
   padding-right: var(--space-6);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  background: var(--color-surface)
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%236b7888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><path d='M3 4.5 6 7.5 9 4.5'/></svg>")
-    no-repeat right var(--space-2) center;
+  /* Dropdown caret drawn as two diagonal gradients (a downward ▼) rather than a
+     `data:image/svg+xml` background — CSS gradients are not governed by the
+     `img-src` CSP directive (`'self' blob:`), so the caret renders without an
+     SVG data URI and without loosening the policy. Theme-aware via the token. */
+  background-color: var(--color-surface);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--color-muted) 50%),
+    linear-gradient(135deg, var(--color-muted) 50%, transparent 50%);
+  background-position:
+    right 13px center,
+    right 8px center;
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
   color: var(--color-fg);
   cursor: pointer;
   appearance: none;
@@ -366,6 +378,45 @@ body {
   letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
   color: var(--color-muted);
+}
+/* ---- ADMIN disclosure (#4): a collapsible section heading + animated list ---- */
+.shell__section-toggle {
+  font: inherit;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--color-muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  margin-top: var(--space-4);
+  padding: var(--space-1) var(--space-3);
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+.shell__section-toggle:hover {
+  color: var(--color-fg-strong);
+}
+.shell__section-caret {
+  font-size: var(--text-xs);
+  line-height: 1;
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+.shell__admin-list {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: 24rem;
+  transition: max-height var(--duration-base) var(--ease-standard);
+}
+.shell__admin-list--collapsed {
+  max-height: 0;
 }
 .shell__user-chip {
   margin-top: auto;
@@ -497,6 +548,13 @@ body {
 .filterbar__row--presets {
   gap: var(--space-2);
 }
+/* Screen-registered view actions (e.g. Grid → Columns), pulled to the right. */
+.filterbar__view-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 .filter-preset {
   display: inline-flex;
   align-items: center;
@@ -546,6 +604,33 @@ body {
    ========================================================================== */
 .filterbar__row--chips {
   gap: var(--space-2);
+}
+/* Phase-scope toggles (Active / Closed / …). Segmented pill buttons; the ON
+   ones are the phases currently shown (OFF = hidden, e.g. terminal by default). */
+.filterbar__row--phases {
+  gap: var(--space-2);
+  align-items: center;
+}
+.filterbar__phase-label {
+  font-size: var(--text-sm);
+}
+.filterbar__phase-toggle {
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2x);
+  color: var(--color-muted);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.filterbar__phase-toggle:hover {
+  border-color: var(--color-border-strong);
+}
+.filterbar__phase-toggle--on {
+  color: var(--color-fg-strong);
+  background: var(--color-fill-hover);
+  border-color: var(--color-border-strong);
 }
 .filterbar__chips {
   display: flex;
@@ -732,6 +817,48 @@ body {
   overflow-y: hidden;
   padding-bottom: var(--space-2);
 }
+/* Pin the (non-laned) board to the full available height so the columns reach
+   the bottom of the viewport even with only a few cards. The row fills the
+   kanban's flex height and stretches each column to it; the column body then
+   flexes to fill, scrolling internally. Swim lanes keep their content-height
+   behaviour (lanes stack + scroll as a group). */
+.kanban__columns:not(.kanban--laned) {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+}
+.kanban__columns:not(.kanban--laned) > .col > .col__body {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+/* Swim lanes (#26): the board stacks lanes vertically; each lane is a labelled
+   row that scrolls its own column set horizontally. */
+.kanban__columns.kanban--laned {
+  flex-direction: column;
+  align-items: stretch;
+  overflow-x: hidden;
+}
+.kanban__lane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-h);
+}
+.kanban__lane-head {
+  position: sticky;
+  left: 0;
+  padding: var(--space-h) 0;
+  font-weight: 600;
+  font-size: var(--text-sm);
+  color: var(--color-fg);
+}
+.kanban__lane-cols {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  overflow-x: auto;
+  padding-bottom: var(--space-2);
+}
 
 /* ---- column ---- */
 .col {
@@ -800,7 +927,19 @@ body {
   border-radius: var(--radius-sm);
   background: var(--color-surface);
   color: var(--color-muted);
-  cursor: not-allowed;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard);
+}
+.col__add:hover {
+  background: var(--color-fill-hover);
+  color: var(--color-fg-strong);
+  border-color: var(--color-border-strong);
+}
+.col__add:active {
+  background: var(--color-accent-soft);
 }
 /* The column body is the per-column virtualList scroll VIEWPORT: positioned +
    overflow-y auto, with a max-height so a tall column scrolls (recycling its
@@ -857,10 +996,76 @@ body {
   cursor: grabbing;
 }
 .card--dragging {
-  opacity: 0.6;
+  opacity: 0.5;
   box-shadow: var(--shadow-drag);
-  transform: scale(1.02) rotate(0.4deg);
+  transform: scale(1.03) rotate(0.5deg);
 }
+
+/* ---- shared animated drop placeholder (#1 / #5) ----
+   A thin gliding bar that marks the insertion gap. Lives in the scroll
+   viewport's CONTENT coordinate space; the control positions it with
+   transform: translateY(y) and the transition makes it glide between slots.
+   A short pulse on drop reinforces where the item landed. */
+.drop-placeholder {
+  position: absolute;
+  left: var(--space-2);
+  right: var(--space-2);
+  top: 0;
+  height: 3px;
+  margin-top: -2px;
+  pointer-events: none;
+  z-index: var(--z-sticky);
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-focus-halo);
+  transition: transform var(--duration-fast) var(--ease-standard);
+  will-change: transform;
+}
+.drop-placeholder::before {
+  /* a small leading dot so the bar reads as an insertion caret */
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  transform: translateY(-50%);
+}
+.drop-placeholder--drop {
+  animation: drop-placeholder-pulse var(--duration-base) var(--ease-standard);
+}
+@keyframes drop-placeholder-pulse {
+  0% {
+    box-shadow: 0 0 0 3px var(--color-focus-halo);
+  }
+  50% {
+    box-shadow: 0 0 0 7px var(--color-focus-halo);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+/* The item that just moved gets a brief accent ring that collapses, marking
+   where it landed (functional context, not decoration). RING ONLY — no
+   transform — so it composes with the FLIP slide (which animates the same
+   node's transform) instead of fighting it. The control adds the class to
+   whichever pooled node now shows the moved item (matched by id), once per
+   move; the FLIP slide carries the actual movement. */
+@keyframes drop-settle {
+  0% {
+    box-shadow: 0 0 0 3px var(--color-accent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+.card--settling,
+.inbox__row--settling {
+  animation: drop-settle var(--duration-slow, 320ms) var(--ease-standard);
+}
+
 .card__grip {
   grid-row: 1 / span 2;
   align-self: center;
@@ -879,10 +1084,22 @@ body {
 }
 .card__meta {
   grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-h);
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   font-variant-numeric: var(--nums-tabular);
   color: var(--color-muted);
+}
+/* Card richness (#25): assignee + tag chips on each card. */
+.card__assignee {
+  font-family: var(--font-sans);
+  color: var(--color-fg);
+}
+.card__tag {
+  font-size: var(--text-2xs);
 }
 
 /* ==========================================================================
@@ -926,6 +1143,79 @@ body {
    the table only overflows when the viewport is narrower than that sum. The
    outer `.grid__table` clips (`overflow: hidden`) so the translated header that
    overflows the right edge is masked. */
+/* #28 — column resize grabber on each header cell's right edge. */
+.grid__head {
+  position: relative;
+}
+.grid__col-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+.grid__col-resize:hover {
+  background: var(--color-accent);
+  opacity: 0.5;
+}
+
+/* #24 — Columns menu toolbar + per-column filter funnel (functional minimum). */
+.grid__columns-panel {
+  min-width: 14rem;
+  padding: var(--space-1) 0;
+  font-size: var(--text-sm);
+}
+.grid__columns-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-h) var(--space-3);
+}
+.grid__columns-label {
+  flex: 1 1 auto;
+}
+.grid__columns-move {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-fg);
+}
+.grid__columns-move:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.grid__col-filter {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-muted);
+  font-size: var(--text-2xs);
+  padding: 0 var(--space-h);
+}
+.grid__col-filter--active {
+  color: var(--color-accent);
+}
+.grid__col-filter-panel {
+  min-width: 12rem;
+  padding: var(--space-1) 0;
+  font-size: var(--text-sm);
+}
+.grid__col-filter-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-fg);
+  padding: var(--space-1x) var(--space-3);
+}
+.grid__col-filter-option:hover {
+  background: var(--color-surface-sunken);
+}
+
 .grid__table {
   --grid-cols:
     2.25rem           /* Select (bulk) */
@@ -1013,6 +1303,28 @@ body {
 }
 .grid__cell:last-child {
   border-right: none;
+}
+
+/* ---- inline cell edit (#30) ---- */
+.grid__cell--editable {
+  cursor: text;
+}
+.grid__cell--editing {
+  padding: 0;
+  overflow: visible;
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+.grid__cell-input {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: var(--pad-compact-y) var(--space-3);
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--color-fg);
+  background: var(--color-surface);
+  border: none;
+  outline: none;
 }
 
 /* ---- sortable-header affordance ---- */
@@ -1335,6 +1647,52 @@ body {
 .bulk-bar__move {
   min-width: 9rem;
 }
+/* Staged-field chips (multi-attribute assign): the fields Apply will also set. */
+.bulk-bar__chips {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.bulk-bar__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  padding: 0 var(--space-1) 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill, 999px);
+  background: var(--color-surface);
+  white-space: nowrap;
+}
+.bulk-bar__chip-remove {
+  font: inherit;
+  font-size: var(--text-2xs);
+  line-height: 1;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+.bulk-bar__chip-remove:hover {
+  color: var(--color-fg);
+}
+.bulk-bar__add {
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  padding: var(--pad-compact-y) var(--space-2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.bulk-bar__add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .bulk-bar__apply,
 .bulk-bar__purge {
   font: inherit;
@@ -1589,11 +1947,9 @@ body {
   box-shadow: inset 2px 0 0 0 var(--color-accent);
 }
 .inbox__row--dragging {
-  opacity: 0.55;
+  opacity: 0.5;
   box-shadow: var(--shadow-drag);
-}
-.inbox__row--drop {
-  box-shadow: inset 0 2px 0 0 var(--color-accent);
+  transform: scale(1.01);
 }
 /* Brighter leading indicator for a row the user has personally ordered vs the
    muted server-default order. */
@@ -2735,8 +3091,8 @@ body {
 }
 .help-overlay__panel {
   position: relative;
-  width: min(36rem, 92vw);
-  max-height: 76vh;
+  width: min(44rem, 94vw);
+  max-height: 84vh;
   display: flex;
   flex-direction: column;
   background: var(--color-surface-raised);
@@ -2744,6 +3100,14 @@ body {
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
+}
+/* The single scroll region: instructions → rule → shortcuts flow together. */
+.help-overlay__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 .help-overlay__header {
   display: flex;
@@ -2779,12 +3143,28 @@ body {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 4px var(--color-focus-halo);
 }
+/* Authored "About this screen" instructions, above the keybindings. */
+.help-overlay__content {
+  padding: var(--space-1) var(--space-6) var(--space-2);
+}
+.help-overlay__content-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--color-fg-strong);
+}
+/* Rule between the instructions and the auto-generated keyboard shortcuts. */
+.help-overlay__sep {
+  width: auto;
+  margin: var(--space-2) var(--space-6) var(--space-4);
+  border: 0;
+  border-top: 1px solid var(--color-hairline);
+}
 .help-overlay__list {
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
   padding: var(--space-1) var(--space-6) var(--space-6);
-  overflow-y: auto;
 }
 .help-overlay__group {
   display: flex;
@@ -3095,6 +3475,15 @@ body {
 }
 .masterdetail__detail-header .masterdetail__detail-title {
   margin: 0;
+}
+/* Detail-pane action buttons (e.g. Projects → Import / Export). */
+.masterdetail__detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-hairline);
 }
 
 /* A danger-tinted button for the destructive Delete / Revoke actions. */
@@ -3632,6 +4021,31 @@ body {
   flex-direction: column;
   gap: var(--space-2);
 }
+/* Group-by + Sort-by sections of the universal view builder (below the tree). */
+.predfilter__groupby,
+.predfilter__sortby {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-hairline);
+}
+.predfilter__sortby {
+  flex-direction: column;
+  align-items: stretch;
+}
+.predfilter__section-label {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+.predfilter__sort-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 /* A connective group: a bordered, slightly sunken card with a header row and a
    recursive list of children. Nested groups indent via the child wrapper. */
 .predfilter__group {
@@ -3840,7 +4254,14 @@ body {
 }
 /* GFM task-list checkboxes are rendered disabled (informational only). */
 .markdown input[type="checkbox"] {
-  margin-right: var(--space-1);
+  margin-right: var(--space-1x);
+  vertical-align: middle;
+}
+/* A task-list item carries its own checkbox — drop the disc bullet so it isn't
+   doubled, and pull it back to align the checkbox with the list margin. */
+.markdown li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: calc(-1 * var(--space-5));
 }
 
 /* ==========================================================================
@@ -4261,6 +4682,105 @@ body {
   padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--color-hairline);
 }
+/* "Back to list" affordance at the top of the header (mirrors q/Esc). */
+.task-detail__back {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-muted);
+  padding: var(--space-1) var(--space-2);
+  margin-left: calc(-1 * var(--space-2));
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-standard),
+    background var(--duration-fast) var(--ease-standard);
+}
+.task-detail__back:hover {
+  color: var(--color-fg-strong);
+  background: var(--color-fill-hover);
+}
+.task-detail__back:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-focus-halo);
+}
+/* Prev/next task nav bubble in the right rail (above attributes): a rail-bar
+   panel with no head, holding one "Task" row whose value is `‹ N of M ›`. */
+.task-detail__nav-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1x) var(--space-3);
+  font-size: var(--text-sm);
+}
+.task-detail__nav {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-1);
+}
+.task-detail__nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  font: inherit;
+  font-size: var(--text-md);
+  line-height: 1;
+  color: var(--color-muted);
+  background: transparent;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-standard),
+    background var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard);
+}
+.task-detail__nav-btn:not(:disabled):hover {
+  color: var(--color-fg-strong);
+  background: var(--color-fill-hover);
+  border-color: var(--color-border-strong);
+}
+.task-detail__nav-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.task-detail__nav-count {
+  min-width: 3.25rem;
+  text-align: center;
+  font-size: var(--text-2xs);
+  font-variant-numeric: var(--nums-tabular);
+}
+
+/* Top row: title (grows) beside the flow/transition controls (#10). */
+.task-detail__header-top {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+.task-detail__header-top .task-detail__title-host {
+  flex: 1 1 auto;
+}
+.task-detail__header-top .task-detail__transitions {
+  flex: 0 0 auto;
+  margin: 0;
+}
+/* DESCRIPTION label + its ✎ edit button on one row (#7). */
+.task-detail__desc-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 .task-detail__title-host {
   display: flex;
   align-items: center;
@@ -4615,6 +5135,283 @@ body {
   font-size: var(--text-xs);
 }
 
+/* -------------------------------------------------------------------------- */
+/* Standalone /activity screen (#1) — the active project's activity feed.       */
+/* -------------------------------------------------------------------------- */
+.activity-screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  min-height: 0;
+  overflow: hidden;
+}
+.activity-screen__head {
+  flex: 0 0 auto;
+}
+.activity-screen__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--color-fg-strong);
+}
+.activity-screen__list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+.activity-screen__empty {
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+}
+/* Each row is a full-width button so the whole line opens the card. */
+.activity-screen__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  text-align: left;
+  color: var(--color-fg);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--color-hairline);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.activity-screen__row:last-child {
+  border-bottom: 0;
+}
+.activity-screen__row:hover {
+  background: var(--color-fill-hover);
+}
+.activity-screen__row:focus-visible {
+  outline: none;
+  background: var(--color-fill-hover);
+  box-shadow: inset 0 0 0 2px var(--color-focus-halo);
+}
+.activity-screen__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.activity-screen__time {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Task-detail COMMS (email threads) — start form + per-comm cards + replies.  */
+/* The section shipped unstyled; this gives the subject + message the most      */
+/* attention (prominent subject, line-break-preserving message bodies).         */
+/* -------------------------------------------------------------------------- */
+.task-comms {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.task-comms__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.task-comms__start {
+  flex: 0 0 auto;
+  min-height: 1.9rem;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+}
+.task-comms__empty {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+/* ---- start-comm form ---- */
+.task-comms__form:not(:empty) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  margin-bottom: var(--space-1);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-sunken);
+}
+.task-comms__form-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1x);
+}
+.task-comms__field-label {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+/* Subject input + initial-message textarea share this class. */
+.task-comms__form-input {
+  font: inherit;
+  font-size: var(--text-sm);
+  width: 100%;
+  min-height: 2.25rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+.task-comms__form-input::placeholder {
+  color: var(--color-muted);
+}
+.task-comms__form-input:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 4px var(--color-focus-halo);
+}
+textarea.task-comms__form-input {
+  resize: vertical;
+  min-height: 4.5rem;
+  line-height: var(--leading-normal);
+}
+.task-comms__form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* ---- comm list + cards ---- */
+.task-comms__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.task-comms__comm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+.task-comms__comm-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+/* The SUBJECT — the comm's headline. Prominent + wraps so it stays readable. */
+.task-comms__subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--color-fg-strong);
+  line-height: var(--leading-snug, 1.3);
+  overflow-wrap: anywhere;
+}
+.task-comms__thread {
+  flex: 0 0 auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--text-2xs);
+  padding: var(--space-h) var(--space-1x);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+}
+.task-comms__recipients {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.task-comms__recipients-picker {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ---- replies (the messages) ---- */
+.task-comms__replies {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1x);
+}
+.task-comms__reply {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-h);
+  padding: var(--space-2) var(--space-2x);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+.task-comms__reply-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1x);
+  font-size: var(--text-2xs);
+}
+/* The MESSAGE body — preserve email line breaks + wrap long tokens/URLs. */
+.task-comms__reply-body {
+  font-size: var(--text-sm);
+  color: var(--color-fg);
+  line-height: var(--leading-normal);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.task-comms__reply-empty {
+  font-size: var(--text-xs);
+}
+
+/* ---- reply composer ---- */
+.task-comms__reply-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+.task-comms__reply-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--text-sm);
+  min-height: 2.25rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  resize: vertical;
+  line-height: var(--leading-normal);
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+.task-comms__reply-input::placeholder {
+  color: var(--color-muted);
+}
+.task-comms__reply-input:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 4px var(--color-focus-halo);
+}
+.task-comms__reply-send {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  min-height: 1.9rem;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+}
+
 /* The kanban card + grid/inbox rows are now clickable into the detail. */
 .card,
 .grid__row {
@@ -4783,6 +5580,35 @@ body {
 }
 
 /* The dropdown menu (composes .kf-popover for the surface look). */
+/* View-actions overflow menu (#4) — mirrors the transition-bar menu. */
+.filter-preset__menu {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) 0;
+  min-width: 13rem;
+  font-size: var(--text-sm);
+}
+.filter-preset__menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: var(--space-1x) var(--space-3);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--color-fg);
+  cursor: pointer;
+}
+.filter-preset__menu-item:hover:not(:disabled) {
+  background: var(--color-surface-sunken);
+}
+.filter-preset__menu-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .transition-bar__menu {
   display: flex;
   flex-direction: column;
@@ -4978,6 +5804,69 @@ body {
 }
 .attachments__thumb-glyph {
   font-size: var(--text-md);
+}
+
+/* ---- main-column attachment PREVIEW STRIP (image + PDF tiles) ---- */
+.task-detail__attachments-preview {
+  margin: var(--space-3) 0;
+}
+.attachments-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.attachments-strip__tile {
+  flex: 0 0 auto;
+  width: 6rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1x);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
+}
+.attachments-strip__tile:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-sm);
+}
+.attachments-strip__tile:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-focus-halo);
+}
+.attachments-strip__box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 5rem;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+}
+.attachments-strip__img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.attachments-strip__glyph {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  color: var(--color-muted);
+}
+.attachments-strip__name {
+  font-size: var(--text-2xs);
+  color: var(--color-fg);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .attachments__meta {
   display: flex;
@@ -5671,4 +6560,293 @@ body {
   gap: var(--space-2);
   padding-top: var(--space-1x);
   border-top: 1px solid var(--color-border);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Enums admin screen (#3) — manage value-cards for enum_managed attributes.   */
+/* -------------------------------------------------------------------------- */
+.enum-manager {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  min-height: 0;
+  overflow-y: auto;
+}
+.enum-manager__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--color-fg-strong);
+}
+.enum-manager__hint {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+}
+.enum-manager__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.enum-manager__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: var(--space-3);
+}
+.enum-manager__group-title {
+  margin: 0;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-fg);
+}
+.enum-manager__values {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.enum-manager__value {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.enum-manager__reorder {
+  flex: 0 0 auto;
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 0;
+}
+.enum-manager__move {
+  font: inherit;
+  font-size: 0.6rem;
+  line-height: 1;
+  padding: 1px var(--space-1);
+  color: var(--color-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.enum-manager__move:hover:not(:disabled) {
+  color: var(--color-fg-strong);
+  background: var(--color-fill-hover);
+}
+.enum-manager__move:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.enum-manager__value-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--color-fg);
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.enum-manager__value-remove {
+  flex: 0 0 auto;
+}
+.enum-manager__add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+.enum-manager__add-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+}
+.enum-manager__empty {
+  font-size: var(--text-sm);
+}
+
+/* -------------------------------------------------------------------------- */
+/* People admin screen (#11) — unified persons list with segment toggles.      */
+/* -------------------------------------------------------------------------- */
+.people-manager {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  min-height: 0;
+  overflow: hidden;
+}
+.people-manager__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.people-manager__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--color-fg-strong);
+}
+.people-manager__segments {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+.people-manager__new {
+  margin-left: auto;
+}
+.people-manager__segment {
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2x);
+  color: var(--color-muted);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.people-manager__segment--active {
+  color: var(--color-fg-strong);
+  background: var(--color-fill-hover);
+  border-color: var(--color-border-strong);
+}
+.people-manager__list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+.people-manager__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-hairline);
+}
+.people-manager__row:last-child {
+  border-bottom: 0;
+}
+.people-manager__name {
+  flex: 0 0 14rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-fg);
+}
+.people-manager__email {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+.people-manager__tier {
+  flex: 0 0 auto;
+}
+.people-manager__empty {
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+}
+.people-manager__remove {
+  flex: 0 0 auto;
+  font: inherit;
+  line-height: 1;
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.people-manager__remove:hover {
+  color: var(--color-danger, #d23);
+  border-color: var(--color-border);
+  background: var(--color-fill-hover);
+}
+
+/* --------------------------------------------------------------------------
+   PeopleManager modal (Add person / Remove person) — a centered sheet over a
+   scrim at the --z-modal tier, same overlay idiom as quick-entry.
+   ========================================================================== */
+.pm-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 14vh var(--space-4) var(--space-4);
+  z-index: var(--z-modal);
+}
+.pm-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--color-scrim);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+.pm-modal__panel {
+  position: relative;
+  width: min(26rem, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-6);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+}
+.pm-modal__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.01em;
+  color: var(--color-fg-strong);
+}
+.pm-modal__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.pm-modal__label {
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+.pm-modal__field--required .pm-modal__label::after {
+  content: ' *';
+  color: var(--color-danger, #d23);
+}
+.pm-modal__input {
+  font: inherit;
+  padding: var(--space-2) var(--space-2x);
+  color: var(--color-fg);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.pm-modal__input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+}
+.pm-modal__hint,
+.pm-modal__msg {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.pm-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
 }

@@ -402,6 +402,94 @@ test('Both configs mount through Control.New as registered MasterDetail controls
 });
 
 /* -------------------------------------------------------------------------- */
+/* Workflows create: implicit project + populated governing-attribute select.  */
+/* -------------------------------------------------------------------------- */
+
+test('Workflows list is scoped to the active project (like every admin screen)', () => {
+  const wf = M.WORKFLOWS_SCREEN;
+  assert.deepEqual(wf.list.input.scopeCardId, { from: 'scope.projectId' });
+  assert.deepEqual(wf.list.when, { signal: 'scope.projectId' });
+  assert.deepEqual(wf.list.skipWhenNull, ['scopeCardId']);
+
+  // The scope is threaded into the compiled flow.list QueryBinding.
+  const compiled = M.adminScreenConfig('workflows');
+  const listQ = compiled.queries.find((q) => q.spec === 'flow.list');
+  assert.ok(listQ, 'compiled flow.list query present');
+  assert.deepEqual(listQ.when, { signal: 'scope.projectId' });
+  assert.deepEqual(listQ.skipWhenNull, ['scopeCardId']);
+});
+
+test('Named Filters: list scoped by enclosing project + detail uses the advanced builder', () => {
+  const nf = M.NAMED_FILTERS_SCREEN;
+  // Scoped to the active project via the enclosing-project filter (filter cards
+  // are grandchildren of the project, so projectId — not parentCardId).
+  assert.deepEqual(nf.list.input.projectId, { from: 'scope.projectId' });
+  assert.deepEqual(nf.list.when, { signal: 'scope.projectId' });
+  assert.deepEqual(nf.list.skipWhenNull, ['projectId']);
+  // The predicate is edited with the visual builder, not a readonly JSON field.
+  assert.equal(nf.detail.nested.kind, 'filterPredicate');
+  assert.ok(!nf.detail.fields.some((f) => f.name === 'attributes.predicate' && f.kind === 'readonly'));
+});
+
+test('Workflows create: the project is implicit (no field; scoped from scope.projectId)', () => {
+  const wf = M.WORKFLOWS_SCREEN;
+  // No Project select field — the scope is implicit.
+  assert.ok(
+    !wf.create.fields.some((f) => f.name === 'scope_card_id'),
+    'no manual Project field in the create form',
+  );
+  // The governed attribute is still a select sourced from a prefetched list.
+  const attrField = wf.create.fields.find((f) => f.name === 'attribute_def_id');
+  assert.ok(attrField && attrField.options && 'fromPath' in attrField.options, 'attribute select has fromPath options');
+  // scopeCardId flows from the active project scope, not the payload.
+  assert.deepEqual(wf.create.input.scopeCardId, { from: 'scope.projectId' });
+  // Only the attribute_def prefetch remains (no project option list).
+  assert.equal(wf.prefetch.length, 1);
+  assert.equal(wf.prefetch[0].landAt, 'admin.workflows.attrOptions');
+});
+
+test('MasterDetail create select populates AFTER its prefetch lands (reactive options)', async () => {
+  // Reproduces the bug: the dialog builds on mount, but the option list is
+  // loaded by a prefetch that resolves a round-trip LATER. A one-time peek at
+  // build time would catch an empty list and never refill — the select must
+  // repopulate reactively when the prefetch lands.
+  const cfg = M.masterDetailScreen({
+    type: 'MasterDetail',
+    title: 'WF',
+    scopeKey: 'wf',
+    prefetch: [
+      { spec: 'attribute_def.select', landAt: 'wf.attrOptions', valueField: 'id', labelField: 'name' },
+    ],
+    list: { spec: 'attribute_def.select', row: { title: 'name' } },
+    create: {
+      spec: 'flow.set',
+      title: 'New workflow',
+      resultIdField: 'id',
+      fields: [
+        { name: 'name', label: 'Name', kind: 'text', required: true },
+        { name: 'attribute_def_id', label: 'Governs attribute', kind: 'select', required: true, options: { fromPath: 'wf.attrOptions' } },
+      ],
+      input: { name: { payload: 'name' }, scopeCardId: { from: 'scope.projectId' }, attributeDefId: { payload: 'attribute_def_id' } },
+    },
+    detail: { titleField: 'name', empty: 'Select one.', fields: [{ name: 'name', label: 'Name', kind: 'readonly' }] },
+  });
+  const { dispatcher, api } = bootApi(adminTransport());
+  const { ctrl } = mountMD(api, cfg);
+
+  const attrSelect = () =>
+    ctrl.el.querySelectorAll('[data-md-form-field]').find((e) => e.dataset.mdFormField === 'attribute_def_id');
+  // Before the prefetch lands the select is empty (the bug's starting state).
+  assert.equal(attrSelect().children.length, 0, 'select starts empty (prefetch not yet landed)');
+
+  await settle(dispatcher);
+
+  // Once the attribute_def.select prefetch lands, the select repopulates — the
+  // mock returns two attribute defs (title, person_kind). Required field → no
+  // blank placeholder, so exactly two options.
+  assert.equal(attrSelect().children.length, 2, 'select populated reactively after the prefetch landed');
+});
+
+/* -------------------------------------------------------------------------- */
 /* Structured predicate filter on card-backed admin screens (#20).             */
 /* -------------------------------------------------------------------------- */
 

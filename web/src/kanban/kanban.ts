@@ -43,7 +43,6 @@
  * node and reads the dragged id from `data-card-id` (set per-fill from the item).
  *
  * Stubbed / deferred (documented):
- *   - QuickEntryOverlay per-column `+` (disabled with a TODO here).
  *   - Swim lanes (the 2-D group_by_attr axis).
  *   - keyboard hjkl card nav.
  */
@@ -52,7 +51,9 @@ import { Control, type BaseControlConfig, type ControlContext } from '../core/co
 import type { ActionBinding, QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
+import { DropPlaceholder, computeDropTarget, applySettle, FlipAnimator } from '../ui/drag-placeholder.js';
 import { navigate, taskUrl } from '../shell/router.js';
+import { publishTaskNav } from '../shell/task-nav.js';
 import { SPEC } from './specs.js';
 import {
   bucketByColumn,
@@ -63,7 +64,8 @@ import {
   UNSET_KEY,
   type CardWithAttrs,
 } from './kanban-helpers.js';
-import { groupAttrFromGroupValue, type GroupAttr } from '../filter/group-axis.js';
+import { type GroupAttr } from '../filter/group-axis.js';
+import { KANBAN_DEFAULT_GROUP_ATTR } from '../filter/screen-resolve.js';
 import type { CardWherePredicate } from '../projects/project-helpers.js';
 import {
   type Predicate,
@@ -81,8 +83,10 @@ import {
  */
 const KANBAN_CARD_HEIGHT = 64;
 
-/** The default axis when no GROUP is picked: group columns by milestone. */
-const DEFAULT_AXIS_ATTR = 'milestone_ref';
+/** The default axis when no GROUP is picked: group columns by milestone. The
+ *  attr is shared with the filter bar (via screen-resolve) so the board's
+ *  fallback and the GROUP picker's default can't drift apart. */
+const DEFAULT_AXIS_ATTR = KANBAN_DEFAULT_GROUP_ATTR;
 const DEFAULT_AXIS_LOOKUP = 'milestones';
 
 /* -------------------------------------------------------------------------- */
@@ -135,6 +139,8 @@ export class Kanban extends Control<KanbanConfig> {
    * {@link axisAttr} / {@link axisLookup} so the default is in one place.
    */
   private axis: GroupAttr | null = null;
+  /** The active swim-lane axis (2nd dimension), or null for a single row (#26). */
+  private lane: GroupAttr | null = null;
 
   /** The active column attribute (the value the cards are bucketed by). */
   private get axisAttr(): string {
@@ -156,6 +162,27 @@ export class Kanban extends Control<KanbanConfig> {
    *  tasks change (optimistic move re-buckets); each render disposes these and
    *  creates fresh ones so no effect / scroll listener / ResizeObserver leaks. */
   private columnLists: VirtualListHandle[] = [];
+
+  /** Live per-column drop placeholders (#1) — created with each column, glide
+   *  to the insertion gap during a drag. Disposed with the column lists on a
+   *  board rebuild + on destroy so no detached nodes / timers leak. */
+  private columnPlaceholders: DropPlaceholder[] = [];
+
+  /** The card id that just moved (drop / re-key), consumed by the next fill to
+   *  play a one-shot settle ring on the card in its new slot. */
+  private settleCardId: bigint | null = null;
+
+  /** FLIP slider: records card positions before a reorder and slides them to
+   *  their new slots after the in-place re-render (within-column moves). */
+  private readonly flip = new FlipAnimator(() => this.boardEl, '[data-kanban-card]');
+
+  /** The board's column/lane STRUCTURE signature from the last DOM build. While
+   *  it's unchanged the board's DOM is NOT rebuilt on a tasks change — each
+   *  column's virtualList reacts to the tasks leaf and updates its cards in
+   *  place (recycling), so a drop reorders smoothly instead of the whole board
+   *  flashing (hide/show). A real structure change (axis/group/lane switch, a
+   *  new bucket column) rebuilds. */
+  private boardStructureKey = '';
 
   /**
    * CLASS-STATIC binding table. The instance config is merged on top, so a
@@ -226,6 +253,16 @@ export class Kanban extends Control<KanbanConfig> {
       when: { signal: 'scope.projectId' },
       input: { cardTypeName: { lit: 'person' } },
       result: { method: 'landPersons' },
+      onError: 'self',
+    },
+    {
+      // Tag value-cards — for the assignee/tag chips on each card (#25 richness).
+      name: 'tags',
+      spec: SPEC.selectWithAttributes,
+      when: { signal: 'scope.projectId' },
+      input: { cardTypeName: { lit: 'tag' }, parentCardId: { from: 'scope.projectId' } },
+      skipWhenNull: ['parentCardId'],
+      result: { method: 'landTags' },
       onError: 'self',
     },
   ];
@@ -347,15 +384,32 @@ export class Kanban extends Control<KanbanConfig> {
       this.bumpQuery();
     }, 'kanban.filterWatch');
 
-    // GROUP picker → column axis. Reads ONLY the `screen.group` leaf and writes
-    // the axis state + bumps the group version (board re-render trigger). One-way:
-    // never reads back a dep it writes. The board render reads the version leaf,
-    // so re-keying happens with no extra wiring and no tasks re-query.
+    // GROUP picker → column axis. Reads the RESOLVED `screen.groupAxis`
+    // ({attr, lookup} | null) the ScreenFilterBar derives from the data-driven
+    // schema (replacing the retired hardcoded group-value switch); null → the
+    // board falls back to its default milestone axis (axisAttr/axisLookup). One-
+    // way: never reads back a dep it writes. The board render reads the version
+    // leaf, so re-keying happens with no extra wiring and no tasks re-query.
     this.effect(() => {
-      const groupValue = this.ctx.tree.at(['screen', 'group']).get<string>() ?? null;
-      this.axis = groupAttrFromGroupValue(groupValue);
+      this.axis = this.ctx.tree.at(['screen', 'groupAxis']).get<GroupAttr | null>() ?? null;
       this.bumpGroup();
     }, 'kanban.groupWatch');
+
+    // LANE picker → 2nd (swim-lane) axis. Reads the resolved `screen.laneAxis`;
+    // null → no lanes (single row). A change re-renders the board (group version).
+    this.effect(() => {
+      this.lane = this.ctx.tree.at(['screen', 'laneAxis']).get<GroupAttr | null>() ?? null;
+      this.bumpGroup();
+    }, 'kanban.laneWatch');
+
+    // Refetch when a task is created anywhere (the quick-entry overlay bumps
+    // `tasks.createdNonce`), so a newly-added card appears on the board without
+    // a manual reload. One-way: reads the nonce, bumps the query version (a
+    // different leaf the tasks query watches) — cascade-safe.
+    this.effect(() => {
+      const nonce = this.ctx.tree.at(['tasks', 'createdNonce']).get<number>() ?? 0;
+      if (nonce > 0) this.bumpQuery();
+    }, 'kanban.refreshOnCreate');
 
     // Inline self-represented load error (onError: 'self').
     this.effect(() => {
@@ -417,6 +471,13 @@ export class Kanban extends Control<KanbanConfig> {
     this.handler('landStatuses', landAxis('statuses'));
     this.handler('landComponents', landAxis('components'));
     this.handler('landPersons', landAxis('persons'));
+    this.handler('landTags', landAxis('tags'));
+  }
+
+  /** Resolve a value-card id to its label via the loaded axis list (or '#id'). */
+  private axisLabel(lookup: string, id: bigint): string {
+    const list = (this.ctx.tree.at(['kanban', 'axis', lookup]).peek<AxisCard[]>() ?? []) as AxisCard[];
+    return list.find((c) => c.id === id)?.label ?? `#${id.toString()}`;
   }
 
   /** The value-card list for the ACTIVE axis (peeked — the board render reads
@@ -430,14 +491,130 @@ export class Kanban extends Control<KanbanConfig> {
   private disposeColumnLists(): void {
     for (const vl of this.columnLists) vl.dispose();
     this.columnLists = [];
+    for (const p of this.columnPlaceholders) p.destroy();
+    this.columnPlaceholders = [];
   }
 
-  /** Rebuild the column DOM from the current tasks + the active axis value-cards. */
+  /** Show `active`'s placeholder at content-space `y`, hiding the others (the
+   *  pointer is over one column at a time; this keeps stale bars from lingering
+   *  in columns the drag has left). */
+  private activatePlaceholder(active: DropPlaceholder, y: number): void {
+    for (const p of this.columnPlaceholders) {
+      if (p !== active) p.hide();
+    }
+    active.showAtY(y);
+  }
+
+  /** Hide every column placeholder (drag ended / cancelled). */
+  private hideAllPlaceholders(): void {
+    for (const p of this.columnPlaceholders) p.hide();
+  }
+
+  /** Run the FLIP slide on the next frame, once the optimistic re-render has
+   *  repositioned the slots. No requestAnimationFrame (test env) → no-op. */
+  private scheduleFlip(): void {
+    if (typeof requestAnimationFrame !== 'function') return;
+    requestAnimationFrame(() => this.flip.play());
+  }
+
+  /** The live, sorted cards for one column (and lane, when laned), filtered from
+   *  `tasks`. Used both by a column's reactive `data()` (reads the tasks leaf via
+   *  `.get()` so the column re-renders in place) and by `onDropInto` (peeks). */
+  private bucketColumn(
+    tasks: readonly CardWithAttrs[],
+    columnKey: string,
+    laneKey: string | undefined,
+  ): CardWithAttrs[] {
+    const attr = this.axisAttr;
+    const lane = this.lane;
+    const laned = laneKey !== undefined && lane !== null && lane.attr !== attr;
+    const out = tasks.filter((t) => {
+      if (bucketKeyOf(t.attributes[attr]) !== columnKey) return false;
+      if (laned && bucketKeyOf(t.attributes[lane.attr]) !== laneKey) return false;
+      return true;
+    });
+    return sortByOrder(out);
+  }
+
+  /** A signature of the board's column/lane STRUCTURE (which columns/lanes exist,
+   *  their order + labels) — NOT their card contents. renderBoard rebuilds the
+   *  DOM only when this changes; card moves within the same structure flow
+   *  through each column's reactive `data()`. */
+  private computeStructureKey(tasks: readonly CardWithAttrs[], axis: AxisCard[]): string {
+    const attr = this.axisAttr;
+    const lane = this.lane;
+    const laned = lane !== null && lane.attr !== attr;
+    const colPart = (scoped: readonly CardWithAttrs[]): string => {
+      const order = columnOrder(axis.map((a) => a.id), Object.keys(bucketByColumn(scoped, attr)));
+      const labelById = new Map(axis.map((a) => [a.id.toString(), a.label]));
+      return order.map((k) => `${k}=${k === UNSET_KEY ? '∅' : labelById.get(k) ?? `#${k}`}`).join(',');
+    };
+    if (!laned) return `flat|${attr}|${colPart(tasks)}`;
+    const laneCards = (this.ctx.tree.at(['kanban', 'axis', lane.lookup ?? '']).peek<AxisCard[]>() ?? []) as AxisCard[];
+    const laneBuckets = bucketByColumn(tasks, lane.attr);
+    const laneOrder = columnOrder(laneCards.map((c) => c.id), Object.keys(laneBuckets));
+    const laneLabel = new Map(laneCards.map((c) => [c.id.toString(), c.label]));
+    const parts = laneOrder.map(
+      (lk) => `${lk}=${lk === UNSET_KEY ? '∅' : laneLabel.get(lk) ?? `#${lk}`}[${colPart(laneBuckets[lk] ?? [])}]`,
+    );
+    return `lane|${attr}|${lane.attr}|${parts.join(';')}`;
+  }
+
+  /** Rebuild the board from the current tasks + the active axis value-cards.
+   *  With a LANE axis set (#26) the board splits into horizontal lanes (one per
+   *  lane value-card), each holding the full column row filtered to its tasks;
+   *  otherwise it's a single column row. */
   private renderBoard(board: HTMLElement, tasks: CardWithAttrs[], axis: AxisCard[]): void {
+    // SKIP the DOM rebuild when the column/lane STRUCTURE is unchanged: each
+    // column's virtualList reacts to the tasks leaf itself, so a move/reorder
+    // updates the cards in place (no flash). Only a real structure change
+    // (axis/group/lane switch, a new bucket column) rebuilds the DOM below.
+    const key = this.computeStructureKey(tasks, axis);
+    if (key === this.boardStructureKey && board.children.length > 0) return;
+    this.boardStructureKey = key;
+
     // Dispose the prior render's column virtualLists before replacing the DOM
     // they were bound to (replaceChildren below detaches their containers).
     this.disposeColumnLists();
 
+    const lane = this.lane;
+    if (lane === null || lane.attr === this.axisAttr) {
+      board.classList.remove('kanban--laned');
+      board.replaceChildren(...this.renderColumnRow(tasks, axis));
+      return;
+    }
+
+    board.classList.add('kanban--laned');
+    const laneCards = (this.ctx.tree.at(['kanban', 'axis', lane.lookup ?? '']).peek<AxisCard[]>() ?? []) as AxisCard[];
+    const laneBuckets = bucketByColumn(tasks, lane.attr);
+    const laneOrder = columnOrder(
+      laneCards.map((c) => c.id),
+      Object.keys(laneBuckets),
+    );
+    const laneLabelById = new Map<string, string>();
+    for (const c of laneCards) laneLabelById.set(c.id.toString(), c.label);
+
+    const lanes: HTMLElement[] = [];
+    for (const laneKey of laneOrder) {
+      const laneTasks = laneBuckets[laneKey] ?? [];
+      const laneEl = document.createElement('div');
+      laneEl.className = 'kanban__lane';
+      laneEl.dataset.kanbanLane = laneKey;
+      const head = document.createElement('div');
+      head.className = 'kanban__lane-head';
+      head.textContent = laneKey === UNSET_KEY ? '(unset)' : (laneLabelById.get(laneKey) ?? `#${laneKey}`);
+      const colsRow = document.createElement('div');
+      colsRow.className = 'kanban__lane-cols';
+      colsRow.append(...this.renderColumnRow(laneTasks, axis, laneKey));
+      laneEl.append(head, colsRow);
+      lanes.push(laneEl);
+    }
+    board.replaceChildren(...lanes);
+  }
+
+  /** Render one row of columns for `tasks`, optionally tagged with the `laneKey`
+   *  they belong to (so a drop can cross-lane re-key). */
+  private renderColumnRow(tasks: CardWithAttrs[], axis: AxisCard[], laneKey?: string): HTMLElement[] {
     const attr = this.axisAttr;
     const buckets = bucketByColumn(tasks, attr);
     const order = columnOrder(
@@ -446,22 +623,23 @@ export class Kanban extends Control<KanbanConfig> {
     );
     const labelById = new Map<string, string>();
     for (const a of axis) labelById.set(a.id.toString(), a.label);
-
     const cols: HTMLElement[] = [];
     for (const key of order) {
-      const cards = sortByOrder([...(buckets[key] ?? [])]);
       const label = key === UNSET_KEY ? '(unset)' : (labelById.get(key) ?? `#${key}`);
-      cols.push(this.renderColumn(key, label, cards));
+      cols.push(this.renderColumn(key, label, laneKey));
     }
-    board.replaceChildren(...cols);
+    return cols;
   }
 
-  /** One column: header (label · count · +) + a body of TaskCards + drop zone. */
-  private renderColumn(columnKey: string, label: string, cards: CardWithAttrs[]): HTMLElement {
+  /** One column: header (label · count · +) + a body of TaskCards + drop zone.
+   *  The card list reads the tasks leaf reactively (via `bucketColumn`), so it
+   *  recycles in place on a move; the count + empty placeholder track it. */
+  private renderColumn(columnKey: string, label: string, laneKey?: string): HTMLElement {
     const col = document.createElement('div');
     col.className = 'col';
     col.dataset.kanbanColumn = '';
     col.dataset.column = columnKey;
+    if (laneKey !== undefined) col.dataset.laneKey = laneKey;
 
     const header = document.createElement('div');
     header.className = 'col__header';
@@ -470,7 +648,7 @@ export class Kanban extends Control<KanbanConfig> {
     labelEl.textContent = label;
     const count = document.createElement('span');
     count.className = 'col__count muted';
-    count.textContent = String(cards.length);
+    count.textContent = '0';
     const add = document.createElement('button');
     add.type = 'button';
     add.className = 'col__add';
@@ -480,7 +658,7 @@ export class Kanban extends Control<KanbanConfig> {
     // column's axis value so the new task lands here (the `(unset)` column
     // opens with no lane prefill).
     add.title = 'Quick-add a task in this column';
-    this.listen(add, 'click', () => this.openQuickEntry(columnKey));
+    this.listen(add, 'click', () => this.openQuickEntry(columnKey, laneKey));
     header.append(labelEl, count, add);
 
     const body = document.createElement('div');
@@ -490,41 +668,54 @@ export class Kanban extends Control<KanbanConfig> {
     const empty = document.createElement('div');
     empty.className = 'col__empty muted';
     empty.textContent = 'No tasks';
-    empty.style.display = cards.length === 0 ? '' : 'none';
+    body.append(empty);
 
-    if (cards.length === 0) {
-      // Empty column: no virtualList (nothing to recycle), just the placeholder.
-      body.append(empty);
-    } else {
-      // The column's card list is a recycling virtualList. `cards` is this
-      // render's stable snapshot (the whole board re-renders on a tasks change,
-      // which disposes + recreates these lists). create(el) builds the card
-      // shell + attaches the dragstart/dragend listeners ONCE; update(el, card)
-      // swaps content + sets data-card-id from the ITEM so the drag payload is
-      // never stale node state.
-      const vl = virtualList<CardWithAttrs>({
-        container: body,
-        rowHeight: KANBAN_CARD_HEIGHT,
-        data: () => cards,
-        key: (card) => card.id.toString(),
-        create: (el) => this.buildCardShell(el),
-        update: (el, card) => this.fillCard(el, card),
-        name: `kanban.col.${columnKey}`,
-      });
-      this.columnLists.push(vl);
-    }
+    // The column's card list is a recycling virtualList whose `data()` reads the
+    // tasks leaf REACTIVELY (bucketColumn → .get()), so a move/reorder re-renders
+    // the cards in place (recycling) WITHOUT a board rebuild — the source of the
+    // hide/show flash. The count + empty placeholder update in the same pass.
+    // create(el) attaches the drag listeners ONCE; update(el, card) swaps content
+    // + sets data-card-id from the ITEM so the drag payload is never stale.
+    const tasksNode = this.ctx.tree.at(this.tasksPath);
+    const vl = virtualList<CardWithAttrs>({
+      container: body,
+      rowHeight: KANBAN_CARD_HEIGHT,
+      data: () => {
+        const live = (tasksNode.get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+        const cards = this.bucketColumn(live, columnKey, laneKey);
+        count.textContent = String(cards.length);
+        empty.style.display = cards.length === 0 ? '' : 'none';
+        return cards;
+      },
+      key: (card) => card.id.toString(),
+      create: (el) => this.buildCardShell(el),
+      update: (el, card) => this.fillCard(el, card),
+      name: `kanban.col.${columnKey}`,
+    });
+    this.columnLists.push(vl);
+
+    // A gliding drop placeholder (#1) lives in this column body's content space.
+    // The board re-renders wholesale on a move, so it's recreated per column and
+    // disposed in disposeColumnLists.
+    const placeholder = new DropPlaceholder(body, { className: 'drop-placeholder--kanban' });
+    this.columnPlaceholders.push(placeholder);
 
     // The column body is a drop target. On drop we distinguish a WITHIN-column
-    // reorder (sort_order rewrite) from a CROSS-column re-key (axis attr).
+    // reorder (sort_order rewrite) from a CROSS-column re-key (axis attr). During
+    // dragover the placeholder glides to the insertion gap under the pointer.
     this.listen(body, 'dragover', (ev) => {
       ev.preventDefault();
       col.classList.add('col--drop');
+      if (draggingCardId === null) return;
+      const t = computeDropTarget(body, (ev as DragEvent).clientY, draggingCardId.toString(), '[data-kanban-card]');
+      this.activatePlaceholder(placeholder, t.y);
     });
     this.listen(body, 'dragleave', () => col.classList.remove('col--drop'));
     this.listen(body, 'drop', (ev) => {
       ev.preventDefault();
       col.classList.remove('col--drop');
-      this.onDropInto(columnKey, body, ev as DragEvent, cards);
+      placeholder.pulse();
+      this.onDropInto(columnKey, body, ev as DragEvent, laneKey);
     });
 
     col.append(header, body);
@@ -563,6 +754,7 @@ export class Kanban extends Control<KanbanConfig> {
       // Read the CURRENT card id from the node — set per fill, never stale.
       const idStr = el.dataset.cardId;
       draggingCardId = idStr !== undefined ? BigInt(idStr) : null;
+      this.settleCardId = null; // a fresh drag clears the prior move's settle
       el.classList.add('card--dragging');
       // Gate the drop-target affordance: mark the board "dragging" so the
       // .col--drop highlight is only visible mid-drag, never at rest.
@@ -578,6 +770,7 @@ export class Kanban extends Control<KanbanConfig> {
       draggingCardId = null;
       el.classList.remove('card--dragging');
       this.boardEl?.classList.remove('kanban--dragging');
+      this.hideAllPlaceholders();
     });
 
     // Click / Enter / `o` opens the card's task detail (`/task/:id`). A native
@@ -594,10 +787,14 @@ export class Kanban extends Control<KanbanConfig> {
     });
   }
 
-  /** Navigate into a card's task detail (`/task/:id`), reading the live id. */
+  /** Navigate into a card's task detail (`/task/:id`), reading the live id.
+   *  Publishes the board's task order so task-detail prev/next nav (#18) walks
+   *  the same set. */
   private openCard(el: HTMLElement): void {
     const idStr = el.dataset.cardId;
     if (idStr === undefined || idStr === '') return;
+    const tasks = (this.ctx.tree.at(['kanban', 'tasks']).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+    publishTaskNav(this.ctx.tree, tasks.map((t) => t.id));
     navigate(taskUrl(idStr));
   }
 
@@ -605,29 +802,67 @@ export class Kanban extends Control<KanbanConfig> {
    *  data-card-id from the ITEM so the drag payload + drop reads are current. */
   private fillCard(el: HTMLElement, card: CardWithAttrs): void {
     el.dataset.cardId = card.id.toString();
+    // The card that just moved settles into its new slot; every other fill
+    // clears the class so a recycled node never keeps a stale animation. The id
+    // persists past the optimistic re-render (cleared on the next dragstart), so
+    // the server-confirm re-render doesn't cut the animation short.
+    applySettle(el, 'card--settling', this.settleCardId !== null && card.id === this.settleCardId);
     const title = childByRole(el, 'title');
     if (title) title.textContent = titleOf(card);
     const meta = childByRole(el, 'meta');
-    if (meta) meta.textContent = `#${card.id.toString()}`;
+    if (meta === null) return;
+    // Richer card (#25): #id · assignee · tag chips (resolved from the axis
+    // lookups; falls back to ids until those lists land + the board re-renders).
+    meta.replaceChildren();
+    const idEl = document.createElement('span');
+    idEl.className = 'card__id';
+    idEl.textContent = `#${card.id.toString()}`;
+    meta.append(idEl);
+
+    const assignee = card.attributes['assignee'];
+    if (typeof assignee === 'bigint') {
+      const a = document.createElement('span');
+      a.className = 'card__assignee';
+      a.dataset.role = 'assignee';
+      a.textContent = this.axisLabel('persons', assignee);
+      meta.append(a);
+    }
+
+    const tags = card.attributes['tags'];
+    if (Array.isArray(tags)) {
+      for (const t of tags) {
+        if (typeof t !== 'bigint') continue;
+        const path = this.axisLabel('tags', t);
+        const chip = document.createElement('span');
+        chip.className = 'tag-chip card__tag';
+        chip.dataset.tagChip = '';
+        const lbl = document.createElement('span');
+        lbl.className = 'tag-chip__label';
+        lbl.textContent = path.includes('/') ? (path.split('/').filter(Boolean).pop() ?? path) : path;
+        chip.append(lbl);
+        meta.append(chip);
+      }
+    }
   }
 
   /**
-   * Resolve a drop onto a column. The dragged card's CURRENT axis-attr key tells
-   * us cross-column vs within-column:
-   *   - DIFFERENT column → CROSS-COLUMN re-key: set the axis attribute to the
-   *     target column's value-card id (or null for `(unset)`) via `moveTask`.
-   *   - SAME column      → WITHIN-COLUMN reorder: rewrite `sort_order` across the
-   *     destination cell to place the card at the pointer's slot, firing one
-   *     `reorderTask` per affected card (coalesced into one batch).
-   *
-   * `cards` is THIS render's snapshot of the column's display-ordered cards
-   * (excluding nothing yet); `body` + the drop event give the insertion slot.
+   * Resolve a drop onto a column. Two independent effects, both applied so the
+   * card lands EXACTLY where dropped:
+   *   - RE-KEY (only when it changed column/lane): set the axis (and lane) attr
+   *     to the target's value-card id, or null for `(unset)`, via `moveTask`.
+   *   - PLACE: rewrite `sort_order` across the target cell so the card sits at
+   *     the pointer's slot, firing one `reorderTask` per affected card. This
+   *     runs for cross-column drops too (previously they only re-keyed and
+   *     landed at an arbitrary position).
+   * Same-tick writes compose (attribute-level optimistic patches) + coalesce
+   * into one batch. The target cell's cards are derived LIVE from the tasks leaf
+   * (`bucketColumn`); `body` + the drop event give the insertion slot.
    */
   private onDropInto(
     targetColumnKey: string,
     body: HTMLElement,
     ev: DragEvent,
-    cards: readonly CardWithAttrs[],
+    laneKey?: string,
   ): void {
     const cardId = draggingCardId;
     draggingCardId = null;
@@ -637,25 +872,43 @@ export class Kanban extends Control<KanbanConfig> {
     const card = tasks.find((t) => t.id === cardId);
     if (!card) return;
 
-    const attr = this.axisAttr;
-    const currentKey = bucketKeyOf(card.attributes[attr]);
+    // FLIP (#context): snapshot card positions BEFORE the optimistic patch, then
+    // slide them to their new slots on the next frame (after the in-place
+    // re-render). Scheduled up front so all drop paths animate. The moved card
+    // also gets a settle ring (compatible — ring is box-shadow, slide is
+    // transform); a cross-column move skips the slide and keeps just the ring.
+    this.flip.capture();
+    this.scheduleFlip();
+    this.settleCardId = cardId;
 
-    if (currentKey !== targetColumnKey) {
-      // CROSS-COLUMN: re-key the dragged card's axis attribute.
-      const value: bigint | null = targetColumnKey === UNSET_KEY ? null : BigInt(targetColumnKey);
-      this.intent('moveTask', { cardId, attributeName: attr, value });
-      return;
+    // CROSS-LANE (swim lanes #26): dropped into a different lane → re-key the
+    // lane axis attribute (a separate moveTask, coalesced into the batch).
+    const lane = this.lane;
+    if (lane !== null && laneKey !== undefined && bucketKeyOf(card.attributes[lane.attr]) !== laneKey) {
+      const laneValue: bigint | null = laneKey === UNSET_KEY ? null : BigInt(laneKey);
+      this.intent('moveTask', { cardId, attributeName: lane.attr, value: laneValue });
     }
 
-    // WITHIN-COLUMN: reorder by rewriting sort_order. The destination stack is
-    // this column's cards with the dragged card excluded; the slot is the
-    // insertion index under the pointer.
-    const destStack = sortByOrder(cards.filter((c) => c.id !== cardId).slice());
+    // CROSS-COLUMN: re-key the dragged card's axis attribute to the target
+    // column's value.
+    const attr = this.axisAttr;
+    if (bucketKeyOf(card.attributes[attr]) !== targetColumnKey) {
+      const value: bigint | null = targetColumnKey === UNSET_KEY ? null : BigInt(targetColumnKey);
+      this.intent('moveTask', { cardId, attributeName: attr, value });
+    }
+
+    // PLACE AT THE DROPPED SLOT. Rewrite sort_order so the card lands exactly
+    // where it was dropped — this runs whether the card stayed in its column (a
+    // reorder) OR crossed into a new one, so a cross-column drop honours the
+    // drop position instead of landing at an arbitrary spot. The dest stack is
+    // the TARGET cell's live cards minus the moved card (it isn't bucketed there
+    // yet on a cross-column move); the slot is the insertion index under the
+    // pointer. The moveTask re-key + these reorderTask writes compose on the
+    // moved card (attribute-level optimistic patches) and coalesce into one
+    // POST /api/v1/batch.
+    const destStack = this.bucketColumn(tasks, targetColumnKey, laneKey).filter((c) => c.id !== cardId);
     const slot = dropSlot(body, ev, cardId);
     const updates = planSortRewrite(destStack, card, slot);
-    // Fire one reorderTask per write IN THE SAME TICK — the dispatcher coalesces
-    // them into a single POST /api/v1/batch, and each carries its own optimistic
-    // sort_order patch so the column re-orders immediately.
     for (const u of updates) {
       this.intent('reorderTask', { cardId: u.cardId, sortOrder: u.sortOrder });
     }
@@ -705,8 +958,93 @@ export class Kanban extends Control<KanbanConfig> {
   override hotkeys(): readonly import('../core/hotkeys.js').HotkeyBinding[] {
     return [
       { binding: 'n', label: 'New task', run: () => this.openQuickEntry() },
+      // Card cursor (#25): h/l move between columns, j/k between cards in a
+      // column, Shift+H/L move the focused card to the adjacent column. Operates
+      // on the focused card node (Enter/o on a card opens it — wired per card).
+      { binding: 'l', label: 'Next column', run: () => this.navColumn(1) },
+      { binding: 'h', label: 'Previous column', run: () => this.navColumn(-1) },
+      { binding: 'j', label: 'Next card', run: () => this.navCard(1) },
+      { binding: 'k', label: 'Previous card', run: () => this.navCard(-1) },
+      { binding: 'Shift+L', label: 'Move card → next column', run: () => this.moveFocused(1) },
+      { binding: 'Shift+H', label: 'Move card → previous column', run: () => this.moveFocused(-1) },
       ...(this.config.hotkeys ?? []),
     ];
+  }
+
+  /* ------------------------------ card cursor (#25) --------------------- */
+
+  private boardColumns(): HTMLElement[] {
+    const board = this.boardEl;
+    if (board === null) return [];
+    return Array.from(board.querySelectorAll?.('[data-kanban-column]') ?? []) as HTMLElement[];
+  }
+  private visibleCardsIn(col: HTMLElement): HTMLElement[] {
+    return (Array.from(col.querySelectorAll?.('[data-kanban-card]') ?? []) as HTMLElement[]).filter(
+      (c) => c.style?.display !== 'none',
+    );
+  }
+  private focusedCard(): HTMLElement | null {
+    const a = (typeof document !== 'undefined' ? document.activeElement : null) as HTMLElement | null;
+    return a !== null && a.dataset?.kanbanCard !== undefined ? a : null;
+  }
+  private columnOf(card: HTMLElement): HTMLElement | null {
+    return (card.closest?.('[data-kanban-column]') ?? null) as HTMLElement | null;
+  }
+
+  /** j/k — focus the next/prev visible card in the focused card's column (or the
+   *  first card on the board when nothing is focused). */
+  private navCard(dir: 1 | -1): void {
+    const card = this.focusedCard();
+    if (card === null) {
+      for (const col of this.boardColumns()) {
+        const cs = this.visibleCardsIn(col);
+        if (cs.length > 0) {
+          cs[0]?.focus?.();
+          return;
+        }
+      }
+      return;
+    }
+    const col = this.columnOf(card);
+    if (col === null) return;
+    const cards = this.visibleCardsIn(col);
+    const j = cards.indexOf(card) + dir;
+    if (j >= 0 && j < cards.length) cards[j]?.focus?.();
+  }
+
+  /** h/l — focus the first visible card in the adjacent column. */
+  private navColumn(dir: 1 | -1): void {
+    const cols = this.boardColumns();
+    if (cols.length === 0) return;
+    const card = this.focusedCard();
+    let ci = 0;
+    if (card !== null) {
+      const col = this.columnOf(card);
+      ci = col !== null ? cols.indexOf(col) : 0;
+    } else {
+      ci = dir > 0 ? -1 : cols.length; // step into the first/last column
+    }
+    const next = ci + dir;
+    if (next < 0 || next >= cols.length) return;
+    const cs = this.visibleCardsIn(cols[next] as HTMLElement);
+    if (cs.length > 0) cs[0]?.focus?.();
+  }
+
+  /** Shift+H/L — move the focused card to the adjacent column (cross-column
+   *  re-key on the active axis), reusing the optimistic moveTask action. */
+  private moveFocused(dir: 1 | -1): void {
+    const card = this.focusedCard();
+    if (card === null) return;
+    const idStr = card.dataset.cardId;
+    if (idStr === undefined || idStr === '') return;
+    const cols = this.boardColumns();
+    const col = this.columnOf(card);
+    if (col === null) return;
+    const next = cols.indexOf(col) + dir;
+    if (next < 0 || next >= cols.length) return;
+    const key = (cols[next] as HTMLElement).dataset.column;
+    const value = key === undefined || key === UNSET_KEY ? null : BigInt(key);
+    this.intent('moveTask', { cardId: BigInt(idStr), attributeName: this.axisAttr, value });
   }
 
   /**
@@ -715,11 +1053,23 @@ export class Kanban extends Control<KanbanConfig> {
    * task lands in that column (the `(unset)` column passes no prefill). The
    * parent is scoped to the current project by the overlay itself.
    */
-  private openQuickEntry(columnKey?: string): void {
-    const detail: { prefill?: { laneAttribute?: { name: string; value: unknown } } } = {};
+  private openQuickEntry(columnKey?: string, laneKey?: string): void {
+    const prefill: {
+      laneAttribute?: { name: string; value: unknown };
+      extraAttributes?: Array<{ name: string; value: unknown }>;
+    } = {};
     if (columnKey !== undefined && columnKey !== UNSET_KEY) {
-      detail.prefill = { laneAttribute: { name: this.axisAttr, value: BigInt(columnKey) } };
+      prefill.laneAttribute = { name: this.axisAttr, value: BigInt(columnKey) };
     }
+    // In a swim lane, also stamp the new task's lane-axis value so it lands here.
+    const lane = this.lane;
+    if (lane !== null && laneKey !== undefined && laneKey !== UNSET_KEY) {
+      prefill.extraAttributes = [{ name: lane.attr, value: BigInt(laneKey) }];
+    }
+    const detail =
+      prefill.laneAttribute !== undefined || prefill.extraAttributes !== undefined
+        ? { prefill }
+        : {};
     this.ctx.bus?.emit('quickCreateOpen', detail);
   }
 

@@ -140,6 +140,12 @@ export interface LoadAuthUserOpts {
    * default (unresolved) — the bounce takes over the page.
    */
   onUnauthorized?: () => void;
+  /**
+   * Called on a successful authenticated probe (200 + `authenticated:true`),
+   * after `auth.user` is landed. The boot wiring uses it to clear the dev-login
+   * recovery guard so a later mid-session expiry can re-attempt recovery.
+   */
+  onAuthed?: () => void;
 }
 
 /**
@@ -171,6 +177,7 @@ export function loadAuthUser(tree: TreeNode, opts: LoadAuthUserOpts = {}): void 
       const wire = (body && typeof body === 'object' ? body : {}) as MeWire;
       if (status >= 200 && status < 300 && wire.authenticated === true) {
         tree.at([...AUTH_USER_PATH]).set(authUserFromWire(wire));
+        opts.onAuthed?.();
         return;
       }
       // A 200 with authenticated:false (the cold-boot probe shape the server
@@ -224,6 +231,16 @@ export function isAdmin(tree: TreeNode): boolean {
 /** Non-reactive: is the signed-in user an admin? */
 export function peekIsAdmin(tree: TreeNode): boolean {
   return peekAuthUser(tree).isAdmin === true;
+}
+
+/** Reactive: does the signed-in user hold `role` (by name, any scope)? */
+export function hasRole(tree: TreeNode, role: string): boolean {
+  return authUser(tree).roles.includes(role);
+}
+
+/** Non-reactive: does the signed-in user hold `role` (by name, any scope)? */
+export function peekHasRole(tree: TreeNode, role: string): boolean {
+  return peekAuthUser(tree).roles.includes(role);
 }
 
 /** Reactive: the signed-in user's id, or null when unresolved. */

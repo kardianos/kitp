@@ -90,6 +90,20 @@ test('the shell mounts a hidden HelpOverlay (toggleHelp is no longer dead)', () 
   assert.equal(isVisible(overlay), false, 'starts hidden until toggleHelp fires');
 });
 
+test('clicking the topbar ? button opens (then closes) the help overlay', () => {
+  const { shell } = mountShell();
+  const overlay = overlayEl(shell);
+  assert.equal(isVisible(overlay), false, 'hidden at rest');
+
+  const btn = shell.el.querySelector('[data-help-toggle]');
+  assert.ok(btn, 'the topbar ? button is present');
+  btn.dispatchEvent({ type: 'click', target: btn });
+  assert.equal(isVisible(overlay), true, 'click opened the help overlay');
+  // Toggling again (second click) closes it.
+  btn.dispatchEvent({ type: 'click', target: btn });
+  assert.equal(isVisible(overlay), false, 'second click closed it');
+});
+
 test('firing toggleHelp shows the overlay; it lists the live global bindings', () => {
   const { shell } = mountShell();
   const overlay = overlayEl(shell);
@@ -166,6 +180,51 @@ test('the topbar `?` button raises toggleHelp and opens the overlay', () => {
   assert.ok(helpBtn, 'the topbar help button is present');
   helpBtn.dispatchEvent({ type: 'click', target: helpBtn });
   assert.equal(isVisible(overlay), true, 'clicking ? opens the overlay');
+});
+
+test('the ⓘ button opens "About this screen"; the ? button opens "Keyboard shortcuts"', () => {
+  const { shell } = mountShell();
+  const overlay = overlayEl(shell);
+  const title = () => overlay.querySelector('[data-help-title]').textContent;
+
+  // The ⓘ instructions button raises its OWN intent → the instructions view.
+  const infoBtn = shell.el.querySelector('[data-instructions-toggle]');
+  assert.ok(infoBtn, 'the topbar instructions button is present');
+  infoBtn.dispatchEvent({ type: 'click', target: infoBtn });
+  assert.equal(isVisible(overlay), true, 'ⓘ opens the overlay');
+  assert.equal(title(), 'About this screen', 'ⓘ opens the instructions view');
+  shell.intent('toggleInstructions'); // same mode again → close
+  assert.equal(isVisible(overlay), false);
+
+  // The ? button → the shortcuts-only view (a separate intent).
+  const helpBtn = shell.el.querySelector('[data-help-toggle]');
+  helpBtn.dispatchEvent({ type: 'click', target: helpBtn });
+  assert.equal(isVisible(overlay), true, '? opens the overlay');
+  assert.equal(title(), 'Keyboard shortcuts', '? opens the shortcuts view');
+});
+
+test('? (shortcuts mode) keeps the instructions content + separator hidden', () => {
+  const { shell } = mountShell();
+  const overlay = overlayEl(shell);
+  shell.intent('toggleHelp'); // shortcuts mode
+  const sep = overlay.querySelector('[data-help-sep]');
+  const content = overlay.querySelector('[data-help-content]');
+  assert.ok(sep && content, 'the content region + <hr> separator elements exist');
+  assert.equal(content.style.display, 'none', 'no instructions content in shortcuts mode');
+  assert.equal(sep.style.display, 'none', 'separator hidden in shortcuts mode');
+  // The machine-generated shortcut rows are still present.
+  assert.ok(overlay.querySelectorAll('[data-help-row]').length > 0, 'shortcut rows render');
+});
+
+test('switching ? → ⓘ while open flips the view in place (stays open)', () => {
+  const { shell } = mountShell();
+  const overlay = overlayEl(shell);
+  const title = () => overlay.querySelector('[data-help-title]').textContent;
+  shell.intent('toggleHelp');
+  assert.equal(title(), 'Keyboard shortcuts');
+  shell.intent('toggleInstructions'); // other mode while open → switch, stay open
+  assert.equal(isVisible(overlay), true, 'still open after switching modes');
+  assert.equal(title(), 'About this screen', 'switched to the instructions view');
 });
 
 /* -------------------------------------------------------------------------- */

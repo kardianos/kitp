@@ -3,10 +3,9 @@
  *
  * Assembles AppShell → ScreenHost(kanban) → Kanban entirely from a declarative
  * config tree via `Control.New`, driven by the declarative ZERO-PROMISE data
- * layer. Replaces the old `proof` demo wiring while KEEPING the load-bearing
- * NotFound behaviour demonstrably working: the kanban screen config declares a
- * child of an UNREGISTERED type (`SparkleChart`) which renders the visible
- * NotFound placeholder rather than crashing the page.
+ * layer. The load-bearing NotFound graceful-degradation guarantee (an unknown
+ * control type renders a visible placeholder rather than crashing) is covered
+ * by the control-registry tests + genuine unknown-layout handling in ScreenHost.
  *
  * Data wiring (all declarative, addressed by spec key):
  *   - card.select_with_attributes → tasks for the in-scope project (Kanban
@@ -31,7 +30,7 @@ import { tree } from './core/tree.js';
 import { loadAuthUser } from './auth/auth-state.js';
 import { Dispatcher, fetchTransport, type ApiFault, type Transport } from './core/dispatch.js';
 import { Api } from './core/api.js';
-import { Control, type ControlContext } from './core/control.js';
+import { Control, controlForNode, type ControlContext, type ChildConfig } from './core/control.js';
 import './core/not-found.js'; // side effect: installs the NotFound factory path
 import './util/markdown-control.js'; // side effect: registers the Markdown control + sink
 import { HotkeyController, activeControlSignal } from './core/hotkeys.js';
@@ -39,23 +38,29 @@ import { registerKanbanSpecs } from './kanban/specs.js';
 import { registerKanbanControls } from './kanban/kanban.js';
 import { registerGridCardRefAttrs, registerGridBulkSpecs } from './grid/specs.js';
 import { registerGrid } from './grid/grid.js';
+import { registerGridColumns } from './grid/grid-columns.js';
 import { registerBulkActionBar } from './grid/bulk-action-bar.js';
 import { registerTagChip } from './grid/tag-chip.js';
 import { registerInbox } from './inbox/inbox.js';
+import { registerInboxViewToggles } from './inbox/inbox-view-toggles.js';
 import { registerInboxSpecs } from './inbox/specs.js';
 import { registerScreenFilterBar } from './shell/screen-filter-bar.js';
 import { registerScreenHost } from './shell/screen-host.js';
 import { registerAppShell, shellHotkeys, type AppShell } from './shell/app-shell.js';
-import { installRouter } from './shell/router.js';
+import { installRouter, peekRoute, helpTopicForRoute } from './shell/router.js';
 import { registerHelpOverlay, type HotkeySnapshot } from './shell/help-overlay.js';
+import { registerHelpSpecs } from './shell/help-specs.js';
+import { registerConfigSpecs, loadServerConfig } from './shell/config-specs.js';
 import { registerProjectList } from './projects/project-list.js';
 import { registerProjectSpecs } from './projects/specs.js';
 import { registerProjectLayout } from './project-detail/project-layout.js';
 import { registerProjectPropertiesPanel } from './project-detail/project-properties-panel.js';
-import { registerMasterDetail, type MasterDetailConfig } from './admin/master-detail.js';
+import { registerMasterDetail } from './admin/master-detail.js';
 import { registerNestedEditor } from './admin/nested-editor.js';
+import { registerEnumManager } from './admin/enum-manager.js';
+import { registerPeopleManager } from './admin/people-manager.js';
 import { registerAdminSpecs } from './admin/specs.js';
-import { adminScreenConfig, ADMIN_VIEWS, type AdminView } from './admin/screens.js';
+import { adminScreenConfig, ADMIN_VIEWS, MANAGER_ADMIN_VIEWS, ADMIN_SECTION, type AdminView } from './admin/screens.js';
 import { registerPredicateFilter } from './filter/predicate-filter.js';
 import { registerQuickChips } from './filter/quick-chips.js';
 import { registerNamedFilters } from './filter/named-filters.js';
@@ -71,6 +76,8 @@ import { registerTransitionBar } from './task-detail/transition-bar.js';
 import { registerTransitionSpecs } from './task-detail/specs.js';
 import { registerTaskComments } from './task-detail/task-comments.js';
 import { registerCommentSpecs } from './task-detail/comment-specs.js';
+import { registerCommThreads } from './task-detail/task-comm-threads.js';
+import { registerCommThreadSpecs } from './task-detail/comm-specs.js';
 import { registerAttachmentSpecs } from './task-detail/attachment-specs.js';
 import { registerAttachmentsSection } from './task-detail/attachments-section.js';
 import { registerTagsEditor } from './task-detail/tags-editor.js';
@@ -79,15 +86,16 @@ import { registerQuickEntry } from './quick-entry/quick-entry.js';
 import { registerImportWizard } from './import/import-wizard.js';
 import { registerImportSpecs } from './import/specs.js';
 import { registerExportMenu } from './export/export-menu.js';
+import { registerActivity } from './activity/activity.js';
 
 /** Rail-link labels for each admin view key (the rail is derived from these). */
 const ADMIN_LINK_LABELS: Record<AdminView, string> = {
-  contacts: 'Contacts',
-  users: 'Users',
+  people: 'People',
   projects: 'Projects',
   screens: 'Screens',
   filters: 'Named Filters',
   attributes: 'Attributes',
+  enums: 'Values',
   workflows: 'Workflows',
   roles: 'Roles',
   agents: 'Agents',
@@ -106,6 +114,17 @@ const USE_REAL_BACKEND = true;
  * ARCHITECTURE.md §12 for the server contract this client assumes.
  */
 const SSO_START_PATH = '/api/v1/auth/oidc/start';
+
+/**
+ * Dev sign-in mint. The server registers this route ONLY when AUTH_MODE=off
+ * (`session.HTTPConfig.DevLoginEnabled`); in OIDC mode it 404s. On a 401 the
+ * client POSTs here first — a 200 means a System session cookie was set (dev),
+ * a 404 means we're in OIDC mode and should bounce to SSO instead. This keeps
+ * the recovery self-configuring with no build-time env flag.
+ */
+const DEV_LOGIN_PATH = '/api/v1/auth/dev-login';
+/** sessionStorage guard key: "dev-login was already tried this tab session". */
+const AUTH_RECOVERY_KEY = 'kitp.devLoginTried';
 
 function boot(): void {
   const transport: Transport = USE_REAL_BACKEND ? fetchTransport('') : mockTransport();
@@ -127,11 +146,27 @@ function boot(): void {
   dispatcher.onFault('http', showFault);
   dispatcher.onFault('decode', showFault);
   dispatcher.onFault('sub_error', showFault);
-  dispatcher.onFault('aborted', showFault);
+  // 'aborted' covers genuine problems (a missing subresponse) AND the noisy
+  // "batch aborted by sibling sub-request" — the latter is emitted for every
+  // OTHER sub-request when one fails (the offender's real error rides a separate
+  // sub_error fault). Because the single reused toast is last-wins, the sibling
+  // noise was masking the real cause. Log it, but don't toast it over the offender.
+  dispatcher.onFault('aborted', (f) => {
+    if (f.reason === 'batch aborted by sibling sub-request') {
+      // eslint-disable-next-line no-console
+      console.warn('[fault]', describeFault(f));
+      return;
+    }
+    showFault(f);
+  });
 
-  // ---- SSO-ONLY auth bounce: a 401 (or auth 403) bounces the whole page ----
+  // ---- Auth recovery (401) / SSO bounce (403) ----
+  // 401 = no/expired session: try to recover (dev-login in AUTH_MODE=off,
+  // else bounce). 403 = authenticated but forbidden: re-authing as the same
+  // user can't fix it, so bounce straight to SSO (unchanged behaviour).
   dispatcher.onFault('http', (f) => {
-    if (f.status === 401 || f.status === 403) bounceToSso();
+    if (f.status === 401) recoverAuthOrBounce();
+    else if (f.status === 403) bounceToSso();
   });
 
   // ---- Register the REAL API specs (declared up front, by endpoint.action) ----
@@ -172,6 +207,17 @@ function boot(): void {
   // before the TaskDetail mounts its TaskComments control. The feed's actor
   // labels reuse the already-registered `user.select` (registerAdminSpecs).
   registerCommentSpecs(api);
+  // The COMMS (email-thread) surface on task detail: comm.list_for_task /
+  // comm.create / comm.set_recipients / reply.post. Idempotent-by-presence;
+  // registered before the TaskDetail mounts its CommThreads control.
+  registerCommThreadSpecs(api);
+  // Server-driven contextual help (help.get_topic / help.get_screen) the `?`
+  // overlay renders above the keybinding cheatsheet. Idempotent-by-presence.
+  registerHelpSpecs(api);
+  // config.get — the operator-set workspace title (header brand + tab title) +
+  // attachment caps. loadServerConfig (below, after the router installs) lands
+  // the title; idempotent-by-presence.
+  registerConfigSpecs(api);
   // The #36 attachments control reads `attachment.list`, writes `file.create` /
   // `attachment.create` / `attachment.delete` + `cas.missing_chunks` (the upload
   // pipeline); the tags editor writes `tag.apply` / `tag.remove`. Also primes the
@@ -195,12 +241,18 @@ function boot(): void {
   registerKanbanControls();
   registerTagChip();
   registerGrid();
+  // The Grid's "Columns" chooser — mounted on the filter bar's View row
+  // (viewActions seam) rather than an in-body toolbar.
+  registerGridColumns();
   // The Grid's selection-driven bulk-action bar (assign / move / purge); the
   // Grid spawns it as a child below the table.
   registerBulkActionBar();
   // The Inbox (list layout body). ScreenHost maps `list` → 'Inbox'; registering
   // it makes a `list` screen resolve here instead of the NotFound placeholder.
   registerInbox();
+  // The Inbox's "Mine only" / "Routed to me" view toggles — mounted on the
+  // filter bar's View row (viewActions seam) rather than the Inbox body.
+  registerInboxViewToggles();
   registerProjectList();
   // The `project` layout body: the Project detail / overview. ScreenHost maps
   // `project` → 'Project'; registering it makes a screen card with
@@ -237,6 +289,14 @@ function boot(): void {
   // spawn: flow-step transitions (Workflows), the edge bind/unbind matrix
   // (Attributes), and the screen filter-card manager (Screens).
   registerNestedEditor();
+  // The data-driven "Values" (Enums) admin screen (#3): edits the value-cards
+  // for every `enum_managed` attribute (milestone / component / tag) in the
+  // active project. Not a MasterDetail — its own control.
+  registerEnumManager();
+  // The unified "People" admin screen (#11): one list of every person with
+  // Users / Assignees / Contacts segment toggles + promote/demote (replaces the
+  // separate Contacts + Users screens). Its own control, not a MasterDetail.
+  registerPeopleManager();
   // The reusable anchored-UI primitives. Combobox (typeahead select) +
   // DatePicker compose the shared Popover helper (the one floating-ui impl).
   // Consumed by the upcoming ref-pickers, quick filters, and attribute editors;
@@ -261,6 +321,11 @@ function boot(): void {
   // which paints the activity feed into the `activity` slot): the comment
   // composer + per-comment author-gated edit + the per-kind activity stream.
   registerTaskComments();
+  // The COMMS (email-thread) control the TaskDetail spawns into its `comms`
+  // slot: list comms, start-comm form (channel + recipients + message), per-comm
+  // recipients editor + reply composer. Reuses card.search (RefPicker) + the
+  // comm-thread specs registered above.
+  registerCommThreads();
   // The #36 trio the TaskDetail spawns into its right-rail slots:
   //   - AttachmentsSection (`attachments`): drag-drop upload (SHA-256 chunk →
   //     cas.missing_chunks → raw POST /cas/chunk → file.create + attachment.create)
@@ -292,6 +357,10 @@ function boot(): void {
   // detail's Export hook). Format (CSV / xlsx / ZIP) + toggles build a
   // same-origin projectexport GET URL; the menu triggers the browser download.
   registerExportMenu();
+  // The standalone `/activity` screen (#1): the active project's reverse-chron
+  // activity feed, reusing the task-detail row phrasing + card_ref label
+  // resolution. The rail "Activity" link / `g a` chord navigates here.
+  registerActivity();
 
   // ---- Shared project scope ----
   // The Kanban's `{ from: 'scope.projectId' }` reads this object (peek at fire
@@ -312,6 +381,12 @@ function boot(): void {
   // Forward-declared so the appConfig's `helpSnapshot` closure can read the
   // controller that is constructed (below) only after the shell mounts.
   let hotkeys: HotkeyController | null = null;
+  // The current route body (ScreenHost / TaskDetail / …) and the deepest active
+  // control WITHIN it. The help overlay snapshots this scope so its shortcut
+  // list reflects the screen — not the topbar chrome the user clicked to open
+  // it (which would otherwise make the shell the live active control).
+  let routeBody: Control | null = null;
+  let screenActive: Control | null = null;
   const bus = {
     emit(type: string, detail?: unknown): void {
       shell?.intent(type, detail);
@@ -326,11 +401,12 @@ function boot(): void {
   // all-projects ProjectList; `/project/:id[/screen/:slug]` lands the
   // ScreenHost → Kanban/Grid/… below; `/admin/:key` lands a MasterDetail.
   // Selecting a project (or a `g k`/`g i`/`g g` chord, or back/forward)
-  // navigate()s and the outlet effect re-derives. The board config also
-  // declares an UNKNOWN child type to prove NotFound graceful degradation.
+  // navigate()s and the outlet effect re-derives.
   const appConfig = {
     type: 'AppShell' as const,
-    brand: 'kitp',
+    // No static brand: the header shows the operator-set WORKSPACE TITLE that
+    // loadServerConfig (config.get) lands at `config.workspaceTitle`, falling
+    // back to the neutral 'Workspace' — 'kitp' is never displayed.
     crumb: 'Kanban',
     // The Picker options load live from the backend (AppShell `projects` query);
     // this static seed is just the placeholder shown for the instant before the
@@ -344,17 +420,30 @@ function boot(): void {
     // admin screen = a link + a config entry + an `adminScreenConfig` case (the
     // case lives in admin/screens.ts). Every link is derived from the canonical
     // `ADMIN_VIEWS` list so the rail + the resolver can never drift.
-    adminLinks: ADMIN_VIEWS.map((v) => ({ label: ADMIN_LINK_LABELS[v], key: v })),
+    adminLinks: ADMIN_VIEWS.map((v) => ({
+      label: ADMIN_LINK_LABELS[v],
+      key: v,
+      // Managers reach the project-scoped manager screens (Manage values); the
+      // rest stay admin-only. Same source the router guard consults.
+      minRole: MANAGER_ADMIN_VIEWS.has(v) ? ('manager' as const) : ('admin' as const),
+      // Rail section: 'workspace' (global) vs 'project' (active-project-scoped).
+      section: ADMIN_SECTION[v],
+    })),
     // The resolver guards on the known view set so an unknown `/admin/:key`
     // returns null → the AppShell renders its NotFound placeholder (preserved).
-    adminConfigFor: (key: string): MasterDetailConfig | null =>
-      (ADMIN_VIEWS as string[]).includes(key) ? adminScreenConfig(key as AdminView) : null,
+    adminConfigFor: (key: string): ChildConfig | null =>
+      (ADMIN_VIEWS as string[]).includes(key) ? (adminScreenConfig(key as AdminView) as ChildConfig) : null,
     // Global-tier hotkeys raised as intents (derived, hierarchical).
     hotkeys: shellHotkeys((intent) => bus.emit(intent)),
     // The HelpOverlay (`?`) renders the LIVE binding set. The HotkeyController
     // is created after the shell mounts, so thread a closure over it; it reads
     // the controller lazily at open() time (always reflects the active scope).
-    helpSnapshot: (): HotkeySnapshot => hotkeys?.snapshot() ?? new Map(),
+    helpSnapshot: (): HotkeySnapshot => hotkeys?.snapshotFor(screenActive) ?? new Map(),
+    // The contextual help TOPIC for the overlay's prose section, derived from
+    // the live route (task_detail / admin.<key> / layout.<layout>). The task +
+    // project routes used to fall through to null — so the task detail showed
+    // keybindings with NO authored prose even though `task_detail` help exists.
+    helpTopic: (): string | null => helpTopicForRoute(peekRoute(tree)),
     // The global quick-entry overlay. The AppShell mounts it once + wires the
     // `quickCreateOpen` intent; its static query loads the in-scope project's
     // status cards (with phase) so the default-create-status chain resolves a
@@ -383,23 +472,17 @@ function boot(): void {
     },
     // The board / per-project screen body. The shell injects the route-derived
     // `screen.{slug,layout}` so the SAME ScreenHost descriptor serves every
-    // screen slug; only the NON-screen fields (the UNKNOWN child type proving
-    // NotFound degradation) carry over.
+    // screen slug.
     boardConfig: {
       type: 'ScreenHost',
       screen: { slug: 'kanban', layout: 'kanban', title: 'Kanban' },
-      // The kanban screen also declares an UNKNOWN child type so the
-      // NotFound placeholder renders (graceful degradation, never throws).
-      children: [
-        { type: 'SparkleChart', seriesPath: 'analytics.sparkline', smoothing: 0.4 },
-      ],
     },
   };
 
   // ---- Install the History-API router: lands the deep-link route from the
   // live URL + wires popstate (back/forward). Must run BEFORE the shell mounts
   // so the outlet effect's first read sees the right route. ----
-  installRouter(tree);
+  installRouter(tree, { managerAdminKeys: MANAGER_ADMIN_VIEWS });
 
   // ---- Current-user identity: probe /api/v1/auth/me and land `auth.user` ----
   // A boot service fetch (callback form, like the transport) — no promise in the
@@ -410,18 +493,67 @@ function boot(): void {
   // the two 401 paths coincide. Kicked off before the shell mounts so the
   // identity is usually present on the first render; the reactive reads handle
   // the (brief) interval before it lands.
-  loadAuthUser(tree, { onUnauthorized: () => bounceToSso() });
+  loadAuthUser(tree, {
+    onUnauthorized: () => recoverAuthOrBounce(),
+    // A successful probe clears the recovery guard so a LATER mid-session
+    // expiry can dev-login again (the guard only suppresses a same-session loop).
+    onAuthed: () => clearAuthRecoveryGuard(),
+  });
+
+  // ---- Workspace title: probe config.get and land `config.workspaceTitle` ----
+  // A boot service fetch (callback form, like loadAuthUser). The AppShell brand
+  // reads the tree leaf reactively; this also sets the browser tab title. An
+  // empty/absent value falls back to the neutral 'Workspace' (never 'kitp').
+  loadServerConfig(api, tree);
 
   const root = Control.New('AppShell', appConfig, ctx);
   const mountEl = document.getElementById('root');
   if (!mountEl) throw new Error('#root missing');
-  root.mount(mountEl);
   shell = root as AppShell;
 
   // ---- Hierarchical hotkeys: derive from the live control tree ----
+  // The ACTIVE control is what makes a screen's scoped hotkeys live (the
+  // TaskDetail's `e t`/`e d`, the Kanban's `j`/`k`, …). It tracks FOCUS: when
+  // focus enters an element, the owning control (deepest registered root at or
+  // above it) becomes active, so its + its ancestors' chords are collected.
+  // Without this the signal sat on the AppShell forever and only the global
+  // `g _`/`n`/`?` chords ever fired.
+  //
+  // ALL of this is wired BEFORE `root.mount()` so the very first route's body
+  // (a deep-link / reload straight to `/task/:id`) becomes the active scope as
+  // it mounts — otherwise its chords wouldn't be live until the next click.
   const rootSig = signal<Control | null>(root, 'root-control');
   const activeSig = activeControlSignal(root);
   hotkeys = new HotkeyController({ root: rootSig, active: activeSig });
+  const isWithin = (c: Control | null, ancestor: Control | null): boolean => {
+    for (let x = c; x; x = x.parent) if (x === ancestor) return true;
+    return false;
+  };
+  const trackActive = (node: EventTarget | null): void => {
+    const c = controlForNode(node as Node | null) ?? root;
+    activeSig.set(c);
+    // Remember the deepest active control INSIDE the current route body so the
+    // help overlay's shortcut list reflects the SCREEN even after the user
+    // clicks the topbar chrome (which makes the shell the live active control).
+    if (routeBody && isWithin(c, routeBody)) screenActive = c;
+  };
+  document.addEventListener('focusin', (e) => trackActive(e.target));
+  // Clicks on non-focusable regions (a card body, the detail title row) don't
+  // emit focusin — track pointerdown too so interacting with a screen activates
+  // its chords even before anything inside takes focus.
+  document.addEventListener('pointerdown', (e) => trackActive(e.target), true);
+  // Baseline: when the route body (re)mounts, make it active so its chords work
+  // immediately on navigation — before any click. The TaskDetail IS the body, so
+  // `e t`/`e d`/`e c`/`e p` are live the moment the task screen opens; the help
+  // overlay's snapshot also seeds to this body.
+  shell.onBodyMount = (body) => {
+    routeBody = body;
+    screenActive = body;
+    activeSig.set(body);
+  };
+
+  // Mount AFTER the hotkey wiring so the initial route body's onBodyMount lands.
+  root.mount(mountEl);
   hotkeys.start();
 
   function bounceToSso(): void {
@@ -429,13 +561,67 @@ function boot(): void {
     location.assign(`${SSO_START_PATH}?redirect=${redirect}`);
   }
 
+  // In-memory latch: coordinates the boot probe + the batch funnel when BOTH
+  // observe the unauthenticated session in the same load. Only the first caller
+  // drives recovery; the rest are no-ops (a reload or bounce is already coming).
+  let recoveryInFlight = false;
+
+  /**
+   * Recover an unauthenticated (401) session, else bounce to SSO. In dev
+   * (AUTH_MODE=off) POST {@link DEV_LOGIN_PATH} mints a System session cookie →
+   * reload signed in; in OIDC mode that route 404s → fall through to
+   * {@link bounceToSso}. The sessionStorage guard breaks a
+   * reload→401→dev-login→reload loop if the minted session still fails; it is
+   * cleared by `onAuthed` on the next successful probe.
+   */
+  function recoverAuthOrBounce(): void {
+    if (recoveryInFlight) return;
+    recoveryInFlight = true;
+    let triedBefore = false;
+    try {
+      triedBefore = sessionStorage.getItem(AUTH_RECOVERY_KEY) !== null;
+    } catch {
+      // sessionStorage unavailable (private mode / no DOM) — skip the guard.
+    }
+    if (triedBefore) {
+      bounceToSso();
+      return;
+    }
+    void (async () => {
+      try {
+        const r = await fetch(DEV_LOGIN_PATH, { method: 'POST', credentials: 'same-origin' });
+        if (r.ok) {
+          try {
+            sessionStorage.setItem(AUTH_RECOVERY_KEY, '1');
+          } catch {
+            // best-effort guard; a missing store just means no loop protection.
+          }
+          location.reload();
+          return;
+        }
+      } catch {
+        // network error → fall through to the bounce below.
+      }
+      // 404 (OIDC mode, route not registered) or any failure → SSO bounce.
+      bounceToSso();
+    })();
+  }
+
+  /** Clear the dev-login recovery guard after a successful authenticated probe. */
+  function clearAuthRecoveryGuard(): void {
+    try {
+      sessionStorage.removeItem(AUTH_RECOVERY_KEY);
+    } catch {
+      // no store → nothing to clear.
+    }
+  }
+
   // eslint-disable-next-line no-console
   console.info(
     'kitp web booted: History-API router → AppShell outlet. The route is the ' +
       'source of truth (deep-links, back/forward); `/project/:id/screen/:slug` ' +
       'drives the ScreenHost layout. Drag a card between columns for an ' +
-      "optimistic move; the kanban screen's unknown 'SparkleChart' child renders " +
-      'a NotFound placeholder.',
+      'optimistic move.',
   );
 }
 

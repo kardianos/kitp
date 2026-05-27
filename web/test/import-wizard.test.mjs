@@ -166,10 +166,18 @@ function mountWizard(api, config = {}) {
 }
 
 async function settle(dispatcher) {
-  for (let i = 0; i < 6; i++) await dispatcher.flushNow();
-  await flushMicrotasks();
-  for (let i = 0; i < 6; i++) await dispatcher.flushNow();
-  M.flushSync?.();
+  // Drain the multi-hop async chain to quiescence. The upload path is a chain
+  // of microtask→batch hops (async CAS sink `arrayBuffer().then` → file.create
+  // batch → upload batch → onOk → setStep), so each turn must ALTERNATE a
+  // microtask flush with a dispatcher batch flush — not 6 batches, one microtask
+  // turn, then 6 batches (which only drains a single microtask interleave and so
+  // is timing-fragile under host load). Bounded so a real hang can't loop forever;
+  // flushNow short-circuits on an empty queue, so spare turns are ~free.
+  for (let i = 0; i < 24; i++) {
+    await flushMicrotasks();
+    await dispatcher.flushNow();
+    M.flushSync?.();
+  }
 }
 
 function sentOf(sent, endpoint, action) {
@@ -303,6 +311,9 @@ test('a user mapping override ships in set_mapping', async () => {
   const { dispatcher, api } = bootApi(transport);
   const { wiz } = mountWizard(api);
   await uploadCsvFile(wiz, dispatcher);
+  // Precondition: the async upload chain fully settled onto the map step (guards
+  // against a partially-drained state silently corrupting the assertions below).
+  assert.equal(wiz._stepForTest(), 'map', 'upload settled onto the map step');
 
   // 'Notes' auto-mapped to ignore; the user maps it to description.
   assert.equal(wiz._mappingForTest()['Notes'], M.IGNORE_COLUMN);
@@ -310,8 +321,11 @@ test('a user mapping override ships in set_mapping', async () => {
 
   click(wiz.el.querySelector('[data-iw-next]'));
   await settle(dispatcher);
+  // set_mapping fully completed → the machine advanced to preview.
+  assert.equal(wiz._stepForTest(), 'preview', 'set_mapping advanced to preview');
 
   const maps = sentOf(sent, 'project.import', 'set_mapping');
+  assert.equal(maps.length, 1, 'exactly one set_mapping fired (no auto-mapping pre-fire)');
   assert.equal(maps[0].data.mapping['Notes'], 'description', 'override shipped');
 });
 

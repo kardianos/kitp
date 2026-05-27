@@ -148,6 +148,12 @@ export class RefPicker extends Control<RefPickerConfig> {
     return this.values.slice();
   }
 
+  /** Open the dropdown immediately (lets a host skip the extra click when the
+   *  picker is mounted specifically to be edited — e.g. task-detail row expand). */
+  open(): void {
+    this.combo?.openMenu();
+  }
+
   /* ------------------------------- single -------------------------------- */
 
   private renderSingle(): void {

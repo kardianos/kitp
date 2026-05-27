@@ -171,14 +171,15 @@ test('mailto and tel and fragment and relative links are allowed', () => {
 /* GFM task-list checkbox is forced disabled by the hook.                      */
 /* -------------------------------------------------------------------------- */
 
-test('task-list checkbox is rendered disabled', () => {
+test('task-list checkbox renders as a disabled CHECKBOX (not a textbox)', () => {
   const out = renderMarkdown('- [ ] todo\n- [x] done');
   assert.match(out, /<input[^>]*disabled/, 'checkbox forced disabled by the hook');
-  // DOMPurify drops `type` from <input> as DOM-clobbering protection (it is
-  // guarded even when in ALLOWED_ATTR), so the rendered checkbox is
-  // `<input checked disabled>` with no type — and crucially cannot be a
-  // text/file/etc. input. The hook's job (force disabled) is the assertion.
-  assert.doesNotMatch(out, /type="checkbox"/, 'type stripped by DOMPurify clobbering guard');
+  // DOMPurify's USE_PROFILES allowlist drops `type` from <input> (even though
+  // it's in ALLOWED_ATTR), which used to leave `<input disabled>` — a disabled
+  // TEXT box. The hook re-adds `type="checkbox"` so it renders as a real
+  // (disabled, read-only) checkbox.
+  assert.match(out, /<input[^>]*type="checkbox"/, 'type=checkbox restored by the hook');
+  assert.doesNotMatch(out, /type="(?:text|file|password|email)"/, 'never a non-checkbox input');
   // The checked state of the second item is preserved (informational).
   assert.match(out, /checked/, 'the [x] item keeps its checked marker');
 });

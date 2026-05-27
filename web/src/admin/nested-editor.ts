@@ -28,8 +28,6 @@ import { readPath, fieldText, type MasterDetailItem } from './master-detail.js';
 import {
   type Predicate,
   type WireNode,
-  isFlatAndOfLeaves,
-  toWhereLeaves,
   toWire,
   fromWire,
   fromWhereLeaves,
@@ -69,6 +67,9 @@ export type NestedEditorKind =
   | 'flowSteps'
   | 'edgeMatrix'
   | 'screenFilters'
+  // The advanced visual builder for the PARENT MasterDetail's selected filter
+  // card — edits its predicate + group + sort (Named Filters admin screen).
+  | 'filterPredicate'
   | 'commChannelConfig'
   | 'activitySinkConfig'
   | 'agentTokens'
@@ -379,6 +380,13 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   /** Monotonic load gate so a stale async delivery resolves to a no-op. */
   private loadSeq = 0;
 
+  /** filterPredicate: the mounted PredicateFilter child + the filter id it
+   *  edits. Held so a re-render on a SELECTION change re-mounts it, but a
+   *  re-render from any OTHER leaf (e.g. an items patch on save) leaves the
+   *  in-progress edit untouched. */
+  private predChild: Control | null = null;
+  private mountedFilterId: string | null = null;
+
   private get selectedPath(): string[] {
     return `${this.config.parentScope}.selectedId`.split('.');
   }
@@ -416,6 +424,8 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         this.renderChannelConfig(item);
       } else if (this.config.kind === 'activitySinkConfig') {
         this.renderSinkConfig(item);
+      } else if (this.config.kind === 'filterPredicate') {
+        this.renderFilterPredicate(item);
       } else {
         this.renderEditor(item);
       }
@@ -637,6 +647,15 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     title.className = 'nested-editor__title';
     title.textContent = 'Transitions';
     heading.append(title);
+
+    // Rename the flow (flow.set with the row's existing fields + a new name).
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.className = 'btn nested-editor__flow-rename';
+    renameBtn.dataset.neFlowRename = '';
+    renameBtn.textContent = 'Rename…';
+    this.listen(renameBtn, 'click', () => this.renameFlow(flow));
+    heading.append(renameBtn);
 
     // The flow-delete guard button.
     const delBtn = document.createElement('button');
@@ -880,6 +899,37 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         this.reload();
       },
       { alive: () => this.isAlive(), onErr: (f) => this.showFault('flow_step.delete', f) },
+    );
+  }
+
+  /** Rename a flow: flow.set is a full-row upsert, so preserve the row's other
+   *  fields (governed attribute + scope) and only change the name. On success,
+   *  patch the parent list item so the row + detail title repaint. */
+  private renameFlow(flow: MasterDetailItem): void {
+    this.clearFault();
+    const cur = String(flow.raw['name'] ?? '');
+    const next = nePromptText('Rename workflow:', cur);
+    if (next === null) return;
+    const trimmed = next.trim();
+    if (trimmed === '' || trimmed === cur) return;
+    const dcs = flow.raw['default_create_status_id'];
+    this.ctx.api.callByName(
+      'flow.set',
+      {
+        id: flow.id,
+        name: trimmed,
+        doc: String(flow.raw['doc'] ?? ''),
+        attributeDefId: String(flow.raw['attribute_def_id'] ?? ''),
+        scopeCardId: String(flow.raw['scope_card_id'] ?? ''),
+        defaultCreateStatusId: dcs !== undefined && dcs !== null ? String(dcs) : undefined,
+      },
+      () => {
+        if (!this.isAlive()) return;
+        const node = this.ctx.tree.at(this.itemsPath);
+        const rows = (node.peek<MasterDetailItem[]>() ?? []) as MasterDetailItem[];
+        node.set(rows.map((it) => (it.id === flow.id ? { id: it.id, raw: { ...it.raw, name: trimmed } } : it)));
+      },
+      { alive: () => this.isAlive(), onErr: (f) => this.showFault('flow.set', f) },
     );
   }
 
@@ -1251,6 +1301,23 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     const raw = fieldText(f, 'attributes.predicate');
     this.ctx.tree.at(predPath).set(fromFilterJson(raw));
 
+    // Seed the group + sort leaves from the filter card so the builder edits the
+    // full view definition (predicate + group + sort), not just the predicate.
+    const groupPath = this.p(`group.${filterId}`);
+    this.ctx.tree.at(groupPath).set(fieldText(f, 'attributes.group_by_attr'));
+    const sortPath = this.p(`sort.${filterId}`);
+    let sortSeed: unknown = null;
+    const sortRaw = fieldText(f, 'attributes.sort');
+    if (sortRaw !== '') {
+      try {
+        const a: unknown = JSON.parse(sortRaw);
+        if (Array.isArray(a)) sortSeed = a;
+      } catch {
+        // malformed sort → start empty.
+      }
+    }
+    this.ctx.tree.at(sortPath).set(sortSeed);
+
     this.spawn(
       'PredicateFilter',
       {
@@ -1258,6 +1325,9 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         valuePath: predPath.join('.'),
         // Filter predicates target task cards (the card_type filters apply to).
         schema: { cardType: 'task' },
+        // The universal view builder: also edit Group by + Sort by here.
+        groupPath: groupPath.join('.'),
+        sortPath: sortPath.join('.'),
       },
       slot,
     );
@@ -1266,11 +1336,20 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     save.type = 'button';
     save.className = 'btn btn-primary nested-editor__predicate-save';
     save.dataset.nePredicateSave = filterId;
-    save.textContent = 'Save predicate';
+    save.textContent = 'Save view';
     this.listen(save, 'click', () => {
       const predicate = this.ctx.tree.at(predPath).peek<Predicate | null>() ?? null;
       const json = predicate === null ? '' : JSON.stringify(toFilterJson(predicate));
       this.updateFilterAttr(screenId, filterId, 'predicate', json);
+      // Persist the group + sort alongside the predicate (the full view def).
+      this.updateFilterAttr(screenId, filterId, 'group_by_attr', this.ctx.tree.at(groupPath).peek<string>() ?? '');
+      const sortVal = this.ctx.tree.at(sortPath).peek<unknown>();
+      this.updateFilterAttr(
+        screenId,
+        filterId,
+        'sort',
+        Array.isArray(sortVal) && sortVal.length > 0 ? JSON.stringify(sortVal) : '',
+      );
       this.ctx.tree.at(this.p('editingId')).set(null);
     });
     slot.append(save);
@@ -1327,6 +1406,130 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       () => { /* parent already patched optimistically */ },
       { alive: () => this.isAlive(), onErr: (f) => this.showFault('attribute.update (default_filter)', f) },
     );
+  }
+
+  /* ----------------------- filterPredicate editor ----------------------- */
+
+  /**
+   * The Named Filters detail's advanced builder: edit the SELECTED filter card's
+   * predicate + group + sort with the same {@link PredicateFilter} the screen
+   * filter editor uses. Re-mounts only when the SELECTED filter changes (guarded
+   * on `mountedFilterId`), so an items patch on save — or any other re-render —
+   * never clobbers an in-progress edit.
+   */
+  private renderFilterPredicate(item: MasterDetailItem | null): void {
+    const id = item?.id ?? null;
+    // Already showing THIS filter's builder → leave it (and any in-progress
+    // edit) alone. Only short-circuits a live, non-null selection; null and
+    // selection changes fall through to (re)render.
+    if (id !== null && id === this.mountedFilterId && this.predChild !== null) return;
+
+    // Selection changed: tear down the previous builder before re-mounting.
+    if (this.predChild !== null) {
+      this.destroyChild(this.predChild);
+      this.predChild = null;
+    }
+    this.mountedFilterId = id;
+
+    if (item === null) {
+      const note = document.createElement('div');
+      note.className = 'muted';
+      note.dataset.neFilterPredicateEmpty = '';
+      note.textContent = 'Select a filter to edit its definition.';
+      this.el.replaceChildren(note);
+      return;
+    }
+
+    const fid = item.id; // non-null past the guard above
+    const frag = document.createDocumentFragment();
+    const heading = document.createElement('h3');
+    heading.className = 'nested-editor__title';
+    heading.textContent = 'Filter definition';
+    frag.append(heading);
+
+    // Seed the builder leaves from the filter card's stored attributes (the
+    // `{ where?, tree? }` predicate JSON + group_by_attr + sort).
+    const predPath = this.p(`predicate.${fid}`);
+    this.ctx.tree.at(predPath).set(fromFilterJson(fieldText(item.raw, 'attributes.predicate')));
+    const groupPath = this.p(`group.${fid}`);
+    this.ctx.tree.at(groupPath).set(fieldText(item.raw, 'attributes.group_by_attr'));
+    const sortPath = this.p(`sort.${fid}`);
+    let sortSeed: unknown = null;
+    const sortRaw = fieldText(item.raw, 'attributes.sort');
+    if (sortRaw !== '') {
+      try {
+        const a: unknown = JSON.parse(sortRaw);
+        if (Array.isArray(a)) sortSeed = a;
+      } catch {
+        // malformed sort → start empty.
+      }
+    }
+    this.ctx.tree.at(sortPath).set(sortSeed);
+
+    const slot = document.createElement('div');
+    slot.className = 'nested-editor__predicate';
+    slot.dataset.nePredicate = fid;
+    frag.append(slot);
+
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'btn btn-primary nested-editor__predicate-save';
+    save.dataset.nePredicateSave = fid;
+    save.textContent = 'Save view';
+    this.listen(save, 'click', () => {
+      const predicate = this.ctx.tree.at(predPath).peek<Predicate | null>() ?? null;
+      const json = predicate === null ? '' : JSON.stringify(toFilterJson(predicate));
+      const group = this.ctx.tree.at(groupPath).peek<string>() ?? '';
+      const sortVal = this.ctx.tree.at(sortPath).peek<unknown>();
+      const sortStr = Array.isArray(sortVal) && sortVal.length > 0 ? JSON.stringify(sortVal) : '';
+      this.commitFilterCard(fid, { predicate: json, group_by_attr: group, sort: sortStr });
+    });
+    frag.append(save);
+
+    this.el.replaceChildren(frag);
+
+    // Mount the builder AFTER the slot is in the live tree.
+    this.predChild = this.spawn(
+      'PredicateFilter',
+      {
+        type: 'PredicateFilter',
+        valuePath: predPath.join('.'),
+        // Filter predicates target task cards (what the filters apply to).
+        schema: { cardType: 'task' },
+        // Universal view builder: also edit Group by + Sort by here.
+        groupPath: groupPath.join('.'),
+        sortPath: sortPath.join('.'),
+      },
+      slot,
+    );
+  }
+
+  /**
+   * Commit the filter card's view definition: one attribute.update per changed
+   * attribute (coalesced into one batch) + an OPTIMISTIC patch of the parent
+   * `items` leaf so the list row (group badge) + a later reselect reflect the
+   * new values without a reload.
+   */
+  private commitFilterCard(filterId: string, attrs: Record<string, string>): void {
+    this.clearFault();
+    // Optimistically patch the parent item so reseeding shows the saved values.
+    const node = this.ctx.tree.at(this.itemsPath);
+    const rows = (node.peek<MasterDetailItem[]>() ?? []) as MasterDetailItem[];
+    node.set(
+      rows.map((it) => {
+        if (it.id !== filterId) return it;
+        const merged = { ...(it.raw['attributes'] as Record<string, unknown> | undefined ?? {}), ...attrs };
+        return { id: it.id, raw: { ...it.raw, attributes: merged } };
+      }),
+    );
+    for (const [attributeName, value] of Object.entries(attrs)) {
+      this.ctx.api.callByName(
+        'attribute.update',
+        { cardId: filterId, attributeName, value },
+        () => { /* optimistic patch already applied */ },
+        { alive: () => this.isAlive(), onErr: (f) => this.showFault(`attribute.update (${attributeName})`, f) },
+      );
+    }
   }
 
   /* ----------------------- comm-channel config -------------------------- */
@@ -2068,17 +2271,19 @@ export class NestedEditor extends Control<NestedEditorConfig> {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Predicate → filter-card JSON. The filter card stores a flat AND as `where[]`  */
-/* and a structured tree as `tree`; we keep the same `{ where?, tree? }` shape   */
-/* the card.select_with_attributes encoder reads.                               */
+/* Filter-card predicate (de)serialization. A filter card stores its predicate */
+/* as the CANONICAL bare WIRE NODE (a leaf `{attr,op,...}` or a connective      */
+/* group) — the exact shape the seed, `screen-resolve.readPredicate()`, and the */
+/* ScreenFilterBar's "save filter" both read+write via toWire/fromWire. Using   */
+/* anything else (e.g. a `{where}/{tree}` wrapper) means a saved filter can't be */
+/* read back at runtime, and a seed/runtime predicate renders empty in the      */
+/* builder. Load tolerates the legacy `{where}/{tree}` wrapper an older build    */
+/* may have written.                                                            */
 /* -------------------------------------------------------------------------- */
 
-function toFilterJson(predicate: Predicate): { where?: CardWherePredicate[]; tree?: WireNode } {
-  if (isFlatAndOfLeaves(predicate)) {
-    const leaves = toWhereLeaves(predicate) ?? [];
-    return leaves.length > 0 ? { where: leaves } : {};
-  }
-  return { tree: toWire(predicate) };
+/** Encode a Predicate to the canonical filter-card wire node (caller stringifies). */
+function toFilterJson(predicate: Predicate): WireNode {
+  return toWire(predicate);
 }
 
 /** Decode a stored filter-card predicate JSON string to a Predicate (or null
@@ -2095,12 +2300,14 @@ function fromFilterJson(raw: string): Predicate | null {
   if (!parsed || typeof parsed !== 'object') return null;
   const obj = parsed as { where?: unknown; tree?: unknown };
   try {
+    // Legacy wrapper tolerated on load.
     if (Array.isArray(obj.where)) return fromWhereLeaves(obj.where as CardWherePredicate[]);
     if (obj.tree !== undefined && obj.tree !== null) return fromWire(obj.tree);
+    // Canonical: a bare wire node (leaf or connective group).
+    return fromWire(parsed);
   } catch {
     return null;
   }
-  return null;
 }
 
 /**
@@ -2117,6 +2324,12 @@ function fieldLabel(control: HTMLElement, text: string, className: string, befor
   if (before) label.append(span, control);
   else label.append(control, span);
   return label;
+}
+
+/** Prompt for text (browser prompt; null when unavailable / cancelled). */
+function nePromptText(message: string, initial: string): string | null {
+  if (typeof window === 'undefined' || typeof window.prompt !== 'function') return null;
+  return window.prompt(message, initial);
 }
 
 export function registerNestedEditor(): void {

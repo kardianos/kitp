@@ -17,11 +17,12 @@
  * the ScreenFilterBar can drive the preset selector + default-on-first-visit off
  * the same key. An unknown slug with no screen card keeps the fallback body.
  *
- * Layout → control type:
+ * Layout → control type (all four registered as of the migration; an unknown
+ * layout is the only path that still falls through to NotFound):
  *   kanban  → Kanban
- *   list    → Inbox     (not built yet → NotFound placeholder, proving the path)
- *   grid    → Grid      (the dense sortable table — registered)
- *   project → Project   (not built yet → NotFound)
+ *   list    → Inbox
+ *   grid    → Grid      (the dense sortable table)
+ *   project → Project   (the project detail / overview)
  *   <other> → NotFound  (unknown layout, e.g. a typo'd screen card)
  *
  * The ScreenFilterBar mounts above the body (shared across task-list layouts).
@@ -31,11 +32,19 @@
  */
 
 import { Control, type BaseControlConfig, type ChildConfig } from '../core/control.js';
+import type { HotkeyBinding } from '../core/hotkeys.js';
+import { focusScreenSearch } from './screen-filter-bar.js';
 import {
   loadScreenAndFilters,
   fallbackLayoutForSlug,
+  layoutRequiresGroup,
+  defaultGroupForLayout,
+  viewActionsForLayout,
   readLayout,
   readGroupByAttr,
+  readExtraColumns,
+  readTagPrefixColumns,
+  readPhaseToggles,
   screenStatePath,
   type ScreenPresetSet,
 } from '../filter/screen-resolve.js';
@@ -73,9 +82,9 @@ declare module '../core/control.js' {
 /**
  * The layout→control map. The Svelte ScreenHost hard-codes four cases; here the
  * same four map to control TYPE strings, and `Control.New` resolves them
- * (registered → real control; unregistered → NotFound). `kanban` and `grid`
- * are built; `list` / `project` deliberately resolve to NotFound to prove the
- * data-driven dispatch + graceful degradation.
+ * (registered → real control; unregistered → NotFound). All four bodies are
+ * registered; only a layout string with no entry here (a typo'd screen card)
+ * resolves to the NotFound placeholder — the graceful-degradation path.
  */
 const LAYOUT_TO_CONTROL: Record<string, string> = {
   kanban: 'Kanban',
@@ -83,6 +92,13 @@ const LAYOUT_TO_CONTROL: Record<string, string> = {
   grid: 'Grid',
   project: 'Project',
 };
+
+/** Layouts that support the swim-lane (2nd) axis. Only the Kanban splits its
+ *  board into lanes, so only it shows the filter bar's LANES picker; the
+ *  Grid / Inbox hide it (lanes are meaningless there). */
+export function layoutSupportsLanes(layout: string): boolean {
+  return layout === 'kanban';
+}
 
 /** Resolve a layout string to the body control type. Unknown → '' (→ NotFound). */
 export function layoutToControlType(layout: string): string {
@@ -101,6 +117,18 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     return el;
   }
 
+  /**
+   * "/" focuses the shared filter bar's search input. Declared HERE (the common
+   * ancestor of the bar + every body) rather than per-body, so grid / list /
+   * kanban / project all get it from one place; a body can still shadow it.
+   */
+  override hotkeys(): readonly HotkeyBinding[] {
+    return [
+      { binding: '/', label: 'Focus search', run: () => focusScreenSearch(this.el) },
+      ...(this.config.hotkeys ?? []),
+    ];
+  }
+
   protected render(): void {
     const screen = this.config.screen;
     const slug = screen.slug;
@@ -110,16 +138,41 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     // the SAME key for the preset selector + the default-on-first-visit cache.
     const statePath = screenStatePath(projectId, slug);
 
+    // The fallback layout comes from the descriptor (which the shell seeds from
+    // the static slug→layout map). If the descriptor's layout is the generic
+    // 'unknown' sentinel, fall back to the slug-derived one so a deep-link to a
+    // known slug still renders even before the screen card resolves. Computed
+    // up front so the filter bar can be told whether this layout supports lanes.
+    const seedLayout =
+      screen.layout && screen.layout !== 'unknown'
+        ? screen.layout
+        : fallbackLayoutForSlug(slug);
+
     // Optional shared filter bar (task-list screens share it). Tell it which
     // (project, slug) key its presets live under so it stays in sync with the
-    // host's resolution.
+    // host's resolution, and whether this layout shows the LANES picker (kanban
+    // only — the Grid / Inbox hide it).
     if (this.config.filterBar !== false) {
       const barHost = document.createElement('div');
       barHost.className = 'screen-host__filterbar';
       this.el.append(barHost);
       this.spawn(
         'ScreenFilterBar',
-        { type: 'ScreenFilterBar', screenStatePath: statePath } as ChildConfig,
+        {
+          type: 'ScreenFilterBar',
+          screenStatePath: statePath,
+          enableLanes: layoutSupportsLanes(seedLayout),
+          // A board layout (Kanban) requires a grouping axis and seeds the
+          // picker to its default (milestone) so the GROUP picker matches the
+          // board from the first paint; flat layouts default to "No group".
+          requireGroup: layoutRequiresGroup(seedLayout),
+          defaultGroup: defaultGroupForLayout(seedLayout),
+          // Screen-specific view actions on the filter bar's View row (e.g. the
+          // Inbox's Mine-only / Routed-to-me toggles). The layout→actions mapping
+          // is data-driven config (viewActionsForLayout) kept outside the host,
+          // so ScreenHost stays generic — no per-layout branch here.
+          viewActions: viewActionsForLayout(seedLayout),
+        } as ChildConfig,
         barHost,
       );
     }
@@ -131,14 +184,6 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     this.el.append(bodyHost);
     this.bodyHost = bodyHost;
 
-    // The fallback layout comes from the descriptor (which the shell seeds from
-    // the static slug→layout map). If the descriptor's layout is the generic
-    // 'unknown' sentinel, fall back to the slug-derived one so a deep-link to a
-    // known slug still renders even before the screen card resolves.
-    const seedLayout =
-      screen.layout && screen.layout !== 'unknown'
-        ? screen.layout
-        : fallbackLayoutForSlug(slug);
     this.dispatchBody(seedLayout);
 
     // Mount any declarative children (e.g. an analytics widget) alongside the
@@ -174,6 +219,21 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     // and to apply the default on first visit.
     node.child('filters').set(set.filters);
     node.child('defaultFilterId').set(set.defaultFilter ? set.defaultFilter.id : null);
+
+    // Land the active screen's Grid COLUMN config (extra_columns / tag_prefix_
+    // columns) at the global `screen.*` leaves the Grid reads (like screen.group).
+    // Reset to [] when there's no screen card so a config-less screen clears them.
+    this.ctx.tree
+      .at(['screen', 'extraColumns'])
+      .set(set.screen !== null ? readExtraColumns(set.screen) : []);
+    this.ctx.tree
+      .at(['screen', 'tagPrefixColumns'])
+      .set(set.screen !== null ? readTagPrefixColumns(set.screen) : []);
+    // Phase-scope toggles (Active / Closed / …) from the screen's toggle_groups;
+    // the ScreenFilterBar renders them + seeds the default-on phases.
+    this.ctx.tree
+      .at(['screen', 'phaseToggles'])
+      .set(set.screen !== null ? readPhaseToggles(set.screen) : []);
 
     if (set.screen === null) {
       // No screen card for this slug → keep the fallback body + announce "no

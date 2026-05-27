@@ -23,6 +23,9 @@
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { formatBinding, type ResolvedBinding } from '../core/hotkeys.js';
+import { setMarkdown } from '../util/markdown-control.js';
+import { trapFocus } from '../util/focus-trap.js';
+import { HELP_GET_TOPIC_SPEC, type HelpOutput } from './help-specs.js';
 
 /** The snapshot shape the overlay renders from (HotkeyController.snapshot()). */
 export type HotkeySnapshot = Map<string, ResolvedBinding>;
@@ -35,6 +38,13 @@ export interface HelpOverlayConfig extends BaseControlConfig {
    * control degrades to an empty list (rather than throwing) if unwired.
    */
   snapshot?: () => HotkeySnapshot;
+  /**
+   * Provider for the current help TOPIC key (e.g. `layout.kanban`, `admin.screens`),
+   * derived from the live route. Called on every open(); when it returns a key
+   * the overlay loads `help.get_topic` and renders the server's markdown above
+   * the keybindings. Null / a failed load → keybindings only (graceful).
+   */
+  topic?: () => string | null;
 }
 
 declare module '../core/control.js' {
@@ -56,13 +66,24 @@ const SCOPE_TITLES: Record<string, string> = {
 };
 
 export class HelpOverlay extends Control<HelpOverlayConfig> {
+  /** Server help-content region (markdown), loaded on open when a topic resolves. */
+  private helpContentEl: HTMLElement | null = null;
+  /** Rule between the instructions markdown and the keybinding cheatsheet. Shown
+   *  only while instructions content is visible. */
+  private sepEl: HTMLElement | null = null;
+  /** The panel header title — flips between the two open modes. */
+  private titleEl: HTMLElement | null = null;
   /** The scrollable rows region — repopulated on every open(). */
   private listEl: HTMLElement | null = null;
+  /** Open mode: shortcuts-only (`?`/`Mod+/`) vs instructions + shortcuts (ⓘ). */
+  private showInstructions = false;
   /** The focusable close affordance — focus lands here on open. */
   private closeBtn: HTMLElement | null = null;
   private opened = false;
   /** Element to restore focus to when the overlay closes. */
   private lastFocused: Element | null = null;
+  /** Focus-trap disposer while the overlay is open (#29). */
+  private untrap: (() => void) | null = null;
   /** Transient overlay-tier keydown listener (bound once, added on open). */
   private readonly onKeydown: (e: Event) => void;
 
@@ -103,7 +124,9 @@ export class HelpOverlay extends Control<HelpOverlayConfig> {
     header.className = 'help-overlay__header';
     const title = document.createElement('h2');
     title.className = 'help-overlay__title';
+    title.dataset.helpTitle = '';
     title.textContent = 'Keyboard shortcuts';
+    this.titleEl = title;
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'help-overlay__close';
@@ -114,12 +137,37 @@ export class HelpOverlay extends Control<HelpOverlayConfig> {
     this.closeBtn = close;
     header.append(title, close);
 
+    // Server-driven contextual help (markdown), above the keybindings. Hidden
+    // until a topic loads (loadHelp on open).
+    const content = document.createElement('div');
+    content.className = 'help-overlay__content';
+    content.dataset.helpContent = '';
+    content.style.display = 'none';
+    this.helpContentEl = content;
+
+    // Separator between the instructions markdown (above) and the keybinding
+    // cheatsheet (below). Hidden until instructions actually render, so the
+    // keybindings-only view (no authored topic) has no dangling rule.
+    const sep = document.createElement('hr');
+    sep.className = 'help-overlay__sep';
+    sep.dataset.helpSep = '';
+    sep.style.display = 'none';
+    this.sepEl = sep;
+
     const list = document.createElement('div');
     list.className = 'help-overlay__list';
     list.dataset.helpList = '';
     this.listEl = list;
 
-    panel.append(header, list);
+    // One scroll region holds the instructions, the rule, and the shortcuts —
+    // the content + shortcuts flow together past a single horizontal rule, not
+    // as two independently-scrolling boxes.
+    const body = document.createElement('div');
+    body.className = 'help-overlay__body';
+    body.dataset.helpBody = '';
+    body.append(content, sep, list);
+
+    panel.append(header, body);
     root.append(backdrop, panel);
   }
 
@@ -128,26 +176,61 @@ export class HelpOverlay extends Control<HelpOverlayConfig> {
     return this.opened;
   }
 
-  /** Toggle open/closed — the surface the `toggleHelp` intent drives. */
-  toggle(): void {
-    if (this.opened) this.close();
-    else this.open();
+  /**
+   * Toggle the overlay. Two distinct surfaces share one control:
+   *   - `{ instructions: false }` (default; the `?`/`Mod+/` chord + the `?`
+   *     button) → KEYBOARD SHORTCUTS only.
+   *   - `{ instructions: true }` (the ⓘ "About this screen" button) → the
+   *     screen's authored instructions, an <hr>, then the shortcuts.
+   * Re-firing the SAME mode closes it; firing the OTHER mode while open just
+   * switches the view (keeps focus trapped).
+   */
+  toggle(opts?: { instructions?: boolean }): void {
+    const want = opts?.instructions === true;
+    if (this.opened) {
+      if (want === this.showInstructions) this.close();
+      else this.applyMode(want);
+      return;
+    }
+    this.open(opts);
   }
 
   /**
-   * Show the overlay: snapshot the live bindings, render the grouped rows,
-   * reveal the surface, trap focus, and wire the overlay-tier Esc/`?` listener.
-   * A DOM toggle only — no signal writes (cascade-safe). Idempotent.
+   * Show the overlay in the requested mode, reveal the surface, trap focus, and
+   * wire the overlay-tier Esc/`?` listener. A DOM toggle only — no signal writes
+   * (cascade-safe). Idempotent.
    */
-  open(): void {
+  open(opts?: { instructions?: boolean }): void {
     if (this.opened) return;
     this.opened = true;
     this.lastFocused = activeElement();
-    this.renderRows();
+    this.applyMode(opts?.instructions === true);
     this.el.style.display = '';
     // Overlay-tier keydown: capture so Esc/`?` win over anything underneath.
     document.addEventListener('keydown', this.onKeydown, true);
+    this.untrap?.();
+    this.untrap = trapFocus(this.el); // keep Tab inside the overlay (#29)
     focusEl(this.closeBtn);
+  }
+
+  /**
+   * Paint the overlay for a mode: the header title, the always-present
+   * machine-generated shortcut rows, and — only in instructions mode — the
+   * authored topic markdown (which the <hr> separates from the shortcuts).
+   * Shortcuts mode hides/clears the instructions content.
+   */
+  private applyMode(instructions: boolean): void {
+    this.showInstructions = instructions;
+    const label = instructions ? 'About this screen' : 'Keyboard shortcuts';
+    if (this.titleEl) this.titleEl.textContent = label;
+    this.el.setAttribute('aria-label', label);
+    this.renderRows();
+    if (instructions) {
+      this.loadHelp();
+    } else {
+      this.helpContentEl?.replaceChildren();
+      this.setContentVisible(false);
+    }
   }
 
   /** Hide the overlay, drop the transient listener, restore focus. Idempotent. */
@@ -155,6 +238,8 @@ export class HelpOverlay extends Control<HelpOverlayConfig> {
     if (!this.opened) return;
     this.opened = false;
     document.removeEventListener('keydown', this.onKeydown, true);
+    this.untrap?.();
+    this.untrap = null;
     this.el.style.display = 'none';
     focusEl(this.lastFocused);
     this.lastFocused = null;
@@ -163,6 +248,54 @@ export class HelpOverlay extends Control<HelpOverlayConfig> {
   override destroy(): void {
     if (this.opened) document.removeEventListener('keydown', this.onKeydown, true);
     super.destroy();
+  }
+
+  /**
+   * Load + render the server's contextual help markdown for the current topic.
+   * No topic / empty body / fault → the content area stays hidden, so the
+   * overlay degrades to the keybinding cheatsheet only (cascade-safe: one-way
+   * DOM write from the callback, no signal).
+   */
+  private loadHelp(): void {
+    const content = this.helpContentEl;
+    if (content === null) return;
+    const topic = this.config.topic?.() ?? null;
+    if (topic === null || topic === '') {
+      content.replaceChildren();
+      this.setContentVisible(false);
+      return;
+    }
+    this.ctx.api.callByName(
+      HELP_GET_TOPIC_SPEC,
+      { topic },
+      (out) => {
+        if (!this.isAlive() || !this.opened) return;
+        const o = out as HelpOutput;
+        if (o.markdown.trim() === '') {
+          this.setContentVisible(false);
+          return;
+        }
+        content.replaceChildren();
+        const h = document.createElement('h3');
+        h.className = 'help-overlay__content-title';
+        h.textContent = o.title !== '' ? o.title : topic;
+        const body = document.createElement('div');
+        body.className = 'help-overlay__content-body';
+        setMarkdown(body, o.markdown); // the single sanitized markdown sink
+        content.append(h, body);
+        this.setContentVisible(true);
+      },
+      {
+        alive: () => this.isAlive(),
+        onErr: () => this.setContentVisible(false),
+      },
+    );
+  }
+
+  /** Show/hide the instructions content + its separator together. */
+  private setContentVisible(visible: boolean): void {
+    if (this.helpContentEl !== null) this.helpContentEl.style.display = visible ? '' : 'none';
+    if (this.sepEl !== null) this.sepEl.style.display = visible ? '' : 'none';
   }
 
   /** Render the snapshot into grouped rows (called fresh on every open). */

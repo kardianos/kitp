@@ -173,6 +173,32 @@ type PersonCreateOutput struct {
 	UserAccountID int64 `json:"user_account_id,string,omitempty" mcp:"desc=newly inserted user_account id when tier='user'; 0 otherwise"`
 }
 
+// PersonGrantAccountInput promotes an EXISTING person card to a "user" by
+// minting a user_account + the user_account_person link. The caller sets
+// person_kind='member' separately (attribute.update); this only grants login.
+type PersonGrantAccountInput struct {
+	PersonCardID int64  `json:"person_card_id,string" mcp:"required,desc=person card to grant a login to"`
+	Email        string `json:"email,omitempty" mcp:"desc=email override for the new user_account (the OIDC match key); when empty the person's stored email attribute is used; one of them must be non-empty"`
+}
+
+// PersonGrantAccountOutput carries the linked (or pre-existing) account id.
+type PersonGrantAccountOutput struct {
+	UserAccountID int64 `json:"user_account_id,string" mcp:"desc=the user_account id linked to the person (newly created, or the pre-existing one when already linked)"`
+}
+
+func registerPersonGrantAccount(_ *store.Pool) {
+	reg.Register(reg.Handler{
+		Endpoint:     "person",
+		Action:       "grant_account",
+		Doc:          "Grant a login (user_account) to an EXISTING person card — promote an assignee/contact to a user. Idempotent: if the person already has an account, returns it. Email required (request override or the person's stored email). Admin-only.",
+		InputType:    reflect.TypeFor[PersonGrantAccountInput](),
+		OutputType:   reflect.TypeFor[PersonGrantAccountOutput](),
+		AllowedRoles: []string{"admin"},
+		// Unified handler — body in db/schema/functions/person_grant_account_batch.sql.
+		SQLFunc: "person_grant_account_batch",
+	})
+}
+
 func registerPersonCreate(_ *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "person",

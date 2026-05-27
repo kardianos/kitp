@@ -518,7 +518,8 @@ export class ProjectLayout extends Control<ProjectLayoutConfig> {
       { binding: ['k', 'ArrowUp'], label: 'Previous task', run: () => this.moveSelection(-1) },
       { binding: 'Enter', label: 'Open selected task', run: () => this.openSelected() },
       { binding: 'e', label: 'Edit properties', run: () => this.openProperties() },
-      { binding: '/', label: 'Focus search', run: () => this.focusSearch() },
+      // "/" (focus search) is provided by the ScreenHost ancestor for every
+      // search screen — no per-body binding needed.
       ...(this.config.hotkeys ?? []),
     ];
   }
@@ -543,21 +544,6 @@ export class ProjectLayout extends Control<ProjectLayoutConfig> {
   private openSelected(): void {
     const sel = this.visibleTasks()[this.selectedIndex];
     if (sel !== undefined) this.openTask(sel.id);
-  }
-
-  private focusSearch(): void {
-    // The shared ScreenFilterBar mounts above this body (the ScreenHost owns it).
-    // Walk to the document root and focus its search input — the same input the
-    // bar exposes (`data-screen-search` / type=search). DOM-only, no signal.
-    const root = (this.el.getRootNode?.() ?? document) as ParentNode;
-    const input =
-      root.querySelector?.<HTMLInputElement>('[data-screen-search]') ??
-      document.querySelector?.<HTMLInputElement>('[data-screen-search]') ??
-      null;
-    if (input && typeof input.focus === 'function') {
-      input.focus();
-      input.select?.();
-    }
   }
 
   /* ---------------------------- actions / hooks -------------------------- */

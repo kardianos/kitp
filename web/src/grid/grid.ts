@@ -54,22 +54,31 @@ import type { ApiFault } from '../core/dispatch.js';
 import { signal } from '../core/signal.js';
 import { virtualList } from '../core/virtual-list.js';
 import { navigate, taskUrl } from '../shell/router.js';
+import { publishTaskNav } from '../shell/task-nav.js';
 import { SPEC } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import type { CardWherePredicate } from '../projects/project-helpers.js';
 import {
   type Predicate,
+  type PredicateLeaf,
   type WireNode,
   isFlatAndOfLeaves,
   toWhereLeaves,
   toWire,
+  leaf as makeLeaf,
+  topLevelLeafForAttr,
+  upsertTopLevelLeaf,
+  removeTopLevelLeaf,
 } from '../filter/predicate.js';
+import { Popover } from '../ui/popover.js';
 import {
-  GRID_COLUMNS,
+  buildGridColumns,
+  tagPrefixValue,
   buildOrderClauses,
   cycleSort,
   effectiveSort,
-  groupAttrFromGroupValue,
+  sortStatesFromFilter,
+  type FilterSortEntry,
   tagPathLeaf,
   walkGrouped,
   type ColumnDef,
@@ -77,6 +86,10 @@ import {
   type GroupItem,
   type SortState,
 } from './grid-helpers.js';
+import type { RefAxis } from '../filter/vocabulary.js';
+import type { AttrSchema } from '../filter/attribute-schema.js';
+import type { RefPicker } from '../ui/ref-picker.js';
+import type { DatePicker } from '../ui/datepicker.js';
 
 /**
  * Fixed virtual-list row height (px). Matches the compact grid row: one line of
@@ -119,6 +132,42 @@ type LabelMap = Record<string, string>;
 /* -------------------------------------------------------------------------- */
 
 export class Grid extends Control<GridConfig> {
+  /**
+   * The DATA-DRIVEN column set (#17): ID/Title + ref columns from the schema
+   * axes + tag-prefix + Tags + the screen's extra_columns + Created/Last-
+   * activity. Computed from `screen.refAxes` / `screen.attrSchema` /
+   * `screen.extraColumns` / `screen.tagPrefixColumns`; the table rebuilds when
+   * the column KEY changes (rare — once when the schema + screen config land).
+   */
+  private columns: ColumnDef[] = [];
+  /** The current column key (`key|key|…`) so a rebuild only fires on a real change. */
+  private columnsKey = '';
+  /** The header row element (children rebuilt on a column change). */
+  private headerEl: HTMLElement | null = null;
+  /** The persistent select-all header cell (kept across column rebuilds). */
+  private selectAllCell: HTMLElement | null = null;
+  /** Per-column header sort handles, keyed by col.key (sortable columns only). */
+  private headerCells = new Map<string, { cell: HTMLElement; arrow: HTMLElement; field: string }>();
+  /** Per-column filter funnels (ref columns) + the popovers, rebuilt with the header. */
+  private headerFilters: Array<{ funnel: HTMLElement; attr: string }> = [];
+  private headerPopovers: Popover[] = [];
+  /** The body (virtualList viewport) + the live list handle (recreated on rebuild). */
+  private bodyEl: HTMLElement | null = null;
+  private vlHandle: { dispose: () => void } | null = null;
+  /** The table element — its inline `--grid-cols` is computed from this.columns
+   *  + per-column widths (#28), so the CSS grid tracks match the dynamic set. */
+  private tableEl: HTMLElement | null = null;
+  /** Width drag-in-flight (key + px), flushed to columnConfig.widths on pointerup. */
+  private pendingResize: { key: string; px: number } | null = null;
+
+  /**
+   * In-flight inline cell edit (#30): the editor child lives inside `cell`,
+   * which is a POOLED virtualList cell. fillCell guards against clobbering it
+   * while the card under that cell is unchanged, and tears it down if the row
+   * recycles to a different card before the edit commits.
+   */
+  private editing: { cardId: string; key: string; cell: HTMLElement; child: Control | null } | null = null;
+
   /** Active header-click sort; null = server default (ORDER BY c.id). */
   private sort: SortState | null = null;
 
@@ -268,15 +317,32 @@ export class Grid extends Control<GridConfig> {
     fault.style.display = 'none';
     this.el.append(fault);
 
+    // The "Columns" chooser (show/hide + reorder) now lives on the filter bar's
+    // View row via the GridColumns viewAction (viewActionsForLayout('grid')); it
+    // writes the same `screen.columnConfig` leaf the `grid.columns` effect below
+    // watches, so the table still rebuilds on a change — no in-body toolbar.
+
     /* ------------------------------- table --------------------------------- */
     // The table is a column: a NON-scrolling sticky header, then the body which
     // is the virtualList scroll VIEWPORT (the recycling pool lives inside it).
     const table = document.createElement('div');
+    this.tableEl = table;
     table.className = 'grid__table';
     table.dataset.gridTable = '';
     table.setAttribute('role', 'table');
 
-    const header = this.buildHeader();
+    // Data-driven columns (#17): compute the initial set, then build the header
+    // (a persistent select-all cell + the per-column cells rebuilt on change).
+    this.columns = this.computeColumns();
+    this.columnsKey = columnKey(this.columns);
+    const header = document.createElement('div');
+    header.className = 'grid__header';
+    header.dataset.gridHeaderRow = '';
+    header.setAttribute('role', 'row');
+    this.headerEl = header;
+    this.selectAllCell = this.buildSelectAllCell();
+    header.append(this.selectAllCell);
+    this.renderHeaderCells();
     table.append(header);
 
     // The body is the scroll viewport handed to virtualList. It must be a
@@ -290,6 +356,7 @@ export class Grid extends Control<GridConfig> {
     body.className = 'grid__body scroll-y scroll-x';
     body.dataset.gridBody = '';
     body.setAttribute('role', 'rowgroup');
+    this.bodyEl = body;
     table.append(body);
 
     // Keep the (outside-the-scroller) header column-aligned with the body under
@@ -356,25 +423,41 @@ export class Grid extends Control<GridConfig> {
     // `update` toggles which is shown. NO key: a row's CONTENT changes while
     // its id + slot index stay fixed when a card_ref lookup lands late (the
     // tick bumps), so update() runs for every visible slot on each render.
-    const vl = virtualList<GroupItem<CardWithAttrs>>({
-      container: body,
-      rowHeight: GRID_ROW_HEIGHT,
-      data: () => {
-        // Read the lookups tick so the single effect re-renders when a label
-        // map lands; update() peeks the same leaves when it resolves cells.
-        this.ctx.tree.at(['grid', 'lookups', 'tick']).get();
-        // Read the group version so a GROUP picker / group-dir change re-walks.
-        this.ctx.tree.at(['grid', 'groupVersion']).get();
-        // Read the selection version so a row toggle / select-all re-renders the
-        // visible window's checkboxes (recycling-safe — fillRow reads the set).
-        this.ctx.tree.at(SELECTION_VERSION_PATH).get();
-        return this.buildItems();
-      },
-      create: (el) => this.buildRowShell(el),
-      update: (el, item) => this.fillItem(el, item),
-      name: 'grid.rows',
+    this.createVirtualList();
+    this.onDestroy(() => this.vlHandle?.dispose());
+    this.onDestroy(() => {
+      for (const p of this.headerPopovers) p.destroy();
     });
-    this.onDestroy(() => vl.dispose());
+
+    // Single header-sort effect (replaces per-column effects so a column rebuild
+    // can't leak them): repaints every header cell's arrow on a sort / group-dir
+    // change. Reads the sort signal + group version; writes only DOM.
+    this.effect(() => {
+      this.sortSignal.get();
+      this.ctx.tree.at(['grid', 'groupVersion']).get();
+      this.paintHeaderSort();
+    }, 'grid.headerSort');
+
+    // Repaint the per-column filter funnels' active state whenever the predicate
+    // changes (from a funnel, a quick chip, the Advanced editor, …). One-way.
+    this.effect(() => {
+      this.ctx.tree.at(['screen', 'predicate']).get();
+      this.paintHeaderFilters();
+    }, 'grid.headerFilters');
+
+    // Rebuild the columns when the data-driven inputs land / change (#17): the
+    // schema axes the bar publishes + the screen's extra_columns / tag_prefix_
+    // columns the ScreenHost lands. Reads those leaves; rebuilds header + list
+    // only when the column KEY actually changes. One-way — cascade-safe.
+    this.effect(() => {
+      this.ctx.tree.at(['screen', 'refAxes']).get();
+      this.ctx.tree.at(['screen', 'attrSchema']).get();
+      this.ctx.tree.at(['screen', 'extraColumns']).get();
+      this.ctx.tree.at(['screen', 'tagPrefixColumns']).get();
+      this.ctx.tree.at(['screen', 'columnConfig']).get(); // hide/reorder/widths
+      this.rebuildColumns();
+      this.applyGridCols(); // dynamic grid tracks (also picks up width-only changes)
+    }, 'grid.columns');
 
     /* -------------------- one-way query-version drivers -------------------- */
     // Bump the tasks query version whenever scope or the filter search change.
@@ -397,13 +480,23 @@ export class Grid extends Control<GridConfig> {
       this.bumpQuery();
     }, 'grid.filterWatch');
 
-    // GROUP picker → group-by attr. Reads ONLY the `screen.group` leaf and
-    // writes the group state + the wire `order[]` (group key prepended so rows
-    // arrive bucketed) + bumps the query version. One-way: never reads back a
-    // dep it writes — same cascade-safe shape as the sort/filter watchers.
+    // The view's "Sort by" (`screen.sort`, from the filter builder) → the wire
+    // `order[]`. A header click still overrides it (effectiveSort). One-way:
+    // reads screen.sort, writes only grid.order + the query version.
     this.effect(() => {
-      const groupValue = this.ctx.tree.at(['screen', 'group']).get<string>() ?? null;
-      const next = groupAttrFromGroupValue(groupValue);
+      this.ctx.tree.at(['screen', 'sort']).get(); // subscribe
+      this.applyOrder();
+      this.bumpQuery();
+    }, 'grid.sortWatch');
+
+    // GROUP picker → group-by attr. Reads the RESOLVED `screen.groupAxis`
+    // ({attr, lookup} | null) the ScreenFilterBar derives from the data-driven
+    // schema (replacing the retired hardcoded group-value switch), and writes
+    // the group state + the wire `order[]` (group key prepended so rows arrive
+    // bucketed) + bumps the query version. One-way: never reads back a dep it
+    // writes — same cascade-safe shape as the sort/filter watchers.
+    this.effect(() => {
+      const next = this.ctx.tree.at(['screen', 'groupAxis']).get<GroupAttr | null>() ?? null;
       // A fresh group column resets the direction so the toggle is predictable.
       if ((next?.attr ?? null) !== (this.group?.attr ?? null)) this.groupDir = 'asc';
       this.group = next;
@@ -411,6 +504,15 @@ export class Grid extends Control<GridConfig> {
       this.bumpGroup();
       this.bumpQuery();
     }, 'grid.groupWatch');
+
+    // Refetch when a task is created anywhere (quick-entry bumps
+    // `tasks.createdNonce`), so a newly-added task shows up without a manual
+    // re-search (#3). One-way: reads the nonce, bumps the query version (a
+    // different leaf the tasks query watches) — cascade-safe.
+    this.effect(() => {
+      const nonce = this.ctx.tree.at(['tasks', 'createdNonce']).get<number>() ?? 0;
+      if (nonce > 0) this.bumpQuery();
+    }, 'grid.refreshOnCreate');
   }
 
   /* ----------------------------- result sinks --------------------------- */
@@ -517,17 +619,188 @@ export class Grid extends Control<GridConfig> {
 
   /* ------------------------------- header ------------------------------- */
 
-  private buildHeader(): HTMLElement {
-    const head = document.createElement('div');
-    head.className = 'grid__header';
-    head.dataset.gridHeaderRow = '';
-    head.setAttribute('role', 'row');
+  /** The full data-driven column set from the schema + screen config (#17),
+   *  BEFORE the user's per-screen hide/reorder (the Columns menu edits that). */
+  private rawColumns(): ColumnDef[] {
+    const refAxes = (this.ctx.tree.at(['screen', 'refAxes']).peek<RefAxis[]>() ?? []) as RefAxis[];
+    const schema = (this.ctx.tree.at(['screen', 'attrSchema']).peek<AttrSchema[]>() ?? []) as AttrSchema[];
+    const extra = (this.ctx.tree.at(['screen', 'extraColumns']).peek<string[]>() ?? []) as string[];
+    const tagPrefixes = (this.ctx.tree.at(['screen', 'tagPrefixColumns']).peek<string[]>() ?? []) as string[];
+    return buildGridColumns(refAxes, schema, extra, tagPrefixes);
+  }
 
-    head.append(this.buildSelectAllCell());
-    for (const col of GRID_COLUMNS) {
-      head.append(this.buildHeaderCell(col));
+  /** Read the user's per-screen column config (hidden keys + order + widths). */
+  private columnConfig(): { hidden: string[]; order: string[]; widths: Record<string, number> } {
+    const c =
+      this.ctx.tree
+        .at(['screen', 'columnConfig'])
+        .peek<{ hidden?: string[]; order?: string[]; widths?: Record<string, number> }>() ?? {};
+    return { hidden: c.hidden ?? [], order: c.order ?? [], widths: c.widths ?? {} };
+  }
+
+  /** Default CSS grid track for a column kind (a width / minmax for flex cols). */
+  private defaultTrack(col: ColumnDef): string {
+    switch (col.kind) {
+      case 'id':
+        return '4.5rem';
+      case 'title':
+        return 'minmax(12rem, 2fr)';
+      case 'tags':
+        return 'minmax(9rem, 1fr)';
+      case 'ref':
+        return '9rem';
+      case 'tag_prefix':
+        return '6.5rem';
+      case 'date':
+        return '7rem';
+      case 'created':
+      case 'last_activity':
+        return '7.5rem';
+      default:
+        return '8rem';
     }
-    return head;
+  }
+
+  /** Compute the `grid-template-columns` value: a fixed select track + one track
+   *  per column (a persisted px width, or the kind default). `liveKey`/`livePx`
+   *  override one column's track during a resize drag (no leaf write per move). */
+  private colsString(liveKey?: string, livePx?: number): string {
+    const widths = this.columnConfig().widths;
+    const tracks = this.columns.map((c) => {
+      if (c.key === liveKey && livePx !== undefined) return `${Math.max(48, Math.round(livePx))}px`;
+      const w = widths[c.key];
+      return typeof w === 'number' ? `${Math.max(48, w)}px` : this.defaultTrack(c);
+    });
+    return ['2.25rem', ...tracks].join(' ');
+  }
+
+  /** Set the table's inline `--grid-cols` (guarded — the minimal test DOM shim
+   *  has no CSSStyleDeclaration.setProperty). */
+  private setGridCols(value: string): void {
+    const style = this.tableEl?.style as { setProperty?: (k: string, v: string) => void } | undefined;
+    if (style !== undefined && typeof style.setProperty === 'function') {
+      style.setProperty('--grid-cols', value);
+    }
+  }
+
+  /** Set the table's inline `--grid-cols` from the current columns + widths (#28). */
+  private applyGridCols(): void {
+    this.setGridCols(this.colsString());
+  }
+
+  /** Begin a header-edge resize drag for `col`. */
+  private startColumnResize(e: PointerEvent, col: ColumnDef): void {
+    e.preventDefault();
+    e.stopPropagation();
+    const cell = this.headerCells.get(col.key)?.cell ?? null;
+    const startW = cell?.getBoundingClientRect?.().width ?? 120;
+    const startX = e.clientX;
+    const onMove = (ev: PointerEvent): void => {
+      const px = Math.max(48, Math.round(startW + (ev.clientX - startX)));
+      this.pendingResize = { key: col.key, px };
+      this.setGridCols(this.colsString(col.key, px));
+    };
+    const onUp = (): void => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      if (this.pendingResize !== null) {
+        const cfg = this.columnConfig();
+        const widths = { ...cfg.widths, [this.pendingResize.key]: this.pendingResize.px };
+        this.pendingResize = null;
+        this.ctx.tree.at(['screen', 'columnConfig']).set({ ...cfg, widths });
+      }
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  }
+
+  /** The VISIBLE, ordered column set = rawColumns minus hidden, sorted by the
+   *  user's order (configured keys first, the rest trailing in natural order). */
+  private computeColumns(): ColumnDef[] {
+    const all = this.rawColumns();
+    const { hidden, order } = this.columnConfig();
+    const hide = new Set(hidden);
+    const visible = all.filter((c) => !hide.has(c.key));
+    if (order.length === 0) return visible;
+    const rank = (k: string): number => {
+      const i = order.indexOf(k);
+      return i >= 0 ? i : order.length + all.findIndex((c) => c.key === k);
+    };
+    return visible.slice().sort((a, b) => rank(a.key) - rank(b.key));
+  }
+
+  /** Rebuild the header cells + the recycling list when the column key changes. */
+  private rebuildColumns(): void {
+    const next = this.computeColumns();
+    const key = columnKey(next);
+    if (key === this.columnsKey) return;
+    this.columns = next;
+    this.columnsKey = key;
+    this.renderHeaderCells();
+    this.createVirtualList();
+  }
+
+  /** (Re)build the per-column header cells, REUSING the persistent select-all
+   *  cell (so its tri-state effect stays intact across a column rebuild). */
+  private renderHeaderCells(): void {
+    const head = this.headerEl;
+    if (head === null) return;
+    this.headerCells.clear();
+    this.headerFilters = [];
+    for (const p of this.headerPopovers) p.destroy();
+    this.headerPopovers = [];
+    const cells: HTMLElement[] = [];
+    for (const col of this.columns) {
+      const { cell, arrow } = this.buildHeaderCell(col);
+      cells.push(cell);
+      if (col.field !== null) this.headerCells.set(col.key, { cell, arrow, field: col.field });
+    }
+    // Re-attach the SAME select-all cell + the fresh column cells in one pass.
+    if (this.selectAllCell !== null) head.replaceChildren(this.selectAllCell, ...cells);
+    else head.replaceChildren(...cells);
+    this.paintHeaderSort();
+    this.paintHeaderFilters();
+  }
+
+  /** Repaint every sortable header cell's arrow from the active sort / group dir. */
+  private paintHeaderSort(): void {
+    const active = this.sortSignal.peek();
+    for (const { cell, arrow, field } of this.headerCells.values()) {
+      const isGroupCol = this.group !== null && field === `attributes.${this.group.attr}`;
+      const dir = isGroupCol ? this.groupDir : active && active.field === field ? active.direction : null;
+      cell.dataset.sortField = field;
+      if (dir === null) {
+        delete cell.dataset.sortDir;
+        arrow.textContent = '';
+        cell.setAttribute('aria-sort', 'none');
+      } else {
+        cell.dataset.sortDir = dir;
+        arrow.textContent = dir === 'asc' ? '↑' : '↓';
+        cell.setAttribute('aria-sort', dir === 'asc' ? 'ascending' : 'descending');
+      }
+    }
+  }
+
+  /** (Re)create the recycling virtualList over the current columns. */
+  private createVirtualList(): void {
+    if (this.bodyEl === null) return;
+    this.vlHandle?.dispose();
+    this.vlHandle = virtualList<GroupItem<CardWithAttrs>>({
+      container: this.bodyEl,
+      rowHeight: GRID_ROW_HEIGHT,
+      data: () => {
+        // Read the lookups tick so the list re-renders when a label map lands;
+        // the group version so a GROUP / group-dir change re-walks; the selection
+        // version so a toggle re-paints the visible checkboxes.
+        this.ctx.tree.at(['grid', 'lookups', 'tick']).get();
+        this.ctx.tree.at(['grid', 'groupVersion']).get();
+        this.ctx.tree.at(SELECTION_VERSION_PATH).get();
+        return this.buildItems();
+      },
+      create: (el) => this.buildRowShell(el),
+      update: (el, item) => this.fillItem(el, item),
+      name: 'grid.rows',
+    });
   }
 
   /**
@@ -566,7 +839,10 @@ export class Grid extends Control<GridConfig> {
     return cell;
   }
 
-  private buildHeaderCell(col: ColumnDef): HTMLElement {
+  /** Build one column header cell. Returns the cell + its arrow span; the sort
+   *  arrows are painted by the single `grid.headerSort` effect (so a column
+   *  rebuild can't leak per-column effects). */
+  private buildHeaderCell(col: ColumnDef): { cell: HTMLElement; arrow: HTMLElement } {
     const cell = document.createElement('div');
     cell.className = `grid__cell grid__head grid-${col.kind}`;
     cell.dataset.gridHeader = '';
@@ -591,39 +867,124 @@ export class Grid extends Control<GridConfig> {
     btn.append(arrow);
 
     cell.append(btn);
+    if (sortable) this.listen(btn, 'click', () => this.onHeaderClick(col));
 
-    if (sortable) {
-      // Reflect the current sort state on this header (data hooks + arrow), and
-      // re-render reactively so a sort change on ANY column repaints all arrows.
-      // When this column IS the group column, the group direction drives the
-      // arrow (clicking it flips groupDir, not a column sort); reading the group
-      // version subscribes the effect so the arrow flips on a group-dir toggle.
-      this.effect(() => {
-        const active = this.sortSignal.get();
-        this.ctx.tree.at(['grid', 'groupVersion']).get(); // subscribe to group changes
-        const isGroupCol = this.group !== null && col.field === `attributes.${this.group.attr}`;
-        const dir = isGroupCol
-          ? this.groupDir
-          : active && active.field === col.field
-            ? active.direction
-            : null;
-        if (dir === null) {
-          delete cell.dataset.sortDir;
-          cell.dataset.sortField = String(col.field);
-          arrow.textContent = '';
-          cell.setAttribute('aria-sort', 'none');
-        } else {
-          cell.dataset.sortField = String(col.field);
-          cell.dataset.sortDir = dir;
-          arrow.textContent = dir === 'asc' ? '↑' : '↓';
-          cell.setAttribute('aria-sort', dir === 'asc' ? 'ascending' : 'descending');
-        }
-      }, `grid.header.${col.key}`);
+    // Resize grabber on the column's right edge (#28) — drag to set a px width
+    // persisted to columnConfig.widths.
+    const resize = document.createElement('span');
+    resize.className = 'grid__col-resize';
+    resize.dataset.gridColResize = col.key;
+    resize.setAttribute('aria-hidden', 'true');
+    this.listen(resize, 'pointerdown', (e) => this.startColumnResize(e as PointerEvent, col));
+    cell.append(resize);
 
-      this.listen(btn, 'click', () => this.onHeaderClick(col));
+    // Per-column filter funnel — ref columns with an enumerable option list
+    // (status / assignee / milestone / component). Toggling values edits a
+    // top-level `attr in […]` leaf in `screen.predicate`, which the filter
+    // watcher turns into the query `where[]` (the grid refetches).
+    if (col.kind === 'ref' && col.targetCardType !== undefined && col.attrName !== null) {
+      const funnel = document.createElement('button');
+      funnel.type = 'button';
+      funnel.className = 'grid__col-filter';
+      funnel.dataset.gridColFilter = col.attrName;
+      funnel.setAttribute('aria-label', `Filter ${col.label}`);
+      funnel.title = `Filter ${col.label}`;
+      funnel.textContent = '⏷';
+      cell.append(funnel);
+      this.headerFilters.push({ funnel, attr: col.attrName });
+      this.buildColumnFilterPopover(col, funnel);
     }
+    return { cell, arrow };
+  }
 
-    return cell;
+  /** Anchor a multi-select option Popover to a column's filter funnel. */
+  private buildColumnFilterPopover(col: ColumnDef, funnel: HTMLElement): void {
+    const pop = new Popover(funnel, {
+      placement: 'bottom-start',
+      width: 'anchor',
+      clampHeight: true,
+      onClose: () => funnel.setAttribute('aria-expanded', 'false'),
+    });
+    pop.element.classList.add('grid__col-filter-panel');
+    this.headerPopovers.push(pop);
+    this.listen(funnel, 'click', (e) => {
+      e.stopPropagation();
+      if (pop.isOpen) {
+        pop.close();
+        return;
+      }
+      this.renderColumnFilterMenu(col, pop.element);
+      funnel.setAttribute('aria-expanded', 'true');
+      pop.open();
+    });
+  }
+
+  /** (Re)render a column filter menu: option checkboxes reflecting the live leaf. */
+  private renderColumnFilterMenu(col: ColumnDef, panel: HTMLElement): void {
+    const attr = col.attrName ?? '';
+    const target = col.targetCardType ?? '';
+    const options = (this.ctx.tree.at(['screen', 'predicateOptions']).peek<Record<string, Array<{ value: string; label: string }>>>() ?? {})[target] ?? [];
+    const selected = new Set(this.columnFilterValues(attr));
+    const list = document.createElement('ul');
+    list.className = 'grid__col-filter-list';
+    list.setAttribute('role', 'listbox');
+    if (options.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'grid__col-filter-empty muted';
+      li.textContent = 'No options';
+      list.append(li);
+    } else {
+      for (const opt of options) {
+        const li = document.createElement('li');
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'grid__col-filter-option';
+        item.dataset.gridColFilterOption = opt.value;
+        const checked = selected.has(opt.value);
+        item.setAttribute('aria-selected', checked ? 'true' : 'false');
+        if (checked) item.classList.add('grid__col-filter-option--checked');
+        item.textContent = `${checked ? '✓ ' : ''}${opt.label}`;
+        this.listen(item, 'click', () => {
+          this.toggleColumnFilter(attr, opt.value);
+          this.renderColumnFilterMenu(col, panel); // repaint checks in place
+        });
+        li.append(item);
+        list.append(li);
+      }
+    }
+    panel.replaceChildren(list);
+  }
+
+  /** The selected values for a column's `attr in/eq` leaf in screen.predicate. */
+  private columnFilterValues(attr: string): string[] {
+    const predicate = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
+    const leaf = topLevelLeafForAttr(predicate, attr);
+    if (leaf === null || (leaf.op !== 'eq' && leaf.op !== 'in')) return [];
+    return (leaf.values ?? []).map((v) => String(v));
+  }
+
+  /** Toggle one value in a column's filter leaf + write screen.predicate. */
+  private toggleColumnFilter(attr: string, value: string): void {
+    const cur = this.columnFilterValues(attr);
+    const next = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];
+    const predicate = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
+    let updated: Predicate | null;
+    if (next.length === 0) {
+      updated = removeTopLevelLeaf(predicate, attr);
+    } else {
+      const newLeaf: PredicateLeaf =
+        next.length === 1 ? makeLeaf(attr, 'eq', [next[0]]) : makeLeaf(attr, 'in', next);
+      updated = upsertTopLevelLeaf(predicate, newLeaf);
+    }
+    this.ctx.tree.at(['screen', 'predicate']).set(updated);
+  }
+
+  /** Mark each funnel active when its column has a filter leaf (effect-driven). */
+  private paintHeaderFilters(): void {
+    for (const { funnel, attr } of this.headerFilters) {
+      const active = this.columnFilterValues(attr).length > 0;
+      funnel.classList.toggle('grid__col-filter--active', active);
+    }
   }
 
   /** Header click: cycle the sort and re-issue the tasks query with the new order. */
@@ -669,11 +1030,30 @@ export class Grid extends Control<GridConfig> {
     const out: SortState[] = [];
     const groupField = this.group !== null ? `attributes.${this.group.attr}` : null;
     if (groupField !== null) out.push({ field: groupField, direction: this.groupDir });
-    for (const s of effectiveSort(this.sort, [])) {
+    // The view's persisted sort (`screen.sort`, set by the filter builder's
+    // "Sort by") is the default order; a header click overrides it (effectiveSort).
+    const filterSort = sortStatesFromFilter(this.readScreenSort());
+    for (const s of effectiveSort(this.sort, filterSort)) {
       if (s.field === groupField) continue;
       out.push(s);
     }
     this.ctx.tree.at(['grid', 'order']).set(buildOrderClauses(out));
+  }
+
+  /** The view's persisted sort entries from `screen.sort` (peek; the dedicated
+   *  effect owns the subscription). Tolerates the `{ attr, dir }` builder shape. */
+  private readScreenSort(): FilterSortEntry[] {
+    const raw = this.ctx.tree.at(['screen', 'sort']).peek<unknown>();
+    if (!Array.isArray(raw)) return [];
+    const out: FilterSortEntry[] = [];
+    for (const e of raw) {
+      if (e !== null && typeof e === 'object') {
+        const o = e as Record<string, unknown>;
+        const attr = typeof o['attr'] === 'string' ? o['attr'] : '';
+        if (attr !== '') out.push({ attr, dir: o['dir'] === 'desc' ? 'desc' : 'asc' });
+      }
+    }
+    return out;
   }
 
   /** Reactive mirror of `this.sort` so every header cell repaints on a change. */
@@ -721,10 +1101,14 @@ export class Grid extends Control<GridConfig> {
     });
   }
 
-  /** Navigate into a row's task detail (`/task/:id`), reading the live card id. */
+  /** Navigate into a row's task detail (`/task/:id`), reading the live card id.
+   *  Publishes the current row order first so task-detail prev/next nav (#18)
+   *  walks the same sequence the grid shows. */
   private openRow(el: HTMLElement): void {
     const idStr = el.dataset.cardId;
     if (idStr === undefined || idStr === '') return;
+    const tasks = (this.ctx.tree.at(['grid', 'tasks']).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+    publishTaskNav(this.ctx.tree, tasks.map((t) => t.id));
     navigate(taskUrl(idStr));
   }
 
@@ -734,7 +1118,7 @@ export class Grid extends Control<GridConfig> {
    *  cell; the row's checkbox click handler is wired ONCE here (it reads the
    *  live data-card-id, never stale node state). */
   private makeRowMode(el: HTMLElement): void {
-    if (el.dataset.gridRow !== undefined && el.children.length === GRID_COLUMNS.length + 1) return;
+    if (el.dataset.gridRow !== undefined && el.children.length === this.columns.length + 1) return;
     delete el.dataset.gridGroupHeader;
     el.className = 'grid__row';
     el.dataset.gridRow = '';
@@ -760,11 +1144,21 @@ export class Grid extends Control<GridConfig> {
     selCell.append(box);
     el.append(selCell);
 
-    for (const col of GRID_COLUMNS) {
+    for (const col of this.columns) {
       const cell = document.createElement('div');
       cell.className = `grid__cell grid-${col.kind}`;
       cell.dataset.gridCol = col.field ?? col.key;
       cell.setAttribute('role', 'cell');
+      // Inline edit (#30): double-click an editable cell to edit in place. The
+      // col is captured per pooled cell; the card id is read live off the row.
+      if (isEditableCol(col)) {
+        cell.classList.add('grid__cell--editable');
+        this.listen(cell, 'dblclick', (ev) => {
+          ev.stopPropagation();
+          const cardId = el.dataset.cardId;
+          if (cardId !== undefined && cardId !== '') this.beginCellEdit(cardId, col, cell);
+        });
+      }
       el.append(cell);
     }
   }
@@ -830,10 +1224,10 @@ export class Grid extends Control<GridConfig> {
       else delete el.dataset.selected;
     }
     // Data cells follow the select cell (offset by 1).
-    for (let i = 0; i < GRID_COLUMNS.length; i++) {
+    for (let i = 0; i < this.columns.length; i++) {
       const cell = cells[i + 1] as HTMLElement | undefined;
       if (!cell) continue;
-      this.fillCell(cell, row, GRID_COLUMNS[i]!);
+      this.fillCell(cell, row, this.columns[i]!);
     }
   }
 
@@ -863,6 +1257,13 @@ export class Grid extends Control<GridConfig> {
 
   /** Repopulate one cell for a task + column, resolving ref labels from lookups. */
   private fillCell(cell: HTMLElement, row: CardWithAttrs, col: ColumnDef): void {
+    // Inline-edit guard (#30): if this pooled cell holds the active editor and
+    // still shows the same card+column, leave the editor in place. If the row
+    // recycled to a different card/column, end the edit before re-rendering.
+    if (this.editing !== null && this.editing.cell === cell) {
+      if (this.editing.cardId === row.id.toString() && this.editing.key === col.key) return;
+      this.cancelCellEdit();
+    }
     // Clear prior content (this slot may have shown another task before).
     cell.replaceChildren();
     switch (col.kind) {
@@ -872,49 +1273,171 @@ export class Grid extends Control<GridConfig> {
       case 'title':
         cell.textContent = strAttr(row, 'title') ?? '(untitled)';
         break;
-      case 'status':
-        this.setRefCell(cell, row, 'status', 'statuses');
+      case 'ref':
+        // A single card_ref attr: resolve its id via the target type's lookup.
+        this.setRefCell(cell, row, col.attrName ?? '', col.lookup ?? '');
         break;
-      case 'assignee':
-        this.setRefCell(cell, row, 'assignee', 'persons');
-        break;
-      case 'priority': {
-        // Priority is a scalar attribute rendered as a tone pill (the design's
-        // [high]/[med]/[low]); empty → em-dash.
-        const v = row.attributes['priority'];
-        if (v === null || v === undefined || v === '') {
+      case 'tag_prefix': {
+        // Synthetic column: the tag value after `<prefix>/` (e.g. priority/high
+        // → "high"), shown as a tone pill; em-dash when no matching tag.
+        const value = this.tagPrefixCell(row, col.prefix ?? '');
+        if (value === null) {
           dash(cell);
         } else {
           const pill = document.createElement('span');
           pill.className = 'grid__pill';
-          pill.dataset.priority = String(v);
-          pill.textContent = String(v);
+          pill.dataset.priority = value;
+          pill.textContent = value;
           cell.append(pill);
         }
         break;
       }
-      case 'milestone':
-        this.setRefCell(cell, row, 'milestone_ref', 'milestones');
-        break;
-      case 'component':
-        this.setRefCell(cell, row, 'component_ref', 'components');
-        break;
       case 'tags':
         this.setTagsCell(cell, row);
         break;
-      case 'due':
-        cell.textContent = dateAttr(row.attributes['due_date']) ?? '—';
+      case 'date':
+        cell.textContent = dateAttr(row.attributes[col.attrName ?? '']) ?? '—';
         break;
+      case 'attr': {
+        // A scalar attribute (text / number) rendered as its string value.
+        const v = row.attributes[col.attrName ?? ''];
+        if (v === null || v === undefined || v === '') dash(cell);
+        else cell.textContent = typeof v === 'bigint' ? v.toString() : String(v);
+        break;
+      }
       case 'created':
-        // created_at rides at the top level of the wire row (the server sets it
-        // from card.created_at). The shared decode doesn't carry it yet, so this
-        // shows '—' until a richer decode lands (documented deferral).
         cell.textContent = dateAttr(topLevel(row, 'created_at')) ?? '—';
         break;
       case 'last_activity':
         cell.textContent = dateAttr(topLevel(row, 'last_activity_at')) ?? '—';
         break;
     }
+  }
+
+  /** Find a loaded task row by its stringified id, or null. */
+  private taskById(cardId: string): CardWithAttrs | null {
+    const tasks = (this.ctx.tree.at(this.tasksPath).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+    return tasks.find((t) => t.id.toString() === cardId) ?? null;
+  }
+
+  /**
+   * Begin an inline edit of one cell (#30): swap the read-mode cell content for
+   * the kind-appropriate editor (RefPicker for `ref`, DatePicker for `date`,
+   * plain input for scalar `attr`). Selection commits via the editor's callback;
+   * the input commits on Enter/blur and cancels on Escape.
+   */
+  private beginCellEdit(cardId: string, col: ColumnDef, cell: HTMLElement): void {
+    // Only one edit at a time; finish (revert) any prior one first.
+    this.cancelCellEdit();
+    const attr = col.attrName;
+    if (attr === null || attr === undefined) return;
+    const row = this.taskById(cardId);
+    if (row === null) return;
+    const cur = row.attributes[attr];
+
+    cell.replaceChildren();
+    cell.classList.add('grid__cell--editing');
+    let child: Control | null = null;
+    const commit = (value: unknown): void => this.commitCellEdit(cardId, attr, value);
+
+    if (col.kind === 'ref') {
+      const map = (this.ctx.tree.at(['grid', 'lookups', col.lookup ?? '']).peek<LabelMap>() ?? {}) as LabelMap;
+      const value = typeof cur === 'bigint' ? cur : null;
+      const rp = this.spawn(
+        'RefPicker',
+        {
+          type: 'RefPicker',
+          cardType: col.targetCardType ?? 'card',
+          value,
+          ...(value !== null && map[value.toString()] ? { currentLabel: map[value.toString()] } : {}),
+          'aria-label': col.label,
+          onChange: (v: bigint | null) => commit(v),
+        },
+        cell,
+      ) as RefPicker;
+      child = rp;
+      queueMicrotask(() => {
+        if (this.isAlive() && this.editing?.child === rp) rp.open();
+      });
+    } else if (col.kind === 'date') {
+      const dp = this.spawn(
+        'DatePicker',
+        {
+          type: 'DatePicker',
+          value: typeof cur === 'string' ? cur : null,
+          onChange: (v: string | null) => commit(v),
+        },
+        cell,
+      ) as DatePicker;
+      child = dp;
+      queueMicrotask(() => {
+        if (this.isAlive() && this.editing?.child === dp) dp.openMenu();
+      });
+    } else {
+      const input = document.createElement('input');
+      input.className = 'grid__cell-input';
+      input.type = typeof cur === 'number' ? 'number' : 'text';
+      input.value = cur === null || cur === undefined ? '' : typeof cur === 'bigint' ? cur.toString() : String(cur);
+      this.listen(input, 'keydown', (ev) => {
+        const e = ev as KeyboardEvent;
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commit(typeof cur === 'number' ? Number(input.value) : input.value);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          this.cancelCellEdit();
+        }
+      });
+      this.listen(input, 'blur', () => {
+        if (this.editing?.cell === cell) commit(typeof cur === 'number' ? Number(input.value) : input.value);
+      });
+      cell.append(input);
+      queueMicrotask(() => {
+        if (this.isAlive() && this.editing?.cell === cell) input.focus();
+      });
+    }
+    this.editing = { cardId, key: col.key, cell, child };
+  }
+
+  /**
+   * Commit an inline edit: optimistically patch the loaded row, fire
+   * `attribute.update`, and refetch on error to revert to server truth. A
+   * no-op when the value is unchanged.
+   */
+  private commitCellEdit(cardId: string, attr: string, value: unknown): void {
+    const editing = this.editing;
+    if (editing === null || editing.cardId !== cardId) return;
+    this.cancelCellEdit();
+
+    const node = this.ctx.tree.at(this.tasksPath);
+    const tasks = (node.peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+    const row = tasks.find((t) => t.id.toString() === cardId);
+    if (row === undefined || sameAttrValue(row.attributes[attr], value)) return;
+
+    node.set(
+      tasks.map((t) =>
+        t.id.toString() === cardId ? { ...t, attributes: { ...t.attributes, [attr]: value } } : t,
+      ),
+    );
+    this.ctx.api.callByName(
+      'attribute.update',
+      { cardId: BigInt(cardId), attributeName: attr, value },
+      () => {},
+      { alive: () => this.isAlive(), onErr: () => this.bumpQuery() },
+    );
+  }
+
+  /** Tear down the active inline editor and restore the cell to read mode. */
+  private cancelCellEdit(): void {
+    const editing = this.editing;
+    if (editing === null) return;
+    this.editing = null;
+    if (editing.child !== null) this.destroyChild(editing.child);
+    editing.cell.classList.remove('grid__cell--editing');
+    const col = this.columns.find((c) => c.key === editing.key);
+    const row = this.taskById(editing.cardId);
+    if (col !== undefined && row !== null) this.fillCell(editing.cell, row, col);
+    else editing.cell.replaceChildren();
   }
 
   /** Resolve a card_ref attribute id to its label via a lookup map; '—' if unset. */
@@ -930,6 +1453,21 @@ export class Grid extends Control<GridConfig> {
     span.className = 'grid__ref';
     span.textContent = map[key] ?? `#${key}`;
     cell.append(span);
+  }
+
+  /** The value for a `tag_prefix` column: resolve the row's tag ids to paths via
+   *  the tags lookup, then the segment after `<prefix>/` (null when none match). */
+  private tagPrefixCell(row: CardWithAttrs, prefix: string): string | null {
+    const ids = row.attributes['tags'];
+    if (!Array.isArray(ids) || ids.length === 0 || prefix === '') return null;
+    const map = (this.ctx.tree.at(['grid', 'lookups', 'tags']).peek<LabelMap>() ?? {}) as LabelMap;
+    const paths: string[] = [];
+    for (const id of ids) {
+      if (typeof id !== 'bigint') continue;
+      const p = map[id.toString()];
+      if (p !== undefined) paths.push(p);
+    }
+    return tagPrefixValue(paths, prefix);
   }
 
   /**
@@ -1044,8 +1582,27 @@ export class Grid extends Control<GridConfig> {
 /** Read a top-level (non-attribute) field off a wire row defensively. The shared
  *  decode doesn't carry `created_at` / `last_activity_at` yet; a richer decode
  *  would, and this reads them the moment they're present. */
+/** Stable identity for a column set (so a rebuild only fires on a real change). */
+function columnKey(cols: readonly ColumnDef[]): string {
+  return cols.map((c) => c.key).join('|');
+}
+
 function topLevel(row: CardWithAttrs, key: string): unknown {
   return (row as unknown as Record<string, unknown>)[key];
+}
+
+/** Columns whose value is a single editable attribute (#30 inline edit).
+ *  ID/Title/tags/tag_prefix/created/last_activity are read-only here. */
+function isEditableCol(col: ColumnDef): boolean {
+  return (col.kind === 'ref' || col.kind === 'date' || col.kind === 'attr') && !!col.attrName;
+}
+
+/** Value equality for inline-edit no-op detection (bigint-aware). */
+function sameAttrValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if ((a === null || a === undefined || a === '') && (b === null || b === undefined || b === '')) return true;
+  if (typeof a === 'bigint' || typeof b === 'bigint') return String(a) === String(b);
+  return false;
 }
 
 function strAttr(row: CardWithAttrs, key: string): string | undefined {

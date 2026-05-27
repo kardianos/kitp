@@ -366,3 +366,51 @@ test('{ cardType } schema sources attributes from attribute_def.select', async (
   const names = attrSel.children.map((o) => o.value);
   assert.deepEqual(names, ['title', 'milestone_ref'], 'attrs sourced from attribute_def.select');
 });
+
+/* -------------------------------------------------------------------------- */
+/* The universal view builder: group-by + sort-by sections (#4).               */
+/* -------------------------------------------------------------------------- */
+
+test('PredicateFilter: groupPath renders a group-by select that writes the attr name', () => {
+  const { ctx, tree } = literalCtx();
+  const c = mount(
+    { type: 'PredicateFilter', valuePath: 'screen.filter', schema: SCHEMA, groupPath: 'screen.group', sortPath: 'screen.sort' },
+    ctx,
+  );
+  const groupSel = c.el.querySelector('[data-pred-group-select]');
+  assert.ok(groupSel, 'group-by select present when groupPath is set');
+  // Only card_ref (single) attrs are groupable: No group + Milestone.
+  const opts = groupSel.children.map((o) => o.value);
+  assert.deepEqual(opts, ['', 'milestone_ref']);
+  setSelect(groupSel, 'milestone_ref');
+  assert.equal(tree.at(['screen', 'group']).peek(), 'milestone_ref');
+});
+
+test('PredicateFilter: sortPath adds/edits/removes sort rows writing { attr, dir }[]', () => {
+  const { ctx, tree } = literalCtx();
+  const c = mount(
+    { type: 'PredicateFilter', valuePath: 'screen.filter', schema: SCHEMA, sortPath: 'screen.sort' },
+    ctx,
+  );
+  const add = c.el.querySelector('[data-pred-sort-add]');
+  assert.ok(add, '+ sort present when sortPath is set');
+  add.dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  // The first schema attr (title) seeds the new row, ascending.
+  assert.deepEqual(tree.at(['screen', 'sort']).peek(), [{ attr: 'title', dir: 'asc' }]);
+
+  setSelect(c.el.querySelector('[data-pred-sort-field]'), 'priority');
+  setSelect(c.el.querySelector('[data-pred-sort-dir]'), 'desc');
+  assert.deepEqual(tree.at(['screen', 'sort']).peek(), [{ attr: 'priority', dir: 'desc' }]);
+
+  c.el.querySelector('[data-pred-sort-remove]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  assert.equal(tree.at(['screen', 'sort']).peek(), null, 'removing the last row clears to null');
+});
+
+test('PredicateFilter: no group/sort sections without the paths (back-compat)', () => {
+  const { ctx } = literalCtx();
+  const c = mount({ type: 'PredicateFilter', valuePath: 'screen.filter', schema: SCHEMA }, ctx);
+  assert.equal(c.el.querySelector('[data-pred-groupby]'), null);
+  assert.equal(c.el.querySelector('[data-pred-sortby]'), null);
+});

@@ -51,14 +51,24 @@ import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { optimistic } from '../core/tree.js';
 import {
   type Predicate,
+  type Phase,
   toWire,
   leaf,
+  topLevelPhases,
+  withTopLevelPhases,
 } from '../filter/predicate.js';
 import {
   readPredicate,
   readGroupByAttr,
+  readSortBy,
   readTitle,
+  type PhaseToggle,
 } from '../filter/screen-resolve.js';
+import { refAxesForCardType, type RefAxis, type CardTypeRow } from '../filter/vocabulary.js';
+import { schemaForCardType } from '../filter/attribute-schema.js';
+import { loadView, saveView } from '../filter/view-persistence.js';
+import { groupAxisForAttr, type GroupAttr } from '../filter/group-axis.js';
+import type { AttributeDefRow } from '../admin/specs.js';
 
 export interface ScreenFilterBarConfig extends BaseControlConfig {
   type: 'ScreenFilterBar';
@@ -79,6 +89,31 @@ export interface ScreenFilterBarConfig extends BaseControlConfig {
    * which is what the existing predicate-only tests exercise.
    */
   screenStatePath?: string[];
+  /**
+   * Show the LANE (swim-lane 2nd axis) picker. Only the Kanban consumes
+   * `screen.laneAxis`, so the host enables this for the kanban layout and leaves
+   * it OFF (default) for the Grid / Inbox — where lanes are meaningless and the
+   * picker would just be dead UI. When false the picker isn't built at all and
+   * `screen.laneGroup`/`laneAxis` stay empty.
+   */
+  enableLanes?: boolean;
+  /**
+   * Require a grouping axis (a board layout — the Kanban — has columns, so it
+   * can't be "ungrouped"). When true the GROUP picker drops its "No group"
+   * option and never resolves to empty: an empty selection is coerced to
+   * `defaultGroup`. The host sets this for the kanban layout, paired with a
+   * non-empty `defaultGroup`, so the picker shows the board's real grouping (no
+   * more "No group" while the board silently groups by milestone).
+   */
+  requireGroup?: boolean;
+  /**
+   * Screen-specific view actions mounted pulled-RIGHT on the "View" row (row 1),
+   * after the preset selector + its ⋯ menu. The host registers per-screen
+   * controls here — e.g. the Grid screen registers its "Columns" chooser, since
+   * column selection is a view concern. Data-driven: the bar mounts whatever
+   * ChildConfigs the host supplies; it hard-codes nothing.
+   */
+  viewActions?: ChildConfig[];
 }
 
 declare module '../core/control.js' {
@@ -87,41 +122,32 @@ declare module '../core/control.js' {
   }
 }
 
-const DEFAULT_GROUP_OPTIONS = [
-  { value: 'milestone', label: 'Milestone' },
-  { value: 'status', label: 'Status' },
-  { value: 'component', label: 'Component' },
-  { value: 'assignee', label: 'Assignee' },
-];
-
 /**
- * Map the Grid's lookup leaf NAME → the card_type NAME the schema's card_ref
- * attrs target. The PredicateFilter keys its options on the target card_type, so
- * we re-key the `{id:label}` lookup maps under these names. A lookup with no
- * mapping here is simply not exposed to the ref pickers.
+ * The "off" entry pinned first in the GROUP picker. Empty value →
+ * `groupAxisForAttr('')` returns null → no grouping (Grid renders a flat list;
+ * Kanban falls back to its default milestone axis). Every other option is
+ * data-driven from the card_type's card_ref attributes (see {@link loadVocabulary}).
  */
-const LOOKUP_TO_CARD_TYPE: Readonly<Record<string, string>> = {
-  persons: 'person',
-  statuses: 'status',
-  milestones: 'milestone',
-  components: 'component',
-  tags: 'tag',
-};
+const NO_GROUP_OPTION = { value: '', label: 'No group' } as const;
+/** The "off" entry pinned first in the LANE picker (swim lanes 2nd axis). */
+const NO_LANE_OPTION = { value: '', label: 'No lanes' } as const;
 
-/** One ref-picker option. */
+/** One ref-picker / chip option (stringified card id → display label). */
 interface RefOption {
   value: string;
   label: string;
 }
 
-/** The GROUP-by value name → the human label used when re-keying a preset's
- *  stored `group_by_attr` (an attribute name) back to the picker vocabulary. */
-const ATTR_TO_GROUP_VALUE: Readonly<Record<string, string>> = {
-  milestone_ref: 'milestone',
-  component_ref: 'component',
-  status: 'status',
-  assignee: 'assignee',
-};
+/**
+ * Display label for a ref-target card: `title` ?? `name` ?? `path` ?? `#id`.
+ * Covers status/milestone/component (title), person (title), tag (path), and
+ * any future value type, mirroring the Svelte `buildRefOptions` rule.
+ */
+function refLabel(card: CardWithAttrs): string {
+  const a = card.attributes;
+  const t = a['title'] ?? a['name'] ?? a['path'];
+  return typeof t === 'string' && t.length > 0 ? t : `#${String(card.id)}`;
+}
 
 export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
   /** The live Advanced PredicateFilter child + its mount host, so Clear /
@@ -132,8 +158,21 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
   private predicateConfig: PredicateFilterConfig | null = null;
 
   private groupEl: HTMLSelectElement | null = null;
+  /** The LANE picker (swim lanes — a 2nd group axis); empty = no lanes. */
+  private laneEl: HTMLSelectElement | null = null;
+  /** True once the persisted view has been restored — gates the persist effect
+   *  so it never writes the transient pre-restore seed over a saved view. */
+  private viewRestored = false;
   private searchEl: HTMLInputElement | null = null;
-  private defaultGroup = 'milestone';
+  // Default group is "No group" unless the screen config / a saved filter's
+  // group_by_attr sets one; the group value is now the attribute NAME (e.g.
+  // 'milestone_ref'), not a hardcoded friendly token.
+  private defaultGroup = '';
+
+  /** Host for the QuickChips control, (re)spawned once the axes resolve. */
+  private chipsHostEl: HTMLElement | null = null;
+  private chipsControl: Control | null = null;
+  private predicateCardType = 'task';
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('div');
@@ -143,34 +182,46 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
   }
 
   protected render(): void {
-    this.defaultGroup = this.config.defaultGroup ?? 'milestone';
-    const groupOptions = this.config.groupOptions ?? DEFAULT_GROUP_OPTIONS;
-    const predicateCardType = this.config.predicateCardType ?? 'task';
+    this.defaultGroup = this.config.defaultGroup ?? '';
+    this.predicateCardType = this.config.predicateCardType ?? 'task';
 
     // Seed tree defaults (one-way; the Object.is gate makes re-seeding a no-op).
     this.ctx.tree.at(['screen', 'group']).set(this.defaultGroup);
+    this.ctx.tree.at(['screen', 'laneGroup']).set('');
     this.ctx.tree.at(['screen', 'search']).set('');
 
-    /* ---- row 1: the NAMED/SAVED filter picker (when wired to a screen) ---- */
-    if (this.config.screenStatePath !== undefined) {
+    /* ---- row 1: the NAMED/SAVED filter picker (when wired to a screen) +
+           any screen-registered view actions, pulled right. ---- */
+    const viewActions = this.config.viewActions ?? [];
+    if (this.config.screenStatePath !== undefined || viewActions.length > 0) {
       const row1 = document.createElement('div');
       row1.className = 'filterbar__row filterbar__row--presets';
       this.el.append(row1);
-      const dotted = this.config.screenStatePath.join('.');
-      this.spawn(
-        'FilterPresetSelector',
-        {
-          type: 'FilterPresetSelector',
-          filtersPath: `${dotted}.filters`,
-          activeIdPath: `${dotted}.activeFilterId`,
-          onPick: (id: bigint | null) => this.applyPreset(id),
-          onSave: () => this.saveCurrentAsNew(),
-          onSetDefault: () => this.setActiveAsDefault(),
-          onRename: () => this.renameActive(),
-          onDelete: () => this.deleteActive(),
-        } as ChildConfig,
-        row1,
-      );
+      if (this.config.screenStatePath !== undefined) {
+        const dotted = this.config.screenStatePath.join('.');
+        this.spawn(
+          'FilterPresetSelector',
+          {
+            type: 'FilterPresetSelector',
+            filtersPath: `${dotted}.filters`,
+            activeIdPath: `${dotted}.activeFilterId`,
+            onPick: (id: bigint | null) => this.applyPreset(id),
+            onSave: () => this.saveCurrentAsNew(),
+            onSetDefault: () => this.setActiveAsDefault(),
+            onRename: () => this.renameActive(),
+            onDelete: () => this.deleteActive(),
+          } as ChildConfig,
+          row1,
+        );
+      }
+      // Screen-specific view actions (e.g. Grid → Columns), right-aligned.
+      if (viewActions.length > 0) {
+        const actions = document.createElement('div');
+        actions.className = 'filterbar__view-actions';
+        actions.dataset.filterbarViewActions = '';
+        row1.append(actions);
+        for (const action of viewActions) this.spawn(action.type, action, actions);
+      }
     }
 
     /* ---- row 2: the v1 working subset (GROUP + search + Advanced + Clear) ---- */
@@ -186,15 +237,30 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     const group = document.createElement('select');
     group.className = 'filterbar__select';
     group.dataset.filterGroup = '';
-    for (const o of groupOptions) {
-      const opt = document.createElement('option');
-      opt.value = o.value;
-      opt.textContent = o.label;
-      if (o.value === this.defaultGroup) opt.selected = true;
-      group.append(opt);
-    }
-    groupWrap.append(groupLabel, group);
     this.groupEl = group;
+    // Seed the options now (No group + any static config override); the
+    // data-driven axes replace these once the schema loads (applyAxes).
+    this.rebuildGroupSelect(this.config.groupOptions ?? []);
+    groupWrap.append(groupLabel, group);
+
+    // LANE-by Picker (swim lanes — a 2nd axis the Kanban splits rows on). Same
+    // data-driven axes as GROUP; empty = no lanes. Only the Kanban consumes it,
+    // so it's built ONLY when the host enables it (config.enableLanes) — the
+    // Grid / Inbox hide it entirely (laneGroup/laneAxis stay empty).
+    let laneWrap: HTMLElement | null = null;
+    if (this.config.enableLanes === true) {
+      laneWrap = document.createElement('label');
+      laneWrap.className = 'filterbar__group filterbar__lane';
+      const laneLabel = document.createElement('span');
+      laneLabel.className = 'filterbar__label muted';
+      laneLabel.textContent = 'LANES';
+      const lane = document.createElement('select');
+      lane.className = 'filterbar__select';
+      lane.dataset.filterLane = '';
+      this.laneEl = lane;
+      this.rebuildLaneSelect([]);
+      laneWrap.append(laneLabel, lane);
+    }
 
     const search = document.createElement('input');
     search.type = 'search';
@@ -216,8 +282,28 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     clear.className = 'btn filterbar__clear';
     clear.textContent = 'Clear';
 
-    row2.append(groupWrap, search, advanced, clear);
+    row2.append(groupWrap);
+    if (laneWrap !== null) row2.append(laneWrap);
+    row2.append(search, advanced, clear);
     this.el.append(row2);
+
+    /* ---- phase-scope toggles (Active / Closed / …) from the screen's
+     *      `toggle_groups`. Each toggles a phase in the SINGLE top-level
+     *      `status has_phase [phases]` leaf of `screen.predicate` (OR-semantics).
+     *      Default-on phases are seeded on first visit (so e.g. terminal is
+     *      hidden); a click reveals/hides a phase. Reads `screen.phaseToggles`
+     *      (landed by ScreenHost) + `screen.predicate` reactively, so it repaints
+     *      on any surface's edit and composes with the chips (the chip helpers
+     *      preserve the `has_phase` leaf). ---- */
+    const phaseHost = document.createElement('div');
+    phaseHost.className = 'filterbar__row filterbar__row--phases';
+    phaseHost.dataset.phaseToggles = '';
+    this.el.append(phaseHost);
+    this.effect(() => {
+      const toggles = (this.ctx.tree.at(['screen', 'phaseToggles']).get<PhaseToggle[]>() ?? []) as PhaseToggle[];
+      const scoped = topLevelPhases(this.ctx.tree.at(['screen', 'predicate']).get<Predicate | null>() ?? null);
+      this.paintPhaseToggles(phaseHost, toggles, new Set<Phase>(scoped));
+    }, 'filterbar.phaseToggles');
 
     /* ---- row 3: the QUICK-CHIPS row (pinned per-attribute one-tap filters) ---- */
     // Each chip toggles a top-level `attr in [...]` leaf in 'screen.predicate'
@@ -227,6 +313,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     const chipsHost = document.createElement('div');
     chipsHost.className = 'filterbar__row filterbar__row--chips';
     this.el.append(chipsHost);
+    this.chipsHostEl = chipsHost;
 
     // The "Named" multi-select — toggles reusable predicate-fragment leaves
     // (`snippet` op → predicate_snippet cards) on the SAME tree. Picking a
@@ -245,17 +332,9 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       } as NamedFiltersConfig,
       chipsHost,
     );
-
-    this.spawn(
-      'QuickChips',
-      {
-        type: 'QuickChips',
-        predicatePath: 'screen.predicate',
-        optionsPath: 'screen.predicateOptions',
-        onCommit: (next: Predicate | null) => this.applyPredicate(next),
-      } as QuickChipsConfig,
-      chipsHost,
-    );
+    // QuickChips is (re)spawned by applyAxes once the data-driven axes resolve,
+    // so its chip set + option values come from the project's attribute schema
+    // rather than a hardcoded list.
 
     /* ---- the Advanced panel: a structured PredicateFilter over the task type ---- */
     const panel = document.createElement('div');
@@ -268,25 +347,45 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.predicateConfig = {
       type: 'PredicateFilter',
       valuePath: 'screen.predicate',
-      schema: { cardType: predicateCardType },
+      schema: { cardType: this.predicateCardType },
       optionsPath: 'screen.predicateOptions',
+      // The Advanced panel doubles as the view builder: add a "Sort by" editor
+      // (the grid consumes `screen.sort` as the default order). GROUP stays the
+      // dedicated row-2 picker, so it's not duplicated here.
+      sortPath: 'screen.sort',
     };
     this.predicateChild = this.spawn('PredicateFilter', this.predicateConfig, panel);
 
-    // Project the Grid's `{id:label}` lookup maps into the PredicateFilter's
-    // option shape (re-keyed by card_type). One-way derive, cascade-safe.
+    // DATA-DRIVEN VOCABULARY. Load the card_type's attribute schema + each
+    // ref-target's option cards, then derive the group picker options + quick
+    // chips + the predicate ref-picker options — all from the server, on EVERY
+    // screen (the old grid.lookups projection only populated on the Grid). Re-
+    // runs on a project switch so project-scoped value cards reload. One-way:
+    // reads scope.projectId, writes schema/options/axes leaves it never reads back.
     this.effect(() => {
-      this.ctx.tree.at(['grid', 'lookups', 'tick']).get(); // re-derive on a late land
-      const options: Record<string, RefOption[]> = {};
-      for (const [lookup, cardType] of Object.entries(LOOKUP_TO_CARD_TYPE)) {
-        const map =
-          (this.ctx.tree.at(['grid', 'lookups', lookup]).get<Record<string, string>>() ??
-            {}) as Record<string, string>;
-        const opts: RefOption[] = Object.entries(map).map(([value, label]) => ({ value, label }));
-        if (opts.length > 0) options[cardType] = opts;
-      }
-      this.ctx.tree.at(['screen', 'predicateOptions']).set(options);
-    }, 'filterbar.predicateOptions');
+      this.ctx.tree.at(['scope', 'projectId']).get();
+      this.loadVocabulary();
+    }, 'filterbar.vocab');
+
+    // Derive `screen.groupAxis` ({attr, lookup} | null) from the active group
+    // attr name + the resolved axis map. The Grid/Kanban read this resolved
+    // value instead of the retired hardcoded switch. One-way derive.
+    this.effect(() => {
+      const groupAttr = this.ctx.tree.at(['screen', 'group']).get<string>() ?? '';
+      const byAttr =
+        this.ctx.tree.at(['screen', 'groupAxesByAttr']).get<Record<string, GroupAttr>>() ?? {};
+      const axis = groupAttr === '' ? null : (byAttr[groupAttr] ?? null);
+      this.ctx.tree.at(['screen', 'groupAxis']).set(axis);
+    }, 'filterbar.groupAxis');
+
+    // Same derive for the LANE axis (swim lanes) → `screen.laneAxis`.
+    this.effect(() => {
+      const laneAttr = this.ctx.tree.at(['screen', 'laneGroup']).get<string>() ?? '';
+      const byAttr =
+        this.ctx.tree.at(['screen', 'groupAxesByAttr']).get<Record<string, GroupAttr>>() ?? {};
+      const axis = laneAttr === '' ? null : (byAttr[laneAttr] ?? null);
+      this.ctx.tree.at(['screen', 'laneAxis']).set(axis);
+    }, 'filterbar.laneAxis');
 
     // DEFAULT-FILTER-ON-FIRST-VISIT. When the screen resolves, apply the
     // default's predicate the first time this (project, slug) is visited; with
@@ -306,6 +405,12 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.listen(group, 'change', () => {
       this.ctx.tree.at(['screen', 'group']).set(group.value);
     });
+    if (this.laneEl !== null) {
+      const lane = this.laneEl;
+      this.listen(lane, 'change', () => {
+        this.ctx.tree.at(['screen', 'laneGroup']).set(lane.value);
+      });
+    }
     this.listen(search, 'input', () => {
       this.ctx.tree.at(['screen', 'search']).set(search.value);
     });
@@ -316,6 +421,218 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       advanced.classList.toggle('filterbar__advanced--open', open);
     });
     this.listen(clear, 'click', () => this.clearAll());
+
+    // VIEW PERSISTENCE (#27): restore the saved (project, slug) view now — before
+    // the async screen-resolve fires the default-on-first-visit effect — then
+    // persist on any change to the view leaves. Restore takes precedence: a
+    // restored view marks the (project, slug) visited so the default is skipped.
+    this.restoreView();
+    this.effect(() => {
+      const predicate = this.ctx.tree.at(['screen', 'predicate']).get<Predicate | null>() ?? null;
+      const group = this.ctx.tree.at(['screen', 'group']).get<string>() ?? '';
+      const laneGroup = this.ctx.tree.at(['screen', 'laneGroup']).get<string>() ?? '';
+      const columnConfig = this.ctx.tree.at(['screen', 'columnConfig']).get<unknown>();
+      if (!this.viewRestored) return; // don't persist the transient pre-restore seed
+      const sp = this.config.screenStatePath;
+      if (sp !== undefined) saveView(sp, { predicate, group, laneGroup, columnConfig });
+    }, 'filterbar.persistView');
+  }
+
+  /** Restore the persisted (project, slug) view into the screen.* leaves. */
+  private restoreView(): void {
+    const sp = this.config.screenStatePath;
+    if (sp === undefined) {
+      this.viewRestored = true;
+      return;
+    }
+    const v = loadView(sp);
+    if (v !== null) {
+      if (v.group !== undefined) {
+        // setGroup coerces an empty restored group to the default under
+        // requireGroup (old saved views may carry '' from before the board
+        // required a group), keeping the picker + board in sync.
+        this.setGroup(v.group);
+      }
+      if (v.laneGroup !== undefined) {
+        this.ctx.tree.at(['screen', 'laneGroup']).set(v.laneGroup);
+        if (this.laneEl !== null) this.laneEl.value = v.laneGroup;
+      }
+      if (v.columnConfig !== undefined) this.ctx.tree.at(['screen', 'columnConfig']).set(v.columnConfig);
+      if (v.predicate !== undefined) {
+        this.ctx.tree.at(['screen', 'predicate']).set(v.predicate as Predicate | null);
+        this.respawnPredicate();
+      }
+      // Mark the (project, slug) visited so default-on-first-visit doesn't
+      // override the restored view when the screen resolves.
+      this.ctx.tree.at([...sp, 'activeFilterId']).set(null);
+    }
+    this.viewRestored = true;
+  }
+
+  /* --------------------------- data-driven vocabulary ----------------------- */
+
+  /**
+   * Load the card_type's attribute schema (`attribute_def.select`) + card_type
+   * registry (`card_type.select`), derive the group/chip axes (filter/
+   * vocabulary.ts), apply them to the UI, and load each axis's option cards.
+   * Both lead queries fire the same tick → one batch; the join derives once both
+   * land. Re-invoked by the `filterbar.vocab` effect on a project switch.
+   */
+  private loadVocabulary(): void {
+    const cardType = this.predicateCardType;
+    let defs: AttributeDefRow[] | null = null;
+    let types: CardTypeRow[] | null = null;
+    const derive = (): void => {
+      if (defs === null || types === null || !this.isAlive()) return;
+      // Publish the full attribute schema so the Grid can type its data-driven
+      // `extra_columns` (date vs text/number rendering) off the same load.
+      this.ctx.tree.at(['screen', 'attrSchema']).set(schemaForCardType(defs, cardType));
+      const axes = refAxesForCardType(defs, types, cardType);
+      this.applyAxes(axes);
+      this.loadAxisOptions(axes, types);
+    };
+    this.ctx.api.callByName(
+      'attribute_def.select',
+      {},
+      (out) => {
+        if (!this.isAlive()) return;
+        defs = ((out as { rows?: AttributeDefRow[] }).rows ?? []) as AttributeDefRow[];
+        derive();
+      },
+      { alive: () => this.isAlive() },
+    );
+    this.ctx.api.callByName(
+      'card_type.select',
+      {},
+      (out) => {
+        if (!this.isAlive()) return;
+        types = ((out as { rows?: CardTypeRow[] }).rows ?? []) as CardTypeRow[];
+        derive();
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /**
+   * Apply the resolved axes: publish the attr→{attr,lookup} map (for the
+   * `screen.groupAxis` derive), rebuild the group `<select>` options, and
+   * (re)spawn QuickChips with the derived chip set.
+   */
+  private applyAxes(axes: RefAxis[]): void {
+    const byAttr: Record<string, GroupAttr> = {};
+    for (const a of axes) {
+      const ga = groupAxisForAttr(a.attr, a.targetCardType);
+      if (ga !== null) byAttr[a.attr] = ga;
+    }
+    this.ctx.tree.at(['screen', 'groupAxesByAttr']).set(byAttr);
+    // Publish the full axis list so other surfaces (the Grid's bulk-action bar,
+    // synthetic ref columns) data-drive off the SAME schema without re-loading.
+    this.ctx.tree.at(['screen', 'refAxes']).set(axes);
+    const opts = axes.map((a) => ({ value: a.attr, label: a.label }));
+    this.rebuildGroupSelect(opts);
+    this.rebuildLaneSelect(opts);
+    this.spawnChips(axes);
+  }
+
+  /** Rebuild the group `<select>` as `No group` + the given axis options,
+   *  preserving the active selection. A board layout (requireGroup) drops the
+   *  "No group" option and falls back to the default axis instead of empty. */
+  private rebuildGroupSelect(options: ReadonlyArray<{ value: string; label: string }>): void {
+    const requireGroup = this.config.requireGroup === true;
+    this.rebuildAxisSelect(
+      this.groupEl,
+      ['screen', 'group'],
+      requireGroup ? null : NO_GROUP_OPTION,
+      options,
+      requireGroup ? this.defaultGroup : '',
+    );
+  }
+
+  /** Rebuild the LANE picker (swim lanes — a 2nd axis); empty value = no lanes. */
+  private rebuildLaneSelect(options: ReadonlyArray<{ value: string; label: string }>): void {
+    this.rebuildAxisSelect(this.laneEl, ['screen', 'laneGroup'], NO_LANE_OPTION, options);
+  }
+
+  /** Shared: rebuild an axis `<select>`. With a `noneOption` it's pinned first
+   *  (the "none" entry); pass null to omit it (a required axis). Preserves the
+   *  active selection, falling back to `fallback` when it isn't among the
+   *  options. */
+  private rebuildAxisSelect(
+    sel: HTMLSelectElement | null,
+    leafPath: string[],
+    noneOption: { value: string; label: string } | null,
+    options: ReadonlyArray<{ value: string; label: string }>,
+    fallback = '',
+  ): void {
+    if (sel === null) return;
+    const current = this.ctx.tree.at(leafPath).peek<string>() ?? '';
+    sel.replaceChildren();
+    const all = noneOption !== null ? [noneOption, ...options] : [...options];
+    for (const o of all) {
+      const opt = document.createElement('option');
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.append(opt);
+    }
+    sel.value = current;
+    if (sel.value !== current) sel.value = fallback;
+  }
+
+  /** (Re)spawn QuickChips with chip defs derived from the axes (one chip per
+   *  card_ref attr; optionKey = its target card_type). */
+  private spawnChips(axes: RefAxis[]): void {
+    if (this.chipsHostEl === null) return;
+    if (this.chipsControl !== null) {
+      this.destroyChild(this.chipsControl);
+      this.chipsControl = null;
+    }
+    const chips = axes.map((a) => ({ attr: a.attr, label: a.label, optionKey: a.targetCardType }));
+    this.chipsControl = this.spawn(
+      'QuickChips',
+      {
+        type: 'QuickChips',
+        chips,
+        predicatePath: 'screen.predicate',
+        optionsPath: 'screen.predicateOptions',
+        onCommit: (next: Predicate | null) => this.applyPredicate(next),
+      } as QuickChipsConfig,
+      this.chipsHostEl,
+    );
+  }
+
+  /**
+   * Load each axis target's option cards into `screen.predicateOptions[target]`
+   * (the map the chips + Advanced ref pickers read). Project-scoped value types
+   * (parent_card_type_id === the project type) query under scope.projectId;
+   * global types (person) query unscoped. One card.select per distinct target.
+   */
+  private loadAxisOptions(axes: RefAxis[], types: CardTypeRow[]): void {
+    const projectType = types.find((t) => t.name === 'project');
+    const projectId = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
+    const seen = new Set<string>();
+    for (const axis of axes) {
+      const target = axis.targetCardType;
+      if (seen.has(target)) continue;
+      seen.add(target);
+      const trow = types.find((t) => t.name === target);
+      const projectScoped =
+        projectType !== undefined && trow !== undefined && trow.parent_card_type_id === projectType.id;
+      const data: Record<string, unknown> = { cardTypeName: target };
+      if (projectScoped && projectId !== null) data['parentCardId'] = projectId;
+      this.ctx.api.callByName(
+        'card.select_with_attributes',
+        data,
+        (out) => {
+          if (!this.isAlive()) return;
+          const rows = ((out as { rows?: CardWithAttrs[] }).rows ?? []) as CardWithAttrs[];
+          const opts: RefOption[] = rows.map((r) => ({ value: String(r.id), label: refLabel(r) }));
+          const node = this.ctx.tree.at(['screen', 'predicateOptions']);
+          const cur = (node.peek<Record<string, RefOption[]>>() ?? {}) as Record<string, RefOption[]>;
+          node.set({ ...cur, [target]: opts });
+        },
+        { alive: () => this.isAlive() },
+      );
+    }
   }
 
   /* --------------------------- preset application --------------------------- */
@@ -337,6 +654,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     if (id === null) {
       this.applyPredicate(null);
       this.setGroup(this.defaultGroup);
+      this.ctx.tree.at(['screen', 'sort']).set(null);
       return;
     }
     const filters = this.ctx.tree.at([...statePath, 'filters']).peek<CardWithAttrs[]>() ?? [];
@@ -346,9 +664,12 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       return;
     }
     this.applyPredicate(readPredicate(card));
-    const groupBy = readGroupByAttr(card);
-    const groupValue = groupBy === null ? this.defaultGroup : (ATTR_TO_GROUP_VALUE[groupBy] ?? this.defaultGroup);
-    this.setGroup(groupValue);
+    // `group_by_attr` already IS the attribute name (the group-picker value), so
+    // it applies directly — no friendly-token translation.
+    this.setGroup(readGroupByAttr(card) ?? this.defaultGroup);
+    // Apply the view's persisted sort (the grid consumes `screen.sort`).
+    const sort = readSortBy(card);
+    this.ctx.tree.at(['screen', 'sort']).set(sort.length > 0 ? sort : null);
   }
 
   /**
@@ -363,16 +684,82 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     if (activeNode.peek<bigint | null>() !== undefined) return;
 
     const defaultId = this.ctx.tree.at([...statePath, 'defaultFilterId']).peek<bigint | null>() ?? null;
+    const toggles = (this.ctx.tree.at(['screen', 'phaseToggles']).peek<PhaseToggle[]>() ?? []) as PhaseToggle[];
+
+    // 1. Base predicate: the default_filter preset, else empty — UNLESS the
+    //    screen defines no phase toggles, in which case keep the legacy
+    //    `status notTerminal` fallback so terminal stays hidden.
     if (defaultId !== null) {
-      // Mark visited + apply the default preset's predicate/group.
-      this.applyPreset(defaultId);
+      this.applyPreset(defaultId); // marks visited + sets predicate/group/sort
+    } else {
+      activeNode.set(null); // mark visited
+      this.applyPredicate(toggles.length > 0 ? null : leaf('status', 'notTerminal'));
+    }
+
+    // 2. Seed the phase scope from the default-on toggles, composed on top of
+    //    the base predicate. All-on (or none) → no leaf (every phase visible).
+    if (toggles.length > 0) {
+      const all = toggles.map((t) => t.phase);
+      const on = toggles.filter((t) => t.defaultOn).map((t) => t.phase);
+      const phases = on.length >= all.length ? [] : on;
+      const cur = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
+      this.applyPredicate(withTopLevelPhases(cur, phases));
+    }
+  }
+
+  /* ----------------------------- phase toggles ----------------------------- */
+
+  /** (Re)render the phase-scope toggle row. `active` is the set of phases the
+   *  `status has_phase` leaf currently scopes to; an EMPTY set means no leaf →
+   *  every phase is visible, so every toggle reads as ON. */
+  private paintPhaseToggles(host: HTMLElement, toggles: readonly PhaseToggle[], active: Set<Phase>): void {
+    host.replaceChildren();
+    if (toggles.length === 0) {
+      host.style.display = 'none';
       return;
     }
-    // No default → the `status notTerminal` fallback (a single not-terminal
-    // leaf). Mark visited (null) so re-resolution doesn't re-apply it over a
-    // later user edit.
-    activeNode.set(null);
-    this.applyPredicate(leaf('status', 'notTerminal'));
+    host.style.display = '';
+    const label = document.createElement('span');
+    label.className = 'filterbar__phase-label muted';
+    label.textContent = 'Phase';
+    host.append(label);
+    for (const t of toggles) {
+      const on = active.size === 0 ? true : active.has(t.phase);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'filterbar__phase-toggle';
+      btn.dataset.phaseToggle = t.phase;
+      btn.textContent = t.label;
+      btn.classList.toggle('filterbar__phase-toggle--on', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      this.listen(btn, 'click', () => this.togglePhase(t.phase));
+      host.append(btn);
+    }
+  }
+
+  /** Toggle one phase in the `status has_phase` scope. Showing-all (no leaf) +
+   *  a click HIDES that phase (restricts to the rest); otherwise the phase is
+   *  added/removed. A result covering every phase collapses to no leaf (show
+   *  all), which the chips never touch. Routes through applyPredicate so the
+   *  Advanced editor + the toggles repaint. */
+  private togglePhase(phase: Phase): void {
+    const toggles = (this.ctx.tree.at(['screen', 'phaseToggles']).peek<PhaseToggle[]>() ?? []) as PhaseToggle[];
+    const all = toggles.map((t) => t.phase);
+    const cur = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
+    const curPhases = topLevelPhases(cur);
+
+    let next: Set<Phase>;
+    if (curPhases.length === 0) {
+      // Showing every phase → clicking hides the clicked one.
+      next = new Set(all.filter((p) => p !== phase));
+    } else {
+      next = new Set(curPhases);
+      if (next.has(phase)) next.delete(phase);
+      else next.add(phase);
+    }
+    // Covering all phases (or none) ⇒ no restriction ⇒ drop the leaf.
+    const phases = next.size >= all.length ? [] : all.filter((p) => next.has(p));
+    this.applyPredicate(withTopLevelPhases(cur, phases));
   }
 
   /** Write a predicate to `screen.predicate` + re-seed the Advanced editor. */
@@ -381,10 +768,13 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.respawnPredicate();
   }
 
-  /** Set the GROUP picker value + leaf (keeps the <select> in sync on apply). */
+  /** Set the GROUP picker value + leaf (keeps the <select> in sync on apply).
+   *  A board layout (requireGroup) never goes to "No group": an empty value is
+   *  coerced to the configured default so the picker + board stay in sync. */
   private setGroup(value: string): void {
-    if (this.groupEl) this.groupEl.value = value;
-    this.ctx.tree.at(['screen', 'group']).set(value);
+    const v = this.config.requireGroup === true && value === '' ? this.defaultGroup : value;
+    if (this.groupEl) this.groupEl.value = v;
+    this.ctx.tree.at(['screen', 'group']).set(v);
   }
 
   /** Clear search + group + the predicate back to defaults (the Clear button). */
@@ -424,9 +814,13 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       // Stored as a JSON STRING (the shape readPredicate reads back).
       attributes['predicate'] = JSON.stringify(toWire(predicate));
     }
-    const groupValue = this.ctx.tree.at(['screen', 'group']).peek<string>() ?? this.defaultGroup;
-    const groupAttr = invertGroupValue(groupValue);
-    if (groupAttr !== null) attributes['group_by_attr'] = groupAttr;
+    // The group value IS the attribute name → persist it verbatim as group_by_attr.
+    const groupAttr = this.ctx.tree.at(['screen', 'group']).peek<string>() ?? '';
+    if (groupAttr !== '') attributes['group_by_attr'] = groupAttr;
+    // The view's "Sort by" list (`{ attr, dir }[]`) → persisted as the filter
+    // card's `sort` attribute (JSON).
+    const sort = this.ctx.tree.at(['screen', 'sort']).peek<unknown>();
+    if (Array.isArray(sort) && sort.length > 0) attributes['sort'] = JSON.stringify(sort);
 
     // Optimistic append with a negative temp id (distinct from any real id).
     const tempIdBig = BigInt(Math.trunc(-Date.now()));
@@ -552,22 +946,6 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
   }
 }
 
-/** Invert a GROUP picker value to the stored attribute name (null = no group). */
-function invertGroupValue(value: string): string | null {
-  switch (value) {
-    case 'milestone':
-      return 'milestone_ref';
-    case 'component':
-      return 'component_ref';
-    case 'status':
-      return 'status';
-    case 'assignee':
-      return 'assignee';
-    default:
-      return null;
-  }
-}
-
 /** Prompt for text (browser prompt; null when unavailable / cancelled). */
 function promptText(message: string, initial: string): string | null {
   if (typeof window === 'undefined' || typeof window.prompt !== 'function') return null;
@@ -582,4 +960,31 @@ function confirmText(message: string): boolean {
 
 export function registerScreenFilterBar(): void {
   Control.register('ScreenFilterBar', ScreenFilterBar);
+}
+
+/**
+ * Focus (and select) the shared ScreenFilterBar's search input, if one is
+ * mounted in the same document tree as `from`. Returns true when an input was
+ * found + focused. DOM-only (no signal write) so it's safe to call from a
+ * hotkey handler. ScreenHost binds "/" to this so every search screen (grid /
+ * list / kanban / project) gets focus-search without each body re-implementing
+ * it. The bar's search input is the canonical `[data-filter-search]` element.
+ */
+export function focusScreenSearch(from: HTMLElement): boolean {
+  const sel = '[data-filter-search]';
+  const root = (from.getRootNode?.() ?? null) as ParentNode | null;
+  // `from` (the ScreenHost root) contains the bar, so try its subtree first;
+  // then the document root, then the document — covers both the live shell and
+  // a detached test mount.
+  const input =
+    from.querySelector?.<HTMLInputElement>(sel) ??
+    root?.querySelector?.<HTMLInputElement>(sel) ??
+    (typeof document !== 'undefined' ? document.querySelector?.<HTMLInputElement>(sel) : null) ??
+    null;
+  if (input && typeof input.focus === 'function') {
+    input.focus();
+    input.select?.();
+    return true;
+  }
+  return false;
 }

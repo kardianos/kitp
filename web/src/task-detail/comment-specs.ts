@@ -47,8 +47,12 @@ export const ACTIVITY_LIMIT = 50;
 /* -------------------------------------------------------------------------- */
 
 export interface ActivitySelectInput {
-  /** The focal card whose activity stream is read. */
-  cardId: bigint;
+  /** The focal card whose activity stream is read. Omit (or 0) for cross-card /
+   *  project-scoped mode (the standalone Activity page). */
+  cardId?: bigint;
+  /** Project scope: only activity for cards within this project (the project or
+   *  a descendant). Used by the Activity page; omit for a single-card feed. */
+  projectId?: bigint;
   /** Optional row cap; the server defaults to 200 and caps at 999. */
   limit?: number;
   /** Cursor: only return rows with id < this (older page). */
@@ -148,7 +152,9 @@ export function registerCommentSpecs(api: Api): void {
       endpoint: 'activity',
       action: 'select',
       encode: (i) => {
-        const m: Record<string, unknown> = { card_id: i.cardId };
+        const m: Record<string, unknown> = {};
+        if (i.cardId !== undefined) m['card_id'] = i.cardId;
+        if (i.projectId !== undefined) m['project_id'] = i.projectId;
         if (i.limit !== undefined) m['limit'] = i.limit;
         if (i.beforeActivityId !== undefined) m['before_activity_id'] = i.beforeActivityId;
         return m;

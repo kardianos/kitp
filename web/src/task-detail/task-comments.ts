@@ -36,8 +36,11 @@
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { setMarkdown } from '../util/markdown-control.js';
+import { fitTextarea } from '../util/autosize.js';
 import { AUTH_USER_PATH, peekCurrentUserId, type AuthUser } from '../auth/auth-state.js';
-import { ADMIN_SPEC, type UserListOutput } from '../admin/specs.js';
+import { ADMIN_SPEC, type UserListOutput, type AttributeDefListOutput } from '../admin/specs.js';
+import { schemaForCardType, type AttrSchema } from '../filter/attribute-schema.js';
+import { attrNameToTargetType, loadActivityLabels } from './activity-labels.js';
 import {
   ACTIVITY_SELECT_SPEC,
   COMMENT_INSERT_SPEC,
@@ -65,6 +68,9 @@ export interface TaskCommentsConfig extends BaseControlConfig {
   type: 'TaskComments';
   /** The focal card whose comments + activity are shown (string → bigint). */
   cardId: string;
+  /** The card's card_type name — drives the attribute schema used to resolve
+   *  card_ref activity values (e.g. "milestone from bob to sally"). Default 'task'. */
+  cardTypeName?: string;
   /**
    * The DOM host the activity feed paints into — the TaskDetail's
    * `[data-slot="activity"]` element. Passed through config (not declarative)
@@ -98,11 +104,18 @@ export class TaskComments extends Control<TaskCommentsConfig> {
   private readonly currentUserOverride: string | null;
   private readonly limit: number;
   private readonly activityHost: HTMLElement | null;
+  private readonly cardTypeName: string;
 
   /** The loaded activity rows, newest-first. */
   private rows: ActivityRow[] = [];
   /** Actor display-name lookup (user_account id → name), keyed id-as-string. */
   private userNames: IdMap = {};
+  /** Resolved card_ref value-card titles for activity old/new values (id→title). */
+  private cardTitles: IdMap = {};
+  /** Resolved tag titles for tag_apply/remove + the `tags` attr (id→title). */
+  private tagPaths: IdMap = {};
+  /** attribute-name → target card_type (from the schema), for label resolution. */
+  private nameToType: Map<string, string> = new Map();
   /** True between the first load fire and its response. */
   private loading = false;
   /** True while a "Load more" page is in flight. */
@@ -133,6 +146,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
       ? this.config.limit
       : ACTIVITY_LIMIT;
     this.activityHost = this.config.activityHost ?? null;
+    this.cardTypeName = this.config.cardTypeName ?? 'task';
   }
 
   protected override createRoot(): HTMLElement {
@@ -204,6 +218,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     this.paintComposer();
     this.paintFeed();
     this.loadUsers();
+    this.loadSchema();
     this.loadActivity(/* append */ false);
 
     // Repaint comments when the signed-in identity lands (so the author's edit
@@ -240,6 +255,48 @@ export class TaskComments extends Control<TaskCommentsConfig> {
         for (const u of rows) map[String(u.id)] = u.display_name;
         this.userNames = map;
         if (this.isAlive()) this.paintFeed();
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /**
+   * Load the card_type's attribute schema once, to map attribute names → their
+   * target card_type. That mapping drives card_ref label resolution in the
+   * activity feed ("milestone from bob to sally" instead of "#234 to #456").
+   * Re-resolves labels for any already-loaded rows when the schema lands.
+   */
+  private loadSchema(): void {
+    this.ctx.api.callByName(
+      ADMIN_SPEC.attributeDefSelect,
+      {},
+      (out) => {
+        if (!this.isAlive()) return;
+        const defs = (out as AttributeDefListOutput).rows ?? [];
+        const full: AttrSchema[] = schemaForCardType(defs, this.cardTypeName);
+        this.nameToType = attrNameToTargetType(full);
+        this.resolveActivityLabels();
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /**
+   * Resolve the card_ref ids referenced by the loaded activity rows to titles
+   * (one `card.search` per target card_type), then repaint the feed. No-op
+   * until the schema's name→type map is known. Data-driven — see activity-labels.
+   */
+  private resolveActivityLabels(): void {
+    if (this.nameToType.size === 0 || this.rows.length === 0) return;
+    loadActivityLabels(
+      this.ctx.api,
+      this.rows,
+      this.nameToType,
+      (maps) => {
+        if (!this.isAlive()) return;
+        this.cardTitles = maps.cardTitles;
+        this.tagPaths = maps.tagPaths;
+        this.paintFeed();
       },
       { alive: () => this.isAlive() },
     );
@@ -290,6 +347,8 @@ export class TaskComments extends Control<TaskCommentsConfig> {
         if (page.length < this.limit) this.hasMore = false;
         this.paintFeed();
         this.paintComments();
+        // Resolve the freshly-loaded rows' card_ref values to titles.
+        this.resolveActivityLabels();
       },
       {
         alive: () => this.isAlive(),
@@ -372,13 +431,22 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     const actor = document.createElement('span');
     actor.className = 'task-comments__actor';
     actor.textContent = this.actorLabel(c.actorId);
+    meta.append(actor);
 
-    const idTag = document.createElement('span');
-    idTag.className = 'task-comments__id muted';
-    idTag.dataset.commentId = '';
-    idTag.textContent = `c${c.id.toString()}`;
+    // Condensed meta: "author · 2h ago (edited)" — a middot separator, time +
+    // edited flag muted. The `c<id>` debug tag is dropped (it wasn't in the
+    // design and just added noise to the line).
+    const sep = document.createElement('span');
+    sep.className = 'task-comments__meta-sep muted';
+    sep.setAttribute('aria-hidden', 'true');
+    sep.textContent = '·';
+    meta.append(sep);
 
-    meta.append(actor, idTag);
+    const time = document.createElement('span');
+    time.className = 'task-comments__time muted';
+    time.dataset.commentTime = '';
+    time.textContent = formatRelativeTime(c.createdAt);
+    meta.append(time);
 
     if (c.edited) {
       const edited = document.createElement('span');
@@ -386,11 +454,6 @@ export class TaskComments extends Control<TaskCommentsConfig> {
       edited.textContent = '(edited)';
       meta.append(edited);
     }
-
-    const time = document.createElement('span');
-    time.className = 'task-comments__time muted';
-    time.textContent = formatRelativeTime(c.createdAt);
-    meta.append(time);
 
     const editState = this.edits.get(c.id.toString());
     const me = this.currentUserId();
@@ -541,6 +604,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     ta.setAttribute('aria-label', 'Add a comment');
     this.listen(ta, 'input', () => {
       this.composerDraft = ta.value;
+      fitTextarea(ta); // grow with the comment as it's typed (capped at ~45vh)
       // Toggle the Comment button's disabled state without a full repaint.
       const btn = this.composerHost.querySelector<HTMLButtonElement>('[data-comment-submit]');
       if (btn !== null) btn.disabled = this.posting || this.composerDraft.trim() === '';
@@ -553,6 +617,8 @@ export class TaskComments extends Control<TaskCommentsConfig> {
       }
     });
     this.composerHost.append(ta);
+    // Fit a preserved draft on (re)paint once layout is available.
+    queueMicrotask(() => fitTextarea(ta));
 
     const foot = document.createElement('div');
     foot.className = 'task-comments__composer-foot';
@@ -686,11 +752,10 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     const text = document.createElement('span');
     text.className = 'task-activity__text';
     text.dataset.activityText = '';
-    // No cardTitles / tagPaths map in this control today — the feed resolves
-    // actors (its primary need); refs fall back to `#<id>`. A future change can
-    // thread the value-card title map through config the same way userNames is
-    // resolved here.
-    text.textContent = formatActivityText(row, this.userNames);
+    // Resolve actors + card_ref values to names: "changed milestone from bob to
+    // sally", not "#234 to #456". The maps fill in once the schema + card.search
+    // land; until then refs fall back to `#<id>` (the feed never blanks).
+    text.textContent = formatActivityText(row, this.userNames, this.cardTitles, this.tagPaths);
     el.append(text);
 
     const time = document.createElement('span');

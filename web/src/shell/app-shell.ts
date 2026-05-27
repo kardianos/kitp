@@ -3,10 +3,11 @@
  * refreshed mock (web/design/mock-kanban.md frame + controls-and-rules.md
  * `AppShell`). Three parts:
  *
- *   - topbar: brand `kitp` + rail-collapse chevron `‹` (left); a project-scope
- *     Picker (`[Default Project ▾]` / `[All projects ▾]`) + breadcrumb crumb
- *     (center); a right cluster of IconButtons — theme toggle `☾`/`☀` (writes
- *     `data-theme` on <html>, R8), panel toggle `▥`, help `?`.
+ *   - topbar: the workspace-title brand + rail-collapse chevron `‹` (left); a
+ *     project-scope Picker (`[Default Project ▾]` / `[All projects ▾]`) +
+ *     breadcrumb crumb (center); a right cluster of IconButtons — theme toggle
+ *     `☾`/`☀` (writes `data-theme` on <html>, R8), instructions `ⓘ`
+ *     ("About this screen"), keyboard-shortcuts help `?`.
  *   - rail: global links (Projects `g p`, Activity `g a`) with right-aligned
  *     muted chord hints; a DEFAULT PROJECT scope section (Inbox `g i`, Grid
  *     `g g`, Kanban `g k`, Project detail); an ADMIN section; a foot user chip.
@@ -53,6 +54,7 @@ import {
   screenUrl,
   type RouteMatch,
 } from './router.js';
+import { WORKSPACE_TITLE_PATH, DEFAULT_WORKSPACE_TITLE } from './config-specs.js';
 
 export interface ProjectScopeOption {
   /** bigint id as a string ('' = all projects). */
@@ -64,7 +66,11 @@ export interface ProjectScopeOption {
 }
 
 export interface AppShellConfig extends BaseControlConfig {
-  /** Brand text. Default 'kitp'. */
+  /**
+   * Static brand fallback. Normally UNSET: the header shows the operator-set
+   * WORKSPACE TITLE from `config.workspaceTitle` (config.get), falling back to
+   * the neutral 'Workspace'. A test may pin a value here; 'kitp' is never a
+   * default. */
   brand?: string;
   /** Breadcrumb crumb for the current screen, e.g. 'Kanban'. */
   crumb?: string;
@@ -84,8 +90,17 @@ export interface AppShellConfig extends BaseControlConfig {
   user?: string;
   /** Nav links for the scope section (slug + label + chord). */
   scopeLinks?: Array<{ slug: string; label: string; chord: string; intent: string }>;
-  /** Admin links. Each `key` is the `/admin/:key` route segment it navigates to. */
-  adminLinks?: Array<{ label: string; key: string }>;
+  /** Admin links. Each `key` is the `/admin/:key` route segment it navigates to.
+   *  `minRole` (default 'admin') gates who sees the link — 'manager' also shows
+   *  it to a manager (e.g. "Manage values"); the route guard matches. `section`
+   *  places the link under the WORKSPACE (global) or PROJECT (active-project-
+   *  scoped) rail heading; default 'workspace'. */
+  adminLinks?: Array<{
+    label: string;
+    key: string;
+    minRole?: 'admin' | 'manager';
+    section?: 'workspace' | 'project';
+  }>;
   /**
    * Resolve an admin route `:key` to a body control config (a MasterDetail
    * config). Supplied by the boot wiring (main.ts) so the shell stays free of
@@ -110,6 +125,9 @@ export interface AppShellConfig extends BaseControlConfig {
    * overlay lists exactly the bindings active for the current scope chain.
    */
   helpSnapshot?: () => Map<string, ResolvedBinding>;
+  /** Current help topic key (route-derived), threaded to the HelpOverlay so it
+   *  loads the server's contextual markdown. */
+  helpTopic?: () => string | null;
   /**
    * The global quick-entry overlay config (a QuickEntry descriptor). Mounted
    * ONCE into the shell root and toggled by the `quickCreateOpen` intent (the
@@ -154,22 +172,33 @@ export class AppShell extends Control<AppShellConfig> {
   /** Breadcrumb element + rail scope-section, toggled by the active view. */
   private crumbEl: HTMLElement | null = null;
   private scopeSectionEls: HTMLElement[] = [];
-  /** Rail ADMIN-section elements (heading + links), shown only for an admin. */
-  private adminSectionEls: HTMLElement[] = [];
+  /** Rail admin sub-sections (WORKSPACE / PROJECT): each section's chrome
+   *  (heading + list) + its per-link role gates. A section shows iff ANY of its
+   *  links is visible to the current identity. */
+  private adminSections: Array<{
+    chrome: HTMLElement[];
+    gates: Array<{ el: HTMLElement; minRole: 'admin' | 'manager' }>;
+  }> = [];
 
   /** Expose the scope so the boot wiring can hand it to descendants' ctx. */
   scopeObject(): { projectId: bigint | null } {
     return this.scope;
   }
 
-  /** Update the breadcrumb crumb; when `allProjects`, hide the rail's
-   *  DEFAULT PROJECT scope section (per the Projects mock — only Projects /
-   *  Activity / ADMIN show when scope = all projects). */
-  private setCrumb(crumb: string, allProjects: boolean): void {
+  /**
+   * Boot hook: called with the route's body control each time the outlet
+   * (re)mounts one. The boot wiring sets the hotkey "active" scope to it so a
+   * screen's chords (TaskDetail `e _`, etc.) are live immediately on navigation,
+   * before any click/focus. Optional — unset in tests.
+   */
+  onBodyMount?: (body: Control) => void;
+
+  /** Update the breadcrumb crumb. The rail's DEFAULT PROJECT scope section
+   *  visibility is owned by a reactive effect on the route + `scope.projectId`
+   *  (see render → 'shell.scopeSection'), not here, so it follows a scope set
+   *  AFTER the route renders — e.g. the task detail publishing its project. */
+  private setCrumb(crumb: string): void {
     if (this.crumbEl) this.crumbEl.textContent = crumb ? `/ ${crumb}` : '';
-    for (const el of this.scopeSectionEls) {
-      el.style.display = allProjects ? 'none' : '';
-    }
   }
 
   /**
@@ -231,13 +260,18 @@ export class AppShell extends Control<AppShellConfig> {
         if (typeof d === 'string' && d.trim().length > 0) opt.description = d.trim();
         return opt;
       });
-      // Default: the project matching defaultProjectLabel, else the first.
-      const want = cfg.defaultProjectLabel;
-      const def = (want ? opts.find((o) => o.label === want) : undefined) ?? opts[0];
-      if (def) {
-        this.scope.projectId = parseId(def.id);
-        // Canonical scope lives on the tree path the descendant Kanban watches.
-        this.ctx.tree.at(['scope', 'projectId']).set(this.scope.projectId);
+      // Pick the active project: the persisted last-used one (if still present),
+      // else the configured defaultProjectLabel, else the first. There is ALWAYS
+      // an active project once any exist. We only adopt the default when nothing
+      // is in scope yet — a deep-link to /project/:id (or any route that already
+      // set scope) wins, so landing never clobbers it.
+      const persisted = readActiveProject();
+      const def =
+        (persisted ? opts.find((o) => o.id === persisted) : undefined) ??
+        (cfg.defaultProjectLabel ? opts.find((o) => o.label === cfg.defaultProjectLabel) : undefined) ??
+        opts[0];
+      if (def && this.scope.projectId === null) {
+        this.setScope(parseId(def.id));
       }
       // Replace the Picker options (the reactive effect re-renders the <select>).
       this.ctx.tree.at(['shell', 'projects']).set(opts);
@@ -248,9 +282,20 @@ export class AppShell extends Control<AppShellConfig> {
     topbar.className = 'shell__topbar';
     topbar.dataset.region = 'shell.topbar';
 
+    // The header brand shows the operator-set WORKSPACE TITLE. It reads the
+    // `config.workspaceTitle` leaf reactively (loadServerConfig lands it from
+    // config.get after boot); before it lands — and when no title is configured
+    // — it falls back to a static `cfg.brand` (tests) or the neutral
+    // 'Workspace'. The old 'kitp' brand is never shown.
     const brand = document.createElement('strong');
     brand.className = 'shell__brand';
-    brand.textContent = cfg.brand ?? 'kitp';
+    brand.dataset.brand = '';
+    const workspaceTitleNode = this.ctx.tree.at([...WORKSPACE_TITLE_PATH]);
+    this.effect(() => {
+      const t = workspaceTitleNode.get<string>();
+      const text = typeof t === 'string' && t.trim() !== '' ? t.trim() : (cfg.brand ?? DEFAULT_WORKSPACE_TITLE);
+      brand.textContent = text;
+    }, 'shell.brand');
 
     const collapse = iconButton('‹', 'Collapse rail');
     collapse.classList.add('shell__collapse');
@@ -260,15 +305,21 @@ export class AppShell extends Control<AppShellConfig> {
     // query writes (see landProjects); a static `cfg.projects` seeds it before the
     // query lands (and is the whole story in unit tests, which inject no projects
     // query result).
+    // The picker is a PROJECT SWITCHER — it lists only real projects (there is
+    // always an active one); it never offers an "all projects" choice. Before
+    // the live query lands it shows a neutral "Loading…" placeholder.
     const scopePicker = document.createElement('select');
     scopePicker.className = 'shell__scope-picker';
     scopePicker.dataset.scopePicker = '';
-    const seed = cfg.projects ?? [{ id: '', label: 'All projects' }];
+    const seed = cfg.projects ?? [{ id: '', label: 'Loading projects…' }];
     this.ctx.tree.at(['shell', 'projects']).set(seed);
     const projectsNode = this.ctx.tree.at(['shell', 'projects']);
     this.effect(() => {
       const opts = (projectsNode.get<ProjectScopeOption[]>() ?? []) as ProjectScopeOption[];
-      const selected = this.scope.projectId === null ? '' : this.scope.projectId.toString();
+      // Reactive on the scope leaf so the <select> reflects the active project
+      // after navigation (setScope), not just when the options change.
+      const pid = this.ctx.tree.at(['scope', 'projectId']).get<bigint | null>() ?? null;
+      const selected = pid === null ? '' : pid.toString();
       const frag = document.createDocumentFragment();
       for (const p of opts) {
         const opt = document.createElement('option');
@@ -291,10 +342,15 @@ export class AppShell extends Control<AppShellConfig> {
     right.className = 'shell__topbar-right';
     const themeBtn = iconButton(currentTheme() === HTML_THEME_DARK ? '☀' : '☾', 'Toggle theme');
     themeBtn.dataset.themeToggle = '';
-    const panelBtn = iconButton('▥', 'Toggle panel');
+    // Instructions ("About this screen"): opens the help overlay, which renders
+    // the current screen's authored instructions markdown, then an <hr>, then
+    // the live keyboard-shortcut cheatsheet. Previously a dead "▥ Toggle panel"
+    // button; now wired to the same `toggleHelp` intent the `?` chord raises.
+    const instructionsBtn = iconButton('ⓘ', 'About this screen');
+    instructionsBtn.dataset.instructionsToggle = '';
     const helpBtn = iconButton('?', 'Keyboard shortcuts');
     helpBtn.dataset.helpToggle = '';
-    right.append(themeBtn, panelBtn, helpBtn);
+    right.append(themeBtn, instructionsBtn, helpBtn);
 
     topbar.append(collapse, brand, scopePicker, crumb, right);
 
@@ -324,38 +380,42 @@ export class AppShell extends Control<AppShellConfig> {
       this.scopeSectionEls.push(link);
     }
 
-    // ADMIN section. Each link NAVIGATES to its `/admin/:key` route via the
-    // History-API router — the same one-way navigate the rest of the rail uses.
-    // The proof that an admin screen is config + a link, never new routing
-    // logic: the outlet effect resolves `:key` through `adminConfigFor`.
-    //
-    // Role-gated: the whole section (heading + links) only shows when the
-    // signed-in user is an admin. We collect its elements and an effect reads
-    // `auth.user` reactively (the boot /auth/me probe lands it) to toggle their
-    // display — a one-way read of the identity leaf, cascade-safe. The router's
-    // requireAdmin guard backs this up so a typed `/admin/*` URL is redirected
-    // for a non-admin even though the rail link is hidden.
+    // ADMIN: split into WORKSPACE (global) + PROJECT (active-project-scoped)
+    // sub-sections. Each link NAVIGATES to its `/admin/:key` route via the
+    // History-API router (the outlet effect resolves `:key` through
+    // `adminConfigFor` — no routing logic here). Each is a collapsible
+    // disclosure (default collapsed). ROLE-GATING toggles inline `display` per
+    // link + per section (the effect below); the router's requireAdmin guard
+    // backs it up for typed `/admin/*` URLs.
     const adminLinks = cfg.adminLinks ?? [
       { label: 'Contacts', key: 'contacts' },
       { label: 'Users…', key: 'users' },
     ];
-    const adminHeading = sectionLabel('ADMIN');
-    adminHeading.dataset.adminSection = '';
-    rail.append(adminHeading);
-    this.adminSectionEls = [adminHeading];
-    for (const l of adminLinks) {
-      const link = railLink(l.label, '', () => navigate(adminUrl(l.key)));
-      link.dataset.adminKey = l.key;
-      link.dataset.adminSection = '';
-      rail.append(link);
-      this.adminSectionEls.push(link);
-    }
-    // Hide the ADMIN section until/unless the identity resolves to an admin.
+    this.adminSections = [];
+    const workspaceLinks = adminLinks.filter((l) => (l.section ?? 'workspace') === 'workspace');
+    const projectLinks = adminLinks.filter((l) => l.section === 'project');
+    if (projectLinks.length > 0) this.buildAdminSection(rail, 'PROJECT', projectLinks);
+    if (workspaceLinks.length > 0) this.buildAdminSection(rail, 'WORKSPACE', workspaceLinks);
+
+    // Per-link + per-section role gate. An admin sees every link; a manager sees
+    // only links flagged minRole:'manager' (e.g. "Manage values"); a plain worker
+    // sees none. A section's chrome (heading + list) shows iff ANY of its links
+    // is visible. One-way read of the identity leaf (the boot /auth/me probe
+    // lands it), writes only DOM — cascade-safe.
     const authUserNode = this.ctx.tree.at([...AUTH_USER_PATH]);
     this.effect(() => {
       const user = authUserNode.get<AuthUser | undefined>();
-      const show = user?.isAdmin === true;
-      for (const el of this.adminSectionEls) el.style.display = show ? '' : 'none';
+      const isAdmin = user?.isAdmin === true;
+      const roles = user?.roles ?? [];
+      for (const section of this.adminSections) {
+        let anyVisible = false;
+        for (const { el, minRole } of section.gates) {
+          const show = isAdmin || (minRole === 'manager' && roles.includes('manager'));
+          el.style.display = show ? '' : 'none';
+          if (show) anyVisible = true;
+        }
+        for (const el of section.chrome) el.style.display = anyVisible ? '' : 'none';
+      }
     }, 'shell.adminSection');
 
     // User chip (rail foot).
@@ -425,7 +485,27 @@ export class AppShell extends Control<AppShellConfig> {
         bodyControl = null;
       }
       bodyControl = this.renderRoute(route, boardConfig, outlet);
+      // Make the freshly-mounted body the active hotkey scope (boot wiring).
+      this.onBodyMount?.(bodyControl);
     }, 'shell.outlet');
+
+    // DEFAULT PROJECT scope-section visibility — REACTIVE on `scope.projectId`
+    // alone. Post-#9 a project is ALWAYS active, so the section shows on every
+    // route (projects landing / admin included) — the project's screen config is
+    // never lost from the rail. Driving it off the leaf means it also reveals
+    // when scope is set AFTER the route paints — e.g. the TaskDetail publishing
+    // its parent project on load (incl. a cold deep-link).
+    const scopeIdNode = this.ctx.tree.at(['scope', 'projectId']);
+    this.effect(() => {
+      const pid = scopeIdNode.get<bigint | null>() ?? null;
+      // The project screen-nav stays visible whenever a project is active —
+      // which (post-#9) is on every route, since a project is always selected —
+      // so the project's screen configuration is never lost from the rail. It's
+      // hidden only before the first project resolves (cold boot) or on a cold
+      // task deep-link before scope is published.
+      const show = pid !== null;
+      for (const el of this.scopeSectionEls) el.style.display = show ? '' : 'none';
+    }, 'shell.scopeSection');
 
     /* --------------------------- interactions -------------------------- */
     this.listen(collapse, 'click', () => this.el.classList.toggle('shell--rail-collapsed'));
@@ -435,14 +515,17 @@ export class AppShell extends Control<AppShellConfig> {
       themeBtn.textContent = next === HTML_THEME_DARK ? '☀' : '☾';
     });
     this.listen(helpBtn, 'click', () => this.intent('toggleHelp'));
+    this.listen(instructionsBtn, 'click', () => this.intent('toggleInstructions'));
     this.listen(scopePicker, 'change', () => {
       const id = parseId(scopePicker.value);
-      // The scope picker is now a NAV control: picking a project navigates to
-      // its default screen (`/project/:id`); picking "all projects" goes to
-      // `/projects`. The route effect sets `scope.projectId` from the route, so
-      // the board's `{ signal: 'scope.projectId' }` query trigger refires. We
-      // raise `projectChanged` for any listener that wants the raw id.
-      navigate(id === null ? '/projects' : `/project/${id.toString()}`);
+      // The scope picker is a project SWITCHER: picking a project navigates to
+      // its default screen (`/project/:id`). The route effect sets
+      // `scope.projectId` from the route, so the board's
+      // `{ signal: 'scope.projectId' }` query trigger refires. The placeholder
+      // (empty id, pre-load) is a no-op. We raise `projectChanged` for any
+      // listener that wants the raw id.
+      if (id === null) return;
+      navigate(`/project/${id.toString()}`);
       this.intent('projectChanged', { projectId: id });
     });
 
@@ -460,6 +543,9 @@ export class AppShell extends Control<AppShellConfig> {
       navigate(id == null ? '/projects' : screenUrl(id, slug));
     };
     this.registerIntent('goProjects', () => navigate('/projects'));
+    // The rail's "Activity" link / `g a` chord — previously a dead intent (no
+    // handler + no route). Lands the active-project activity feed.
+    this.registerIntent('goActivity', () => navigate('/activity'));
     this.registerIntent('goInbox', () => goScreen('inbox'));
     this.registerIntent('goGrid', () => goScreen('grid'));
     this.registerIntent('goKanban', () => goScreen('kanban'));
@@ -472,10 +558,14 @@ export class AppShell extends Control<AppShellConfig> {
     // DOM toggle inside the control (no signal write), so it stays cascade-safe.
     const help = this.spawn(
       'HelpOverlay',
-      { type: 'HelpOverlay', snapshot: cfg.helpSnapshot } as ChildConfig,
+      { type: 'HelpOverlay', snapshot: cfg.helpSnapshot, topic: cfg.helpTopic } as ChildConfig,
       this.el,
     ) as HelpOverlay;
-    this.registerIntent('toggleHelp', () => help.toggle());
+    // `?` / `Mod+/` + the `?` button → KEYBOARD SHORTCUTS only. The ⓘ button →
+    // the screen's INSTRUCTIONS, then an <hr>, then the shortcuts. Two distinct
+    // surfaces over the one overlay control.
+    this.registerIntent('toggleHelp', () => help.toggle({ instructions: false }));
+    this.registerIntent('toggleInstructions', () => help.toggle({ instructions: true }));
 
     /* -------------------------- quick-entry overlay ------------------------ */
     // The global `n` fast-task-create overlay. Mounted ONCE into the shell root
@@ -527,6 +617,54 @@ export class AppShell extends Control<AppShellConfig> {
   }
 
   /**
+   * Build one collapsible admin sub-section (WORKSPACE / PROJECT) into the rail:
+   * a disclosure heading + its links, recording the section's chrome + per-link
+   * role gates for the visibility effect. The heading text doubles as the
+   * `data-admin-section` / `data-admin-toggle` key ('workspace' | 'project').
+   */
+  private buildAdminSection(
+    rail: HTMLElement,
+    label: string,
+    links: ReadonlyArray<{ label: string; key: string; minRole?: 'admin' | 'manager' }>,
+  ): void {
+    const sectionKey = label.toLowerCase();
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'shell__section-toggle muted';
+    toggle.dataset.adminSection = sectionKey;
+    toggle.dataset.adminToggle = sectionKey;
+    toggle.setAttribute('aria-expanded', 'false');
+    const lbl = document.createElement('span');
+    lbl.textContent = label;
+    const caret = document.createElement('span');
+    caret.className = 'shell__section-caret';
+    caret.textContent = '▸';
+    toggle.append(lbl, caret);
+
+    const list = document.createElement('div');
+    list.className = 'shell__admin-list shell__admin-list--collapsed';
+    list.dataset.adminSection = sectionKey;
+    list.dataset.adminList = sectionKey;
+
+    const gates: Array<{ el: HTMLElement; minRole: 'admin' | 'manager' }> = [];
+    for (const l of links) {
+      const link = railLink(l.label, '', () => navigate(adminUrl(l.key)));
+      link.dataset.adminKey = l.key;
+      list.append(link);
+      gates.push({ el: link, minRole: l.minRole ?? 'admin' });
+    }
+
+    rail.append(toggle, list);
+    // Expand/collapse — a pure DOM toggle (no signal write), cascade-safe.
+    this.listen(toggle, 'click', () => {
+      const collapsed = list.classList.toggle('shell__admin-list--collapsed');
+      toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      caret.textContent = collapsed ? '▸' : '▾';
+    });
+    this.adminSections.push({ chrome: [toggle, list], gates });
+  }
+
+  /**
    * Spawn the outlet body for a matched route. The route is the source of
    * truth: this maps `route.name` → a body control, sets `scope.projectId`
    * from the route's `:id` (for project / screen routes), and derives the
@@ -538,8 +676,11 @@ export class AppShell extends Control<AppShellConfig> {
   private renderRoute(route: RouteMatch, boardConfig: ChildConfig, outlet: HTMLElement): Control {
     switch (route.name) {
       case 'projects': {
-        this.setScope(null);
-        this.setCrumb('Projects', true);
+        // Do NOT clear scope here: a project is always active, so the all-
+        // projects list still shows the active project in the header + rail nav
+        // (the user switches via the header picker; this screen is for per-
+        // project view/edit/import/export + creating projects).
+        this.setCrumb('Projects');
         return this.spawn('ProjectList', { type: 'ProjectList' }, outlet);
       }
       case 'project':
@@ -565,18 +706,27 @@ export class AppShell extends Control<AppShellConfig> {
           screen,
           resolveScreen: true,
         };
-        this.setCrumb(screen.title, false);
+        this.setCrumb(screen.title);
         return this.spawn(cfg.type, cfg, outlet);
       }
       case 'task': {
-        // #33 builds the real task-detail screen; for now a visible stub via
-        // the NotFound placeholder (graceful degradation, never throws).
-        this.setCrumb(`Task #${route.params['id'] ?? ''}`, true);
+        // The DEFAULT PROJECT screen-nav stays visible on the task detail: the
+        // TaskDetail publishes the task's parent project into `scope.projectId`
+        // once it loads, and the 'shell.scopeSection' effect reveals the section
+        // reactively (works on a cold deep-link too, where no project was in
+        // scope at route-render time).
+        this.setCrumb(`Task #${route.params['id'] ?? ''}`);
         return this.spawn(
           'TaskDetail',
           { type: 'TaskDetail', taskId: route.params['id'] } as ChildConfig,
           outlet,
         );
+      }
+      case 'activity': {
+        // The active-project activity feed. Reads `scope.projectId` (always
+        // set), so scope is left intact — the rail nav stays on the project.
+        this.setCrumb('Activity');
+        return this.spawn('Activity', { type: 'Activity' } as ChildConfig, outlet);
       }
       case 'admin': {
         // Resolve `/admin/:key` to a MasterDetail config via the boot resolver.
@@ -584,12 +734,12 @@ export class AppShell extends Control<AppShellConfig> {
         // to a NotFound placeholder (graceful degradation).
         const key = route.params['key'] ?? '';
         const adminCfg = this.config.adminConfigFor?.(key) ?? { type: `UnknownAdmin:${key}` };
-        this.setCrumb((adminCfg as { title?: string }).title ?? 'Admin', true);
+        this.setCrumb((adminCfg as { title?: string }).title ?? 'Admin');
         return this.spawn(adminCfg.type, adminCfg, outlet);
       }
       case 'notfound':
       default: {
-        this.setCrumb('Not found', true);
+        this.setCrumb('Not found');
         return this.spawn(
           `NoRoute:${route.path}`,
           { type: `NoRoute:${route.path}`, path: route.path } as ChildConfig,
@@ -607,6 +757,9 @@ export class AppShell extends Control<AppShellConfig> {
   private setScope(id: bigint | null): void {
     this.scope.projectId = id;
     this.ctx.tree.at(['scope', 'projectId']).set(id);
+    // Persist the active project so the next load restores it (the picker is
+    // the normal switcher; there's no "all projects" scope to fall back to).
+    if (id !== null) writeActiveProject(id.toString());
   }
 
   /** Mount a body child into the outlet imperatively (used by boot wiring). */
@@ -633,6 +786,8 @@ function outletKey(route: RouteMatch): string {
       return `screen:${route.params['id'] ?? ''}:${route.params['slug'] ?? ''}`;
     case 'task':
       return `task:${route.params['id'] ?? ''}`;
+    case 'activity':
+      return 'activity';
     case 'admin':
       return `admin:${route.params['key'] ?? ''}`;
     default:
@@ -701,6 +856,29 @@ function parseId(raw: string | undefined): bigint | null {
     return n > 0n ? n : null;
   } catch {
     return null;
+  }
+}
+
+/** localStorage key for the last-active project id (the always-active scope). */
+const ACTIVE_PROJECT_KEY = 'kitp.activeProject';
+
+/** The persisted last-active project id (digits only), or null. Guarded so a
+ *  missing/blocked localStorage (private mode, no DOM) degrades to no-op. */
+function readActiveProject(): string | null {
+  try {
+    const v = localStorage.getItem(ACTIVE_PROJECT_KEY);
+    return v !== null && /^\d+$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the active project id so the next load restores it. Best-effort. */
+function writeActiveProject(id: string): void {
+  try {
+    localStorage.setItem(ACTIVE_PROJECT_KEY, id);
+  } catch {
+    // no store (private mode / no DOM) — persistence is a nice-to-have.
   }
 }
 

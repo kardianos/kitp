@@ -23,7 +23,9 @@
  *
  * After any bulk op fires the bar bumps `grid.queryVersion` (re-issue the tasks
  * query so the server-of-record reconciles the optimistic view) and clears the
- * selection.
+ * selection. The writes + the bump run inside ONE signal `batch` (see `burst`)
+ * so the re-query coalesces into the SAME dispatcher POST as the writes, ordered
+ * after them — one server tx, no stale-snapshot race over the optimistic patch.
  *
  * Cascade-safety: every effect reads ONE leaf and writes only DOM (the
  * count/visibility effects) — selection writes + the query-version bump are
@@ -32,12 +34,14 @@
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
+import { batch } from '../core/signal.js';
 import type { ActionBinding } from '../core/data.js';
 import { SPEC } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { GRID_SPEC } from './specs.js';
 import type { RefPicker } from '../ui/ref-picker.js';
 import type { Combobox } from '../ui/combobox.js';
+import type { RefAxis } from '../filter/vocabulary.js';
 
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
@@ -78,23 +82,22 @@ interface AssignAttr {
   choices?: { value: string; label: string }[];
 }
 
-const ASSIGN_ATTRS: readonly AssignAttr[] = [
-  { name: 'status', label: 'Status', kind: 'ref', cardType: 'status' },
-  { name: 'assignee', label: 'Assignee', kind: 'ref', cardType: 'person' },
-  { name: 'milestone_ref', label: 'Milestone', kind: 'ref', cardType: 'milestone' },
-  { name: 'component_ref', label: 'Component', kind: 'ref', cardType: 'component' },
-  {
-    name: 'priority',
-    label: 'Priority',
-    kind: 'scalar',
-    choices: [
-      { value: 'high', label: 'High' },
-      { value: 'medium', label: 'Medium' },
-      { value: 'low', label: 'Low' },
-    ],
-  },
-  { name: 'tags', label: 'Tags', kind: 'ref_multi', cardType: 'tag' },
-];
+/**
+ * Bulk-assignable attributes are DATA-DRIVEN from the same schema the
+ * ScreenFilterBar resolves (`screen.refAxes` — the card_type's card_ref
+ * attrs). Each axis maps to a ref / ref_multi value editor (RefPicker, which
+ * loads its options via `card.search`). The previous hardcoded list (incl. a
+ * `priority` tag-prefix synthetic) is gone; tag-prefix bulk-assign would come
+ * from the screen's `tag_prefix_columns` config, not an attribute_def.
+ */
+function assignAttrFromAxis(a: RefAxis): AssignAttr {
+  return {
+    name: a.attr,
+    label: a.label,
+    kind: a.multi ? 'ref_multi' : 'ref',
+    cardType: a.targetCardType,
+  };
+}
 
 /* -------------------------------------------------------------------------- */
 /* Control.                                                                   */
@@ -177,8 +180,22 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
   private assignAttr: AssignAttr | null = null;
   private assignValue: unknown = undefined;
   private assignBtn!: HTMLButtonElement;
+  /** Data-driven assignable attrs (from `screen.refAxes`) + the field picker. */
+  private assignAttrs: AssignAttr[] = [];
+  private attrPicker: Combobox<string> | null = null;
   /** The purge confirm dialog node (built lazily). */
   private confirmEl: HTMLElement | null = null;
+
+  /**
+   * Staged attribute→value pairs applied TOGETHER (#10 multi-attribute assign):
+   * "Add" stashes the current field+value as a chip and resets the editor for
+   * the next field; "Apply" then writes every staged pair (plus the in-editor
+   * one, if valid) across every selected card in one coalesced batch. One field
+   * appears at most once (last write wins).
+   */
+  private staged: { name: string; label: string; value: unknown }[] = [];
+  private stagedEl!: HTMLElement;
+  private addBtn!: HTMLButtonElement;
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('div');
@@ -222,21 +239,37 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
     assignLabel.textContent = 'Assign';
     assign.append(assignLabel);
 
+    // Staged field chips (the already-added fields that Apply will write too).
+    const stagedEl = document.createElement('span');
+    stagedEl.className = 'bulk-bar__chips';
+    stagedEl.dataset.bulkStagedList = '';
+    this.stagedEl = stagedEl;
+    assign.append(stagedEl);
+
     // Attribute picker (which field to assign).
     const attrHost = document.createElement('div');
     attrHost.className = 'bulk-bar__attr';
-    this.spawn(
+    this.attrPicker = this.spawn(
       'Combobox',
       {
         type: 'Combobox',
         placeholder: 'Field…',
         'aria-label': 'Attribute to assign',
-        options: ASSIGN_ATTRS.map((a) => ({ value: a.name, label: a.label })),
+        // Options are filled reactively from the data-driven `screen.refAxes`.
+        options: [],
         onChange: (v: string | null) => this.onAttrPicked(v),
       },
       attrHost,
-    );
+    ) as Combobox<string>;
     assign.append(attrHost);
+
+    // Data-drive the assignable fields from the shared schema axes the
+    // ScreenFilterBar publishes — same source as the quick chips / group picker.
+    this.effect(() => {
+      const axes = (this.ctx.tree.at(['screen', 'refAxes']).get<RefAxis[]>() ?? []) as RefAxis[];
+      this.assignAttrs = axes.map(assignAttrFromAxis);
+      this.attrPicker?.setOptions(this.assignAttrs.map((a) => ({ value: a.name, label: a.label })));
+    }, 'bulkBar.assignAttrs');
 
     // Value editor host (filled when an attribute is picked).
     const valueHost = document.createElement('div');
@@ -244,6 +277,19 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
     valueHost.dataset.bulkValue = '';
     this.valueHost = valueHost;
     assign.append(valueHost);
+
+    // "Add" stages the current field+value so another can be picked; Apply then
+    // writes them all at once.
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'bulk-bar__add';
+    addBtn.dataset.bulkAddField = '';
+    addBtn.textContent = '+ Add';
+    addBtn.title = 'Add this field, then pick another to set several at once';
+    addBtn.disabled = true;
+    this.listen(addBtn, 'click', () => this.stageCurrent());
+    this.addBtn = addBtn;
+    assign.append(addBtn);
 
     const assignBtn = document.createElement('button');
     assignBtn.type = 'button';
@@ -334,6 +380,9 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
     this.ctx.tree.at(this.selectionPath).set(new Set<string>());
     this.bumpSelectionVersion();
     this.closePurgeConfirm();
+    // The bar hides when empty; reset the staged fields + editor so a fresh
+    // selection starts clean (also covers the post-apply path via afterBulk).
+    this.resetAssign();
   }
 
   private bumpSelectionVersion(): void {
@@ -353,7 +402,7 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
   private onAttrPicked(name: string | null): void {
     this.disposeValueChild();
     this.assignValue = undefined;
-    this.assignAttr = name === null ? null : (ASSIGN_ATTRS.find((a) => a.name === name) ?? null);
+    this.assignAttr = name === null ? null : (this.assignAttrs.find((a) => a.name === name) ?? null);
     this.valueHost.replaceChildren();
 
     const attr = this.assignAttr;
@@ -385,6 +434,11 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
           cardType: attr.cardType ?? 'card',
           multi: true,
           values: [],
+          // Scope project-owned value-cards (milestone/component/status/tag) to
+          // the active project so a cross-project pick can't be made — otherwise
+          // attribute.update rejects with cross_project_ref. Global refs
+          // (person) stay unscoped.
+          ...(this.refScope(attr.cardType) ? { parentScopePath: 'scope.projectId' } : {}),
           placeholder: `Search ${attr.label.toLowerCase()}…`,
           'aria-label': `${attr.label} value`,
           onChangeMulti: (values: bigint[]) => {
@@ -401,6 +455,7 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
           type: 'RefPicker',
           cardType: attr.cardType ?? 'card',
           value: null,
+          ...(this.refScope(attr.cardType) ? { parentScopePath: 'scope.projectId' } : {}),
           placeholder: `Search ${attr.label.toLowerCase()}…`,
           'aria-label': `${attr.label} value`,
           onChange: (v: bigint | null) => {
@@ -414,6 +469,13 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
     this.refreshAssignEnabled();
   }
 
+  /** Whether a card_ref target is PROJECT-scoped (its value-cards live under a
+   *  project) and so its picker should be scoped to the active project. Person
+   *  refs (assignee / originator) are global, so they stay unscoped. */
+  private refScope(cardType: string | undefined): boolean {
+    return cardType !== undefined && cardType !== '' && cardType !== 'person';
+  }
+
   /** Whether the current assign selection is a non-empty, applicable value. */
   private hasAssignValue(): boolean {
     const v = this.assignValue;
@@ -424,28 +486,104 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
   }
 
   private refreshAssignEnabled(): void {
-    this.assignBtn.disabled = !(
-      this.assignAttr !== null &&
-      this.hasAssignValue() &&
-      this.selectionCount() > 0
-    );
+    this.assignBtn.disabled = !(this.selectionCount() > 0 && this.pendingPairs().length > 0);
+    // "Add" only stages when the in-editor field+value is itself valid.
+    this.addBtn.disabled = !(this.assignAttr !== null && this.hasAssignValue());
   }
 
   /**
-   * Fire `attribute.update` for every selected card, ONE intent per card in a
-   * single synchronous loop. The dispatcher coalesces the same-tick burst into
-   * one batch; each carries its own optimistic patch over the tasks leaf.
+   * The attribute→value pairs Apply will write: every staged chip, plus the
+   * in-editor field if it carries a value (so a single field still applies
+   * without first clicking Add). One field appears once — the in-editor value
+   * overrides a staged entry for the same field.
    */
-  private applyAssign(): void {
+  private pendingPairs(): { name: string; value: unknown }[] {
+    const pairs = this.staged.map((s) => ({ name: s.name, value: s.value }));
+    const attr = this.assignAttr;
+    if (attr !== null && this.hasAssignValue()) {
+      const i = pairs.findIndex((p) => p.name === attr.name);
+      const entry = { name: attr.name, value: this.assignValue };
+      if (i >= 0) pairs[i] = entry;
+      else pairs.push(entry);
+    }
+    return pairs;
+  }
+
+  /** Stash the current field+value as a chip and reset the editor for the next. */
+  private stageCurrent(): void {
     const attr = this.assignAttr;
     if (attr === null || !this.hasAssignValue()) return;
+    this.staged = this.staged.filter((s) => s.name !== attr.name);
+    this.staged.push({ name: attr.name, label: attr.label, value: this.assignValue });
+    this.resetAssignEditor();
+    this.renderStaged();
+    this.refreshAssignEnabled();
+  }
+
+  /** Drop one staged field. */
+  private removeStaged(name: string): void {
+    this.staged = this.staged.filter((s) => s.name !== name);
+    this.renderStaged();
+    this.refreshAssignEnabled();
+  }
+
+  /** (Re)render the staged-field chips. */
+  private renderStaged(): void {
+    this.stagedEl.replaceChildren();
+    for (const s of this.staged) {
+      const chip = document.createElement('span');
+      chip.className = 'bulk-bar__chip';
+      chip.dataset.bulkStaged = s.name;
+      const label = document.createElement('span');
+      label.className = 'bulk-bar__chip-label';
+      label.textContent = s.label;
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'bulk-bar__chip-remove';
+      rm.dataset.bulkStagedRemove = s.name;
+      rm.setAttribute('aria-label', `Remove ${s.label}`);
+      rm.textContent = '✕';
+      this.listen(rm, 'click', () => this.removeStaged(s.name));
+      chip.append(label, rm);
+      this.stagedEl.append(chip);
+    }
+  }
+
+  /** Reset the field picker + value editor (keeps any staged chips). */
+  private resetAssignEditor(): void {
+    this.disposeValueChild();
+    this.assignAttr = null;
+    this.assignValue = undefined;
+    this.valueHost.replaceChildren();
+    this.attrPicker?.setValue(null);
+  }
+
+  /** Reset the whole assign surface: staged chips + the editor. */
+  private resetAssign(): void {
+    this.staged = [];
+    this.resetAssignEditor();
+    this.renderStaged();
+    this.refreshAssignEnabled();
+  }
+
+  /**
+   * Fire `attribute.update` for every (selected card × pending pair), all in a
+   * single synchronous loop. The dispatcher coalesces the same-tick burst into
+   * one batch; each carries its own optimistic patch over the tasks leaf, so
+   * setting Status + Milestone + Component on N cards is one POST.
+   */
+  private applyAssign(): void {
+    const pairs = this.pendingPairs();
+    if (pairs.length === 0) return;
     const ids = this.selectedIds();
     if (ids.length === 0) return;
-    const value = this.assignValue;
-    for (const cardId of ids) {
-      this.intent('bulkAssign', { cardId, attributeName: attr.name, value });
-    }
-    this.afterBulk();
+    this.burst(() => {
+      for (const cardId of ids) {
+        for (const pair of pairs) {
+          this.intent('bulkAssign', { cardId, attributeName: pair.name, value: pair.value });
+        }
+      }
+    });
   }
 
   /* -------------------------------- move ---------------------------------- */
@@ -455,10 +593,11 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
     if (projectId === null) return;
     const ids = this.selectedIds();
     if (ids.length === 0) return;
-    for (const cardId of ids) {
-      this.intent('bulkMove', { cardId, newProjectId: projectId });
-    }
-    this.afterBulk();
+    this.burst(() => {
+      for (const cardId of ids) {
+        this.intent('bulkMove', { cardId, newProjectId: projectId });
+      }
+    });
   }
 
   /* -------------------------------- purge --------------------------------- */
@@ -531,14 +670,34 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
   private applyPurge(): void {
     const ids = this.selectedIds();
     if (ids.length === 0) return;
-    for (const cardId of ids) {
-      this.intent('bulkPurge', { cardId });
-    }
     this.closePurgeConfirm();
-    this.afterBulk();
+    this.burst(() => {
+      for (const cardId of ids) {
+        this.intent('bulkPurge', { cardId });
+      }
+    });
   }
 
   /* ------------------------------- shared --------------------------------- */
+
+  /**
+   * Run a bulk burst atomically: fire its per-card intents AND `afterBulk` inside
+   * ONE signal `batch`, so the `grid.queryVersion` bump's re-query effect runs at
+   * batch end (synchronously, before any microtask) and its `card.select` is
+   * enqueued into the SAME dispatcher POST as the writes — ordered after them, so
+   * one server tx sees the writes and returns reconciled rows.
+   *
+   * Without the batch the bump's effect runs in a LATER signal microtask (the
+   * dispatcher already flushed the writes), so the re-query rides a SEPARATE,
+   * concurrent POST that can read a pre-write snapshot and land STALE rows over
+   * the optimistic patch — the grid then shows the old value until a re-nav.
+   */
+  private burst(fire: () => void): void {
+    batch(() => {
+      fire();
+      this.afterBulk();
+    });
+  }
 
   /** Post-write: reconcile the grid (re-issue the read) + clear the selection. */
   private afterBulk(): void {
