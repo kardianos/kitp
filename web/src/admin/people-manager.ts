@@ -23,7 +23,7 @@
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
-import { ADMIN_SPEC, type UserListOutput, type UserRow } from './specs.js';
+import { ADMIN_SPEC, type UserListOutput, type UserRow, type UserRoleAssignment } from './specs.js';
 import { SPEC, type SelectWithAttributesOutput } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { trapFocus, captureFocus } from '../util/focus-trap.js';
@@ -59,12 +59,16 @@ interface PersonRow {
   tier: Tier;
   /** The linked user_account id (string), when this person is a user. */
   accountId: string | null;
+  /** The user's role assignments (users only; from user.list_with_roles). */
+  roles: UserRoleAssignment[];
 }
 
 export class PeopleManager extends Control<PeopleManagerConfig> {
   private persons: CardWithAttrs[] = [];
   private accountByPerson: Map<string, UserRow> = new Map();
   private segment: Segment = 'all';
+  /** Assignable roles (role.list) for the per-user role picker (#19). */
+  private roleOptions: Array<{ id: string; name: string }> = [];
 
   private segHost!: HTMLElement;
   private listHost!: HTMLElement;
@@ -137,6 +141,18 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
       },
       { alive: () => this.isAlive() },
     );
+    // Assignable roles for the per-user role picker (#19).
+    this.ctx.api.callByName(
+      ADMIN_SPEC.roleList,
+      {},
+      (out) => {
+        if (!this.isAlive()) return;
+        const rows = ((out ?? {}) as { rows?: Array<{ id?: unknown; name?: unknown }> }).rows ?? [];
+        this.roleOptions = rows.map((r) => ({ id: String(r.id ?? ''), name: String(r.name ?? '') }));
+        this.paint();
+      },
+      { alive: () => this.isAlive() },
+    );
   }
 
   private attr(card: CardWithAttrs, name: string): string {
@@ -156,6 +172,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
         email: account?.email ?? this.attr(p, 'email'),
         tier,
         accountId: account?.id ?? null,
+        roles: account?.roles ?? [],
       });
     }
     out.sort((a, b) => a.title.localeCompare(b.title));
@@ -237,7 +254,91 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     this.listen(remove, 'click', () => this.openRemoveDialog(r));
 
     row.append(name, email, tierSel, remove);
+    // Inline role assignment for users (#19): their roles as removable chips +
+    // an "add role" picker. Reuses the user_role.set / user_role.revoke specs.
+    if (r.tier === 'user' && r.accountId !== null) {
+      row.append(this.renderRolesEditor(r));
+    }
     return row;
+  }
+
+  /** The per-user roles editor: current roles as ✕-chips + an "add role" select.
+   *  Global-scope assignment (the common case); scoped roles still show + revoke. */
+  private renderRolesEditor(r: PersonRow): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'people-manager__roles';
+    wrap.dataset.peopleRoles = '';
+
+    for (const role of r.roles) {
+      const chip = document.createElement('span');
+      chip.className = 'people-manager__role-chip';
+      chip.dataset.peopleRole = role.role_name;
+      const label = document.createElement('span');
+      label.textContent = role.scope_project_title
+        ? `${role.role_name} · ${role.scope_project_title}`
+        : role.role_name;
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'people-manager__role-remove';
+      rm.dataset.peopleRoleRemove = role.role_name;
+      rm.setAttribute('aria-label', `Revoke ${role.role_name}`);
+      rm.textContent = '✕';
+      this.listen(rm, 'click', () => this.revokeRole(r, role));
+      chip.append(label, rm);
+      wrap.append(chip);
+    }
+
+    // Add-role select: roles not already held GLOBALLY (a global grant is the
+    // one this picker mints; scoped grants of the same role still list).
+    const haveGlobal = new Set(
+      r.roles.filter((x) => x.scope_project_id === undefined).map((x) => x.role_name),
+    );
+    const add = document.createElement('select');
+    add.className = 'people-manager__role-add';
+    add.dataset.peopleRoleAdd = '';
+    add.setAttribute('aria-label', 'Add role');
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = '+ Add role…';
+    add.append(blank);
+    for (const ro of this.roleOptions) {
+      if (haveGlobal.has(ro.name)) continue;
+      const opt = document.createElement('option');
+      opt.value = ro.name;
+      opt.textContent = ro.name;
+      add.append(opt);
+    }
+    this.listen(add, 'change', () => {
+      if (add.value !== '') this.assignRole(r, add.value);
+    });
+    wrap.append(add);
+    return wrap;
+  }
+
+  private assignRole(r: PersonRow, roleName: string): void {
+    if (r.accountId === null) return;
+    this.ctx.api.callByName(
+      ADMIN_SPEC.userRoleSet,
+      { userId: r.accountId, roleName },
+      () => {
+        if (this.isAlive()) this.load();
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  private revokeRole(r: PersonRow, role: UserRoleAssignment): void {
+    if (r.accountId === null) return;
+    const input: Record<string, unknown> = { userId: r.accountId, roleName: role.role_name };
+    if (role.scope_project_id !== undefined) input['scopeProjectId'] = role.scope_project_id;
+    this.ctx.api.callByName(
+      ADMIN_SPEC.userRoleRevoke,
+      input,
+      () => {
+        if (this.isAlive()) this.load();
+      },
+      { alive: () => this.isAlive() },
+    );
   }
 
   /** Promote / demote a person to a target tier by composing the needed writes. */

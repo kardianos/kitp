@@ -18,7 +18,7 @@ before(async () => {
 
 // 701 = contact, 702 = assignee (member, no account), 703 = user (member + account 900).
 function recordingTransport() {
-  const sent = { updates: [], grants: [], unlinks: [], creates: [], deletes: [] };
+  const sent = { updates: [], grants: [], unlinks: [], creates: [], deletes: [], roleSets: [], roleRevokes: [] };
   function respond(sr) {
     const k = `${sr.endpoint}.${sr.action}`;
     const data = sr.data ?? {};
@@ -34,9 +34,16 @@ function recordingTransport() {
     }
     if (k === 'user.list_with_roles') {
       return { id: sr.id, ok: true, data: { rows: [
-        { id: '900', display_name: 'Uma User', email: 'uma@x.com', is_agent: false, person_card_id: '703', roles: [] },
+        { id: '900', display_name: 'Uma User', email: 'uma@x.com', is_agent: false, person_card_id: '703', roles: [{ role_name: 'worker' }] },
       ] } };
     }
+    if (k === 'role.list') {
+      return { id: sr.id, ok: true, data: { rows: [
+        { id: '1', name: 'admin' }, { id: '2', name: 'manager' }, { id: '3', name: 'worker' },
+      ] } };
+    }
+    if (k === 'user_role.set') { sent.roleSets.push(data); return { id: sr.id, ok: true, data: { ok: true } }; }
+    if (k === 'user_role.revoke') { sent.roleRevokes.push(data); return { id: sr.id, ok: true, data: { ok: true, revoked: 1 } }; }
     if (k === 'attribute.update') { sent.updates.push(data); return { id: sr.id, ok: true, data: { ok: true } }; }
     if (k === 'person.grant_account') { sent.grants.push(data); return { id: sr.id, ok: true, data: { user_account_id: '901' } }; }
     if (k === 'user.unlink_person') { sent.unlinks.push(data); return { id: sr.id, ok: true, data: { ok: true, deleted: 1 } }; }
@@ -230,4 +237,34 @@ test('PeopleManager Remove a user: confirm → user.unlink_person + card.delete'
   assert.equal(String(transport.sent.unlinks[0].user_account_id), '900', 'unlinks the linked account');
   assert.equal(transport.sent.deletes.length, 1, 'then the person card is soft-deleted');
   assert.equal(String(transport.sent.deletes[0].card_id), '703');
+});
+
+test('People: a user row shows roles + assign/revoke fires user_role.set/revoke (#19)', async () => {
+  const transport = recordingTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  const userRow = () => ctrl.el.querySelectorAll('[data-people-row]').find((r) => r.dataset.peopleRow === '703');
+  assert.ok(userRow(), 'the user row rendered');
+  assert.ok(userRow().querySelector('[data-people-role="worker"]'), 'shows the existing worker role chip');
+
+  // Assign a role via the add-select.
+  const add = userRow().querySelector('[data-people-role-add]');
+  add.value = 'manager';
+  add.dispatchEvent({ type: 'change' });
+  await settle(dispatcher);
+  assert.equal(transport.sent.roleSets.length, 1, 'user_role.set fired');
+  assert.equal(String(transport.sent.roleSets[0].user_id), '900', 'targets the user account');
+  assert.equal(transport.sent.roleSets[0].role_name, 'manager');
+
+  // Revoke the worker role (re-query — the reload re-rendered the rows).
+  userRow().querySelector('[data-people-role-remove="worker"]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  assert.equal(transport.sent.roleRevokes.length, 1, 'user_role.revoke fired');
+  assert.equal(transport.sent.roleRevokes[0].role_name, 'worker');
+
+  // Non-user (contact) rows have no role editor.
+  const contactRow = ctrl.el.querySelectorAll('[data-people-row]').find((r) => r.dataset.peopleRow === '701');
+  assert.equal(contactRow.querySelector('[data-people-roles]'), null, 'contacts have no role editor');
 });
