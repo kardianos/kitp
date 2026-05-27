@@ -3734,6 +3734,40 @@ body {
   cursor: grab;
   user-select: none;
 }
+/* Inline pencil-edit (shared EditableField), e.g. the workflow flow name. */
+.editable-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.editable-field__text {
+  font-weight: var(--weight-semibold);
+  color: var(--color-fg-strong);
+}
+.editable-field__edit {
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: 1;
+  padding: 0 var(--space-1);
+  border: none;
+  background: none;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+.editable-field__edit:hover {
+  color: var(--color-accent);
+}
+.editable-field__input {
+  font: inherit;
+  padding: var(--pad-compact-y) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+.nested-editor__flow-name {
+  font-size: var(--text-md);
+}
 .nested-editor__step-drag:active {
   cursor: grabbing;
 }

@@ -26,6 +26,7 @@ import { Control, type BaseControlConfig } from '../core/control.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
 import { Modal } from '../ui/modal.js';
+import { EditableField } from '../ui/editable-field.js';
 import { readPath, fieldText, type MasterDetailItem } from './master-detail.js';
 import {
   type Predicate,
@@ -670,19 +671,19 @@ export class NestedEditor extends Control<NestedEditorConfig> {
 
     const heading = document.createElement('div');
     heading.className = 'nested-editor__heading';
-    const title = document.createElement('h3');
-    title.className = 'nested-editor__title';
-    title.textContent = 'Transitions';
+    // The flow NAME, inline-editable via the shared pencil control (#15) —
+    // replaces the old "Rename…" window.prompt button.
+    const name = new EditableField({
+      value: String(flow.raw['name'] ?? ''),
+      ariaLabel: 'Rename workflow',
+      className: 'nested-editor__flow-name',
+      onCommit: (next) => this.renameFlow(flow, next),
+    });
+    heading.append(name.el);
+    const title = document.createElement('span');
+    title.className = 'nested-editor__title muted';
+    title.textContent = 'transitions';
     heading.append(title);
-
-    // Rename the flow (flow.set with the row's existing fields + a new name).
-    const renameBtn = document.createElement('button');
-    renameBtn.type = 'button';
-    renameBtn.className = 'btn nested-editor__flow-rename';
-    renameBtn.dataset.neFlowRename = '';
-    renameBtn.textContent = 'Rename…';
-    this.listen(renameBtn, 'click', () => this.renameFlow(flow));
-    heading.append(renameBtn);
 
     // The flow-delete guard button.
     const delBtn = document.createElement('button');
@@ -1053,12 +1054,10 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   /** Rename a flow: flow.set is a full-row upsert, so preserve the row's other
    *  fields (governed attribute + scope) and only change the name. On success,
    *  patch the parent list item so the row + detail title repaint. */
-  private renameFlow(flow: MasterDetailItem): void {
+  private renameFlow(flow: MasterDetailItem, nextName: string): void {
     this.clearFault();
     const cur = String(flow.raw['name'] ?? '');
-    const next = nePromptText('Rename workflow:', cur);
-    if (next === null) return;
-    const trimmed = next.trim();
+    const trimmed = nextName.trim();
     if (trimmed === '' || trimmed === cur) return;
     const dcs = flow.raw['default_create_status_id'];
     this.ctx.api.callByName(
@@ -2495,12 +2494,6 @@ function fieldLabel(control: HTMLElement, text: string, className: string, befor
   if (before) label.append(span, control);
   else label.append(control, span);
   return label;
-}
-
-/** Prompt for text (browser prompt; null when unavailable / cancelled). */
-function nePromptText(message: string, initial: string): string | null {
-  if (typeof window === 'undefined' || typeof window.prompt !== 'function') return null;
-  return window.prompt(message, initial);
 }
 
 export function registerNestedEditor(): void {

@@ -98,6 +98,9 @@ function nestedTransport(opts = {}) {
             return { id: sr.id, ok: true, data: { rows: [] } };
           }
           /* ---- writes ---- */
+          case 'flow.set':
+            rec(key, data);
+            return { id: sr.id, ok: true, data: { id: data.id ?? '50' } };
           case 'flow_step.set':
             rec(key, data);
             return { id: sr.id, ok: true, data: { id: '999' } };
@@ -306,6 +309,30 @@ test('Workflows: dragging a transition reorders within its from-group (#14)', as
   assert.equal(byId['901'], 0, '901 took the first slot');
   assert.equal(byId['900'], 1, '900 took the second slot');
   assert.equal(byId['902'], undefined, 'a step in a DIFFERENT from-group is untouched');
+});
+
+test('Workflows: the flow name is inline-editable via the pencil control (#15)', async () => {
+  const transport = nestedTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountMD(api, M.adminScreenConfig('workflows'));
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+
+  // The heading shows the flow name with a ✎ pencil (no Rename window.prompt).
+  const pencil = ctrl.el.querySelector('[data-editable-edit]');
+  assert.ok(pencil, 'the flow name carries a pencil edit affordance');
+  pencil.dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+
+  const input = ctrl.el.querySelector('[data-editable-input]');
+  assert.ok(input, 'clicking the pencil reveals an inline input');
+  input.value = 'Renamed flow';
+  input.dispatchEvent({ type: 'keydown', key: 'Enter', target: input });
+  await settle(dispatcher);
+
+  const sets = writesFor(transport, 'flow.set');
+  assert.ok(sets.length >= 1, 'flow.set fired on commit');
+  assert.equal(sets[sets.length - 1].data.name, 'Renamed flow', 'the edited name is sent');
 });
 
 test('Workflows: adding a transition fires flow_step.set with the draft', async () => {
