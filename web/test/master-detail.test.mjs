@@ -672,6 +672,33 @@ test('Projects: "+ New" fires card.insert optimistically + the row appears, then
   assert.equal(M.fieldText(promoted.raw, 'attributes.title'), 'New Apollo');
 });
 
+test('Screens: "+ New" sends the required layout + slug in attributes (New Screen fix #18)', async () => {
+  const transport = adminTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl, tree } = mountMD(api, M.adminScreenConfig('screens'));
+  tree.at(['scope', 'projectId']).set(100n); // screens parent under the active project
+  await settle(dispatcher);
+
+  ctrl.el.querySelector('[data-md-new]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  // A screen card REQUIRES title + layout + slug — the create now collects all
+  // three (title-only used to fail an edge_violation).
+  fillCreateDialog(ctrl, { title: 'Backlog', layout: 'grid', slug: 'backlog' });
+  ctrl.el.querySelector('[data-md-create-submit]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  await settle(dispatcher);
+
+  const w = transport.sent.writes.find((x) => x.key === 'card.insert');
+  assert.ok(w, 'card.insert fired');
+  assert.equal(w.data.card_type_name, 'screen');
+  assert.equal(w.data.title, 'Backlog', 'title rides top-level');
+  assert.deepEqual(
+    w.data.attributes,
+    { layout: 'grid', slug: 'backlog' },
+    'layout + slug ride in attributes (the required edges)',
+  );
+});
+
 test('Projects: create fault rolls back the optimistic add', async () => {
   const transport = adminTransport({ failWrites: true });
   const { dispatcher, api } = bootApi(transport);

@@ -3813,6 +3813,25 @@ body {
   font-size: var(--text-xs);
   color: var(--color-danger);
 }
+.nested-editor__predicate-raw {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+}
+.nested-editor__predicate-raw-summary {
+  cursor: pointer;
+}
+.nested-editor__predicate-raw-json {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-2xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 12rem;
+  overflow: auto;
+}
 .nested-editor__predicate {
   flex-basis: 100%;
   display: flex;

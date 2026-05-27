@@ -360,11 +360,19 @@ export const SCREENS_SCREEN: MasterDetailConfig = {
     spec: 'card.insert',
     title: 'New screen',
     buttonLabel: '+ New',
-    fields: [{ name: 'title', label: 'Title', kind: 'text', required: true, placeholder: 'Screen title' }],
+    // A screen card REQUIRES title + layout + slug (is_required edges), so the
+    // create must collect all three — title-only used to fail an edge_violation
+    // (the "New screen doesn't work" bug). layout + slug ride in attributes.
+    fields: [
+      { name: 'title', label: 'Title', kind: 'text', required: true, placeholder: 'Screen title' },
+      { name: 'layout', label: 'Layout', kind: 'select', required: true, options: SCREEN_LAYOUT_OPTIONS, attribute: true },
+      { name: 'slug', label: 'Slug', kind: 'text', required: true, placeholder: 'url-slug (unique)', attribute: true },
+    ],
     // Parent the new screen to the active project (screens are project-owned).
     input: {
       cardTypeName: { lit: 'screen' },
       parentCardId: { from: 'scope.projectId' },
+      attributes: { payload: 'attributes' },
       title: { payload: 'title' },
     },
   },
@@ -399,9 +407,11 @@ export const NAMED_FILTERS_SCREEN: MasterDetailConfig = {
     skipWhenNull: ['projectId'],
     rowHeight: 56,
     search: { field: 'attributes.title', placeholder: 'Search filters…' },
+    // No predicate JSON under the name — the raw predicate is available (for
+    // debugging) as a disclosure under "Save view" in the editor. The group
+    // axis stays as a badge.
     row: {
       title: 'attributes.title',
-      subtitle: 'attributes.predicate',
       badge: 'attributes.group_by_attr',
     },
   },

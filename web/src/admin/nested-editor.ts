@@ -1605,6 +1605,28 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     });
     frag.append(save);
 
+    // Optional raw-predicate peek (debugging) under Save view: a collapsed
+    // disclosure showing the current predicate JSON, refreshed when expanded
+    // (so it reflects in-progress edits without a tracked effect).
+    const raw = document.createElement('details');
+    raw.className = 'nested-editor__predicate-raw';
+    const sum = document.createElement('summary');
+    sum.className = 'muted nested-editor__predicate-raw-summary';
+    sum.textContent = 'Raw predicate (debug)';
+    const pre = document.createElement('pre');
+    pre.className = 'nested-editor__predicate-raw-json';
+    pre.dataset.nePredicateRaw = '';
+    const refreshRaw = (): void => {
+      const p = this.ctx.tree.at(predPath).peek<Predicate | null>() ?? null;
+      pre.textContent = p === null ? '(no predicate)' : JSON.stringify(toFilterJson(p), null, 2);
+    };
+    this.listen(raw, 'toggle', () => {
+      if (raw.open) refreshRaw();
+    });
+    refreshRaw();
+    raw.append(sum, pre);
+    frag.append(raw);
+
     this.el.replaceChildren(frag);
 
     // Mount the builder AFTER the slot is in the live tree.

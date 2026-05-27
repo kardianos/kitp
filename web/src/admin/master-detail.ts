@@ -77,6 +77,13 @@ export interface MasterDetailFormField {
   options?: FieldOptions;
   required?: boolean;
   placeholder?: string;
+  /**
+   * Route this field into the payload's `attributes` object (under `name`)
+   * instead of a top-level payload key — so a card.insert create can set extra
+   * card attributes (e.g. a screen's `layout` / `slug`) via
+   * `input: { attributes: { payload: 'attributes' } }`.
+   */
+  attribute?: boolean;
 }
 
 /**
@@ -503,10 +510,18 @@ export function updateAction(cfg: MasterDetailConfig): ActionBinding | null {
   };
 }
 
-/** Default card-shaped optimistic raw from a payload (the `title` field). */
+/** Default card-shaped optimistic raw from a payload: the `title` field plus any
+ *  `attribute`-flagged fields the create folded into `payload.attributes` (so
+ *  the optimistic row shows e.g. the screen's layout badge before the reload). */
 function defaultOptimisticRaw(payload: Record<string, unknown>): Record<string, unknown> {
   const title = payload['title'];
-  return { attributes: { title: typeof title === 'string' ? title : '' } };
+  const attrs = payload['attributes'];
+  return {
+    attributes: {
+      title: typeof title === 'string' ? title : '',
+      ...(attrs && typeof attrs === 'object' ? (attrs as Record<string, unknown>) : {}),
+    },
+  };
 }
 
 /**
@@ -1469,13 +1484,18 @@ export class MasterDetail extends Control<MasterDetailConfig> {
 
     const commit = (): void => {
       const payload: Record<string, unknown> = {};
+      const attributes: Record<string, unknown> = {};
       let missingRequired = false;
       for (const f of create.fields) {
         const el = inputs.get(f.name);
         const value = el ? readControlValue(el) : '';
         if (f.required === true && value === '') missingRequired = true;
-        payload[f.name] = value;
+        // `attribute` fields collect into payload.attributes (so a card.insert
+        // create can set layout / slug / …); the rest stay top-level.
+        if (f.attribute === true) attributes[f.name] = value;
+        else payload[f.name] = value;
       }
+      if (Object.keys(attributes).length > 0) payload['attributes'] = attributes;
       if (missingRequired) {
         const firstReq = create.fields.find((f) => f.required === true);
         const el = firstReq ? inputs.get(firstReq.name) : undefined;
