@@ -25,6 +25,7 @@
 import { Control, type BaseControlConfig } from '../core/control.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
+import { Modal } from '../ui/modal.js';
 import { readPath, fieldText, type MasterDetailItem } from './master-detail.js';
 import {
   type Predicate,
@@ -398,6 +399,9 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   private draggingStepFrom: string | null = null;
   private stepPlaceholders: DropPlaceholder[] = [];
 
+  /** The open Add/Edit-transition modal (#16), if any. */
+  private stepModal: Modal | null = null;
+
   private get selectedPath(): string[] {
     return `${this.config.parentScope}.selectedId`.split('.');
   }
@@ -417,10 +421,12 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   }
 
   protected render(): void {
-    // Tear down any flowSteps drop placeholders on control destroy.
+    // Tear down any flowSteps drop placeholders + the transition modal on destroy.
     this.onDestroy(() => {
       for (const p of this.stepPlaceholders) p.destroy();
       this.stepPlaceholders = [];
+      this.stepModal?.destroy();
+      this.stepModal = null;
     });
     // Re-render on selection OR items change (an optimistic parent edit, a
     // promoted create id). The data loads fire as a side effect keyed on the
@@ -752,8 +758,24 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     }
     frag.append(list);
 
-    // The add/edit mini-form.
-    frag.append(this.buildStepForm(flow.id, valueCards));
+    // Add a transition — opens the editor in a modal (#16), not an inline form
+    // at the bottom (which read as a surprising always-present panel).
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn nested-editor__step-add';
+    addBtn.dataset.neStepAdd = '';
+    addBtn.textContent = '+ Add transition';
+    this.listen(addBtn, 'click', () =>
+      this.openStepModal(flow.id, {
+        id: '0',
+        fromCardId: '',
+        toCardId: '',
+        label: '',
+        requiresRoleId: '',
+        sortOrder: '',
+      }),
+    );
+    frag.append(addBtn);
 
     this.el.replaceChildren(frag);
   }
@@ -808,7 +830,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     edit.dataset.neStepEdit = s.id;
     edit.textContent = 'Edit';
     this.listen(edit, 'click', () => {
-      this.ctx.tree.at(this.p('draft')).set({
+      this.openStepModal(flowId, {
         id: s.id,
         fromCardId: s.from_card_id,
         toCardId: s.to_card_id,
@@ -830,28 +852,45 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     return row;
   }
 
-  private buildStepForm(flowId: string, valueCards: Array<{ id: string; label: string }>): HTMLElement {
-    const draft = (this.ctx.tree.at(this.p('draft')).peek<FlowStepDraft | null>() ?? null) as FlowStepDraft | null;
+  /** Open the Add/Edit-transition editor in a modal (#16) — replaces the old
+   *  inline-at-the-bottom form. Builds the form for `draft` into a fresh modal
+   *  and opens it; save closes it + reloads, Esc/×/backdrop dismiss. */
+  private openStepModal(flowId: string, draft: FlowStepDraft): void {
+    this.stepModal?.destroy();
+    const valueCards = (this.ctx.tree.at(this.p('valueCards')).peek<Array<{ id: string; label: string }>>() ?? []) as Array<{ id: string; label: string }>;
+    const editing = draft.id !== '0' && draft.id !== '';
+    const modal = new Modal({
+      title: editing ? 'Edit transition' : 'Add transition',
+      className: 'nested-editor__step-modal',
+      host: this.el,
+    });
+    this.stepModal = modal;
+    modal.element.append(this.buildStepForm(flowId, valueCards, draft, () => modal.close()));
+    modal.open();
+  }
+
+  private buildStepForm(
+    flowId: string,
+    valueCards: Array<{ id: string; label: string }>,
+    draft: FlowStepDraft,
+    onDone: () => void,
+  ): HTMLElement {
     const roles = (this.ctx.tree.at(this.p('roles')).peek<Array<{ id: string; name: string }>>() ?? []) as Array<{ id: string; name: string }>;
+    const editing = draft.id !== '0' && draft.id !== '';
 
     const form = document.createElement('div');
     form.className = 'nested-editor__step-form';
     form.dataset.neStepForm = '';
 
-    const formHead = document.createElement('div');
-    formHead.className = 'nested-editor__step-form-head muted';
-    formHead.textContent = draft && draft.id !== '0' && draft.id !== '' ? 'Edit transition' : 'Add transition';
-    form.append(formHead);
-
-    const fromSel = this.valueCardSelect('neFrom', valueCards, draft?.fromCardId ?? '');
-    const toSel = this.valueCardSelect('neTo', valueCards, draft?.toCardId ?? '');
+    const fromSel = this.valueCardSelect('neFrom', valueCards, draft.fromCardId);
+    const toSel = this.valueCardSelect('neTo', valueCards, draft.toCardId);
 
     const labelInput = document.createElement('input');
     labelInput.type = 'text';
     labelInput.className = 'nested-editor__step-input';
     labelInput.dataset.neLabel = '';
     labelInput.placeholder = 'Label (button text)';
-    labelInput.value = draft?.label ?? '';
+    labelInput.value = draft.label;
 
     const roleSel = document.createElement('select');
     roleSel.className = 'nested-editor__step-select';
@@ -864,17 +903,17 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       const opt = document.createElement('option');
       opt.value = r.id;
       opt.textContent = r.name;
-      if (r.id === (draft?.requiresRoleId ?? '')) opt.selected = true;
+      if (r.id === draft.requiresRoleId) opt.selected = true;
       roleSel.append(opt);
     }
-    roleSel.value = draft?.requiresRoleId ?? '';
+    roleSel.value = draft.requiresRoleId;
 
     const sortInput = document.createElement('input');
     sortInput.type = 'text';
     sortInput.className = 'nested-editor__step-input';
     sortInput.dataset.neSort = '';
     sortInput.placeholder = 'Sort order';
-    sortInput.value = draft?.sortOrder ?? '';
+    sortInput.value = draft.sortOrder;
 
     form.append(fromSel, toSel, labelInput, roleSel, sortInput);
 
@@ -888,10 +927,10 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     submit.type = 'button';
     submit.className = 'btn btn-primary nested-editor__step-submit';
     submit.dataset.neStepSubmit = '';
-    submit.textContent = draft && draft.id !== '0' && draft.id !== '' ? 'Save transition' : 'Add transition';
+    submit.textContent = editing ? 'Save transition' : 'Add transition';
     this.listen(submit, 'click', () => {
       const d: FlowStepDraft = {
-        id: draft?.id ?? '0',
+        id: draft.id,
         fromCardId: fromSel.value,
         toCardId: toSel.value,
         label: labelInput.value,
@@ -904,19 +943,9 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         err.textContent = Object.values(v.errors)[0] ?? 'Invalid transition';
         return;
       }
-      this.saveStep(flowId, d);
+      this.saveStep(flowId, d, onDone);
     });
     form.append(submit);
-
-    if (draft && draft.id !== '0' && draft.id !== '') {
-      const cancel = document.createElement('button');
-      cancel.type = 'button';
-      cancel.className = 'btn nested-editor__step-cancel';
-      cancel.dataset.neStepCancel = '';
-      cancel.textContent = 'Cancel';
-      this.listen(cancel, 'click', () => this.ctx.tree.at(this.p('draft')).set(null));
-      form.append(cancel);
-    }
 
     return form;
   }
@@ -940,7 +969,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     return sel;
   }
 
-  private saveStep(flowId: string, d: FlowStepDraft): void {
+  private saveStep(flowId: string, d: FlowStepDraft, onDone?: () => void): void {
     this.clearFault();
     this.ctx.api.callByName(
       'flow_step.set',
@@ -955,7 +984,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       },
       () => {
         if (!this.isAlive()) return;
-        this.ctx.tree.at(this.p('draft')).set(null);
+        onDone?.(); // close the editor modal
         this.reload();
       },
       { alive: () => this.isAlive(), onErr: (f) => this.showFault('flow_step.set', f) },

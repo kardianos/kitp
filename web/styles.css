@@ -2322,6 +2322,64 @@ body {
    New/Edit project dialog — COMFORTABLE chrome. Soft floating surface,
    large radius, generous padding, One-UI calm.
    ========================================================================== */
+/* Modal (shared overlay helper) — centered panel + backdrop, used by the
+   workflow Edit-transition editor and other focused forms. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: var(--color-scrim);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  z-index: var(--z-modal);
+}
+.modal__panel {
+  width: min(34rem, 92vw);
+  max-height: 80vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-6) var(--space-6);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+}
+.modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.modal__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.01em;
+  color: var(--color-fg-strong);
+}
+.modal__close {
+  font: inherit;
+  font-size: var(--text-lg);
+  line-height: 1;
+  padding: 0 var(--space-1);
+  border: none;
+  background: none;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+.modal__close:hover {
+  color: var(--color-fg);
+}
+.modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
 .qe-dialog {
   position: fixed;
   inset: 0;

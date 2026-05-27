@@ -315,7 +315,14 @@ test('Workflows: adding a transition fires flow_step.set with the draft', async 
   await settle(dispatcher);
   await selectFirstRow(ctrl, dispatcher);
 
+  // The transition editor is now a modal (#16) — open it via "+ Add transition".
+  assert.equal(ctrl.el.querySelector('[data-ne-step-form]'), null, 'no inline form before opening');
+  ctrl.el.querySelector('[data-ne-step-add]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+
   const form = ctrl.el.querySelector('[data-ne-step-form]');
+  assert.ok(form, 'the modal hosts the transition form');
+  assert.ok(ctrl.el.querySelector('[data-modal]'), 'the transition editor opens in a modal (#16)');
   form.querySelector('[data-ne-from]').value = '102';
   form.querySelector('[data-ne-to]').value = '101';
   form.querySelector('[data-ne-label]').value = 'Reopen';
