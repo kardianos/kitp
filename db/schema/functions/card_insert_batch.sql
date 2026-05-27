@@ -441,7 +441,12 @@ BEGIN
         --     the new project is bare; fixtures that need a populated
         --     project should run after the install seed or use a
         --     hand-rolled card-tree.
-        IF _card_type_name = 'project' THEN
+        -- Skip the auto-stamp when the new project IS ITSELF a template
+        -- (is_template=true in the insert attrs): a template is created blank
+        -- so it doesn't inherit the standard template's structure. Real
+        -- projects (is_template absent / false) still get the standard template.
+        IF _card_type_name = 'project'
+           AND COALESCE((_attrs->>'is_template')::boolean, FALSE) = FALSE THEN
             SELECT av.card_id INTO _template_id
             FROM attribute_value av
             JOIN attribute_def ad ON ad.id = av.attribute_def_id

@@ -234,6 +234,59 @@ export class ProjectList extends Control<ProjectListConfig> {
       },
       onError: 'top',
     },
+    // Create a REAL project from a CHOSEN template (project.stamp). The default
+    // template path stays on `createProject` (card.insert auto-stamps the
+    // standard template); this fires only when the user picks a specific one.
+    {
+      intent: 'stampProject',
+      spec: PROJECT_SPEC.projectStamp,
+      input: {
+        templateProjectId: { payload: 'templateProjectId' },
+        name: { payload: 'title' },
+        description: { payload: 'description' },
+        isTemplate: { lit: false },
+      },
+      optimistic: {
+        path: 'shell.projects',
+        patch: (current, payload): ProjectOption[] => appendPending(current, payload, false),
+      },
+      result: { method: 'landStamped' },
+      onError: 'top',
+    },
+    // Create a TEMPLATE by copying another template (project.stamp, is_template=true).
+    {
+      intent: 'stampTemplate',
+      spec: PROJECT_SPEC.projectStamp,
+      input: {
+        templateProjectId: { payload: 'templateProjectId' },
+        name: { payload: 'title' },
+        description: { payload: 'description' },
+        isTemplate: { lit: true },
+      },
+      optimistic: {
+        path: 'shell.projectTemplates',
+        patch: (current, payload): ProjectOption[] => appendPending(current, payload, true),
+      },
+      result: { method: 'landTemplateStamped' },
+      onError: 'top',
+    },
+    // Create a BLANK template (card.insert with is_template=true; the server
+    // suppresses the auto-stamp for templates so nothing is copied).
+    {
+      intent: 'createTemplate',
+      spec: PROJECT_SPEC.cardInsert,
+      input: {
+        cardTypeName: { lit: 'project' },
+        title: { payload: 'title' },
+        attributes: { payload: 'attributes' },
+      },
+      optimistic: {
+        path: 'shell.projectTemplates',
+        patch: (current, payload): ProjectOption[] => appendPending(current, payload, true),
+      },
+      result: { method: 'landTemplateCreated' },
+      onError: 'top',
+    },
   ];
 
   protected override createRoot(): HTMLElement {
@@ -245,24 +298,21 @@ export class ProjectList extends Control<ProjectListConfig> {
   }
 
   protected render(): void {
-    // Success sink: replace the pending temp-id row with the real id (title +
-    // description already correct). Keeps the just-created project selectable.
-    this.handler('landCreated', (out) => {
-      const realId = ((out ?? {}) as { id?: bigint }).id;
-      const tempId = this.pendingOptimisticId;
-      this.pendingOptimisticId = null;
-      if (realId === undefined || tempId === null) return;
-      const node = this.ctx.tree.at(this.projectsPath);
-      const rows = (node.peek<ProjectOption[]>() ?? []) as ProjectOption[];
-      node.set(
-        rows.map((r) => {
-          if (r.id !== tempId.toString()) return r;
-          const promoted: ProjectOption = { id: realId.toString(), label: r.label };
-          if (r.description) promoted.description = r.description;
-          return promoted;
-        }),
-      );
-    });
+    // Success sinks: replace the pending temp-id row with the real id, in the
+    // path the create/stamp optimistically wrote. card.insert returns `id`;
+    // project.stamp returns `new_project_id` (decoded to `newProjectId`).
+    this.handler('landCreated', (out) =>
+      this.promoteTemp(this.projectsPath, ((out ?? {}) as { id?: bigint }).id),
+    );
+    this.handler('landStamped', (out) =>
+      this.promoteTemp(this.projectsPath, ((out ?? {}) as { newProjectId?: bigint }).newProjectId),
+    );
+    this.handler('landTemplateCreated', (out) =>
+      this.promoteTemp(this.templatesPath, ((out ?? {}) as { id?: bigint }).id),
+    );
+    this.handler('landTemplateStamped', (out) =>
+      this.promoteTemp(this.templatesPath, ((out ?? {}) as { newProjectId?: bigint }).newProjectId),
+    );
 
     // Land the supplementary template rows as ProjectOptions flagged
     // isTemplate (so fillRow can badge them). Written to the templates path the
@@ -732,6 +782,52 @@ export class ProjectList extends Control<ProjectListConfig> {
     descLabel.append(descSpan, descInput);
     moreRegion.append(descLabel);
 
+    /* --- Template controls (CREATE mode only) --- */
+    const tmplRegion = document.createElement('div');
+    tmplRegion.className = 'qe-dialog__template-region';
+    tmplRegion.dataset.qeTemplateRegion = '';
+
+    const isTmplLabel = document.createElement('label');
+    isTmplLabel.className = 'qe-dialog__checkbox';
+    const isTmpl = document.createElement('input');
+    isTmpl.type = 'checkbox';
+    isTmpl.dataset.qeIsTemplate = '';
+    const isTmplSpan = document.createElement('span');
+    isTmplSpan.textContent = 'Create as template';
+    isTmplLabel.append(isTmpl, isTmplSpan);
+
+    const copyLabel = document.createElement('label');
+    copyLabel.className = 'qe-dialog__field';
+    const copySpan = document.createElement('span');
+    copySpan.className = 'qe-dialog__label';
+    copySpan.textContent = 'Copy from template';
+    const copySel = document.createElement('select');
+    copySel.className = 'qe-dialog__input';
+    copySel.dataset.qeTemplate = '';
+    copyLabel.append(copySpan, copySel);
+
+    tmplRegion.append(isTmplLabel, copyLabel);
+
+    // (Re)build the template <select>: a context-sensitive first option
+    // (real → "Standard (default)"; template → "(blank)") then one option per
+    // loaded template. Preserves the current selection when still valid.
+    const rebuildTemplateOptions = (): void => {
+      const tmpls = (this.ctx.tree.at(this.templatesPath).peek<ProjectOption[]>() ?? []) as ProjectOption[];
+      const cur = copySel.value;
+      const first = document.createElement('option');
+      first.value = '';
+      first.textContent = isTmpl.checked ? '(blank — no copy)' : 'Standard template (default)';
+      const opts: HTMLOptionElement[] = [first];
+      for (const t of tmpls) {
+        const o = document.createElement('option');
+        o.value = t.id;
+        o.textContent = t.label;
+        opts.push(o);
+      }
+      copySel.replaceChildren(...opts);
+      copySel.value = cur;
+    };
+
     const hint = document.createElement('div');
     hint.className = 'qe-dialog__hint muted';
 
@@ -750,8 +846,16 @@ export class ProjectList extends Control<ProjectListConfig> {
     primary.textContent = 'Add & Close';
     footer.append(another, primary);
 
-    panel.append(heading, titleLabel, more, moreRegion, hint, footer);
+    panel.append(heading, titleLabel, more, moreRegion, tmplRegion, hint, footer);
     root.append(panel);
+
+    // Keep the template <select> in sync with the loaded templates + the
+    // checkbox label. Reads the templates leaf reactively; one-way (DOM only).
+    this.effect(() => {
+      this.ctx.tree.at(this.templatesPath).get();
+      rebuildTemplateOptions();
+    }, 'projects.dialogTemplates');
+    this.listen(isTmpl, 'change', () => rebuildTemplateOptions());
 
     /* --- mode state --- */
     let mode: 'create' | 'edit' = 'create';
@@ -765,6 +869,8 @@ export class ProjectList extends Control<ProjectListConfig> {
     };
 
     const applyMode = (): void => {
+      // Template controls are a create-only concern (edit just renames fields).
+      tmplRegion.style.display = mode === 'create' ? '' : 'none';
       if (mode === 'create') {
         heading.textContent = 'New project';
         another.style.display = '';
@@ -792,6 +898,9 @@ export class ProjectList extends Control<ProjectListConfig> {
         origDesc = '';
         titleInput.value = '';
         descInput.value = '';
+        isTmpl.checked = false;
+        rebuildTemplateOptions();
+        copySel.value = '';
         showDesc(false);
         applyMode();
         root.style.display = '';
@@ -828,10 +937,13 @@ export class ProjectList extends Control<ProjectListConfig> {
         focusEl(titleInput);
         return;
       }
-      this.fireCreate(title, descInput.value.trim());
+      this.fireCreate(title, descInput.value.trim(), isTmpl.checked, copySel.value);
       if (keepOpen) {
         titleInput.value = '';
         descInput.value = '';
+        isTmpl.checked = false;
+        rebuildTemplateOptions();
+        copySel.value = '';
         showDesc(false);
         focusEl(titleInput);
       } else {
@@ -904,16 +1016,69 @@ export class ProjectList extends Control<ProjectListConfig> {
    * card.insert fires. On fault the tree transaction auto-rolls-back. A
    * non-empty description rides as `attributes.description`.
    */
-  private fireCreate(title: string, description: string): void {
+  private fireCreate(
+    title: string,
+    description: string,
+    asTemplate: boolean,
+    templateId: string,
+  ): void {
     const optimisticId = nextOptimisticId();
     this.pendingOptimisticId = optimisticId;
-    const payload: {
-      title: string;
-      optimisticId: bigint;
-      attributes?: { description: string };
-    } = { title, optimisticId };
-    if (description.length > 0) payload.attributes = { description };
-    this.intent('createProject', payload);
+    const hasTemplate = /^-?\d+$/.test(templateId) && BigInt(templateId) > 0n;
+
+    if (asTemplate) {
+      // Creating a TEMPLATE: copy a chosen template, or a blank one.
+      if (hasTemplate) {
+        this.intent('stampTemplate', {
+          title,
+          description,
+          optimisticId,
+          templateProjectId: BigInt(templateId),
+        });
+      } else {
+        const attributes: Record<string, unknown> = { is_template: true };
+        if (description.length > 0) attributes['description'] = description;
+        this.intent('createTemplate', { title, optimisticId, attributes });
+      }
+      return;
+    }
+
+    // Creating a REAL project. A specific template → project.stamp; otherwise
+    // the default card.insert path (which auto-stamps the standard template).
+    if (hasTemplate) {
+      this.intent('stampProject', {
+        title,
+        description,
+        optimisticId,
+        templateProjectId: BigInt(templateId),
+      });
+    } else {
+      const payload: { title: string; optimisticId: bigint; attributes?: { description: string } } = {
+        title,
+        optimisticId,
+      };
+      if (description.length > 0) payload.attributes = { description };
+      this.intent('createProject', payload);
+    }
+  }
+
+  /** Promote the in-flight optimistic temp row to its server id in `path`
+   *  (shared by every create/stamp success sink). */
+  private promoteTemp(path: string[], realId: bigint | undefined): void {
+    const tempId = this.pendingOptimisticId;
+    this.pendingOptimisticId = null;
+    if (realId === undefined || tempId === null) return;
+    const node = this.ctx.tree.at(path);
+    const rows = (node.peek<ProjectOption[]>() ?? []) as ProjectOption[];
+    node.set(
+      rows.map((r) => {
+        if (r.id !== tempId.toString()) return r;
+        const promoted: ProjectOption = { id: realId.toString(), label: r.label };
+        if (r.description) promoted.description = r.description;
+        if (r.isTemplate) promoted.isTemplate = true;
+        return promoted;
+      }),
+    );
   }
 
   /**
@@ -965,6 +1130,27 @@ export interface ProjectOption {
  * the payload's `cardId`. An empty new description clears the field (drops the
  * `description` key). Pure over the current leaf + payload.
  */
+/** Optimistic-append a pending project row from a create/stamp payload. Reads
+ *  the title + an optional description (top-level `description` for stamp, or
+ *  `attributes.description` for card.insert) + the minted optimisticId; flags
+ *  the row `isTemplate` when it belongs on the templates path. */
+function appendPending(current: unknown, payload: unknown, isTemplate: boolean): ProjectOption[] {
+  const rows = Array.isArray(current) ? (current as ProjectOption[]) : [];
+  const p = (payload ?? {}) as {
+    title?: string;
+    optimisticId?: bigint;
+    description?: string;
+    attributes?: { description?: string };
+  };
+  if (typeof p.title !== 'string' || p.title.length === 0) return rows;
+  const id = p.optimisticId ?? nextOptimisticId();
+  const row: ProjectOption = { id: id.toString(), label: p.title, pending: true };
+  const desc = p.description ?? p.attributes?.description;
+  if (typeof desc === 'string' && desc.length > 0) row.description = desc;
+  if (isTemplate) row.isTemplate = true;
+  return [...rows, row];
+}
+
 function patchRowField(
   current: unknown,
   payload: unknown,

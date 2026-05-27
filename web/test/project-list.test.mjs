@@ -370,6 +370,9 @@ function recordingProjectsTransport(projectRows) {
         if (key === 'card.insert') {
           return { id: sr.id, ok: true, data: { id: '500' } };
         }
+        if (key === 'project.stamp') {
+          return { id: sr.id, ok: true, data: { new_project_id: '600', warnings: [] } };
+        }
         if (key === 'attribute.update') {
           return { id: sr.id, ok: true, data: { ok: true, activity_id: '70001' } };
         }
@@ -460,8 +463,11 @@ test('AppShell projects query ships the is_template != true leaf, excluding temp
     'the template is absent from the list',
   );
 
-  // Scope picker (SAME path) shows the same two options, no template.
-  const options = shell.el.querySelectorAll('OPTION');
+  // Scope picker (SAME path) shows the same two options, no template. Scope the
+  // query to the picker <select> (the New-project dialog also has a template
+  // <select> whose options must not be counted here).
+  const picker = shell.el.querySelector('[data-scope-picker]');
+  const options = picker.querySelectorAll('OPTION');
   const pickerLabels = options.map((o) => o.textContent).sort();
   assert.deepEqual(pickerLabels, ['Default Project', 'Mobile App'], 'picker excludes the template too');
 });
@@ -691,4 +697,65 @@ test('ProjectList: "Show templates" toggle folds template rows in and badges the
   const realRow = rows.find((r) => r.dataset.projectId === '31');
   assert.notEqual(tmplRow.querySelectorAll('[data-role="badge"]')[0].style.display, 'none', 'template badged');
   assert.equal(realRow.querySelectorAll('[data-role="badge"]')[0].style.display, 'none', 'real project not badged');
+});
+
+/* -------------------------------------------------------------------------- */
+/* New-project template controls (#6).                                         */
+/* -------------------------------------------------------------------------- */
+
+test('choosing a template stamps the new project via project.stamp', async () => {
+  const { transport, sent } = recordingProjectsTransport([]);
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl, tree } = mountProjectList(api, [...SEED]);
+  await settle(dispatcher);
+  // Make a template available to the dialog's picker.
+  tree.at(['shell', 'projectTemplates']).set([
+    { id: '10', label: 'Standard Project Template', isTemplate: true },
+  ]);
+  M.flushSync?.();
+
+  ctrl.intent('quickCreateOpen');
+  ctrl.el.querySelector('[data-qe-title]').value = 'From Template';
+  const sel = ctrl.el.querySelector('[data-qe-template]');
+  sel.value = '10';
+  const addClose = ctrl.el.querySelector('[data-qe-add-close]');
+  addClose.dispatchEvent({ type: 'click', target: addClose });
+  M.flushSync?.();
+  await settle(dispatcher);
+
+  const stamp = sent.find((sr) => sr.endpoint === 'project' && sr.action === 'stamp');
+  assert.ok(stamp, 'project.stamp was shipped for a chosen template');
+  assert.equal(String(stamp.data.template_project_id), '10', 'the chosen template id rides');
+  assert.equal(stamp.data.name, 'From Template', 'title rides as name');
+  assert.ok(
+    !sent.find((sr) => sr.endpoint === 'card' && sr.action === 'insert'),
+    'no card.insert when a specific template is chosen',
+  );
+});
+
+test('"Create as template" (blank) fires card.insert with is_template=true', async () => {
+  const { transport, sent } = recordingProjectsTransport([]);
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountProjectList(api, [...SEED]);
+  await settle(dispatcher);
+
+  ctrl.intent('quickCreateOpen');
+  ctrl.el.querySelector('[data-qe-title]').value = 'My Template';
+  const chk = ctrl.el.querySelector('[data-qe-is-template]');
+  chk.checked = true;
+  chk.dispatchEvent({ type: 'change', target: chk });
+  // Leave the template picker at blank → a bare template (no copy).
+  const addClose = ctrl.el.querySelector('[data-qe-add-close]');
+  addClose.dispatchEvent({ type: 'click', target: addClose });
+  M.flushSync?.();
+  await settle(dispatcher);
+
+  const ins = sent.find((sr) => sr.endpoint === 'card' && sr.action === 'insert');
+  assert.ok(ins, 'card.insert shipped for a blank template');
+  assert.equal(ins.data.title, 'My Template');
+  assert.equal(ins.data.attributes?.is_template, true, 'is_template:true rides in attributes');
+  assert.ok(
+    !sent.find((sr) => sr.endpoint === 'project' && sr.action === 'stamp'),
+    'no project.stamp for a blank template',
+  );
 });

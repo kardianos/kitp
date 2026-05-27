@@ -53,7 +53,6 @@ import {
   type Predicate,
   type Phase,
   toWire,
-  leaf,
   topLevelPhases,
   withTopLevelPhases,
 } from '../filter/predicate.js';
@@ -686,14 +685,16 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     const defaultId = this.ctx.tree.at([...statePath, 'defaultFilterId']).peek<bigint | null>() ?? null;
     const toggles = (this.ctx.tree.at(['screen', 'phaseToggles']).peek<PhaseToggle[]>() ?? []) as PhaseToggle[];
 
-    // 1. Base predicate: the default_filter preset, else empty — UNLESS the
-    //    screen defines no phase toggles, in which case keep the legacy
-    //    `status notTerminal` fallback so terminal stays hidden.
+    // 1. Base predicate: the default_filter preset, else EMPTY (every phase
+    //    visible). There is no hardcoded "not terminal" default any more — what
+    //    a screen hides by default is OWNED by its phase toggles' `default_on`
+    //    flags (seeded per screen, applied in step 2). A screen with no phase
+    //    toggles therefore shows ALL phases by default.
     if (defaultId !== null) {
       this.applyPreset(defaultId); // marks visited + sets predicate/group/sort
     } else {
       activeNode.set(null); // mark visited
-      this.applyPredicate(toggles.length > 0 ? null : leaf('status', 'notTerminal'));
+      this.applyPredicate(null);
     }
 
     // 2. Seed the phase scope from the default-on toggles, composed on top of

@@ -35,11 +35,14 @@ DECLARE
     _raw jsonb;
     _template_id bigint;
     _name text;
+    _description text;
+    _is_template boolean;
     _project_ct_id bigint;
     _template_ct_id bigint;
     _new_project_id bigint;
     _title_def_id bigint;
     _is_template_def_id bigint;
+    _description_def_id bigint;
     _activity_id bigint;
     _descendant_count int;
     _flow_count int;
@@ -60,6 +63,9 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'project.stamp: attribute_def ''is_template'' missing';
     END IF;
+    -- description is optional input; if its attribute_def is absent we skip the
+    -- write rather than fail the stamp.
+    SELECT id INTO _description_def_id FROM attribute_def WHERE name = 'description';
 
     FOR _idx, _raw IN
         SELECT (r.ord - 1)::int, r.value
@@ -72,6 +78,12 @@ BEGIN
             _template_id := NULL;
         END;
         _name := _raw->>'name';
+        _description := _raw->>'description'; -- NULL when absent
+        BEGIN
+            _is_template := COALESCE((_raw->>'is_template')::boolean, FALSE);
+        EXCEPTION WHEN invalid_text_representation THEN
+            _is_template := FALSE;
+        END;
 
         IF _template_id IS NULL OR _template_id = 0 THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
@@ -131,13 +143,25 @@ BEGIN
         --    copy_project_template (the `av.card_id <> template_id` clause),
         --    so writing here is safe — the helper won't overwrite it.
         INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
-        VALUES (_new_project_id, 'attr_update', _is_template_def_id, NULL, to_jsonb(FALSE), actor_id)
+        VALUES (_new_project_id, 'attr_update', _is_template_def_id, NULL, to_jsonb(_is_template), actor_id)
         RETURNING id INTO _activity_id;
         INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
-        VALUES (_new_project_id, _is_template_def_id, to_jsonb(FALSE), _activity_id)
+        VALUES (_new_project_id, _is_template_def_id, to_jsonb(_is_template), _activity_id)
         ON CONFLICT (card_id, attribute_def_id) DO UPDATE
             SET value = EXCLUDED.value,
                 last_activity_id = EXCLUDED.last_activity_id;
+
+        -- 5b. Write the optional description attribute_value (same upsert shape).
+        IF _description IS NOT NULL AND _description <> '' AND _description_def_id IS NOT NULL THEN
+            INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
+            VALUES (_new_project_id, 'attr_update', _description_def_id, NULL, to_jsonb(_description), actor_id)
+            RETURNING id INTO _activity_id;
+            INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
+            VALUES (_new_project_id, _description_def_id, to_jsonb(_description), _activity_id)
+            ON CONFLICT (card_id, attribute_def_id) DO UPDATE
+                SET value = EXCLUDED.value,
+                    last_activity_id = EXCLUDED.last_activity_id;
+        END IF;
 
         -- 6. Graph-copy the template's descendant structure via the shared
         --    helper. This is the same helper card.insert(project) calls

@@ -78,6 +78,7 @@ function screenMockTransport(opts = {}) {
   function screenRow() {
     const attrs = { slug: 'grid', layout: 'grid', title: 'Grid' };
     if (defaultFilterId !== undefined) attrs.default_filter = String(defaultFilterId);
+    if (opts.toggleGroups !== undefined) attrs.toggle_groups = opts.toggleGroups;
     return {
       id: String(SCREEN_GRID_ID),
       card_type_id: '20',
@@ -493,20 +494,49 @@ test('default_filter applied on first visit', async () => {
   );
 });
 
-test('default-on-first-visit falls back to `status notTerminal` when no default_filter', async () => {
-  const transport = screenMockTransport(); // no defaultFilterId
+test('default-on-first-visit shows ALL phases when no default_filter and no phase toggles', async () => {
+  const transport = screenMockTransport(); // no defaultFilterId, no toggle_groups
   const { dispatcher, api } = bootApi(transport);
   const tree = new M.TreeNode({}, []);
   const { statePath } = mountHost(api, tree);
   await settle(dispatcher);
 
-  // No default → the `status notTerminal` fallback applied; active id null
-  // (visited, "Default").
+  // No default + no phase toggles → an EMPTY predicate (every phase visible).
+  // The legacy hardcoded `status notTerminal` default was removed; what a screen
+  // hides by default is owned by its phase toggles' default_on flags. active id
+  // null (visited, "Default").
   assert.equal(tree.at([...statePath, 'activeFilterId']).peek(), null, 'no preset; cache marked visited');
+  assert.equal(
+    tree.at(['screen', 'predicate']).peek() ?? null,
+    null,
+    'no phase toggles → no default predicate (all phases shown)',
+  );
+});
+
+test('default-on-first-visit seeds the per-screen phase scope (terminal hidden via default_on, not a notTerminal default)', async () => {
+  const toggleGroups = JSON.stringify([
+    {
+      name: 'phase_scope',
+      operator: 'or',
+      mode: 'multi',
+      items: [
+        { name: 'active', label: 'Active', predicate: { attr: 'status', op: 'has_phase', values: ['active'] }, default_on: true },
+        { name: 'terminal', label: 'Closed', predicate: { attr: 'status', op: 'has_phase', values: ['terminal'] }, default_on: false },
+      ],
+    },
+  ]);
+  const transport = screenMockTransport({ toggleGroups });
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  mountHost(api, tree);
+  await settle(dispatcher);
+
+  // The screen's own default_on flags (active on, terminal off) drive the
+  // default — a has_phase [active] scope, NOT a hardcoded notTerminal leaf.
   assert.deepEqual(
-    tree.at(['screen', 'predicate']).peek(),
-    { kind: 'leaf', attr: 'status', op: 'notTerminal' },
-    'fallback applied a single status notTerminal leaf',
+    M.topLevelPhases(tree.at(['screen', 'predicate']).peek()),
+    ['active'],
+    'seeded the active-only phase scope from default_on',
   );
 });
 

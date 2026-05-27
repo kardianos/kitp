@@ -45,6 +45,13 @@ import (
 type StampInput struct {
 	TemplateProjectID int64  `json:"template_project_id,string" mcp:"required,desc=id of the project card to use as the source template"`
 	Name              string `json:"name" mcp:"required,desc=title for the new project card"`
+	// Description is written as the new project's `description` attribute when
+	// non-empty (optional).
+	Description string `json:"description,omitempty" mcp:"desc=optional description for the new project"`
+	// IsTemplate marks the freshly stamped project as a template itself
+	// (is_template=true) instead of the default false — for cloning one template
+	// into another.
+	IsTemplate bool `json:"is_template,omitempty" mcp:"desc=mark the new project as a template (default false)"`
 }
 
 // StampOutput surfaces the new project's id plus a Warnings field so

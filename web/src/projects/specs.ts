@@ -27,6 +27,7 @@ import type { Api } from '../core/api.js';
 
 export const PROJECT_SPEC = {
   cardInsert: 'card.insert',
+  projectStamp: 'project.stamp',
 } as const;
 
 /* -------------------------------------------------------------------------- */
@@ -46,6 +47,22 @@ export interface CardInsertInput {
 
 export interface CardInsertOutput {
   id: bigint;
+}
+
+/** project.stamp — create a project by graph-copying a template. */
+export interface ProjectStampInput {
+  templateProjectId: bigint;
+  /** Title for the new project (the wire field is `name`). */
+  name: string;
+  /** Optional description written on the new project. */
+  description?: string;
+  /** Mark the new project as a template itself (default false). */
+  isTemplate?: boolean;
+}
+
+export interface ProjectStampOutput {
+  newProjectId: bigint;
+  warnings?: string[];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -89,5 +106,26 @@ export function registerProjectSpecs(api: Api): void {
       return m;
     },
     decode: (raw): CardInsertOutput => ({ id: asId(asObj(raw)['id']) }),
+  });
+
+  api.define<ProjectStampInput, ProjectStampOutput>({
+    endpoint: 'project',
+    action: 'stamp',
+    encode: (i) => {
+      const m: Record<string, unknown> = {
+        template_project_id: i.templateProjectId,
+        name: i.name,
+      };
+      if (i.description !== undefined && i.description !== '') m['description'] = i.description;
+      if (i.isTemplate === true) m['is_template'] = true;
+      return m;
+    },
+    decode: (raw): ProjectStampOutput => {
+      const o = asObj(raw);
+      const warnings = Array.isArray(o['warnings']) ? (o['warnings'] as string[]) : undefined;
+      return warnings !== undefined
+        ? { newProjectId: asId(o['new_project_id']), warnings }
+        : { newProjectId: asId(o['new_project_id']) };
+    },
   });
 }

@@ -254,6 +254,64 @@ func TestProjectStampBatch_ValidationFailures(t *testing.T) {
 	}
 }
 
+// TestProjectStampBatch_DescriptionAndIsTemplate stamps with an optional
+// description and is_template=true, and confirms both land on the new project
+// (the structure is still copied — a template cloned from a template).
+func TestProjectStampBatch_DescriptionAndIsTemplate(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_project_stamp_batch_desc_tmpl")
+	templateID := lookupInstallSeedTemplate(t, pool)
+
+	rows := callProjectStampBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{
+			"template_project_id": strconv.FormatInt(templateID, 10),
+			"name":                "Cloned template",
+			"description":         "A starter template",
+			"is_template":         true,
+		},
+	})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("want 1 ok row; got %+v", rows)
+	}
+	var got struct {
+		NewProjectID string `json:"new_project_id"`
+	}
+	if err := json.Unmarshal(rows[0].Result, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	newID, _ := strconv.ParseInt(got.NewProjectID, 10, 64)
+
+	// is_template = TRUE (this stamp produced a template).
+	var isTemplate bool
+	if err := pool.QueryRow(context.Background(), `
+		SELECT (av.value)::text::boolean FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE av.card_id = $1 AND ad.name = 'is_template'
+	`, newID).Scan(&isTemplate); err != nil {
+		t.Fatalf("is_template lookup: %v", err)
+	}
+	if !isTemplate {
+		t.Errorf("is_template = false; want true")
+	}
+
+	// description was written.
+	var desc string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT av.value #>> '{}' FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE av.card_id = $1 AND ad.name = 'description'
+	`, newID).Scan(&desc); err != nil {
+		t.Fatalf("description lookup: %v", err)
+	}
+	if desc != "A starter template" {
+		t.Errorf("description = %q, want %q", desc, "A starter template")
+	}
+
+	// Structure still copied (the clone carries the template's screens).
+	if n := countDescendantsByCardType(t, pool, newID, "screen"); n != 7 {
+		t.Errorf("screens = %d, want 7 (structure copied)", n)
+	}
+}
+
 // TestProjectStampBatch_MultiRow runs two stamps in one batch and
 // confirms both succeed with distinct new_project_id values.
 func TestProjectStampBatch_MultiRow(t *testing.T) {
