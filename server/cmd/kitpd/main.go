@@ -93,6 +93,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/projectstamp"
 	domrole "github.com/kitp/kitp/server/internal/dom/role"
 	"github.com/kitp/kitp/server/internal/dom/rolemapping"
+	domscheduler "github.com/kitp/kitp/server/internal/dom/scheduler"
 	"github.com/kitp/kitp/server/internal/dom/tag"
 	domuser "github.com/kitp/kitp/server/internal/dom/user"
 	"github.com/kitp/kitp/server/internal/dom/usercardagent"
@@ -454,54 +455,21 @@ func runHTTP() error {
 		Logger:      logger,
 	}
 
-	// SMTP senders. One goroutine per configured comm_channel card;
-	// each polls for pending reply_body rows and ships them via SMTP.
-	// Adding a new channel currently requires a kitpd restart — auto-
-	// detect is a follow-up gate (email_comm_spec.md §"SMTP sender").
-	// In dev / test environments without comm channels this returns
-	// an empty slice; the call is a no-op.
+	// Comm-channel + activity-sink workers. Each is a reconciling pool:
+	// one per-row worker (SMTP sender / IMAP poller / MS Graph pumper)
+	// kept in sync with the live channel/sink set. They are driven by the
+	// scheduler jobs declared below (comm.smtp_send / comm.imap_poll /
+	// activitysink.pump) — a single ticker per protocol that sweeps every
+	// channel each tick, NOT one goroutine per channel. A newly-added
+	// channel is picked up on the next sweep (no restart); a disabled /
+	// faulted channel's worker self-skips. The *_TICK_SEC envs set the
+	// owning job's Interval.
 	smtpTick := time.Duration(envInt("KITP_COMM_SMTP_TICK_SEC", 10)) * time.Second
-	smtpSenders, err := comm.StartSMTPSenderPool(ctx, pool, smtpTick, logger)
-	if err != nil {
-		return fmt.Errorf("smtp senders: %w", err)
-	}
-	if len(smtpSenders) > 0 {
-		log.Printf("started %d SMTP sender(s) (tick=%s, dry_run=%s)",
-			len(smtpSenders), smtpTick, envOr("KITP_COMM_SMTP_DRY_RUN", "0"))
-	}
-
-	// IMAP pollers. Mirror of the SMTP pool: one goroutine per
-	// configured comm_channel card, fetching unseen messages on each
-	// tick and routing via the three-tier threading lookup (header /
-	// subject suffix / body trailer). Adding a new channel currently
-	// requires a kitpd restart — auto-detect is a follow-up gate
-	// (email_comm_spec.md §"IMAP poller").
 	imapTick := time.Duration(envInt("KITP_COMM_IMAP_TICK_SEC", 60)) * time.Second
-	imapPollers, err := comm.StartIMAPPollerPool(ctx, pool, imapTick, logger)
-	if err != nil {
-		return fmt.Errorf("imap pollers: %w", err)
-	}
-	if len(imapPollers) > 0 {
-		log.Printf("started %d IMAP poller(s) (tick=%s, dry_run=%s, insecure=%s)",
-			len(imapPollers), imapTick,
-			envOr("KITP_COMM_IMAP_DRY_RUN", "0"),
-			envOr("KITP_COMM_IMAP_INSECURE", "0"))
-	}
-
-	// Activity sink pumpers. One goroutine per configured activity_sink
-	// card; each polls the activity stream for the sink's project and
-	// pushes matching rows to its configured external destination
-	// (MS Graph → Teams in v1). Adding a new sink currently requires a
-	// kitpd restart — mirrors the SMTP / IMAP pools.
 	activityTick := time.Duration(envInt("KITP_ACTIVITY_SINK_TICK_SEC", 30)) * time.Second
-	activityPumpers, err := activitysink.StartMSGraphPumperPool(ctx, pool, activityTick, logger)
-	if err != nil {
-		return fmt.Errorf("activity_sink pumpers: %w", err)
-	}
-	if len(activityPumpers) > 0 {
-		log.Printf("started %d activity_sink pumper(s) (tick=%s, dry_run=%s)",
-			len(activityPumpers), activityTick, envOr("KITP_ACTIVITY_SINK_DRY_RUN", "0"))
-	}
+	smtpPool := comm.NewSMTPPool(pool, smtpTick, logger)
+	imapPool := comm.NewIMAPPool(pool, imapTick, logger)
+	activityPool := activitysink.NewMSGraphPool(pool, activityTick, logger)
 
 	// comm_log retention prune. Deletes comm_log rows older than the
 	// configured retention window (default 30d). The cadence is set
@@ -514,47 +482,82 @@ func runHTTP() error {
 	pruner.SetLogger(logger)
 
 	// ----- background job scheduler -----
-	// All periodic ticker work is declared here so the cadence,
-	// timeout, and metrics live in one table. Pool-style workers
-	// (IMAP / SMTP / activitysink — per-row, persistent connection)
-	// are NOT a fit and keep their existing shape above.
+	// All periodic ticker work is declared here so the cadence, timeout,
+	// and metrics live in one table — including the comm/activity-sink
+	// sweeps, which drive their per-channel worker pools (constructed
+	// above) from one ticker per protocol rather than a goroutine per row.
 	sched := job.New[struct{}](pgPool, struct{}{}, logger)
 	for _, j := range []job.Job[struct{}]{
 		{
-			Name:     "idempotency.cleanup",
-			Interval: 10 * time.Minute,
+			Name:        "idempotency.cleanup",
+			Description: "Purge expired idempotency keys from the in-memory store.",
+			Interval:    10 * time.Minute,
 			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
 				return idem.Cleanup(ctx)
 			},
 		},
 		{
-			Name:      "cas.reaper",
-			OnStartup: true, // catch abandoned uploads from a previous boot
-			Interval:  reaper.Interval,
+			Name:        "cas.reaper",
+			Description: "Reap abandoned CAS upload sessions and orphaned chunks.",
+			OnStartup:   true, // catch abandoned uploads from a previous boot
+			Interval:    reaper.Interval,
 			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
 				return reaper.RunOnce(ctx)
 			},
 		},
 		{
-			Name:     "session.touch",
-			Interval: time.Duration(envInt("KITP_SESSION_TOUCH_SECONDS", 180)) * time.Second,
+			Name:        "session.touch",
+			Description: "Flush buffered session last-seen timestamps to the DB.",
+			Interval:    time.Duration(envInt("KITP_SESSION_TOUCH_SECONDS", 180)) * time.Second,
 			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
 				return sessionMgr.RunTouch(ctx)
 			},
 		},
 		{
-			Name:     "token.touch",
-			Interval: 3 * time.Minute, // mirrors token.Config default
+			Name:        "token.touch",
+			Description: "Flush buffered API-token last-used timestamps to the DB.",
+			Interval:    3 * time.Minute, // mirrors token.Config default
 			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
 				return tokenMgr.RunTouch(ctx)
 			},
 		},
 		{
-			Name:     "comm.log_prune",
-			Interval: pruneInterval,
+			Name:        "comm.log_prune",
+			Description: "Delete comm_log rows older than the retention window.",
+			Interval:    pruneInterval,
 			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
 				_, err := pruner.RunOnce(ctx)
 				return err
+			},
+		},
+		{
+			Name:        "comm.imap_poll",
+			Description: "Poll every enabled email channel's IMAP inbox and ingest new messages.",
+			OnStartup:   true, // check mail immediately on boot, don't wait a full interval
+			Interval:    imapTick,
+			Timeout:     job.MaxDefaultTimeout, // a full sweep may dial several channels
+			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
+				return imapPool.RunOnce(ctx)
+			},
+		},
+		{
+			Name:        "comm.smtp_send",
+			Description: "Send pending outbound replies via each enabled channel's SMTP server.",
+			OnStartup:   true,
+			Interval:    smtpTick,
+			Timeout:     job.MaxDefaultTimeout,
+			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
+				return smtpPool.RunOnce(ctx)
+			},
+		},
+		{
+			Name:        "activitysink.pump",
+			Description: "Push matching activity rows to each enabled sink's external destination.",
+			OnStartup:   true,
+			Interval:    activityTick,
+			Timeout:     job.MaxDefaultTimeout,
+			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
+				return activityPool.RunOnce(ctx)
 			},
 		},
 	} {
@@ -563,6 +566,11 @@ func runHTTP() error {
 		}
 	}
 	sched.Start(ctx)
+	// Expose the live scheduler to the admin scheduler.list / scheduler.run
+	// handlers (the workspace Jobs screen). Registered here, not in
+	// registerHandlers, so the MCP entrypoint (no scheduler) doesn't carry
+	// dead handlers. Must precede the server accepting requests below.
+	domscheduler.Register(pool, sched)
 	log.Printf("started job scheduler with %d job(s) (comm_log retention=%dd, prune=%dh)",
 		len(sched.Metrics()), retentionDays, pruneHours)
 
@@ -649,19 +657,12 @@ func runHTTP() error {
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
-	for _, sender := range smtpSenders {
-		sender.Stop()
-	}
-	for _, poller := range imapPollers {
-		poller.Stop()
-	}
-	for _, pumper := range activityPumpers {
-		pumper.Stop()
-	}
 	// Job scheduler: cancel the root ctx so every job goroutine sees
-	// parent.Done() and exits. Without this Wait() blocks forever —
-	// httpSrv.Shutdown only bounds its own draining, it doesn't
-	// propagate cancellation back to the parent.
+	// parent.Done() and exits — including the comm/activity-sink sweep
+	// jobs, whose worker pools hold no connections between ticks, so
+	// there's nothing else to drain. Without this Wait() blocks forever:
+	// httpSrv.Shutdown only bounds its own draining, it doesn't propagate
+	// cancellation back to the parent.
 	cancel()
 	sched.Wait()
 	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)

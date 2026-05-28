@@ -839,10 +839,10 @@ func TestReplyPost(t *testing.T) {
 	if from != "" {
 		t.Errorf("reply_from=%q want empty (channel has no from_address)", from)
 	}
-	// Subject = "{thread_id} {task.title}". Task title is whatever the
-	// fixture seeded; verify the thread_id prefix + a trailing space.
-	if len(subject) < 11 || subject[10] != ' ' {
-		t.Errorf("reply_subject=%q want '{thread_id} {task.title}' shape (11+ chars, space after the 10-char thread_id)", subject)
+	// Subject = "[#{thread_id}] {task.title}" — the thread id rides in the
+	// [#...] tag (matched anywhere by inbound threading), prefixed, title after.
+	if len(subject) < 14 || subject[:2] != "[#" || subject[12] != ']' || subject[13] != ' ' {
+		t.Errorf("reply_subject=%q want '[#{thread_id}] {task.title}' shape", subject)
 	}
 	if bodyText != "Hello, here is a fix." {
 		t.Errorf("reply_body_text=%q want 'Hello, here is a fix.'", bodyText)

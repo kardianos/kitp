@@ -176,9 +176,12 @@ BEGIN
         END IF;
         _to_snapshot := array_to_string(_recipients, ', ');
 
-        -- Subject snapshot = "{thread_id} {task.title}" (or just
-        -- thread_id when the task has no title — defensive, the task
-        -- card_type has title as a required edge).
+        -- Subject snapshot = "[#{thread_id}] {task.title}" — the thread id rides
+        -- in the [#...] tag (which inbound threading matches anywhere in the
+        -- subject) so it appears ONCE, prefixed, with the human title after.
+        -- buildMIME sees the tag already present and leaves the subject as-is.
+        -- (Falls back to just the tag when the task has no title — defensive;
+        -- the task card_type has title as a required edge.)
         _task_title := '';
         IF _parent_task_id <> 0 THEN
             SELECT COALESCE(av.value #>> '{}', '')
@@ -191,9 +194,9 @@ BEGIN
             END IF;
         END IF;
         IF _task_title = '' THEN
-            _subject_snapshot := _thread_id;
+            _subject_snapshot := '[#' || _thread_id || ']';
         ELSE
-            _subject_snapshot := _thread_id || ' ' || _task_title;
+            _subject_snapshot := '[#' || _thread_id || '] ' || _task_title;
         END IF;
 
         -- 4. Channel from_address (best-effort).

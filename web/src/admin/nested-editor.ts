@@ -43,7 +43,7 @@ import type {
   AttributeDefBoundCardType,
   FlowPreviewDeleteOutput,
   FlowStepBlocker,
-  CommChannelRow,
+  CommChannel,
   ActivitySinkRow,
   UserTokenRow,
   RoleMappingRow,
@@ -72,7 +72,6 @@ export type NestedEditorKind =
   | 'flowSteps'
   | 'edgeMatrix'
   | 'screenFilters'
-  | 'commChannelConfig'
   | 'activitySinkConfig'
   | 'agentTokens'
   | 'roleMappings';
@@ -219,6 +218,9 @@ export interface CommChannelDraft {
   /** Blank on load. */
   smtpPassword: string;
   fromAddress: string;
+  /** Status card id for new intake tasks; '' = leave unchanged / use the
+   *  project flow default. */
+  intakeStatusId: string;
   channelStatus: string;
 }
 
@@ -227,28 +229,36 @@ export function emptyChannelDraft(): CommChannelDraft {
     id: '0', name: '', channelType: 'email',
     imapHost: '', imapPort: '', imapUsername: '', imapPassword: '',
     smtpHost: '', smtpPort: '', smtpUsername: '', smtpPassword: '',
-    fromAddress: '', channelStatus: 'enabled',
+    fromAddress: '', intakeStatusId: '', channelStatus: 'enabled',
   };
 }
 
-/** Hydrate a draft from a server row. Password fields ALWAYS start blank — the
- *  GUI shows "configured" via the row's has_*_password flags. */
-export function channelRowToDraft(row: CommChannelRow): CommChannelDraft {
+/** Hydrate a draft from a server row. Host / port / username are stored
+ *  config (not secrets), so they hydrate from the row — otherwise a saved
+ *  channel shows blank ports + usernames. Only PASSWORD fields stay blank;
+ *  the GUI shows "configured" via the row's has_*_password flags. */
+export function channelRowToDraft(row: CommChannel): CommChannelDraft {
   return {
     id: row.id,
     name: row.name,
-    channelType: row.channel_type === '' ? 'email' : row.channel_type,
-    imapHost: row.imap_host ?? '',
-    imapPort: '',
-    imapUsername: '',
+    channelType: row.channelType === '' ? 'email' : row.channelType,
+    imapHost: row.imapHost ?? '',
+    imapPort: portToStr(row.imapPort),
+    imapUsername: row.imapUsername ?? '',
     imapPassword: '',
-    smtpHost: row.smtp_host ?? '',
-    smtpPort: '',
-    smtpUsername: '',
+    smtpHost: row.smtpHost ?? '',
+    smtpPort: portToStr(row.smtpPort),
+    smtpUsername: row.smtpUsername ?? '',
     smtpPassword: '',
-    fromAddress: row.from_address ?? '',
-    channelStatus: row.channel_status === '' ? 'enabled' : row.channel_status,
+    fromAddress: row.fromAddress ?? '',
+    intakeStatusId: row.intakeStatusId ?? '',
+    channelStatus: row.channelStatus === '' ? 'enabled' : row.channelStatus,
   };
+}
+
+/** A stored port (0 / undefined = unset) as the form's all-strings value. */
+function portToStr(port: number | undefined): string {
+  return port === undefined || port === 0 ? '' : String(port);
 }
 
 /** Per-field error messages; empty record = valid. Mirrors the server gate. */
@@ -285,6 +295,9 @@ export function channelDraftToSet(d: CommChannelDraft, projectId: string): Recor
   if (sp !== 0) out['smtpPort'] = sp;
   if (d.smtpUsername.trim() !== '') out['smtpUsername'] = d.smtpUsername.trim();
   if (d.smtpPassword !== '') out['smtpPassword'] = d.smtpPassword;
+  // intake_status uses PATCH semantics server-side (0 = leave unchanged), so we
+  // only send it when a real status is chosen. There's no "clear back to none".
+  if (d.intakeStatusId && d.intakeStatusId !== '0') out['intakeStatusId'] = d.intakeStatusId;
   if (d.fromAddress.trim() !== '') out['fromAddress'] = d.fromAddress.trim();
   if (d.channelStatus !== '') out['channelStatus'] = d.channelStatus;
   return out;
@@ -385,6 +398,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   /** Monotonic load gate so a stale async delivery resolves to a no-op. */
   private loadSeq = 0;
 
+
   /** flowSteps drag-reorder (shared DnD kit): the dragged step id + its
    *  from_card_id (drag is constrained WITHIN a from-group). One placeholder per
    *  from-group, recreated each renderFlowSteps. */
@@ -435,8 +449,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       // regardless of the parent Roles selection.
       if (this.config.kind === 'roleMappings') {
         this.renderRoleMappings();
-      } else if (this.config.kind === 'commChannelConfig') {
-        this.renderChannelConfig(item);
       } else if (this.config.kind === 'activitySinkConfig') {
         this.renderSinkConfig(item);
       } else {
@@ -476,14 +488,11 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         this.ctx.tree.at(this.p('editingId')).get();
         this.ctx.tree.at(this.p('flows')).get(); // workflow (#27) options
         break;
-      // commChannelConfig / activitySinkConfig do NOT subscribe to `draft`:
-      // every keystroke writes the draft (per-field update), and subscribing
-      // would re-render the whole form on each letter — replacing the live
-      // `<input>` element and losing focus mid-word. Structural draft writes
-      // (hydrate on selection change, "+ New" click, save reset) call the
-      // render method explicitly instead. See renderChannelConfig /
-      // renderSinkConfig + hydrate{Channel,Sink}Draft + save{Channel,Sink}.
-      case 'commChannelConfig':
+      // activitySinkConfig does NOT subscribe to `draft`: every keystroke writes
+      // the draft (per-field update), and subscribing would re-render the whole
+      // form on each letter — replacing the live `<input>` and losing focus
+      // mid-word. Structural draft writes (hydrate on selection change, "+ New"
+      // click, save reset) call renderSinkConfig explicitly instead.
       case 'activitySinkConfig':
         break;
       case 'agentTokens':
@@ -510,9 +519,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         break;
       case 'screenFilters':
         this.loadScreenFilters(item.id);
-        break;
-      case 'commChannelConfig':
-        this.hydrateChannelDraft(item);
         break;
       case 'activitySinkConfig':
         this.hydrateSinkDraft(item);
@@ -641,9 +647,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         break;
       case 'screenFilters':
         this.renderScreenFilters(item);
-        break;
-      case 'commChannelConfig':
-        this.renderChannelConfig(item);
         break;
       case 'activitySinkConfig':
         this.renderSinkConfig(item);
@@ -889,6 +892,15 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     form.className = 'nested-editor__step-form';
     form.dataset.neStepForm = '';
 
+    // Instruction text: explain what a transition IS, in plain terms.
+    const intro = document.createElement('p');
+    intro.className = 'nested-editor__step-intro muted';
+    intro.dataset.neStepIntro = '';
+    intro.textContent =
+      'A transition is a one-click status change shown as a button on the task’s status bar. ' +
+      'Pick the status a task must be in (From), the status the button moves it to (To), and the label the user clicks.';
+    form.append(intro);
+
     const fromSel = this.valueCardSelect('neFrom', valueCards, draft.fromCardId);
     const toSel = this.valueCardSelect('neTo', valueCards, draft.toCardId);
 
@@ -896,7 +908,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     labelInput.type = 'text';
     labelInput.className = 'nested-editor__step-input';
     labelInput.dataset.neLabel = '';
-    labelInput.placeholder = 'Label (button text)';
+    labelInput.placeholder = 'e.g. Accept, Start, Resolve';
     labelInput.value = draft.label;
 
     const roleSel = document.createElement('select');
@@ -919,10 +931,30 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     sortInput.type = 'text';
     sortInput.className = 'nested-editor__step-input';
     sortInput.dataset.neSort = '';
-    sortInput.placeholder = 'Sort order';
+    sortInput.placeholder = 'e.g. 1';
     sortInput.value = draft.sortOrder;
 
-    form.append(fromSel, toSel, labelInput, roleSel, sortInput);
+    // Each control gets a label + a one-line help caption.
+    const field = (labelText: string, control: HTMLElement, help: string): HTMLElement => {
+      const wrap = document.createElement('label');
+      wrap.className = 'nested-editor__step-field';
+      const lbl = document.createElement('span');
+      lbl.className = 'nested-editor__step-field-label';
+      lbl.textContent = labelText;
+      const hint = document.createElement('span');
+      hint.className = 'nested-editor__step-field-help muted';
+      hint.textContent = help;
+      wrap.append(lbl, control, hint);
+      return wrap;
+    };
+
+    form.append(
+      field('From status', fromSel, 'The status a task must currently be in for this button to appear.'),
+      field('To status', toSel, 'The status the task moves to when the button is clicked.'),
+      field('Button label', labelInput, 'The action text the user sees on the status bar.'),
+      field('Required role', roleSel, 'Who may use this transition — leave as “any role” for no restriction.'),
+      field('Sort order', sortInput, 'Lower numbers list first among a status’s buttons.'),
+    );
 
     const err = document.createElement('div');
     err.className = 'nested-editor__step-error';
@@ -1675,134 +1707,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     );
   }
 
-  /* ----------------------- comm-channel config -------------------------- */
-
-  /** Hydrate the channel draft from the selected row UNLESS one is already in
-   *  flight (so an in-progress edit isn't clobbered by a re-render). Password
-   *  fields always start blank — never echoed. */
-  private hydrateChannelDraft(item: MasterDetailItem): void {
-    const node = this.ctx.tree.at(this.p('draft'));
-    const cur = node.peek<CommChannelDraft | null>() ?? null;
-    if (cur !== null && cur.id === item.id) return; // keep the live edit
-    node.set(channelRowToDraft(item.raw as unknown as CommChannelRow));
-    // Structural draft write (selection change): re-render explicitly since the
-    // render effect doesn't subscribe to `draft` (keeps the keystroke-cycle
-    // from re-rendering the form and stealing input focus).
-    this.renderChannelConfig(item);
-  }
-
-  private renderChannelConfig(item: MasterDetailItem | null): void {
-    // The draft is the source of truth for the form. When nothing is selected
-    // and no draft is in flight, show only the "+ New channel" affordance.
-    const existing = this.ctx.tree.at(this.p('draft')).peek<CommChannelDraft | null>() ?? null;
-    const draft: CommChannelDraft | null =
-      existing ?? (item !== null ? channelRowToDraft(item.raw as unknown as CommChannelRow) : null);
-
-    const frag = document.createDocumentFragment();
-    const heading = document.createElement('div');
-    heading.className = 'nested-editor__heading';
-    const title = document.createElement('h3');
-    title.className = 'nested-editor__title';
-    title.textContent = draft !== null && draft.id !== '0' && draft.id !== '' ? 'Channel configuration' : 'New channel';
-    heading.append(title);
-    const newBtn = document.createElement('button');
-    newBtn.type = 'button';
-    newBtn.className = 'btn nested-editor__config-new';
-    newBtn.dataset.neChannelNew = '';
-    newBtn.textContent = '+ New channel';
-    // Structural draft write: clear to the empty draft + re-render the form
-    // (the render effect doesn't subscribe to `draft`; see subscribeLoadedLeaves).
-    this.listen(newBtn, 'click', () => {
-      this.ctx.tree.at(this.p('draft')).set(emptyChannelDraft());
-      this.renderChannelConfig(null);
-    });
-    heading.append(newBtn);
-    frag.append(heading);
-
-    if (draft === null) {
-      const hint = document.createElement('div');
-      hint.className = 'muted';
-      hint.dataset.neConfigEmpty = '';
-      hint.textContent = 'Select a channel to edit it, or add a new one.';
-      frag.append(hint);
-      this.el.replaceChildren(frag);
-      return;
-    }
-    const row = (item !== null ? item.raw : {}) as unknown as CommChannelRow;
-
-    const form = document.createElement('div');
-    form.className = 'nested-editor__config-form';
-    form.dataset.neChannelConfig = '';
-
-    const update = (patch: Partial<CommChannelDraft>): void => {
-      const next = { ...(this.ctx.tree.at(this.p('draft')).peek<CommChannelDraft>() ?? draft), ...patch };
-      this.ctx.tree.at(this.p('draft')).set(next);
-    };
-
-    form.append(this.textField('neName', 'Name', draft.name, (v) => update({ name: v })));
-    form.append(this.textField('neImapHost', 'IMAP host', draft.imapHost, (v) => update({ imapHost: v })));
-    form.append(this.textField('neImapPort', 'IMAP port', draft.imapPort, (v) => update({ imapPort: v })));
-    form.append(this.textField('neImapUser', 'IMAP username', draft.imapUsername, (v) => update({ imapUsername: v })));
-    form.append(this.secretField('neImapPwd', 'IMAP password', draft.imapPassword, row.has_imap_password, (v) => update({ imapPassword: v })));
-    form.append(this.textField('neSmtpHost', 'SMTP host', draft.smtpHost, (v) => update({ smtpHost: v })));
-    form.append(this.textField('neSmtpPort', 'SMTP port', draft.smtpPort, (v) => update({ smtpPort: v })));
-    form.append(this.textField('neSmtpUser', 'SMTP username', draft.smtpUsername, (v) => update({ smtpUsername: v })));
-    form.append(this.secretField('neSmtpPwd', 'SMTP password', draft.smtpPassword, row.has_smtp_password, (v) => update({ smtpPassword: v })));
-    form.append(this.textField('neFrom', 'From address', draft.fromAddress, (v) => update({ fromAddress: v })));
-    form.append(this.selectField('neStatus', 'Status', CHANNEL_STATUS_OPTIONS, draft.channelStatus, (v) => update({ channelStatus: v })));
-
-    const err = document.createElement('div');
-    err.className = 'nested-editor__config-error';
-    err.dataset.neConfigError = '';
-    err.style.display = 'none';
-    form.append(err);
-
-    const save = document.createElement('button');
-    save.type = 'button';
-    save.className = 'btn btn-primary nested-editor__config-save';
-    save.dataset.neConfigSave = '';
-    save.textContent = 'Save channel';
-    this.listen(save, 'click', () => {
-      const d = (this.ctx.tree.at(this.p('draft')).peek<CommChannelDraft>() ?? draft);
-      const errors = validateChannelDraft(d);
-      const first = Object.values(errors)[0];
-      if (first !== undefined) {
-        err.style.display = '';
-        err.textContent = first;
-        return;
-      }
-      this.saveChannel(d);
-    });
-    form.append(save);
-    frag.append(form);
-    this.el.replaceChildren(frag);
-  }
-
-  private saveChannel(d: CommChannelDraft): void {
-    const projectId = this.scopeProjectId();
-    if (projectId === '' || projectId === '0') {
-      this.setFault({ kind: 'sub_error', code: 'no_project', message: 'Pick a project before saving a channel.' });
-      return;
-    }
-    this.clearFault();
-    this.ctx.api.callByName(
-      'comm_channel.set',
-      channelDraftToSet(d, projectId),
-      () => {
-        if (!this.isAlive()) return;
-        // Clear the draft + reload the parent list so the row reflects server
-        // truth (and a fresh create surfaces with its server id).
-        this.ctx.tree.at(this.p('draft')).set(null);
-        // Render-effect doesn't subscribe to `draft`; clear the form
-        // immediately so the user doesn't see the saved channel hanging
-        // around during the async list reload.
-        this.renderChannelConfig(null);
-        this.reloadProjectScopedList('comm_channel.list');
-      },
-      { alive: () => this.isAlive(), onErr: (f) => this.showFault('comm_channel.set', f) },
-    );
-  }
-
   /* ----------------------- activity-sink config ------------------------- */
 
   private hydrateSinkDraft(item: MasterDetailItem): void {
@@ -2030,7 +1934,8 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       () => {
         if (!this.isAlive()) return;
         this.ctx.tree.at(this.p('draft')).set(null);
-        // See saveChannel — render-effect doesn't subscribe to `draft`.
+        // Render-effect doesn't subscribe to `draft` (focus-survival rule), so
+        // re-render explicitly after the structural save reset.
         this.renderSinkConfig(null);
         this.reloadProjectScopedList('activity_sink.list');
       },

@@ -160,6 +160,39 @@ flow_id,         from_card_id,  to_card_id,  label,            sort_order
 @flow_default,   @s_cancel,     @s_todo,     "Reopen",         2
 
 
+## table card | under=proj_default | doc="Comm status value-cards for Default Project's comm flow (email_comm_spec Gate 2). Same `status` card_type as the task statuses but they answer the `comm_status` attribute; the comm lifecycle (Open → In progress → Resolved) is tracked independently of the task status flow so a task can be 'Doing' while its email thread is 'Resolved'." | on_conflict="id"
+### rows
+card_type_id,      parent_card_id, phase,    title,         sort_order, alias
+$card_type.status, parent,         active,   "Open",        10,         cs_open
+$card_type.status, parent,         active,   "In progress", 20,         cs_progress
+$card_type.status, parent,         terminal, "Resolved",    30,         cs_resolved
+
+
+## table flow | doc="Default Project comm flow — binds `comm_status` to the project so inbound mail (createTaskAndComm) and comm.create can assign a comm its status. Without it both fail 'no_comm_flow'. Globally-unique name per the loader name-lookup note on the task flow above." | on_conflict="attribute_def_id, scope_card_id"
+### rows
+name,                        attribute_def_id,           scope_card_id, default_create_status_id, alias
+"Default Project comm flow", $attribute_def.comm_status, @proj_default, @cs_open,                 flow_comm
+
+
+## table flow_step | doc="Comm flow transitions (email_comm_spec Gate 2): Open → In progress (start working), In progress → Resolved (resolve), Resolved → Open (reopen)." | on_conflict="flow_id, from_card_id, to_card_id, label"
+### rows
+flow_id,     from_card_id,  to_card_id,    label,           sort_order
+@flow_comm,  @cs_open,      @cs_progress,  "Start working", 1
+@flow_comm,  @cs_progress,  @cs_resolved,  "Resolve",       1
+@flow_comm,  @cs_resolved,  @cs_open,      "Reopen",        1
+
+
+## table card | under=proj_default | alias=sc_comms | doc="Comms screen (email_comm_spec Gate 7). Lists tasks with attached comms (the 'Comms attached' default_filter below). flow_ref points at the comm flow so the TransitionBar shows comm-status transitions; toggle_groups filter by comm_status phase (Active / Resolved) rather than task status; default_create_status overrides to 'Open' (the comm flow's create default)."
+### rows
+card_type_id,      parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,    default_create_status, alias,    toggle_groups
+$card_type.screen, parent,         "Comms", list,   comms, c,      7,          @flow_comm,  @cs_open,              sc_comms, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"comm_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Resolved","predicate":{"attr":"comm_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+
+## table card | under=sc_comms | doc="Default filter for the Comms screen: tasks that have any attached comm cards."
+### rows
+card_type_id,      parent_card_id, title,            predicate
+$card_type.filter, parent,         "Comms attached", `{"attr":"comms","op":"exists"}`
+
+
 ## table card | under=proj_default | doc="25 dense tasks. status is round-robin so every state has at least a few rows; 'Closed:'-prefixed titles force Done so a manually-curated terminal example survives the rotation. sort_order is task_idx * 100 (the loader can't compute that, so each row carries its literal value). due_date is the demo-only non-built-in attribute defined above; a mix of past, today-ish, and future ISO dates exercises overdue / upcoming display."
 ### rows
 card_type_id,    parent_card_id, title,                       status,    assignee,             milestone_ref, component_ref, tags,                                 description,                                                                              sort_order, due_date
@@ -346,6 +379,39 @@ flow_id,      from_card_id,     to_card_id,      label,            sort_order
 @mob_flow,    @mob_s_review,    @mob_s_cancel,   "Cancel",         6
 @mob_flow,    @mob_s_done,      @mob_s_todo,     "Reopen",         1
 @mob_flow,    @mob_s_cancel,    @mob_s_todo,     "Reopen",         2
+
+
+## table card | under=proj_mobile | doc="Mobile App comm status value-cards — independent set from Default Project's, same Open → In progress → Resolved comm lifecycle bound to this project's comm flow." | on_conflict="id"
+### rows
+card_type_id,      parent_card_id, phase,    title,         sort_order, alias
+$card_type.status, parent,         active,   "Open",        10,         mob_cs_open
+$card_type.status, parent,         active,   "In progress", 20,         mob_cs_progress
+$card_type.status, parent,         terminal, "Resolved",    30,         mob_cs_resolved
+
+
+## table flow | doc="Mobile App comm flow — binds `comm_status` to Mobile App so inbound mail / comm.create can assign a comm its status. Globally-unique name per the loader name-lookup note above." | on_conflict="attribute_def_id, scope_card_id"
+### rows
+name,                    attribute_def_id,           scope_card_id, default_create_status_id, alias
+"Mobile App comm flow",  $attribute_def.comm_status, @proj_mobile,  @mob_cs_open,             mob_flow_comm
+
+
+## table flow_step | doc="Mobile App comm flow transitions — same shape as Default Project, pointing at Mobile App's comm-status cards." | on_conflict="flow_id, from_card_id, to_card_id, label"
+### rows
+flow_id,         from_card_id,      to_card_id,         label,           sort_order
+@mob_flow_comm,  @mob_cs_open,      @mob_cs_progress,   "Start working", 1
+@mob_flow_comm,  @mob_cs_progress,  @mob_cs_resolved,   "Resolve",       1
+@mob_flow_comm,  @mob_cs_resolved,  @mob_cs_open,       "Reopen",        1
+
+
+## table card | under=proj_mobile | alias=mob_sc_comms | doc="Mobile App Comms screen. No hotkey (Default Project claims the single-letter keys, like the other Mobile App screens). flow_ref → the comm flow; toggle_groups filter by comm_status phase; default_create_status → 'Open'."
+### rows
+card_type_id,      parent_card_id, title,   layout, slug,  sort_order, flow_ref,        default_create_status, alias,        toggle_groups
+$card_type.screen, parent,         "Comms", list,   comms, 7,          @mob_flow_comm,  @mob_cs_open,          mob_sc_comms, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"comm_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Resolved","predicate":{"attr":"comm_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+
+## table card | under=mob_sc_comms | doc="Default filter for the Mobile App Comms screen: tasks that have any attached comm cards."
+### rows
+card_type_id,      parent_card_id, title,            predicate
+$card_type.filter, parent,         "Comms attached", `{"attr":"comms","op":"exists"}`
 
 
 ## table card | under=proj_mobile | doc="Mobile App tasks. Smaller fixture than Default Project (8 tasks vs ~29) — variety more than density. status round-robin so every active state has at least one row; a closed task survives the rotation for terminal-state coverage."

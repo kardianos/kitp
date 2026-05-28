@@ -27,6 +27,8 @@ before(async () => {
   M.registerEnumManager(); // the Enums admin view is its own control, not a MasterDetail
   M.registerPeopleManager(); // the People admin view is its own control too
   M.registerNestedEditor(); // the OIDC Claims admin view is a standalone NestedEditor
+  M.registerSchedulerJobs(); // the Background Jobs admin view is its own control too
+  M.registerRecordForm(); // Comm Channels mounts the generic RecordForm in its detail
 });
 
 const PROJECT_ID = '31';
@@ -213,10 +215,13 @@ test('card-backed admin screens carry an editField update action; read-only ones
     'agents has an agent.delete delete action',
   );
   assert.deepEqual(agents.detail.nested, { kind: 'agentTokens' }, 'agents mounts the token nested editor');
-  // Comm Channels / Activity Sinks mount config nested editors that fire their
-  // own imperative comm_channel.set / activity_sink.set calls — no MasterDetail-
-  // level action binding. Workflows / Comm Log stay pure read-only viewers.
-  assert.deepEqual(M.adminScreenConfig('comm_channels').detail.nested, { kind: 'commChannelConfig' });
+  // Comm Channels now mounts the generic RecordForm (detail.form) instead of a
+  // bespoke nested editor: a field table + save/list-refresh owned by the
+  // control. Activity Sinks still uses its config nested editor (not migrated).
+  const commCh = M.adminScreenConfig('comm_channels');
+  assert.equal(commCh.detail.nested, undefined, 'comm_channels no longer uses a nested editor');
+  assert.equal(commCh.detail.form?.saveSpec, 'comm_channel.set', 'comm_channels mounts RecordForm saving via comm_channel.set');
+  assert.ok(Array.isArray(commCh.detail.form?.fields) && commCh.detail.form.fields.length > 0, 'comm_channels form has a field table');
   assert.deepEqual(M.adminScreenConfig('activity_sinks').detail.nested, { kind: 'activitySinkConfig' });
   // Roles is now a pure overview — the OIDC claim→role mapping editor moved to
   // its own Workspace screen (oidc_claims), a standalone roleMappings NestedEditor.
@@ -268,6 +273,16 @@ test('Attributes: the detail mounts the edge-matrix nested editor (replacing bou
   // Workflows + Screens carry their nested editors too.
   assert.deepEqual(M.adminScreenConfig('workflows').detail.nested, { kind: 'flowSteps' });
   assert.deepEqual(M.adminScreenConfig('screens').detail.nested, { kind: 'screenFilters' });
+});
+
+test('Workflows: create optimistic row carries the flat `name` (not "(untitled)")', () => {
+  // flow.list rows are flat ({ name, … }) with titleField 'name'. Without a
+  // custom optimisticRaw the default builds a card-shaped { attributes: { title } }
+  // row, so the new workflow read "(untitled)" until a manual reload. The
+  // optimisticRaw must put the typed name at the flat `name` key.
+  const cfg = M.adminScreenConfig('workflows');
+  const raw = cfg.create.optimisticRaw({ name: 'My Flow', attribute_def_id: '5' });
+  assert.equal(raw.name, 'My Flow', 'optimistic row exposes the flat name (titleField)');
 });
 
 test('Custom attributes: hides built-ins (rowFilter) + offers a picker target (#13)', async () => {
@@ -343,7 +358,7 @@ test('ADMIN_SECTION classifies every admin view (Workspace global vs Project sco
   // Confirmed grouping: global-data screens are Workspace; the rest are Project
   // (always filtered to the active project).
   const inSection = (s) => M.ADMIN_VIEWS.filter((v) => M.ADMIN_SECTION[v] === s).sort();
-  assert.deepEqual(inSection('workspace'), ['agents', 'attributes', 'oidc_claims', 'people', 'roles']);
+  assert.deepEqual(inSection('workspace'), ['agents', 'attributes', 'jobs', 'oidc_claims', 'people', 'roles']);
   assert.deepEqual(inSection('project'), ['activity_sinks', 'comm_channels', 'comm_log', 'enums', 'screens', 'workflows']);
 });
 

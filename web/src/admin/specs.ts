@@ -29,6 +29,7 @@
  */
 
 import type { Api } from '../core/api.js';
+import { encodeWire, decodeWire } from '../core/codec.js';
 
 /* -------------------------------------------------------------------------- */
 /* Spec keys (addressed by the declarative binding tables).                    */
@@ -72,6 +73,9 @@ export const ADMIN_SPEC = {
   roleMappingList: 'role_mapping.list',
   roleMappingSet: 'role_mapping.set',
   roleMappingDelete: 'role_mapping.delete',
+  // Background jobs (workspace Jobs screen) — list + run-now.
+  schedulerList: 'scheduler.list',
+  schedulerRun: 'scheduler.run',
 } as const;
 
 /* -------------------------------------------------------------------------- */
@@ -167,22 +171,72 @@ export interface RoleListOutput {
 
 /* ---- comm_channel.list (Comm Channels screen) ---------------------------- */
 
-export interface CommChannelRow {
+/**
+ * One comm_channel row, camelCase — decoded straight off the wire by the
+ * generic codec (decodeWire), no field-by-field mapping. Keys mirror the Go
+ * ChannelRow json tags with snake→camel applied.
+ */
+export interface CommChannel {
   id: string;
   name: string;
-  channel_type: string;
-  imap_host?: string;
-  smtp_host?: string;
-  from_address?: string;
-  channel_status: string;
-  channel_fault_reason?: string;
-  has_imap_password: boolean;
-  has_smtp_password: boolean;
-  created_at?: string;
+  channelType: string;
+  imapHost?: string;
+  imapPort?: number;
+  imapUsername?: string;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpUsername?: string;
+  fromAddress?: string;
+  /** Status card id new intake tasks are created in; omitted/0 = use the
+   *  project flow's default at intake time. */
+  intakeStatusId?: string;
+  channelStatus: string;
+  channelFaultReason?: string;
+  hasImapPassword: boolean;
+  hasSmtpPassword: boolean;
+  createdAt?: string;
 }
 
 export interface CommChannelListOutput {
-  rows: CommChannelRow[];
+  rows: CommChannel[];
+}
+
+/* ---- scheduler.list / scheduler.run (workspace Jobs screen) -------------- */
+
+/** One background job: its static declaration + a live metrics snapshot.
+ *  Durations arrive pre-formatted (e.g. "10m0s"); empty strings mean "unset"
+ *  / "never run". */
+export interface SchedulerJobInfo {
+  name: string;
+  description: string;
+  interval: string;
+  timeout: string;
+  on_startup: boolean;
+  offset: string;
+  disabled: boolean;
+  success: number;
+  failure: number;
+  last_run_at: string;
+  last_duration: string;
+  last_error: string;
+}
+
+export interface SchedulerListOutput {
+  jobs: SchedulerJobInfo[];
+}
+
+/** The outcome of one "run now" trigger plus the refreshed metrics row. */
+export interface SchedulerRunOutput {
+  name: string;
+  /** False when the job was already running; no new run launched. */
+  started: boolean;
+  /** True when the run executed AND the job returned no error. */
+  ok: boolean;
+  error: string;
+  duration: string;
+  ran_at: string;
+  message: string;
+  job: SchedulerJobInfo;
 }
 
 /* ---- activity_sink.list (Activity Sinks screen) -------------------------- */
@@ -682,26 +736,21 @@ function decodeRoleRow(j: Record<string, unknown>): RoleRow {
   return out;
 }
 
-function decodeCommChannelRow(j: Record<string, unknown>): CommChannelRow {
-  const out: CommChannelRow = {
-    id: asStr(j['id']),
+function decodeSchedulerJob(j: Record<string, unknown>): SchedulerJobInfo {
+  return {
     name: asStr(j['name']),
-    channel_type: asStr(j['channel_type']),
-    channel_status: asStr(j['channel_status']),
-    has_imap_password: asBool(j['has_imap_password']),
-    has_smtp_password: asBool(j['has_smtp_password']),
+    description: asStr(j['description']),
+    interval: asStr(j['interval']),
+    timeout: asStr(j['timeout']),
+    on_startup: asBool(j['on_startup']),
+    offset: asStr(j['offset']),
+    disabled: asBool(j['disabled']),
+    success: asNum(j['success']),
+    failure: asNum(j['failure']),
+    last_run_at: asStr(j['last_run_at']),
+    last_duration: asStr(j['last_duration']),
+    last_error: asStr(j['last_error']),
   };
-  const ih = asStrOpt(j['imap_host']);
-  if (ih !== undefined) out.imap_host = ih;
-  const sh = asStrOpt(j['smtp_host']);
-  if (sh !== undefined) out.smtp_host = sh;
-  const fa = asStrOpt(j['from_address']);
-  if (fa !== undefined) out.from_address = fa;
-  const fr = asStrOpt(j['channel_fault_reason']);
-  if (fr !== undefined) out.channel_fault_reason = fr;
-  const at = asStrOpt(j['created_at']);
-  if (at !== undefined) out.created_at = at;
-  return out;
 }
 
 function decodeActivitySinkRow(j: Record<string, unknown>): ActivitySinkRow {
@@ -860,20 +909,13 @@ export function registerAdminSpecs(api: Api): void {
   });
 
   // comm_channel.list — Comm Channels screen. project_id REQUIRED (channels are
-  // project-scoped cards), so the screen threads `{ from: 'scope.projectId' }`
-  // and stays idle until the shared project scope resolves. Secrets are NOT in
-  // the wire shape (only has_*_password flags), so nothing sensitive surfaces.
+  // project-scoped cards). Generic codec both ways: no field-by-field mapping
+  // (the wire's has_*_password flags + ports + ids decode by convention).
   api.define<{ projectId?: string | bigint }, CommChannelListOutput>({
     endpoint: 'comm_channel',
     action: 'list',
-    encode: (i) => {
-      const m: Record<string, unknown> = {};
-      if (i.projectId !== undefined && i.projectId !== null) m['project_id'] = i.projectId;
-      return m;
-    },
-    decode: (raw): CommChannelListOutput => ({
-      rows: asArray(asObj(raw)['rows']).map((r) => decodeCommChannelRow(asObj(r))),
-    }),
+    encode: (i) => encodeWire(i),
+    decode: (raw) => decodeWire(raw) as CommChannelListOutput,
   });
 
   // activity_sink.list — Activity Sinks screen. project_id REQUIRED; same
@@ -906,6 +948,38 @@ export function registerAdminSpecs(api: Api): void {
     decode: (raw): CommLogListOutput => ({
       rows: asArray(asObj(raw)['rows']).map((r) => decodeCommLogRow(asObj(r))),
     }),
+  });
+
+  // scheduler.list — workspace Jobs screen. No input; admin-only. Returns
+  // every hard-coded background job with its properties + last-run status.
+  api.define<Record<string, never>, SchedulerListOutput>({
+    endpoint: 'scheduler',
+    action: 'list',
+    encode: () => ({}),
+    decode: (raw): SchedulerListOutput => ({
+      jobs: asArray(asObj(raw)['jobs']).map((r) => decodeSchedulerJob(asObj(r))),
+    }),
+  });
+
+  // scheduler.run — "run now" on the Jobs screen. Triggers one job by name
+  // and returns its immediate outcome + the refreshed metrics row.
+  api.define<{ name: string }, SchedulerRunOutput>({
+    endpoint: 'scheduler',
+    action: 'run',
+    encode: (i) => ({ name: i.name }),
+    decode: (raw): SchedulerRunOutput => {
+      const j = asObj(raw);
+      return {
+        name: asStr(j['name']),
+        started: asBool(j['started']),
+        ok: asBool(j['ok']),
+        error: asStr(j['error']),
+        duration: asStr(j['duration']),
+        ran_at: asStr(j['ran_at']),
+        message: asStr(j['message']),
+        job: decodeSchedulerJob(asObj(j['job'])),
+      };
+    },
   });
 
   /* ---- Write specs (create / role / unlink). Idempotent-by-presence so a
@@ -1194,40 +1268,17 @@ export function registerAdminSpecs(api: Api): void {
 
   /* ---- Comm-channel + activity-sink config writes (write-only secrets). --- */
 
-  // comm_channel.set — Comm Channels config. The password fields ride the
-  // OMIT-vs-CLEAR distinction: a key absent from the JSON preserves the stored
-  // cipher (the screen only ever omits — secrets are never echoed). The encoder
-  // only writes a password key when the input field is a non-undefined string,
-  // so a blank-on-load form that the user never typed into omits it entirely.
+  // comm_channel.set — Comm Channels config. Generic codec: the caller passes a
+  // camelCase input containing ONLY the fields to write (the draft→input mapper
+  // applies the omit rules — password omitted unless typed, id/intake omitted
+  // when 0/''), and encodeWire drops undefined + converts keys. A key absent
+  // from the wire preserves the stored value server-side (PATCH semantics).
   if (!api.registry.has({ endpoint: 'comm_channel', action: 'set' })) {
     api.define<CommChannelSetInput, CommChannelSetOutput>({
       endpoint: 'comm_channel',
       action: 'set',
-      encode: (i) => {
-        const m: Record<string, unknown> = {
-          project_id: i.projectId,
-          name: i.name,
-          channel_type: i.channelType,
-        };
-        if (i.id !== undefined && String(i.id) !== '' && String(i.id) !== '0') m['id'] = i.id;
-        if (i.imapHost !== undefined) m['imap_host'] = i.imapHost;
-        if (i.imapPort !== undefined) m['imap_port'] = i.imapPort;
-        if (i.imapUsername !== undefined) m['imap_username'] = i.imapUsername;
-        if (i.smtpHost !== undefined) m['smtp_host'] = i.smtpHost;
-        if (i.smtpPort !== undefined) m['smtp_port'] = i.smtpPort;
-        if (i.smtpUsername !== undefined) m['smtp_username'] = i.smtpUsername;
-        if (i.fromAddress !== undefined) m['from_address'] = i.fromAddress;
-        if (i.intakeStatusId !== undefined && String(i.intakeStatusId) !== '' && String(i.intakeStatusId) !== '0') {
-          m['intake_status_id'] = i.intakeStatusId;
-        }
-        if (i.channelStatus !== undefined && i.channelStatus !== '') m['channel_status'] = i.channelStatus;
-        // Secrets: send the key ONLY when the user typed a value. Omitting
-        // (undefined) leaves the stored cipher untouched server-side.
-        if (i.imapPassword !== undefined) m['imap_password'] = i.imapPassword;
-        if (i.smtpPassword !== undefined) m['smtp_password'] = i.smtpPassword;
-        return m;
-      },
-      decode: (raw): CommChannelSetOutput => ({ channelId: asStr(asObj(raw)['channel_id']) }),
+      encode: (i) => encodeWire(i),
+      decode: (raw) => decodeWire(raw) as CommChannelSetOutput,
     });
   }
 

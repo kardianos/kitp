@@ -49,6 +49,7 @@ import (
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/comm"
+	"github.com/kitp/kitp/server/internal/job"
 	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -96,23 +97,11 @@ type MSGraphPumper struct {
 	dryRun     bool
 	logger     *slog.Logger
 	poster     MSGraphPoster
-	stop       chan struct{}
-	done       chan struct{}
 }
 
-// StartMSGraphPumper spawns one pumper goroutine. tick is clamped
-// to >=1s; production defaults to 30s. projectID is the parent card
-// id the sink sits under — resolved by the caller (typically
-// StartMSGraphPumperPool) so the pumper does not need a tx on every
-// tick to discover its scope.
-func StartMSGraphPumper(pool *store.Pool, sinkID, projectID int64, tick time.Duration) *MSGraphPumper {
-	p := newPumper(pool, sinkID, projectID, tick)
-	go p.run()
-	return p
-}
-
-// NewMSGraphPumperForTest builds an unstarted pumper so tests can drive
-// RunOnce synchronously. Production callers go through StartMSGraphPumper.
+// NewMSGraphPumperForTest builds a pumper so tests can drive RunOnce /
+// TickOnce synchronously. Production builds them through an [MSGraphPool],
+// which reconciles one pumper per sink and ticks them via the scheduler.
 func NewMSGraphPumperForTest(pool *store.Pool, sinkID, projectID int64, tick time.Duration) *MSGraphPumper {
 	return newPumper(pool, sinkID, projectID, tick)
 }
@@ -130,8 +119,6 @@ func newPumper(pool *store.Pool, sinkID, projectID int64, tick time.Duration) *M
 		dryRun:     os.Getenv("KITP_ACTIVITY_SINK_DRY_RUN") == "1",
 		logger:     slog.Default(),
 		poster:     realMSGraphPost,
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
 	}
 }
 
@@ -158,36 +145,21 @@ func (p *MSGraphPumper) SetBatchLimit(n int) {
 	}
 }
 
-// Stop signals the goroutine to exit and waits for it to drain. Safe to
-// call multiple times.
-func (p *MSGraphPumper) Stop() {
-	select {
-	case <-p.stop:
-	default:
-		close(p.stop)
+// TickOnce pushes one sink's pending activity rows, under a 60s budget and
+// the System actor. Logs and returns the RunOnce error; the [MSGraphPool]
+// sweep discards it so one bad sink doesn't fail the pump job. There's no
+// persistent connection between ticks.
+func (p *MSGraphPumper) TickOnce(ctx context.Context) error {
+	runCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	runCtx = auth.WithSystemUser(runCtx)
+	if err := p.RunOnce(runCtx); err != nil {
+		p.logger.LogAttrs(runCtx, slog.LevelError, "activity_sink pumper RunOnce",
+			slog.Int64("sink_id", p.sinkID),
+			slog.String("err", err.Error()))
+		return err
 	}
-	<-p.done
-}
-
-func (p *MSGraphPumper) run() {
-	defer close(p.done)
-	t := time.NewTicker(p.tick)
-	defer t.Stop()
-	for {
-		select {
-		case <-p.stop:
-			return
-		case <-t.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			ctx = auth.WithSystemUser(ctx)
-			if err := p.RunOnce(ctx); err != nil {
-				p.logger.LogAttrs(ctx, slog.LevelError, "activity_sink pumper RunOnce",
-					slog.Int64("sink_id", p.sinkID),
-					slog.String("err", err.Error()))
-			}
-			cancel()
-		}
-	}
+	return nil
 }
 
 // RunOnce executes one scan + push cycle synchronously. Exported so
@@ -577,20 +549,48 @@ func ListSinks(ctx context.Context, pool *store.Pool) ([]struct{ SinkID, Project
 	return out, rows.Err()
 }
 
-// StartMSGraphPumperPool spawns one pumper per existing activity_sink
-// card. Returns every pumper so the caller can collect them for
-// shutdown. Errors loading the sink list propagate; per-sink
-// goroutines never fail-fast.
-func StartMSGraphPumperPool(ctx context.Context, pool *store.Pool, tick time.Duration, logger *slog.Logger) ([]*MSGraphPumper, error) {
-	sinks, err := ListSinks(ctx, pool)
+// sinkKey identifies a pumper by sink id + its parent project (the
+// project is resolved once at construction so the pumper needn't query
+// for its scope each tick). Comparable so it can key the worker pool.
+type sinkKey struct{ SinkID, ProjectID int64 }
+
+// MSGraphPool drives every activity_sink's pumper from a single scheduler
+// job. Each RunOnce reconciles one [MSGraphPumper] per live sink and ticks
+// each one. Construct with [NewMSGraphPool] and call RunOnce from the
+// `activitysink.pump` job (see cmd/kitpd/main.go).
+type MSGraphPool struct {
+	pool *store.Pool
+	wp   *job.WorkerPool[sinkKey, *MSGraphPumper]
+}
+
+// NewMSGraphPool builds the pool. tick is the per-pumper cadence hint (the
+// real cadence is the owning job's Interval); logger is threaded to each
+// pumper.
+func NewMSGraphPool(pool *store.Pool, tick time.Duration, logger *slog.Logger) *MSGraphPool {
+	m := &MSGraphPool{pool: pool}
+	m.wp = job.NewWorkerPool[sinkKey, *MSGraphPumper](
+		func(k sinkKey) *MSGraphPumper {
+			p := newPumper(pool, k.SinkID, k.ProjectID, tick)
+			p.SetLogger(logger)
+			return p
+		},
+		// Discard the per-sink error: TickOnce already logged it, and one
+		// bad sink must not flip the whole pump job red.
+		func(ctx context.Context, p *MSGraphPumper) error { _ = p.TickOnce(ctx); return nil },
+	)
+	return m
+}
+
+// RunOnce is the `activitysink.pump` job body: list every sink and sweep
+// its pumper. Returns only a sink-enumeration error.
+func (m *MSGraphPool) RunOnce(ctx context.Context) error {
+	sinks, err := ListSinks(ctx, m.pool)
 	if err != nil {
-		return nil, fmt.Errorf("activity_sink pumper pool: %w", err)
+		return fmt.Errorf("activity_sink pump: list sinks: %w", err)
 	}
-	out := make([]*MSGraphPumper, 0, len(sinks))
-	for _, s := range sinks {
-		p := StartMSGraphPumper(pool, s.SinkID, s.ProjectID, tick)
-		p.SetLogger(logger)
-		out = append(out, p)
+	keys := make([]sinkKey, len(sinks))
+	for i, s := range sinks {
+		keys[i] = sinkKey{SinkID: s.SinkID, ProjectID: s.ProjectID}
 	}
-	return out, nil
+	return m.wp.Sweep(ctx, keys)
 }

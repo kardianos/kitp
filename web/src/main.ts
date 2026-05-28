@@ -59,6 +59,8 @@ import { registerMasterDetail } from './admin/master-detail.js';
 import { registerNestedEditor } from './admin/nested-editor.js';
 import { registerEnumManager } from './admin/enum-manager.js';
 import { registerPeopleManager } from './admin/people-manager.js';
+import { registerSchedulerJobs } from './admin/scheduler-jobs.js';
+import { registerRecordForm } from './admin/record-form.js';
 import { registerAdminSpecs } from './admin/specs.js';
 import { adminScreenConfig, ADMIN_VIEWS, MANAGER_ADMIN_VIEWS, ADMIN_SECTION, type AdminView } from './admin/screens.js';
 import { registerPredicateFilter } from './filter/predicate-filter.js';
@@ -103,6 +105,7 @@ const ADMIN_LINK_LABELS: Record<AdminView, string> = {
   comm_channels: 'Comm Channels',
   activity_sinks: 'Activity Sinks',
   comm_log: 'Comm Log',
+  jobs: 'Background Jobs',
 };
 import { mockTransport } from './kanban/mock-data.js';
 
@@ -302,6 +305,12 @@ function boot(): void {
   // Users / Assignees / Contacts segment toggles + promote/demote (replaces the
   // separate Contacts + Users screens). Its own control, not a MasterDetail.
   registerPeopleManager();
+  // The workspace "Background Jobs" admin screen: lists the server's hard-coded
+  // scheduler jobs + a per-job "Run now". Its own control, not a MasterDetail.
+  registerSchedulerJobs();
+  // The generic config-driven record editor mounted in a MasterDetail detail
+  // pane (Comm Channels today). Replaces per-screen bespoke config editors.
+  registerRecordForm();
   // The reusable anchored-UI primitives. Combobox (typeahead select) +
   // DatePicker compose the shared Popover helper (the one floating-ui impl).
   // Consumed by the upcoming ref-pickers, quick filters, and attribute editors;

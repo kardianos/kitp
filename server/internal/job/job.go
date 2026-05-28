@@ -41,12 +41,26 @@ import (
 // zero. The actual default is `min(Interval, MaxDefaultTimeout)`.
 const MaxDefaultTimeout = 600 * time.Second
 
+// ErrJobNotFound is returned by [Scheduler.Trigger] when no job with the
+// requested name is registered.
+var ErrJobNotFound = errors.New("job: not found")
+
+// ErrJobRunning is returned by [Scheduler.Trigger] when the job is already
+// executing (a scheduled tick or a concurrent manual run holds it). The
+// caller should retry once the in-flight run finishes.
+var ErrJobRunning = errors.New("job: already running")
+
 // Job is one periodic task. Declared in main and handed to a
 // [Scheduler].
 type Job[Cfg any] struct {
 	// Name identifies the job in logs and metrics. Must be unique
 	// across the scheduler.
 	Name string
+
+	// Description is a short human-facing blurb of what the job does.
+	// Surfaced verbatim by [Scheduler.Describe] for the admin Jobs
+	// screen; optional (empty is fine).
+	Description string
 
 	// Run performs one unit of the job's work. The supplied ctx is
 	// cancelled when either the parent ctx is cancelled or the
@@ -92,6 +106,34 @@ type JobMetrics struct {
 	LastError    string // empty when no failure has occurred yet
 }
 
+// JobDescriptor pairs a job's static declaration (the fields set in
+// main.go) with a live [JobMetrics] snapshot. [Scheduler.Describe]
+// returns one per registered job — the read surface the admin Jobs
+// screen renders.
+type JobDescriptor struct {
+	Name        string
+	Description string
+	Interval    time.Duration
+	// Timeout is the EFFECTIVE per-run cap the scheduler applies —
+	// `min(Interval, MaxDefaultTimeout)` when [Job.Timeout] is zero.
+	Timeout   time.Duration
+	OnStartup bool
+	Offset    time.Duration
+	Disabled  bool
+	Metrics   JobMetrics
+}
+
+// RunResult is the outcome of a single [Scheduler.Trigger] call — the
+// manual "run now" affordance. Err carries the job's own error (nil on
+// success); the scheduler's per-job counters are updated identically to
+// a scheduled tick.
+type RunResult struct {
+	Name      string
+	StartedAt time.Time
+	Duration  time.Duration
+	Err       error
+}
+
 // Scheduler runs a set of [Job]s.
 type Scheduler[Cfg any] struct {
 	db     *pgxpool.Pool
@@ -114,6 +156,12 @@ type counters struct {
 	lastRunAt    time.Time
 	lastDuration time.Duration
 	lastError    string
+
+	// runMu serialises one job's body across a scheduled tick and a
+	// manual Trigger so the two never overlap. tick holds it for the
+	// run's duration; Trigger uses TryLock and reports ErrJobRunning
+	// rather than block the HTTP request behind an in-flight tick.
+	runMu sync.Mutex
 }
 
 // New constructs an empty scheduler bound to [db], the typed config
@@ -201,29 +249,120 @@ func (s *Scheduler[Cfg]) Metrics() []JobMetrics {
 
 	out := make([]JobMetrics, 0, len(jobs))
 	for _, j := range jobs {
-		c := metrics[j.Name]
-		c.mu.Lock()
-		out = append(out, JobMetrics{
-			Name:         j.Name,
-			Success:      c.success,
-			Failure:      c.failure,
-			LastRunAt:    c.lastRunAt,
-			LastDuration: c.lastDuration,
-			LastError:    c.lastError,
-		})
-		c.mu.Unlock()
+		out = append(out, metrics[j.Name].snapshot(j.Name))
 	}
 	return out
 }
 
-func (s *Scheduler[Cfg]) runJob(parent context.Context, j Job[Cfg]) {
-	timeout := j.Timeout
-	if timeout == 0 {
-		timeout = MaxDefaultTimeout
-		if j.Interval > 0 && j.Interval < timeout {
-			timeout = j.Interval
+// Describe returns a snapshot of every registered job's static
+// declaration plus its live metrics. Disabled jobs are included so the
+// admin surface can show (and still trigger) them.
+func (s *Scheduler[Cfg]) Describe() []JobDescriptor {
+	s.mu.RLock()
+	jobs := append([]Job[Cfg](nil), s.jobs...)
+	metrics := s.metrics
+	s.mu.RUnlock()
+
+	out := make([]JobDescriptor, 0, len(jobs))
+	for _, j := range jobs {
+		out = append(out, JobDescriptor{
+			Name:        j.Name,
+			Description: j.Description,
+			Interval:    j.Interval,
+			Timeout:     effectiveTimeout(j),
+			OnStartup:   j.OnStartup,
+			Offset:      j.Offset,
+			Disabled:    j.Disabled,
+			Metrics:     metrics[j.Name].snapshot(j.Name),
+		})
+	}
+	return out
+}
+
+// Trigger runs one job's body immediately, out of band from its regular
+// cadence — the "run now" admin affordance. It blocks until the run
+// finishes (or ctx expires) and returns the outcome; the per-job
+// counters are updated exactly as a scheduled tick would. Disabled jobs
+// can still be triggered. Returns [ErrJobNotFound] for an unknown name
+// and [ErrJobRunning] when a scheduled tick or another Trigger holds the
+// job. The run honours the job's effective timeout, further bounded by
+// any deadline already on ctx.
+func (s *Scheduler[Cfg]) Trigger(ctx context.Context, name string) (RunResult, error) {
+	s.mu.RLock()
+	var job *Job[Cfg]
+	for i := range s.jobs {
+		if s.jobs[i].Name == name {
+			cp := s.jobs[i]
+			job = &cp
+			break
 		}
 	}
+	c := s.metrics[name]
+	s.mu.RUnlock()
+	if job == nil || c == nil {
+		return RunResult{}, ErrJobNotFound
+	}
+
+	if !c.runMu.TryLock() {
+		return RunResult{}, ErrJobRunning
+	}
+	defer c.runMu.Unlock()
+
+	runCtx, cancel := context.WithTimeout(ctx, effectiveTimeout(*job))
+	defer cancel()
+
+	start := time.Now()
+	err := job.Run(runCtx, s.db, s.cfg)
+	dur := time.Since(start)
+	c.record(start, dur, err)
+	s.logOutcome(runCtx, job.Name, dur, effectiveTimeout(*job), err, "manual")
+
+	return RunResult{Name: job.Name, StartedAt: start, Duration: dur, Err: err}, nil
+}
+
+// snapshot reads the counters under the lock into a JobMetrics value.
+func (c *counters) snapshot(name string) JobMetrics {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return JobMetrics{
+		Name:         name,
+		Success:      c.success,
+		Failure:      c.failure,
+		LastRunAt:    c.lastRunAt,
+		LastDuration: c.lastDuration,
+		LastError:    c.lastError,
+	}
+}
+
+// record folds one run's outcome into the counters under the lock.
+func (c *counters) record(start time.Time, dur time.Duration, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastRunAt = start
+	c.lastDuration = dur
+	if err != nil {
+		c.failure++
+		c.lastError = err.Error()
+	} else {
+		c.success++
+	}
+}
+
+// effectiveTimeout resolves the per-run wall-clock cap: Job.Timeout when
+// set, otherwise `min(Interval, MaxDefaultTimeout)`.
+func effectiveTimeout[Cfg any](j Job[Cfg]) time.Duration {
+	if j.Timeout > 0 {
+		return j.Timeout
+	}
+	t := MaxDefaultTimeout
+	if j.Interval > 0 && j.Interval < t {
+		t = j.Interval
+	}
+	return t
+}
+
+func (s *Scheduler[Cfg]) runJob(parent context.Context, j Job[Cfg]) {
+	timeout := effectiveTimeout(j)
 
 	// Initial wait. OnStartup=true runs after `Offset` only;
 	// OnStartup=false waits a full `Interval` plus `Offset`.
@@ -257,22 +396,24 @@ func (s *Scheduler[Cfg]) tick(parent context.Context, j Job[Cfg], timeout time.D
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
+	c := s.metrics[j.Name]
+	// Serialise against a concurrent manual Trigger (the "run now"
+	// admin path). Two scheduled ticks of one job never overlap (single
+	// goroutine), so this only ever contends with a Trigger.
+	c.runMu.Lock()
 	start := time.Now()
 	err := j.Run(ctx, s.db, s.cfg)
 	dur := time.Since(start)
+	c.runMu.Unlock()
 
-	c := s.metrics[j.Name]
-	c.mu.Lock()
-	c.lastRunAt = start
-	c.lastDuration = dur
-	if err != nil {
-		c.failure++
-		c.lastError = err.Error()
-	} else {
-		c.success++
-	}
-	c.mu.Unlock()
+	c.record(start, dur, err)
+	s.logOutcome(ctx, j.Name, dur, timeout, err, "scheduled")
+}
 
+// logOutcome emits the structured success / failure / timeout log line
+// shared by scheduled ticks and manual triggers. `kind` distinguishes
+// the two in the log ("scheduled" vs "manual").
+func (s *Scheduler[Cfg]) logOutcome(ctx context.Context, name string, dur, timeout time.Duration, err error, trigger string) {
 	if err != nil {
 		// Distinguish a deadline-exceeded outcome from a "real" job
 		// failure so the operator can grep "timeout" without
@@ -284,13 +425,15 @@ func (s *Scheduler[Cfg]) tick(parent context.Context, j Job[Cfg], timeout time.D
 			level = slog.LevelWarn
 		}
 		s.logger.LogAttrs(ctx, level, kind,
-			slog.String("job", j.Name),
+			slog.String("job", name),
+			slog.String("trigger", trigger),
 			slog.Duration("duration", dur),
 			slog.Duration("timeout", timeout),
 			slog.String("err", err.Error()))
 		return
 	}
 	s.logger.LogAttrs(ctx, slog.LevelDebug, "job_ok",
-		slog.String("job", j.Name),
+		slog.String("job", name),
+		slog.String("trigger", trigger),
 		slog.Duration("duration", dur))
 }

@@ -154,8 +154,11 @@ plumbing required.
 Periodic ticker work goes through `internal/job` — one `Scheduler`
 holds the table of jobs and owns their goroutines, per-tick
 timeout, logging, and per-job success/failure metrics. Declare
-jobs in `main.go` alongside the existing five (idempotency
-cleanup, CAS reap, session/token touch, comm log prune).
+jobs in `main.go` alongside the existing ones (idempotency
+cleanup, CAS reap, session/token touch, comm log prune, and the
+comm/activity-sink sweeps). Admins can introspect every job and
+trigger one on demand via `scheduler.list` / `scheduler.run`
+(the workspace "Background Jobs" screen).
 
 Each subsystem exposes a `RunOnce(ctx) error` (or similar one-shot
 method); the `Job.Run` closure adapts to the
@@ -163,9 +166,19 @@ method); the `Job.Run` closure adapts to the
 timeout is `min(Interval, 600s)`; the job MUST honour ctx
 cancellation (pgx Query/Exec accept it natively).
 
-Pool-style workers (IMAP / SMTP / activitysink — per-row,
-persistent connection) are NOT a fit and keep their existing
-per-instance Stop() pattern.
+Per-row workers (IMAP poller / SMTP sender / activitysink pumper —
+one unit of work per comm_channel / activity_sink row) ALSO run on
+the scheduler, via a `job.WorkerPool[K,W]`: a single sweep job per
+protocol (`comm.imap_poll` / `comm.smtp_send` / `activitysink.pump`)
+reconciles one worker per live row and ticks each one. The pool adds
+workers for new rows and drops them for vanished rows on the next
+sweep — no restart, and a disabled/faulted row's worker self-skips.
+This replaces the old goroutine-per-row pools with their own
+`Stop()` lifecycle. Each worker holds NO connection between ticks
+(it dials + closes per `RunOnce`), so a dropped worker needs no
+teardown. Per-worker errors are logged + (IMAP) backed-off inside
+the worker's `Tick`/`TickOnce`; the sweep discards them so one bad
+row doesn't flip the job red — only a row-enumeration failure does.
 
 Session and token managers carry an in-memory touch buffer.
 Register their `RunTouch` on the scheduler; AFTER `sched.Wait()`

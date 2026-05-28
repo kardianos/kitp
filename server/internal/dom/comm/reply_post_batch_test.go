@@ -64,13 +64,13 @@ func callReplyPostBatch(t *testing.T, pool *pgxpool.Pool, actorID int64, inputs 
 // inserted directly. Returns the ids we need to drive reply_post_batch
 // in isolation.
 type replyFixture struct {
-	projectID  int64
-	taskID     int64
-	channelID  int64
-	commID     int64
-	personID   int64
-	threadID   string
-	taskTitle  string
+	projectID int64
+	taskID    int64
+	channelID int64
+	commID    int64
+	personID  int64
+	threadID  string
+	taskTitle string
 }
 
 // insertAttr is a tiny helper that writes one attribute_value row
@@ -199,7 +199,7 @@ func TestReplyPostBatch_Happy(t *testing.T) {
 	if from != "kitp@example.com" {
 		t.Errorf("reply_from=%q want kitp@example.com (channel from_address)", from)
 	}
-	expectSubject := f.threadID + " " + f.taskTitle
+	expectSubject := "[#" + f.threadID + "] " + f.taskTitle
 	if subject != expectSubject {
 		t.Errorf("reply_subject=%q want %q", subject, expectSubject)
 	}
@@ -242,7 +242,9 @@ func TestReplyPostBatch_MultiRow(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("rows: %d", len(rows))
 	}
-	type out struct{ ReplyID string `json:"reply_id"` }
+	type out struct {
+		ReplyID string `json:"reply_id"`
+	}
 	var got [2]out
 	for i, r := range rows {
 		if !r.OK {
@@ -331,7 +333,9 @@ func TestReplyPostBatch_AppendsToExistingReplies(t *testing.T) {
 	if !rows[0].OK {
 		t.Fatalf("happy: %+v", rows[0])
 	}
-	var got struct{ ReplyID string `json:"reply_id"` }
+	var got struct {
+		ReplyID string `json:"reply_id"`
+	}
 	_ = json.Unmarshal(rows[0].Result, &got)
 	rid, _ := strconv.ParseInt(got.ReplyID, 10, 64)
 

@@ -40,6 +40,7 @@ import {
   type BaseControlConfig,
 } from '../core/control.js';
 import { resolveInput, type ActionBinding, type InputSpec, type QueryBinding } from '../core/data.js';
+import type { RecordFormScreenConfig } from './record-form.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
 import type { CardWherePredicate } from '../projects/project-helpers.js';
@@ -327,6 +328,14 @@ export interface MasterDetailConfig extends BaseControlConfig {
         | 'roleMappings';
       scopeKey?: string;
     };
+    /**
+     * Optional generic RecordForm editor rendered below the fields — the
+     * config-driven replacement for a bespoke `nested` editor. Mounts a
+     * `RecordForm` that watches THIS screen's `<scopeKey>.selectedId` +
+     * `.items`, renders the field table, and owns save + list refresh. See
+     * `admin/record-form.ts`; the Comm Channels screen is the first adopter.
+     */
+    form?: RecordFormScreenConfig;
     /**
      * Detail-pane action buttons that raise a GLOBAL (bus) intent for the
      * selected item — e.g. the Projects screen's Import / Export, reusing the
@@ -757,6 +766,11 @@ export class MasterDetail extends Control<MasterDetailConfig> {
           return { id: realIdStr, raw };
         }),
       );
+      // Admin screens: just call the server again — replace the optimistic
+      // (payload-shaped) row with the canonical server row so every column /
+      // detail field is correct (no "(untitled)", no per-screen optimisticRaw
+      // guesswork needed).
+      this.reloadListFromServer();
       this.bumpRefresh(); // a new row may belong in a dependent view (e.g. the nav)
     });
 
@@ -835,6 +849,21 @@ export class MasterDetail extends Control<MasterDetailConfig> {
     detailFields.className = 'masterdetail__detail-fields';
     detailFields.dataset.mdDetailFields = '';
     detailPane.append(detailFields);
+
+    // The editable RecordForm (when configured) sits ABOVE any nested editor —
+    // e.g. Workflows shows its name/description/default-create fields first,
+    // then the flow-step transition list below.
+    if (cfg.detail.form) {
+      const formHost = document.createElement('div');
+      formHost.className = 'masterdetail__form';
+      formHost.dataset.mdForm = '';
+      detailPane.append(formHost);
+      this.spawn(
+        'RecordForm',
+        { ...cfg.detail.form, type: 'RecordForm', parentScope: cfg.scopeKey, scopeKey: `${cfg.scopeKey}.form` },
+        formHost,
+      );
+    }
 
     if (cfg.detail.nested) {
       const nestedHost = document.createElement('div');
@@ -1015,6 +1044,37 @@ export class MasterDetail extends Control<MasterDetailConfig> {
     node.set((node.peek<number>() ?? 0) + 1);
   }
 
+  /**
+   * Re-issue the list read and land items — the "just call the server again"
+   * refresh after a create. Admin screens are low-traffic, so the extra
+   * round-trip buys correctness for free: the optimistic row (which carries
+   * only the create payload's fields) is replaced by the canonical server row,
+   * so a flat-row screen never shows a stale "(untitled)". Works regardless of
+   * the list's trigger; honours `skipWhenNull` so it never fires unscoped. */
+  private reloadListFromServer(): void {
+    const cfg = this.config;
+    const input = resolveInput(cfg.list.input, {
+      tree: this.ctx.tree,
+      config: cfg as unknown as Record<string, unknown>,
+      ...(this.ctx.scope ? { scope: this.ctx.scope } : {}),
+    });
+    for (const f of cfg.list.skipWhenNull ?? []) {
+      if (input[f] === null || input[f] === undefined) return;
+    }
+    this.ctx.api.callByName(
+      cfg.list.spec,
+      input,
+      (out) => {
+        if (!this.isAlive()) return;
+        const items = extractRows(out)
+          .map(normaliseRow)
+          .filter((it): it is MasterDetailItem => it !== null);
+        this.ctx.tree.at(this.itemsPath).set(items);
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
   /** Bump the optional cross-control refresh nonce after a write (no-op unless
    *  `config.refreshNonce` is set). A one-way tree write — cascade-safe. */
   private bumpRefresh(): void {
@@ -1124,6 +1184,13 @@ export class MasterDetail extends Control<MasterDetailConfig> {
    */
   private renderDetail(host: HTMLElement, selectedId: string | null, items: readonly MasterDetailItem[]): void {
     const cfg = this.config;
+    // When a RecordForm owns the detail pane, it renders the full editable
+    // surface (incl. the title/name) below — so the scalar header + readonly
+    // fields here would just duplicate it. Leave the scalar host empty.
+    if (cfg.detail.form) {
+      host.replaceChildren();
+      return;
+    }
     const item = selectedId === null ? undefined : items.find((it) => it.id === selectedId);
 
     if (!item) {

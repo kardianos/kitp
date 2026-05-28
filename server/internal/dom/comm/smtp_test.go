@@ -389,9 +389,10 @@ func TestSMTPSenderMIMEHeaders(t *testing.T) {
 	msg := string(rt.calls[0].msg)
 	t.Logf("MIME message:\n%s", msg)
 
-	// Subject is now derived server-side as "{thread_id} {task.title}"
-	// (see runReplyPost); the SMTP builder appends the threading suffix.
-	wantSubject := "Subject: " + threadID + " Issue 1 [#" + threadID + "]"
+	// Subject is derived server-side as "[#{thread_id}] {task.title}" (see
+	// runReplyPost). The threading tag is already in the subject, so the SMTP
+	// builder leaves it as-is (no duplicate suffix).
+	wantSubject := "Subject: [#" + threadID + "] Issue 1"
 	wantThreadHdr := "X-Kitp-Thread-Id: " + threadID
 	wantRef := "Ref: " + threadID
 

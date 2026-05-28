@@ -13,6 +13,7 @@
 export * from './signal.js';
 export * from './tree.js';
 export * from './dispatch.js';
+export * from './codec.js';
 export * from './api.js';
 export * from './data.js';
 export * from './control.js';

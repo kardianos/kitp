@@ -64,6 +64,11 @@ import type { DatePicker } from '../ui/datepicker.js';
 import type { TransitionBar } from './transition-bar.js';
 import type { TaskComments } from './task-comments.js';
 import type { CommThreads } from './task-comm-threads.js';
+import {
+  ACTIVITY_POLL_SPEC,
+  type ActivityPollInput,
+  type ActivityPollOutput,
+} from './comment-specs.js';
 import type { AttachmentsSection } from './attachments-section.js';
 import type { TagsEditor } from './tags-editor.js';
 import type { RelatedTasksPanel } from './related-tasks-panel.js';
@@ -130,6 +135,9 @@ const PANEL_SKIP_ATTRS = new Set([
   'sort_order',
   'parent_task',
   'parent_relationship',
+  // System-managed + shown in the dedicated Comms section below — not a
+  // user-pickable ref, so it shouldn't render as a (raw-id) RefPicker row.
+  'comms',
 ]);
 
 /** A card_ref attribute whose target card_type is NOT project-scoped. */
@@ -171,6 +179,17 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   /** Host + control for the COMMS (email-thread) section. */
   private commsHost!: HTMLElement;
   private commThreads: CommThreads | null = null;
+
+  /** The header "Refresh" button, held so the background poll can repaint its
+   *  synced (green) ↔ new-content (orange-blinking) state. */
+  private refreshBtn: HTMLButtonElement | null = null;
+  /** Background-poll baseline: activity ids ≤ this are considered "seen" (the
+   *  newest id present when the screen opened / was last refreshed). */
+  private pollSinceId: bigint = 0n;
+  /** The ticking poll handle, cleared on destroy. */
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Newer-activity count from the last poll (drives the indicator). */
+  private pollNewCount = 0;
   /** Hosts the #36 attachments / tags / related controls mount into (their slots). */
   private attachmentsHost!: HTMLElement;
   /** Main-column host the AttachmentsSection paints its preview strip into. */
@@ -264,6 +283,19 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     back.textContent = '‹ Back to list';
     this.listen(back, 'click', () => this.goBack());
     header.append(back);
+
+    // "Refresh" — re-fetch the comm threads + comments/activity feed to pick up
+    // messages that arrived since load (no polling/long-poll; user-initiated).
+    const refresh = document.createElement('button');
+    refresh.type = 'button';
+    refresh.className = 'task-detail__refresh task-detail__refresh--synced';
+    refresh.dataset.taskRefresh = '';
+    refresh.title = 'Check for new comms & comments';
+    refresh.setAttribute('aria-label', 'Refresh comms and comments');
+    refresh.textContent = '↻ Refresh';
+    this.listen(refresh, 'click', () => this.refreshFeeds());
+    header.append(refresh);
+    this.refreshBtn = refresh;
 
     const headerTop = document.createElement('div');
     headerTop.className = 'task-detail__header-top';
@@ -521,6 +553,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.mountAttachments();
     this.mountTags();
     this.mountRelated();
+    this.startPolling();
   }
 
   /**
@@ -570,6 +603,95 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * edit; the TaskDetail also tells it to {@link TaskComments.reload} after a
    * status transition / attribute edit so those rows appear.
    */
+  /** Re-fetch the comm threads + the comments/activity feed — the header
+   *  "Refresh" button. Both child controls own their own reload() (re-query +
+   *  repaint); null-safe before the task has loaded. Also re-seeds the poll
+   *  baseline so the "new content" indicator clears back to synced. */
+  private refreshFeeds(): void {
+    this.commThreads?.reload();
+    this.taskComments?.reload();
+    // The user has now pulled the latest — re-seed the baseline to the current
+    // head so the indicator drops back to green (the probe lands async).
+    this.pollOnce(true);
+  }
+
+  /* -------------------------- background poll --------------------------- */
+
+  /** ~15s cadence — cheap enough for a count-only probe, snappy enough that a
+   *  reply shows up "soon". Paused while the tab is hidden. */
+  private static readonly POLL_INTERVAL_MS = 15_000;
+
+  /**
+   * Seed the poll baseline to the task's current latest activity id, then start
+   * the ticking background poll. Idempotent (guards on the timer). The initial
+   * seed probe means the indicator only lights for activity that arrives AFTER
+   * the screen opened. A `visibilitychange` listener re-probes immediately when
+   * the tab regains focus (and the interval skips ticks while hidden).
+   */
+  private startPolling(): void {
+    if (this.taskId === null || this.pollTimer !== null) return;
+    this.pollOnce(true);
+    const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (this.isAlive()) this.pollOnce(false);
+    }, TaskDetail.POLL_INTERVAL_MS);
+    // Don't let the poll keep a process alive when nothing else is pending (lets
+    // `node --test` exit). No-op in browsers, where setInterval returns a number.
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.pollTimer = timer;
+    this.onDestroy(() => {
+      if (this.pollTimer !== null) {
+        clearInterval(this.pollTimer);
+        this.pollTimer = null;
+      }
+    });
+    if (typeof document !== 'undefined') {
+      this.listen(document, 'visibilitychange', () => {
+        if (!document.hidden && this.isAlive()) this.pollOnce(false);
+      });
+    }
+  }
+
+  /**
+   * One poll round-trip. When `seed` is true the response's latest id becomes
+   * the baseline (indicator cleared); otherwise `new_count` drives the refresh
+   * button's synced ↔ new-content state. Zero-promise; gated by isAlive().
+   */
+  private pollOnce(seed: boolean): void {
+    if (this.taskId === null) return;
+    const input: ActivityPollInput = { taskId: this.taskId };
+    if (!seed) input.sinceActivityId = this.pollSinceId;
+    this.ctx.api.callByName(
+      ACTIVITY_POLL_SPEC,
+      input,
+      (out) => {
+        const o = out as ActivityPollOutput;
+        if (seed) {
+          this.pollSinceId = o.latestActivityId;
+          this.pollNewCount = 0;
+        } else {
+          this.pollNewCount = o.newCount;
+        }
+        this.paintRefreshState();
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /** Reflect the poll state on the Refresh button: green/synced when nothing is
+   *  new, orange-blinking with a count when newer activity has landed. */
+  private paintRefreshState(): void {
+    const btn = this.refreshBtn;
+    if (btn === null) return;
+    const fresh = this.pollNewCount > 0;
+    btn.classList.toggle('task-detail__refresh--new', fresh);
+    btn.classList.toggle('task-detail__refresh--synced', !fresh);
+    btn.textContent = fresh ? `↻ ${this.pollNewCount} new` : '↻ Refresh';
+    btn.title = fresh
+      ? `${this.pollNewCount} new comm${this.pollNewCount === 1 ? '' : 's'} / comment${this.pollNewCount === 1 ? '' : 's'} — click to load`
+      : 'Up to date · click to check for new comms & comments';
+  }
+
   /** Spawn the COMMS (email-thread) control into the `comms` slot. Idempotent. */
   private mountComms(): void {
     if (this.task === null || this.taskId === null) return;

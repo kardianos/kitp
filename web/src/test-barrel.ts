@@ -241,6 +241,8 @@ export {
 // two proof-of-reuse screen configs + the user.* specs.
 export { EnumManager, registerEnumManager } from './admin/enum-manager.js';
 export { PeopleManager, registerPeopleManager } from './admin/people-manager.js';
+export { SchedulerJobs, registerSchedulerJobs } from './admin/scheduler-jobs.js';
+export { RecordForm, registerRecordForm } from './admin/record-form.js';
 export {
   MasterDetail,
   registerMasterDetail,
@@ -278,6 +280,11 @@ export {
   type CommChannelDraft,
   type ActivitySinkDraft,
 } from './admin/nested-editor.js';
+export {
+  workflowRowToDraft,
+  workflowDraftToInput,
+  WORKFLOW_FORM,
+} from './admin/workflow-form.js';
 export {
   type ActivityPredicate,
   ACTIVITY_LEAF_OPS,

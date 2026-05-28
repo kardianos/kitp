@@ -41,14 +41,18 @@ import {
 import type { EnumManagerConfig } from './enum-manager.js';
 import type { PeopleManagerConfig } from './people-manager.js';
 import type { NestedEditorConfig } from './nested-editor.js';
+import type { SchedulerJobsConfig } from './scheduler-jobs.js';
+import { COMM_CHANNEL_FORM } from './comm-channel-form.js';
+import { WORKFLOW_FORM } from './workflow-form.js';
 
 /** An admin screen is a MasterDetail or its own control (Enums / People /
- *  the standalone OIDC Claims editor). */
+ *  the standalone OIDC Claims editor / the Jobs screen). */
 type AdminScreenConfig =
   | MasterDetailConfig
   | EnumManagerConfig
   | PeopleManagerConfig
-  | NestedEditorConfig;
+  | NestedEditorConfig
+  | SchedulerJobsConfig;
 
 /* -------------------------------------------------------------------------- */
 /* Contacts = person cards (CARD source).                                      */
@@ -470,18 +474,21 @@ export const WORKFLOWS_SCREEN: MasterDetailConfig = {
       scopeCardId: { from: 'scope.projectId' },
       attributeDefId: { payload: 'attribute_def_id' },
     },
+    // flow.list rows are FLAT ({ name, doc, … }), so the optimistic row must
+    // carry `name` (titleField) — otherwise the new row reads "(untitled)"
+    // until the post-create server reload lands the canonical row.
+    optimisticRaw: (p) => ({ name: typeof p['name'] === 'string' ? p['name'] : '' }),
   },
   detail: {
     titleField: 'name',
-    empty: 'Select a workflow to view its transitions.',
-    fields: [
-      { name: 'name', label: 'Name', kind: 'readonly' },
-      { name: 'doc', label: 'Description', kind: 'readonly' },
-      { name: 'attribute_def_name', label: 'Attribute', kind: 'readonly' },
-      // Show the joined NAMES (project title / status title), not raw card ids.
-      { name: 'scope_project_title', label: 'Project', kind: 'readonly' },
-      { name: 'default_create_status_name', label: 'Default create status', kind: 'readonly' },
-    ],
+    empty: 'Select a workflow to edit it and its transitions.',
+    // The generic RecordForm owns the editable scalar fields (name, description,
+    // default-create status); the readonly detail header is gone (it couldn't
+    // edit doc / default_create_status). Creation stays in the create dialog
+    // above (it collects the governed attribute), so the form has allowCreate:
+    // false. The flow-step transition editor mounts below it.
+    fields: [],
+    form: WORKFLOW_FORM,
     // Nested flow-step transition editor (grouped by `from` + delete guard).
     nested: { kind: 'flowSteps' },
   },
@@ -620,20 +627,18 @@ export const COMM_CHANNELS_SCREEN: MasterDetailConfig = {
     skipWhenNull: ['projectId'],
     rowHeight: 56,
     search: { field: 'name', placeholder: 'Search channels…' },
-    row: { title: 'name', subtitle: 'from_address', badge: 'channel_status' },
+    // Rows are the camelCase CommChannel decoded by the generic codec.
+    row: { title: 'name', subtitle: 'fromAddress', badge: 'channelStatus' },
   },
   detail: {
     titleField: 'name',
     empty: 'Pick a project, then select a channel. (Secrets are write-only.)',
-    // The scalar header shows the at-a-glance summary; the nested config editor
-    // below owns the full editable form INCLUDING the write-only IMAP/SMTP
-    // passwords (blank on load; sent only when typed) + a "+ New channel" path.
-    fields: [
-      { name: 'channel_type', label: 'Channel type', kind: 'readonly' },
-      { name: 'from_address', label: 'From address', kind: 'readonly' },
-      { name: 'channel_status', label: 'Status', kind: 'readonly' },
-    ],
-    nested: { kind: 'commChannelConfig' },
+    // The generic RecordForm (COMM_CHANNEL_FORM) owns the ENTIRE editable detail
+    // — name, hosts/ports/usernames, write-only passwords, the intake-status
+    // picker, status, + New, and save + list refresh. No readonly header fields
+    // (they'd just duplicate the form), so `fields` is empty.
+    fields: [],
+    form: COMM_CHANNEL_FORM,
   },
 };
 
@@ -732,7 +737,8 @@ export type AdminView =
   | 'oidc_claims'
   | 'comm_channels'
   | 'activity_sinks'
-  | 'comm_log';
+  | 'comm_log'
+  | 'jobs';
 
 /** The data-driven "Enums" screen — NOT a MasterDetail (one screen spans many
  *  card types). A plain control config; resolved as-is below. */
@@ -748,6 +754,14 @@ export const ENUMS_SCREEN: EnumManagerConfig = {
 export const PEOPLE_SCREEN: PeopleManagerConfig = {
   type: 'PeopleManager',
   title: 'People',
+};
+
+/** The workspace "Background Jobs" screen — lists the server's hard-coded
+ *  scheduler jobs with a per-job "Run now". Its own control (data source is
+ *  the in-memory scheduler, not a card/DB list), not a MasterDetail. */
+export const JOBS_SCREEN: SchedulerJobsConfig = {
+  type: 'SchedulerJobs',
+  title: 'Background Jobs',
 };
 
 // Most admin screens are MasterDetail; a few (Enums) are their own control. The
@@ -767,6 +781,7 @@ const ADMIN_SCREENS: Record<AdminView, AdminScreenConfig> = {
   comm_channels: COMM_CHANNELS_SCREEN,
   activity_sinks: ACTIVITY_SINKS_SCREEN,
   comm_log: COMM_LOG_SCREEN,
+  jobs: JOBS_SCREEN,
 };
 
 /** Every admin view key (drives the rail-link list + the resolver). */
@@ -805,6 +820,8 @@ export const ADMIN_SECTION: Record<AdminView, AdminSection> = {
   comm_channels: 'project',
   activity_sinks: 'project',
   comm_log: 'project',
+  // Workspace-wide: the jobs are global process state, not project-scoped.
+  jobs: 'workspace',
 };
 
 export function adminScreenConfig(view: AdminView): AdminScreenConfig {

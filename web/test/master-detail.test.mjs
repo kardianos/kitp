@@ -67,6 +67,11 @@ function adminTransport({ persons = 32, users = 30, failWrites = false } = {}) {
   // where[]/tree the predicate filter feeds into the list query, plus every
   // write request so create/delete/role tests can assert the wire shape.
   const sent = { personInputs: [], writes: [] };
+  // Mutable backing lists so the post-create server reload reflects the insert
+  // (a real server returns the new row; the "just call the server again" refresh
+  // re-reads these). person cards + non-person cards (project / screen / …).
+  const personList = personRows(persons);
+  const insertedCards = [];
   const transport = {
     async send(body) {
       const req = JSON.parse(body);
@@ -76,9 +81,13 @@ function adminTransport({ persons = 32, users = 30, failWrites = false } = {}) {
           const data = sr.data ?? {};
           if (data.card_type_name === 'person') {
             sent.personInputs.push(data);
-            return { id: sr.id, ok: true, data: { rows: personRows(persons) } };
+            return { id: sr.id, ok: true, data: { rows: personList } };
           }
-          return { id: sr.id, ok: true, data: { rows: [] } };
+          return {
+            id: sr.id,
+            ok: true,
+            data: { rows: insertedCards.filter((c) => c.card_type_name === (data.card_type_name ?? '')) },
+          };
         }
         if (key === 'user.list_with_roles') {
           return { id: sr.id, ok: true, data: { rows: userRows(users) } };
@@ -87,6 +96,12 @@ function adminTransport({ persons = 32, users = 30, failWrites = false } = {}) {
         if (key === 'card.insert') {
           sent.writes.push({ key, data: sr.data ?? {} });
           if (failWrites) return { id: sr.id, ok: false, error: { code: 'forbidden', message: 'mock create fault' } };
+          const d = sr.data ?? {};
+          insertedCards.push({
+            id: '7777',
+            card_type_name: d.card_type_name ?? '',
+            attributes: { title: d.title, ...(d.attributes && typeof d.attributes === 'object' ? d.attributes : {}) },
+          });
           return { id: sr.id, ok: true, data: { id: '7777' } };
         }
         if (key === 'card.delete') {
@@ -97,7 +112,13 @@ function adminTransport({ persons = 32, users = 30, failWrites = false } = {}) {
         if (key === 'person.create') {
           sent.writes.push({ key, data: sr.data ?? {} });
           if (failWrites) return { id: sr.id, ok: false, error: { code: 'conflict', message: 'mock create fault' } };
-          return { id: sr.id, ok: true, data: { person_card_id: '8888', user_account_id: sr.data?.tier === 'user' ? '5555' : '0' } };
+          const d = sr.data ?? {};
+          personList.push({
+            id: '8888',
+            card_type_name: 'person',
+            attributes: { title: d.title, email: d.email ?? '', person_kind: d.tier === 'contact' ? 'contact' : 'member' },
+          });
+          return { id: sr.id, ok: true, data: { person_card_id: '8888', user_account_id: d.tier === 'user' ? '5555' : '0' } };
         }
         if (key === 'user_role.set') {
           sent.writes.push({ key, data: sr.data ?? {} });

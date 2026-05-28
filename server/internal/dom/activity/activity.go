@@ -45,7 +45,21 @@ type SelectOutput struct {
 	Rows []Row `json:"rows" mcp:"desc=matching activity rows in chronological order"`
 }
 
-// Register installs the handler.
+// PollInput is the cheap "is there newer activity?" probe for the task-detail
+// background poll: a task id + the latest activity id the client already has.
+type PollInput struct {
+	TaskID          int64 `json:"task_id,string" mcp:"required,desc=task card id to poll (spans the task + its comm child cards)"`
+	SinceActivityID int64 `json:"since_activity_id,string,omitempty" mcp:"desc=latest activity id the client has; new_count counts rows with id > this (0/omitted = count all)"`
+}
+
+// PollOutput reports the latest activity id across the task + its comm children
+// and how many are newer than SinceActivityID.
+type PollOutput struct {
+	LatestActivityID int64 `json:"latest_activity_id,string" mcp:"desc=max activity id across the task + its comm child cards (0 when none / not visible)"`
+	NewCount         int   `json:"new_count" mcp:"desc=count of activity rows newer than since_activity_id"`
+}
+
+// Register installs the handlers.
 func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "activity",
@@ -57,6 +71,18 @@ func Register(p *store.Pool) {
 		// Unified handler — body lives in
 		// db/schema/functions/activity_select_batch.sql.
 		SQLFunc: "activity_select_batch",
+	})
+	reg.Register(reg.Handler{
+		Endpoint:     "activity",
+		Action:       "poll",
+		Doc:          "Cheap newer-activity check for the task-detail background poll: latest activity id + new_count across the task and its comm child cards.",
+		InputType:    reflect.TypeFor[PollInput](),
+		OutputType:   reflect.TypeFor[PollOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		IsRead:       true,
+		// Unified handler — body lives in
+		// db/schema/functions/activity_poll_batch.sql.
+		SQLFunc: "activity_poll_batch",
 	})
 	_ = p
 }

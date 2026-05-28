@@ -36,8 +36,19 @@ import type { Api } from '../core/api.js';
 /* -------------------------------------------------------------------------- */
 
 export const ACTIVITY_SELECT_SPEC = 'activity.select';
+export const ACTIVITY_POLL_SPEC = 'activity.poll';
 export const COMMENT_INSERT_SPEC = 'comment.insert';
 export const COMMENT_UPDATE_SPEC = 'comment.update';
+
+/** activity.poll — cheap "newer activity?" probe for the task-detail bg poll. */
+export interface ActivityPollInput {
+  taskId: bigint | string;
+  sinceActivityId?: bigint | string;
+}
+export interface ActivityPollOutput {
+  latestActivityId: bigint;
+  newCount: number;
+}
 
 /** Default activity rows pulled per page — matches the Svelte screen's batch. */
 export const ACTIVITY_LIMIT = 50;
@@ -168,6 +179,25 @@ export function registerCommentSpecs(api: Api): void {
       decode: (raw): ActivitySelectOutput => ({
         rows: asArray(asObj(raw)['rows']).map((r) => decodeActivityRow(asObj(r))),
       }),
+    });
+  }
+
+  if (!api.registry.has({ endpoint: 'activity', action: 'poll' })) {
+    api.define<ActivityPollInput, ActivityPollOutput>({
+      endpoint: 'activity',
+      action: 'poll',
+      encode: (i) => {
+        const m: Record<string, unknown> = { task_id: i.taskId };
+        if (i.sinceActivityId !== undefined) m['since_activity_id'] = i.sinceActivityId;
+        return m;
+      },
+      decode: (raw): ActivityPollOutput => {
+        const j = asObj(raw);
+        return {
+          latestActivityId: asId(j['latest_activity_id']),
+          newCount: typeof j['new_count'] === 'number' ? j['new_count'] : Number(j['new_count'] ?? 0),
+        };
+      },
     });
   }
 

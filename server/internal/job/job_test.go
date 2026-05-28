@@ -331,6 +331,155 @@ func TestConfigThreadedThrough(t *testing.T) {
 	}
 }
 
+// TestDescribe verifies the static declaration + live metrics snapshot,
+// including a disabled job (which still appears).
+func TestDescribe(t *testing.T) {
+	t.Parallel()
+	s := job.New[struct{}](nil, struct{}{}, quietLogger())
+	must(t, s.Add(job.Job[struct{}]{
+		Name:        "alpha",
+		Description: "the alpha job",
+		Interval:    10 * time.Minute,
+		Timeout:     5 * time.Second,
+		OnStartup:   true,
+		Run:         noop,
+	}))
+	must(t, s.Add(job.Job[struct{}]{
+		Name:     "beta",
+		Disabled: true,
+		Interval: time.Minute,
+		Run:      noop,
+	}))
+
+	descs := s.Describe()
+	if len(descs) != 2 {
+		t.Fatalf("Describe returned %d jobs, want 2", len(descs))
+	}
+	a := descriptorByName(descs, "alpha")
+	if a.Description != "the alpha job" || a.Interval != 10*time.Minute || a.Timeout != 5*time.Second || !a.OnStartup {
+		t.Errorf("alpha descriptor wrong: %+v", a)
+	}
+	if a.Metrics.Success != 0 || !a.Metrics.LastRunAt.IsZero() {
+		t.Errorf("alpha metrics should be empty before any run: %+v", a.Metrics)
+	}
+	b := descriptorByName(descs, "beta")
+	if !b.Disabled {
+		t.Errorf("beta should report Disabled=true: %+v", b)
+	}
+	// A zero Timeout resolves to min(Interval, MaxDefaultTimeout); beta's
+	// 1m interval is below the 600s cap, so its effective timeout is 1m.
+	if b.Timeout != time.Minute {
+		t.Errorf("beta effective timeout = %v, want 1m", b.Timeout)
+	}
+}
+
+// TestTriggerRunsAndRecords runs a job on demand (no Start) and checks
+// the result + that the success counter / last-run fields update.
+func TestTriggerRunsAndRecords(t *testing.T) {
+	t.Parallel()
+	var hits atomic.Int64
+	s := job.New[struct{}](nil, struct{}{}, quietLogger())
+	must(t, s.Add(job.Job[struct{}]{
+		Name:     "manual",
+		Interval: time.Hour,
+		Run: func(_ context.Context, _ *pgxpool.Pool, _ struct{}) error {
+			hits.Add(1)
+			return nil
+		},
+	}))
+
+	res, err := s.Trigger(context.Background(), "manual")
+	if err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	if res.Err != nil || res.StartedAt.IsZero() {
+		t.Errorf("unexpected result: %+v", res)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("Run fired %d times, want 1", got)
+	}
+	d := descriptorByName(s.Describe(), "manual")
+	if d.Metrics.Success != 1 || d.Metrics.Failure != 0 || d.Metrics.LastRunAt.IsZero() {
+		t.Errorf("metrics not recorded: %+v", d.Metrics)
+	}
+}
+
+// TestTriggerNotFound — an unknown name returns ErrJobNotFound.
+func TestTriggerNotFound(t *testing.T) {
+	t.Parallel()
+	s := job.New[struct{}](nil, struct{}{}, quietLogger())
+	if _, err := s.Trigger(context.Background(), "ghost"); !errors.Is(err, job.ErrJobNotFound) {
+		t.Errorf("Trigger(ghost) err = %v, want ErrJobNotFound", err)
+	}
+}
+
+// TestTriggerError — a failing run surfaces its error and increments the
+// failure counter.
+func TestTriggerError(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("boom")
+	s := job.New[struct{}](nil, struct{}{}, quietLogger())
+	must(t, s.Add(job.Job[struct{}]{
+		Name:     "fails",
+		Interval: time.Hour,
+		Run:      func(_ context.Context, _ *pgxpool.Pool, _ struct{}) error { return boom },
+	}))
+
+	res, err := s.Trigger(context.Background(), "fails")
+	if err != nil {
+		t.Fatalf("Trigger returned a control error: %v", err)
+	}
+	if !errors.Is(res.Err, boom) {
+		t.Errorf("res.Err = %v, want boom", res.Err)
+	}
+	d := descriptorByName(s.Describe(), "fails")
+	if d.Metrics.Failure != 1 || d.Metrics.LastError == "" {
+		t.Errorf("failure not recorded: %+v", d.Metrics)
+	}
+}
+
+// TestTriggerAlreadyRunning — a concurrent Trigger of an in-flight job
+// reports ErrJobRunning rather than overlapping the run.
+func TestTriggerAlreadyRunning(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	s := job.New[struct{}](nil, struct{}{}, quietLogger())
+	must(t, s.Add(job.Job[struct{}]{
+		Name:     "blocker",
+		Interval: time.Hour,
+		Run: func(_ context.Context, _ *pgxpool.Pool, _ struct{}) error {
+			close(entered)
+			<-release
+			return nil
+		},
+	}))
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = s.Trigger(context.Background(), "blocker")
+		close(done)
+	}()
+
+	<-entered // first run is now holding the job
+	if _, err := s.Trigger(context.Background(), "blocker"); !errors.Is(err, job.ErrJobRunning) {
+		t.Errorf("concurrent Trigger err = %v, want ErrJobRunning", err)
+	}
+	close(release)
+	<-done
+}
+
+func noop(_ context.Context, _ *pgxpool.Pool, _ struct{}) error { return nil }
+
+func descriptorByName(ds []job.JobDescriptor, name string) job.JobDescriptor {
+	for _, d := range ds {
+		if d.Name == name {
+			return d
+		}
+	}
+	return job.JobDescriptor{}
+}
+
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {

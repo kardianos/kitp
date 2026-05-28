@@ -33,6 +33,7 @@ before(async () => {
   M = await import(`${outdir}/app.js`);
   M.registerMasterDetail();
   M.registerNestedEditor();
+  M.registerRecordForm();
   M.registerPredicateFilter();
   M.registerCombobox();
   M.registerRefPicker();
@@ -100,9 +101,23 @@ function adminTransport() {
           case 'role_mapping.list':
             return { id: sr.id, ok: true, data: { rows: mappingRows } };
           /* ---- writes ---- */
-          case 'comm_channel.set':
+          case 'comm_channel.set': {
             rec(key, data);
-            return { id: sr.id, ok: true, data: { channel_id: data.id ?? '81' } };
+            const isInsert = data.id === undefined || data.id === null || data.id === '' || data.id === '0';
+            if (isInsert) {
+              const nid = String(80 + channelRows.length);
+              channelRows = [
+                ...channelRows,
+                {
+                  id: nid, name: data.name, channel_type: data.channel_type ?? 'email',
+                  channel_status: data.channel_status ?? 'enabled',
+                  has_imap_password: false, has_smtp_password: false,
+                },
+              ];
+              return { id: sr.id, ok: true, data: { channel_id: nid } };
+            }
+            return { id: sr.id, ok: true, data: { channel_id: data.id } };
+          }
           case 'activity_sink.set':
             rec(key, data);
             return { id: sr.id, ok: true, data: { sink_id: data.id ?? '91' } };
@@ -209,13 +224,77 @@ test('channelDraftToSet omits a password when blank, sends it when typed', () =>
   assert.equal('smtpPassword' in out, false, 'smtpPassword still omitted');
 });
 
+test('intake_status round-trips: hydrated from the row, sent only when set', () => {
+  // channelRowToDraft consumes the DECODED (camelCase) CommChannel row.
+  // Unset on the row → blank draft → omitted from the wire payload.
+  const none = M.channelRowToDraft({
+    id: '80', name: 'X', channelType: 'email', channelStatus: 'enabled',
+    hasImapPassword: false, hasSmtpPassword: false,
+  });
+  assert.equal(none.intakeStatusId, '', 'unset intake stays blank');
+  assert.equal('intakeStatusId' in M.channelDraftToSet(none, PROJECT_ID), false, 'blank intake omitted from payload');
+
+  // Set on the row → draft carries it → sent on save.
+  const set = M.channelRowToDraft({
+    id: '80', name: 'X', channelType: 'email', channelStatus: 'enabled',
+    intakeStatusId: '321', hasImapPassword: false, hasSmtpPassword: false,
+  });
+  assert.equal(set.intakeStatusId, '321', 'intake hydrated from the row');
+  assert.equal(M.channelDraftToSet(set, PROJECT_ID).intakeStatusId, '321', 'intake sent when set');
+});
+
+test('Workflows: row→draft→flow.set carries doc + default_create_status, keeps the governed attr', () => {
+  // The Workflows RecordForm edits name / description / default-create status;
+  // the governed attribute + scope ride along so flow.set updates the SAME flow.
+  const draft = M.workflowRowToDraft({
+    id: '5', name: 'Status', doc: 'old', attribute_def_id: '9',
+    scope_card_id: '31', default_create_status_id: '12',
+  });
+  assert.equal(draft.doc, 'old', 'description hydrated');
+  assert.equal(draft.defaultCreateStatusId, '12', 'default-create status hydrated');
+  assert.equal(draft.attributeDefId, '9', 'governed attr carried (hidden)');
+
+  // Edit the two fields the user wanted editable.
+  draft.doc = 'new description';
+  draft.defaultCreateStatusId = '13';
+  const input = M.workflowDraftToInput(draft, '31');
+  assert.equal(input.id, '5', 'updates the same flow by id');
+  assert.equal(input.doc, 'new description', 'edited description sent');
+  assert.equal(input.defaultCreateStatusId, '13', 'edited default-create status sent');
+  assert.equal(input.attributeDefId, '9', 'governed attr preserved (not changed)');
+  assert.equal(input.scopeCardId, '31', 'scope preserved');
+});
+
 test('channelRowToDraft starts passwords blank (never echoed)', () => {
   const draft = M.channelRowToDraft({
-    id: '80', name: 'X', channel_type: 'email', imap_host: 'h', smtp_host: 's',
-    from_address: 'f@x', channel_status: 'enabled', has_imap_password: true, has_smtp_password: true,
+    id: '80', name: 'X', channelType: 'email', imapHost: 'h', smtpHost: 's',
+    fromAddress: 'f@x', channelStatus: 'enabled', hasImapPassword: true, hasSmtpPassword: true,
   });
   assert.equal(draft.imapPassword, '', 'imap password blank on load');
   assert.equal(draft.smtpPassword, '', 'smtp password blank on load');
+});
+
+test('channelRowToDraft hydrates saved ports + usernames (not secrets)', () => {
+  const draft = M.channelRowToDraft({
+    id: '80', name: 'X', channelType: 'email',
+    imapHost: 'imap.h', imapPort: 993, imapUsername: 'in@x',
+    smtpHost: 'smtp.h', smtpPort: 587, smtpUsername: 'out@x',
+    fromAddress: 'f@x', channelStatus: 'enabled', hasImapPassword: true, hasSmtpPassword: true,
+  });
+  assert.equal(draft.imapPort, '993', 'imap port shown as saved');
+  assert.equal(draft.imapUsername, 'in@x', 'imap username shown as saved');
+  assert.equal(draft.smtpPort, '587', 'smtp port shown as saved');
+  assert.equal(draft.smtpUsername, 'out@x', 'smtp username shown as saved');
+});
+
+test('channelRowToDraft leaves unset ports/usernames blank', () => {
+  const draft = M.channelRowToDraft({
+    id: '81', name: 'Y', channelType: 'email',
+    channelStatus: 'enabled', hasImapPassword: false, hasSmtpPassword: false,
+  });
+  assert.equal(draft.imapPort, '', 'unset imap port is blank');
+  assert.equal(draft.imapUsername, '', 'unset imap username is blank');
+  assert.equal(draft.smtpPort, '', 'unset smtp port is blank');
 });
 
 test('validateChannelDraft requires name + rejects non-email channel type', () => {
@@ -272,15 +351,15 @@ test('Comm Channels: config form renders has_*_password state; saving without ty
   await selectFirstRow(ctrl, dispatcher);
 
   // The secret-state captions reflect the row flags (imap configured, smtp not).
-  const imapState = ctrl.el.querySelector('[data-ne-secret-state="neImapPwd"]');
-  const smtpState = ctrl.el.querySelector('[data-ne-secret-state="neSmtpPwd"]');
-  assert.equal(imapState.textContent, 'configured', 'imap password shown configured');
-  assert.equal(smtpState.textContent, 'not set', 'smtp password shown not set');
+  const imapState = ctrl.el.querySelector('[data-record-form-secret-state="imapPassword"]');
+  const smtpState = ctrl.el.querySelector('[data-record-form-secret-state="smtpPassword"]');
+  assert.match(imapState.textContent, /configured/, 'imap password shown configured');
+  assert.match(smtpState.textContent, /not set/, 'smtp password shown not set');
   // The password inputs are blank on load.
-  assert.equal(ctrl.el.querySelector('[data-ne-imap-pwd]').value, '');
+  assert.equal(ctrl.el.querySelector('[data-record-form-field="imapPassword"]').value, '');
 
   // Save WITHOUT typing a password → comm_channel.set carries no password keys.
-  ctrl.el.querySelector('[data-ne-config-save]').dispatchEvent({ type: 'click' });
+  ctrl.el.querySelector('[data-record-form-save]').dispatchEvent({ type: 'click' });
   await settle(dispatcher);
   const sets = writesFor(transport, 'comm_channel.set');
   assert.equal(sets.length, 1, 'one comm_channel.set fired');
@@ -304,19 +383,44 @@ test('Comm Channels: typing into the name field does NOT replace the input (focu
   await settle(dispatcher);
   await selectFirstRow(ctrl, dispatcher);
 
-  const before = ctrl.el.querySelector('[data-ne-name]');
+  const before = ctrl.el.querySelector('[data-record-form-field="name"]');
   assert.ok(before, 'name input rendered');
   before.value = 'a';
   before.dispatchEvent({ type: 'input' });
   M.flushSync?.();
-  const after = ctrl.el.querySelector('[data-ne-name]');
+  const after = ctrl.el.querySelector('[data-record-form-field="name"]');
   assert.equal(after, before, 'same DOM input after a keystroke (no re-render)');
   // A second keystroke also lands on the same input (the regression: pre-fix,
   // this would be a fresh element each time).
   before.value = 'ab';
   before.dispatchEvent({ type: 'input' });
   M.flushSync?.();
-  assert.equal(ctrl.el.querySelector('[data-ne-name]'), before, 'still the same input');
+  assert.equal(ctrl.el.querySelector('[data-record-form-field="name"]'), before, 'still the same input');
+});
+
+test('Comm Channels: creating a channel shows it in the list without a manual reload', async () => {
+  const transport = adminTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountView(api, 'comm_channels');
+  await settle(dispatcher);
+  assert.equal(visibleRows(ctrl.el).length, 1, 'one seeded channel initially');
+
+  // + New → fill name → Save (an INSERT: no id).
+  ctrl.el.querySelector('[data-record-form-new]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  const nameInput = ctrl.el.querySelector('[data-record-form-field="name"]');
+  nameInput.value = 'New Channel';
+  nameInput.dispatchEvent({ type: 'input' });
+  M.flushSync?.();
+  ctrl.el.querySelector('[data-record-form-save]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+
+  const sets = writesFor(transport, 'comm_channel.set');
+  assert.equal(sets.length, 1, 'one comm_channel.set fired');
+  assert.equal('id' in sets[0].data, false, 'insert carries no id');
+  // The master list reflects the new channel WITHOUT a screen reload (RecordForm
+  // re-issued comm_channel.list + rewrote items, which the virtualList tracks).
+  assert.equal(visibleRows(ctrl.el).length, 2, 'new channel appears in the list immediately');
 });
 
 test('Comm Channels: typing a password sends ONLY that field', async () => {
@@ -326,11 +430,11 @@ test('Comm Channels: typing a password sends ONLY that field', async () => {
   await settle(dispatcher);
   await selectFirstRow(ctrl, dispatcher);
 
-  const imapPwd = ctrl.el.querySelector('[data-ne-imap-pwd]');
+  const imapPwd = ctrl.el.querySelector('[data-record-form-field="imapPassword"]');
   imapPwd.value = 'new-imap-secret';
   imapPwd.dispatchEvent({ type: 'input' });
   M.flushSync?.();
-  ctrl.el.querySelector('[data-ne-config-save]').dispatchEvent({ type: 'click' });
+  ctrl.el.querySelector('[data-record-form-save]').dispatchEvent({ type: 'click' });
   await settle(dispatcher);
 
   const sets = writesFor(transport, 'comm_channel.set');

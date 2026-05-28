@@ -24,11 +24,11 @@
 // threading + insert logic is the imapClient interface; tests inject
 // a fake that feeds canned InboundMessage values into RunOnce.
 //
-//   KITP_COMM_IMAP_TICK_SEC=60   poll interval; default 60s
-//   KITP_COMM_IMAP_DRY_RUN=0     when "1", log and continue without
-//                                opening an IMAP connection
-//   KITP_COMM_IMAP_INSECURE=0    when "1", allow plaintext IMAP (no
-//                                TLS); dev only
+//	KITP_COMM_IMAP_TICK_SEC=60   poll interval; default 60s
+//	KITP_COMM_IMAP_DRY_RUN=0     when "1", log and continue without
+//	                             opening an IMAP connection
+//	KITP_COMM_IMAP_INSECURE=0    when "1", allow plaintext IMAP (no
+//	                             TLS); dev only
 package comm
 
 import (
@@ -59,15 +59,16 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/job"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
-// IMAPPoller owns the per-channel poll loop. Construct with
-// StartIMAPPoller; the returned value's Stop() drains the goroutine
-// cleanly. RunOnce is exported so tests can drive one iteration
-// synchronously without waiting on the ticker.
+// IMAPPoller owns one channel's poll state (backoff counters + the dial
+// seam). An [IMAPPool] holds one poller per channel and drives them from
+// a single scheduler job via Tick; RunOnce runs one scan+ingest cycle and
+// is exported so tests can drive it synchronously.
 type IMAPPoller struct {
 	pool      *store.Pool
 	channelID int64
@@ -95,9 +96,6 @@ type IMAPPoller struct {
 	// "this is no longer transient" signal. See bumpBackoff for the
 	// increment rule.
 	capHits int
-
-	stop chan struct{}
-	done chan struct{}
 }
 
 // IMAPDialFunc opens an authenticated IMAP session with INBOX selected
@@ -172,19 +170,9 @@ type InboundAttachment struct {
 	Bytes    []byte
 }
 
-// StartIMAPPoller spawns the poll goroutine for one channel. tick is
-// the poll cadence (clamped to >= 5s; production defaults to 60s).
-// The returned poller is ready immediately; the first scan fires on
-// the first ticker tick. Call Stop() to drain.
-func StartIMAPPoller(pool *store.Pool, channelID int64, tick time.Duration) *IMAPPoller {
-	p := newIMAPPoller(pool, channelID, tick)
-	go p.run()
-	return p
-}
-
-// NewIMAPPollerForTest builds an unstarted IMAPPoller so tests can
-// drive RunOnce synchronously. Production callers go through
-// StartIMAPPoller.
+// NewIMAPPollerForTest builds an IMAPPoller so tests can drive RunOnce /
+// Tick synchronously. Production builds them through an [IMAPPool], which
+// reconciles one poller per channel and ticks them via the scheduler.
 func NewIMAPPollerForTest(pool *store.Pool, channelID int64, tick time.Duration) *IMAPPoller {
 	return newIMAPPoller(pool, channelID, tick)
 }
@@ -200,8 +188,6 @@ func newIMAPPoller(pool *store.Pool, channelID int64, tick time.Duration) *IMAPP
 		dryRun:    os.Getenv("KITP_COMM_IMAP_DRY_RUN") == "1",
 		insecure:  os.Getenv("KITP_COMM_IMAP_INSECURE") == "1",
 		logger:    slog.Default(),
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
 	}
 	p.dial = dialIMAP
 	return p
@@ -221,17 +207,6 @@ func (p *IMAPPoller) SetDialFunc(f IMAPDialFunc) {
 	if f != nil {
 		p.dial = f
 	}
-}
-
-// Stop signals the goroutine to exit and waits for it to drain. Safe
-// to call multiple times.
-func (p *IMAPPoller) Stop() {
-	select {
-	case <-p.stop:
-	default:
-		close(p.stop)
-	}
-	<-p.done
 }
 
 // backoffMin / backoffMax bracket the exponential backoff window the
@@ -288,47 +263,47 @@ func looksLikeAuthError(err error) bool {
 	return false
 }
 
-func (p *IMAPPoller) run() {
-	defer close(p.done)
-	t := time.NewTicker(p.tick)
-	defer t.Stop()
-	for {
-		select {
-		case <-p.stop:
-			return
-		case now := <-t.C:
-			if now.Before(p.nextAttemptAt) {
-				continue // still backing off
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			ctx = auth.WithSystemUser(ctx)
-			if err := p.RunOnce(ctx); err != nil {
-				p.bumpBackoff()
-				p.logger.LogAttrs(ctx, slog.LevelError, "imap poller RunOnce",
-					slog.Int64("channel_id", p.channelID),
-					slog.Duration("backoff", p.backoff),
-					slog.Int("cap_hits", p.capHits),
-					slog.String("err", err.Error()))
-				// Sustained-failure trip: once we've been failing at
-				// the backoff ceiling for the threshold, treat it as
-				// "this is no longer transient" and disable the
-				// channel until an admin re-enables.
-				if p.capHits >= sustainedFailureCapHits {
-					if mfErr := MarkChannelFault(ctx, p.pool, p.channelID,
-						fmt.Sprintf("sustained polling failure: %v", err)); mfErr != nil {
-						p.logger.LogAttrs(ctx, slog.LevelError, "imap poller mark fault",
-							slog.Int64("channel_id", p.channelID),
-							slog.String("err", mfErr.Error()))
-					}
-				}
-			} else {
-				p.backoff = 0
-				p.nextAttemptAt = time.Time{}
-				p.capHits = 0
-			}
-			cancel()
-		}
+// Tick runs one poll attempt subject to the poller's backoff gate: while
+// backing off it returns nil without dialing. On RunOnce failure it bumps
+// the backoff and, after sustained ceiling failures, trips the channel
+// into disabled-fault; on success it clears the backoff. Logs the failure
+// itself (with channel_id) and returns the RunOnce error so callers can
+// observe it — the [IMAPPool] sweep discards it to keep the poll job green
+// (a transient channel error isn't a scheduler-job failure). One IMAP
+// session is dialed + closed per call, so there's nothing to drain between
+// ticks.
+func (p *IMAPPoller) Tick(ctx context.Context) error {
+	if time.Now().Before(p.nextAttemptAt) {
+		return nil // still backing off
 	}
+	runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	runCtx = auth.WithSystemUser(runCtx)
+	err := p.RunOnce(runCtx)
+	if err != nil {
+		p.bumpBackoff()
+		p.logger.LogAttrs(runCtx, slog.LevelError, "imap poller RunOnce",
+			slog.Int64("channel_id", p.channelID),
+			slog.Duration("backoff", p.backoff),
+			slog.Int("cap_hits", p.capHits),
+			slog.String("err", err.Error()))
+		// Sustained-failure trip: once we've been failing at the backoff
+		// ceiling for the threshold, treat it as "this is no longer
+		// transient" and disable the channel until an admin re-enables.
+		if p.capHits >= sustainedFailureCapHits {
+			if mfErr := MarkChannelFault(runCtx, p.pool, p.channelID,
+				fmt.Sprintf("sustained polling failure: %v", err)); mfErr != nil {
+				p.logger.LogAttrs(runCtx, slog.LevelError, "imap poller mark fault",
+					slog.Int64("channel_id", p.channelID),
+					slog.String("err", mfErr.Error()))
+			}
+		}
+		return err
+	}
+	p.backoff = 0
+	p.nextAttemptAt = time.Time{}
+	p.capHits = 0
+	return nil
 }
 
 func (p *IMAPPoller) bumpBackoff() {
@@ -383,6 +358,9 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 		return fmt.Errorf("imap poller: read status: %w", err)
 	}
 	if status != ChannelStatusEnabled {
+		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap skip: channel not enabled",
+			slog.Int64("channel_id", p.channelID),
+			slog.String("status", status))
 		return nil
 	}
 
@@ -390,6 +368,18 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("imap poller: load config: %w", err)
 	}
+
+	// Config snapshot (no secrets). The common "no new tasks" cause shows
+	// up here: intake_status_id=0 means every non-reply message is dropped
+	// (see processOne); has_password=false means dial will fail.
+	p.logger.LogAttrs(ctx, slog.LevelDebug, "imap channel config",
+		slog.Int64("channel_id", p.channelID),
+		slog.String("host", cfg.Host),
+		slog.Int("port", cfg.Port),
+		slog.Bool("has_username", cfg.Username != ""),
+		slog.Bool("has_password", cfg.Password != ""),
+		slog.Int64("project_id", projectID),
+		slog.Int64("intake_status_id", intakeStatusID))
 
 	if p.dryRun {
 		p.logger.LogAttrs(ctx, slog.LevelInfo, "imap dry-run",
@@ -423,11 +413,17 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 		return fmt.Errorf("imap dial: %w", err)
 	}
 	defer func() { _ = client.Close() }()
+	p.logger.LogAttrs(ctx, slog.LevelDebug, "imap connected",
+		slog.Int64("channel_id", p.channelID),
+		slog.String("host", cfg.Host))
 
 	msgs, err := client.FetchUnseen(ctx)
 	if err != nil {
 		return fmt.Errorf("imap fetch: %w", err)
 	}
+	p.logger.LogAttrs(ctx, slog.LevelDebug, "imap fetched unseen",
+		slog.Int64("channel_id", p.channelID),
+		slog.Int("count", len(msgs)))
 
 	var ingested []uint32
 	var firstErr error
@@ -450,6 +446,10 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 			firstErr = fmt.Errorf("imap mark seen: %w", err)
 		}
 	}
+	p.logger.LogAttrs(ctx, slog.LevelDebug, "imap cycle complete",
+		slog.Int64("channel_id", p.channelID),
+		slog.Int("fetched", len(msgs)),
+		slog.Int("ingested", len(ingested)))
 	return firstErr
 }
 
@@ -544,16 +544,35 @@ func (p *IMAPPoller) processOne(ctx context.Context, projectID, intakeStatusID i
 
 	switch {
 	case matchedCommID != 0:
+		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap message → reply on existing comm",
+			slog.Int64("channel_id", p.channelID),
+			slog.Int64("comm_id", matchedCommID),
+			slog.String("thread_source", source),
+			slog.String("message_id", m.MessageID),
+			slog.String("subject", m.Subject))
 		if err := p.appendReceivedReply(ctx, tx, snap, matchedCommID, m, actorID); err != nil {
 			return p.logParseError(ctx, projectID, m, err)
 		}
 	case intakeStatusID != 0:
+		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap message → new task",
+			slog.Int64("channel_id", p.channelID),
+			slog.Int64("project_id", projectID),
+			slog.Int64("intake_status_id", intakeStatusID),
+			slog.String("from", m.From),
+			slog.String("subject", m.Subject))
 		if err := p.createTaskAndComm(ctx, tx, snap, projectID, intakeStatusID, m, actorID); err != nil {
 			return p.logParseError(ctx, projectID, m, err)
 		}
 	default:
-		// Discard: no thread match, no intake configured. Log the
-		// dropped message so operators can configure intake later.
+		// Discard: no thread match, no intake configured. This is the
+		// usual "inbound mail isn't becoming tasks" cause — surface it at
+		// WARN (not just the comm_log row below) so it's visible in logs.
+		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap message dropped: no thread match and channel has no intake_status configured",
+			slog.Int64("channel_id", p.channelID),
+			slog.Int64("project_id", projectID),
+			slog.String("from", m.From),
+			slog.String("subject", m.Subject),
+			slog.String("thread_source", source))
 		detail := map[string]any{
 			"message_id":    m.MessageID,
 			"from":          m.From,
@@ -1409,19 +1428,44 @@ func (r *realIMAPClient) Close() error {
 
 // ---- startup helpers ----
 
-// StartIMAPPollerPool spawns one IMAPPoller per existing comm_channel
-// card. Mirrors StartSMTPSenderPool. Returns every poller so the
-// caller can collect them for shutdown.
-func StartIMAPPollerPool(ctx context.Context, pool *store.Pool, tick time.Duration, logger *slog.Logger) ([]*IMAPPoller, error) {
-	ids, err := ListChannelIDs(ctx, pool)
+// IMAPPool drives inbound polling for every comm_channel from a single
+// scheduler job. Each RunOnce reconciles one [IMAPPoller] per live channel
+// and ticks each one; per-channel backoff lives on the poller and survives
+// across sweeps. Construct with [NewIMAPPool] and call RunOnce from the
+// `comm.imap_poll` job (see cmd/kitpd/main.go).
+type IMAPPool struct {
+	pool   *store.Pool
+	logger *slog.Logger
+	wp     *job.WorkerPool[int64, *IMAPPoller]
+}
+
+// NewIMAPPool builds the pool. tick is the per-poller cadence hint (the
+// real cadence is the owning job's Interval); logger is threaded to each
+// poller.
+func NewIMAPPool(pool *store.Pool, tick time.Duration, logger *slog.Logger) *IMAPPool {
+	m := &IMAPPool{pool: pool, logger: logger}
+	m.wp = job.NewWorkerPool[int64, *IMAPPoller](
+		func(id int64) *IMAPPoller {
+			p := newIMAPPoller(pool, id, tick)
+			p.SetLogger(logger)
+			return p
+		},
+		// Discard the per-channel error: Tick already logged + backed off,
+		// and one bad channel must not flip the whole poll job red.
+		func(ctx context.Context, p *IMAPPoller) error { _ = p.Tick(ctx); return nil },
+	)
+	return m
+}
+
+// RunOnce is the `comm.imap_poll` job body: list every channel and sweep
+// its poller. Returns only a channel-enumeration error (per-channel poll
+// errors are handled inside Tick).
+func (m *IMAPPool) RunOnce(ctx context.Context) error {
+	ids, err := ListChannelIDs(ctx, m.pool)
 	if err != nil {
-		return nil, fmt.Errorf("imap poller pool: %w", err)
+		return fmt.Errorf("imap poll: list channels: %w", err)
 	}
-	out := make([]*IMAPPoller, 0, len(ids))
-	for _, id := range ids {
-		p := StartIMAPPoller(pool, id, tick)
-		p.SetLogger(logger)
-		out = append(out, p)
-	}
-	return out, nil
+	m.logger.LogAttrs(ctx, slog.LevelDebug, "imap poll sweep",
+		slog.Int("channels", len(ids)))
+	return m.wp.Sweep(ctx, ids)
 }

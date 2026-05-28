@@ -5,17 +5,17 @@
 // for reply_body cards with delivery_status='pending' that belong to a
 // comm whose channel_ref matches this sender. For each:
 //
-//   1. Build a plain-text MIME message (From, To, Subject with
-//      [#<thread_id>] suffix, X-Kitp-Thread-Id header, body, Ref:
-//      trailer).
-//   2. Decrypt the channel's SMTP password from comm_secret.
-//   3. Connect with STARTTLS (port 587) or implicit TLS (port 465).
-//   4. On success: flip delivery_status to 'sent', log comm_log
-//      kind='send_ok'.
-//   5. On a 5xx response: flip delivery_status to 'bounced', log
-//      kind='send_bounce'.
-//   6. On any other error: flip delivery_status to 'failed', log
-//      kind='send_fail'.
+//  1. Build a plain-text MIME message (From, To, Subject with
+//     [#<thread_id>] suffix, X-Kitp-Thread-Id header, body, Ref:
+//     trailer).
+//  2. Decrypt the channel's SMTP password from comm_secret.
+//  3. Connect with STARTTLS (port 587) or implicit TLS (port 465).
+//  4. On success: flip delivery_status to 'sent', log comm_log
+//     kind='send_ok'.
+//  5. On a 5xx response: flip delivery_status to 'bounced', log
+//     kind='send_bounce'.
+//  6. On any other error: flip delivery_status to 'failed', log
+//     kind='send_fail'.
 //
 // Tests in smtp_test.go drive RunOnce against an in-process SMTP
 // listener that records MAIL FROM / RCPT TO / DATA and replays
@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/job"
 	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
@@ -57,10 +58,10 @@ import (
 // the user-facing cap is on payload (predictable) not wire size.
 const MaxReplyAttachmentBytes int64 = 20 * 1024 * 1024
 
-// SMTPSender owns the per-channel poll loop. Construct with
-// StartSMTPSender; the returned value's Stop() drains the goroutine
-// cleanly. RunOnce is exported so tests can drive one iteration
-// synchronously without waiting on the ticker.
+// SMTPSender owns one channel's outbound state (just the transport seam).
+// An [SMTPPool] holds one sender per channel and drives them from a single
+// scheduler job via TickOnce; RunOnce sends the pending replies for one
+// channel and is exported so tests can drive it synchronously.
 type SMTPSender struct {
 	pool      *store.Pool
 	channelID int64
@@ -72,8 +73,6 @@ type SMTPSender struct {
 	// to sendSMTP. Nil = use the default (sendSMTP, or a no-op in
 	// dry-run mode).
 	transport SMTPTransport
-	stop      chan struct{}
-	done      chan struct{}
 }
 
 // SMTPTransport is the seam between the queue scanner and the wire.
@@ -94,20 +93,11 @@ func (e *SMTPBounceError) Error() string {
 	return fmt.Sprintf("smtp bounce %d: %s", e.Code, e.Msg)
 }
 
-// StartSMTPSender spawns the poll goroutine for one channel. tick is
-// the poll cadence (clamped to >=1s; production defaults to 10s). The
-// returned sender is ready immediately; the first scan fires on the
-// first ticker tick. Call Stop() to drain.
-func StartSMTPSender(pool *store.Pool, channelID int64, tick time.Duration) *SMTPSender {
-	s := newSMTPSender(pool, channelID, tick)
-	go s.run()
-	return s
-}
-
-// NewSMTPSenderForTest builds an unstarted SMTPSender so tests can
-// drive RunOnce synchronously. Production callers go through
-// StartSMTPSender. Exported because the test lives in the comm_test
-// package (external) — see smtp_test.go.
+// NewSMTPSenderForTest builds an SMTPSender so tests can drive RunOnce /
+// TickOnce synchronously. Production builds them through an [SMTPPool],
+// which reconciles one sender per channel and ticks them via the
+// scheduler. Exported because the test lives in the comm_test package
+// (external) — see smtp_test.go.
 func NewSMTPSenderForTest(pool *store.Pool, channelID int64, tick time.Duration) *SMTPSender {
 	return newSMTPSender(pool, channelID, tick)
 }
@@ -117,7 +107,7 @@ func NewSMTPSenderForTest(pool *store.Pool, channelID int64, tick time.Duration)
 // reply_body card. Internal callers (processOne) use buildMIME
 // directly.
 func BuildMIMEForTest(from, to, subject, body, threadID string) []byte {
-	return buildMIME(from, to, subject, body, threadID, nil)
+	return buildMIME(from, to, subject, body, "", threadID, nil)
 }
 
 // newSMTPSender builds the struct without starting the goroutine.
@@ -132,8 +122,6 @@ func newSMTPSender(pool *store.Pool, channelID int64, tick time.Duration) *SMTPS
 		tick:      tick,
 		dryRun:    os.Getenv("KITP_COMM_SMTP_DRY_RUN") == "1",
 		logger:    slog.Default(),
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
 	}
 	s.transport = sendSMTP
 	return s
@@ -158,39 +146,23 @@ func (s *SMTPSender) SetTransport(t SMTPTransport) {
 // Stop signals the goroutine to exit and waits for it to drain. Safe
 // to call multiple times — additional calls block on the same done
 // channel.
-func (s *SMTPSender) Stop() {
-	select {
-	case <-s.stop:
-		// already stopped
-	default:
-		close(s.stop)
+// TickOnce sends one channel's pending replies, under a 30s budget and
+// the System actor (the sender is a backend worker, not a user request;
+// logging + delivery_status flips reference SystemUserID via
+// auth.ActorOrSystem inside RunOnce). Logs and returns the RunOnce error;
+// the [SMTPPool] sweep discards it so one bad channel doesn't fail the
+// send job. There's no persistent connection between ticks.
+func (s *SMTPSender) TickOnce(ctx context.Context) error {
+	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	runCtx = auth.WithSystemUser(runCtx)
+	if err := s.RunOnce(runCtx); err != nil {
+		s.logger.LogAttrs(runCtx, slog.LevelError, "smtp sender RunOnce",
+			slog.Int64("channel_id", s.channelID),
+			slog.String("err", err.Error()))
+		return err
 	}
-	<-s.done
-}
-
-func (s *SMTPSender) run() {
-	defer close(s.done)
-	t := time.NewTicker(s.tick)
-	defer t.Stop()
-	for {
-		select {
-		case <-s.stop:
-			return
-		case <-t.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			// All SMTP traffic runs under the System actor — the sender
-			// is a backend worker, not a user-driven request. Logging
-			// + delivery_status flips reference SystemUserID via
-			// auth.ActorOrSystem inside RunOnce.
-			ctx = auth.WithSystemUser(ctx)
-			if err := s.RunOnce(ctx); err != nil {
-				s.logger.LogAttrs(ctx, slog.LevelError, "smtp sender RunOnce",
-					slog.Int64("channel_id", s.channelID),
-					slog.String("err", err.Error()))
-			}
-			cancel()
-		}
-	}
+	return nil
 }
 
 // pendingReply is the read-side row materialised before we build the
@@ -212,6 +184,7 @@ type pendingReply struct {
 	smtpUser    string
 	smtpPass    string
 	fromAddress string
+	signature   string // comm_channel title — auto-appended to the body as "-<name>"
 }
 
 // RunOnce executes one scan + send cycle synchronously. Exported so
@@ -278,7 +251,7 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 		return fmt.Errorf("smtp sender: reply %d attachments %d > cap %d",
 			r.replyID, total, MaxReplyAttachmentBytes)
 	}
-	msg := buildMIME(r.from, r.to, r.subject, r.body, r.threadID, atts)
+	msg := buildMIME(r.from, r.to, r.subject, r.body, r.signature, r.threadID, atts)
 
 	var sendErr error
 	if s.dryRun {
@@ -350,6 +323,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			COALESCE((SELECT (value)::text::int FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='smtp_port' AND jsonb_typeof(value)='number'), 0) AS smtp_port,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='smtp_username'), '')   AS smtp_username,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='from_address'), '')    AS from_address,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='title'), '')           AS channel_name,
 			COALESCE(
 				(SELECT pgp_sym_decrypt(cs.smtp_password, current_setting('app.comm_secret_key'))
 					FROM comm_secret cs WHERE cs.channel_card_id = ch.id AND cs.smtp_password IS NOT NULL),
@@ -392,7 +366,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			&r.replyID, &r.commID, &r.channelID, &r.projectID,
 			&r.to, &r.from, &r.subject, &r.body,
 			&r.threadID,
-			&r.smtpHost, &r.smtpPort, &r.smtpUser, &r.fromAddress,
+			&r.smtpHost, &r.smtpPort, &r.smtpUser, &r.fromAddress, &r.signature,
 			&r.smtpPass,
 		); err != nil {
 			return nil, err
@@ -472,7 +446,7 @@ func (s *SMTPSender) recordResult(ctx context.Context, r pendingReply, newStatus
 // the wire protocol) and emit a single Content-Type header for
 // plain-text UTF-8. Quoted-printable / multipart MIME is out of scope
 // for v1 (the spec calls out "plain text only").
-func buildMIME(from, to, subject, body, threadID string, atts []mimeAttachment) []byte {
+func buildMIME(from, to, subject, body, signature, threadID string, atts []mimeAttachment) []byte {
 	suffix := "[#" + threadID + "]"
 	subjectFinal := subject
 	switch {
@@ -489,6 +463,11 @@ func buildMIME(from, to, subject, body, threadID string, atts []mimeAttachment) 
 	bodyNorm := strings.TrimRight(body, "\r\n")
 	bodyNorm = strings.ReplaceAll(bodyNorm, "\r\n", "\n")
 	bodyNorm = strings.ReplaceAll(bodyNorm, "\n", "\r\n")
+	// Auto-sign with the channel name, before the machine Ref: trailer, so the
+	// recipient sees "…body…\n\n-<channel>". Skipped when unnamed.
+	if sig := strings.TrimSpace(signature); sig != "" {
+		bodyNorm += "\r\n\r\n-" + sig
+	}
 	bodyWithRef := bodyNorm + "\r\n\r\nRef: " + threadID + "\r\n"
 
 	// Common headers.
@@ -790,21 +769,39 @@ func ListChannelIDs(ctx context.Context, pool *store.Pool) ([]int64, error) {
 	return out, rows.Err()
 }
 
-// StartSMTPSenderPool spawns one SMTPSender per existing
-// comm_channel card. Returns every sender so the caller can collect
-// them for shutdown. Errors loading the channel list are returned
-// directly; per-channel goroutines never fail-fast (they log errors
-// and retry on the next tick).
-func StartSMTPSenderPool(ctx context.Context, pool *store.Pool, tick time.Duration, logger *slog.Logger) ([]*SMTPSender, error) {
-	ids, err := ListChannelIDs(ctx, pool)
+// SMTPPool drives outbound sending for every comm_channel from a single
+// scheduler job. Each RunOnce reconciles one [SMTPSender] per live channel
+// and ticks each one. Construct with [NewSMTPPool] and call RunOnce from
+// the `comm.smtp_send` job (see cmd/kitpd/main.go).
+type SMTPPool struct {
+	pool *store.Pool
+	wp   *job.WorkerPool[int64, *SMTPSender]
+}
+
+// NewSMTPPool builds the pool. tick is the per-sender cadence hint (the
+// real cadence is the owning job's Interval); logger is threaded to each
+// sender.
+func NewSMTPPool(pool *store.Pool, tick time.Duration, logger *slog.Logger) *SMTPPool {
+	m := &SMTPPool{pool: pool}
+	m.wp = job.NewWorkerPool[int64, *SMTPSender](
+		func(id int64) *SMTPSender {
+			s := newSMTPSender(pool, id, tick)
+			s.SetLogger(logger)
+			return s
+		},
+		// Discard the per-channel error: TickOnce already logged it, and
+		// one bad channel must not flip the whole send job red.
+		func(ctx context.Context, s *SMTPSender) error { _ = s.TickOnce(ctx); return nil },
+	)
+	return m
+}
+
+// RunOnce is the `comm.smtp_send` job body: list every channel and sweep
+// its sender. Returns only a channel-enumeration error.
+func (m *SMTPPool) RunOnce(ctx context.Context) error {
+	ids, err := ListChannelIDs(ctx, m.pool)
 	if err != nil {
-		return nil, fmt.Errorf("smtp sender pool: %w", err)
+		return fmt.Errorf("smtp send: list channels: %w", err)
 	}
-	out := make([]*SMTPSender, 0, len(ids))
-	for _, id := range ids {
-		s := StartSMTPSender(pool, id, tick)
-		s.SetLogger(logger)
-		out = append(out, s)
-	}
-	return out, nil
+	return m.wp.Sweep(ctx, ids)
 }
