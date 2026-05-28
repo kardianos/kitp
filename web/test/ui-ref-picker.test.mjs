@@ -170,6 +170,26 @@ test('single: trigger falls back to #<id> when no label is known', () => {
   rp.destroy();
 });
 
+test('single: pinnedOptions surface a quick-pick atop the search results, selectable', async () => {
+  const api = stubApi();
+  let picked = 'unset';
+  const rp = mountRefPicker(
+    { cardType: 'person', pinnedOptions: [{ value: 108n, label: 'Self' }], onChange: (v) => (picked = v) },
+    api,
+  );
+  rp.combo.openMenu();
+  await flushMicrotasks();
+  // "Self" shows before any card.search row is delivered.
+  assert.equal(options()[0].textContent, 'Self', 'pinned Self is first');
+  api.calls[0].onOk({ rows: [{ id: 11n, title: 'Alice' }] });
+  assert.deepEqual(options().map((li) => li.textContent), ['Self', 'Alice'], 'pinned then searched rows');
+
+  options()[0].click(); // pick Self
+  assert.equal(picked, 108n, 'onChange emits the pinned person card id');
+  assert.equal(rp.el.querySelector('.kf-combobox__label').textContent, 'Self', 'trigger relabels to the seeded pinned label');
+  rp.destroy();
+});
+
 test('single: parentScopePath threads parentCardId into the search', async () => {
   const api = stubApi();
   const ctx = {

@@ -46,7 +46,7 @@ import { registerInboxViewToggles } from './inbox/inbox-view-toggles.js';
 import { registerInboxSpecs } from './inbox/specs.js';
 import { registerScreenFilterBar } from './shell/screen-filter-bar.js';
 import { registerScreenHost } from './shell/screen-host.js';
-import { registerAppShell, shellHotkeys, type AppShell } from './shell/app-shell.js';
+import { registerAppShell, shellHotkeys, applyStoredTheme, type AppShell } from './shell/app-shell.js';
 import { installRouter, peekRoute, helpTopicForRoute } from './shell/router.js';
 import { registerHelpOverlay, type HotkeySnapshot } from './shell/help-overlay.js';
 import { registerHelpSpecs } from './shell/help-specs.js';
@@ -83,23 +83,23 @@ import { registerAttachmentsSection } from './task-detail/attachments-section.js
 import { registerTagsEditor } from './task-detail/tags-editor.js';
 import { registerRelatedTasksPanel } from './task-detail/related-tasks-panel.js';
 import { registerQuickEntry } from './quick-entry/quick-entry.js';
+import { registerNewTaskButton } from './quick-entry/new-task-button.js';
 import { registerImportWizard } from './import/import-wizard.js';
 import { registerImportSpecs } from './import/specs.js';
 import { registerExportMenu } from './export/export-menu.js';
 import { registerActivity } from './activity/activity.js';
+import { registerAccountPage } from './shell/account-page.js';
 
 /** Rail-link labels for each admin view key (the rail is derived from these). */
 const ADMIN_LINK_LABELS: Record<AdminView, string> = {
   people: 'People',
-  projects: 'Projects',
+  agents: 'Agents',
   screens: 'Screens',
-  filters: 'Named Filters',
   attributes: 'Attributes',
   enums: 'Values',
   workflows: 'Workflows',
   roles: 'Roles',
   oidc_claims: 'OIDC Claims',
-  agents: 'Agents',
   comm_channels: 'Comm Channels',
   activity_sinks: 'Activity Sinks',
   comm_log: 'Comm Log',
@@ -128,6 +128,10 @@ const DEV_LOGIN_PATH = '/api/v1/auth/dev-login';
 const AUTH_RECOVERY_KEY = 'kitp.devLoginTried';
 
 function boot(): void {
+  // Restore the user's saved theme before anything mounts, so a dark-mode user
+  // doesn't load into the light default (CSP forbids a pre-paint inline script).
+  applyStoredTheme();
+
   const transport: Transport = USE_REAL_BACKEND ? fetchTransport('') : mockTransport();
   const dispatcher = new Dispatcher({ transport });
   const api = new Api(dispatcher);
@@ -345,6 +349,9 @@ function boot(): void {
   // task" affordances raise that intent. Reuses card.insert / tag.apply /
   // attachment.create / card.delete (all registered above) — no new specs.
   registerQuickEntry();
+  // The visible "+ New" button on the Grid + List filter bars (raises the same
+  // quickCreateOpen intent as the `n` hotkey, mounted via viewActionsForLayout).
+  registerNewTaskButton();
   // The #41 CSV import wizard. The AppShell mounts ONE instance and wires the
   // `projectImport` intent to open() (raised by the Project detail's Import hook
   // with `{ projectId }`); on a successful commit it raises `projectImportDone`,
@@ -362,6 +369,8 @@ function boot(): void {
   // activity feed, reusing the task-detail row phrasing + card_ref label
   // resolution. The rail "Activity" link / `g a` chord navigates here.
   registerActivity();
+  // The read-only Account profile (rail user-menu → Account, route /account).
+  registerAccountPage();
 
   // ---- Shared project scope ----
   // The Kanban's `{ from: 'scope.projectId' }` reads this object (peek at fire
@@ -444,7 +453,18 @@ function boot(): void {
     // the live route (task_detail / admin.<key> / layout.<layout>). The task +
     // project routes used to fall through to null — so the task detail showed
     // keybindings with NO authored prose even though `task_detail` help exists.
-    helpTopic: (): string | null => helpTopicForRoute(peekRoute(tree)),
+    helpTopic: (): string | null => {
+      // screen / project routes: the topic is `layout.<layout>`, where the
+      // layout is resolved from the active screen's card (no slug→layout map).
+      // The ScreenHost publishes it to `screen.layout`; read it here so a custom
+      // screen gets its layout's help too. Other routes use the static mapping.
+      const route = peekRoute(tree);
+      if (route.name === 'screen' || route.name === 'project') {
+        const layout = tree.at(['screen', 'layout']).peek<string>() ?? '';
+        return layout !== '' && layout !== 'unknown' ? `layout.${layout}` : null;
+      }
+      return helpTopicForRoute(route);
+    },
     // The global quick-entry overlay. The AppShell mounts it once + wires the
     // `quickCreateOpen` intent; its static query loads the in-scope project's
     // status cards (with phase) so the default-create-status chain resolves a
@@ -616,14 +636,6 @@ function boot(): void {
       // no store → nothing to clear.
     }
   }
-
-  // eslint-disable-next-line no-console
-  console.info(
-    'kitp web booted: History-API router → AppShell outlet. The route is the ' +
-      'source of truth (deep-links, back/forward); `/project/:id/screen/:slug` ' +
-      'drives the ScreenHost layout. Drag a card between columns for an ' +
-      'optimistic move.',
-  );
 }
 
 function describeFault(f: ApiFault): string {

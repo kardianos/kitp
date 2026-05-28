@@ -44,6 +44,14 @@ export interface AuthUser {
   isAdmin: boolean;
   isAgent: boolean;
   parentUserId: bigint | null;
+  /**
+   * Card id of the person row linked to this user (via user_account_person),
+   * or null for a login-only account with no person card. Distinct from
+   * {@link userId}: assignee/originator are card_ref → person CARD ids, so the
+   * "Self" quick-pick resolves to THIS, not userId. (They coincide only in the
+   * demo fixture where person card ids were seeded to match user ids.)
+   */
+  personCardId: bigint | null;
 }
 
 /** The wire shape of `GET /api/v1/auth/me` (ids are JSON strings). */
@@ -55,6 +63,7 @@ interface MeWire {
   is_admin?: boolean;
   is_agent?: boolean;
   parent_user_id?: string;
+  person_card_id?: string;
 }
 
 /**
@@ -123,6 +132,7 @@ export function authUserFromWire(body: unknown): AuthUser {
     isAdmin: j.is_admin === true,
     isAgent: j.is_agent === true,
     parentUserId: parseId(j.parent_user_id),
+    personCardId: parseId(j.person_card_id),
   };
 }
 
@@ -205,6 +215,7 @@ function unresolvedUser(): AuthUser {
     isAdmin: false,
     isAgent: false,
     parentUserId: null,
+    personCardId: null,
   };
 }
 
@@ -251,4 +262,17 @@ export function currentUserId(tree: TreeNode): bigint | null {
 /** Non-reactive: the signed-in user's id, or null when unresolved. */
 export function peekCurrentUserId(tree: TreeNode): bigint | null {
   return peekAuthUser(tree).userId;
+}
+
+/**
+ * Reactive: the signed-in user's PERSON card id (for "Self" person-ref picks),
+ * or null when the account has no linked person / is unresolved.
+ */
+export function currentPersonId(tree: TreeNode): bigint | null {
+  return authUser(tree).personCardId;
+}
+
+/** Non-reactive: the signed-in user's person card id, or null. */
+export function peekCurrentPersonId(tree: TreeNode): bigint | null {
+  return peekAuthUser(tree).personCardId;
 }

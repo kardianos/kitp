@@ -57,6 +57,10 @@ export interface ActivitySelectInput {
   limit?: number;
   /** Cursor: only return rows with id < this (older page). */
   beforeActivityId?: bigint;
+  /** Inclusive lower bound on created_at, ISO date `YYYY-MM-DD`. */
+  fromDate?: string;
+  /** Inclusive upper bound on created_at, ISO date `YYYY-MM-DD`. */
+  toDate?: string;
 }
 
 /** One activity row in the web model (decoded from the wire). */
@@ -157,6 +161,8 @@ export function registerCommentSpecs(api: Api): void {
         if (i.projectId !== undefined) m['project_id'] = i.projectId;
         if (i.limit !== undefined) m['limit'] = i.limit;
         if (i.beforeActivityId !== undefined) m['before_activity_id'] = i.beforeActivityId;
+        if (i.fromDate !== undefined && i.fromDate !== '') m['from_date'] = i.fromDate;
+        if (i.toDate !== undefined && i.toDate !== '') m['to_date'] = i.toDate;
         return m;
       },
       decode: (raw): ActivitySelectOutput => ({

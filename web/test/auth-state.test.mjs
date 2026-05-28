@@ -132,7 +132,26 @@ test('authUserFromWire: tolerates a missing / partial body', () => {
   assert.equal(empty.userId, null);
   assert.deepEqual(empty.roles, []);
   assert.equal(empty.isAdmin, false);
+  assert.equal(empty.personCardId, null, 'no person link → null');
   const partial = M.authUserFromWire({ user_id: '7', is_admin: true });
   assert.equal(partial.userId, 7n);
   assert.equal(partial.isAdmin, true);
+});
+
+test('authUserFromWire: person_card_id revives to a bigint distinct from user_id', () => {
+  const tree = newTree();
+  M.loadAuthUser(tree, {
+    probe: stubProbe(200, {
+      authenticated: true,
+      user_id: '42',
+      display_name: 'Ada',
+      person_card_id: '108', // distinct id space from user_id
+    }),
+  });
+  const u = tree.at([...M.AUTH_USER_PATH]).peek();
+  assert.equal(u.personCardId, 108n, 'person card id revived to bigint');
+  assert.equal(u.userId, 42n, 'user id stays separate');
+  // The helpers read the same leaf.
+  assert.equal(M.authPeekCurrentPersonId(tree), 108n);
+  assert.equal(M.authPeekCurrentUserId(tree), 42n);
 });

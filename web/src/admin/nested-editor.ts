@@ -48,6 +48,8 @@ import type {
   UserTokenRow,
   RoleMappingRow,
   RoleRow,
+  FlowRow,
+  FlowListOutput,
 } from './specs.js';
 import {
   type ActivityLeafOp,
@@ -70,9 +72,6 @@ export type NestedEditorKind =
   | 'flowSteps'
   | 'edgeMatrix'
   | 'screenFilters'
-  // The advanced visual builder for the PARENT MasterDetail's selected filter
-  // card — edits its predicate + group + sort (Named Filters admin screen).
-  | 'filterPredicate'
   | 'commChannelConfig'
   | 'activitySinkConfig'
   | 'agentTokens'
@@ -386,13 +385,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   /** Monotonic load gate so a stale async delivery resolves to a no-op. */
   private loadSeq = 0;
 
-  /** filterPredicate: the mounted PredicateFilter child + the filter id it
-   *  edits. Held so a re-render on a SELECTION change re-mounts it, but a
-   *  re-render from any OTHER leaf (e.g. an items patch on save) leaves the
-   *  in-progress edit untouched. */
-  private predChild: Control | null = null;
-  private mountedFilterId: string | null = null;
-
   /** flowSteps drag-reorder (shared DnD kit): the dragged step id + its
    *  from_card_id (drag is constrained WITHIN a from-group). One placeholder per
    *  from-group, recreated each renderFlowSteps. */
@@ -447,8 +439,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         this.renderChannelConfig(item);
       } else if (this.config.kind === 'activitySinkConfig') {
         this.renderSinkConfig(item);
-      } else if (this.config.kind === 'filterPredicate') {
-        this.renderFilterPredicate(item);
       } else {
         this.renderEditor(item);
       }
@@ -484,12 +474,17 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       case 'screenFilters':
         this.ctx.tree.at(this.p('filters')).get();
         this.ctx.tree.at(this.p('editingId')).get();
+        this.ctx.tree.at(this.p('flows')).get(); // workflow (#27) options
         break;
+      // commChannelConfig / activitySinkConfig do NOT subscribe to `draft`:
+      // every keystroke writes the draft (per-field update), and subscribing
+      // would re-render the whole form on each letter — replacing the live
+      // `<input>` element and losing focus mid-word. Structural draft writes
+      // (hydrate on selection change, "+ New" click, save reset) call the
+      // render method explicitly instead. See renderChannelConfig /
+      // renderSinkConfig + hydrate{Channel,Sink}Draft + save{Channel,Sink}.
       case 'commChannelConfig':
-        this.ctx.tree.at(this.p('draft')).get();
-        break;
       case 'activitySinkConfig':
-        this.ctx.tree.at(this.p('draft')).get();
         break;
       case 'agentTokens':
         this.ctx.tree.at(this.p('tokens')).get();
@@ -593,6 +588,17 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       (out) => {
         if (!this.isAlive() || seq !== this.loadSeq) return;
         this.ctx.tree.at(this.p('filters')).set((out as { rows: Array<Record<string, unknown>> }).rows ?? []);
+      },
+      { alive: () => this.isAlive() },
+    );
+    // Workflow options (#27): the flows the screen's flow_ref can point at. Loaded
+    // once; the renderer filters to the active project's flows by scope_card_id.
+    this.ctx.api.callByName(
+      'flow.list',
+      {},
+      (out) => {
+        if (!this.isAlive()) return;
+        this.ctx.tree.at(this.p('flows')).set((out as FlowListOutput).rows ?? []);
       },
       { alive: () => this.isAlive() },
     );
@@ -1338,6 +1344,9 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   private renderScreenFilters(screen: MasterDetailItem): void {
     const frag = document.createDocumentFragment();
 
+    // Workflow (flow_ref) + base phase (toggle_groups) editors (#27).
+    frag.append(this.buildScreenWorkflowPhase(screen));
+
     const heading = document.createElement('div');
     heading.className = 'nested-editor__heading';
     const title = document.createElement('h3');
@@ -1373,6 +1382,117 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     frag.append(list);
 
     this.el.replaceChildren(frag);
+  }
+
+  /**
+   * Workflow (flow_ref) + base-phase (toggle_groups) editors for a screen (#27).
+   * Workflow is a select over the active project's flows (a flow id; '' = the
+   * project default). Base phase is a single select that rewrites the screen's
+   * `toggle_groups` so the chosen phase is the default-on one (drives the phase
+   * toggles + the #24 default-create-status base).
+   */
+  private buildScreenWorkflowPhase(screen: MasterDetailItem): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'nested-editor__screen-config';
+    wrap.dataset.neScreenConfig = '';
+
+    const heading = document.createElement('h3');
+    heading.className = 'nested-editor__title';
+    heading.textContent = 'Workflow & phase';
+    wrap.append(heading);
+
+    // Workflow (flow_ref) — the screen's flows are those scoped to its project.
+    const projectId = fieldText(screen.raw, 'parent_card_id');
+    const flows = (this.ctx.tree.at(this.p('flows')).peek<FlowRow[]>() ?? []) as FlowRow[];
+    const projectFlows = flows.filter((f) => (f.scope_card_id ?? '') === projectId);
+    const curFlow = fieldText(screen.raw, 'attributes.flow_ref');
+
+    const flowRow = document.createElement('label');
+    flowRow.className = 'nested-editor__config-row';
+    const flowLabel = document.createElement('span');
+    flowLabel.className = 'nested-editor__config-label';
+    flowLabel.textContent = 'Workflow';
+    const flowSel = document.createElement('select');
+    flowSel.className = 'nested-editor__config-select';
+    flowSel.dataset.neScreenFlow = '';
+    const flowNone = document.createElement('option');
+    flowNone.value = '';
+    flowNone.textContent = 'Project default';
+    flowSel.append(flowNone);
+    for (const f of projectFlows) {
+      const o = document.createElement('option');
+      o.value = f.id;
+      o.textContent = f.name;
+      flowSel.append(o);
+    }
+    flowSel.value = projectFlows.some((f) => f.id === curFlow) ? curFlow : '';
+    this.listen(flowSel, 'change', () => this.setScreenFlow(screen.id, flowSel.value));
+    flowRow.append(flowLabel, flowSel);
+    wrap.append(flowRow);
+
+    // Base phase (toggle_groups phase_scope default_on).
+    const phaseRow = document.createElement('label');
+    phaseRow.className = 'nested-editor__config-row';
+    const phaseLabel = document.createElement('span');
+    phaseLabel.className = 'nested-editor__config-label';
+    phaseLabel.textContent = 'Base phase';
+    const phaseSel = document.createElement('select');
+    phaseSel.className = 'nested-editor__config-select';
+    phaseSel.dataset.neScreenBasePhase = '';
+    for (const opt of BASE_PHASE_OPTIONS) {
+      const o = document.createElement('option');
+      o.value = opt.value;
+      o.textContent = opt.label;
+      phaseSel.append(o);
+    }
+    phaseSel.value = currentBasePhase(fieldText(screen.raw, 'attributes.toggle_groups'));
+    this.listen(phaseSel, 'change', () => this.setScreenBasePhase(screen.id, phaseSel.value));
+    phaseRow.append(phaseLabel, phaseSel);
+    wrap.append(phaseRow);
+
+    return wrap;
+  }
+
+  /** Set the screen's workflow override (flow_ref). '' → 0 = use project default. */
+  private setScreenFlow(screenId: string, flowId: string): void {
+    this.clearFault();
+    this.patchScreenAttr(screenId, 'flow_ref', flowId);
+    this.ctx.api.callByName(
+      'attribute.update',
+      { cardId: screenId, attributeName: 'flow_ref', value: flowId === '' ? 0 : Number(flowId) },
+      () => { if (this.isAlive()) this.reload(); },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /** Set the screen's base phase by rewriting its toggle_groups phase_scope. */
+  private setScreenBasePhase(screenId: string, phase: string): void {
+    this.clearFault();
+    const items = (this.ctx.tree.at(this.itemsPath).peek<MasterDetailItem[]>() ?? []) as MasterDetailItem[];
+    const screen = items.find((it) => it.id === screenId) ?? null;
+    const cur = screen === null ? '' : fieldText(screen.raw, 'attributes.toggle_groups');
+    const next = withBasePhase(cur, phase);
+    this.patchScreenAttr(screenId, 'toggle_groups', next);
+    this.ctx.api.callByName(
+      'attribute.update',
+      { cardId: screenId, attributeName: 'toggle_groups', value: next },
+      () => { if (this.isAlive()) this.reload(); },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /** Optimistically patch one attribute on the parent screen item (the radio /
+   *  selects reflect it immediately; the reload reconciles to server truth). */
+  private patchScreenAttr(screenId: string, attr: string, value: string): void {
+    const node = this.ctx.tree.at(this.itemsPath);
+    const rows = (node.peek<MasterDetailItem[]>() ?? []) as MasterDetailItem[];
+    node.set(
+      rows.map((it) => {
+        if (it.id !== screenId) return it;
+        const attrs = { ...((it.raw['attributes'] as Record<string, unknown> | undefined) ?? {}), [attr]: value };
+        return { id: it.id, raw: { ...it.raw, attributes: attrs } };
+      }),
+    );
   }
 
   private buildFilterRow(screenId: string, f: Record<string, unknown>, defaultFilter: string): HTMLElement {
@@ -1555,152 +1675,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     );
   }
 
-  /* ----------------------- filterPredicate editor ----------------------- */
-
-  /**
-   * The Named Filters detail's advanced builder: edit the SELECTED filter card's
-   * predicate + group + sort with the same {@link PredicateFilter} the screen
-   * filter editor uses. Re-mounts only when the SELECTED filter changes (guarded
-   * on `mountedFilterId`), so an items patch on save — or any other re-render —
-   * never clobbers an in-progress edit.
-   */
-  private renderFilterPredicate(item: MasterDetailItem | null): void {
-    const id = item?.id ?? null;
-    // Already showing THIS filter's builder → leave it (and any in-progress
-    // edit) alone. Only short-circuits a live, non-null selection; null and
-    // selection changes fall through to (re)render.
-    if (id !== null && id === this.mountedFilterId && this.predChild !== null) return;
-
-    // Selection changed: tear down the previous builder before re-mounting.
-    if (this.predChild !== null) {
-      this.destroyChild(this.predChild);
-      this.predChild = null;
-    }
-    this.mountedFilterId = id;
-
-    if (item === null) {
-      const note = document.createElement('div');
-      note.className = 'muted';
-      note.dataset.neFilterPredicateEmpty = '';
-      note.textContent = 'Select a filter to edit its definition.';
-      this.el.replaceChildren(note);
-      return;
-    }
-
-    const fid = item.id; // non-null past the guard above
-    const frag = document.createDocumentFragment();
-    const heading = document.createElement('h3');
-    heading.className = 'nested-editor__title';
-    heading.textContent = 'Filter definition';
-    frag.append(heading);
-
-    // Seed the builder leaves from the filter card's stored attributes (the
-    // `{ where?, tree? }` predicate JSON + group_by_attr + sort).
-    const predPath = this.p(`predicate.${fid}`);
-    this.ctx.tree.at(predPath).set(fromFilterJson(fieldText(item.raw, 'attributes.predicate')));
-    const groupPath = this.p(`group.${fid}`);
-    this.ctx.tree.at(groupPath).set(fieldText(item.raw, 'attributes.group_by_attr'));
-    const sortPath = this.p(`sort.${fid}`);
-    let sortSeed: unknown = null;
-    const sortRaw = fieldText(item.raw, 'attributes.sort');
-    if (sortRaw !== '') {
-      try {
-        const a: unknown = JSON.parse(sortRaw);
-        if (Array.isArray(a)) sortSeed = a;
-      } catch {
-        // malformed sort → start empty.
-      }
-    }
-    this.ctx.tree.at(sortPath).set(sortSeed);
-
-    const slot = document.createElement('div');
-    slot.className = 'nested-editor__predicate';
-    slot.dataset.nePredicate = fid;
-    frag.append(slot);
-
-    const save = document.createElement('button');
-    save.type = 'button';
-    save.className = 'btn btn-primary nested-editor__predicate-save';
-    save.dataset.nePredicateSave = fid;
-    save.textContent = 'Save view';
-    this.listen(save, 'click', () => {
-      const predicate = this.ctx.tree.at(predPath).peek<Predicate | null>() ?? null;
-      const json = predicate === null ? '' : JSON.stringify(toFilterJson(predicate));
-      const group = this.ctx.tree.at(groupPath).peek<string>() ?? '';
-      const sortVal = this.ctx.tree.at(sortPath).peek<unknown>();
-      const sortStr = Array.isArray(sortVal) && sortVal.length > 0 ? JSON.stringify(sortVal) : '';
-      this.commitFilterCard(fid, { predicate: json, group_by_attr: group, sort: sortStr });
-    });
-    frag.append(save);
-
-    // Optional raw-predicate peek (debugging) under Save view: a collapsed
-    // disclosure showing the current predicate JSON, refreshed when expanded
-    // (so it reflects in-progress edits without a tracked effect).
-    const raw = document.createElement('details');
-    raw.className = 'nested-editor__predicate-raw';
-    const sum = document.createElement('summary');
-    sum.className = 'muted nested-editor__predicate-raw-summary';
-    sum.textContent = 'Raw predicate (debug)';
-    const pre = document.createElement('pre');
-    pre.className = 'nested-editor__predicate-raw-json';
-    pre.dataset.nePredicateRaw = '';
-    const refreshRaw = (): void => {
-      const p = this.ctx.tree.at(predPath).peek<Predicate | null>() ?? null;
-      pre.textContent = p === null ? '(no predicate)' : JSON.stringify(toFilterJson(p), null, 2);
-    };
-    this.listen(raw, 'toggle', () => {
-      if (raw.open) refreshRaw();
-    });
-    refreshRaw();
-    raw.append(sum, pre);
-    frag.append(raw);
-
-    this.el.replaceChildren(frag);
-
-    // Mount the builder AFTER the slot is in the live tree.
-    this.predChild = this.spawn(
-      'PredicateFilter',
-      {
-        type: 'PredicateFilter',
-        valuePath: predPath.join('.'),
-        // Filter predicates target task cards (what the filters apply to).
-        schema: { cardType: 'task' },
-        // Universal view builder: also edit Group by + Sort by here.
-        groupPath: groupPath.join('.'),
-        sortPath: sortPath.join('.'),
-      },
-      slot,
-    );
-  }
-
-  /**
-   * Commit the filter card's view definition: one attribute.update per changed
-   * attribute (coalesced into one batch) + an OPTIMISTIC patch of the parent
-   * `items` leaf so the list row (group badge) + a later reselect reflect the
-   * new values without a reload.
-   */
-  private commitFilterCard(filterId: string, attrs: Record<string, string>): void {
-    this.clearFault();
-    // Optimistically patch the parent item so reseeding shows the saved values.
-    const node = this.ctx.tree.at(this.itemsPath);
-    const rows = (node.peek<MasterDetailItem[]>() ?? []) as MasterDetailItem[];
-    node.set(
-      rows.map((it) => {
-        if (it.id !== filterId) return it;
-        const merged = { ...(it.raw['attributes'] as Record<string, unknown> | undefined ?? {}), ...attrs };
-        return { id: it.id, raw: { ...it.raw, attributes: merged } };
-      }),
-    );
-    for (const [attributeName, value] of Object.entries(attrs)) {
-      this.ctx.api.callByName(
-        'attribute.update',
-        { cardId: filterId, attributeName, value },
-        () => { /* optimistic patch already applied */ },
-        { alive: () => this.isAlive(), onErr: (f) => this.showFault(`attribute.update (${attributeName})`, f) },
-      );
-    }
-  }
-
   /* ----------------------- comm-channel config -------------------------- */
 
   /** Hydrate the channel draft from the selected row UNLESS one is already in
@@ -1711,6 +1685,10 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     const cur = node.peek<CommChannelDraft | null>() ?? null;
     if (cur !== null && cur.id === item.id) return; // keep the live edit
     node.set(channelRowToDraft(item.raw as unknown as CommChannelRow));
+    // Structural draft write (selection change): re-render explicitly since the
+    // render effect doesn't subscribe to `draft` (keeps the keystroke-cycle
+    // from re-rendering the form and stealing input focus).
+    this.renderChannelConfig(item);
   }
 
   private renderChannelConfig(item: MasterDetailItem | null): void {
@@ -1732,7 +1710,12 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     newBtn.className = 'btn nested-editor__config-new';
     newBtn.dataset.neChannelNew = '';
     newBtn.textContent = '+ New channel';
-    this.listen(newBtn, 'click', () => this.ctx.tree.at(this.p('draft')).set(emptyChannelDraft()));
+    // Structural draft write: clear to the empty draft + re-render the form
+    // (the render effect doesn't subscribe to `draft`; see subscribeLoadedLeaves).
+    this.listen(newBtn, 'click', () => {
+      this.ctx.tree.at(this.p('draft')).set(emptyChannelDraft());
+      this.renderChannelConfig(null);
+    });
     heading.append(newBtn);
     frag.append(heading);
 
@@ -1810,6 +1793,10 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         // Clear the draft + reload the parent list so the row reflects server
         // truth (and a fresh create surfaces with its server id).
         this.ctx.tree.at(this.p('draft')).set(null);
+        // Render-effect doesn't subscribe to `draft`; clear the form
+        // immediately so the user doesn't see the saved channel hanging
+        // around during the async list reload.
+        this.renderChannelConfig(null);
         this.reloadProjectScopedList('comm_channel.list');
       },
       { alive: () => this.isAlive(), onErr: (f) => this.showFault('comm_channel.set', f) },
@@ -1823,6 +1810,9 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     const cur = node.peek<ActivitySinkDraft | null>() ?? null;
     if (cur !== null && cur.id === item.id) return;
     node.set(sinkRowToDraft(item.raw as unknown as ActivitySinkRow));
+    // Structural draft write (selection change): re-render explicitly since the
+    // render effect doesn't subscribe to `draft` (focus-survival rule).
+    this.renderSinkConfig(item);
   }
 
   private renderSinkConfig(item: MasterDetailItem | null): void {
@@ -1842,7 +1832,10 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     newBtn.className = 'btn nested-editor__config-new';
     newBtn.dataset.neSinkNew = '';
     newBtn.textContent = '+ New sink';
-    this.listen(newBtn, 'click', () => this.ctx.tree.at(this.p('draft')).set(emptySinkDraft()));
+    this.listen(newBtn, 'click', () => {
+      this.ctx.tree.at(this.p('draft')).set(emptySinkDraft());
+      this.renderSinkConfig(null);
+    });
     heading.append(newBtn);
     frag.append(heading);
 
@@ -1876,7 +1869,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     frag.append(form);
 
     // The activity-filter editor (a predicate over single activity rows).
-    frag.append(this.buildActivityFilterEditor(draft, update));
+    frag.append(this.buildActivityFilterEditor(draft, update, item));
 
     const err = document.createElement('div');
     err.className = 'nested-editor__config-error';
@@ -1910,6 +1903,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   private buildActivityFilterEditor(
     draft: ActivitySinkDraft,
     update: (patch: Partial<ActivitySinkDraft>) => void,
+    item: MasterDetailItem | null,
   ): HTMLElement {
     const wrap = document.createElement('div');
     wrap.className = 'nested-editor__activity-filter';
@@ -1938,6 +1932,10 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       this.listen(conn, 'change', () => {
         const next = setConnective(activityPredicateFromString(draft.activityFilter), conn.value as 'and' | 'or');
         update({ activityFilter: activityPredicateToString(next) });
+        // Structural filter-tree change → re-render explicitly (the render
+        // effect doesn't track `draft`; keystroke updates skip re-render so
+        // text inputs keep focus, but the filter leaves list does need it).
+        this.renderSinkConfig(item);
       });
       wrap.append(conn);
     }
@@ -1968,6 +1966,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       this.listen(rm, 'click', () => {
         const next = removeLeafAt(activityPredicateFromString(draft.activityFilter), i);
         update({ activityFilter: activityPredicateToString(next) });
+        this.renderSinkConfig(item); // structural change — see connective handler above.
       });
       r.append(rm);
       list.append(r);
@@ -2010,6 +2009,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       if (values.length === 0) return;
       const next = appendLeaf(activityPredicateFromString(draft.activityFilter), { kind: 'leaf', op, values });
       update({ activityFilter: activityPredicateToString(next) });
+      this.renderSinkConfig(item); // structural change — see connective handler above.
     });
 
     addForm.append(opSel, valInput, addBtn, hint);
@@ -2030,6 +2030,8 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       () => {
         if (!this.isAlive()) return;
         this.ctx.tree.at(this.p('draft')).set(null);
+        // See saveChannel — render-effect doesn't subscribe to `draft`.
+        this.renderSinkConfig(null);
         this.reloadProjectScopedList('activity_sink.list');
       },
       { alive: () => this.isAlive(), onErr: (f) => this.showFault('activity_sink.set', f) },
@@ -2494,6 +2496,76 @@ function fieldLabel(control: HTMLElement, text: string, className: string, befor
   if (before) label.append(span, control);
   else label.append(control, span);
   return label;
+}
+
+/* ---- Screen base-phase (#27): toggle_groups phase_scope helpers ----------- */
+
+const BASE_PHASE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: '', label: 'All phases (no base)' },
+  { value: 'triage', label: 'Triage' },
+  { value: 'active', label: 'Active' },
+  { value: 'terminal', label: 'Closed' },
+];
+
+const PHASE_LABELS: Record<string, string> = { triage: 'Triage', active: 'Active', terminal: 'Closed' };
+
+function isObjVal(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object';
+}
+
+/** Parse a toggle_groups JSON string to an array of groups (never throws). */
+function parseGroups(json: string): unknown[] {
+  if (typeof json !== 'string' || json.trim() === '') return [];
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The base phase a toggle_groups JSON encodes: the phase_scope item whose
+ *  `default_on` is true. '' when there's no phase_scope group / none default-on. */
+function currentBasePhase(toggleGroupsJson: string): string {
+  const ps = parseGroups(toggleGroupsJson).find(
+    (g) => isObjVal(g) && (g as { name?: unknown }).name === 'phase_scope',
+  );
+  if (!isObjVal(ps)) return '';
+  const items = Array.isArray((ps as { items?: unknown }).items) ? (ps as { items: unknown[] }).items : [];
+  for (const it of items) {
+    if (isObjVal(it) && (it as { default_on?: unknown }).default_on === true) {
+      const pred = (it as { predicate?: { values?: unknown } }).predicate;
+      if (pred && Array.isArray(pred.values)) return String(pred.values[0] ?? '');
+      return String((it as { name?: unknown }).name ?? '');
+    }
+  }
+  return '';
+}
+
+/** Rewrite a toggle_groups JSON string so its phase_scope group's `default_on`
+ *  is set ONLY for `phase` (or drop the phase_scope group when phase is ''),
+ *  preserving every OTHER group (e.g. the Inbox's `mine_only` scope group). */
+function withBasePhase(toggleGroupsJson: string, phase: string): string {
+  const others = parseGroups(toggleGroupsJson).filter(
+    (g) => !(isObjVal(g) && (g as { name?: unknown }).name === 'phase_scope'),
+  );
+  const groups = phase === '' ? others : [buildPhaseScopeGroup(phase), ...others];
+  return JSON.stringify(groups);
+}
+
+function buildPhaseScopeGroup(basePhase: string): Record<string, unknown> {
+  const phases = ['triage', 'active', 'terminal'];
+  return {
+    name: 'phase_scope',
+    operator: 'or',
+    mode: 'multi',
+    items: phases.map((ph) => ({
+      name: ph,
+      label: PHASE_LABELS[ph] ?? ph,
+      predicate: { attr: 'status', op: 'has_phase', values: [ph] },
+      default_on: ph === basePhase,
+    })),
+  };
 }
 
 export function registerNestedEditor(): void {

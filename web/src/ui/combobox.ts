@@ -52,6 +52,15 @@ export interface ComboboxConfig<V = unknown> extends BaseControlConfig {
   value?: V | null;
   /** Static option list. Ignored when `loadOptions` is set (async is source of truth). */
   options?: ComboboxOption<V>[];
+  /**
+   * Always-available options pinned to the TOP of the list, shown in both
+   * static and async modes (e.g. a "Self" quick-pick). They are substring-
+   * filtered by the query like any option and deduped against the result list
+   * by value, so a pinned id that the loader also returns appears once. The
+   * control treats these generically — semantics (what "Self" means) live in
+   * the host that supplies them.
+   */
+  pinnedOptions?: ComboboxOption<V>[];
   /** Async option loader (callback-dispatcher form). When set, switches to async mode. */
   loadOptions?: ComboboxLoad<V>;
   /** Trigger placeholder when nothing is selected. */
@@ -76,6 +85,7 @@ const DEBOUNCE_MS = 180;
 export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
   private value: V | null = null;
   private staticOptions: ComboboxOption<V>[] = [];
+  private pinnedOptions: ComboboxOption<V>[] = [];
   private asyncOptions: ComboboxOption<V>[] = [];
   private filtered: ComboboxOption<V>[] = [];
   private query = '';
@@ -97,6 +107,7 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
     super(...args);
     this.value = this.config.value ?? null;
     this.staticOptions = this.config.options ?? [];
+    this.pinnedOptions = this.config.pinnedOptions ?? [];
     this.isAsync = typeof this.config.loadOptions === 'function';
   }
 
@@ -265,20 +276,35 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
   }
 
   private recomputeFiltered(): void {
-    if (this.isAsync) {
-      // Async: the loader is the single source of truth — no client narrowing.
-      this.filtered = this.asyncOptions;
-      return;
-    }
     const q = this.query.trim().toLowerCase();
-    this.filtered = q === ''
-      ? this.staticOptions
-      : this.staticOptions.filter((o) => o.label.toLowerCase().includes(q));
+    // Async: the loader is the single source of truth for the body — no client
+    // narrowing. Static: substring-filter locally.
+    const body = this.isAsync
+      ? this.asyncOptions
+      : q === ''
+        ? this.staticOptions
+        : this.staticOptions.filter((o) => o.label.toLowerCase().includes(q));
+    this.filtered = this.withPinned(body, q);
+  }
+
+  /**
+   * Prepend the query-matching pinned options to `body`, deduped against it by
+   * value (a pinned id the loader also returned shows once, in the body's
+   * position is dropped in favour of the pinned slot at top).
+   */
+  private withPinned(body: ComboboxOption<V>[], q: string): ComboboxOption<V>[] {
+    if (this.pinnedOptions.length === 0) return body;
+    const pinned = q === ''
+      ? this.pinnedOptions
+      : this.pinnedOptions.filter((o) => o.label.toLowerCase().includes(q));
+    if (pinned.length === 0) return body;
+    const pinnedValues = new Set(pinned.map((o) => o.value));
+    return [...pinned, ...body.filter((o) => !pinnedValues.has(o.value))];
   }
 
   /** Resolve a label for `value` from whichever option list knows it. */
   private labelFor(value: V): string | null {
-    const all = [...this.staticOptions, ...this.asyncOptions];
+    const all = [...this.pinnedOptions, ...this.staticOptions, ...this.asyncOptions];
     const hit = all.find((o) => o.value === value);
     return hit ? hit.label : null;
   }
@@ -297,7 +323,13 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
 
   private renderList(state: 'ready' | 'loading' = 'ready'): void {
     this.listEl.replaceChildren();
+    // While the async body loads, still surface the pinned quick-picks (e.g.
+    // "Self") at the top so they're available immediately, with a Loading row
+    // beneath. `filtered` is set to the pinned-only list so keyboard nav +
+    // Enter stay consistent with what's painted.
     if (state === 'loading') {
+      this.filtered = this.withPinned([], this.query.trim().toLowerCase());
+      this.filtered.forEach((opt, i) => this.appendOption(opt, i));
       const li = document.createElement('li');
       li.className = 'kf-combobox__empty';
       li.textContent = 'Loading…';
@@ -311,27 +343,30 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
       this.listEl.appendChild(li);
       return;
     }
-    this.filtered.forEach((opt, i) => {
-      const li = document.createElement('li');
-      li.className = 'kf-combobox__option';
-      li.setAttribute('role', 'option');
-      li.dataset.cbOption = String(i);
-      const selected = this.value !== null && opt.value === this.value;
-      li.setAttribute('aria-selected', selected ? 'true' : 'false');
-      if (selected) li.classList.add('kf-combobox__option--selected');
-      if (opt.disabled) {
-        li.classList.add('kf-combobox__option--disabled');
-        li.setAttribute('aria-disabled', 'true');
-      }
-      if (i === this.highlightIdx) li.classList.add('kf-combobox__option--active');
-      li.textContent = opt.label;
-      this.listen(li, 'pointerenter', () => {
-        this.highlightIdx = i;
-        this.paintActive();
-      });
-      this.listen(li, 'click', () => this.selectOption(opt));
-      this.listEl.appendChild(li);
+    this.filtered.forEach((opt, i) => this.appendOption(opt, i));
+  }
+
+  /** Render one option <li> at index `i` into the list. */
+  private appendOption(opt: ComboboxOption<V>, i: number): void {
+    const li = document.createElement('li');
+    li.className = 'kf-combobox__option';
+    li.setAttribute('role', 'option');
+    li.dataset.cbOption = String(i);
+    const selected = this.value !== null && opt.value === this.value;
+    li.setAttribute('aria-selected', selected ? 'true' : 'false');
+    if (selected) li.classList.add('kf-combobox__option--selected');
+    if (opt.disabled) {
+      li.classList.add('kf-combobox__option--disabled');
+      li.setAttribute('aria-disabled', 'true');
+    }
+    if (i === this.highlightIdx) li.classList.add('kf-combobox__option--active');
+    li.textContent = opt.label;
+    this.listen(li, 'pointerenter', () => {
+      this.highlightIdx = i;
+      this.paintActive();
     });
+    this.listen(li, 'click', () => this.selectOption(opt));
+    this.listEl.appendChild(li);
   }
 
   /** Cheap highlight-only repaint (no full rebuild) on arrow / hover move. */

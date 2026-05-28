@@ -224,6 +224,36 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 			  AND av.value #>> '{}' >= to_char(now()::date, 'YYYY-MM-DD')
 			  AND av.value #>> '{}' <= to_char((now() + %s * interval '1 day')::date, 'YYYY-MM-DD')
 		)`, addArg(n.Attr), addArg(days)), nil
+	case "within_last_days":
+		// Relative-date op, PAST window (mirror of within_days). N from
+		// values[0], non-negative. Two targets: the top-level card
+		// timestamps last_activity_at (via a MAX(activity) subquery — no
+		// `la` join needed, so it compiles in any `FROM card c` context
+		// incl. project export) / created_at (the card column), compared
+		// `>= now() - N days`; or a date attribute in [today-N, today].
+		days, derr := withinDaysValue(n.Values)
+		if derr != nil {
+			return "", derr
+		}
+		switch n.Attr {
+		case "last_activity_at":
+			return fmt.Sprintf(
+				`(SELECT MAX(a.created_at) FROM activity a WHERE a.card_id = c.id) >= now() - %s * interval '1 day'`,
+				addArg(days)), nil
+		case "created_at":
+			return fmt.Sprintf(`c.created_at >= now() - %s * interval '1 day'`, addArg(days)), nil
+		default:
+			return fmt.Sprintf(`EXISTS (
+				SELECT 1
+				FROM attribute_value av
+				JOIN attribute_def ad ON ad.id = av.attribute_def_id
+				WHERE av.card_id = c.id
+				  AND ad.name = %s
+				  AND av.value #>> '{}' <> ''
+				  AND av.value #>> '{}' >= to_char((now() - %s * interval '1 day')::date, 'YYYY-MM-DD')
+				  AND av.value #>> '{}' <= to_char(now()::date, 'YYYY-MM-DD')
+			)`, addArg(n.Attr), addArg(days)), nil
+		}
 	case "=", "eq":
 		val := CanonicalizeFilterValue(n.Attr, snap, singleValue(n.Values))
 		return fmt.Sprintf(`EXISTS (

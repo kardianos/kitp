@@ -53,6 +53,8 @@ import {
   resolveDefaultCreateStatus,
   type FlowRow,
 } from './default-status.js';
+import type { PhaseToggle } from '../filter/screen-resolve.js';
+import type { Phase } from '../filter/predicate.js';
 import {
   resolveParentForInsert,
   submitQuickEntry,
@@ -91,6 +93,12 @@ export interface QuickEntryConfig extends BaseControlConfig {
    * default (step 2). Optional.
    */
   flowPath?: string;
+  /**
+   * Tree path the active screen's phase toggles live at ({@link PhaseToggle}[])
+   * for the base-phase default (step 3). Default 'screen.phaseToggles' — the
+   * leaf the ScreenHost seeds for the active screen.
+   */
+  phaseTogglesPath?: string;
   /** The card_type the assignee RefPicker searches. Default 'user'. */
   assigneeCardType?: string;
   /** The card_type the tags RefPicker searches. Default 'tag'. */
@@ -140,6 +148,8 @@ const WELL_KNOWN_ATTRS = new Set<string>(['title', 'description', 'tags', 'assig
 
 /** Default tree path the status-candidate cards land at (the chain's fallback). */
 const DEFAULT_CANDIDATE_STATUSES_PATH = 'quickEntry.candidateStatuses';
+/** Default tree path the active screen's phase toggles land at (base-phase step). */
+const DEFAULT_PHASE_TOGGLES_PATH = 'screen.phaseToggles';
 
 export class QuickEntry extends Control<QuickEntryConfig> {
   /**
@@ -947,13 +957,19 @@ export class QuickEntry extends Control<QuickEntryConfig> {
       const candidates = this.peekCandidateStatuses();
       const screenCard = this.peekScreenCard();
       const flow = this.peekFlow();
+      const basePhase = this.peekBasePhase();
+      // A "+ New sub-task" raise carries parent_relationship='subtask'; such a
+      // task defaults to the first ACTIVE status (step 0), not the screen base.
+      const subtask = (effectivePrefill.extraAttributes ?? []).some(
+        (a) => a.name === 'parent_relationship' && a.value === 'subtask',
+      );
       // Run the chain when there's something to resolve from: a screen / flow
       // override, or loaded candidate statuses. With none, skip it and let the
       // server's required-edge check surface a missing status (avoids a
       // premature "no valid starting status" error on an unseeded project).
       const hasSource = screenCard !== null || flow !== null || candidates.length > 0;
       if (!pinsStatus && hasSource) {
-        const r = resolveDefaultCreateStatus({ screenCard, flow, candidateStatuses: candidates });
+        const r = resolveDefaultCreateStatus({ screenCard, flow, candidateStatuses: candidates, basePhase, subtask });
         if ('error' in r) {
           this.showError(r.message);
           return;
@@ -1115,6 +1131,18 @@ export class QuickEntry extends Control<QuickEntryConfig> {
   private peekFlow(): FlowRow | null {
     if (this.config.flowPath === undefined) return null;
     return this.ctx.tree.at(splitPath(this.config.flowPath)).peek<FlowRow | null>() ?? null;
+  }
+
+  /**
+   * The active screen's base phase — its first default-on phase toggle (e.g. a
+   * Board screen → 'active', an Inbox screen → 'triage'). Null when there are
+   * no toggles, so the chain falls through to the triage/active fallbacks.
+   */
+  private peekBasePhase(): Phase | null {
+    const path = this.config.phaseTogglesPath ?? DEFAULT_PHASE_TOGGLES_PATH;
+    const toggles = this.ctx.tree.at(splitPath(path)).peek<PhaseToggle[]>();
+    if (!Array.isArray(toggles) || toggles.length === 0) return null;
+    return (toggles.find((t) => t.defaultOn) ?? toggles[0]).phase;
   }
 
   /* ------------------------------ test seams ---------------------------- */

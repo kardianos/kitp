@@ -58,7 +58,8 @@ import {
   schemaForCardType,
   type AttrSchema,
 } from '../filter/attribute-schema.js';
-import type { RefPicker } from '../ui/ref-picker.js';
+import type { RefPicker, RefPinnedOption } from '../ui/ref-picker.js';
+import { peekCurrentPersonId } from '../auth/auth-state.js';
 import type { DatePicker } from '../ui/datepicker.js';
 import type { TransitionBar } from './transition-bar.js';
 import type { TaskComments } from './task-comments.js';
@@ -86,6 +87,13 @@ export interface TaskDetailConfig extends BaseControlConfig {
    * / a host that wants to pin an identity can still pass it.
    */
   currentUserId?: string;
+  /**
+   * OPTIONAL override for the signed-in user's PERSON card id, used to offer a
+   * "Self" quick-pick when editing a person-typed card_ref (assignee /
+   * originator). When absent, read from `auth.user` (the boot /auth/me probe).
+   * Tests pin it here to avoid standing up the auth tree.
+   */
+  currentPersonId?: bigint;
   /**
    * Inject the raw chunk-POST sink for the #36 AttachmentsSection upload service
    * (tests pass a mock). Production leaves it unset → the service uses a
@@ -1101,6 +1109,20 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   }
 
   /**
+   * The "Self" quick-pick for a person-typed card_ref (assignee / originator):
+   * the caller's PERSON card id (config override, else `auth.user`). Null when
+   * the field isn't a person ref or the account has no linked person — in which
+   * case no pinned option is offered. Keyed off `targetCardType`, not a magic
+   * attribute name, so any person ref (assignee, originator, …) gets it.
+   */
+  private selfPinnedFor(attr: AttrSchema): RefPinnedOption[] {
+    if (attr.targetCardType !== 'person') return [];
+    const personId = this.config.currentPersonId ?? peekCurrentPersonId(this.ctx.tree);
+    if (personId === null) return [];
+    return [{ value: personId, label: 'Self' }];
+  }
+
+  /**
    * Mount the inline editor for an attribute by value_type. Eager-commit types
    * (card_ref / card_ref[] / date / bool) fire `attribute.update` straight from
    * their change callback; text / number hold the typed draft and commit on
@@ -1132,6 +1154,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
               ? { currentLabel: this.labelFor(cur) }
               : {}),
             ...(this.refScopePath(attr) ? { parentScopePath: this.refScopePath(attr) } : {}),
+            ...(this.selfPinnedFor(attr).length > 0 ? { pinnedOptions: this.selfPinnedFor(attr) } : {}),
             'aria-label': attr.label,
             placeholder: `Search ${attr.label.toLowerCase()}…`,
             onChange: (value: bigint | null) => onCommit(value),

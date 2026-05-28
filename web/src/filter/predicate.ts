@@ -43,7 +43,8 @@ export type Op =
   | 'parentStatusPhase'
   | 'snippet'
   | 'beforeToday'
-  | 'withinDays';
+  | 'withinDays'
+  | 'withinLastDays';
 
 /**
  * Wire-string for each operator. These values MUST match the `op` field the
@@ -64,6 +65,7 @@ export const OP_TO_WIRE: Readonly<Record<Op, string>> = {
   snippet: 'snippet',
   beforeToday: 'before_today',
   withinDays: 'within_days',
+  withinLastDays: 'within_last_days',
 };
 
 const WIRE_TO_OP: Readonly<Record<string, Op>> = {
@@ -82,6 +84,7 @@ const WIRE_TO_OP: Readonly<Record<string, Op>> = {
   snippet: 'snippet',
   before_today: 'beforeToday',
   within_days: 'withinDays',
+  within_last_days: 'withinLastDays',
 };
 
 /** Returns the wire string for [op]. Inverse of {@link opFromWire}. */
@@ -113,6 +116,7 @@ export function opArity(op: Op): OpArity {
     case 'contains':
     case 'snippet':
     case 'withinDays':
+    case 'withinLastDays':
       return 'single';
     case 'in':
     case 'notIn':
@@ -146,6 +150,7 @@ export const OP_LABELS: Readonly<Record<Op, string>> = {
   snippet: 'named filter',
   beforeToday: 'is before today',
   withinDays: 'within next (days)',
+  withinLastDays: 'within last (days)',
 };
 
 export function opLabel(op: Op): string {
@@ -162,7 +167,7 @@ export function opLabel(op: Op): string {
  * tokens; the others are scalar JSON types. The catalog below keys the
  * allowed operators on these tokens.
  */
-export type ValueType = 'text' | 'number' | 'bool' | 'date' | 'card_ref' | 'card_ref[]';
+export type ValueType = 'text' | 'number' | 'bool' | 'date' | 'timestamp' | 'card_ref' | 'card_ref[]';
 
 /**
  * The op-catalog: which operators each value_type exposes in the editor, and
@@ -185,10 +190,24 @@ export const OPS_BY_VALUE_TYPE: Readonly<Record<ValueType, readonly Op[]>> = {
   text: ['eq', 'ne', 'contains', 'exists', 'notExists'],
   number: ['eq', 'ne', 'exists', 'notExists'],
   bool: ['eq', 'ne', 'exists', 'notExists'],
-  date: ['eq', 'ne', 'exists', 'notExists', 'beforeToday', 'withinDays'],
+  date: ['eq', 'ne', 'exists', 'notExists', 'beforeToday', 'withinDays', 'withinLastDays'],
+  // Top-level card timestamps (last_activity_at / created_at) — only the
+  // past-window relative op is meaningful (they always exist; the equality /
+  // ISO-text ops target attribute_values, which these aren't).
+  timestamp: ['withinLastDays'],
   card_ref: ['eq', 'ne', 'in', 'notIn', 'hasPhase', 'exists', 'notExists'],
   'card_ref[]': ['in', 'notIn', 'hasPhase', 'exists', 'notExists'],
 };
+
+/**
+ * The reserved dynamic value token for a person-typed card_ref filter
+ * (assignee / originator) meaning "the current viewer". Stored verbatim in a
+ * leaf's `values` (and persisted in saved filters) so a shared screen resolves
+ * PER-VIEWER; the server's `_resolve_me_tokens` pre-pass rewrites it to the
+ * caller's person card id at query time. The client never resolves it (keeping
+ * filters portable across users).
+ */
+export const ME_REF_TOKEN = '@me';
 
 /**
  * Operators allowed for [valueType]. Unknown value types fall back to the

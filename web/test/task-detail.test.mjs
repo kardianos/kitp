@@ -515,6 +515,55 @@ test('TaskDetail: a card_ref row mounts a RefPicker; a date row mounts a DatePic
   assert.ok(dueRow.querySelector('[data-control="DatePicker"]'), 'date attr → DatePicker editor');
 });
 
+test('TaskDetail: a person-typed card_ref (assignee) pins a "Self" quick-pick atop the picker', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  // currentPersonId 77 is the caller's PERSON card (distinct from assignee=10).
+  const tree = new M.TreeNode({}, []);
+  const td = M.Control.New(
+    'TaskDetail',
+    { type: 'TaskDetail', taskId: String(TASK_ID), currentPersonId: 77n },
+    { api, tree },
+  );
+  td.mount(document.createElement('div'));
+  document.body.appendChild(td.el);
+  await settle(dispatcher);
+
+  const assigneeRow = td.el.querySelector('[data-attr-row="assignee"]');
+  toggle(assigneeRow); // RefPicker mounts + auto-opens (#8)
+  await flushMicrotasks();
+  await settle(dispatcher);
+  await flushMicrotasks();
+
+  const opts = [...document.querySelectorAll('[data-cb-option]')].map((li) => li.textContent);
+  assert.equal(opts[0], 'Self', 'Self pinned at the top of a person ref picker');
+  assert.ok(opts.includes('Alice'), 'searched person rows follow the pin');
+});
+
+test('TaskDetail: a non-person card_ref (status) gets no "Self" pin', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const td = M.Control.New(
+    'TaskDetail',
+    { type: 'TaskDetail', taskId: String(TASK_ID), currentPersonId: 77n },
+    { api, tree },
+  );
+  td.mount(document.createElement('div'));
+  document.body.appendChild(td.el);
+  await settle(dispatcher);
+
+  const statusRow = td.el.querySelector('[data-attr-row="status"]');
+  toggle(statusRow);
+  await flushMicrotasks();
+  await settle(dispatcher);
+  await flushMicrotasks();
+
+  const opts = [...document.querySelectorAll('[data-cb-option]')].map((li) => li.textContent);
+  assert.ok(opts.length > 0, 'status picker opened with options');
+  assert.ok(!opts.includes('Self'), 'no Self pin on a non-person ref');
+});
+
 test('TaskDetail: a text attr row inline-edits and fires attribute.update on Enter', async () => {
   const { transport, updates } = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);

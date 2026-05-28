@@ -6,11 +6,23 @@
  * re-expressed against the `web/` card model (bigint ids + a plain attributes
  * record — {@link CardWithAttrs}). The walk, in order:
  *
+ *   0. sub-task          ← first status with phase='active' (when `subtask`)
  *   1. screen.default_create_status   ← per-screen override (card_ref → status)
  *   2. flow.default_create_status_id  ← per-flow default
- *   3. first status with phase='triage'  by sort_order
- *   4. first status with phase='active'  by sort_order
- *   5. fail with code='flow_no_default'
+ *   3. first status of the screen's BASE PHASE by sort_order  ← `basePhase`
+ *   4. first status with phase='triage'  by sort_order
+ *   5. first status with phase='active'  by sort_order
+ *   6. fail with code='flow_no_default'
+ *
+ * Step 0: a sub-task is created in the context of its (active) parent, so it
+ * defaults to the first ACTIVE status regardless of the screen it was raised
+ * from (the chosen behaviour for the "+ New sub-task" flow). It only short-
+ * circuits when an active status exists; otherwise the normal chain runs.
+ *
+ * Step 3: the screen's base phase is the first default-on phase toggle (e.g.
+ * a Board screen → 'active', an Inbox screen → 'triage'); new issues land in
+ * the first status of that phase. This is what makes a per-screen default fall
+ * out of the screen's own phase scope without an explicit override card_ref.
  *
  * The resolver is intentionally PURE: callers gather the inputs (the active
  * screen card, an optional flow row, the project's candidate status cards) and
@@ -19,6 +31,7 @@
  */
 
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
+import type { Phase } from '../filter/predicate.js';
 
 /**
  * The subset of a `flow.list` row the resolver needs. Declared locally (no flow
@@ -43,6 +56,16 @@ export interface ResolveDefaultCreateStatusOpts {
    * `sort_order`. Sorted internally — callers needn't pre-sort.
    */
   candidateStatuses: CardWithAttrs[];
+  /**
+   * The active screen's base phase (its first default-on phase toggle), used
+   * by step 3. Null/undefined when there's no screen scope or no toggles.
+   */
+  basePhase?: Phase | null;
+  /**
+   * True when creating a sub-task ("+ New sub-task"): defaults to the first
+   * ACTIVE status regardless of screen (step 0).
+   */
+  subtask?: boolean;
 }
 
 /** Success: the status card id to stamp on the new task. */
@@ -92,7 +115,7 @@ function readScreenDefaultStatus(
  */
 function firstByPhase(
   candidates: CardWithAttrs[],
-  phase: 'triage' | 'active',
+  phase: Phase,
 ): CardWithAttrs | null {
   let best: CardWithAttrs | null = null;
   let bestSort = Number.POSITIVE_INFINITY;
@@ -136,6 +159,13 @@ function toId(v: unknown): bigint | null {
 export function resolveDefaultCreateStatus(
   opts: ResolveDefaultCreateStatusOpts,
 ): ResolveDefaultCreateStatusResult {
+  // 0. Sub-task → first active (the parent is active work). Only short-
+  //    circuits when an active status exists; otherwise fall through.
+  if (opts.subtask === true) {
+    const subActive = firstByPhase(opts.candidateStatuses, 'active');
+    if (subActive !== null) return { statusCardId: subActive.id };
+  }
+
   // 1. screen.default_create_status
   const screenDefault = readScreenDefaultStatus(opts.screenCard);
   if (screenDefault !== null) return { statusCardId: screenDefault };
@@ -146,15 +176,21 @@ export function resolveDefaultCreateStatus(
     return { statusCardId: flowDefault };
   }
 
-  // 3. First triage by sort_order.
+  // 3. First status of the screen's base phase by sort_order.
+  if (opts.basePhase != null) {
+    const base = firstByPhase(opts.candidateStatuses, opts.basePhase);
+    if (base !== null) return { statusCardId: base.id };
+  }
+
+  // 4. First triage by sort_order.
   const triage = firstByPhase(opts.candidateStatuses, 'triage');
   if (triage !== null) return { statusCardId: triage.id };
 
-  // 4. First active by sort_order.
+  // 5. First active by sort_order.
   const active = firstByPhase(opts.candidateStatuses, 'active');
   if (active !== null) return { statusCardId: active.id };
 
-  // 5. Bottom-out — a friendly error for the toast.
+  // 6. Bottom-out — a friendly error for the toast.
   return {
     error: 'flow_no_default',
     message:

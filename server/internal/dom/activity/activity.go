@@ -22,6 +22,8 @@ type SelectInput struct {
 	ProjectID        int64  `json:"project_id,string,omitempty" mcp:"desc=project scope; when set, only activity for cards within that project (the project or a descendant) is returned"`
 	Limit            *int   `json:"limit,omitempty" mcp:"desc=optional row cap; defaults to 200"`
 	BeforeActivityID *int64 `json:"before_activity_id,string,omitempty" mcp:"desc=cursor; only return activity rows with id < this"`
+	FromDate         string `json:"from_date,omitempty" mcp:"desc=inclusive lower bound on created_at, ISO date YYYY-MM-DD"`
+	ToDate           string `json:"to_date,omitempty" mcp:"desc=inclusive upper bound on created_at, ISO date YYYY-MM-DD"`
 }
 
 // Row is one denormalized activity row. CardID is set so cross-card

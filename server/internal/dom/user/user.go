@@ -29,10 +29,11 @@ type SelectInput struct {
 
 // Row is one user_account row — only the fields the UI needs.
 type Row struct {
-	ID           int64  `json:"id,string"                      mcp:"desc=user account id"`
-	DisplayName  string `json:"display_name"                    mcp:"desc=user display name"`
-	ParentUserID *int64 `json:"parent_user_id,string,omitempty" mcp:"desc=human owner when is_agent=true; null for humans"`
-	IsAgent      bool   `json:"is_agent"                        mcp:"desc=true when this row is an agent owned by parent_user_id"`
+	ID             int64   `json:"id,string"                        mcp:"desc=user account id"`
+	DisplayName    string  `json:"display_name"                      mcp:"desc=user display name"`
+	ParentUserID   *int64  `json:"parent_user_id,string,omitempty"   mcp:"desc=human owner when is_agent=true; null for humans"`
+	ParentUserName *string `json:"parent_user_name,omitempty"        mcp:"desc=resolved display_name of the owner when is_agent=true; null for humans"`
+	IsAgent        bool    `json:"is_agent"                          mcp:"desc=true when this row is an agent owned by parent_user_id"`
 }
 
 // SelectOutput is the per-input payload — every input gets the same

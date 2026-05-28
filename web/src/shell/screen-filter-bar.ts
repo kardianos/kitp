@@ -214,6 +214,12 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
           row1,
         );
       }
+      // Phase-scope filter (#31): a DROPDOWN of phase checkboxes ON the View
+      // line (not its own row). Shown only when the screen defines phase
+      // toggles; the checked set defaults to the screen's base phase (seeded by
+      // applyDefaultOnFirstVisit) and edits the `status has_phase` scope.
+      this.buildPhaseDropdown(row1);
+
       // Screen-specific view actions (e.g. Grid → Columns), right-aligned.
       if (viewActions.length > 0) {
         const actions = document.createElement('div');
@@ -286,24 +292,6 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     if (laneWrap !== null) row2.append(laneWrap);
     row2.append(search, advanced, clear);
     this.el.append(row2);
-
-    /* ---- phase-scope toggles (Active / Closed / …) from the screen's
-     *      `toggle_groups`. Each toggles a phase in the SINGLE top-level
-     *      `status has_phase [phases]` leaf of `screen.predicate` (OR-semantics).
-     *      Default-on phases are seeded on first visit (so e.g. terminal is
-     *      hidden); a click reveals/hides a phase. Reads `screen.phaseToggles`
-     *      (landed by ScreenHost) + `screen.predicate` reactively, so it repaints
-     *      on any surface's edit and composes with the chips (the chip helpers
-     *      preserve the `has_phase` leaf). ---- */
-    const phaseHost = document.createElement('div');
-    phaseHost.className = 'filterbar__row filterbar__row--phases';
-    phaseHost.dataset.phaseToggles = '';
-    this.el.append(phaseHost);
-    this.effect(() => {
-      const toggles = (this.ctx.tree.at(['screen', 'phaseToggles']).get<PhaseToggle[]>() ?? []) as PhaseToggle[];
-      const scoped = topLevelPhases(this.ctx.tree.at(['screen', 'predicate']).get<Predicate | null>() ?? null);
-      this.paintPhaseToggles(phaseHost, toggles, new Set<Phase>(scoped));
-    }, 'filterbar.phaseToggles');
 
     /* ---- row 3: the QUICK-CHIPS row (pinned per-attribute one-tap filters) ---- */
     // Each chip toggles a top-level `attr in [...]` leaf in 'screen.predicate'
@@ -435,7 +423,18 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       const columnConfig = this.ctx.tree.at(['screen', 'columnConfig']).get<unknown>();
       if (!this.viewRestored) return; // don't persist the transient pre-restore seed
       const sp = this.config.screenStatePath;
-      if (sp !== undefined) saveView(sp, { predicate, group, laneGroup, columnConfig });
+      if (sp === undefined) return;
+      // Persist the SELECTED preset too (peek — selection always rides a
+      // predicate change), so a reload re-selects it in the View picker instead
+      // of falling back to a blank "Default". null = explicit Default / ad-hoc.
+      const activeId = this.ctx.tree.at([...sp, 'activeFilterId']).peek<bigint | null>() ?? null;
+      saveView(sp, {
+        predicate,
+        group,
+        laneGroup,
+        columnConfig,
+        activeFilterId: activeId === null ? null : activeId.toString(),
+      });
     }, 'filterbar.persistView');
   }
 
@@ -463,9 +462,17 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
         this.ctx.tree.at(['screen', 'predicate']).set(v.predicate as Predicate | null);
         this.respawnPredicate();
       }
-      // Mark the (project, slug) visited so default-on-first-visit doesn't
-      // override the restored view when the screen resolves.
-      this.ctx.tree.at([...sp, 'activeFilterId']).set(null);
+      // Restore the selected preset so the View picker re-selects it (the
+      // default view included). Setting it ALSO marks the (project, slug)
+      // visited, so default-on-first-visit doesn't re-apply over the restore.
+      // A legacy view with no persisted selection leaves activeFilterId UNSET,
+      // so the screen's default_filter still applies + selects on resolve.
+      if ('activeFilterId' in v) {
+        const raw = v.activeFilterId;
+        // Regex-guarded, so BigInt() never throws; any other shape → null (Default).
+        const id = typeof raw === 'string' && /^\d+$/.test(raw) ? BigInt(raw) : null;
+        this.ctx.tree.at([...sp, 'activeFilterId']).set(id);
+      }
     }
     this.viewRestored = true;
   }
@@ -711,33 +718,94 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     }
   }
 
-  /* ----------------------------- phase toggles ----------------------------- */
+  /* ----------------------------- phase dropdown ---------------------------- */
 
-  /** (Re)render the phase-scope toggle row. `active` is the set of phases the
-   *  `status has_phase` leaf currently scopes to; an EMPTY set means no leaf →
-   *  every phase is visible, so every toggle reads as ON. */
-  private paintPhaseToggles(host: HTMLElement, toggles: readonly PhaseToggle[], active: Set<Phase>): void {
-    host.replaceChildren();
+  /**
+   * Build the phase-scope DROPDOWN (#31) on the View line: a trigger button +
+   * a panel of one checkbox per phase. Shown only when the screen defines phase
+   * toggles; the checked set reflects the `status has_phase` scope (defaulting
+   * to the base phase the screen seeded). A child-panel dropdown (not a body-
+   * mounted popover) so it stays in the bar's DOM + works under the test shim.
+   */
+  private buildPhaseDropdown(row: HTMLElement): void {
+    const wrap = document.createElement('div');
+    wrap.className = 'filterbar__phase';
+    wrap.dataset.phaseToggles = ''; // the (project, slug) phase-scope control
+    wrap.style.display = 'none'; // until toggles land
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'btn filterbar__phase-trigger';
+    trigger.dataset.phaseDropdown = '';
+    trigger.setAttribute('aria-haspopup', 'true');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.textContent = 'Phase';
+
+    const panel = document.createElement('div');
+    panel.className = 'filterbar__phase-menu';
+    panel.dataset.phaseMenu = '';
+    panel.style.display = 'none';
+
+    wrap.append(trigger, panel);
+    row.append(wrap);
+
+    const setOpen = (open: boolean): void => {
+      panel.style.display = open ? '' : 'none';
+      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    this.listen(trigger, 'click', (ev) => {
+      (ev as Event).stopPropagation();
+      setOpen(panel.style.display === 'none');
+    });
+    // Keep the menu open while ticking boxes; close on an outside click (best-
+    // effort — the shim may not bubble, which is fine: tests drive directly).
+    this.listen(panel, 'click', (ev) => (ev as Event).stopPropagation());
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      this.listen(document, 'click', () => setOpen(false));
+    }
+
+    this.effect(() => {
+      const toggles = (this.ctx.tree.at(['screen', 'phaseToggles']).get<PhaseToggle[]>() ?? []) as PhaseToggle[];
+      const scoped = topLevelPhases(this.ctx.tree.at(['screen', 'predicate']).get<Predicate | null>() ?? null);
+      this.paintPhaseDropdown(wrap, trigger, panel, toggles, new Set<Phase>(scoped));
+    }, 'filterbar.phaseToggles');
+  }
+
+  /** (Re)render the phase dropdown's trigger label + checkbox panel. `active` is
+   *  the set of phases the `status has_phase` leaf scopes to; EMPTY = no leaf →
+   *  every phase visible, so every box reads checked. */
+  private paintPhaseDropdown(
+    wrap: HTMLElement,
+    trigger: HTMLElement,
+    panel: HTMLElement,
+    toggles: readonly PhaseToggle[],
+    active: Set<Phase>,
+  ): void {
     if (toggles.length === 0) {
-      host.style.display = 'none';
+      wrap.style.display = 'none';
       return;
     }
-    host.style.display = '';
-    const label = document.createElement('span');
-    label.className = 'filterbar__phase-label muted';
-    label.textContent = 'Phase';
-    host.append(label);
+    wrap.style.display = '';
+    // Trigger summary: the on-phase labels, or "All" when nothing is scoped out.
+    const onLabels = toggles.filter((t) => active.size === 0 || active.has(t.phase)).map((t) => t.label);
+    const summary = onLabels.length === toggles.length ? 'All' : onLabels.join(', ') || 'None';
+    trigger.textContent = `Phase: ${summary}`;
+
+    panel.replaceChildren();
     for (const t of toggles) {
       const on = active.size === 0 ? true : active.has(t.phase);
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'filterbar__phase-toggle';
-      btn.dataset.phaseToggle = t.phase;
-      btn.textContent = t.label;
-      btn.classList.toggle('filterbar__phase-toggle--on', on);
-      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-      this.listen(btn, 'click', () => this.togglePhase(t.phase));
-      host.append(btn);
+      const option = document.createElement('label');
+      option.className = 'filterbar__phase-option';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'filterbar__phase-check';
+      cb.dataset.phaseToggle = t.phase;
+      cb.checked = on;
+      const text = document.createElement('span');
+      text.textContent = t.label;
+      option.append(cb, text);
+      this.listen(cb, 'change', () => this.togglePhase(t.phase));
+      panel.append(option);
     }
   }
 

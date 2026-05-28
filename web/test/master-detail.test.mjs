@@ -419,18 +419,6 @@ test('Workflows list is scoped to the active project (like every admin screen)',
   assert.deepEqual(listQ.skipWhenNull, ['scopeCardId']);
 });
 
-test('Named Filters: list scoped by enclosing project + detail uses the advanced builder', () => {
-  const nf = M.NAMED_FILTERS_SCREEN;
-  // Scoped to the active project via the enclosing-project filter (filter cards
-  // are grandchildren of the project, so projectId — not parentCardId).
-  assert.deepEqual(nf.list.input.projectId, { from: 'scope.projectId' });
-  assert.deepEqual(nf.list.when, { signal: 'scope.projectId' });
-  assert.deepEqual(nf.list.skipWhenNull, ['projectId']);
-  // The predicate is edited with the visual builder, not a readonly JSON field.
-  assert.equal(nf.detail.nested.kind, 'filterPredicate');
-  assert.ok(!nf.detail.fields.some((f) => f.name === 'attributes.predicate' && f.kind === 'readonly'));
-});
-
 test('Workflows create: the project is implicit (no field; scoped from scope.projectId)', () => {
   const wf = M.WORKFLOWS_SCREEN;
   // No Project select field — the scope is implicit.
@@ -623,12 +611,56 @@ function fillCreateDialog(ctrl, values) {
   return dialog;
 }
 
+// A card-backed MasterDetail fixture with a title-only create + delete. Mirrors
+// the (removed) admin Projects screen — project create/delete/edit now live on
+// the user-facing ProjectList, so the generic MasterDetail control's
+// create/delete machinery is exercised here against a local fixture instead.
+function projectsFixture() {
+  return M.masterDetailScreen({
+    type: 'MasterDetail',
+    title: 'Projects',
+    scopeKey: 'admin.projects',
+    refreshNonce: 'shell.navRefresh', // bumps a cross-control nonce on write (#29)
+    list: {
+      spec: 'card.select_with_attributes',
+      input: { cardTypeName: { lit: 'project' } },
+      rowHeight: 56,
+      search: { field: 'attributes.title', placeholder: 'Search projects…' },
+      row: { title: 'attributes.title', subtitle: 'attributes.description' },
+    },
+    detail: {
+      titleField: 'attributes.title',
+      empty: 'Select a project.',
+      updateSpec: 'attribute.update',
+      fields: [{ name: 'attributes.title', label: 'Title', kind: 'text', editable: true }],
+    },
+    create: {
+      spec: 'card.insert',
+      title: 'New project',
+      buttonLabel: '+ New',
+      fields: [{ name: 'title', label: 'Title', kind: 'text', required: true, placeholder: 'Project title' }],
+      input: { cardTypeName: { lit: 'project' }, title: { payload: 'title' } },
+    },
+    delete: {
+      spec: 'card.delete',
+      confirm: 'Delete this project? This cannot be undone.',
+      input: { cardId: { payload: 'id' } },
+    },
+  });
+}
+
 test('masterDetailScreen wires create + delete actions for card-backed screens', () => {
-  for (const view of ['projects', 'screens', 'filters']) {
+  // Screens get both create + delete (Named Filters was removed — filters are
+  // curated from a screen's own filter bar + nested editor).
+  for (const view of ['screens']) {
     const cfg = M.adminScreenConfig(view);
     assert.ok(cfg.actions.some((a) => a.intent === 'createItem' && a.spec === 'card.insert'), `${view} create → card.insert`);
     assert.ok(cfg.actions.some((a) => a.intent === 'deleteItem' && a.spec === 'card.delete'), `${view} delete → card.delete`);
   }
+  // The local card-backed fixture wires the same create + delete actions.
+  const fx = projectsFixture();
+  assert.ok(fx.actions.some((a) => a.intent === 'createItem' && a.spec === 'card.insert'), 'fixture create → card.insert');
+  assert.ok(fx.actions.some((a) => a.intent === 'deleteItem' && a.spec === 'card.delete'), 'fixture delete → card.delete');
   // Contacts creates via person.create + deletes via card.delete.
   const contacts = M.adminScreenConfig('contacts');
   assert.ok(contacts.actions.some((a) => a.intent === 'createItem' && a.spec === 'person.create'));
@@ -638,7 +670,7 @@ test('masterDetailScreen wires create + delete actions for card-backed screens',
 test('Projects: "+ New" fires card.insert optimistically + the row appears, then promotes to the real id', async () => {
   const transport = adminTransport();
   const { dispatcher, api } = bootApi(transport);
-  const { ctrl, tree } = mountMD(api, M.adminScreenConfig('projects'));
+  const { ctrl, tree } = mountMD(api, projectsFixture());
   await settle(dispatcher);
 
   const before = (tree.at(['admin', 'projects', 'items']).peek() ?? []).length;
@@ -702,7 +734,7 @@ test('Screens: "+ New" sends the required layout + slug in attributes (New Scree
 test('Projects: create fault rolls back the optimistic add', async () => {
   const transport = adminTransport({ failWrites: true });
   const { dispatcher, api } = bootApi(transport);
-  const { ctrl, tree } = mountMD(api, M.adminScreenConfig('projects'));
+  const { ctrl, tree } = mountMD(api, projectsFixture());
   await settle(dispatcher);
 
   const before = (tree.at(['admin', 'projects', 'items']).peek() ?? []).length;
@@ -720,7 +752,7 @@ test('Projects: create fault rolls back the optimistic add', async () => {
 test('Projects: required title gates the submit (no card.insert fires)', async () => {
   const transport = adminTransport();
   const { dispatcher, api } = bootApi(transport);
-  const { ctrl } = mountMD(api, M.adminScreenConfig('projects'));
+  const { ctrl } = mountMD(api, projectsFixture());
   await settle(dispatcher);
 
   ctrl.el.querySelector('[data-md-new]').dispatchEvent({ type: 'click' });
@@ -735,7 +767,7 @@ test('Projects: required title gates the submit (no card.insert fires)', async (
 test('Projects: deleting the selected row fires card.delete + the row leaves (optimistic)', async () => {
   const transport = adminTransport();
   const { dispatcher, api } = bootApi(transport);
-  const { ctrl, tree } = mountMD(api, M.adminScreenConfig('projects'));
+  const { ctrl, tree } = mountMD(api, projectsFixture());
   await settle(dispatcher);
 
   // Seed one real project row + select it (the mock projects list returns []).
@@ -763,7 +795,7 @@ test('Projects: deleting the selected row fires card.delete + the row leaves (op
 test('Projects: a delete fault rolls the row back into the list', async () => {
   const transport = adminTransport({ failWrites: true });
   const { dispatcher, api } = bootApi(transport);
-  const { ctrl, tree } = mountMD(api, M.adminScreenConfig('projects'));
+  const { ctrl, tree } = mountMD(api, projectsFixture());
   await settle(dispatcher);
 
   tree.at(['admin', 'projects', 'items']).set([
@@ -780,6 +812,29 @@ test('Projects: a delete fault rolls the row back into the list', async () => {
   const items = tree.at(['admin', 'projects', 'items']).peek();
   assert.equal(items.length, 1, 'row rolled back into the list on fault');
   assert.equal(items[0].id, '7001');
+});
+
+test('refreshNonce: a successful write bumps the configured nonce (#29 nav refresh)', async () => {
+  const transport = adminTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl, tree } = mountMD(api, projectsFixture()); // refreshNonce: 'shell.navRefresh'
+  await settle(dispatcher);
+
+  const before = tree.at(['shell', 'navRefresh']).peek() ?? 0;
+
+  // Edit a row's title → attribute.update success → the nonce bumps.
+  tree.at(['admin', 'projects', 'items']).set([
+    { id: '7001', raw: { id: '7001', attributes: { title: 'Apollo' } } },
+  ]);
+  tree.at(['admin', 'projects', 'selectedId']).set('7001');
+  M.flushSync?.();
+  const titleInput = ctrl.el.querySelector('[data-md-field="attributes.title"]') ?? ctrl.el.querySelector('[data-md-edit]');
+  // Drive the edit through the detail field; fall back to firing the intent directly.
+  ctrl.intent('editField', { id: '7001', attributeName: 'title', value: 'Renamed' });
+  await settle(dispatcher);
+
+  assert.ok((tree.at(['shell', 'navRefresh']).peek() ?? 0) > before, 'edit success bumped the refresh nonce');
+  void titleInput;
 });
 
 /* -------------------------------------------------------------------------- */

@@ -36,6 +36,9 @@ import { splitPath } from '../core/data.js';
 import { Combobox, type ComboboxOption } from './combobox.js';
 import { CARD_SEARCH_SPEC, type CardSearchOutput } from './specs.js';
 
+/** A pinned quick-pick (e.g. "Self") always shown atop the single-mode list. */
+export type RefPinnedOption = ComboboxOption<bigint>;
+
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
 /* -------------------------------------------------------------------------- */
@@ -63,6 +66,13 @@ export interface RefPickerConfig extends BaseControlConfig {
   currentLabel?: string;
   /** Known labels for current multi values, keyed by stringified id. */
   currentLabels?: Record<string, string>;
+  /**
+   * Single-mode only: options pinned to the top of the dropdown regardless of
+   * the search query (e.g. a "Self" person quick-pick resolving to the caller's
+   * person card). Their labels seed the trigger label cache so a pinned pick
+   * shows its label immediately. Ignored in multi mode.
+   */
+  pinnedOptions?: RefPinnedOption[];
   /** Trigger placeholder when nothing is selected. */
   placeholder?: string;
   /** Disable the control. */
@@ -121,6 +131,10 @@ export class RefPicker extends Control<RefPickerConfig> {
         const v = cl[k];
         if (typeof v === 'string') this.labels.set(k, v);
       }
+    }
+    // Seed labels for pinned quick-picks so the trigger resolves after a pick.
+    for (const opt of this.config.pinnedOptions ?? []) {
+      this.labels.set(String(opt.value), opt.label);
     }
   }
 
@@ -261,6 +275,11 @@ export class RefPicker extends Control<RefPickerConfig> {
       type: 'Combobox' as const,
       value: initial,
       placeholder: this.config.placeholder ?? 'Search…',
+      // Pinned quick-picks are a single-mode affordance (assignee/originator);
+      // the multi add-combobox doesn't surface them.
+      ...(!this.isMulti && this.config.pinnedOptions?.length
+        ? { pinnedOptions: this.config.pinnedOptions }
+        : {}),
       ...(this.config.disabled === true ? { disabled: true } : {}),
       ...(this.config['aria-label'] ? { 'aria-label': this.config['aria-label'] } : {}),
       loadOptions: (query: string, deliver: (opts: ComboboxOption<bigint>[]) => void): void => {

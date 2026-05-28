@@ -149,9 +149,7 @@ test('every admin view is config-only: resolves to a registered control config',
 /* -------------------------------------------------------------------------- */
 
 const SCREEN_SCOPE = {
-  projects: ['admin', 'projects', 'items'],
   screens: ['admin', 'screens', 'items'],
-  filters: ['admin', 'filters', 'items'],
   attributes: ['admin', 'attributes', 'items'],
   workflows: ['admin', 'workflows', 'items'],
   roles: ['admin', 'roles', 'items'],
@@ -181,8 +179,8 @@ for (const [view, itemsPath] of Object.entries(SCREEN_SCOPE)) {
 /* -------------------------------------------------------------------------- */
 
 test('card-backed admin screens carry an editField update action; read-only ones do not', () => {
-  // Card-backed + editable: Projects / Screens / Named Filters (attribute.update).
-  for (const view of ['projects', 'screens', 'filters']) {
+  // Card-backed + editable: Screens (attribute.update).
+  for (const view of ['screens']) {
     const cfg = M.adminScreenConfig(view);
     assert.ok(
       cfg.actions.some((a) => a.intent === 'editField' && a.spec === 'attribute.update'),
@@ -300,37 +298,15 @@ test('Screens admin: list + create are scoped to the active project (#10)', () =
   assert.deepEqual(cfg.list.skipWhenNull, ['parentCardId']);
   // New screens are parented to the active project (not orphaned globally).
   assert.deepEqual(cfg.create.input.parentCardId, { from: 'scope.projectId' });
-});
-
-test('Projects admin: template badge maps to a label + Import/Export raise bus intents (#14)', async () => {
-  const cfg = M.adminScreenConfig('projects');
-  // The badge is the value→label form, so a template shows "Template" (not "TRUE").
-  assert.deepEqual(cfg.list.row.badge, { field: 'attributes.is_template', labels: { true: 'Template' } });
-  // Import / Export detail actions reuse the AppShell's global bus intents.
-  assert.deepEqual((cfg.detail.actions ?? []).map((a) => a.intent), ['projectImport', 'projectExport']);
-
-  // Mount with a bus spy, load the project row, select it, click Import.
-  const { api, dispatcher } = bootApi();
-  const emitted = [];
-  const tree = new M.TreeNode({}, []);
-  tree.at(['scope', 'projectId']).set(PROJECT_ID);
-  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
-  const bus = { emit: (type, detail) => emitted.push({ type, detail }) };
-  const ctrl = M.Control.New('MasterDetail', cfg, { api, tree, bus, scope });
-  ctrl.mount(new FakeElement('div'));
-  await settle(dispatcher);
-
-  const items = tree.at(['admin', 'projects', 'items']).peek();
-  assert.ok(items.length >= 1, 'a project row loaded');
-  tree.at(['admin', 'projects', 'selectedId']).set(items[0].id);
-  M.flushSync?.();
-
-  const importBtn = ctrl.el.querySelector('[data-md-action="projectImport"]');
-  assert.ok(importBtn, 'the Import action button renders in the project detail');
-  importBtn.dispatchEvent({ type: 'click', target: importBtn });
-  const ev = emitted.find((e) => e.type === 'projectImport');
-  assert.ok(ev, 'clicking Import raised the projectImport bus intent');
-  assert.equal(String(ev.detail.projectId), String(items[0].id), 'carries the selected project id');
+  // The list is ordered by sort_order so it matches the sidebar nav order.
+  assert.deepEqual(cfg.list.input.order, { lit: [{ field: 'attributes.sort_order', direction: 'ASC' }] });
+  // No advanced/predicate filter (a project has few screens) — and crucially the
+  // COMPILED list query keeps its scope-signal trigger (NOT a listVersion one a
+  // predicateFilter would force), so it fires on mount + every project switch
+  // rather than silently skipping when scope wasn't ready (the "doesn't show" bug).
+  assert.equal(cfg.list.predicateFilter, undefined, 'no predicateFilter');
+  const listQ = cfg.queries.find((q) => q.name === 'list');
+  assert.deepEqual(listQ.when, { signal: 'scope.projectId' }, 'list fires on the scope signal');
 });
 
 /* -------------------------------------------------------------------------- */
@@ -367,8 +343,17 @@ test('ADMIN_SECTION classifies every admin view (Workspace global vs Project sco
   // Confirmed grouping: global-data screens are Workspace; the rest are Project
   // (always filtered to the active project).
   const inSection = (s) => M.ADMIN_VIEWS.filter((v) => M.ADMIN_SECTION[v] === s).sort();
-  assert.deepEqual(inSection('workspace'), ['agents', 'attributes', 'oidc_claims', 'people', 'projects', 'roles']);
-  assert.deepEqual(inSection('project'), ['activity_sinks', 'comm_channels', 'comm_log', 'enums', 'filters', 'screens', 'workflows']);
+  assert.deepEqual(inSection('workspace'), ['agents', 'attributes', 'oidc_claims', 'people', 'roles']);
+  assert.deepEqual(inSection('project'), ['activity_sinks', 'comm_channels', 'comm_log', 'enums', 'screens', 'workflows']);
+});
+
+test('WORKSPACE rail order: Agents sits directly under People', () => {
+  // The rail renders ADMIN_VIEWS order within each section (main.ts adminLinks),
+  // so the WORKSPACE order is ADMIN_VIEWS filtered to workspace.
+  const workspace = M.ADMIN_VIEWS.filter((v) => M.ADMIN_SECTION[v] === 'workspace');
+  const pi = workspace.indexOf('people');
+  assert.ok(pi >= 0, 'People is in the workspace section');
+  assert.equal(workspace[pi + 1], 'agents', 'Agents immediately follows People');
 });
 
 test('every PROJECT admin screen scopes its list to the active project', () => {

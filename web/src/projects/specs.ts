@@ -28,6 +28,9 @@ import type { Api } from '../core/api.js';
 export const PROJECT_SPEC = {
   cardInsert: 'card.insert',
   projectStamp: 'project.stamp',
+  // Soft-delete a project card (registered by registerFilterCardSpecs; the
+  // overview's edit dialog reuses it now that there's no admin Projects screen).
+  cardDelete: 'card.delete',
 } as const;
 
 /* -------------------------------------------------------------------------- */
@@ -63,6 +66,16 @@ export interface ProjectStampInput {
 export interface ProjectStampOutput {
   newProjectId: bigint;
   warnings?: string[];
+}
+
+/** card.delete — soft-delete a project card from the overview's edit dialog. */
+export interface CardDeleteInput {
+  cardId: bigint;
+}
+
+export interface CardDeleteOutput {
+  ok: boolean;
+  activityId: bigint;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -128,4 +141,19 @@ export function registerProjectSpecs(api: Api): void {
         : { newProjectId: asId(o['new_project_id']) };
     },
   });
+
+  // The overview's edit dialog soft-deletes projects. Idempotent-by-presence:
+  // registerFilterCardSpecs may have already defined card.delete (saved-filter
+  // Delete reuses the same spec), so skip when it's already registered.
+  if (!api.registry.has({ endpoint: 'card', action: 'delete' })) {
+    api.define<CardDeleteInput, CardDeleteOutput>({
+      endpoint: 'card',
+      action: 'delete',
+      encode: (i) => ({ card_id: i.cardId }),
+      decode: (raw): CardDeleteOutput => {
+        const o = asObj(raw);
+        return { ok: o['ok'] === true, activityId: asId(o['activity_id']) };
+      },
+    });
+  }
 }

@@ -21,6 +21,8 @@ export {
   peekIsAdmin as authPeekIsAdmin,
   currentUserId as authCurrentUserId,
   peekCurrentUserId as authPeekCurrentUserId,
+  currentPersonId as authCurrentPersonId,
+  peekCurrentPersonId as authPeekCurrentPersonId,
   type AuthUser,
   type MeProbe,
 } from './auth/auth-state.js';
@@ -130,7 +132,6 @@ export {
 } from './filter/filter-card-specs.js';
 export {
   loadScreenAndFilters,
-  fallbackLayoutForSlug,
   layoutRequiresGroup,
   defaultGroupForLayout,
   viewActionsForLayout,
@@ -151,6 +152,8 @@ export {
 // Real screen controls + their registrars.
 export { Kanban, Column, TaskCard, registerKanbanControls, _resetDragState } from './kanban/kanban.js';
 export { ScreenHost, layoutToControlType, registerScreenHost } from './shell/screen-host.js';
+export { AccountPage, registerAccountPage } from './shell/account-page.js';
+export { logout, LOGOUT_PATH } from './shell/logout.js';
 export { ScreenFilterBar, registerScreenFilterBar, focusScreenSearch } from './shell/screen-filter-bar.js';
 export { Grid, registerGrid } from './grid/grid.js';
 export { GridColumns, registerGridColumns } from './grid/grid-columns.js';
@@ -160,6 +163,7 @@ export { TagChip, registerTagChip } from './grid/tag-chip.js';
 // and the write specs (user_card_sort.set / user_card_agent.set|clear).
 export { Inbox, registerInbox, _resetInboxDragState } from './inbox/inbox.js';
 export { InboxViewToggles, registerInboxViewToggles } from './inbox/inbox-view-toggles.js';
+export { NewTaskButton, registerNewTaskButton } from './quick-entry/new-task-button.js';
 export {
   planPersonalReorder,
   applyPersonalReorder,
@@ -175,7 +179,7 @@ export {
   type UserCardAgentSetInput,
   type UserCardAgentClearInput,
 } from './inbox/specs.js';
-export { AppShell, registerAppShell, shellHotkeys } from './shell/app-shell.js';
+export { AppShell, registerAppShell, shellHotkeys, applyStoredTheme } from './shell/app-shell.js';
 export {
   matchRoute,
   navigate,
@@ -184,7 +188,6 @@ export {
   currentRoute,
   peekRoute,
   routeGuard,
-  screenLayoutForSlug,
   helpTopicForRoute,
   projectUrl,
   screenUrl,
@@ -213,7 +216,7 @@ export {
 } from './shell/config-specs.js';
 export { publishTaskNav, taskNavListUrl, taskNavNeighbor } from './shell/task-nav.js';
 export { attrNameToTargetType, collectRefIdsByType, loadActivityLabels } from './task-detail/activity-labels.js';
-export { Activity, registerActivity } from './activity/activity.js';
+export { Activity, registerActivity, activityRowsToCsv, isoDaysAgo, ACTIVITY_DEFAULT_LOOKBACK_DAYS } from './activity/activity.js';
 export { ProjectList, registerProjectList } from './projects/project-list.js';
 
 // Project detail (the `project` layout body): the ProjectLayout control + its
@@ -292,9 +295,7 @@ export {
 export {
   CONTACTS_SCREEN,
   USERS_SCREEN,
-  PROJECTS_SCREEN,
   SCREENS_SCREEN,
-  NAMED_FILTERS_SCREEN,
   ATTRIBUTES_SCREEN,
   WORKFLOWS_SCREEN,
   ROLES_SCREEN,

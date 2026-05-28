@@ -59,26 +59,11 @@ export function screenStatePath(projectId: bigint | null, slug: string): string[
   return ['screens', projectId === null ? 'none' : projectId.toString(), slug];
 }
 
-/* -------------------------------------------------------------------------- */
-/* Static slug → layout fallback (the seam #29 replaced; kept as a fallback).  */
-/* -------------------------------------------------------------------------- */
-
-/**
- * The static slug→layout fallback used when a project has no `screen` card for
- * a slug. Mirrors the original router `SLUG_TO_LAYOUT` table; the router now
- * delegates here so the mapping lives in one place. An unknown slug returns
- * 'unknown' (→ the ScreenHost's NotFound placeholder).
- */
-const SLUG_TO_LAYOUT: Readonly<Record<string, string>> = {
-  kanban: 'kanban',
-  grid: 'grid',
-  inbox: 'list',
-  project: 'project',
-};
-
-export function fallbackLayoutForSlug(slug: string): string {
-  return SLUG_TO_LAYOUT[slug] ?? 'unknown';
-}
+/* There is intentionally NO static slug→layout map. Every screen — Inbox, Grid,
+ * Kanban included — is just a `screen` card; its `layout` attribute is the only
+ * source of truth (the LAYOUTS themselves are the built-ins, not the slugs). The
+ * ScreenHost resolves the card and dispatches on its layout; until it resolves it
+ * shows a neutral loading body. No slug is privileged. */
 
 /* -------------------------------------------------------------------------- */
 /* Group-axis defaults (keep the filter bar's GROUP picker in sync with a      */
@@ -117,9 +102,9 @@ export function defaultGroupForLayout(layout: string): string {
 export function viewActionsForLayout(layout: string): Array<{ type: string }> {
   switch (layout) {
     case 'list':
-      return [{ type: 'InboxViewToggles' }];
+      return [{ type: 'NewTaskButton' }, { type: 'InboxViewToggles' }];
     case 'grid':
-      return [{ type: 'GridColumns' }];
+      return [{ type: 'NewTaskButton' }, { type: 'GridColumns' }];
     default:
       return [];
   }

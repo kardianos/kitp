@@ -330,6 +330,51 @@ test('Inbox reorder: releasing in the gap (drop on the list container) commits (
   assert.ok(transport.sent.sortSets.length >= 1, 'user_card_sort.set fired for the gap drop');
 });
 
+test('Inbox reorder: dropping on the LAST row’s lower half moves the card to the end (#30)', async () => {
+  const transport = recordingInboxTransport();
+  const { dispatcher, inbox } = bootInbox(transport);
+  await settle(dispatcher);
+
+  // Drag the FIRST row (201) ONTO the last row (203). With a real rect, a drop
+  // in 203's LOWER half must insert AFTER it (the end) — not before it (the old
+  // bug, where a card could never pass the last row).
+  const r201 = visibleRows(inbox).find((r) => r.dataset.cardId === '201');
+  const r203 = visibleRows(inbox).find((r) => r.dataset.cardId === '203');
+  // The shim has no layout; stub 203's rect so the midpoint check can resolve.
+  r203.getBoundingClientRect = () => ({ top: 100, bottom: 140, height: 40, left: 0, right: 0, width: 0, x: 0, y: 100 });
+
+  r201.dispatchEvent({ type: 'dragstart', target: r201 });
+  r203.dispatchEvent({ type: 'drop', target: r203, clientY: 135 }); // lower half (>120 midpoint)
+
+  assert.deepEqual(
+    visibleRows(inbox).map((r) => r.dataset.cardId),
+    ['202', '203', '201'],
+    'drop on the last row’s lower half moved 201 to the END',
+  );
+  await settle(dispatcher);
+  assert.ok(transport.sent.sortSets.length >= 1, 'user_card_sort.set fired');
+});
+
+test('Inbox reorder: dropping on a row’s upper half still inserts BEFORE it', async () => {
+  const transport = recordingInboxTransport();
+  const { dispatcher, inbox } = bootInbox(transport);
+  await settle(dispatcher);
+
+  // Drag the last row (203) onto 202's UPPER half → insert BEFORE 202.
+  const r202 = visibleRows(inbox).find((r) => r.dataset.cardId === '202');
+  const r203 = visibleRows(inbox).find((r) => r.dataset.cardId === '203');
+  r202.getBoundingClientRect = () => ({ top: 100, bottom: 140, height: 40, left: 0, right: 0, width: 0, x: 0, y: 100 });
+
+  r203.dispatchEvent({ type: 'dragstart', target: r203 });
+  r202.dispatchEvent({ type: 'drop', target: r202, clientY: 105 }); // upper half (<120 midpoint)
+
+  assert.deepEqual(
+    visibleRows(inbox).map((r) => r.dataset.cardId),
+    ['201', '203', '202'],
+    'upper-half drop inserted 203 before 202',
+  );
+});
+
 /* -------------------------------------------------------------------------- */
 /* Animated drop placeholder (#5): a gliding bar shows the insertion gap.       */
 /* -------------------------------------------------------------------------- */

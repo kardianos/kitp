@@ -154,6 +154,50 @@ test('set-attr to a card_ref switches op list; set-op to in; set value via ref p
   });
 });
 
+test('person card_ref offers a dynamic "Me" option; picking it lands the @me token', () => {
+  const { ctx, tree } = literalCtx();
+  // A person ref (assignee) + a non-person ref (milestone) in one schema.
+  const schema = [
+    { name: 'assignee', label: 'Assignee', valueType: 'card_ref', targetCardType: 'person' },
+    { name: 'milestone_ref', label: 'Milestone', valueType: 'card_ref', targetCardType: 'milestone' },
+  ];
+  tree.at(['screen', 'filterOptions']).set({
+    person: [{ value: '5', label: 'Alice' }],
+    milestone: [{ value: '32', label: 'M1' }],
+  });
+  const c = mount(
+    { type: 'PredicateFilter', valuePath: 'screen.filter', schema, optionsPath: 'screen.filterOptions' },
+    ctx,
+  );
+  c.el.querySelector('[data-pred-add-leaf]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+
+  // attr=assignee (person), default op eq → a single ref <select> with a Me option.
+  setSelect(c.el.querySelector('[data-pred-attr]'), 'assignee');
+  setSelect(c.el.querySelector('[data-pred-op]'), 'eq');
+  const ref = c.el.querySelector('[data-pred-ref]');
+  const me = ref.querySelector('[data-pred-ref-me]');
+  assert.ok(me, 'person ref has a "Me" option');
+  assert.equal(me.value, '@me', 'Me carries the @me token');
+
+  // Pick "Me" → the leaf stores the @me token verbatim (resolved per-viewer
+  // server-side), NOT a concrete id.
+  setSelect(ref, '@me');
+  assert.deepEqual(c.currentWire(), {
+    connective: 'and',
+    children: [{ attr: 'assignee', op: '=', values: ['@me'] }],
+  });
+
+  // A non-person ref (milestone) gets NO Me option.
+  setSelect(c.el.querySelector('[data-pred-attr]'), 'milestone_ref');
+  setSelect(c.el.querySelector('[data-pred-op]'), 'eq');
+  assert.equal(
+    c.el.querySelector('[data-pred-ref]').querySelector('[data-pred-ref-me]'),
+    null,
+    'non-person ref has no Me option',
+  );
+});
+
 test('text leaf: typing a value lands a contains predicate', () => {
   const { ctx } = literalCtx();
   const c = mount(
@@ -364,7 +408,9 @@ test('{ cardType } schema sources attributes from attribute_def.select', async (
   M.flushSync?.();
   const attrSel = c.el.querySelector('[data-pred-attr]');
   const names = attrSel.children.map((o) => o.value);
-  assert.deepEqual(names, ['title', 'milestone_ref'], 'attrs sourced from attribute_def.select');
+  // The card_type's attrs, plus the synthetic every-card timestamps the
+  // predicate can filter on (last_activity_at / created_at).
+  assert.deepEqual(names, ['title', 'milestone_ref', 'last_activity_at', 'created_at'], 'sourced attrs + top-level timestamps');
 });
 
 /* -------------------------------------------------------------------------- */

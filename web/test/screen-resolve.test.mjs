@@ -299,13 +299,8 @@ test('readPhaseToggles: parses the phase_scope group from toggle_groups (ignores
   assert.deepEqual(M.readPhaseToggles({ id: 1n, attributes: { toggle_groups: 'nope{' } }), []);
 });
 
-test('fallbackLayoutForSlug: known slugs map; unknown → unknown', () => {
-  assert.equal(M.fallbackLayoutForSlug('kanban'), 'kanban');
-  assert.equal(M.fallbackLayoutForSlug('grid'), 'grid');
-  assert.equal(M.fallbackLayoutForSlug('inbox'), 'list');
-  assert.equal(M.fallbackLayoutForSlug('project'), 'project');
-  assert.equal(M.fallbackLayoutForSlug('hologram'), 'unknown');
-});
+// (Removed: there is no fallbackLayoutForSlug / slug→layout map any more — a
+//  screen's layout is read from its card. No slug is privileged.)
 
 test('layoutRequiresGroup / defaultGroupForLayout: only the board (kanban) requires a group', () => {
   assert.equal(M.layoutRequiresGroup('kanban'), true, 'kanban requires a group axis');
@@ -317,9 +312,19 @@ test('layoutRequiresGroup / defaultGroupForLayout: only the board (kanban) requi
   assert.equal(M.defaultGroupForLayout('grid'), '', 'flat layouts default to No group');
 });
 
-test('viewActionsForLayout: list → InboxViewToggles, grid → GridColumns, others → none', () => {
-  assert.deepEqual(M.viewActionsForLayout('list'), [{ type: 'InboxViewToggles' }], 'inbox toggles on the list View row');
-  assert.deepEqual(M.viewActionsForLayout('grid'), [{ type: 'GridColumns' }], 'grid Columns chooser on the View row');
+test('viewActionsForLayout: list + grid lead with the "+ New" button, others → none', () => {
+  // The "+ New" task button leads the View row on the two task-list layouts the
+  // user asked for; kanban (column +) and project (own + New task) don't get it.
+  assert.deepEqual(
+    M.viewActionsForLayout('list'),
+    [{ type: 'NewTaskButton' }, { type: 'InboxViewToggles' }],
+    'New button + inbox toggles on the list View row',
+  );
+  assert.deepEqual(
+    M.viewActionsForLayout('grid'),
+    [{ type: 'NewTaskButton' }, { type: 'GridColumns' }],
+    'New button + Columns chooser on the grid View row',
+  );
   assert.deepEqual(M.viewActionsForLayout('kanban'), [], 'kanban registers no view actions');
   assert.deepEqual(M.viewActionsForLayout('project'), [], 'project registers no view actions');
 });

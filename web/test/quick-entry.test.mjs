@@ -278,6 +278,63 @@ test('submit fires card.insert with the project scope as parent + resolved defau
   assert.equal(data.attributes.status, '200', 'first triage status stamped (chain step 3)');
 });
 
+test('submit stamps the screen base phase status (active board → first active)', async () => {
+  // Same two statuses; a Board-style screen whose base phase is 'active' must
+  // seed the first ACTIVE status (201), NOT the first triage (200).
+  const statusRows = [
+    { id: '201', card_type_name: 'status', phase: 'active', attributes: { title: 'Doing', sort_order: 2 } },
+    { id: '200', card_type_name: 'status', phase: 'triage', attributes: { title: 'Triage', sort_order: 1 } },
+  ];
+  const { transport, sent } = quickEntryHarness({ statusRows });
+  const { dispatcher, api } = bootApi(transport);
+  const { qe, tree } = mountQuickEntry(api);
+  // The ScreenHost seeds this leaf for the active screen; a Board has active on.
+  tree.at(['screen', 'phaseToggles']).set([
+    { label: 'Active', phase: 'active', defaultOn: true },
+    { label: 'Closed', phase: 'terminal', defaultOn: false },
+  ]);
+  await settle(dispatcher);
+
+  qe.open();
+  qe.el.querySelector('[data-qe-title]').value = 'On a board';
+  click(qe.el.querySelector('[data-qe-add-close]'));
+  await settle(dispatcher);
+
+  const data = sentOf(sent, 'card', 'insert')[0].data;
+  assert.equal(data.attributes.status, '201', 'base phase active → first active status');
+});
+
+test('submit of a sub-task stamps first active regardless of screen base phase', async () => {
+  // A triage-base screen + a "+ New sub-task" prefill → still first active (201).
+  const statusRows = [
+    { id: '201', card_type_name: 'status', phase: 'active', attributes: { title: 'Doing', sort_order: 2 } },
+    { id: '200', card_type_name: 'status', phase: 'triage', attributes: { title: 'Triage', sort_order: 1 } },
+  ];
+  const { transport, sent } = quickEntryHarness({ statusRows });
+  const { dispatcher, api } = bootApi(transport);
+  const { qe, tree } = mountQuickEntry(api);
+  tree.at(['screen', 'phaseToggles']).set([
+    { label: 'Triage', phase: 'triage', defaultOn: true },
+  ]);
+  await settle(dispatcher);
+
+  qe.open({
+    prefill: {
+      extraAttributes: [
+        { name: 'parent_task', value: 42n },
+        { name: 'parent_relationship', value: 'subtask' },
+      ],
+    },
+  });
+  qe.el.querySelector('[data-qe-title]').value = 'A sub-task';
+  click(qe.el.querySelector('[data-qe-add-close]'));
+  await settle(dispatcher);
+
+  const data = sentOf(sent, 'card', 'insert')[0].data;
+  assert.equal(data.attributes.status, '201', 'sub-task → first active even on a triage screen');
+  assert.equal(data.attributes.parent_task, '42', 'sub-task link rides the insert');
+});
+
 test('no project scope → submit surfaces an inline error (no card.insert)', async () => {
   const { transport, sent } = quickEntryHarness();
   const { dispatcher, api } = bootApi(transport);
@@ -505,10 +562,68 @@ test('default-status chain: falls to first active when no triage (step 4)', () =
   assert.deepEqual(r, { statusCardId: 22n }, 'lowest-sort_order active wins');
 });
 
-test('default-status chain: bottoms out with flow_no_default (step 5)', () => {
+test('default-status chain: bottoms out with flow_no_default', () => {
   const r = M.resolveDefaultCreateStatus({ screenCard: null, flow: null, candidateStatuses: [] });
   assert.equal(r.error, 'flow_no_default');
   assert.match(r.message, /no valid starting status/);
+});
+
+test('default-status chain: sub-task → first active, ignoring screen/flow/base (step 0)', () => {
+  const r = M.resolveDefaultCreateStatus({
+    // A screen override + flow default + a triage base phase are all present;
+    // a sub-task must still land in the first ACTIVE status.
+    screenCard: { id: 1n, card_type_name: 'screen', attributes: { default_create_status: '777' } },
+    flow: { id: 2n, default_create_status_id: 888n },
+    basePhase: 'triage',
+    subtask: true,
+    candidateStatuses: [
+      { id: 31n, card_type_name: 'status', phase: 'triage', attributes: { sort_order: 0 } },
+      { id: 32n, card_type_name: 'status', phase: 'active', attributes: { sort_order: 5 } },
+      { id: 33n, card_type_name: 'status', phase: 'active', attributes: { sort_order: 2 } },
+    ],
+  });
+  assert.deepEqual(r, { statusCardId: 33n }, 'sub-task uses lowest-sort_order active');
+});
+
+test('default-status chain: sub-task with no active falls through to triage', () => {
+  const r = M.resolveDefaultCreateStatus({
+    screenCard: null,
+    flow: null,
+    subtask: true,
+    candidateStatuses: [
+      { id: 41n, card_type_name: 'status', phase: 'triage', attributes: { sort_order: 1 } },
+    ],
+  });
+  assert.deepEqual(r, { statusCardId: 41n }, 'sub-task falls through when no active exists');
+});
+
+test('default-status chain: base phase active beats first triage (step 3)', () => {
+  const r = M.resolveDefaultCreateStatus({
+    // No screen override, no flow; a Board-style screen (base phase = active)
+    // must seed the first ACTIVE status even though a triage status exists.
+    screenCard: null,
+    flow: null,
+    basePhase: 'active',
+    candidateStatuses: [
+      { id: 51n, card_type_name: 'status', phase: 'triage', attributes: { sort_order: 0 } },
+      { id: 52n, card_type_name: 'status', phase: 'active', attributes: { sort_order: 7 } },
+      { id: 53n, card_type_name: 'status', phase: 'active', attributes: { sort_order: 3 } },
+    ],
+  });
+  assert.deepEqual(r, { statusCardId: 53n }, 'base phase active picks lowest-sort_order active');
+});
+
+test('default-status chain: base phase triage picks first triage (step 3)', () => {
+  const r = M.resolveDefaultCreateStatus({
+    screenCard: null,
+    flow: null,
+    basePhase: 'triage',
+    candidateStatuses: [
+      { id: 61n, card_type_name: 'status', phase: 'active', attributes: { sort_order: 0 } },
+      { id: 62n, card_type_name: 'status', phase: 'triage', attributes: { sort_order: 4 } },
+    ],
+  });
+  assert.deepEqual(r, { statusCardId: 62n }, 'base phase triage picks the triage status');
 });
 
 test('overlay surfaces flow_no_default inline when a task has no status source', async () => {

@@ -113,9 +113,11 @@ test('helpTopicForRoute: each route maps to its embedded-help topic key', () => 
   // showed keybindings with no authored prose even though `task_detail` exists.
   assert.equal(M.helpTopicForRoute(M.matchRoute('/task/7')), 'task_detail', 'task → task_detail prose');
   assert.equal(M.helpTopicForRoute(M.matchRoute('/admin/users')), 'admin.users');
-  assert.equal(M.helpTopicForRoute(M.matchRoute('/project/9/screen/grid')), 'layout.grid');
-  assert.equal(M.helpTopicForRoute(M.matchRoute('/project/9/screen/kanban')), 'layout.kanban');
-  assert.equal(M.helpTopicForRoute(M.matchRoute('/project/9')), 'layout.kanban', 'project board default');
+  // screen / project routes no longer map a slug → layout here: the topic is
+  // `layout.<resolved layout>`, resolved by the caller from the ScreenHost's
+  // published `screen.layout` leaf (no slug is privileged). So this returns null.
+  assert.equal(M.helpTopicForRoute(M.matchRoute('/project/9/screen/grid')), null);
+  assert.equal(M.helpTopicForRoute(M.matchRoute('/project/9')), null);
   // No authored topic for the all-projects landing / not-found.
   assert.equal(M.helpTopicForRoute(M.matchRoute('/projects')), null);
   assert.equal(M.helpTopicForRoute(M.matchRoute('/nope')), null);
@@ -132,13 +134,9 @@ test('matchRoute: trailing slash + query string are normalised away', () => {
 /* slug → layout seam (#29).                                                   */
 /* -------------------------------------------------------------------------- */
 
-test('screenLayoutForSlug: known slugs map; unknown → unknown (NotFound)', () => {
-  assert.equal(M.screenLayoutForSlug('kanban'), 'kanban');
-  assert.equal(M.screenLayoutForSlug('grid'), 'grid');
-  assert.equal(M.screenLayoutForSlug('inbox'), 'list');
-  assert.equal(M.screenLayoutForSlug('project'), 'project');
-  assert.equal(M.screenLayoutForSlug('hologram'), 'unknown');
-});
+// (No screenLayoutForSlug seam any more — a screen's layout comes from its card,
+//  resolved by the ScreenHost; the slug carries no built-in layout. See the
+//  data-driven screen-resolution tests below.)
 
 /* -------------------------------------------------------------------------- */
 /* navigate(): history + route leaf.                                           */
@@ -321,12 +319,23 @@ function mountShell(opts = {}) {
   const ctx = { api, tree, scope };
   M.installRouter(tree); // lands the current URL route BEFORE mount
 
+  // Inject the per-project scope links via the AppShell's `scopeLinks` test
+  // seam so the rail-presence assertions have something to find before the
+  // (mocked-out) loadScopeLinks query lands. Production no longer hardcodes
+  // these — each project's screen cards drive them via loadScopeLinks.
+  const scopeLinks = opts.scopeLinks ?? [
+    { slug: 'inbox', label: 'Inbox', chord: 'g i' },
+    { slug: 'grid', label: 'Grid', chord: 'g g' },
+    { slug: 'kanban', label: 'Kanban', chord: 'g k' },
+    { slug: 'project', label: 'Project detail', chord: '' },
+  ];
   const shell = M.Control.New(
     'AppShell',
     {
       type: 'AppShell',
       boardConfig: { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban' } },
       adminConfigFor: (key) => (key === 'users' ? M.adminScreenConfig('users') : null),
+      scopeLinks,
       ...(opts.adminLinks !== undefined ? { adminLinks: opts.adminLinks } : {}),
     },
     ctx,
@@ -435,26 +444,67 @@ test('navigate swaps the outlet: /projects → ProjectList, /project/:id → Scr
   assert.equal(shell.el.findByControl('ScreenHost').length, 0, 'board torn down');
 });
 
-test('/project/:id/screen/grid → ScreenHost dispatches the grid layout', () => {
+test('/project/:id/screen/grid → ScreenHost resolves the grid layout from the screen card', async () => {
+  // No slug seed: the host loads the project's `screen` cards, matches 'grid',
+  // and dispatches the card's layout. (Mounted with a screen-returning transport
+  // since the layout is now card-driven, not slug-derived.)
   setPath('/project/42/screen/grid');
-  const { shell, tree } = mountShell();
-
-  // The deep-link landed a screen route → ScreenHost with the grid layout.
-  const hosts = shell.el.findByControl('ScreenHost');
-  assert.equal(hosts.length, 1, 'screen route mounted a ScreenHost');
+  const screens = [
+    { id: '90', card_type_name: 'screen', parent_card_id: '42', attributes: { title: 'Grid', slug: 'grid', layout: 'grid' } },
+  ];
+  const dispatcher = new M.Dispatcher({ transport: screenNavTransport(screens) });
+  const api = new M.Api(dispatcher);
+  M.registerKanbanSpecs(api);
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(42n);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  M.installRouter(tree);
+  const shell = M.Control.New(
+    'AppShell',
+    { type: 'AppShell', boardConfig: { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban' } }, adminConfigFor: () => null },
+    { api, tree, scope },
+  );
+  shell.mount(new FakeElement('div'));
+  assert.equal(shell.el.findByControl('ScreenHost').length, 1, 'screen route mounted a ScreenHost');
   assert.equal(tree.at(['scope', 'projectId']).peek(), 42n, 'scope from the :id');
-  // The body host carries the resolved layout (grid → Grid control).
+
+  for (let i = 0; i < 4; i++) await dispatcher.flushNow();
+  M.flushSync?.();
   const body = shell.el.querySelector('.screen-host__body');
-  assert.equal(body.dataset.layout, 'grid', 'slug→layout: grid');
+  assert.equal(body.dataset.layout, 'grid', 'resolved card layout: grid');
   assert.equal(body.findByControl('Grid').length, 1, 'grid layout → Grid control');
 });
 
-test('/project/:id/screen/<unknown> → ScreenHost renders NotFound (graceful)', () => {
+test('/project/:id/screen/<unknown> → loading (no red flash), then NotFound after resolution', async () => {
+  // A custom slug's layout is known only to its screen card. The host must NOT
+  // flash the red NotFound for the 'unknown' seed while that card loads — it
+  // shows a neutral loading body, then NotFound iff the card doesn't resolve.
   setPath('/project/42/screen/hologram');
-  const { shell } = mountShell();
-  const body = shell.el.querySelector('.screen-host__body');
-  assert.equal(body.dataset.layout, 'unknown', 'unknown slug → unknown layout');
-  assert.equal(body.findByControl('NotFound').length, 1, 'unknown layout → NotFound');
+  const dispatcher = new M.Dispatcher({ transport: screenNavTransport([]) }); // no screen cards
+  const api = new M.Api(dispatcher);
+  M.registerKanbanSpecs(api); // card.select_with_attributes (registered at boot in prod)
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(42n);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  M.installRouter(tree);
+  const shell = M.Control.New(
+    'AppShell',
+    { type: 'AppShell', boardConfig: { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban' } }, adminConfigFor: () => null },
+    { api, tree, scope },
+  );
+  shell.mount(new FakeElement('div'));
+
+  // While resolving: a neutral loading body, NOT the red NotFound.
+  let body = shell.el.querySelector('.screen-host__body');
+  assert.ok(body.querySelector('[data-screen-loading]'), 'shows a loading body while resolving');
+  assert.equal(body.findByControl('NotFound').length, 0, 'no NotFound flash before resolution');
+
+  // After resolution finds no screen card for the slug → graceful NotFound.
+  for (let i = 0; i < 4; i++) await dispatcher.flushNow();
+  M.flushSync?.();
+  body = shell.el.querySelector('.screen-host__body');
+  assert.equal(body.dataset.layout, 'unknown', 'unresolved slug → unknown layout');
+  assert.equal(body.findByControl('NotFound').length, 1, 'unknown layout → NotFound (after resolve)');
 });
 
 test('/admin/:key → MasterDetail via adminConfigFor; unknown key → NotFound', () => {
@@ -566,12 +616,14 @@ test('ADMIN disclosure (#4): collapsed by default, the heading toggles it open',
 /* DEFAULT PROJECT screen-nav: reactive on the route + scope.projectId.         */
 /* -------------------------------------------------------------------------- */
 
-/** The per-project rail nav (Inbox/Grid/Kanban/Project) is visible iff none of
- *  its `[data-slug]` links are display:none. */
+/** The per-project rail nav is visible iff its links host isn't display:none.
+ *  The nav is now data-driven (links rebuilt from the project's screen cards),
+ *  so the show/hide effect toggles the whole links HOST, not each link. */
 function scopeNavVisible(shell) {
   const links = shell.el.querySelectorAll('[data-slug]');
   assert.ok(links.length > 0, 'scope nav links present in the rail');
-  return links.every((el) => el.style.display !== 'none');
+  const host = shell.el.querySelector('[data-region="shell.scopeLinks"]');
+  return host !== null && host.style.display !== 'none';
 }
 
 test('Task detail: project screen-nav reveals when the task publishes its project scope', () => {
@@ -595,6 +647,182 @@ test('Per-project screen-nav stays visible on /projects when a project is active
   tree.at(['scope', 'projectId']).set(9n);
   M.flushSync?.();
   assert.equal(scopeNavVisible(shell), true, 'active project keeps the screen-nav visible on /projects');
+});
+
+test('switching projects PRESERVES the current screen slug (no snap to the board)', () => {
+  setPath('/project/42/screen/grid');
+  const { shell } = mountShell();
+  const picker = shell.el.querySelector('[data-scope-picker]');
+  assert.ok(picker, 'the project switcher is present');
+  picker.value = '99';
+  picker.dispatchEvent({ type: 'change', target: picker });
+  // Same screen (grid) in the NEW project — not the hard-coded kanban board.
+  assert.equal(location.pathname, '/project/99/screen/grid', 'stayed on the grid screen');
+});
+
+test('switching projects off a screen route lands on the project board', () => {
+  setPath('/projects');
+  const { shell } = mountShell();
+  const picker = shell.el.querySelector('[data-scope-picker]');
+  picker.value = '99';
+  picker.dispatchEvent({ type: 'change', target: picker });
+  assert.equal(location.pathname, '/project/99', 'no current screen → default board');
+});
+
+// A transport that returns the given screen cards for the rail's screen query.
+function screenNavTransport(screens) {
+  return {
+    async send(body) {
+      const req = JSON.parse(body);
+      const subresponses = req.subrequests.map((sr) => {
+        const k = `${sr.endpoint}.${sr.action}`;
+        if (k === 'card.select_with_attributes' && (sr.data ?? {}).card_type_name === 'screen') {
+          return { id: sr.id, ok: true, data: { rows: screens } };
+        }
+        return { id: sr.id, ok: true, data: { rows: [] } };
+      });
+      return { status: 200, text: JSON.stringify({ subresponses }) };
+    },
+  };
+}
+
+test('/project/:id (default board) redirects to the FIRST screen by sort_order', async () => {
+  setPath('/project/42');
+  const screens = [
+    { id: '51', card_type_name: 'screen', parent_card_id: '42', attributes: { title: 'Roadmap', slug: 'roadmap', sort_order: 2 } },
+    { id: '50', card_type_name: 'screen', parent_card_id: '42', attributes: { title: 'Backlog', slug: 'backlog', sort_order: 1 } },
+  ];
+  const dispatcher = new M.Dispatcher({ transport: screenNavTransport(screens) });
+  const api = new M.Api(dispatcher);
+  M.registerKanbanSpecs(api);
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(42n);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  M.installRouter(tree);
+  const shell = M.Control.New(
+    'AppShell',
+    { type: 'AppShell', boardConfig: { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban' } }, adminConfigFor: () => null },
+    { api, tree, scope },
+  );
+  shell.mount(new FakeElement('div'));
+  for (let i = 0; i < 4; i++) await dispatcher.flushNow();
+  M.flushSync?.();
+
+  // The default board is the first screen by sort_order (backlog, sort 1) — not
+  // a hard-coded kanban board.
+  assert.equal(location.pathname, '/project/42/screen/backlog', 'redirected to the first screen');
+});
+
+test('/project/:id/screen/<custom> → no NotFound flash; resolves to the screen card layout', async () => {
+  // The reported bug: navigating to a custom screen (e.g. "Ideas") flashed the
+  // red "component not found" before its card resolved. Now it shows a neutral
+  // loading body, then the real layout — never NotFound.
+  setPath('/project/42/screen/ideas');
+  const screens = [
+    { id: '80', card_type_name: 'screen', parent_card_id: '42', attributes: { title: 'Ideas', slug: 'ideas', layout: 'grid' } },
+  ];
+  const dispatcher = new M.Dispatcher({ transport: screenNavTransport(screens) });
+  const api = new M.Api(dispatcher);
+  M.registerKanbanSpecs(api); // Grid + the body controls are registered in before()
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(42n);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  M.installRouter(tree);
+  const shell = M.Control.New(
+    'AppShell',
+    { type: 'AppShell', boardConfig: { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban' } }, adminConfigFor: () => null },
+    { api, tree, scope },
+  );
+  shell.mount(new FakeElement('div'));
+
+  // No red flash at any point — loading first.
+  let body = shell.el.querySelector('.screen-host__body');
+  assert.equal(body.findByControl('NotFound').length, 0, 'no NotFound flash for a custom slug');
+  assert.ok(body.querySelector('[data-screen-loading]'), 'neutral loading body while resolving');
+
+  for (let i = 0; i < 4; i++) await dispatcher.flushNow();
+  M.flushSync?.();
+  body = shell.el.querySelector('.screen-host__body');
+  assert.equal(body.dataset.layout, 'grid', 'resolves to the screen card layout (no flash, then the real body)');
+});
+
+test('DEFAULT PROJECT nav is data-driven: the rail links come from the project screen cards', async () => {
+  setPath('/projects');
+  const screens = [
+    { id: '51', card_type_name: 'screen', attributes: { title: 'Roadmap', slug: 'roadmap', hotkey: 'r', sort_order: 2 } },
+    { id: '50', card_type_name: 'screen', attributes: { title: 'Backlog', slug: 'backlog', hotkey: 'b', sort_order: 1 } },
+  ];
+  const dispatcher = new M.Dispatcher({ transport: screenNavTransport(screens) });
+  const api = new M.Api(dispatcher);
+  M.registerKanbanSpecs(api); // card.select_with_attributes (registered at boot in prod)
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(7n);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  M.installRouter(tree);
+  const shell = M.Control.New(
+    'AppShell',
+    {
+      type: 'AppShell',
+      boardConfig: { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban' } },
+      adminConfigFor: () => null,
+    },
+    { api, tree, scope },
+  );
+  shell.mount(new FakeElement('div'));
+  for (let i = 0; i < 4; i++) await dispatcher.flushNow();
+  M.flushSync?.();
+
+  // The hard-coded fallback (inbox/grid/kanban/project) is replaced by the
+  // project's actual screen cards — a NEW screen card now shows in the nav.
+  const linkEls = shell.el.querySelectorAll('[data-slug]');
+  const slugs = linkEls.map((e) => e.dataset.slug);
+  assert.deepEqual(slugs, ['backlog', 'roadmap'], 'links derived from screen cards, ordered by sort_order');
+  const text = linkEls.map((e) => e.textContent).join(' ');
+  assert.ok(text.includes('Backlog') && text.includes('Roadmap'), 'labels from the screen titles');
+});
+
+test('screens wire up a data-driven g+<hotkey> chord (a screen key shadows a global one)', async () => {
+  setPath('/project/42/screen/grid');
+  const screens = [
+    { id: '81', card_type_name: 'screen', parent_card_id: '42', attributes: { title: 'Backlog', slug: 'backlog', hotkey: 'b', sort_order: 1 } },
+    // An Archive screen claims `a` — the global `g a` (Activity) chord.
+    { id: '80', card_type_name: 'screen', parent_card_id: '42', attributes: { title: 'Archive', slug: 'archive', hotkey: 'a', sort_order: 5 } },
+  ];
+  const dispatcher = new M.Dispatcher({ transport: screenNavTransport(screens) });
+  const api = new M.Api(dispatcher);
+  M.registerKanbanSpecs(api);
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(42n);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  M.installRouter(tree);
+  const shell = M.Control.New(
+    'AppShell',
+    {
+      type: 'AppShell',
+      boardConfig: { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban' } },
+      adminConfigFor: () => null,
+      hotkeys: M.shellHotkeys(() => {}), // global chords incl. `g a` Activity
+    },
+    { api, tree, scope },
+  );
+  shell.mount(new FakeElement('div'));
+  for (let i = 0; i < 4; i++) await dispatcher.flushNow();
+  M.flushSync?.();
+
+  const all = shell.hotkeys();
+  // `g b` → the Backlog screen (no global conflict): exactly one binding.
+  const gb = all.filter((b) => b.binding === 'g b');
+  assert.equal(gb.length, 1, 'one g b binding (the backlog screen)');
+  gb[0].run();
+  assert.equal(location.pathname, '/project/42/screen/backlog', 'g b navigates to backlog');
+
+  // `g a`: the screen binding is appended AFTER the global one, so deriveBindings
+  // resolves the screen as the winner. The last `g a` entry is the Archive screen.
+  const ga = all.filter((b) => b.binding === 'g a');
+  const winner = ga[ga.length - 1];
+  assert.match(winner.label, /Archive/, 'a screen claims the g a chord');
+  winner.run();
+  assert.equal(location.pathname, '/project/42/screen/archive', 'g a navigates to the archive screen');
 });
 
 test('Per-project screen-nav shows on a project screen route', () => {

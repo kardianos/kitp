@@ -150,6 +150,36 @@ func TestAttributeUpdateBatch_Happy(t *testing.T) {
 	}
 }
 
+// TestAttributeUpdateBatch_NumberStringCoerced — a `number` attribute set via a
+// numeric STRING (what a text input sends) is canonicalised to a JSON number,
+// so the read + numeric ORDER BY paths (which require jsonb_typeof='number')
+// honour it. Without the coercion a hand-edited sort_order is silently dropped
+// from numeric ordering.
+func TestAttributeUpdateBatch_NumberStringCoerced(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_attr_upd_number_coerce")
+	_, statusID, _ := seedProjectAndTask(t, pool) // status carries a sort_order edge
+	rows := callAttributeUpdateBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"card_id": strconv.FormatInt(statusID, 10), "attribute_name": "sort_order", "value": "20"},
+	})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("want ok; got %+v", rows[0])
+	}
+	var typ string
+	var num float64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT jsonb_typeof(value), (value)::text::numeric
+		   FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		  WHERE av.card_id = $1 AND ad.name = 'sort_order'`, statusID).Scan(&typ, &num); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if typ != "number" {
+		t.Errorf("sort_order stored as %q, want \"number\" (a string is dropped from numeric ordering)", typ)
+	}
+	if num != 20 {
+		t.Errorf("sort_order = %v, want 20", num)
+	}
+}
+
 // TestAttributeUpdateBatch_MultiRow — three updates on the same card,
 // all ok, idx order matches input order, second write carries the
 // first write's value as prev_value.

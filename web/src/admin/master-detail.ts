@@ -39,7 +39,7 @@ import {
   Control,
   type BaseControlConfig,
 } from '../core/control.js';
-import type { ActionBinding, InputSpec, QueryBinding } from '../core/data.js';
+import { resolveInput, type ActionBinding, type InputSpec, type QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
 import type { CardWherePredicate } from '../projects/project-helpers.js';
@@ -216,6 +216,13 @@ export interface MasterDetailConfig extends BaseControlConfig {
   /** Tree namespace holding `<scopeKey>.items` + `<scopeKey>.selectedId`. */
   scopeKey: string;
   /**
+   * Optional dotted tree path bumped (as a +1 nonce) after any successful
+   * create / edit / delete. Lets another control react to this screen's writes
+   * — e.g. the admin Screens screen sets `shell.navRefresh` so the data-driven
+   * sidebar nav reloads when a screen is renamed / added / removed.
+   */
+  refreshNonce?: string;
+  /**
    * Auxiliary option lists to load on mount, so a select field's
    * `options: { fromPath }` is DATA-DRIVEN from the server rather than hardcoded
    * (e.g. the role-assign select loads `role.list` instead of a literal role
@@ -224,8 +231,12 @@ export interface MasterDetailConfig extends BaseControlConfig {
    */
   prefetch?: Array<{
     spec: string;
-    /** Optional input passed to the spec (e.g. `{ cardTypeName: 'project' }`). */
-    input?: Record<string, unknown>;
+    /** Optional declarative input (InputSpec). With `scoped`, `{ from: 'scope.projectId' }`
+     *  resolves at fire time and the fetch re-runs on a project switch. */
+    input?: InputSpec;
+    /** When true, resolve `input` via the tree/scope and refetch on a project
+     *  switch — for project-scoped option lists (e.g. the active project's screens). */
+    scoped?: boolean;
     landAt: string;
     valueField: string;
     labelField: string;
@@ -310,7 +321,6 @@ export interface MasterDetailConfig extends BaseControlConfig {
         | 'flowSteps'
         | 'edgeMatrix'
         | 'screenFilters'
-        | 'filterPredicate'
         | 'commChannelConfig'
         | 'activitySinkConfig'
         | 'agentTokens'
@@ -509,6 +519,7 @@ export function updateAction(cfg: MasterDetailConfig): ActionBinding | null {
         });
       },
     },
+    result: { method: 'afterWrite' }, // bump refreshNonce on edit success (no-op if unset)
     onError: 'top',
   };
 }
@@ -582,6 +593,7 @@ export function deleteAction(cfg: MasterDetailConfig): ActionBinding | null {
         return rows.filter((it) => it.id !== id.id);
       },
     },
+    result: { method: 'afterWrite' }, // bump refreshNonce on delete success (no-op if unset)
     onError: 'top',
   };
 }
@@ -680,12 +692,14 @@ export class MasterDetail extends Control<MasterDetailConfig> {
     const rowHeight = cfg.list.rowHeight ?? DEFAULT_ROW_HEIGHT;
 
     // Data-driven auxiliary option lists (e.g. role.list → the role-assign
-    // select). One callByName per entry; lands {value,label}[] at `landAt` for a
-    // select field's `options: { fromPath }`. One-way; cascade-safe.
-    for (const pf of cfg.prefetch ?? []) {
+    // select; the active project's screens → the named-filter parent picker).
+    // Lands {value,label}[] at `landAt` for a select field's `options:{fromPath}`.
+    // Static entries fetch once; `scoped` entries resolve `input` (so
+    // `{from:'scope.projectId'}` works) + refetch on a project switch. One-way.
+    const runPrefetch = (pf: NonNullable<MasterDetailConfig['prefetch']>[number], input: Record<string, unknown>): void => {
       this.ctx.api.callByName(
         pf.spec,
-        pf.input ?? {},
+        input,
         (out) => {
           if (!this.isAlive()) return;
           const rows = extractRows(out);
@@ -697,6 +711,17 @@ export class MasterDetail extends Control<MasterDetailConfig> {
         },
         { alive: () => this.isAlive() },
       );
+    };
+    for (const pf of cfg.prefetch ?? []) {
+      if (pf.scoped === true) {
+        // Re-resolve + refetch whenever the active project changes.
+        this.effect(() => {
+          this.ctx.tree.at(['scope', 'projectId']).get();
+          runPrefetch(pf, resolveInput(pf.input, { tree: this.ctx.tree, config: {} }));
+        }, `masterDetail.prefetch.${pf.landAt}`);
+      } else {
+        runPrefetch(pf, resolveInput(pf.input, { tree: this.ctx.tree, config: {} }));
+      }
     }
 
     // The list query lands its rows here: NORMALISE every decoded row to a
@@ -732,7 +757,13 @@ export class MasterDetail extends Control<MasterDetailConfig> {
           return { id: realIdStr, raw };
         }),
       );
+      this.bumpRefresh(); // a new row may belong in a dependent view (e.g. the nav)
     });
+
+    // Edit / delete success sink: bump the optional refreshNonce so a dependent
+    // view reacts (e.g. the sidebar nav reloads after a screen is renamed /
+    // removed). A no-op when `refreshNonce` isn't configured.
+    this.handler('afterWrite', () => this.bumpRefresh());
 
     // Relation reload sink: bump the listVersion leaf so the list query refires
     // and the mutated row reflects server truth. A one-way tree write (outside
@@ -981,6 +1012,15 @@ export class MasterDetail extends Control<MasterDetailConfig> {
   /** Bump the listVersion leaf so the `{ signal }` list query refires. */
   private bumpListVersion(): void {
     const node = this.ctx.tree.at(this.listVersionPath);
+    node.set((node.peek<number>() ?? 0) + 1);
+  }
+
+  /** Bump the optional cross-control refresh nonce after a write (no-op unless
+   *  `config.refreshNonce` is set). A one-way tree write — cascade-safe. */
+  private bumpRefresh(): void {
+    const path = this.config.refreshNonce;
+    if (path === undefined || path === '') return;
+    const node = this.ctx.tree.at(path.split('.'));
     node.set((node.peek<number>() ?? 0) + 1);
   }
 

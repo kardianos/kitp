@@ -116,7 +116,9 @@ test('AppShell projects query lands shell.projects; ProjectList renders rows fro
   const rows = visibleProjectRows(shell.el);
   assert.equal(rows.length, 1, 'one row for the one landed project');
   assert.match(rows[0].textContent, /Default Project/);
-  assert.match(rows[0].textContent, /open tasks: —/, 'dash placeholder for open count');
+  // No "open tasks: —" placeholder anymore — the count was never wired to a
+  // server query, so the meta line is gone (regression-pinned here).
+  assert.doesNotMatch(rows[0].textContent, /open tasks/);
 });
 
 /* -------------------------------------------------------------------------- */
@@ -326,11 +328,13 @@ test('AppShell swaps the outlet between ProjectList and the board on navigation'
   assert.equal(shell.el.findByControl('ScreenHost').length, 1, 'board mounted for the project');
   assert.equal(tree.at(['scope', 'projectId']).peek(), 31n, 'scope mirrored from the project route');
 
-  // The Kanban chord navigates to /project/31/screen/kanban (route effect keeps
-  // the board mounted — same project; the key changes screen→kanban).
-  shell.intent('goKanban');
+  // A `g k` chord (data-driven, on a screen card with hotkey='k') would call
+  // goScreenSlug('kanban') and navigate to /project/31/screen/kanban; we drive
+  // that URL directly so the rest of the assertion (route + ScreenHost mount)
+  // doesn't depend on a project's screen-card hotkey set being seeded.
+  M.navigate('/project/31/screen/kanban');
   M.flushSync?.();
-  assert.equal(tree.at(['router', 'route']).peek().name, 'screen', 'goKanban navigated to a screen');
+  assert.equal(tree.at(['router', 'route']).peek().name, 'screen', 'screen route landed');
   assert.equal(tree.at(['router', 'route']).peek().params.slug, 'kanban', 'screen slug = kanban');
   assert.equal(shell.el.findByControl('ScreenHost').length, 1, 'board still mounted');
 
@@ -658,6 +662,50 @@ test('edit optimistic title patch ROLLS BACK on fault', async () => {
 
   const rows = visibleProjectRows(ctrl.el);
   assert.match(rows[0].textContent, /Original Name/, 'the list row reverted too');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Delete from the edit dialog (replaces the removed admin Projects screen).   */
+/* -------------------------------------------------------------------------- */
+
+test('the edit dialog Delete button fires card.delete + drops the row optimistically', async () => {
+  const { transport, sent } = recordingProjectsTransport([]);
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl, tree } = mountProjectList(api, [
+    { id: '31', label: 'Default Project' },
+    { id: '32', label: 'Mobile App' },
+  ]);
+
+  // Open the edit dialog for the first row; the Delete button is now visible.
+  const editBtn = ctrl.el.querySelector('[data-project-edit]');
+  editBtn.dispatchEvent({ type: 'click', target: editBtn });
+  const del = ctrl.el.querySelector('[data-qe-delete]');
+  assert.ok(del, 'edit dialog shows a Delete button');
+  assert.equal(del.style.display, '', 'Delete is visible in edit mode');
+
+  del.dispatchEvent({ type: 'click', target: del });
+  M.flushSync?.();
+
+  // OPTIMISTIC: the row is gone from shell.projects before the server replies.
+  const opts = tree.at(['shell', 'projects']).peek();
+  assert.deepEqual(opts.map((o) => o.id), ['32'], 'deleted row removed optimistically');
+
+  await settle(dispatcher);
+  const deletes = sent.filter((sr) => sr.endpoint === 'card' && sr.action === 'delete');
+  assert.equal(deletes.length, 1, 'exactly one card.delete fired');
+  assert.equal(String(deletes[0].data.card_id), '31', 'card.delete targets the edited project');
+});
+
+test('the create dialog hides the Delete button (create has no row to delete)', () => {
+  const { api } = bootApi(M.mockTransport());
+  const { ctrl } = mountProjectList(api, []);
+
+  ctrl.intent('quickCreateOpen'); // opens the shared dialog in CREATE mode
+  M.flushSync?.();
+
+  const del = ctrl.el.querySelector('[data-qe-delete]');
+  assert.ok(del, 'the Delete button exists in the dialog DOM');
+  assert.equal(del.style.display, 'none', 'Delete is hidden in create mode');
 });
 
 /* -------------------------------------------------------------------------- */

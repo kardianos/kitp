@@ -137,6 +137,53 @@ test('Activity: clicking a row opens the card detail (/task/:cardId)', async () 
   assert.equal(route.params.id, '9', 'navigated to the row card');
 });
 
+test('Activity: defaults to the last 7 days (from_date sent), and changing From reloads', async () => {
+  lastActivityInput = null;
+  const { dispatcher, api } = bootApi(activityTransport());
+  const { ctrl } = mountActivity(api);
+  await settle(dispatcher);
+
+  // The initial load carries a from_date = today − 7 (the default window).
+  const want7 = M.isoDaysAgo(M.ACTIVITY_DEFAULT_LOOKBACK_DAYS);
+  assert.equal(lastActivityInput.from_date, want7, 'default 7-day look-back applied');
+  assert.equal(lastActivityInput.to_date, undefined, 'no upper bound by default');
+
+  // Changing the From input fires a fresh activity.select with the new bound.
+  const fromInput = ctrl.el.querySelector('[data-activity-date="from"]');
+  fromInput.value = '2026-05-01';
+  fromInput.dispatchEvent({ type: 'change' });
+  await settle(dispatcher);
+  assert.equal(lastActivityInput.from_date, '2026-05-01', 'edited From bound sent on reload');
+});
+
+test('Activity: Export CSV fetches the window at a high limit and builds a CSV', async () => {
+  lastActivityInput = null;
+  const { dispatcher, api } = bootApi(activityTransport());
+  const { ctrl } = mountActivity(api);
+  await settle(dispatcher);
+
+  ctrl.el.querySelector('[data-activity-export]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  // The export pulls a high-limit page (not the on-screen cap) for the window.
+  assert.equal(lastActivityInput.limit, 999, 'export fetch uses a high row cap');
+  assert.equal(lastActivityInput.project_id, String(PROJECT), 'export is project-scoped');
+  assert.equal(lastActivityInput.from_date, M.isoDaysAgo(M.ACTIVITY_DEFAULT_LOOKBACK_DAYS), 'export honours the date window');
+});
+
+test('activityRowsToCsv: header + one escaped row per activity, labels resolved', () => {
+  const rows = [
+    { id: 200n, cardId: 9n, kind: 'attr_update', attributeName: 'milestone_ref', valueOld: '234', valueNew: '456', actorId: 5n, createdAt: '2026-05-24T12:00:00.000Z' },
+    { id: 201n, cardId: 9n, kind: 'comment', commentBody: 'hi, there', actorId: 5n, createdAt: '2026-05-24T12:01:00.000Z' },
+  ];
+  const csv = M.activityRowsToCsv(rows, { '5': 'Bob' }, { cardTitles: { '234': 'Q1', '456': 'Q2' }, tagPaths: {} });
+  const lines = csv.split('\n');
+  assert.equal(lines[0], 'timestamp,kind,card_id,actor,attribute,detail', 'header columns');
+  assert.equal(lines.length, 3, 'header + 2 rows');
+  // The attr_update detail resolves the milestone ids to titles via the maps.
+  assert.ok(lines[1].includes('Bob changed milestone from Q1 to Q2'), 'card_ref labels resolved in detail');
+  assert.equal(lines[1].split(',')[3], 'Bob', 'actor id resolved to name');
+});
+
 test('Activity: no active project → empty state, no query', async () => {
   lastActivityInput = null;
   const { dispatcher, api } = bootApi(activityTransport());

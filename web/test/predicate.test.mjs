@@ -65,9 +65,15 @@ test('fromWire is the inverse of toWire (group + leaf)', () => {
     leaf('title', 'contains', ['urgent']),
     notOf(leaf('priority', 'eq', ['high'])),
     leaf('due_date', 'withinDays', [3]),
+    // "Closed in the last 15 days": terminal phase + last activity within 15d.
+    leaf('status', 'hasPhase', ['terminal']),
+    leaf('last_activity_at', 'withinLastDays', [15]),
   ]);
   const back = fromWire(toWire(tree));
   assert.deepEqual(back, tree);
+  // The new op crosses the wire as `within_last_days`.
+  assert.equal(M.opToWire('withinLastDays'), 'within_last_days');
+  assert.equal(M.opFromWire('within_last_days'), 'withinLastDays');
 });
 
 test('fromWire accepts the v1 single-value `value` shape', () => {
@@ -134,6 +140,9 @@ test('op-catalog: text allows contains; date allows beforeToday + withinDays', (
   const date = opsForValueType('date');
   assert.ok(date.includes('beforeToday'));
   assert.ok(date.includes('withinDays'));
+  assert.ok(date.includes('withinLastDays'), 'date also allows the past-window op');
+  // The top-level timestamp fields expose ONLY the past-window op.
+  assert.deepEqual(opsForValueType('timestamp'), ['withinLastDays']);
 });
 
 test('op-catalog: unknown value_type falls back to the text op set', () => {
@@ -344,7 +353,7 @@ test('schemaForCardType filters to bound defs + carries targetCardType for refs'
   assert.deepEqual(
     schema.map((s) => s.name),
     ['title', 'milestone_ref', 'tags'],
-    'only task-bound defs, ordered by edge ordering',
+    'only task-bound defs, ordered by edge ordering (no synthetic fields here)',
   );
   const mref = schema.find((s) => s.name === 'milestone_ref');
   assert.equal(mref.valueType, 'card_ref');

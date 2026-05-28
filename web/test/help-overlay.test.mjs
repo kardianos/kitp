@@ -117,11 +117,21 @@ test('firing toggleHelp shows the overlay; it lists the live global bindings', (
   );
   assert.ok(globalGroup, 'a "global" scope group is rendered');
 
-  // The global chords from shellHotkeys appear as labelled rows.
+  // The global chords from shellHotkeys appear as labelled rows. Per-screen
+  // chords (Inbox / Grid / Kanban) are NOT in shellHotkeys anymore — each is
+  // derived from its screen card's hotkey attribute (data-driven). So we
+  // assert only the truly-global bindings here.
   const text = overlay.textContent;
   assert.match(text, /Go to Projects/, 'lists the g p binding label');
-  assert.match(text, /Go to Kanban/, 'lists the g k binding label');
+  assert.match(text, /Go to Activity/, 'lists the g a binding label');
   assert.match(text, /Keyboard shortcuts/, 'lists the help binding label');
+  // Regression: per-screen chords (Inbox/Grid/Kanban) MUST NOT be hardcoded
+  // globals. A project whose screen cards don't carry `hotkey='i'/'g'/'k'`
+  // must not see a `g i`/`g g`/`g k` binding here — otherwise the chord lands
+  // a slug that the project doesn't actually have.
+  assert.doesNotMatch(text, /Go to Inbox/, 'no hardcoded g i (Inbox is data-driven from screen cards)');
+  assert.doesNotMatch(text, /Go to Grid/, 'no hardcoded g g');
+  assert.doesNotMatch(text, /Go to Kanban/, 'no hardcoded g k');
 
   // The `?` / Ctrl+/ aliases collapse onto ONE row for the help binding.
   const helpRow = overlay

@@ -57,10 +57,11 @@ func callBatch(t *testing.T, pool *pgxpool.Pool, fn string, actorID int64, input
 }
 
 type selectUserRow struct {
-	ID           string  `json:"id"`
-	DisplayName  string  `json:"display_name"`
-	ParentUserID *string `json:"parent_user_id"`
-	IsAgent      bool    `json:"is_agent"`
+	ID             string  `json:"id"`
+	DisplayName    string  `json:"display_name"`
+	ParentUserID   *string `json:"parent_user_id"`
+	ParentUserName *string `json:"parent_user_name"`
+	IsAgent        bool    `json:"is_agent"`
 }
 
 type selectOut struct {
@@ -146,6 +147,11 @@ func TestUserSelectBatch_FilterParentUserID(t *testing.T) {
 	for _, r := range out.Rows {
 		if r.ID == strconv.FormatInt(agent, 10) {
 			found = true
+			// The owner's display_name must resolve via the self-join so
+			// the Agents screen can show a name instead of a bare id.
+			if r.ParentUserName == nil || *r.ParentUserName != "System" {
+				t.Errorf("agent %d parent_user_name: got %v, want \"System\"", agent, r.ParentUserName)
+			}
 		}
 	}
 	if !found {

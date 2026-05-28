@@ -30,7 +30,84 @@ import {
   sortActivityDesc,
   type IdMap,
 } from '../task-detail/activity-text.js';
-import { attrNameToTargetType, loadActivityLabels } from '../task-detail/activity-labels.js';
+import { attrNameToTargetType, loadActivityLabels, type ActivityLabelMaps } from '../task-detail/activity-labels.js';
+
+/** Default look-back window for the feed: the last 7 days. */
+export const ACTIVITY_DEFAULT_LOOKBACK_DAYS = 7;
+/** Row cap for the Export CSV fetch (the server caps activity.select at 999). */
+const ACTIVITY_EXPORT_LIMIT = 999;
+
+/** ISO `YYYY-MM-DD` for a Date in local time. */
+function isoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** ISO date `n` days before `now` (local). Exported for the screen's default. */
+export function isoDaysAgo(n: number, now: Date = new Date()): string {
+  const d = new Date(now);
+  d.setDate(d.getDate() - n);
+  return isoDate(d);
+}
+
+/** CSV-escape one cell (quote when it contains a comma, quote, or newline). */
+function csvCell(v: string): string {
+  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+
+/**
+ * Build a CSV (header + one row per activity) from already-loaded rows + the
+ * resolved label maps. Columns mirror what the feed shows: when it happened,
+ * the kind, the card id it's on, who did it, the changed attribute, and the
+ * human-readable detail (with card_ref values resolved to titles). Pure +
+ * exported so it's unit-testable without a DOM / download.
+ */
+export function activityRowsToCsv(
+  rows: readonly ActivityRow[],
+  userNames: IdMap,
+  maps: ActivityLabelMaps,
+): string {
+  const header = ['timestamp', 'kind', 'card_id', 'actor', 'attribute', 'detail'];
+  const lines = [header.join(',')];
+  for (const r of rows) {
+    const actor = userNames[String(r.actorId)] ?? `#${r.actorId.toString()}`;
+    const detail = formatActivityText(r, userNames, maps.cardTitles, maps.tagPaths);
+    lines.push(
+      [r.createdAt, r.kind, r.cardId.toString(), actor, r.attributeName ?? '', detail]
+        .map((c) => csvCell(String(c)))
+        .join(','),
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Save `text` as a download named `filename`. Feature-detected: a no-op
+ * (returns false) where Blob / URL.createObjectURL are unavailable (the test
+ * dom-shim) so the export path is safe to call there; production browsers save
+ * the file. Side-effect-only — no promise crosses a control boundary.
+ */
+function downloadTextFile(filename: string, text: string, doc: Document = document): boolean {
+  const g = globalThis as unknown as {
+    Blob?: typeof Blob;
+    URL?: { createObjectURL?: (b: Blob) => string; revokeObjectURL?: (u: string) => void };
+  };
+  if (typeof g.Blob !== 'function' || typeof g.URL?.createObjectURL !== 'function') return false;
+  const blob = new g.Blob([text], { type: 'text/csv;charset=utf-8' });
+  const url = g.URL.createObjectURL(blob);
+  const a = doc.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  doc.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Give the browser a tick to grab the bytes before revoking.
+  setTimeout(() => g.URL?.revokeObjectURL?.(url), 0);
+  return true;
+}
 
 export interface ActivityConfig extends BaseControlConfig {
   type: 'Activity';
@@ -40,6 +117,8 @@ export interface ActivityConfig extends BaseControlConfig {
   cardTypeName?: string;
   /** Optional row cap. Default ACTIVITY_LIMIT. */
   limit?: number;
+  /** Initial look-back window in days (default 7). 0 / negative → no lower bound. */
+  lookbackDays?: number;
 }
 
 declare module '../core/control.js' {
@@ -59,8 +138,11 @@ export class Activity extends Control<ActivityConfig> {
   private tagPaths: IdMap = {};
   private nameToType: Map<string, string> = new Map();
   private loading = false;
-  /** The project id the current `rows` were loaded for (guards redundant loads). */
-  private loadedFor: bigint | null = null;
+  /** Active date window (ISO `YYYY-MM-DD`); '' means unbounded on that side. */
+  private fromDate: string;
+  private toDate = '';
+  /** Key (`pid|from|to`) the current `rows` were loaded for — guards redundant loads. */
+  private loadedKey: string | null = null;
 
   private listEl!: HTMLElement;
 
@@ -69,6 +151,8 @@ export class Activity extends Control<ActivityConfig> {
     this.scopePath = (this.config.projectScopePath ?? 'scope.projectId').split('.');
     this.cardTypeName = this.config.cardTypeName ?? 'task';
     this.limit = typeof this.config.limit === 'number' && this.config.limit > 0 ? this.config.limit : ACTIVITY_LIMIT;
+    const look = typeof this.config.lookbackDays === 'number' ? this.config.lookbackDays : ACTIVITY_DEFAULT_LOOKBACK_DAYS;
+    this.fromDate = look > 0 ? isoDaysAgo(look) : '';
   }
 
   protected override createRoot(): HTMLElement {
@@ -86,6 +170,31 @@ export class Activity extends Control<ActivityConfig> {
     title.textContent = 'Activity';
     head.append(title);
 
+    // Filter bar: a [From, To] date range (defaulting to the last 7 days) and
+    // an Export CSV button. Native date inputs keep this light (no calendar
+    // popover) and reload the feed on change.
+    const bar = document.createElement('div');
+    bar.className = 'activity-screen__filter';
+    bar.dataset.activityFilter = '';
+    bar.append(
+      this.dateField('From', 'from', this.fromDate, (v) => {
+        this.fromDate = v;
+        this.reload();
+      }),
+      this.dateField('To', 'to', this.toDate, (v) => {
+        this.toDate = v;
+        this.reload();
+      }),
+    );
+    const exportBtn = document.createElement('button');
+    exportBtn.type = 'button';
+    exportBtn.className = 'btn activity-screen__export';
+    exportBtn.dataset.activityExport = '';
+    exportBtn.textContent = 'Export CSV';
+    this.listen(exportBtn, 'click', () => this.exportCsv());
+    bar.append(exportBtn);
+    head.append(bar);
+
     const list = document.createElement('div');
     list.className = 'activity-screen__list';
     list.dataset.activityBody = '';
@@ -96,30 +205,56 @@ export class Activity extends Control<ActivityConfig> {
     this.loadUsers();
     this.loadSchema();
     // Reactive on the project scope: (re)load when the active project resolves
-    // or changes. A one-way read → load (no signal write), cascade-safe.
+    // or changes. A one-way read → load (no signal write), cascade-safe. Date
+    // changes call reload() directly (the window is part of the load key).
     this.effect(() => {
-      const pid = this.ctx.tree.at([...this.scopePath]).get<bigint | null>() ?? null;
-      this.loadActivity(pid);
+      this.ctx.tree.at([...this.scopePath]).get<bigint | null>(); // subscribe
+      this.reload();
     }, 'activity.scope');
+  }
+
+  /** A labelled native date input for the filter bar. */
+  private dateField(label: string, role: string, value: string, onChange: (v: string) => void): HTMLElement {
+    const wrap = document.createElement('label');
+    wrap.className = 'activity-screen__date';
+    const span = document.createElement('span');
+    span.className = 'activity-screen__date-label muted';
+    span.textContent = label;
+    const input = document.createElement('input');
+    input.type = 'date';
+    input.className = 'activity-screen__date-input';
+    input.dataset.activityDate = role;
+    input.value = value;
+    input.setAttribute('aria-label', `${label} date`);
+    this.listen(input, 'change', () => onChange(input.value));
+    wrap.append(span, input);
+    return wrap;
+  }
+
+  /** Read the active project + reload the feed for the current date window. */
+  private reload(): void {
+    const pid = this.ctx.tree.at([...this.scopePath]).peek<bigint | null>() ?? null;
+    this.loadActivity(pid);
   }
 
   private loadActivity(pid: bigint | null): void {
     if (pid === null) {
       this.rows = [];
-      this.loadedFor = null;
+      this.loadedKey = null;
       this.paint();
       return;
     }
-    if (pid === this.loadedFor && !this.loading) {
-      // Already loaded for this project; nothing to do.
+    const key = `${pid.toString()}|${this.fromDate}|${this.toDate}`;
+    if (key === this.loadedKey && !this.loading) {
+      // Already loaded for this project + window; nothing to do.
       return;
     }
-    this.loadedFor = pid;
+    this.loadedKey = key;
     this.loading = true;
     this.paint();
     this.ctx.api.callByName(
       ACTIVITY_SELECT_SPEC,
-      { projectId: pid, limit: this.limit },
+      this.queryInput(pid, this.limit),
       (out) => {
         if (!this.isAlive()) return;
         this.loading = false;
@@ -135,6 +270,46 @@ export class Activity extends Control<ActivityConfig> {
           this.paint();
         },
       },
+    );
+  }
+
+  /** The activity.select input for the active project + current date window. */
+  private queryInput(pid: bigint, limit: number): Record<string, unknown> {
+    const input: Record<string, unknown> = { projectId: pid, limit };
+    if (this.fromDate !== '') input['fromDate'] = this.fromDate;
+    if (this.toDate !== '') input['toDate'] = this.toDate;
+    return input;
+  }
+
+  /**
+   * Export the current project's activity for the active date window as a CSV
+   * download. Fetches a high-limit page (independent of the on-screen cap) so
+   * the export isn't truncated to the visible rows, resolves card_ref labels
+   * for that set, then builds + saves the file.
+   */
+  private exportCsv(): void {
+    const pid = this.ctx.tree.at([...this.scopePath]).peek<bigint | null>() ?? null;
+    if (pid === null) return;
+    this.ctx.api.callByName(
+      ACTIVITY_SELECT_SPEC,
+      this.queryInput(pid, ACTIVITY_EXPORT_LIMIT),
+      (out) => {
+        if (!this.isAlive()) return;
+        const rows = sortActivityDesc((out as ActivitySelectOutput).rows ?? []);
+        // Resolve labels for THIS set (may exceed the displayed rows), then save.
+        loadActivityLabels(
+          this.ctx.api,
+          rows,
+          this.nameToType,
+          (maps) => {
+            if (!this.isAlive()) return;
+            const csv = activityRowsToCsv(rows, this.userNames, maps);
+            downloadTextFile(`activity-${pid.toString()}.csv`, csv);
+          },
+          { alive: () => this.isAlive() },
+        );
+      },
+      { alive: () => this.isAlive() },
     );
   }
 

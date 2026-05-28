@@ -84,6 +84,12 @@ type MeResponse struct {
 	IsAdmin       bool     `json:"is_admin,omitempty"`
 	IsAgent       bool     `json:"is_agent,omitempty"`
 	ParentUserID  *int64   `json:"parent_user_id,string,omitempty"`
+	// PersonCardID is the card id of the person row linked to this
+	// user_account (via user_account_person), or nil for a login-only
+	// account with no person card. The client uses it to resolve the
+	// "Self" quick-pick when editing a person-typed card_ref (assignee
+	// / originator) — assignee values are person CARD ids, not user ids.
+	PersonCardID *int64 `json:"person_card_id,string,omitempty"`
 }
 
 // buildMe loads roles for userID and returns a MeResponse the handlers
@@ -118,11 +124,16 @@ func buildMe(ctx context.Context, cfg HTTPConfig, userID int64, displayName stri
 	// zero values rather than failing the whole /auth/me probe.
 	var isAgent bool
 	var parentID *int64
-	if err := cfg.Pool.QueryRow(ctx,
-		`SELECT is_agent, parent_user_id FROM user_account WHERE id = $1`, userID,
-	).Scan(&isAgent, &parentID); err == nil {
+	var personCardID *int64
+	if err := cfg.Pool.QueryRow(ctx, `
+		SELECT ua.is_agent, ua.parent_user_id, uap.person_card_id
+		FROM user_account ua
+		LEFT JOIN user_account_person uap ON uap.user_account_id = ua.id
+		WHERE ua.id = $1
+	`, userID).Scan(&isAgent, &parentID, &personCardID); err == nil {
 		out.IsAgent = isAgent
 		out.ParentUserID = parentID
+		out.PersonCardID = personCardID
 	}
 	return out, nil
 }

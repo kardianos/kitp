@@ -6,8 +6,8 @@
  *     "+ New project" action;
  *   - a search Field ("Search projects… (press / to focus)") that filters the
  *     list client-side by title (the project set is small + fully resident);
- *   - one row per project: title + an "open tasks: —" subtitle (a documented
- *     dash placeholder for v1 — per-project open counts are not loaded yet, in
+ *   - one row per project: title + description (no per-project task count —
+ *     never sourced from the server, and a permanent "—" placeholder was just
  *     deliberate parity with the Svelte ProjectsScreen) + a trailing ✎ edit
  *     IconButton that opens the shared project-properties editor.
  *   - a quick-entry dialog (the shared project-properties FORM: Title + a
@@ -287,6 +287,30 @@ export class ProjectList extends Control<ProjectListConfig> {
       result: { method: 'landTemplateCreated' },
       onError: 'top',
     },
+    // Soft-delete a real project (card.delete). The optimistic patch drops the
+    // row from `shell.projects`; on fault the tree transaction auto-restores it.
+    {
+      intent: 'deleteProject',
+      spec: PROJECT_SPEC.cardDelete,
+      input: { cardId: { payload: 'cardId' } },
+      optimistic: {
+        path: 'shell.projects',
+        patch: (current, payload): ProjectOption[] => removeRow(current, payload),
+      },
+      onError: 'top',
+    },
+    // Soft-delete a template project — same spec, but the row lives in the
+    // separate `shell.projectTemplates` leaf (mirrors the create/stamp split).
+    {
+      intent: 'deleteTemplate',
+      spec: PROJECT_SPEC.cardDelete,
+      input: { cardId: { payload: 'cardId' } },
+      optimistic: {
+        path: 'shell.projectTemplates',
+        patch: (current, payload): ProjectOption[] => removeRow(current, payload),
+      },
+      onError: 'top',
+    },
   ];
 
   protected override createRoot(): HTMLElement {
@@ -533,14 +557,11 @@ export class ProjectList extends Control<ProjectListConfig> {
     descEl.className = 'projects__row-desc muted';
     descEl.dataset.role = 'desc';
 
-    const meta = document.createElement('span');
-    meta.className = 'projects__row-meta muted';
-    meta.dataset.role = 'meta';
-    // v1 placeholder: per-project open-task counts are not loaded yet — the
-    // literal dash is intentional parity with the Svelte ProjectsScreen.
-    meta.textContent = 'open tasks: —';
-
-    open.append(titleEl, badge, descEl, meta);
+    // The Svelte ProjectsScreen used to show an "open tasks: —" placeholder
+    // because per-project open counts were never wired (no server query
+    // sourced it). Removed: a permanent dash adds visual noise without
+    // information. If/when card.count_by_project lands, drop a real count in.
+    open.append(titleEl, badge, descEl);
 
     const edit = document.createElement('button');
     edit.type = 'button';
@@ -695,7 +716,17 @@ export class ProjectList extends Control<ProjectListConfig> {
     if (p.pending) return; // no real card id yet
     const id = parseId(p.id);
     if (id === null) return;
-    this.dialog?.openEdit(id, p.label, p.description ?? '');
+    this.dialog?.openEdit(id, p.label, p.description ?? '', p.isTemplate === true);
+  }
+
+  /**
+   * Soft-delete a project from the EDIT dialog (replaces the removed admin
+   * Projects screen's delete). Templates live in a separate leaf, so route to
+   * the matching intent; the optimistic patch drops the row + auto-rolls-back
+   * on fault. A confirm guards the destructive action.
+   */
+  private fireDelete(id: bigint, isTemplate: boolean): void {
+    this.intent(isTemplate ? 'deleteTemplate' : 'deleteProject', { cardId: id });
   }
 
   /** The render() closure stashes a focus-the-search-input fn here. */
@@ -831,9 +862,18 @@ export class ProjectList extends Control<ProjectListConfig> {
     const hint = document.createElement('div');
     hint.className = 'qe-dialog__hint muted';
 
-    /* --- Footer (CREATE: Add & Another / Add & Close; EDIT: Save) --- */
+    /* --- Footer (CREATE: Add & Another / Add & Close; EDIT: Delete · Save) --- */
     const footer = document.createElement('div');
     footer.className = 'qe-dialog__footer';
+    // Left-aligned destructive action — EDIT mode only (replaces the removed
+    // admin Projects screen's delete). A confirm guards it.
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'btn btn-danger qe-dialog__delete';
+    del.dataset.qeDelete = '';
+    del.textContent = 'Delete project';
+    del.style.marginRight = 'auto';
+    del.style.display = 'none';
     const another = document.createElement('button');
     another.type = 'button';
     another.className = 'btn qe-dialog__another';
@@ -844,7 +884,7 @@ export class ProjectList extends Control<ProjectListConfig> {
     primary.className = 'btn btn-primary qe-dialog__close';
     primary.dataset.qeAddClose = '';
     primary.textContent = 'Add & Close';
-    footer.append(another, primary);
+    footer.append(del, another, primary);
 
     panel.append(heading, titleLabel, more, moreRegion, tmplRegion, hint, footer);
     root.append(panel);
@@ -860,6 +900,7 @@ export class ProjectList extends Control<ProjectListConfig> {
     /* --- mode state --- */
     let mode: 'create' | 'edit' = 'create';
     let editId: bigint | null = null;
+    let editIsTemplate = false;
     let origTitle = '';
     let origDesc = '';
 
@@ -871,6 +912,8 @@ export class ProjectList extends Control<ProjectListConfig> {
     const applyMode = (): void => {
       // Template controls are a create-only concern (edit just renames fields).
       tmplRegion.style.display = mode === 'create' ? '' : 'none';
+      // Delete is an edit-only, destructive action.
+      del.style.display = mode === 'edit' ? '' : 'none';
       if (mode === 'create') {
         heading.textContent = 'New project';
         another.style.display = '';
@@ -881,6 +924,7 @@ export class ProjectList extends Control<ProjectListConfig> {
           'Press Enter to add another · Ctrl+Enter to add and close · Esc to cancel';
       } else {
         heading.textContent = 'Edit project';
+        del.textContent = editIsTemplate ? 'Delete template' : 'Delete project';
         another.style.display = 'none';
         primary.textContent = 'Save';
         primary.dataset.qeSave = '';
@@ -906,9 +950,10 @@ export class ProjectList extends Control<ProjectListConfig> {
         root.style.display = '';
         focusEl(titleInput);
       },
-      openEdit: (id, title, description) => {
+      openEdit: (id, title, description, isTemplate) => {
         mode = 'edit';
         editId = id;
+        editIsTemplate = isTemplate;
         origTitle = title;
         origDesc = description;
         titleInput.value = title;
@@ -972,6 +1017,17 @@ export class ProjectList extends Control<ProjectListConfig> {
 
     this.listen(another, 'click', () => add(true));
     this.listen(primary, 'click', () => commitPrimary());
+    this.listen(del, 'click', () => {
+      if (editId === null) return;
+      const what = editIsTemplate ? 'template' : 'project';
+      const ok =
+        typeof confirm === 'function'
+          ? confirm(`Delete this ${what}? This cannot be undone.`)
+          : true;
+      if (!ok) return;
+      this.fireDelete(editId, editIsTemplate);
+      dialog.close();
+    });
 
     // Keyboard: Esc = cancel. Title Enter (create) = add another, Mod+Enter =
     // commit. In edit mode Enter on the title commits; Mod+Enter in the
@@ -1151,6 +1207,15 @@ function appendPending(current: unknown, payload: unknown, isTemplate: boolean):
   return [...rows, row];
 }
 
+/** Drop the row whose id matches `payload.cardId` (the optimistic delete). */
+function removeRow(current: unknown, payload: unknown): ProjectOption[] {
+  const rows = Array.isArray(current) ? (current as ProjectOption[]) : [];
+  const p = (payload ?? {}) as { cardId?: bigint };
+  if (p.cardId === undefined) return rows;
+  const targetId = p.cardId.toString();
+  return rows.filter((r) => r.id !== targetId);
+}
+
 function patchRowField(
   current: unknown,
   payload: unknown,
@@ -1265,7 +1330,7 @@ interface PropertiesDialog {
   /** Open in CREATE mode (blank form). */
   openCreate(): void;
   /** Open in EDIT mode for a project, prefilled with its title + description. */
-  openEdit(id: bigint, title: string, description: string): void;
+  openEdit(id: bigint, title: string, description: string, isTemplate: boolean): void;
   close(): void;
   isOpen(): boolean;
 }

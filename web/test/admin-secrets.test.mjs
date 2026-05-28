@@ -290,6 +290,35 @@ test('Comm Channels: config form renders has_*_password state; saving without ty
   assert.equal(String(sets[0].data.id), '80', 'updates the selected channel');
 });
 
+test('Comm Channels: typing into the name field does NOT replace the input (focus survives)', async () => {
+  // The bug: the nested-editor render effect subscribed to `draft`; every
+  // keystroke wrote `draft`, the effect re-fired, the form re-rendered, the
+  // `<input>` was replaced — so the user could only type one letter at a time
+  // before focus was lost to the new node. Fix: the render effect no longer
+  // subscribes to `draft`; structural draft writes (hydrate / +New / save reset
+  // / filter-list mutations) call render explicitly. Per-field keystrokes
+  // write `draft` without re-rendering, so the input stays put.
+  const transport = adminTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountView(api, 'comm_channels');
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+
+  const before = ctrl.el.querySelector('[data-ne-name]');
+  assert.ok(before, 'name input rendered');
+  before.value = 'a';
+  before.dispatchEvent({ type: 'input' });
+  M.flushSync?.();
+  const after = ctrl.el.querySelector('[data-ne-name]');
+  assert.equal(after, before, 'same DOM input after a keystroke (no re-render)');
+  // A second keystroke also lands on the same input (the regression: pre-fix,
+  // this would be a fresh element each time).
+  before.value = 'ab';
+  before.dispatchEvent({ type: 'input' });
+  M.flushSync?.();
+  assert.equal(ctrl.el.querySelector('[data-ne-name]'), before, 'still the same input');
+});
+
 test('Comm Channels: typing a password sends ONLY that field', async () => {
   const transport = adminTransport();
   const { dispatcher, api } = bootApi(transport);

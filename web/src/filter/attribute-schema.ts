@@ -141,6 +141,15 @@ export function schemaForCardType(
   return bound.map((b) => b.schema);
 }
 
+/** Synthetic, every-card date fields (top-level card columns, not attributes).
+ *  Their only meaningful predicate op is the past-window `withinLastDays`.
+ *  Surfaced by the FILTER editor (resolveSchema) only — NOT by the attribute-
+ *  editing panels (TaskDetail / project properties), which edit real attrs. */
+export const TOP_LEVEL_TIMESTAMP_FIELDS: readonly AttrSchema[] = [
+  { name: 'last_activity_at', label: 'Last activity', valueType: 'timestamp' },
+  { name: 'created_at', label: 'Created', valueType: 'timestamp' },
+];
+
 /**
  * Resolve a {@link SchemaSource} to a concrete {@link AttrSchema}[] given the
  * loaded `attribute_def` rows. A literal list passes through; a `{ cardType }`
@@ -154,7 +163,10 @@ export function resolveSchema(
   defs: readonly AttributeDefRow[],
 ): AttrSchema[] {
   if (Array.isArray(source)) return source;
-  return schemaForCardType(defs, source.cardType);
+  // A {cardType} filter schema = the card_type's attributes PLUS the every-card
+  // top-level timestamps (last_activity_at / created_at), so a view can filter
+  // e.g. "last activity within 15 days" / "closed within 15 days".
+  return [...schemaForCardType(defs, source.cardType), ...TOP_LEVEL_TIMESTAMP_FIELDS];
 }
 
 /** Look up one schema entry by attribute name. */

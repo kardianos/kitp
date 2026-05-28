@@ -61,8 +61,8 @@ func TestProjectInsertSeedsScreens(t *testing.T) {
 		{slug: "grid", layout: "grid", title: "Grid", sortOrder: 2, hotkey: "g"},
 		{slug: "kanban", layout: "kanban", title: "Kanban", sortOrder: 3, hotkey: "k"},
 		{slug: "project", layout: "project", title: "Project", sortOrder: 4},
-		{slug: "ideas", layout: "list", title: "Ideas", sortOrder: 5, hotkey: "n"},
-		{slug: "archive", layout: "list", title: "Closed last 30d", sortOrder: 6},
+		{slug: "incoming", layout: "list", title: "Incoming", sortOrder: 5, hotkey: "n"},
+		{slug: "recently-closed", layout: "list", title: "Recently Closed", sortOrder: 6},
 		{slug: "comms", layout: "list", title: "Comms", sortOrder: 7, hotkey: "c"},
 	}
 	if len(sOut.Rows) != len(wants) {

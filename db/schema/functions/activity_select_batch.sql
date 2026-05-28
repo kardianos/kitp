@@ -30,6 +30,8 @@ DECLARE
     _card_id bigint;
     _project_id bigint;
     _before_id bigint;
+    _from_date date;
+    _to_date date;
     _limit int;
     _sort_asc boolean;
 BEGIN
@@ -58,6 +60,20 @@ BEGIN
         IF _project_id = 0 THEN
             _project_id := NULL;
         END IF;
+        -- Optional [from_date, to_date] window on created_at (the standalone
+        -- Activity page defaults to the last 7 days). Both inclusive by day:
+        -- from_date >= midnight of from_date; to_date < midnight after to_date.
+        -- A malformed date is treated as "unset" rather than failing the batch.
+        BEGIN
+            _from_date := NULLIF(_raw->>'from_date', '')::date;
+        EXCEPTION WHEN invalid_datetime_format OR invalid_text_representation THEN
+            _from_date := NULL;
+        END;
+        BEGIN
+            _to_date := NULLIF(_raw->>'to_date', '')::date;
+        EXCEPTION WHEN invalid_datetime_format OR invalid_text_representation THEN
+            _to_date := NULL;
+        END;
         _limit := COALESCE(NULLIF(_raw->>'limit', '')::int, 200);
         IF _limit <= 0 OR _limit >= 1000 THEN
             _limit := 200;
@@ -97,6 +113,9 @@ BEGIN
                     LEFT JOIN comment_body cb ON cb.id = (a.value_new->>'comment_body_id')::bigint
                     WHERE (_card_id IS NULL OR a.card_id = _card_id)
                       AND (_before_id IS NULL OR a.id < _before_id)
+                      -- Date window (inclusive by day) on created_at.
+                      AND (_from_date IS NULL OR a.created_at >= _from_date)
+                      AND (_to_date IS NULL OR a.created_at < (_to_date + 1))
                       -- Project scope: the card is the project or a descendant
                       -- (walk parents up to the depth-16 cap, same as B7).
                       AND (_project_id IS NULL OR EXISTS (

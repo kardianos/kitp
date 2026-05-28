@@ -963,8 +963,16 @@ export class Kanban extends Control<KanbanConfig> {
       // on the focused card node (Enter/o on a card opens it — wired per card).
       { binding: 'l', label: 'Next column', run: () => this.navColumn(1) },
       { binding: 'h', label: 'Previous column', run: () => this.navColumn(-1) },
+      // ArrowLeft/Right alternates for h/l — NOT fireInInputs (they move the
+      // text caret in the search input; hijacking would strand typing).
+      { binding: 'ArrowRight', label: 'Next column', run: () => this.navColumn(1) },
+      { binding: 'ArrowLeft', label: 'Previous column', run: () => this.navColumn(-1) },
       { binding: 'j', label: 'Next card', run: () => this.navCard(1) },
       { binding: 'k', label: 'Previous card', run: () => this.navCard(-1) },
+      // ArrowUp/Down also navigate cards while the search input has focus
+      // (Up/Down don't move the text caret, so it's safe to hijack).
+      { binding: 'ArrowDown', label: 'Next card', run: () => this.navCard(1), fireInInputs: true },
+      { binding: 'ArrowUp', label: 'Previous card', run: () => this.navCard(-1), fireInInputs: true },
       { binding: 'Shift+L', label: 'Move card → next column', run: () => this.moveFocused(1) },
       { binding: 'Shift+H', label: 'Move card → previous column', run: () => this.moveFocused(-1) },
       ...(this.config.hotkeys ?? []),

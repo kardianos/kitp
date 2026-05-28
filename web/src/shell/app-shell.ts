@@ -45,16 +45,18 @@ import type { ImportWizard } from '../import/import-wizard.js';
 import type { ExportMenu } from '../export/export-menu.js';
 import { TEMPLATE_EXCLUSION_LEAF } from '../projects/project-helpers.js';
 import { AUTH_USER_PATH, type AuthUser } from '../auth/auth-state.js';
+import { logout } from './logout.js';
 import {
   ROUTER_PATH,
   navigate,
   matchRoute,
-  screenLayoutForSlug,
   adminUrl,
   screenUrl,
   type RouteMatch,
 } from './router.js';
 import { WORKSPACE_TITLE_PATH, DEFAULT_WORKSPACE_TITLE } from './config-specs.js';
+import { readSlug, readTitle } from '../filter/screen-resolve.js';
+import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 
 export interface ProjectScopeOption {
   /** bigint id as a string ('' = all projects). */
@@ -63,6 +65,15 @@ export interface ProjectScopeOption {
   /** The project's `description` attribute, carried so the ✎ editor (which
    *  reads the same `shell.projects` path) can prefill without a refetch. */
   description?: string;
+}
+
+/** One DEFAULT-PROJECT rail link, derived from a `screen` card. `hotkey` (the
+ *  card's single-char `hotkey` attr) wires the `g <hotkey>` navigation chord. */
+interface ScopeLink {
+  slug: string;
+  label: string;
+  chord: string;
+  hotkey?: string;
 }
 
 export interface AppShellConfig extends BaseControlConfig {
@@ -89,7 +100,7 @@ export interface AppShellConfig extends BaseControlConfig {
   /** Signed-in user label for the rail foot chip. */
   user?: string;
   /** Nav links for the scope section (slug + label + chord). */
-  scopeLinks?: Array<{ slug: string; label: string; chord: string; intent: string }>;
+  scopeLinks?: Array<{ slug: string; label: string; chord: string }>;
   /** Admin links. Each `key` is the `/admin/:key` route segment it navigates to.
    *  `minRole` (default 'admin') gates who sees the link — 'manager' also shows
    *  it to a manager (e.g. "Manage values"); the route guard matches. `section`
@@ -172,6 +183,9 @@ export class AppShell extends Control<AppShellConfig> {
   /** Breadcrumb element + rail scope-section, toggled by the active view. */
   private crumbEl: HTMLElement | null = null;
   private scopeSectionEls: HTMLElement[] = [];
+  /** The rail's DEFAULT-PROJECT links container, rebuilt from the active
+   *  project's screen cards (data-driven nav — see loadScopeLinks). */
+  private scopeLinksHost: HTMLElement | null = null;
   /** Rail admin sub-sections (WORKSPACE / PROJECT): each section's chrome
    *  (heading + list) + its per-link role gates. A section shows iff ANY of its
    *  links is visible to the current identity. */
@@ -363,22 +377,23 @@ export class AppShell extends Control<AppShellConfig> {
     rail.append(railLink('Projects', 'g p', () => this.intent('goProjects')));
     rail.append(railLink('Activity', 'g a', () => this.intent('goActivity')));
 
-    // DEFAULT PROJECT scope section.
-    const scopeLinks = cfg.scopeLinks ?? [
-      { slug: 'inbox', label: 'Inbox', chord: 'g i', intent: 'goInbox' },
-      { slug: 'grid', label: 'Grid', chord: 'g g', intent: 'goGrid' },
-      { slug: 'kanban', label: 'Kanban', chord: 'g k', intent: 'goKanban' },
-      { slug: 'project', label: 'Project detail', chord: '', intent: 'goProject' },
-    ];
+    // DEFAULT PROJECT scope section. Links are PURELY DATA-DRIVEN off the
+    // active project's `screen` cards — no hardcoded Inbox/Grid/Kanban slugs
+    // (a project with no inbox-hotkey screen had its `g i` chord land
+    // /screen/inbox via a stale hardcoded entry; both are gone). `cfg.scopeLinks`
+    // is a test seam to inject links; otherwise we start empty and wait for
+    // `loadScopeLinks` to publish from the project's screen cards.
+    const fallbackLinks = cfg.scopeLinks ?? [];
     const scopeHeading = sectionLabel('DEFAULT PROJECT');
-    rail.append(scopeHeading);
-    this.scopeSectionEls = [scopeHeading];
-    for (const l of scopeLinks) {
-      const link = railLink(l.label, l.chord, () => this.intent(l.intent));
-      link.dataset.slug = l.slug;
-      rail.append(link);
-      this.scopeSectionEls.push(link);
-    }
+    const scopeLinksHost = document.createElement('div');
+    scopeLinksHost.className = 'shell__scope-links';
+    scopeLinksHost.dataset.region = 'shell.scopeLinks';
+    rail.append(scopeHeading, scopeLinksHost);
+    // The show/hide effect toggles the heading + the whole links host together.
+    this.scopeSectionEls = [scopeHeading, scopeLinksHost];
+    this.scopeLinksHost = scopeLinksHost;
+    this.renderScopeLinks(fallbackLinks.map((l) => ({ slug: l.slug, label: l.label, chord: l.chord })));
+    this.loadScopeLinks();
 
     // ADMIN: split into WORKSPACE (global) + PROJECT (active-project-scoped)
     // sub-sections. Each link NAVIGATES to its `/admin/:key` route via the
@@ -418,9 +433,15 @@ export class AppShell extends Control<AppShellConfig> {
       }
     }, 'shell.adminSection');
 
-    // User chip (rail foot).
-    const chip = document.createElement('div');
+    // User chip (rail foot) — a button that expands a menu with Account + Logout.
+    const userWrap = document.createElement('div');
+    userWrap.className = 'shell__user';
+    const chip = document.createElement('button');
+    chip.type = 'button';
     chip.className = 'shell__user-chip';
+    chip.dataset.userChip = '';
+    chip.setAttribute('aria-haspopup', 'menu');
+    chip.setAttribute('aria-expanded', 'false');
     const avatar = document.createElement('span');
     avatar.className = 'shell__avatar';
     avatar.textContent = '⊙';
@@ -439,7 +460,55 @@ export class AppShell extends Control<AppShellConfig> {
     caret.className = 'shell__user-caret muted';
     caret.textContent = '▾';
     chip.append(avatar, name, caret);
-    rail.append(chip);
+
+    // The expanding menu (Account / Logout), hidden until the chip is clicked.
+    const menu = document.createElement('div');
+    menu.className = 'shell__user-menu';
+    menu.dataset.userMenu = '';
+    menu.style.display = 'none';
+    const setMenuOpen = (open: boolean): void => {
+      menu.style.display = open ? '' : 'none';
+      chip.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    const accountBtn = document.createElement('button');
+    accountBtn.type = 'button';
+    accountBtn.className = 'shell__user-menu-item';
+    accountBtn.dataset.userMenuAccount = '';
+    accountBtn.textContent = 'Account';
+    this.listen(accountBtn, 'click', () => {
+      setMenuOpen(false);
+      navigate('/account');
+    });
+    const logoutBtn = document.createElement('button');
+    logoutBtn.type = 'button';
+    logoutBtn.className = 'shell__user-menu-item';
+    logoutBtn.dataset.userMenuLogout = '';
+    logoutBtn.textContent = 'Log out';
+    this.listen(logoutBtn, 'click', () => {
+      setMenuOpen(false);
+      logout();
+    });
+    menu.append(accountBtn, logoutBtn);
+
+    this.listen(chip, 'click', () => setMenuOpen(menu.style.display === 'none'));
+    // Dismiss on outside-click / Esc (document-tier; cleaned up on destroy).
+    const onDocDown = (e: Event): void => {
+      if (!userWrap.contains?.(e.target as Node)) setMenuOpen(false);
+    };
+    const onDocKey = (e: Event): void => {
+      if ((e as KeyboardEvent).key === 'Escape') setMenuOpen(false);
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('pointerdown', onDocDown, true);
+      document.addEventListener('keydown', onDocKey, true);
+      this.onDestroy(() => {
+        document.removeEventListener('pointerdown', onDocDown, true);
+        document.removeEventListener('keydown', onDocKey, true);
+      });
+    }
+
+    userWrap.append(chip, menu);
+    rail.append(userWrap);
 
     /* ----------------------------- outlet ----------------------------- */
     const outlet = document.createElement('main');
@@ -518,38 +587,31 @@ export class AppShell extends Control<AppShellConfig> {
     this.listen(instructionsBtn, 'click', () => this.intent('toggleInstructions'));
     this.listen(scopePicker, 'change', () => {
       const id = parseId(scopePicker.value);
-      // The scope picker is a project SWITCHER: picking a project navigates to
-      // its default screen (`/project/:id`). The route effect sets
-      // `scope.projectId` from the route, so the board's
-      // `{ signal: 'scope.projectId' }` query trigger refires. The placeholder
-      // (empty id, pre-load) is a no-op. We raise `projectChanged` for any
-      // listener that wants the raw id.
+      // The scope picker is a project SWITCHER. STAY ON THE SAME SCREEN: if the
+      // current route is a screen, carry its slug to the new project so a switch
+      // doesn't snap you back to the board every time. The ScreenHost resolves
+      // that slug's card in the new project (or degrades to a loading→NotFound
+      // when it has no such screen — the data-driven rail lists what it does
+      // have). Off a screen route (projects list / admin / a task), land on the
+      // project's default board. The route effect mirrors `scope.projectId` from
+      // the route, so the body's `{ signal }` query refires.
       if (id === null) return;
-      navigate(`/project/${id.toString()}`);
+      const route = this.ctx.tree.at([...ROUTER_PATH]).peek<RouteMatch>() ?? null;
+      const slug = route !== null && route.name === 'screen' ? route.params['slug'] : undefined;
+      navigate(slug !== undefined && slug !== '' ? screenUrl(id, slug) : `/project/${id.toString()}`);
       this.intent('projectChanged', { projectId: id });
     });
 
     /* --------------------------- nav intents --------------------------- */
-    // Rail links + global `g _` chords raise these intents; the shell maps each
-    // to a NAVIGATE call (History-API router). 'goProjects' lands the
-    // all-projects list; the per-project screen chords build a
-    // `/project/:id/screen/:slug` URL from the CURRENT project scope (the
-    // route is the source of truth — these read the live scope leaf at fire
-    // time). All are one-way navigations outside any tracked effect.
-    const goScreen = (slug: string): void => {
-      const id = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>();
-      // No project in scope yet → fall back to the projects list (nothing to
-      // screen against). Once a project resolves the chord lands its screen.
-      navigate(id == null ? '/projects' : screenUrl(id, slug));
-    };
+    // Only GLOBAL routes have intent handlers here: 'goProjects' (the
+    // all-projects list) and 'goActivity' (the active-project activity feed).
+    // Per-screen navigation is purely DATA-DRIVEN — `loadScopeLinks` publishes
+    // each project's screen cards into `shell.screenLinks`, and a rail click /
+    // `g <hotkey>` chord calls `goScreenSlug(l.slug)` directly. There is no
+    // `goInbox`/`goGrid`/`goKanban` intent (those used to hardcode a slug even
+    // for projects whose screen cards didn't carry that hotkey).
     this.registerIntent('goProjects', () => navigate('/projects'));
-    // The rail's "Activity" link / `g a` chord — previously a dead intent (no
-    // handler + no route). Lands the active-project activity feed.
     this.registerIntent('goActivity', () => navigate('/activity'));
-    this.registerIntent('goInbox', () => goScreen('inbox'));
-    this.registerIntent('goGrid', () => goScreen('grid'));
-    this.registerIntent('goKanban', () => goScreen('kanban'));
-    this.registerIntent('goProject', () => goScreen('project'));
 
     /* --------------------------- help overlay -------------------------- */
     // The `toggleHelp` intent (raised by the `?`/`Mod+/` chord AND the topbar
@@ -622,6 +684,110 @@ export class AppShell extends Control<AppShellConfig> {
    * role gates for the visibility effect. The heading text doubles as the
    * `data-admin-section` / `data-admin-toggle` key ('workspace' | 'project').
    */
+  /** Rebuild the DEFAULT-PROJECT rail links from a resolved screen list. Each
+   *  link navigates to `/project/:id/screen/:slug` (live scope at click time). */
+  private renderScopeLinks(links: ReadonlyArray<ScopeLink>): void {
+    const host = this.scopeLinksHost;
+    if (host === null) return;
+    host.replaceChildren();
+    for (const l of links) {
+      const link = railLink(l.label, l.chord, () => this.goScreenSlug(l.slug));
+      link.dataset.slug = l.slug;
+      host.append(link);
+    }
+  }
+
+  /** Navigate to a screen slug under the live project scope (rail link click). */
+  private goScreenSlug(slug: string): void {
+    const id = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>();
+    navigate(id == null ? '/projects' : screenUrl(id, slug));
+  }
+
+  /**
+   * Global hotkeys = the static shell chords (config.hotkeys: `g p`, `g a`, `?`,
+   * `n`, …) PLUS a DATA-DRIVEN `g <hotkey>` per screen card, so a screen's
+   * `hotkey` attribute (e.g. an Archive screen's `a`) jumps to it via `g a`.
+   * Read reactively from `shell.screenLinks` (published by loadScopeLinks), so
+   * the binding set tracks the active project's screens; appended AFTER the
+   * static chords so a screen's chord shadows a same-key global one (deriveBindings
+   * keeps the last entry at a given depth). The HotkeyController's binding map is
+   * a computed over this, so it recomputes when the screens load / the project
+   * switches.
+   */
+  override hotkeys(): readonly HotkeyBinding[] {
+    const base = this.config.hotkeys ?? [];
+    const links = (this.ctx.tree.at(['shell', 'screenLinks']).get<ScopeLink[]>() ?? []) as ScopeLink[];
+    const dynamic: HotkeyBinding[] = [];
+    for (const l of links) {
+      if (l.hotkey === undefined || l.hotkey === '') continue;
+      dynamic.push({
+        binding: `g ${l.hotkey}`,
+        label: `Go to ${l.label}`,
+        run: () => this.goScreenSlug(l.slug),
+      });
+    }
+    return [...base, ...dynamic];
+  }
+
+  /**
+   * Load the active project's `screen` cards and rebuild the rail's scope links
+   * from them (sorted by `sort_order`, label = title, chord = `g <hotkey>`), so
+   * a newly-created screen shows up in the nav. Reactive on `scope.projectId`;
+   * a project with no screen cards keeps whatever's rendered (the fallback).
+   */
+  private loadScopeLinks(): void {
+    const scopeIdNode = this.ctx.tree.at(['scope', 'projectId']);
+    this.effect(() => {
+      const pid = scopeIdNode.get<bigint | null>() ?? null;
+      // Also refire when the admin Screens screen bumps this nonce (a screen was
+      // renamed / added / removed), so the nav reflects the edit without a reload.
+      this.ctx.tree.at(['shell', 'navRefresh']).get();
+      if (pid === null) return;
+      this.ctx.api.callByName(
+        'card.select_with_attributes',
+        { cardTypeName: 'screen', parentCardId: pid, order: [{ field: 'attributes.sort_order', direction: 'ASC' }] },
+        (out) => {
+          if (!this.isAlive()) return;
+          const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+          if (rows.length === 0) {
+            // No screen cards for this project — render an empty rail (and
+            // empty `screenLinks`) so a previous project's links don't linger
+            // when switching to one that genuinely has none.
+            this.renderScopeLinks([]);
+            this.ctx.tree.at(['shell', 'screenLinks']).set([]);
+            return;
+          }
+          // Sort by the `sort_order` attribute client-side (don't rely on the
+          // server honouring the order hint); unsorted rows sink to the back.
+          const ord = (r: CardWithAttrs): number => {
+            const v = r.attributes['sort_order'];
+            return typeof v === 'number' && Number.isFinite(v) ? v : Number.POSITIVE_INFINITY;
+          };
+          const links = rows
+            .slice()
+            .sort((a, b) => ord(a) - ord(b))
+            .map((r): ScopeLink | null => {
+              const slug = readSlug(r);
+              if (slug === null) return null;
+              const hk = r.attributes['hotkey'];
+              const hotkey = typeof hk === 'string' ? hk : '';
+              const chord = hotkey !== '' ? `g ${hotkey}` : '';
+              return { slug, label: readTitle(r), chord, hotkey };
+            })
+            .filter((l): l is ScopeLink => l !== null);
+          this.renderScopeLinks(links);
+          // Publish for AppShell.hotkeys() so each screen's `hotkey` wires up
+          // its `g <hotkey>` navigation chord (data-driven, project-specific).
+          // An empty `links` array (no slugs at all) lands an empty rail —
+          // matches the rows-empty branch above so a previous project's links
+          // don't linger.
+          this.ctx.tree.at(['shell', 'screenLinks']).set(links);
+        },
+        { alive: () => this.isAlive() },
+      );
+    }, 'shell.scopeLinks');
+  }
+
   private buildAdminSection(
     rail: HTMLElement,
     label: string,
@@ -683,23 +849,31 @@ export class AppShell extends Control<AppShellConfig> {
         this.setCrumb('Projects');
         return this.spawn('ProjectList', { type: 'ProjectList' }, outlet);
       }
-      case 'project':
+      case 'project': {
+        // Bare `/project/:id` (no slug) = the project's DEFAULT board. There is
+        // no hard-coded default screen: the ScreenHost's `defaultScreen` mode
+        // loads the project's screen cards, picks the FIRST by sort_order, and
+        // redirects to it (so the URL / presets / nav key off the real slug).
+        this.setScope(parseId(route.params['id']));
+        this.setCrumb('');
+        const cfg: ChildConfig = {
+          ...boardConfig,
+          type: boardConfig.type,
+          screen: { slug: '', layout: 'unknown' },
+          defaultScreen: true,
+          resolveScreen: false,
+        };
+        return this.spawn(cfg.type, cfg, outlet);
+      }
       case 'screen': {
         const id = parseId(route.params['id']);
         this.setScope(id);
-        // The default screen for `/project/:id` is the board (kanban for now);
-        // `/project/:id/screen/:slug` SEEDS the body from the slug→layout
-        // fallback (#29), then the ScreenHost resolves the project's real
-        // `screen` card by slug and re-dispatches its body off the card's
-        // `layout` attribute. We do NOT carry the board's kanban `bodyConfig`
-        // across (that would pin every slug to Kanban).
-        const slug = route.name === 'screen' ? (route.params['slug'] ?? 'kanban') : 'kanban';
-        const layout = route.name === 'screen' ? screenLayoutForSlug(slug) : 'kanban';
-        const screen = { slug, layout, title: capitalise(slug) };
-        // Carry over the board descriptor's NON-screen fields (e.g. the
-        // declarative `children` that prove NotFound degradation), but replace
-        // the screen with the route-derived one. `resolveScreen` switches on the
-        // host's real screen-card resolution (off in unit tests via boardConfig).
+        // `/project/:id/screen/:slug`: the ScreenHost resolves the project's real
+        // `screen` card by slug and dispatches its body off the card's `layout`
+        // (no slug→layout seed — no slug is privileged; a neutral loading body
+        // shows until it resolves). We do NOT carry the board's kanban bodyConfig.
+        const slug = route.params['slug'] ?? 'kanban';
+        const screen = { slug, layout: 'unknown', title: capitalise(slug) };
         const cfg: ChildConfig = {
           ...boardConfig,
           type: boardConfig.type,
@@ -727,6 +901,11 @@ export class AppShell extends Control<AppShellConfig> {
         // set), so scope is left intact — the rail nav stays on the project.
         this.setCrumb('Activity');
         return this.spawn('Activity', { type: 'Activity' } as ChildConfig, outlet);
+      }
+      case 'account': {
+        // The signed-in user's read-only profile (rail user-menu → Account).
+        this.setCrumb('Account');
+        return this.spawn('AccountPage', { type: 'AccountPage' } as ChildConfig, outlet);
       }
       case 'admin': {
         // Resolve `/admin/:key` to a MasterDetail config via the boot resolver.
@@ -846,6 +1025,41 @@ function currentTheme(): string {
 function setTheme(theme: string): void {
   if (typeof document === 'undefined' || !document.documentElement) return;
   document.documentElement.setAttribute('data-theme', theme);
+  writeStoredTheme(theme);
+}
+
+/** localStorage key for the user's chosen theme ('dark' | 'light'). */
+const THEME_KEY = 'kitp.theme';
+
+/** The persisted theme choice, or null when unset / blocked / invalid. */
+function readStoredTheme(): string | null {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    return v === HTML_THEME_DARK || v === HTML_THEME_LIGHT ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the chosen theme so the next load restores it. Best-effort. */
+function writeStoredTheme(theme: string): void {
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+  } catch {
+    // no store (private mode / no DOM) — persistence is a nice-to-have.
+  }
+}
+
+/**
+ * Apply the persisted theme to `<html>` before the shell renders, so a user who
+ * chose dark mode doesn't load into the light default. No stored choice leaves
+ * the document's default (`data-theme="light"` in index.html) untouched. Called
+ * once at boot, ahead of mounting (CSP forbids an inline pre-paint script, so a
+ * single repaint on the deferred module is the best we can do). Idempotent.
+ */
+export function applyStoredTheme(): void {
+  const stored = readStoredTheme();
+  if (stored !== null) setTheme(stored);
 }
 
 function parseId(raw: string | undefined): bigint | null {
@@ -882,14 +1096,18 @@ function writeActiveProject(id: string): void {
   }
 }
 
-/** Build the default global-tier hotkey chords as INTENT-raising bindings. */
+/**
+ * Build the default global-tier hotkey chords as INTENT-raising bindings.
+ * NO per-screen chords (Inbox / Grid / Kanban) live here — every screen's
+ * `g <hotkey>` is derived from its own `hotkey` attribute by
+ * `AppShell.hotkeys()` reading the data-driven `shell.screenLinks`. A project
+ * with no screen carrying `hotkey='i'` therefore has NO `g i` chord; this used
+ * to navigate to `inbox` regardless because of a hardcoded entry — removed.
+ */
 export function shellHotkeys(emit: (intent: string) => void): HotkeyBinding[] {
   return [
     { binding: 'g p', label: 'Go to Projects', run: () => emit('goProjects') },
     { binding: 'g a', label: 'Go to Activity', run: () => emit('goActivity') },
-    { binding: 'g i', label: 'Go to Inbox', run: () => emit('goInbox') },
-    { binding: 'g g', label: 'Go to Grid', run: () => emit('goGrid') },
-    { binding: 'g k', label: 'Go to Kanban', run: () => emit('goKanban') },
     { binding: ['?', 'Mod+/'], label: 'Keyboard shortcuts', run: () => emit('toggleHelp') },
     // Global `n` opens the quick-entry overlay scoped to the current project.
     // Task screens (kanban/grid/inbox) layer their own `n` over this to pass a

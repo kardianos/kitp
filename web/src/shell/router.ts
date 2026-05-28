@@ -37,7 +37,6 @@
  */
 
 import type { TreeNode } from '../core/tree.js';
-import { fallbackLayoutForSlug } from '../filter/screen-resolve.js';
 import { AUTH_USER_PATH, peekIsAdmin, peekHasRole, type AuthUser } from '../auth/auth-state.js';
 
 /** Where the parsed current route lives in the data tree. */
@@ -50,6 +49,7 @@ export type RouteName =
   | 'screen'
   | 'task'
   | 'activity'
+  | 'account'
   | 'admin'
   | 'notfound';
 
@@ -89,6 +89,7 @@ const ROUTES: readonly RoutePattern[] = [
   { pattern: '/project/:id/screen/:slug', name: 'screen', guard: 'requireAuth' },
   { pattern: '/task/:id', name: 'task', guard: 'requireAuth' },
   { pattern: '/activity', name: 'activity', guard: 'requireAuth' },
+  { pattern: '/account', name: 'account', guard: 'requireAuth' },
   { pattern: '/admin/:key', name: 'admin', guard: 'requireAdmin' },
 ];
 
@@ -97,22 +98,9 @@ export function activityUrl(): string {
   return '/activity';
 }
 
-/**
- * Resolve a URL slug to a ScreenHost layout — the SEED/FALLBACK layout only.
- *
- * #29 replaced the old hardcoded slug→layout table with REAL screen-card
- * resolution: the ScreenHost loads the project's `screen` cards, matches by
- * slug, and drives its body off the resolved card's `layout` attribute. This
- * function is now the FALLBACK the router seeds the ScreenHost with so a cold
- * deep-link / unseeded project still paints a sane body before (or absent) a
- * matching screen card; an unknown slug returns 'unknown' → the ScreenHost's
- * NotFound placeholder (graceful degradation). The mapping lives in one place
- * (`filter/screen-resolve.ts`); this delegates so the router + the host share
- * the same fallback table.
- */
-export function screenLayoutForSlug(slug: string): string {
-  return fallbackLayoutForSlug(slug);
-}
+// (No screenLayoutForSlug seam: a screen's layout is resolved from its `screen`
+//  card by the ScreenHost — no slug is mapped to a layout. The help overlay
+//  reads the resolved layout from the `screen.layout` leaf the host publishes.)
 
 /**
  * The embedded-help TOPIC key for a route — what `help.get_topic` looks up to
@@ -133,12 +121,13 @@ export function helpTopicForRoute(route: RouteMatch): string | null {
       const key = route.params['key'];
       return key !== undefined && key !== '' ? `admin.${key}` : null;
     }
-    case 'screen': {
-      const slug = route.params['slug'];
-      return slug !== undefined && slug !== '' ? `layout.${screenLayoutForSlug(slug)}` : null;
-    }
+    // screen / project: the topic is `layout.<resolved layout>`, but the layout
+    // is known only once the screen card resolves — the caller (main.ts) reads
+    // the ScreenHost-published `screen.layout` leaf for these routes. Returning
+    // null here is just the no-leaf fallback.
+    case 'screen':
     case 'project':
-      return 'layout.kanban'; // the default project screen is the board
+      return null;
     default:
       return null;
   }

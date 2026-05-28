@@ -689,85 +689,62 @@ test('Screens: editing a filter title fires attribute.update on the filter card'
 });
 
 /* -------------------------------------------------------------------------- */
-/* Named Filters: the advanced visual predicate builder (filterPredicate).      */
+/* Screens: workflow (flow_ref) + base phase (toggle_groups) editors (#27).     */
 /* -------------------------------------------------------------------------- */
 
-test('Named Filters: selecting a filter mounts the advanced builder; Save commits predicate+group+sort', async () => {
+test('Screens: the workflow + base-phase editors render with the project flows', async () => {
   const transport = nestedTransport();
   const { dispatcher, api } = bootApi(transport);
-  const { ctrl } = mountMD(api, M.adminScreenConfig('filters'));
+  const { ctrl } = mountMD(api, M.adminScreenConfig('screens'));
   await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
 
-  // The project's filter cards list; select the first.
-  const id = await selectFirstRow(ctrl, dispatcher);
-
-  // The advanced visual builder (PredicateFilter) mounted for that filter.
-  assert.ok(ctrl.el.querySelector('[data-ne-predicate]'), 'predicate builder slot mounted');
-  assert.equal(ctrl.el.findByControl('PredicateFilter').length, 1, 'one PredicateFilter builder');
-
-  // Save commits the full view definition (predicate + group + sort) to the card.
-  ctrl.el.querySelector('[data-ne-predicate-save]').dispatchEvent({ type: 'click' });
-  await settle(dispatcher);
-  const updates = writesFor(transport, 'attribute.update');
-  assert.deepEqual(
-    updates.map((u) => u.data.attribute_name).sort(),
-    ['group_by_attr', 'predicate', 'sort'],
-    'one attribute.update per view-definition field',
-  );
-  assert.ok(updates.every((u) => String(u.data.card_id) === id), 'all target the selected filter card');
+  const flow = ctrl.el.querySelector('[data-ne-screen-flow]');
+  const phase = ctrl.el.querySelector('[data-ne-screen-base-phase]');
+  assert.ok(flow, 'workflow select renders');
+  assert.ok(phase, 'base-phase select renders');
+  // The project's one flow (id 50, scoped to project 31) is an option.
+  const flowOpts = flow.querySelectorAll('option').map((o) => o.value);
+  assert.ok(flowOpts.includes('50'), 'the project flow is selectable');
+  assert.ok(flowOpts.includes(''), 'a "project default" (unset) option exists');
 });
 
-test('Named Filters: switching the selected filter re-mounts the builder (one live PredicateFilter)', async () => {
+test('Screens: choosing a workflow fires attribute.update(flow_ref) on the screen', async () => {
   const transport = nestedTransport();
   const { dispatcher, api } = bootApi(transport);
-  const { ctrl } = mountMD(api, M.adminScreenConfig('filters'));
+  const { ctrl } = mountMD(api, M.adminScreenConfig('screens'));
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+
+  const flow = ctrl.el.querySelector('[data-ne-screen-flow]');
+  flow.value = '50';
+  flow.dispatchEvent({ type: 'change' });
   await settle(dispatcher);
 
-  const rows = visibleRows(ctrl.el);
-  rows[0].dispatchEvent({ type: 'click' });
-  M.flushSync?.();
-  await settle(dispatcher);
-  rows[1].dispatchEvent({ type: 'click' });
-  M.flushSync?.();
-  await settle(dispatcher);
-
-  // The previous builder was torn down — exactly one PredicateFilter is live.
-  assert.equal(ctrl.el.findByControl('PredicateFilter').length, 1, 'old builder destroyed on reselect');
-  assert.equal(ctrl.el.querySelector('[data-ne-predicate]').dataset.nePredicate, rows[1].dataset.mdId);
+  const u = writesFor(transport, 'attribute.update').filter((w) => w.data.attribute_name === 'flow_ref');
+  assert.equal(u.length, 1, 'one flow_ref update fired');
+  assert.equal(String(u[0].data.card_id), '60', 'on the selected screen');
+  assert.equal(Number(u[0].data.value), 50, 'flow_ref set to the chosen flow id');
 });
 
-test('Named Filters: a bare-leaf predicate (status has_phase) loads into the builder and saves canonically', async () => {
-  // The seed/runtime store a filter predicate as a BARE WIRE NODE (leaf or
-  // connective), read back by screen-resolve.readPredicate via fromWire. The
-  // builder must load that shape (not render empty) and save it back in the
-  // same shape (so the runtime can read it).
-  const stored = JSON.stringify({ attr: 'status', op: 'has_phase', values: ['active'] });
-  const transport = nestedTransport({ filterPredicate: stored });
+test('Screens: choosing a base phase rewrites toggle_groups with that phase default-on', async () => {
+  const transport = nestedTransport();
   const { dispatcher, api } = bootApi(transport);
-  const { ctrl } = mountMD(api, M.adminScreenConfig('filters'));
+  const { ctrl } = mountMD(api, M.adminScreenConfig('screens'));
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+
+  const phase = ctrl.el.querySelector('[data-ne-screen-base-phase]');
+  phase.value = 'active';
+  phase.dispatchEvent({ type: 'change' });
   await settle(dispatcher);
 
-  // Select the filter whose predicate is the bare-leaf has_phase node (id 70).
-  const rows = visibleRows(ctrl.el).filter((r) => r.dataset.mdId === '70');
-  rows[0].dispatchEvent({ type: 'click' });
-  M.flushSync?.();
-  await settle(dispatcher);
-
-  // It loaded into the builder (a non-empty predicate → a leaf row + the
-  // has_phase phase checkboxes render, not an empty builder).
-  assert.ok(ctrl.el.findByControl('PredicateFilter').length === 1, 'builder mounted');
-  assert.ok(ctrl.el.querySelector('[data-pred-leaf]'), 'the stored predicate rendered as a leaf (not empty)');
-  assert.ok(ctrl.el.querySelector('[data-pred-phases]'), 'has_phase decoded → triage/active/terminal checkboxes');
-
-  // Save → the persisted predicate is the CANONICAL wire node readPredicate reads.
-  ctrl.el.querySelector('[data-ne-predicate-save]').dispatchEvent({ type: 'click' });
-  await settle(dispatcher);
-  const pred = writesFor(transport, 'attribute.update').find((w) => w.data.attribute_name === 'predicate');
-  assert.ok(pred, 'predicate attribute.update fired');
-  const parsed = JSON.parse(pred.data.value);
-  assert.equal(parsed.where, undefined, 'no legacy {where} wrapper');
-  assert.equal(parsed.tree, undefined, 'no legacy {tree} wrapper');
-  // The runtime decoder reads it back to a non-null predicate.
-  const roundTrip = M.readPredicate({ attributes: { predicate: pred.data.value } });
-  assert.ok(roundTrip !== null, 'runtime readPredicate decodes the builder-saved predicate');
+  const u = writesFor(transport, 'attribute.update').filter((w) => w.data.attribute_name === 'toggle_groups');
+  assert.equal(u.length, 1, 'one toggle_groups update fired');
+  const groups = JSON.parse(u[0].data.value);
+  const ps = groups.find((g) => g.name === 'phase_scope');
+  assert.ok(ps, 'a phase_scope group is written');
+  const on = ps.items.filter((it) => it.default_on).map((it) => it.name);
+  assert.deepEqual(on, ['active'], 'only the chosen phase is default-on');
 });
+

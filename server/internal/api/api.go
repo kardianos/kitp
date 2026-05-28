@@ -97,12 +97,17 @@ type BatchResponse struct {
 
 // Server holds the dependencies the dispatcher needs.
 //
-// Logger is optional; when set, the dispatcher emits one info line per
-// batch (with request_id, user_id, subrequest_count, duration_ms,
-// outcome) and one debug line per sub-request (Phase 21).
+// Logger is optional; when set AND RequestLog is true, the dispatcher emits
+// one info line per batch (with request_id, user_id, subrequest_count,
+// duration_ms, outcome) and one debug line per sub-request (Phase 21).
+// RequestLog defaults to false (no per-request lines); kitpd flips it on
+// from `KITP_REQUEST_LOG=1` so production servers are quiet by default but
+// ops can opt in. Non-request slog calls (auth-rejected, errors, query
+// tracer) are unaffected — they still emit at their configured level.
 type Server struct {
-	Pool   *store.Pool
-	Logger *slog.Logger
+	Pool       *store.Pool
+	Logger     *slog.Logger
+	RequestLog bool
 }
 
 // NewServer constructs a dispatcher.
@@ -110,9 +115,11 @@ func NewServer(p *store.Pool) *Server {
 	return &Server{Pool: p}
 }
 
-// logBatch emits the per-batch info line if a Logger is configured.
+// logBatch emits the per-batch info line if a Logger is configured AND
+// RequestLog is on. Off by default so the production stdout doesn't hum with
+// one line per /api/v1/batch POST; set KITP_REQUEST_LOG=1 to enable.
 func (s *Server) logBatch(ctx context.Context, n int, dur time.Duration, outcome string) {
-	if s.Logger == nil {
+	if s.Logger == nil || !s.RequestLog {
 		return
 	}
 	s.Logger.LogAttrs(ctx, slog.LevelInfo, "batch",
@@ -124,9 +131,11 @@ func (s *Server) logBatch(ctx context.Context, n int, dur time.Duration, outcome
 	)
 }
 
-// logSubrequest emits the per-sub-request debug line if a Logger is configured.
+// logSubrequest emits the per-sub-request debug line if a Logger is configured
+// AND RequestLog is on (same gate as logBatch — request logging is a single
+// opt-in surface).
 func (s *Server) logSubrequest(ctx context.Context, sr SubResponse, endpoint, action string) {
-	if s.Logger == nil {
+	if s.Logger == nil || !s.RequestLog {
 		return
 	}
 	code := ""

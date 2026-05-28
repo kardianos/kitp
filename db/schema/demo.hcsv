@@ -210,8 +210,8 @@ $card_type.task, parent,         "Audit-log review (related)", @s_review,$user_a
 
 ## table card | under=proj_default | doc="Inbox screen. flow_ref binds the screen to the project's task flow so the TransitionBar in the task-detail header surfaces labelled transitions (Accept / Start / Send to review / Approve / Cancel / Reopen). Without flow_ref the bar renders empty."
 ### rows
-card_type_id, parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,       alias
-$card_type.screen, parent, "Inbox",  list,   inbox, i,      1,          @flow_default,  sc_inbox
+card_type_id, parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,       alias, toggle_groups
+$card_type.screen, parent, "Inbox",  list,   inbox, i,      1,          @flow_default,  sc_inbox, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 ## table card | under=sc_inbox
 ### rows
@@ -221,8 +221,8 @@ $card_type.filter, parent, "Default Inbox", `{"attr":"status","op":"not terminal
 
 ## table card | under=proj_default | doc="Grid screen. tag_prefix_columns defines which tag namespaces (e.g. 'priority/') break out into their own grid column; extra_columns lists attribute_def names to surface as additional columns (between Tags and Created). Both are configurable via the screen filter bar's Columns control."
 ### rows
-card_type_id, parent_card_id, title,  layout, slug, hotkey, sort_order, flow_ref,       tag_prefix_columns, extra_columns,    alias
-$card_type.screen, parent, "Grid",  grid,   grid, g,      2,          @flow_default,  `["priority"]`,     `["due_date"]`,   sc_grid
+card_type_id, parent_card_id, title,  layout, slug, hotkey, sort_order, flow_ref,       tag_prefix_columns, extra_columns,    alias, toggle_groups
+$card_type.screen, parent, "Grid",  grid,   grid, g,      2,          @flow_default,  `["priority"]`,     `["due_date"]`,   sc_grid, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 ## table card | under=sc_grid
 ### rows
@@ -233,8 +233,8 @@ $card_type.filter, parent, "Head tasks",   `{"connective":"or","children":[{"att
 
 ## table card | under=proj_default | doc="Kanban screen."
 ### rows
-card_type_id, parent_card_id, title,    layout, slug,   hotkey, sort_order, flow_ref,       alias
-$card_type.screen, parent, "Kanban", kanban, kanban, k,      3,          @flow_default,  sc_kanban
+card_type_id, parent_card_id, title,    layout, slug,   hotkey, sort_order, flow_ref,       alias, toggle_groups
+$card_type.screen, parent, "Kanban", kanban, kanban, k,      3,          @flow_default,  sc_kanban, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 ## table card | under=sc_kanban
 ### rows
@@ -244,13 +244,25 @@ $card_type.filter, parent, "Default Kanban", `{"attr":"status","op":"not termina
 
 ## table card | under=proj_default | doc="Project-detail screen."
 ### rows
-card_type_id, parent_card_id, title,            layout, slug,    sort_order, flow_ref,       alias
-$card_type.screen, parent, "Project detail", project, project, 4,          @flow_default,  sc_pd
+card_type_id, parent_card_id, title,            layout, slug,    sort_order, flow_ref,       alias, toggle_groups
+$card_type.screen, parent, "Project detail", project, project, 4,          @flow_default,  sc_pd, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 ## table card | under=sc_pd
 ### rows
 card_type_id, parent_card_id, title,                     predicate
 $card_type.filter, parent, "Default Project detail", `{"attr":"status","op":"not terminal"}`
+
+
+## table card | under=proj_default | doc="Incoming screen: triage-phase rows (its base phase)."
+### rows
+card_type_id, parent_card_id, title,      layout, slug,     hotkey, sort_order, flow_ref,       toggle_groups
+$card_type.screen, parent, "Incoming", list,   incoming, n,      5,          @flow_default,  `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":true},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":false},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+
+
+## table card | under=proj_default | doc="Recently Closed screen: terminal-phase rows (its base phase)."
+### rows
+card_type_id, parent_card_id, title,             layout, slug,            sort_order, flow_ref,       toggle_groups
+$card_type.screen, parent, "Recently Closed", list,   recently-closed, 6,          @flow_default,  `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":false},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":true}]}]`
 
 
 ## table card | under=proj_default | doc="Named-filter snippets — reusable predicate chunks the user pulls into any screen's active filter via the 'Named' multi-select. The two date snippets reference the relative-date ops (before_today / within_days), which the server compiler resolves against now()::date at query time so the result keeps moving with the clock instead of going stale on save. The non-terminal status check uses has_phase [triage, active] (the kernel form) so the advanced filter editor renders the op label cleanly. 'Heads' surfaces top-level tasks (no parent OR parent terminal)."
@@ -351,8 +363,8 @@ $card_type.task, parent,         "Closed: prototype review",  @mob_s_cancel,  $u
 
 ## table card | under=proj_mobile | doc="Mobile App Inbox screen. No hotkey set — Default Project already claims the single-letter screen keys (i / g / k); Mobile App reaches its screens via the project picker + click. Symmetry across the two projects rather than chord collisions."
 ### rows
-card_type_id, parent_card_id, title,   layout, slug,  sort_order, flow_ref,   alias
-$card_type.screen, parent, "Inbox",  list,   inbox, 1,          @mob_flow,  mob_sc_inbox
+card_type_id, parent_card_id, title,   layout, slug,  sort_order, flow_ref,   alias, toggle_groups
+$card_type.screen, parent, "Inbox",  list,   inbox, 1,          @mob_flow,  mob_sc_inbox, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 ## table card | under=mob_sc_inbox
 ### rows
@@ -362,8 +374,8 @@ $card_type.filter, parent, "Default Inbox", `{"attr":"status","op":"not terminal
 
 ## table card | under=proj_mobile | doc="Mobile App Grid screen. No tag_prefix_columns — Default Project's grid already exercises that affordance, and the parser's backtick-cell cross-product treats a multi-element JSON array oddly under the alias path; safer to omit. extra_columns surfaces the due_date attribute as a Grid column."
 ### rows
-card_type_id, parent_card_id, title,  layout, slug, sort_order, flow_ref,   extra_columns,   alias
-$card_type.screen, parent, "Grid",  grid,   grid, 2,          @mob_flow,  `["due_date"]`, mob_sc_grid
+card_type_id, parent_card_id, title,  layout, slug, sort_order, flow_ref,   extra_columns,   alias, toggle_groups
+$card_type.screen, parent, "Grid",  grid,   grid, 2,          @mob_flow,  `["due_date"]`, mob_sc_grid, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 ## table card | under=mob_sc_grid
 ### rows
@@ -373,8 +385,8 @@ $card_type.filter, parent, "Default Grid", `{"attr":"status","op":"not terminal"
 
 ## table card | under=proj_mobile | doc="Mobile App Kanban screen."
 ### rows
-card_type_id, parent_card_id, title,    layout, slug,   sort_order, flow_ref,   alias
-$card_type.screen, parent, "Kanban", kanban, kanban, 3,          @mob_flow,  mob_sc_kanban
+card_type_id, parent_card_id, title,    layout, slug,   sort_order, flow_ref,   alias, toggle_groups
+$card_type.screen, parent, "Kanban", kanban, kanban, 3,          @mob_flow,  mob_sc_kanban, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 ## table card | under=mob_sc_kanban
 ### rows
@@ -384,13 +396,25 @@ $card_type.filter, parent, "Default Kanban", `{"attr":"status","op":"not termina
 
 ## table card | under=proj_mobile | doc="Mobile App Project-detail screen."
 ### rows
-card_type_id, parent_card_id, title,            layout, slug,    sort_order, flow_ref,   alias
-$card_type.screen, parent, "Project detail", project, project, 4,          @mob_flow,  mob_sc_pd
+card_type_id, parent_card_id, title,            layout, slug,    sort_order, flow_ref,   alias, toggle_groups
+$card_type.screen, parent, "Project detail", project, project, 4,          @mob_flow,  mob_sc_pd, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 ## table card | under=mob_sc_pd
 ### rows
 card_type_id, parent_card_id, title,                     predicate
 $card_type.filter, parent, "Default Project detail", `{"attr":"status","op":"not terminal"}`
+
+
+## table card | under=proj_mobile | doc="Mobile App Incoming screen: triage-phase rows (its base phase)."
+### rows
+card_type_id, parent_card_id, title,      layout, slug,     sort_order, flow_ref,   toggle_groups
+$card_type.screen, parent, "Incoming", list,   incoming, 5,          @mob_flow,  `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":true},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":false},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+
+
+## table card | under=proj_mobile | doc="Mobile App Recently Closed screen: terminal-phase rows (its base phase)."
+### rows
+card_type_id, parent_card_id, title,             layout, slug,            sort_order, flow_ref,   toggle_groups
+$card_type.screen, parent, "Recently Closed", list,   recently-closed, 6,          @mob_flow,  `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":false},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":true}]}]`
 
 
 ## table card | under=proj_mobile | doc="Same set of snippets as Default Project, scoped to Mobile App. Each project owns its own snippet cards — predicate_snippet is per-project. Listing them across both demo projects exercises the cross-project navigation: pick a project, see its named filters, pick another, see a different list."

@@ -101,9 +101,15 @@ test('EnumManager lists only enum_managed attributes + their value-cards (#3)', 
 
   // The value-cards select must order by the sort_order ATTRIBUTE using the
   // `attributes.` prefix — a bare 'sort_order' is rejected by the server
-  // ("unsupported order field"), which empties the screen.
+  // ("unsupported order field"), which empties the screen. `title` follows as a
+  // deterministic secondary key (value-cards with no sort_order all sort null →
+  // NULLS LAST, and the select appends no final tiebreaker, so without it the
+  // order is non-deterministic).
   assert.ok(transport.sent.milestoneOrders.length > 0, 'value-cards select carries an order');
-  assert.deepEqual(transport.sent.milestoneOrders[0], [{ field: 'attributes.sort_order', direction: 'ASC' }]);
+  assert.deepEqual(transport.sent.milestoneOrders[0], [
+    { field: 'attributes.sort_order', direction: 'ASC' },
+    { field: 'attributes.title', direction: 'ASC' },
+  ]);
 });
 
 test('EnumManager add fires card.insert under the active project', async () => {
@@ -146,32 +152,83 @@ test('EnumManager rename fires attribute.update(title); remove fires card.delete
   assert.equal(String(transport.sent.deletes[0].card_id), '500');
 });
 
-test('EnumManager reorder: ▼ moves a value down and persists a sort_order ladder', async () => {
+test('EnumManager add(tag): fills the required text edge (path) from the title', async () => {
+  // The `tag` card_type has a REQUIRED `path` text edge besides title; a bare
+  // card.insert {title} fails edge_violation. The control fills required text
+  // edges from the entered title (schema-driven — no card_type hardcoded).
+  const sent = { inserts: [] };
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      const subresponses = req.subrequests.map((sr) => {
+        const k = `${sr.endpoint}.${sr.action}`;
+        const data = sr.data ?? {};
+        if (k === 'attribute_def.select') {
+          return {
+            id: sr.id, ok: true,
+            data: { rows: [
+              { id: 't1', name: 'tags', value_type: 'card_ref[]', is_built_in: true, enum_managed: true, target_card_type_name: 'tag', bound_to: [] },
+              // path: a REQUIRED text edge on tag → must be auto-filled.
+              { id: 't2', name: 'path', value_type: 'text', is_built_in: true, enum_managed: false, bound_to: [{ card_type_id: '9', card_type_name: 'tag', is_required: true }] },
+              // title: required too, but it has a dedicated field → must NOT be duplicated into attributes.
+              { id: 't3', name: 'title', value_type: 'text', is_built_in: true, enum_managed: false, bound_to: [{ card_type_id: '9', card_type_name: 'tag', is_required: true }] },
+            ] },
+          };
+        }
+        if (k === 'card.select_with_attributes') return { id: sr.id, ok: true, data: { rows: [] } };
+        if (k === 'card.insert') { sent.inserts.push(data); return { id: sr.id, ok: true, data: { id: '900' } }; }
+        return { id: sr.id, ok: true, data: {} };
+      });
+      return { status: 200, text: JSON.stringify({ subresponses }) };
+    },
+  };
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  const input = ctrl.el.querySelector('[data-enum-add-input="tag"]');
+  assert.ok(input, 'the tag enum renders an add input');
+  input.value = 'area/frontend';
+  input.dispatchEvent({ type: 'input', target: input });
+  ctrl.el.querySelector('[data-enum-add="tag"]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+
+  assert.equal(sent.inserts.length, 1, 'one card.insert fired');
+  assert.equal(sent.inserts[0].card_type_name, 'tag');
+  assert.equal(sent.inserts[0].title, 'area/frontend', 'title rides top-level');
+  assert.deepEqual(
+    sent.inserts[0].attributes,
+    { path: 'area/frontend' },
+    'required path edge filled from the title; title not duplicated into attributes',
+  );
+});
+
+test('EnumManager reorder: no ▲/▼ buttons (drag handle is the only reorder UI)', async () => {
+  const { dispatcher, api } = bootApi(recordingTransport());
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  assert.equal(ctrl.el.querySelectorAll('[data-enum-move-up]').length, 0, 'no up arrows');
+  assert.equal(ctrl.el.querySelectorAll('[data-enum-move-down]').length, 0, 'no down arrows');
+  assert.ok(ctrl.el.querySelector('[data-enum-drag]'), 'the drag handle remains');
+});
+
+test('EnumManager add: refocuses the add input so the next value can be typed', async () => {
   const transport = recordingTransport();
   const { dispatcher, api } = bootApi(transport);
   const { ctrl } = mount(api);
   await settle(dispatcher);
 
-  // Initial order Q1(500), Q2(501): the first row can't move up, the last down.
-  let order = ctrl.el.querySelectorAll('[data-enum-value]').map((v) => v.dataset.enumValue);
-  assert.deepEqual(order, ['500', '501'], 'values render in sort_order');
-  assert.equal(ctrl.el.querySelector('[data-enum-move-up="500"]').disabled, true, 'first row: up disabled');
-  assert.equal(ctrl.el.querySelector('[data-enum-move-down="501"]').disabled, true, 'last row: down disabled');
-
-  // Move Q1 down.
-  ctrl.el.querySelector('[data-enum-move-down="500"]').dispatchEvent({ type: 'click' });
+  const input = ctrl.el.querySelector('[data-enum-add-input="milestone"]');
+  input.value = 'Q3';
+  input.dispatchEvent({ type: 'input', target: input });
+  ctrl.el.querySelector('[data-enum-add="milestone"]').dispatchEvent({ type: 'click' });
   await settle(dispatcher);
 
-  // Optimistic repaint into the new order.
-  order = ctrl.el.querySelectorAll('[data-enum-value]').map((v) => v.dataset.enumValue);
-  assert.deepEqual(order, ['501', '500'], 'rows repainted in the new order');
-
-  // sort_order persisted as a 10,20 ladder over the new order (one coalesced batch).
-  const sorts = transport.sent.updates.filter((u) => u.attribute_name === 'sort_order');
-  assert.equal(sorts.length, 2, 'sort_order written for each reindexed card');
-  const byCard = Object.fromEntries(sorts.map((u) => [String(u.card_id), u.value]));
-  assert.equal(byCard['501'], 10, 'the card now first gets the lowest sort_order');
-  assert.equal(byCard['500'], 20);
+  // The list repainted (a fresh input node); focus returned to it + draft cleared.
+  const after = ctrl.el.querySelector('[data-enum-add-input="milestone"]');
+  assert.equal(document.activeElement, after, 'add input refocused after the repaint');
+  assert.equal(after.value, '', 'draft cleared, ready for the next value');
 });
 
 test('EnumManager reorder: dragging a value commits via the shared drop kit (#12)', async () => {
@@ -194,4 +251,142 @@ test('EnumManager reorder: dragging a value commits via the shared drop kit (#12
   assert.deepEqual(order, ['501', '500'], 'drag-drop moved 501 to the front');
   const sorts = transport.sent.updates.filter((u) => u.attribute_name === 'sort_order');
   assert.ok(sorts.length >= 1, 'sort_order ladder persisted after the drag');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Grouped tags: path-root buckets + per-group single-select exclusivity.       */
+/* -------------------------------------------------------------------------- */
+
+// A tag card_type carries BOTH a `path` and a `root_exclusive_at` text edge →
+// the EnumManager renders it grouped by path root with per-group exclusivity.
+function groupedTagTransport() {
+  const sent = { inserts: [], updates: [], deletes: [] };
+  const tags = [
+    { id: '700', card_type_name: 'tag', parent_card_id: '31', attributes: { title: 'priority/high', path: 'priority/high', root_exclusive_at: 'priority', sort_order: 10 } },
+    { id: '701', card_type_name: 'tag', parent_card_id: '31', attributes: { title: 'priority/med', path: 'priority/med', root_exclusive_at: 'priority', sort_order: 20 } },
+    { id: '702', card_type_name: 'tag', parent_card_id: '31', attributes: { title: 'area/frontend', path: 'area/frontend', sort_order: 30 } },
+  ];
+  function respond(sr) {
+    const k = `${sr.endpoint}.${sr.action}`;
+    const data = sr.data ?? {};
+    if (k === 'attribute_def.select') {
+      return { id: sr.id, ok: true, data: { rows: [
+        { id: 'g1', name: 'tags', value_type: 'card_ref[]', is_built_in: true, enum_managed: true, target_card_type_name: 'tag', bound_to: [] },
+        { id: 'g2', name: 'path', value_type: 'text', is_built_in: true, enum_managed: false, bound_to: [{ card_type_id: '9', card_type_name: 'tag', is_required: true }] },
+        { id: 'g3', name: 'root_exclusive_at', value_type: 'text', is_built_in: true, enum_managed: false, bound_to: [{ card_type_id: '9', card_type_name: 'tag', is_required: false }] },
+        { id: 'g4', name: 'title', value_type: 'text', is_built_in: true, enum_managed: false, bound_to: [{ card_type_id: '9', card_type_name: 'tag', is_required: true }] },
+      ] } };
+    }
+    if (k === 'card.select_with_attributes') return { id: sr.id, ok: true, data: { rows: data.card_type_name === 'tag' ? tags : [] } };
+    if (k === 'card.insert') { sent.inserts.push(data); return { id: sr.id, ok: true, data: { id: '900' } }; }
+    if (k === 'attribute.update') { sent.updates.push(data); return { id: sr.id, ok: true, data: { ok: true } }; }
+    if (k === 'card.delete') { sent.deletes.push(data); return { id: sr.id, ok: true, data: { ok: true } }; }
+    return { id: sr.id, ok: false, error: { code: 'unknown', message: k } };
+  }
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      return { status: 200, text: JSON.stringify({ subresponses: req.subrequests.map(respond) }) };
+    },
+  };
+  transport.sent = sent;
+  return transport;
+}
+
+test('Grouped tags: render one sub-group per path root with a single-select toggle', async () => {
+  const { dispatcher, api } = bootApi(groupedTagTransport());
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  const groups = ctrl.el.querySelectorAll('[data-enum-subgroup]').map((g) => g.dataset.enumSubgroup).sort();
+  assert.deepEqual(groups, ['area', 'priority'], 'tags bucketed by path root');
+  // priority's members are both exclusive at 'priority' → toggle ON; area → OFF.
+  assert.equal(ctrl.el.querySelector('[data-enum-exclusive="priority"]').checked, true, 'priority is single-select');
+  assert.equal(ctrl.el.querySelector('[data-enum-exclusive="area"]').checked, false, 'area is not single-select');
+});
+
+test('Grouped tags: toggling a group ON sets root_exclusive_at on every member', async () => {
+  const transport = groupedTagTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  const toggle = ctrl.el.querySelector('[data-enum-exclusive="area"]');
+  toggle.checked = true;
+  toggle.dispatchEvent({ type: 'change', target: toggle });
+  await settle(dispatcher);
+
+  const ex = transport.sent.updates.filter((u) => u.attribute_name === 'root_exclusive_at');
+  assert.equal(ex.length, 1, 'one member updated');
+  assert.equal(String(ex[0].card_id), '702');
+  assert.equal(ex[0].value, 'area', 'root_exclusive_at set to the group root');
+});
+
+test('Grouped tags: toggling a group OFF clears root_exclusive_at on every member', async () => {
+  const transport = groupedTagTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  const toggle = ctrl.el.querySelector('[data-enum-exclusive="priority"]');
+  toggle.checked = false;
+  toggle.dispatchEvent({ type: 'change', target: toggle });
+  await settle(dispatcher);
+
+  const ex = transport.sent.updates.filter((u) => u.attribute_name === 'root_exclusive_at');
+  assert.equal(ex.length, 2, 'both priority members cleared');
+  assert.deepEqual(ex.map((u) => u.value), ['', ''], 'exclusivity cleared');
+});
+
+test('Grouped tags: add to a single-select group prepends the root + inherits exclusivity', async () => {
+  const transport = groupedTagTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  const input = ctrl.el.querySelector('[data-enum-add-group="priority"]');
+  assert.ok(input, 'priority group has its own add input');
+  input.value = 'low';
+  input.dispatchEvent({ type: 'input', target: input });
+  ctrl.el.querySelector('[data-enum-add-group-btn="priority"]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+
+  assert.equal(transport.sent.inserts.length, 1, 'one card.insert fired');
+  assert.equal(transport.sent.inserts[0].title, 'priority/low', 'path becomes root/typed');
+  assert.deepEqual(
+    transport.sent.inserts[0].attributes,
+    { path: 'priority/low', root_exclusive_at: 'priority' },
+    'new value carries the full path + inherits the group exclusivity',
+  );
+});
+
+test('Grouped tags: add to a non-exclusive group does not set root_exclusive_at', async () => {
+  const transport = groupedTagTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  const input = ctrl.el.querySelector('[data-enum-add-group="area"]');
+  input.value = 'backend';
+  input.dispatchEvent({ type: 'input', target: input });
+  ctrl.el.querySelector('[data-enum-add-group-btn="area"]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+
+  assert.deepEqual(transport.sent.inserts[0].attributes, { path: 'area/backend' }, 'no exclusivity inherited');
+});
+
+test('Grouped tags: "+ New group" adds a fresh empty bucket with its own add input', async () => {
+  const { dispatcher, api } = bootApi(groupedTagTransport());
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  const ng = ctrl.el.querySelector('[data-enum-new-group="tag"]');
+  ng.value = 'severity';
+  ng.dispatchEvent({ type: 'input', target: ng });
+  ctrl.el.querySelector('[data-enum-new-group-add="tag"]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+
+  assert.ok(ctrl.el.querySelector('[data-enum-subgroup="severity"]'), 'the new group renders');
+  assert.ok(ctrl.el.querySelector('[data-enum-add-group="severity"]'), 'with its own add input');
+  // No card.insert yet — the bucket is client-side until its first value lands.
 });

@@ -463,9 +463,9 @@ export class Inbox extends Control<InboxConfig> {
       this.placeholder?.pulse();
       const before = this.dropBeforeRow(body, (ev as DragEvent).clientY);
       if (before !== null) {
-        // Insert before the row the placeholder pointed at (row-based math is
-        // scroll-robust — it resolves the slot from the target's card id).
-        this.onRowDrop(before, ev as DragEvent);
+        // Gap drop: dropBeforeRow already resolved the insertion row, so insert
+        // BEFORE it (no per-row midpoint check — pass no clientY).
+        this.onRowDrop(before);
       } else {
         // Released past the last row → move to the end.
         const movedId = draggingRowId;
@@ -765,8 +765,10 @@ export class Inbox extends Control<InboxConfig> {
       // handler) — otherwise a drop ONTO a row would commit twice in a real
       // browser. (The test DOM shim doesn't bubble, so this is a no-op there.)
       ev.stopPropagation();
-      this.placeholder?.pulse();
-      this.onRowDrop(el, ev as DragEvent);
+      // Position-aware: a drop in the row's LOWER half inserts AFTER it (so a
+      // drop on the last row's lower half reaches the END — a card could never
+      // pass the last row before, #30). Matches the dragover placeholder.
+      this.onRowDrop(el, (ev as DragEvent).clientY);
     });
   }
 
@@ -900,8 +902,15 @@ export class Inbox extends Control<InboxConfig> {
     return null;
   }
 
-  /** Resolve a drop onto a row: reorder the dragged row to this row's slot. */
-  private onRowDrop(targetRow: HTMLElement, _ev: DragEvent): void {
+  /**
+   * Resolve a drop onto a row: reorder the dragged row relative to this row's
+   * slot. With `clientY` (a drop ONTO the row), the pointer's vertical half
+   * decides BEFORE (upper) vs AFTER (lower) — so a drop on the LAST row's lower
+   * half reaches the end (#30). Without it (a gap drop, where dropBeforeRow
+   * already resolved the row to go before), it inserts BEFORE. No layout
+   * (test shim → 0-rects) falls back to BEFORE, the historical default.
+   */
+  private onRowDrop(targetRow: HTMLElement, clientY?: number): void {
     const movedId = draggingRowId;
     draggingRowId = null;
     if (movedId === null) return;
@@ -914,10 +923,18 @@ export class Inbox extends Control<InboxConfig> {
     const fromIdx = rows.findIndex((r) => r.id === movedId);
     const toIdx = rows.findIndex((r) => r.id === targetId);
     if (fromIdx < 0 || toIdx < 0) return;
-    // insertAt counts BEFORE the target row in the list with the moved row
-    // removed; a downward move past its old slot needs the -1 correction.
-    let insertAt = toIdx;
-    if (fromIdx < toIdx) insertAt -= 1;
+    // Lower-half drop → insert AFTER the target; otherwise BEFORE it.
+    let after = false;
+    if (clientY !== undefined) {
+      const rect = targetRow.getBoundingClientRect?.();
+      if (rect && (rect.top !== 0 || rect.bottom !== 0)) {
+        after = clientY >= rect.top + rect.height / 2;
+      }
+    }
+    // insertAt counts in the list with the moved row removed; a downward move
+    // past the moved row's old slot needs the -1 correction.
+    let insertAt = after ? toIdx + 1 : toIdx;
+    if (fromIdx < insertAt) insertAt -= 1;
     this.reorderTo(movedId, insertAt);
   }
 
@@ -1017,8 +1034,14 @@ export class Inbox extends Control<InboxConfig> {
   override hotkeys(): readonly import('../core/hotkeys.js').HotkeyBinding[] {
     return [
       { binding: 'n', run: () => this.ctx.bus?.emit('quickCreateOpen'), label: 'New task' },
-      { binding: ['j', 'ArrowDown'], run: () => this.moveSelection(1), label: 'Next task' },
-      { binding: ['k', 'ArrowUp'], run: () => this.moveSelection(-1), label: 'Previous task' },
+      { binding: 'j', run: () => this.moveSelection(1), label: 'Next task' },
+      { binding: 'k', run: () => this.moveSelection(-1), label: 'Previous task' },
+      // Up/Down also navigate rows while the filter-bar search input has focus
+      // (typing in the search shouldn't strand the cursor — Up/Down don't move
+      // the caret in a text input, so this is safe). Left/Right stay default
+      // (they DO move the caret) so typing isn't hijacked.
+      { binding: 'ArrowDown', run: () => this.moveSelection(1), label: 'Next task', fireInInputs: true },
+      { binding: 'ArrowUp', run: () => this.moveSelection(-1), label: 'Previous task', fireInInputs: true },
       { binding: ['Shift+j', 'Shift+ArrowDown'], run: () => this.reorderSelected(1), label: 'Move row down' },
       { binding: ['Shift+k', 'Shift+ArrowUp'], run: () => this.reorderSelected(-1), label: 'Move row up' },
       ...(this.config.hotkeys ?? []),

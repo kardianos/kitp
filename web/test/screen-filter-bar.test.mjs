@@ -787,7 +787,7 @@ test('NamedFilters: a snippet leaf composes with a quick-chip leaf + an Advanced
 /* Phase-scope toggles — hide terminal by default, toggle to reveal all.        */
 /* -------------------------------------------------------------------------- */
 
-test('ScreenFilterBar: phase toggles render from screen.phaseToggles + toggle the has_phase scope', async () => {
+test('ScreenFilterBar: phase scope is a checkbox DROPDOWN on the View line (#31)', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);
@@ -802,28 +802,31 @@ test('ScreenFilterBar: phase toggles render from screen.phaseToggles + toggle th
   ]);
   M.flushSync?.();
 
-  const row = bar.querySelector('[data-phase-toggles]');
-  assert.ok(row, 'phase toggle row rendered');
-  const byPhase = (p) => row.querySelector(`[data-phase-toggle="${p}"]`);
-  const isOn = (p) => byPhase(p).classList.contains('filterbar__phase-toggle--on');
-  assert.ok(byPhase('triage') && byPhase('active') && byPhase('terminal'), 'one button per phase');
+  // The dropdown lives on the View (presets) row — NOT its own row.
+  const presetsRow = bar.querySelector('.filterbar__row--presets');
+  assert.ok(presetsRow && presetsRow.querySelector('[data-phase-dropdown]'), 'phase dropdown is on the View line');
+  const wrap = bar.querySelector('[data-phase-toggles]');
+  assert.ok(wrap, 'phase control rendered');
+  const byPhase = (p) => wrap.querySelector(`[data-phase-toggle="${p}"]`);
+  const isOn = (p) => byPhase(p).checked; // a checkbox now, not a button
+  assert.ok(byPhase('triage') && byPhase('active') && byPhase('terminal'), 'one checkbox per phase');
 
-  // Unscoped (no has_phase leaf) → all phases visible → every toggle reads ON.
+  // Unscoped (no has_phase leaf) → all phases visible → every box checked.
   tree.at(['screen', 'predicate']).set(null);
   M.flushSync?.();
   for (const p of ['triage', 'active', 'terminal']) {
-    assert.ok(isOn(p), `${p} on when unscoped`);
+    assert.ok(isOn(p), `${p} checked when unscoped`);
   }
 
-  // Scope to active only (what default-on seeds): Active on, others off.
+  // Scope to active only (what the base phase seeds): Active checked, others not.
   tree.at(['screen', 'predicate']).set({ kind: 'leaf', attr: 'status', op: 'hasPhase', values: ['active'] });
   M.flushSync?.();
-  assert.ok(isOn('active'), 'active on');
-  assert.ok(!isOn('terminal'), 'terminal hidden by default');
-  assert.ok(!isOn('triage'), 'triage hidden');
+  assert.ok(isOn('active'), 'active checked');
+  assert.ok(!isOn('terminal'), 'terminal unchecked by default');
+  assert.ok(!isOn('triage'), 'triage unchecked');
 
-  // Click "Closed" → reveal terminal too (active OR terminal).
-  byPhase('terminal').dispatchEvent({ type: 'click' });
+  // Tick "Closed" → reveal terminal too (active OR terminal).
+  byPhase('terminal').dispatchEvent({ type: 'change' });
   M.flushSync?.();
   assert.deepEqual(
     M.topLevelPhases(tree.at(['screen', 'predicate']).peek()).sort(),
@@ -831,8 +834,8 @@ test('ScreenFilterBar: phase toggles render from screen.phaseToggles + toggle th
     'terminal added to the phase scope',
   );
 
-  // Toggling every phase on collapses to no leaf (show all).
-  byPhase('triage').dispatchEvent({ type: 'click' });
+  // Ticking every phase on collapses to no leaf (show all).
+  byPhase('triage').dispatchEvent({ type: 'change' });
   M.flushSync?.();
   assert.deepEqual(M.topLevelPhases(tree.at(['screen', 'predicate']).peek()), [], 'all phases → no scope leaf');
 });

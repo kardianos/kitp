@@ -144,6 +144,57 @@ test('async loader resolves through the callback (deliver) path', async () => {
   cb.destroy();
 });
 
+test('pinnedOptions sit atop the list (static + async) and dedupe by value', async () => {
+  // Static mode: the pinned "Self" rides above the fruit list.
+  const cb = mountCombobox({ options: FRUITS, pinnedOptions: [{ value: 99, label: 'Self' }] });
+  cb.openMenu();
+  await flushMicrotasks();
+  assert.equal(options()[0].textContent, 'Self', 'pinned option is first');
+  assert.equal(options().length, 5, 'pinned + 4 fruits');
+  cb.destroy();
+
+  // Async mode: pinned shows before any deliver, and a delivered row sharing the
+  // pinned value collapses into the single pinned slot.
+  let deliver = null;
+  const cb2 = mountCombobox({
+    options: [],
+    pinnedOptions: [{ value: 10, label: 'Self' }],
+    loadOptions: (_q, sink) => (deliver = sink),
+  });
+  cb2.openMenu();
+  await flushMicrotasks();
+  assert.deepEqual(options().map((li) => li.textContent), ['Self'], 'pinned shows during load');
+  deliver([{ value: 10, label: 'Mango (dupe id)' }, { value: 11, label: 'Melon' }]);
+  assert.deepEqual(
+    options().map((li) => li.textContent),
+    ['Self', 'Melon'],
+    'dup id folds into the pinned slot; distinct rows follow',
+  );
+  cb2.destroy();
+});
+
+test('pinnedOptions are substring-filtered by the query like any option', async () => {
+  const cb = mountCombobox({ options: FRUITS, pinnedOptions: [{ value: 99, label: 'Self' }] });
+  cb.openMenu();
+  await flushMicrotasks();
+  const input = search();
+  input.value = 'ap'; // matches Apple/Apricot, NOT Self
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert.deepEqual(options().map((li) => li.textContent), ['Apple', 'Apricot'], 'pinned drops when query excludes it');
+  cb.destroy();
+});
+
+test('picking a pinned option relabels the trigger from the pinned label', async () => {
+  let picked;
+  const cb = mountCombobox({ options: FRUITS, pinnedOptions: [{ value: 99, label: 'Self' }], onChange: (v) => (picked = v) });
+  cb.openMenu();
+  await flushMicrotasks();
+  options()[0].click(); // Self
+  assert.equal(picked, 99, 'pinned value emitted');
+  assert.equal(cb.el.querySelector('.kf-combobox__label').textContent, 'Self', 'trigger shows the pinned label');
+  cb.destroy();
+});
+
 test('stale async delivery (after menu close) is dropped', async () => {
   let deliver = null;
   const cb = mountCombobox({

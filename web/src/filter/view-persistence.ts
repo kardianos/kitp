@@ -26,6 +26,14 @@ export interface PersistedView {
   laneGroup?: string;
   /** screen.columnConfig ({ hidden, order, widths }). */
   columnConfig?: unknown;
+  /**
+   * The selected saved-view preset (`<statePath>.activeFilterId`) as a stringified
+   * id, or null for an explicit "Default" / ad-hoc (no named preset). ABSENT means
+   * the view was never persisted with a selection — so the screen's
+   * `default_filter` still applies + selects on resolve (see ScreenFilterBar's
+   * restore + default-on-first-visit). Stringified for JSON (ids are bigint).
+   */
+  activeFilterId?: string | null;
 }
 
 /** bigint → string so JSON.stringify never throws on a card_ref id value. */

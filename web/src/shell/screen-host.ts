@@ -34,13 +34,15 @@
 import { Control, type BaseControlConfig, type ChildConfig } from '../core/control.js';
 import type { HotkeyBinding } from '../core/hotkeys.js';
 import { focusScreenSearch } from './screen-filter-bar.js';
+import { navigate, screenUrl } from './router.js';
+import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import {
   loadScreenAndFilters,
-  fallbackLayoutForSlug,
   layoutRequiresGroup,
   defaultGroupForLayout,
   viewActionsForLayout,
   readLayout,
+  readSlug,
   readGroupByAttr,
   readExtraColumns,
   readTagPrefixColumns,
@@ -71,6 +73,15 @@ export interface ScreenHostConfig extends BaseControlConfig {
    * and re-dispatches the body if the resolved `layout` differs.
    */
   resolveScreen?: boolean;
+  /**
+   * The default-board mode for the bare `/project/:id` route (no slug). Instead
+   * of resolving a fixed slug, the host loads the project's `screen` cards,
+   * picks the FIRST by `sort_order`, and replace-navigates to it — so the
+   * project's default screen is its first screen, not a hard-coded board. Shows
+   * a neutral loading body until the redirect (NotFound iff the project has no
+   * screens). When set, `screen.slug` is ignored.
+   */
+  defaultScreen?: boolean;
 }
 
 declare module '../core/control.js' {
@@ -109,6 +120,22 @@ export class ScreenHost extends Control<ScreenHostConfig> {
   private bodyHost: HTMLElement | null = null;
   private bodyControl: Control | null = null;
   private currentLayout = '';
+  /** The slug-derived fallback layout ('unknown' for a custom slug only the
+   *  screen card knows); used to render NotFound iff resolution finds no card. */
+  private seedLayout = '';
+  /** The transient "resolving…" placeholder shown instead of flashing NotFound
+   *  while a custom slug's screen card loads. Removed once a body dispatches. */
+  private loadingEl: HTMLElement | null = null;
+  /** The shared filter bar host + control + the layout it was configured for.
+   *  The bar's layout-specific config (lanes / required-group / view actions)
+   *  is derived from the RESOLVED layout — no slug is privileged — so the bar is
+   *  (re)spawned by dispatchBody when the layout it should reflect changes. */
+  private barHost: HTMLElement | null = null;
+  private barControl: Control | null = null;
+  private barLayout: string | null = null;
+  /** The (project, slug) preset key, computed in render() and reused by the
+   *  filter bar whenever it's (re)spawned. */
+  private statePath: string[] = [];
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('div');
@@ -134,57 +161,59 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     const slug = screen.slug;
     const projectId = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
 
+    // Default-board mode (`/project/:id`, no slug): resolve the project's first
+    // screen by sort_order and redirect to it — the default screen is the first
+    // screen, not a hard-coded board. A neutral loading body shows until then.
+    if (this.config.defaultScreen === true) {
+      const bodyHost = document.createElement('div');
+      bodyHost.className = 'screen-host__body';
+      this.el.append(bodyHost);
+      this.bodyHost = bodyHost;
+      this.renderLoadingBody();
+      if (projectId !== null) this.resolveDefaultScreen(projectId);
+      return;
+    }
+
     // The (project, slug) key everything lands under. The ScreenFilterBar reads
     // the SAME key for the preset selector + the default-on-first-visit cache.
     const statePath = screenStatePath(projectId, slug);
+    this.statePath = statePath;
 
-    // The fallback layout comes from the descriptor (which the shell seeds from
-    // the static slug→layout map). If the descriptor's layout is the generic
-    // 'unknown' sentinel, fall back to the slug-derived one so a deep-link to a
-    // known slug still renders even before the screen card resolves. Computed
-    // up front so the filter bar can be told whether this layout supports lanes.
-    const seedLayout =
-      screen.layout && screen.layout !== 'unknown'
-        ? screen.layout
-        : fallbackLayoutForSlug(slug);
+    // The seed layout is ONLY the descriptor's own layout — NO slug is special.
+    // Every screen (inbox / grid / kanban included) is just a screen card, so a
+    // descriptor that doesn't already carry a layout seeds 'unknown' and defers
+    // to the card's resolved `layout`. The body AND the filter bar's config are
+    // both driven off the resolved layout (see dispatchBody) so there's nothing
+    // to privilege per slug.
+    const seedLayout = screen.layout && screen.layout !== 'unknown' ? screen.layout : 'unknown';
 
-    // Optional shared filter bar (task-list screens share it). Tell it which
-    // (project, slug) key its presets live under so it stays in sync with the
-    // host's resolution, and whether this layout shows the LANES picker (kanban
-    // only — the Grid / Inbox hide it).
+    // The shared filter bar's HOST is created here; the bar itself is spawned by
+    // dispatchBody once the layout is known (its lanes / group / view-action
+    // config is layout-specific), so it always matches the dispatched body.
     if (this.config.filterBar !== false) {
       const barHost = document.createElement('div');
       barHost.className = 'screen-host__filterbar';
       this.el.append(barHost);
-      this.spawn(
-        'ScreenFilterBar',
-        {
-          type: 'ScreenFilterBar',
-          screenStatePath: statePath,
-          enableLanes: layoutSupportsLanes(seedLayout),
-          // A board layout (Kanban) requires a grouping axis and seeds the
-          // picker to its default (milestone) so the GROUP picker matches the
-          // board from the first paint; flat layouts default to "No group".
-          requireGroup: layoutRequiresGroup(seedLayout),
-          defaultGroup: defaultGroupForLayout(seedLayout),
-          // Screen-specific view actions on the filter bar's View row (e.g. the
-          // Inbox's Mine-only / Routed-to-me toggles). The layout→actions mapping
-          // is data-driven config (viewActionsForLayout) kept outside the host,
-          // so ScreenHost stays generic — no per-layout branch here.
-          viewActions: viewActionsForLayout(seedLayout),
-        } as ChildConfig,
-        barHost,
-      );
+      this.barHost = barHost;
     }
 
-    // Body region; dispatch on the FALLBACK layout first so a cold load paints
-    // without waiting on the screen-card round-trip.
+    // Body region.
     const bodyHost = document.createElement('div');
     bodyHost.className = 'screen-host__body';
     this.el.append(bodyHost);
     this.bodyHost = bodyHost;
 
-    this.dispatchBody(seedLayout);
+    this.seedLayout = seedLayout;
+    // A screen's layout is known only to its card. Rather than flash the red
+    // NotFound placeholder for the 'unknown' seed while that card loads, defer to
+    // a neutral "resolving…" body; onScreenResolved dispatches the real layout
+    // (or NotFound iff the screen genuinely doesn't exist).
+    const willResolve = this.config.resolveScreen !== false && projectId !== null;
+    if (seedLayout === 'unknown' && willResolve) {
+      this.renderLoadingBody();
+    } else {
+      this.dispatchBody(seedLayout);
+    }
 
     // Mount any declarative children (e.g. an analytics widget) alongside the
     // body. An UNREGISTERED child type renders the visible NotFound placeholder
@@ -204,6 +233,39 @@ export class ScreenHost extends Control<ScreenHostConfig> {
         () => this.isAlive(),
       );
     }
+  }
+
+  /**
+   * Default-board resolution: load the project's `screen` cards, pick the FIRST
+   * by `sort_order`, and replace-navigate to its `/screen/<slug>` URL so the
+   * default screen is the project's first screen (URL + presets + nav all key
+   * off the real slug). No screens → NotFound (the project genuinely has none).
+   */
+  private resolveDefaultScreen(projectId: bigint): void {
+    this.ctx.api.callByName(
+      'card.select_with_attributes',
+      { cardTypeName: 'screen', parentCardId: projectId, order: [{ field: 'attributes.sort_order', direction: 'ASC' }] },
+      (out) => {
+        if (!this.isAlive()) return;
+        const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+        const ord = (r: CardWithAttrs): number => {
+          const v = r.attributes['sort_order'];
+          return typeof v === 'number' && Number.isFinite(v) ? v : Number.POSITIVE_INFINITY;
+        };
+        const first = rows
+          .slice()
+          .sort((a, b) => ord(a) - ord(b))
+          .map((r) => readSlug(r))
+          .find((s): s is string => s !== null && s !== '');
+        if (first === undefined) {
+          // No screens in this project → genuine NotFound (no slug to land on).
+          this.dispatchBody('unknown');
+          return;
+        }
+        navigate(screenUrl(projectId, first), { replace: true });
+      },
+      { alive: () => this.isAlive() },
+    );
   }
 
   /**
@@ -237,7 +299,10 @@ export class ScreenHost extends Control<ScreenHostConfig> {
 
     if (set.screen === null) {
       // No screen card for this slug → keep the fallback body + announce "no
-      // screen" so the bar still renders its default-filter fallback.
+      // screen" so the bar still renders its default-filter fallback. If we
+      // DEFERRED (a custom slug whose card didn't resolve), nothing is painted
+      // yet — now show the genuine NotFound for the missing screen.
+      if (this.bodyControl === null) this.dispatchBody(this.seedLayout);
       node.child('screenId').set(null);
       node.child('resolved').set(true);
       return;
@@ -262,15 +327,66 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     }
   }
 
-  /** (Re)build the body control for `layout`, tearing down any previous body. */
+  /** A neutral "resolving…" placeholder shown while a custom slug's screen card
+   *  loads — avoids flashing the red NotFound for the 'unknown' seed layout. */
+  private renderLoadingBody(): void {
+    if (this.bodyHost === null) return;
+    const el = document.createElement('div');
+    el.className = 'screen-host__loading muted';
+    el.dataset.screenLoading = '';
+    el.textContent = 'Loading…';
+    this.bodyHost.append(el);
+    this.loadingEl = el;
+  }
+
+  /** (Re)spawn the shared filter bar configured for `layout` — its lanes /
+   *  required-group / view-action config is layout-specific, so the bar follows
+   *  the resolved layout (no slug privileging). No-op when the bar is disabled
+   *  or already configured for this layout. */
+  private spawnFilterBar(layout: string): void {
+    if (this.barHost === null || this.barLayout === layout) return;
+    if (this.barControl !== null) {
+      this.destroyChild(this.barControl);
+      this.barControl = null;
+    }
+    this.barLayout = layout;
+    this.barControl = this.spawn(
+      'ScreenFilterBar',
+      {
+        type: 'ScreenFilterBar',
+        screenStatePath: this.statePath,
+        // Layout-derived (the layouts themselves are the only built-ins): the
+        // Kanban shows the LANES picker + requires a grouping axis; flat layouts
+        // hide lanes + default to "No group". view actions (Inbox's Mine-only /
+        // Routed-to-me) likewise come from the layout, not the slug.
+        enableLanes: layoutSupportsLanes(layout),
+        requireGroup: layoutRequiresGroup(layout),
+        defaultGroup: defaultGroupForLayout(layout),
+        viewActions: viewActionsForLayout(layout),
+      } as ChildConfig,
+      this.barHost,
+    );
+  }
+
+  /** (Re)build the body control for `layout`, tearing down any previous body.
+   *  Also (re)spawns the filter bar + publishes `screen.layout` (the resolved
+   *  layout the help overlay keys its `layout.<layout>` topic off). */
   private dispatchBody(layout: string): void {
     if (this.bodyHost === null) return;
+    if (this.loadingEl !== null) {
+      this.loadingEl.remove?.();
+      this.loadingEl = null;
+    }
     if (this.bodyControl !== null) {
       this.destroyChild(this.bodyControl);
       this.bodyControl = null;
     }
     this.currentLayout = layout;
     this.bodyHost.dataset.layout = layout;
+    // Publish the resolved layout so the help overlay can resolve its topic from
+    // the SCREEN'S layout (works for custom screens too — no slug map needed).
+    this.ctx.tree.at(['screen', 'layout']).set(layout);
+    this.spawnFilterBar(layout);
 
     const bodyType = layoutToControlType(layout);
     // The body config carries the screen's title + any layout-specific config.

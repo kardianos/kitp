@@ -66,6 +66,7 @@ import {
   opsForValueType,
   fromWire,
   toWire,
+  ME_REF_TOKEN,
 } from './predicate.js';
 
 /* -------------------------------------------------------------------------- */
@@ -768,7 +769,8 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
       return;
     }
 
-    if (leaf.op === 'withinDays') {
+    if (leaf.op === 'withinDays' || leaf.op === 'withinLastDays') {
+      // A day-count input (overrides the attr's date type) — "within next/last N days".
       host.append(this.numberInput(leaf, attr?.label ?? leaf.attr, true));
       return;
     }
@@ -903,6 +905,17 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
       sel.append(blank);
     }
     const selectedStrs = new Set(leaf.values.map((v) => String(v)));
+    // Person refs (assignee / originator) offer a dynamic "Me" that resolves to
+    // the current viewer server-side (the `@me` token; see ME_REF_TOKEN). It
+    // leads the list so "assignee == me" / "originator == me" is one click.
+    if (attr?.targetCardType === 'person') {
+      const me = document.createElement('option');
+      me.value = ME_REF_TOKEN;
+      me.textContent = 'Me';
+      me.dataset.predRefMe = '';
+      if (selectedStrs.has(ME_REF_TOKEN)) me.selected = true;
+      sel.append(me);
+    }
     for (const o of list) {
       const opt = document.createElement('option');
       opt.value = o.value;

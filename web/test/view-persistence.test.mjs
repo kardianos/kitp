@@ -48,3 +48,20 @@ test('loadView tolerates a missing / malformed entry', () => {
   store.set('kitp.view.31.grid', '{not json');
   assert.equal(M.loadView(sp), null, 'malformed → null, no throw');
 });
+
+test('saveView/loadView round-trips the selected preset (activeFilterId) so the View picker re-selects it', () => {
+  // A named preset selection persists as a stringified id.
+  M.saveView(sp, { predicate: null, activeFilterId: '404' });
+  assert.equal(M.loadView(sp).activeFilterId, '404', 'preset id round-trips');
+
+  // An explicit "Default" / ad-hoc selection persists as null (distinct from absent).
+  M.saveView(sp, { predicate: null, activeFilterId: null });
+  const v = M.loadView(sp);
+  assert.equal('activeFilterId' in v, true, 'the key is present');
+  assert.equal(v.activeFilterId, null, 'explicit Default persists as null');
+
+  // A legacy view with no selection leaves the key ABSENT, so the screen's
+  // default_filter still applies + selects on resolve (ScreenFilterBar restore).
+  M.saveView(sp, { predicate: null });
+  assert.equal('activeFilterId' in M.loadView(sp), false, 'absent when never selected');
+});

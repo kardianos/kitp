@@ -46,6 +46,7 @@ DECLARE
     _limit_v int;
     _offset_v int;
     _params jsonb;
+    _me_person_id bigint;
     _compile_result jsonb;
     _pred_sql text;
     _clauses text[];
@@ -158,6 +159,23 @@ BEGIN
             _clauses := array_append(_clauses, format(
                 'ct.name = ($1->>%s)',
                 (jsonb_array_length(_params) - 1)::text));
+        END IF;
+
+        -- Resolve the dynamic "@me" person-ref token to the caller's person card
+        -- id BEFORE compiling (so card_compile_predicate only sees concrete ids).
+        -- Saved filters store "@me" verbatim → each viewer resolves to their own
+        -- person (dynamic per-viewer assignee/originator == me). Skipped when the
+        -- caller has no linked person — "@me" then stays a string + matches no
+        -- card, which is correct (the viewer has no person identity).
+        SELECT person_card_id INTO _me_person_id
+        FROM user_account_person WHERE user_account_id = actor_id;
+        IF _me_person_id IS NOT NULL THEN
+            IF _tree IS NOT NULL THEN
+                _tree := _resolve_me_tokens(_tree, _me_person_id);
+            END IF;
+            IF _where IS NOT NULL THEN
+                _where := _resolve_me_tokens(_where, _me_person_id);
+            END IF;
         END IF;
 
         -- Predicate: v2 tree wins, fallback to v1 flat where[] (top-level AND).

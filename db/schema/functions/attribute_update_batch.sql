@@ -210,9 +210,21 @@ BEGIN
                        ORDER BY e.ord), '[]'::jsonb)
               INTO _value_norm
               FROM jsonb_array_elements(_value) WITH ORDINALITY AS e(v, ord);
+        ELSIF _value_type = 'number' THEN
+            -- A numeric STRING (e.g. a text input's "2") is canonicalised to a
+            -- JSON number so the read + ORDER BY paths — which require
+            -- jsonb_typeof(value)='number' — actually honour it. Without this a
+            -- hand-edited sort_order stays a string and is silently dropped from
+            -- numeric ordering. Non-numeric strings pass through unchanged.
+            IF jsonb_typeof(_value) = 'string'
+               AND (_value #>> '{}') ~ '^-?\d+(\.\d+)?$' THEN
+                _value_norm := to_jsonb((_value #>> '{}')::numeric);
+            ELSE
+                _value_norm := _value;
+            END IF;
+            _value_card_ids := ARRAY[]::bigint[];
         ELSE
-            -- text / number / bool / date — no canonicalisation, no
-            -- card_ref validation.
+            -- text / bool / date — no canonicalisation, no card_ref validation.
             _value_norm := _value;
             _value_card_ids := ARRAY[]::bigint[];
         END IF;

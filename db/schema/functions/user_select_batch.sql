@@ -13,7 +13,9 @@
 --
 -- Result JSON shape matches `user.SelectOutput`:
 --   {"rows": [{"id": "<bigint>", "display_name": "...",
---             "parent_user_id": "<bigint>"|null, "is_agent": bool}]}
+--             "parent_user_id": "<bigint>"|null,
+--             "parent_user_name": "<owner display_name>"|null,
+--             "is_agent": bool}]}
 CREATE OR REPLACE FUNCTION user_select_batch(
     actor_id bigint,
     inputs jsonb
@@ -73,10 +75,12 @@ BEGIN
                              THEN NULL::jsonb
                              ELSE to_jsonb(ua.parent_user_id::text)
                         END,
+                    'parent_user_name', to_jsonb(owner.display_name),
                     'is_agent',     ua.is_agent
                 ) ORDER BY ua.display_name, ua.id
             )
             FROM user_account ua
+            LEFT JOIN user_account owner ON owner.id = ua.parent_user_id
             WHERE
                 (NOT _has_ids OR ua.id::text IN (
                     SELECT jsonb_array_elements_text(_ids_raw)

@@ -245,3 +245,167 @@ func TestCardSelectWithAttrsBatch_VisibilityScoped(t *testing.T) {
 		t.Errorf("worker→B leaked tasks: %v", res.Rows)
 	}
 }
+
+// TestCardSelectWithAttrsBatch_AssigneeMe — the dynamic "@me" person-ref token
+// resolves to the CALLER's person card id (via user_account_person), so an
+// "assignee == @me" filter returns only the caller's own tasks. A caller with
+// no linked person resolves "@me" to nothing (matches no rows).
+func TestCardSelectWithAttrsBatch_AssigneeMe(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_swa_assignee_me")
+	ctx := context.Background()
+
+	var projectID, assigneeDefID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name='project' RETURNING id`).
+		Scan(&projectID); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM attribute_def WHERE name='assignee'`).Scan(&assigneeDefID); err != nil {
+		t.Fatalf("assignee attr_def: %v", err)
+	}
+	mkPerson := func() int64 {
+		var id int64
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name='person' RETURNING id`).
+			Scan(&id); err != nil {
+			t.Fatalf("person: %v", err)
+		}
+		return id
+	}
+	mkTaskAssignedTo := func(person int64) int64 {
+		var id int64
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO card (card_type_id, parent_card_id) SELECT id, $1 FROM card_type WHERE name='task' RETURNING id`,
+			projectID).Scan(&id); err != nil {
+			t.Fatalf("task: %v", err)
+		}
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO attribute_value (card_id, attribute_def_id, value) VALUES ($1, $2, to_jsonb($3::bigint))`,
+			id, assigneeDefID, person); err != nil {
+			t.Fatalf("assignee value: %v", err)
+		}
+		return id
+	}
+	// A worker-scoped user so the caller can SEE the project's tasks.
+	mkWorker := func(name string) int64 {
+		var uid int64
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO user_account (display_name) VALUES ($1) RETURNING id`, name).Scan(&uid); err != nil {
+			t.Fatalf("user: %v", err)
+		}
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO user_role (user_id, role_id, scope_card_id) SELECT $1, id, $2 FROM role WHERE name='worker'`,
+			uid, projectID); err != nil {
+			t.Fatalf("user_role: %v", err)
+		}
+		return uid
+	}
+
+	personMine := mkPerson()
+	personOther := mkPerson()
+	myTask := mkTaskAssignedTo(personMine)
+	otherTask := mkTaskAssignedTo(personOther)
+
+	// `me` is linked to personMine; `noPerson` has visibility but no person.
+	me := mkWorker("me-user")
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO user_account_person (user_account_id, person_card_id) VALUES ($1, $2)`,
+		me, personMine); err != nil {
+		t.Fatalf("link person: %v", err)
+	}
+	noPerson := mkWorker("no-person-user")
+
+	meTree := []map[string]any{{
+		"card_type_name": "task",
+		"parent_card_id": strconv.FormatInt(projectID, 10),
+		"tree":           map[string]any{"attr": "assignee", "op": "eq", "values": []any{"@me"}},
+	}}
+
+	// As `me`: "@me" resolves to personMine → only myTask matches.
+	rows := callCardSelectWithAttrsBatch(t, pool, me, meTree)
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("me query: %+v", rows)
+	}
+	res := decodeSWA(t, rows[0].Result)
+	ids := map[string]bool{}
+	for _, r := range res.Rows {
+		ids[r.ID] = true
+	}
+	if !ids[strconv.FormatInt(myTask, 10)] {
+		t.Errorf("assignee==@me should match my task %d; got %v", myTask, res.Rows)
+	}
+	if ids[strconv.FormatInt(otherTask, 10)] {
+		t.Errorf("assignee==@me leaked another user's task %d", otherTask)
+	}
+
+	// As `noPerson`: "@me" resolves to nothing → no rows (despite visibility).
+	rows = callCardSelectWithAttrsBatch(t, pool, noPerson, meTree)
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("noPerson query: %+v", rows)
+	}
+	res = decodeSWA(t, rows[0].Result)
+	if len(res.Rows) != 0 {
+		t.Errorf("no linked person → @me should match nothing; got %v", res.Rows)
+	}
+}
+
+// TestCardSelectWithAttrsBatch_WithinLastDays — the within_last_days op on the
+// top-level last_activity_at field matches only cards whose most-recent activity
+// is within N days (a card last touched 30 days ago is excluded at N=15). This
+// is the backbone of "closed in the last 15 days" (terminal + this op).
+func TestCardSelectWithAttrsBatch_WithinLastDays(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_swa_within_last_days")
+	ctx := context.Background()
+
+	var projectID, recentTask, oldTask int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name='project' RETURNING id`).
+		Scan(&projectID); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	mkTask := func() int64 {
+		var id int64
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO card (card_type_id, parent_card_id) SELECT id, $1 FROM card_type WHERE name='task' RETURNING id`,
+			projectID).Scan(&id); err != nil {
+			t.Fatalf("task: %v", err)
+		}
+		return id
+	}
+	recentTask = mkTask()
+	oldTask = mkTask()
+
+	// recentTask's last activity is now(); oldTask's is 30 days ago.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO activity (card_id, kind, actor_id, created_at) VALUES ($1, 'test', $2, now())`,
+		recentTask, auth.SystemUserID); err != nil {
+		t.Fatalf("recent activity: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO activity (card_id, kind, actor_id, created_at) VALUES ($1, 'test', $2, now() - interval '30 days')`,
+		oldTask, auth.SystemUserID); err != nil {
+		t.Fatalf("old activity: %v", err)
+	}
+
+	inputs := []map[string]any{{
+		"card_type_name": "task",
+		"parent_card_id": strconv.FormatInt(projectID, 10),
+		"tree":           map[string]any{"attr": "last_activity_at", "op": "within_last_days", "values": []any{15}},
+	}}
+	rows := callCardSelectWithAttrsBatch(t, pool, auth.SystemUserID, inputs)
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("want ok; got %+v", rows[0])
+	}
+	res := decodeSWA(t, rows[0].Result)
+	got := map[string]bool{}
+	for _, r := range res.Rows {
+		got[r.ID] = true
+	}
+	if !got[strconv.FormatInt(recentTask, 10)] {
+		t.Errorf("recent task (activity today) should match within_last_days 15")
+	}
+	if got[strconv.FormatInt(oldTask, 10)] {
+		t.Errorf("old task (activity 30d ago) should NOT match within_last_days 15")
+	}
+}

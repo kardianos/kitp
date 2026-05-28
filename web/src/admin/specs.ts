@@ -18,7 +18,8 @@
  *            revival registration is required for this read).
  *   - user.select  (db/schema/functions/user_select_batch.sql)
  *       in : { display_name?, parent_user_id?, is_agent? }
- *       out: { rows: [{ id, display_name, parent_user_id?, is_agent }] }
+ *       out: { rows: [{ id, display_name, parent_user_id?,
+ *                       parent_user_name?, is_agent }] }
  *            — the lighter read, registered as a simpler fallback.
  *
  * The decoders pass the decoded rows through near-verbatim (the MasterDetail
@@ -89,6 +90,7 @@ export interface UserRow {
   email?: string;
   oidc_sub?: string;
   parent_user_id?: string;
+  parent_user_name?: string;
   is_agent: boolean;
   person_card_id?: string;
   roles: UserRoleAssignment[];
@@ -611,6 +613,8 @@ function decodeUserRow(j: Record<string, unknown>): UserRow {
   if (oidc !== undefined) out.oidc_sub = oidc;
   const parent = asStrOpt(j['parent_user_id']);
   if (parent !== undefined) out.parent_user_id = parent;
+  const parentName = asStrOpt(j['parent_user_name']);
+  if (parentName !== undefined) out.parent_user_name = parentName;
   const person = asStrOpt(j['person_card_id']);
   if (person !== undefined) out.person_card_id = person;
   return out;

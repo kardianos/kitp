@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -91,6 +92,20 @@ func seedActivity(t *testing.T, pool *pgxpool.Pool, cardID int64, kind string) i
 	return id
 }
 
+// seedActivityAt is seedActivity with an explicit created_at, for date-window
+// tests.
+func seedActivityAt(t *testing.T, pool *pgxpool.Pool, cardID int64, kind string, at time.Time) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(), `
+		INSERT INTO activity (card_id, kind, actor_id, created_at)
+		VALUES ($1, $2, $3, $4) RETURNING id
+	`, cardID, kind, auth.SystemUserID, at).Scan(&id); err != nil {
+		t.Fatalf("seed activity at %v: %v", at, err)
+	}
+	return id
+}
+
 type activityOut struct {
 	Rows []struct {
 		ID        string `json:"id"`
@@ -129,6 +144,61 @@ func TestActivitySelectBatch_HappySingleCard(t *testing.T) {
 		out.Rows[2].ID != strconv.FormatInt(a3, 10) {
 		t.Errorf("order: %+v", out.Rows)
 	}
+}
+
+// TestActivitySelectBatch_DateWindow — from_date / to_date bound the feed by
+// created_at (inclusive by day). Backs the Activity page's default 7-day window.
+func TestActivitySelectBatch_DateWindow(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_activity_select_batch_dates")
+	project := seedCard(t, pool, "project", nil)
+	task := seedCard(t, pool, "task", &project)
+
+	now := time.Now()
+	old := seedActivityAt(t, pool, task, "card_create", now.AddDate(0, 0, -10))
+	mid := seedActivityAt(t, pool, task, "attr_update", now.AddDate(0, 0, -3))
+	rec := seedActivityAt(t, pool, task, "comment", now)
+
+	ids := func(res []selectResultRow) []string {
+		var o activityOut
+		if err := json.Unmarshal(res[0].Result, &o); err != nil {
+			t.Fatalf("unmarshal: %v: %s", err, res[0].Result)
+		}
+		out := make([]string, len(o.Rows))
+		for i, r := range o.Rows {
+			out[i] = r.ID
+		}
+		return out
+	}
+	fmtDate := func(d time.Time) string { return d.Format("2006-01-02") }
+
+	// from_date = 5 days ago → the 10-day-old row drops; mid + rec remain
+	// (ascending, single-card mode).
+	resFrom := callActivitySelectBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"card_id": strconv.FormatInt(task, 10), "from_date": fmtDate(now.AddDate(0, 0, -5))},
+	})
+	if got, want := ids(resFrom), []string{strconv.FormatInt(mid, 10), strconv.FormatInt(rec, 10)}; !equalStrs(got, want) {
+		t.Errorf("from_date window: got %v, want %v", got, want)
+	}
+
+	// to_date = 5 days ago → only the 10-day-old row (created_at < 4 days ago).
+	resTo := callActivitySelectBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"card_id": strconv.FormatInt(task, 10), "to_date": fmtDate(now.AddDate(0, 0, -5))},
+	})
+	if got, want := ids(resTo), []string{strconv.FormatInt(old, 10)}; !equalStrs(got, want) {
+		t.Errorf("to_date window: got %v, want %v", got, want)
+	}
+}
+
+func equalStrs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestActivitySelectBatch_Empty — empty input array → 0 result rows.

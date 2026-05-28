@@ -243,6 +243,12 @@ func runHTTP() error {
 	}
 
 	logger := obs.NewLogger(envOr("LOG_LEVEL", "info"))
+	// Per-request logging is OFF by default: one stdout line per /api/v1/batch
+	// (+ the http access line at debug, + the per-subrequest debug line) is
+	// rarely what ops want by default. KITP_REQUEST_LOG=1 turns the whole
+	// per-request surface back on. Errors, the query tracer, auth-rejected,
+	// and other non-request slog calls are unaffected.
+	requestLog := os.Getenv("KITP_REQUEST_LOG") == "1"
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -301,6 +307,7 @@ func runHTTP() error {
 
 	srv := api.NewServer(pool)
 	srv.Logger = logger
+	srv.RequestLog = requestLog
 
 	mux := http.NewServeMux()
 	if webDir != "" {
@@ -604,11 +611,15 @@ func runHTTP() error {
 		ReportOnly: os.Getenv("KITP_CSP_REPORT_ONLY") == "1",
 		Reporter:   os.Getenv("KITP_CSP_REPORT_URI"),
 	})
-	var inner http.Handler = obs.RequestIDMiddleware(
-		obs.LoggingMiddleware(logger,
-			cspMW(mux),
-		),
-	)
+	// The per-request http access line lives in LoggingMiddleware; only mount
+	// it when request logging is on, so the default chain is RequestID → CSP →
+	// mux (RequestID is kept regardless so the X-Request-ID header still flows
+	// — it's a header propagation step, not a log line).
+	var chain http.Handler = cspMW(mux)
+	if requestLog {
+		chain = obs.LoggingMiddleware(logger, chain)
+	}
+	var inner http.Handler = obs.RequestIDMiddleware(chain)
 	httpHandler := inner
 	if api.CORSEnabled(env) {
 		httpHandler = api.CORSMiddleware(inner)
@@ -709,6 +720,9 @@ func runMCP() error {
 
 	srv := api.NewServer(pool)
 	srv.Logger = logger
+	// MCP shares the same KITP_REQUEST_LOG=1 toggle as the HTTP server, so
+	// `kitpd mcp` and `kitpd serve` agree on whether per-call lines emit.
+	srv.RequestLog = os.Getenv("KITP_REQUEST_LOG") == "1"
 
 	// Resolve the acting user. By default the MCP entry runs as the
 	// System User (back-compat: nothing changed for callers that don't

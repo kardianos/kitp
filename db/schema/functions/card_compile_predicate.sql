@@ -286,6 +286,49 @@ BEGIN
             _attr_idx::text, _val_idx::text);
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
+    ELSIF _op = 'within_last_days' THEN
+        -- Relative-date op, PAST window (mirror of within_days). N = values[0],
+        -- a non-negative int. Two targets: the TOP-LEVEL card timestamps
+        -- last_activity_at / created_at (this query LATERAL-joins `la` + has
+        -- `c`), compared `>= now() - N days`; or a date ATTRIBUTE, whose stored
+        -- ISO-date text sits in [today-N, today].
+        IF jsonb_array_length(_values) = 0 THEN
+            RAISE EXCEPTION 'within_last_days: missing day count';
+        END IF;
+        _v := _values->0;
+        IF jsonb_typeof(_v) = 'number' THEN
+            _days := (_v)::text::int;
+        ELSIF jsonb_typeof(_v) = 'string' AND (_v #>> '{}') ~ '^-?[0-9]+$' THEN
+            _days := (_v #>> '{}')::int;
+        ELSE
+            RAISE EXCEPTION 'within_last_days: value must be int or string-int';
+        END IF;
+        IF _days < 0 THEN
+            RAISE EXCEPTION 'within_last_days: negative N (%)', _days;
+        END IF;
+        IF _days > 3650 THEN
+            RAISE EXCEPTION 'within_last_days: % days is unreasonable (>10y)', _days;
+        END IF;
+        SELECT p, i INTO params, _val_idx FROM _ph_push(params, to_jsonb(_days)) AS r(p, i);
+        IF _attr = 'last_activity_at' THEN
+            _sql := format(
+                'la.last_activity_at >= now() - (($1->>%s)::int) * interval ''1 day''',
+                _val_idx::text);
+        ELSIF _attr = 'created_at' THEN
+            _sql := format(
+                'c.created_at >= now() - (($1->>%s)::int) * interval ''1 day''',
+                _val_idx::text);
+        ELSE
+            SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
+            _sql := format(
+                'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value #>> ''{}'' <> '''' ' ||
+                'AND av.value #>> ''{}'' >= to_char((now() - (($1->>%s)::int) * interval ''1 day'')::date, ''YYYY-MM-DD'') ' ||
+                'AND av.value #>> ''{}'' <= to_char(now()::date, ''YYYY-MM-DD''))',
+                _attr_idx::text, _val_idx::text);
+        END IF;
+        RETURN jsonb_build_object('sql', _sql, 'params', params);
+
     ELSIF _op = 'contains' THEN
         IF jsonb_array_length(_values) = 0 THEN
             RAISE EXCEPTION 'contains: missing value';

@@ -38,6 +38,7 @@ before(async () => {
   M.registerScreenHost();
   M.registerScreenFilterBar();
   M.registerKanbanControls();
+  M.registerAccountPage();
 });
 
 beforeEach(() => {
@@ -345,4 +346,32 @@ test("the ProjectLayout Export button raises projectExport with the anchor", asy
   assert.ok(captured, 'projectExport intent emitted');
   assert.equal(captured.projectId, PROJECT_ID, 'carries the in-scope project id');
   assert.equal(captured.anchor, exportBtn, 'carries the Export button as the popover anchor');
+});
+
+test('AppShell user chip expands a menu → Account navigates to /account (#21)', async () => {
+  const tree = new M.TreeNode({}, []);
+  const ctx = { api: { callByName: () => {} }, tree };
+  M.installRouter(tree);
+  const shell = M.Control.New(
+    'AppShell',
+    { type: 'AppShell', boardConfig: { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban' } } },
+    ctx,
+  );
+  shell.mount(document.body);
+
+  // The menu is hidden until the chip is clicked; it then exposes Account + Logout.
+  const chip = shell.el.querySelector('[data-user-chip]');
+  assert.ok(chip, 'the user chip is a button');
+  const menu = shell.el.querySelector('[data-user-menu]');
+  assert.equal(menu.style.display, 'none', 'menu hidden at rest');
+  chip.dispatchEvent(new window.Event('click', { bubbles: true }));
+  assert.notEqual(menu.style.display, 'none', 'chip click opens the menu');
+  assert.ok(shell.el.querySelector('[data-user-menu-account]'), 'Account item present');
+  assert.ok(shell.el.querySelector('[data-user-menu-logout]'), 'Logout item present');
+
+  // Account navigates to /account; the outlet renders the AccountPage.
+  shell.el.querySelector('[data-user-menu-account]').dispatchEvent(new window.Event('click', { bubbles: true }));
+  await flushMicrotasks();
+  assert.equal(tree.at(['router', 'route']).peek().name, 'account', 'navigated to the account route');
+  assert.ok(shell.el.querySelector('[data-control="AccountPage"]'), 'the account page rendered');
 });
