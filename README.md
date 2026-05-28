@@ -1,154 +1,187 @@
 # kitp
 
-A small task tracker built around a uniform domain model — CARD,
-ACTIVITY, ATTRIBUTE, EDGE, PROCESS, ROLE — with a single batched API
-endpoint, a Go server backed by Postgres, and a Svelte 5 + TypeScript
-web client. The type-registration pattern that drives the API surface
-also auto-publishes an MCP tool surface, and every state change is
-event-sourced through the activity log.
+A task tracker built on a single uniform domain model: every row is a
+CARD, every change is an ACTIVITY, every field is an ATTRIBUTE, links are
+EDGES, and access is governed by PROCESS + ROLE grants. The whole API is
+one batched endpoint; the same handler registry that serves HTTP also
+publishes an MCP tool surface. The backend is Go + Postgres; the web
+client is plain TypeScript bundled with esbuild (no framework, no npm
+runtime deps).
+
+## Features
+
+- Cards with typed attributes; projects, tasks, milestones, components,
+  tags, comments, and people are all card types under one model.
+- Event-sourced activity log: every attribute change writes an activity
+  row, so history and per-task feeds come for free.
+- Flow / status kernel: card types can be flow-bound, with transitions
+  enforced server-side and a transition bar in the UI.
+- Screens, views, filters, and attribute schemas are themselves stored
+  as cards (data-driven, editable in the admin screens).
+- Predicate-tree filtering with per-row, per-project visibility checks.
+- Role-scoped authorization: viewer / worker / manager / admin grants,
+  optionally scoped to a project subtree.
+- Email comm channels: inbound IMAP polling creates tasks, outbound SMTP
+  replies thread by subject tag, all driven by background jobs.
+- Content-addressed attachment store (chunked upload, dedup, reaper).
+- Background job scheduler with an admin screen (list + run-now).
+- MCP server for agent access over stdio.
+
+## Requirements
+
+- Go 1.26 (this dev image uses /home/d/bin/go).
+- Node 20+ (only esbuild is used to bundle web/; there are no npm runtime
+  deps).
+- Docker (Postgres 16 runs in the kitp-pg container via
+  docker-compose.yml, reachable at 127.0.0.1:5544).
 
 ## Quickstart
 
-Prerequisites:
+    make up           # start Postgres (kitp-pg) on 127.0.0.1:5544
+    make db-reset     # drop + recreate the schema, seed, and demo data
+    make web          # bundle web/ to web/dist via esbuild
+    make run          # run kitpd: API + UI on http://localhost:18080
 
-- Go 1.26 (`/home/d/bin/go` in this repo's dev image)
-- Node 20+ and pnpm (the client uses Vite + vitest + selenium-webdriver)
-- Docker (Postgres 16 runs in the `kitp-pg` container via
-  `docker-compose.yml`)
-- Google Chrome + matching ChromeDriver (only required for the e2e
-  target)
+make db-reset is idempotent; make run re-applies the schema on startup
+too. For a production-shaped DB without demo fixtures, use
+make db-reset-clean. To print the generated SQL without touching the DB,
+use make schema-gen. The canonical schema lives in db/schema/*.hcsv (DDL,
+seed, demo, and PL/pgSQL functions are generated from these files).
 
-Bring everything up from a clean clone:
+## Configuration
 
-```sh
-make up           # docker-compose: brings up kitp-pg on 127.0.0.1:5544
-make db-reset     # apply db/schema/declarative.toml (DDL + seed + demo)
-make web          # vite build → client/dist/
-make run          # one process: API + UI on http://localhost:18080
-```
+All runtime configuration is through environment variables. Only
+DATABASE_URL is strictly required; everything else has a default.
 
-`make db-reset` drops the `public` schema and pipes the schema-gen output into
-psql. Run it once on a fresh DB; `make run` also re-applies the schema on
-startup, but the script is idempotent (CREATE … IF NOT EXISTS / ON CONFLICT
-DO NOTHING throughout) so re-applying is cheap. For a production-shaped DB
-without the demo fixture data, use `make db-reset-clean`. To inspect the
-generated SQL offline, `make schema-gen` writes it to stdout.
+### Core
 
-Open http://localhost:18080/ in Chrome. kitpd serves both the Svelte
-bundle (with SPA-fallback for client routes like `/project/42`) and the
-batch API endpoint on the same port. Vite builds finish in a couple of
-seconds, so `make web` is now fast enough to run on every change — but
-`make web-dev` (Vite dev server with HMR) is the preferred inner loop.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| DATABASE_URL | (required) | Postgres DSN. |
+| ENV | dev | dev or production. production refuses unsafe configs (see below). |
+| AUTH_MODE | off | off (all requests run as the System user) or oidc. |
+| LISTEN_ADDR | :8080 | HTTP listen address. The Makefile overrides this to :18080. |
+| WEB_DIR | (unset) | Directory of the built web bundle to serve at GET /. Unset = API only. |
+| KITP_WORKSPACE_TITLE | Workspace | Display name for the workspace in the UI. |
 
-Useful single-step targets while developing:
+In production the server refuses to start when AUTH_MODE=off, when
+AUTH_MODE=oidc but OIDC_ISSUER is empty, or when KITP_COMM_SECRET_KEY is
+unset or left at the published dev default.
 
-```sh
-make test         # go test ./... (server)
-make web-test     # vitest (client unit + widget tests)
-make web-dev      # vite dev server with HMR (preferred dev loop)
-make run          # kitpd on :18080 — API + UI together
-                  # override port:        make run LISTEN_ADDR=:8080
-                  # serve API only (no UI): make run WEB_DIR=
-make web-serve    # legacy: serve built bundle via python on :8090
-                  # (only needed for the e2e harness's cross-origin check)
-make e2e          # full Chrome end-to-end: server + client + DB
-```
+### Schema and bootstrap
 
-The e2e target resets the Postgres `public` schema, re-applies the
-declarative schema (DDL + seed + demo), boots a fresh kitpd on `:18080`,
-drives Chrome via selenium-webdriver,
-walks the user journey, captures one PNG per step into
-`docs/screenshots/e2e/`, and verifies post-state via direct API calls.
-Exit code reports pass/fail. The harness is implemented in Node at
-`client/test/e2e/run.ts`.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| KITP_SKIP_SCHEMA | (unset) | Set to any value to skip applying the schema on startup. |
+| KITP_DEMO_DATA | (unset) | Non-empty loads demo fixtures (implied when ENV=dev). |
+| MIGRATE_ONLY | (unset) | Apply the schema, then exit without serving. |
+| KITP_INIT_ADMIN_EMAIL | (unset) | Bootstrap an admin user_account for this email on startup (no-op once any admin exists). |
+
+### OIDC (used when AUTH_MODE=oidc)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| OIDC_ISSUER | (required for oidc) | Issuer URL; discovery + JWKS are fetched from it. |
+| OIDC_CLIENT_ID | (unset) | OAuth client id. |
+| OIDC_CLIENT_SECRET | (unset) | OAuth client secret. |
+| OIDC_REDIRECT_URI | (unset) | Login callback URI. |
+| OIDC_AUDIENCE | (unset) | Expected token audience, if enforced. |
+| OIDC_SCOPES | openid profile email | Requested scopes. |
+| OIDC_ROLE_CLAIM | groups | Token claim mapped to roles. |
+| OIDC_DEFAULT_ROLE | worker | Role assigned when no mapping matches. |
+| OIDC_REQUIRED_CLAIMS | (unset) | Comma list of key=value claim requirements. |
+| KITP_OIDC_TRUST_UNVERIFIED_EMAIL | 0 | 1 trusts the email claim without OP verification (only for OPs that verify out-of-band). |
+
+### Session (the cookie minted at the OIDC handoff)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| KITP_SESSION_IDLE_HOURS | 168 | Sliding idle window (7 days). Each request slides it forward. |
+| KITP_SESSION_ABSOLUTE_DAYS | 45 | Hard cap from login; re-auth required after this regardless of activity. Also the cookie Max-Age. |
+| KITP_SESSION_TOUCH_SECONDS | 180 | How often buffered last-seen touches flush to the DB. |
+| KITP_INSECURE_COOKIE | 0 | 1 drops the Secure flag so the cookie works over plain http in dev. |
+
+### Email comm channels
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| KITP_COMM_SECRET_KEY | (dev default) | Symmetric key encrypting stored channel passwords. Required in production. |
+| KITP_COMM_HOST_ALLOWLIST | (unset) | Comma list of mail hosts the dialer may connect to. |
+| KITP_COMM_SMTP_TICK_SEC | 10 | Outbound SMTP send sweep interval. |
+| KITP_COMM_IMAP_TICK_SEC | 60 | Inbound IMAP poll interval. |
+| KITP_ACTIVITY_SINK_TICK_SEC | 30 | Activity-sink pump interval. |
+| KITP_COMM_LOG_RETENTION_DAYS | 30 | How long comm_log rows are kept. |
+| KITP_COMM_LOG_PRUNE_HOURS | 24 | How often the comm_log prune job runs. |
+| KITP_COMM_SMTP_DRY_RUN | 0 | 1 logs the would-be message instead of sending. |
+| KITP_COMM_IMAP_DRY_RUN | 0 | 1 polls without mutating mailbox state. |
+| KITP_COMM_IMAP_INSECURE | 0 | 1 allows non-TLS IMAP (dev only). |
+| KITP_ACTIVITY_SINK_DRY_RUN | 0 | 1 runs the activity sink without emitting. |
+
+### Attachments and content store
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| ATTACHMENT_MAX_MB | 250 | Max size of a single attachment. |
+| ATTACHMENT_CHUNK_MAX_MB | 8 | Max upload chunk size. |
+| CAS_REAPER_INTERVAL_SEC | 3600 | How often unreferenced blobs are reaped. |
+| CAS_REAPER_GRACE_SEC | 3600 | Grace period before an unreferenced blob is eligible for reaping. |
+
+### Observability
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| LOG_LEVEL | info | Log level; debug also enables the pgx query tracer. |
+| PG_TRACE | (unset) | Set to trace every SQL statement. |
+| KITP_REQUEST_LOG | 0 | 1 turns on per-request logging. |
+
+### HTTP security
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| CORS | (unset) | Comma list of allowed origins. |
+| KITP_CSP_REPORT_ONLY | 0 | 1 sends CSP as report-only. |
+| KITP_CSP_REPORT_URI | (unset) | CSP violation report endpoint. |
+
+### MCP (the `kitpd mcp` subcommand)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| KITP_TOKEN | (unset) | Bearer token; when set, MCP acts as that token's user instead of System. |
+
+## Make targets
+
+Build/dev parameters are passed as make variables (defaults shown):
+DB_DSN, GO (/home/d/bin/go), LISTEN_ADDR (:18080), WEB_DIR (web/dist),
+WEB_PORT (8090), DEMO (-demo).
+
+    make up              # start Postgres
+    make down            # stop the stack
+    make db-reset        # drop + recreate schema, seed, demo
+    make db-reset-clean  # seed only, no demo data
+    make schema-gen      # print generated SQL to stdout
+    make web             # build web/dist via esbuild
+    make web-dev         # esbuild dev server with live reload
+    make run             # run kitpd (API + UI)
+    make test            # go test ./... (server)
+    make lint            # go vet ./...
 
 ## Layout
 
-```
-server/         Go server (net/http + pgx)
-  cmd/kitpd/      main entry point (HTTP + MCP)
-  internal/api/   batch endpoint, dispatcher, CORS
-  internal/reg/   handler registry, reflect helpers, MCP tag schema
-  internal/dom/   domain handlers (card, activity, attribute, tag, ...)
-  internal/store/ pgx wrappers; one .sql file per write group
-  internal/mcp/   MCP server (Phase 19)
-  internal/obs/   logging, request id, idempotency, pgx tracer
-client/         Svelte 5 + TypeScript SPA (Vite)
-  src/dispatch/    per-frame batched POST /api/v1/batch
-  src/reg/         handler registry / typed envelopes
-  src/auth/        OIDC PKCE
-  src/routing/     path-based router + guards
-  src/shell/       AppShell + sidebar
-  src/keys/        global keyboard shortcut system
-  src/filter/      Predicate AST + FilterBar + presets
-  src/dnd/         fat-placeholder drag/drop
-  src/quick_entry/ multi-task quick-create overlay
-  src/ui/          primitives (Button, Combobox, DatePicker, ...)
-  src/screens/     one Svelte component per screen
-  test/unit/       vitest
-  test/e2e/        node + selenium-webdriver + chromedriver
-db/schema/      declarative.toml (canonical DDL + seed + demo)
-                Apply with `make db-reset` or `go run ./server/cmd/schema-gen`
-docs/           screenshots, traceability matrix
-e2e/            legacy Dart e2e harness (retired by the Svelte cutover;
-                kept in tree for archive — not wired into any make target)
-scripts/        thin shell wrappers around make targets
-```
+    server/         Go server (net/http + pgx)
+      cmd/kitpd/      main entry point (HTTP server + `mcp` subcommand)
+      cmd/schema-gen/ generates SQL from db/schema/*.hcsv
+      internal/api/   batch endpoint, dispatcher, authz, CORS, CSP
+      internal/reg/   handler registry + MCP tag schema
+      internal/dom/   domain handlers (card, activity, attribute, comm, ...)
+      internal/auth/  AUTH_MODE off/oidc, session cookie, role mapping
+      internal/store/ pgx pool wrappers + schema apply
+      internal/job/   background job scheduler + worker pools
+    web/            web client (plain TypeScript, esbuild)
+      src/core/       control framework, data layer, wire codec
+      src/...         one module per screen / feature
+    db/schema/      *.hcsv: canonical DDL, seed, demo, and PL/pgSQL functions
+    docs/           design notes and plans
 
-## Auth modes
+## License
 
-kitp supports two `AUTH_MODE` values, both wired through the same
-dispatcher. Roles + grants apply in BOTH modes; the difference is who
-the actor is for a given HTTP request.
-
-- `AUTH_MODE=off` (default) — every request runs as the seeded System
-  User (`oidc_sub IS NULL, display_name='System'`). The System User
-  holds every grant via the `system` role, so dev tests and the existing
-  `make run` flow are unchanged. **Production refuses to start in this
-  mode** (see `internal/auth/auth.go::ProductionRefusalError`).
-- `AUTH_MODE=oidc` — the server validates `Authorization: Bearer …` on
-  every request via the OP's JWKS, auto-provisions a `user_account` row
-  on first sight of a `sub`, and applies role mappings from the
-  `role_mapping` table to the configured claim (default `groups`). On
-  the client, the Svelte bundle drives Authorization Code + PKCE: the
-  verifier lives in `sessionStorage` for the same-tab redirect only;
-  tokens stay in memory. **Production refuses to start in this mode if
-  `OIDC_ISSUER` is empty.**
-
-Built-in roles seeded by migration 0010:
-
-- `viewer` — read-only.
-- `worker` — `card.update`, `comment.post`, `user_card_sort.set` on `task`.
-- `manager` — every worker grant plus `card.create/update/delete` on
-  `project / milestone / component / tag`.
-- `admin` — every manager grant plus admin-only handlers (`user_role.set`,
-  `user_role.revoke`, `role_mapping.set/delete`).
-
-Each `user_role` row may carry a `scope_card_id` (a project id) to scope
-the grant to that project's subtree; null = global. The dispatcher
-resolves each sub-request's "target project" by walking
-`parent_card_id` (capped at depth 16) and matches the actor's grants
-against `(card_type, process)` plus the scope rule.
-
-### Running the OIDC stack locally
-
-```sh
-make dex-up           # docker compose --profile oidc up -d dex
-make web-build-oidc   # vite build with VITE_KITP_OIDC_* env vars baked in
-make run-oidc         # kitpd with AUTH_MODE=oidc OIDC_ISSUER=...
-make e2e-oidc         # currently a stub: the OIDC variant of the Node
-                      # e2e harness has not been ported yet (see Makefile)
-```
-
-The dex config (`dev/dex/config.yaml`) registers a public `kitp-web`
-client with the redirect URI `http://localhost:18080/auth/callback` and
-seeds three static users (admin / alice / bob, password=`password`).
-
-## See also
-
-- `REQUIREMENTS.md` — what kitp must do.
-- `IMPLEMENTATION_PLAN.md` — phased delivery plan.
-- `OIDC_ROLES_PLAN.md` — Phase 20 (OIDC + roles) implementation brief.
-- `docs/traceability.md` — every requirement mapped to the test(s) that
-  cover it.
-- `docs/screenshots/INDEX.md` — phase-by-phase screenshot catalogue.
+zlib license. See LICENSE.
