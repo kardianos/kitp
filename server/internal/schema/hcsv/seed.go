@@ -83,36 +83,48 @@ type GenerateOptions struct {
 	DemoPath string
 }
 
-// GenerateAll reads schema.hcsv + seed.hcsv + (optionally) demo.hcsv
-// and renders one CREATE … + INSERT … SQL script. Mirrors the old
-// declarative.GenerateAll contract.
-func GenerateAll(opts GenerateOptions) (string, error) {
+// SchemaVersion is the baseline schema/seed version recorded in the
+// schema_version ledger the first time a database is initialized. The
+// install seed is one-time bootstrap data: store.ApplySchema applies it
+// only when no baseline row exists, so re-applying on a live database
+// never re-runs the seed. Bump this when the meaning of the baseline
+// changes (informational today; the gate keys off the baseline row's
+// presence, not its version).
+const SchemaVersion = 1
+
+// Parts holds the separately-applicable sections of the generated
+// schema. Splitting them lets store.ApplySchema apply the idempotent DDL
+// on every boot while gating the one-time install Seed behind the
+// schema_version ledger. Demo carries its own DO-block guard.
+type Parts struct {
+	DDL  string // CREATE … IF NOT EXISTS; safe to re-apply every startup.
+	Seed string // built-in install rows; apply once, on first init.
+	Demo string // opt-in fixture data (empty unless opts.Demo).
+}
+
+// GenerateParts renders the schema as its component sections. GenerateAll
+// concatenates these; store.ApplySchema applies them with per-section
+// gating.
+func GenerateParts(opts GenerateOptions) (Parts, error) {
 	schema, err := Load("")
 	if err != nil {
-		return "", err
+		return Parts{}, err
 	}
 	seedPath, demoPath := SeedPaths()
 	seedBuf, err := os.ReadFile(seedPath)
 	if err != nil {
-		return "", fmt.Errorf("hcsv: read %s: %w", seedPath, err)
+		return Parts{}, fmt.Errorf("hcsv: read %s: %w", seedPath, err)
 	}
 	seedDoc, err := Parse(seedBuf)
 	if err != nil {
-		return "", err
+		return Parts{}, err
 	}
 	seedAttrTypes := collectAttributeValueTypes(seedDoc.Root)
 	seedSQL, err := BuildSeed(seedDoc, schema, SeedOptions{})
 	if err != nil {
-		return "", err
+		return Parts{}, err
 	}
-	var b strings.Builder
-	b.WriteString("-- Auto-generated from db/schema/schema.hcsv + seed.hcsv (+ demo.hcsv) by\n")
-	b.WriteString("-- server/cmd/schema-gen. Do not edit by hand.\n\n")
-	b.WriteString(GenerateSQL(schema))
-	if seedSQL != "" {
-		b.WriteString("\n-- Seed: built-in system rows.\n")
-		b.WriteString(seedSQL)
-	}
+	p := Parts{DDL: GenerateSQL(schema), Seed: seedSQL}
 	if opts.Demo {
 		path := demoPath
 		if opts.DemoPath != "" {
@@ -123,12 +135,34 @@ func GenerateAll(opts GenerateOptions) (string, error) {
 			KnownAttrTypes: seedAttrTypes,
 		})
 		if err != nil {
-			return "", err
+			return Parts{}, err
 		}
-		if demoSQL != "" {
-			b.WriteString("\n-- Demo: opt-in fixture data.\n")
-			b.WriteString(demoSQL)
-		}
+		p.Demo = demoSQL
+	}
+	return p, nil
+}
+
+// GenerateAll reads schema.hcsv + seed.hcsv + (optionally) demo.hcsv
+// and renders one CREATE … + INSERT … SQL script. Mirrors the old
+// declarative.GenerateAll contract — used by schema-gen for printing the
+// full script. store.ApplySchema uses GenerateParts instead so it can
+// gate the seed.
+func GenerateAll(opts GenerateOptions) (string, error) {
+	p, err := GenerateParts(opts)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	b.WriteString("-- Auto-generated from db/schema/schema.hcsv + seed.hcsv (+ demo.hcsv) by\n")
+	b.WriteString("-- server/cmd/schema-gen. Do not edit by hand.\n\n")
+	b.WriteString(p.DDL)
+	if p.Seed != "" {
+		b.WriteString("\n-- Seed: built-in system rows.\n")
+		b.WriteString(p.Seed)
+	}
+	if p.Demo != "" {
+		b.WriteString("\n-- Demo: opt-in fixture data.\n")
+		b.WriteString(p.Demo)
 	}
 	return b.String(), nil
 }
@@ -1193,9 +1227,18 @@ func (l *seedLoader) cardNameAttribute() string {
 }
 
 // aliasLookupSQL returns a SQL expression resolving an @alias to its
-// row id. For card rows we resolve via the name-attribute subquery
-// (cross-CTE-statement-safe). For non-card rows we use the table's
-// natural-name lookup.
+// row id. An alias names ONE specific seeded row, so we must resolve it to
+// exactly that row.
+//
+//   - card rows: the name-attribute subquery (cross-CTE-statement-safe).
+//   - non-card rows with a unique key the row fully supplies: the unique key.
+//     This is what scopes a flow alias to the template project — a flow is
+//     unique per (attribute_def_id, scope_card_id), so this resolves to the
+//     template's flow and never matches the same-named flows that project.stamp
+//     copies into every other project. (Resolving by `name` alone returned
+//     every same-named flow once a second project existed → "more than one row
+//     returned by a subquery".)
+//   - otherwise: the table's natural-name lookup, lowest id wins.
 func (l *seedLoader) aliasLookupSQL(alias string) string {
 	r, ok := l.aliases[alias]
 	if !ok {
@@ -1204,17 +1247,49 @@ func (l *seedLoader) aliasLookupSQL(alias string) string {
 	if r.table == "card" {
 		return l.cardLookupByNameAttr(r)
 	}
-	// Non-card alias: use the table's name_column lookup if the row
-	// has a value for it; otherwise fall back to a default.
-	tbl, _ := l.tables[r.table]
-	if tbl != nil && tbl.Meta != nil {
-		if nc := tbl.Meta["name_column"]; nc != "" {
-			if cv, ok := r.cells[nc]; ok && (cv.kind == ckBare || cv.kind == ckString) {
-				return fmt.Sprintf("(SELECT id FROM %s WHERE %s=%s)", r.table, nc, sqlString(cv.text))
+	tbl := l.tables[r.table]
+	if tbl != nil {
+		if sql, ok := l.rowLookupByUnique(r, tbl); ok {
+			return sql
+		}
+		// Fallback: natural-name lookup. A name_column need not be unique, so
+		// resolve deterministically to the lowest id rather than risking a
+		// multi-row scalar-subquery error.
+		if tbl.Meta != nil {
+			if nc := tbl.Meta["name_column"]; nc != "" {
+				if cv, ok := r.cells[nc]; ok && (cv.kind == ckBare || cv.kind == ckString) {
+					return fmt.Sprintf("(SELECT id FROM %s WHERE %s=%s ORDER BY id LIMIT 1)", r.table, nc, sqlString(cv.text))
+				}
 			}
 		}
 	}
-	return fmt.Sprintf("NULL /* alias @%s: no name_column meta */", alias)
+	return fmt.Sprintf("NULL /* alias @%s: no unique key or name_column */", alias)
+}
+
+// rowLookupByUnique builds `(SELECT id FROM <table> WHERE <c1>=… AND <c2>=…)`
+// from the row's own values for the first unique constraint whose columns the
+// row fully supplies. The unique key identifies exactly one row, so no ORDER
+// BY / LIMIT is needed. Returns ok=false when no unique constraint is covered.
+func (l *seedLoader) rowLookupByUnique(r *seedRow, tbl *Table) (string, bool) {
+	for _, uk := range tbl.Unique {
+		if len(uk) == 0 {
+			continue
+		}
+		conds := make([]string, 0, len(uk))
+		complete := true
+		for _, col := range uk {
+			cv, ok := r.cells[col]
+			if !ok {
+				complete = false
+				break
+			}
+			conds = append(conds, fmt.Sprintf("%s=%s", col, l.renderForColumn(r, cv, tbl, col)))
+		}
+		if complete {
+			return fmt.Sprintf("(SELECT id FROM %s WHERE %s)", r.table, strings.Join(conds, " AND ")), true
+		}
+	}
+	return "", false
 }
 
 // dollarLookupSQL emits an inline SELECT for $<table>.<name>. Uses the
@@ -1228,7 +1303,12 @@ func (l *seedLoader) dollarLookupSQL(table, name string) string {
 	}
 	if tbl.Meta != nil {
 		if nc := tbl.Meta["name_column"]; nc != "" {
-			return fmt.Sprintf("(SELECT id FROM %s WHERE %s=%s)", table, nc, sqlString(name))
+			// ORDER BY id LIMIT 1: a name_column is not guaranteed unique
+			// (flow.name, say, is only unique per (attribute_def_id,
+			// scope_card_id)), so a bare scalar subquery errors with
+			// "more than one row returned" once duplicates exist. Resolve
+			// deterministically to the lowest id instead.
+			return fmt.Sprintf("(SELECT id FROM %s WHERE %s=%s ORDER BY id LIMIT 1)", table, nc, sqlString(name))
 		}
 		if na := tbl.Meta["name_attribute"]; na != "" {
 			return fmt.Sprintf(

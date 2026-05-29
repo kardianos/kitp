@@ -39,8 +39,8 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// 14 built-in card_types + the predicate_snippet card_type
 		// introduced for named filters = 15.
 		{`SELECT count(*) FROM card_type`, 15},
-		{`SELECT count(*) FROM attribute_def`, 60},
-		{`SELECT count(*) FROM edge`, 90},
+		{`SELECT count(*) FROM attribute_def`, 62},
+		{`SELECT count(*) FROM edge`, 92},
 		{`SELECT count(*) FROM process`, 6},
 		{`SELECT count(*) FROM process_step`, 7},
 		// Template's status flow + 12 transitions (Gate 11), plus the
@@ -89,8 +89,8 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{`SELECT count(*) FROM card`, 30},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 15},
-		{`SELECT count(*) FROM attribute_def`, 60},
-		{`SELECT count(*) FROM edge`, 90},
+		{`SELECT count(*) FROM attribute_def`, 62},
+		{`SELECT count(*) FROM edge`, 92},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -166,5 +166,88 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		if got != c.want {
 			t.Errorf("%s after re-apply: got %d, want %d", c.query, got, c.want)
 		}
+	}
+}
+
+// TestApplySchemaGateSkipsReseed proves the schema_version gate: once a
+// baseline is recorded, re-applying does NOT re-run the install seed. We
+// delete a seeded row and confirm a re-apply leaves it deleted (the seed is
+// one-time bootstrap data, not self-healing) and records exactly one baseline.
+func TestApplySchemaGateSkipsReseed(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_gate")
+	ctx := context.Background()
+	opts := hcsv.GenerateOptions{Demo: false}
+	if err := store.ApplySchema(ctx, pool, opts); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM flow_step WHERE label='Accept'`); err != nil {
+		t.Fatalf("delete seed row: %v", err)
+	}
+	if err := store.ApplySchema(ctx, pool, opts); err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+	var steps, baselines int64
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM flow_step`).Scan(&steps); err != nil {
+		t.Fatal(err)
+	}
+	if steps != 14 {
+		t.Errorf("flow_step after gated re-apply: got %d, want 14 (seed must not re-run)", steps)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_version WHERE name='baseline'`).Scan(&baselines); err != nil {
+		t.Fatal(err)
+	}
+	if baselines != 1 {
+		t.Errorf("baseline rows: got %d, want 1", baselines)
+	}
+}
+
+// TestApplySchemaAdoptsPreLedgerDB covers an already-initialized database that
+// predates the ledger (e.g. a deployed install). ApplySchema must adopt it:
+// record the baseline WITHOUT re-running the seed — even when the data has
+// drifted in a way that a naive seed re-run could not tolerate.
+func TestApplySchemaAdoptsPreLedgerDB(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_adopt")
+	ctx := context.Background()
+
+	// Simulate a pre-ledger install: apply the full generated script directly,
+	// then drop the ledger so the DB looks like an old deploy.
+	sql, err := hcsv.GenerateAll(hcsv.GenerateOptions{Demo: false})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if _, err := pool.Exec(ctx, sql); err != nil {
+		t.Fatalf("seed pre-ledger db: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS schema_version`); err != nil {
+		t.Fatalf("drop ledger: %v", err)
+	}
+	// Drift the data: a second same-named flow scoped to another card — the
+	// shape that used to break a seed re-run.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO flow (name, attribute_def_id, scope_card_id)
+		SELECT name, attribute_def_id,
+		       (SELECT id FROM card WHERE card_type_id=(SELECT id FROM card_type WHERE name='person') ORDER BY id LIMIT 1)
+		FROM flow WHERE name='Standard task'`); err != nil {
+		t.Fatalf("drift flow: %v", err)
+	}
+
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("adopt apply: %v", err)
+	}
+
+	// Baseline recorded exactly once; the seed was NOT re-run (flow_step still
+	// the original 15, not doubled).
+	var baselines, steps int64
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_version WHERE name='baseline'`).Scan(&baselines); err != nil {
+		t.Fatal(err)
+	}
+	if baselines != 1 {
+		t.Errorf("baseline rows after adoption: got %d, want 1", baselines)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM flow_step`).Scan(&steps); err != nil {
+		t.Fatal(err)
+	}
+	if steps != 15 {
+		t.Errorf("flow_step after adoption: got %d, want 15 (seed must not re-run)", steps)
 	}
 }

@@ -280,7 +280,17 @@ export class AppShell extends Control<AppShellConfig> {
       const rows =
         ((out ?? {}) as { rows?: Array<{ id: bigint; attributes?: Record<string, unknown> }> })
           .rows ?? [];
-      if (rows.length === 0) return;
+      if (rows.length === 0) {
+        // Loaded, but there are no (non-template) projects. REPLACE the
+        // "Loading projects…" seed with an empty list — otherwise the seed
+        // sticks and the picker reads "Loading projects…" forever, and the
+        // /projects ProjectList (which reads this same `shell.projects` leaf)
+        // shows a phantom loading row instead of its empty-state. The picker
+        // renders a "No projects" placeholder for an empty list (below).
+        // Nothing to scope to, so scope.projectId is left as-is.
+        this.ctx.tree.at(['shell', 'projects']).set([]);
+        return;
+      }
       const opts: ProjectScopeOption[] = rows.map((r) => {
         const t = r.attributes?.['title'];
         const d = r.attributes?.['description'];
@@ -353,12 +363,24 @@ export class AppShell extends Control<AppShellConfig> {
       const pid = this.ctx.tree.at(['scope', 'projectId']).get<bigint | null>() ?? null;
       const selected = pid === null ? '' : pid.toString();
       const frag = document.createDocumentFragment();
-      for (const p of opts) {
-        const opt = document.createElement('option');
-        opt.value = p.id;
-        opt.textContent = p.label;
-        if (p.id === selected) opt.selected = true;
-        frag.append(opt);
+      if (opts.length === 0) {
+        // Loaded with no projects: a non-selectable "No projects" placeholder
+        // so the <select> never sits blank or stuck on the "Loading projects…"
+        // seed. (The seed itself still shows while the query is in flight.)
+        const ph = document.createElement('option');
+        ph.value = '';
+        ph.textContent = 'No projects';
+        ph.disabled = true;
+        ph.selected = true;
+        frag.append(ph);
+      } else {
+        for (const p of opts) {
+          const opt = document.createElement('option');
+          opt.value = p.id;
+          opt.textContent = p.label;
+          if (p.id === selected) opt.selected = true;
+          frag.append(opt);
+        }
       }
       scopePicker.replaceChildren(frag);
       scopePicker.value = selected;

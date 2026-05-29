@@ -121,6 +121,65 @@ test('AppShell projects query lands shell.projects; ProjectList renders rows fro
   assert.doesNotMatch(rows[0].textContent, /open tasks/);
 });
 
+/* A transport that returns ZERO projects (an empty workspace): every card read
+ * lands an empty row set; non-card calls just succeed. */
+function emptyProjectsTransport() {
+  return {
+    async send(body) {
+      const req = JSON.parse(body);
+      const subresponses = req.subrequests.map((sr) => {
+        const key = `${sr.endpoint}.${sr.action}`;
+        if (key === 'card.select_with_attributes' || key === 'card.select') {
+          return { id: sr.id, ok: true, data: { rows: [] } };
+        }
+        return { id: sr.id, ok: true, data: {} };
+      });
+      return { status: 200, text: JSON.stringify({ subresponses }) };
+    },
+  };
+}
+
+test('AppShell: an empty projects result clears the "Loading projects…" seed (no perpetual loading)', async () => {
+  const { dispatcher, api } = bootApi(emptyProjectsTransport());
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(null);
+  const scope = {
+    get projectId() {
+      return tree.at(['scope', 'projectId']).peek() ?? null;
+    },
+  };
+  const ctx = { api, tree, scope };
+  const shell = M.Control.New(
+    'AppShell',
+    {
+      type: 'AppShell',
+      view: 'projects',
+      defaultProjectLabel: 'Default Project',
+      boardConfig: { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban' } },
+    },
+    ctx,
+  );
+  shell.mount(new FakeElement('div'));
+
+  await settle(dispatcher); // projects query resolves with rows: []
+
+  // The "Loading projects…" seed is REPLACED with an empty list — not left in
+  // place — so nothing reads as perpetually loading.
+  const landed = tree.at(['shell', 'projects']).peek();
+  assert.ok(Array.isArray(landed) && landed.length === 0, 'shell.projects replaced with []');
+
+  // The scope picker shows a "No projects" placeholder, never the stuck seed.
+  const picker = shell.el.querySelector('[data-scope-picker]');
+  assert.ok(picker, 'scope picker present');
+  assert.doesNotMatch(picker.textContent, /Loading projects/, 'seed cleared (not stuck loading)');
+  assert.match(picker.textContent, /No projects/, 'picker shows the empty placeholder');
+
+  // The /projects ProjectList (same leaf) shows its empty-state, no phantom row.
+  assert.equal(visibleProjectRows(shell.el).length, 0, 'no project rows rendered');
+  const emptyEl = shell.el.querySelector('[data-projects-empty]');
+  assert.ok(emptyEl && emptyEl.style.display !== 'none', 'empty-state placeholder visible');
+});
+
 /* -------------------------------------------------------------------------- */
 /* ProjectList renders rows + search filters them.                             */
 /* -------------------------------------------------------------------------- */

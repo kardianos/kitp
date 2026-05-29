@@ -145,7 +145,7 @@ name, parent_id
 foo, $card_type.task
 `
 	got := renderSeed(t, src)
-	mustContain(t, got, "(SELECT id FROM card_type WHERE name='task')")
+	mustContain(t, got, "(SELECT id FROM card_type WHERE name='task' ORDER BY id LIMIT 1)")
 }
 
 // TestSeed_Lookup_DottedName covers $process."dotted.name" with quoted
@@ -164,7 +164,7 @@ name, parent_id
 x, $card_type."foo.bar"
 `
 	got := renderSeed(t, src)
-	mustContain(t, got, "(SELECT id FROM card_type WHERE name='foo.bar')")
+	mustContain(t, got, "(SELECT id FROM card_type WHERE name='foo.bar' ORDER BY id LIMIT 1)")
 }
 
 // TestSeed_Alias covers @<alias>: the synthetic `alias` column on a
@@ -182,8 +182,9 @@ name, parent_id
 referent, @ct_foo
 `
 	got := renderSeed(t, src)
-	// Alias of a non-card row resolves via its name_column lookup.
-	mustContain(t, got, "(SELECT id FROM card_type WHERE name='foo')")
+	// Alias of a non-card row with no unique key resolves via its
+	// name_column lookup, lowest id wins.
+	mustContain(t, got, "(SELECT id FROM card_type WHERE name='foo' ORDER BY id LIMIT 1)")
 }
 
 // TestSeed_ArrayExpansion covers the cross-product semantics of `[a,

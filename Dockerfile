@@ -31,12 +31,15 @@ WORKDIR /app/web
 COPY web/ ./
 # Bundle the two named entries to dist/{app.js,styles.css} (styles.css's @import
 # of design/tokens.css is inlined), then rewrite index.html's asset refs from
-# relative to absolute so deep SPA routes resolve them. Mirrors `make web`,
-# minified for production (no sourcemaps).
+# relative to absolute so deep SPA routes resolve them, and copy the static
+# icon assets (favicons / app icons / logo PNGs) into dist/assets so the
+# /assets/* <link>s resolve in the shipped bundle. Mirrors `node build.mjs`
+# (which does the same copyAssets step), minified for production (no sourcemaps).
 RUN esbuild app=src/main.ts styles=styles.css \
         --bundle --format=esm --target=es2022 --minify --outdir=dist \
  && sed -e 's#\./dist/app\.js#/app.js#' -e 's#\./styles\.css#/styles.css#' \
-        index.html > dist/index.html
+        index.html > dist/index.html \
+ && cp -r assets dist/assets
 
 # ---------- stage 2: static Go binary ----------
 FROM golang:1.26-alpine AS server
