@@ -109,6 +109,87 @@ function downloadTextFile(filename: string, text: string, doc: Document = docume
   return true;
 }
 
+/** One cluster of adjacent activity rows that share an owning card ("thing"). */
+export interface ActivityGroup {
+  /** The card the cluster links to (server-resolved nav card / owning task). */
+  navId: bigint;
+  /** Headline title of navId (server-provided; '' when unknown). */
+  title: string;
+  /** Member rows, newest-first (same order as the feed). */
+  rows: ActivityRow[];
+}
+
+/** Max gap between adjacent rows kept in one group (12h) — events on the same
+ *  card further apart than this stay separate, so a group reads as "one go". */
+const GROUP_GAP_MS = 12 * 60 * 60 * 1000;
+
+/** Group adjacent rows (already newest-first) that share an owning card and sit
+ *  within GROUP_GAP_MS of each other. Pure — exported for unit tests. */
+export function groupActivity(rows: readonly ActivityRow[]): ActivityGroup[] {
+  const groups: ActivityGroup[] = [];
+  let tailTime = 0;
+  for (const row of rows) {
+    const navId = row.navCardId ?? row.cardId;
+    const t = Date.parse(row.createdAt);
+    const last = groups[groups.length - 1];
+    if (last !== undefined && last.navId === navId && Math.abs(tailTime - t) <= GROUP_GAP_MS) {
+      last.rows.push(row);
+    } else {
+      groups.push({ navId, title: row.navTitle ?? '', rows: [row] });
+    }
+    if (!Number.isNaN(t)) tailTime = t;
+  }
+  return groups;
+}
+
+const KIND_CATEGORY: Record<string, string> = {
+  comment: 'comment',
+  attr_update: 'update',
+  card_create: 'created',
+  tag_apply: 'tag',
+  tag_remove: 'tag',
+};
+function kindCategory(kind: string): string {
+  return KIND_CATEGORY[kind] ?? 'other';
+}
+function kindLabel(cat: string, n: number): string {
+  switch (cat) {
+    case 'comment':
+      return n === 1 ? 'comment' : 'comments';
+    case 'update':
+      return n === 1 ? 'update' : 'updates';
+    case 'tag':
+      return n === 1 ? 'tag change' : 'tag changes';
+    case 'created':
+      return 'created';
+    default:
+      return n === 1 ? 'event' : 'events';
+  }
+}
+const CATEGORY_ORDER = ['created', 'comment', 'update', 'tag', 'other'];
+
+/** A group's sub-line: the full action text for a lone row, else a compact
+ *  count by category ("3 updates · 1 comment"). Exported for unit tests. */
+export function summarizeGroup(
+  rows: readonly ActivityRow[],
+  userNames: IdMap,
+  cardTitles: IdMap,
+  tagPaths: IdMap,
+): string {
+  if (rows.length === 1) return formatActivityText(rows[0], userNames, cardTitles, tagPaths);
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    const c = kindCategory(r.kind);
+    counts.set(c, (counts.get(c) ?? 0) + 1);
+  }
+  const parts: string[] = [];
+  for (const cat of CATEGORY_ORDER) {
+    const n = counts.get(cat);
+    if (n !== undefined && n > 0) parts.push(`${n} ${kindLabel(cat, n)}`);
+  }
+  return parts.join(' · ');
+}
+
 export interface ActivityConfig extends BaseControlConfig {
   type: 'Activity';
   /** Dotted tree path holding the active project id. Default 'scope.projectId'. */
@@ -377,30 +458,43 @@ export class Activity extends Control<ActivityConfig> {
       return;
     }
     const frag = document.createDocumentFragment();
-    for (const row of this.rows) frag.append(this.renderRow(row));
+    for (const g of groupActivity(this.rows)) frag.append(this.renderGroup(g));
     list.append(frag);
   }
 
-  private renderRow(row: ActivityRow): HTMLElement {
-    // A row is a button so the whole line navigates to the card's detail.
+  /**
+   * Render one grouped "thing": a clickable card headed by the owning card's
+   * title, with a one-line summary (the full action for a lone row, else a
+   * count by category). The whole card navigates to the owning card.
+   */
+  private renderGroup(g: ActivityGroup): HTMLElement {
     const el = document.createElement('button');
     el.type = 'button';
-    el.className = 'activity-screen__row';
-    el.dataset.activityRow = row.id.toString();
-    el.dataset.activityKind = row.kind;
-    el.dataset.activityCard = row.cardId.toString();
+    el.className = 'activity-screen__group';
+    el.dataset.activityGroup = g.navId.toString();
+    el.dataset.activityCount = String(g.rows.length);
 
-    const text = document.createElement('span');
-    text.className = 'activity-screen__text';
-    text.dataset.activityText = '';
-    text.textContent = formatActivityText(row, this.userNames, this.cardTitles, this.tagPaths);
-
+    const head = document.createElement('div');
+    head.className = 'activity-screen__group-head';
+    const title = document.createElement('span');
+    title.className = 'activity-screen__group-title';
+    title.dataset.activityTitle = '';
+    title.textContent =
+      g.title !== '' ? g.title : (this.cardTitles[g.navId.toString()] ?? `#${g.navId.toString()}`);
     const time = document.createElement('span');
-    time.className = 'activity-screen__time muted';
-    time.textContent = formatRelativeTime(row.createdAt);
+    time.className = 'activity-screen__group-time muted';
+    time.textContent = formatRelativeTime(g.rows[0].createdAt);
+    head.append(title, time);
 
-    el.append(text, time);
-    this.listen(el, 'click', () => navigate(taskUrl(row.cardId)));
+    const summary = document.createElement('span');
+    summary.className = 'activity-screen__group-summary muted';
+    summary.dataset.activitySummary = '';
+    summary.textContent = summarizeGroup(g.rows, this.userNames, this.cardTitles, this.tagPaths);
+
+    el.append(head, summary);
+    // Open the OWNING card (server-resolved nav card / task) — comm & reply
+    // activity lives on cards with no task route, so never link the raw card.
+    this.listen(el, 'click', () => navigate(taskUrl(g.navId)));
     return el;
   }
 }

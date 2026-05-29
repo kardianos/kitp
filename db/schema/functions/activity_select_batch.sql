@@ -99,6 +99,15 @@ BEGIN
                         jsonb_build_object(
                             'id',             a.id::text,
                             'card_id',        a.card_id::text,
+                            -- The card the UI should OPEN for this row: the
+                            -- nearest 'task' ancestor (so comm / reply activity
+                            -- lands on the owning task, not the comm card which
+                            -- has no task route). reply_body cards are global
+                            -- (no structural parent) so they resolve via the
+                            -- replies[] → comm → task chain; everything else
+                            -- falls back to the card itself.
+                            'nav_card_id',    nav.nav_card_id::text,
+                            'nav_title',      nav.nav_title,
                             'kind',           a.kind,
                             'attribute_name', ad.name,
                             'value_old',      a.value_old,
@@ -111,6 +120,49 @@ BEGIN
                     FROM activity a
                     LEFT JOIN attribute_def ad ON ad.id = a.attribute_def_id
                     LEFT JOIN comment_body cb ON cb.id = (a.value_new->>'comment_body_id')::bigint
+                    LEFT JOIN LATERAL (
+                        -- Resolve the navigable card (nearest task ancestor /
+                        -- reply_body's comm's task / self) AND its title, so the
+                        -- Activity feed can both link to and headline the owning
+                        -- "thing" without a second round trip.
+                        SELECT x.nav_card_id,
+                               (
+                                   SELECT av.value #>> '{}'
+                                   FROM attribute_value av
+                                   JOIN attribute_def adt ON adt.id = av.attribute_def_id
+                                   WHERE av.card_id = x.nav_card_id AND adt.name = 'title'
+                               ) AS nav_title
+                        FROM (
+                            SELECT COALESCE(
+                                -- nearest 'task' ancestor (self or up the parent chain)
+                                (
+                                    WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (
+                                        SELECT c.id, c.parent_card_id, c.card_type_id, 0
+                                        FROM card c WHERE c.id = a.card_id
+                                        UNION ALL
+                                        SELECT p.id, p.parent_card_id, p.card_type_id, up.depth + 1
+                                        FROM card p JOIN up ON p.id = up.parent_card_id
+                                        WHERE up.depth < 16
+                                    )
+                                    SELECT up.id
+                                    FROM up JOIN card_type ct ON ct.id = up.card_type_id
+                                    WHERE ct.name = 'task'
+                                    ORDER BY up.depth
+                                    LIMIT 1
+                                ),
+                                -- reply_body: global card referenced by a comm's replies[]
+                                (
+                                    SELECT cm.parent_card_id
+                                    FROM attribute_value rep
+                                    JOIN attribute_def adr ON adr.id = rep.attribute_def_id AND adr.name = 'replies'
+                                    JOIN card cm ON cm.id = rep.card_id
+                                    WHERE rep.value @> to_jsonb(a.card_id)
+                                    LIMIT 1
+                                ),
+                                a.card_id
+                            ) AS nav_card_id
+                        ) x
+                    ) nav ON true
                     WHERE (_card_id IS NULL OR a.card_id = _card_id)
                       AND (_before_id IS NULL OR a.id < _before_id)
                       -- Date window (inclusive by day) on created_at.

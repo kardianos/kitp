@@ -184,7 +184,13 @@ type pendingReply struct {
 	smtpUser    string
 	smtpPass    string
 	fromAddress string
-	signature   string // comm_channel title — auto-appended to the body as "-<name>"
+	// signature is the resolved text appended to the body as "-<signature>"
+	// (empty = append nothing). It's derived from signatureMode + the two
+	// candidate names below, picked in loadPending after the scan.
+	signature     string
+	signatureMode string // channel's signature_mode: '' | none | comm_name | user_name
+	channelName   string // comm_channel title (for comm_name mode)
+	authorName    string // reply author's user_account.display_name (for user_name mode)
 }
 
 // RunOnce executes one scan + send cycle synchronously. Exported so
@@ -324,6 +330,13 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='smtp_username'), '')   AS smtp_username,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='from_address'), '')    AS from_address,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='title'), '')           AS channel_name,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='signature_mode'), '')  AS signature_mode,
+			COALESCE((SELECT ua.display_name
+			          FROM attribute_value av
+			          JOIN attribute_def ad ON ad.id = av.attribute_def_id
+			          JOIN user_account ua ON ua.id = (av.value)::text::bigint
+			          WHERE av.card_id = rb.id AND ad.name='reply_author'
+			            AND jsonb_typeof(av.value)='number'), '')                                                                                                                     AS author_name,
 			COALESCE(
 				(SELECT pgp_sym_decrypt(cs.smtp_password, current_setting('app.comm_secret_key'))
 					FROM comm_secret cs WHERE cs.channel_card_id = ch.id AND cs.smtp_password IS NOT NULL),
@@ -366,7 +379,8 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			&r.replyID, &r.commID, &r.channelID, &r.projectID,
 			&r.to, &r.from, &r.subject, &r.body,
 			&r.threadID,
-			&r.smtpHost, &r.smtpPort, &r.smtpUser, &r.fromAddress, &r.signature,
+			&r.smtpHost, &r.smtpPort, &r.smtpUser, &r.fromAddress,
+			&r.channelName, &r.signatureMode, &r.authorName,
 			&r.smtpPass,
 		); err != nil {
 			return nil, err
@@ -377,6 +391,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 		if r.from == "" {
 			r.from = r.fromAddress
 		}
+		r.signature = resolveSignature(r.signatureMode, r.channelName, r.authorName)
 		out = append(out, r)
 	}
 	if err := pgRows.Err(); err != nil {
@@ -431,6 +446,24 @@ func (s *SMTPSender) recordResult(ctx context.Context, r pendingReply, newStatus
 		s.pool.NoteWrite()
 	}
 	return nil
+}
+
+// resolveSignature maps the channel's signature_mode to the text appended to
+// outbound reply bodies as "-<signature>". An unset/unknown mode preserves the
+// legacy behaviour (sign with the channel name); 'none' signs nothing;
+// 'user_name' signs with the reply author's display name (empty when the author
+// can't be resolved — no dangling dash).
+func resolveSignature(mode, channelName, authorName string) string {
+	switch mode {
+	case "none":
+		return ""
+	case "user_name":
+		return authorName
+	case "comm_name":
+		return channelName
+	default: // "" (unset) or any unexpected value → legacy default
+		return channelName
+	}
 }
 
 // ---- MIME ----

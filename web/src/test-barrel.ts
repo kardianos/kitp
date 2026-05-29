@@ -216,7 +216,7 @@ export {
 } from './shell/config-specs.js';
 export { publishTaskNav, taskNavListUrl, taskNavNeighbor } from './shell/task-nav.js';
 export { attrNameToTargetType, collectRefIdsByType, loadActivityLabels } from './task-detail/activity-labels.js';
-export { Activity, registerActivity, activityRowsToCsv, isoDaysAgo, ACTIVITY_DEFAULT_LOOKBACK_DAYS } from './activity/activity.js';
+export { Activity, registerActivity, activityRowsToCsv, isoDaysAgo, ACTIVITY_DEFAULT_LOOKBACK_DAYS, groupActivity, summarizeGroup } from './activity/activity.js';
 export { ProjectList, registerProjectList } from './projects/project-list.js';
 
 // Project detail (the `project` layout body): the ProjectLayout control + its

@@ -375,6 +375,12 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       this.ctx.tree.at(['screen', 'laneAxis']).set(axis);
     }, 'filterbar.laneAxis');
 
+    // Restore the saved (project, slug) view BEFORE the default-filter + phase
+    // seed effects run. Critical for nav-back: when `resolved` is already true,
+    // those effects fire on creation, so the restore must precede them — else it
+    // overwrites the seeded phase (and the seed peeks, so it won't re-apply).
+    this.restoreView();
+
     // DEFAULT-FILTER-ON-FIRST-VISIT. When the screen resolves, apply the
     // default's predicate the first time this (project, slug) is visited; with
     // no default start from an EMPTY predicate (phase toggles' default_on own
@@ -388,6 +394,22 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
         if (!resolved) return;
         this.applyDefaultOnFirstVisit(statePath);
       }, 'filterbar.defaultFilter');
+      // Phase is SESSION-ONLY. Derive it from the in-session value (the user's
+      // choice this session) or the screen's base phase. This SUBSCRIBES to the
+      // phase toggles so it re-derives when they land — a deferred / empty first
+      // resolution must not lock in "all". The session node is written only by
+      // user actions (toggle / Clear), so re-deriving never clobbers a choice.
+      this.effect(() => {
+        const resolved = this.ctx.tree.at([...statePath, 'resolved']).get<boolean>() ?? false;
+        const toggles = (this.ctx.tree.at(['screen', 'phaseToggles']).get<PhaseToggle[]>() ?? []) as PhaseToggle[];
+        if (!resolved) return;
+        const session = this.phaseSessionNode(statePath).peek<Phase[] | undefined>();
+        // No toggles + no in-session choice → the screen has no phase concept.
+        if (toggles.length === 0 && session === undefined) return;
+        const phases = session ?? this.basePhases();
+        const cur = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
+        this.applyPredicate(withTopLevelPhases(cur, phases));
+      }, 'filterbar.seedPhase');
     }
 
     /* ---- interactions: bar writes tree state one-way ---- */
@@ -411,11 +433,9 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     });
     this.listen(clear, 'click', () => this.clearAll());
 
-    // VIEW PERSISTENCE (#27): restore the saved (project, slug) view now — before
-    // the async screen-resolve fires the default-on-first-visit effect — then
-    // persist on any change to the view leaves. Restore takes precedence: a
-    // restored view marks the (project, slug) visited so the default is skipped.
-    this.restoreView();
+    // VIEW PERSISTENCE (#27): persist on any change to the view leaves. The
+    // restore itself happens earlier (before the default-filter + phase-seed
+    // effects) — see restoreView() near the top of render.
     this.effect(() => {
       const predicate = this.ctx.tree.at(['screen', 'predicate']).get<Predicate | null>() ?? null;
       const group = this.ctx.tree.at(['screen', 'group']).get<string>() ?? '';
@@ -429,7 +449,9 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       // of falling back to a blank "Default". null = explicit Default / ad-hoc.
       const activeId = this.ctx.tree.at([...sp, 'activeFilterId']).peek<bigint | null>() ?? null;
       saveView(sp, {
-        predicate,
+        // Phase scope is SESSION-ONLY — strip it so a reload starts at the
+        // screen's base phase rather than restoring a stale phase selection.
+        predicate: withTopLevelPhases(predicate, []),
         group,
         laneGroup,
         columnConfig,
@@ -459,7 +481,9 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       }
       if (v.columnConfig !== undefined) this.ctx.tree.at(['screen', 'columnConfig']).set(v.columnConfig);
       if (v.predicate !== undefined) {
-        this.ctx.tree.at(['screen', 'predicate']).set(v.predicate as Predicate | null);
+        // Strip any persisted phase leaf (session-only); the per-mount phase
+        // seed re-applies the base / in-session phase on top.
+        this.ctx.tree.at(['screen', 'predicate']).set(withTopLevelPhases(v.predicate as Predicate | null, []));
         this.respawnPredicate();
       }
       // Restore the selected preset so the View picker re-selects it (the
@@ -691,31 +715,50 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     const activeNode = this.ctx.tree.at([...statePath, 'activeFilterId']);
     // `undefined` = never visited; `null` = visited with "Default" (no preset).
     if (activeNode.peek<bigint | null>() !== undefined) return;
+    this.applyScreenDefaults(statePath);
+  }
 
+  /**
+   * Apply the screen's DEFAULT VIEW: the `default_filter` preset (else an empty
+   * predicate). Shared by the first-visit seed and the Clear button. Phase is
+   * NOT touched here — it's session-only and owned by the `filterbar.seedPhase`
+   * effect and {@link resetPhaseToBase}.
+   */
+  private applyScreenDefaults(statePath: string[]): void {
+    const activeNode = this.ctx.tree.at([...statePath, 'activeFilterId']);
     const defaultId = this.ctx.tree.at([...statePath, 'defaultFilterId']).peek<bigint | null>() ?? null;
-    const toggles = (this.ctx.tree.at(['screen', 'phaseToggles']).peek<PhaseToggle[]>() ?? []) as PhaseToggle[];
-
-    // 1. Base predicate: the default_filter preset, else EMPTY (every phase
-    //    visible). There is no hardcoded "not terminal" default any more — what
-    //    a screen hides by default is OWNED by its phase toggles' `default_on`
-    //    flags (seeded per screen, applied in step 2). A screen with no phase
-    //    toggles therefore shows ALL phases by default.
     if (defaultId !== null) {
       this.applyPreset(defaultId); // marks visited + sets predicate/group/sort
     } else {
       activeNode.set(null); // mark visited
       this.applyPredicate(null);
     }
+  }
 
-    // 2. Seed the phase scope from the default-on toggles, composed on top of
-    //    the base predicate. All-on (or none) → no leaf (every phase visible).
-    if (toggles.length > 0) {
-      const all = toggles.map((t) => t.phase);
-      const on = toggles.filter((t) => t.defaultOn).map((t) => t.phase);
-      const phases = on.length >= all.length ? [] : on;
-      const cur = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
-      this.applyPredicate(withTopLevelPhases(cur, phases));
-    }
+  /** The screen's BASE phase set (toggles' `default_on`); [] = all phases (no
+   *  scope leaf). A screen with no phase toggles has no base phase. */
+  private basePhases(): Phase[] {
+    const toggles = (this.ctx.tree.at(['screen', 'phaseToggles']).peek<PhaseToggle[]>() ?? []) as PhaseToggle[];
+    if (toggles.length === 0) return [];
+    const all = toggles.map((t) => t.phase);
+    const on = toggles.filter((t) => t.defaultOn).map((t) => t.phase);
+    return on.length >= all.length ? [] : on;
+  }
+
+  /** The IN-MEMORY (session-only) phase node for a screen. It survives in-session
+   *  navigation (task → back keeps the toggle) but is gone on reload, so phase
+   *  resets to base each session. Keyed like the persisted view (project, slug). */
+  private phaseSessionNode(statePath: string[]) {
+    return this.ctx.tree.at(['session', 'phase', ...statePath.slice(1)]);
+  }
+
+  /** Reset phase to the screen's base (the Clear button) + record it as the
+   *  in-session value so it sticks for the rest of the session. */
+  private resetPhaseToBase(statePath: string[]): void {
+    const phases = this.basePhases();
+    const cur = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
+    this.applyPredicate(withTopLevelPhases(cur, phases));
+    this.phaseSessionNode(statePath).set(phases);
   }
 
   /* ----------------------------- phase dropdown ---------------------------- */
@@ -832,6 +875,9 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     // Covering all phases (or none) ⇒ no restriction ⇒ drop the leaf.
     const phases = next.size >= all.length ? [] : all.filter((p) => next.has(p));
     this.applyPredicate(withTopLevelPhases(cur, phases));
+    // Remember the user's phase choice for THIS session only (in-memory).
+    const sp = this.config.screenStatePath;
+    if (sp !== undefined) this.phaseSessionNode(sp).set(phases);
   }
 
   /** Write a predicate to `screen.predicate` + re-seed the Advanced editor. */
@@ -849,16 +895,22 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.ctx.tree.at(['screen', 'group']).set(v);
   }
 
-  /** Clear search + group + the predicate back to defaults (the Clear button). */
+  /**
+   * The Clear button — reset the screen to its DEFAULTS, not to "All". Clears
+   * the search, resets the group, then re-applies the screen's default view
+   * (`default_filter` preset) + base phase via {@link applyScreenDefaults}. With
+   * no persisted screen state (tests / ad-hoc) it falls back to an empty filter.
+   */
   private clearAll(): void {
     if (this.searchEl) this.searchEl.value = '';
     this.setGroup(this.defaultGroup);
     this.ctx.tree.at(['screen', 'search']).set('');
-    this.applyPredicate(null);
-    // Clearing detaches from any active preset (a subsequent re-pick reattaches).
     const statePath = this.config.screenStatePath;
     if (statePath !== undefined) {
-      this.ctx.tree.at([...statePath, 'activeFilterId']).set(null);
+      this.applyScreenDefaults(statePath); // default VIEW
+      this.resetPhaseToBase(statePath); // base PHASE (+ session)
+    } else {
+      this.applyPredicate(null);
     }
   }
 

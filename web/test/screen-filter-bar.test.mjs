@@ -857,6 +857,143 @@ test('ScreenFilterBar: a status quick-chip and the phase scope coexist (chip nev
   assert.deepEqual(M.topLevelPhases(tree.at(['screen', 'predicate']).peek()), ['active'], 'phase scope survived the status chip');
 });
 
+test('ScreenFilterBar: Clear resets to the base phase, not "All"', async () => {
+  const { dispatcher, api } = bootApi(taskMockTransport());
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  const bar = M.Control.New(
+    'ScreenFilterBar',
+    { type: 'ScreenFilterBar', screenStatePath: ['screen', 'kanban'] },
+    { api, tree, scope },
+  );
+  bar.mount(new FakeElement('div'));
+
+  // Base phase: Active on by default. Mark the screen visited, then widen the
+  // user's view to "all phases" (no scope leaf) — what we want Clear to undo.
+  tree.at(['screen', 'phaseToggles']).set([
+    { label: 'Triage', phase: 'triage', defaultOn: false },
+    { label: 'Active', phase: 'active', defaultOn: true },
+    { label: 'Closed', phase: 'terminal', defaultOn: false },
+  ]);
+  tree.at(['screen', 'kanban', 'activeFilterId']).set(null);
+  tree.at(['screen', 'predicate']).set(null);
+  M.flushSync?.();
+  await settle(dispatcher);
+
+  bar.el.querySelector('.filterbar__clear').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  await settle(dispatcher);
+
+  assert.deepEqual(
+    M.topLevelPhases(tree.at(['screen', 'predicate']).peek()).sort(),
+    ['active'],
+    'Clear restored the base phase (Active), not All',
+  );
+});
+
+test('ScreenFilterBar: phase is session-only — in-memory, resets to base on a fresh session', async () => {
+  const { dispatcher, api } = bootApi(taskMockTransport());
+  const SP = ['screen', 'kanban'];
+  const toggles = [
+    { label: 'Triage', phase: 'triage', defaultOn: false },
+    { label: 'Active', phase: 'active', defaultOn: true },
+    { label: 'Closed', phase: 'terminal', defaultOn: false },
+  ];
+  const mountBar = (tree) => {
+    tree.at(['scope', 'projectId']).set(PROJECT_ID);
+    const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+    tree.at(['screen', 'phaseToggles']).set(toggles);
+    const bar = M.Control.New('ScreenFilterBar', { type: 'ScreenFilterBar', screenStatePath: SP }, { api, tree, scope });
+    bar.mount(new FakeElement('div'));
+    tree.at([...SP, 'resolved']).set(true); // fire the resolve → seedPhase effect
+    M.flushSync?.();
+    return bar;
+  };
+
+  // Session A: mount seeds the base phase; user widens to include terminal.
+  const treeA = new M.TreeNode({}, []);
+  const barA = mountBar(treeA);
+  await settle(dispatcher);
+  assert.deepEqual(M.topLevelPhases(treeA.at(['screen', 'predicate']).peek()).sort(), ['active'], 'mount seeds base phase');
+
+  barA.el.querySelector('[data-phase-toggle="terminal"]').dispatchEvent({ type: 'change' });
+  M.flushSync?.();
+  assert.deepEqual(
+    treeA.at(['session', 'phase', 'kanban']).peek().slice().sort(),
+    ['active', 'terminal'],
+    'user phase choice stored in the in-memory session node (not localStorage)',
+  );
+
+  // Session B: a fresh tree (simulating a reload) resets to base, NOT the prior
+  // session's widened phase, and carries no session value.
+  const treeB = new M.TreeNode({}, []);
+  mountBar(treeB);
+  await settle(dispatcher);
+  assert.deepEqual(M.topLevelPhases(treeB.at(['screen', 'predicate']).peek()).sort(), ['active'], 'fresh session resets to base phase');
+  assert.equal(treeB.at(['session', 'phase', 'kanban']).peek(), undefined, 'no carried-over session phase on a fresh session');
+});
+
+test('ScreenFilterBar: phase re-seeds to base when toggles land AFTER resolve (no "all" lock)', async () => {
+  const { dispatcher, api } = bootApi(taskMockTransport());
+  const SP = ['screen', 'kanban'];
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  const bar = M.Control.New('ScreenFilterBar', { type: 'ScreenFilterBar', screenStatePath: SP }, { api, tree, scope });
+  bar.mount(new FakeElement('div'));
+
+  // Deferred resolution: `resolved` flips true BEFORE the phase toggles land.
+  tree.at([...SP, 'resolved']).set(true);
+  M.flushSync?.();
+  await settle(dispatcher);
+  assert.deepEqual(M.topLevelPhases(tree.at(['screen', 'predicate']).peek()), [], 'no phase applied (or locked) before toggles land');
+
+  // Toggles arrive → phase re-seeds to base (Active), not stuck at "all".
+  tree.at(['screen', 'phaseToggles']).set([
+    { label: 'Triage', phase: 'triage', defaultOn: false },
+    { label: 'Active', phase: 'active', defaultOn: true },
+    { label: 'Closed', phase: 'terminal', defaultOn: false },
+  ]);
+  M.flushSync?.();
+  await settle(dispatcher);
+  assert.deepEqual(
+    M.topLevelPhases(tree.at(['screen', 'predicate']).peek()).sort(),
+    ['active'],
+    'base phase applied once toggles land (re-seed, not "all")',
+  );
+});
+
+test('ScreenFilterBar: nav-back (resolved already true at mount) seeds base phase', async () => {
+  const { dispatcher, api } = bootApi(taskMockTransport());
+  const SP = ['screen', 'kanban'];
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  // State already present from earlier this session: screen resolved, toggles
+  // landed, visited, and a leftover "all" predicate from the previous screen.
+  tree.at(['screen', 'phaseToggles']).set([
+    { label: 'Triage', phase: 'triage', defaultOn: false },
+    { label: 'Active', phase: 'active', defaultOn: true },
+    { label: 'Closed', phase: 'terminal', defaultOn: false },
+  ]);
+  tree.at([...SP, 'resolved']).set(true);
+  tree.at([...SP, 'activeFilterId']).set(null);
+  tree.at(['screen', 'predicate']).set(null);
+
+  // A FRESH bar (as on nav-back): its phase-seed effect runs at creation.
+  const bar = M.Control.New('ScreenFilterBar', { type: 'ScreenFilterBar', screenStatePath: SP }, { api, tree, scope });
+  bar.mount(new FakeElement('div'));
+  M.flushSync?.();
+  await settle(dispatcher);
+
+  assert.deepEqual(
+    M.topLevelPhases(tree.at(['screen', 'predicate']).peek()).sort(),
+    ['active'],
+    'nav-back seeds base phase even when resolved was already true at mount',
+  );
+});
+
 /* -------------------------------------------------------------------------- */
 /* "/" focuses the shared search input (provided by ScreenHost).               */
 /* -------------------------------------------------------------------------- */

@@ -14,8 +14,9 @@
 --      channel becomes the reply_from snapshot.
 --   5. Insert reply_body card (global; no parent) + card_create
 --      activity.
---   6. Write the five reply_body attributes (reply_to / reply_from /
---      reply_subject / reply_body_text / delivery_status='pending').
+--   6. Write the six reply_body attributes (reply_to / reply_from /
+--      reply_subject / reply_body_text / delivery_status='pending' /
+--      reply_author=actor_id).
 --      Uses an ordinality-join pattern: a single jsonb_array_elements
 --      iteration emits one activity row per attribute and zips the
 --      returned activity ids back through unnest WITH ORDINALITY for
@@ -66,6 +67,7 @@ DECLARE
     _reply_subject_def bigint;
     _reply_body_text_def bigint;
     _delivery_status_def bigint;
+    _reply_author_def bigint;
     _replies_def bigint;
     _old_replies jsonb;
     _new_replies jsonb;
@@ -84,9 +86,11 @@ BEGIN
     SELECT id INTO _reply_subject_def    FROM attribute_def WHERE name = 'reply_subject';
     SELECT id INTO _reply_body_text_def  FROM attribute_def WHERE name = 'reply_body_text';
     SELECT id INTO _delivery_status_def  FROM attribute_def WHERE name = 'delivery_status';
+    SELECT id INTO _reply_author_def     FROM attribute_def WHERE name = 'reply_author';
     SELECT id INTO _replies_def          FROM attribute_def WHERE name = 'replies';
     IF _reply_to_def IS NULL OR _reply_from_def IS NULL OR _reply_subject_def IS NULL
        OR _reply_body_text_def IS NULL OR _delivery_status_def IS NULL
+       OR _reply_author_def IS NULL
        OR _replies_def IS NULL THEN
         RAISE EXCEPTION 'reply.post: one of reply_body / replies attribute_defs missing'
             USING ERRCODE = 'P0001';
@@ -218,9 +222,9 @@ BEGIN
         INSERT INTO activity (card_id, kind, actor_id)
         VALUES (_reply_id, 'card_create', reply_post_batch.actor_id);
 
-        -- 6. Set-based write of the five reply_body attributes. The
+        -- 6. Set-based write of the six reply_body attributes. The
         --    ordinality-join pattern from attribute_update_batch lets us
-        --    emit all five activity rows in one statement and zip the
+        --    emit all six activity rows in one statement and zip the
         --    returned ids back to the corresponding attribute_value
         --    upserts in a single ON CONFLICT block.
         WITH writes(ord, attr_def_id, value) AS (
@@ -229,7 +233,11 @@ BEGIN
                 (2, _reply_from_def,       to_jsonb(_from_address)),
                 (3, _reply_subject_def,    to_jsonb(_subject_snapshot)),
                 (4, _reply_body_text_def,  to_jsonb(_body)),
-                (5, _delivery_status_def,  to_jsonb('pending'::text))
+                (5, _delivery_status_def,  to_jsonb('pending'::text)),
+                -- reply_author links the reply card to the user_account that
+                -- authored it (the reply.post caller), so the SMTP signer and
+                -- the UI can resolve the sender's name without an activity join.
+                (6, _reply_author_def,     to_jsonb(reply_post_batch.actor_id))
         ),
         ins_activity AS (
             INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)

@@ -180,17 +180,18 @@ func TestReplyPostBatch_Happy(t *testing.T) {
 		t.Fatal("empty reply_id")
 	}
 
-	// Verify the five attributes.
+	// Verify the six attributes.
 	ctx := context.Background()
-	var to, from, subject, body, status string
+	var to, from, subject, body, status, author string
 	if err := pool.QueryRow(ctx, `
 		SELECT
 			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1::bigint AND ad.name='reply_to'),
 			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1::bigint AND ad.name='reply_from'),
 			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1::bigint AND ad.name='reply_subject'),
 			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1::bigint AND ad.name='reply_body_text'),
-			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1::bigint AND ad.name='delivery_status')
-	`, got.ReplyID).Scan(&to, &from, &subject, &body, &status); err != nil {
+			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1::bigint AND ad.name='delivery_status'),
+			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1::bigint AND ad.name='reply_author')
+	`, got.ReplyID).Scan(&to, &from, &subject, &body, &status, &author); err != nil {
 		t.Fatalf("read attrs: %v", err)
 	}
 	if to != "cust@example.com" {
@@ -208,6 +209,9 @@ func TestReplyPostBatch_Happy(t *testing.T) {
 	}
 	if status != "pending" {
 		t.Errorf("status=%q want pending", status)
+	}
+	if want := strconv.FormatInt(auth.SystemUserID, 10); author != want {
+		t.Errorf("reply_author=%q want %q (the reply.post actor)", author, want)
 	}
 
 	// Verify comm.replies got the new reply_body id appended.

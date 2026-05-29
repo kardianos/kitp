@@ -146,6 +146,54 @@ func TestActivitySelectBatch_HappySingleCard(t *testing.T) {
 	}
 }
 
+// TestActivitySelectBatch_NavCardResolvesToTask — activity on a comm card
+// resolves nav_card_id to the OWNING task (so the Activity feed links land on a
+// real task route, not the comm card). Task-own activity resolves to itself.
+func TestActivitySelectBatch_NavCardResolvesToTask(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_activity_select_nav_task")
+	project := seedCard(t, pool, "project", nil)
+	task := seedCard(t, pool, "task", &project)
+	comm := seedCard(t, pool, "comm", &task)
+	seedActivity(t, pool, task, "card_create")
+	seedActivity(t, pool, comm, "attr_update")
+
+	res := callActivitySelectBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"project_id": strconv.FormatInt(project, 10)},
+	})
+	if len(res) != 1 || !res[0].OK {
+		t.Fatalf("want one ok row, got %+v", res)
+	}
+	var out struct {
+		Rows []struct {
+			CardID    string `json:"card_id"`
+			NavCardID string `json:"nav_card_id"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(res[0].Result, &out); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, res[0].Result)
+	}
+	taskStr := strconv.FormatInt(task, 10)
+	commStr := strconv.FormatInt(comm, 10)
+	var sawComm, sawTask bool
+	for _, r := range out.Rows {
+		switch r.CardID {
+		case commStr:
+			sawComm = true
+			if r.NavCardID != taskStr {
+				t.Errorf("comm activity nav_card_id=%s, want owning task %s", r.NavCardID, taskStr)
+			}
+		case taskStr:
+			sawTask = true
+			if r.NavCardID != taskStr {
+				t.Errorf("task activity nav_card_id=%s, want self %s", r.NavCardID, taskStr)
+			}
+		}
+	}
+	if !sawComm || !sawTask {
+		t.Fatalf("missing rows (comm=%v task=%v): %+v", sawComm, sawTask, out.Rows)
+	}
+}
+
 // TestActivitySelectBatch_DateWindow — from_date / to_date bound the feed by
 // created_at (inclusive by day). Backs the Activity page's default 7-day window.
 func TestActivitySelectBatch_DateWindow(t *testing.T) {

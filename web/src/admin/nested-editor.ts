@@ -222,6 +222,9 @@ export interface CommChannelDraft {
    *  project flow default. */
   intakeStatusId: string;
   channelStatus: string;
+  /** What to auto-append to outbound reply bodies: 'none' | 'comm_name' |
+   *  'user_name'. */
+  signatureMode: string;
 }
 
 export function emptyChannelDraft(): CommChannelDraft {
@@ -230,6 +233,7 @@ export function emptyChannelDraft(): CommChannelDraft {
     imapHost: '', imapPort: '', imapUsername: '', imapPassword: '',
     smtpHost: '', smtpPort: '', smtpUsername: '', smtpPassword: '',
     fromAddress: '', intakeStatusId: '', channelStatus: 'enabled',
+    signatureMode: 'comm_name',
   };
 }
 
@@ -253,6 +257,7 @@ export function channelRowToDraft(row: CommChannel): CommChannelDraft {
     fromAddress: row.fromAddress ?? '',
     intakeStatusId: row.intakeStatusId ?? '',
     channelStatus: row.channelStatus === '' ? 'enabled' : row.channelStatus,
+    signatureMode: !row.signatureMode ? 'comm_name' : row.signatureMode,
   };
 }
 
@@ -300,6 +305,7 @@ export function channelDraftToSet(d: CommChannelDraft, projectId: string): Recor
   if (d.intakeStatusId && d.intakeStatusId !== '0') out['intakeStatusId'] = d.intakeStatusId;
   if (d.fromAddress.trim() !== '') out['fromAddress'] = d.fromAddress.trim();
   if (d.channelStatus !== '') out['channelStatus'] = d.channelStatus;
+  if (d.signatureMode !== '') out['signatureMode'] = d.signatureMode;
   return out;
 }
 
@@ -388,6 +394,13 @@ export const CHANNEL_STATUS_OPTIONS: ReadonlyArray<{ value: string; label: strin
   { value: 'enabled', label: 'Enabled' },
   { value: 'disabled-admin', label: 'Disabled (admin)' },
   { value: 'disabled-fault', label: 'Disabled (fault)' },
+];
+
+/** Outbound-reply signature options for the comm-channel config form. */
+export const SIGNATURE_MODE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'none', label: 'Append nothing' },
+  { value: 'comm_name', label: 'Append channel name' },
+  { value: 'user_name', label: 'Append sender name' },
 ];
 
 /* -------------------------------------------------------------------------- */

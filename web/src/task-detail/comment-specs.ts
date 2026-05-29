@@ -78,6 +78,12 @@ export interface ActivitySelectInput {
 export interface ActivityRow {
   id: bigint;
   cardId: bigint;
+  /** The card the UI should OPEN for this row — the nearest task ancestor of
+   *  cardId (so comm / reply activity lands on the owning task). Falls back to
+   *  cardId server-side. */
+  navCardId?: bigint;
+  /** Title of navCardId — the headline for the grouped activity feed. */
+  navTitle?: string;
   kind: string;
   attributeName?: string;
   valueOld?: unknown;
@@ -144,6 +150,8 @@ function decodeActivityRow(j: Record<string, unknown>): ActivityRow {
     actorId: asId(j['actor_id']),
     createdAt: asStr(j['created_at']),
   };
+  if (j['nav_card_id'] !== undefined && j['nav_card_id'] !== null) out.navCardId = asId(j['nav_card_id']);
+  if (typeof j['nav_title'] === 'string') out.navTitle = j['nav_title'];
   if (typeof j['attribute_name'] === 'string') out.attributeName = j['attribute_name'];
   if (j['value_old'] !== undefined && j['value_old'] !== null) out.valueOld = j['value_old'];
   if (j['value_new'] !== undefined && j['value_new'] !== null) out.valueNew = j['value_new'];

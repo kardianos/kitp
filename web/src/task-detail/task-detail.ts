@@ -463,7 +463,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         const found = rows.find((r) => r.id === this.taskId) ?? null;
         this.task = found;
         if (found === null) {
-          this.showNotFound();
+          // The id may be a comm card (e.g. a stale link) — comm cards have no
+          // task route, so resolve to the owning task and redirect there.
+          this.redirectIfCommCard();
           return;
         }
         this.showLoaded();
@@ -471,6 +473,39 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         this.publishProjectScope();
       },
       { alive: () => this.isAlive() },
+    );
+  }
+
+  /**
+   * Fallback when /task/:id isn't a task: if the id is a COMM card, redirect to
+   * its parent task (comm cards parent under their task); otherwise show the
+   * not-found state. One extra read, only on the (rare) miss path.
+   */
+  private redirectIfCommCard(): void {
+    if (this.taskId === null) {
+      this.showNotFound();
+      return;
+    }
+    this.ctx.api.callByName(
+      SPEC.selectWithAttributes,
+      { cardTypeName: 'comm' },
+      (out) => {
+        if (!this.isAlive()) return;
+        const rows = (out as SelectWithAttributesOutput).rows ?? [];
+        const comm = rows.find((r) => r.id === this.taskId) ?? null;
+        const parent = comm?.parent_card_id;
+        if (typeof parent === 'bigint' && parent > 0n) {
+          navigate(taskUrl(parent));
+          return;
+        }
+        this.showNotFound();
+      },
+      {
+        alive: () => this.isAlive(),
+        onErr: () => {
+          if (this.isAlive()) this.showNotFound();
+        },
+      },
     );
   }
 
@@ -586,6 +621,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
             // The transition wrote an attr_update + status row to the stream —
             // refresh the #35 feed so it reflects the move.
             this.taskComments?.reload();
+            this.noteOwnActivity();
           }
         },
       },
@@ -678,6 +714,13 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     );
   }
 
+  /** Re-seed the poll baseline after the user's OWN activity (a comment, reply,
+   *  attribute edit, transition, …) so it doesn't light the "new content"
+   *  indicator. pollOnce(true) adopts the current latest as the baseline. */
+  private noteOwnActivity(): void {
+    if (this.isAlive()) this.pollOnce(true);
+  }
+
   /** Reflect the poll state on the Refresh button: green/synced when nothing is
    *  new, orange-blinking with a count when newer activity has landed. */
   private paintRefreshState(): void {
@@ -700,7 +743,13 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.commsHost.classList.add('task-detail__slot--filled');
     this.commThreads = this.spawn(
       'CommThreads',
-      { type: 'CommThreads', taskId: this.taskId.toString(), projectScopePath: 'scope.projectId' },
+      {
+        type: 'CommThreads',
+        taskId: this.taskId.toString(),
+        projectScopePath: 'scope.projectId',
+        // Our own reply / new thread shouldn't trip the "new content" badge.
+        onLocalWrite: () => this.noteOwnActivity(),
+      },
       this.commsHost,
     ) as CommThreads;
   }
@@ -719,6 +768,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       cardId: this.taskId.toString(),
       cardTypeName: this.cardTypeName,
       activityHost: this.activityHost,
+      // Our own comment insert/edit shouldn't trip the "new content" badge.
+      onLocalWrite: () => this.noteOwnActivity(),
     };
     if (this.config.currentUserId !== undefined) cfg['currentUserId'] = this.config.currentUserId;
     const tc = this.spawn('TaskComments', cfg, this.commentsHost) as TaskComments;
@@ -742,7 +793,10 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       // Paint the image/PDF preview strip into the main-column host.
       previewHost: this.attachmentsPreviewHost,
       onChanged: () => {
-        if (this.isAlive()) this.taskComments?.reload();
+        if (this.isAlive()) {
+          this.taskComments?.reload();
+          this.noteOwnActivity();
+        }
       },
     };
     if (this.config.postChunk !== undefined) cfg['postChunk'] = this.config.postChunk;
@@ -788,6 +842,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         if (this.isAlive()) {
           this.renderPanel();
           this.taskComments?.reload();
+          this.noteOwnActivity();
         }
       },
     };
@@ -823,6 +878,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         if (this.isAlive()) {
           this.renderPanel();
           this.taskComments?.reload();
+          this.noteOwnActivity();
         }
       },
     };
@@ -1457,6 +1513,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         // Every attribute edit appends an attr_update row to the stream —
         // refresh the #35 activity feed so it reflects the change.
         this.taskComments?.reload();
+        this.noteOwnActivity();
       },
       {
         alive: () => this.isAlive(),

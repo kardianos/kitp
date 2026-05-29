@@ -23,6 +23,17 @@ export const COMM_LIST_FOR_TASK_SPEC = 'comm.list_for_task';
 export const COMM_CREATE_SPEC = 'comm.create';
 export const COMM_SET_RECIPIENTS_SPEC = 'comm.set_recipients';
 export const REPLY_POST_SPEC = 'reply.post';
+export const COMM_UNSEEN_COUNT_SPEC = 'comm.unseen_count';
+
+/** comm.unseen_count — cheap "how many new received comms?" probe for the
+ *  header notification bell. */
+export interface CommUnseenCountInput {
+  sinceActivityId?: bigint | string;
+}
+export interface CommUnseenCountOutput {
+  latestActivityId: bigint;
+  unseenCount: number;
+}
 
 /* ------------------------------- web model -------------------------------- */
 
@@ -175,6 +186,24 @@ export function registerCommThreadSpecs(api: Api): void {
       decode: (raw): CommSetRecipientsOutput => ({
         count: typeof asObj(raw)['count'] === 'number' ? (asObj(raw)['count'] as number) : 0,
       }),
+    });
+  }
+  if (!api.registry.has({ endpoint: 'comm', action: 'unseen_count' })) {
+    api.define<CommUnseenCountInput, CommUnseenCountOutput>({
+      endpoint: 'comm',
+      action: 'unseen_count',
+      encode: (i) => {
+        const m: Record<string, unknown> = {};
+        if (i.sinceActivityId !== undefined) m['since_activity_id'] = i.sinceActivityId;
+        return m;
+      },
+      decode: (raw): CommUnseenCountOutput => {
+        const j = asObj(raw);
+        return {
+          latestActivityId: asId(j['latest_activity_id']),
+          unseenCount: typeof j['unseen_count'] === 'number' ? j['unseen_count'] : Number(j['unseen_count'] ?? 0),
+        };
+      },
     });
   }
   if (!api.registry.has({ endpoint: 'reply', action: 'post' })) {

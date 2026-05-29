@@ -358,6 +358,30 @@ select optgroup {
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* Notification bell + its count badge (new received comms). */
+.iconbtn--bell {
+  position: relative;
+}
+.iconbtn--alert {
+  color: var(--color-accent);
+}
+.iconbtn__badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.25rem;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: var(--color-danger);
+  color: var(--color-danger-fg);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-bold);
+  line-height: 1rem;
+  text-align: center;
+  pointer-events: none;
+}
 
 /* ---- rail ---- */
 .shell__rail {
@@ -5629,16 +5653,15 @@ select optgroup {
   padding: var(--space-3);
   font-size: var(--text-sm);
 }
-/* Each row is a full-width button so the whole line opens the card. */
-.activity-screen__row {
+/* Each group is a full-width button (a "card") headed by the owning card's
+   title, with a one-line summary beneath; the whole card opens the card. */
+.activity-screen__group {
   display: flex;
-  align-items: baseline;
-  gap: var(--space-3);
+  flex-direction: column;
+  gap: var(--space-h);
   width: 100%;
   padding: var(--space-2) var(--space-3);
   font: inherit;
-  font-size: var(--text-sm);
-  line-height: 1.35;
   text-align: left;
   color: var(--color-fg);
   background: transparent;
@@ -5647,25 +5670,42 @@ select optgroup {
   cursor: pointer;
   transition: background var(--duration-fast) var(--ease-standard);
 }
-.activity-screen__row:last-child {
+.activity-screen__group:last-child {
   border-bottom: 0;
 }
-.activity-screen__row:hover {
+.activity-screen__group:hover {
   background: var(--color-fill-hover);
 }
-.activity-screen__row:focus-visible {
+.activity-screen__group:focus-visible {
   outline: none;
   background: var(--color-fill-hover);
   box-shadow: inset 0 0 0 2px var(--color-focus-halo);
 }
-.activity-screen__text {
+.activity-screen__group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.activity-screen__group-title {
   flex: 1 1 auto;
   min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-fg-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.activity-screen__time {
+.activity-screen__group-time {
   flex: 0 0 auto;
   font-size: var(--text-2xs);
   font-variant-numeric: tabular-nums;
+}
+.activity-screen__group-summary {
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -5817,7 +5857,24 @@ textarea.task-comms__form-input {
   gap: var(--space-h);
   padding: var(--space-2) var(--space-2x);
   border-radius: var(--radius-md);
-  background: var(--color-surface-sunken);
+  /* Raised above the comm card (which sits on --color-surface) + a border so
+     each message reads as a distinct bubble instead of blending into the panel,
+     especially in dark mode where the sunken/surface tokens are nearly equal. */
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-border-strong);
+  max-width: 92%;
+}
+/* Inbound (received) sits left with a neutral stripe. */
+.task-comms__reply[data-direction='in'] {
+  align-self: flex-start;
+}
+/* Outbound (sent / queued) sits right, accent-tinted, with an accent stripe —
+   the same left/right + colour cue chat clients use to separate the two sides. */
+.task-comms__reply[data-direction='out'] {
+  align-self: flex-end;
+  background: var(--color-accent-soft);
+  border-left-color: var(--color-accent);
 }
 .task-comms__reply-meta {
   display: flex;

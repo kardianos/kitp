@@ -36,6 +36,10 @@ export interface CommThreadsConfig extends BaseControlConfig {
   taskId?: string;
   /** Dotted tree path holding the in-scope project id (channel search scope). */
   projectScopePath?: string;
+  /** Called after a successful LOCAL write (our own reply / new thread /
+   *  recipient change) so the parent can advance its background-poll baseline —
+   *  our own activity shouldn't trip the "new content" indicator. */
+  onLocalWrite?: () => void;
 }
 
 declare module '../core/control.js' {
@@ -220,6 +224,9 @@ export class CommThreads extends Control<CommThreadsConfig> {
         const li = document.createElement('li');
         li.className = 'task-comms__reply';
         li.dataset.replyRow = r.id.toString();
+        // Direction drives the bubble tint: 'in' for received mail, 'out' for
+        // anything we sent/queued (pending / sent / bounced / failed).
+        li.dataset.direction = r.deliveryStatus === 'received' ? 'in' : 'out';
         const meta = document.createElement('div');
         meta.className = 'task-comms__reply-meta muted';
         const fromTxt = r.from.length > 0 ? r.from : '—';
@@ -383,6 +390,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
         this.formOpen = false;
         this.formHost.replaceChildren();
         this.loadComms();
+        this.config.onLocalWrite?.();
       },
       { alive: () => this.isAlive() },
     );
@@ -393,7 +401,9 @@ export class CommThreads extends Control<CommThreadsConfig> {
       REPLY_POST_SPEC,
       { commId, body },
       () => {
-        if (this.isAlive()) this.loadComms();
+        if (!this.isAlive()) return;
+        this.loadComms();
+        this.config.onLocalWrite?.();
       },
       { alive: () => this.isAlive() },
     );
@@ -405,7 +415,9 @@ export class CommThreads extends Control<CommThreadsConfig> {
       { commId, recipientPersonIds: ids },
       () => {
         // No reload needed — the picker already reflects the edit; the server
-        // truth lands on the next list load.
+        // truth lands on the next list load. Still advance the parent's poll
+        // baseline so our own attr_update doesn't light the "new" indicator.
+        if (this.isAlive()) this.config.onLocalWrite?.();
       },
       { alive: () => this.isAlive() },
     );

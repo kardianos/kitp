@@ -38,11 +38,13 @@ function activityTransport() {
         data: {
           rows: [
             {
-              id: '200', card_id: '9', kind: 'attr_update', attribute_name: 'milestone_ref',
+              id: '200', card_id: '9', nav_card_id: '9', nav_title: 'Fix the bug',
+              kind: 'attr_update', attribute_name: 'milestone_ref',
               value_old: '234', value_new: '456', actor_id: '5', created_at: '2026-05-24T12:00:00.000Z',
             },
             {
-              id: '201', card_id: '9', kind: 'comment', comment_body: 'hi',
+              id: '201', card_id: '9', nav_card_id: '9', nav_title: 'Fix the bug',
+              kind: 'comment', comment_body: 'hi',
               actor_id: '5', created_at: '2026-05-24T12:01:00.000Z',
             },
           ],
@@ -106,7 +108,7 @@ function mountActivity(api) {
   return { ctrl, tree };
 }
 
-test('Activity: loads project-scoped rows, resolves labels, renders newest-first', async () => {
+test('Activity: groups same-card activity into one card with title + count summary', async () => {
   lastActivityInput = null;
   const { dispatcher, api } = bootApi(activityTransport());
   const { ctrl } = mountActivity(api);
@@ -115,26 +117,47 @@ test('Activity: loads project-scoped rows, resolves labels, renders newest-first
   // The query was scoped to the active project.
   assert.equal(lastActivityInput.project_id, String(PROJECT), 'activity.select sent project_id');
 
-  const rows = ctrl.el.querySelectorAll('[data-activity-row]');
-  assert.equal(rows.length, 2, 'both rows render');
-  // Newest-first by timestamp: the comment (12:01) before the attr_update (12:00).
-  assert.equal(rows[0].dataset.activityRow, '201');
-  assert.equal(rows[1].dataset.activityRow, '200');
-
-  // The card_ref attr_update resolves milestone ids to titles (not #234/#456).
-  const attrText = rows[1].querySelector('[data-activity-text]');
-  assert.equal(attrText.textContent, 'Bob changed milestone from Q1 to Q2');
+  const groups = ctrl.el.querySelectorAll('[data-activity-group]');
+  assert.equal(groups.length, 1, 'both rows (same owning card) collapse into one group');
+  assert.equal(groups[0].dataset.activityGroup, '9', 'group keyed by the owning card');
+  assert.equal(groups[0].dataset.activityCount, '2', 'group holds both rows');
+  assert.equal(
+    groups[0].querySelector('[data-activity-title]').textContent,
+    'Fix the bug',
+    'headline = owning card title',
+  );
+  const summary = groups[0].querySelector('[data-activity-summary]').textContent;
+  assert.ok(summary.includes('comment') && summary.includes('update'), `summary counts kinds: ${summary}`);
 });
 
-test('Activity: clicking a row opens the card detail (/task/:cardId)', async () => {
+test('Activity: clicking a group opens the owning card (/task/:navId)', async () => {
   const { dispatcher, api } = bootApi(activityTransport());
   const { ctrl, tree } = mountActivity(api);
   await settle(dispatcher);
 
-  ctrl.el.querySelector('[data-activity-row="200"]').dispatchEvent({ type: 'click' });
+  ctrl.el.querySelector('[data-activity-group="9"]').dispatchEvent({ type: 'click' });
   const route = tree.at([...M.ROUTER_PATH]).peek();
   assert.equal(route.name, 'task');
-  assert.equal(route.params.id, '9', 'navigated to the row card');
+  assert.equal(route.params.id, '9', 'navigated to the owning card');
+});
+
+test('groupActivity + summarizeGroup: split by owning card; lone row = full text, multi = counts', () => {
+  const rows = [
+    { id: 2n, cardId: 9n, navCardId: 9n, navTitle: 'Fix the bug', kind: 'comment', commentBody: 'hey', actorId: 5n, createdAt: '2026-05-24T12:05:00.000Z' },
+    { id: 1n, cardId: 9n, navCardId: 9n, navTitle: 'Fix the bug', kind: 'attr_update', attributeName: 'milestone_ref', valueOld: '234', valueNew: '456', actorId: 5n, createdAt: '2026-05-24T12:00:00.000Z' },
+    { id: 3n, cardId: 14n, navCardId: 7n, navTitle: 'Other task', kind: 'comment', commentBody: 'x', actorId: 5n, createdAt: '2026-05-24T11:00:00.000Z' },
+  ];
+  const groups = M.groupActivity(rows);
+  assert.equal(groups.length, 2, 'two owning cards → two groups');
+  assert.equal(groups[0].navId, 9n);
+  assert.equal(groups[0].rows.length, 2, 'adjacent same-card rows grouped');
+  assert.equal(groups[1].navId, 7n);
+  // Lone row → full action text (labels resolved via the maps).
+  const single = M.summarizeGroup(groups[1].rows, { '5': 'Bob' }, {}, {});
+  assert.ok(single.length > 0 && single.includes('Bob'), `single-row full text: ${single}`);
+  // Multi-row → compact count by category.
+  const multi = M.summarizeGroup(groups[0].rows, { '5': 'Bob' }, { '234': 'Q1', '456': 'Q2' }, {});
+  assert.ok(multi.includes('1 comment') && multi.includes('1 update'), `count summary: ${multi}`);
 });
 
 test('Activity: defaults to the last 7 days (from_date sent), and changing From reloads', async () => {

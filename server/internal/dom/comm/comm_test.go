@@ -516,6 +516,58 @@ func TestCommCreateWithInitialMessage(t *testing.T) {
 	}
 }
 
+// TestCommUnseenCount drives the notification-bell count: zero before any
+// received comm, one after a comm.create with an initial (received) message,
+// and back to zero once the baseline advances past it.
+func TestCommUnseenCount(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_comm_unseen_count")
+
+	var setOut comm.ChannelSetOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "ch", Endpoint: "comm_channel", Action: "set", Data: json.RawMessage(
+			fmt.Sprintf(`{"project_id":"%d","name":"Support","channel_type":"email"}`, f.projectID)),
+	}, &setOut)
+
+	// No received comms yet.
+	var base comm.UnseenCountOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "u0", Endpoint: "comm", Action: "unseen_count", Data: json.RawMessage(`{"since_activity_id":"0"}`),
+	}, &base)
+	if base.UnseenCount != 0 {
+		t.Fatalf("baseline unseen=%d want 0", base.UnseenCount)
+	}
+
+	// A comm with an initial message materialises a received reply_body.
+	var ccOut comm.CommCreateOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "c", Endpoint: "comm", Action: "create", Data: json.RawMessage(
+			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Login issue","initial_message":"Cannot log in"}`,
+				f.taskID, setOut.ChannelID)),
+	}, &ccOut)
+
+	// since=0 now sees exactly the one received comm, with a real latest id.
+	var one comm.UnseenCountOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "u1", Endpoint: "comm", Action: "unseen_count", Data: json.RawMessage(`{"since_activity_id":"0"}`),
+	}, &one)
+	if one.UnseenCount != 1 {
+		t.Errorf("unseen=%d want 1", one.UnseenCount)
+	}
+	if one.LatestActivityID == 0 {
+		t.Error("latest_activity_id=0, want >0")
+	}
+
+	// Advancing the baseline past it clears the count.
+	var seen comm.UnseenCountOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "u2", Endpoint: "comm", Action: "unseen_count", Data: json.RawMessage(
+			fmt.Sprintf(`{"since_activity_id":"%d"}`, one.LatestActivityID)),
+	}, &seen)
+	if seen.UnseenCount != 0 {
+		t.Errorf("after-seen unseen=%d want 0", seen.UnseenCount)
+	}
+}
+
 // TestCommCreateMismatchedProject confirms cross-project task / channel
 // combinations are rejected with a structured code.
 func TestCommCreateMismatchedProject(t *testing.T) {

@@ -191,6 +191,9 @@ export interface CommChannel {
    *  project flow's default at intake time. */
   intakeStatusId?: string;
   channelStatus: string;
+  /** Outbound reply signature: 'none' | 'comm_name' | 'user_name' ('' = unset,
+   *  treated as 'comm_name'). */
+  signatureMode?: string;
   channelFaultReason?: string;
   hasImapPassword: boolean;
   hasSmtpPassword: boolean;
@@ -503,6 +506,8 @@ export interface CommChannelSetInput {
   fromAddress?: string;
   intakeStatusId?: bigint | string;
   channelStatus?: string;
+  /** 'none' | 'comm_name' | 'user_name'; omit/'' leaves the stored value. */
+  signatureMode?: string;
 }
 export interface CommChannelSetOutput {
   channelId: string;

@@ -57,6 +57,11 @@ import {
 import { WORKSPACE_TITLE_PATH, DEFAULT_WORKSPACE_TITLE } from './config-specs.js';
 import { readSlug, readTitle } from '../filter/screen-resolve.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
+import {
+  COMM_UNSEEN_COUNT_SPEC,
+  type CommUnseenCountInput,
+  type CommUnseenCountOutput,
+} from '../task-detail/comm-specs.js';
 
 export interface ProjectScopeOption {
   /** bigint id as a string ('' = all projects). */
@@ -193,6 +198,19 @@ export class AppShell extends Control<AppShellConfig> {
     chrome: HTMLElement[];
     gates: Array<{ el: HTMLElement; minRole: 'admin' | 'manager' }>;
   }> = [];
+
+  /** Notification bell: the button + its count badge, plus poll state. The
+   *  baseline is the create-activity id of the newest received comm the user
+   *  has "seen" (persisted per-user in localStorage); the badge shows how many
+   *  arrived after it. See startCommPoll. */
+  private bellBtn: HTMLButtonElement | null = null;
+  private bellBadgeEl: HTMLElement | null = null;
+  private commSeenBaseline = 0n;
+  private commLatest = 0n;
+  private commStorageKey: string | null = null;
+  private commPollTimer: ReturnType<typeof setInterval> | null = null;
+  private commPollStarted = false;
+  private static readonly COMM_POLL_MS = 45_000;
 
   /** Expose the scope so the boot wiring can hand it to descendants' ctx. */
   scopeObject(): { projectId: bigint | null } {
@@ -364,7 +382,25 @@ export class AppShell extends Control<AppShellConfig> {
     instructionsBtn.dataset.instructionsToggle = '';
     const helpBtn = iconButton('?', 'Keyboard shortcuts');
     helpBtn.dataset.helpToggle = '';
-    right.append(themeBtn, instructionsBtn, helpBtn);
+
+    // Notification bell: a count badge for newly received comms. Clicking opens
+    // the global Activity view and marks the current latest as seen.
+    const bell = iconButton('✉', 'No new messages');
+    bell.classList.add('iconbtn--bell');
+    bell.dataset.commsBell = '';
+    const badge = document.createElement('span');
+    badge.className = 'iconbtn__badge';
+    badge.dataset.commsBadge = '';
+    badge.style.display = 'none';
+    bell.append(badge);
+    this.bellBtn = bell;
+    this.bellBadgeEl = badge;
+    this.listen(bell, 'click', () => {
+      this.goToCommsScreen();
+      this.markCommsSeen();
+    });
+
+    right.append(bell, themeBtn, instructionsBtn, helpBtn);
 
     topbar.append(collapse, brand, scopePicker, crumb, right);
 
@@ -394,6 +430,7 @@ export class AppShell extends Control<AppShellConfig> {
     this.scopeLinksHost = scopeLinksHost;
     this.renderScopeLinks(fallbackLinks.map((l) => ({ slug: l.slug, label: l.label, chord: l.chord })));
     this.loadScopeLinks();
+    this.startCommPoll();
 
     // ADMIN: split into WORKSPACE (global) + PROJECT (active-project-scoped)
     // sub-sections. Each link NAVIGATES to its `/admin/:key` route via the
@@ -735,6 +772,129 @@ export class AppShell extends Control<AppShellConfig> {
    * a newly-created screen shows up in the nav. Reactive on `scope.projectId`;
    * a project with no screen cards keeps whatever's rendered (the fallback).
    */
+  /* ----------------------- notification bell poll ---------------------- */
+
+  /**
+   * Start the new-received-comms poll once the current user resolves. The
+   * baseline (newest "seen" received-comm activity id) persists per-user in
+   * localStorage so unread survives reloads; first run on a device seeds it to
+   * the current latest (so history isn't shown as new). Inert when the
+   * comm.unseen_count spec isn't registered (test harnesses).
+   */
+  private startCommPoll(): void {
+    const api = this.ctx.api;
+    if (!api?.registry?.has({ endpoint: 'comm', action: 'unseen_count' })) return;
+    this.effect(() => {
+      const u = this.ctx.tree.at(['auth', 'user']).get<{ userId: bigint | null }>();
+      const uid = u?.userId ?? null;
+      if (uid === null || this.commPollStarted) return;
+      this.commPollStarted = true;
+      this.beginCommPoll(uid);
+    });
+  }
+
+  private beginCommPoll(userId: bigint): void {
+    this.commStorageKey = `kitp.comms.seen.${userId.toString()}`;
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem(this.commStorageKey);
+    } catch {
+      stored = null;
+    }
+    if (stored !== null && /^\d+$/.test(stored)) {
+      this.commSeenBaseline = BigInt(stored);
+      this.pollComms(false);
+    } else {
+      // First run on this device — seed the baseline to the current latest so
+      // pre-existing comms don't all show as "new".
+      this.pollComms(true);
+    }
+    const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (this.isAlive()) this.pollComms(false);
+    }, AppShell.COMM_POLL_MS);
+    // Don't let the poll keep a process alive (lets node --test exit); no-op in
+    // browsers where setInterval returns a number.
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.commPollTimer = timer;
+    this.onDestroy(() => {
+      if (this.commPollTimer !== null) {
+        clearInterval(this.commPollTimer);
+        this.commPollTimer = null;
+      }
+    });
+  }
+
+  /** One unseen-count round-trip. seed=true adopts the response's latest as the
+   *  baseline (badge cleared); otherwise the count drives the badge. */
+  private pollComms(seed: boolean): void {
+    const input: CommUnseenCountInput = {};
+    if (!seed) input.sinceActivityId = this.commSeenBaseline;
+    this.ctx.api.callByName(COMM_UNSEEN_COUNT_SPEC, input, (out) => {
+      if (!this.isAlive()) return;
+      const o = (out ?? {}) as CommUnseenCountOutput;
+      this.commLatest = o.latestActivityId ?? 0n;
+      if (seed) {
+        this.commSeenBaseline = this.commLatest;
+        this.persistBaseline();
+        this.paintBell(0);
+      } else {
+        this.paintBell(o.unseenCount ?? 0);
+      }
+    });
+  }
+
+  /** Bell click target: the active project's Comms screen when it defines one
+   *  (slug 'comms'), else the global Activity feed. The bell counts across all
+   *  projects, so this is a best-effort landing on the in-scope project. */
+  private goToCommsScreen(): void {
+    const pid = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
+    if (pid !== null) {
+      const links = this.ctx.tree.at(['shell', 'screenLinks']).peek<Array<{ slug: string }>>() ?? [];
+      if (links.some((l) => l.slug === 'comms')) {
+        navigate(screenUrl(pid, 'comms'));
+        return;
+      }
+    }
+    navigate('/activity');
+  }
+
+  /** Bell click — adopt the latest seen id, clear the badge, persist. */
+  private markCommsSeen(): void {
+    this.commSeenBaseline = this.commLatest;
+    this.persistBaseline();
+    this.paintBell(0);
+  }
+
+  private persistBaseline(): void {
+    if (this.commStorageKey === null) return;
+    try {
+      localStorage.setItem(this.commStorageKey, this.commSeenBaseline.toString());
+    } catch {
+      // localStorage unavailable (private mode / tests) — the in-memory
+      // baseline still works for the session.
+    }
+  }
+
+  private paintBell(count: number): void {
+    const badge = this.bellBadgeEl;
+    const btn = this.bellBtn;
+    if (badge === null || btn === null) return;
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : String(count);
+      badge.style.display = '';
+      btn.classList.add('iconbtn--alert');
+      btn.title = `${count} new message${count === 1 ? '' : 's'} — view activity`;
+      btn.setAttribute('aria-label', btn.title);
+    } else {
+      badge.textContent = '';
+      badge.style.display = 'none';
+      btn.classList.remove('iconbtn--alert');
+      btn.title = 'No new messages';
+      btn.setAttribute('aria-label', btn.title);
+    }
+  }
+
   private loadScopeLinks(): void {
     const scopeIdNode = this.ctx.tree.at(['scope', 'projectId']);
     this.effect(() => {

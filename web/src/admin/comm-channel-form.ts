@@ -16,6 +16,7 @@ import {
   channelDraftToSet,
   validateChannelDraft,
   CHANNEL_STATUS_OPTIONS,
+  SIGNATURE_MODE_OPTIONS,
 } from './nested-editor.js';
 
 /** The status order shared with the template / demo Comms screens. */
@@ -46,6 +47,7 @@ export const COMM_CHANNEL_FORM: RecordFormScreenConfig = {
     { name: 'smtpUsername', label: 'SMTP username', kind: 'text' },
     { name: 'smtpPassword', label: 'SMTP password', kind: 'secret', configuredFlag: 'hasSmtpPassword' },
     { name: 'fromAddress', label: 'From address', kind: 'text' },
+    { name: 'signatureMode', label: 'Reply signature', kind: 'select', options: [...SIGNATURE_MODE_OPTIONS] },
     {
       name: 'intakeStatusId',
       label: 'Intake status',

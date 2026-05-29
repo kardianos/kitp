@@ -60,6 +60,7 @@ DECLARE
     _smtp_username text;
     _intake_status_id bigint;
     _status text;
+    _signature_mode text;
     _imap_pwd_raw jsonb;
     _smtp_pwd_raw jsonb;
     _imap_pwd text;
@@ -104,6 +105,7 @@ BEGIN
         _smtp_username:= COALESCE(_raw->>'smtp_username', '');
         _from_address := COALESCE(_raw->>'from_address', '');
         _status       := COALESCE(_raw->>'channel_status', '');
+        _signature_mode := COALESCE(_raw->>'signature_mode', '');
         BEGIN
             _intake_status_id := COALESCE(NULLIF(_raw->>'intake_status_id', '')::bigint, 0);
         EXCEPTION WHEN invalid_text_representation THEN
@@ -161,6 +163,12 @@ BEGIN
         IF _status <> '' AND _status NOT IN ('enabled', 'disabled-admin', 'disabled-fault') THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 format('comm_channel.set: channel_status %L is not one of ''enabled'' / ''disabled-admin'' / ''disabled-fault''', _status),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF _signature_mode <> '' AND _signature_mode NOT IN ('none', 'comm_name', 'user_name') THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('comm_channel.set: signature_mode %L is not one of ''none'' / ''comm_name'' / ''user_name''', _signature_mode),
                 NULL::jsonb;
             CONTINUE;
         END IF;
@@ -255,7 +263,8 @@ BEGIN
                 (9,  'from_address',         to_jsonb(_from_address),          _from_address <> ''),
                 (10, 'intake_status',        to_jsonb(_intake_status_id),      _intake_status_id <> 0),
                 (11, 'channel_status',       to_jsonb(_status),                _status <> ''),
-                (12, 'channel_fault_reason', to_jsonb(''::text),               _status = 'enabled')
+                (12, 'channel_fault_reason', to_jsonb(''::text),               _status = 'enabled'),
+                (13, 'signature_mode',       to_jsonb(_signature_mode),        _signature_mode <> '')
             ) AS v(ord, attr_name, value, include)
             WHERE v.include
         ),

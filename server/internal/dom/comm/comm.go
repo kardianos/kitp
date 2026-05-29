@@ -66,6 +66,11 @@ type ChannelSetInput struct {
 	// resume polling after a fault, or to 'disabled-admin' to pause.
 	// The runtime owns the 'disabled-fault' transition.
 	Status string `json:"channel_status,omitempty" mcp:"desc=tri-state status; one of 'enabled' | 'disabled-admin' | 'disabled-fault'; empty leaves the stored value unchanged"`
+	// SignatureMode controls what (if anything) is auto-appended to the
+	// body of outbound replies on this channel: 'none' | 'comm_name'
+	// (the channel title) | 'user_name' (the reply author's display name).
+	// Empty leaves the stored value unchanged (absent = 'comm_name').
+	SignatureMode string `json:"signature_mode,omitempty" mcp:"desc=outbound reply signature; one of 'none' | 'comm_name' | 'user_name'; empty leaves the stored value unchanged"`
 }
 
 // ChannelSetOutput surfaces the channel card id so the caller can chain.
@@ -96,6 +101,7 @@ type ChannelRow struct {
 	FromAddress     string `json:"from_address" mcp:"desc=outbound From: envelope"`
 	IntakeStatusID  int64  `json:"intake_status_id,string,omitempty" mcp:"desc=intake status card id; 0/omitted = use project flow default"`
 	Status          string `json:"channel_status" mcp:"desc=tri-state status: 'enabled' | 'disabled-admin' | 'disabled-fault'"`
+	SignatureMode   string `json:"signature_mode" mcp:"desc=outbound reply signature: 'none' | 'comm_name' | 'user_name' (empty = unset, treated as 'comm_name')"`
 	FaultReason     string `json:"channel_fault_reason,omitempty" mcp:"desc=free-form reason set by the runtime when status='disabled-fault'; empty otherwise"`
 	HasIMAPPassword bool   `json:"has_imap_password" mcp:"desc=true if a non-null encrypted IMAP password is stored"`
 	HasSMTPPassword bool   `json:"has_smtp_password" mcp:"desc=true if a non-null encrypted SMTP password is stored"`
@@ -105,6 +111,23 @@ type ChannelRow struct {
 // ChannelListOutput wraps the rows in a stable envelope.
 type ChannelListOutput struct {
 	Rows []ChannelRow `json:"rows" mcp:"desc=comm_channel cards under the project"`
+}
+
+// ---- comm.unseen_count ----
+
+// UnseenCountInput is the cheap "how many new received comms?" probe behind the
+// header notification bell. SinceActivityID is the create-activity id baseline
+// the client already saw; the count is of received reply_body cards created
+// after it, across every project the caller can see.
+type UnseenCountInput struct {
+	SinceActivityID int64 `json:"since_activity_id,string,omitempty" mcp:"desc=create-activity id baseline; unseen_count counts received comms created after it (0/omitted counts all visible)"`
+}
+
+// UnseenCountOutput reports the newest received-comm create-activity id the
+// caller can see plus how many are newer than SinceActivityID.
+type UnseenCountOutput struct {
+	LatestActivityID int64 `json:"latest_activity_id,string" mcp:"desc=max create-activity id across received comms the caller can see (0 when none)"`
+	UnseenCount      int   `json:"unseen_count" mcp:"desc=count of received comms created after since_activity_id"`
 }
 
 // ---- comm.create ----
@@ -284,6 +307,18 @@ func Register(p *store.Pool) {
 		// Unified handler — body lives in
 		// db/schema/functions/comm_list_for_task_batch.sql.
 		SQLFunc: "comm_list_for_task_batch",
+	})
+	reg.Register(reg.Handler{
+		Endpoint:     "comm",
+		Action:       "unseen_count",
+		Doc:          "Cheap count of newly received comms (inbound reply_body cards) across every project the caller can see, with create-activity id > since_activity_id. Drives the header notification bell; any authenticated user may call.",
+		InputType:    reflect.TypeFor[UnseenCountInput](),
+		OutputType:   reflect.TypeFor[UnseenCountOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		IsRead:       true,
+		// Unified handler — body lives in
+		// db/schema/functions/comm_unseen_count_batch.sql.
+		SQLFunc: "comm_unseen_count_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "reply",

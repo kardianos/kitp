@@ -86,6 +86,10 @@ export interface TaskCommentsConfig extends BaseControlConfig {
   currentUserId?: string;
   /** Optional row cap per activity page. Default ACTIVITY_LIMIT (50). */
   limit?: number;
+  /** Called after a successful LOCAL write (the user's own comment insert/edit)
+   *  so the parent can advance its background-poll baseline — our own activity
+   *  shouldn't trip the "new content" indicator. */
+  onLocalWrite?: () => void;
 }
 
 declare module '../core/control.js' {
@@ -576,6 +580,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
         this.edits.delete(key);
         // Re-query so the comment_edit audit row + the new body land canonically.
         this.reload();
+        this.config.onLocalWrite?.();
       },
       {
         alive: () => this.isAlive(),
@@ -681,6 +686,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
         // Drop the optimistic placeholder; the refresh re-loads the real row.
         this.rows = this.rows.filter((r) => r.id !== -1n);
         this.reload();
+        this.config.onLocalWrite?.();
         this.paintComposer();
       },
       {
