@@ -343,7 +343,7 @@ exchange **only when `OIDC_CLIENT_SECRET` is set**. So both modes work:
 
 Build/dev parameters are passed as make variables (defaults shown):
 DB_DSN, GO (/home/d/bin/go), LISTEN_ADDR (:18080), WEB_DIR (web/dist),
-WEB_PORT (8090), DEMO (-demo).
+WEB_PORT (8090), DEMO (-demo), IMAGE (ghcr.io/kardianos/kitp).
 
     make up              # start Postgres
     make down            # stop the stack
@@ -356,6 +356,10 @@ WEB_PORT (8090), DEMO (-demo).
     make run             # run kitpd (API + UI) without demo data
     make test            # go test ./... (server)
     make lint            # go vet ./...
+    make container-build # build the image: IMAGE:latest + IMAGE:sha-<commit> (no push)
+    make container       # build, tag (:latest + :sha-<commit>), and push both
+                         #   (refuses a dirty tree; ALLOW_DIRTY=1 overrides;
+                         #    needs `docker login` to the registry first)
 
 ## Layout
 

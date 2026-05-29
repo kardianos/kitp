@@ -21,8 +21,15 @@ WEB_DIR ?= $(REPO_ROOT)/web/dist
 
 DEMO ?= -demo
 
+# Published container image repo. Override to push elsewhere:
+#   make container IMAGE=ghcr.io/you/kitp
+IMAGE ?= ghcr.io/kardianos/kitp
+# Short commit the image is tagged with (:sha-<commit>), alongside :latest.
+GIT_SHA := $(shell git -C $(REPO_ROOT) rev-parse --short HEAD 2>/dev/null)
+
 .PHONY: up down db-up db-reset db-reset-clean schema-gen \
-        test test-bench run demo lint web web-dev client
+        test test-bench run demo lint web web-dev client \
+        container container-build
 
 up: db-up
 	@echo "kitp dev stack up; run 'make run' to start kitpd"
@@ -108,3 +115,27 @@ web-dev:
 # DELETE this target (and WEB_DIR's client/dist note) once client/ is removed.
 client:
 	cd client && pnpm install --frozen-lockfile && pnpm build
+
+# ---------- container image (GHCR) ------------------------------------------
+
+# Build the self-contained image (esbuild web bundle + static Go binary baked
+# with db/schema; see Dockerfile) tagged :latest AND :sha-<commit>. No push —
+# safe on a dirty tree; handy for a local smoke run:
+#   make container-build && docker run --rm -p 8080:8080 -e ... $(IMAGE):latest
+container-build:
+	docker build -t $(IMAGE):latest -t $(IMAGE):sha-$(GIT_SHA) $(REPO_ROOT)
+
+# Build, tag (:latest + :sha-<commit>), and push BOTH tags to the registry.
+# Refuses a dirty working tree so :sha-$(GIT_SHA) actually contains what ships
+# (commit/stash first, or override with `ALLOW_DIRTY=1 make container`).
+# Requires a prior `docker login` to the registry host (ghcr.io by default).
+container:
+	@if [ -z "$(ALLOW_DIRTY)" ] && [ -n "$$(git -C $(REPO_ROOT) status --porcelain)" ]; then \
+		echo "make container: working tree is dirty — :sha-$(GIT_SHA) would not match the pushed image."; \
+		echo "  commit/stash first, or: ALLOW_DIRTY=1 make container   (or 'make container-build' to build without pushing)"; \
+		exit 1; \
+	fi
+	docker build -t $(IMAGE):latest -t $(IMAGE):sha-$(GIT_SHA) $(REPO_ROOT)
+	docker push $(IMAGE):sha-$(GIT_SHA)
+	docker push $(IMAGE):latest
+	@echo "pushed $(IMAGE):sha-$(GIT_SHA) and $(IMAGE):latest"
