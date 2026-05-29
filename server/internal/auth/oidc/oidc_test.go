@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kitp/kitp/server/internal/auth/oidc"
 	"github.com/kitp/kitp/server/internal/store"
@@ -283,6 +284,108 @@ func TestProvisionAppliesMultipleRoles(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("expected 2 user_role rows for multi-role; got %d", n)
+	}
+}
+
+// rolesOf returns the set of GLOBAL role names a user holds.
+func rolesOf(t *testing.T, ctx context.Context, pool *pgxpool.Pool, userID int64) map[string]bool {
+	t.Helper()
+	rows, err := pool.Query(ctx, `
+		SELECT r.name FROM user_role ur JOIN role r ON r.id = ur.role_id
+		WHERE ur.user_id = $1 AND ur.scope_card_id IS NULL
+	`, userID)
+	if err != nil {
+		t.Fatalf("rolesOf query: %v", err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("rolesOf scan: %v", err)
+		}
+		out[name] = true
+	}
+	return out
+}
+
+// TestProvisionRevokesUnmappedRoles is the authoritative-role-sync contract:
+// when the OP sends the role claim, OIDC-granted roles the current claims no
+// longer justify are revoked, while manual/admin grants survive; and when the
+// claim is ABSENT the OP isn't asserting roles, so nothing is revoked.
+func TestProvisionRevokesUnmappedRoles(t *testing.T) {
+	op := newFakeOP(t)
+	pool := store.TestPool(t, "kitp_test_oidc_revoke")
+	v := oidc.NewValidator(&oidc.Config{
+		Issuer:    op.server.URL,
+		Audience:  "kitp-web",
+		RoleClaim: "groups",
+		// DefaultRole left empty so the claim-absent case grants nothing and
+		// the only question under test is whether existing roles are kept.
+	}, pool)
+	ctx := context.Background()
+	now := time.Now()
+	const sub = "role-sync"
+
+	resolve := func(groups any) int64 {
+		t.Helper()
+		claims := jwt.MapClaims{
+			"iss": op.server.URL,
+			"aud": "kitp-web",
+			"sub": sub,
+			"exp": now.Add(time.Hour).Unix(),
+		}
+		// A nil `groups` means "omit the claim entirely" (claim absent);
+		// otherwise set it (present, used to map roles).
+		if groups != nil {
+			claims["groups"] = groups
+		}
+		id, _, err := v.Resolve(ctx, op.signToken(t, claims))
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		return id
+	}
+
+	// 1) First login as a worker (claim present → role granted via OIDC).
+	uid := resolve([]string{"kitp.worker"})
+	if got := rolesOf(t, ctx, pool, uid); !got["worker"] || got["admin"] {
+		t.Fatalf("after worker login: roles=%v, want {worker}", got)
+	}
+
+	// 2) Admin manually grants this user the 'manager' role (granted_via
+	//    defaults to 'manual'). It must survive OIDC reconciliation.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO user_role (user_id, role_id, scope_card_id)
+		SELECT $1, id, NULL FROM role WHERE name = 'manager'
+	`, uid); err != nil {
+		t.Fatalf("manual manager grant: %v", err)
+	}
+
+	// 3) Re-login with a DIFFERENT group (admin, worker removed). The OIDC
+	//    'worker' grant must be revoked, 'admin' granted, 'manager' (manual)
+	//    untouched.
+	resolve([]string{"kitp.admin"})
+	got := rolesOf(t, ctx, pool, uid)
+	if got["worker"] {
+		t.Error("worker role survived after the worker group was removed (not revoked)")
+	}
+	if !got["admin"] {
+		t.Error("admin role not granted on re-login")
+	}
+	if !got["manager"] {
+		t.Error("manual 'manager' grant was revoked by OIDC reconciliation")
+	}
+
+	// 4) Re-login with the role claim ABSENT. The OP isn't asserting roles,
+	//    so reconciliation must NOT run — the OIDC 'admin' role survives.
+	resolve(nil)
+	got = rolesOf(t, ctx, pool, uid)
+	if !got["admin"] {
+		t.Error("admin (OIDC) role revoked on a login with no role claim — must be left alone")
+	}
+	if !got["manager"] {
+		t.Error("manual 'manager' grant lost on claim-absent login")
 	}
 }
 

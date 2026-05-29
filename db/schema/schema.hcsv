@@ -222,14 +222,15 @@ role_id, bigint, false, role.id
 card_type_id, bigint, false, card_type.id
 process_id, bigint, false, process.id
 
-## table user_role | doc="Assigns a role to a user, optionally scoped to a single card subtree."
+## table user_role | doc="Assigns a role to a user, optionally scoped to a single card subtree. granted_via records provenance: 'manual' (admin/UI/MCP grant, init-admin bootstrap, seed) vs 'oidc' (derived from an OIDC group claim). The OIDC provisioner reconciles ONLY 'oidc' global rows against the live claims, so manual grants are never revoked by an IdP group change."
 
 ### columns
-name, type, pk, nullable, references
-id, bigserial, true, , 
-user_id, bigint, , false, user_account.id
-role_id, bigint, , false, role.id
-scope_card_id, bigint, , , card.id
+name, type, pk, nullable, default, check, references
+id, bigserial, true, , , ,
+user_id, bigint, , false, , , user_account.id
+role_id, bigint, , false, , , role.id
+scope_card_id, bigint, , , , , card.id
+granted_via, text, , false, 'manual', "granted_via IN ('manual', 'oidc')",
 
 ### indexes
 name, columns, unique, where

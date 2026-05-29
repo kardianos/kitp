@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,12 @@ type Config struct {
 	ClientSecret string
 	RedirectURI  string
 	Scopes       string // space-separated; default "openid profile email"
+
+	// PostLogoutRedirectURI is where the OP sends the browser back after
+	// RP-initiated logout (unified logout / Single Logout). Must be an
+	// absolute URL registered with the OP. Defaults to the origin of
+	// RedirectURI + "/" when unset.
+	PostLogoutRedirectURI string
 
 	// TrustUnverifiedEmail disables the `email_verified == true`
 	// requirement on the pre-created-account email fallback (see
@@ -95,6 +102,12 @@ func FromEnv(env func(string) string) *Config {
 	if cfg.Scopes == "" {
 		cfg.Scopes = "openid profile email"
 	}
+	cfg.PostLogoutRedirectURI = env("OIDC_POST_LOGOUT_REDIRECT_URI")
+	if cfg.PostLogoutRedirectURI == "" && cfg.RedirectURI != "" {
+		if u, err := url.Parse(cfg.RedirectURI); err == nil && u.Scheme != "" && u.Host != "" {
+			cfg.PostLogoutRedirectURI = u.Scheme + "://" + u.Host + "/"
+		}
+	}
 	if req := env("OIDC_REQUIRED_CLAIMS"); req != "" {
 		for _, kv := range strings.Split(req, ",") {
 			pair := strings.SplitN(strings.TrimSpace(kv), "=", 2)
@@ -113,6 +126,7 @@ type discoveryDoc struct {
 	JWKSURL               string `json:"jwks_uri"`
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
+	EndSessionEndpoint    string `json:"end_session_endpoint"`
 }
 
 // jwksDoc is the subset of JWKS we care about (RSA keys with kid).
@@ -307,6 +321,40 @@ func (v *Validator) TokenEndpoint(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("oidc: discovery missing token_endpoint")
 	}
 	return v.disco.TokenEndpoint, nil
+}
+
+// EndSessionURL builds the OP's RP-initiated logout URL (the unified-logout
+// redirect): the browser is sent here after the local session is cleared so
+// the IdP session ends too. Returns ok=false when the OP advertises no
+// `end_session_endpoint` in discovery — the caller then falls back to a
+// local-only logout (clear cookie + return to the app root).
+//
+// We pass `client_id` + `post_logout_redirect_uri` (the client_id form of
+// RP-Initiated Logout). We deliberately don't persist the user's id_token
+// server-side, so `id_token_hint` is omitted; OPs that REQUIRE the hint for
+// a post-logout redirect will still end the session but may show their own
+// "you are logged out" page instead of bouncing back.
+func (v *Validator) EndSessionURL(ctx context.Context, postLogoutRedirect string) (string, bool, error) {
+	if err := v.ensureDiscovery(ctx); err != nil {
+		return "", false, err
+	}
+	v.mu.RLock()
+	endpoint := v.disco.EndSessionEndpoint
+	v.mu.RUnlock()
+	if endpoint == "" {
+		return "", false, nil
+	}
+	q := url.Values{}
+	if v.cfg.ClientID != "" {
+		q.Set("client_id", v.cfg.ClientID)
+	}
+	if postLogoutRedirect != "" {
+		q.Set("post_logout_redirect_uri", postLogoutRedirect)
+	}
+	if enc := q.Encode(); enc != "" {
+		return endpoint + "?" + enc, true, nil
+	}
+	return endpoint, true, nil
 }
 
 func (v *Validator) ensureDiscovery(ctx context.Context) error {
@@ -585,34 +633,40 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		}
 	}
 
-	// Apply role mapping. Errors fall into three buckets:
+	// Apply role mapping. The set of roles a user holds VIA OIDC
+	// (user_role.granted_via = 'oidc') is reconciled to exactly what the
+	// current claims justify: claim values are mapped to roles and granted
+	// here, and any OIDC-granted role the claims no longer justify is
+	// revoked below. Manual/admin grants (granted_via = 'manual') and
+	// project-scoped rows are never touched. Insert errors fall into three
+	// buckets:
 	//   - ErrNoRows on role_mapping lookup: that claim value just
 	//     isn't mapped, fall through to the next value.
 	//   - Real DB error on the lookup: propagate (rollback).
 	//   - Insert error: propagate.
 	values := claimValues(claims, v.cfg.RoleClaim)
-	matched := false
-	if len(values) > 0 {
-		for _, val := range values {
-			var roleID int64
-			err := tx.QueryRow(ctx, `SELECT role_id FROM role_mapping WHERE claim_value = $1`, val).Scan(&roleID)
-			if errors.Is(err, pgx.ErrNoRows) {
-				continue
-			}
-			if err != nil {
-				return 0, "", fmt.Errorf("oidc: role_mapping lookup %q: %w", val, err)
-			}
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO user_role (user_id, role_id, scope_card_id)
-				VALUES ($1, $2, NULL)
-				ON CONFLICT DO NOTHING
-			`, userID, roleID); err != nil {
-				return 0, "", fmt.Errorf("oidc: apply role: %w", err)
-			}
-			matched = true
+	// desired = the role_ids the current claims justify; the reconcile
+	// DELETE keeps exactly these among the user's 'oidc' global grants.
+	desired := make([]int64, 0, len(values)+1)
+	for _, val := range values {
+		var roleID int64
+		err := tx.QueryRow(ctx, `SELECT role_id FROM role_mapping WHERE claim_value = $1`, val).Scan(&roleID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
 		}
+		if err != nil {
+			return 0, "", fmt.Errorf("oidc: role_mapping lookup %q: %w", val, err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO user_role (user_id, role_id, scope_card_id, granted_via)
+			VALUES ($1, $2, NULL, 'oidc')
+			ON CONFLICT DO NOTHING
+		`, userID, roleID); err != nil {
+			return 0, "", fmt.Errorf("oidc: apply role: %w", err)
+		}
+		desired = append(desired, roleID)
 	}
-	if !matched && v.cfg.DefaultRole != "" {
+	if len(desired) == 0 && v.cfg.DefaultRole != "" {
 		var roleID int64
 		err := tx.QueryRow(ctx, `SELECT id FROM role WHERE name = $1`, v.cfg.DefaultRole).Scan(&roleID)
 		switch {
@@ -627,11 +681,31 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 			return 0, "", fmt.Errorf("oidc: default role lookup: %w", err)
 		default:
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO user_role (user_id, role_id, scope_card_id)
-				VALUES ($1, $2, NULL) ON CONFLICT DO NOTHING
+				INSERT INTO user_role (user_id, role_id, scope_card_id, granted_via)
+				VALUES ($1, $2, NULL, 'oidc') ON CONFLICT DO NOTHING
 			`, userID, roleID); err != nil {
 				return 0, "", fmt.Errorf("oidc: apply default role: %w", err)
 			}
+			desired = append(desired, roleID)
+		}
+	}
+	// Authoritative revoke — ONLY when the OP actually sent the role claim
+	// (claims are used to map roles this login). Without the claim present
+	// the OP isn't asserting roles, so we leave existing grants untouched.
+	// With it present, drop any OIDC-granted GLOBAL role the current claims
+	// no longer justify (e.g. the user was removed from a group in the IdP).
+	// `<> ALL($2)` with an empty array deletes every 'oidc' global row,
+	// which is correct: claims present but nothing mapped (and no default)
+	// means no OIDC roles are justified.
+	if claimPresent(claims, v.cfg.RoleClaim) {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM user_role
+			WHERE user_id = $1
+			  AND granted_via = 'oidc'
+			  AND scope_card_id IS NULL
+			  AND role_id <> ALL($2::bigint[])
+		`, userID, desired); err != nil {
+			return 0, "", fmt.Errorf("oidc: reconcile roles: %w", err)
 		}
 	}
 
@@ -680,6 +754,16 @@ func grantAdminIfInitMode(ctx context.Context, tx pgx.Tx, userID int64) error {
 		return fmt.Errorf("init-admin grant: %w", err)
 	}
 	return nil
+}
+
+// claimPresent reports whether the named claim KEY exists in the token at
+// all — distinct from "present but empty". The role reconcile treats the
+// claim as authoritative (and may revoke OIDC roles) only when the OP
+// actually sent it this login; an absent claim means "not asserting roles",
+// so existing grants are left alone.
+func claimPresent(c jwt.MapClaims, key string) bool {
+	_, ok := c[key]
+	return ok
 }
 
 // claimValues returns every value of the named claim. Handles both single-

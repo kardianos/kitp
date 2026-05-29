@@ -210,6 +210,25 @@ func (m *Manager) Revoke(ctx context.Context, id string) error {
 	return nil
 }
 
+// RevokeAllForUser marks EVERY live session for userID revoked — the
+// "log out everywhere / all devices" half of a unified logout. Idempotent
+// (a user with no live sessions returns nil). Pending in-memory touch
+// entries for those sessions are left to drain naturally: a touch UPDATE
+// against an already-revoked row only moves last_seen_at, and Lookup still
+// rejects on revoked_at, so it can't resurrect a session.
+func (m *Manager) RevokeAllForUser(ctx context.Context, userID int64) error {
+	if userID == 0 {
+		return nil
+	}
+	_, err := m.pool.Exec(ctx, `
+		UPDATE session SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL
+	`, userID)
+	if err != nil {
+		return fmt.Errorf("session: revoke all for user: %w", err)
+	}
+	return nil
+}
+
 // flush drains the pending-touch batch into a single UPDATE. Skipped
 // when the batch is empty so an idle server doesn't poll the DB.
 func (m *Manager) flush(ctx context.Context) error {

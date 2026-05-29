@@ -90,10 +90,11 @@ client, or set it for a confidential client (recommended — see
 | OIDC_CLIENT_ID | (unset) | OAuth client id. |
 | OIDC_CLIENT_SECRET | (unset) | OAuth client secret. OPTIONAL — PKCE is always used; omit for a public (PKCE-only) client, set for a confidential client (recommended for this server-side BFF). |
 | OIDC_REDIRECT_URI | (unset) | Login callback URI. |
+| OIDC_POST_LOGOUT_REDIRECT_URI | (origin of OIDC_REDIRECT_URI) | Where the OP returns the browser after unified (RP-initiated) logout. Must be registered with the OP. |
 | OIDC_AUDIENCE | (unset) | Expected token audience, if enforced. |
 | OIDC_SCOPES | openid profile email | Requested scopes. |
-| OIDC_ROLE_CLAIM | groups | Token claim mapped to roles. |
-| OIDC_DEFAULT_ROLE | worker | Role assigned when no mapping matches. |
+| OIDC_ROLE_CLAIM | groups | Token claim whose values map to roles via the role_mapping table (see Authentication & authorization). |
+| OIDC_DEFAULT_ROLE | worker | Role granted when no claim value maps; set empty to grant nothing. |
 | OIDC_REQUIRED_CLAIMS | (unset) | Comma list of key=value claim requirements. |
 | KITP_OIDC_TRUST_UNVERIFIED_EMAIL | 0 | 1 trusts the email claim without OP verification (only for OPs that verify out-of-band). |
 
@@ -152,6 +153,84 @@ client, or set it for a confidential client (recommended — see
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | KITP_TOKEN | (unset) | Bearer token; when set, MCP acts as that token's user instead of System. |
+
+## Authentication & authorization
+
+`AUTH_MODE=off` runs every request as the built-in System user (dev only).
+`AUTH_MODE=oidc` enables the sign-in flow, just-in-time user provisioning,
+and OIDC role mapping described below.
+
+### Auth API endpoints
+
+These live under `/api/v1/auth` and are plain HTTP routes (not part of the
+batched API). They set/clear the opaque `kitp_session` cookie; the cookie
+never carries a token (server-side BFF session model).
+
+| Method & path | Auth | Purpose |
+| --- | --- | --- |
+| GET `/api/v1/auth/me` | public | Current identity: `{authenticated, user_id, display_name, roles, is_admin, is_agent, parent_user_id, person_card_id}`. Returns `{authenticated:false}` with **200** (not 401) when there is no valid session, to keep the cold-boot probe out of the error column. |
+| POST `/api/v1/auth/logout` | public | **Unified logout** (see below). Revokes every session the caller holds and clears the cookie; in OIDC mode the JSON response carries a `redirect` to the OP's end-session URL. |
+| GET `/api/v1/auth/oidc/start` | public | Begins the OIDC PKCE redirect dance. A `?redirect=<local-path>` is validated and preserved as the post-login destination. OIDC mode only. |
+| GET `/api/v1/auth/oidc/callback` | public | OIDC redirect target: exchanges the code, provisions + role-maps the user, mints the session, then redirects to the saved destination. OIDC mode only. |
+| POST `/api/v1/auth/dev-login` | public | Mints a System-user session. **`AUTH_MODE=off` only** (not registered in OIDC mode). |
+| POST `/api/v1/auth/dev-impersonate` | authed | Swaps the session to one of the caller's own agents. **`AUTH_MODE=off` only.** |
+
+### Unified logout
+
+`POST /api/v1/auth/logout` is a *global* sign-out, not just a local cookie
+clear:
+
+- It revokes **every** active session for the user — all browsers and
+  devices — not only the cookie that made the request.
+- It clears the `kitp_session` cookie on the response.
+- In OIDC mode, when the provider advertises an `end_session_endpoint`, the
+  response is `{"ok":true,"redirect":"<op-end-session-url>"}` — an
+  RP-initiated logout URL carrying `client_id` + `post_logout_redirect_uri`
+  so the **IdP** session ends too. The web client navigates there; with no
+  end-session endpoint (or in dev) the `redirect` is omitted and the client
+  returns to `/`. Set the return target with `OIDC_POST_LOGOUT_REDIRECT_URI`.
+- It is a public route on purpose: a stale or already-revoked cookie still
+  clears cleanly instead of returning 401.
+
+The request needs no body:
+
+    curl -X POST https://kitp.example.com/api/v1/auth/logout \
+      -H 'Cookie: kitp_session=<sid>'
+    # {"ok":true,"redirect":"https://id.example.com/protocol/openid-connect/logout?client_id=kitp&post_logout_redirect_uri=https%3A%2F%2Fkitp.example.com%2F"}
+
+### OIDC roles & provisioning
+
+On a successful OIDC sign-in the server provisions and role-maps the user
+just-in-time:
+
+- **Just-in-time provisioning.** First sign-in for an OIDC subject creates a
+  `user_account` plus a linked `person` card. If an admin pre-created an
+  account with the same **verified** email (and no subject bound yet), the
+  subject attaches to that row instead. Set
+  `KITP_OIDC_TRUST_UNVERIFIED_EMAIL=1` only for an OP that verifies emails
+  out-of-band.
+- **Role mapping.** Each value of the `OIDC_ROLE_CLAIM` claim (default
+  `groups`) is looked up in the `role_mapping` table (`claim_value → role`)
+  and granted globally. Manage mappings in the admin UI or via the
+  `role_mapping.set` / `role_mapping.delete` / `role_mapping.list` API. The
+  dev seed maps `kitp.admin → admin`, `kitp.manager → manager`,
+  `kitp.worker → worker`.
+- **Default role.** When no claim value matches a mapping, the user is
+  granted `OIDC_DEFAULT_ROLE` (default `worker`); leave it empty to grant
+  nothing.
+- **Authoritative revocation.** When the role claim is present in the token,
+  OIDC-derived grants are reconciled to exactly what the current claims
+  justify — a role whose group was removed in the IdP is revoked on the next
+  sign-in. Roles granted by hand (admin UI / API), the first-admin bootstrap,
+  and project-scoped grants are recorded separately and are **never** touched
+  by this reconciliation. When the claim is absent entirely, the OP is not
+  asserting roles and nothing is revoked.
+- **Re-sync cadence.** Mappings re-apply on each sign-in and whenever the
+  token's claims change; a short server-side claims cache means an IdP group
+  change propagates within a few minutes (or immediately on next login).
+- **First-admin bootstrap.** If `KITP_INIT_ADMIN_EMAIL` was not set at
+  startup and no admin exists yet, the first user to sign in is granted
+  `admin`.
 
 ## Container / deployment
 

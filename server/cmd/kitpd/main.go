@@ -352,6 +352,30 @@ func runHTTP() error {
 		Logger:          logger,
 	})
 
+	// OIDC validator, built early (before the auth surface mounts) so the
+	// logout handler can offer an RP-initiated end-session redirect — the
+	// unified logout. nil in AUTH_MODE=off, where dev-login is the only
+	// login path. Reused by the OIDC redirect dance mounted further below.
+	var oidcValidator *oidc.Validator
+	var oidcCfg *oidc.Config
+	if mode == auth.ModeOIDC {
+		oidcCfg = oidc.FromEnv(os.Getenv)
+		if oidcCfg == nil {
+			return errors.New("AUTH_MODE=oidc but OIDC_ISSUER is empty")
+		}
+		oidcValidator = oidc.NewValidator(oidcCfg, pgPool)
+	}
+	// EndSession hook for /auth/logout: fires only in OIDC mode, and only
+	// redirects to the OP when discovery advertises an end_session_endpoint
+	// (otherwise the logout stays local). Captures the post-logout redirect.
+	var endSession session.EndSessionFunc
+	if oidcValidator != nil {
+		postLogout := oidcCfg.PostLogoutRedirectURI
+		endSession = func(ctx context.Context) (string, bool, error) {
+			return oidcValidator.EndSessionURL(ctx, postLogout)
+		}
+	}
+
 	// Auth surface (login + me + logout + optional dev-impersonate).
 	session.Mount(apiRouter, session.HTTPConfig{
 		Manager:         sessionMgr,
@@ -359,6 +383,7 @@ func runHTTP() error {
 		SystemUserID:    auth.SystemUserID,
 		DevLoginEnabled: mode == auth.ModeOff,
 		InsecureCookie:  insecureCookie,
+		EndSession:      endSession,
 	})
 
 	// Remote MCP transport (Streamable HTTP). Same dispatcher as the
@@ -577,15 +602,11 @@ func runHTTP() error {
 	// OIDC mode: register the redirect dance on the apiRouter as
 	// Public routes (browsers are mid-redirect with no cookie yet).
 	// In AUTH_MODE=off mode the routes are simply not registered —
-	// dev-login on the session surface is the only login path.
+	// dev-login on the session surface is the only login path. Reuses the
+	// validator built above (which also backs the unified-logout hook).
 	if mode == auth.ModeOIDC {
-		oidcCfg := oidc.FromEnv(os.Getenv)
-		if oidcCfg == nil {
-			return errors.New("AUTH_MODE=oidc but OIDC_ISSUER is empty")
-		}
-		validator := oidc.NewValidator(oidcCfg, pgPool)
 		bffCfg := oidc.BFFConfig{
-			Validator:      validator,
+			Validator:      oidcValidator,
 			Pool:           pgPool,
 			SessionManager: sessionMgr,
 			InsecureCookie: insecureCookie,

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -10,6 +11,14 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 )
+
+// EndSessionFunc, when set on HTTPConfig, returns the OP's RP-initiated
+// logout URL for the unified logout: after the local session is cleared the
+// handler hands this URL back to the client to navigate to, ending the IdP
+// session too. ok=false means no end-session is available (dev-login, or an
+// OP that advertises no end_session_endpoint) → the client just returns to
+// the app root. Wired from the OIDC validator in main.go; nil in AUTH_MODE=off.
+type EndSessionFunc func(ctx context.Context) (url string, ok bool, err error)
 
 // HTTPConfig wires the Manager + cookie attributes into the HTTP
 // handlers Mount registers on the apiRouter.
@@ -28,6 +37,10 @@ type HTTPConfig struct {
 	// InsecureCookie disables the Secure cookie attribute. Set when
 	// running over plain http://localhost in dev.
 	InsecureCookie bool
+	// EndSession, when non-nil (OIDC mode), supplies the OP's
+	// RP-initiated logout URL so /auth/logout can perform a unified
+	// logout (end the IdP session too). nil in AUTH_MODE=off.
+	EndSession EndSessionFunc
 }
 
 // Mount registers the session auth surface on the apiRouter:
@@ -176,14 +189,38 @@ func handleDevLogin(ctx context.Context, w http.ResponseWriter, _ *http.Request,
 func handleLogout(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg HTTPConfig) error {
 	id := Read(r)
 	if id != "" {
-		// Best-effort revoke. Even if the DB UPDATE errors we still
-		// want the browser to drop the cookie so the user is locally
-		// signed out; the row will be reaped naturally when its
-		// absolute cap elapses.
-		_ = cfg.Manager.Revoke(ctx, id)
+		// Unified logout: drop EVERY session this user holds (all
+		// devices/browsers), not just the cookie in this one. Resolve the
+		// user from the current session first; if that lookup fails (stale
+		// or already-revoked cookie) fall back to a best-effort single
+		// revoke so the row still closes. Either way we clear the cookie
+		// below so the browser is locally signed out regardless of DB error.
+		if user, err := cfg.Manager.Lookup(ctx, id); err == nil {
+			_ = cfg.Manager.RevokeAllForUser(ctx, user.ID)
+		} else {
+			_ = cfg.Manager.Revoke(ctx, id)
+		}
 	}
 	Clear(w, cfg.InsecureCookie)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	// OIDC Single Logout: hand the client the OP's end-session URL so the
+	// IdP session ends too. Absent (dev-login, or an OP without an
+	// end_session_endpoint) → empty redirect and the client returns to the
+	// app root. A discovery error here is non-fatal: the local logout
+	// already succeeded, so log it and fall back to the local redirect.
+	var redirect string
+	if cfg.EndSession != nil {
+		if u, ok, err := cfg.EndSession(ctx); err != nil {
+			slog.Default().LogAttrs(ctx, slog.LevelWarn, "oidc end-session url",
+				slog.String("err", err.Error()))
+		} else if ok {
+			redirect = u
+		}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		OK       bool   `json:"ok"`
+		Redirect string `json:"redirect,omitempty"`
+	}{OK: true, Redirect: redirect})
 	return nil
 }
 
