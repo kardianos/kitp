@@ -1192,6 +1192,61 @@ test('BulkActionBar: Add stages a field so Apply sets several attributes at once
   assert.equal(tree.at(['grid', 'selection']).peek().size, 0, 'selection cleared after multi-assign');
 });
 
+test('BulkActionBar: Unassign clears the picked field on every selected card', async () => {
+  const { transport, sent } = gridMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const grid = mountGrid(api, tree);
+  await settle(dispatcher);
+
+  // Select both rows.
+  const boxes = rowSelectBoxes(grid);
+  boxes[0].dispatchEvent({ type: 'click', target: boxes[0] });
+  boxes[1].dispatchEvent({ type: 'click', target: boxes[1] });
+
+  // Pick the field but DON'T enter a value — Apply stays disabled while
+  // Unassign becomes available (the action posts value=null per card).
+  const bar = bulkBar(grid);
+  const attrCombo = findControls(bar, 'Combobox').find((c) => c.config.placeholder === 'Field…');
+  attrCombo.config.onChange('milestone_ref');
+
+  const applyBtn = grid.el.querySelectorAll('[data-bulk-assign]')[0];
+  const unassignBtn = grid.el.querySelectorAll('[data-bulk-unassign]')[0];
+  assert.ok(unassignBtn, 'an Unassign button is rendered');
+  assert.equal(applyBtn.disabled, true, 'Apply stays disabled without a value');
+  assert.equal(unassignBtn.disabled, false, 'Unassign enabled with field + selection');
+
+  const batchesBefore = sent.batches.length;
+  unassignBtn.dispatchEvent({ type: 'click', target: unassignBtn });
+  await settle(dispatcher);
+
+  // One attribute.update per selected card, each writing value=null.
+  const updates = sent.writes.filter((w) => w.kind === 'attribute.update');
+  assert.equal(updates.length, 2, 'one attribute.update per selected card');
+  assert.deepEqual(
+    updates.map((u) => String(u.data.card_id)).sort(),
+    ['201', '202'],
+    'targets both selected cards',
+  );
+  assert.ok(
+    updates.every((u) => u.data.attribute_name === 'milestone_ref' && u.data.value === null),
+    'each update clears milestone_ref to null',
+  );
+
+  // Coalesced into ONE batch (same path as Apply).
+  const newBatches = sent.batches.slice(batchesBefore);
+  const unassignBatch = newBatches.find((b) => b.includes('attribute.update'));
+  assert.ok(unassignBatch, 'an unassign batch was sent');
+  assert.equal(
+    unassignBatch.filter((k) => k === 'attribute.update').length,
+    2,
+    'both attribute.update calls coalesced into ONE batch',
+  );
+
+  // Selection cleared after the bulk op.
+  assert.equal(tree.at(['grid', 'selection']).peek().size, 0, 'selection cleared after unassign');
+});
+
 test('BulkActionBar: project-scoped ref pickers are scoped to the active project; person is not', async () => {
   const { transport } = gridMockTransport();
   const { dispatcher, api } = bootApi(transport);

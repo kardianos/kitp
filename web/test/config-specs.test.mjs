@@ -58,6 +58,30 @@ test('loadServerConfig lands config.workspaceTitle + sets document.title', async
   assert.equal(document.title, 'Acme HQ');
 });
 
+test('loadServerConfig lands comms_bell_url at config.commsBellUrl (workspace-configurable bell)', async () => {
+  const { api, dispatcher } = harness((sr) => ({
+    id: sr.id,
+    ok: true,
+    data: { config: { comms_bell_url: '/screen/triage', workspace_title: 'Acme HQ' } },
+  }));
+  const tree = new M.TreeNode({}, []);
+  M.loadServerConfig(api, tree);
+  await dispatcher.flushNow();
+  assert.equal(tree.at([...M.COMMS_BELL_URL_PATH]).peek(), '/screen/triage');
+});
+
+test('loadServerConfig lands an empty comms_bell_url so the AppShell falls back to its default', async () => {
+  const { api, dispatcher } = harness((sr) => ({
+    id: sr.id,
+    ok: true,
+    data: { config: { workspace_title: 'Acme HQ' } }, // comms_bell_url absent
+  }));
+  const tree = new M.TreeNode({}, []);
+  M.loadServerConfig(api, tree);
+  await dispatcher.flushNow();
+  assert.equal(tree.at([...M.COMMS_BELL_URL_PATH]).peek(), '');
+});
+
 test('loadServerConfig falls back to "Workspace" when unset (never "kitp")', async () => {
   const { api, dispatcher } = harness((sr) => ({
     id: sr.id,

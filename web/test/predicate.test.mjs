@@ -294,6 +294,80 @@ test('phase scope: withTopLevelPhases / topLevelPhases round-trip + coexist with
   assert.deepEqual(topLevelLeafForAttr(allVisible, 'status'), { kind: 'leaf', attr: 'status', op: 'in', values: ['40'] }, 'chip preserved when phase scope cleared');
 });
 
+test('applySearchFilter: empty search → no where/tree leaves', () => {
+  const { applySearchFilter } = M;
+  const out = applySearchFilter('', ['title'], null);
+  assert.equal(out.where, undefined, 'no where on empty needle');
+  assert.equal(out.tree, undefined, 'no tree on empty needle');
+});
+
+test('applySearchFilter: single-field search rides where[] (the common case)', () => {
+  const { applySearchFilter } = M;
+  const out = applySearchFilter('foo', ['title'], null);
+  assert.deepEqual(out.where, [{ attr: 'title', op: 'contains', value: 'foo' }]);
+  assert.equal(out.tree, undefined);
+});
+
+test('applySearchFilter: multi-field search wraps the needle in an OR group on tree', () => {
+  const { applySearchFilter } = M;
+  const out = applySearchFilter('hello', ['title', 'description', 'comments'], null);
+  assert.equal(out.where, undefined, 'where empty; the OR rides on tree');
+  // Tree leaves MUST use the plural `values: [...]` form — the Go-side
+  // CardWhereTreeNode struct silently drops the singular `value` field, which
+  // surfaced as "contains: missing value" from the predicate compiler.
+  assert.deepEqual(out.tree, {
+    connective: 'or',
+    children: [
+      { attr: 'title', op: 'contains', values: ['hello'] },
+      { attr: 'description', op: 'contains', values: ['hello'] },
+      { attr: 'comments', op: 'contains', values: ['hello'] },
+    ],
+  });
+});
+
+test('applySearchFilter: single-field search + structured predicate AND-fold on tree (where[] would be ignored)', () => {
+  // The Go server uses `tree` when set and IGNORES `where[]`. So a structured
+  // predicate (which must ride on tree) plus a single-field search needs the
+  // search leaf folded INSIDE the tree, using the plural `values` shape.
+  const { applySearchFilter, leaf, orOf } = M;
+  const predicate = orOf([leaf('status', 'in', [40]), leaf('status', 'in', [41])]);
+  const out = applySearchFilter('foo', ['title'], predicate);
+  assert.equal(out.where, undefined);
+  assert.equal(out.tree.connective, 'and');
+  assert.equal(out.tree.children.length, 2);
+  assert.deepEqual(out.tree.children[0], { attr: 'title', op: 'contains', values: ['foo'] });
+  assert.equal(out.tree.children[1].connective, 'or');
+});
+
+test('applySearchFilter: empty field set + a needle falls back to title (search never inert)', () => {
+  const { applySearchFilter } = M;
+  const out = applySearchFilter('foo', [], null);
+  assert.deepEqual(out.where, [{ attr: 'title', op: 'contains', value: 'foo' }]);
+});
+
+test('applySearchFilter: flat-AND predicate + single-field search compose into where[]', () => {
+  const { applySearchFilter, leaf, andOf } = M;
+  const predicate = andOf([leaf('status', 'in', [40])]);
+  const out = applySearchFilter('foo', ['title'], predicate);
+  assert.equal(out.tree, undefined);
+  assert.equal(out.where.length, 2);
+  assert.deepEqual(out.where[0], { attr: 'title', op: 'contains', value: 'foo' });
+  // Existing leaf wire shape from toWhereLeaves: { attr, op, values }.
+  assert.equal(out.where[1].attr, 'status');
+  assert.equal(out.where[1].op, 'in');
+});
+
+test('applySearchFilter: multi-field search + flat-AND predicate → tree AND(searchOR, ...predLeaves)', () => {
+  const { applySearchFilter, leaf, andOf } = M;
+  const predicate = andOf([leaf('status', 'in', [40])]);
+  const out = applySearchFilter('foo', ['title', 'description'], predicate);
+  assert.equal(out.where, undefined);
+  assert.equal(out.tree.connective, 'and');
+  assert.equal(out.tree.children.length, 2);
+  assert.equal(out.tree.children[0].connective, 'or', 'search OR group leads');
+  assert.equal(out.tree.children[1].attr, 'status', 'user predicate leaf rides alongside');
+});
+
 test('topLevelLeafForAttr: finds a bare/AND-child leaf; ignores nested-group leaves', () => {
   const { topLevelLeafForAttr, andOf, orOf, leaf } = M;
   assert.deepEqual(topLevelLeafForAttr(leaf('status', 'in', ['40']), 'status'), {

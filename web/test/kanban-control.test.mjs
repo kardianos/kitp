@@ -477,6 +477,35 @@ function bootMultiAxisKanban() {
   return { transport, dispatcher, tree, kanban };
 }
 
+test('Kanban: multi-field search ships a v2 leaf shape the server accepts', async () => {
+  // Reproduces the "Failed to load kanban: internal: contains: missing value"
+  // error reported when description / comments is added to the search set.
+  // The kanban's wire `tree` field must carry leaf nodes that the predicate
+  // compiler can extract a needle from — either { value } (v1) or { values }
+  // (v2). Bare { attr, op } leaves trigger the missing-value RAISE.
+  const { dispatcher, tree } = bootMultiAxisKanban();
+  await settle(dispatcher);
+
+  // Type a needle + activate description.
+  tree.at(['screen', 'search']).set('foo');
+  tree.at(['screen', 'searchFields']).set(['title', 'description']);
+  await settle(dispatcher);
+
+  const wireTree = tree.at(['kanban', 'tree']).peek();
+  assert.equal(wireTree.connective, 'or', 'multi-field rides on an OR tree');
+  for (const leaf of wireTree.children) {
+    // Tree leaves MUST use the plural `values` form — the Go-side
+    // CardWhereTreeNode struct has no `Value` field, so the singular form is
+    // silently dropped on unmarshal and the predicate compiler raises
+    // "contains: missing value".
+    assert.ok(
+      Array.isArray(leaf.values) && leaf.values.length > 0,
+      `leaf for ${leaf.attr} ships values:[...] (the singular value is dropped server-side)`,
+    );
+    assert.equal(leaf.values[0], 'foo', 'needle survives in values[0]');
+  }
+});
+
 test('Kanban: no GROUP set → default milestone axis (unchanged)', async () => {
   const { dispatcher, kanban } = bootMultiAxisKanban();
   await settle(dispatcher);
@@ -554,6 +583,62 @@ test('Kanban: cross-column move updates the ACTIVE axis attr (status when groupe
   assert.ok(
     visibleCards(colsAfter[1]).some((c) => c.dataset.cardId === '201'),
     '201 re-bucketed into the Doing (status 51) column',
+  );
+});
+
+test('Kanban: column order follows the value-cards\' explicit sort_order', async () => {
+  // Same multi-axis harness but with REVERSE-order milestones: the server
+  // returns them id-ASC (32, 33, 34), and the kanban must re-order them by
+  // their explicit `sort_order` attribute (3, 1, 2 → board shows 33, 34, 32).
+  // Pre-fix the kanban honoured first-seen / server order.
+  const sent = { taskInputs: [] };
+  const row = (id, type, parent, attrs) => ({
+    id: String(id), card_type_id: type === 'task' ? '5' : '9',
+    card_type_name: type,
+    parent_card_id: parent === null ? undefined : String(parent),
+    attributes: attrs,
+  });
+  const TASKS = [
+    row(201n, 'task', 100, { title: 'A', sort_order: 100, milestone_ref: '32' }),
+    row(202n, 'task', 100, { title: 'B', sort_order: 200, milestone_ref: '33' }),
+    row(203n, 'task', 100, { title: 'C', sort_order: 300, milestone_ref: '34' }),
+  ];
+  // Server returns 32/33/34 in id order; the kanban must reorder by sort_order.
+  const MILESTONES = [
+    row(32n, 'milestone', 100, { title: 'M1', sort_order: 3 }),
+    row(33n, 'milestone', 100, { title: 'M2', sort_order: 1 }),
+    row(34n, 'milestone', 100, { title: 'M3', sort_order: 2 }),
+  ];
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      const subresponses = req.subrequests.map((sr) => {
+        if (sr.endpoint === 'card' && sr.action === 'select_with_attributes') {
+          const d = sr.data ?? {};
+          if (d.card_type_name === 'task') { sent.taskInputs.push(d); return { id: sr.id, ok: true, data: { rows: TASKS } }; }
+          if (d.card_type_name === 'milestone') return { id: sr.id, ok: true, data: { rows: MILESTONES } };
+          return { id: sr.id, ok: true, data: { rows: [] } };
+        }
+        return { id: sr.id, ok: false, error: { code: 'unknown_handler', message: '' } };
+      });
+      return { status: 200, text: JSON.stringify({ subresponses }) };
+    },
+  };
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(100n);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  const ctx = { api, tree, scope };
+  const kanban = M.Control.New('Kanban', { type: 'Kanban' }, ctx);
+  kanban.mount(new FakeElement('div'));
+  await settle(dispatcher);
+
+  // Columns ordered by milestone sort_order (1: 33, 2: 34, 3: 32) + (unset).
+  const cols = kanban.el.querySelectorAll('[data-kanban-column]');
+  assert.deepEqual(
+    cols.map((c) => c.dataset.column),
+    ['33', '34', '32', '__unset__'],
+    'column order follows the milestone value-cards\' explicit sort_order',
   );
 });
 

@@ -87,6 +87,8 @@ export {
   orOf,
   notOf,
   emptyRoot,
+  applySearchFilter,
+  SEARCH_FIELD_VALUES,
 } from './filter/predicate.js';
 export {
   type AttrSchema,
@@ -212,6 +214,7 @@ export {
   loadServerConfig,
   CONFIG_GET_SPEC,
   WORKSPACE_TITLE_PATH,
+  COMMS_BELL_URL_PATH,
   DEFAULT_WORKSPACE_TITLE,
   type ServerConfig,
 } from './shell/config-specs.js';

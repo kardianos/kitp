@@ -69,10 +69,9 @@ import { KANBAN_DEFAULT_GROUP_ATTR } from '../filter/screen-resolve.js';
 import type { CardWherePredicate } from '../projects/project-helpers.js';
 import {
   type Predicate,
-  type WireNode,
-  isFlatAndOfLeaves,
-  toWhereLeaves,
-  toWire,
+  type Phase,
+  applySearchFilter,
+  topLevelPhases,
 } from '../filter/predicate.js';
 
 /**
@@ -122,6 +121,13 @@ declare module '../core/control.js' {
 interface AxisCard {
   id: bigint;
   label: string;
+  /** Top-level `phase` (statuses only) — drives column visibility when a phase
+   *  scope is set on a status-grouped board: out-of-phase columns are hidden. */
+  phase?: Phase;
+  /** The value-card's `sort_order` attribute, used to sequence the kanban's
+   *  columns / lanes. Falls back to +Inf for cards that never had it written,
+   *  so explicit-order cards always lead untouched ones. */
+  sortOrder: number;
 }
 
 /* Shared dataset key for the in-flight drag (one board, simple module state). */
@@ -380,7 +386,8 @@ export class Kanban extends Control<KanbanConfig> {
     this.effect(() => {
       const search = this.ctx.tree.at(['screen', 'search']).get<string>() ?? '';
       const predicate = this.ctx.tree.at(['screen', 'predicate']).get<Predicate | null>() ?? null;
-      this.applyFilter(search, predicate);
+      const fields = this.ctx.tree.at(['screen', 'searchFields']).get<string[]>() ?? ['title'];
+      this.applyFilter(search, fields, predicate);
       this.bumpQuery();
     }, 'kanban.filterWatch');
 
@@ -411,6 +418,17 @@ export class Kanban extends Control<KanbanConfig> {
       if (nonce > 0) this.bumpQuery();
     }, 'kanban.refreshOnCreate');
 
+    // Workflow restriction (#16): when a project's status flow exists, the
+    // status-grouped board hides columns for statuses the flow doesn't include.
+    // Reads scope.projectId; writes `kanban.workflowStatusIds` (a Set<bigint>
+    // of in-workflow status card ids, or null when no flow applies → no filter).
+    // One-way; the board render effect subscribes to the leaf so a late landing
+    // re-keys the columns without a re-issued tasks query.
+    this.effect(() => {
+      this.ctx.tree.at(['scope', 'projectId']).get();
+      this.loadWorkflowStatuses();
+    }, 'kanban.workflowStatuses');
+
     // Inline self-represented load error (onError: 'self').
     this.effect(() => {
       const f = this.fault.get();
@@ -427,10 +445,14 @@ export class Kanban extends Control<KanbanConfig> {
     // active axis's value-card list, and the group version. Re-bucketing on
     // every tasks change is what makes the optimistic move/reorder (and their
     // rollbacks) re-render the columns with no extra wiring; reading the group
-    // version re-keys the columns when the GROUP picker changes.
+    // version re-keys the columns when the GROUP picker changes. Subscribing
+    // to `screen.predicate` here re-renders the board when only the phase scope
+    // changes (status-axis columns hide out-of-phase value cards in that case).
     this.effect(() => {
       const tasks = (tasksNode.get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
       this.ctx.tree.at(['kanban', 'groupVersion']).get(); // re-key on a GROUP change
+      this.ctx.tree.at(['screen', 'predicate']).get(); // re-key on a PHASE change
+      this.ctx.tree.at(['kanban', 'workflowStatusIds']).get(); // re-key when workflow lands
       const axis = this.activeAxisCards();
       this.renderBoard(board, tasks, axis);
     }, 'kanban.board');
@@ -449,10 +471,14 @@ export class Kanban extends Control<KanbanConfig> {
     });
 
     // Each axis lookup lands an AxisCard[] (id + display label) at
-    // kanban.axis.<lookup>. The board reads only the active axis's list.
+    // kanban.axis.<lookup>. The board reads only the active axis's list. The
+    // list is sorted by each value-card's explicit `sort_order` so the column
+    // / lane sequence matches the operator's ordering (the server returns rows
+    // in default id / created_at order — without this the kanban sequenced
+    // statuses / milestones arbitrarily).
     const landAxis = (lookup: string) => (out: unknown) => {
       const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
-      const axis: AxisCard[] = rows.map((r) => ({ id: r.id, label: labelOf(r) }));
+      const axis = sortAxisCards(rows.map((r) => axisCardOf(r)));
       this.ctx.tree.at(['kanban', 'axis', lookup]).set(axis);
       // Re-key the columns when a late-landing axis list arrives for the active
       // axis (the board render reads the group version).
@@ -463,7 +489,7 @@ export class Kanban extends Control<KanbanConfig> {
     // tests + any external reader), in addition to the unified axis path.
     this.handler('landMilestones', (out) => {
       const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
-      const axis: AxisCard[] = rows.map((r) => ({ id: r.id, label: labelOf(r) }));
+      const axis = sortAxisCards(rows.map((r) => axisCardOf(r)));
       this.ctx.tree.at(['kanban', 'milestones']).set(axis);
       this.ctx.tree.at(['kanban', 'axis', 'milestones']).set(axis);
       this.bumpGroup();
@@ -481,9 +507,81 @@ export class Kanban extends Control<KanbanConfig> {
   }
 
   /** The value-card list for the ACTIVE axis (peeked — the board render reads
-   *  the group version separately to subscribe to axis switches + late lands). */
+   *  the group version separately to subscribe to axis switches + late lands).
+   *  Two status-specific restrictions stack: phase scope (`screen.predicate`'s
+   *  `has_phase` leaf hides out-of-phase columns) and workflow restriction
+   *  (`kanban.workflowStatusIds`, the set of status ids the project's status
+   *  flow uses, hides statuses the workflow doesn't include). Both peek; the
+   *  board render subscribes to the underlying leaves separately. */
   private activeAxisCards(): AxisCard[] {
-    return (this.ctx.tree.at(['kanban', 'axis', this.axisLookup]).peek<AxisCard[]>() ?? []) as AxisCard[];
+    const all = (this.ctx.tree.at(['kanban', 'axis', this.axisLookup]).peek<AxisCard[]>() ?? []) as AxisCard[];
+    if (this.axisLookup !== 'statuses') return all;
+    let out = all;
+    // Workflow restriction: when the project's status flow has loaded, keep
+    // only the statuses the workflow includes; null = no workflow → no filter.
+    const wf = this.ctx.tree.at(['kanban', 'workflowStatusIds']).peek<Set<bigint> | null>() ?? null;
+    if (wf !== null && wf.size > 0) {
+      out = out.filter((a) => wf.has(a.id));
+    }
+    // Phase restriction (#15): keep only statuses whose phase the user scoped to.
+    const predicate = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
+    const phases = topLevelPhases(predicate);
+    if (phases.length > 0) {
+      const allow = new Set<Phase>(phases);
+      out = out.filter((a) => a.phase === undefined || allow.has(a.phase));
+    }
+    return out;
+  }
+
+  /**
+   * Load the project's status workflow + its steps, then land the set of
+   * in-workflow status card ids at `kanban.workflowStatusIds`. Two sequential
+   * batched reads (`flow.list` → `flow_step.list`) — the second can't fire
+   * until the flow id resolves from the first. The first that mentions the
+   * `status` attribute wins (multi-flow projects pick a deterministic one by
+   * the server's row order). Clearing the leaf to null when no flow applies
+   * → the activeAxisCards filter falls back to "show every status".
+   */
+  private loadWorkflowStatuses(): void {
+    const pid = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
+    if (pid === null) {
+      this.ctx.tree.at(['kanban', 'workflowStatusIds']).set(null);
+      return;
+    }
+    this.ctx.api.callByName(
+      'flow.list',
+      { scopeCardId: pid },
+      (out) => {
+        if (!this.isAlive()) return;
+        const rows = ((out ?? {}) as { rows?: Array<{ id: string; attribute_def_name?: string }> }).rows ?? [];
+        const flow = rows.find((r) => r.attribute_def_name === 'status') ?? null;
+        if (flow === null) {
+          this.ctx.tree.at(['kanban', 'workflowStatusIds']).set(null);
+          this.bumpGroup();
+          return;
+        }
+        this.ctx.api.callByName(
+          'flow_step.list',
+          { flowId: flow.id },
+          (stepsOut) => {
+            if (!this.isAlive()) return;
+            const stepRows = ((stepsOut ?? {}) as { rows?: Array<{ from_card_id: string; to_card_id: string }> }).rows ?? [];
+            const ids = new Set<bigint>();
+            const add = (s: string): void => {
+              if (/^-?\d+$/.test(s)) ids.add(BigInt(s));
+            };
+            for (const r of stepRows) {
+              add(r.from_card_id);
+              add(r.to_card_id);
+            }
+            this.ctx.tree.at(['kanban', 'workflowStatusIds']).set(ids.size > 0 ? ids : null);
+            this.bumpGroup();
+          },
+          { alive: () => this.isAlive() },
+        );
+      },
+      { alive: () => this.isAlive() },
+    );
   }
 
   /** Dispose + clear the live per-column virtualLists (before a board rebuild
@@ -819,15 +917,6 @@ export class Kanban extends Control<KanbanConfig> {
     idEl.textContent = `#${card.id.toString()}`;
     meta.append(idEl);
 
-    const assignee = card.attributes['assignee'];
-    if (typeof assignee === 'bigint') {
-      const a = document.createElement('span');
-      a.className = 'card__assignee';
-      a.dataset.role = 'assignee';
-      a.textContent = this.axisLabel('persons', assignee);
-      meta.append(a);
-    }
-
     const tags = card.attributes['tags'];
     if (Array.isArray(tags)) {
       for (const t of tags) {
@@ -917,33 +1006,16 @@ export class Kanban extends Control<KanbanConfig> {
   /* ----------------------------- query driver --------------------------- */
 
   /**
-   * Project the shared search + Advanced structured predicate to the tasks
-   * query's `where[]` / `tree` leaves. Identical contract to the Grid's
-   * applyFilter: a flat AND of leaves composes with the title-search leaf in
-   * `where[]`; a structured tree (OR / NOT / nesting) rides the v2 `tree` field
-   * while the search leaf stays in `where[]`. Empty inputs are set to undefined
-   * so the encoder omits them.
+   * Project the shared search + chosen search fields + Advanced structured
+   * predicate to the tasks query's `where[]` / `tree` leaves via the shared
+   * {@link applySearchFilter} composer. A single-field search keeps the leaf in
+   * `where[]` (the common case); a multi-field search wraps the needle in an
+   * OR group on `tree`. Empty inputs leave each leaf undefined so the encoder
+   * omits them.
    */
-  private applyFilter(search: string, predicate: Predicate | null): void {
-    const needle = search.trim();
-    const searchLeaf: CardWherePredicate | null =
-      needle.length > 0 ? { attr: 'title', op: 'contains', value: needle } : null;
-
-    let where: CardWherePredicate[] | undefined;
-    let tree: WireNode | undefined;
-
-    if (predicate === null) {
-      where = searchLeaf ? [searchLeaf] : undefined;
-    } else if (isFlatAndOfLeaves(predicate)) {
-      const leaves = toWhereLeaves(predicate) ?? [];
-      const combined = searchLeaf ? [searchLeaf, ...leaves] : leaves;
-      where = combined.length > 0 ? combined : undefined;
-    } else {
-      where = searchLeaf ? [searchLeaf] : undefined;
-      tree = toWire(predicate);
-    }
-
-    this.ctx.tree.at(['kanban', 'where']).set(where);
+  private applyFilter(search: string, fields: readonly string[], predicate: Predicate | null): void {
+    const { where, tree } = applySearchFilter(search, fields, predicate);
+    this.ctx.tree.at(['kanban', 'where']).set(where as CardWherePredicate[] | undefined);
     this.ctx.tree.at(['kanban', 'tree']).set(tree);
   }
 
@@ -1148,6 +1220,35 @@ function titleOf(card: CardWithAttrs): string {
 function labelOf(r: CardWithAttrs): string {
   const t = r.attributes['title'] ?? r.attributes['name'];
   return typeof t === 'string' && t.length > 0 ? t : `#${r.id.toString()}`;
+}
+
+/** Build the kanban's column-keying AxisCard from a value-card row. Carries the
+ *  row's top-level `phase` (status cards) so a phase-scoped status-grouped board
+ *  can hide out-of-phase columns. Reads `sort_order` so the column / lane
+ *  sequence honours the operator's explicit value-card ordering — see
+ *  {@link sortAxisCards}. */
+function axisCardOf(r: CardWithAttrs): AxisCard {
+  const so = r.attributes['sort_order'];
+  const out: AxisCard = {
+    id: r.id,
+    label: labelOf(r),
+    sortOrder: typeof so === 'number' && Number.isFinite(so) ? so : Number.POSITIVE_INFINITY,
+  };
+  if (r.phase !== undefined) out.phase = r.phase;
+  return out;
+}
+
+/** Sort a value-card list by explicit `sort_order` (ASC), tie-breaking on the
+ *  id (ASC) — so the kanban's column / lane order matches the operator's
+ *  ordering, and value-cards without `sort_order` keep the server's
+ *  deterministic id-based order rather than reshuffling alphabetically (which
+ *  is locale-sensitive). Stable across re-fetches. */
+function sortAxisCards(cards: AxisCard[]): AxisCard[] {
+  cards.sort((a, b) => {
+    if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  return cards;
 }
 
 /**

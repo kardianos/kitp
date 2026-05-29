@@ -63,6 +63,7 @@ import {
   type QuickEntryPrefill,
   type QuickEntrySubmitInput,
 } from './submission.js';
+import { navigate, taskUrl } from '../shell/router.js';
 
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
@@ -347,13 +348,23 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     another.className = 'btn qe-overlay__another';
     another.dataset.qeAddAnother = '';
     another.textContent = 'Add & Another';
+    // "Save & Edit" — creates the task AND navigates to its detail view so the
+    // user can fill in the rest. Closes the overlay on the navigate (the detail
+    // screen mounts on the new route).
+    const addEdit = document.createElement('button');
+    addEdit.type = 'button';
+    addEdit.className = 'btn qe-overlay__edit';
+    addEdit.dataset.qeAddEdit = '';
+    addEdit.textContent = 'Save & Edit';
+    addEdit.title = 'Save and open this task in the detail view';
     const addClose = document.createElement('button');
     addClose.type = 'button';
     addClose.className = 'btn btn-primary qe-overlay__close';
     addClose.dataset.qeAddClose = '';
     addClose.textContent = 'Add & Close';
-    buttons.append(another, addClose);
+    buttons.append(another, addEdit, addClose);
     this.listen(another, 'click', () => this.submit(false));
+    this.listen(addEdit, 'click', () => this.submit(true, true));
     this.listen(addClose, 'click', () => this.submit(true));
 
     const hintRow = document.createElement('div');
@@ -924,8 +935,11 @@ export class QuickEntry extends Control<QuickEntryConfig> {
    * attachments (CAS), then issue the coalesced card.insert + tag.apply +
    * attachment.create batch. `closeAfter` distinguishes Mod+Enter / Add & Close
    * (close on success) from Enter / Add & Another (clear + keep open).
+   * `openDetailAfter` (Save & Edit) navigates to the new task's detail view
+   * on success — implies `closeAfter` since the route change tears the overlay
+   * down anyway.
    */
-  private submit(closeAfter: boolean): void {
+  private submit(closeAfter: boolean, openDetailAfter = false): void {
     if (this.submitting) return;
     const title = (this.titleInput?.value ?? '').trim();
     if (title === '') {
@@ -981,7 +995,14 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     this.setSubmitting(true);
 
     // Pre-upload attachments (CAS), then fire the batch.
-    this.uploadThenSubmit(title, resolution.parentCardId, effectivePrefill, defaultStatusCardId, closeAfter);
+    this.uploadThenSubmit(
+      title,
+      resolution.parentCardId,
+      effectivePrefill,
+      defaultStatusCardId,
+      closeAfter,
+      openDetailAfter,
+    );
   }
 
   /**
@@ -997,13 +1018,14 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     prefill: QuickEntryPrefill,
     defaultStatusCardId: bigint | undefined,
     closeAfter: boolean,
+    openDetailAfter: boolean,
   ): void {
     const pending = this.pendingAttachments.filter((a) => a.fileId === undefined);
     const ready = (): void => {
       const fileIds = this.pendingAttachments
         .map((a) => a.fileId)
         .filter((id): id is bigint => id !== undefined);
-      this.fireSubmit(title, parentCardId, prefill, defaultStatusCardId, fileIds, closeAfter);
+      this.fireSubmit(title, parentCardId, prefill, defaultStatusCardId, fileIds, closeAfter, openDetailAfter);
     };
     if (pending.length === 0) {
       ready();
@@ -1046,6 +1068,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     defaultStatusCardId: bigint | undefined,
     attachmentFileIds: bigint[],
     closeAfter: boolean,
+    openDetailAfter: boolean,
   ): void {
     const input: QuickEntrySubmitInput = {
       cardTypeName: this.cardType,
@@ -1070,8 +1093,17 @@ export class QuickEntry extends Control<QuickEntryConfig> {
         // for + New sub-task #9). One-way write — cascade-safe.
         const nonce = this.ctx.tree.at(['tasks', 'createdNonce']);
         nonce.set((nonce.peek<number>() ?? 0) + 1);
-        if (closeAfter) this.close();
-        else this.clearForNext();
+        if (openDetailAfter) {
+          // "Save & Edit" — the new card route takes over the page so the
+          // overlay tears down with it. Close FIRST so the focus trap releases
+          // before navigation moves focus to the detail screen.
+          this.close();
+          navigate(taskUrl(newCardId));
+        } else if (closeAfter) {
+          this.close();
+        } else {
+          this.clearForNext();
+        }
       },
       onError: (fault: ApiFault) => {
         this.setSubmitting(false);

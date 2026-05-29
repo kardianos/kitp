@@ -109,6 +109,29 @@ func Register() {
 		// of docs/UNIFIED_HANDLER_PLAN.md.
 		SQLFunc: "user_unlink_person_batch",
 	})
+	reg.Register(reg.Handler{
+		Endpoint:     "user",
+		Action:       "set_display_name",
+		Doc:          "Update user_account.display_name for one user_account row. The /auth/me probe reads display_name straight from this column, so this is what powers the shell's signed-in user chip — renaming the linked person card (attribute.update on title) does NOT propagate here. Admin-only; no-op (ok=true) when the value already matches.",
+		InputType:    reflect.TypeFor[SetDisplayNameInput](),
+		OutputType:   reflect.TypeFor[SetDisplayNameOutput](),
+		AllowedRoles: []string{"admin"},
+		SQLFunc:      "user_set_display_name_batch",
+	})
+}
+
+// SetDisplayNameInput addresses the user_account row whose display_name is
+// being updated. We key on user_account_id rather than the linked person card
+// because admin call sites land on this action from the user record.
+type SetDisplayNameInput struct {
+	UserAccountID int64  `json:"user_account_id,string" mcp:"required,desc=user_account row whose display_name is being updated"`
+	DisplayName   string `json:"display_name"          mcp:"required,desc=new display_name; non-empty (the column is NOT NULL and the shell falls back to its config default on empty)"`
+}
+
+// SetDisplayNameOutput reports whether the column actually changed, so the
+// caller can distinguish a real rename from a no-op repeat.
+type SetDisplayNameOutput struct {
+	Updated bool `json:"updated" mcp:"desc=true when the column changed; false when the value already matched"`
 }
 
 // UnlinkPersonInput addresses the user_account row whose person link

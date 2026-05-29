@@ -495,6 +495,7 @@ updated_at, timestamptz, , false, now(), ,
 ## function agent_create_batch | doc="agent.create — insert a user_account (is_agent=TRUE, parent_user_id=actor) per input." | path="functions/agent_create_batch.sql"
 ## function agent_delete_batch | doc="agent.delete — null attribute_value.last_activity_id then delete activity rows + delete user_account (gated on is_agent=TRUE) per input." | path="functions/agent_delete_batch.sql"
 ## function user_unlink_person_batch | doc="user.unlink_person — admin-only delete of the user_account_person link; idempotent." | path="functions/user_unlink_person_batch.sql"
+## function user_set_display_name_batch | doc="user.set_display_name — admin-only update of user_account.display_name; idempotent (updated=false when the value already matches). /auth/me reads display_name straight from this column, so it powers the shell's signed-in user chip." | path="functions/user_set_display_name_batch.sql"
 ## function user_token_create_batch | doc="user_token.create — mint a 32-byte base64url bearer token bound to (user_id, label) and surface it once in the result." | path="functions/user_token_create_batch.sql"
 ## function user_token_revoke_batch | doc="user_token.revoke — set revoked_at = now() on the matching (user_id, label) row; idempotent." | path="functions/user_token_revoke_batch.sql"
 ## function user_role_set_batch | doc="user_role.set — upsert a (user_id, role, scope_card_id) grant against the partial unique indexes." | path="functions/user_role_set_batch.sql"

@@ -70,7 +70,6 @@ function buildPage(css, tagCount) {
         <div class="card__title" data-role="title">A fairly long task title that should ellipsize on one line</div>
         <div class="card__meta muted" data-role="meta">
           <span class="card__id">#201</span>
-          <span class="card__assignee" data-role="assignee">Ada Lovelace</span>
           ${tags}
         </div>
       </div>

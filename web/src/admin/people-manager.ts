@@ -28,6 +28,8 @@ import { ADMIN_SPEC, type UserListOutput, type UserRow, type UserRoleAssignment 
 import { SPEC, type SelectWithAttributesOutput } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { trapFocus, captureFocus } from '../util/focus-trap.js';
+import { EditableField } from '../ui/editable-field.js';
+import { AUTH_USER_PATH, type AuthUser } from '../auth/auth-state.js';
 
 /** A human-readable message for a merge fault — surfaces the server's
  *  'merge_login_conflict' (and other sub_error) text in the merge dialog. */
@@ -71,6 +73,10 @@ interface PersonRow {
   accountId: string | null;
   /** The user's role assignments (users only; from user.list_with_roles). */
   roles: UserRoleAssignment[];
+  /** Person card's `is_active` attribute. Disabled rows stay in the system so
+   *  every historical assignee / originator / comm-recipient ref still resolves
+   *  to a name; new pickers should drop disabled people from their search. */
+  isActive: boolean;
 }
 
 export class PeopleManager extends Control<PeopleManagerConfig> {
@@ -176,6 +182,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
       const account = this.accountByPerson.get(p.id.toString()) ?? null;
       const kind = this.attr(p, 'person_kind');
       const tier: Tier = account !== null ? 'user' : kind === 'contact' ? 'contact' : 'assignee';
+      const activeRaw = p.attributes['is_active'];
       out.push({
         id: p.id,
         title: this.attr(p, 'title'),
@@ -183,6 +190,9 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
         tier,
         accountId: account?.id ?? null,
         roles: account?.roles ?? [],
+        // `is_active` defaults TRUE (the seed sets it that way for new people),
+        // so an unwritten attribute reads as active too.
+        isActive: activeRaw !== false,
       });
     }
     out.sort((a, b) => a.title.localeCompare(b.title));
@@ -229,15 +239,49 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     row.className = 'people-manager__row';
     row.dataset.peopleRow = r.id.toString();
     row.dataset.tier = r.tier;
+    if (!r.isActive) {
+      row.classList.add('people-manager__row--disabled');
+      row.dataset.peopleDisabled = '';
+    }
 
+    // Name: inline-editable via the shared pencil control. Commits an
+    // attribute.update on the person's `title` and reloads (per-row state is
+    // cheap to rebuild, and `load` already invalidates the picker labels).
+    const nameField = new EditableField({
+      value: r.title || `#${r.id.toString()}`,
+      ariaLabel: `Rename ${r.title || `#${r.id.toString()}`}`,
+      emptyText: '—',
+      onCommit: (next) => this.commitName(r, next.trim()),
+    });
     const name = document.createElement('span');
     name.className = 'people-manager__name';
     name.dataset.peopleName = '';
-    name.textContent = r.title || `#${r.id.toString()}`;
+    name.append(nameField.el);
 
-    const email = document.createElement('span');
-    email.className = 'people-manager__email muted';
-    email.textContent = r.email;
+    // Email:
+    //   - For users (account-linked), the user_account row is the source of
+    //     truth — editing the person's `email` attribute wouldn't move the
+    //     displayed value. Keep it read-only for users, with a tooltip that
+    //     points the operator at the user record.
+    //   - For assignees / contacts, the person's `email` attribute IS the
+    //     value the row displays, so it's inline-editable here (commits
+    //     attribute.update on `email`).
+    const emailHost = document.createElement('span');
+    emailHost.className = 'people-manager__email muted';
+    if (r.tier === 'user') {
+      emailHost.textContent = r.email;
+      emailHost.title = 'Email is the user account sign-in key — manage in the user record.';
+    } else {
+      const emailField = new EditableField({
+        value: r.email,
+        ariaLabel: `Edit email for ${r.title || `#${r.id.toString()}`}`,
+        placeholder: 'name@example.com',
+        emptyText: 'no email',
+        onCommit: (next) => this.commitEmail(r, next.trim()),
+      });
+      emailHost.append(emailField.el);
+    }
+    const email = emailHost;
 
     // Tier select — the promote/demote control.
     const tierSel = document.createElement('select');
@@ -252,6 +296,22 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
       tierSel.append(opt);
     }
     this.listen(tierSel, 'change', () => this.changeTier(r, tierSel.value as Tier));
+
+    // Disable / Re-enable: flip the person's `is_active` attribute. KEEPS the
+    // person card so every historical reference (assignee / originator / comm
+    // recipient) still resolves to a name; new pickers should hide disabled
+    // people from their search. Less destructive than the Remove (soft-delete)
+    // affordance to its right — Remove is for genuine mistakes / duplicates.
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'people-manager__toggle';
+    toggle.dataset.peopleToggleActive = r.isActive ? 'on' : 'off';
+    toggle.textContent = r.isActive ? 'Disable' : 'Re-enable';
+    toggle.title = r.isActive
+      ? `Disable ${r.title || `#${r.id.toString()}`} (keeps the person in the system)`
+      : `Re-enable ${r.title || `#${r.id.toString()}`}`;
+    toggle.setAttribute('aria-label', toggle.title);
+    this.listen(toggle, 'click', () => this.commitActive(r, !r.isActive));
 
     // Remove: opens a confirm dialog → revoke login (if a user) + soft-delete.
     const remove = document.createElement('button');
@@ -274,7 +334,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     merge.textContent = 'Merge';
     this.listen(merge, 'click', () => this.openMergeDialog(r));
 
-    row.append(name, email, tierSel, merge, remove);
+    row.append(name, email, tierSel, merge, toggle, remove);
     // Inline role assignment for users (#19): their roles as removable chips +
     // an "add role" picker. Reuses the user_role.set / user_role.revoke specs.
     if (r.tier === 'user' && r.accountId !== null) {
@@ -355,6 +415,78 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     this.ctx.api.callByName(
       ADMIN_SPEC.userRoleRevoke,
       input,
+      () => {
+        if (this.isAlive()) this.load();
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /** Commit a person's display name. Two writes ride in the same coalesced
+   *  batch:
+   *    1. `attribute.update(title)` on the person card — the value the People
+   *       list, ref-pickers, and the merge dialog read.
+   *    2. For tier 'user' only: `user.set_display_name` on the linked
+   *       user_account — the column `/auth/me` reads for the shell's
+   *       signed-in user chip. Without this the chip keeps showing the OLD
+   *       display_name until a server-side rewrite.
+   *  When the renamed user is the SIGNED-IN user, we also mirror the new name
+   *  into the `auth.user` leaf so the chip updates this session without
+   *  waiting for the next `/auth/me` probe. No-op on unchanged / empty.
+   */
+  private commitName(r: PersonRow, next: string): void {
+    if (next === '' || next === r.title) return;
+    this.ctx.api.callByName(
+      SPEC.attributeUpdate,
+      { cardId: r.id, attributeName: 'title', value: next },
+      () => {
+        if (this.isAlive()) this.load();
+      },
+      { alive: () => this.isAlive() },
+    );
+    if (r.tier === 'user' && r.accountId !== null) {
+      this.ctx.api.callByName(
+        ADMIN_SPEC.userSetDisplayName,
+        { userAccountId: r.accountId, displayName: next },
+        () => {
+          if (!this.isAlive()) return;
+          // Mirror into auth.user when this is the signed-in user, so the
+          // shell chip flips immediately (its effect reads the leaf reactively).
+          const node = this.ctx.tree.at([...AUTH_USER_PATH]);
+          const cur = node.peek<AuthUser>();
+          if (cur && cur.userId !== null && r.accountId !== null && cur.userId.toString() === r.accountId) {
+            node.set({ ...cur, displayName: next });
+          }
+        },
+        { alive: () => this.isAlive() },
+      );
+    }
+  }
+
+  /** Toggle the person's `is_active` flag. The card stays — every historical
+   *  ref to it (assignees, originators, comm recipients) still resolves to a
+   *  name; the disable just signals "no new assignments" so RefPickers can
+   *  filter them out of their search. */
+  private commitActive(r: PersonRow, next: boolean): void {
+    if (next === r.isActive) return;
+    this.ctx.api.callByName(
+      SPEC.attributeUpdate,
+      { cardId: r.id, attributeName: 'is_active', value: next },
+      () => {
+        if (this.isAlive()) this.load();
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /** Commit an assignee/contact's email (the person card's `email` attribute).
+   *  Users skip this path — their account email is the source of truth, so the
+   *  row renders read-only for them. */
+  private commitEmail(r: PersonRow, next: string): void {
+    if (next === r.email) return;
+    this.ctx.api.callByName(
+      SPEC.attributeUpdate,
+      { cardId: r.id, attributeName: 'email', value: next === '' ? null : next },
       () => {
         if (this.isAlive()) this.load();
       },

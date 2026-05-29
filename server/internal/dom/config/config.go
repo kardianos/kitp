@@ -23,6 +23,7 @@ type Snapshot struct {
 	AttachmentMaxBytes int64  `json:"attachment_max_bytes" mcp:"desc=whole-file upload cap, in bytes (UI enforces before chunking)"`
 	ChunkMaxBytes      int64  `json:"chunk_max_bytes" mcp:"desc=per-chunk cap on POST /api/v1/cas/chunk, in bytes"`
 	WorkspaceTitle     string `json:"workspace_title" mcp:"desc=operator-set workspace name shown in the web header + browser title"`
+	CommsBellURL       string `json:"comms_bell_url" mcp:"desc=destination URL the header comms-bell navigates to; empty falls back to the active project's comms screen (or /activity)"`
 }
 
 // GetInput is empty.

@@ -275,6 +275,12 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     search.dataset.filterSearch = '';
     this.searchEl = search;
 
+    // Search-fields dropdown — controls which fields the title-search runs
+    // against. Defaults to title only; the checkbox list adds description /
+    // comments. Pinned right of the search input so it reads as "search in:"
+    // configuration; persists via the standard view path so re-nav restores it.
+    const searchFields = this.buildSearchFieldsDropdown();
+
     // Advanced toggle — expands the structured PredicateFilter panel.
     const advanced = document.createElement('button');
     advanced.type = 'button';
@@ -290,7 +296,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
 
     row2.append(groupWrap);
     if (laneWrap !== null) row2.append(laneWrap);
-    row2.append(search, advanced, clear);
+    row2.append(search, searchFields, advanced, clear);
     this.el.append(row2);
 
     /* ---- row 3: the QUICK-CHIPS row (pinned per-attribute one-tap filters) ---- */
@@ -424,6 +430,8 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     }
     this.listen(search, 'input', () => {
       this.ctx.tree.at(['screen', 'search']).set(search.value);
+      const sp = this.config.screenStatePath;
+      if (sp !== undefined) this.searchSessionNode(sp).set(search.value);
     });
     this.listen(advanced, 'click', () => {
       const open = panel.style.display === 'none';
@@ -466,6 +474,14 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     if (sp === undefined) {
       this.viewRestored = true;
       return;
+    }
+    // Restore the in-session search text (list → detail → back keeps what the
+    // user typed). Empty when never set this session; the cold-reload path keeps
+    // the existing transient-search posture.
+    const sessionSearch = this.searchSessionNode(sp).peek<string>() ?? '';
+    if (sessionSearch !== '') {
+      this.ctx.tree.at(['screen', 'search']).set(sessionSearch);
+      if (this.searchEl !== null) this.searchEl.value = sessionSearch;
     }
     const v = loadView(sp);
     if (v !== null) {
@@ -752,6 +768,14 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     return this.ctx.tree.at(['session', 'phase', ...statePath.slice(1)]);
   }
 
+  /** The IN-MEMORY (session-only) search text node for a screen. Mirrors the
+   *  phase pattern: a list → detail → back round trip restores what the user
+   *  typed, but a cold reload starts empty (search is transient across reloads
+   *  by design — only retained within a session). Keyed by (project, slug). */
+  private searchSessionNode(statePath: string[]) {
+    return this.ctx.tree.at(['session', 'search', ...statePath.slice(1)]);
+  }
+
   /** Reset phase to the screen's base (the Clear button) + record it as the
    *  in-session value so it sticks for the rest of the session. */
   private resetPhaseToBase(statePath: string[]): void {
@@ -770,6 +794,113 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
    * to the base phase the screen seeded). A child-panel dropdown (not a body-
    * mounted popover) so it stays in the bar's DOM + works under the test shim.
    */
+  /**
+   * Build the SEARCH-FIELDS dropdown — pinned to the right of the search input.
+   * A trigger button + a panel of three checkboxes (Title / Description /
+   * Comments) selecting which fields the search text matches against. Defaults
+   * to title only (the existing behaviour). The active set lives at
+   * `screen.searchFields`; consumers (Kanban / Grid / Inbox `applyFilter`) read
+   * it to build their wire predicate.
+   */
+  private buildSearchFieldsDropdown(): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'filterbar__search-fields';
+    wrap.dataset.filterSearchFields = '';
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'btn filterbar__search-fields-trigger';
+    trigger.dataset.filterSearchFieldsTrigger = '';
+    trigger.setAttribute('aria-haspopup', 'true');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.textContent = 'In: Title';
+
+    const panel = document.createElement('div');
+    panel.className = 'filterbar__search-fields-menu';
+    panel.dataset.filterSearchFieldsMenu = '';
+    panel.style.display = 'none';
+
+    wrap.append(trigger, panel);
+
+    const setOpen = (open: boolean): void => {
+      panel.style.display = open ? '' : 'none';
+      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    this.listen(trigger, 'click', (ev) => {
+      (ev as Event).stopPropagation();
+      setOpen(panel.style.display === 'none');
+    });
+    this.listen(panel, 'click', (ev) => (ev as Event).stopPropagation());
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      this.listen(document, 'click', () => setOpen(false));
+    }
+
+    // Seed the leaf BEFORE the data layer wires so the consumers' applyFilter
+    // sees a populated set on the first run. `restoreView` later overwrites
+    // this with the persisted value when one exists.
+    this.ctx.tree.at(['screen', 'searchFields']).set(['title']);
+
+    // Paint the panel + the trigger label reactively from the active set.
+    this.effect(() => {
+      const active = (this.ctx.tree.at(['screen', 'searchFields']).get<string[]>() ?? ['title']);
+      this.paintSearchFieldsDropdown(trigger, panel, active);
+    }, 'filterbar.searchFields');
+
+    return wrap;
+  }
+
+  /** (Re)render the search-fields trigger label + checkbox panel. The trigger
+   *  reads "In: Title" / "In: Title, Description" / "In: Title, Description,
+   *  Comments". Toggling a box mutates `screen.searchFields`; the title box
+   *  refuses to deselect — leaving the search empty would render the input
+   *  inert without an obvious reason. */
+  private paintSearchFieldsDropdown(
+    trigger: HTMLElement,
+    panel: HTMLElement,
+    active: readonly string[],
+  ): void {
+    const FIELDS: ReadonlyArray<{ value: string; label: string; locked?: boolean }> = [
+      { value: 'title', label: 'Title', locked: true },
+      { value: 'description', label: 'Description' },
+      { value: 'comments', label: 'Comments' },
+    ];
+    const set = new Set(active);
+    trigger.textContent = `In: ${FIELDS.filter((f) => set.has(f.value)).map((f) => f.label).join(', ') || 'Title'}`;
+
+    panel.replaceChildren();
+    for (const f of FIELDS) {
+      const option = document.createElement('label');
+      option.className = 'filterbar__search-fields-option';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'filterbar__search-fields-check';
+      cb.dataset.filterSearchField = f.value;
+      cb.checked = set.has(f.value);
+      if (f.locked === true) cb.disabled = true;
+      const text = document.createElement('span');
+      text.textContent = f.label;
+      option.append(cb, text);
+      this.listen(cb, 'change', () => this.toggleSearchField(f.value));
+      panel.append(option);
+    }
+  }
+
+  /** Toggle one search field on `screen.searchFields`. Title stays pinned —
+   *  the box renders disabled too — so the search input never becomes inert. */
+  private toggleSearchField(field: string): void {
+    if (field === 'title') return;
+    const cur = (this.ctx.tree.at(['screen', 'searchFields']).peek<string[]>() ?? ['title']).slice();
+    const i = cur.indexOf(field);
+    if (i >= 0) cur.splice(i, 1);
+    else cur.push(field);
+    // Always preserve a canonical title/description/comments ordering so the
+    // persisted value comparison + the trigger label stay stable.
+    const order = ['title', 'description', 'comments'];
+    cur.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    if (!cur.includes('title')) cur.unshift('title');
+    this.ctx.tree.at(['screen', 'searchFields']).set(cur);
+  }
+
   private buildPhaseDropdown(row: HTMLElement): void {
     const wrap = document.createElement('div');
     wrap.className = 'filterbar__phase';
@@ -907,6 +1038,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.ctx.tree.at(['screen', 'search']).set('');
     const statePath = this.config.screenStatePath;
     if (statePath !== undefined) {
+      this.searchSessionNode(statePath).set(''); // drop the in-session search too
       this.applyScreenDefaults(statePath); // default VIEW
       this.resetPhaseToBase(statePath); // base PHASE (+ session)
     } else {

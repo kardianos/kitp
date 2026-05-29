@@ -92,6 +92,14 @@ export function cycleSort(current: SortState | null, field: string): SortState |
  * encoder drops empty arrays. `null` and `[]` both mean "no order — let the
  * server fall back to its default". The server expects `direction: 'ASC' |
  * 'DESC'`; we upper-case here.
+ *
+ * NULLS LAST is implicit on every server-side branch of
+ * `card_select_with_attributes_batch.sql`'s ORDER BY assembly — attribute,
+ * timestamp, and personal_sort_order paths all append `NULLS LAST` regardless
+ * of direction. So a `direction: 'desc'` clause naturally surfaces unset
+ * rows last; callers must NOT prepend a synthetic "is null" key to emulate
+ * the rule. Any new client-side comparator should preserve the same invariant
+ * — see `inbox-helpers.sortGrouped` for the in-memory equivalent.
  */
 export function buildOrderClauses(sort: SortState | SortState[] | null): OrderClause[] {
   if (sort === null) return [];

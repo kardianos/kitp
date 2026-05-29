@@ -296,6 +296,62 @@ func TestUserListWithRolesBatch_MultiInput(t *testing.T) {
 	}
 }
 
+func TestUserSetDisplayNameBatch(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_user_set_display_name")
+	ctx := context.Background()
+	var uid int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO user_account (display_name) VALUES ('before') RETURNING id`,
+	).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+
+	// First call: actually updates → updated=true. Reads back the new value.
+	rows := callBatch(t, pool, "user_set_display_name_batch", auth.SystemUserID,
+		[]map[string]any{{"user_account_id": strconv.FormatInt(uid, 10), "display_name": "after"}})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("first call: %+v", rows)
+	}
+	var first struct{ Updated bool `json:"updated"` }
+	_ = json.Unmarshal(rows[0].Result, &first)
+	if !first.Updated {
+		t.Errorf("first call should report updated=true; got %+v", first)
+	}
+	var got string
+	if err := pool.QueryRow(ctx, `SELECT display_name FROM user_account WHERE id=$1`, uid).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "after" {
+		t.Errorf("display_name not persisted: got %q want %q", got, "after")
+	}
+
+	// Idempotent repeat: same payload → updated=false.
+	rows = callBatch(t, pool, "user_set_display_name_batch", auth.SystemUserID,
+		[]map[string]any{{"user_account_id": strconv.FormatInt(uid, 10), "display_name": "after"}})
+	var second struct{ Updated bool `json:"updated"` }
+	_ = json.Unmarshal(rows[0].Result, &second)
+	if second.Updated {
+		t.Errorf("repeat call should report updated=false; got %+v", second)
+	}
+
+	// Validation: empty display_name rejects.
+	rows = callBatch(t, pool, "user_set_display_name_batch", auth.SystemUserID,
+		[]map[string]any{{"user_account_id": strconv.FormatInt(uid, 10), "display_name": "   "}})
+	if rows[0].OK {
+		t.Errorf("empty (whitespace-only) display_name should reject; got %+v", rows[0])
+	}
+	if rows[0].Code != "validation" {
+		t.Errorf("want validation code; got %q", rows[0].Code)
+	}
+
+	// Validation: missing user_account_id rejects.
+	rows = callBatch(t, pool, "user_set_display_name_batch", auth.SystemUserID,
+		[]map[string]any{{"display_name": "x"}})
+	if rows[0].OK {
+		t.Errorf("missing user_account_id should reject; got %+v", rows[0])
+	}
+}
+
 func TestUserListWithRolesBatch_EmptyRoles(t *testing.T) {
 	pool := store.TestPool(t, "kitp_test_user_list_with_roles_empty")
 	ctx := context.Background()

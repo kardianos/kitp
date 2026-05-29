@@ -568,6 +568,104 @@ export function emptyRoot(): PredicateGroup {
 }
 
 /* -------------------------------------------------------------------------- */
+/* applySearchFilter — the shared search + Advanced predicate composer the    */
+/* Kanban / Grid / Inbox `applyFilter` methods all dispatch to.               */
+/* -------------------------------------------------------------------------- */
+
+/** The fields the user may search across. The server's `contains` op
+ *  special-cases `comments` (it joins against `comment_body`), so the wire
+ *  carries the same attribute names verbatim — no client-side rewrite. */
+export const SEARCH_FIELD_VALUES = ['title', 'description', 'comments'] as const;
+export type SearchField = (typeof SEARCH_FIELD_VALUES)[number];
+const SEARCH_FIELDS_SET: ReadonlySet<string> = new Set(SEARCH_FIELD_VALUES as readonly string[]);
+
+/**
+ * Project the shared search needle + the chosen search fields + the Advanced
+ * structured predicate down to the `card.select_with_attributes` wire fields
+ * (`where[]` / `tree`).
+ *
+ * Single-field search (e.g. just title) compose into the flat `where[]` so the
+ * common case stays as cheap as before. A multi-field search (title +
+ * description, …) wraps the needle in an OR group and rides the v2 `tree`
+ * field; the user's structured predicate is ANDed in alongside it.
+ *
+ * Empty inputs return `undefined` for each leaf so the encoder omits them.
+ */
+export function applySearchFilter(
+  search: string,
+  fields: readonly string[],
+  predicate: Predicate | null,
+): { where: WireNode[] | undefined; tree: WireNode | undefined } {
+  const needle = search.trim();
+  const validFields = needle === ''
+    ? []
+    : fields.filter((f): f is SearchField => SEARCH_FIELDS_SET.has(f));
+  // Fall back to title when the caller passed an empty / unknown set but DID
+  // type a query — otherwise the search input would be silently inert.
+  const effective = needle === '' ? [] : validFields.length > 0 ? validFields : ['title'];
+
+  // Build the search clause. The v2 `tree` field's Go-side leaf struct only
+  // carries `Values []` (plural) — the singular `value` key is silently dropped
+  // on unmarshal, which surfaces as "contains: missing value" from the
+  // predicate compiler. The v1 `where[]` Predicate struct still accepts both,
+  // so the where-leaf path may stay singular; the tree-leaf path must use
+  // the plural form. The SQL fallback compiler (card_compile_predicate.sql)
+  // handles both shapes — only the Go path is strict.
+  let searchLeaves: WireNode[] = [];
+  let searchTree: WireNode | null = null;
+  if (effective.length === 1) {
+    searchLeaves = [{ attr: effective[0], op: 'contains', value: needle }];
+  } else if (effective.length > 1) {
+    searchTree = {
+      connective: 'or',
+      children: effective.map((attr) => ({ attr, op: 'contains', values: [needle] })),
+    };
+  }
+
+  // The Go server uses `tree` when set and IGNORES `where[]`. So whenever we
+  // emit a `tree`, the search leaves must ride INSIDE it — they can't sit in
+  // `where[]` alongside. Tree-leaf shape requires `values: [...]` (plural);
+  // the {searchTree} branch already builds that, and the single-field branch
+  // re-shapes its leaf to the plural form before merging into a tree below.
+  const singleSearchLeafAsTree: WireNode | null =
+    effective.length === 1
+      ? { attr: effective[0], op: 'contains', values: [needle] }
+      : null;
+  const searchClauseForTree: WireNode | null = searchTree ?? singleSearchLeafAsTree;
+
+  if (predicate === null) {
+    if (searchTree !== null) return { where: undefined, tree: searchTree };
+    return { where: searchLeaves.length > 0 ? searchLeaves : undefined, tree: undefined };
+  }
+  if (isFlatAndOfLeaves(predicate)) {
+    const userLeaves = (toWhereLeaves(predicate) ?? []) as WireNode[];
+    if (searchTree !== null) {
+      // Multi-field search: ride on tree, AND-fold the (plural-leaf) user
+      // predicate alongside it. (We could rebuild user leaves via toWire to
+      // guarantee the plural shape, but toWhereLeaves already calls toWire.)
+      const tree: WireNode = {
+        connective: 'and',
+        children: [searchTree, ...userLeaves.map((l) => ({ ...l }))],
+      };
+      return { where: undefined, tree };
+    }
+    const combined = [...searchLeaves, ...userLeaves];
+    return { where: combined.length > 0 ? combined : undefined, tree: undefined };
+  }
+  // Structured (non flat-AND) predicate → must use `tree`; the search clause
+  // joins it under a top-level AND so the Go-side ignored-`where` rule doesn't
+  // silently drop the needle.
+  const userTree = toWire(predicate);
+  if (searchClauseForTree !== null) {
+    return {
+      where: undefined,
+      tree: { connective: 'and', children: [searchClauseForTree, userTree] },
+    };
+  }
+  return { where: undefined, tree: userTree };
+}
+
+/* -------------------------------------------------------------------------- */
 /* CardWherePredicate — backward-compatible re-export                         */
 /* -------------------------------------------------------------------------- */
 

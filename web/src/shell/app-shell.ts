@@ -54,7 +54,7 @@ import {
   screenUrl,
   type RouteMatch,
 } from './router.js';
-import { WORKSPACE_TITLE_PATH, DEFAULT_WORKSPACE_TITLE } from './config-specs.js';
+import { WORKSPACE_TITLE_PATH, COMMS_BELL_URL_PATH, DEFAULT_WORKSPACE_TITLE } from './config-specs.js';
 import { readSlug, readTitle } from '../filter/screen-resolve.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import {
@@ -442,7 +442,7 @@ export class AppShell extends Control<AppShellConfig> {
     // is a test seam to inject links; otherwise we start empty and wait for
     // `loadScopeLinks` to publish from the project's screen cards.
     const fallbackLinks = cfg.scopeLinks ?? [];
-    const scopeHeading = sectionLabel('DEFAULT PROJECT');
+    const scopeHeading = sectionLabel('TASKS');
     const scopeLinksHost = document.createElement('div');
     scopeLinksHost.className = 'shell__scope-links';
     scopeLinksHost.dataset.region = 'shell.scopeLinks';
@@ -866,10 +866,19 @@ export class AppShell extends Control<AppShellConfig> {
     });
   }
 
-  /** Bell click target: the active project's Comms screen when it defines one
-   *  (slug 'comms'), else the global Activity feed. The bell counts across all
-   *  projects, so this is a best-effort landing on the in-scope project. */
+  /** Bell click target. PRECEDENCE:
+   *    1. Operator-set workspace URL (`config.commsBellUrl`, env
+   *       `KITP_COMMS_BELL_URL`) — workspace-configurable destination.
+   *    2. The active project's Comms screen (slug 'comms') when defined.
+   *    3. The global `/activity` feed.
+   *  The bell counts across all projects, so this is a best-effort landing.
+   */
   private goToCommsScreen(): void {
+    const configured = this.ctx.tree.at([...COMMS_BELL_URL_PATH]).peek<string>() ?? '';
+    if (configured !== '') {
+      navigate(configured);
+      return;
+    }
     const pid = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
     if (pid !== null) {
       const links = this.ctx.tree.at(['shell', 'screenLinks']).peek<Array<{ slug: string }>>() ?? [];

@@ -97,7 +97,12 @@ function taskMockTransport() {
     defRow('title', 'text', null, 0),
     defRow('description', 'text', null, 1),
     defRow('assignee', 'card_ref', 'person', 2),
+    // `status` is intentionally not edited from the attribute panel — the
+    // TransitionBar (#34) is the canonical status assigner since it restricts
+    // the picker to the card's currently-available transitions. The bound
+    // attribute_def still exists; the panel skips it (see PANEL_SKIP_ATTRS).
     defRow('status', 'card_ref', 'status', 3),
+    defRow('milestone_ref', 'card_ref', 'milestone', 35),
     defRow('due_date', 'date', null, 4),
     defRow('priority', 'text', null, 5),
   ];
@@ -119,6 +124,7 @@ function taskMockTransport() {
       const rows = [];
       if (data.card_type_name === 'person') rows.push({ id: '10', title: 'Alice' });
       if (data.card_type_name === 'status') rows.push({ id: '40', title: 'Todo' });
+      if (data.card_type_name === 'milestone') rows.push({ id: '50', title: 'Sprint 1' });
       return { id: sr.id, ok: true, data: { rows } };
     }
     if (key === 'activity.select') {
@@ -446,6 +452,37 @@ test('TaskDetail: the Back button returns to the saved source list URL (not hist
   M._resetRouterForTest();
 });
 
+test('TaskDetail: q and Escape hotkeys return to the saved source list URL', async () => {
+  const { transport } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  for (const k of ['q', 'Escape']) {
+    const tree = new M.TreeNode({}, []);
+    tree.at(['nav', 'taskList']).set(['53', '54', '55']);
+    tree.at(['nav', 'listUrl']).set('/project/9/screen/grid');
+    M.installRouter(tree);
+    const td = M.Control.New('TaskDetail', { type: 'TaskDetail', taskId: String(TASK_ID) }, { api, tree });
+    td.mount(document.createElement('div'));
+    document.body.appendChild(td.el);
+    await settle(dispatcher);
+
+    // The HotkeyController drives the binding map off the active control chain;
+    // TaskDetail is the freshly-mounted body so it owns the q/Escape binding.
+    const rootSig = M.signal(td, 'root');
+    const activeSig = M.signal(td, 'active');
+    const hk = new M.HotkeyController({ root: rootSig, active: activeSig, target: document });
+    const dispose = hk.start();
+    document.body.dispatchEvent(
+      new globalThis.window.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }),
+    );
+    const route = tree.at([...M.ROUTER_PATH]).peek();
+    assert.equal(route.name, 'screen', `${k} navigated to a screen route`);
+    assert.equal(route.params.slug, 'grid', `${k} returned to the saved grid list`);
+    dispose();
+    M._resetRouterForTest();
+    document.body.replaceChildren();
+  }
+});
+
 test('TaskDetail: Back falls back to the project board on a cold deep-link', async () => {
   const { transport } = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
@@ -476,8 +513,9 @@ test('TaskDetail: attribute panel renders a row per editable attr with read summ
   const panel = td.el.querySelector('[data-task-detail-panel]');
   assert.ok(panel, 'attribute panel rendered');
   const rows = [...panel.querySelectorAll('[data-attr-row]')].map((r) => r.dataset.attrRow);
-  // title/description skipped; assignee/status/due_date/priority shown.
-  assert.deepEqual(rows, ['assignee', 'status', 'due_date', 'priority']);
+  // title/description + status skipped (TransitionBar #34 owns status);
+  // assignee/due_date/priority/milestone_ref shown (ordering: 2/4/5/35).
+  assert.deepEqual(rows, ['assignee', 'due_date', 'priority', 'milestone_ref']);
 
   // card_ref summary resolved to a label via card.search.
   const assigneeRow = panel.querySelector('[data-attr-row="assignee"]');
@@ -540,7 +578,7 @@ test('TaskDetail: a person-typed card_ref (assignee) pins a "Self" quick-pick at
   assert.ok(opts.includes('Alice'), 'searched person rows follow the pin');
 });
 
-test('TaskDetail: a non-person card_ref (status) gets no "Self" pin', async () => {
+test('TaskDetail: a non-person card_ref (milestone_ref) gets no "Self" pin', async () => {
   const { transport } = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const tree = new M.TreeNode({}, []);
@@ -553,14 +591,14 @@ test('TaskDetail: a non-person card_ref (status) gets no "Self" pin', async () =
   document.body.appendChild(td.el);
   await settle(dispatcher);
 
-  const statusRow = td.el.querySelector('[data-attr-row="status"]');
-  toggle(statusRow);
+  const milestoneRow = td.el.querySelector('[data-attr-row="milestone_ref"]');
+  toggle(milestoneRow);
   await flushMicrotasks();
   await settle(dispatcher);
   await flushMicrotasks();
 
   const opts = [...document.querySelectorAll('[data-cb-option]')].map((li) => li.textContent);
-  assert.ok(opts.length > 0, 'status picker opened with options');
+  assert.ok(opts.length > 0, 'milestone picker opened with options');
   assert.ok(!opts.includes('Self'), 'no Self pin on a non-person ref');
 });
 
@@ -582,6 +620,37 @@ test('TaskDetail: a text attr row inline-edits and fires attribute.update on Ent
   const u = updates.find((x) => x.attribute_name === 'priority');
   assert.ok(u, 'attribute.update(priority) fired');
   assert.equal(u.value, 'low');
+});
+
+test('TaskDetail: per-row Unassign fires attribute.update(value=null)', async () => {
+  const { transport, updates } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { td } = mountTaskDetail(api);
+  await settle(dispatcher);
+
+  const assigneeRow = td.el.querySelector('[data-attr-row="assignee"]');
+  toggle(assigneeRow);
+  await flushMicrotasks();
+  await settle(dispatcher);
+
+  const unassignBtn = assigneeRow.querySelector('[data-attr-unassign]');
+  assert.ok(unassignBtn, 'an Unassign button is rendered inside the row editor');
+  assert.equal(unassignBtn.disabled, false, 'enabled while the attribute has a value');
+
+  unassignBtn.click();
+  await settle(dispatcher);
+
+  const u = updates.find((x) => x.attribute_name === 'assignee');
+  assert.ok(u, 'attribute.update(assignee) fired');
+  assert.equal(u.value, null, 'value is null — the unassign payload');
+  // After the clear, the row summary reflects the empty state and the button
+  // disables itself (nothing left to clear).
+  assert.equal(
+    assigneeRow.querySelector('[data-attr-value]').textContent,
+    '—',
+    'summary reads empty after unassign',
+  );
+  assert.equal(unassignBtn.disabled, true, 'disabled once the value is cleared');
 });
 
 /* -------------------------------------------------------------------------- */

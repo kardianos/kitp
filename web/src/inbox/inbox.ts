@@ -76,9 +76,7 @@ import type { CardWherePredicate } from '../projects/project-helpers.js';
 import {
   type Predicate,
   type WireNode,
-  isFlatAndOfLeaves,
-  toWhereLeaves,
-  toWire,
+  applySearchFilter,
 } from '../filter/predicate.js';
 
 /**
@@ -533,8 +531,9 @@ export class Inbox extends Control<InboxConfig> {
     this.effect(() => {
       const search = this.ctx.tree.at(['screen', 'search']).get<string>() ?? '';
       const predicate = this.ctx.tree.at(['screen', 'predicate']).get<Predicate | null>() ?? null;
+      const fields = this.ctx.tree.at(['screen', 'searchFields']).get<string[]>() ?? ['title'];
       this.ctx.tree.at(['inbox', 'mineOnly']).get(); // subscribe — the toggle flips it
-      this.applyFilter(search, predicate);
+      this.applyFilter(search, fields, predicate);
       this.bumpQuery();
     }, 'inbox.filterWatch');
 
@@ -576,7 +575,8 @@ export class Inbox extends Control<InboxConfig> {
       if ((this.ctx.tree.at(['inbox', 'mineOnly']).peek<boolean>() ?? false)) {
         const search = this.ctx.tree.at(['screen', 'search']).peek<string>() ?? '';
         const predicate = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
-        this.applyFilter(search, predicate);
+        const fields = this.ctx.tree.at(['screen', 'searchFields']).peek<string[]>() ?? ['title'];
+        this.applyFilter(search, fields, predicate);
         this.bumpQuery();
       }
     }, 'inbox.identityWatch');
@@ -672,36 +672,32 @@ export class Inbox extends Control<InboxConfig> {
    * Grid/Kanban: a flat AND composes into where[]; a structured tree rides the
    * v2 `tree` field while the search leaf stays in where[].
    */
-  private applyFilter(search: string, predicate: Predicate | null): void {
-    const needle = search.trim();
-    const leaves: CardWherePredicate[] = [];
-    if (needle.length > 0) leaves.push({ attr: 'title', op: 'contains', value: needle });
-
-    // mine_only: AND an `assignee = me` leaf — using the resolved identity
-    // (config override, else the landed auth.user). Before the identity resolves
-    // (null) this is a no-op refire; the identity-watch effect re-applies the
-    // filter once the probe lands.
+  private applyFilter(search: string, fields: readonly string[], predicate: Predicate | null): void {
+    // Compose the shared (search × selected-fields × Advanced-predicate) leaves
+    // via {@link applySearchFilter}, then AND the inbox-specific `assignee = me`
+    // leaf in alongside it. The mine_only leaf rides as a flat-AND leaf in
+    // `where[]` whenever the result is already in where[]-shape; otherwise it
+    // joins the tree's top-level AND so the search-OR group still applies.
+    const { where, tree } = applySearchFilter(search, fields, predicate);
     const me = this.resolveUserId();
     const mineOnly = this.ctx.tree.at(['inbox', 'mineOnly']).peek<boolean>() ?? false;
-    if (mineOnly && me !== null) {
-      leaves.push({ attr: 'assignee', op: '=', value: me });
+    const mineLeaf: CardWherePredicate | null =
+      mineOnly && me !== null ? { attr: 'assignee', op: '=', value: me } : null;
+
+    let outWhere: CardWherePredicate[] | undefined = where as CardWherePredicate[] | undefined;
+    let outTree: WireNode | undefined = tree;
+    if (mineLeaf !== null) {
+      if (outTree === undefined) {
+        outWhere = [...(outWhere ?? []), mineLeaf];
+      } else if (outTree.connective === 'and' && Array.isArray(outTree.children)) {
+        outTree = { connective: 'and', children: [...outTree.children, mineLeaf] };
+      } else {
+        outTree = { connective: 'and', children: [outTree, mineLeaf] };
+      }
     }
 
-    let where: CardWherePredicate[] | undefined;
-    let tree: WireNode | undefined;
-
-    if (predicate === null) {
-      where = leaves.length > 0 ? leaves : undefined;
-    } else if (isFlatAndOfLeaves(predicate)) {
-      const combined = [...leaves, ...(toWhereLeaves(predicate) ?? [])];
-      where = combined.length > 0 ? combined : undefined;
-    } else {
-      where = leaves.length > 0 ? leaves : undefined;
-      tree = toWire(predicate);
-    }
-
-    this.ctx.tree.at(['inbox', 'where']).set(where);
-    this.ctx.tree.at(['inbox', 'tree']).set(tree);
+    this.ctx.tree.at(['inbox', 'where']).set(outWhere);
+    this.ctx.tree.at(['inbox', 'tree']).set(outTree);
   }
 
   private bumpQuery(): void {

@@ -52,6 +52,7 @@ export const ADMIN_SPEC = {
   userRoleRevoke: 'user_role.revoke',
   userRoleList: 'user_role.list',
   userUnlinkPerson: 'user.unlink_person',
+  userSetDisplayName: 'user.set_display_name',
   // Nested-editor specs (flow-step transitions, attribute edges, card_types).
   cardTypeSelect: 'card_type.select',
   cardSetPhase: 'card.set_phase',
@@ -376,6 +377,16 @@ export interface UserUnlinkPersonInput {
 }
 export interface UserUnlinkPersonOutput {
   deleted: boolean;
+}
+
+/* ---- user.set_display_name (Users rename → shell chip) ------------------- */
+
+export interface UserSetDisplayNameInput {
+  userAccountId: bigint | string;
+  displayName: string;
+}
+export interface UserSetDisplayNameOutput {
+  updated: boolean;
 }
 
 /* ---- card_type.select (edge matrix axis) --------------------------------- */
@@ -1150,6 +1161,21 @@ export function registerAdminSpecs(api: Api): void {
       action: 'unlink_person',
       encode: (i) => ({ user_account_id: i.userAccountId }),
       decode: (raw): UserUnlinkPersonOutput => ({ deleted: asObj(raw)['deleted'] === true }),
+    });
+  }
+
+  // user.set_display_name — admin-only update of user_account.display_name.
+  // The /auth/me probe reads display_name straight from this column, so the
+  // shell's signed-in user chip only reflects a rename when this fires;
+  // renaming the linked person card (attribute.update on title) does NOT
+  // propagate. PeopleManager calls this for tier 'user' alongside the
+  // person-title commit. Idempotent (updated=false when unchanged).
+  if (!api.registry.has({ endpoint: 'user', action: 'set_display_name' })) {
+    api.define<UserSetDisplayNameInput, UserSetDisplayNameOutput>({
+      endpoint: 'user',
+      action: 'set_display_name',
+      encode: (i) => ({ user_account_id: i.userAccountId, display_name: i.displayName }),
+      decode: (raw): UserSetDisplayNameOutput => ({ updated: asObj(raw)['updated'] === true }),
     });
   }
 

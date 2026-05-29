@@ -21,6 +21,11 @@ export const CONFIG_GET_SPEC = 'config.get';
 /** Where the resolved workspace title lives in the data tree (AppShell reads it). */
 export const WORKSPACE_TITLE_PATH = ['config', 'workspaceTitle'] as const;
 
+/** Where the resolved comms-bell destination URL lives (AppShell reads it on bell
+ *  click). Empty string = no operator override → fall back to the project-aware
+ *  default (active project's comms screen, else /activity). */
+export const COMMS_BELL_URL_PATH = ['config', 'commsBellUrl'] as const;
+
 /** The neutral fallback shown when no workspace title is configured. Never 'kitp'. */
 export const DEFAULT_WORKSPACE_TITLE = 'Workspace';
 
@@ -28,6 +33,8 @@ export interface ServerConfig {
   workspaceTitle: string;
   attachmentMaxBytes: number;
   chunkMaxBytes: number;
+  /** Operator-set destination URL for the comms-bell, or '' for the default. */
+  commsBellUrl: string;
 }
 
 function asObj(v: unknown): Record<string, unknown> {
@@ -46,6 +53,7 @@ function decodeConfig(raw: unknown): ServerConfig {
     workspaceTitle: asStr(c['workspace_title']),
     attachmentMaxBytes: asNum(c['attachment_max_bytes']),
     chunkMaxBytes: asNum(c['chunk_max_bytes']),
+    commsBellUrl: asStr(c['comms_bell_url']),
   };
 }
 
@@ -78,6 +86,9 @@ export function loadServerConfig(api: Api, tree: TreeNode): void {
       const title = cfg.workspaceTitle.trim() !== '' ? cfg.workspaceTitle.trim() : DEFAULT_WORKSPACE_TITLE;
       tree.at([...WORKSPACE_TITLE_PATH]).set(title);
       if (typeof document !== 'undefined') document.title = title;
+      // Land the operator-set comms-bell URL (empty → AppShell falls back to
+      // the project-aware default).
+      tree.at([...COMMS_BELL_URL_PATH]).set(cfg.commsBellUrl.trim());
     },
     { alive: () => true },
   );

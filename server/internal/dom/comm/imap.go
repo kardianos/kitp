@@ -1147,10 +1147,19 @@ func ParseInboundMessage(uid uint32, raw []byte) (InboundMessage, error) {
 		out.Body = bodyText
 		out.Attachments = atts
 	case strings.HasPrefix(ctypeLow, "text/html"):
-		out.Body = stripHTMLTags(string(body))
+		// Apply Content-Transfer-Encoding first (quoted-printable / base64)
+		// so QP markers don't survive into the stripped output — same rule
+		// walkMultipart applies per-part.
+		decoded := decodeTransferEncoding(body, msg.Header.Get("Content-Transfer-Encoding"))
+		out.Body = stripHTMLTags(string(decoded))
 	default:
-		// text/plain or unknown — treat as plain text.
-		out.Body = string(body)
+		// text/plain or unknown — treat as plain text. Apply the message's
+		// Content-Transfer-Encoding so a top-level `quoted-printable` body
+		// (`=E2=80=AA`, soft-wrap `=\r\n`, …) renders as the original UTF-8
+		// the sender typed; without this the QP markers leaked into the
+		// stored body verbatim.
+		decoded := decodeTransferEncoding(body, msg.Header.Get("Content-Transfer-Encoding"))
+		out.Body = string(decoded)
 	}
 	return out, nil
 }

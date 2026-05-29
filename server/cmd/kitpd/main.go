@@ -320,6 +320,12 @@ func runHTTP() error {
 	// compose / systemd EnvironmentFile); defaults to the neutral "Workspace"
 	// so the old "kitp" brand is never shown.
 	workspaceTitle := envOr("KITP_WORKSPACE_TITLE", "Workspace")
+	// Where the header comms-bell navigates. Empty (the default) keeps the
+	// project-aware fallback the client used before this knob landed: the
+	// active project's `comms` screen if present, else /activity. Operators
+	// who route comms triage somewhere else (e.g. a saved Grid view or an
+	// embedded URL) set KITP_COMMS_BELL_URL to that path.
+	commsBellURL := envOr("KITP_COMMS_BELL_URL", "")
 	storage := cas.New(cas.NewPgBackend(pgPool))
 
 	registerHandlers(pool, storage)
@@ -485,6 +491,7 @@ func runHTTP() error {
 		AttachmentMaxBytes: maxAttachBytes,
 		ChunkMaxBytes:      chunkMaxBytes,
 		WorkspaceTitle:     workspaceTitle,
+		CommsBellURL:       commsBellURL,
 	})
 
 	// CAS reaper. Sweeps at the configured cadence, dropping cas_blob

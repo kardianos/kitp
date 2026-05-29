@@ -138,6 +138,12 @@ const PANEL_SKIP_ATTRS = new Set([
   // System-managed + shown in the dedicated Comms section below — not a
   // user-pickable ref, so it shouldn't render as a (raw-id) RefPicker row.
   'comms',
+  // Status changes flow through the TransitionBar (#34), which restricts the
+  // picker to the card's CURRENTLY-AVAILABLE transitions. A free RefPicker row
+  // in the panel let you assign any status (including ones the flow forbids)
+  // — bypassing the workflow gate. Skip the row entirely; the header's
+  // TransitionBar is the canonical assigner.
+  'status',
 ]);
 
 /** A card_ref attribute whose target card_type is NOT project-scoped. */
@@ -526,6 +532,12 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * Resolve display labels for the card_ref attribute values the task currently
    * holds, so the panel's RefPicker triggers show "alice" rather than "#10".
    * One `card.search { ids }` per distinct target card_type that has set refs.
+   * Tolerates non-bigint wire forms (digit-string / number): the dispatcher's
+   * id-revival is hand-keyed by attribute NAME (`assignee`, `status`, …) so
+   * un-primed card_ref attrs (e.g. `originator`) arrive as strings. The schema
+   * is the canonical source of card_ref-ness — every consumer reads the value
+   * via {@link asAttrId} so the fix applies uniformly to every card_ref attr
+   * without per-name registration drift.
    */
   private resolveRefLabels(): void {
     const task = this.task;
@@ -537,14 +549,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       if (target === undefined) continue;
       const v = task.attributes[attr.name];
       const collect = (id: unknown): void => {
-        if (typeof id === 'bigint') {
-          let set = byType.get(target);
-          if (set === undefined) {
-            set = new Set();
-            byType.set(target, set);
-          }
-          set.add(id);
+        const bid = asAttrId(id);
+        if (bid === null) return;
+        let set = byType.get(target);
+        if (set === undefined) {
+          set = new Set();
+          byType.set(target, set);
         }
+        set.add(bid);
       };
       if (Array.isArray(v)) v.forEach(collect);
       else collect(v);
@@ -1243,15 +1255,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     errEl.style.display = 'none';
     editor.append(errEl);
 
-    // Status carries a note that #34 (the editable TransitionBar) replaces this
-    // plain ref editor as the canonical status changer.
-    if (attr.name === 'status') {
-      const note = document.createElement('p');
-      note.className = 'task-detail__row-note muted';
-      note.dataset.attrNote = '';
-      note.textContent = 'Status changes move to the TransitionBar (#34).';
-      editor.append(note);
-    }
+    // "Unassign" — clears this attribute to null on the focal task, mirroring
+    // the bulk-bar's Unassign action. Always rendered (so the row consistently
+    // exposes the affordance) and disabled when the field already has no value;
+    // bool stays read/write via its checkbox and skips this (its semantics
+    // distinguish true / false but not "unset"). Sits at the editor's bottom so
+    // the value editor mounts above it.
+    const unassign = this.buildUnassignButton(attr, value, errEl);
+    if (unassign !== null) editor.append(unassign);
 
     // Mount the inline editor lazily on first expand so a closed panel doesn't
     // spin up N RefPickers / DatePickers (each fires card.search on open).
@@ -1261,21 +1272,74 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       if (mounted) return;
       mounted = true;
       this.mountEditor(attr, editor, value, errEl);
+      // Keep the Unassign button at the bottom of the editor even after the
+      // value editor mounts its own children (mountEditor appends to `editor`).
+      if (unassign !== null) editor.append(unassign);
     });
 
     return row;
   }
 
-  /** Build a printed read-summary for an attribute's current value. */
+  /**
+   * Build the per-row "Unassign" button — fires `attribute.update` with
+   * value=null on the focal task. Returns null for attribute types where
+   * un-assigning is meaningless (bool: the checkbox already toggles between
+   * its two well-defined states). Enabled state tracks whether the attribute
+   * currently has a meaningful value to clear.
+   */
+  private buildUnassignButton(
+    attr: AttrSchema,
+    valueEl: HTMLElement,
+    errEl: HTMLElement,
+  ): HTMLButtonElement | null {
+    if (attr.valueType === 'bool') return null;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'task-detail__row-unassign';
+    btn.dataset.attrUnassign = '';
+    btn.textContent = 'Unassign';
+    btn.title = `Clear ${attr.label.toLowerCase()} on this task`;
+    btn.disabled = !this.hasMeaningfulValue(attr);
+    this.listen(btn, 'click', (ev) => {
+      // The row is a <details>; bare click bubbles to its <summary> and toggles
+      // it. Stop here so a click on the button doesn't fold the row closed.
+      (ev as Event).stopPropagation();
+      this.commitAttribute(attr.name, null, () => {
+        valueEl.textContent = this.summaryFor(attr);
+        btn.disabled = !this.hasMeaningfulValue(attr);
+      }, errEl);
+    });
+    return btn;
+  }
+
+  /** Whether an attribute currently holds a meaningful (non-empty) value — the
+   *  "Unassign" button is disabled when there's nothing to clear. */
+  private hasMeaningfulValue(attr: AttrSchema): boolean {
+    const v = this.task?.attributes[attr.name];
+    if (v === null || v === undefined || v === '') return false;
+    if (Array.isArray(v) && v.length === 0) return false;
+    return true;
+  }
+
+  /** Build a printed read-summary for an attribute's current value. The card_ref
+   *  cases coerce via {@link asAttrId} so an un-revived wire form (digit-string
+   *  / number) renders its resolved label like a bigint would — uniform across
+   *  every card_ref attribute (originator, assignee, status, …). */
   private summaryFor(attr: AttrSchema): string {
     const v = this.task?.attributes[attr.name];
     if (v === null || v === undefined || v === '') return '—';
     if (attr.valueType === 'card_ref') {
-      return typeof v === 'bigint' ? this.labelFor(v) : String(v);
+      const id = asAttrId(v);
+      return id !== null ? this.labelFor(id) : '—';
     }
     if (attr.valueType === 'card_ref[]') {
       if (!Array.isArray(v) || v.length === 0) return '—';
-      return v.map((id) => (typeof id === 'bigint' ? this.labelFor(id) : String(id))).join(', ');
+      const labels: string[] = [];
+      for (const raw of v) {
+        const id = asAttrId(raw);
+        if (id !== null) labels.push(this.labelFor(id));
+      }
+      return labels.length > 0 ? labels.join(', ') : '—';
     }
     if (attr.valueType === 'bool') return v === true ? 'Yes' : 'No';
     if (typeof v === 'bigint') return v.toString();
@@ -1322,15 +1386,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 
     switch (attr.valueType) {
       case 'card_ref': {
+        const curId = asAttrId(cur);
         const rp = this.spawn(
           'RefPicker',
           {
             type: 'RefPicker',
             cardType: attr.targetCardType ?? 'card',
-            value: typeof cur === 'bigint' ? cur : null,
-            ...(typeof cur === 'bigint'
-              ? { currentLabel: this.labelFor(cur) }
-              : {}),
+            value: curId,
+            ...(curId !== null ? { currentLabel: this.labelFor(curId) } : {}),
             ...(this.refScopePath(attr) ? { parentScopePath: this.refScopePath(attr) } : {}),
             ...(this.selfPinnedFor(attr).length > 0 ? { pinnedOptions: this.selfPinnedFor(attr) } : {}),
             'aria-label': attr.label,
@@ -1348,7 +1411,13 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         break;
       }
       case 'card_ref[]': {
-        const cur2 = Array.isArray(cur) ? (cur as unknown[]).filter((x): x is bigint => typeof x === 'bigint') : [];
+        const cur2: bigint[] = [];
+        if (Array.isArray(cur)) {
+          for (const raw of cur) {
+            const id = asAttrId(raw);
+            if (id !== null) cur2.push(id);
+          }
+        }
         const labels: Record<string, string> = {};
         for (const id of cur2) labels[String(id)] = this.labelFor(id);
         const rp = this.spawn(
@@ -1557,6 +1626,30 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 /* -------------------------------------------------------------------------- */
 /* Helpers.                                                                    */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Coerce a wire-side card_ref attribute value to bigint, or null when absent /
+ * malformed. The dispatcher's id-revival is hand-keyed by attribute name
+ * (see `core/dispatch.ts` CARD_REF_ATTR_KEYS) so an un-primed card_ref attr
+ * (e.g. `originator`) arrives as a digit-string. Every TaskDetail consumer that
+ * reads a card_ref attribute funnels through this helper so the panel's label
+ * resolution, summary rendering, and editor seeding all apply the SAME tolerant
+ * rule — fixing originator (and any future card_ref attr) without a one-off
+ * registration per name.
+ */
+function asAttrId(v: unknown): bigint | null {
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'number' && Number.isInteger(v) && v > 0) return BigInt(v);
+  if (typeof v === 'string' && /^-?\d+$/.test(v)) {
+    try {
+      const n = BigInt(v);
+      return n > 0n ? n : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 /** Parse a route `:id` string to a positive bigint, or null when malformed. */
 function parseId(raw: string | undefined): bigint | null {

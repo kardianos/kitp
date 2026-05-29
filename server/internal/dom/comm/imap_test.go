@@ -483,6 +483,61 @@ func TestIMAPPollerHTMLStrip(t *testing.T) {
 	}
 }
 
+// TestIMAPPollerTopLevelQuotedPrintable covers a SINGLE-PART text/plain
+// message whose Content-Transfer-Encoding is quoted-printable. The
+// header's `=E2=80=AA` (U+202A LRE) MUST decode to the UTF-8 byte run,
+// and the soft-wrap `=\r\n` joins the wrapped line back together, so the
+// stored body matches what the sender originally typed. Before the fix
+// the top-level text branch did not apply the transfer encoding and
+// QP markers survived verbatim into the stored body.
+func TestIMAPPollerTopLevelQuotedPrintable(t *testing.T) {
+	body := "From: alice@example.com\r\n" +
+		"To: kitp@example.com\r\n" +
+		"Subject: Signed\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"Content-Transfer-Encoding: quoted-printable\r\n" +
+		"\r\n" +
+		"-Daniel Theophanes\r\n" +
+		" Solid Core Data Inc\r\n" +
+		"=E2=80=AA 214-843-1718\r\n"
+	m, err := comm.ParseInboundMessage(3, []byte(body))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if strings.Contains(m.Body, "=E2") || strings.Contains(m.Body, "=80") {
+		t.Errorf("QP markers survived into body: %q", m.Body)
+	}
+	if !strings.Contains(m.Body, "‪ 214-843-1718") {
+		t.Errorf("expected decoded U+202A run in body, got %q", m.Body)
+	}
+}
+
+// TestIMAPPollerTopLevelQPSoftWrap covers the QP `=\r\n` soft-line-break
+// rule on a single-part body: the decoded text should join the two source
+// lines into one, with no `=` trailing in the body.
+func TestIMAPPollerTopLevelQPSoftWrap(t *testing.T) {
+	body := "From: alice@example.com\r\n" +
+		"To: kitp@example.com\r\n" +
+		"Subject: Wrapped\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"Content-Transfer-Encoding: quoted-printable\r\n" +
+		"\r\n" +
+		"This line wraps with a soft br=\r\n" +
+		"eak.\r\n"
+	m, err := comm.ParseInboundMessage(4, []byte(body))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if strings.Contains(m.Body, "br=eak") || strings.Contains(m.Body, "br=\n") {
+		t.Errorf("soft wrap not joined: %q", m.Body)
+	}
+	if !strings.Contains(m.Body, "soft break.") {
+		t.Errorf("expected joined line in body, got %q", m.Body)
+	}
+}
+
 // ---- backoff ----
 
 // TestIMAPPollerExponentialBackoff drives the internal bumpBackoff

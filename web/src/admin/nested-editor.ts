@@ -127,6 +127,19 @@ export function groupStepsByFrom(steps: readonly FlowStepRow[]): FromBucket[] {
   return order.map((id) => byId.get(id)!).filter((b): b is FromBucket => b !== undefined);
 }
 
+/** Numeric-safe compare of two id-shaped strings (wire ids are JSON strings
+ *  carrying bigint values). Falls back to localeCompare for non-digit values. */
+export function compareIdStrings(a: string, b: string): number {
+  const ad = /^-?\d+$/.test(a);
+  const bd = /^-?\d+$/.test(b);
+  if (ad && bd) {
+    const ai = BigInt(a);
+    const bi = BigInt(b);
+    return ai < bi ? -1 : ai > bi ? 1 : 0;
+  }
+  return a.localeCompare(b);
+}
+
 export interface MatrixRow {
   cardType: CardTypeRow;
   bound: boolean;
@@ -733,7 +746,20 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     const valueCards = (this.ctx.tree.at(this.p('valueCards')).peek<Array<{ id: string; label: string }>>() ?? []) as Array<{ id: string; label: string }>;
     const titleById = new Map(valueCards.map((c) => [c.id, c.label]));
     const steps = (this.ctx.tree.at(this.p('steps')).peek<FlowStepRow[]>() ?? []) as FlowStepRow[];
+    // Group steps by `from` value-card AND impose a STABLE order on the groups
+    // themselves: the canonical value-card sequence (the order the kanban /
+    // attribute screens show statuses), falling back to the from_card_id as a
+    // numeric tie-break. Without this the chart re-shuffled groups whenever the
+    // server's `sort_order, label, id` row order changed which step appeared
+    // first (a transition's label edit could flip group order).
     const buckets = groupStepsByFrom(steps);
+    const orderIdx = new Map(valueCards.map((c, i) => [c.id, i]));
+    buckets.sort((a, b) => {
+      const ai = orderIdx.get(a.fromCardId) ?? Number.MAX_SAFE_INTEGER;
+      const bi = orderIdx.get(b.fromCardId) ?? Number.MAX_SAFE_INTEGER;
+      if (ai !== bi) return ai - bi;
+      return compareIdStrings(a.fromCardId, b.fromCardId);
+    });
 
     const list = document.createElement('div');
     list.className = 'nested-editor__steps';

@@ -278,6 +278,38 @@ test('submit fires card.insert with the project scope as parent + resolved defau
   assert.equal(data.attributes.status, '200', 'first triage status stamped (chain step 3)');
 });
 
+test('Save & Edit saves the task then navigates to /task/:id', async () => {
+  const statusRows = [
+    { id: '201', card_type_name: 'status', phase: 'active', attributes: { title: 'Doing', sort_order: 2 } },
+    { id: '200', card_type_name: 'status', phase: 'triage', attributes: { title: 'Triage', sort_order: 1 } },
+  ];
+  const { transport, sent } = quickEntryHarness({ statusRows });
+  const { dispatcher, api } = bootApi(transport);
+  const { qe, tree } = mountQuickEntry(api);
+  M.installRouter(tree);
+  await settle(dispatcher);
+
+  qe.open();
+  setTitle(qe, 'Open me');
+  const editBtn = qe.el.querySelector('[data-qe-add-edit]');
+  assert.ok(editBtn, 'a Save & Edit button is rendered');
+  click(editBtn);
+  await settle(dispatcher);
+
+  // The task was saved.
+  const inserts = sentOf(sent, 'card', 'insert');
+  assert.equal(inserts.length, 1, 'exactly one card.insert');
+  assert.equal(inserts[0].data.title, 'Open me');
+
+  // And the router landed on the new task's detail route.
+  const route = tree.at([...M.ROUTER_PATH]).peek();
+  assert.equal(route.name, 'task', 'navigated to a task detail route');
+  assert.equal(route.params.id, String(NEW_CARD_ID), 'route id is the new card id');
+  // Overlay is closed (the navigate hands focus to the detail screen).
+  assert.equal(qe.el.style.display, 'none', 'overlay closed after Save & Edit');
+  M._resetRouterForTest();
+});
+
 test('submit stamps the screen base phase status (active board → first active)', async () => {
   // Same two statuses; a Board-style screen whose base phase is 'active' must
   // seed the first ACTIVE status (201), NOT the first triage (200).

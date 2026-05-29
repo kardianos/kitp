@@ -778,6 +778,41 @@ select optgroup {
   cursor: pointer;
   white-space: nowrap;
 }
+/* Search-fields dropdown — same dropdown idiom as Phase, pinned right of the
+   search input. The trigger reads "In: Title, Description" so the user can
+   tell at a glance which fields the search matches against. */
+.filterbar__search-fields {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.filterbar__search-fields-trigger {
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+.filterbar__search-fields-menu {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  right: 0;
+  z-index: var(--z-popover, 50);
+  min-width: 11rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-md, 0 4px 16px rgb(0 0 0 / 0.18));
+}
+.filterbar__search-fields-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
 .filterbar__chips {
   display: flex;
   align-items: center;
@@ -1254,11 +1289,7 @@ select optgroup {
   font-variant-numeric: var(--nums-tabular);
   color: var(--color-muted);
 }
-/* Card richness (#25): assignee + tag chips on each card. */
-.card__assignee {
-  font-family: var(--font-sans);
-  color: var(--color-fg);
-}
+/* Card richness (#25): tag chips on each card. */
 .card__tag {
   font-size: var(--text-2xs);
 }
@@ -1882,6 +1913,27 @@ select optgroup {
 .bulk-bar__purge:hover {
   background: var(--color-danger);
   color: var(--color-on-accent, #fff);
+}
+/* "Unassign" — clears the picked field on every selected card. Neutral chrome
+   so it reads as a secondary action next to the accent-filled Apply. */
+.bulk-bar__clear-attr {
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  padding: var(--pad-compact-y) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.bulk-bar__clear-attr:hover:not(:disabled) {
+  background: var(--color-surface-sunken);
+}
+.bulk-bar__clear-attr:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ---- the type-to-confirm purge dialog (rendered above the bar) ---- */
@@ -3946,6 +3998,12 @@ select optgroup {
   gap: var(--space-3);
 }
 .nested-editor__step-group {
+  /* `position: relative` so the absolutely-positioned DropPlaceholder lands in
+     this group's own coordinate space — computeDropTarget returns `y` relative
+     to the group viewport, and the placeholder's `translateY(y)` is anchored
+     here instead of escaping to a far-away ancestor (drag indicator showed up
+     in the wrong place / "list not properly contained"). */
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -5514,6 +5572,28 @@ select optgroup {
   margin: 0;
   font-size: var(--text-2xs);
   color: var(--color-danger);
+}
+/* Per-row "Unassign" — small, secondary; pulled right so the value editor
+   above reads as the primary action. Disabled state mutes it to match other
+   read-only chrome in the panel. */
+.task-detail__row-unassign {
+  align-self: flex-end;
+  font: inherit;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  padding: var(--pad-compact-y) var(--space-2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  cursor: pointer;
+}
+.task-detail__row-unassign:hover:not(:disabled) {
+  background: var(--color-surface-sunken);
+}
+.task-detail__row-unassign:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* ---- the #34/#35/#36 slots ---- */
@@ -7641,6 +7721,32 @@ textarea.task-comms__form-input {
   color: var(--color-fg-strong);
   border-color: var(--color-border);
   background: var(--color-fill-hover);
+}
+/* Disable / Re-enable toggle on a person row. Sits between Merge and Remove;
+   the row carries `--disabled` to mute the whole record while keeping it
+   visible (the row still answers historical ref-picker resolutions). */
+.people-manager__toggle {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: var(--text-2xs);
+  line-height: 1;
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.people-manager__toggle:hover {
+  color: var(--color-fg-strong);
+  border-color: var(--color-border);
+  background: var(--color-fill-hover);
+}
+.people-manager__row--disabled {
+  opacity: 0.55;
+}
+.people-manager__row--disabled .people-manager__name {
+  text-decoration: line-through;
 }
 
 /* --------------------------------------------------------------------------

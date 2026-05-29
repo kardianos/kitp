@@ -180,6 +180,11 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
   private assignAttr: AssignAttr | null = null;
   private assignValue: unknown = undefined;
   private assignBtn!: HTMLButtonElement;
+  /** The "Unassign" button — clears the picked field's value across the
+   *  selection (fires `attribute.update` with value=null). Enabled when a field
+   *  is picked and the selection is non-empty; no value entry required since
+   *  the action IS "set to null". */
+  private clearBtn!: HTMLButtonElement;
   /** Data-driven assignable attrs (from `screen.refAxes`) + the field picker. */
   private assignAttrs: AssignAttr[] = [];
   private attrPicker: Combobox<string> | null = null;
@@ -300,6 +305,21 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
     this.listen(assignBtn, 'click', () => this.applyAssign());
     this.assignBtn = assignBtn;
     assign.append(assignBtn);
+
+    // "Unassign" — clears the picked field's value across the selection. No
+    // value entry needed since the action IS "set to null" (the bulk write
+    // posts `attribute.update` with value=null per selected card). Enabled when
+    // a field is picked AND the selection is non-empty.
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'bulk-bar__clear-attr';
+    clearBtn.dataset.bulkUnassign = '';
+    clearBtn.textContent = 'Unassign';
+    clearBtn.title = 'Clear this field on every selected task';
+    clearBtn.disabled = true;
+    this.listen(clearBtn, 'click', () => this.applyUnassign());
+    this.clearBtn = clearBtn;
+    assign.append(clearBtn);
 
     /* ---- move to project ---- */
     const move = document.createElement('div');
@@ -489,6 +509,9 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
     this.assignBtn.disabled = !(this.selectionCount() > 0 && this.pendingPairs().length > 0);
     // "Add" only stages when the in-editor field+value is itself valid.
     this.addBtn.disabled = !(this.assignAttr !== null && this.hasAssignValue());
+    // "Unassign" needs a picked field + a non-empty selection; no value entry
+    // (the action posts value=null per selected card).
+    this.clearBtn.disabled = !(this.assignAttr !== null && this.selectionCount() > 0);
   }
 
   /**
@@ -582,6 +605,26 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
         for (const pair of pairs) {
           this.intent('bulkAssign', { cardId, attributeName: pair.name, value: pair.value });
         }
+      }
+    });
+  }
+
+  /**
+   * Bulk un-assign — fires `attribute.update` with value=null for the picked
+   * field across every selected card. Shares the same coalesced-burst path as
+   * {@link applyAssign} (one POST), reuses the `bulkAssign` action's optimistic
+   * patch (which folds a null payload into the row's attribute), and clears the
+   * selection on success via {@link afterBulk}. No-op when no field is picked
+   * or the selection is empty (the button is also disabled then).
+   */
+  private applyUnassign(): void {
+    const attr = this.assignAttr;
+    if (attr === null) return;
+    const ids = this.selectedIds();
+    if (ids.length === 0) return;
+    this.burst(() => {
+      for (const cardId of ids) {
+        this.intent('bulkAssign', { cardId, attributeName: attr.name, value: null });
       }
     });
   }

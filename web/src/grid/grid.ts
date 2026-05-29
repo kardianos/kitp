@@ -61,10 +61,7 @@ import type { CardWherePredicate } from '../projects/project-helpers.js';
 import {
   type Predicate,
   type PredicateLeaf,
-  type WireNode,
-  isFlatAndOfLeaves,
-  toWhereLeaves,
-  toWire,
+  applySearchFilter,
   leaf as makeLeaf,
   topLevelLeafForAttr,
   upsertTopLevelLeaf,
@@ -476,7 +473,8 @@ export class Grid extends Control<GridConfig> {
     this.effect(() => {
       const search = this.ctx.tree.at(['screen', 'search']).get<string>() ?? '';
       const predicate = this.ctx.tree.at(['screen', 'predicate']).get<Predicate | null>() ?? null;
-      this.applyFilter(search, predicate);
+      const fields = this.ctx.tree.at(['screen', 'searchFields']).get<string[]>() ?? ['title'];
+      this.applyFilter(search, fields, predicate);
       this.bumpQuery();
     }, 'grid.filterWatch');
 
@@ -1522,28 +1520,9 @@ export class Grid extends Control<GridConfig> {
    *
    * `where` / `tree` are set to `undefined` when empty so the encoder omits them.
    */
-  private applyFilter(search: string, predicate: Predicate | null): void {
-    const needle = search.trim();
-    const searchLeaf: CardWherePredicate | null =
-      needle.length > 0 ? { attr: 'title', op: 'contains', value: needle } : null;
-
-    let where: CardWherePredicate[] | undefined;
-    let tree: WireNode | undefined;
-
-    if (predicate === null) {
-      where = searchLeaf ? [searchLeaf] : undefined;
-    } else if (isFlatAndOfLeaves(predicate)) {
-      // Flat AND → compose its leaves with the search leaf in `where[]`.
-      const leaves = toWhereLeaves(predicate) ?? [];
-      const combined = searchLeaf ? [searchLeaf, ...leaves] : leaves;
-      where = combined.length > 0 ? combined : undefined;
-    } else {
-      // Structured tree (OR / NOT / nested) → `tree`; search stays in `where[]`.
-      where = searchLeaf ? [searchLeaf] : undefined;
-      tree = toWire(predicate);
-    }
-
-    this.ctx.tree.at(['grid', 'where']).set(where);
+  private applyFilter(search: string, fields: readonly string[], predicate: Predicate | null): void {
+    const { where, tree } = applySearchFilter(search, fields, predicate);
+    this.ctx.tree.at(['grid', 'where']).set(where as CardWherePredicate[] | undefined);
     this.ctx.tree.at(['grid', 'tree']).set(tree);
   }
 
