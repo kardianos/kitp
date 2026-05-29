@@ -32,6 +32,26 @@ function visibleRows(inbox) {
     .filter((r) => r.style.display !== 'none');
 }
 
+/** The visible flat item sequence in the list body: data rows ([data-inbox-row])
+ *  and group headers ([data-inbox-group]) in DOM order, skipping parked
+ *  (display:none) pool nodes. Mirrors the Grid test's visibleItems. */
+function visibleItems(inbox) {
+  return inbox.el
+    .querySelectorAll('[data-inbox-list]')[0]
+    .querySelectorAll('[data-role="vlist-row"]')
+    .filter((n) => n.style.display !== 'none')
+    .map((n) =>
+      n.dataset.inboxGroup !== undefined
+        ? {
+            kind: 'group',
+            label: n.querySelectorAll('.inbox__group-label')[0]?.textContent,
+            count: n.querySelectorAll('.inbox__group-count')[0]?.textContent,
+            dir: n.dataset.groupDir,
+          }
+        : { kind: 'row', id: n.dataset.cardId },
+    );
+}
+
 /* -------------------------------------------------------------------------- */
 /* A recording transport for the Inbox: serves tasks (with personal_sort_order  */
 /* TOP-LEVEL, only when with_personal_sort requested), persons, statuses, the   */
@@ -685,6 +705,109 @@ test('Inbox: the shared screen.predicate narrows the tasks query', async () => {
   const last = transport.sent.taskInputs[transport.sent.taskInputs.length - 1];
   assert.deepEqual(last.where, [{ attr: 'status', op: 'in', values: ['50'] }], 'flat-AND → where[]');
   assert.equal(last.with_personal_sort, true, 'still requests personal sort under a filter');
+});
+
+/* -------------------------------------------------------------------------- */
+/* GROUP picker (screen.groupAxis) buckets the list into header + row sections, */
+/* mirroring the Grid.                                                          */
+/* -------------------------------------------------------------------------- */
+
+test('Inbox: GROUP picker (screen.groupAxis) buckets the list into header + row sections', async () => {
+  const transport = recordingInboxTransport();
+  const { dispatcher, tree, inbox } = bootInbox(transport);
+  await settle(dispatcher);
+
+  // Ungrouped: no group headers, just the three personal-ordered rows.
+  assert.equal(
+    inbox.el.querySelectorAll('[data-inbox-group]').filter((n) => n.style.display !== 'none').length,
+    0,
+    'no group headers when ungrouped',
+  );
+
+  // Drive the shared GROUP picker leaf: group by status (the SAME leaf the Grid
+  // consumes; the inbox resolves labels via its own statuses lookup).
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
+  await settle(dispatcher);
+
+  // status 50 → Doing [201], 51 → To do [202], unset → 203 (trailing bucket).
+  assert.deepEqual(
+    visibleItems(inbox),
+    [
+      { kind: 'group', label: 'Doing', count: '· 1', dir: 'asc' },
+      { kind: 'row', id: '201' },
+      { kind: 'group', label: 'To do', count: '· 1', dir: 'asc' },
+      { kind: 'row', id: '202' },
+      { kind: 'group', label: '(unset)', count: '· 1', dir: 'asc' },
+      { kind: 'row', id: '203' },
+    ],
+    'header(label·count) then bucketed rows, ascending by status, unset last',
+  );
+});
+
+test('Inbox: grouping prepends the group key to the wire order[] (rows arrive bucketed)', async () => {
+  const transport = recordingInboxTransport();
+  const { dispatcher, tree } = bootInbox(transport);
+  await settle(dispatcher);
+
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
+  await settle(dispatcher);
+
+  const last = transport.sent.taskInputs[transport.sent.taskInputs.length - 1];
+  assert.deepEqual(
+    last.order,
+    [
+      { field: 'attributes.status', direction: 'ASC' },
+      { field: 'personal_sort_order', direction: 'ASC' },
+      { field: 'created_at', direction: 'DESC' },
+    ],
+    'group key first (asc), then the personal-sort order',
+  );
+  assert.equal(last.with_personal_sort, true, 'still requests personal sort while grouped');
+});
+
+test('Inbox: a group-header click flips the group direction (asc ⇄ desc)', async () => {
+  const transport = recordingInboxTransport();
+  const { dispatcher, tree, inbox } = bootInbox(transport);
+  await settle(dispatcher);
+
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
+  await settle(dispatcher);
+
+  const header = inbox.el
+    .querySelectorAll('[data-inbox-group]')
+    .find((n) => n.style.display !== 'none');
+  assert.equal(header.dataset.groupDir, 'asc', 'starts ascending');
+
+  header.dispatchEvent({ type: 'click', target: header });
+  await settle(dispatcher);
+
+  // Buckets reverse (To do before Doing); the unset bucket still trails.
+  assert.deepEqual(
+    visibleItems(inbox),
+    [
+      { kind: 'group', label: 'To do', count: '· 1', dir: 'desc' },
+      { kind: 'row', id: '202' },
+      { kind: 'group', label: 'Doing', count: '· 1', dir: 'desc' },
+      { kind: 'row', id: '201' },
+      { kind: 'group', label: '(unset)', count: '· 1', dir: 'desc' },
+      { kind: 'row', id: '203' },
+    ],
+    'group dir flipped to desc reverses bucket order',
+  );
+  const last = transport.sent.taskInputs[transport.sent.taskInputs.length - 1];
+  assert.equal(last.order[0].direction, 'DESC', 'wire group key re-issued DESC');
+});
+
+test('Inbox: ungrouped rows carry no group headers (data-inbox-row count unchanged)', async () => {
+  const transport = recordingInboxTransport();
+  const { dispatcher, inbox } = bootInbox(transport);
+  await settle(dispatcher);
+  // The existing row-order contract still holds: three data rows, no headers.
+  assert.deepEqual(
+    visibleRows(inbox).map((r) => r.dataset.cardId),
+    ['201', '202', '203'],
+    'flat personal order preserved when no group axis is set',
+  );
 });
 
 /* -------------------------------------------------------------------------- */

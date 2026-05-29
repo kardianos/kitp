@@ -290,74 +290,22 @@ export function tagPathLeaf(path: string): string {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Grouping — group_by_attr (LIFTED from client/src/screens/grid_helpers.ts    */
-/* `walkGrouped` / `GroupItem`, re-expressed against the web card model).      */
+/* Grouping — re-exported from the shared filter/group-axis.ts seam.           */
 /* -------------------------------------------------------------------------- */
 
 /**
- * The GROUP-axis seam (`groupAttrFromGroupValue` + `GroupAttr`) now lives in the
- * shared `filter/group-axis.ts` module — both the Grid (row grouping) and the
- * Kanban board (column re-keying) read the same `screen.group` picker leaf and
- * need the same translation. Re-exported here so the Grid's existing import
- * path (`./grid-helpers.js`) keeps working unchanged.
+ * The GROUP-axis seam (`groupAttrFromGroupValue` + `GroupAttr`) AND the flat
+ * header+row item model (`walkGrouped` / `GroupItem` / `GROUP_EMPTY_KEY`) live
+ * in the shared `filter/group-axis.ts` module — the Grid (row grouping), the
+ * Kanban board (column re-keying), and the Inbox (list grouping) all read the
+ * same `screen.group` picker leaf and walk rows into the same shape. Re-exported
+ * here so the Grid's existing import path (`./grid-helpers.js`) keeps working
+ * unchanged.
  */
-export { groupAttrFromGroupValue, type GroupAttr } from '../filter/group-axis.js';
-
-/**
- * One entry in the flat sequence the recycling virtualList renders when a
- * group-by attr is active: either a section HEADER (one per consecutive run of
- * the same group-key value) or a data ROW. Headers don't consume a row index;
- * each row carries its position in the rows-only sequence as `idx`.
- */
-export type GroupItem<T> =
-  | { kind: 'group'; label: string; count: number; key: string }
-  | { kind: 'row'; row: T; idx: number };
-
-/** Sentinel group key for rows whose group attribute is unset / null / "". */
-export const GROUP_EMPTY_KEY = '__empty__';
-
-/**
- * Walk pre-ordered `rows` and emit a HEADER whenever `attrName`'s value changes
- * from the previous row, followed by that bucket's rows — a FLAT
- * `[{kind:'group'}, {kind:'row'}, …]` list the virtualList renders without
- * losing recycling (every entry is one fixed-height slot). Relies on the caller
- * having pre-ordered rows by the group key (the server does this by prepending
- * the group field to the wire `order[]`), so the walk is O(n) and never
- * re-buckets.
- *
- * `attrName === null` → the rows pass through as a flat row-only sequence (the
- * no-group case, identical to today's behaviour).
- *
- * Each header carries the bucket `count` (the run length) so the rendered label
- * can read `Doing · 4`. Empty / null / "" values cluster into a single
- * `(unset)` bucket. `labelOf` resolves a card_ref group value (bigint id) to a
- * display title; it is NOT called for the unset bucket.
- */
-export function walkGrouped<T extends { attributes: Record<string, unknown> }>(
-  rows: readonly T[],
-  attrName: string | null,
-  labelOf: (key: unknown) => string,
-): GroupItem<T>[] {
-  if (attrName === null) {
-    return rows.map((row, idx) => ({ kind: 'row', row, idx }) as GroupItem<T>);
-  }
-  const out: GroupItem<T>[] = [];
-  // Track the most recent header so we can stamp its run length once the run
-  // ends (we don't know a bucket's size until we hit the next key boundary).
-  let header: { kind: 'group'; label: string; count: number; key: string } | null = null;
-  let prevKey: string | undefined;
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i]!;
-    const v = row.attributes[attrName];
-    const isEmpty = v === undefined || v === null || v === '';
-    const key = isEmpty ? GROUP_EMPTY_KEY : String(v);
-    if (key !== prevKey) {
-      header = { kind: 'group', label: isEmpty ? '(unset)' : labelOf(v), count: 0, key };
-      out.push(header);
-      prevKey = key;
-    }
-    if (header !== null) header.count += 1;
-    out.push({ kind: 'row', row, idx: i });
-  }
-  return out;
-}
+export {
+  groupAttrFromGroupValue,
+  walkGrouped,
+  GROUP_EMPTY_KEY,
+  type GroupAttr,
+  type GroupItem,
+} from '../filter/group-axis.js';

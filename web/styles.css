@@ -2108,6 +2108,53 @@ select optgroup {
   color: var(--color-accent);
 }
 
+/* ---- group section header (GROUP picker active): same fixed slot height as a
+   row (the virtualList positions by INBOX_ROW_HEIGHT=56), an accent band that
+   reads as a section divider. Clicking it flips the group direction. ---- */
+.inbox__group-header {
+  box-sizing: border-box;
+  height: 56px;
+  margin: 2px 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: none;
+  border-top: 1px solid var(--color-accent-ring);
+  border-bottom: 1px solid var(--color-accent-ring);
+  background: var(--color-accent-soft);
+  color: var(--color-fg-strong);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+.inbox__group-header:hover {
+  background: var(--color-fill-hover);
+}
+.inbox__group-header:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+.inbox__group-arrow {
+  color: var(--color-accent);
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+.inbox__group-label {
+  color: var(--color-fg-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inbox__group-count {
+  color: var(--color-muted);
+  font-weight: var(--weight-medium);
+  text-transform: none;
+}
+
 .inbox__grip {
   flex: 0 0 auto;
   display: inline-flex;

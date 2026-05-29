@@ -109,6 +109,25 @@ export function move(visibleLen: number, current: number, delta: number): number
 }
 
 /**
+ * Compare two cards by `personal_sort_order` ASC, with `id` as the tie-breaker;
+ * NULL personal sorts rank last (matches the server's `ASC NULLS LAST`). Shared
+ * by {@link sortByPersonal} and {@link sortGrouped} (the within-group order).
+ */
+function comparePersonal(a: CardWithAttrs, b: CardWithAttrs): number {
+  const sa = personalSortOf(a);
+  const sb = personalSortOf(b);
+  if (sa !== undefined && sb !== undefined) {
+    const c = sa - sb;
+    if (c !== 0) return c;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  }
+  if (sa === undefined && sb === undefined) {
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  }
+  return sa === undefined ? 1 : -1; // nulls last
+}
+
+/**
  * Stable sort by `personal_sort_order` ASC, with `id` as the tie-breaker; NULL
  * personal sorts rank last (matches the server's `ASC NULLS LAST`). Returns the
  * same array for chaining. Used to derive the display order the row reconciler
@@ -116,18 +135,47 @@ export function move(visibleLen: number, current: number, delta: number): number
  * client honest).
  */
 export function sortByPersonal(cards: CardWithAttrs[]): CardWithAttrs[] {
+  cards.sort(comparePersonal);
+  return cards;
+}
+
+/**
+ * Order cards for a GROUPED inbox: cluster by the group attribute's value
+ * (`dir` asc/desc; the unset / null / "" bucket always trails), then by
+ * `personal_sort_order` within each bucket. `walkGrouped` requires its input
+ * pre-clustered by the group key, and the inbox can't rely on the server order
+ * alone because an optimistic personal-reorder patch re-stamps the rows
+ * client-side — so it re-derives the grouped order here. Mutates + returns the
+ * passed array (callers pass a slice).
+ */
+export function sortGrouped(
+  cards: CardWithAttrs[],
+  attr: string,
+  dir: 'asc' | 'desc',
+): CardWithAttrs[] {
+  const sign = dir === 'desc' ? -1 : 1;
   cards.sort((a, b) => {
-    const sa = personalSortOf(a);
-    const sb = personalSortOf(b);
-    if (sa !== undefined && sb !== undefined) {
-      const c = sa - sb;
-      if (c !== 0) return c;
-      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    const va = a.attributes[attr];
+    const vb = b.attributes[attr];
+    const ea = va === undefined || va === null || va === '';
+    const eb = vb === undefined || vb === null || vb === '';
+    // The unset bucket trails in BOTH directions (matches `ASC NULLS LAST`).
+    if (ea !== eb) return ea ? 1 : -1;
+    if (!ea) {
+      const c = compareGroupValue(va, vb);
+      if (c !== 0) return c * sign;
     }
-    if (sa === undefined && sb === undefined) {
-      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-    }
-    return sa === undefined ? 1 : -1; // nulls last
+    return comparePersonal(a, b);
   });
   return cards;
+}
+
+/** Order two non-empty group keys: numeric for bigint card_refs, else string. */
+function compareGroupValue(a: unknown, b: unknown): number {
+  if (typeof a === 'bigint' && typeof b === 'bigint') {
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+  const sa = String(a);
+  const sb = String(b);
+  return sa < sb ? -1 : sa > sb ? 1 : 0;
 }

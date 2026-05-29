@@ -64,11 +64,13 @@ import { publishTaskNav } from '../shell/task-nav.js';
 import { SPEC } from '../kanban/specs.js';
 import { INBOX_SPEC } from './specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
+import { walkGrouped, type GroupAttr, type GroupItem } from '../filter/group-axis.js';
 import {
   applyPersonalReorder,
   move,
   planPersonalReorder,
   sortByPersonal,
+  sortGrouped,
 } from './inbox-helpers.js';
 import type { CardWherePredicate } from '../projects/project-helpers.js';
 import {
@@ -127,8 +129,24 @@ let draggingRowId: bigint | null = null;
 /* -------------------------------------------------------------------------- */
 
 export class Inbox extends Control<InboxConfig> {
-  /** Index of the keyboard-selected row (j/k cursor + Shift+j/k reorder). */
+  /** Index of the keyboard-selected row (j/k cursor + Shift+j/k reorder).
+   *  Indexes into the DISPLAY order (see currentRows) — which is the grouped
+   *  order when a group axis is active, so it lines up with each row item's
+   *  `idx` from walkGrouped. */
   private selectedIndex = 0;
+
+  /**
+   * Active group-by axis (the RESOLVED `screen.groupAxis` from the shared
+   * ScreenFilterBar's GROUP picker), or null for a flat list. When set, rows are
+   * clustered into labelled sections — the same model the Grid renders. Drives
+   * the wire `order[]` (group key prepended so rows arrive bucketed) AND the
+   * flat header+row item sequence the virtualList renders.
+   */
+  private group: GroupAttr | null = null;
+
+  /** Direction of the group sort key (asc/desc). A group-header click flips it;
+   *  reset to 'asc' whenever the group attr itself changes. Mirrors the Grid. */
+  private groupDir: 'asc' | 'desc' = 'asc';
 
   /** The "Mine only" / "Routed to me" view state lives entirely in the
    *  `inbox.mineOnly` / `inbox.routedToMe` tree leaves (flipped by the filter-bar
@@ -171,12 +189,10 @@ export class Inbox extends Control<InboxConfig> {
         parentCardId: { from: 'scope.projectId' },
         withPersonalSort: { lit: true },
         routedToMe: { from: 'inbox.routedToMe' },
-        order: {
-          lit: [
-            { field: 'personal_sort_order', direction: 'ASC' },
-            { field: 'created_at', direction: 'DESC' },
-          ],
-        },
+        // Resolved from a tree leaf at fire time: the personal-sort order by
+        // default, with the active group key prepended (so rows arrive bucketed)
+        // when a group axis is selected. See applyOrder().
+        order: { from: 'inbox.order' },
         where: { from: 'inbox.where' },
         tree: { from: 'inbox.tree' },
         limit: { lit: 200 },
@@ -202,6 +218,27 @@ export class Inbox extends Control<InboxConfig> {
       input: { cardTypeName: { lit: 'status' }, parentCardId: { from: 'scope.projectId' } },
       skipWhenNull: ['parentCardId'],
       result: { method: 'landStatuses' },
+      onError: 'self',
+    },
+    {
+      // Label maps for the milestone / component GROUP axes (the inbox row cells
+      // don't show these, but grouping by them must resolve a name, not `#id` —
+      // same axes the Grid loads). Project-scoped value cards.
+      name: 'milestones',
+      spec: SPEC.selectWithAttributes,
+      when: { signal: 'scope.projectId' },
+      input: { cardTypeName: { lit: 'milestone' }, parentCardId: { from: 'scope.projectId' } },
+      skipWhenNull: ['parentCardId'],
+      result: { method: 'landMilestones' },
+      onError: 'self',
+    },
+    {
+      name: 'components',
+      spec: SPEC.selectWithAttributes,
+      when: { signal: 'scope.projectId' },
+      input: { cardTypeName: { lit: 'component' }, parentCardId: { from: 'scope.projectId' } },
+      skipWhenNull: ['parentCardId'],
+      result: { method: 'landComponents' },
       onError: 'self',
     },
     {
@@ -343,6 +380,14 @@ export class Inbox extends Control<InboxConfig> {
     }
     const versionNode = this.ctx.tree.at(['inbox', 'queryVersion']);
     if (versionNode.peek<number>() === undefined) versionNode.set(0);
+    // Seed the wire order leaf (group null → personal-sort default) BEFORE the
+    // data layer wires, so the first tasks fire reads a value (not undefined).
+    this.applyOrder();
+    // groupVersion: a body-only re-walk trigger the group effect + group-dir
+    // flip bump; the virtualList's data() reads it so the grouped item model
+    // re-derives from the rows already loaded without waiting on the refetch.
+    const groupVersionNode = this.ctx.tree.at(['inbox', 'groupVersion']);
+    if (groupVersionNode.peek<number>() === undefined) groupVersionNode.set(0);
     // lookups tick: a body-only re-render trigger the lookups + agents bump so a
     // late-landing label/agent list re-resolves the visible rows.
     const tickNode = this.ctx.tree.at(['inbox', 'lookups', 'tick']);
@@ -421,17 +466,18 @@ export class Inbox extends Control<InboxConfig> {
     // leaf reactively AND the lookups tick (late label/agent lands re-resolve)
     // AND the routing leaf (a delegate set/clear repaints the picker). The list
     // is sorted by personal_sort_order so an optimistic patch re-orders it.
-    const vl = virtualList<CardWithAttrs>({
+    const vl = virtualList<GroupItem<CardWithAttrs>>({
       container: body,
       rowHeight: INBOX_ROW_HEIGHT,
       data: () => {
         this.ctx.tree.at(['inbox', 'lookups', 'tick']).get();
         this.ctx.tree.at(['inbox', 'routing']).get();
+        this.ctx.tree.at(['inbox', 'groupVersion']).get();
         const rows = (tasksNode.get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
-        return sortByPersonal(rows.slice());
+        return this.buildItems(rows);
       },
       create: (el) => this.buildRowShell(el),
-      update: (el, row, i) => this.fillRow(el, row, i),
+      update: (el, item) => this.fillItem(el, item),
       name: 'inbox.rows',
     });
     this.onDestroy(() => vl.dispose());
@@ -500,6 +546,22 @@ export class Inbox extends Control<InboxConfig> {
       this.bumpQuery();
     }, 'inbox.routedWatch');
 
+    // GROUP picker → group-by axis. Reads the RESOLVED `screen.groupAxis`
+    // ({attr, lookup} | null) the shared ScreenFilterBar derives from the
+    // data-driven schema — the SAME leaf the Grid consumes. Writes the group
+    // state + the wire `order[]` (group key prepended so rows arrive bucketed),
+    // re-walks the body, and refires the query. One-way (never reads back a dep
+    // it writes) — same cascade-safe shape as the sort/filter watchers.
+    this.effect(() => {
+      const next = this.ctx.tree.at(['screen', 'groupAxis']).get<GroupAttr | null>() ?? null;
+      // A fresh group column resets the direction so the toggle is predictable.
+      if ((next?.attr ?? null) !== (this.group?.attr ?? null)) this.groupDir = 'asc';
+      this.group = next;
+      this.applyOrder();
+      this.bumpGroup();
+      this.bumpQuery();
+    }, 'inbox.groupWatch');
+
     // Identity watch: when the boot /auth/me probe lands `auth.user` (or it
     // changes), mirror the user's id into `inbox.parentUserId` (drives the
     // agents query) and re-project the mine_only filter so a toggle that was on
@@ -559,6 +621,8 @@ export class Inbox extends Control<InboxConfig> {
     };
     this.handler('landPersons', landLabels('persons', titleAttr));
     this.handler('landStatuses', landLabels('statuses', titleOrName));
+    this.handler('landMilestones', landLabels('milestones', titleOrName));
+    this.handler('landComponents', landLabels('components', titleOrName));
 
     // Agents land as an {id,label}[] the row picker reads.
     this.handler('landAgents', (out) => {
@@ -645,20 +709,142 @@ export class Inbox extends Control<InboxConfig> {
     node.set((node.peek<number>() ?? 0) + 1);
   }
 
+  /**
+   * Project the wire `order[]`: the active group key FIRST (at `groupDir`, so
+   * the server returns rows bucketed), then the personal-sort order, then
+   * created_at. Ungrouped this is just the personal-sort default. Written to a
+   * tree leaf the tasks query reads at fire time.
+   */
+  private applyOrder(): void {
+    const order: Array<{ field: string; direction: 'ASC' | 'DESC' }> = [];
+    if (this.group !== null) {
+      order.push({
+        field: `attributes.${this.group.attr}`,
+        direction: this.groupDir === 'asc' ? 'ASC' : 'DESC',
+      });
+    }
+    order.push({ field: 'personal_sort_order', direction: 'ASC' });
+    order.push({ field: 'created_at', direction: 'DESC' });
+    this.ctx.tree.at(['inbox', 'order']).set(order);
+  }
+
+  /** Bump the group version so the virtualList re-walks the body (re-buckets +
+   *  repaints headers) without waiting on the tasks refetch. */
+  private bumpGroup(): void {
+    const node = this.ctx.tree.at(['inbox', 'groupVersion']);
+    node.set((node.peek<number>() ?? 0) + 1);
+  }
+
+  /**
+   * Flip the group sort direction (asc ⇄ desc of the group key). Re-issues the
+   * tasks query with the flipped first `order[]` key (server reverses bucket
+   * order) and re-walks the body. Wired to the group-section header click.
+   */
+  private toggleGroupDir(): void {
+    if (this.group === null) return;
+    this.groupDir = this.groupDir === 'asc' ? 'desc' : 'asc';
+    this.applyOrder();
+    this.bumpGroup();
+    this.bumpQuery();
+  }
+
   /* -------------------------------- rows -------------------------------- */
 
   /**
-   * Build ONE pooled row node (virtualList `create`). The drag affordances +
-   * the delegate <select> change listener are attached HERE (once), reading the
-   * live card id from `data-card-id` at event time — never a captured card,
-   * since the node recycles to a different row on scroll.
+   * Build ONE pooled node (virtualList `create`). The el-level gestures (click /
+   * keyboard / drag) are wired HERE exactly once; they read the live MODE +
+   * `data-card-id` at event time — never a captured row, since a pooled node
+   * recycles AND may flip between a data row and a group header on scroll. The
+   * row's inner content + the delegate <select> listener are built by
+   * makeRowMode (the node starts in row mode).
    */
   private buildRowShell(el: HTMLElement): void {
+    this.makeRowMode(el);
+
+    // A DATA-row click selects AND opens the task detail (`/task/:id`); a
+    // GROUP-HEADER click flips the group direction (same gesture as the Grid's
+    // section header). Enter / `o` on a focused row opens it. Clicks on the
+    // delegate <select> are ignored (its own change handler owns those). All
+    // read the live mode + data-card-id (never stale on a recycled node).
+    this.listen(el, 'click', (ev) => {
+      if (el.dataset.inboxGroup !== undefined) {
+        this.toggleGroupDir();
+        return;
+      }
+      const target = ev.target as HTMLElement | null;
+      if (target && target.dataset?.role === 'delegate') return;
+      const idStr = el.dataset.cardId;
+      if (idStr === undefined) return;
+      this.selectByCardId(BigInt(idStr));
+      this.openTask(idStr);
+    });
+    this.listen(el, 'keydown', (ev) => {
+      if (el.dataset.inboxRow === undefined) return; // headers aren't openable
+      const k = (ev as KeyboardEvent).key;
+      if (k === 'Enter' || k === 'o') {
+        ev.preventDefault();
+        const idStr = el.dataset.cardId;
+        if (idStr !== undefined) this.openTask(idStr);
+      }
+    });
+    this.listen(el, 'dragstart', (ev) => {
+      if (el.dataset.inboxRow === undefined) return; // group headers don't drag
+      const idStr = el.dataset.cardId;
+      draggingRowId = idStr !== undefined ? BigInt(idStr) : null;
+      this.settleRowId = null; // a fresh drag clears the prior move's settle
+      el.classList.add('inbox__row--dragging');
+      const dt = (ev as DragEvent).dataTransfer;
+      if (dt && idStr !== undefined) {
+        dt.effectAllowed = 'move';
+        dt.setData('text/plain', idStr);
+      }
+    });
+    this.listen(el, 'dragend', () => {
+      draggingRowId = null;
+      el.classList.remove('inbox__row--dragging');
+      this.placeholder?.hide();
+    });
+    this.listen(el, 'dragover', (ev) => {
+      ev.preventDefault();
+      // Glide the shared placeholder to the insertion gap (#5), computed against
+      // the list viewport so the bar sits in the list's content coordinate space
+      // (and "drag to end" parks it below the last row).
+      if (draggingRowId === null || this.listBody === null) return;
+      const t = computeDropTarget(this.listBody, (ev as DragEvent).clientY, draggingRowId.toString(), '[data-inbox-row]');
+      this.placeholder?.showAtY(t.y);
+    });
+    this.listen(el, 'drop', (ev) => {
+      ev.preventDefault();
+      // Stop the drop from ALSO bubbling to the container `drop` (the gap
+      // handler) — otherwise a drop ONTO a row would commit twice in a real
+      // browser. (The test DOM shim doesn't bubble, so this is a no-op there.)
+      ev.stopPropagation();
+      if (el.dataset.inboxRow === undefined) return; // a drop landing on a header
+      // Position-aware: a drop in the row's LOWER half inserts AFTER it (so a
+      // drop on the last row's lower half reaches the END — a card could never
+      // pass the last row before, #30). Matches the dragover placeholder.
+      this.onRowDrop(el, (ev as DragEvent).clientY);
+    });
+  }
+
+  /**
+   * (Re)build a pooled node as a DATA ROW: the grip, the title/meta lines, and
+   * the delegate <select> (its change listener wired here — re-wired on each
+   * mode transition, since the children are rebuilt). Idempotent: returns early
+   * when the node is already a row, so a pure scroll between rows is cheap. A
+   * node previously in group-header mode is rebuilt here.
+   */
+  private makeRowMode(el: HTMLElement): void {
+    if (el.dataset.inboxRow !== undefined) return;
+    delete el.dataset.inboxGroup;
+    delete el.dataset.groupKey;
+    delete el.dataset.groupDir;
     el.className = 'inbox__row';
     el.dataset.inboxRow = '';
     el.setAttribute('role', 'listitem');
     el.tabIndex = 0;
     el.draggable = true;
+    el.replaceChildren();
 
     const grip = document.createElement('span');
     grip.className = 'inbox__grip muted';
@@ -711,65 +897,81 @@ export class Inbox extends Control<InboxConfig> {
     });
 
     el.append(grip, main, delegate);
+  }
 
-    // A row click selects AND opens the task detail (`/task/:id`); Enter / `o`
-    // on the focused row opens it too. The id comes from `data-card-id` (set
-    // per fill, never stale on a recycled node). navigate() is a one-way
-    // History write outside any tracked effect — cascade-safe. Clicks that
-    // originate on the delegate <select> are ignored (its own change handler
-    // owns those) so picking an agent never bounces into the detail.
-    this.listen(el, 'click', (ev) => {
-      const target = ev.target as HTMLElement | null;
-      if (target && target.dataset?.role === 'delegate') return;
-      const idStr = el.dataset.cardId;
-      if (idStr === undefined) return;
-      this.selectByCardId(BigInt(idStr));
-      this.openTask(idStr);
-    });
-    this.listen(el, 'keydown', (ev) => {
-      const k = (ev as KeyboardEvent).key;
-      if (k === 'Enter' || k === 'o') {
-        ev.preventDefault();
-        const idStr = el.dataset.cardId;
-        if (idStr !== undefined) this.openTask(idStr);
-      }
-    });
-    this.listen(el, 'dragstart', (ev) => {
-      const idStr = el.dataset.cardId;
-      draggingRowId = idStr !== undefined ? BigInt(idStr) : null;
-      this.settleRowId = null; // a fresh drag clears the prior move's settle
-      el.classList.add('inbox__row--dragging');
-      const dt = (ev as DragEvent).dataTransfer;
-      if (dt && idStr !== undefined) {
-        dt.effectAllowed = 'move';
-        dt.setData('text/plain', idStr);
-      }
-    });
-    this.listen(el, 'dragend', () => {
-      draggingRowId = null;
-      el.classList.remove('inbox__row--dragging');
-      this.placeholder?.hide();
-    });
-    this.listen(el, 'dragover', (ev) => {
-      ev.preventDefault();
-      // Glide the shared placeholder to the insertion gap (#5), computed against
-      // the list viewport so the bar sits in the list's content coordinate space
-      // (and "drag to end" parks it below the last row).
-      if (draggingRowId === null || this.listBody === null) return;
-      const t = computeDropTarget(this.listBody, (ev as DragEvent).clientY, draggingRowId.toString(), '[data-inbox-row]');
-      this.placeholder?.showAtY(t.y);
-    });
-    this.listen(el, 'drop', (ev) => {
-      ev.preventDefault();
-      // Stop the drop from ALSO bubbling to the container `drop` (the gap
-      // handler) — otherwise a drop ONTO a row would commit twice in a real
-      // browser. (The test DOM shim doesn't bubble, so this is a no-op there.)
-      ev.stopPropagation();
-      // Position-aware: a drop in the row's LOWER half inserts AFTER it (so a
-      // drop on the last row's lower half reaches the END — a card could never
-      // pass the last row before, #30). Matches the dragover placeholder.
-      this.onRowDrop(el, (ev as DragEvent).clientY);
-    });
+  /**
+   * (Re)build a pooled node as a GROUP HEADER: a leading direction arrow, the
+   * bucket label, and `· count`. The whole band is clickable (the el-level click
+   * handler flips the group direction). Idempotent across header fills; rebuilds
+   * only on the transition out of row mode.
+   */
+  private makeHeaderMode(el: HTMLElement): void {
+    if (el.dataset.inboxGroup !== undefined) return;
+    delete el.dataset.inboxRow;
+    delete el.dataset.cardId;
+    el.className = 'inbox__group-header';
+    el.dataset.inboxGroup = '';
+    el.setAttribute('role', 'listitem');
+    el.tabIndex = 0;
+    el.draggable = false;
+    el.replaceChildren();
+    const arrow = document.createElement('span');
+    arrow.className = 'inbox__group-arrow';
+    arrow.dataset.role = 'group-arrow';
+    arrow.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.className = 'inbox__group-label';
+    label.dataset.role = 'group-label';
+    const count = document.createElement('span');
+    count.className = 'inbox__group-count muted';
+    count.dataset.role = 'group-count';
+    el.append(arrow, label, count);
+  }
+
+  /**
+   * Build the flat item sequence the virtualList renders. No group → plain rows
+   * (unchanged behaviour). A group axis active → cluster the (optimistic-patch-
+   * aware) display order with sortGrouped, then walk it into
+   * `[{kind:'group'}, {kind:'row'}, …]`, resolving card_ref group keys to their
+   * display label through the matching lookup map.
+   */
+  private buildItems(rows: CardWithAttrs[]): GroupItem<CardWithAttrs>[] {
+    const g = this.group;
+    if (g === null) return walkGrouped(sortByPersonal(rows.slice()), null, () => '');
+    const ordered = sortGrouped(rows.slice(), g.attr, this.groupDir);
+    return walkGrouped(ordered, g.attr, (key) => this.labelForGroupKey(key, g.lookup));
+  }
+
+  /** Discriminate a flat GroupItem onto a pooled node: header content for a
+   *  `group` item, the data-row cells for a `row` item (using the row's
+   *  rows-only `idx` as its selection index, so headers don't offset it). */
+  private fillItem(el: HTMLElement, item: GroupItem<CardWithAttrs>): void {
+    if (item.kind === 'group') {
+      this.makeHeaderMode(el);
+      el.dataset.groupKey = item.key;
+      el.dataset.groupDir = this.groupDir;
+      const arrow = childByRole(el, 'group-arrow');
+      if (arrow) arrow.textContent = this.groupDir === 'asc' ? '↑' : '↓';
+      const label = childByRole(el, 'group-label');
+      if (label) label.textContent = item.label;
+      const count = childByRole(el, 'group-count');
+      if (count) count.textContent = `· ${item.count}`;
+    } else {
+      this.makeRowMode(el);
+      this.fillRow(el, item.row, item.idx);
+    }
+  }
+
+  /** Resolve a group key to its display label: a card_ref bigint goes through
+   *  the group axis's lookup map (persons / statuses / milestones / components);
+   *  scalars are their own label. Mirrors the Grid's labelForGroupKey. */
+  private labelForGroupKey(key: unknown, lookup: string | null): string {
+    if (typeof key === 'bigint' && lookup !== null) {
+      const map = this.lookup(lookup);
+      const k = key.toString();
+      return map[k] ?? `#${k}`;
+    }
+    return String(key);
   }
 
   /**
@@ -1020,10 +1222,15 @@ export class Inbox extends Control<InboxConfig> {
     }
   }
 
-  /** The current (personal-sorted) row order. */
+  /** The current DISPLAY row order — the grouped order (group key, then personal
+   *  sort within each bucket) when a group axis is active, else the flat
+   *  personal-sorted order. This matches each row item's `idx` from walkGrouped,
+   *  so the keyboard selection + reorder math index into the same sequence the
+   *  body renders. */
   private currentRows(): CardWithAttrs[] {
     const rows = (this.ctx.tree.at(this.tasksPath).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
-    return sortByPersonal(rows.slice());
+    if (this.group === null) return sortByPersonal(rows.slice());
+    return sortGrouped(rows.slice(), this.group.attr, this.groupDir);
   }
 
   /* ------------------------------- hotkeys ------------------------------ */

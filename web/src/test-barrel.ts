@@ -168,6 +168,7 @@ export {
   planPersonalReorder,
   applyPersonalReorder,
   sortByPersonal,
+  sortGrouped,
   move as inboxMove,
   type PersonalSortUpdate,
 } from './inbox/inbox-helpers.js';
