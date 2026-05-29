@@ -13,7 +13,7 @@
 // split documented in ARCHITECTURE.md §2.
 
 import * as esbuild from 'esbuild';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, cp } from 'node:fs/promises';
 
 const serve = process.argv.includes('--serve');
 
@@ -53,6 +53,14 @@ async function writeDistIndex() {
   await writeFile('dist/index.html', out);
 }
 
+// Copy static icon assets (favicons, apple-touch, general-use PNGs) into the
+// bundle so /assets/* resolves in the shipped dist/ exactly as it does under
+// the dev server (which serves web/ directly). Referenced by absolute path in
+// index.html's <head>.
+async function copyAssets() {
+  await cp('assets', 'dist/assets', { recursive: true });
+}
+
 if (serve) {
   const ctx = await esbuild.context(common);
   await ctx.watch();
@@ -62,5 +70,6 @@ if (serve) {
 } else {
   await esbuild.build(common);
   await writeDistIndex();
-  console.log('built self-contained dist/ (index.html, app.js, styles.css)');
+  await copyAssets();
+  console.log('built self-contained dist/ (index.html, app.js, styles.css, assets/)');
 }

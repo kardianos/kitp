@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>kitp — logo options</title>
+  <style>
+    :root {
+      --blue: #006fff;
+      --steel: #93a4b8;
+      --ink: #0e1620;
+      --muted: #5b6b7f;
+      --line: #e2e8f0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      color: var(--ink);
+      background: #f6f8fb;
+      -webkit-font-smoothing: antialiased;
+    }
+    header {
+      padding: 32px 40px 8px;
+    }
+    header h1 { margin: 0 0 4px; font-size: 20px; letter-spacing: -0.01em; }
+    header p { margin: 0; color: var(--muted); max-width: 60ch; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(360px, 1fr));
+      gap: 20px;
+      padding: 24px 40px 56px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .card__head {
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .card__head h2 { margin: 0 0 2px; font-size: 15px; }
+    .card__head .num { color: var(--blue); font-weight: 700; }
+    .card__head p { margin: 0; color: var(--muted); font-size: 13px; }
+    /* two preview panes: light + dark */
+    .panes { display: grid; grid-template-columns: 1fr 1fr; }
+    .pane {
+      padding: 22px 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+    .pane--light { background: #ffffff; }
+    .pane--dark  { background: #0a1018; }
+    .hero { display: block; }
+    /* size strip — REAL pixel sizes (favicon territory) */
+    .sizes {
+      display: flex;
+      align-items: flex-end;
+      gap: 14px;
+      min-height: 36px;
+    }
+    .sizes figure {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    .sizes figcaption {
+      font-size: 10px;
+      color: var(--muted);
+    }
+    .pane--dark figcaption { color: #6b7a8c; }
+    img { image-rendering: auto; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>kitp — task tracker logo options</h1>
+    <p>Concept: <strong>two inputs, one reactor draining them.</strong> Steel inputs (the raw
+    work) are consumed by the confident UniFi-blue reactor. Each mark is built on a 48-unit grid
+    and shown below at real favicon sizes (16–32&nbsp;px) on light and dark, plus a 96&nbsp;px hero.</p>
+  </header>
+
+  <main class="grid">
+    <!-- 1 -->
+    <section class="card">
+      <div class="card__head">
+        <h2><span class="num">1.</span> Converge</h2>
+        <p>Two streams fall together into a core that drips out the base — a literal drain.</p>
+      </div>
+      <div class="panes">
+        <div class="pane pane--light">
+          <img class="hero" src="logo-1-converge.svg" width="96" height="96" alt="Converge logo">
+          <div class="sizes">
+            <figure><img src="logo-1-converge.svg" width="16" height="16" alt=""><figcaption>16</figcaption></figure>
+            <figure><img src="logo-1-converge.svg" width="20" height="20" alt=""><figcaption>20</figcaption></figure>
+            <figure><img src="logo-1-converge.svg" width="24" height="24" alt=""><figcaption>24</figcaption></figure>
+            <figure><img src="logo-1-converge.svg" width="32" height="32" alt=""><figcaption>32</figcaption></figure>
+          </div>
+        </div>
+        <div class="pane pane--dark">
+          <img class="hero" src="logo-1-converge.svg" width="96" height="96" alt="Converge logo on dark">
+          <div class="sizes">
+            <figure><img src="logo-1-converge.svg" width="16" height="16" alt=""><figcaption>16</figcaption></figure>
+            <figure><img src="logo-1-converge.svg" width="20" height="20" alt=""><figcaption>20</figcaption></figure>
+            <figure><img src="logo-1-converge.svg" width="24" height="24" alt=""><figcaption>24</figcaption></figure>
+            <figure><img src="logo-1-converge.svg" width="32" height="32" alt=""><figcaption>32</figcaption></figure>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2 -->
+    <section class="card">
+      <div class="card__head">
+        <h2><span class="num">2.</span> Intake</h2>
+        <p>A solid reactor disc with an open core; two side feeds are pulled into its shoulders.</p>
+      </div>
+      <div class="panes">
+        <div class="pane pane--light">
+          <img class="hero" src="logo-2-intake.svg" width="96" height="96" alt="Intake logo">
+          <div class="sizes">
+            <figure><img src="logo-2-intake.svg" width="16" height="16" alt=""><figcaption>16</figcaption></figure>
+            <figure><img src="logo-2-intake.svg" width="20" height="20" alt=""><figcaption>20</figcaption></figure>
+            <figure><img src="logo-2-intake.svg" width="24" height="24" alt=""><figcaption>24</figcaption></figure>
+            <figure><img src="logo-2-intake.svg" width="32" height="32" alt=""><figcaption>32</figcaption></figure>
+          </div>
+        </div>
+        <div class="pane pane--dark">
+          <img class="hero" src="logo-2-intake.svg" width="96" height="96" alt="Intake logo on dark">
+          <div class="sizes">
+            <figure><img src="logo-2-intake.svg" width="16" height="16" alt=""><figcaption>16</figcaption></figure>
+            <figure><img src="logo-2-intake.svg" width="20" height="20" alt=""><figcaption>20</figcaption></figure>
+            <figure><img src="logo-2-intake.svg" width="24" height="24" alt=""><figcaption>24</figcaption></figure>
+            <figure><img src="logo-2-intake.svg" width="32" height="32" alt=""><figcaption>32</figcaption></figure>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3 -->
+    <section class="card">
+      <div class="card__head">
+        <h2><span class="num">3.</span> Funnel</h2>
+        <p>Two task cards tip into a funnel that narrows to a single draining drop. Most literal.</p>
+      </div>
+      <div class="panes">
+        <div class="pane pane--light">
+          <img class="hero" src="logo-3-funnel.svg" width="96" height="96" alt="Funnel logo">
+          <div class="sizes">
+            <figure><img src="logo-3-funnel.svg" width="16" height="16" alt=""><figcaption>16</figcaption></figure>
+            <figure><img src="logo-3-funnel.svg" width="20" height="20" alt=""><figcaption>20</figcaption></figure>
+            <figure><img src="logo-3-funnel.svg" width="24" height="24" alt=""><figcaption>24</figcaption></figure>
+            <figure><img src="logo-3-funnel.svg" width="32" height="32" alt=""><figcaption>32</figcaption></figure>
+          </div>
+        </div>
+        <div class="pane pane--dark">
+          <img class="hero" src="logo-3-funnel.svg" width="96" height="96" alt="Funnel logo on dark">
+          <div class="sizes">
+            <figure><img src="logo-3-funnel.svg" width="16" height="16" alt=""><figcaption>16</figcaption></figure>
+            <figure><img src="logo-3-funnel.svg" width="20" height="20" alt=""><figcaption>20</figcaption></figure>
+            <figure><img src="logo-3-funnel.svg" width="24" height="24" alt=""><figcaption>24</figcaption></figure>
+            <figure><img src="logo-3-funnel.svg" width="32" height="32" alt=""><figcaption>32</figcaption></figure>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4 -->
+    <section class="card">
+      <div class="card__head">
+        <h2><span class="num">4.</span> Reactor</h2>
+        <p>A hexagonal core with an open drain; two feeds enter the top corners. Most "engine".</p>
+      </div>
+      <div class="panes">
+        <div class="pane pane--light">
+          <img class="hero" src="logo-4-reactor.svg" width="96" height="96" alt="Reactor logo">
+          <div class="sizes">
+            <figure><img src="logo-4-reactor.svg" width="16" height="16" alt=""><figcaption>16</figcaption></figure>
+            <figure><img src="logo-4-reactor.svg" width="20" height="20" alt=""><figcaption>20</figcaption></figure>
+            <figure><img src="logo-4-reactor.svg" width="24" height="24" alt=""><figcaption>24</figcaption></figure>
+            <figure><img src="logo-4-reactor.svg" width="32" height="32" alt=""><figcaption>32</figcaption></figure>
+          </div>
+        </div>
+        <div class="pane pane--dark">
+          <img class="hero" src="logo-4-reactor.svg" width="96" height="96" alt="Reactor logo on dark">
+          <div class="sizes">
+            <figure><img src="logo-4-reactor.svg" width="16" height="16" alt=""><figcaption>16</figcaption></figure>
+            <figure><img src="logo-4-reactor.svg" width="20" height="20" alt=""><figcaption>20</figcaption></figure>
+            <figure><img src="logo-4-reactor.svg" width="24" height="24" alt=""><figcaption>24</figcaption></figure>
+            <figure><img src="logo-4-reactor.svg" width="32" height="32" alt=""><figcaption>32</figcaption></figure>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

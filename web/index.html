@@ -4,6 +4,18 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>kitp web — Kanban vertical slice</title>
+    <!--
+      Favicons + app icons live in web/assets/ and are referenced by ABSOLUTE
+      path so they resolve from the bundle root regardless of SPA route depth
+      (same reasoning as app.js — see build.mjs). build.mjs copies web/assets/
+      into dist/assets/ for the shipped bundle.
+    -->
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/assets/favicon.ico" sizes="any" />
+    <link rel="icon" href="/assets/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="icon" href="/assets/favicon-16.png" sizes="16x16" type="image/png" />
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+    <meta name="theme-color" content="#006fff" />
     <link rel="stylesheet" href="./styles.css" />
     <!--
       Design tokens are owned by web/design/tokens.css; styles.css imports them

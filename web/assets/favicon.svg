@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" fill="none" role="img" aria-label="Task tracker logo: two task cards draining through a reactor funnel">
+  <!-- two inputs: task cards tilting into the funnel mouth -->
+  <g transform="rotate(13 16 12)"><rect x="11" y="7" width="10" height="10" rx="2.5" fill="#93a4b8"/></g>
+  <g transform="rotate(-13 32 12)"><rect x="27" y="7" width="10" height="10" rx="2.5" fill="#93a4b8"/></g>
+  <!-- reactor: funnel narrowing to a drain, with a drop -->
+  <path d="M12 21 L36 21 L27 31 L21 31 Z" fill="#006fff"/>
+  <circle cx="24" cy="37" r="2.6" fill="#006fff"/>
+</svg>
