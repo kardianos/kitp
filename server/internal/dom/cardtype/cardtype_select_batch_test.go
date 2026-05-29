@@ -61,6 +61,7 @@ type ctPayload struct {
 		ParentCardTypeID  *string `json:"parent_card_type_id"`
 		AllowSelfParent   bool    `json:"allow_self_parent"`
 		IsBuiltIn         bool    `json:"is_built_in"`
+		UsesPhase         bool    `json:"uses_phase"`
 	} `json:"rows"`
 }
 
@@ -78,18 +79,32 @@ func TestCardTypeSelectBatch_Happy(t *testing.T) {
 	if len(got.Rows) == 0 {
 		t.Fatalf("expected at least one card_type row")
 	}
-	// Sanity: 'project' must be present, and is_built_in must be true.
-	var sawProject bool
+	// Sanity: 'project' must be present, and is_built_in must be true. uses_phase
+	// distinguishes flow-bound value types (status) from the rest (project) — the
+	// signal the Manage Values screen reads to show a per-value phase control.
+	var sawProject, sawStatus bool
 	for _, r := range got.Rows {
 		if r.Name == "project" {
 			sawProject = true
 			if !r.IsBuiltIn {
 				t.Errorf("project is_built_in=false; expected true")
 			}
+			if r.UsesPhase {
+				t.Errorf("project uses_phase=true; expected false")
+			}
+		}
+		if r.Name == "status" {
+			sawStatus = true
+			if !r.UsesPhase {
+				t.Errorf("status uses_phase=false; expected true (flow-bound value type)")
+			}
 		}
 	}
 	if !sawProject {
 		t.Errorf("'project' card_type missing from snapshot")
+	}
+	if !sawStatus {
+		t.Errorf("'status' card_type missing from snapshot")
 	}
 }
 

@@ -14,7 +14,7 @@
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
-import { ADMIN_SPEC, type AttributeDefListOutput } from './specs.js';
+import { ADMIN_SPEC, type AttributeDefListOutput, type CardTypeListOutput } from './specs.js';
 import { SPEC, type SelectWithAttributesOutput } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
@@ -62,6 +62,11 @@ export class EnumManager extends Control<EnumManagerConfig> {
   /** Per grouped card_type, text attr names bound to it (detects "grouped" mode:
    *  the type carries both a `path` and a `root_exclusive_at` text edge). */
   private textAttrsByType: Record<string, Set<string>> = {};
+  /** Managed card_types whose instances carry a meaningful phase (uses_phase —
+   *  e.g. status). For these the value rows + add row show a phase selector
+   *  (triage/active/terminal). Data-driven from card_type.select; no name is
+   *  hardcoded, so any future flow-bound managed type gets the control too. */
+  private phaseBearing = new Set<string>();
   /** Client-side empty groups the user created via "+ New group" but hasn't
    *  added a value to yet (per grouped cardType). They vanish once a value lands
    *  (the group is then real) or on project switch. */
@@ -98,7 +103,7 @@ export class EnumManager extends Control<EnumManagerConfig> {
     title.textContent = 'Manage values';
     const hint = document.createElement('p');
     hint.className = 'enum-manager__hint muted';
-    hint.textContent = 'Add, rename, or remove the allowed values for milestones, components, tags, and any other managed attribute — for the active project.';
+    hint.textContent = 'Add, rename, or remove the allowed values for milestones, components, tags, statuses, and any other managed attribute — for the active project. Status values also carry a phase (triage / active / terminal).';
     head.append(title, hint);
 
     const list = document.createElement('div');
@@ -113,6 +118,7 @@ export class EnumManager extends Control<EnumManagerConfig> {
     });
 
     this.loadSchema();
+    this.loadCardTypes(); // which managed types are phase-bearing (uses_phase)
     // Reload value-cards when the active project resolves / changes. One-way:
     // reads scope, writes only this control's DOM + its own load state.
     this.effect(() => {
@@ -167,6 +173,55 @@ export class EnumManager extends Control<EnumManagerConfig> {
 
         this.reloadAll();
       },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /** Load the (global) card_type set → the phase-bearing managed types. */
+  private loadCardTypes(): void {
+    this.ctx.api.callByName(
+      ADMIN_SPEC.cardTypeSelect,
+      {},
+      (out) => {
+        if (!this.isAlive()) return;
+        const rows = (out as CardTypeListOutput).rows ?? [];
+        const next = new Set<string>();
+        for (const r of rows) if (r.uses_phase === true) next.add(r.name);
+        this.phaseBearing = next;
+        this.paint();
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /** A value-card's current phase ('' when the type isn't flow-bound). */
+  private phaseOf(card: CardWithAttrs): string {
+    return typeof card.phase === 'string' ? card.phase : '';
+  }
+
+  /** Build a phase <select> (triage|active|terminal) seeded to `current`. */
+  private buildPhaseSelect(current: string): HTMLSelectElement {
+    const sel = document.createElement('select');
+    sel.className = 'enum-manager__phase';
+    sel.dataset.enumPhase = '';
+    for (const ph of ['triage', 'active', 'terminal']) {
+      const opt = document.createElement('option');
+      opt.value = ph;
+      opt.textContent = ph;
+      if (ph === current) opt.selected = true;
+      sel.append(opt);
+    }
+    sel.value = current;
+    return sel;
+  }
+
+  /** Set a value-card's phase via card.set_phase, then reload its enum. */
+  private setValuePhase(e: ManagedEnum, card: CardWithAttrs, phase: string): void {
+    card.phase = phase as CardWithAttrs['phase']; // optimistic
+    this.ctx.api.callByName(
+      ADMIN_SPEC.cardSetPhase,
+      { cardId: card.id, phase },
+      () => { if (this.isAlive()) this.loadEnum(e); },
       { alive: () => this.isAlive() },
     );
   }
@@ -443,10 +498,14 @@ export class EnumManager extends Control<EnumManagerConfig> {
     this.listen(input, 'input', () => {
       this.addDrafts[key] = input.value;
     });
+    // Phase-bearing types (status): pick the new value's phase up front. Default
+    // 'active' — a freshly added status is usually a working state.
+    const phaseSel = this.phaseBearing.has(e.cardType) ? this.buildPhaseSelect('active') : null;
+    if (phaseSel) phaseSel.dataset.enumAddPhase = e.cardType;
     this.listen(input, 'keydown', (ev) => {
       if ((ev as KeyboardEvent).key === 'Enter') {
         (ev as KeyboardEvent).preventDefault();
-        this.addValue(e, group, input.value);
+        this.addValue(e, group, input.value, phaseSel?.value);
       }
     });
     const addBtn = document.createElement('button');
@@ -455,8 +514,9 @@ export class EnumManager extends Control<EnumManagerConfig> {
     addBtn.dataset.enumAdd = e.cardType;
     if (group !== null) addBtn.dataset.enumAddGroupBtn = group;
     addBtn.textContent = '+ Add';
-    this.listen(addBtn, 'click', () => this.addValue(e, group, input.value));
-    addRow.append(input, addBtn);
+    this.listen(addBtn, 'click', () => this.addValue(e, group, input.value, phaseSel?.value));
+    if (phaseSel) addRow.append(input, phaseSel, addBtn);
+    else addRow.append(input, addBtn);
     return addRow;
   }
 
@@ -559,7 +619,20 @@ export class EnumManager extends Control<EnumManagerConfig> {
     remove.textContent = '×';
     this.listen(remove, 'click', () => this.removeValue(card));
 
-    row.append(reorder, input, remove);
+    // Flow-bound value types (status): a phase selector per value. Changing it
+    // writes the structural phase column via card.set_phase.
+    if (this.phaseBearing.has(e.cardType)) {
+      const cur = this.phaseOf(card) || 'triage';
+      const phaseSel = this.buildPhaseSelect(cur);
+      phaseSel.setAttribute('aria-label', `${e.label} phase`);
+      this.listen(phaseSel, 'change', () => {
+        if (phaseSel.value === cur) return;
+        this.setValuePhase(e, card, phaseSel.value);
+      });
+      row.append(reorder, input, phaseSel, remove);
+    } else {
+      row.append(reorder, input, remove);
+    }
     return row;
   }
 
@@ -639,7 +712,7 @@ export class EnumManager extends Control<EnumManagerConfig> {
    *  path = `root/<typed>` and it inherits the group's current exclusivity. For
    *  a flat enum (`group` null) the entered title mirrors into required text
    *  edges (e.g. a flat tag's path = title). */
-  private addValue(e: ManagedEnum, group: string | null, raw: string): void {
+  private addValue(e: ManagedEnum, group: string | null, raw: string, phase?: string): void {
     const typed = raw.trim();
     const pid = this.projectId();
     if (typed === '' || pid === null) return;
@@ -662,12 +735,15 @@ export class EnumManager extends Control<EnumManagerConfig> {
       if (exclusive) attrs['root_exclusive_at'] = group;
     }
 
-    const input: { cardTypeName: string; parentCardId: bigint; title: string; attributes?: Record<string, unknown> } = {
+    const input: { cardTypeName: string; parentCardId: bigint; title: string; attributes?: Record<string, unknown>; phase?: string } = {
       cardTypeName: e.cardType,
       parentCardId: pid,
       title,
     };
     if (Object.keys(attrs).length > 0) input.attributes = attrs;
+    // Flow-bound value types (status): set the chosen phase on the new card
+    // (card.insert takes a top-level phase; defaults 'triage' if omitted).
+    if (this.phaseBearing.has(e.cardType) && phase !== undefined && phase !== '') input.phase = phase;
     this.ctx.api.callByName(
       'card.insert',
       input,

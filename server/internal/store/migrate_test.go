@@ -57,6 +57,36 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 			t.Errorf("%s: got %d, want %d", c.query, got, c.want)
 		}
 	}
+
+	// Regression — the "conflicts with an existing record" project-create bug:
+	// the template cards are seeded with EXPLICIT ids, so reset_sequence=
+	// card_id_seq MUST run after the last template card block. If it runs too
+	// early (e.g. on the System-person block), card_id_seq sits behind
+	// MAX(card.id) and the first runtime card insert collides on card_pkey.
+	var seqLast, maxID int64
+	if err := pool.QueryRow(ctx, `SELECT last_value FROM card_id_seq`).Scan(&seqLast); err != nil {
+		t.Fatalf("read card_id_seq: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(MAX(id), 0) FROM card`).Scan(&maxID); err != nil {
+		t.Fatalf("read max card id: %v", err)
+	}
+	if seqLast < maxID {
+		t.Fatalf("card_id_seq=%d is behind MAX(card.id)=%d — a runtime card insert would collide (card_pkey)", seqLast, maxID)
+	}
+
+	// End-to-end: creating a project (which auto-stamps the template) must
+	// succeed, not 23505 → "conflict". This is the exact user-reported path.
+	var ok bool
+	var code, msg string
+	if err := pool.QueryRow(ctx, `
+		SELECT ok, code, message
+		FROM card_insert_batch(1, '[{"card_type_name":"project","title":"Seq Regression Project"}]'::jsonb)
+	`).Scan(&ok, &code, &msg); err != nil {
+		t.Fatalf("card_insert_batch(project): %v", err)
+	}
+	if !ok {
+		t.Fatalf("project create failed after a fresh non-demo seed: code=%s message=%q", code, msg)
+	}
 }
 
 // TestApplySchemaWithTestDemo applies the install seed plus the stable

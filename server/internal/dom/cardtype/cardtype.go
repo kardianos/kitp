@@ -20,6 +20,7 @@ type Row struct {
 	ParentCardTypeID *int64 `json:"parent_card_type_id,string,omitempty" mcp:"desc=id of the only allowed parent card_type, if constrained"`
 	AllowSelfParent  bool   `json:"allow_self_parent" mcp:"desc=if true, instances may be parented to other instances of the same type"`
 	IsBuiltIn        bool   `json:"is_built_in" mcp:"desc=true for v1 built-in types"`
+	UsesPhase        bool   `json:"uses_phase" mcp:"desc=true for flow-bound value-card types whose instances carry a meaningful phase (triage|active|terminal) — e.g. status"`
 }
 
 // SelectOutput is the per-input payload — every input returns the same

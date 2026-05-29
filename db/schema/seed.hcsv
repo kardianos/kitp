@@ -63,7 +63,7 @@ title,                 text,        true, null, false
 assignee,              card_ref,    true, $card_type.person, false
 milestone_ref,         card_ref,    true, $card_type.milestone, true
 component_ref,         card_ref,    true, $card_type.component, true
-status,                card_ref,    true, $card_type.status, false
+status,                card_ref,    true, $card_type.status, true
 path,                  text,        true, null, false
 root_exclusive_at,     text,        true, null, false
 tags,                  card_ref[],  true, $card_type.tag, true
@@ -243,7 +243,7 @@ $process."task.update_with_comment", 2, comment,        insert
 $process."user_card_sort.set",       1, user_card_sort, set
 
 
-## table card | doc="Person card for the System User. Explicit id=1 mirrors user_account.id=1 so activity actor lookups and any task happen-to-be-assigned-to-System scenarios resolve. ON CONFLICT (id) DO NOTHING short-circuits the entire CTE chain on re-apply (the activity / attribute_value CTEs SELECT FROM the card CTE, so an empty result cascades through). Dev / demo person cards live in demo.hcsv." | reset_sequence=card_id_seq | on_conflict="id"
+## table card | doc="Person card for the System User. Explicit id=1 mirrors user_account.id=1 so activity actor lookups and any task happen-to-be-assigned-to-System scenarios resolve. ON CONFLICT (id) DO NOTHING short-circuits the entire CTE chain on re-apply (the activity / attribute_value CTEs SELECT FROM the card CTE, so an empty result cascades through). Dev / demo person cards live in demo.hcsv." | on_conflict="id"
 ### rows
 id, card_type_id,       title,   alias
 1, $card_type.person,  System,  person_system
@@ -423,7 +423,7 @@ id, card_type_id,     parent_card_id, title,             predicate
 27, $card_type.filter, parent,         "Comms attached",  `{"attr":"comms","op":"exists"}`
 
 
-## table card | under=tpl_project | doc="Template predicate-snippet cards — every newly stamped project inherits 'Overdue', 'Due within 3 days', and 'Heads' as named filters. The two date snippets reference the relative-date ops (before_today / within_days) which the server compiler resolves against now()::date at query time so the result keeps moving with the clock instead of going stale on save. The non-terminal status check is expressed as has_phase [triage, active] (the kernel form) so the advanced filter editor renders the operator with its friendly label. 'Heads' surfaces tasks with no parent OR whose parent has reached terminal, i.e. the current 'head of chain' view." | on_conflict="id"
+## table card | under=tpl_project | doc="Template predicate-snippet cards — every newly stamped project inherits 'Overdue', 'Due within 3 days', and 'Heads' as named filters. The two date snippets reference the relative-date ops (before_today / within_days) which the server compiler resolves against now()::date at query time so the result keeps moving with the clock instead of going stale on save. The non-terminal status check is expressed as has_phase [triage, active] (the kernel form) so the advanced filter editor renders the operator with its friendly label. 'Heads' surfaces tasks with no parent OR whose parent has reached terminal, i.e. the current 'head of chain' view. This is the LAST template card block, so it carries reset_sequence=card_id_seq: every template card above is inserted with an EXPLICIT id, so the sequence must be advanced past them here (after the final insert). Without this a fresh non-demo seed leaves card_id_seq behind the template ids and the first runtime card insert collides (card_pkey). Demo doesn't hit this — its later cards use auto-ids that advance the sequence naturally." | on_conflict="id" | reset_sequence=card_id_seq
 ### rows
 id, card_type_id,                 parent_card_id, title,                  predicate
 28, $card_type.predicate_snippet, parent,         "Overdue",              `{"connective":"and","children":[{"attr":"status","op":"has_phase","values":["triage","active"]},{"attr":"due_date","op":"before_today"}]}`

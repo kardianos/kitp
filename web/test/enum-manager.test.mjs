@@ -45,6 +45,9 @@ function recordingTransport() {
       }
       return { id: sr.id, ok: true, data: { rows: [] } };
     }
+    // The control loads card_type.select to learn which managed types are
+    // phase-bearing (uses_phase). None here → no phase UI for these tests.
+    if (k === 'card_type.select') return { id: sr.id, ok: true, data: { rows: [] } };
     if (k === 'card.insert') { sent.inserts.push(data); return { id: sr.id, ok: true, data: { id: '502' } }; }
     if (k === 'attribute.update') { sent.updates.push(data); return { id: sr.id, ok: true, data: { ok: true } }; }
     if (k === 'card.delete') { sent.deletes.push(data); return { id: sr.id, ok: true, data: { ok: true } }; }
@@ -278,6 +281,7 @@ function groupedTagTransport() {
       ] } };
     }
     if (k === 'card.select_with_attributes') return { id: sr.id, ok: true, data: { rows: data.card_type_name === 'tag' ? tags : [] } };
+    if (k === 'card_type.select') return { id: sr.id, ok: true, data: { rows: [] } };
     if (k === 'card.insert') { sent.inserts.push(data); return { id: sr.id, ok: true, data: { id: '900' } }; }
     if (k === 'attribute.update') { sent.updates.push(data); return { id: sr.id, ok: true, data: { ok: true } }; }
     if (k === 'card.delete') { sent.deletes.push(data); return { id: sr.id, ok: true, data: { ok: true } }; }
@@ -389,4 +393,90 @@ test('Grouped tags: "+ New group" adds a fresh empty bucket with its own add inp
   assert.ok(ctrl.el.querySelector('[data-enum-subgroup="severity"]'), 'the new group renders');
   assert.ok(ctrl.el.querySelector('[data-enum-add-group="severity"]'), 'with its own add input');
   // No card.insert yet — the bucket is client-side until its first value lands.
+});
+
+/* -------------------------------------------------------------------------- */
+/* Status: enum_managed + phase-bearing (uses_phase). Manage Values curates    */
+/* the status value set AND each value's phase (triage/active/terminal).        */
+/* -------------------------------------------------------------------------- */
+
+function statusTransport() {
+  const sent = { inserts: [], setPhases: [] };
+  const statuses = [
+    { id: '600', card_type_name: 'status', parent_card_id: '31', phase: 'triage', attributes: { title: 'New idea', sort_order: 10 } },
+    { id: '601', card_type_name: 'status', parent_card_id: '31', phase: 'active', attributes: { title: 'Doing', sort_order: 20 } },
+  ];
+  function respond(sr) {
+    const k = `${sr.endpoint}.${sr.action}`;
+    const data = sr.data ?? {};
+    if (k === 'attribute_def.select') {
+      return { id: sr.id, ok: true, data: { rows: [
+        { id: 's1', name: 'status', value_type: 'card_ref', is_built_in: true, enum_managed: true, target_card_type_name: 'status', bound_to: [] },
+      ] } };
+    }
+    if (k === 'card_type.select') {
+      return { id: sr.id, ok: true, data: { rows: [
+        { id: '8', name: 'status', allow_self_parent: false, is_built_in: true, uses_phase: true },
+        { id: '9', name: 'milestone', allow_self_parent: false, is_built_in: true, uses_phase: false },
+      ] } };
+    }
+    if (k === 'card.select_with_attributes') {
+      return { id: sr.id, ok: true, data: { rows: data.card_type_name === 'status' ? statuses : [] } };
+    }
+    if (k === 'card.insert') { sent.inserts.push(data); return { id: sr.id, ok: true, data: { id: '602' } }; }
+    if (k === 'card.set_phase') { sent.setPhases.push(data); return { id: sr.id, ok: true, data: { ok: true, activity_id: '1' } }; }
+    if (k === 'attribute.update') return { id: sr.id, ok: true, data: { ok: true } };
+    return { id: sr.id, ok: false, error: { code: 'unknown', message: k } };
+  }
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      return { status: 200, text: JSON.stringify({ subresponses: req.subrequests.map(respond) }) };
+    },
+  };
+  transport.sent = sent;
+  return transport;
+}
+
+test('Status values: phase selector per value, card.set_phase on change, phase passed on add', async () => {
+  const transport = statusTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  // Status renders as a managed group (it's enum_managed in this mock).
+  assert.ok(ctrl.el.querySelector('[data-enum-group="status"]'), 'status renders as a managed enum');
+
+  // Every status value row carries a phase select seeded to the card's phase.
+  const rows = ctrl.el.querySelectorAll('[data-enum-value]');
+  const rowPhases = rows.map((r) => r.querySelector('[data-enum-phase]')).filter(Boolean);
+  assert.equal(rowPhases.length, 2, 'a phase select on each status value row');
+  const doing = rows.find((r) => r.dataset.enumValue === '601');
+  assert.equal(doing.querySelector('[data-enum-phase]').value, 'active', 'phase select reflects the value-card phase');
+
+  // Change New idea (600) triage → terminal → fires card.set_phase.
+  const newIdea = rows.find((r) => r.dataset.enumValue === '600');
+  const sel = newIdea.querySelector('[data-enum-phase]');
+  assert.equal(sel.value, 'triage');
+  sel.value = 'terminal';
+  sel.dispatchEvent({ type: 'change', target: sel });
+  await settle(dispatcher);
+  assert.equal(transport.sent.setPhases.length, 1, 'card.set_phase fired');
+  assert.equal(String(transport.sent.setPhases[0].card_id), '600');
+  assert.equal(transport.sent.setPhases[0].phase, 'terminal', 'chosen phase sent');
+
+  // The add row carries a phase select (defaults active); adding threads it to card.insert.
+  const addPhase = ctrl.el.querySelector('[data-enum-add-phase="status"]');
+  assert.ok(addPhase, 'the add row has a phase select');
+  assert.equal(addPhase.value, 'active', 'add phase defaults to active');
+  addPhase.value = 'terminal';
+  const addInput = ctrl.el.querySelector('[data-enum-add-input="status"]');
+  addInput.value = 'Shipped';
+  addInput.dispatchEvent({ type: 'input', target: addInput });
+  ctrl.el.querySelector('[data-enum-add="status"]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  assert.equal(transport.sent.inserts.length, 1, 'card.insert fired');
+  assert.equal(transport.sent.inserts[0].title, 'Shipped');
+  assert.equal(transport.sent.inserts[0].phase, 'terminal', 'chosen phase passed to card.insert');
+  assert.equal(String(transport.sent.inserts[0].parent_card_id), '31', 'parented to the active project');
 });

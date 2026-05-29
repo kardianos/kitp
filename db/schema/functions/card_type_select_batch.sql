@@ -36,7 +36,8 @@ BEGIN
                          ELSE to_jsonb(ct.parent_card_type_id::text)
                     END,
                 'allow_self_parent',   ct.allow_self_parent,
-                'is_built_in',         ct.is_built_in
+                'is_built_in',         ct.is_built_in,
+                'uses_phase',          ct.uses_phase
             ) ORDER BY ct.id
         )
         FROM card_type ct

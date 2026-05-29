@@ -53,6 +53,7 @@ export const ADMIN_SPEC = {
   userUnlinkPerson: 'user.unlink_person',
   // Nested-editor specs (flow-step transitions, attribute edges, card_types).
   cardTypeSelect: 'card_type.select',
+  cardSetPhase: 'card.set_phase',
   flowStepList: 'flow_step.list',
   flowStepSet: 'flow_step.set',
   flowStepDelete: 'flow_step.delete',
@@ -344,6 +345,16 @@ export interface UserRoleListOutput {
   rows: UserRoleAssignment[];
 }
 
+export interface CardSetPhaseInput {
+  cardId: bigint | string;
+  /** triage | active | terminal. */
+  phase: string;
+}
+export interface CardSetPhaseOutput {
+  ok: boolean;
+  activityId: bigint;
+}
+
 /* ---- user.unlink_person (Users unlink) ----------------------------------- */
 
 export interface UserUnlinkPersonInput {
@@ -361,6 +372,10 @@ export interface CardTypeRow {
   parent_card_type_id?: string;
   allow_self_parent: boolean;
   is_built_in: boolean;
+  /** True for flow-bound value-card types whose instances carry a meaningful
+   *  phase (triage|active|terminal) — e.g. `status`. Drives the EnumManager's
+   *  per-value phase control. */
+  uses_phase?: boolean;
 }
 export interface CardTypeListOutput {
   rows: CardTypeRow[];
@@ -808,6 +823,7 @@ function decodeCardTypeRow(j: Record<string, unknown>): CardTypeRow {
   };
   const p = asStrOpt(j['parent_card_type_id']);
   if (p !== undefined) out.parent_card_type_id = p;
+  if (j['uses_phase'] === true) out.uses_phase = true;
   return out;
 }
 
@@ -1114,6 +1130,20 @@ export function registerAdminSpecs(api: Api): void {
       decode: (raw): CardTypeListOutput => ({
         rows: asArray(asObj(raw)['rows']).map((r) => decodeCardTypeRow(asObj(r))),
       }),
+    });
+  }
+
+  // card.set_phase — set a flow-bound value-card's phase (triage|active|
+  // terminal). Manage Values uses it to set the phase of a status value.
+  if (!api.registry.has({ endpoint: 'card', action: 'set_phase' })) {
+    api.define<CardSetPhaseInput, CardSetPhaseOutput>({
+      endpoint: 'card',
+      action: 'set_phase',
+      encode: (i) => ({ card_id: i.cardId, phase: i.phase }),
+      decode: (raw): CardSetPhaseOutput => {
+        const j = asObj(raw);
+        return { ok: j['ok'] === true, activityId: asId(j['activity_id']) };
+      },
     });
   }
 
