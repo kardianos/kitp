@@ -89,6 +89,66 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 	}
 }
 
+// TestForwardMigrationsReachExistingDB proves the run-once forward-migration
+// phase reconciles an ALREADY-seeded database (where the one-time install seed
+// never re-runs): a missing migration applies on the next boot, records its
+// ledger row, and is skipped (idempotent) thereafter.
+func TestForwardMigrationsReachExistingDB(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_forward_migrations")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	// A fresh apply records the migration ledger rows (kind='migration').
+	var migCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_version WHERE kind='migration'`).Scan(&migCount); err != nil {
+		t.Fatalf("count migrations: %v", err)
+	}
+	if migCount < 2 {
+		t.Fatalf("expected >=2 migration ledger rows after apply, got %d", migCount)
+	}
+
+	// Simulate an existing DB that predates 0001: clear the flag and drop just
+	// that migration's ledger row, leaving the baseline in place (so the
+	// one-time seed stays gated off, exactly like a real upgraded install).
+	if _, err := pool.Exec(ctx, `UPDATE attribute_def SET enum_managed = false WHERE name = 'status'`); err != nil {
+		t.Fatalf("unset flag: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_version WHERE name = '0001_status_enum_managed'`); err != nil {
+		t.Fatalf("drop ledger row: %v", err)
+	}
+
+	// A normal boot re-applies the missing migration (the seed does NOT re-run).
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	var enumManaged, haveRow bool
+	if err := pool.QueryRow(ctx, `SELECT enum_managed FROM attribute_def WHERE name = 'status'`).Scan(&enumManaged); err != nil {
+		t.Fatalf("read flag: %v", err)
+	}
+	if !enumManaged {
+		t.Fatal("forward migration did not set status.enum_managed on the existing DB")
+	}
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_version WHERE name='0001_status_enum_managed')`).Scan(&haveRow); err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	if !haveRow {
+		t.Fatal("migration ledger row not recorded after re-apply")
+	}
+
+	// Idempotent: a further boot is a clean no-op (row present → skipped).
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("third apply (idempotent): %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT enum_managed FROM attribute_def WHERE name = 'status'`).Scan(&enumManaged); err != nil {
+		t.Fatalf("re-read flag: %v", err)
+	}
+	if !enumManaged {
+		t.Fatal("status.enum_managed regressed on a no-op boot")
+	}
+}
+
 // TestApplySchemaWithTestDemo applies the install seed plus the stable
 // test_demo.hcsv fixture (NOT the dev demo.hcsv, which is allowed to
 // grow freely). The counts here are stable by design — changing
