@@ -40,10 +40,13 @@ runtime deps).
     make up           # start Postgres (kitp-pg) on 127.0.0.1:5544
     make db-reset     # drop + recreate the schema, seed, and demo data
     make web          # bundle web/ to web/dist via esbuild
-    make run          # run kitpd: API + UI on http://localhost:18080
+    make demo         # run kitpd with demo fixtures: API + UI on http://localhost:18080
+    make run          # same, but WITHOUT demo data (keeps a clean DB clean)
 
-make db-reset is idempotent; make run re-applies the schema on startup
-too. For a production-shaped DB without demo fixtures, use
+make db-reset is idempotent; both make run and make demo re-apply the schema
+on startup too. The only difference is demo data: make demo seeds the demo
+fixtures, make run does not — so make run never re-injects demo into a
+db-reset-clean database. For a production-shaped DB without demo fixtures, use
 make db-reset-clean. To print the generated SQL without touching the DB,
 use make schema-gen. The canonical schema lives in db/schema/*.hcsv (DDL,
 seed, demo, and PL/pgSQL functions are generated from these files).
@@ -73,7 +76,7 @@ unset or left at the published dev default.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | KITP_SKIP_SCHEMA | (unset) | Set to any value to skip applying the schema on startup. |
-| KITP_DEMO_DATA | (unset) | Non-empty loads demo fixtures (implied when ENV=dev). |
+| KITP_DEMO_DATA | (unset) | Loads demo fixtures when truthy. Implied when ENV=dev, but an explicit value wins — set to 0/false/empty to disable demo even in dev. |
 | MIGRATE_ONLY | (unset) | Apply the schema, then exit without serving. |
 | KITP_INIT_ADMIN_EMAIL | (unset) | Bootstrap an admin user_account for this email on startup (no-op once any admin exists). |
 
@@ -295,8 +298,11 @@ postgres://USER:PASSWORD@HOST:5432/DBNAME?sslmode=require
 - The server applies the schema on every startup (idempotent). To manage
   migrations out-of-band, run one container with `MIGRATE_ONLY=1` (applies the
   schema, then exits) and run the serving container with `KITP_SKIP_SCHEMA=1`.
-- Demo fixtures load only when `ENV=dev` or `KITP_DEMO_DATA` is set, so a
-  production DB stays clean.
+- Demo fixtures load when `ENV=dev`, or when `KITP_DEMO_DATA` is set to a
+  truthy value. An explicit `KITP_DEMO_DATA` always wins over the `ENV=dev`
+  default, so `KITP_DEMO_DATA=0` disables demo even in dev — that is what lets
+  `make run` re-apply the schema without re-seeding demo. A production DB stays
+  clean regardless.
 
 A throwaway local stack (app + Postgres) — note `ENV=dev` here only to skip the
 OIDC/secret refusals for a quick spin; never run dev mode in production:
@@ -346,7 +352,8 @@ WEB_PORT (8090), DEMO (-demo).
     make schema-gen      # print generated SQL to stdout
     make web             # build web/dist via esbuild
     make web-dev         # esbuild dev server with live reload
-    make run             # run kitpd (API + UI)
+    make demo            # run kitpd (API + UI) with demo fixtures
+    make run             # run kitpd (API + UI) without demo data
     make test            # go test ./... (server)
     make lint            # go vet ./...
 

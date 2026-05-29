@@ -114,6 +114,24 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// wantDemo reports whether to apply the opt-in demo seed section on startup.
+// Demo is implied in dev so a zero-config `make run` on a fresh DB is useful,
+// but an explicit KITP_DEMO_DATA always wins — so KITP_DEMO_DATA=0 (or empty)
+// keeps a `db-reset-clean` database clean even in dev, and `make run` can
+// re-apply the schema on every start without re-injecting demo fixtures.
+func wantDemo(env string) bool {
+	v, ok := os.LookupEnv("KITP_DEMO_DATA")
+	if !ok {
+		return env == "dev"
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
 // envInt reads an integer-valued env var. Returns fallback when the var is
 // unset, empty, or fails to parse — invalid values log a warning and fall
 // through (silent fall-through hides typos).
@@ -261,7 +279,7 @@ func runHTTP() error {
 	defer pgPool.Close()
 
 	if os.Getenv("KITP_SKIP_SCHEMA") == "" {
-		demo := os.Getenv("KITP_DEMO_DATA") != "" || env == "dev"
+		demo := wantDemo(env)
 		if err := store.ApplySchema(ctx, pgPool, hcsv.GenerateOptions{Demo: demo}); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
 		}
@@ -724,7 +742,7 @@ func runMCP() error {
 	defer pgPool.Close()
 
 	if os.Getenv("KITP_SKIP_SCHEMA") == "" {
-		demo := os.Getenv("KITP_DEMO_DATA") != "" || env == "dev"
+		demo := wantDemo(env)
 		if err := store.ApplySchema(ctx, pgPool, hcsv.GenerateOptions{Demo: demo}); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
 		}

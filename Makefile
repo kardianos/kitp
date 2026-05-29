@@ -22,7 +22,7 @@ WEB_DIR ?= $(REPO_ROOT)/web/dist
 DEMO ?= -demo
 
 .PHONY: up down db-up db-reset db-reset-clean schema-gen \
-        test test-bench run lint web web-dev client
+        test test-bench run demo lint web web-dev client
 
 up: db-up
 	@echo "kitp dev stack up; run 'make run' to start kitpd"
@@ -63,8 +63,15 @@ test:
 test-bench:
 	cd server && DATABASE_URL='$(DB_DSN)' $(GO) test -bench=. -run=^$$ ./...
 
+# Run kitpd (API + UI on $(LISTEN_ADDR)). The schema is re-applied on startup
+# either way. `run` starts WITHOUT demo data — KITP_DEMO_DATA=0 overrides the
+# dev default — so a `db-reset-clean` database stays clean across restarts.
+# Use `demo` for the same thing but with the opt-in demo fixtures seeded.
 run:
-	cd server && DATABASE_URL='$(DB_DSN)' LISTEN_ADDR='$(LISTEN_ADDR)' WEB_DIR='$(WEB_DIR)' $(GO) run ./cmd/kitpd
+	cd server && DATABASE_URL='$(DB_DSN)' LISTEN_ADDR='$(LISTEN_ADDR)' WEB_DIR='$(WEB_DIR)' KITP_DEMO_DATA=0 $(GO) run ./cmd/kitpd
+
+demo:
+	cd server && DATABASE_URL='$(DB_DSN)' LISTEN_ADDR='$(LISTEN_ADDR)' WEB_DIR='$(WEB_DIR)' KITP_DEMO_DATA=1 $(GO) run ./cmd/kitpd
 
 lint:
 	cd server && $(GO) vet ./...
