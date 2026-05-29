@@ -92,9 +92,15 @@ type Schema struct {
 	Functions  []Function
 }
 
-// Path returns the canonical location of db/schema/schema.hcsv. Walks
-// up from the package source so tests find it regardless of cwd.
+// Path returns the canonical location of db/schema/schema.hcsv. When
+// KITP_SCHEMA_DIR is set (containers / packaged deploys), the schema
+// files are read from there directly — no dependency on the build-time
+// source layout. Otherwise it walks up from the package source so tests
+// find it regardless of cwd.
 func Path() string {
+	if dir := os.Getenv("KITP_SCHEMA_DIR"); dir != "" {
+		return filepath.Join(dir, "schema.hcsv")
+	}
 	_, file, _, _ := runtime.Caller(0)
 	dir := filepath.Dir(file)
 	for range 8 {

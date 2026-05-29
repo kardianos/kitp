@@ -134,7 +134,12 @@ func GenerateAll(opts GenerateOptions) (string, error) {
 }
 
 // SeedPaths returns the canonical locations of seed.hcsv and demo.hcsv.
+// KITP_SCHEMA_DIR (containers / packaged deploys) overrides the source-
+// relative walk — see Path().
 func SeedPaths() (seed, demo string) {
+	if dir := os.Getenv("KITP_SCHEMA_DIR"); dir != "" {
+		return filepath.Join(dir, "seed.hcsv"), filepath.Join(dir, "demo.hcsv")
+	}
 	_, file, _, _ := runtime.Caller(0)
 	dir := filepath.Dir(file)
 	for range 8 {

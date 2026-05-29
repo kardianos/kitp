@@ -79,11 +79,16 @@ unset or left at the published dev default.
 
 ### OIDC (used when AUTH_MODE=oidc)
 
+The login flow is a server-side BFF and **always uses PKCE (S256)**. The client
+secret is **optional**: omit `OIDC_CLIENT_SECRET` for a public (PKCE-only)
+client, or set it for a confidential client (recommended — see
+[OIDC: PKCE-only vs PKCE + client secret](#oidc-pkce-only-vs-pkce--client-secret)).
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | OIDC_ISSUER | (required for oidc) | Issuer URL; discovery + JWKS are fetched from it. |
 | OIDC_CLIENT_ID | (unset) | OAuth client id. |
-| OIDC_CLIENT_SECRET | (unset) | OAuth client secret. |
+| OIDC_CLIENT_SECRET | (unset) | OAuth client secret. OPTIONAL — PKCE is always used; omit for a public (PKCE-only) client, set for a confidential client (recommended for this server-side BFF). |
 | OIDC_REDIRECT_URI | (unset) | Login callback URI. |
 | OIDC_AUDIENCE | (unset) | Expected token audience, if enforced. |
 | OIDC_SCOPES | openid profile email | Requested scopes. |
@@ -147,6 +152,97 @@ unset or left at the published dev default.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | KITP_TOKEN | (unset) | Bearer token; when set, MCP acts as that token's user instead of System. |
+
+## Container / deployment
+
+A multi-stage `Dockerfile` (at the repo root) builds a small static image:
+esbuild compiles the web bundle, a `golang:alpine` stage builds a static
+`CGO_ENABLED=0` binary, and the runtime is `scratch` (binary + `db/schema` +
+the web bundle + CA certs, run as the unprivileged `nobody` uid). The schema is
+applied on startup from `KITP_SCHEMA_DIR` (baked to `/app/db/schema`); the web
+bundle is served at `GET /` from `WEB_DIR` (`/app/web`).
+
+```sh
+docker build -t kitp:latest .          # context = repo root
+```
+
+Run it against your Postgres. Only `DATABASE_URL` is strictly required, but the
+image defaults to `ENV=production`, which refuses to start unless auth and the
+comm secret are configured (see below):
+
+```sh
+docker run --rm -p 8080:8080 \
+  -e DATABASE_URL='postgres://kitp:secret@db.internal:5432/kitp?sslmode=require' \
+  -e ENV=production \
+  -e AUTH_MODE=oidc \
+  -e OIDC_ISSUER='https://id.example.com' \
+  -e OIDC_CLIENT_ID='kitp' \
+  -e OIDC_CLIENT_SECRET='…' \
+  -e OIDC_REDIRECT_URI='https://kitp.example.com/api/v1/auth/oidc/callback' \
+  -e KITP_COMM_SECRET_KEY="$(openssl rand -base64 32)" \
+  kitp:latest
+```
+
+### Required for production
+
+`ENV=production` enables three start-up refusals — set these or the server
+exits immediately:
+
+- `DATABASE_URL` — always required.
+- `AUTH_MODE=oidc` + a non-empty `OIDC_ISSUER` — production refuses
+  `AUTH_MODE=off`.
+- `KITP_COMM_SECRET_KEY` — a real secret (not the dev default); it encrypts
+  stored comm-channel passwords. Generate one with `openssl rand -base64 32`.
+
+### Connecting to PostgreSQL
+
+`DATABASE_URL` is a standard libpq/pgx DSN (URL or keyword form):
+
+```
+postgres://USER:PASSWORD@HOST:5432/DBNAME?sslmode=require
+```
+
+- Use `sslmode=require` (or `verify-full` with a CA) for any non-loopback DB.
+- The server applies the schema on every startup (idempotent). To manage
+  migrations out-of-band, run one container with `MIGRATE_ONLY=1` (applies the
+  schema, then exits) and run the serving container with `KITP_SKIP_SCHEMA=1`.
+- Demo fixtures load only when `ENV=dev` or `KITP_DEMO_DATA` is set, so a
+  production DB stays clean.
+
+A throwaway local stack (app + Postgres) — note `ENV=dev` here only to skip the
+OIDC/secret refusals for a quick spin; never run dev mode in production:
+
+```yaml
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kitp
+      POSTGRES_PASSWORD: kitp
+      POSTGRES_DB: kitp
+  app:
+    image: kitp:latest
+    depends_on: [db]
+    ports: ["8080:8080"]
+    environment:
+      DATABASE_URL: postgres://kitp:kitp@db:5432/kitp?sslmode=disable
+      ENV: dev
+      AUTH_MODE: "off"
+```
+
+### OIDC: PKCE-only vs PKCE + client secret
+
+The login flow is a server-side BFF (Backend-For-Frontend): the browser holds
+only an opaque session cookie, and the code-for-token exchange happens in the
+server. It **always** uses PKCE (S256), and adds a `client_secret` to the token
+exchange **only when `OIDC_CLIENT_SECRET` is set**. So both modes work:
+
+- **PKCE + secret (recommended).** This BFF is a *confidential* client — it can
+  keep a secret — so register it as confidential and set `OIDC_CLIENT_SECRET`.
+  PKCE is still applied on top (defence in depth). This is the suggested setup.
+- **PKCE-only (public client).** Leave `OIDC_CLIENT_SECRET` unset and register a
+  public client. Supported, and fine when your OP doesn't issue a secret, but
+  prefer the secret here since the server can protect it.
 
 ## Make targets
 

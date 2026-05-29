@@ -1,0 +1,14 @@
+# Keep the build context small + reproducible. The Dockerfile only needs
+# server/ (Go source), web/ (TS source + vendored deps), and db/schema/.
+.git
+**/node_modules
+web/dist
+client
+client-svelte
+e2e
+docs/screenshots
+**/*.test.mjs
+web/test
+server/**/*_test.go
+**/.DS_Store
+*.log
