@@ -155,6 +155,16 @@ client, or set it for a confidential client (recommended — see
 
 ## Container / deployment
 
+### Pull the published image
+
+Prebuilt images are published to the GitHub Container Registry:
+
+```sh
+docker pull ghcr.io/kardianos/kitp:latest      # or a pinned :sha-<commit> tag
+```
+
+### Or build it yourself
+
 A multi-stage `Dockerfile` (at the repo root) builds a small static image:
 esbuild compiles the web bundle, a `golang:alpine` stage builds a static
 `CGO_ENABLED=0` binary, and the runtime is `scratch` (binary + `db/schema` +
@@ -163,10 +173,10 @@ applied on startup from `KITP_SCHEMA_DIR` (baked to `/app/db/schema`); the web
 bundle is served at `GET /` from `WEB_DIR` (`/app/web`).
 
 ```sh
-docker build -t kitp:latest .          # context = repo root
+docker build -t ghcr.io/kardianos/kitp:latest .   # context = repo root
 ```
 
-Run it against your Postgres. Only `DATABASE_URL` is strictly required, but the
+Run it against your Postgres (use the published image tag or your local build). Only `DATABASE_URL` is strictly required, but the
 image defaults to `ENV=production`, which refuses to start unless auth and the
 comm secret are configured (see below):
 
@@ -180,7 +190,7 @@ docker run --rm -p 8080:8080 \
   -e OIDC_CLIENT_SECRET='…' \
   -e OIDC_REDIRECT_URI='https://kitp.example.com/api/v1/auth/oidc/callback' \
   -e KITP_COMM_SECRET_KEY="$(openssl rand -base64 32)" \
-  kitp:latest
+  ghcr.io/kardianos/kitp:latest
 ```
 
 ### Required for production
@@ -221,7 +231,7 @@ services:
       POSTGRES_PASSWORD: kitp
       POSTGRES_DB: kitp
   app:
-    image: kitp:latest
+    image: ghcr.io/kardianos/kitp:latest
     depends_on: [db]
     ports: ["8080:8080"]
     environment:
