@@ -48,6 +48,9 @@ import type {
   UserTokenRow,
   RoleMappingRow,
   RoleRow,
+  RoleListOutput,
+  UserRoleListOutput,
+  UserRoleAssignment,
   FlowRow,
   FlowListOutput,
 } from './specs.js';
@@ -511,6 +514,8 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       case 'agentTokens':
         this.ctx.tree.at(this.p('tokens')).get();
         this.ctx.tree.at(this.p('mint')).get();
+        this.ctx.tree.at(this.p('agentRoles')).get();
+        this.ctx.tree.at(this.p('roleCatalogue')).get();
         break;
       case 'roleMappings':
         this.ctx.tree.at(this.p('mappings')).get();
@@ -537,7 +542,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         this.hydrateSinkDraft(item);
         break;
       case 'agentTokens':
-        this.loadTokens(item.id);
+        this.loadAgentDetail(item.id);
         break;
       case 'roleMappings':
         // Global — loaded on mount, not per-selection.
@@ -1966,9 +1971,147 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     }, { alive: () => this.isAlive(), onErr: (f) => this.showFault('user_token.list', f) });
   }
 
+  /** Initial per-selection load for the agent detail: the agent's tokens, its
+   *  current role grants (user_role.list), and the role catalogue (role.list)
+   *  for the assign dropdown — all under ONE load gate so a stale agent
+   *  switch can't interleave. Token / role writes reload their slice only. */
+  private loadAgentDetail(agentId: string): void {
+    const seq = ++this.loadSeq;
+    this.ctx.api.callByName('user_token.list', { userId: agentId }, (out) => {
+      if (!this.isAlive() || seq !== this.loadSeq) return;
+      this.ctx.tree.at(this.p('tokens')).set((out as { rows: UserTokenRow[] }).rows ?? []);
+    }, { alive: () => this.isAlive(), onErr: (f) => this.showFault('user_token.list', f) });
+    this.ctx.api.callByName('user_role.list', { userId: agentId }, (out) => {
+      if (!this.isAlive() || seq !== this.loadSeq) return;
+      this.ctx.tree.at(this.p('agentRoles')).set((out as UserRoleListOutput).rows ?? []);
+    }, { alive: () => this.isAlive(), onErr: (f) => this.showFault('user_role.list', f) });
+    this.ctx.api.callByName('role.list', {}, (out) => {
+      if (!this.isAlive() || seq !== this.loadSeq) return;
+      this.ctx.tree.at(this.p('roleCatalogue')).set((out as RoleListOutput).rows ?? []);
+    }, { alive: () => this.isAlive() });
+  }
+
+  /** Reload just the agent's role grants after an assign/revoke (the catalogue
+   *  is stable, so it isn't re-fetched). */
+  private loadAgentRoles(agentId: string): void {
+    const seq = ++this.loadSeq;
+    this.ctx.api.callByName('user_role.list', { userId: agentId }, (out) => {
+      if (!this.isAlive() || seq !== this.loadSeq) return;
+      this.ctx.tree.at(this.p('agentRoles')).set((out as UserRoleListOutput).rows ?? []);
+    }, { alive: () => this.isAlive(), onErr: (f) => this.showFault('user_role.list', f) });
+  }
+
+  /** Grant a (global) role to the agent, then reload its grants. The server
+   *  enforces the parent-grants-subset rule (an owner can only grant non-admin
+   *  roles they hold); a violation surfaces as an inline fault. */
+  private assignAgentRole(agentId: string, roleName: string): void {
+    if (roleName === '') return;
+    this.clearFault();
+    this.ctx.api.callByName(
+      'user_role.set',
+      { userId: agentId, roleName },
+      () => { if (this.isAlive()) this.loadAgentRoles(agentId); },
+      { alive: () => this.isAlive(), onErr: (f) => this.showFault('user_role.set', f) },
+    );
+  }
+
+  /** Revoke one of the agent's role grants (scope must match the grant: a
+   *  global grant passes no scope), then reload. */
+  private revokeAgentRole(agentId: string, roleName: string, scopeProjectId?: string): void {
+    this.clearFault();
+    const input: Record<string, unknown> = { userId: agentId, roleName };
+    if (scopeProjectId !== undefined && scopeProjectId !== '') input.scopeProjectId = scopeProjectId;
+    this.ctx.api.callByName(
+      'user_role.revoke',
+      input,
+      () => { if (this.isAlive()) this.loadAgentRoles(agentId); },
+      { alive: () => this.isAlive(), onErr: (f) => this.showFault('user_role.revoke', f) },
+    );
+  }
+
+  private buildAgentRoleRow(agentId: string, g: UserRoleAssignment): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'nested-editor__agent-role-row';
+    row.dataset.neAgentRoleRow = g.role_name;
+    const name = document.createElement('span');
+    name.className = 'nested-editor__agent-role-name';
+    name.textContent = g.role_name;
+    row.append(name);
+    if (g.scope_project_id !== undefined) {
+      const scope = document.createElement('span');
+      scope.className = 'nested-editor__agent-role-scope muted';
+      scope.textContent = g.scope_project_title ?? `project #${g.scope_project_id}`;
+      row.append(scope);
+    }
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'btn btn-danger nested-editor__agent-role-revoke';
+    rm.dataset.neAgentRoleRevoke = g.role_name;
+    rm.textContent = 'Revoke';
+    this.listen(rm, 'click', () => this.revokeAgentRole(agentId, g.role_name, g.scope_project_id));
+    row.append(rm);
+    return row;
+  }
+
   private renderAgentTokens(agent: MasterDetailItem): void {
     const frag = document.createDocumentFragment();
 
+    /* ----------------------------- Roles ------------------------------- */
+    const rolesHeading = document.createElement('h3');
+    rolesHeading.className = 'nested-editor__title';
+    rolesHeading.textContent = 'Roles';
+    frag.append(rolesHeading);
+
+    const rolesNote = document.createElement('div');
+    rolesNote.className = 'nested-editor__guard-note muted';
+    rolesNote.textContent =
+      'The roles this agent acts as. Effective permissions are the intersection of these grants and the owner’s roles — an owner can only grant non-admin roles they hold themselves.';
+    frag.append(rolesNote);
+
+    const grants = (this.ctx.tree.at(this.p('agentRoles')).peek<UserRoleAssignment[]>() ?? []) as UserRoleAssignment[];
+    const catalogue = (this.ctx.tree.at(this.p('roleCatalogue')).peek<RoleRow[]>() ?? []) as RoleRow[];
+
+    const rolesList = document.createElement('div');
+    rolesList.className = 'nested-editor__agent-roles';
+    rolesList.dataset.neAgentRoles = '';
+    if (grants.length === 0) {
+      const none = document.createElement('div');
+      none.className = 'muted';
+      none.dataset.neAgentRolesEmpty = '';
+      none.textContent = 'No roles granted yet.';
+      rolesList.append(none);
+    }
+    for (const g of grants) rolesList.append(this.buildAgentRoleRow(agent.id, g));
+    frag.append(rolesList);
+
+    // Single "Assign role" dropdown (assign-on-pick). Excludes roles already
+    // held globally so you can't re-grant the same one; agents get GLOBAL
+    // grants here (the "acts as" role), so no scope field.
+    const heldGlobal = new Set(grants.filter((g) => g.scope_project_id === undefined).map((g) => g.role_name));
+    const assign = document.createElement('select');
+    assign.className = 'nested-editor__agent-role-assign';
+    assign.dataset.neAgentRoleAssign = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = '+ Assign role…';
+    assign.append(placeholder);
+    for (const r of catalogue) {
+      if (heldGlobal.has(r.name)) continue;
+      const opt = document.createElement('option');
+      opt.value = r.name;
+      opt.textContent = r.name;
+      assign.append(opt);
+    }
+    assign.value = '';
+    this.listen(assign, 'change', () => {
+      const roleName = assign.value;
+      if (roleName === '') return;
+      this.assignAgentRole(agent.id, roleName);
+      assign.value = '';
+    });
+    frag.append(assign);
+
+    /* --------------------------- API tokens ---------------------------- */
     const heading = document.createElement('h3');
     heading.className = 'nested-editor__title';
     heading.textContent = 'API tokens';

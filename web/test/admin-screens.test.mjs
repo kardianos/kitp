@@ -388,3 +388,103 @@ test('every PROJECT admin screen scopes its list to the active project', () => {
     assert.ok(scoped, `${v}: list query is scoped to scope.projectId (got ${JSON.stringify(input)})`);
   }
 });
+
+/* -------------------------------------------------------------------------- */
+/* Agents: the nested editor manages an agent's "acts as" roles (web-only,     */
+/* via the existing user_role.list / .set / .revoke handlers).                 */
+/* -------------------------------------------------------------------------- */
+
+test('Agents nested editor: lists, assigns, and revokes an agent\'s roles', async () => {
+  const sent = [];
+  let agentRoles = [{ role_name: 'worker' }]; // mutated by set/revoke so reload reflects truth
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      const subresponses = req.subrequests.map((sr) => {
+        const key = `${sr.endpoint}.${sr.action}`;
+        const data = sr.data ?? {};
+        sent.push({ key, data });
+        switch (key) {
+          case 'user.select':
+            return { id: sr.id, ok: true, data: { rows: [{ id: '3001', display_name: 'bot-1', parent_user_id: '2001', is_agent: true }] } };
+          case 'user_role.list':
+            return { id: sr.id, ok: true, data: { rows: agentRoles } };
+          case 'role.list':
+            return { id: sr.id, ok: true, data: { rows: [
+              { id: '1', name: 'admin', grants: [] },
+              { id: '2', name: 'manager', grants: [] },
+              { id: '3', name: 'worker', grants: [] },
+            ] } };
+          case 'user_token.list':
+            return { id: sr.id, ok: true, data: { rows: [] } };
+          case 'user_role.set':
+            agentRoles = [...agentRoles, { role_name: String(data.role_name) }];
+            return { id: sr.id, ok: true, data: { ok: true, user_role_id: '999' } };
+          case 'user_role.revoke':
+            agentRoles = agentRoles.filter((g) => g.role_name !== String(data.role_name));
+            return { id: sr.id, ok: true, data: { ok: true, deleted: 1 } };
+          default:
+            return { id: sr.id, ok: false, error: { code: 'unknown', message: key } };
+        }
+      });
+      return { status: 200, text: JSON.stringify({ subresponses }) };
+    },
+  };
+  const dispatcher = new M.Dispatcher({ transport });
+  const api = new M.Api(dispatcher);
+  M.registerKanbanSpecs(api);
+  M.registerAdminSpecs(api);
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  const scope = { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } };
+  const ctrl = M.Control.New('MasterDetail', M.adminScreenConfig('agents'), { api, tree, scope });
+  ctrl.mount(new FakeElement('div'));
+  await settle(dispatcher); // agents list loads (one agent)
+
+  // Select the agent → the nested editor loads its roles + the catalogue.
+  tree.at(['admin', 'agents', 'selectedId']).set('3001');
+  await settle(dispatcher);
+
+  // Current grant ('worker') renders as a revocable row.
+  const roleRows = ctrl.el.querySelectorAll('[data-ne-agent-role-row]');
+  assert.deepEqual(roleRows.map((r) => r.dataset.neAgentRoleRow), ['worker'], 'current role listed');
+
+  // The single assign dropdown offers the catalogue minus the held role.
+  const assign = ctrl.el.querySelectorAll('[data-ne-agent-role-assign]')[0];
+  assert.ok(assign, 'assign dropdown present');
+  assert.deepEqual(
+    assign.children.map((o) => o.value),
+    ['', 'admin', 'manager'],
+    'placeholder + roles not already held (worker excluded)',
+  );
+
+  // Pick 'manager' → fires a GLOBAL user_role.set (no scope) for this agent.
+  assign.value = 'manager';
+  assign.dispatchEvent({ type: 'change', target: assign });
+  await settle(dispatcher);
+  const setReq = sent.filter((s) => s.key === 'user_role.set').pop();
+  assert.ok(setReq, 'user_role.set fired');
+  assert.equal(String(setReq.data.user_id), '3001', 'set targets the agent');
+  assert.equal(setReq.data.role_name, 'manager', 'set carries the chosen role');
+  assert.equal(setReq.data.scope_project_id, undefined, 'global grant (no project scope)');
+  // Reload reflects the new grant.
+  assert.deepEqual(
+    ctrl.el.querySelectorAll('[data-ne-agent-role-row]').map((r) => r.dataset.neAgentRoleRow).sort(),
+    ['manager', 'worker'],
+    'assigned role appears after reload',
+  );
+
+  // Revoke 'worker'.
+  const revokeBtn = ctrl.el.querySelectorAll('[data-ne-agent-role-revoke="worker"]')[0];
+  assert.ok(revokeBtn, 'worker revoke button present');
+  revokeBtn.dispatchEvent({ type: 'click', target: revokeBtn });
+  await settle(dispatcher);
+  const revReq = sent.filter((s) => s.key === 'user_role.revoke').pop();
+  assert.equal(String(revReq.data.user_id), '3001', 'revoke targets the agent');
+  assert.equal(revReq.data.role_name, 'worker', 'revoke carries the role');
+  assert.deepEqual(
+    ctrl.el.querySelectorAll('[data-ne-agent-role-row]').map((r) => r.dataset.neAgentRoleRow),
+    ['manager'],
+    'revoked role removed after reload',
+  );
+});

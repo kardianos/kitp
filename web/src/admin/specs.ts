@@ -49,6 +49,7 @@ export const ADMIN_SPEC = {
   personGrantAccount: 'person.grant_account',
   userRoleSet: 'user_role.set',
   userRoleRevoke: 'user_role.revoke',
+  userRoleList: 'user_role.list',
   userUnlinkPerson: 'user.unlink_person',
   // Nested-editor specs (flow-step transitions, attribute edges, card_types).
   cardTypeSelect: 'card_type.select',
@@ -334,6 +335,13 @@ export interface UserRoleRevokeInput {
 export interface UserRoleRevokeOutput {
   ok: boolean;
   deleted: number;
+}
+
+export interface UserRoleListInput {
+  userId: bigint | string;
+}
+export interface UserRoleListOutput {
+  rows: UserRoleAssignment[];
 }
 
 /* ---- user.unlink_person (Users unlink) ----------------------------------- */
@@ -1067,6 +1075,19 @@ export function registerAdminSpecs(api: Api): void {
         const j = asObj(raw);
         return { ok: j['ok'] === true, deleted: asNum(j['deleted']) };
       },
+    });
+  }
+
+  // user_role.list — the grants held by one user. The Agents screen reads it
+  // per selected agent to render + manage that agent's "acts as" roles.
+  if (!api.registry.has({ endpoint: 'user_role', action: 'list' })) {
+    api.define<UserRoleListInput, UserRoleListOutput>({
+      endpoint: 'user_role',
+      action: 'list',
+      encode: (i) => ({ user_id: i.userId }),
+      decode: (raw): UserRoleListOutput => ({
+        rows: asArray(asObj(raw)['rows']).map((r) => decodeRole(asObj(r))),
+      }),
     });
   }
 

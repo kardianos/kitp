@@ -557,9 +557,10 @@ export const OIDC_CLAIMS_SCREEN: NestedEditorConfig = {
  * is no dedicated agent-list handler; the lighter `user.select` read carries the
  * is_agent + parent_user_id columns this screen needs. Create (agent.create) /
  * delete (agent.delete) via the generic MasterDetail affordances; the nested
- * `agentTokens` editor mints (secret surfaced ONCE) / lists / revokes API tokens.
- * Role grants for an agent are managed on the Users screen (the parent-grants-
- * subset rule is enforced server-side).
+ * `agentTokens` editor manages BOTH the agent's roles (the "acts as" grants —
+ * loaded per-selection via user_role.list, set/revoked via user_role.set /
+ * user_role.revoke, with the parent-grants-subset rule enforced server-side)
+ * and its API tokens (secret surfaced ONCE on mint / list / revoke).
  */
 export const AGENTS_SCREEN: MasterDetailConfig = {
   type: 'MasterDetail',

@@ -4465,6 +4465,45 @@ select optgroup {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Agent roles: the "acts as" grants on the Agents detail (above API tokens).   */
+/* -------------------------------------------------------------------------- */
+.nested-editor__agent-roles {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+}
+.nested-editor__agent-role-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-h) var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+.nested-editor__agent-role-name {
+  font-size: var(--text-sm);
+  color: var(--color-fg-strong);
+  min-width: 6rem;
+}
+.nested-editor__agent-role-scope {
+  font-size: var(--text-2xs);
+}
+.nested-editor__agent-role-revoke {
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+  margin-left: auto;
+}
+.nested-editor__agent-role-assign {
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+
+/* -------------------------------------------------------------------------- */
 /* PredicateFilter — structured filter tree editor (groups + leaves).          */
 /* Compact-data surface: reuses the field/select/button rhythm of the rest of  */
 /* the app. Structural only; no new tokens.                                    */
