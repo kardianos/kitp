@@ -114,6 +114,7 @@ func Register(p *store.Pool) {
 	})
 	RegisterSearch(p)
 	RegisterMoveDelete(p)
+	RegisterMerge(p)
 	RegisterSetPhase(p)
 	RegisterTaskMove(p)
 	RegisterTaskPurge(p)

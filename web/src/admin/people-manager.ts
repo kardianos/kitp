@@ -23,10 +23,20 @@
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
+import type { ApiFault } from '../core/dispatch.js';
 import { ADMIN_SPEC, type UserListOutput, type UserRow, type UserRoleAssignment } from './specs.js';
 import { SPEC, type SelectWithAttributesOutput } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { trapFocus, captureFocus } from '../util/focus-trap.js';
+
+/** A human-readable message for a merge fault — surfaces the server's
+ *  'merge_login_conflict' (and other sub_error) text in the merge dialog. */
+function mergeFaultMessage(f: ApiFault): string {
+  if (f.kind === 'sub_error') return f.message !== '' ? f.message : `Merge failed (${f.code}).`;
+  if (f.kind === 'http') return `Merge failed (http ${f.status}).`;
+  if (f.kind === 'network') return `Merge failed: ${f.message}`;
+  return 'Merge failed.';
+}
 
 export interface PeopleManagerConfig extends BaseControlConfig {
   type: 'PeopleManager';
@@ -253,7 +263,18 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     remove.textContent = '✕';
     this.listen(remove, 'click', () => this.openRemoveDialog(r));
 
-    row.append(name, email, tierSel, remove);
+    // Merge: fold this (duplicate) person into another, repointing every
+    // assignee / originator / comm-recipient reference to the survivor.
+    const merge = document.createElement('button');
+    merge.type = 'button';
+    merge.className = 'people-manager__merge';
+    merge.dataset.peopleMerge = r.id.toString();
+    merge.title = 'Merge this duplicate into another person';
+    merge.setAttribute('aria-label', `Merge ${r.title || `#${r.id.toString()}`} into another person`);
+    merge.textContent = 'Merge';
+    this.listen(merge, 'click', () => this.openMergeDialog(r));
+
+    row.append(name, email, tierSel, merge, remove);
     // Inline role assignment for users (#19): their roles as removable chips +
     // an "add role" picker. Reuses the user_role.set / user_role.revoke specs.
     if (r.tier === 'user' && r.accountId !== null) {
@@ -526,6 +547,104 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     this.openModal(panel, 'Add person');
     validate();
     nameInput.focus?.();
+  }
+
+  /* -------------------------------- merge --------------------------------- */
+
+  /** "Merge": fold this (duplicate) person into a chosen survivor. Every
+   *  assignee / originator / comm-recipient reference repoints to the survivor,
+   *  a sole login moves over, and the duplicate is soft-deleted (person.merge).
+   *  Mirrors the server's login-conflict guard up front: two people that BOTH
+   *  have a login can't be merged here. */
+  private openMergeDialog(loser: PersonRow): void {
+    const others = this.rows().filter((r) => r.id !== loser.id);
+
+    const panel = document.createElement('div');
+    const title = document.createElement('h2');
+    title.className = 'pm-modal__title';
+    title.textContent = 'Merge duplicate';
+
+    const intro = document.createElement('p');
+    intro.className = 'pm-modal__hint muted';
+    intro.textContent =
+      `Fold “${loser.title || `#${loser.id.toString()}`}” into another person. Every task assignee, ` +
+      `originator, and comm recipient pointing at it moves to the survivor, and this duplicate is removed.`;
+
+    const sel = document.createElement('select');
+    sel.dataset.peopleMergeSurvivor = '';
+    if (others.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No other people to merge into';
+      sel.append(opt);
+      sel.disabled = true;
+    } else {
+      for (const o of others) {
+        const opt = document.createElement('option');
+        opt.value = o.id.toString();
+        opt.textContent = o.email ? `${o.title || `#${o.id.toString()}`} · ${o.email}` : o.title || `#${o.id.toString()}`;
+        sel.append(opt);
+      }
+    }
+
+    const warn = document.createElement('p');
+    warn.className = 'pm-modal__hint';
+    warn.dataset.peopleMergeWarn = '';
+    warn.style.display = 'none';
+
+    const actions = document.createElement('div');
+    actions.className = 'pm-modal__actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn';
+    cancel.dataset.peopleMergeCancel = '';
+    cancel.textContent = 'Cancel';
+    this.listen(cancel, 'click', () => this.closeModal());
+    const submit = document.createElement('button');
+    submit.type = 'button';
+    submit.className = 'btn btn-primary';
+    submit.dataset.peopleMergeSubmit = '';
+    submit.textContent = 'Merge';
+    actions.append(cancel, submit);
+
+    const survivorOf = (id: string): PersonRow | undefined => others.find((o) => o.id.toString() === id);
+    const validate = (): void => {
+      const sv = survivorOf(sel.value);
+      const bothLogins = loser.accountId !== null && sv != null && sv.accountId !== null;
+      if (bothLogins) {
+        warn.textContent =
+          'Both people have a login. Resolve the duplicate logins first — merging user accounts (sessions, tokens, agents, roles) isn’t supported here.';
+        warn.style.display = '';
+      } else {
+        warn.style.display = 'none';
+      }
+      submit.disabled = others.length === 0 || sel.value === '' || bothLogins;
+    };
+    this.listen(sel, 'change', validate);
+
+    this.listen(submit, 'click', () => {
+      if (sel.value === '') return;
+      this.ctx.api.callByName(
+        ADMIN_SPEC.personMerge,
+        { survivorId: sel.value, loserIds: [loser.id] },
+        () => {
+          if (!this.isAlive()) return;
+          this.closeModal();
+          this.load();
+        },
+        {
+          alive: () => this.isAlive(),
+          onErr: (f) => {
+            warn.textContent = mergeFaultMessage(f);
+            warn.style.display = '';
+          },
+        },
+      );
+    });
+
+    panel.append(title, intro, this.field('Survivor', sel), warn, actions);
+    this.openModal(panel, 'Merge duplicate');
+    validate();
   }
 
   /* ------------------------------- remove --------------------------------- */

@@ -1128,6 +1128,11 @@ select optgroup {
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-xs);
   line-height: var(--leading-data);
+  /* The card is a FIXED-height virtualList slot (KANBAN_CARD_HEIGHT=64). Clip to
+     the box so a heavily-tagged card can never spill its content onto the
+     neighbouring card and obscure ITS title. Title stays (grid row 1, top);
+     tags (row 2) clip. See test/kanban-card-layout.test.mjs. */
+  overflow: hidden;
   cursor: grab;
   transition:
     border-color var(--duration-fast) var(--ease-standard),
@@ -1225,13 +1230,23 @@ select optgroup {
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   color: var(--color-fg-strong);
+  /* The title is ALWAYS one fully-visible line; a long title ellipsizes rather
+     than wrapping (which would grow row 1 and push content out). min-width:0
+     lets it shrink + ellipsize inside the 1fr grid track. */
+  white-space: nowrap;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .card__meta {
   grid-column: 2;
   display: flex;
-  flex-wrap: wrap;
+  /* One line of tags, clipped at the card edge — never wrap (wrapping grows the
+     card past its fixed height and spills onto the next card). Tags truncate;
+     the title above is never affected. */
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow: hidden;
   align-items: center;
   gap: var(--space-h);
   font-family: var(--font-mono);
@@ -7602,7 +7617,8 @@ textarea.task-comms__form-input {
   padding: var(--space-3);
   font-size: var(--text-sm);
 }
-.people-manager__remove {
+.people-manager__remove,
+.people-manager__merge {
   flex: 0 0 auto;
   font: inherit;
   line-height: 1;
@@ -7613,8 +7629,16 @@ textarea.task-comms__form-input {
   border-radius: var(--radius-md);
   cursor: pointer;
 }
+.people-manager__merge {
+  font-size: var(--text-2xs);
+}
 .people-manager__remove:hover {
   color: var(--color-danger, #d23);
+  border-color: var(--color-border);
+  background: var(--color-fill-hover);
+}
+.people-manager__merge:hover {
+  color: var(--color-fg-strong);
   border-color: var(--color-border);
   background: var(--color-fill-hover);
 }

@@ -216,6 +216,37 @@ func registerPersonCreate(_ *store.Pool) {
 	})
 }
 
+// PersonMergeInput folds duplicate person cards into one survivor. Loser ids
+// ride as strings (wire convention for bigint ids; an array can't use
+// `,string` per element); the SQL accepts numeric strings or numbers.
+type PersonMergeInput struct {
+	SurvivorID int64    `json:"survivor_id,string" mcp:"required,desc=person card that survives the merge"`
+	LoserIDs   []string `json:"loser_ids" mcp:"required,desc=duplicate person card ids to fold into the survivor; every assignee / originator / comm_recipients reference is repointed and the losers are soft-deleted"`
+}
+
+// PersonMergeOutput reports the survivor + what moved.
+type PersonMergeOutput struct {
+	OK          bool  `json:"ok" mcp:"desc=true on success"`
+	SurvivorID  int64 `json:"survivor_id,string" mcp:"desc=the surviving person card id"`
+	MergedCount int   `json:"merged_count" mcp:"desc=number of loser person cards folded in"`
+	Repointed   int   `json:"repointed" mcp:"desc=number of attribute_value rows repointed to the survivor"`
+	MovedLogin  bool  `json:"moved_login" mcp:"desc=true when a user_account login was moved from a loser to the survivor"`
+}
+
+func registerPersonMerge(_ *store.Pool) {
+	reg.Register(reg.Handler{
+		Endpoint:     "person",
+		Action:       "merge",
+		Doc:          "Merge duplicate person cards into one survivor: repoint every assignee / originator / comm_recipients reference to the survivor, move a sole login (user_account) to the survivor, backfill the survivor's blank email from a loser, and soft-delete the losers. Rejects with 'merge_login_conflict' when more than one of the people has a login (resolve duplicate user accounts first — merging logins/sessions/tokens is out of scope). Admin-only.",
+		InputType:    reflect.TypeFor[PersonMergeInput](),
+		OutputType:   reflect.TypeFor[PersonMergeOutput](),
+		AllowedRoles: []string{"admin"},
+		// Unified handler — body in db/schema/functions/person_merge_batch.sql
+		// (which calls the shared card_merge_into primitive).
+		SQLFunc: "person_merge_batch",
+	})
+}
+
 // registerPersonUpsertByEmail is called from Register(). Pulled into
 // its own function so the comm.Register reads as a flat list rather
 // than a wall of inline handler structs.

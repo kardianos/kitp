@@ -356,6 +356,7 @@ func Register(p *store.Pool) {
 	registerPersonUpsertByEmail(p)
 	registerPersonCreate(p)
 	registerPersonGrantAccount(p)
+	registerPersonMerge(p)
 	registerCommSetRecipients(p)
 }
 

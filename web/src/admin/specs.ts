@@ -47,6 +47,7 @@ export const ADMIN_SPEC = {
   // Write specs the create/delete + Users role/person affordances issue.
   personCreate: 'person.create',
   personGrantAccount: 'person.grant_account',
+  personMerge: 'person.merge',
   userRoleSet: 'user_role.set',
   userRoleRevoke: 'user_role.revoke',
   userRoleList: 'user_role.list',
@@ -312,6 +313,19 @@ export interface PersonGrantAccountInput {
 export interface PersonGrantAccountOutput {
   /** The linked (new or pre-existing) user_account id. */
   userAccountId: bigint;
+}
+
+export interface PersonMergeInput {
+  survivorId: bigint | string;
+  /** Duplicate person card ids to fold into the survivor. */
+  loserIds: Array<bigint | string>;
+}
+export interface PersonMergeOutput {
+  ok: boolean;
+  survivorId: bigint;
+  mergedCount: number;
+  repointed: number;
+  movedLogin: boolean;
 }
 
 /* ---- user_role.set / user_role.revoke (Users role assign/revoke) --------- */
@@ -1049,6 +1063,27 @@ export function registerAdminSpecs(api: Api): void {
         return m;
       },
       decode: (raw): PersonGrantAccountOutput => ({ userAccountId: asId(asObj(raw)['user_account_id']) }),
+    });
+  }
+
+  // person.merge — fold duplicate person cards into a survivor (repoint refs,
+  // move a sole login, backfill email, soft-delete losers). loser_ids ride as
+  // strings (bigint wire convention; an array can't use `,string` per element).
+  if (!api.registry.has({ endpoint: 'person', action: 'merge' })) {
+    api.define<PersonMergeInput, PersonMergeOutput>({
+      endpoint: 'person',
+      action: 'merge',
+      encode: (i) => ({ survivor_id: i.survivorId, loser_ids: i.loserIds.map((v) => String(v)) }),
+      decode: (raw): PersonMergeOutput => {
+        const j = asObj(raw);
+        return {
+          ok: j['ok'] === true,
+          survivorId: asId(j['survivor_id']),
+          mergedCount: asNum(j['merged_count']),
+          repointed: asNum(j['repointed']),
+          movedLogin: j['moved_login'] === true,
+        };
+      },
     });
   }
 

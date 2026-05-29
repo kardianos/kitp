@@ -18,7 +18,7 @@ before(async () => {
 
 // 701 = contact, 702 = assignee (member, no account), 703 = user (member + account 900).
 function recordingTransport() {
-  const sent = { updates: [], grants: [], unlinks: [], creates: [], deletes: [], roleSets: [], roleRevokes: [] };
+  const sent = { updates: [], grants: [], unlinks: [], creates: [], deletes: [], roleSets: [], roleRevokes: [], merges: [] };
   function respond(sr) {
     const k = `${sr.endpoint}.${sr.action}`;
     const data = sr.data ?? {};
@@ -49,6 +49,10 @@ function recordingTransport() {
     if (k === 'user.unlink_person') { sent.unlinks.push(data); return { id: sr.id, ok: true, data: { ok: true, deleted: 1 } }; }
     if (k === 'person.create') { sent.creates.push(data); return { id: sr.id, ok: true, data: { person_card_id: '704', user_account_id: '0' } }; }
     if (k === 'card.delete') { sent.deletes.push(data); return { id: sr.id, ok: true, data: { ok: true, activity_id: '9' } }; }
+    if (k === 'person.merge') {
+      sent.merges.push(data);
+      return { id: sr.id, ok: true, data: { ok: true, survivor_id: String(data.survivor_id), merged_count: (data.loser_ids || []).length, repointed: 3, moved_login: false } };
+    }
     return { id: sr.id, ok: false, error: { code: 'unknown', message: k } };
   }
   const transport = {
@@ -267,4 +271,59 @@ test('People: a user row shows roles + assign/revoke fires user_role.set/revoke 
   // Non-user (contact) rows have no role editor.
   const contactRow = ctrl.el.querySelectorAll('[data-people-row]').find((r) => r.dataset.peopleRow === '701');
   assert.equal(contactRow.querySelector('[data-people-roles]'), null, 'contacts have no role editor');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Merge: fold a duplicate person into a chosen survivor via person.merge.     */
+/* -------------------------------------------------------------------------- */
+
+test('PeopleManager merge: folds a duplicate into a chosen survivor (person.merge)', async () => {
+  const transport = recordingTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  // Open the merge dialog on Carol (701, contact — the duplicate/loser).
+  const mergeBtn = ctrl.el.querySelector('[data-people-merge="701"]');
+  assert.ok(mergeBtn, 'each person row has a Merge button');
+  mergeBtn.dispatchEvent({ type: 'click', target: mergeBtn });
+
+  // The survivor select lists the OTHER people (702, 703) but not the loser.
+  const sel = ctrl.el.querySelector('[data-people-merge-survivor]');
+  assert.ok(sel, 'merge dialog has a survivor select');
+  const opts = sel.children.map((o) => o.value).filter((v) => v !== '');
+  assert.deepEqual(opts.sort(), ['702', '703'], 'survivor options are the other people');
+
+  // Choose 702 (Avery) and merge.
+  sel.value = '702';
+  sel.dispatchEvent({ type: 'change', target: sel });
+  ctrl.el.querySelector('[data-people-merge-submit]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+
+  assert.equal(transport.sent.merges.length, 1, 'one person.merge fired');
+  assert.equal(String(transport.sent.merges[0].survivor_id), '702', 'merges into the chosen survivor');
+  assert.deepEqual(
+    (transport.sent.merges[0].loser_ids || []).map(String),
+    ['701'],
+    'the opened row is the loser',
+  );
+  // Dialog closed on success.
+  assert.equal(ctrl.el.querySelectorAll('[data-pm-modal]').length, 0, 'merge dialog closed after success');
+});
+
+test('PeopleManager merge: blocked when both people have a login (mirrors server guard)', async () => {
+  const transport = recordingTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+
+  // Open merge on Uma (703 — a USER, has a login). Survivor select includes
+  // 701 (contact, no login) and 702 (assignee, no login); neither conflicts.
+  ctrl.el.querySelector('[data-people-merge="703"]').dispatchEvent({ type: 'click', target: ctrl.el.querySelector('[data-people-merge="703"]') });
+  const sel = ctrl.el.querySelector('[data-people-merge-survivor]');
+  const submit = ctrl.el.querySelector('[data-people-merge-submit]');
+  // A no-login survivor is allowed (only the loser has a login).
+  sel.value = '702';
+  sel.dispatchEvent({ type: 'change', target: sel });
+  assert.equal(submit.disabled, false, 'merging a user into a no-login person is allowed');
 });
