@@ -213,6 +213,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private editingDescription = false;
   /** The ✎ button on the DESCRIPTION label row (hidden while editing). */
   private descEditBtn: HTMLButtonElement | null = null;
+  /** Save / Cancel buttons in the DESCRIPTION label row (visible while editing).
+   *  Lets the user paste back and forth between the source and the editor
+   *  without a stray blur committing a half-finished draft. */
+  private descSaveBtn: HTMLButtonElement | null = null;
+  private descCancelBtn: HTMLButtonElement | null = null;
+  /** The live textarea while editing — held so the Save button can read its
+   *  value without a DOM query. */
+  private descInputEl: HTMLTextAreaElement | null = null;
 
   /** Per-row child editors (RefPicker / DatePicker) so we can dispose on rebuild. */
   private rowChildren: Control[] = [];
@@ -334,12 +342,19 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     const descSection = document.createElement('section');
     descSection.className = 'task-detail__desc';
     descSection.dataset.region = 'detail.description';
-    // Label row: "DESCRIPTION" + the ✎ edit button sitting right next to the
-    // label (not floating in the body). Hidden while editing.
+    // Label row: "DESCRIPTION" on the left, action buttons on the right (✎ when
+    // not editing; Save + Cancel when editing).  Save lives at the TOP of the
+    // textbox so the user can commit without scrolling down — needed because
+    // the description editor stays open across blur (Save / Mod+Enter / Esc
+    // only), letting the user paste back and forth from another window.
     const descLabel = document.createElement('div');
     descLabel.className = 'task-detail__section-label task-detail__desc-label muted';
     const descLabelText = document.createElement('span');
     descLabelText.textContent = 'DESCRIPTION';
+
+    const descActions = document.createElement('span');
+    descActions.className = 'task-detail__desc-actions';
+
     const descEdit = document.createElement('button');
     descEdit.type = 'button';
     descEdit.className = 'task-detail__edit-btn';
@@ -349,7 +364,33 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     descEdit.textContent = '✎';
     this.listen(descEdit, 'click', () => this.startDescriptionEdit());
     this.descEditBtn = descEdit;
-    descLabel.append(descLabelText, descEdit);
+
+    const descSave = document.createElement('button');
+    descSave.type = 'button';
+    descSave.className = 'btn btn-primary task-detail__desc-save';
+    descSave.dataset.taskDescSave = '';
+    descSave.title = 'Save description (Mod+Enter)';
+    descSave.setAttribute('aria-label', 'Save description');
+    descSave.textContent = 'Save';
+    descSave.style.display = 'none';
+    this.listen(descSave, 'click', () => {
+      if (this.descInputEl !== null) this.commitDescription(this.descInputEl.value);
+    });
+    this.descSaveBtn = descSave;
+
+    const descCancel = document.createElement('button');
+    descCancel.type = 'button';
+    descCancel.className = 'btn task-detail__desc-cancel';
+    descCancel.dataset.taskDescCancel = '';
+    descCancel.title = 'Cancel (Esc)';
+    descCancel.setAttribute('aria-label', 'Cancel description edit');
+    descCancel.textContent = 'Cancel';
+    descCancel.style.display = 'none';
+    this.listen(descCancel, 'click', () => this.cancelDescriptionEdit());
+    this.descCancelBtn = descCancel;
+
+    descActions.append(descEdit, descCancel, descSave);
+    descLabel.append(descLabelText, descActions);
     const descHost = document.createElement('div');
     descHost.className = 'task-detail__desc-host';
     this.descHost = descHost;
@@ -1005,8 +1046,13 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 
   private renderDescription(): void {
     this.descHost.replaceChildren();
-    // The label-row ✎ is hidden while editing (the textarea is the affordance).
+    // Toggle the label-row action buttons: ✎ when reading, Save + Cancel
+    // when editing.  The textarea NO LONGER commits on blur — the user can
+    // paste back and forth from another window without the draft committing.
     if (this.descEditBtn) this.descEditBtn.style.display = this.editingDescription ? 'none' : '';
+    if (this.descSaveBtn) this.descSaveBtn.style.display = this.editingDescription ? '' : 'none';
+    if (this.descCancelBtn) this.descCancelBtn.style.display = this.editingDescription ? '' : 'none';
+
     if (this.editingDescription) {
       const ta = document.createElement('textarea');
       ta.className = 'task-detail__desc-input';
@@ -1014,10 +1060,10 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       ta.value = this.descriptionText();
       ta.rows = 3; // a floor; the field auto-grows with content (fitTextarea)
       ta.setAttribute('aria-label', 'Task description');
-      ta.placeholder = 'Markdown supported · Mod+Enter to save';
+      ta.placeholder = 'Markdown supported · Mod+Enter or Save to commit';
       this.descHost.append(ta);
+      this.descInputEl = ta;
       this.listen(ta, 'keydown', (e) => this.onDescriptionKeydown(e as KeyboardEvent, ta));
-      this.listen(ta, 'blur', () => this.commitDescription(ta.value));
       this.listen(ta, 'input', () => fitTextarea(ta));
       queueMicrotask(() => {
         ta.focus();
@@ -1026,6 +1072,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       return;
     }
 
+    this.descInputEl = null;
     const body = document.createElement('div');
     body.className = 'task-detail__desc-body';
     body.dataset.taskDescBody = '';

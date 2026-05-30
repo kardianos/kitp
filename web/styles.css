@@ -5477,11 +5477,24 @@ select optgroup {
   flex: 0 0 auto;
   margin: 0;
 }
-/* DESCRIPTION label + its ✎ edit button on one row (#7). */
+/* DESCRIPTION label + its actions on one row (#7).  In read mode: ✎.  In
+ * edit mode: Save + Cancel sitting at the TOP of the textarea (same line as
+ * the label) so the operator can commit a long edit without scrolling. */
 .task-detail__desc-label {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+.task-detail__desc-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.task-detail__desc-save,
+.task-detail__desc-cancel {
+  font-size: var(--text-xs);
+  padding: var(--space-h) var(--space-2);
 }
 .task-detail__title-host {
   display: flex;

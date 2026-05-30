@@ -289,6 +289,68 @@ test('TaskDetail: description renders Markdown and edit fires attribute.update(d
   assert.equal(descUpdate.value, 'A new description.');
 });
 
+test('TaskDetail: description editor stays open until Save (no blur commit); Save fires the write', async () => {
+  const { transport, updates } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { td } = mountTaskDetail(api);
+  await settle(dispatcher);
+
+  // Open the editor.  Save + Cancel buttons become visible in the label row;
+  // the ✎ icon hides.
+  td.el.querySelector('[data-task-desc-edit]').click();
+  const ta = td.el.querySelector('[data-task-desc-input]');
+  const save = td.el.querySelector('[data-task-desc-save]');
+  const cancel = td.el.querySelector('[data-task-desc-cancel]');
+  assert.ok(ta, 'description textarea mounted');
+  assert.ok(save, 'Save button rendered in the label row');
+  assert.notEqual(save.style.display, 'none', 'Save button visible while editing');
+  assert.ok(cancel, 'Cancel button rendered');
+  assert.notEqual(cancel.style.display, 'none', 'Cancel button visible while editing');
+
+  // Type a draft, then settle the dispatcher.  The user could now alt-tab
+  // away to copy more content; the editor must STAY OPEN and NO write must
+  // have fired yet — the regression we're guarding is the prior blur-commit.
+  ta.value = 'mid-paste draft';
+  await settle(dispatcher);
+  assert.ok(
+    td.el.querySelector('[data-task-desc-input]'),
+    'editor still mounted while user is composing',
+  );
+  assert.equal(
+    updates.filter((u) => u.attribute_name === 'description').length,
+    0,
+    'no attribute.update fired before the operator commits',
+  );
+
+  // Clicking Save commits the textarea's current value.
+  ta.value = 'final description';
+  save.click();
+  await settle(dispatcher);
+  const descUpdate = updates.find((u) => u.attribute_name === 'description');
+  assert.ok(descUpdate, 'Save → attribute.update fires');
+  assert.equal(descUpdate.value, 'final description');
+});
+
+test('TaskDetail: description Cancel button closes the editor without a write', async () => {
+  const { transport, updates } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { td } = mountTaskDetail(api);
+  await settle(dispatcher);
+
+  td.el.querySelector('[data-task-desc-edit]').click();
+  const ta = td.el.querySelector('[data-task-desc-input]');
+  ta.value = 'abandon this draft';
+
+  td.el.querySelector('[data-task-desc-cancel]').click();
+  await settle(dispatcher);
+  assert.equal(
+    updates.filter((u) => u.attribute_name === 'description').length,
+    0,
+    'Cancel fires no write',
+  );
+  assert.equal(td.el.querySelector('[data-task-desc-input]'), null, 'editor torn down');
+});
+
 /* -------------------------------------------------------------------------- */
 /* Edit chords (e t / e d / e c) open + FOCUS their text field.                 */
 /* -------------------------------------------------------------------------- */
