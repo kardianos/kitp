@@ -133,8 +133,8 @@ function gridMockTransport() {
             ok: true,
             data: {
               rows: [
-                card(60n, 'tag', { path: 'area/frontend/ui' }),
-                card(61n, 'tag', { path: 'priority/high' }),
+                card(60n, 'tag', { path: 'area/frontend/ui', color: 'blue' }),
+                card(61n, 'tag', { path: 'priority/high', color: 'red' }),
               ],
             },
           };
@@ -252,8 +252,11 @@ test('Grid: tasks query lands and rows render in declared column order', async (
       'attributes.assignee',
       'attributes.milestone_ref',
       'attributes.component_ref',
+      // Tag-prefix sub-columns: `priority` first (explicit screen config),
+      // then `area` auto-derived from the loaded tag cards' paths. No
+      // catch-all Tags column — every applied tag surfaces in its prefix slot.
       'tag:priority',
-      'tags',
+      'tag:area',
       'attributes.due_date',
       'created_at',
       'last_activity_at',
@@ -466,27 +469,33 @@ test('Grid: Escape cancels an inline edit without firing a write', async () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* Tags column renders one TagChip per tag.                                    */
+/* Tag-prefix sub-columns render one pill per matching tag (suffix only).      */
 /* -------------------------------------------------------------------------- */
 
-test('Grid: Tags column renders one TagChip per tag (leaf label)', async () => {
+test('Grid: tag-prefix sub-columns render one pill per matching tag (suffix only + palette color)', async () => {
   const { transport } = gridMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const tree = new M.TreeNode({}, []);
   const grid = mountGrid(api, tree);
   await settle(dispatcher);
 
-  const row = visibleGridRows(grid.el)[0]; // task 201
-  const tagsCell = row.querySelectorAll('[data-grid-col]').find((c) => c.dataset.gridCol === 'tags');
-  const chips = tagsCell.querySelectorAll('[data-tag-chip]');
-  assert.equal(chips.length, 2, 'two tag chips');
-  // Chips carry the full path + show the LEAF segment as label.
-  assert.deepEqual(chips.map((c) => c.dataset.tagPath), ['area/frontend/ui', 'priority/high']);
-  const leafText = (chip) =>
-    chip.querySelectorAll('[data-tag-chip]').length === 0 // it IS the chip
-      ? chip.children.find((x) => x.classList.contains('tag-chip__label')).textContent
-      : null;
-  assert.deepEqual(chips.map(leafText), ['ui', 'high'], 'chip label is the leaf segment');
+  const row = visibleGridRows(grid.el)[0]; // task 201 — tags: area/frontend/ui + priority/high
+  const cells = row.querySelectorAll('[data-grid-col]');
+  const cellByCol = (field) => cells.find((c) => c.dataset.gridCol === field);
+
+  // priority slot — the only path matching `priority/` is `priority/high`, color "red".
+  const priorityCell = cellByCol('tag:priority');
+  const priorityPills = priorityCell.querySelectorAll('.grid__pill');
+  assert.equal(priorityPills.length, 1, 'one priority pill');
+  assert.equal(priorityPills[0].textContent, 'high', 'priority pill shows the suffix only');
+  assert.equal(priorityPills[0].dataset.tagColor, 'red', 'priority pill carries the "red" palette tone');
+
+  // area slot — path `area/frontend/ui` lands here with suffix `frontend/ui` and color "blue".
+  const areaCell = cellByCol('tag:area');
+  const areaPills = areaCell.querySelectorAll('.grid__pill');
+  assert.equal(areaPills.length, 1, 'one area pill');
+  assert.equal(areaPills[0].textContent, 'frontend/ui', 'area pill shows the suffix after `area/`');
+  assert.equal(areaPills[0].dataset.tagColor, 'blue', 'area pill carries the "blue" palette tone');
 });
 
 /* -------------------------------------------------------------------------- */
@@ -633,21 +642,21 @@ test('grid-helpers buildGridColumns: data-driven set from refAxes + screen confi
   const refAxes = [
     { attr: 'status', label: 'Status', targetCardType: 'status', multi: false },
     { attr: 'assignee', label: 'Assignee', targetCardType: 'person', multi: false },
-    { attr: 'tags', label: 'Tags', targetCardType: 'tag', multi: true }, // multi → skipped (Tags col)
+    { attr: 'tags', label: 'Tags', targetCardType: 'tag', multi: true }, // multi → skipped (prefixes columns)
   ];
   const schema = [{ name: 'due_date', label: 'Due date', valueType: 'date' }];
   const cols = buildGridColumns(refAxes, schema, ['due_date'], ['priority']);
   const byKey = Object.fromEntries(cols.map((c) => [c.key, c]));
 
-  // Order: id, title, ref(status), ref(assignee), tag_prefix(priority), tags, date(due_date), created, last_activity.
+  // Order: id, title, ref(status), ref(assignee), tag_prefix(priority), date(due_date), created, last_activity.
+  // No catch-all `tags` column — every tag surfaces in its prefix sub-column.
   assert.deepEqual(
     cols.map((c) => c.key),
-    ['id', 'title', 'status', 'assignee', 'tag:priority', 'tags', 'due_date', 'created', 'last_activity'],
-    'multi-ref tags axis is skipped; tag-prefix + extra columns slot in',
+    ['id', 'title', 'status', 'assignee', 'tag:priority', 'due_date', 'created', 'last_activity'],
+    'multi-ref tags axis is skipped; tag-prefix + extra columns slot in (no catch-all Tags)',
   );
-  // ID / Tags / tag-prefix are non-sortable (field null); refs + date carry a field.
+  // ID / tag-prefix are non-sortable (field null); refs + date carry a field.
   assert.equal(byKey.id.field, null);
-  assert.equal(byKey.tags.field, null);
   assert.equal(byKey['tag:priority'].field, null);
   assert.equal(byKey.status.kind, 'ref');
   assert.equal(byKey.status.lookup, 'statuses'); // person→persons, status→statuses, …
@@ -657,10 +666,43 @@ test('grid-helpers buildGridColumns: data-driven set from refAxes + screen confi
   assert.equal(byKey.created.field, 'created_at');
 });
 
-test('grid-helpers tagPrefixValue extracts the segment after <prefix>/', () => {
-  const { tagPrefixValue } = M;
-  assert.equal(tagPrefixValue(['area/frontend/ui', 'priority/high'], 'priority'), 'high');
-  assert.equal(tagPrefixValue(['area/frontend'], 'priority'), null);
+test('grid-helpers extractTagPrefixes: distinct alphabetically-sorted prefixes', () => {
+  const { extractTagPrefixes } = M;
+  // Duplicate prefixes collapse; un-prefixed paths (no `/`) are skipped.
+  assert.deepEqual(
+    extractTagPrefixes(['area/frontend/ui', 'priority/high', 'area/api', 'flat']),
+    ['area', 'priority'],
+  );
+  assert.deepEqual(extractTagPrefixes([]), []);
+});
+
+test('grid-helpers tagPrefixValues returns every matching suffix', () => {
+  const { tagPrefixValues } = M;
+  // Multiple tags can share one prefix — every match is returned.
+  assert.deepEqual(
+    tagPrefixValues(['area/frontend/ui', 'area/api', 'priority/high'], 'area'),
+    ['frontend/ui', 'api'],
+  );
+  assert.deepEqual(tagPrefixValues(['area/frontend'], 'priority'), []);
+});
+
+test('grid-helpers estimateTagPrefixColumnPx tracks the widest suffix + header', () => {
+  const { estimateTagPrefixColumnPx } = M;
+  // No matching tags → the column hugs the header label, never the 56px floor.
+  const empty = estimateTagPrefixColumnPx([], 'priority');
+  assert.ok(empty >= 56, 'never collapses below the floor');
+  // A long suffix should drive the column wider than a short header.
+  const wide = estimateTagPrefixColumnPx(
+    ['area/frontend', 'area/backend', 'area/the-very-long-platform-team'],
+    'area',
+  );
+  const narrow = estimateTagPrefixColumnPx(['area/ui'], 'area');
+  assert.ok(wide > narrow, 'wider suffix → wider column');
+  // A wide HEADER beats a tiny body — the column still fits the header label.
+  const headerHeavy = estimateTagPrefixColumnPx(['supercategory/a'], 'supercategory');
+  const bodyHeavy = estimateTagPrefixColumnPx(['a/superlong-but-not-quite'], 'a');
+  assert.ok(headerHeavy >= 56);
+  assert.ok(bodyHeavy >= 56);
 });
 
 /* -------------------------------------------------------------------------- */

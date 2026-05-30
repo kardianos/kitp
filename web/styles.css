@@ -1713,7 +1713,10 @@ select optgroup {
   text-overflow: ellipsis;
 }
 
-/* ---- priority tone pill (compact, near-square chip) ---- */
+/* ---- tag-prefix sub-column pill (compact, near-square chip) ----
+ * Tone is data-driven from the tag's `color` attribute (set on the admin
+ * Values screen) and shared with `.tag-chip` — see the [data-tag-color="..."]
+ * palette below. */
 .grid__pill {
   font-size: var(--text-2xs);
   font-weight: var(--weight-semibold);
@@ -1722,19 +1725,103 @@ select optgroup {
   border-radius: var(--radius-sm);
   background: var(--color-fill-hover);
   color: var(--color-muted);
+  white-space: nowrap;
 }
-.grid__pill[data-priority="high"] {
-  background: var(--color-danger-soft);
-  color: var(--color-danger);
+
+/* ---- shared tag/pill palette tones (read off [data-tag-color="..."]) ----
+ * Both the grid pill and the .tag-chip wear these — change the admin
+ * Values screen's color picker and every surface re-tones consistently.
+ * The 15-tone set walks the colour wheel; tokens fall back to inline hex so
+ * the chip still tones cleanly even when a project theme overrides --color-*. */
+.grid__pill[data-tag-color="red"],
+.tag-chip[data-tag-color="red"] {
+  background: var(--color-danger-soft, #ffd6d3);
+  color: var(--color-danger, #9b1c0f);
+  border-color: var(--color-danger-soft, #ffd6d3);
 }
-.grid__pill[data-priority="med"],
-.grid__pill[data-priority="medium"] {
-  background: var(--color-warning);
-  color: var(--color-warning-fg);
+.grid__pill[data-tag-color="orange"],
+.tag-chip[data-tag-color="orange"] {
+  background: #ffe2c4;
+  color: #a04a00;
+  border-color: #ffe2c4;
 }
-.grid__pill[data-priority="low"] {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
+.grid__pill[data-tag-color="amber"],
+.tag-chip[data-tag-color="amber"] {
+  background: var(--color-warning, #fff0c4);
+  color: var(--color-warning-fg, #7a5300);
+  border-color: var(--color-warning, #fff0c4);
+}
+.grid__pill[data-tag-color="yellow"],
+.tag-chip[data-tag-color="yellow"] {
+  background: #fff3a8;
+  color: #6e5600;
+  border-color: #fff3a8;
+}
+.grid__pill[data-tag-color="lime"],
+.tag-chip[data-tag-color="lime"] {
+  background: #e2f7c4;
+  color: #4d7a00;
+  border-color: #e2f7c4;
+}
+.grid__pill[data-tag-color="green"],
+.tag-chip[data-tag-color="green"] {
+  background: var(--color-success-soft, #d1fadf);
+  color: var(--color-success, #027a48);
+  border-color: var(--color-success-soft, #d1fadf);
+}
+.grid__pill[data-tag-color="teal"],
+.tag-chip[data-tag-color="teal"] {
+  background: #c7f0eb;
+  color: #036b6b;
+  border-color: #c7f0eb;
+}
+.grid__pill[data-tag-color="cyan"],
+.tag-chip[data-tag-color="cyan"] {
+  background: #cdebf9;
+  color: #006b94;
+  border-color: #cdebf9;
+}
+.grid__pill[data-tag-color="blue"],
+.tag-chip[data-tag-color="blue"] {
+  background: var(--color-accent-soft, #d8e7ff);
+  color: var(--color-accent, #1e4ea8);
+  border-color: var(--color-accent-soft, #d8e7ff);
+}
+.grid__pill[data-tag-color="indigo"],
+.tag-chip[data-tag-color="indigo"] {
+  background: #dde0fb;
+  color: #344b9a;
+  border-color: #dde0fb;
+}
+.grid__pill[data-tag-color="purple"],
+.tag-chip[data-tag-color="purple"] {
+  background: var(--color-purple-soft, #ede0ff);
+  color: var(--color-purple, #6638b0);
+  border-color: var(--color-purple-soft, #ede0ff);
+}
+.grid__pill[data-tag-color="magenta"],
+.tag-chip[data-tag-color="magenta"] {
+  background: #f6cef4;
+  color: #931e7d;
+  border-color: #f6cef4;
+}
+.grid__pill[data-tag-color="pink"],
+.tag-chip[data-tag-color="pink"] {
+  background: #fcd9e6;
+  color: #a8326c;
+  border-color: #fcd9e6;
+}
+.grid__pill[data-tag-color="brown"],
+.tag-chip[data-tag-color="brown"] {
+  background: #ead9c4;
+  color: #6b4423;
+  border-color: #ead9c4;
+}
+.grid__pill[data-tag-color="gray"],
+.tag-chip[data-tag-color="gray"] {
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+  border-color: var(--color-fill-hover);
 }
 
 /* ---- muted em-dash for empty cells ---- */
@@ -6706,44 +6793,51 @@ textarea.task-comms__form-input {
   right: var(--space-4);
 }
 
-/* ---- tags editor ---- */
+/* ---- tags editor (compact mini-grid: prefix label | chips + add) ---- */
 .tags-editor__body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-}
-.tags-editor__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
+  display: grid;
+  /* prefix labels in a narrow auto column, chips fill the rest.  align-baseline
+   * keeps the label baseline level with the chip text in each row. */
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  column-gap: var(--space-2);
+  row-gap: var(--space-h);
+  padding: var(--space-1x) var(--space-2);
 }
 .tags-editor__empty {
+  grid-column: 1 / -1;
   font-size: var(--text-xs);
+}
+.tags-editor__slot {
+  display: contents; /* lift label + value into the parent grid as one row */
+}
+.tags-editor__slot-label {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  white-space: nowrap;
+  /* Hug the right side of the label column so chips read nice and close. */
+  text-align: right;
+}
+.tags-editor__slot-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-h);
+}
+.tags-editor__slot-empty {
+  font-size: var(--text-2xs);
+}
+.tags-editor__slot-add .kf-combobox {
+  /* The per-slot add control is just a `+` trigger — keep it small + inline so
+   * a slot with a single chip still reads as one row. */
+  font-size: var(--text-2xs);
 }
 .tags-editor__chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-h) var(--space-1x);
-  font-size: var(--text-xs);
-  border: 1px solid var(--color-accent-soft);
-  border-radius: var(--radius-pill);
-  background: var(--color-accent-tint);
-  color: var(--color-accent-strong);
-}
-.tags-editor__chip-remove {
-  font: inherit;
-  font-size: var(--text-sm);
-  line-height: 1;
-  color: var(--color-accent-strong);
-  background: none;
-  border: 0;
-  padding: 0;
-  cursor: pointer;
-}
-.tags-editor__chip-remove:hover {
-  color: var(--color-danger);
+  /* Re-use the shared .tag-chip baseline; this hook just lets the editor add
+   * spacing tweaks without disturbing chips in the grid/kanban. */
+  font-size: var(--text-2xs);
 }
 
 /* ---- related tasks ---- */
@@ -7425,6 +7519,81 @@ textarea.task-comms__form-input {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
+}
+/* Color picker on color-bearing value rows (tag). Shares the phase select's
+ * geometry; when a value is picked it wears the matching tag palette tone so
+ * the operator sees the colour they're choosing (the palette `[data-tag-color]`
+ * tones above are scoped to .grid__pill / .tag-chip — copy them here so the
+ * select itself recolours). */
+.enum-manager__color {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--color-fg);
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.enum-manager__color[data-tag-color="red"] {
+  background: var(--color-danger-soft, #ffd6d3);
+  color: var(--color-danger, #9b1c0f);
+}
+.enum-manager__color[data-tag-color="orange"] {
+  background: #ffe2c4;
+  color: #a04a00;
+}
+.enum-manager__color[data-tag-color="amber"] {
+  background: var(--color-warning, #fff0c4);
+  color: var(--color-warning-fg, #7a5300);
+}
+.enum-manager__color[data-tag-color="yellow"] {
+  background: #fff3a8;
+  color: #6e5600;
+}
+.enum-manager__color[data-tag-color="lime"] {
+  background: #e2f7c4;
+  color: #4d7a00;
+}
+.enum-manager__color[data-tag-color="green"] {
+  background: var(--color-success-soft, #d1fadf);
+  color: var(--color-success, #027a48);
+}
+.enum-manager__color[data-tag-color="teal"] {
+  background: #c7f0eb;
+  color: #036b6b;
+}
+.enum-manager__color[data-tag-color="cyan"] {
+  background: #cdebf9;
+  color: #006b94;
+}
+.enum-manager__color[data-tag-color="blue"] {
+  background: var(--color-accent-soft, #d8e7ff);
+  color: var(--color-accent, #1e4ea8);
+}
+.enum-manager__color[data-tag-color="indigo"] {
+  background: #dde0fb;
+  color: #344b9a;
+}
+.enum-manager__color[data-tag-color="purple"] {
+  background: var(--color-purple-soft, #ede0ff);
+  color: var(--color-purple, #6638b0);
+}
+.enum-manager__color[data-tag-color="magenta"] {
+  background: #f6cef4;
+  color: #931e7d;
+}
+.enum-manager__color[data-tag-color="pink"] {
+  background: #fcd9e6;
+  color: #a8326c;
+}
+.enum-manager__color[data-tag-color="brown"] {
+  background: #ead9c4;
+  color: #6b4423;
+}
+.enum-manager__color[data-tag-color="gray"] {
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
 }
 .enum-manager__add {
   display: flex;

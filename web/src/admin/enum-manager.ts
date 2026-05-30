@@ -41,6 +41,36 @@ interface ManagedEnum {
   cardType: string;
 }
 
+/**
+ * The shared color palette every chip / pill renderer keys off.  `value` is
+ * the string written to the value-card's `color` text attribute (and read
+ * back as `data-tag-color="<value>"` everywhere); `label` is the picker text.
+ * Empty string = neutral default. The 15-tone set walks the colour wheel
+ * (warm → cool → neutral) plus a brown and a gray so the operator can build
+ * meaningful palettes for any namespace (priority / area / team / …) without
+ * a true colour wheel widget. Keep in sync with the
+ * `.tag-chip[data-tag-color="..."]` / `.grid__pill[data-tag-color="..."]`
+ * tones in `styles.css`.
+ */
+const COLOR_PALETTE: ReadonlyArray<{ value: string; label: string }> = [
+  { value: '', label: '—' },
+  { value: 'red', label: 'Red' },
+  { value: 'orange', label: 'Orange' },
+  { value: 'amber', label: 'Amber' },
+  { value: 'yellow', label: 'Yellow' },
+  { value: 'lime', label: 'Lime' },
+  { value: 'green', label: 'Green' },
+  { value: 'teal', label: 'Teal' },
+  { value: 'cyan', label: 'Cyan' },
+  { value: 'blue', label: 'Blue' },
+  { value: 'indigo', label: 'Indigo' },
+  { value: 'purple', label: 'Purple' },
+  { value: 'magenta', label: 'Magenta' },
+  { value: 'pink', label: 'Pink' },
+  { value: 'brown', label: 'Brown' },
+  { value: 'gray', label: 'Gray' },
+];
+
 export class EnumManager extends Control<EnumManagerConfig> {
   private readonly scopePath: string[];
   /** The flagged attributes' target card_types (deduped). */
@@ -224,6 +254,57 @@ export class EnumManager extends Control<EnumManagerConfig> {
       () => { if (this.isAlive()) this.loadEnum(e); },
       { alive: () => this.isAlive() },
     );
+  }
+
+  /** A value-card's current `color` text attribute ('' when unset). */
+  private colorOf(card: CardWithAttrs): string {
+    const v = card.attributes['color'];
+    return typeof v === 'string' ? v : '';
+  }
+
+  /** Whether this managed value-card-type carries a `color` text attribute
+   *  in the schema — drives the inline palette picker. Data-driven so any
+   *  future value-card-type that gains a `color` edge picks it up automatically. */
+  private hasColorAttr(cardType: string): boolean {
+    return this.textAttrsByType[cardType]?.has('color') === true;
+  }
+
+  /**
+   * Build the per-row color picker — a small <select> over the shared palette
+   * tones. The empty option keeps the neutral default (no tone). The selected
+   * option is seeded from `current` (the card's stored color, or '').
+   */
+  private buildColorSelect(current: string): HTMLSelectElement {
+    const sel = document.createElement('select');
+    sel.className = 'enum-manager__color';
+    sel.dataset.enumColor = '';
+    for (const c of COLOR_PALETTE) {
+      const opt = document.createElement('option');
+      opt.value = c.value;
+      opt.textContent = c.label;
+      if (c.value === current) opt.selected = true;
+      sel.append(opt);
+    }
+    sel.value = current;
+    // The select wears its current color via `data-tag-color` so the same
+    // palette CSS tones the picker itself — the operator sees the colour
+    // they're choosing. Updated on every change in setValueColor's caller.
+    if (current !== '') sel.dataset.tagColor = current;
+    return sel;
+  }
+
+  /** Set a value-card's `color` text attribute via attribute.update. The
+   *  current row is repainted in place (optimistic), and the next reload
+   *  reconciles. */
+  private setValueColor(card: CardWithAttrs, color: string): void {
+    card.attributes['color'] = color; // optimistic
+    this.ctx.api.callByName(
+      SPEC.attributeUpdate,
+      { cardId: card.id, attributeName: 'color', value: color === '' ? null : color },
+      () => {},
+      { alive: () => this.isAlive() },
+    );
+    this.paint();
   }
 
   /** Load the value-cards for every managed enum, scoped to the active project. */
@@ -630,6 +711,17 @@ export class EnumManager extends Control<EnumManagerConfig> {
         this.setValuePhase(e, card, phaseSel.value);
       });
       row.append(reorder, input, phaseSel, remove);
+    } else if (this.hasColorAttr(e.cardType)) {
+      // Color-bearing value types (tag): a small palette picker per value.
+      // Writes the `color` text attribute; the chip readers (grid pill, tag
+      // chip, task-detail chip) all key off `data-tag-color` so a change here
+      // tones everything on the next render.
+      const colorSel = this.buildColorSelect(this.colorOf(card));
+      colorSel.setAttribute('aria-label', `${e.label} color`);
+      this.listen(colorSel, 'change', () => {
+        this.setValueColor(card, colorSel.value);
+      });
+      row.append(reorder, input, colorSel, remove);
     } else {
       row.append(reorder, input, remove);
     }

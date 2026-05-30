@@ -12,7 +12,7 @@
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { Popover } from '../ui/popover.js';
-import { buildGridColumns, type ColumnDef } from './grid-helpers.js';
+import { buildGridColumns, extractTagPrefixes, type ColumnDef } from './grid-helpers.js';
 import type { RefAxis } from '../filter/vocabulary.js';
 import type { AttrSchema } from '../filter/attribute-schema.js';
 
@@ -71,13 +71,24 @@ export class GridColumns extends Control<GridColumnsConfig> {
   /* ------------------------------ tree reads ----------------------------- */
 
   /** The full data-driven column set from the schema + screen config, BEFORE
-   *  the user's per-screen hide/reorder (mirrors Grid.rawColumns). */
+   *  the user's per-screen hide/reorder (mirrors Grid.rawColumns). Tag-prefix
+   *  sub-columns are auto-derived from the project's loaded tag cards and
+   *  unioned with any explicit `tag_prefix_columns` from the screen card. */
   private rawColumns(): ColumnDef[] {
     const refAxes = (this.ctx.tree.at(['screen', 'refAxes']).peek<RefAxis[]>() ?? []) as RefAxis[];
     const schema = (this.ctx.tree.at(['screen', 'attrSchema']).peek<AttrSchema[]>() ?? []) as AttrSchema[];
     const extra = (this.ctx.tree.at(['screen', 'extraColumns']).peek<string[]>() ?? []) as string[];
-    const tagPrefixes = (this.ctx.tree.at(['screen', 'tagPrefixColumns']).peek<string[]>() ?? []) as string[];
-    return buildGridColumns(refAxes, schema, extra, tagPrefixes);
+    const explicit = (this.ctx.tree.at(['screen', 'tagPrefixColumns']).peek<string[]>() ?? []) as string[];
+    const tagMap = (this.ctx.tree.at(['grid', 'lookups', 'tags']).peek<Record<string, string>>() ?? {}) as Record<string, string>;
+    const auto = extractTagPrefixes(Object.values(tagMap));
+    const merged: string[] = [];
+    const seen = new Set<string>();
+    for (const p of [...explicit, ...auto]) {
+      if (p === '' || seen.has(p)) continue;
+      seen.add(p);
+      merged.push(p);
+    }
+    return buildGridColumns(refAxes, schema, extra, merged);
   }
 
   /** The user's per-screen column config (hidden keys + order + widths). */

@@ -55,6 +55,24 @@ test('bucketKeyOf: 42n / 42 / "42" all key to "42" (boot-order-safe)', () => {
   assert.equal(bucketKeyOf(''), UNSET_KEY);
 });
 
+test('asAttrId: coerces bigint / int / digit-string to bigint; rejects malformed', () => {
+  // The dispatcher's id-revival is hand-keyed by attribute name, so any
+  // un-primed card_ref attr (e.g. originator) arrives as a digit-string. The
+  // Grid / Inbox / TaskDetail consumers must all coerce the same way so a new
+  // card_ref attr works without a one-off registration.
+  const { asAttrId } = M;
+  assert.equal(asAttrId(42n), 42n, 'bigint passes through');
+  assert.equal(asAttrId(42), 42n, 'int → bigint');
+  assert.equal(asAttrId('42'), 42n, 'digit-string → bigint (the originator wire form)');
+  assert.equal(asAttrId(null), null);
+  assert.equal(asAttrId(undefined), null);
+  assert.equal(asAttrId(''), null);
+  assert.equal(asAttrId('foo'), null);
+  assert.equal(asAttrId(-1), null, 'non-positive rejected');
+  assert.equal(asAttrId(0), null);
+  assert.equal(asAttrId(1.5), null, 'non-integer rejected');
+});
+
 /* -------------------------------------------------------------------------- */
 /* columnOrder.                                                                */
 /* -------------------------------------------------------------------------- */

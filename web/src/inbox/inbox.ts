@@ -63,7 +63,7 @@ import { navigate, taskUrl } from '../shell/router.js';
 import { publishTaskNav } from '../shell/task-nav.js';
 import { SPEC } from '../kanban/specs.js';
 import { INBOX_SPEC } from './specs.js';
-import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
+import { asAttrId, type CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { walkGrouped, type GroupAttr, type GroupItem } from '../filter/group-axis.js';
 import {
   applyPersonalReorder,
@@ -958,14 +958,19 @@ export class Inbox extends Control<InboxConfig> {
     }
   }
 
-  /** Resolve a group key to its display label: a card_ref bigint goes through
-   *  the group axis's lookup map (persons / statuses / milestones / components);
-   *  scalars are their own label. Mirrors the Grid's labelForGroupKey. */
+  /** Resolve a group key to its display label: a card_ref id goes through the
+   *  group axis's lookup map (persons / statuses / milestones / components);
+   *  scalars are their own label. Coerces the key via {@link asAttrId} so an
+   *  un-revived wire form (digit-string for un-primed card_ref attrs like
+   *  `originator`) still resolves a name. Mirrors the Grid's labelForGroupKey. */
   private labelForGroupKey(key: unknown, lookup: string | null): string {
-    if (typeof key === 'bigint' && lookup !== null) {
-      const map = this.lookup(lookup);
-      const k = key.toString();
-      return map[k] ?? `#${k}`;
+    if (lookup !== null) {
+      const id = asAttrId(key);
+      if (id !== null) {
+        const map = this.lookup(lookup);
+        const k = id.toString();
+        return map[k] ?? `#${k}`;
+      }
     }
     return String(key);
   }

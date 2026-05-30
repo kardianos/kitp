@@ -51,7 +51,7 @@ import { fitTextarea } from '../util/autosize.js';
 import { navigate, taskUrl, projectUrl } from '../shell/router.js';
 import { taskNavNeighbor, taskNavListUrl } from '../shell/task-nav.js';
 import { SPEC, type SelectWithAttributesOutput, type AttributeUpdateOutput } from '../kanban/specs.js';
-import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
+import { asAttrId, type CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { CARD_SEARCH_SPEC } from '../ui/specs.js';
 import { ADMIN_SPEC, type AttributeDefListOutput } from '../admin/specs.js';
 import {
@@ -1626,30 +1626,6 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 /* -------------------------------------------------------------------------- */
 /* Helpers.                                                                    */
 /* -------------------------------------------------------------------------- */
-
-/**
- * Coerce a wire-side card_ref attribute value to bigint, or null when absent /
- * malformed. The dispatcher's id-revival is hand-keyed by attribute name
- * (see `core/dispatch.ts` CARD_REF_ATTR_KEYS) so an un-primed card_ref attr
- * (e.g. `originator`) arrives as a digit-string. Every TaskDetail consumer that
- * reads a card_ref attribute funnels through this helper so the panel's label
- * resolution, summary rendering, and editor seeding all apply the SAME tolerant
- * rule — fixing originator (and any future card_ref attr) without a one-off
- * registration per name.
- */
-function asAttrId(v: unknown): bigint | null {
-  if (typeof v === 'bigint') return v;
-  if (typeof v === 'number' && Number.isInteger(v) && v > 0) return BigInt(v);
-  if (typeof v === 'string' && /^-?\d+$/.test(v)) {
-    try {
-      const n = BigInt(v);
-      return n > 0n ? n : null;
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
 
 /** Parse a route `:id` string to a positive bigint, or null when malformed. */
 function parseId(raw: string | undefined): bigint | null {

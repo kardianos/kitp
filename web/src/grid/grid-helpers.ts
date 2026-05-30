@@ -157,8 +157,7 @@ export type ColumnKind =
   | 'id'
   | 'title'
   | 'ref' // a single card_ref attribute → label resolved via a lookup map
-  | 'tag_prefix' // synthetic: the tag whose path starts `<prefix>/`
-  | 'tags' // the catch-all tag chips
+  | 'tag_prefix' // sub-column: every tag whose path starts `<prefix>/` (suffix only)
   | 'date' // a date-typed attribute
   | 'attr' // a scalar text/number attribute (rendered as its string value)
   | 'created'
@@ -169,7 +168,7 @@ export type ColumnKind =
  *
  *   - `field` is the wire `order.field` value the server understands
  *     (`attributes.title`, `created_at`); `null` means the column is not
- *     sortable (the catch-all Tags column, whose value is a JSONB array).
+ *     sortable (the tag-prefix columns, whose values come from a JSONB array).
  *   - `attrName` is the matching attribute name (used later for per-column
  *     filter Pickers — deferred in v1); `null` means no filter dropdown.
  *   - `key` is a stable per-column key for the keyed-list / `data-grid-col`.
@@ -192,38 +191,40 @@ export interface ColumnDef {
 
 /**
  * Build the Grid column set DATA-DRIVEN from the project's schema + the screen
- * config (replacing the old hardcoded list). In render order:
+ * config + the project's known tag prefixes. In render order:
  *
  *   ID · Title · <one `ref` column per single card_ref axis> ·
- *   <one `tag_prefix` column per screen `tag_prefix_columns`> · Tags ·
+ *   <one `tag_prefix` column per known tag prefix> ·
  *   <one column per screen `extra_columns` attr (date vs scalar by schema)> ·
  *   Created · Last activity
  *
  *   - Ref columns come from `refAxes` (the same card_ref vocab axes the group
- *     picker / quick chips use); the multi-ref `tags` axis is skipped (it's the
- *     catch-all Tags column). Each resolves its label via the target type's
- *     lookup map (`lookupNameForCardType`).
- *   - `tagPrefixColumns` (e.g. `["priority"]`) → synthetic columns showing the
- *     tag value after `<prefix>/` (this is where the old hardcoded Priority
- *     column now comes from).
+ *     picker / quick chips use); the multi-ref `tags` axis is skipped — tags
+ *     surface as per-prefix sub-columns instead of a catch-all. Each ref
+ *     resolves its label via the target type's lookup map
+ *     (`lookupNameForCardType`).
+ *   - `tagPrefixes` — the union of every distinct prefix observed on the
+ *     project's `tag` cards (auto-derived from the lookup) and any explicit
+ *     prefixes from the screen card's `tag_prefix_columns`. One column per
+ *     prefix; the cell renders the suffix (after `<prefix>/`) of every
+ *     matching applied tag.
  *   - `extraColumns` (e.g. `["due_date"]`) → extra attribute columns, typed
  *     `date` vs `attr` from the schema; ones already shown as a ref are skipped.
  *
- * Empty inputs yield the minimal base (ID · Title · Tags · Created · Last
- * activity) — the cold/standalone fallback before the schema + screen config land.
+ * Empty inputs yield the minimal base (ID · Title · Created · Last activity).
  */
 export function buildGridColumns(
   refAxes: readonly RefAxis[],
   schema: readonly AttrSchema[],
   extraColumns: readonly string[],
-  tagPrefixColumns: readonly string[],
+  tagPrefixes: readonly string[],
 ): ColumnDef[] {
   const cols: ColumnDef[] = [
     { kind: 'id', key: 'id', label: 'ID', field: null, attrName: null },
     { kind: 'title', key: 'title', label: 'Title', field: 'attributes.title', attrName: null },
   ];
   for (const ax of refAxes) {
-    if (ax.multi) continue; // the multi-ref tags axis is the catch-all Tags column
+    if (ax.multi) continue; // the multi-ref tags axis surfaces as per-prefix columns
     cols.push({
       kind: 'ref',
       key: ax.attr,
@@ -234,7 +235,7 @@ export function buildGridColumns(
       targetCardType: ax.targetCardType,
     });
   }
-  for (const prefix of tagPrefixColumns) {
+  for (const prefix of tagPrefixes) {
     cols.push({
       kind: 'tag_prefix',
       key: `tag:${prefix}`,
@@ -244,7 +245,6 @@ export function buildGridColumns(
       prefix,
     });
   }
-  cols.push({ kind: 'tags', key: 'tags', label: 'Tags', field: null, attrName: null });
   const shown = new Set(cols.map((c) => c.attrName).filter((n): n is string => n !== null));
   for (const name of extraColumns) {
     if (shown.has(name)) continue;
@@ -264,15 +264,69 @@ export function buildGridColumns(
 }
 
 /**
- * The tag value for a `tag_prefix` column: the segment after `<prefix>/` in the
- * first matching resolved tag path, or null when no tag carries that prefix.
+ * Every distinct tag prefix observed in [paths] — the segment before the first
+ * `/`. Paths without a `/` are skipped (an un-prefixed tag has no slot column).
+ * Sorted alphabetically so the auto-derived column order is stable across
+ * loads. Empty strings (a path like `/foo`) are skipped.
  */
-export function tagPrefixValue(paths: readonly string[], prefix: string): string | null {
-  const pre = `${prefix}/`;
+export function extractTagPrefixes(paths: Iterable<string>): string[] {
+  const set = new Set<string>();
   for (const p of paths) {
-    if (p.startsWith(pre)) return p.slice(pre.length);
+    const i = p.indexOf('/');
+    if (i > 0) set.add(p.slice(0, i));
   }
-  return null;
+  return [...set].sort();
+}
+
+/**
+ * Every matching suffix for a `tag_prefix` column — the segments after
+ * `<prefix>/` for every resolved path that starts with `<prefix>/`. Multiple
+ * tags can share one prefix (e.g. `area/frontend` + `area/api`); the cell
+ * renders one pill per returned value. Returns `[]` when nothing matches.
+ */
+export function tagPrefixValues(paths: readonly string[], prefix: string): string[] {
+  const pre = `${prefix}/`;
+  const out: string[] = [];
+  for (const p of paths) {
+    if (!p.startsWith(pre)) continue;
+    const v = p.slice(pre.length);
+    if (v.length > 0) out.push(v);
+  }
+  return out;
+}
+
+/**
+ * Estimate the resting width (px) of a `tag_prefix` sub-column from the set of
+ * tag PATHS in the project — so the column hugs the widest pill it will ever
+ * render without the CSS auto-size fighting the dynamic grid track lengths.
+ *
+ * We pick the max of (header-label width) and (widest-pill width) and add
+ * fixed chrome (cell padding + the pill's own padding + a hair of slack for
+ * the resize grabber). The numbers are calibrated to the cell's `--text-sm`
+ * register (the body uses `--text-2xs` for the pill text — both kept aligned
+ * with the styles in `styles.css`).
+ *
+ * Pure so it is exercised directly by `node --test`. A floor of 56px keeps
+ * an empty / dash-only column from collapsing.
+ */
+export function estimateTagPrefixColumnPx(
+  paths: Iterable<string>,
+  prefix: string,
+): number {
+  const pre = `${prefix}/`;
+  let widestSuffix = '';
+  for (const p of paths) {
+    if (!p.startsWith(pre)) continue;
+    const sfx = p.slice(pre.length);
+    if (sfx.length > widestSuffix.length) widestSuffix = sfx;
+  }
+  // Body pill = `--text-2xs` (~11px) semibold ≈ 6.5px/char + 16px pill pad +
+  // 24px cell pad = ~40px chrome.  Header = `--text-sm` (~13px) ≈ 7px/char +
+  // 24px cell pad + 12px resize grabber = ~36px chrome.  Floor protects empty
+  // columns from collapsing under the chrome alone.
+  const headerPx = Math.ceil(prefix.length * 7 + 36);
+  const bodyPx = Math.ceil(widestSuffix.length * 6.5 + 40);
+  return Math.max(56, headerPx, bodyPx);
 }
 
 /* -------------------------------------------------------------------------- */

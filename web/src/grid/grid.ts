@@ -56,7 +56,7 @@ import { virtualList } from '../core/virtual-list.js';
 import { navigate, taskUrl } from '../shell/router.js';
 import { publishTaskNav } from '../shell/task-nav.js';
 import { SPEC } from '../kanban/specs.js';
-import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
+import { asAttrId, type CardWithAttrs } from '../kanban/kanban-helpers.js';
 import type { CardWherePredicate } from '../projects/project-helpers.js';
 import {
   type Predicate,
@@ -70,13 +70,13 @@ import {
 import { Popover } from '../ui/popover.js';
 import {
   buildGridColumns,
-  tagPrefixValue,
+  estimateTagPrefixColumnPx,
+  extractTagPrefixes,
   buildOrderClauses,
   cycleSort,
   effectiveSort,
   sortStatesFromFilter,
   type FilterSortEntry,
-  tagPathLeaf,
   walkGrouped,
   type ColumnDef,
   type GroupAttr,
@@ -156,6 +156,12 @@ export class Grid extends Control<GridConfig> {
   private tableEl: HTMLElement | null = null;
   /** Width drag-in-flight (key + px), flushed to columnConfig.widths on pointerup. */
   private pendingResize: { key: string; px: number } | null = null;
+
+  /** Per-tag-prefix default column width (px), estimated from the loaded tag
+   *  paths so the column hugs its widest pill.  Recomputed by the grid.columns
+   *  effect whenever the tags lookup lands.  An explicit column resize still
+   *  wins via columnConfig.widths. */
+  private tagPrefixWidths = new Map<string, number>();
 
   /**
    * In-flight inline cell edit (#30): the editor child lives inside `cell`,
@@ -444,14 +450,17 @@ export class Grid extends Control<GridConfig> {
 
     // Rebuild the columns when the data-driven inputs land / change (#17): the
     // schema axes the bar publishes + the screen's extra_columns / tag_prefix_
-    // columns the ScreenHost lands. Reads those leaves; rebuilds header + list
-    // only when the column KEY actually changes. One-way — cascade-safe.
+    // columns the ScreenHost lands + the tags lookup (tag-prefix sub-columns are
+    // auto-derived from every distinct prefix observed on the project's `tag`
+    // cards). Reads those leaves; rebuilds header + list only when the column
+    // KEY actually changes. One-way — cascade-safe.
     this.effect(() => {
       this.ctx.tree.at(['screen', 'refAxes']).get();
       this.ctx.tree.at(['screen', 'attrSchema']).get();
       this.ctx.tree.at(['screen', 'extraColumns']).get();
       this.ctx.tree.at(['screen', 'tagPrefixColumns']).get();
       this.ctx.tree.at(['screen', 'columnConfig']).get(); // hide/reorder/widths
+      this.ctx.tree.at(['grid', 'lookups', 'tags']).get(); // auto-derived prefixes
       this.rebuildColumns();
       this.applyGridCols(); // dynamic grid tracks (also picks up width-only changes)
     }, 'grid.columns');
@@ -536,10 +545,23 @@ export class Grid extends Control<GridConfig> {
     this.handler('landStatuses', landLabels('statuses', titleOrName));
     this.handler('landMilestones', landLabels('milestones', titleOrName));
     this.handler('landComponents', landLabels('components', titleOrName));
-    this.handler('landTags', landLabels('tags', (r) => {
-      const p = r.attributes['path'];
-      return typeof p === 'string' && p.length > 0 ? p : `#${r.id.toString()}`;
-    }));
+    // Tags carry an extra COLOR axis (`color` attribute → small named palette).
+    // Lands two parallel maps: `tags` (id → path) keeps the existing readers
+    // working, and `tagColors` (id → color name) drives the pill / chip tone.
+    this.handler('landTags', (out) => {
+      const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+      const paths: LabelMap = {};
+      const colors: LabelMap = {};
+      for (const r of rows) {
+        const p = r.attributes['path'];
+        paths[r.id.toString()] = typeof p === 'string' && p.length > 0 ? p : `#${r.id.toString()}`;
+        const c = r.attributes['color'];
+        if (typeof c === 'string' && c.length > 0) colors[r.id.toString()] = c;
+      }
+      this.ctx.tree.at(['grid', 'lookups', 'tags']).set(paths);
+      this.ctx.tree.at(['grid', 'lookups', 'tagColors']).set(colors);
+      this.tickLookups();
+    });
   }
 
   /** Bump the lookup tick so the virtualList's effect re-runs (re-windowing +
@@ -618,13 +640,26 @@ export class Grid extends Control<GridConfig> {
   /* ------------------------------- header ------------------------------- */
 
   /** The full data-driven column set from the schema + screen config (#17),
-   *  BEFORE the user's per-screen hide/reorder (the Columns menu edits that). */
+   *  BEFORE the user's per-screen hide/reorder (the Columns menu edits that).
+   *  Tag-prefix columns are auto-derived: every distinct prefix observed in the
+   *  project's `tag` cards becomes one sub-column. The screen's explicit
+   *  `tag_prefix_columns` list is unioned in (so a forced prefix appears even
+   *  before any matching tag has been seen). */
   private rawColumns(): ColumnDef[] {
     const refAxes = (this.ctx.tree.at(['screen', 'refAxes']).peek<RefAxis[]>() ?? []) as RefAxis[];
     const schema = (this.ctx.tree.at(['screen', 'attrSchema']).peek<AttrSchema[]>() ?? []) as AttrSchema[];
     const extra = (this.ctx.tree.at(['screen', 'extraColumns']).peek<string[]>() ?? []) as string[];
-    const tagPrefixes = (this.ctx.tree.at(['screen', 'tagPrefixColumns']).peek<string[]>() ?? []) as string[];
-    return buildGridColumns(refAxes, schema, extra, tagPrefixes);
+    const explicit = (this.ctx.tree.at(['screen', 'tagPrefixColumns']).peek<string[]>() ?? []) as string[];
+    const tagMap = (this.ctx.tree.at(['grid', 'lookups', 'tags']).peek<LabelMap>() ?? {}) as LabelMap;
+    const auto = extractTagPrefixes(Object.values(tagMap));
+    const merged: string[] = [];
+    const seen = new Set<string>();
+    for (const p of [...explicit, ...auto]) {
+      if (p === '' || seen.has(p)) continue;
+      seen.add(p);
+      merged.push(p);
+    }
+    return buildGridColumns(refAxes, schema, extra, merged);
   }
 
   /** Read the user's per-screen column config (hidden keys + order + widths). */
@@ -643,12 +678,17 @@ export class Grid extends Control<GridConfig> {
         return '4.5rem';
       case 'title':
         return 'minmax(12rem, 2fr)';
-      case 'tags':
-        return 'minmax(9rem, 1fr)';
       case 'ref':
         return '9rem';
-      case 'tag_prefix':
-        return '6.5rem';
+      case 'tag_prefix': {
+        // Default width is computed in TS from the loaded tag paths
+        // (estimateTagPrefixColumnPx) so the column fits its widest pill
+        // without `max-content` fighting the dynamic CSS grid track. Recomputed
+        // whenever the tags lookup lands (the grid.columns effect drives it).
+        const prefix = col.prefix ?? '';
+        const px = this.tagPrefixWidths.get(prefix) ?? 56;
+        return `${px}px`;
+      }
       case 'date':
         return '7rem';
       case 'created':
@@ -727,8 +767,22 @@ export class Grid extends Control<GridConfig> {
     return visible.slice().sort((a, b) => rank(a.key) - rank(b.key));
   }
 
+  /** Recompute the per-prefix default widths from the loaded tag paths. Called
+   *  from the columns effect so the header tracks repaint with the new px
+   *  whenever the tags lookup lands. */
+  private recomputeTagPrefixWidths(): void {
+    const tagMap = (this.ctx.tree.at(['grid', 'lookups', 'tags']).peek<LabelMap>() ?? {}) as LabelMap;
+    const paths = Object.values(tagMap);
+    const next = new Map<string, number>();
+    for (const prefix of extractTagPrefixes(paths)) {
+      next.set(prefix, estimateTagPrefixColumnPx(paths, prefix));
+    }
+    this.tagPrefixWidths = next;
+  }
+
   /** Rebuild the header cells + the recycling list when the column key changes. */
   private rebuildColumns(): void {
+    this.recomputeTagPrefixWidths();
     const next = this.computeColumns();
     const key = columnKey(next);
     if (key === this.columnsKey) return;
@@ -1242,13 +1296,18 @@ export class Grid extends Control<GridConfig> {
     return walkGrouped(tasks, g.attr, (key) => this.labelForGroupKey(key, g.lookup));
   }
 
-  /** Resolve a group key to its display label: a card_ref bigint goes through
-   *  the group attr's lookup map; scalars are their own label. */
+  /** Resolve a group key to its display label: a card_ref id goes through the
+   *  group attr's lookup map; scalars are their own label. Coerces the key via
+   *  {@link asAttrId} so an un-revived wire form (digit-string for un-primed
+   *  card_ref attrs like `originator`) still resolves a name. */
   private labelForGroupKey(key: unknown, lookup: string | null): string {
-    if (typeof key === 'bigint' && lookup !== null) {
-      const map = (this.ctx.tree.at(['grid', 'lookups', lookup]).peek<LabelMap>() ?? {}) as LabelMap;
-      const k = key.toString();
-      return map[k] ?? `#${k}`;
+    if (lookup !== null) {
+      const id = asAttrId(key);
+      if (id !== null) {
+        const map = (this.ctx.tree.at(['grid', 'lookups', lookup]).peek<LabelMap>() ?? {}) as LabelMap;
+        const k = id.toString();
+        return map[k] ?? `#${k}`;
+      }
     }
     return String(key);
   }
@@ -1276,23 +1335,24 @@ export class Grid extends Control<GridConfig> {
         this.setRefCell(cell, row, col.attrName ?? '', col.lookup ?? '');
         break;
       case 'tag_prefix': {
-        // Synthetic column: the tag value after `<prefix>/` (e.g. priority/high
-        // → "high"), shown as a tone pill; em-dash when no matching tag.
-        const value = this.tagPrefixCell(row, col.prefix ?? '');
-        if (value === null) {
+        // Sub-column per tag prefix: render one pill per applied tag whose path
+        // starts `<prefix>/`, showing only the suffix. Em-dash when none match.
+        const matches = this.tagPrefixCellMatches(row, col.prefix ?? '');
+        if (matches.length === 0) {
           dash(cell);
         } else {
-          const pill = document.createElement('span');
-          pill.className = 'grid__pill';
-          pill.dataset.priority = value;
-          pill.textContent = value;
-          cell.append(pill);
+          const colorMap = (this.ctx.tree.at(['grid', 'lookups', 'tagColors']).peek<LabelMap>() ?? {}) as LabelMap;
+          for (const m of matches) {
+            const pill = document.createElement('span');
+            pill.className = 'grid__pill';
+            const color = colorMap[m.id.toString()];
+            if (color !== undefined && color !== '') pill.dataset.tagColor = color;
+            pill.textContent = m.suffix;
+            cell.append(pill);
+          }
         }
         break;
       }
-      case 'tags':
-        this.setTagsCell(cell, row);
-        break;
       case 'date':
         cell.textContent = dateAttr(row.attributes[col.attrName ?? '']) ?? '—';
         break;
@@ -1340,7 +1400,10 @@ export class Grid extends Control<GridConfig> {
 
     if (col.kind === 'ref') {
       const map = (this.ctx.tree.at(['grid', 'lookups', col.lookup ?? '']).peek<LabelMap>() ?? {}) as LabelMap;
-      const value = typeof cur === 'bigint' ? cur : null;
+      // Coerce via asAttrId so an un-revived wire form (a digit-string for an
+      // un-primed card_ref attr, e.g. originator) still seeds the RefPicker
+      // with the current selection instead of opening empty.
+      const value = asAttrId(cur);
       const rp = this.spawn(
         'RefPicker',
         {
@@ -1438,10 +1501,13 @@ export class Grid extends Control<GridConfig> {
     else editing.cell.replaceChildren();
   }
 
-  /** Resolve a card_ref attribute id to its label via a lookup map; '—' if unset. */
+  /** Resolve a card_ref attribute id to its label via a lookup map; '—' if unset.
+   *  Funnels through {@link asAttrId} so an un-revived wire form (digit-string /
+   *  number) resolves the same as a bigint — every card_ref attr (originator
+   *  included) renders without needing its own boot-time `registerCardRefAttr`. */
   private setRefCell(cell: HTMLElement, row: CardWithAttrs, attr: string, lookup: string): void {
-    const id = row.attributes[attr];
-    if (typeof id !== 'bigint') {
+    const id = asAttrId(row.attributes[attr]);
+    if (id === null) {
       dash(cell);
       return;
     }
@@ -1453,55 +1519,24 @@ export class Grid extends Control<GridConfig> {
     cell.append(span);
   }
 
-  /** The value for a `tag_prefix` column: resolve the row's tag ids to paths via
-   *  the tags lookup, then the segment after `<prefix>/` (null when none match). */
-  private tagPrefixCell(row: CardWithAttrs, prefix: string): string | null {
+  /** For a `tag_prefix` sub-column: every (tag-id, suffix) pair on this row
+   *  whose resolved path starts `<prefix>/`. The id lets the renderer look up
+   *  the tag's color in the parallel `tagColors` lookup; the suffix is the
+   *  visible pill text. Empty array when the row has no matching tag. */
+  private tagPrefixCellMatches(row: CardWithAttrs, prefix: string): Array<{ id: bigint; suffix: string }> {
     const ids = row.attributes['tags'];
-    if (!Array.isArray(ids) || ids.length === 0 || prefix === '') return null;
+    if (!Array.isArray(ids) || ids.length === 0 || prefix === '') return [];
     const map = (this.ctx.tree.at(['grid', 'lookups', 'tags']).peek<LabelMap>() ?? {}) as LabelMap;
-    const paths: string[] = [];
-    for (const id of ids) {
-      if (typeof id !== 'bigint') continue;
-      const p = map[id.toString()];
-      if (p !== undefined) paths.push(p);
-    }
-    return tagPrefixValue(paths, prefix);
-  }
-
-  /**
-   * Render one tag chip per tag in the row's `tags` card_ref[] array, as plain
-   * DOM mirroring the TagChip control's structure (`data-tag-chip` /
-   * `.tag-chip__label`, full path as the tooltip + `data-tag-path`). We do NOT
-   * spawn a TagChip Control per chip here: the row node is recycled, so a
-   * spawned child Control would either leak (never destroyed) or need bespoke
-   * teardown per fillRow. Plain DOM is rebuilt in place each fill — same markup,
-   * no lifecycle to manage on a recycled node.
-   */
-  private setTagsCell(cell: HTMLElement, row: CardWithAttrs): void {
-    const ids = row.attributes['tags'];
-    if (!Array.isArray(ids) || ids.length === 0) {
-      dash(cell);
-      return;
-    }
-    const map = (this.ctx.tree.at(['grid', 'lookups', 'tags']).peek<LabelMap>() ?? {}) as LabelMap;
-    let rendered = 0;
+    const pre = `${prefix}/`;
+    const out: Array<{ id: bigint; suffix: string }> = [];
     for (const id of ids) {
       if (typeof id !== 'bigint') continue;
       const path = map[id.toString()];
-      if (path === undefined) continue;
-      const chip = document.createElement('span');
-      chip.className = 'tag-chip';
-      chip.dataset.tagChip = '';
-      chip.dataset.tagPath = path;
-      if (path.length > 0) chip.title = path;
-      const label = document.createElement('span');
-      label.className = 'tag-chip__label';
-      label.textContent = tagPathLeaf(path);
-      chip.append(label);
-      cell.append(chip);
-      rendered += 1;
+      if (path === undefined || !path.startsWith(pre)) continue;
+      const suffix = path.slice(pre.length);
+      if (suffix.length > 0) out.push({ id, suffix });
     }
-    if (rendered === 0) dash(cell);
+    return out;
   }
 
   /* ----------------------------- query driver --------------------------- */

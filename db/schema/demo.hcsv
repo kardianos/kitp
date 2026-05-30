@@ -113,17 +113,17 @@ $card_type.component, parent, "Auth",     c_auth
 $card_type.component, parent, "UI",       c_ui
 
 
-## table card | under=proj_default | doc="Tags. path is the full slash-delimited label; root_exclusive_at names the segment under which tags are mutually-exclusive (one of priority/* may be applied at a time)."
+## table card | under=proj_default | doc="Tags. path is the full slash-delimited label; root_exclusive_at names the segment under which tags are mutually-exclusive (one of priority/* may be applied at a time). color picks a named palette entry (red / amber / green / blue / purple / gray); empty falls back to the neutral chip."
 ### rows
-card_type_id, parent_card_id, title,           path,           root_exclusive_at, alias
-$card_type.tag, parent, "priority/high",  "priority/high",  "priority", t_pri_high
-$card_type.tag, parent, "priority/med",   "priority/med",   "priority", t_pri_med
-$card_type.tag, parent, "priority/low",   "priority/low",   "priority", t_pri_low
-$card_type.tag, parent, "area/frontend",  "area/frontend",  null,       t_area_fe
-$card_type.tag, parent, "area/backend",   "area/backend",   null,       t_area_be
-$card_type.tag, parent, "team/platform",  "team/platform",  null,       t_team_plat
-$card_type.tag, parent, "team/product",   "team/product",   null,       t_team_prod
-$card_type.tag, parent, "team/growth",    "team/growth",    null,       t_team_grow
+card_type_id, parent_card_id, title,           path,           root_exclusive_at, color,   alias
+$card_type.tag, parent, "priority/high",  "priority/high",  "priority", "red",    t_pri_high
+$card_type.tag, parent, "priority/med",   "priority/med",   "priority", "amber",  t_pri_med
+$card_type.tag, parent, "priority/low",   "priority/low",   "priority", "green",  t_pri_low
+$card_type.tag, parent, "area/frontend",  "area/frontend",  null,       "blue",   t_area_fe
+$card_type.tag, parent, "area/backend",   "area/backend",   null,       "purple", t_area_be
+$card_type.tag, parent, "team/platform",  "team/platform",  null,       "gray",   t_team_plat
+$card_type.tag, parent, "team/product",   "team/product",   null,       "gray",   t_team_prod
+$card_type.tag, parent, "team/growth",    "team/growth",    null,       "gray",   t_team_grow
 
 
 ## table card | under=proj_default | doc="Status value-cards. phase classifies each status row for the predicate compiler's has_phase op and the legacy notTerminal alias: triage statuses surface in inbox/triage flows; active statuses are the in-flight queue; terminal statuses (Done, Cancelled) are hidden by has_phase ∈ {triage, active} filters."
@@ -340,11 +340,11 @@ $card_type.component, parent, "Shared",  mob_c_shared
 
 ## table card | under=proj_mobile | doc="Mobile App tags — same priority namespace + platform tags so the tag exclusivity logic stays exercised under a smaller surface."
 ### rows
-card_type_id, parent_card_id, title,             path,             root_exclusive_at, alias
-$card_type.tag, parent, "priority/high",     "priority/high",     "priority", mob_t_pri_high
-$card_type.tag, parent, "priority/low",      "priority/low",      "priority", mob_t_pri_low
-$card_type.tag, parent, "platform/ios",      "platform/ios",      null,       mob_t_plat_ios
-$card_type.tag, parent, "platform/android",  "platform/android",  null,       mob_t_plat_and
+card_type_id, parent_card_id, title,             path,             root_exclusive_at, color,    alias
+$card_type.tag, parent, "priority/high",     "priority/high",     "priority", "red",    mob_t_pri_high
+$card_type.tag, parent, "priority/low",      "priority/low",      "priority", "green",  mob_t_pri_low
+$card_type.tag, parent, "platform/ios",      "platform/ios",      null,       "blue",   mob_t_plat_ios
+$card_type.tag, parent, "platform/android",  "platform/android",  null,       "purple", mob_t_plat_and
 
 
 ## table card | under=proj_mobile | doc="Mobile App status value-cards. Independent set from Default Project's — each project owns its own status cards, which is exactly the cross-project re-classification flow that task.move exercises."

@@ -121,6 +121,7 @@ parent_task,           card_ref,    true, $card_type.task, false
 parent_relationship,   text,        true, null, false
 due_date,              date,        true, null, false
 originator,            card_ref,    true, $card_type.person, false
+color,                 text,        true, null, false
 
 
 ## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"
@@ -139,6 +140,7 @@ $card_type.status,    $attribute_def.title,             true,  0
 $card_type.status,    $attribute_def.sort_order,        false, 1
 $card_type.tag,       $attribute_def.path,              true,  2
 $card_type.tag,       $attribute_def.root_exclusive_at, false, 3
+$card_type.tag,       $attribute_def.color,             false, 6
 $card_type.project,   $attribute_def.tags,              false, 4
 $card_type.project,   $attribute_def.is_template,       false, 6
 $card_type.task,      $attribute_def.tags,              false, 4

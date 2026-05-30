@@ -32,29 +32,38 @@ beforeEach(() => {
   document.body.replaceChildren();
 });
 
-/** Transport serving card.search (tag labels + add menu) + tag.apply/.remove. */
+/** Transport serving card.select_with_attributes (tag catalogue with colors) +
+ *  tag.apply / tag.remove. The editor uses select_with_attributes (not search)
+ *  because it needs each tag's `color` attribute, which search doesn't return. */
 function tagsHarness(opts = {}) {
   const applies = [];
   const removes = [];
+  // tagId → { path, color? }. Colors are the named palette tones the admin
+  // Values screen sets; absent → the chip renders in the neutral default.
   const tagCards = opts.tagCards ?? {
-    10: 'priority/high',
-    11: 'priority/low',
-    12: 'area/api',
+    10: { path: 'priority/high', color: 'red' },
+    11: { path: 'priority/low', color: 'green' },
+    12: { path: 'area/api', color: 'blue' },
   };
   const removedOnApply = opts.removedOnApply ?? {}; // tagId → [removed ids]
 
   function respond(sr) {
     const k = `${sr.endpoint}.${sr.action}`;
     const data = sr.data ?? {};
-    if (k === 'card.search') {
-      let rows;
-      if (Array.isArray(data.ids) && data.ids.length > 0) {
-        rows = data.ids
-          .map((id) => ({ id: String(id), title: tagCards[String(id)] }))
-          .filter((r) => r.title !== undefined);
-      } else {
-        rows = Object.keys(tagCards).map((id) => ({ id, title: tagCards[id] }));
-      }
+    if (k === 'card.select_with_attributes') {
+      // Treat the harness as project-scoped — the editor passes a
+      // parent_card_id or omits it; we just return every tag either way.
+      const rows = Object.keys(tagCards).map((id) => {
+        const tag = tagCards[id];
+        const attrs = { path: tag.path };
+        if (tag.color !== undefined) attrs.color = tag.color;
+        return {
+          id,
+          card_type_id: '9',
+          card_type_name: 'tag',
+          attributes: attrs,
+        };
+      });
       return { id: sr.id, ok: true, data: { rows } };
     }
     if (k === 'tag.apply') {
@@ -83,7 +92,7 @@ function tagsHarness(opts = {}) {
 function bootApi(transport) {
   const dispatcher = new M.Dispatcher({ transport });
   const api = new M.Api(dispatcher);
-  M.registerCardSearchSpec(api);
+  M.registerKanbanSpecs(api); // defines card.select_with_attributes
   M.registerAttachmentSpecs(api); // tag.apply / tag.remove
   return { dispatcher, api };
 }
@@ -107,16 +116,32 @@ function mount(api, cfg = {}) {
 
 /* -------------------------------------------------------------------------- */
 
-test('TagsEditor: seeded tags render as chips with resolved labels', async () => {
+test('TagsEditor: seeded tags render as chips with the SUFFIX label (slot strips the prefix)', async () => {
   const h = tagsHarness();
   const { dispatcher, api } = bootApi(h.transport);
   const c = mount(api, { initialTagIds: ['10', '12'] });
   await settle(dispatcher);
 
+  // Two chips render — labels are the suffix after each tag's prefix ("/").
   const chips = [...c.el.querySelectorAll('[data-tag-chip]')];
-  assert.equal(chips.length, 2, 'two chips');
+  assert.equal(chips.length, 2, 'two chips (one per applied tag)');
   const labels = chips.map((ch) => ch.querySelector('.tags-editor__chip-label').textContent);
-  assert.deepEqual(labels.sort(), ['area/api', 'priority/high'], 'labels resolved via card.search');
+  assert.deepEqual(labels.sort(), ['api', 'high'], 'chip label is the suffix only (after the prefix slot)');
+
+  // Each chip sits inside its prefix slot — there's one slot per known prefix.
+  const slots = [...c.el.querySelectorAll('[data-tag-slot]')];
+  const slotKeys = slots.map((s) => s.dataset.tagSlot);
+  assert.ok(slotKeys.includes('area'), 'area slot rendered');
+  assert.ok(slotKeys.includes('priority'), 'priority slot rendered');
+  // priority/high (id 10) is the applied priority tag — it shows in the priority slot.
+  const prioritySlot = slots.find((s) => s.dataset.tagSlot === 'priority');
+  const priorityChip = prioritySlot.querySelector('[data-tag-chip]');
+  assert.equal(priorityChip.dataset.tagChip, '10', 'the applied priority tag (10) shows in the priority slot');
+  // The chip carries the tag's color from the catalogue load → palette tone CSS hook.
+  assert.equal(priorityChip.dataset.tagColor, 'red', 'priority/high renders with its "red" palette tone');
+  const areaSlot = slots.find((s) => s.dataset.tagSlot === 'area');
+  const areaChip = areaSlot.querySelector('[data-tag-chip]');
+  assert.equal(areaChip.dataset.tagColor, 'blue', 'area/api renders with its "blue" palette tone');
 });
 
 test('TagsEditor: removing a chip fires tag.remove + drops it optimistically', async () => {

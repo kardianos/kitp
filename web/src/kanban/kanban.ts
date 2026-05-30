@@ -128,6 +128,9 @@ interface AxisCard {
    *  columns / lanes. Falls back to +Inf for cards that never had it written,
    *  so explicit-order cards always lead untouched ones. */
   sortOrder: number;
+  /** Named palette tone (tag cards only — `color` attribute). Empty / absent
+   *  leaves the chip in its neutral default. */
+  color?: string;
 }
 
 /* Shared dataset key for the in-flight drag (one board, simple module state). */
@@ -498,12 +501,6 @@ export class Kanban extends Control<KanbanConfig> {
     this.handler('landComponents', landAxis('components'));
     this.handler('landPersons', landAxis('persons'));
     this.handler('landTags', landAxis('tags'));
-  }
-
-  /** Resolve a value-card id to its label via the loaded axis list (or '#id'). */
-  private axisLabel(lookup: string, id: bigint): string {
-    const list = (this.ctx.tree.at(['kanban', 'axis', lookup]).peek<AxisCard[]>() ?? []) as AxisCard[];
-    return list.find((c) => c.id === id)?.label ?? `#${id.toString()}`;
   }
 
   /** The value-card list for the ACTIVE axis (peeked — the board render reads
@@ -919,12 +916,15 @@ export class Kanban extends Control<KanbanConfig> {
 
     const tags = card.attributes['tags'];
     if (Array.isArray(tags)) {
+      const tagAxis = (this.ctx.tree.at(['kanban', 'axis', 'tags']).peek<AxisCard[]>() ?? []) as AxisCard[];
       for (const t of tags) {
         if (typeof t !== 'bigint') continue;
-        const path = this.axisLabel('tags', t);
+        const ac = tagAxis.find((c) => c.id === t);
+        const path = ac?.label ?? `#${t.toString()}`;
         const chip = document.createElement('span');
         chip.className = 'tag-chip card__tag';
         chip.dataset.tagChip = '';
+        if (ac?.color !== undefined) chip.dataset.tagColor = ac.color;
         const lbl = document.createElement('span');
         lbl.className = 'tag-chip__label';
         lbl.textContent = path.includes('/') ? (path.split('/').filter(Boolean).pop() ?? path) : path;
@@ -1235,6 +1235,8 @@ function axisCardOf(r: CardWithAttrs): AxisCard {
     sortOrder: typeof so === 'number' && Number.isFinite(so) ? so : Number.POSITIVE_INFINITY,
   };
   if (r.phase !== undefined) out.phase = r.phase;
+  const color = r.attributes['color'];
+  if (typeof color === 'string' && color !== '') out.color = color;
   return out;
 }
 

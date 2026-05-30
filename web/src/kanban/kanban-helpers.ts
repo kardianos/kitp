@@ -76,6 +76,33 @@ export function bucketKeyOf(v: unknown): string {
   return String(v);
 }
 
+/**
+ * Coerce a wire-side card_ref attribute value (the value at
+ * `card.attributes[attr]` for a card_ref-typed attr_def) to a positive bigint,
+ * or null when absent / malformed. The dispatcher's id-revival is hand-keyed
+ * by attribute name (see `core/dispatch.ts` CARD_REF_ATTR_KEYS) so an
+ * un-primed card_ref attr (e.g. `originator`) arrives as a digit-string.
+ *
+ * EVERY consumer that reads a card_ref attribute — the Grid's ref-cell
+ * renderer + group-label resolver, the Inbox's group-label resolver, the
+ * TaskDetail panel — funnels through this helper so a new card_ref attr
+ * "just works" without each call site needing its own bigint-typeof gate or
+ * a one-off addition to the dispatcher registry.
+ */
+export function asAttrId(v: unknown): bigint | null {
+  if (typeof v === 'bigint') return v > 0n ? v : null;
+  if (typeof v === 'number' && Number.isInteger(v) && v > 0) return BigInt(v);
+  if (typeof v === 'string' && /^-?\d+$/.test(v)) {
+    try {
+      const n = BigInt(v);
+      return n > 0n ? n : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 /* -------------------------------------------------------------------------- */
 /* bucketByColumn.                                                             */
 /* -------------------------------------------------------------------------- */
