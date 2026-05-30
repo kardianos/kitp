@@ -334,10 +334,63 @@ export {
 } from './ui/combobox.js';
 export { DatePicker, registerDatePicker, type DatePickerConfig } from './ui/datepicker.js';
 export { registerRefPicker, type RefPicker } from './ui/ref-picker.js';
+export { FieldEditor, registerFieldEditor, type FieldEditorConfig } from './ui/field-editor.js';
+export {
+  Unset,
+  Mixed,
+  pendingValue,
+  loaded,
+  confirmValue,
+  errored,
+  isUnset,
+  isPending,
+  isResolved,
+  isMixed,
+  isError,
+  hasValue,
+  valueOf,
+  errorOf,
+  type LoadState,
+} from './core/load-state.js';
+export { CardRefValue, registerCardRefValue, type CardRefValueConfig } from './ui/card-ref-value.js';
+export {
+  AttributeRow,
+  registerAttributeRow,
+  computeSummary,
+  hasMeaningfulValue,
+  type AttributeRowConfig,
+} from './ui/attribute-row.js';
 export { registerCardSearchSpec, CARD_SEARCH_SPEC } from './ui/specs.js';
 
 // Task detail (#33): the /task/:id shell + attribute side panel.
 export { TaskDetail, registerTaskDetail, type TaskDetailConfig } from './task-detail/task-detail.js';
+export {
+  PanelModel,
+  isMeaningful,
+  type AttrSignal,
+  type RefLabelSignal,
+} from './task-detail/panel-model.js';
+export {
+  BatchPanelModel,
+  type BatchAttrSignal,
+  type FanOutResult,
+} from './task-detail/batch-panel-model.js';
+export {
+  TaskAttributePanel,
+  registerTaskAttributePanel,
+  type TaskAttributePanelConfig,
+} from './task-detail/task-attribute-panel.js';
+export {
+  NewTaskForm,
+  registerNewTaskForm,
+  type NewTaskFormConfig,
+  type NewTaskFormIntent,
+} from './task-detail/new-task-form.js';
+export {
+  BatchTaskEditor,
+  registerBatchTaskEditor,
+  type BatchTaskEditorConfig,
+} from './task-detail/batch-task-editor.js';
 
 // Task detail (#34): the TransitionBar status changer + its spec + bucket helpers.
 export {

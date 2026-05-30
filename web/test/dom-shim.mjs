@@ -54,9 +54,31 @@ class FakeElement {
   }
   setAttribute(k, v) {
     this.attributes[k] = String(v);
+    // Mirror real DOM behaviour: setAttribute('data-foo-bar', v) writes
+    // dataset.fooBar. Without this, code paths that go through the
+    // bindAttr() helper (or the canonical setAttribute API) can't be
+    // observed via .dataset reads in tests.
+    if (typeof k === 'string' && k.startsWith('data-')) {
+      const camel = k
+        .slice(5)
+        .replace(/-([a-z])/g, (_m, c) => c.toUpperCase());
+      this.dataset[camel] = String(v);
+    }
   }
   getAttribute(k) {
     return k in this.attributes ? this.attributes[k] : null;
+  }
+  removeAttribute(k) {
+    delete this.attributes[k];
+    if (typeof k === 'string' && k.startsWith('data-')) {
+      const camel = k
+        .slice(5)
+        .replace(/-([a-z])/g, (_m, c) => c.toUpperCase());
+      delete this.dataset[camel];
+    }
+  }
+  hasAttribute(k) {
+    return k in this.attributes;
   }
   // Class-selector querySelector/All ('.foo') + tag fallback. Enough for the
   // shell/screen-host body lookups the tests exercise.

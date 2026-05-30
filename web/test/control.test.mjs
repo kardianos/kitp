@@ -134,6 +134,140 @@ test('destroy(): tears down children depth-first + disposes effects/listeners', 
   assert.equal(root.isAlive(), false);
 });
 
+/* -------------------------------------------------------------------------- */
+/* Signal-binding helpers — bindText/bindAttr/bindClass/bindShow/bindProp.    */
+/* -------------------------------------------------------------------------- */
+
+test('bindText: writes textContent + reactively updates on signal change', () => {
+  const { Control, signal, flushSync } = Ctrl;
+  const title = signal('initial');
+  class TitleView extends Control {
+    render() {
+      const span = new FakeElement('span');
+      this.el.children.push(span);
+      span.parentNode = this.el;
+      this.bindText(span, title);
+    }
+  }
+  Control.register('TitleView_B', TitleView);
+  const c = Control.New('TitleView_B', { type: 'TitleView_B' }, ctx());
+  c.mount(new FakeElement('div'));
+  const span = c.el.children[0];
+  assert.equal(span.textContent, 'initial', 'first paint reads the signal');
+  title.set('updated');
+  flushSync();
+  assert.equal(span.textContent, 'updated', 'effect repaints on signal change');
+});
+
+test('bindText: thunk source mixes multiple signal reads (tracked)', () => {
+  const { Control, signal, flushSync } = Ctrl;
+  const a = signal('Alice');
+  const b = signal(3);
+  class Combined extends Control {
+    render() {
+      const span = new FakeElement('span');
+      this.el.children.push(span);
+      span.parentNode = this.el;
+      // Thunk reads BOTH signals — both subscribed automatically.
+      this.bindText(span, () => `${a.get()} #${b.get()}`);
+    }
+  }
+  Control.register('Combined_B', Combined);
+  const c = Control.New('Combined_B', { type: 'Combined_B' }, ctx());
+  c.mount(new FakeElement('div'));
+  assert.equal(c.el.children[0].textContent, 'Alice #3');
+  b.set(7);
+  flushSync();
+  assert.equal(c.el.children[0].textContent, 'Alice #7', 'changing either dep repaints');
+  a.set('Bob');
+  flushSync();
+  assert.equal(c.el.children[0].textContent, 'Bob #7');
+});
+
+test('bindClass: toggles a class from a boolean signal', () => {
+  const { Control, signal, flushSync } = Ctrl;
+  const busy = signal(false);
+  class BusyHost extends Control {
+    render() {
+      this.bindClass(this.el, 'is-busy', busy);
+    }
+  }
+  Control.register('BusyHost_B', BusyHost);
+  const c = Control.New('BusyHost_B', { type: 'BusyHost_B' }, ctx());
+  c.mount(new FakeElement('div'));
+  assert.equal(c.el.classList.contains('is-busy'), false, 'class absent while false');
+  busy.set(true);
+  flushSync();
+  assert.equal(c.el.classList.contains('is-busy'), true, 'class added when true');
+  busy.set(false);
+  flushSync();
+  assert.equal(c.el.classList.contains('is-busy'), false, 'class removed when flipped back');
+});
+
+test('bindAttr: null/empty REMOVES the attribute; truthy sets it', () => {
+  const { Control, signal, flushSync } = Ctrl;
+  const color = signal('red');
+  class Tagged extends Control {
+    render() {
+      this.bindAttr(this.el, 'data-tag-color', color);
+    }
+  }
+  Control.register('Tagged_B', Tagged);
+  const c = Control.New('Tagged_B', { type: 'Tagged_B' }, ctx());
+  c.mount(new FakeElement('div'));
+  assert.equal(c.el.getAttribute('data-tag-color'), 'red');
+  color.set(null);
+  flushSync();
+  assert.equal(c.el.hasAttribute('data-tag-color'), false, 'null clears the attribute');
+  color.set('blue');
+  flushSync();
+  assert.equal(c.el.getAttribute('data-tag-color'), 'blue', 'a fresh value sets it again');
+});
+
+test('bindShow: toggles style.display between "" and "none"', () => {
+  const { Control, signal, flushSync } = Ctrl;
+  const visible = signal(true);
+  class Toggled extends Control {
+    render() {
+      this.bindShow(this.el, visible);
+    }
+  }
+  Control.register('Toggled_B', Toggled);
+  const c = Control.New('Toggled_B', { type: 'Toggled_B' }, ctx());
+  c.mount(new FakeElement('div'));
+  assert.equal(c.el.style.display, '', 'visible by default');
+  visible.set(false);
+  flushSync();
+  assert.equal(c.el.style.display, 'none', 'hidden when source goes false');
+});
+
+test('destroy: bindings stop firing after teardown', () => {
+  const { Control, signal, flushSync } = Ctrl;
+  const tick = signal(0);
+  let lastSeen = -1;
+  class Counter extends Control {
+    render() {
+      const span = new FakeElement('span');
+      this.el.children.push(span);
+      span.parentNode = this.el;
+      this.bindText(span, () => {
+        lastSeen = tick.get();
+        return String(tick.get());
+      });
+    }
+  }
+  Control.register('Counter_B', Counter);
+  const c = Control.New('Counter_B', { type: 'Counter_B' }, ctx());
+  c.mount(new FakeElement('div'));
+  tick.set(1);
+  flushSync();
+  assert.equal(lastSeen, 1);
+  c.destroy();
+  tick.set(99);
+  flushSync();
+  assert.equal(lastSeen, 1, 'effect disposed on destroy — no further reads');
+});
+
 test('imperative spawn child + destroyChild removes only that child', () => {
   const { Control } = Ctrl;
   const disposed = [];

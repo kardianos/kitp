@@ -298,6 +298,112 @@ export abstract class Control<Cfg extends BaseControlConfig = BaseControlConfig>
     this.disposers.push(effect(fn, name ?? `${this.type}.effect`));
   }
 
+  /* ---- signal-binding helpers ---------------------------------------------
+   *
+   * One-liners that register a reactive effect mapping a signal (or a thunk
+   * reading signals) onto a DOM property. Auto-disposed via `effect()`. The
+   * goal is to push the
+   *
+   *   this.effect(() => { el.textContent = sig.get(); });
+   *
+   * pattern into a single self-documenting call. Each helper accepts either a
+   * `Signal<T>` (read with `.get()`) or a `() => T` thunk (any signal reads
+   * INSIDE the thunk are tracked automatically). The thunk form is the more
+   * common one — it lets you mix multiple sources without a `computed()`.
+   *
+   * NB: these do NOT diff. They write the value on every effect run; the
+   * signal layer already drops no-op writes via Object.is, so when the source
+   * value is unchanged the helper's underlying effect never runs at all.
+   * ----------------------------------------------------------------------- */
+
+  /** Bind `el.textContent` to `source`. Coerces null/undefined to ''. */
+  protected bindText(el: Node, source: Signal<unknown> | (() => unknown), name?: string): void {
+    this.effect(() => {
+      const v = readSource(source);
+      el.textContent = v === null || v === undefined ? '' : String(v);
+    }, name ?? `${this.type}.bindText`);
+  }
+
+  /**
+   * Bind an HTML attribute. `null`, `undefined`, `false`, or `''` REMOVE the
+   * attribute; `true` sets it to a flag (`attr=""`); anything else stringifies.
+   * Matches the conventional "presence is truthy" attribute semantics.
+   */
+  protected bindAttr(
+    el: Element,
+    attr: string,
+    source: Signal<unknown> | (() => unknown),
+    name?: string,
+  ): void {
+    this.effect(() => {
+      const v = readSource(source);
+      if (v === null || v === undefined || v === false || v === '') {
+        el.removeAttribute(attr);
+      } else if (v === true) {
+        el.setAttribute(attr, '');
+      } else {
+        el.setAttribute(attr, String(v));
+      }
+    }, name ?? `${this.type}.bindAttr(${attr})`);
+  }
+
+  /** Toggle a class based on a boolean source. */
+  protected bindClass(
+    el: Element,
+    cls: string,
+    source: Signal<unknown> | (() => unknown),
+    name?: string,
+  ): void {
+    this.effect(() => {
+      el.classList.toggle(cls, !!readSource(source));
+    }, name ?? `${this.type}.bindClass(${cls})`);
+  }
+
+  /** Show / hide an element via `style.display` (no class toggle). `true`
+   *  reveals, `false` sets `display: none`. */
+  protected bindShow(
+    el: HTMLElement,
+    source: Signal<unknown> | (() => unknown),
+    name?: string,
+  ): void {
+    this.effect(() => {
+      el.style.display = readSource(source) ? '' : 'none';
+    }, name ?? `${this.type}.bindShow`);
+  }
+
+  /**
+   * Bind a DOM property (e.g. `value`, `checked`, `disabled`, `hidden`).
+   * Useful for inputs whose state mirrors a signal — though for `value` /
+   * `checked` you usually ALSO listen on `'input'` / `'change'` to push the
+   * other way.
+   */
+  protected bindProp<E extends Element>(
+    el: E,
+    key: keyof E & string,
+    source: Signal<unknown> | (() => unknown),
+    name?: string,
+  ): void {
+    this.effect(() => {
+      (el as unknown as Record<string, unknown>)[key] = readSource(source);
+    }, name ?? `${this.type}.bindProp(${key})`);
+  }
+
+  /** Bind a single CSS property on `el.style`. The value is coerced via
+   *  `String(v)`; `null` / `undefined` clears the property. */
+  protected bindStyle(
+    el: HTMLElement,
+    prop: string,
+    source: Signal<unknown> | (() => unknown),
+    name?: string,
+  ): void {
+    this.effect(() => {
+      const v = readSource(source);
+      // Cast: CSSStyleDeclaration indexer is keyed by camelCased property name.
+      const styleObj = el.style as unknown as Record<string, string>;
+      styleObj[prop] = v === null || v === undefined ? '' : String(v);
+    }, name ?? `${this.type}.bindStyle(${prop})`);
+  }
+
   /** Register any disposer (listener removal, floating-ui cleanup, etc.). */
   protected onDestroy(fn: () => void): void {
     this.disposers.push(fn);
@@ -437,4 +543,17 @@ export abstract class Control<Cfg extends BaseControlConfig = BaseControlConfig>
     })(type, ph as unknown as BaseControlConfig, ctx);
     return fallback;
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Internal: resolve a binding source (Signal | thunk) to its current value.   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Resolve a binding source. A thunk (`() => T`) runs inline so any signal
+ * reads inside it are tracked by the surrounding effect. A `Signal<T>` is
+ * read via `.get()` (tracked the same way). Used by every `bindX` helper.
+ */
+function readSource<T>(src: Signal<T> | (() => T)): T {
+  return typeof src === 'function' ? (src as () => T)() : src.get();
 }

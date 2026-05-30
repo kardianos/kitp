@@ -44,6 +44,10 @@ before(async () => {
   M.registerCombobox();
   M.registerDatePicker();
   M.registerRefPicker();
+  M.registerFieldEditor();
+  M.registerCardRefValue();
+  M.registerAttributeRow();
+  M.registerTaskAttributePanel();
   M.registerTaskDetail();
   // #35: the TaskDetail now spawns a TaskComments child into its comments slot
   // (and paints the activity feed into the activity slot). Register it so the

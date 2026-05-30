@@ -46,6 +46,7 @@
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
+import { PanelModel } from './panel-model.js';
 import { setMarkdown } from '../util/markdown-control.js';
 import { fitTextarea } from '../util/autosize.js';
 import { navigate, taskUrl, projectUrl } from '../shell/router.js';
@@ -58,9 +59,8 @@ import {
   schemaForCardType,
   type AttrSchema,
 } from '../filter/attribute-schema.js';
-import type { RefPicker, RefPinnedOption } from '../ui/ref-picker.js';
+import type { RefPinnedOption } from '../ui/ref-picker.js';
 import { peekCurrentPersonId } from '../auth/auth-state.js';
-import type { DatePicker } from '../ui/datepicker.js';
 import type { TransitionBar } from './transition-bar.js';
 import type { TaskComments } from './task-comments.js';
 import type { CommThreads } from './task-comm-threads.js';
@@ -157,12 +157,30 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private readonly taskId: bigint | null;
   private readonly cardTypeName: string;
 
-  /** The loaded focal task, or null (loading / not found). */
+  /** The loaded focal task, or null (loading / not found).  Kept for the
+   *  callsites that still need the raw card (parent_card_id, redirect-on-
+   *  comm logic, etc.); the attribute-level state lives in {@link panel}. */
   private task: CardWithAttrs | null = null;
   /** The task card_type's editable attribute schema. */
   private schema: AttrSchema[] = [];
-  /** card_ref label cache: stringified id → display label (seeds RefPicker triggers). */
+  /** card_ref label cache held for callers (RefPicker seed labels, etc.) —
+   *  the lookup signals live on {@link panel.refLabel} but a few read sites
+   *  still want a synchronous lookup, so we mirror landed labels here. */
   private readonly refLabels = new Map<string, string>();
+  /**
+   * The typed signal store backing the attribute panel.  Replaces the prior
+   * ad-hoc trio (`panelVersion` + `attrErrors` + `refLabels`-as-the-truth):
+   *
+   *   - `panel.attr(name)` is a `Signal<LoadState<unknown>>` per attribute,
+   *     read by AttributeRow's `state` thunk.
+   *   - `panel.refLabel(target, id)` is a `Signal<LoadState<string>>` per
+   *     ref id, read by CardRefValue (when rows wire it in) or accessed
+   *     synchronously by the RefPicker seed path through `refLabels`.
+   *   - Lifecycle mutations (`seedAttr`, `beginCommit`, `confirmCommit`,
+   *     `rejectCommit`, `setRefLabel`) are the ONLY way the panel's
+   *     declared state changes.  No more `bumpPanel()`.
+   */
+  private readonly panel = new PanelModel();
 
   /* DOM regions, held so the load onOk can repaint without a full re-render. */
   private loadingEl!: HTMLElement;
@@ -515,6 +533,10 @@ export class TaskDetail extends Control<TaskDetailConfig> {
           this.redirectIfCommCard();
           return;
         }
+        // Seed the panel store with every attribute's initial Value/Unset.
+        // Every subsequent commit drives a Pending → Value/Error transition
+        // through `panel.beginCommit / confirmCommit / rejectCommit`.
+        this.panel.seedFromAttributes(found.attributes);
         this.showLoaded();
         this.resolveRefLabels();
         this.publishProjectScope();
@@ -607,10 +629,16 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         CARD_SEARCH_SPEC,
         { cardTypeName: target, ids: [...ids] },
         (out) => {
+          if (!this.isAlive()) return;
           const rows = ((out ?? {}) as { rows?: Array<{ id: bigint; title: string }> }).rows ?? [];
-          for (const r of rows) this.refLabels.set(String(r.id), r.title);
-          // Re-render the panel so the freshly-resolved labels show.
-          if (this.isAlive() && this.task !== null) this.renderPanel();
+          // Land each label on BOTH the per-ref signal (the panel store —
+          // AttributeRow / CardRefValue subscribe) and the synchronous Map
+          // mirror (still consulted by some seed paths).  Each set() on a
+          // signal repaints only the chips that read it.
+          for (const r of rows) {
+            this.refLabels.set(String(r.id), r.title);
+            this.panel.setRefLabel(target, r.id, r.title);
+          }
         },
         { alive: () => this.isAlive() },
       );
@@ -660,16 +688,17 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         cardId: this.taskId.toString(),
         statusAttr: 'status',
         onChanged: (toCardId: bigint, attributeName: string) => {
-          // Mirror the optimistic move into the loaded task + repaint the
-          // panel's status summary; the bar reloads its own steps.
+          // Mirror the optimistic move into the loaded task AND seed the
+          // panel store (Pending → Value on the next confirm, but the bar
+          // already drove its own commit so we land directly at Value).
           if (this.task !== null) {
             this.task.attributes = {
               ...this.task.attributes,
               [attributeName]: toCardId,
             };
           }
+          this.panel.seedAttr(attributeName, toCardId);
           if (this.isAlive()) {
-            this.renderPanel();
             this.resolveRefLabels();
             // The transition wrote an attr_update + status row to the stream —
             // refresh the #35 feed so it reflects the move.
@@ -892,8 +921,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         if (this.task !== null) {
           this.task.attributes = { ...this.task.attributes, tags: tagIds };
         }
+        this.panel.seedAttr('tags', tagIds);
         if (this.isAlive()) {
-          this.renderPanel();
           this.taskComments?.reload();
           this.noteOwnActivity();
         }
@@ -928,8 +957,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
             parent_relationship: relationship ?? null,
           };
         }
+        this.panel.seedAttr('parent_task', parentTaskId);
+        this.panel.seedAttr('parent_relationship', relationship);
         if (this.isAlive()) {
-          this.renderPanel();
           this.taskComments?.reload();
           this.noteOwnActivity();
         }
@@ -1034,7 +1064,13 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       this.renderTitle();
       return;
     }
-    this.commitAttribute('title', next, () => this.renderTitle());
+    // commitAttribute mutates this.task.attributes synchronously via
+    // beginCommit + the raw mirror, so the renderTitle() that follows reads
+    // the optimistic value immediately.  On a server reject we re-render
+    // from the rolled-back task in `commitAttribute`'s onErr (todo: subscribe
+    // the title input to the panel store directly — same as AttributeRow).
+    this.commitAttribute('title', next);
+    this.renderTitle();
   }
 
   /* ----------------------------- description ---------------------------- */
@@ -1243,158 +1279,45 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       this.renderDescription();
       return;
     }
-    this.commitAttribute('description', next, () => this.renderDescription());
+    this.commitAttribute('description', next);
+    this.renderDescription();
   }
 
   /* --------------------------- attribute panel -------------------------- */
 
   /**
-   * Render the attribute side panel: one row per editable attribute. Each row
-   * is a `<details>` with a read summary; expanding it mounts the inline editor
-   * chosen by value_type. Rebuilds wholesale (disposing prior row children) so
-   * a re-render after a commit / late label resolution is clean.
+   * Render the attribute side panel by spawning a {@link TaskAttributePanel}
+   * — the high-level intent control that owns "render the schema's rows
+   * against a single-task PanelModel + live-commit each change."
+   *
+   * This used to be an inline loop here.  Lifted into its own control per
+   * STRUCTURAL_PLAN composition principle: a NEW high-level control for
+   * each intent ('live' here; deferred / batch live in NewTaskForm /
+   * BatchTaskEditor) rather than a `policy` knob on a shared primitive.
    */
   private renderPanel(): void {
     this.disposeRowChildren();
     this.panelBody.replaceChildren();
     if (this.task === null) return;
-    if (this.schema.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'task-detail__panel-empty muted';
-      empty.textContent = 'No attributes available.';
-      this.panelBody.append(empty);
-      return;
-    }
-    for (const attr of this.schema) {
-      this.panelBody.append(this.renderRow(attr));
-    }
-  }
-
-  private renderRow(attr: AttrSchema): HTMLElement {
-    const row = document.createElement('details');
-    row.className = 'task-detail__row';
-    row.dataset.attrRow = attr.name;
-
-    const summary = document.createElement('summary');
-    summary.className = 'task-detail__row-summary';
-
-    const label = document.createElement('span');
-    label.className = 'task-detail__row-label muted';
-    label.textContent = attr.label;
-
-    const value = document.createElement('span');
-    value.className = 'task-detail__row-value';
-    value.dataset.attrValue = '';
-    value.textContent = this.summaryFor(attr);
-
-    summary.append(label, value);
-    row.append(summary);
-
-    const editor = document.createElement('div');
-    editor.className = 'task-detail__row-editor';
-    editor.dataset.attrEditor = '';
-    row.append(editor);
-
-    const errEl = document.createElement('p');
-    errEl.className = 'task-detail__row-error';
-    errEl.dataset.attrError = '';
-    errEl.setAttribute('role', 'alert');
-    errEl.style.display = 'none';
-    editor.append(errEl);
-
-    // "Unassign" — clears this attribute to null on the focal task, mirroring
-    // the bulk-bar's Unassign action. Always rendered (so the row consistently
-    // exposes the affordance) and disabled when the field already has no value;
-    // bool stays read/write via its checkbox and skips this (its semantics
-    // distinguish true / false but not "unset"). Sits at the editor's bottom so
-    // the value editor mounts above it.
-    const unassign = this.buildUnassignButton(attr, value, errEl);
-    if (unassign !== null) editor.append(unassign);
-
-    // Mount the inline editor lazily on first expand so a closed panel doesn't
-    // spin up N RefPickers / DatePickers (each fires card.search on open).
-    let mounted = false;
-    this.listen(row, 'toggle', () => {
-      if ((row as unknown as { open?: boolean }).open !== true) return;
-      if (mounted) return;
-      mounted = true;
-      this.mountEditor(attr, editor, value, errEl);
-      // Keep the Unassign button at the bottom of the editor even after the
-      // value editor mounts its own children (mountEditor appends to `editor`).
-      if (unassign !== null) editor.append(unassign);
-    });
-
-    return row;
-  }
-
-  /**
-   * Build the per-row "Unassign" button — fires `attribute.update` with
-   * value=null on the focal task. Returns null for attribute types where
-   * un-assigning is meaningless (bool: the checkbox already toggles between
-   * its two well-defined states). Enabled state tracks whether the attribute
-   * currently has a meaningful value to clear.
-   */
-  private buildUnassignButton(
-    attr: AttrSchema,
-    valueEl: HTMLElement,
-    errEl: HTMLElement,
-  ): HTMLButtonElement | null {
-    if (attr.valueType === 'bool') return null;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'task-detail__row-unassign';
-    btn.dataset.attrUnassign = '';
-    btn.textContent = 'Unassign';
-    btn.title = `Clear ${attr.label.toLowerCase()} on this task`;
-    btn.disabled = !this.hasMeaningfulValue(attr);
-    this.listen(btn, 'click', (ev) => {
-      // The row is a <details>; bare click bubbles to its <summary> and toggles
-      // it. Stop here so a click on the button doesn't fold the row closed.
-      (ev as Event).stopPropagation();
-      this.commitAttribute(attr.name, null, () => {
-        valueEl.textContent = this.summaryFor(attr);
-        btn.disabled = !this.hasMeaningfulValue(attr);
-      }, errEl);
-    });
-    return btn;
-  }
-
-  /** Whether an attribute currently holds a meaningful (non-empty) value — the
-   *  "Unassign" button is disabled when there's nothing to clear. */
-  private hasMeaningfulValue(attr: AttrSchema): boolean {
-    const v = this.task?.attributes[attr.name];
-    if (v === null || v === undefined || v === '') return false;
-    if (Array.isArray(v) && v.length === 0) return false;
-    return true;
-  }
-
-  /** Build a printed read-summary for an attribute's current value. The card_ref
-   *  cases coerce via {@link asAttrId} so an un-revived wire form (digit-string
-   *  / number) renders its resolved label like a bigint would — uniform across
-   *  every card_ref attribute (originator, assignee, status, …). */
-  private summaryFor(attr: AttrSchema): string {
-    const v = this.task?.attributes[attr.name];
-    if (v === null || v === undefined || v === '') return '—';
-    if (attr.valueType === 'card_ref') {
-      const id = asAttrId(v);
-      return id !== null ? this.labelFor(id) : '—';
-    }
-    if (attr.valueType === 'card_ref[]') {
-      if (!Array.isArray(v) || v.length === 0) return '—';
-      const labels: string[] = [];
-      for (const raw of v) {
-        const id = asAttrId(raw);
-        if (id !== null) labels.push(this.labelFor(id));
-      }
-      return labels.length > 0 ? labels.join(', ') : '—';
-    }
-    if (attr.valueType === 'bool') return v === true ? 'Yes' : 'No';
-    if (typeof v === 'bigint') return v.toString();
-    return String(v);
-  }
-
-  private labelFor(id: bigint): string {
-    return this.refLabels.get(String(id)) ?? `#${id.toString()}`;
+    const tap = this.spawn(
+      'TaskAttributePanel',
+      {
+        type: 'TaskAttributePanel',
+        schema: this.schema,
+        panel: this.panel,
+        onCommit: (name: string, value: unknown) => this.commitAttribute(name, value),
+        forAttr: (attr: AttrSchema) => {
+          const out: Record<string, unknown> = {};
+          const scope = this.refScopePath(attr);
+          if (scope !== undefined) out['parentScopePath'] = scope;
+          const pinned = this.selfPinnedFor(attr);
+          if (pinned.length > 0) out['pinnedOptions'] = pinned;
+          return out;
+        },
+      },
+      this.panelBody,
+    );
+    this.rowChildren.push(tap);
   }
 
   /**
@@ -1409,165 +1332,6 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     const personId = this.config.currentPersonId ?? peekCurrentPersonId(this.ctx.tree);
     if (personId === null) return [];
     return [{ value: personId, label: 'Self' }];
-  }
-
-  /**
-   * Mount the inline editor for an attribute by value_type. Eager-commit types
-   * (card_ref / card_ref[] / date / bool) fire `attribute.update` straight from
-   * their change callback; text / number hold the typed draft and commit on
-   * blur or Enter.
-   */
-  private mountEditor(
-    attr: AttrSchema,
-    editor: HTMLElement,
-    valueEl: HTMLElement,
-    errEl: HTMLElement,
-  ): void {
-    const cur = this.task?.attributes[attr.name];
-    const onDone = (): void => {
-      valueEl.textContent = this.summaryFor(attr);
-    };
-    const onCommit = (next: unknown): void => {
-      this.commitAttribute(attr.name, next, onDone, errEl);
-    };
-
-    switch (attr.valueType) {
-      case 'card_ref': {
-        const curId = asAttrId(cur);
-        const rp = this.spawn(
-          'RefPicker',
-          {
-            type: 'RefPicker',
-            cardType: attr.targetCardType ?? 'card',
-            value: curId,
-            ...(curId !== null ? { currentLabel: this.labelFor(curId) } : {}),
-            ...(this.refScopePath(attr) ? { parentScopePath: this.refScopePath(attr) } : {}),
-            ...(this.selfPinnedFor(attr).length > 0 ? { pinnedOptions: this.selfPinnedFor(attr) } : {}),
-            'aria-label': attr.label,
-            placeholder: `Search ${attr.label.toLowerCase()}…`,
-            onChange: (value: bigint | null) => onCommit(value),
-          },
-          editor,
-        ) as RefPicker;
-        this.rowChildren.push(rp);
-        // Open the picker immediately — the row was expanded specifically to
-        // edit it, so skip the extra click to drop the dropdown (#8).
-        queueMicrotask(() => {
-          if (this.isAlive()) rp.open();
-        });
-        break;
-      }
-      case 'card_ref[]': {
-        const cur2: bigint[] = [];
-        if (Array.isArray(cur)) {
-          for (const raw of cur) {
-            const id = asAttrId(raw);
-            if (id !== null) cur2.push(id);
-          }
-        }
-        const labels: Record<string, string> = {};
-        for (const id of cur2) labels[String(id)] = this.labelFor(id);
-        const rp = this.spawn(
-          'RefPicker',
-          {
-            type: 'RefPicker',
-            cardType: attr.targetCardType ?? 'card',
-            multi: true,
-            values: cur2,
-            currentLabels: labels,
-            ...(this.refScopePath(attr) ? { parentScopePath: this.refScopePath(attr) } : {}),
-            'aria-label': attr.label,
-            placeholder: `Search ${attr.label.toLowerCase()}…`,
-            onChangeMulti: (values: bigint[]) => onCommit(values),
-          },
-          editor,
-        ) as RefPicker;
-        this.rowChildren.push(rp);
-        // Open the picker immediately — the row was expanded specifically to
-        // edit it, so skip the extra click to drop the dropdown (#8).
-        queueMicrotask(() => {
-          if (this.isAlive()) rp.open();
-        });
-        break;
-      }
-      case 'date': {
-        const dp = this.spawn(
-          'DatePicker',
-          {
-            type: 'DatePicker',
-            value: typeof cur === 'string' ? cur : null,
-            'aria-label': attr.label,
-            onChange: (value: string | null) => onCommit(value),
-          },
-          editor,
-        ) as DatePicker;
-        this.rowChildren.push(dp);
-        // Drop the calendar immediately on expand (#8).
-        queueMicrotask(() => {
-          if (this.isAlive()) dp.openMenu();
-        });
-        break;
-      }
-      case 'bool': {
-        const box = document.createElement('input');
-        box.type = 'checkbox';
-        box.className = 'task-detail__row-checkbox';
-        box.dataset.attrCheckbox = '';
-        box.checked = cur === true;
-        box.setAttribute('aria-label', attr.label);
-        this.listen(box, 'change', () => onCommit(box.checked));
-        editor.append(box);
-        break;
-      }
-      case 'number': {
-        const input = document.createElement('input');
-        input.type = 'number';
-        input.className = 'task-detail__row-number';
-        input.dataset.attrInput = '';
-        input.value = typeof cur === 'number' ? String(cur) : '';
-        input.setAttribute('aria-label', attr.label);
-        const commit = (): void => {
-          const raw = input.value.trim();
-          const next: unknown = raw === '' ? null : Number(raw);
-          if (next !== null && !Number.isFinite(next as number)) return;
-          onCommit(next);
-        };
-        this.listen(input, 'keydown', (e) => {
-          if ((e as KeyboardEvent).key === 'Enter') {
-            (e as KeyboardEvent).preventDefault();
-            commit();
-          }
-        });
-        this.listen(input, 'blur', () => commit());
-        editor.append(input);
-        queueMicrotask(() => {
-          if (this.isAlive()) input.focus();
-        });
-        break;
-      }
-      default: {
-        // text + any unknown value_type fall through to a text input.
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.className = 'task-detail__row-text';
-        input.dataset.attrInput = '';
-        input.value = typeof cur === 'string' ? cur : cur === null || cur === undefined ? '' : String(cur);
-        input.setAttribute('aria-label', attr.label);
-        const commit = (): void => onCommit(input.value);
-        this.listen(input, 'keydown', (e) => {
-          if ((e as KeyboardEvent).key === 'Enter') {
-            (e as KeyboardEvent).preventDefault();
-            commit();
-          }
-        });
-        this.listen(input, 'blur', () => commit());
-        editor.append(input);
-        queueMicrotask(() => {
-          if (this.isAlive()) input.focus();
-        });
-        break;
-      }
-    }
   }
 
   /**
@@ -1590,61 +1354,65 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   /* ---------------------------- commit + state -------------------------- */
 
   /**
-   * Fire `attribute.update` for one attribute, OPTIMISTICALLY: patch the loaded
-   * task's attribute immediately, call `onDone` (re-paint the read summary /
-   * editor), and roll back + surface the error inline (and via the central
-   * funnel) on fault. Zero-promise — routes through `api.callByName`.
+   * Fire `attribute.update` for one attribute through the {@link PanelModel}
+   * lifecycle:
+   *
+   *   1. `beginCommit(name, value)` — state goes Pending(value). The
+   *      AttributeRow's reactive bindings see a STABLE pending state for
+   *      the whole round trip (no flicker).
+   *   2. server OK → `confirmCommit(name)` (Pending → Value).
+   *   3. server NACK → `rejectCommit(name, prev, message)` (Pending →
+   *      Error). The row's inline error surfaces; the controls revert.
+   *
+   * The raw `this.task.attributes` is ALSO mirrored so downstream sections
+   * (the TagsEditor seed, the related-tasks-panel seed) reading
+   * `this.task.attributes['x']` keep working until they migrate to the
+   * panel store too. STRUCTURAL_PLAN follow-up: drop those mirrors.
    */
-  private commitAttribute(
-    name: string,
-    value: unknown,
-    onDone: () => void,
-    errEl?: HTMLElement,
-  ): void {
+  private commitAttribute(name: string, value: unknown): void {
     const task = this.task;
     if (task === null || this.taskId === null) return;
     const prev = task.attributes[name];
-    // Optimistic local patch.
+
+    this.panel.beginCommit(name, value);
     task.attributes = { ...task.attributes, [name]: value ?? null };
-    if (errEl) {
-      errEl.style.display = 'none';
-      errEl.textContent = '';
-    }
-    onDone();
+
+    // Imperative editors (title / description) re-render off `this.task`, so
+    // they need an extra paint on the server-reject path to reflect the
+    // rolled-back value.  AttributeRow / FieldEditor read the panel store
+    // and re-paint automatically.
+    const postRender = (): void => {
+      if (name === 'title') this.renderTitle();
+      else if (name === 'description') this.renderDescription();
+    };
 
     this.ctx.api.callByName(
       SPEC.attributeUpdate,
       { cardId: this.taskId, attributeName: name, value: value ?? null },
       (_out) => {
         void (_out as AttributeUpdateOutput);
-        // Server confirmed; the optimistic patch stands. If we just set a
-        // card_ref, the freshly-picked label is already cached by the RefPicker
-        // search, but resolve again to cover ids whose label wasn't loaded.
         if (!this.isAlive()) return;
+        this.panel.confirmCommit(name);
+        // If we just set a card_ref, resolve again to cover ids whose
+        // label wasn't loaded yet.
         this.resolveRefLabels();
-        // A status change from the panel moves the card through its flow — tell
-        // the TransitionBar to re-load its available steps so the two stay in
-        // sync (the bar owns the canonical status changer).
+        // A status change moves the card through its flow — refresh the
+        // TransitionBar so the two stay in sync.
         if (name === 'status') this.transitionBar?.reload();
         // Every attribute edit appends an attr_update row to the stream —
-        // refresh the #35 activity feed so it reflects the change.
+        // refresh the #35 activity feed.
         this.taskComments?.reload();
         this.noteOwnActivity();
       },
       {
         alive: () => this.isAlive(),
         onErr: () => {
-          // Roll back the optimistic patch and surface the error inline; the
-          // central funnel (onError default) already showed the toast.
           if (!this.isAlive()) return;
           if (this.task !== null) {
             this.task.attributes = { ...this.task.attributes, [name]: prev };
           }
-          onDone();
-          if (errEl) {
-            errEl.style.display = '';
-            errEl.textContent = 'Failed to save. Try again.';
-          }
+          this.panel.rejectCommit(name, prev, 'Failed to save. Try again.');
+          postRender();
         },
       },
     );

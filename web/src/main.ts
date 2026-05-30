@@ -72,6 +72,12 @@ import { registerFilterCardSpecs } from './filter/filter-card-specs.js';
 import { registerCombobox } from './ui/combobox.js';
 import { registerDatePicker } from './ui/datepicker.js';
 import { registerRefPicker } from './ui/ref-picker.js';
+import { registerFieldEditor } from './ui/field-editor.js';
+import { registerCardRefValue } from './ui/card-ref-value.js';
+import { registerAttributeRow } from './ui/attribute-row.js';
+import { registerTaskAttributePanel } from './task-detail/task-attribute-panel.js';
+import { registerNewTaskForm } from './task-detail/new-task-form.js';
+import { registerBatchTaskEditor } from './task-detail/batch-task-editor.js';
 import { registerCardSearchSpec } from './ui/specs.js';
 import { registerTaskDetail } from './task-detail/task-detail.js';
 import { registerTransitionBar } from './task-detail/transition-bar.js';
@@ -321,6 +327,32 @@ function boot(): void {
   // whose async loader fires card.search; the editor every card_ref attribute
   // (assignee/status/milestone/component/tags/recipients/parent_task) mounts.
   registerRefPicker();
+  // The unified attribute editor (#STRUCTURAL_PLAN item 1): one control that
+  // routes to RefPicker / DatePicker / native input by attr.valueType.
+  // Replaces the per-screen 6-arm switches in TaskDetail / BulkActionBar /
+  // grid inline-edit so a new attribute type is one switch arm here, not
+  // three drifts across screens.
+  registerFieldEditor();
+  // The single-id ref-label render (#STRUCTURAL_PLAN item 2): replaces the
+  // per-screen `map[id] ?? '#id'` reimplementations. Consumed by
+  // AttributeRow's summary and any other surface rendering a resolved ref.
+  registerCardRefValue();
+  // The unified attribute row (#STRUCTURAL_PLAN item 3): label + reactive
+  // summary + lazy-mounted FieldEditor + Unassign + inline error.  Replaces
+  // TaskDetail's renderRow + buildUnassignButton + the per-row event wiring.
+  registerAttributeRow();
+  // The single-task panel (live-commit policy).  Owns the schema iteration
+  // + per-row wiring.  Composed by TaskDetail.  Sister high-level controls
+  // for the deferred-commit (NewTaskForm) and fan-out (BatchTaskEditor)
+  // policies live alongside and use the same AttributeRow primitive.
+  registerTaskAttributePanel();
+  // The deferred-commit form (Save / Save & Another / Save & Open).  Owns
+  // the draft store + the submit button row.  Composed by QuickEntry's
+  // modal (or any other "create a new task" surface).
+  registerNewTaskForm();
+  // The fan-out batch editor (Mixed-aware, applies to N selected).  Owns
+  // the selection-header line + the row list.  Composed by BulkActionBar.
+  registerBatchTaskEditor();
   // The /task/:id detail screen shell (#33): two-column layout, title +
   // description inline edit, and the attribute side panel (inline edit by
   // value_type — RefPicker for card_refs, DatePicker for dates). Registers

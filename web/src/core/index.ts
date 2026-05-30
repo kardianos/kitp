@@ -11,6 +11,7 @@
  */
 
 export * from './signal.js';
+export * from './load-state.js';
 export * from './tree.js';
 export * from './dispatch.js';
 export * from './codec.js';
