@@ -575,3 +575,77 @@ not a knob.  The primitives stay still.
 4. **(5) data-layer enforcement** — the higher-leverage structural
    item still on deck.
 
+## Retrospective — QuickEntry per-type editor → FieldEditor (2026-05-30)
+
+### What landed
+
+- **QuickEntry's `renderAttrEditor` now composes `FieldEditor`.**  The
+  "+ Add field" rows used to re-derive the full six-arm `valueType`
+  switch (card_ref / card_ref[] → RefPicker, date → DatePicker, bool →
+  checkbox, number/text → native input) — a verbatim duplicate of the
+  switch FieldEditor owns.  That ~65-line method collapsed to a ~15-line
+  `spawn('FieldEditor', …)` whose `onCommit` feeds the row's draft value.
+  The drift class (a card_ref coercion bug fixed in TaskDetail but not in
+  QuickEntry, etc.) is gone by construction — there is one editor now.
+- **`noAutoOpen: true` preserves QuickEntry's add-on-demand UX.**  Picking
+  a field from the row's `<select>` mounts the editor silent; the user
+  clicks in to edit (no calendar/popover springing open the instant a
+  field is chosen).  This is the escape hatch the items (1) retro flagged
+  — and QuickEntry is exactly the "parent decides when to open" consumer
+  it was meant for.
+- **The unused `DatePicker` import dropped** (FieldEditor owns date
+  routing now); `RefPicker` stays (assignee/tags pickers still spawn it
+  directly — those are well-known slots, not palette attributes).
+- **2 new tests** in `test/quick-entry.test.mjs`: one pins the routing
+  (text → native input, re-pick card_ref → RefPicker), one drives a text
+  commit end-to-end and asserts the value rides the `card.insert` as an
+  additional attribute.
+
+Total: 739 / 739 tests passing; `tsgo` clean.
+
+### Numbers
+
+| metric | before | after |
+| --- | --- | --- |
+| `quick-entry.ts` lines | 1300 | 1267 |
+| `quick-entry.ts` `createElement` | 52 | 50 |
+| `quick-entry.ts` `this.spawn(` call sites | 4 | 3 |
+
+The two raw `createElement`s (the bool checkbox + the text/number input)
+and the two separate ref/date `spawn`s collapsed into ONE `FieldEditor`
+spawn.  As in the TaskDetail item (1) retro, the line count isn't the
+story — the win is that QuickEntry no longer owns per-type editor code at
+all; it consumes the primitive.
+
+### Why NOT "wire to NewTaskForm" (the move (1) as originally phrased)
+
+`NewTaskForm` renders the WHOLE schema as `AttributeRow`s with Save
+buttons.  QuickEntry's body is the opposite shape: title + description
+always visible, plus *add-on-demand* rows where the user first picks
+WHICH attribute to add.  Dropping `NewTaskForm` in wholesale would fight
+that UX (and QuickEntry already owns its own Save / Save & Another / Save
+& Edit footer + the tags / attachments / status-resolution pipeline the
+form doesn't model).  The composition-principle-correct reading is that
+the per-field VALUE EDITOR is the reusable unit — and that unit is the
+`FieldEditor` primitive, the same one `NewTaskForm` composes inside its
+rows.  So QuickEntry composes the primitive directly rather than nesting
+a whole-form control.  Primitives stay still; the screen keeps its intent.
+
+### Still on deck
+
+- **BulkActionBar → its value editor.**  `onAttrPicked` still hand-rolls
+  a RefPicker single / multi + a (currently dead) scalar-choices Combobox
+  arm.  It's a candidate for `FieldEditor`, but with two caveats that make
+  it a separate, careful change: (a) FieldEditor has no scalar-choices
+  arm (no live axis produces one today, so migrating would DROP that
+  latent capability — a FieldEditor concern to add deliberately, not a
+  per-screen reimplementation), and (b) the bar's "Apply" enable logic
+  re-runs on every value change, whereas FieldEditor's text/number arms
+  commit on Enter/blur.  Both are fine for today's all-ref axes but want
+  an explicit decision.  The bar's staged-chips "+ Add / Apply" model
+  also doesn't match `BatchTaskEditor`'s per-row immediate commit, so the
+  originally-planned `BatchTaskEditor` wiring needs the bar's batch
+  semantic reconciled first.
+- **`PanelModel.refLabelPeek`** and **(5) data-layer enforcement** remain
+  the next structural items, unchanged.
+

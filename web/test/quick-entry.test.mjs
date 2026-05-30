@@ -38,6 +38,7 @@ before(async () => {
   M.registerCombobox();
   M.registerRefPicker();
   M.registerDatePicker();
+  M.registerFieldEditor(); // the "+ Add field" rows host one per picked attribute
   // For the AppShell-wiring test: register the shell + its outlet body controls.
   M.registerAppShell();
   M.registerScreenHost();
@@ -246,6 +247,73 @@ test('open() shows the overlay collapsed; "+ More details" reveals the region', 
   assert.ok(qe.el.querySelector('[data-qe-tags]'), 'tags host shown');
   assert.ok(qe.el.querySelector('[data-qe-dropzone]'), 'attachment dropzone shown');
   assert.ok(qe.el.querySelector('[data-qe-add-field]'), '"+ Add field" shown');
+});
+
+/* -------------------------------------------------------------------------- */
+/* "+ Add field" rows host the shared FieldEditor (no bespoke per-type switch). */
+/* -------------------------------------------------------------------------- */
+
+test('"+ Add field" mounts a FieldEditor routed by the attr valueType', () => {
+  const { api } = bootApi(quickEntryHarness().transport);
+  const { qe } = mountQuickEntry(api, {
+    attributePalette: [
+      { name: 'priority', label: 'Priority', valueType: 'text' },
+      { name: 'milestone', label: 'Milestone', valueType: 'card_ref', targetCardType: 'milestone' },
+    ],
+  });
+  qe.open();
+  click(qe.el.querySelector('[data-qe-more]')); // reveal details
+  click(qe.el.querySelector('[data-qe-add-field]')); // add an empty row
+
+  const select = qe.el.querySelector('[data-qe-attr-select]');
+  assert.ok(select, 'an attribute select rendered');
+
+  // Pick the text attr → a FieldEditor mounts, routed to a native text input.
+  select.value = 'priority';
+  select.dispatchEvent(new globalThis.window.Event('change', { bubbles: true }));
+  const editor = qe.el.querySelector('[data-control="FieldEditor"]');
+  assert.ok(editor, 'a FieldEditor mounts in the value host');
+  assert.equal(editor.dataset.fieldType, 'text', 'routed by valueType=text');
+  assert.ok(editor.querySelector('[data-attr-input]'), 'native text input present');
+
+  // Re-pick the card_ref attr → the editor re-routes to a RefPicker.
+  select.value = 'milestone';
+  select.dispatchEvent(new globalThis.window.Event('change', { bubbles: true }));
+  const reEditor = qe.el.querySelector('[data-control="FieldEditor"]');
+  assert.equal(reEditor.dataset.fieldType, 'card_ref', 're-routed to card_ref');
+  assert.ok(reEditor.querySelector('[data-control="RefPicker"]'), 'RefPicker hosted');
+});
+
+test('a committed "+ Add field" value rides the card.insert as an additional attribute', async () => {
+  const statusRows = [
+    { id: '200', card_type_name: 'status', phase: 'triage', attributes: { title: 'Triage', sort_order: 1 } },
+  ];
+  const { transport, sent } = quickEntryHarness({ statusRows });
+  const { dispatcher, api } = bootApi(transport);
+  const { qe } = mountQuickEntry(api, {
+    attributePalette: [{ name: 'priority', label: 'Priority', valueType: 'text' }],
+  });
+  await settle(dispatcher);
+
+  qe.open();
+  setTitle(qe, 'Has a custom field');
+  click(qe.el.querySelector('[data-qe-more]'));
+  click(qe.el.querySelector('[data-qe-add-field]'));
+  const select = qe.el.querySelector('[data-qe-attr-select]');
+  select.value = 'priority';
+  select.dispatchEvent(new globalThis.window.Event('change', { bubbles: true }));
+
+  // FieldEditor's text arm commits on blur — type then blur.
+  const input = qe.el.querySelector('[data-control="FieldEditor"] [data-attr-input]');
+  input.value = 'high';
+  input.dispatchEvent(new globalThis.window.Event('blur', { bubbles: true }));
+
+  click(qe.el.querySelector('[data-qe-add-close]'));
+  await settle(dispatcher);
+
+  const inserts = sentOf(sent, 'card', 'insert');
+  assert.equal(inserts.length, 1, 'exactly one card.insert');
+  assert.equal(inserts[0].data.attributes.priority, 'high', 'committed value rode the insert');
 });
 
 /* -------------------------------------------------------------------------- */

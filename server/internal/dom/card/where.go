@@ -255,12 +255,32 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 			)`, addArg(n.Attr), addArg(days)), nil
 		}
 	case "=", "eq":
+		// card_ref[] (e.g. tags) stores ONE row per card holding a JSON
+		// array; "= X" means "the array contains the id X" (membership),
+		// not scalar equality against the whole array — which never
+		// matches. Use jsonb containment with the value canonicalised to
+		// a number so it matches the array's numeric elements.
+		if snap.ValueType(n.Attr) == "card_ref[]" {
+			val := snap.CanonicalizeRefScalar(singleValue(n.Values))
+			return fmt.Sprintf(`EXISTS (
+				SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
+				WHERE av.card_id = c.id AND ad.name = %s AND av.value @> %s::jsonb
+			)`, addArg(n.Attr), addArg(string(val))), nil
+		}
 		val := CanonicalizeFilterValue(n.Attr, snap, singleValue(n.Values))
 		return fmt.Sprintf(`EXISTS (
 			SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
 			WHERE av.card_id = c.id AND ad.name = %s AND av.value = %s::jsonb
 		)`, addArg(n.Attr), addArg(string(val))), nil
 	case "!=", "ne":
+		// card_ref[]: "!= X" means "the array does NOT contain X".
+		if snap.ValueType(n.Attr) == "card_ref[]" {
+			val := snap.CanonicalizeRefScalar(singleValue(n.Values))
+			return fmt.Sprintf(`NOT EXISTS (
+				SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
+				WHERE av.card_id = c.id AND ad.name = %s AND av.value @> %s::jsonb
+			)`, addArg(n.Attr), addArg(string(val))), nil
+		}
 		val := CanonicalizeFilterValue(n.Attr, snap, singleValue(n.Values))
 		return fmt.Sprintf(`NOT EXISTS (
 			SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
@@ -269,6 +289,19 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 	case "in":
 		if len(n.Values) == 0 {
 			return "FALSE", nil
+		}
+		// card_ref[]: "in (X, Y)" means "the array contains X OR Y" — a
+		// disjunction of membership tests, not scalar IN against the
+		// whole array.
+		if snap.ValueType(n.Attr) == "card_ref[]" {
+			conds := make([]string, len(n.Values))
+			for j, v := range n.Values {
+				conds[j] = "av.value @> " + addArg(string(snap.CanonicalizeRefScalar(normalizeJSON(v)))) + "::jsonb"
+			}
+			return fmt.Sprintf(`EXISTS (
+				SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
+				WHERE av.card_id = c.id AND ad.name = %s AND (%s)
+			)`, addArg(n.Attr), strings.Join(conds, " OR ")), nil
 		}
 		placeholders := make([]string, len(n.Values))
 		for j, v := range n.Values {
@@ -283,6 +316,18 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 			// Empty "not in" is vacuously true (nothing is in the empty
 			// set). Mirror translatePredicate's empty-AND choice.
 			return "TRUE", nil
+		}
+		// card_ref[]: "not in (X, Y)" means "the array contains NEITHER
+		// X nor Y".
+		if snap.ValueType(n.Attr) == "card_ref[]" {
+			conds := make([]string, len(n.Values))
+			for j, v := range n.Values {
+				conds[j] = "av.value @> " + addArg(string(snap.CanonicalizeRefScalar(normalizeJSON(v)))) + "::jsonb"
+			}
+			return fmt.Sprintf(`NOT EXISTS (
+				SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
+				WHERE av.card_id = c.id AND ad.name = %s AND (%s)
+			)`, addArg(n.Attr), strings.Join(conds, " OR ")), nil
 		}
 		placeholders := make([]string, len(n.Values))
 		for j, v := range n.Values {

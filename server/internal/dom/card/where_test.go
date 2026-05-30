@@ -212,6 +212,71 @@ func TestTree_NotIn(t *testing.T) {
 	}
 }
 
+// TestTree_TagsMembership: a card_ref[] attribute (tags) filters by ARRAY
+// MEMBERSHIP, not scalar equality. Each card stores ONE `tags` row holding
+// a JSON array, so "tags = X" must mean "the array CONTAINS X". This is the
+// regression that left every tag filter returning zero rows — scalar
+// `av.value = X` / `av.value IN (…)` against a stored array `[…]` never
+// matched (while single card_ref attrs like milestone_ref worked). Values
+// arrive as the UI sends them — JSON strings — to also pin the
+// string→number canonicalisation that membership needs.
+func TestTree_TagsMembership(t *testing.T) {
+	srv, _ := setupAttr(t, "kitp_test_card_tree_tags")
+	ctx := auth.WithSystemUser(context.Background())
+
+	insert := func(body string) int64 {
+		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "i", Endpoint: "card", Action: "insert", Data: json.RawMessage(body)},
+		}})
+		if !resp.Subresponses[0].OK {
+			t.Fatalf("insert %s: %+v", body, resp.Subresponses[0])
+		}
+		var o card.InsertOutput
+		b, _ := json.Marshal(resp.Subresponses[0].Data)
+		_ = json.Unmarshal(b, &o)
+		return o.ID
+	}
+
+	proj := insert(`{"card_type_name":"project","title":"P"}`)
+	status := mkStatusUnder(t, srv, proj)
+	// tag cards require title + path (a slash-delimited label).
+	tagA := insert(fmt.Sprintf(`{"card_type_name":"tag","parent_card_id":"%d","title":"A","attributes":{"path":"a"}}`, proj))
+	tagB := insert(fmt.Sprintf(`{"card_type_name":"tag","parent_card_id":"%d","title":"B","attributes":{"path":"b"}}`, proj))
+	tagC := insert(fmt.Sprintf(`{"card_type_name":"tag","parent_card_id":"%d","title":"C","attributes":{"path":"c"}}`, proj))
+
+	task := func(tags ...int64) int64 {
+		ids, _ := json.Marshal(tags)
+		return insert(fmt.Sprintf(
+			`{"card_type_name":"task","parent_card_id":"%d","title":"t","attributes":{"status":%d,"tags":%s}}`,
+			proj, status, ids))
+	}
+	tAB := task(tagA, tagB)
+	_ = task(tagB) // tB — has B only; never in the eq=A / "no A,B" sets.
+	tC := task(tagC)
+	tNone := task()
+
+	// eq → membership: "has tag A" → only the A,B task.
+	got := rowIDs(queryTree(t, srv, proj,
+		fmt.Sprintf(`{"connective":"and","children":[{"attr":"tags","op":"=","values":["%d"]}]}`, tagA)))
+	if want := sortedInts(tAB); !equalIDs(got, want) {
+		t.Errorf("tags = A: got %v, want %v", got, want)
+	}
+
+	// in → OR of memberships: "has tag A OR C".
+	got = rowIDs(queryTree(t, srv, proj,
+		fmt.Sprintf(`{"connective":"and","children":[{"attr":"tags","op":"in","values":["%d","%d"]}]}`, tagA, tagC)))
+	if want := sortedInts(tAB, tC); !equalIDs(got, want) {
+		t.Errorf("tags in (A,C): got %v, want %v", got, want)
+	}
+
+	// not in → "has NEITHER A nor B": the C-only task + the untagged task.
+	got = rowIDs(queryTree(t, srv, proj,
+		fmt.Sprintf(`{"connective":"and","children":[{"attr":"tags","op":"not in","values":["%d","%d"]}]}`, tagA, tagB)))
+	if want := sortedInts(tC, tNone); !equalIDs(got, want) {
+		t.Errorf("tags not in (A,B): got %v, want %v", got, want)
+	}
+}
+
 // TestTree_ExistsAndNotExists: exists / not exists.
 func TestTree_ExistsAndNotExists(t *testing.T) {
 	srv, _ := setupAttr(t, "kitp_test_card_tree_exist")

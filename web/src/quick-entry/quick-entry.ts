@@ -10,8 +10,8 @@
  *       · Tags (multi RefPicker over the project's `tag` cards),
  *       · an attachment dropzone (uses the shared {@link uploadFile} service),
  *       · "+ Add field" — pick any editable attribute from the palette and edit
- *         its value inline (RefPicker for card_ref(s), DatePicker for dates,
- *         text/number/checkbox otherwise).
+ *         its value inline via the shared {@link FieldEditor} (it routes to
+ *         RefPicker / DatePicker / native input by the attr's valueType).
  *
  * Submission (web/design parity):
  *   - Plain Enter in the title  → submit + KEEP the overlay open (clear, refocus
@@ -48,7 +48,6 @@ import type { AttrSchema } from '../filter/attribute-schema.js';
 import { prepareFile, type PostChunk } from '../task-detail/upload.js';
 import { trapFocus } from '../util/focus-trap.js';
 import type { RefPicker } from '../ui/ref-picker.js';
-import type { DatePicker } from '../ui/datepicker.js';
 import {
   resolveDefaultCreateStatus,
   type FlowRow,
@@ -132,7 +131,7 @@ interface AttrRow {
   id: number;
   name: string | null;
   value: unknown;
-  /** The spawned inline editor (RefPicker / DatePicker), if any. */
+  /** The spawned inline {@link FieldEditor} for the picked attribute, if any. */
   editor: Control | null;
   /** The row's DOM container so we can re-render its editor in place. */
   el: HTMLElement;
@@ -749,7 +748,17 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     if (this.addFieldBtn) this.addFieldBtn.disabled = this.availablePaletteFor(null).length === 0;
   }
 
-  /** Render the inline value editor for a row's picked attribute by valueType. */
+  /**
+   * Render the inline value editor for a row's picked attribute. Routing by
+   * `valueType` (card_ref / card_ref[] / date / bool / number / text) is owned
+   * by the shared {@link FieldEditor} primitive — QuickEntry composes it rather
+   * than re-deriving the six-arm switch (the "different bugs per attribute"
+   * failure mode the STRUCTURAL_PLAN's item (1) closed). The editor stays
+   * silent on mount (`noAutoOpen`) — the overlay's add-on-demand UX shouldn't
+   * pop a picker the instant a field is chosen; the user clicks in to edit.
+   * onCommit feeds the row's draft value; `collectAdditionalAttributes` drops
+   * the empties (null / '' / []) at submit.
+   */
   private renderAttrEditor(row: AttrRow): void {
     if (row.editor) {
       this.destroyChild(row.editor);
@@ -758,62 +767,20 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     row.valueHost.replaceChildren();
     const attr = this.palette().find((a) => a.name === row.name);
     if (attr === undefined) return;
-
-    const vt = attr.valueType;
-    if (vt === 'card_ref' || vt === 'card_ref[]') {
-      const multi = vt === 'card_ref[]';
-      row.editor = this.spawn(
-        'RefPicker',
-        {
-          type: 'RefPicker',
-          cardType: attr.targetCardType ?? 'card',
-          multi,
-          parentScopePath: this.config.projectScopePath ?? 'scope.projectId',
-          placeholder: `Pick ${attr.label}…`,
-          'aria-label': attr.label,
-          ...(multi
-            ? { onChangeMulti: (vs: bigint[]) => { row.value = vs.slice(); } }
-            : { onChange: (v: bigint | null) => { row.value = v; } }),
+    row.editor = this.spawn(
+      'FieldEditor',
+      {
+        type: 'FieldEditor',
+        attr,
+        value: row.value ?? null,
+        parentScopePath: this.config.projectScopePath ?? 'scope.projectId',
+        noAutoOpen: true,
+        onCommit: (v: unknown) => {
+          row.value = v;
         },
-        row.valueHost,
-      );
-      return;
-    }
-    if (vt === 'date') {
-      row.editor = this.spawn(
-        'DatePicker',
-        {
-          type: 'DatePicker',
-          value: null,
-          placeholder: `Pick ${attr.label}…`,
-          'aria-label': attr.label,
-          onChange: (iso: string | null) => { row.value = iso; },
-        },
-        row.valueHost,
-      ) as DatePicker;
-      return;
-    }
-    if (vt === 'bool') {
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.className = 'qe-overlay__attr-checkbox';
-      cb.dataset.qeAttrInput = '';
-      this.listen(cb, 'change', () => { row.value = cb.checked; });
-      row.valueHost.append(cb);
-      return;
-    }
-    // text / number / unknown → a plain input.
-    const input = document.createElement('input');
-    input.type = vt === 'number' ? 'number' : 'text';
-    input.className = 'qe-overlay__input qe-overlay__attr-input';
-    input.dataset.qeAttrInput = '';
-    input.placeholder = attr.label;
-    this.listen(input, 'input', () => {
-      const raw = input.value;
-      if (raw === '') { row.value = undefined; return; }
-      row.value = vt === 'number' ? Number(raw) : raw;
-    });
-    row.valueHost.append(input);
+      },
+      row.valueHost,
+    );
   }
 
   /** Collect the filled "+ Add field" rows as NamedAttribute[] (drop empties). */

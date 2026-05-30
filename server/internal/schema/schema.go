@@ -146,6 +146,38 @@ func (s *Snapshot) EdgeFor(cardTypeID int64, attrName string) (Edge, AttributeDe
 	return e, a, ok
 }
 
+// ValueType returns attrName's declared value_type (e.g. "card_ref",
+// "card_ref[]", "text"), or "" when the attribute is unknown. Read paths
+// use it to decide array-membership vs scalar-equality compilation.
+func (s *Snapshot) ValueType(attrName string) string {
+	if s == nil {
+		return ""
+	}
+	if a, ok := s.AttrByName[attrName]; ok {
+		return a.ValueType
+	}
+	return ""
+}
+
+// CanonicalizeRefScalar canonicalises a card_ref id for a MEMBERSHIP test
+// against a stored card_ref[] array (e.g. "tags = X" meaning "the array
+// contains X"). A scalar string-of-digits becomes a JSON number so it
+// matches the numeric elements the array stores; a value that is itself a
+// JSON array is canonicalised element-wise (subset containment). Unlike
+// CanonicalizeValue this does NOT consult the attribute's value_type — the
+// caller has already established the target is card_ref[] and is supplying
+// a single element to test for.
+func (s *Snapshot) CanonicalizeRefScalar(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var arr []json.RawMessage
+	if json.Unmarshal(raw, &arr) == nil {
+		return cardRefArrayToNumbers(raw)
+	}
+	return cardRefValueToNumber(raw)
+}
+
 // CanonicalizeValue rewrites a wire-side attribute value to the jsonb
 // shape used in attribute_value storage. The dispatcher serialises
 // bigint ids as JSON strings (`"123"`) but the seed writes them as JSON

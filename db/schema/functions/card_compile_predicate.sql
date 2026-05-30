@@ -32,6 +32,14 @@
 -- before being appended to the params bag. Mirrors
 -- schema.Snapshot.CanonicalizeValue.
 --
+-- card_ref[] membership: a card_ref[] attribute (e.g. tags) stores ONE
+-- attribute_value row per card holding a JSON array of ids. The eq / ne /
+-- in / not-in ops therefore compile to jsonb CONTAINMENT (av.value @> id)
+-- — "the array contains this id" — not scalar equality against the whole
+-- array (which never matches). `in` becomes an OR of containments. Each id
+-- is canonicalized as a SCALAR card_ref (string→number) so it matches the
+-- array's numeric elements. Mirrors compileLeaf in where.go.
+--
 -- Snippet expansion: op='snippet' fetches the referenced
 -- predicate_snippet card's `predicate` attribute value and recurses.
 -- Cycle detection uses the `visited` argument (array of seen snippet
@@ -167,14 +175,27 @@ BEGIN
             _v := _values->0;
             IF _v IS NULL THEN _v := 'null'::jsonb; END IF;
         END IF;
-        _v_canon := _canon_card_ref(_v, _value_type);
-        -- Append attr (text) + value (jsonb); _ph_push reports each index.
         SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
-        SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
-        _sql := format(
-            'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
-            'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value = ($1->%s)::jsonb)',
-            _attr_idx::text, _val_idx::text);
+        IF _value_type = 'card_ref[]' THEN
+            -- card_ref[] (e.g. tags) stores ONE row per card holding a JSON
+            -- array; "= X" means "the array CONTAINS the id X" (membership),
+            -- not scalar equality against the whole array — which never
+            -- matches. Canonicalise the value to a scalar number so it
+            -- matches the array's numeric elements, then test containment.
+            _v_canon := _canon_card_ref(_v, 'card_ref');
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
+            _sql := format(
+                'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value @> ($1->%s)::jsonb)',
+                _attr_idx::text, _val_idx::text);
+        ELSE
+            _v_canon := _canon_card_ref(_v, _value_type);
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
+            _sql := format(
+                'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value = ($1->%s)::jsonb)',
+                _attr_idx::text, _val_idx::text);
+        END IF;
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op IN ('!=', 'ne') THEN
@@ -184,13 +205,23 @@ BEGIN
             _v := _values->0;
             IF _v IS NULL THEN _v := 'null'::jsonb; END IF;
         END IF;
-        _v_canon := _canon_card_ref(_v, _value_type);
         SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);
-        SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
-        _sql := format(
-            'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
-            'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value = ($1->%s)::jsonb)',
-            _attr_idx::text, _val_idx::text);
+        IF _value_type = 'card_ref[]' THEN
+            -- "!= X" means "the array does NOT contain X".
+            _v_canon := _canon_card_ref(_v, 'card_ref');
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
+            _sql := format(
+                'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value @> ($1->%s)::jsonb)',
+                _attr_idx::text, _val_idx::text);
+        ELSE
+            _v_canon := _canon_card_ref(_v, _value_type);
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
+            _sql := format(
+                'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value = ($1->%s)::jsonb)',
+                _attr_idx::text, _val_idx::text);
+        END IF;
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op = 'in' THEN
@@ -201,16 +232,33 @@ BEGIN
         _placeholders := ARRAY[]::text[];
         FOR _v IN SELECT value FROM jsonb_array_elements(_values)
         LOOP
-            _v_canon := _canon_card_ref(_v, _value_type);
-            SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
-            _placeholders := array_append(_placeholders,
-                format('($1->%s)::jsonb', _val_idx::text));
+            IF _value_type = 'card_ref[]' THEN
+                -- "in (X, Y)" on a card_ref[] = "the array contains X OR Y"
+                -- — a disjunction of membership tests (see eq above).
+                _v_canon := _canon_card_ref(_v, 'card_ref');
+                SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
+                _placeholders := array_append(_placeholders,
+                    format('av.value @> ($1->%s)::jsonb', _val_idx::text));
+            ELSE
+                _v_canon := _canon_card_ref(_v, _value_type);
+                SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
+                _placeholders := array_append(_placeholders,
+                    format('($1->%s)::jsonb', _val_idx::text));
+            END IF;
         END LOOP;
-        _sql := format(
-            'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
-            'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value IN (%s))',
-            _attr_idx::text,
-            array_to_string(_placeholders, ', '));
+        IF _value_type = 'card_ref[]' THEN
+            _sql := format(
+                'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND (%s))',
+                _attr_idx::text,
+                array_to_string(_placeholders, ' OR '));
+        ELSE
+            _sql := format(
+                'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value IN (%s))',
+                _attr_idx::text,
+                array_to_string(_placeholders, ', '));
+        END IF;
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op = 'not in' THEN
@@ -221,16 +269,32 @@ BEGIN
         _placeholders := ARRAY[]::text[];
         FOR _v IN SELECT value FROM jsonb_array_elements(_values)
         LOOP
-            _v_canon := _canon_card_ref(_v, _value_type);
-            SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
-            _placeholders := array_append(_placeholders,
-                format('($1->%s)::jsonb', _val_idx::text));
+            IF _value_type = 'card_ref[]' THEN
+                _v_canon := _canon_card_ref(_v, 'card_ref');
+                SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
+                _placeholders := array_append(_placeholders,
+                    format('av.value @> ($1->%s)::jsonb', _val_idx::text));
+            ELSE
+                _v_canon := _canon_card_ref(_v, _value_type);
+                SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
+                _placeholders := array_append(_placeholders,
+                    format('($1->%s)::jsonb', _val_idx::text));
+            END IF;
         END LOOP;
-        _sql := format(
-            'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
-            'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value IN (%s))',
-            _attr_idx::text,
-            array_to_string(_placeholders, ', '));
+        IF _value_type = 'card_ref[]' THEN
+            -- "not in (X, Y)" = "the array contains NEITHER X nor Y".
+            _sql := format(
+                'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND (%s))',
+                _attr_idx::text,
+                array_to_string(_placeholders, ' OR '));
+        ELSE
+            _sql := format(
+                'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value IN (%s))',
+                _attr_idx::text,
+                array_to_string(_placeholders, ', '));
+        END IF;
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
     ELSIF _op = 'exists' THEN
