@@ -484,6 +484,19 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     grid.append(loading, notFound, main, rail);
     this.el.append(grid);
 
+    // Pre-mount the route-id-only sections (transitions, comments + activity,
+    // comms, attachments) NOW, in the same tick as the task/schema reads, so
+    // their queries COALESCE into one POST instead of firing a second round-trip
+    // after the task lands. They mount into the still-hidden main/rail slots;
+    // showLoaded() just reveals them (the mounts are idempotent there). Tags /
+    // related / the attribute panel need the task card itself, so they stay in
+    // showLoaded. On a not-found / comm-card redirect these reads are harmless
+    // (empty results, discarded when the detail tears down).
+    this.mountTransitionBar();
+    this.mountComments();
+    this.mountComms();
+    this.mountAttachments();
+
     // Kick off the loads. Zero-promise: the onOk callbacks repaint when each
     // response lands, gated by isAlive() so a torn-down screen never delivers.
     this.loadSchema();
@@ -679,7 +692,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * `onChanged` so the panel's status summary tracks the optimistic move.
    */
   private mountTransitionBar(): void {
-    if (this.task === null || this.taskId === null) return;
+    if (this.taskId === null) return;
     if (this.transitionBar !== null) return;
     const bar = this.spawn(
       'TransitionBar',
@@ -819,7 +832,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 
   /** Spawn the COMMS (email-thread) control into the `comms` slot. Idempotent. */
   private mountComms(): void {
-    if (this.task === null || this.taskId === null) return;
+    if (this.taskId === null) return;
     if (this.commThreads !== null) return;
     this.commsHost.replaceChildren();
     this.commsHost.classList.add('task-detail__slot--filled');
@@ -837,7 +850,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   }
 
   private mountComments(): void {
-    if (this.task === null || this.taskId === null) return;
+    if (this.taskId === null) return;
     if (this.taskComments !== null) return;
     // Drop the empty-slot placeholder look + label now that both slots are
     // filled (the comments control mounts here; the feed paints the activity
@@ -865,7 +878,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * drive them with mocks; production leaves them unset (same-origin fetch).
    */
   private mountAttachments(): void {
-    if (this.task === null || this.taskId === null) return;
+    if (this.taskId === null) return;
     if (this.attachmentsSection !== null) return;
     this.attachmentsHost.replaceChildren();
     this.attachmentsHost.classList.add('task-detail__slot--filled');

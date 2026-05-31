@@ -144,17 +144,24 @@ function taskMockTransport() {
       updates.push(data);
       return { id: sr.id, ok: true, data: { ok: true, activity_id: '999' } };
     }
+    // Route-id-only section reads (pre-mounted alongside the task) — empty is
+    // fine for the shell tests; their own behaviour is covered elsewhere.
+    if (key === 'comm.list_for_task' || key === 'attachment.list' || key === 'flow_step.list_for_card') {
+      return { id: sr.id, ok: true, data: { rows: [] } };
+    }
     return { id: sr.id, ok: false, error: { code: 'unknown', message: `mock has no ${key}` } };
   }
 
+  const batches = [];
   const transport = {
     async send(body) {
       const req = JSON.parse(body);
+      batches.push(req.subrequests.map((s) => `${s.endpoint}.${s.action}`));
       const subresponses = req.subrequests.map((sr) => respond(sr));
       return { status: 200, text: JSON.stringify({ subresponses }) };
     },
   };
-  return { transport, updates };
+  return { transport, updates, batches };
 }
 
 function bootApi(transport) {
@@ -733,4 +740,34 @@ test('TaskDetail: a missing task id resolves to the not-found state', async () =
   assert.ok(nf, 'not-found block present');
   assert.equal(nf.style.display, '', 'not-found shown');
   assert.equal(td.el.querySelector('[data-task-detail-loading]').style.display, 'none');
+});
+
+test('TASK OPEN: route-id-only sections coalesce into the task batch (no second round-trip)', async () => {
+  const { transport, batches } = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  // Register the section CONTROLS (so they mount for real, not NotFound) + their
+  // SPECS (so their reads enqueue + reach the mock). Control.register is a global
+  // singleton that may already be set by another test file, so guard it.
+  for (const reg of [M.registerCommThreads, M.registerTransitionBar, M.registerAttachmentsSection]) {
+    try {
+      reg();
+    } catch {
+      /* already registered in this process */
+    }
+  }
+  M.registerCommThreadSpecs(api);
+  M.registerTransitionSpecs(api);
+  M.registerAttachmentSpecs(api);
+  mountTaskDetail(api);
+  await settle(dispatcher);
+
+  assert.ok(batches.length >= 1, 'at least one batch sent');
+  const first = batches[0];
+  // The task read AND the heavy section reads ride the SAME (first) POST — so
+  // the main column is complete when the detail reveals, not filled a round-trip
+  // later. (Tags/related need the task card, so they stay in a later batch.)
+  assert.ok(first.includes('card.select_with_attributes'), 'task read in batch 1');
+  assert.ok(first.includes('comm.list_for_task'), 'comms read coalesced into batch 1');
+  assert.ok(first.includes('attachment.list'), 'attachments read coalesced into batch 1');
+  assert.ok(first.includes('flow_step.list_for_card'), 'transition read coalesced into batch 1');
 });
