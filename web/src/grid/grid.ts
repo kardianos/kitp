@@ -139,6 +139,10 @@ export class Grid extends Control<GridConfig> {
    * the column KEY changes (rare — once when the schema + screen config land).
    */
   private columns: ColumnDef[] = [];
+
+  /** Flipped true once the first tasks response lands; gates the empty message
+   *  vs a "Loading…" placeholder so a fresh Grid never flashes empty-then-fill. */
+  private tasksLoaded = false;
   /** The current column key (`key|key|…`) so a rebuild only fires on a real change. */
   private columnsKey = '';
   /** The header row element (children rebuilt on a column change). */
@@ -411,10 +415,13 @@ export class Grid extends Control<GridConfig> {
       fault.textContent = `Failed to load grid: ${describeFault(f)}`;
     }, 'grid.fault');
 
-    // Empty-state toggle reads only the tasks leaf (cascade-safe).
+    // Empty-state toggle reads only the tasks leaf (cascade-safe). Until the
+    // first load lands, show "Loading…" rather than the empty message so a
+    // freshly-mounted Grid doesn't flash "no tasks" then fill.
     this.effect(() => {
       const rows = (tasksNode.get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
       empty.style.display = rows.length === 0 ? '' : 'none';
+      empty.textContent = this.tasksLoaded ? 'No tasks match this filter.' : 'Loading…';
     }, 'grid.empty');
 
     // Rows render through the recycling virtualList: `body` is the scroll
@@ -534,6 +541,8 @@ export class Grid extends Control<GridConfig> {
   private registerResultHandlers(): void {
     this.handler('landTasks', (out) => {
       const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+      // Mark loaded BEFORE the leaf write so the empty-state effect reads it.
+      this.tasksLoaded = true;
       this.ctx.tree.at(this.tasksPath).set(rows);
     });
 

@@ -208,3 +208,29 @@ test('Api.call: alive=false drops the response (destroyed control)', async () =>
   await disp.flushNow();
   assert.equal(called, false, 'onOk not invoked when the call is no longer alive');
 });
+
+test('IN-FLIGHT SIGNAL: rises on enqueue, returns to 0 after a batch settles', async () => {
+  const { Dispatcher } = D;
+  const t = recordingTransport((req) => ({
+    status: 200,
+    text: JSON.stringify({
+      subresponses: req.subrequests.map((s) => ({ id: s.id, ok: true, data: {} })),
+    }),
+  }));
+  const disp = new Dispatcher({ transport: t });
+  assert.equal(disp.inFlight.peek(), 0, 'idle at rest');
+  disp.request({ endpoint: 'x', action: 'a' });
+  disp.request({ endpoint: 'x', action: 'b' });
+  assert.equal(disp.inFlight.peek(), 2, 'two enqueued → in-flight 2');
+  await disp.flushNow();
+  assert.equal(disp.inFlight.peek(), 0, 'settled → back to 0');
+});
+
+test('IN-FLIGHT SIGNAL: an HTTP error path also releases the count', async () => {
+  const { Dispatcher } = D;
+  const disp = new Dispatcher({ transport: recordingTransport(() => ({ status: 500, text: '' })) });
+  disp.request({ endpoint: 'x', action: 'a' });
+  assert.equal(disp.inFlight.peek(), 1);
+  await disp.flushNow();
+  assert.equal(disp.inFlight.peek(), 0, 'failAll released the in-flight count');
+});

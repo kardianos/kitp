@@ -173,3 +173,34 @@ test('CommsList: switching the comm_status phase filter re-queries (active → t
   assert.equal(rows.length, 1);
   assert.equal(rows[0].dataset.commRow, '200');
 });
+
+test('CommsList: an empty result resolves to the empty message (not stuck on Loading)', async () => {
+  // Mock returns no comms for the active filter → the loaded-gate must flip so
+  // the placeholder reads the real empty message, never staying on "Loading…".
+  const h = {
+    transport: {
+      async send(body) {
+        const req = JSON.parse(body);
+        return {
+          status: 200,
+          text: JSON.stringify({
+            subresponses: req.subrequests.map((sr) => {
+              const ct = (sr.data ?? {}).card_type_name;
+              if (ct === 'status')
+                return { id: sr.id, ok: true, data: { rows: STATUSES.map((s) => ({ id: s.id, phase: s.phase, attributes: { title: s.title } })) } };
+              return { id: sr.id, ok: true, data: { rows: [] } }; // no comms, no tasks
+            }),
+          }),
+        };
+      },
+    },
+  };
+  const { dispatcher, api } = bootApi(h.transport);
+  const { c } = mount(api, 'active');
+  await settle(dispatcher);
+
+  assert.equal(c.el.querySelectorAll('[data-comm-row]').length, 0, 'no rows');
+  const empty = c.el.querySelector('[data-comms-list-empty]');
+  assert.equal(empty.style.display, '', 'empty placeholder visible');
+  assert.equal(empty.textContent, 'No comms in this view.', 'loaded-gate flipped off "Loading…"');
+});

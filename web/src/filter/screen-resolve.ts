@@ -417,17 +417,18 @@ const SELECT_WITH_ATTRS = 'card.select_with_attributes';
  *   2. card.select_with_attributes { cardTypeName:'filter', parentCardId:screen }
  *      → the saved filter cards for that screen.
  *
- * Step 2 fires only after step 1 returns AND finds a matching screen card; a
- * project with no screen row for the slug short-circuits with an empty result.
- * ZERO-PROMISE: the dispatcher coalesces both reads into a batch when issued in
- * the same tick, but we issue step 2 from step 1's onOk callback (it needs the
- * resolved screen id), so they land as two sequential batches — same posture as
- * the Svelte `loadScreenAndFilters`.
+ * All three reads fire in the SAME tick, so the dispatcher coalesces them into
+ * ONE POST /api/v1/batch — the screen resolves in a single round-trip instead
+ * of the old screen → filters → flows waterfall, removing the per-stage repaint
+ * flash. Filters are read project-enclosed and matched to the resolved screen
+ * client-side (so they no longer wait on screen.id); flows derive the phase
+ * attr from flow_ref. The three legs join in an internal `finish`.
  *
  * `onResult` is called exactly once with the resolved set. Failures funnel
- * through the centralized fault registry (no per-call try/catch); on a step-1
- * failure `onResult` is NOT called (the host keeps its fallback). `alive` lets
- * the caller drop a late delivery after it's torn down.
+ * through the centralized fault registry (no per-call try/catch); on a SCREEN
+ * read failure `onResult` is NOT called (the host keeps its fallback), while a
+ * filters / flows failure resolves that leg empty so the screen still renders.
+ * `alive` lets the caller drop a late delivery after it's torn down.
  */
 export function loadScreenAndFilters(
   api: Api,
@@ -436,51 +437,76 @@ export function loadScreenAndFilters(
   onResult: (set: ScreenPresetSet) => void,
   alive?: () => boolean,
 ): void {
+  const opts = alive ? { alive } : {};
+  // Three legs, fired in ONE tick → the dispatcher coalesces them into a single
+  // POST so the screen resolves in one round-trip (no per-stage flash). The
+  // legs join in `finish`, which runs once all three have landed:
+  //   - screens under the project (matched to `slug`);
+  //   - filters ENCLOSED by the project (filter → screen → project), matched to
+  //     the resolved screen client-side — so this no longer waits on screen.id;
+  //   - the project's flows, to derive the phase attr from the screen's flow_ref.
+  let screenRows: CardWithAttrs[] | null = null;
+  let filterRows: CardWithAttrs[] | null = null;
+  let flowRows: Array<{ id?: unknown; attribute_def_name?: unknown }> | null = null;
+
+  const finish = (): void => {
+    // Wait for all three legs. The screen read is load-bearing: on its failure
+    // screenRows stays null, finish never completes, and onResult is NOT called
+    // (the host keeps its fallback) — matching the prior behaviour. Filters and
+    // flows are enhancements: they resolve to [] on error so the screen still
+    // renders (no saved presets / phase attr falls back to toggle_groups).
+    if (screenRows === null || filterRows === null || flowRows === null) return;
+    const screen = screenRows.find((r) => readSlug(r) === slug) ?? null;
+    if (screen === null) {
+      onResult({ screen: null, filters: [], defaultFilter: null });
+      return;
+    }
+    const filters = filterRows.filter((f) => f.parent_card_id === screen.id);
+    const defaultId = readDefaultFilterID(screen);
+    const defaultFilter = defaultId === null ? null : (filters.find((f) => f.id === defaultId) ?? null);
+    const flowRef = readFlowRef(screen);
+    const match = flowRef === null ? undefined : flowRows.find((r) => String(r.id) === flowRef);
+    const phaseAttr = typeof match?.attribute_def_name === 'string' ? match.attribute_def_name : undefined;
+    onResult({ screen, filters, defaultFilter, ...(phaseAttr !== undefined ? { phaseAttr } : {}) });
+  };
+
   api.callByName(
     SELECT_WITH_ATTRS,
     { cardTypeName: 'screen', parentCardId: projectId },
     (out) => {
-      const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
-      const screen = rows.find((r) => readSlug(r) === slug) ?? null;
-      if (screen === null) {
-        onResult({ screen: null, filters: [], defaultFilter: null });
-        return;
-      }
-      api.callByName(
-        SELECT_WITH_ATTRS,
-        { cardTypeName: 'filter', parentCardId: screen.id },
-        (filterOut) => {
-          const filters = ((filterOut ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
-          const defaultId = readDefaultFilterID(screen);
-          const defaultFilter =
-            defaultId === null ? null : (filters.find((f) => f.id === defaultId) ?? null);
-          // Derive the phase-filter attr from the screen's flow (flow_ref →
-          // that flow's attribute_def). $authenticated, so every viewer can
-          // resolve it. A missing flow_ref or a failed/empty lookup lands the
-          // set WITHOUT phaseAttr (readPhaseToggles falls back to toggle_groups).
-          const flowRef = readFlowRef(screen);
-          if (flowRef === null) {
-            onResult({ screen, filters, defaultFilter });
-            return;
-          }
-          const land = (phaseAttr?: string): void =>
-            onResult({ screen, filters, defaultFilter, ...(phaseAttr !== undefined ? { phaseAttr } : {}) });
-          api.callByName(
-            'flow.list',
-            { scopeCardId: projectId.toString() },
-            (flowOut) => {
-              const rows = ((flowOut ?? {}) as {
-                rows?: Array<{ id?: unknown; attribute_def_name?: unknown }>;
-              }).rows ?? [];
-              const match = rows.find((r) => String(r.id) === flowRef);
-              land(typeof match?.attribute_def_name === 'string' ? match.attribute_def_name : undefined);
-            },
-            { ...(alive ? { alive } : {}), onErr: () => land() },
-          );
-        },
-        alive ? { alive } : {},
-      );
+      screenRows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+      finish();
     },
-    alive ? { alive } : {},
+    opts, // screen failure → onResult not called (fallback kept)
+  );
+  api.callByName(
+    SELECT_WITH_ATTRS,
+    { cardTypeName: 'filter', projectId },
+    (out) => {
+      filterRows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+      finish();
+    },
+    {
+      ...opts,
+      onErr: () => {
+        filterRows = [];
+        finish();
+      },
+    },
+  );
+  api.callByName(
+    'flow.list',
+    { scopeCardId: projectId.toString() },
+    (out) => {
+      flowRows = ((out ?? {}) as { rows?: Array<{ id?: unknown; attribute_def_name?: unknown }> }).rows ?? [];
+      finish();
+    },
+    {
+      ...opts,
+      onErr: () => {
+        flowRows = [];
+        finish();
+      },
+    },
   );
 }

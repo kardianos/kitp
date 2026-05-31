@@ -133,6 +133,11 @@ export class Inbox extends Control<InboxConfig> {
    *  `idx` from walkGrouped. */
   private selectedIndex = 0;
 
+  /** Flipped true once the FIRST tasks response lands. Until then the body
+   *  shows "Loading…" rather than the "inbox is clear" empty message, so a
+   *  freshly-mounted Inbox never flashes empty-then-fill. */
+  private tasksLoaded = false;
+
   /**
    * Active group-by axis (the RESOLVED `screen.groupAxis` from the shared
    * ScreenFilterBar's GROUP picker), or null for a flat list. When set, rows are
@@ -447,10 +452,15 @@ export class Inbox extends Control<InboxConfig> {
       fault.textContent = `Failed to load inbox: ${describeFault(f)}`;
     }, 'inbox.fault');
 
-    // Empty-state toggle reads only the tasks leaf (cascade-safe).
+    // Empty-state toggle reads only the tasks leaf (cascade-safe). Before the
+    // first load lands, show "Loading…" instead of the empty message so the
+    // mount doesn't flash "inbox is clear" then fill.
     this.effect(() => {
       const rows = (tasksNode.get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
       empty.style.display = rows.length === 0 ? '' : 'none';
+      empty.textContent = this.tasksLoaded
+        ? 'Your inbox is clear. Nothing assigned to you right now.'
+        : 'Loading…';
     }, 'inbox.empty');
 
     // Agent-view banner reflects the routed-to-me toggle (read the tree leaf so
@@ -605,6 +615,9 @@ export class Inbox extends Control<InboxConfig> {
   private registerResultHandlers(): void {
     this.handler('landTasks', (out) => {
       const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+      // Mark loaded BEFORE writing the leaf so the empty-state effect (which
+      // re-runs on the leaf write) reads the resolved flag.
+      this.tasksLoaded = true;
       this.ctx.tree.at(this.tasksPath).set(rows);
       // Keep the keyboard selection in range after a reload.
       if (this.selectedIndex >= rows.length) {

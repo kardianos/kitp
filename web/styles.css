@@ -604,6 +604,15 @@ select optgroup {
   min-height: 0;
   padding: var(--space-4);
 }
+/* The transient "resolving…" placeholder fills the body area so the swap to
+   the real layout doesn't collapse from a 1-line height to a full board. */
+.screen-host__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 50vh;
+  font-size: var(--text-base);
+}
 
 /* ==========================================================================
    ScreenFilterBar — COMPACT data control bar (dense, hairline, tabular).
@@ -1832,6 +1841,7 @@ select optgroup {
 /* ---- empty state ---- */
 .grid__empty {
   padding: var(--space-10) var(--space-4);
+  min-height: 12rem;
   text-align: center;
   font-size: var(--text-base);
   color: var(--color-muted);
@@ -6013,6 +6023,9 @@ select optgroup {
 }
 .task-comms__empty {
   margin: 0;
+  min-height: 4rem;
+  display: flex;
+  align-items: center;
   font-size: var(--text-sm);
 }
 
@@ -8142,5 +8155,9 @@ textarea.task-comms__form-input {
 }
 .comms-list__empty {
   margin: 0;
+  min-height: 8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: var(--text-sm);
 }

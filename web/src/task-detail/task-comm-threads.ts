@@ -51,6 +51,9 @@ declare module '../core/control.js' {
 export class CommThreads extends Control<CommThreadsConfig> {
   private taskId: bigint | null = null;
   private comms: CommRow[] = [];
+  /** Flipped true once the first comm.list_for_task lands; gates "No comms
+   *  attached." vs a "Loading…" placeholder so the section doesn't flash empty. */
+  private commsLoaded = false;
   /** person id → display name, for recipient chips/labels. */
   private personLabels = new Map<string, string>();
   /** status card id → {label, phase}, for the comm_status badge + section filter. */
@@ -141,6 +144,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
       (out) => {
         if (!this.isAlive()) return;
         this.comms = (out as CommListForTaskOutput).rows ?? [];
+        this.commsLoaded = true;
         this.paintHeading();
         this.paintFilter();
         this.paintList();
@@ -243,7 +247,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
     if (this.comms.length === 0) {
       const empty = document.createElement('p');
       empty.className = 'task-comms__empty muted';
-      empty.textContent = 'No comms attached.';
+      empty.textContent = this.commsLoaded ? 'No comms attached.' : 'Loading…';
       this.listEl.append(empty);
       return;
     }

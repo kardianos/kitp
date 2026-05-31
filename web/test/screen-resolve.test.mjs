@@ -54,7 +54,7 @@ const FILTER_MINE_ID = 811n; // a saved filter ("Mine")
 /* -------------------------------------------------------------------------- */
 
 function screenMockTransport(opts = {}) {
-  const sent = { taskInputs: [], inserts: [], updates: [], deletes: [], screenReads: 0, filterReads: 0 };
+  const sent = { taskInputs: [], inserts: [], updates: [], deletes: [], screenReads: 0, filterReads: 0, flowReads: 0, batches: 0 };
   const defaultFilterId = opts.defaultFilterId; // bigint | undefined
 
   const card = (id, type, attrs) => ({
@@ -159,6 +159,10 @@ function screenMockTransport(opts = {}) {
           return { id: sr.id, ok: true, data: { rows: TASKS } };
       }
     }
+    if (key === 'flow.list') {
+      sent.flowReads++;
+      return { id: sr.id, ok: true, data: { rows: [] } };
+    }
     if (key === 'card.insert') {
       sent.inserts.push(sr.data ?? {});
       return { id: sr.id, ok: true, data: { id: '900' } };
@@ -176,6 +180,7 @@ function screenMockTransport(opts = {}) {
 
   const transport = {
     async send(body) {
+      sent.batches++;
       const req = JSON.parse(body);
       const subresponses = req.subrequests.map((sr) => respond(sr));
       return { status: 200, text: JSON.stringify({ subresponses }) };
@@ -193,6 +198,17 @@ function bootApi(transport) {
   M.registerGridCardRefAttrs();
   M.registerFilterSpecs(api); // attribute_def.select
   M.registerFilterCardSpecs(api); // card.delete
+  // flow.list — used by loadScreenAndFilters to derive the phase attr from
+  // flow_ref. Minimal inline define (the real one lives in registerAdminSpecs,
+  // which also re-registers attribute_def.select and would clash here).
+  if (!api.registry.has({ endpoint: 'flow', action: 'list' })) {
+    api.define({
+      endpoint: 'flow',
+      action: 'list',
+      encode: (i) => (i.scopeCardId !== undefined ? { scope_card_id: i.scopeCardId } : {}),
+      decode: (raw) => raw,
+    });
+  }
   return { dispatcher, api };
 }
 
@@ -402,7 +418,11 @@ test('loadScreenAndFilters: resolves the screen by slug + loads its filters', as
   assert.ok(result.defaultFilter, 'default filter resolved');
   assert.equal(result.defaultFilter.id, FILTER_OPEN_ID, 'default_filter id matched a filter card');
   assert.equal(transport.sent.screenReads, 1);
-  assert.equal(transport.sent.filterReads, 1, 'filter read fired after the screen matched');
+  assert.equal(transport.sent.filterReads, 1, 'filter read fired (project-scoped, same batch)');
+  assert.equal(transport.sent.flowReads, 1, 'flow read fired for the phase-attr derivation');
+  // The win: screen + filters + flows resolve in ONE POST, not three sequential
+  // round-trips — so the screen paints once instead of flashing per stage.
+  assert.equal(transport.sent.batches, 1, 'all three reads coalesced into a single batch');
 });
 
 /* -------------------------------------------------------------------------- */

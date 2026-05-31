@@ -32,6 +32,9 @@ declare module '../core/control.js' {
 
 export class CommsList extends Control<CommsListConfig> {
   private comms: CardWithAttrs[] = [];
+  /** Flipped true once the first comm query lands; until then the body shows
+   *  "Loading…" rather than the empty message (no empty-then-fill flash). */
+  private loaded = false;
   /** status card id → {label, phase} for the comm_status badge. */
   private statusInfo = new Map<string, { label: string; phase: string }>();
   /** task card id → title, for the parent-task chip. */
@@ -70,7 +73,7 @@ export class CommsList extends Control<CommsListConfig> {
     empty.className = 'comms-list__empty muted';
     empty.dataset.commsListEmpty = '';
     empty.style.display = 'none';
-    empty.textContent = 'No comms in this view.';
+    empty.textContent = 'Loading…'; // until the first load lands (see paint)
     this.emptyEl = empty;
     this.el.append(empty);
 
@@ -113,6 +116,7 @@ export class CommsList extends Control<CommsListConfig> {
       (out) => {
         if (!this.isAlive()) return;
         this.comms = ((out as { rows?: CardWithAttrs[] }).rows ?? []) as CardWithAttrs[];
+        this.loaded = true;
         this.paint();
       },
       { alive: () => this.isAlive() },
@@ -154,6 +158,7 @@ export class CommsList extends Control<CommsListConfig> {
   private paint(): void {
     this.headEl.textContent = this.comms.length > 0 ? `COMMS · ${this.comms.length}` : 'COMMS';
     this.listEl.replaceChildren();
+    this.emptyEl.textContent = this.loaded ? 'No comms in this view.' : 'Loading…';
     this.emptyEl.style.display = this.comms.length === 0 ? '' : 'none';
     for (const comm of this.comms) this.listEl.append(this.renderRow(comm));
   }

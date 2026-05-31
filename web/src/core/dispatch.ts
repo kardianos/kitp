@@ -22,6 +22,8 @@
  * canned in-memory backend; production passes a fetch-backed transport.
  */
 
+import { signal, type ReadonlySignal } from './signal.js';
+
 /* -------------------------------------------------------------------------- */
 /* Wire-shape types (mirror client/src/dispatch/subrequest.ts).               */
 /* -------------------------------------------------------------------------- */
@@ -223,10 +225,19 @@ export class Dispatcher {
   private queue: Pending[] = [];
   private flushScheduled = false;
   private readonly faultListeners = new Map<FaultKind, Array<(f: ApiFault) => void>>();
+  /** Count of requests enqueued but not yet settled (delivered or failed).
+   *  A reactive source so UI can show a global "loading" affordance and a
+   *  render-coordination boundary can wait on `inFlight === 0`. */
+  private readonly inFlightSig = signal(0, 'dispatch.inFlight');
 
   constructor(opts: DispatcherOptions) {
     this.transport = opts.transport;
     this.schedule = opts.schedule ?? defaultSchedule;
+  }
+
+  /** Number of outstanding requests (enqueued, not yet settled), as a signal. */
+  get inFlight(): ReadonlySignal<number> {
+    return this.inFlightSig;
   }
 
   /**
@@ -275,6 +286,7 @@ export class Dispatcher {
       onOk,
       onFault,
     });
+    this.inFlightSig.set(this.inFlightSig.peek() + 1);
     this.maybeScheduleFlush();
     return { id };
   }
@@ -315,6 +327,10 @@ export class Dispatcher {
     for (const p of batch) {
       if (p.alive()) p.onFault(fault);
     }
+    // Every failAll path settles the whole batch (the 4 early-return error
+    // paths in flush); release its in-flight count here. The success path
+    // releases at the end of flush's delivery loop instead.
+    this.inFlightSig.set(this.inFlightSig.peek() - batch.length);
   }
 
   private async flush(): Promise<void> {
@@ -410,6 +426,8 @@ export class Dispatcher {
         if (p.alive()) p.onFault(fault);
       }
     }
+    // Success path: the whole batch has been delivered — release its count.
+    this.inFlightSig.set(this.inFlightSig.peek() - batch.length);
   }
 }
 
