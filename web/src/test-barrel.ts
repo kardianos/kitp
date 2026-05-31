@@ -150,6 +150,15 @@ export {
   type ScreenPresetSet,
   type PhaseToggle,
 } from './filter/screen-resolve.js';
+export {
+  TAG_PREFIX_OPTION,
+  tagPrefixOptionValue,
+  tagPrefixFromOptionValue,
+  tagLeaf,
+  tagRootLabel,
+  exclusiveRoots,
+  tagIdUnderRoot,
+} from './filter/tag-prefix.js';
 
 // Real screen controls + their registrars.
 export { Kanban, Column, TaskCard, registerKanbanControls, _resetDragState } from './kanban/kanban.js';

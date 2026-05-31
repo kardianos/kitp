@@ -132,7 +132,17 @@ function taskMockTransport() {
         case 'component':
           return { id: sr.id, ok: true, data: { rows: [card(50n, 'component', { title: 'FE' })] } };
         case 'tag':
-          return { id: sr.id, ok: true, data: { rows: [card(60n, 'tag', { path: 'a/b' })] } };
+          return {
+            id: sr.id,
+            ok: true,
+            data: {
+              rows: [
+                // 'priority' is a mutually-exclusive root (groupable); 'area' is not.
+                card(60n, 'tag', { path: 'priority/high', root_exclusive_at: 'priority' }),
+                card(61n, 'tag', { path: 'area/backend' }),
+              ],
+            },
+          };
         case 'predicate_snippet':
           return {
             id: sr.id,
@@ -327,6 +337,48 @@ test('ScreenFilterBar: kanban requires a group — picker defaults to milestone,
   assert.ok(groupEl, 'group picker present');
   const labels = (groupEl.children ?? []).map((o) => o.textContent);
   assert.ok(!labels.includes('No group'), `kanban group picker omits "No group" (got ${JSON.stringify(labels)})`);
+});
+
+test('ScreenFilterBar: GROUP/LANE pickers drop raw multi-ref tags and offer exclusive tag prefixes', async () => {
+  const { dispatcher, api } = bootApi(taskMockTransport());
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  const scope = {
+    get projectId() {
+      return tree.at(['scope', 'projectId']).peek() ?? null;
+    },
+  };
+  const host = M.Control.New(
+    'ScreenHost',
+    { type: 'ScreenHost', screen: { slug: 'kanban', layout: 'kanban', title: 'Kanban' }, resolveScreen: false },
+    { api, tree, scope },
+  );
+  host.mount(new FakeElement('div'));
+  await settle(dispatcher); // resolves axes AND lands the tag option cards (with roots)
+
+  const groupEl = host.el.querySelectorAll('[data-filter-group]')[0];
+  const labels = (groupEl.children ?? []).map((o) => o.textContent);
+  // Raw card_ref[] `tags` is NOT groupable; the exclusive 'priority' root is,
+  // shown as 'Priority'. The non-exclusive 'area' prefix is never offered.
+  assert.ok(!labels.includes('Tags'), `raw Tags grouping dropped (got ${JSON.stringify(labels)})`);
+  assert.ok(labels.includes('Priority'), `exclusive prefix offered (got ${JSON.stringify(labels)})`);
+  assert.ok(!labels.includes('Area'), 'non-exclusive prefix not offered');
+  // Single-valued ref axes are still groupable.
+  assert.ok(labels.includes('Status') && labels.includes('Milestone'), 'scalar ref axes remain');
+
+  // The synthetic option resolves to a tag-prefix GroupAttr.
+  const byAttr = tree.at(['screen', 'groupAxesByAttr']).peek();
+  assert.deepEqual(
+    byAttr['tagpfx:priority'],
+    { attr: 'tags', lookup: 'tags', tagPrefix: 'priority' },
+    'tagpfx:priority resolves to a tag-prefix GroupAttr',
+  );
+  assert.equal(byAttr['tags'], undefined, 'no raw tags group axis');
+
+  // The LANE picker (swim lanes) offers the same prefix option.
+  const laneEl = host.el.querySelectorAll('[data-filter-lane]')[0];
+  const laneLabels = (laneEl.children ?? []).map((o) => o.textContent);
+  assert.ok(laneLabels.includes('Priority') && !laneLabels.includes('Tags'), 'lanes mirror the group options');
 });
 
 /* -------------------------------------------------------------------------- */

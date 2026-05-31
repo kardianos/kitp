@@ -19,18 +19,19 @@ function card(id, attrs) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* bucketByColumn.                                                             */
+/* bucketByKey.                                                                */
 /* -------------------------------------------------------------------------- */
 
-test('bucketByColumn: groups by axis value; unset lands in UNSET_KEY', () => {
-  const { bucketByColumn, UNSET_KEY } = M;
+test('bucketByKey: groups by a scalar axis value; unset lands in UNSET_KEY', () => {
+  const { bucketByKey, bucketKeyOf, UNSET_KEY } = M;
   const cards = [
     card(1n, { milestone_ref: 32n }),
     card(2n, { milestone_ref: 32n }),
     card(3n, { milestone_ref: 33n }),
     card(4n, {}), // unset
   ];
-  const b = bucketByColumn(cards, 'milestone_ref');
+  // The board's ordinary-axis key: the scalar attribute value.
+  const b = bucketByKey(cards, (c) => bucketKeyOf(c.attributes['milestone_ref']));
   assert.deepEqual(
     b['32'].map((c) => c.id),
     [1n, 2n],
@@ -43,6 +44,27 @@ test('bucketByColumn: groups by axis value; unset lands in UNSET_KEY', () => {
     b[UNSET_KEY].map((c) => c.id),
     [4n],
   );
+});
+
+test('bucketByKey: each card lands in exactly ONE bucket (the resolved key)', () => {
+  const { bucketByKey, tagIdUnderRoot, UNSET_KEY } = M;
+  // A tag-prefix keyer: a card's bucket is the id of its tag under 'priority'.
+  const rootById = new Map([
+    ['108', 'priority'],
+    ['109', 'priority'],
+    ['110', ''],
+  ]);
+  const cards = [
+    card(1n, { tags: [108n, 110n] }), // priority/high (+ a non-priority tag) → 108 only
+    card(2n, { tags: [109n] }), // priority/low → 109
+    card(3n, { tags: [110n] }), // no priority tag → unset
+    card(4n, {}), // no tags → unset
+  ];
+  const b = bucketByKey(cards, (c) => tagIdUnderRoot(c.attributes['tags'], rootById, 'priority') ?? UNSET_KEY);
+  assert.deepEqual(b['108'].map((c) => c.id), [1n], 'card 1 only in 108 (no fan-out across its other tags)');
+  assert.deepEqual(b['109'].map((c) => c.id), [2n]);
+  assert.equal(b['108,110'], undefined, 'no combined array-key bucket');
+  assert.deepEqual(b[UNSET_KEY].map((c) => c.id), [3n, 4n], 'no priority tag → unset');
 });
 
 test('bucketKeyOf: 42n / 42 / "42" all key to "42" (boot-order-safe)', () => {

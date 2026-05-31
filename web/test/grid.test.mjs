@@ -70,7 +70,7 @@ function visibleGridRows(root) {
 
 const PROJECT_ID = 100n;
 
-function gridMockTransport() {
+function gridMockTransport(taskOverride) {
   // Records the most recent tasks-query input so tests can inspect order/where,
   // plus every write sub-request (attribute.update / task.move / task.purge)
   // AND a per-flush batch log so a test can assert the bulk fan-out coalesced
@@ -105,6 +105,9 @@ function gridMockTransport() {
     },
     task(202n, 'API rate limits', { sort_order: 200 }),
   ];
+  // A test may override the row set entirely (e.g. to exercise range
+  // selection over more than the two default rows).
+  const TASK_ROWS = taskOverride ?? TASKS;
 
   const card = (id, type, attrs) => ({
     id: String(id),
@@ -141,7 +144,7 @@ function gridMockTransport() {
         case 'task':
         default:
           sent.taskInputs.push(data);
-          return { id: sr.id, ok: true, data: { rows: TASKS } };
+          return { id: sr.id, ok: true, data: { rows: TASK_ROWS } };
       }
     }
     if (key === 'attribute.update') {
@@ -889,6 +892,93 @@ test('Grid: grouping prepends the group key to the wire order[] (rows arrive buc
   assert.deepEqual(last.order, [{ field: 'attributes.status', direction: 'ASC' }], 'group key first, asc');
 });
 
+/**
+ * A grouping mock for the exclusive TAG-PREFIX case: tasks carry `tags` arrays,
+ * and the `tag` lookup returns cards with `path` + `root_exclusive_at` so
+ * 'priority' is an exclusive (groupable) prefix and 'area' is not. Tasks are
+ * NOT server-ordered by the group key — a tag-prefix group buckets client-side.
+ */
+function tagPrefixGroupingTransport() {
+  const sent = { taskInputs: [] };
+  const task = (id, tags) => ({
+    id: String(id),
+    card_type_id: '5',
+    card_type_name: 'task',
+    parent_card_id: String(PROJECT_ID),
+    phase: 'active',
+    attributes: { title: `T${id}`, sort_order: Number(id), tags },
+  });
+  const TASKS = [
+    task(301n, ['61']), // priority/high
+    task(302n, ['62']), // priority/low
+    task(303n, ['61']), // priority/high
+    task(304n, ['64']), // area only → unset under priority
+    task(305n, []), // no tags → unset
+  ];
+  const card = (id, type, attrs) => ({
+    id: String(id), card_type_id: '9', card_type_name: type, parent_card_id: String(PROJECT_ID), attributes: attrs,
+  });
+  function respond(sr) {
+    if (`${sr.endpoint}.${sr.action}` === 'card.select_with_attributes') {
+      const data = sr.data ?? {};
+      if (data.card_type_name === 'tag') {
+        return {
+          id: sr.id, ok: true, data: { rows: [
+            card(61n, 'tag', { path: 'priority/high', root_exclusive_at: 'priority', sort_order: 1 }),
+            card(62n, 'tag', { path: 'priority/low', root_exclusive_at: 'priority', sort_order: 2 }),
+            card(64n, 'tag', { path: 'area/backend', sort_order: 3 }),
+          ] } };
+      }
+      if (data.card_type_name === 'task') {
+        sent.taskInputs.push(data);
+        return { id: sr.id, ok: true, data: { rows: TASKS } };
+      }
+      return { id: sr.id, ok: true, data: { rows: [] } };
+    }
+    return { id: sr.id, ok: false, error: { code: 'unknown_handler', message: 'no' } };
+  }
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      return { status: 200, text: JSON.stringify({ subresponses: req.subrequests.map(respond) }) };
+    },
+  };
+  return { transport, sent };
+}
+
+test('Grid: GROUP by an exclusive tag prefix buckets rows client-side (leaf labels, no wire group order)', async () => {
+  const { transport, sent } = tagPrefixGroupingTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const grid = mountGrid(api, tree);
+  await settle(dispatcher);
+
+  tree.at(['screen', 'groupAxis']).set({ attr: 'tags', lookup: 'tags', tagPrefix: 'priority' });
+  await settle(dispatcher);
+
+  // Headers are the priority tags in sort_order, leaf-labelled; rows bucket by
+  // the card's priority tag; cards with none (incl. the area-only 304) land in
+  // (unset). The area tag is never a group.
+  assert.deepEqual(visibleItems(grid.el), [
+    { kind: 'group', label: 'high', count: '· 2', dir: 'asc' },
+    { kind: 'row', id: '301' },
+    { kind: 'row', id: '303' },
+    { kind: 'group', label: 'low', count: '· 1', dir: 'asc' },
+    { kind: 'row', id: '302' },
+    { kind: 'group', label: '(unset)', count: '· 2', dir: 'asc' },
+    { kind: 'row', id: '304' },
+    { kind: 'row', id: '305' },
+  ]);
+
+  // A tag-prefix group is client-side: the wire order must NOT prepend a group
+  // field (the server can't order by "the tag under a prefix").
+  const last = sent.taskInputs[sent.taskInputs.length - 1];
+  assert.ok(
+    !Array.isArray(last.order) || !last.order.some((o) => o.field === 'attributes.tags'),
+    'no attributes.tags prepended to the wire order',
+  );
+});
+
 test('Grid: group-header click flips the group direction (asc ⇄ desc)', async () => {
   const { transport, sent } = groupingMockTransport();
   const { dispatcher, api } = bootApi(transport);
@@ -1038,6 +1128,77 @@ test('Grid: Space on a focused row toggles its selection', async () => {
   // Navigation did NOT fire (Space is selection, not open).
   row.dispatchEvent({ type: 'keydown', key: ' ', target: row });
   assert.equal(sel().size, 0, 'Space again toggled it off');
+});
+
+test('Grid: Shift+click a checkbox selects the whole range from the anchor to the clicked row', async () => {
+  // Five rows so the range spans rows the user never clicked directly.
+  const rows = ['301', '302', '303', '304', '305'].map((id, i) => ({
+    id,
+    card_type_id: '5',
+    card_type_name: 'task',
+    parent_card_id: String(PROJECT_ID),
+    phase: 'active',
+    attributes: { title: `T${id}`, sort_order: (i + 1) * 10 },
+  }));
+  const { transport } = gridMockTransport(rows);
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const grid = mountGrid(api, tree);
+  await settle(dispatcher);
+
+  const sel = () => [...tree.at(['grid', 'selection']).peek()].sort();
+  // Resolve a row's checkbox by its live card id (order-independent — the
+  // recycling pool's DOM order needn't match item order).
+  const boxFor = (id) =>
+    visibleGridRows(grid.el)
+      .find((r) => r.dataset.cardId === id)
+      .querySelectorAll('[data-grid-select-row]')[0];
+
+  // Plain click 302 → it becomes the anchor + the only selection.
+  boxFor('302').dispatchEvent({ type: 'click', target: boxFor('302') });
+  assert.deepEqual(sel(), ['302'], 'anchor row selected');
+
+  // Shift+click 304 → fills 302..304 inclusive (303 was never clicked).
+  boxFor('304').dispatchEvent({ type: 'click', target: boxFor('304'), shiftKey: true });
+  assert.deepEqual(sel(), ['302', '303', '304'], 'range 302..304 filled');
+
+  // Shift+click BACKWARD to 301 → the anchor moved to 304, so this extends
+  // 304..301 and unions it with the existing selection (305 stays out).
+  boxFor('301').dispatchEvent({ type: 'click', target: boxFor('301'), shiftKey: true });
+  assert.deepEqual(sel(), ['301', '302', '303', '304'], 'backward range unions in 301');
+});
+
+test('Grid: Shift+click with no prior anchor just toggles the one row', async () => {
+  const { transport } = gridMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const grid = mountGrid(api, tree);
+  await settle(dispatcher);
+
+  const sel = () => [...tree.at(['grid', 'selection']).peek()];
+  const boxes = rowSelectBoxes(grid);
+  // First gesture is a Shift+click — with no anchor it falls back to a toggle.
+  boxes[0].dispatchEvent({ type: 'click', target: boxes[0], shiftKey: true });
+  assert.deepEqual(sel(), ['201'], 'shift with no anchor selected just the clicked row');
+});
+
+test('Grid: the whole select cell is the toggle hitbox (not just the checkbox), and never opens the row', async () => {
+  const { transport } = gridMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const grid = mountGrid(api, tree);
+  await settle(dispatcher);
+
+  const sel = () => [...tree.at(['grid', 'selection']).peek()];
+  const row = visibleGridRows(grid.el)[0];
+  // The leading select CELL (the padding around the checkbox), not the box.
+  const cell = row.querySelectorAll('[data-grid-col="select"]')[0];
+  assert.ok(cell, 'a leading select cell renders');
+
+  const before = location.pathname;
+  cell.dispatchEvent({ type: 'click', target: cell });
+  assert.deepEqual(sel(), ['201'], 'a click in the select cell toggled the row');
+  assert.equal(location.pathname, before, 'select-cell click did not navigate into the task');
 });
 
 test('Grid: header select-all checks every loaded task; re-click clears', async () => {

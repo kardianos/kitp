@@ -56,7 +56,7 @@ import { navigate, taskUrl } from '../shell/router.js';
 import { publishTaskNav } from '../shell/task-nav.js';
 import { SPEC } from './specs.js';
 import {
-  bucketByColumn,
+  bucketByKey,
   bucketKeyOf,
   columnOrder,
   planSortRewrite,
@@ -65,6 +65,8 @@ import {
   type CardWithAttrs,
 } from './kanban-helpers.js';
 import { type GroupAttr } from '../filter/group-axis.js';
+import { tagIdUnderRoot, tagLeaf } from '../filter/tag-prefix.js';
+import { TAG_APPLY_SPEC, TAG_REMOVE_SPEC } from '../task-detail/attachment-specs.js';
 import { KANBAN_DEFAULT_GROUP_ATTR } from '../filter/screen-resolve.js';
 import type { CardWherePredicate } from '../projects/project-helpers.js';
 import {
@@ -131,6 +133,13 @@ interface AxisCard {
   /** Named palette tone (tag cards only — `color` attribute). Empty / absent
    *  leaves the chip in its neutral default. */
   color?: string;
+  /** Tag cards only: the slash-delimited `path` ('priority/high') — its leaf is
+   *  the column/lane label under a tag-prefix axis. */
+  path?: string;
+  /** Tag cards only: the `root_exclusive_at` segment ('priority') — the prefix
+   *  this tag is groupable under, and the membership test for that prefix's
+   *  columns. Empty / absent for non-exclusive tags. */
+  rootExclusiveAt?: string;
 }
 
 /* Shared dataset key for the in-flight drag (one board, simple module state). */
@@ -156,9 +165,33 @@ export class Kanban extends Control<KanbanConfig> {
     return this.axis?.attr ?? DEFAULT_AXIS_ATTR;
   }
 
-  /** The lookup-map name whose value-cards key the columns for the active axis. */
-  private get axisLookup(): string {
-    return this.axis?.lookup ?? DEFAULT_AXIS_LOOKUP;
+  /** A bucket-key resolver for [axis], with any tag root map precomputed once
+   *  (so a per-card key is O(1)). For a tag-prefix axis the key is the id of the
+   *  card's single tag under that exclusive root (or UNSET); otherwise it's the
+   *  scalar value of the axis attribute. Shared by columns + swim lanes. */
+  private keyer(axis: GroupAttr | null): (card: CardWithAttrs) => string {
+    const prefix = axis?.tagPrefix;
+    if (prefix !== undefined) {
+      const rootMap = this.tagRootMap();
+      return (card) => tagIdUnderRoot(card.attributes['tags'], rootMap, prefix) ?? UNSET_KEY;
+    }
+    const attr = axis?.attr ?? DEFAULT_AXIS_ATTR;
+    return (card) => bucketKeyOf(card.attributes[attr]);
+  }
+
+  /** id→exclusive-root map over the loaded tag value-cards (tag-prefix keying). */
+  private tagRootMap(): Map<string, string> {
+    const tags = (this.ctx.tree.at(['kanban', 'axis', 'tags']).peek<AxisCard[]>() ?? []) as AxisCard[];
+    const m = new Map<string, string>();
+    for (const t of tags) if (t.rootExclusiveAt !== undefined) m.set(t.id.toString(), t.rootExclusiveAt);
+    return m;
+  }
+
+  /** The column/lane LABEL for a value-card on [axis]: a tag-prefix axis shows
+   *  the tag's leaf ('priority/high' → 'high'); any other axis its plain label. */
+  private axisLabelOf(card: AxisCard, axis: GroupAttr | null): string {
+    if (axis?.tagPrefix !== undefined) return tagLeaf(card.path ?? card.label);
+    return card.label;
   }
 
   /** The board element (`.kanban__columns`). Held so the drag handlers can
@@ -331,6 +364,36 @@ export class Kanban extends Control<KanbanConfig> {
           );
         },
       },
+      onError: 'top',
+    },
+    {
+      // Optimistic CROSS-COLUMN move on a TAG-PREFIX axis. Re-keying a tag
+      // prefix isn't a scalar attribute set (that would clobber the whole `tags`
+      // array) — it's `tag.apply`, which the server resolves atomically: it adds
+      // the target tag AND drops any sibling sharing its `root_exclusive_at`,
+      // preserving the card's other tags. The optimistic patch sets the card's
+      // `tags` to the array the client precomputed (payload.tags) so the move
+      // shows instantly; the wire call only carries target/tag ids.
+      intent: 'applyTag',
+      spec: TAG_APPLY_SPEC,
+      input: {
+        targetCardId: { payload: 'cardId' },
+        tagCardId: { payload: 'tagId' },
+      },
+      optimistic: { path: 'kanban.tasks', patch: patchTags },
+      onError: 'top',
+    },
+    {
+      // Optimistic move into the `(unset)` column of a tag-prefix axis: drop the
+      // card's current tag under that root via `tag.remove`. Same optimistic
+      // `tags` rewrite as applyTag.
+      intent: 'removeTag',
+      spec: TAG_REMOVE_SPEC,
+      input: {
+        targetCardId: { payload: 'cardId' },
+        tagCardId: { payload: 'tagId' },
+      },
+      optimistic: { path: 'kanban.tasks', patch: patchTags },
       onError: 'top',
     },
   ];
@@ -511,8 +574,20 @@ export class Kanban extends Control<KanbanConfig> {
    *  flow uses, hides statuses the workflow doesn't include). Both peek; the
    *  board render subscribes to the underlying leaves separately. */
   private activeAxisCards(): AxisCard[] {
-    const all = (this.ctx.tree.at(['kanban', 'axis', this.axisLookup]).peek<AxisCard[]>() ?? []) as AxisCard[];
-    if (this.axisLookup !== 'statuses') return all;
+    return this.axisCardsFor(this.axis);
+  }
+
+  /** The value-card list for ANY axis (column or lane). For a tag-prefix axis
+   *  it's the tags under that exclusive root; otherwise the axis's full
+   *  value-card list, with the status-only phase / workflow restrictions
+   *  applied (those only matter for the column axis, which is the status case). */
+  private axisCardsFor(axis: GroupAttr | null): AxisCard[] {
+    const lookup = axis?.lookup ?? DEFAULT_AXIS_LOOKUP;
+    const all = (this.ctx.tree.at(['kanban', 'axis', lookup]).peek<AxisCard[]>() ?? []) as AxisCard[];
+    if (axis?.tagPrefix !== undefined) {
+      return all.filter((a) => a.rootExclusiveAt === axis.tagPrefix);
+    }
+    if (lookup !== 'statuses') return all;
     let out = all;
     // Workflow restriction: when the project's status flow has loaded, keep
     // only the statuses the workflow includes; null = no workflow → no filter.
@@ -620,12 +695,13 @@ export class Kanban extends Control<KanbanConfig> {
     columnKey: string,
     laneKey: string | undefined,
   ): CardWithAttrs[] {
-    const attr = this.axisAttr;
     const lane = this.lane;
-    const laned = laneKey !== undefined && lane !== null && lane.attr !== attr;
+    const laned = laneKey !== undefined && lane !== null && !this.laneIsColumnAxis(lane);
+    const colKeyOf = this.keyer(this.axis);
+    const laneKeyOf = laned ? this.keyer(lane) : null;
     const out = tasks.filter((t) => {
-      if (bucketKeyOf(t.attributes[attr]) !== columnKey) return false;
-      if (laned && bucketKeyOf(t.attributes[lane.attr]) !== laneKey) return false;
+      if (colKeyOf(t) !== columnKey) return false;
+      if (laneKeyOf !== null && laneKeyOf(t) !== laneKey) return false;
       return true;
     });
     return sortByOrder(out);
@@ -636,23 +712,38 @@ export class Kanban extends Control<KanbanConfig> {
    *  DOM only when this changes; card moves within the same structure flow
    *  through each column's reactive `data()`. */
   private computeStructureKey(tasks: readonly CardWithAttrs[], axis: AxisCard[]): string {
-    const attr = this.axisAttr;
     const lane = this.lane;
-    const laned = lane !== null && lane.attr !== attr;
+    const laned = lane !== null && !this.laneIsColumnAxis(lane);
+    const colKeyOf = this.keyer(this.axis);
     const colPart = (scoped: readonly CardWithAttrs[]): string => {
-      const order = columnOrder(axis.map((a) => a.id), Object.keys(bucketByColumn(scoped, attr)));
-      const labelById = new Map(axis.map((a) => [a.id.toString(), a.label]));
+      const order = columnOrder(axis.map((a) => a.id), Object.keys(bucketByKey(scoped, colKeyOf)));
+      const labelById = new Map(axis.map((a) => [a.id.toString(), this.axisLabelOf(a, this.axis)]));
       return order.map((k) => `${k}=${k === UNSET_KEY ? '∅' : labelById.get(k) ?? `#${k}`}`).join(',');
     };
-    if (!laned) return `flat|${attr}|${colPart(tasks)}`;
-    const laneCards = (this.ctx.tree.at(['kanban', 'axis', lane.lookup ?? '']).peek<AxisCard[]>() ?? []) as AxisCard[];
-    const laneBuckets = bucketByColumn(tasks, lane.attr);
+    if (!laned) return `flat|${this.axisSig(this.axis)}|${colPart(tasks)}`;
+    const laneCards = this.axisCardsFor(lane);
+    const laneKeyOf = this.keyer(lane);
+    const laneBuckets = bucketByKey(tasks, laneKeyOf);
     const laneOrder = columnOrder(laneCards.map((c) => c.id), Object.keys(laneBuckets));
-    const laneLabel = new Map(laneCards.map((c) => [c.id.toString(), c.label]));
+    const laneLabel = new Map(laneCards.map((c) => [c.id.toString(), this.axisLabelOf(c, lane)]));
     const parts = laneOrder.map(
       (lk) => `${lk}=${lk === UNSET_KEY ? '∅' : laneLabel.get(lk) ?? `#${lk}`}[${colPart(laneBuckets[lk] ?? [])}]`,
     );
-    return `lane|${attr}|${lane.attr}|${parts.join(';')}`;
+    return `lane|${this.axisSig(this.axis)}|${this.axisSig(lane)}|${parts.join(';')}`;
+  }
+
+  /** A stable signature for an axis (attr + any tag prefix) used in the
+   *  structure key so a prefix switch (priority → severity) rebuilds the DOM. */
+  private axisSig(axis: GroupAttr | null): string {
+    return axis?.tagPrefix !== undefined ? `tags:${axis.tagPrefix}` : (axis?.attr ?? this.axisAttr);
+  }
+
+  /** Whether [lane] addresses the SAME axis as the column axis — by signature,
+   *  not bare attr, so two distinct tag prefixes (both `attr='tags'`, e.g.
+   *  priority columns × severity lanes) are correctly seen as different axes
+   *  rather than collapsing to "no lanes". */
+  private laneIsColumnAxis(lane: GroupAttr): boolean {
+    return this.axisSig(lane) === this.axisSig(this.axis);
   }
 
   /** Rebuild the board from the current tasks + the active axis value-cards.
@@ -673,21 +764,21 @@ export class Kanban extends Control<KanbanConfig> {
     this.disposeColumnLists();
 
     const lane = this.lane;
-    if (lane === null || lane.attr === this.axisAttr) {
+    if (lane === null || this.laneIsColumnAxis(lane)) {
       board.classList.remove('kanban--laned');
       board.replaceChildren(...this.renderColumnRow(tasks, axis));
       return;
     }
 
     board.classList.add('kanban--laned');
-    const laneCards = (this.ctx.tree.at(['kanban', 'axis', lane.lookup ?? '']).peek<AxisCard[]>() ?? []) as AxisCard[];
-    const laneBuckets = bucketByColumn(tasks, lane.attr);
+    const laneCards = this.axisCardsFor(lane);
+    const laneBuckets = bucketByKey(tasks, this.keyer(lane));
     const laneOrder = columnOrder(
       laneCards.map((c) => c.id),
       Object.keys(laneBuckets),
     );
     const laneLabelById = new Map<string, string>();
-    for (const c of laneCards) laneLabelById.set(c.id.toString(), c.label);
+    for (const c of laneCards) laneLabelById.set(c.id.toString(), this.axisLabelOf(c, lane));
 
     const lanes: HTMLElement[] = [];
     for (const laneKey of laneOrder) {
@@ -710,14 +801,13 @@ export class Kanban extends Control<KanbanConfig> {
   /** Render one row of columns for `tasks`, optionally tagged with the `laneKey`
    *  they belong to (so a drop can cross-lane re-key). */
   private renderColumnRow(tasks: CardWithAttrs[], axis: AxisCard[], laneKey?: string): HTMLElement[] {
-    const attr = this.axisAttr;
-    const buckets = bucketByColumn(tasks, attr);
+    const buckets = bucketByKey(tasks, this.keyer(this.axis));
     const order = columnOrder(
       axis.map((a) => a.id),
       Object.keys(buckets),
     );
     const labelById = new Map<string, string>();
-    for (const a of axis) labelById.set(a.id.toString(), a.label);
+    for (const a of axis) labelById.set(a.id.toString(), this.axisLabelOf(a, this.axis));
     const cols: HTMLElement[] = [];
     for (const key of order) {
       const label = key === UNSET_KEY ? '(unset)' : (labelById.get(key) ?? `#${key}`);
@@ -971,20 +1061,15 @@ export class Kanban extends Control<KanbanConfig> {
     this.settleCardId = cardId;
 
     // CROSS-LANE (swim lanes #26): dropped into a different lane → re-key the
-    // lane axis attribute (a separate moveTask, coalesced into the batch).
+    // lane axis to the target lane's value (moveTask for a scalar axis, or
+    // tag.apply/remove for a tag-prefix lane — see rekeyAxis).
     const lane = this.lane;
-    if (lane !== null && laneKey !== undefined && bucketKeyOf(card.attributes[lane.attr]) !== laneKey) {
-      const laneValue: bigint | null = laneKey === UNSET_KEY ? null : BigInt(laneKey);
-      this.intent('moveTask', { cardId, attributeName: lane.attr, value: laneValue });
+    if (lane !== null && !this.laneIsColumnAxis(lane) && laneKey !== undefined) {
+      this.rekeyAxis(card, cardId, lane, laneKey);
     }
 
-    // CROSS-COLUMN: re-key the dragged card's axis attribute to the target
-    // column's value.
-    const attr = this.axisAttr;
-    if (bucketKeyOf(card.attributes[attr]) !== targetColumnKey) {
-      const value: bigint | null = targetColumnKey === UNSET_KEY ? null : BigInt(targetColumnKey);
-      this.intent('moveTask', { cardId, attributeName: attr, value });
-    }
+    // CROSS-COLUMN: re-key the dragged card's column axis to the target column.
+    this.rekeyAxis(card, cardId, this.axis, targetColumnKey);
 
     // PLACE AT THE DROPPED SLOT. Rewrite sort_order so the card lands exactly
     // where it was dropped — this runs whether the card stayed in its column (a
@@ -1001,6 +1086,53 @@ export class Kanban extends Control<KanbanConfig> {
     for (const u of updates) {
       this.intent('reorderTask', { cardId: u.cardId, sortOrder: u.sortOrder });
     }
+  }
+
+  /**
+   * Re-key a card's [axis] to the target bucket [targetKey], choosing the write
+   * by axis kind. A TAG-PREFIX axis re-tags rather than overwriting `tags`:
+   * `tag.apply` (into a tag column) or `tag.remove` (into `(unset)`), both of
+   * which the server resolves atomically — apply drops any sibling under the
+   * same exclusive root, so the card's OTHER tags survive. The optimistic `tags`
+   * array is precomputed here to match. A scalar axis re-keys via
+   * attribute.update (moveTask). No-op when the card already sits in the target.
+   */
+  private rekeyAxis(card: CardWithAttrs, cardId: bigint, axis: GroupAttr | null, targetKey: string): void {
+    if (this.keyer(axis)(card) === targetKey) return;
+    if (axis?.tagPrefix !== undefined) {
+      const root = axis.tagPrefix;
+      if (targetKey === UNSET_KEY) {
+        // Into (unset): drop the card's current tag under this root, if any.
+        const curKey = this.keyer(axis)(card);
+        if (curKey === UNSET_KEY) return;
+        this.intent('removeTag', { cardId, tagId: BigInt(curKey), tags: this.retagArray(card, root, null) });
+      } else {
+        const addId = BigInt(targetKey);
+        this.intent('applyTag', { cardId, tagId: addId, tags: this.retagArray(card, root, addId) });
+      }
+      return;
+    }
+    const value: bigint | null = targetKey === UNSET_KEY ? null : BigInt(targetKey);
+    this.intent('moveTask', { cardId, attributeName: axis?.attr ?? DEFAULT_AXIS_ATTR, value });
+  }
+
+  /** The card's `tags` after an exclusive-root retag: drop every tag it holds
+   *  under [root], then add [addId] (null = pure removal). Mirrors tag.apply's
+   *  atomic swap so the optimistic view matches what the server stores. */
+  private retagArray(card: CardWithAttrs, root: string, addId: bigint | null): bigint[] {
+    const rootMap = this.tagRootMap();
+    const raw = card.attributes['tags'];
+    const kept: bigint[] = [];
+    if (Array.isArray(raw)) {
+      for (const el of raw) {
+        const id = typeof el === 'bigint' ? el : /^-?\d+$/.test(String(el)) ? BigInt(String(el)) : null;
+        if (id === null) continue;
+        if (rootMap.get(id.toString()) === root) continue; // drop the old tag under this root
+        kept.push(id);
+      }
+    }
+    if (addId !== null && !kept.some((id) => id === addId)) kept.push(addId);
+    return kept;
   }
 
   /* ----------------------------- query driver --------------------------- */
@@ -1113,18 +1245,24 @@ export class Kanban extends Control<KanbanConfig> {
   /** Shift+H/L — move the focused card to the adjacent column (cross-column
    *  re-key on the active axis), reusing the optimistic moveTask action. */
   private moveFocused(dir: 1 | -1): void {
-    const card = this.focusedCard();
-    if (card === null) return;
-    const idStr = card.dataset.cardId;
+    const cardEl = this.focusedCard();
+    if (cardEl === null) return;
+    const idStr = cardEl.dataset.cardId;
     if (idStr === undefined || idStr === '') return;
     const cols = this.boardColumns();
-    const col = this.columnOf(card);
+    const col = this.columnOf(cardEl);
     if (col === null) return;
     const next = cols.indexOf(col) + dir;
     if (next < 0 || next >= cols.length) return;
     const key = (cols[next] as HTMLElement).dataset.column;
-    const value = key === undefined || key === UNSET_KEY ? null : BigInt(key);
-    this.intent('moveTask', { cardId: BigInt(idStr), attributeName: this.axisAttr, value });
+    if (key === undefined) return;
+    const cardId = BigInt(idStr);
+    const tasks = (this.ctx.tree.at(this.tasksPath).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+    const card = tasks.find((t) => t.id === cardId);
+    if (card === undefined) return;
+    // Re-key the card's column axis — moveTask for a scalar axis, tag.apply /
+    // tag.remove for a tag-prefix axis (preserving the card's other tags).
+    this.rekeyAxis(card, cardId, this.axis, key);
   }
 
   /**
@@ -1139,7 +1277,12 @@ export class Kanban extends Control<KanbanConfig> {
       extraAttributes?: Array<{ name: string; value: unknown }>;
     } = {};
     if (columnKey !== undefined && columnKey !== UNSET_KEY) {
-      prefill.laneAttribute = { name: this.axisAttr, value: BigInt(columnKey) };
+      // A tag-prefix column keys on `tags` (a card_ref[]): seed it as a
+      // single-element ARRAY so the new task carries that one tag, not a scalar
+      // that would mis-shape the multi-valued attribute.
+      const value: unknown =
+        this.axis?.tagPrefix !== undefined ? [BigInt(columnKey)] : BigInt(columnKey);
+      prefill.laneAttribute = { name: this.axisAttr, value };
     }
     // In a swim lane, also stamp the new task's lane-axis value so it lands here.
     const lane = this.lane;
@@ -1222,6 +1365,19 @@ function labelOf(r: CardWithAttrs): string {
   return typeof t === 'string' && t.length > 0 ? t : `#${r.id.toString()}`;
 }
 
+/** Optimistic patch for the applyTag / removeTag actions: replace the dragged
+ *  card's `tags` array with the client-precomputed result (payload.tags), so a
+ *  tag-prefix column/lane move shows instantly. A no-op if the payload lacks the
+ *  precomputed array. Rolls back automatically on a server fault. */
+function patchTags(current: unknown, payload: unknown): CardWithAttrs[] {
+  const rows = Array.isArray(current) ? (current as CardWithAttrs[]) : [];
+  const p = (payload ?? {}) as { cardId?: bigint; tags?: bigint[] };
+  if (p.cardId === undefined || !Array.isArray(p.tags)) return rows;
+  return rows.map((row) =>
+    row.id === p.cardId ? { ...row, attributes: { ...row.attributes, tags: p.tags } } : row,
+  );
+}
+
 /** Build the kanban's column-keying AxisCard from a value-card row. Carries the
  *  row's top-level `phase` (status cards) so a phase-scoped status-grouped board
  *  can hide out-of-phase columns. Reads `sort_order` so the column / lane
@@ -1237,6 +1393,10 @@ function axisCardOf(r: CardWithAttrs): AxisCard {
   if (r.phase !== undefined) out.phase = r.phase;
   const color = r.attributes['color'];
   if (typeof color === 'string' && color !== '') out.color = color;
+  const path = r.attributes['path'];
+  if (typeof path === 'string' && path !== '') out.path = path;
+  const root = r.attributes['root_exclusive_at'];
+  if (typeof root === 'string' && root !== '') out.rootExclusiveAt = root;
   return out;
 }
 

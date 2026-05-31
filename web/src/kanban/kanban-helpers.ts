@@ -6,7 +6,8 @@
  * functions exercised directly by `node --test`.
  *
  * Surface (parity with the Svelte helpers):
- *   - {@link bucketByColumn}      group cards by a column-attr value-card id;
+ *   - {@link bucketByKey}         group cards by a caller-supplied per-card key
+ *                                 (scalar axis value or tag-prefix tag id);
  *                                 unset lands in the `UNSET_KEY` bucket.
  *   - {@link planSortRewrite}     the minimal `sort_order` writes that place a
  *                                 moved card into a destination cell, rewriting
@@ -104,22 +105,26 @@ export function asAttrId(v: unknown): bigint | null {
 }
 
 /* -------------------------------------------------------------------------- */
-/* bucketByColumn.                                                             */
+/* bucketByKey.                                                                */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Bucket [cards] by the value of [columnAttr]. Cards whose attribute is unset
- * land in the {@link UNSET_KEY} bucket. The record keeps first-seen insertion
- * order so callers iterating `Object.entries` get a deterministic order when
- * there is no canonical column ordering supplied.
+ * Bucket [cards] by a per-card KEY function. The board's only bucketer: the
+ * caller supplies `keyOf` — the scalar value of an axis attribute for an
+ * ordinary axis (`c => bucketKeyOf(c.attributes[attr])`), or the id of the
+ * single tag a card carries under an exclusive root for a tag-prefix axis.
+ * Cards with no value land in {@link UNSET_KEY} (the caller's keyOf returns it).
+ * Keeps first-seen key order; a card maps to exactly ONE bucket (no fan-out —
+ * an axis whose value is multi-valued is modelled as a tag-prefix axis, which
+ * is single-valued by exclusivity).
  */
-export function bucketByColumn(
+export function bucketByKey(
   cards: readonly CardWithAttrs[],
-  columnAttr: string,
+  keyOf: (card: CardWithAttrs) => string,
 ): Record<string, CardWithAttrs[]> {
   const out: Record<string, CardWithAttrs[]> = {};
   for (const c of cards) {
-    const k = bucketKeyOf(c.attributes[columnAttr]);
+    const k = keyOf(c);
     const bucket = out[k];
     if (bucket === undefined) out[k] = [c];
     else bucket.push(c);

@@ -78,11 +78,13 @@ import {
   sortStatesFromFilter,
   type FilterSortEntry,
   walkGrouped,
+  GROUP_EMPTY_KEY,
   type ColumnDef,
   type GroupAttr,
   type GroupItem,
   type SortState,
 } from './grid-helpers.js';
+import { tagIdUnderRoot, tagLeaf } from '../filter/tag-prefix.js';
 import type { RefAxis } from '../filter/vocabulary.js';
 import type { AttrSchema } from '../filter/attribute-schema.js';
 import type { RefPicker } from '../ui/ref-picker.js';
@@ -143,6 +145,10 @@ export class Grid extends Control<GridConfig> {
   private headerEl: HTMLElement | null = null;
   /** The persistent select-all header cell (kept across column rebuilds). */
   private selectAllCell: HTMLElement | null = null;
+  /** The last row toggled by a plain (non-shift) click/Space — the anchor a
+   *  subsequent Shift+click extends a range from. Cleared lazily (a stale id
+   *  that's scrolled out of the loaded set just yields no range). */
+  private selectionAnchor: string | null = null;
   /** Per-column header sort handles, keyed by col.key (sortable columns only). */
   private headerCells = new Map<string, { cell: HTMLElement; arrow: HTMLElement; field: string }>();
   /** Per-column filter funnels (ref columns) + the popovers, rebuilt with the header. */
@@ -552,14 +558,27 @@ export class Grid extends Control<GridConfig> {
       const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
       const paths: LabelMap = {};
       const colors: LabelMap = {};
+      // Tag-prefix grouping needs each tag's exclusive root + sort_order: roots
+      // define a prefix's column set + a row's bucket; sort_order sequences the
+      // groups (so priority high/med/low order matches the operator's, not the
+      // server's id order). Parallel maps keyed by id-string.
+      const roots: LabelMap = {};
+      const sort: Record<string, number> = {};
       for (const r of rows) {
+        const id = r.id.toString();
         const p = r.attributes['path'];
-        paths[r.id.toString()] = typeof p === 'string' && p.length > 0 ? p : `#${r.id.toString()}`;
+        paths[id] = typeof p === 'string' && p.length > 0 ? p : `#${id}`;
         const c = r.attributes['color'];
-        if (typeof c === 'string' && c.length > 0) colors[r.id.toString()] = c;
+        if (typeof c === 'string' && c.length > 0) colors[id] = c;
+        const re = r.attributes['root_exclusive_at'];
+        if (typeof re === 'string' && re.length > 0) roots[id] = re;
+        const so = r.attributes['sort_order'];
+        sort[id] = typeof so === 'number' && Number.isFinite(so) ? so : Number.POSITIVE_INFINITY;
       }
       this.ctx.tree.at(['grid', 'lookups', 'tags']).set(paths);
       this.ctx.tree.at(['grid', 'lookups', 'tagColors']).set(colors);
+      this.ctx.tree.at(['grid', 'lookups', 'tagRoots']).set(roots);
+      this.ctx.tree.at(['grid', 'lookups', 'tagSort']).set(sort);
       this.tickLookups();
     });
   }
@@ -599,14 +618,53 @@ export class Grid extends Control<GridConfig> {
     node.set((node.peek<number>() ?? 0) + 1);
   }
 
-  /** Toggle one row's selection by its live `data-card-id` (never node state). */
-  private toggleRowSelection(el: HTMLElement): void {
+  /**
+   * Select a row from a checkbox click / Space press, by its live
+   * `data-card-id` (never node state).
+   *
+   * - Plain gesture (`extend=false`): toggle just this row, and record it as
+   *   the range ANCHOR for a later Shift+click.
+   * - Shift gesture (`extend=true`): add every row between the anchor and the
+   *   clicked row (inclusive, in the order shown — group walk included) to the
+   *   selection, the spreadsheet / Gmail idiom. The anchor then moves to the
+   *   clicked row so a further Shift+click extends from here. With no anchor
+   *   yet (or one scrolled out of the loaded set) it falls back to a toggle.
+   */
+  private selectRow(el: HTMLElement, extend: boolean): void {
     const idStr = el.dataset.cardId;
     if (idStr === undefined || idStr === '') return;
+
+    if (extend && this.selectionAnchor !== null && this.selectionAnchor !== idStr) {
+      const order = this.orderedRowIds();
+      const a = order.indexOf(this.selectionAnchor);
+      const b = order.indexOf(idStr);
+      if (a !== -1 && b !== -1) {
+        const lo = Math.min(a, b);
+        const hi = Math.max(a, b);
+        const next = new Set(this.selection());
+        for (let i = lo; i <= hi; i++) next.add(order[i]!);
+        this.setSelection(next);
+        this.selectionAnchor = idStr;
+        return;
+      }
+    }
+
     const next = new Set(this.selection());
     if (next.has(idStr)) next.delete(idStr);
     else next.add(idStr);
     this.setSelection(next);
+    this.selectionAnchor = idStr;
+  }
+
+  /** Row card-ids (stringified) in the order currently DISPLAYED — the group
+   *  walk order when grouped, the server order otherwise. Drives Shift+click
+   *  range selection so "between the two" matches what the user sees. */
+  private orderedRowIds(): string[] {
+    const ids: string[] = [];
+    for (const item of this.buildItems()) {
+      if (item.kind === 'row') ids.push(item.row.id.toString());
+    }
+    return ids;
   }
 
   /** All loaded task ids (stringified) — the select-all universe. */
@@ -1080,7 +1138,13 @@ export class Grid extends Control<GridConfig> {
    */
   private applyOrder(): void {
     const out: SortState[] = [];
-    const groupField = this.group !== null ? `attributes.${this.group.attr}` : null;
+    // A tag-prefix group is bucketed CLIENT-side (the server can't order rows by
+    // "the tag under a prefix" — `tags` is an array), so don't prepend a group
+    // field to the wire order in that case; ordinary group attrs still do.
+    const groupField =
+      this.group !== null && this.group.tagPrefix === undefined
+        ? `attributes.${this.group.attr}`
+        : null;
     if (groupField !== null) out.push({ field: groupField, direction: this.groupDir });
     // The view's persisted sort (`screen.sort`, set by the filter builder's
     // "Sort by") is the default order; a header click overrides it (effectiveSort).
@@ -1148,7 +1212,7 @@ export class Grid extends Control<GridConfig> {
         this.openRow(el);
       } else if (k === ' ' || k === 'Spacebar' || k === 'Space') {
         ev.preventDefault();
-        this.toggleRowSelection(el);
+        this.selectRow(el, (ev as KeyboardEvent).shiftKey);
       }
     });
   }
@@ -1179,8 +1243,14 @@ export class Grid extends Control<GridConfig> {
     el.replaceChildren();
 
     // Leading select cell: a checkbox whose checked state is read from the tree
-    // set in fillRow (recycling-safe). The click stops propagation so it never
-    // opens the row's task detail, and toggles by the row's live card id.
+    // set in fillRow (recycling-safe). The WHOLE cell is the toggle hitbox (not
+    // just the small checkbox) — a click anywhere in it stops propagation so it
+    // never opens the row's task detail, and toggles by the row's live card id.
+    // That's what keeps an edge / near-miss click on the checkbox from opening
+    // the row. The shared gesture is wired on the cell AND the box: in the real
+    // DOM a box click bubbles to the cell (and the box's own stopPropagation
+    // prevents a double-fire), while the test DOM shim doesn't bubble, so the
+    // box needs its own listener for the checkbox-targeted click tests.
     const selCell = document.createElement('div');
     selCell.className = 'grid__cell grid-select';
     selCell.dataset.gridCol = 'select';
@@ -1189,10 +1259,20 @@ export class Grid extends Control<GridConfig> {
     box.type = 'checkbox';
     box.className = 'grid__select-box';
     box.dataset.gridSelectRow = '';
-    this.listen(box, 'click', (ev) => {
+    // Suppress the browser's native text-selection that a Shift+click would
+    // otherwise drag across rows (text selection starts on mousedown). Doesn't
+    // block the checkbox toggle — the click still fires and drives selectRow.
+    const guardShiftSelect = (ev: Event): void => {
+      if ((ev as MouseEvent).shiftKey) ev.preventDefault();
+    };
+    const onSelectGesture = (ev: Event): void => {
       ev.stopPropagation();
-      this.toggleRowSelection(el);
-    });
+      this.selectRow(el, (ev as MouseEvent).shiftKey);
+    };
+    this.listen(selCell, 'mousedown', guardShiftSelect);
+    this.listen(selCell, 'click', onSelectGesture);
+    this.listen(box, 'mousedown', guardShiftSelect);
+    this.listen(box, 'click', onSelectGesture);
     selCell.append(box);
     el.append(selCell);
 
@@ -1293,7 +1373,52 @@ export class Grid extends Control<GridConfig> {
     const tasks = (this.ctx.tree.at(this.tasksPath).get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
     const g = this.group;
     if (g === null) return walkGrouped(tasks, null, () => '');
+    if (g.tagPrefix !== undefined) return this.buildTagPrefixItems(tasks, g.tagPrefix);
     return walkGrouped(tasks, g.attr, (key) => this.labelForGroupKey(key, g.lookup));
+  }
+
+  /**
+   * Client-side grouping for a mutually-exclusive TAG PREFIX (e.g. 'priority').
+   * Unlike a plain group attr (the server pre-orders rows by it so walkGrouped
+   * streams them), a tag prefix has no server order — `tags` is an array — so we
+   * bucket here: each card lands under the single tag it carries with that root
+   * (exclusivity guarantees ≤1), or `(unset)`. Groups are emitted in the tags'
+   * `sort_order`, labelled by their leaf segment. Empty groups are omitted (same
+   * as walkGrouped, which only emits a header when a row is present).
+   */
+  private buildTagPrefixItems(tasks: readonly CardWithAttrs[], prefix: string): GroupItem<CardWithAttrs>[] {
+    const paths = (this.ctx.tree.at(['grid', 'lookups', 'tags']).peek<LabelMap>() ?? {}) as LabelMap;
+    const roots = (this.ctx.tree.at(['grid', 'lookups', 'tagRoots']).peek<LabelMap>() ?? {}) as LabelMap;
+    const sort = (this.ctx.tree.at(['grid', 'lookups', 'tagSort']).peek<Record<string, number>>() ??
+      {}) as Record<string, number>;
+    const rootById = new Map(Object.entries(roots));
+
+    const buckets = new Map<string, CardWithAttrs[]>();
+    for (const row of tasks) {
+      const key = tagIdUnderRoot(row.attributes['tags'], rootById, prefix) ?? GROUP_EMPTY_KEY;
+      const bucket = buckets.get(key);
+      if (bucket === undefined) buckets.set(key, [row]);
+      else bucket.push(row);
+    }
+
+    // Prefix's tag ids in sort_order (then id) — the canonical group sequence.
+    const prefixIds = Object.keys(roots)
+      .filter((id) => roots[id] === prefix)
+      .sort((a, b) => (sort[a] ?? Infinity) - (sort[b] ?? Infinity) || (a < b ? -1 : a > b ? 1 : 0));
+
+    const out: GroupItem<CardWithAttrs>[] = [];
+    let idx = 0;
+    const emit = (key: string, label: string, rows: CardWithAttrs[]): void => {
+      out.push({ kind: 'group', label, count: rows.length, key });
+      for (const row of rows) out.push({ kind: 'row', row, idx: idx++ });
+    };
+    for (const id of prefixIds) {
+      const rows = buckets.get(id);
+      if (rows !== undefined && rows.length > 0) emit(id, tagLeaf(paths[id] ?? `#${id}`), rows);
+    }
+    const unset = buckets.get(GROUP_EMPTY_KEY);
+    if (unset !== undefined && unset.length > 0) emit(GROUP_EMPTY_KEY, '(unset)', unset);
+    return out;
   }
 
   /** Resolve a group key to its display label: a card_ref id goes through the

@@ -47,6 +47,8 @@ function bootApi(transport) {
   // assignee) so their values revive to bigint when grouping by those axes —
   // exactly what main.ts does at boot. Idempotent (Set-backed in the dispatcher).
   M.registerGridCardRefAttrs();
+  // tag.apply / tag.remove specs back the kanban's tag-prefix drag-to-retag.
+  M.registerAttachmentSpecs(api);
   return { dispatcher, api };
 }
 
@@ -553,6 +555,172 @@ test('Kanban: GROUP=status re-keys columns to statuses + (unset)', async () => {
     taskFiresBefore,
     'GROUP change re-keys without re-fetching tasks',
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/* GROUP by an exclusive TAG PREFIX (priority) → one column per priority tag.   */
+/* -------------------------------------------------------------------------- */
+
+function tagPrefixKanbanTransport() {
+  const sent = { taskInputs: [], tagWrites: [] };
+  const row = (id, type, parent, attrs) => ({
+    id: String(id),
+    card_type_id: type === 'task' ? '5' : '9',
+    card_type_name: type,
+    parent_card_id: parent === null ? undefined : String(parent),
+    attributes: attrs,
+  });
+  // 201 carries priority/high (+ a non-exclusive area tag); 202 priority/low;
+  // 203 only the area tag (→ unset under priority); 204 no tags (→ unset).
+  const TASKS = [
+    row(201n, 'task', 100, { title: 'A', sort_order: 100, tags: ['108', '110'] }),
+    row(202n, 'task', 100, { title: 'B', sort_order: 200, tags: ['109'] }),
+    row(203n, 'task', 100, { title: 'C', sort_order: 300, tags: ['110'] }),
+    row(204n, 'task', 100, { title: 'D', sort_order: 400, tags: [] }),
+  ];
+  // priority/* are mutually exclusive (root_exclusive_at='priority'); area/* are not.
+  const TAGS = [
+    row(108n, 'tag', 100, { path: 'priority/high', root_exclusive_at: 'priority', sort_order: 1 }),
+    row(109n, 'tag', 100, { path: 'priority/low', root_exclusive_at: 'priority', sort_order: 3 }),
+    row(110n, 'tag', 100, { path: 'area/backend', sort_order: 2 }),
+  ];
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      const subresponses = req.subrequests.map((sr) => {
+        const key = `${sr.endpoint}.${sr.action}`;
+        if (key === 'card.select_with_attributes') {
+          const data = sr.data ?? {};
+          if (data.card_type_name === 'task') {
+            sent.taskInputs.push(data);
+            return { id: sr.id, ok: true, data: { rows: TASKS } };
+          }
+          if (data.card_type_name === 'tag') return { id: sr.id, ok: true, data: { rows: TAGS } };
+          return { id: sr.id, ok: true, data: { rows: [] } };
+        }
+        if (key === 'tag.apply') {
+          sent.tagWrites.push({ kind: 'apply', data: sr.data ?? {} });
+          return { id: sr.id, ok: true, data: { ok: true, activity_id: '900' } };
+        }
+        if (key === 'tag.remove') {
+          sent.tagWrites.push({ kind: 'remove', data: sr.data ?? {} });
+          return { id: sr.id, ok: true, data: { ok: true, activity_id: '901' } };
+        }
+        if (key === 'attribute.update') {
+          sent.tagWrites.push({ kind: 'attribute.update', data: sr.data ?? {} });
+          return { id: sr.id, ok: true, data: { ok: true, activity_id: '902' } };
+        }
+        return { id: sr.id, ok: false, error: { code: 'unknown_handler', message: `no ${key}` } };
+      });
+      return { status: 200, text: JSON.stringify({ subresponses }) };
+    },
+  };
+  transport.sent = sent;
+  return transport;
+}
+
+/** Mount a kanban over the tag-prefix transport, grouped by the priority prefix. */
+async function bootTagPrefixKanban() {
+  const transport = tagPrefixKanbanTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(100n);
+  const scope = {
+    get projectId() {
+      return tree.at(['scope', 'projectId']).peek() ?? null;
+    },
+  };
+  const kanban = M.Control.New('Kanban', { type: 'Kanban' }, { api, tree, scope });
+  kanban.mount(new FakeElement('div'));
+  await settle(dispatcher);
+  tree.at(['screen', 'groupAxis']).set({ attr: 'tags', lookup: 'tags', tagPrefix: 'priority' });
+  await settle(dispatcher);
+  return { transport, dispatcher, tree, kanban };
+}
+
+test('Kanban: GROUP by an exclusive tag prefix → one column per priority tag (leaf-labelled, no fan-out)', async () => {
+  const { kanban } = await bootTagPrefixKanban();
+
+  const cols = kanban.el.querySelectorAll('[data-kanban-column]');
+  // Columns = the priority tags in sort_order (108 high, 109 low) + (unset).
+  // The non-exclusive area tag (110) is NOT a column.
+  assert.deepEqual(
+    cols.map((c) => c.dataset.column),
+    ['108', '109', '__unset__'],
+    'one column per exclusive priority tag + unset (area tag excluded)',
+  );
+  // Headers show the tag LEAF, not the full path or the raw id.
+  assert.equal(cols[0].querySelector('.col__label').textContent, 'high');
+  assert.equal(cols[1].querySelector('.col__label').textContent, 'low');
+  // 201 (priority/high) sits in 108 even though it ALSO carries the area tag —
+  // no fan-out, no combined '#108,110' column.
+  assert.deepEqual(visibleCards(cols[0]).map((c) => c.dataset.cardId), ['201']);
+  assert.deepEqual(visibleCards(cols[1]).map((c) => c.dataset.cardId), ['202']);
+  // 203 (only the area tag) + 204 (no tags) fall into (unset).
+  assert.deepEqual(visibleCards(cols[2]).map((c) => c.dataset.cardId), ['203', '204']);
+});
+
+test('Kanban: dragging across tag-prefix columns re-tags via tag.apply (preserving other tags)', async () => {
+  const { transport, dispatcher, tree, kanban } = await bootTagPrefixKanban();
+
+  // Drag 201 (priority/high=108, + area tag 110) onto the 'low' column (109).
+  const cols = kanban.el.querySelectorAll('[data-kanban-column]');
+  const card201 = visibleCards(cols[0]).find((c) => c.dataset.cardId === '201');
+  card201.dispatchEvent({ type: 'dragstart', target: card201 });
+  const toBody = cols[1].querySelector('[data-kanban-column-body]'); // the 'low' (109) column
+  toBody.dispatchEvent({ type: 'drop', target: toBody, clientY: 0 });
+
+  // OPTIMISTIC (synchronous): 201's tags drop the old priority tag (108), keep
+  // the area tag (110), and add the new priority tag (109).
+  const t201 = tree.at(['kanban', 'tasks']).peek().find((t) => t.id === 201n);
+  assert.deepEqual(
+    [...t201.attributes.tags].map(String).sort(),
+    ['109', '110'],
+    'old priority tag swapped out, non-priority tag preserved',
+  );
+
+  await settle(dispatcher); // flush the wire calls
+
+  // It fired tag.apply for the target tag (109), NOT a destructive attribute.update.
+  const applies = transport.sent.tagWrites.filter((w) => w.kind === 'apply');
+  assert.equal(applies.length, 1, 'one tag.apply fired');
+  assert.equal(String(applies[0].data.target_card_id), '201');
+  assert.equal(String(applies[0].data.tag_card_id), '109', 'applied the target priority tag');
+  assert.equal(
+    transport.sent.tagWrites.some((w) => w.kind === 'attribute.update'),
+    false,
+    'no attribute.update (which would clobber the whole tags array)',
+  );
+
+  // 201 re-bucketed into the 'low' column.
+  const colsAfter = kanban.el.querySelectorAll('[data-kanban-column]');
+  assert.ok(visibleCards(colsAfter[1]).some((c) => c.dataset.cardId === '201'), '201 now in the low column');
+});
+
+test('Kanban: dragging a tag-prefix card into (unset) removes its tag under that root via tag.remove', async () => {
+  const { transport, dispatcher, tree, kanban } = await bootTagPrefixKanban();
+
+  const cols = kanban.el.querySelectorAll('[data-kanban-column]');
+  // Columns: [108 high, 109 low, (unset)]. Drag 202 (priority/low=109) into unset.
+  const card202 = visibleCards(cols[1]).find((c) => c.dataset.cardId === '202');
+  card202.dispatchEvent({ type: 'dragstart', target: card202 });
+  const unsetBody = cols[2].querySelector('[data-kanban-column-body]');
+  unsetBody.dispatchEvent({ type: 'drop', target: unsetBody, clientY: 0 });
+
+  // OPTIMISTIC (synchronous): 202 now has no priority tag.
+  const t202 = tree.at(['kanban', 'tasks']).peek().find((t) => t.id === 202n);
+  assert.deepEqual([...t202.attributes.tags], [], '202 dropped its priority tag');
+
+  await settle(dispatcher); // flush the wire calls
+
+  // It fired tag.remove for the card's current priority tag (109).
+  const removes = transport.sent.tagWrites.filter((w) => w.kind === 'remove');
+  assert.equal(removes.length, 1, 'one tag.remove fired');
+  assert.equal(String(removes[0].data.target_card_id), '202');
+  assert.equal(String(removes[0].data.tag_card_id), '109', 'removed the current priority tag');
+
+  const colsAfter = kanban.el.querySelectorAll('[data-kanban-column]');
+  assert.ok(visibleCards(colsAfter[2]).some((c) => c.dataset.cardId === '202'), '202 moved to (unset)');
 });
 
 test('Kanban: cross-column move updates the ACTIVE axis attr (status when grouped by status)', async () => {

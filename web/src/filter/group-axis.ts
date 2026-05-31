@@ -24,6 +24,13 @@
 export interface GroupAttr {
   attr: string;
   lookup: string | null;
+  /**
+   * When set, this axis groups by a mutually-exclusive TAG PREFIX (the named
+   * `root_exclusive_at` segment, e.g. 'priority') rather than the raw value of
+   * `attr`. `attr` is then 'tags' and `lookup` is 'tags'; consumers bucket each
+   * card by the single tag it carries under this root. See filter/tag-prefix.ts.
+   */
+  tagPrefix?: string;
 }
 
 export function groupAttrFromGroupValue(value: string | null | undefined): GroupAttr | null {

@@ -68,6 +68,7 @@ import { refAxesForCardType, type RefAxis, type CardTypeRow } from '../filter/vo
 import { schemaForCardType } from '../filter/attribute-schema.js';
 import { loadView, saveView } from '../filter/view-persistence.js';
 import { groupAxisForAttr, type GroupAttr } from '../filter/group-axis.js';
+import { exclusiveRoots, tagPrefixOptionValue, tagRootLabel } from '../filter/tag-prefix.js';
 import type { AttributeDefRow } from '../admin/specs.js';
 
 export interface ScreenFilterBarConfig extends BaseControlConfig {
@@ -173,6 +174,12 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
   private chipsHostEl: HTMLElement | null = null;
   private chipsControl: Control | null = null;
   private predicateCardType = 'task';
+
+  /** The resolved schema axes (last applied) + the exclusive tag roots derived
+   *  once the `tag` option cards land. Held so the group/lane `<select>`s can be
+   *  rebuilt when the (async) tag roots arrive after the initial axis derive. */
+  private axes: RefAxis[] = [];
+  private tagRoots: string[] = [];
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('div');
@@ -567,19 +574,50 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
    * (re)spawn QuickChips with the derived chip set.
    */
   private applyAxes(axes: RefAxis[]): void {
-    const byAttr: Record<string, GroupAttr> = {};
-    for (const a of axes) {
-      const ga = groupAxisForAttr(a.attr, a.targetCardType);
-      if (ga !== null) byAttr[a.attr] = ga;
-    }
-    this.ctx.tree.at(['screen', 'groupAxesByAttr']).set(byAttr);
+    this.axes = axes;
     // Publish the full axis list so other surfaces (the Grid's bulk-action bar,
     // synthetic ref columns) data-drive off the SAME schema without re-loading.
+    // This keeps every axis (incl. multi-ref `tags`) — it's the GROUP/LANE
+    // pickers that narrow to single-valued axes + exclusive tag prefixes.
     this.ctx.tree.at(['screen', 'refAxes']).set(axes);
-    const opts = axes.map((a) => ({ value: a.attr, label: a.label }));
+    this.applyGroupOptions();
+    this.spawnChips(axes);
+  }
+
+  /**
+   * (Re)build the GROUP + LANE pickers' options + the `screen.groupAxesByAttr`
+   * resolver from the current schema axes ({@link axes}) and the discovered
+   * exclusive tag roots ({@link tagRoots}).
+   *
+   * Two deliberate narrowings vs. the raw axis set:
+   *   - MULTI-valued ref axes (card_ref[], e.g. raw `tags`) are NOT groupable —
+   *     a card with several tags would scatter across columns. They're dropped.
+   *   - Each mutually-exclusive tag ROOT (e.g. 'priority') is offered instead as
+   *     a synthetic `tagpfx:<root>` option resolving to a tag-prefix GroupAttr.
+   *     Non-exclusive prefixes ('platform' / 'area') are never offered.
+   *
+   * Re-invoked when the async `tag` option cards land (so the prefix options
+   * appear once their roots are known).
+   */
+  private applyGroupOptions(): void {
+    const byAttr: Record<string, GroupAttr> = {};
+    const opts: { value: string; label: string }[] = [];
+    for (const a of this.axes) {
+      if (a.multi) continue; // raw card_ref[] axes aren't groupable
+      const ga = groupAxisForAttr(a.attr, a.targetCardType);
+      if (ga !== null) {
+        byAttr[a.attr] = ga;
+        opts.push({ value: a.attr, label: a.label });
+      }
+    }
+    for (const root of this.tagRoots) {
+      const value = tagPrefixOptionValue(root);
+      byAttr[value] = { attr: 'tags', lookup: 'tags', tagPrefix: root };
+      opts.push({ value, label: tagRootLabel(root) });
+    }
+    this.ctx.tree.at(['screen', 'groupAxesByAttr']).set(byAttr);
     this.rebuildGroupSelect(opts);
     this.rebuildLaneSelect(opts);
-    this.spawnChips(axes);
   }
 
   /** Rebuild the group `<select>` as `No group` + the given axis options,
@@ -677,6 +715,23 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
           const node = this.ctx.tree.at(['screen', 'predicateOptions']);
           const cur = (node.peek<Record<string, RefOption[]>>() ?? {}) as Record<string, RefOption[]>;
           node.set({ ...cur, [target]: opts });
+          // Tags: derive the mutually-exclusive roots (the `root_exclusive_at`
+          // segments) and, if they changed, rebuild the GROUP/LANE pickers so
+          // each becomes a "group by <prefix>" option. Publishing the id→root
+          // map lets the Grid bucket rows by prefix without re-querying.
+          if (target === 'tag') {
+            const rootById: Record<string, string> = {};
+            for (const r of rows) {
+              const re = r.attributes['root_exclusive_at'];
+              if (typeof re === 'string' && re.length > 0) rootById[r.id.toString()] = re;
+            }
+            this.ctx.tree.at(['screen', 'tagRootById']).set(rootById);
+            const roots = exclusiveRoots(rows.map((r) => ({ rootExclusiveAt: rootById[r.id.toString()] ?? '' })));
+            if (roots.join(' ') !== this.tagRoots.join(' ')) {
+              this.tagRoots = roots;
+              this.applyGroupOptions();
+            }
+          }
         },
         { alive: () => this.isAlive() },
       );
