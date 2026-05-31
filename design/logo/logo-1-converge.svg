@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" fill="none" role="img" aria-label="Task tracker logo: two streams converging into a draining reactor">
-  <!-- two inputs: streams converging from the top corners -->
-  <path d="M10 11 L21 22" stroke="#93a4b8" stroke-width="6" stroke-linecap="round"/>
-  <path d="M38 11 L27 22" stroke="#93a4b8" stroke-width="6" stroke-linecap="round"/>
-  <!-- reactor core -->
-  <circle cx="24" cy="24" r="8" fill="#006fff"/>
-  <!-- drain: a drop leaving the bottom -->
-  <path d="M24 33.5 C 28 38 27.5 42 24 42 C 20.5 42 20 38 24 33.5 Z" fill="#006fff"/>
-</svg>

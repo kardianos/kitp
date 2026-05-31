@@ -35,7 +35,7 @@ type CookieOptions struct {
 // expects an already-signed-in user), this constant becomes a
 // silent foot-gun — switch that single endpoint's cookie read to
 // Lax, or relax the default here. See
-// issues/backend/11-low-samesite-strict-oidc.md.
+// DI-8 in docs/DESIGN_INVARIANTS.md.
 func Set(w http.ResponseWriter, id string, opts CookieOptions) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,

@@ -155,6 +155,11 @@ pattern that drives the API also auto-publishes an MCP surface.
 - N-SEC-4: SQL is parameterized; JSON payloads are never string-concatenated into SQL.
 - N-SEC-5: Dev-mode (System User) refuses to start when `ENV=production`.
 
+Security, robustness, and correctness invariants established by the
+2026-05 audit (per-row read/write authz, idempotency partitioning, OIDC
+bootstrap hardening, the query-timeout model, …) are recorded as `DI-n`
+rules in [`docs/DESIGN_INVARIANTS.md`](docs/DESIGN_INVARIANTS.md).
+
 ### 4.7 Testing & Delivery
 - N-TEST-1: Each phase ends with green unit tests for new logic.
 - N-TEST-2: Each UI-facing phase ends with at least one screenshot per new screen, committed under `docs/screenshots/<phase>/`.

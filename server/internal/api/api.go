@@ -28,7 +28,7 @@ import (
 // typical sub-second batch shapes; heavy handlers (import.commit,
 // project.stamp, export) declare a larger Timeout explicitly.
 // Pool-wide `statement_timeout=600s` is the absolute hard cap.
-// See issues/sql/01-med-no-statement-timeout.md.
+// See DI-10 in docs/DESIGN_INVARIANTS.md.
 const DefaultHandlerTimeout = 6 * time.Second
 
 // requestIDKeyT is a context key for the request id. The obs package

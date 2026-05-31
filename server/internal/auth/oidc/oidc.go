@@ -519,7 +519,7 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	// email could sign into an OP that lets users self-claim emails
 	// (consumer Google, etc.) and the fallback would attach their
 	// sub to the admin's user_account row. See
-	// issues/backend/04-high-oidc-email-fallback-unverified.md.
+	// DI-4 in docs/DESIGN_INVARIANTS.md.
 	emailVerified, _ := claims["email_verified"].(bool)
 	emailTrusted := emailVerified || v.cfg.TrustUnverifiedEmail
 	if subErr != nil && email != "" && emailTrusted {
@@ -732,7 +732,7 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 // the rest of the provisioning steps. The `NOT EXISTS` subquery +
 // INSERT is one statement; two concurrent first-time sign-ins
 // cannot both pass the gate and both self-elevate. Documented in
-// issues/backend/02-high-init-admin-race-oidc.md.
+// DI-2 in docs/DESIGN_INVARIANTS.md.
 //
 // ON CONFLICT DO NOTHING covers the "already an admin" case for
 // the same user (rerunning the function with the same userID).

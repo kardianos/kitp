@@ -24,8 +24,7 @@
  *   Error(prev, message) — show summary(prev), Unassign reflects prev,
  *                          inline error visible.
  *
- * Reference: `/home/d/code/kitp/STRUCTURAL_PLAN.md` items (2) + (3) + the
- * (2)/(3) retrospective's "what didn't" follow-up.
+ * Reference: ARCHITECTURE.md §13 (composition principle + L0 primitives).
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';

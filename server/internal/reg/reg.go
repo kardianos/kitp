@@ -90,7 +90,7 @@ type Handler struct {
 	// guard panics on any handler that lists `worker` or `manager` in
 	// AllowedRoles without supplying CardTypeID + ProcessName — the
 	// bug class spelled out in
-	// issues/backend/06-med-handlers-skip-scope-check.md.
+	// DI-5 in docs/DESIGN_INVARIANTS.md.
 	GlobalScope bool
 	// Timeout caps the wall-clock time the dispatcher allows for one
 	// invocation of Run (the entire arrayPath batch — every input
@@ -99,7 +99,7 @@ type Handler struct {
 	// `project.stamp`, `project.export.*`) override with a larger
 	// value; cheap reads stay at the default. The pool-wide
 	// `statement_timeout=600s` is the absolute hard cap. See
-	// issues/sql/01-med-no-statement-timeout.md.
+	// DI-10 in docs/DESIGN_INVARIANTS.md.
 	Timeout time.Duration
 	// SQLFunc is the name of the PL/pgSQL function that implements
 	// this handler under the unified shape (see
@@ -222,12 +222,12 @@ func Register(h Handler) {
 	// Set GlobalScope=true on handlers that legitimately operate on
 	// rows without a project anchor (CAS chunks, persons before
 	// they're attached, file rows). Anything else risks the bug
-	// class in issues/backend/06-med-handlers-skip-scope-check.md.
+	// class in DI-5 (docs/DESIGN_INVARIANTS.md).
 	if needsRowScope(h.AllowedRoles) && !h.GlobalScope {
 		if h.CardTypeID == nil || h.ProcessName == "" {
 			panic(fmt.Sprintf(
 				"reg.Register: %s.%s has worker/manager in AllowedRoles but no CardTypeID + ProcessName (and GlobalScope is false). "+
-					"Per-row scope check would silently skip — see issues/backend/06-med-handlers-skip-scope-check.md.",
+					"Per-row scope check would silently skip — see DI-5 in docs/DESIGN_INVARIANTS.md.",
 				h.Endpoint, h.Action))
 		}
 		// The scope pass must also be able to locate the *card* to walk

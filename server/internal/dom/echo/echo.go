@@ -12,8 +12,8 @@ import (
 )
 
 // PingInput is the wire shape for echo.ping. The handler simply echoes
-// the message back. It carries an "x" field because that mirrors the
-// example curl in IMPLEMENTATION_PLAN.md §1.
+// the message back. It carries an "x" field as a minimal integer
+// round-trip alongside the free-form message.
 type PingInput struct {
 	X       int    `json:"x" mcp:"desc=an integer that will be echoed back unchanged"`
 	Message string `json:"message" mcp:"desc=a free-form string echoed back to the caller"`

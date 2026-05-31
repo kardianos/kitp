@@ -15,8 +15,7 @@ LISTEN_ADDR ?= :18080
 
 # kitpd serves the built UI at GET / (with SPA fallback) on the same port as
 # the API, so a single `make run` is enough. Points at the web/ esbuild bundle
-# (`make web`). To serve the legacy Svelte build instead:
-#   make run WEB_DIR=$(REPO_ROOT)/client/dist
+# (`make web`).
 WEB_DIR ?= $(REPO_ROOT)/web/dist
 
 DEMO ?= -demo
@@ -28,7 +27,7 @@ IMAGE ?= ghcr.io/kardianos/kitp
 GIT_SHA := $(shell git -C $(REPO_ROOT) rev-parse --short HEAD 2>/dev/null)
 
 .PHONY: up down db-up db-reset db-reset-clean schema-gen \
-        test test-bench run demo lint web web-dev client \
+        test test-bench run demo lint web web-dev \
         container container-build
 
 up: db-up
@@ -82,6 +81,7 @@ demo:
 
 lint:
 	cd server && $(GO) vet ./...
+	./scripts/check-recursive-depth.sh
 
 # ---------- web client (pure TS, esbuild only) ------------------------------
 
@@ -108,13 +108,6 @@ web-dev:
 	cd web && $(ESBUILD) app=src/main.ts styles=styles.css \
 		--bundle --format=esm --target=es2022 --sourcemap --outdir=dist \
 		--servedir=. --serve=127.0.0.1:$(WEB_PORT)
-
-# Legacy Svelte SPA build (Vite + pnpm) -> client/dist. This is the ONLY
-# remaining client/ target; `make web` above is its replacement. Serve it with
-# `make run WEB_DIR=$(REPO_ROOT)/client/dist`.
-# DELETE this target (and WEB_DIR's client/dist note) once client/ is removed.
-client:
-	cd client && pnpm install --frozen-lockfile && pnpm build
 
 # ---------- container image (GHCR) ------------------------------------------
 

@@ -118,8 +118,8 @@ func TestIdempotencyKey_NoKeyPassthrough(t *testing.T) {
 }
 
 // TestIdempotency_WrapAuthed_PartitionsByUser is the regression
-// test for the original cache-cross-user bug (issues/backend/
-// 01-critical-idempotency-cross-user.md). Two distinct users post
+// test for the original cache-cross-user bug (DI-1 in
+// docs/DESIGN_INVARIANTS.md). Two distinct users post
 // the same key+body. With the wrong implementation (the legacy
 // Middleware path that reads auth.ActorOrSystem(ctx) before the
 // router has resolved the user), both calls partition under

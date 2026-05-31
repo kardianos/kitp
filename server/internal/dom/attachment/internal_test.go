@@ -10,8 +10,8 @@ import (
 	"github.com/kitp/kitp/server/internal/store"
 )
 
-// TestRequireAttachmentAccess is the focused regression test for B3
-// (issues/backend/03-high-attachment-no-row-authz.md). Lives in
+// TestRequireAttachmentAccess is the focused regression test for DI-3
+// (docs/DESIGN_INVARIANTS.md). Lives in
 // `package attachment` (not _test) so it can call the unexported
 // requireAttachmentAccess helper. We seed via direct SQL — no
 // dispatcher, no HTTP — so the test is fast and the assertion

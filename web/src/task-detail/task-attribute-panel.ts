@@ -3,7 +3,7 @@
  * attribute rows against a SINGLE task's PanelModel and commit each change
  * to the server immediately."
  *
- * Per the project's composition principle (STRUCTURAL_PLAN): this control is
+ * Per the project's composition principle (ARCHITECTURE.md §13): this control is
  * the named intent.  We do NOT have a generic `AttributePanel { policy:
  * 'live' | 'deferred' | 'batch' }`.  Instead each commit semantic gets its
  * own high-level control — `TaskAttributePanel` (live), `NewTaskForm`

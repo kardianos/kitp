@@ -74,7 +74,7 @@ through named slots so that wiring is mechanical when it lands.
 
 Any handler that returns card-derived rows (cards, activity, comms,
 attachments) must AND-join `schema.VisibilityClause(cardIDExpr,
-userSlot)` into its WHERE. See `issues/backend/07-med-reads-across-projects.md`
+userSlot)` into its WHERE. See DI-6 in `docs/DESIGN_INVARIANTS.md`
 for the model. The predicate evaluates true when the caller (or, if
 they're an agent, their `parent_user_id`) holds a `user_role` that's
 either globally scoped or scoped to the card's project.
@@ -84,8 +84,8 @@ either globally scoped or scoped to the card's project.
 Handlers in `AllowedRoles` that include `worker` or `manager` MUST
 set `CardTypeID` + `ProcessName` on their `reg.Handler`, OR set
 `GlobalScope: true` with a comment explaining why no project anchor
-exists. `reg.Register` panics at startup otherwise. See
-`issues/backend/06-med-handlers-skip-scope-check.md`.
+exists. `reg.Register` panics at startup otherwise. See DI-5 in
+`docs/DESIGN_INVARIANTS.md`.
 
 ## Unified handler shape
 
@@ -144,10 +144,9 @@ Three layers, set top-down:
    600s)`. Scheduler-applied to background ticker tasks.
 
 pgx propagates ctx cancellation natively via the Postgres
-wire-protocol CancelRequest path — see
-`issues/sql/01-pgx-cancellation-report.md` for the
-demonstrated proof. Passing the derived ctx to pgx is all the
-plumbing required.
+wire-protocol CancelRequest path — see DI-10 in
+`docs/DESIGN_INVARIANTS.md` for the demonstrated proof. Passing
+the derived ctx to pgx is all the plumbing required.
 
 ## Background jobs
 

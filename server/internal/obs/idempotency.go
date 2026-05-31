@@ -105,7 +105,7 @@ func (s *IdempotencyStore) WrapAuthed(next api.AuthedHandler) api.AuthedHandler 
 		// Partition by the RESOLVED user (the kernel just stamped them
 		// onto ctx). The legacy Middleware path used ActorOrSystem(ctx)
 		// which returned SystemUserID before the resolver had run —
-		// see issues/backend/01-critical-idempotency-cross-user.md.
+		// see DI-1 in docs/DESIGN_INVARIANTS.md.
 		userID := u.ID
 
 		stored, gotHash, found, err := s.lookup(ctx, userID, key)
@@ -199,7 +199,7 @@ func batchSucceeded(body []byte) bool {
 // auth.ActorOrSystem(ctx) which returns SystemUserID when the user
 // resolver hasn't run, so the cache key collapses across users.
 // The bug is detailed in
-// issues/backend/01-critical-idempotency-cross-user.md.
+// DI-1 in docs/DESIGN_INVARIANTS.md.
 func (s *IdempotencyStore) Middleware(_ any, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := r.Header.Get("Idempotency-Key")

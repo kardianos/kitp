@@ -66,6 +66,7 @@ DATABASE_URL is strictly required; everything else has a default.
 | LISTEN_ADDR | :8080 | HTTP listen address. The Makefile overrides this to :18080. |
 | WEB_DIR | (unset) | Directory of the built web bundle to serve at GET /. Unset = API only. |
 | KITP_WORKSPACE_TITLE | Workspace | Display name for the workspace in the UI. |
+| KITP_COMMS_BELL_URL | (unset) | Destination the header comms-bell navigates to. Empty keeps the project-aware default (active project's `comms` screen if present, else `/activity`); set a path to route comms triage elsewhere (e.g. a saved Grid view). |
 
 In production the server refuses to start when AUTH_MODE=off, when
 AUTH_MODE=oidc but OIDC_ISSUER is empty, or when KITP_COMM_SECRET_KEY is

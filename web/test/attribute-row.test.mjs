@@ -1,7 +1,6 @@
 /**
  * AttributeRow — the unified attribute panel row driven by a single
- * `LoadState<unknown>` thunk (STRUCTURAL_PLAN items 2 + 3, refined per
- * the (2)/(3) retrospective).
+ * `LoadState<unknown>` thunk (ARCHITECTURE.md §13).
  *
  * The tests pin the lifecycle contract: every visible surface — summary,
  * Unassign disabled, busy class, inline error — derives from ONE state

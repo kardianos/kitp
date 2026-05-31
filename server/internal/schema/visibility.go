@@ -37,7 +37,7 @@ import "fmt"
 // placeholder for the user id (caller adds the int64 to its args
 // slice).
 //
-// Closes issues/backend/07-med-reads-across-projects.md.
+// Closes DI-6 (docs/DESIGN_INVARIANTS.md).
 func VisibilityClause(cardIDExpr, userArg string) string {
 	return fmt.Sprintf(`EXISTS (
 		WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (

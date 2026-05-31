@@ -261,7 +261,7 @@ func (rt *Router) writeErr(w http.ResponseWriter, r *http.Request, err error) {
 // unrecognised `*reg.HandlerError` (e.g. one with a domain-specific
 // code) renders as a server fault rather than a misleading 400 with
 // a raw error string — see
-// issues/backend/12-low-handler-error-default-400.md.
+// DI-9 in docs/DESIGN_INVARIANTS.md.
 func regHandlerErrorStatus(e *reg.HandlerError) int {
 	switch e.Code {
 	case "unauthorized", "unauthenticated":

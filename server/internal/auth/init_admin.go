@@ -81,7 +81,7 @@ func BootstrapInitAdmin(ctx context.Context, pool *pgxpool.Pool, email string) e
 	// still matches the textnorm-normalised env input. The application
 	// layer normalises on every fresh insert; this `lower(...)` guard
 	// covers historic rows. See
-	// issues/backend/10-low-bootstrap-email-norm.md.
+	// DI-7 in docs/DESIGN_INVARIANTS.md.
 	if err := tx.QueryRow(ctx,
 		`SELECT id FROM user_account WHERE lower(email) = $1 ORDER BY id LIMIT 1`,
 		email,

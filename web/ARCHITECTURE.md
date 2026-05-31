@@ -1,15 +1,15 @@
 # kitp `web/` — Zero-Framework Signal/Control Architecture
 
-> Status: scaffold + end-to-end proof (this pass). A from-scratch alternative
-> to `client/` (Svelte 5 + Vite + Tailwind). Speaks the **same**
-> `POST /api/v1/batch` wire protocol verbatim. No Svelte, no Vite, no
-> Tailwind, no React — esbuild is the sole toolchain.
+> This is the kitp web client: hand-authored TypeScript, **esbuild the sole
+> toolchain** — no Svelte, no Vite, no Tailwind, no React. It speaks the
+> `POST /api/v1/batch` wire protocol verbatim. It replaced an earlier Svelte 5
+> client (since removed); a few sections below still contrast with that client
+> where the contrast explains a design choice.
 >
-> This file is the "write it down before building" artifact required by the
-> owner. It extends `docs/reviews/frontend-alt-architecture.md` (read that
-> first for the long-form rationale, the parity-mapping table, and the
-> honest tradeoff section). Here we lock the *concrete* decisions this
-> codebase implements.
+> **This is the single source of truth for the `web/` framework.** §0–§12 are
+> the as-built framework. **§13** is the composition principle + control
+> taxonomy every screen follows (the rule going forward). **§14** is the
+> current screen inventory and known gaps.
 
 ---
 
@@ -64,10 +64,11 @@ no framework compiler, no module-graph dev server magic.
 ## 2. Build & module strategy — esbuild only
 
 - `web/package.json` lists **esbuild** as the sole build/dev dependency.
-  (Runtime markdown deps `dompurify` + `marked` are *vendored* under
-  `web/vendor/` as ESM — noted, not installed via the framework toolchain.
-  They are the XSS/markdown boundary and are not yet wired in this pass; see
-  §10 Stubbed.)
+  Runtime deps `dompurify` + `marked` (the XSS/markdown boundary) and
+  `@floating-ui/dom` (popover positioning) are *vendored* under `web/vendor/`
+  as ESM — not installed via the framework toolchain. They are wired through
+  `src/util/markdown.ts` / `src/util/markdown-control.ts` and the popover
+  control.
 - `web/build.mjs` is the single build script. `node build.mjs` emits a
   **self-contained** `web/dist/` — `index.html` + `app.js` + `styles.css`
   (the `@import` of `web/design/tokens.css` is inlined by esbuild, so dist
@@ -313,6 +314,14 @@ Ported from `client/src/dispatch/` (the protocol knowledge is hard-won):
 ---
 
 ## 10. The first real screen vertical slice (`src/main.ts`)
+
+> **Historical — the founding slice.** §10/§10b document the first two screens
+> (Kanban, Project List) and the data-path proofs done with them. The technical
+> specifics — wire shapes, bigint revival, the `scope.projectId` → board path,
+> optimistic move + rollback, `skipWhenNull` — remain accurate and are the best
+> worked example of the data layer. The "stubbed this slice" / "verified this
+> pass" notes are point-in-time; the full screen set is now built — see §14 for
+> the current inventory.
 
 `src/main.ts` assembles the **AppShell → ScreenHost(kanban) → Kanban** tree
 entirely from a **declarative config** via `Control.New`, replacing the earlier
@@ -723,3 +732,110 @@ assumptions the client is built against:
    **HTTP 401** (or `403` for an authenticated-but-forbidden auth failure) so
    the client's funnel can bounce. Per-row `sub_error`s (e.g. `flow_disallowed`)
    are *not* auth failures and do not bounce.
+
+---
+
+## 13. Design principles & control taxonomy — the rule going forward
+
+This section is the durable design contract for the control layer. Source
+comments cite it as "ARCHITECTURE.md §13."
+
+### Composition principle
+
+**Lower-level primitives stay tiny and stable. New intent = new high-level
+control. We do NOT grow knobs on primitives to cover new use cases — we name
+the new use case in a new control and compose the same primitives behind it.**
+
+The test of the principle: if a new use case needs a primitive to behave
+differently, it's almost always a new *state* (model it as data), not a new
+*config knob*. (Example: "the selection disagrees" became a `Mixed` kind on
+`LoadState`, not a mode flag on `AttributeRow`.)
+
+### L0 primitives — tiny, pure, screen-agnostic
+
+| layer | primitive | duty |
+| --- | --- | --- |
+| type | `LoadState<T>` (`core/load-state.ts`) | the explicit async lifecycle: `Unset` / `Pending(v)` / `Value(v)` / `Error(prev,msg)` / `Mixed`. One shape every async value passes through. |
+| stores | `PanelModel`, `BatchPanelModel` (`task-detail/`) | typed `Signal<LoadState<unknown>>` stores; each owns ONE semantic (single-task live edit vs. fan-out to a selection). Siblings, not modes. |
+| control | `FieldEditor` (`ui/field-editor.ts`) | one editor per `attr.valueType`, routing to `RefPicker`/`DatePicker`/native input. Pure: config in, `onCommit` out. |
+| control | `CardRefValue` (`ui/card-ref-value.ts`) | one ref id → resolved label render with pending/resolved states, driven by a `() => LoadState<string>` thunk. |
+| control | `AttributeRow` (`ui/attribute-row.ts`) | label + summary + lazy-mounted `FieldEditor` + Unassign + inline error, all derived from ONE `() => LoadState<unknown>` thunk. |
+
+Primitives are tested as primitives; they don't know about screens.
+
+### High-level intent controls — each NAMED for its intent
+
+| intent | control | commit semantic |
+| --- | --- | --- |
+| edit one task live | `TaskAttributePanel` | each row commits to `attribute.update` immediately |
+| draft a new task with Save | `NewTaskForm` | each row seeds a draft store; Save dispatches one `card.insert` |
+| edit N selected tasks | `BatchTaskEditor` | each row commits via fan-out across the selection |
+
+A new need ("edit a project's metadata as a panel", "edit with diff preview") is
+another high-level control composing the same primitives — not a knob on one.
+
+### Cascade-safety rules (do not recreate the Svelte effect-cascade)
+
+The signal core throws a **named `SignalCycleError`** listing live effects when a
+flush fails to converge (§3) — never a silent depth cap. To stay out of it:
+
+1. **Derive, don't mirror.** Never use an effect whose only job is to copy one
+   signal into another; use `computed`/derived reads.
+2. **One-way loads.** A trigger effect tracks *only* primitive keys (ids/slugs/a
+   version) and writes *only* into the tree the view derives from — never back
+   into a tracked dep, never into a foreign store another effect tracks.
+3. **Fine-grained writes.** Mutate tree nodes in place; don't reassign whole
+   collections (that invalidates every reader and fans out cascades).
+
+The declarative data layer (§11) enforces these by construction: triggers are
+explicit, inputs are pure resolutions, results land in defined tree sinks.
+
+---
+
+## 14. Current state & known gaps
+
+The proof slice (§10) grew into the full client. All v1 screens are built and
+wired against the real `/api/v1/batch` (`USE_REAL_BACKEND = true` is the app
+default); `node --test` runs **61 test files**; `tsgo --noEmit` is the type
+authority.
+
+### Built & wired
+
+- **Shell / nav** — History-API router (deep-links, back/forward,
+  `/project/:id/screen/:slug`, `/task/:id`, `/admin/:key`, `requireAdmin`);
+  AppShell frame; signal-driven outlet swap; hierarchical hotkeys; `?` help
+  overlay (server-driven via `help.get_topic`); user menu + logout.
+- **Screens** — Project list, Project detail, Inbox/List, **Kanban**
+  (group-by axis, swim lanes, within-column reorder, cross-column move,
+  per-column quick-add, virtualized columns, `hjkl` nav), **Grid**
+  (data-driven column set, row grouping, sortable headers, inline cell edit,
+  column show/hide/reorder/resize, bulk-action bar, virtualized rows),
+  **Task detail** (two-column; inline markdown title/description;
+  `TaskAttributePanel`; `TransitionBar`; comments + activity; chunked CAS
+  attachments + gallery; tags editor; related/sub-tasks; comms/email threads).
+- **Filter/view system** — structured predicate tree, data-driven quick chips,
+  named/saved filters + preset selector, group-by axis, per-`(project,slug)`
+  view persistence, default-filter-on-first-visit.
+- **Admin** — 12 views on MasterDetail (flows, edges, screens, comm channels,
+  activity sinks, agents/tokens, role mappings, people/roles, …) with
+  create/delete/inline-edit/nested editors.
+- **Primitives** — Combobox, DatePicker, RefPicker, Popover, Modal, Markdown
+  render+sanitize, quick-entry overlay, import wizard, export menu.
+
+### Known gaps / next structural work
+
+- **(5) Data-layer enforcement** (highest-leverage remaining): lift the
+  imperative `callByName` sites (notably TaskDetail's read path) into `static
+  queries`/`static actions` so every read is cascade-safe + auto-resubscribed.
+  ~38 files still call `callByName` directly.
+- **(4) Keyed reconciliation** for the remaining `replaceChildren` paints
+  (grid cells on scroll-into-view, kanban column rebuilds). `core/keyed-list.ts`
+  exists; the deeper signal-driven lift waits on a reproducible flash test.
+- **TaskDetail mirrors** — `this.task` + `refLabels: Map` are still mirrored
+  alongside the `PanelModel`; a `PanelModel.refLabelPeek` would close the
+  synchronous-lookup gap. Imperative title/description editors aren't on the
+  panel store yet (tracked by a code TODO).
+- **Roving tabindex** across grid rows / kanban cards (focus-trap shipped;
+  per-row arrow-cursor is partial).
+- **Verify-only** — `project.stamp`, `card.move` (reparent), `card.set_phase`,
+  `card.undelete`, `help.get_screen` have no web caller yet.

@@ -452,7 +452,7 @@ func runHTTP() error {
 	// Idempotency cache. Mounted as a decorator on the batch route
 	// (NOT as outer middleware) so the cache key is partitioned by
 	// the user the apiRouter has just resolved — see
-	// issues/backend/01-critical-idempotency-cross-user.md for the
+	// DI-1 in docs/DESIGN_INVARIANTS.md for the
 	// bug this avoids. The cleanup goroutine runs for the lifetime
 	// of the process.
 	idem := obs.NewIdempotencyStore(pgPool, logger)

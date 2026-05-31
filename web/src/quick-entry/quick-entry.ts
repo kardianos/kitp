@@ -753,7 +753,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
    * `valueType` (card_ref / card_ref[] / date / bool / number / text) is owned
    * by the shared {@link FieldEditor} primitive — QuickEntry composes it rather
    * than re-deriving the six-arm switch (the "different bugs per attribute"
-   * failure mode the STRUCTURAL_PLAN's item (1) closed). The editor stays
+   * failure mode FieldEditor closed; ARCHITECTURE.md §13). The editor stays
    * silent on mount (`noAutoOpen`) — the overlay's add-on-demand UX shouldn't
    * pop a picker the instant a field is chosen; the user clicks in to edit.
    * onCommit feeds the row's draft value; `collectAdditionalAttributes` drops

@@ -25,7 +25,7 @@
  * STRUCTURAL though: the 6-arm switch that used to live in 3 different
  * screens (with subtle drift between them) is now ONE control.
  *
- * Reference: `/home/d/code/kitp/STRUCTURAL_PLAN.md` item (1).
+ * Reference: ARCHITECTURE.md §13 (composition principle + L0 primitives).
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';

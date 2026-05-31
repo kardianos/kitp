@@ -1,6 +1,6 @@
 /**
  * CardRefValue — single-id ref-label render driven by a LoadState<string>
- * thunk (STRUCTURAL_PLAN items 2 + the refactor in the (2)/(3) retro).
+ * thunk (ARCHITECTURE.md §13).
  *
  * Tests pin the lifecycle contract:
  *   - Unset id → unset placeholder, classes reflect "unset".

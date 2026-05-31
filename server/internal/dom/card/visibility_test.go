@@ -2,7 +2,7 @@
 // (schema.VisibilityClause) applied to card.select,
 // card.select_with_attributes, and card.search.
 //
-// Closes issues/backend/07-med-reads-across-projects.md. The pre-fix
+// Closes DI-6 (docs/DESIGN_INVARIANTS.md). The pre-fix
 // dispatcher allowed any authenticated user to read any card by id;
 // these tests pin the new behaviour:
 //

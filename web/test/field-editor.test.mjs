@@ -1,5 +1,5 @@
 /**
- * FieldEditor — the unified attribute editor (STRUCTURAL_PLAN item 1).  One
+ * FieldEditor — the unified attribute editor (ARCHITECTURE.md §13).  One
  * control routes to RefPicker / DatePicker / native input by `attr.valueType`
  * and fires `onCommit(value)` once the user commits.  Replaces the three
  * per-screen 6-arm switches (TaskDetail panel, BulkActionBar, grid inline edit).

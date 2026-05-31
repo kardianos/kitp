@@ -327,17 +327,17 @@ function boot(): void {
   // whose async loader fires card.search; the editor every card_ref attribute
   // (assignee/status/milestone/component/tags/recipients/parent_task) mounts.
   registerRefPicker();
-  // The unified attribute editor (#STRUCTURAL_PLAN item 1): one control that
+  // The unified attribute editor (ARCHITECTURE.md §13 / FieldEditor): one control that
   // routes to RefPicker / DatePicker / native input by attr.valueType.
   // Replaces the per-screen 6-arm switches in TaskDetail / BulkActionBar /
   // grid inline-edit so a new attribute type is one switch arm here, not
   // three drifts across screens.
   registerFieldEditor();
-  // The single-id ref-label render (#STRUCTURAL_PLAN item 2): replaces the
+  // The single-id ref-label render (ARCHITECTURE.md §13 / CardRefValue): replaces the
   // per-screen `map[id] ?? '#id'` reimplementations. Consumed by
   // AttributeRow's summary and any other surface rendering a resolved ref.
   registerCardRefValue();
-  // The unified attribute row (#STRUCTURAL_PLAN item 3): label + reactive
+  // The unified attribute row (ARCHITECTURE.md §13 / AttributeRow): label + reactive
   // summary + lazy-mounted FieldEditor + Unassign + inline error.  Replaces
   // TaskDetail's renderRow + buildUnassignButton + the per-row event wiring.
   registerAttributeRow();

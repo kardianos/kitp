@@ -91,7 +91,7 @@ func handleStream(ctx context.Context, w http.ResponseWriter, r *http.Request, c
 	// attachment's project (same gate projectexport uses). Without
 	// this, any authenticated user could enumerate attachments by
 	// sequential id — see
-	// issues/backend/03-high-attachment-no-row-authz.md.
+	// DI-3 in docs/DESIGN_INVARIANTS.md.
 	if err := requireAttachmentAccess(ctx, cfg.Pool, user.ID, id); err != nil {
 		return err
 	}

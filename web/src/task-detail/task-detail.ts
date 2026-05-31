@@ -1291,7 +1291,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * against a single-task PanelModel + live-commit each change."
    *
    * This used to be an inline loop here.  Lifted into its own control per
-   * STRUCTURAL_PLAN composition principle: a NEW high-level control for
+   * the composition principle (ARCHITECTURE.md §13): a NEW high-level control for
    * each intent ('live' here; deferred / batch live in NewTaskForm /
    * BatchTaskEditor) rather than a `policy` knob on a shared primitive.
    */
@@ -1367,7 +1367,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * The raw `this.task.attributes` is ALSO mirrored so downstream sections
    * (the TagsEditor seed, the related-tasks-panel seed) reading
    * `this.task.attributes['x']` keep working until they migrate to the
-   * panel store too. STRUCTURAL_PLAN follow-up: drop those mirrors.
+   * panel store too. ARCHITECTURE.md §14 follow-up: drop those mirrors.
    */
   private commitAttribute(name: string, value: unknown): void {
     const task = this.task;

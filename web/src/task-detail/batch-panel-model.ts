@@ -11,7 +11,7 @@
  *     `attribute.update`; BatchPanelModel's is a FAN-OUT across the
  *     selection (with partial-failure handling).
  *
- * Per the project's composition principle (STRUCTURAL_PLAN): we do NOT
+ * Per the project's composition principle (ARCHITECTURE.md §13): we do NOT
  * grow `PanelModel` with a `mode: 'single' | 'batch'` knob.  We build a
  * second class with focused duty.  Higher-level controls
  * (`BatchTaskEditor`) compose this with the SAME `AttributeRow` /
