@@ -287,6 +287,12 @@ test('Workflows: steps load + render grouped by `from` status', async () => {
   assert.match(rows[0].textContent, /Start → Doing/);
   // The role-gated row surfaces the role name.
   assert.match(ctrl.el.querySelectorAll('[data-ne-step-row]')[1].textContent, /manager/);
+
+  // Drag grips show only where reordering is meaningful: the 2-step group (101 →
+  // steps 900/901) has grips; the lone-step group (102 → step 902) does not.
+  assert.ok(ctrl.el.querySelector('[data-ne-step-drag="900"]'), 'multi-step group keeps its grip');
+  assert.ok(ctrl.el.querySelector('[data-ne-step-drag="901"]'), 'multi-step group keeps its grip');
+  assert.equal(ctrl.el.querySelector('[data-ne-step-drag="902"]'), null, 'lone-step group has no grip');
 });
 
 test('Workflows: dragging a transition reorders within its from-group (#14)', async () => {

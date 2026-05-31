@@ -82,7 +82,7 @@ export const WORKFLOW_FORM: RecordFormScreenConfig = {
     { name: 'doc', label: 'Description', kind: 'text', placeholder: 'What this workflow governs' },
     {
       name: 'defaultCreateStatusId',
-      label: 'Default create status',
+      label: 'Initial status (new items)',
       kind: 'selectFromQuery',
       optionsFrom: {
         spec: 'card.select_with_attributes',

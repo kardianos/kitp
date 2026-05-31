@@ -779,8 +779,11 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       ghead.className = 'nested-editor__step-group-head muted';
       ghead.textContent = `From: ${titleById.get(b.fromCardId) ?? `#${b.fromCardId}`}`;
       group.append(ghead);
+      // Reordering only matters WITHIN a from-group, so a lone transition has
+      // nothing to reorder — suppress its drag grip (it otherwise reads broken).
+      const reorderable = b.steps.length > 1;
       for (const s of b.steps) {
-        group.append(this.buildStepRow(flow.id, s, titleById));
+        group.append(this.buildStepRow(flow.id, s, titleById, reorderable));
       }
 
       // Drag-reorder WITHIN this from-group (shared DnD kit). Container-level
@@ -834,36 +837,50 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     this.el.replaceChildren(frag);
   }
 
-  private buildStepRow(flowId: string, s: FlowStepRow, titleById: Map<string, string>): HTMLElement {
+  private buildStepRow(
+    flowId: string,
+    s: FlowStepRow,
+    titleById: Map<string, string>,
+    reorderable: boolean,
+  ): HTMLElement {
     const row = document.createElement('div');
     row.className = 'nested-editor__step-row';
     row.dataset.neStepRow = s.id;
     // `data-card-id` lets the shared computeDropTarget skip the dragged row.
     row.dataset.cardId = s.id;
 
-    // Drag handle (shared DnD kit) — reorders within the from-group.
-    const handle = document.createElement('span');
-    handle.className = 'nested-editor__step-drag';
-    handle.dataset.neStepDrag = s.id;
-    handle.draggable = true;
-    handle.setAttribute('aria-hidden', 'true');
-    handle.title = 'Drag to reorder';
-    handle.textContent = '⠿';
-    this.listen(handle, 'dragstart', (ev) => {
-      this.draggingStepId = s.id;
-      this.draggingStepFrom = s.from_card_id;
-      const dt = (ev as DragEvent).dataTransfer;
-      if (dt) {
-        dt.effectAllowed = 'move';
-        dt.setData('text/plain', s.id);
-      }
-    });
-    this.listen(handle, 'dragend', () => {
-      this.draggingStepId = null;
-      this.draggingStepFrom = null;
-      for (const p of this.stepPlaceholders) p.hide();
-    });
-    row.append(handle);
+    if (reorderable) {
+      // Drag handle (shared DnD kit) — reorders within the from-group.
+      const handle = document.createElement('span');
+      handle.className = 'nested-editor__step-drag';
+      handle.dataset.neStepDrag = s.id;
+      handle.draggable = true;
+      handle.setAttribute('aria-hidden', 'true');
+      handle.title = 'Drag to reorder';
+      handle.textContent = '⠿';
+      this.listen(handle, 'dragstart', (ev) => {
+        this.draggingStepId = s.id;
+        this.draggingStepFrom = s.from_card_id;
+        const dt = (ev as DragEvent).dataTransfer;
+        if (dt) {
+          dt.effectAllowed = 'move';
+          dt.setData('text/plain', s.id);
+        }
+      });
+      this.listen(handle, 'dragend', () => {
+        this.draggingStepId = null;
+        this.draggingStepFrom = null;
+        for (const p of this.stepPlaceholders) p.hide();
+      });
+      row.append(handle);
+    } else {
+      // Lone transition in its from-group → nothing to reorder. Render an inert
+      // spacer (no grip) so the row still aligns with reorderable groups.
+      const spacer = document.createElement('span');
+      spacer.className = 'nested-editor__step-drag nested-editor__step-drag--inert';
+      spacer.setAttribute('aria-hidden', 'true');
+      row.append(spacer);
+    }
 
     const label = document.createElement('span');
     label.className = 'nested-editor__step-label';
