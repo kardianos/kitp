@@ -185,7 +185,7 @@ flow_id,     from_card_id,  to_card_id,    label,           sort_order
 ## table card | under=proj_default | alias=sc_comms | doc="Comms screen (email_comm_spec Gate 7). Lists tasks with attached comms (the 'Comms attached' default_filter below). flow_ref points at the comm flow so the TransitionBar shows comm-status transitions; toggle_groups filter by comm_status phase (Active / Resolved) rather than task status; default_create_status overrides to 'Open' (the comm flow's create default)."
 ### rows
 card_type_id,      parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,    default_create_status, alias,    toggle_groups
-$card_type.screen, parent,         "Comms", list,   comms, c,      7,          @flow_comm,  @cs_open,              sc_comms, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"comm_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Resolved","predicate":{"attr":"comm_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+$card_type.screen, parent,         "Comms", comms,  comms, c,      7,          @flow_comm,  @cs_open,              sc_comms, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"comm_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Resolved","predicate":{"attr":"comm_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 ## table card | under=sc_comms | doc="Default filter for the Comms screen: tasks that have any attached comm cards."
 ### rows
@@ -406,7 +406,7 @@ flow_id,         from_card_id,      to_card_id,         label,           sort_or
 ## table card | under=proj_mobile | alias=mob_sc_comms | doc="Mobile App Comms screen. No hotkey (Default Project claims the single-letter keys, like the other Mobile App screens). flow_ref → the comm flow; toggle_groups filter by comm_status phase; default_create_status → 'Open'."
 ### rows
 card_type_id,      parent_card_id, title,   layout, slug,  sort_order, flow_ref,        default_create_status, alias,        toggle_groups
-$card_type.screen, parent,         "Comms", list,   comms, 7,          @mob_flow_comm,  @mob_cs_open,          mob_sc_comms, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"comm_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Resolved","predicate":{"attr":"comm_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+$card_type.screen, parent,         "Comms", comms,  comms, 7,          @mob_flow_comm,  @mob_cs_open,          mob_sc_comms, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"comm_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Resolved","predicate":{"attr":"comm_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 ## table card | under=mob_sc_comms | doc="Default filter for the Mobile App Comms screen: tasks that have any attached comm cards."
 ### rows

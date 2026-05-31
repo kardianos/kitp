@@ -102,6 +102,7 @@ const LAYOUT_TO_CONTROL: Record<string, string> = {
   list: 'Inbox',
   grid: 'Grid',
   project: 'Project',
+  comms: 'CommsList',
 };
 
 /** Layouts that support the swim-lane (2nd) axis. Only the Kanban splits its
@@ -295,7 +296,7 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     // the ScreenFilterBar renders them + seeds the default-on phases.
     this.ctx.tree
       .at(['screen', 'phaseToggles'])
-      .set(set.screen !== null ? readPhaseToggles(set.screen) : []);
+      .set(set.screen !== null ? readPhaseToggles(set.screen, set.phaseAttr) : []);
 
     if (set.screen === null) {
       // No screen card for this slug → keep the fallback body + announce "no

@@ -6016,6 +6016,56 @@ select optgroup {
   font-size: var(--text-sm);
 }
 
+/* ---- comm_status badge + per-section phase filter ---- */
+.task-comms__status {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  padding: var(--space-h) var(--space-1x);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+}
+.task-comms__status[data-phase="triage"] {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.task-comms__status[data-phase="active"] {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+.task-comms__status[data-phase="terminal"] {
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+}
+.task-comms__phase-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.task-comms__phase-filter:empty {
+  display: none;
+}
+.task-comms__phase-chip {
+  font: inherit;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  padding: var(--space-h) var(--space-1x);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill, 999px);
+  background: var(--color-bg);
+  color: var(--color-muted);
+  cursor: pointer;
+}
+.task-comms__phase-chip[aria-pressed="true"] {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+.task-comms__transitions {
+  margin-top: var(--space-1);
+}
+
 /* ---- start-comm form ---- */
 .task-comms__form:not(:empty) {
   display: flex;
@@ -8005,4 +8055,92 @@ textarea.task-comms__form-input {
   justify-content: flex-end;
   gap: var(--space-2);
   margin-top: var(--space-1);
+}
+
+/* -------------------------------------------------------------------------- */
+/* CommsList — the `comms` screen layout (lists comm cards by comm_status).    */
+/* -------------------------------------------------------------------------- */
+.comms-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  min-height: 0;
+}
+.comms-list__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.comms-list__heading {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.04em;
+}
+.comms-list__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.comms-list__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--color-bg);
+  cursor: pointer;
+}
+.comms-list__row:hover {
+  background: var(--color-fill-hover);
+}
+.comms-list__row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--color-focus-halo);
+}
+.comms-list__main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-h);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.comms-list__subject {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium, 500);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.comms-list__task {
+  font-size: var(--text-xs);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.comms-list__status {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  padding: var(--space-h) var(--space-1x);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+}
+.comms-list__status[data-phase="triage"] {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.comms-list__status[data-phase="active"] {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+.comms-list__status[data-phase="terminal"] {
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+}
+.comms-list__empty {
+  margin: 0;
+  font-size: var(--text-sm);
 }

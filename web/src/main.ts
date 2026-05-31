@@ -42,6 +42,7 @@ import { registerGridColumns } from './grid/grid-columns.js';
 import { registerBulkActionBar } from './grid/bulk-action-bar.js';
 import { registerTagChip } from './grid/tag-chip.js';
 import { registerInbox } from './inbox/inbox.js';
+import { registerCommsList } from './comms/comms-list.js';
 import { registerInboxViewToggles } from './inbox/inbox-view-toggles.js';
 import { registerInboxSpecs } from './inbox/specs.js';
 import { registerScreenFilterBar } from './shell/screen-filter-bar.js';
@@ -267,6 +268,8 @@ function boot(): void {
   // The Inbox's "Mine only" / "Routed to me" view toggles — mounted on the
   // filter bar's View row (viewActions seam) rather than the Inbox body.
   registerInboxViewToggles();
+  // The `comms` layout body: lists comm cards filtered by comm_status phase.
+  registerCommsList();
   registerProjectList();
   // The `project` layout body: the Project detail / overview. ScreenHost maps
   // `project` → 'Project'; registering it makes a screen card with

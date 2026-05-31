@@ -53,10 +53,18 @@ export class CommThreads extends Control<CommThreadsConfig> {
   private comms: CommRow[] = [];
   /** person id → display name, for recipient chips/labels. */
   private personLabels = new Map<string, string>();
+  /** status card id → {label, phase}, for the comm_status badge + section filter. */
+  private statusInfo = new Map<string, { label: string; phase: string }>();
+  /** Per-section comm_status phase filter ('' = all phases). Filters the rendered
+   *  comm list independently of the task's own status. */
+  private phaseFilter: '' | 'triage' | 'active' | 'terminal' = '';
   /** Child RefPickers (per-comm recipients + the start form), disposed on repaint. */
   private pickers: RefPicker[] = [];
+  /** Child TransitionBars (one per comm, bound to comm_status), disposed on repaint. */
+  private bars: Control[] = [];
 
   private headEl!: HTMLElement;
+  private filterEl!: HTMLElement;
   private formHost!: HTMLElement;
   private listEl!: HTMLElement;
   private formOpen = false;
@@ -91,6 +99,14 @@ export class CommThreads extends Control<CommThreadsConfig> {
     this.headEl = head;
     this.el.append(head);
 
+    // Per-section comm_status phase filter — lets you narrow the task's comm
+    // threads by their OWN status phase, independent of the task status.
+    const filterRow = document.createElement('div');
+    filterRow.className = 'task-comms__phase-filter';
+    filterRow.dataset.commsPhaseFilter = '';
+    this.filterEl = filterRow;
+    this.el.append(filterRow);
+
     const formHost = document.createElement('div');
     formHost.className = 'task-comms__form';
     formHost.dataset.commsForm = '';
@@ -106,6 +122,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
     this.onDestroy(() => this.disposePickers());
 
     this.loadPersons();
+    this.loadStatuses();
     this.loadComms();
   }
 
@@ -125,6 +142,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
         if (!this.isAlive()) return;
         this.comms = (out as CommListForTaskOutput).rows ?? [];
         this.paintHeading();
+        this.paintFilter();
         this.paintList();
       },
       { alive: () => this.isAlive() },
@@ -146,11 +164,77 @@ export class CommThreads extends Control<CommThreadsConfig> {
     );
   }
 
+  /** Load the status value-cards so each comm renders a labelled, phase-toned
+   *  comm_status badge (the comm flow reuses the shared `status` card pool). */
+  private loadStatuses(): void {
+    this.ctx.api.callByName(
+      SPEC.selectWithAttributes,
+      { cardTypeName: 'status' },
+      (out) => {
+        if (!this.isAlive()) return;
+        const rows = ((out as { rows?: CardWithAttrs[] }).rows ?? []) as CardWithAttrs[];
+        for (const r of rows) {
+          this.statusInfo.set(String(r.id), { label: statusLabel(r), phase: r.phase ?? '' });
+        }
+        this.paintFilter();
+        this.paintList(); // late labels → repaint badges
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /** The phase of a comm's comm_status, or '' when unknown / unloaded. */
+  private commPhase(comm: CommRow): string {
+    return this.statusInfo.get(comm.commStatus.toString())?.phase ?? '';
+  }
+
   /* ------------------------------- painting ----------------------------- */
 
   private paintHeading(): void {
     const h = this.headEl.querySelector<HTMLElement>('[data-comms-heading]');
     if (h) h.textContent = this.comms.length > 0 ? `COMMS (${this.comms.length})` : 'COMMS';
+  }
+
+  /** Phase → chip label for the section filter (terminal reads "Resolved"). */
+  private static readonly PHASE_LABEL: Record<string, string> = {
+    triage: 'Triage',
+    active: 'Active',
+    terminal: 'Resolved',
+  };
+
+  /** Render the comm_status phase-filter chips: "All" plus one chip per phase
+   *  present among the task's comms, each with its count. Hidden when there are
+   *  no comms. Clicking a chip narrows the rendered list (see paintList). */
+  private paintFilter(): void {
+    this.filterEl.replaceChildren();
+    if (this.comms.length === 0) return;
+
+    const counts = new Map<string, number>();
+    for (const c of this.comms) {
+      const ph = this.commPhase(c);
+      if (ph !== '') counts.set(ph, (counts.get(ph) ?? 0) + 1);
+    }
+
+    const chip = (phase: '' | 'triage' | 'active' | 'terminal', label: string, count: number): void => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'task-comms__phase-chip';
+      b.dataset.phaseChip = phase === '' ? 'all' : phase;
+      b.setAttribute('aria-pressed', this.phaseFilter === phase ? 'true' : 'false');
+      b.textContent = count >= 0 ? `${label} · ${count}` : label;
+      this.listen(b, 'click', () => {
+        this.phaseFilter = phase;
+        this.paintFilter();
+        this.paintList();
+      });
+      this.filterEl.append(b);
+    };
+
+    chip('', 'All', this.comms.length);
+    for (const phase of ['triage', 'active', 'terminal'] as const) {
+      const n = counts.get(phase) ?? 0;
+      if (n > 0) chip(phase, CommThreads.PHASE_LABEL[phase] ?? phase, n);
+    }
   }
 
   private paintList(): void {
@@ -163,7 +247,19 @@ export class CommThreads extends Control<CommThreadsConfig> {
       this.listEl.append(empty);
       return;
     }
-    for (const comm of this.comms) this.listEl.append(this.renderComm(comm));
+    const shown =
+      this.phaseFilter === ''
+        ? this.comms
+        : this.comms.filter((c) => this.commPhase(c) === this.phaseFilter);
+    if (shown.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'task-comms__empty muted';
+      const lbl = CommThreads.PHASE_LABEL[this.phaseFilter] ?? this.phaseFilter;
+      empty.textContent = `No ${lbl.toLowerCase()} comms.`;
+      this.listEl.append(empty);
+      return;
+    }
+    for (const comm of shown) this.listEl.append(this.renderComm(comm));
   }
 
   private renderComm(comm: CommRow): HTMLElement {
@@ -180,8 +276,41 @@ export class CommThreads extends Control<CommThreadsConfig> {
     const thread = document.createElement('span');
     thread.className = 'task-comms__thread muted';
     thread.textContent = comm.threadId;
-    top.append(subj, thread);
+    // comm_status badge — phase-toned (triage/active/terminal), independent of
+    // the task's own status. Resolves the label+phase from the loaded statuses.
+    const badge = document.createElement('span');
+    badge.className = 'task-comms__status';
+    badge.dataset.commStatusBadge = '';
+    const info = this.statusInfo.get(comm.commStatus.toString());
+    badge.dataset.phase = info?.phase ?? '';
+    badge.textContent = info !== undefined ? info.label : `#${comm.commStatus}`;
+    top.append(subj, thread, badge);
     card.append(top);
+
+    // Comm-status transition bar: reuses the task TransitionBar, bound to the
+    // comm card's `comm_status` flow, so the thread can be advanced and closed
+    // (Resolve → terminal) inline. onChanged reloads so the badge + filter
+    // counts re-resolve from server truth.
+    const barHost = document.createElement('div');
+    barHost.className = 'task-comms__transitions';
+    barHost.dataset.commTransitions = '';
+    card.append(barHost);
+    const bar = this.spawn(
+      'TransitionBar',
+      {
+        type: 'TransitionBar',
+        cardId: comm.id.toString(),
+        statusAttr: 'comm_status',
+        progressPrimary: true,
+        onChanged: () => {
+          if (!this.isAlive()) return;
+          this.loadComms();
+          this.config.onLocalWrite?.();
+        },
+      },
+      barHost,
+    );
+    this.bars.push(bar);
 
     // Recipients — an editable RefPicker over person (display + edit in one).
     const recipRow = document.createElement('div');
@@ -426,6 +555,8 @@ export class CommThreads extends Control<CommThreadsConfig> {
   private disposePickers(): void {
     for (const p of this.pickers) this.destroyChild(p);
     this.pickers = [];
+    for (const b of this.bars) this.destroyChild(b);
+    this.bars = [];
   }
 }
 
@@ -444,6 +575,12 @@ function parseId(raw: string | undefined): bigint | null {
 function personName(card: CardWithAttrs): string {
   const a = card.attributes;
   const t = a['title'] ?? a['name'] ?? a['email'];
+  return typeof t === 'string' && t.length > 0 ? t : `#${String(card.id)}`;
+}
+
+function statusLabel(card: CardWithAttrs): string {
+  const a = card.attributes;
+  const t = a['title'] ?? a['name'];
   return typeof t === 'string' && t.length > 0 ? t : `#${String(card.id)}`;
 }
 

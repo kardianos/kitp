@@ -176,6 +176,55 @@ var migrations = []migration{
 		id:  "0002_card_seq_resync",
 		sql: `SELECT setval('card_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM card), 1))`,
 	},
+	{
+		// The Comms screen now lists comm cards directly (layout 'comms' → the
+		// CommsList body) instead of tasks-with-comms (layout 'list' → Inbox),
+		// so its comm_status phase filter actually scopes comm cards. Flip the
+		// layout on every existing comms-slug screen (template + stamped). And
+		// drop any task-only `default_filter` ("Comms attached") wired onto a
+		// comms screen — it would clobber the comm query when applied as a
+		// preset. Idempotent: a fresh seed already ships layout 'comms' and no
+		// default_filter, so both statements are no-ops there.
+		id: "0003_comms_screen_layout",
+		sql: `
+DO $$
+DECLARE
+  _layout_def bigint := (SELECT id FROM attribute_def WHERE name = 'layout');
+  _slug_def   bigint := (SELECT id FROM attribute_def WHERE name = 'slug');
+  _filter_def bigint := (SELECT id FROM attribute_def WHERE name = 'default_filter');
+  _screen_ct  bigint := (SELECT id FROM card_type WHERE name = 'screen');
+BEGIN
+  IF _layout_def IS NULL OR _slug_def IS NULL OR _screen_ct IS NULL THEN
+    RETURN;
+  END IF;
+  UPDATE attribute_value av
+  SET value = to_jsonb('comms'::text)
+  WHERE av.attribute_def_id = _layout_def
+    AND av.value #>> '{}' = 'list'
+    AND EXISTS (
+      SELECT 1 FROM card c
+      WHERE c.id = av.card_id AND c.card_type_id = _screen_ct
+        AND EXISTS (
+          SELECT 1 FROM attribute_value sv
+          WHERE sv.card_id = c.id AND sv.attribute_def_id = _slug_def
+            AND sv.value #>> '{}' = 'comms'
+        )
+    );
+  IF _filter_def IS NOT NULL THEN
+    DELETE FROM attribute_value av
+    WHERE av.attribute_def_id = _filter_def
+      AND EXISTS (
+        SELECT 1 FROM card c
+        WHERE c.id = av.card_id AND c.card_type_id = _screen_ct
+          AND EXISTS (
+            SELECT 1 FROM attribute_value sv
+            WHERE sv.card_id = c.id AND sv.attribute_def_id = _slug_def
+              AND sv.value #>> '{}' = 'comms'
+          )
+      );
+  END IF;
+END $$;`,
+	},
 }
 
 // ledgerDDL creates the schema-version ledger. Kept here (not in the generated

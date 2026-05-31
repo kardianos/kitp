@@ -236,20 +236,42 @@ export interface PhaseToggle {
   phase: Phase;
   /** Whether it's ON by default (the seed's `default_on`). */
   defaultOn: boolean;
+  /**
+   * The card_ref attribute this toggle's `has_phase` leaf scopes (the seed
+   * predicate's `attr`). Usually `status` (task screens) but `comm_status` on
+   * the Comms screen, so the filter bar composes the right leaf. Defaults to
+   * `status` when the seed omits it.
+   */
+  attr: string;
 }
 
+/** Canonical phase order + default labels for the UNIFORM phase filter. Every
+ *  phase-bearing screen offers all three phases in this order; a screen's
+ *  toggle_groups only tunes which attr is scoped, the default-on set, and
+ *  (optionally) per-phase label overrides. */
+const PHASE_ORDER: readonly Phase[] = ['triage', 'active', 'terminal'];
+const PHASE_DEFAULT_LABEL: Record<Phase, string> = {
+  triage: 'Triage',
+  active: 'Active',
+  terminal: 'Closed',
+};
+
 /**
- * Read a screen card's `phase_scope` toggle group from its `toggle_groups`
- * attribute (a JSON spec — see the seed). Each item is a `status has_phase
- * [<phase>]` predicate with a label + `default_on`; we surface them as
- * {@link PhaseToggle}s the ScreenFilterBar renders. The bar composes the
- * selected phases into ONE top-level `status has_phase [phases]` leaf
- * (OR-semantics), hiding non-selected phases (terminal is off by default).
+ * Read a screen's phase filter as a UNIFORM set of three toggles (Triage /
+ * Active / Terminal), pushed down into the filter rather than hand-listed per
+ * screen. The screen's `phase_scope` toggle_groups items only declare, per
+ * phase it mentions: the scoped `attr` (`status` vs `comm_status`), the
+ * `default_on` selection, and an optional label override. Any phase the screen
+ * DIDN'T mention is synthesized here as default-off, inheriting the screen's
+ * phase attr — so a flow that later gains, say, a triage `comm_status` (a
+ * spam / L1 gate) is filterable with NO per-screen edit. The `has_phase`
+ * predicate is phase- and attr-agnostic, so a toggle for a phase no status
+ * currently occupies simply yields an empty result.
  *
- * Malformed / absent `toggle_groups` → no phase toggles (the screen shows every
- * phase). We never throw on a half-written value.
+ * A screen with no `phase_scope` group has no phase concept → no toggles (e.g.
+ * the project detail). Malformed / absent `toggle_groups` → []; never throws.
  */
-export function readPhaseToggles(screen: CardWithAttrs): PhaseToggle[] {
+export function readPhaseToggles(screen: CardWithAttrs, attrOverride?: string): PhaseToggle[] {
   const raw = screen.attributes['toggle_groups'];
   if (typeof raw !== 'string' || raw.trim() === '') return [];
   let parsed: unknown;
@@ -263,21 +285,47 @@ export function readPhaseToggles(screen: CardWithAttrs): PhaseToggle[] {
     (g): g is { items?: unknown } => g !== null && typeof g === 'object' && (g as { name?: unknown }).name === 'phase_scope',
   );
   const items = group && Array.isArray((group as { items?: unknown }).items) ? (group as { items: unknown[] }).items : [];
-  const out: PhaseToggle[] = [];
+
+  // Parse whatever phases the screen declared (keyed by phase): default_on +
+  // an optional label override. The scoped attr is DERIVED from the screen's
+  // flow (attrOverride, passed by ScreenHost from flow_ref → attribute_def);
+  // the toggle_groups predicate's own attr is only a fallback for a screen
+  // whose flow we couldn't resolve.
+  const declared = new Map<Phase, { label: string; defaultOn: boolean }>();
+  let parsedAttr = 'status';
   for (const it of items) {
     if (it === null || typeof it !== 'object') continue;
-    const item = it as { label?: unknown; default_on?: unknown; predicate?: { op?: unknown; values?: unknown } };
+    const item = it as {
+      label?: unknown;
+      default_on?: unknown;
+      predicate?: { op?: unknown; values?: unknown; attr?: unknown };
+    };
     const pred = item.predicate;
     if (!pred || typeof pred !== 'object' || pred.op !== 'has_phase') continue;
     const ph = Array.isArray(pred.values) ? String(pred.values[0] ?? '') : '';
     if (!(PHASES as readonly string[]).includes(ph)) continue;
-    out.push({
-      label: typeof item.label === 'string' && item.label !== '' ? item.label : ph,
-      phase: ph as Phase,
+    if (typeof pred.attr === 'string' && pred.attr !== '') parsedAttr = pred.attr;
+    declared.set(ph as Phase, {
+      label: typeof item.label === 'string' && item.label !== '' ? item.label : PHASE_DEFAULT_LABEL[ph as Phase],
       defaultOn: item.default_on === true,
     });
   }
-  return out;
+  // No declared phases → the screen has no phase concept; show no filter.
+  if (declared.size === 0) return [];
+
+  const attr = typeof attrOverride === 'string' && attrOverride !== '' ? attrOverride : parsedAttr;
+  // UNIFORM: emit all three phases in canonical order, synthesizing the ones
+  // the screen didn't declare as default-off; every toggle scopes the same
+  // flow-derived attr.
+  return PHASE_ORDER.map((phase) => {
+    const d = declared.get(phase);
+    return {
+      label: d?.label ?? PHASE_DEFAULT_LABEL[phase],
+      phase,
+      defaultOn: d?.defaultOn ?? false,
+      attr,
+    };
+  });
 }
 
 /**
@@ -341,6 +389,21 @@ export interface ScreenPresetSet {
   filters: CardWithAttrs[];
   /** The filter `screen.default_filter` points at (when set + present), else null. */
   defaultFilter: CardWithAttrs | null;
+  /** The phase-filter attr DERIVED from the screen's flow (`flow_ref` → that
+   *  flow's bound attribute_def: `status` for task flows, `comm_status` for
+   *  comm flows). Undefined when the screen has no flow_ref or the lookup
+   *  failed — readPhaseToggles then falls back to the toggle_groups attr. */
+  phaseAttr?: string;
+}
+
+/** Read a screen card's `flow_ref` (a flow id, stored as a number) as a string
+ *  id, or null when unset. */
+export function readFlowRef(screen: CardWithAttrs): string | null {
+  const v = screen.attributes['flow_ref'];
+  if (typeof v === 'bigint') return v.toString();
+  if (typeof v === 'number' && Number.isInteger(v)) return String(v);
+  if (typeof v === 'string' && /^\d+$/.test(v)) return v;
+  return null;
 }
 
 /** The spec key the loader addresses (the shared card read). */
@@ -391,7 +454,29 @@ export function loadScreenAndFilters(
           const defaultId = readDefaultFilterID(screen);
           const defaultFilter =
             defaultId === null ? null : (filters.find((f) => f.id === defaultId) ?? null);
-          onResult({ screen, filters, defaultFilter });
+          // Derive the phase-filter attr from the screen's flow (flow_ref →
+          // that flow's attribute_def). $authenticated, so every viewer can
+          // resolve it. A missing flow_ref or a failed/empty lookup lands the
+          // set WITHOUT phaseAttr (readPhaseToggles falls back to toggle_groups).
+          const flowRef = readFlowRef(screen);
+          if (flowRef === null) {
+            onResult({ screen, filters, defaultFilter });
+            return;
+          }
+          const land = (phaseAttr?: string): void =>
+            onResult({ screen, filters, defaultFilter, ...(phaseAttr !== undefined ? { phaseAttr } : {}) });
+          api.callByName(
+            'flow.list',
+            { scopeCardId: projectId.toString() },
+            (flowOut) => {
+              const rows = ((flowOut ?? {}) as {
+                rows?: Array<{ id?: unknown; attribute_def_name?: unknown }>;
+              }).rows ?? [];
+              const match = rows.find((r) => String(r.id) === flowRef);
+              land(typeof match?.attribute_def_name === 'string' ? match.attribute_def_name : undefined);
+            },
+            { ...(alive ? { alive } : {}), onErr: () => land() },
+          );
         },
         alive ? { alive } : {},
       );

@@ -793,7 +793,7 @@ func TestStampFromInstallSeedTemplate(t *testing.T) {
 
 // TestStampedProjectHasCommsScreen exercises Gate 7 of email_comm_spec:
 // the install-seed template carries a "Comms" screen card (slug=comms,
-// layout=list, hotkey=c) with flow_ref pointing at the template's comm
+// layout=comms, hotkey=c) with flow_ref pointing at the template's comm
 // flow, default_create_status pointing at the "Open" comm status, and
 // a "Comms attached" filter child carrying predicate {op:"exists",
 // attr:"comms"}. Stamping the template must reproduce all of those —
@@ -840,7 +840,7 @@ func TestStampedProjectHasCommsScreen(t *testing.T) {
 		attr string
 		want string
 	}{
-		{"layout", "list"},
+		{"layout", "comms"},
 		{"hotkey", "c"},
 	} {
 		var got string

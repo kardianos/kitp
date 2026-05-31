@@ -63,7 +63,7 @@ func TestProjectInsertSeedsScreens(t *testing.T) {
 		{slug: "project", layout: "project", title: "Project", sortOrder: 4},
 		{slug: "incoming", layout: "list", title: "Incoming", sortOrder: 5, hotkey: "n"},
 		{slug: "recently-closed", layout: "list", title: "Recently Closed", sortOrder: 6},
-		{slug: "comms", layout: "list", title: "Comms", sortOrder: 7, hotkey: "c"},
+		{slug: "comms", layout: "comms", title: "Comms", sortOrder: 7, hotkey: "c"},
 	}
 	if len(sOut.Rows) != len(wants) {
 		t.Fatalf("screen count: got %d, want %d", len(sOut.Rows), len(wants))

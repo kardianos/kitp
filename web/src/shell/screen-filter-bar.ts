@@ -421,7 +421,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
         if (toggles.length === 0 && session === undefined) return;
         const phases = session ?? this.basePhases();
         const cur = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
-        this.applyPredicate(withTopLevelPhases(cur, phases));
+        this.applyPredicate(withTopLevelPhases(cur, phases, phaseAttrOf(toggles)));
       }, 'filterbar.seedPhase');
     }
 
@@ -466,7 +466,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       saveView(sp, {
         // Phase scope is SESSION-ONLY — strip it so a reload starts at the
         // screen's base phase rather than restoring a stale phase selection.
-        predicate: withTopLevelPhases(predicate, []),
+        predicate: withTopLevelPhases(predicate, [], this.phaseAttr()),
         group,
         laneGroup,
         columnConfig,
@@ -506,7 +506,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       if (v.predicate !== undefined) {
         // Strip any persisted phase leaf (session-only); the per-mount phase
         // seed re-applies the base / in-session phase on top.
-        this.ctx.tree.at(['screen', 'predicate']).set(withTopLevelPhases(v.predicate as Predicate | null, []));
+        this.ctx.tree.at(['screen', 'predicate']).set(withTopLevelPhases(v.predicate as Predicate | null, [], this.phaseAttr()));
         this.respawnPredicate();
       }
       // Restore the selected preset so the View picker re-selects it (the
@@ -816,6 +816,13 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     return on.length >= all.length ? [] : on;
   }
 
+  /** The card_ref attribute the active screen's phase toggles scope (`status`
+   *  for task screens, `comm_status` for the Comms screen). Drives which
+   *  `has_phase` leaf the seed/restore/reset compose + strip. */
+  private phaseAttr(): string {
+    return phaseAttrOf(this.ctx.tree.at(['screen', 'phaseToggles']).peek<PhaseToggle[]>() ?? []);
+  }
+
   /** The IN-MEMORY (session-only) phase node for a screen. It survives in-session
    *  navigation (task → back keeps the toggle) but is gone on reload, so phase
    *  resets to base each session. Keyed like the persisted view (project, slug). */
@@ -836,7 +843,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
   private resetPhaseToBase(statePath: string[]): void {
     const phases = this.basePhases();
     const cur = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
-    this.applyPredicate(withTopLevelPhases(cur, phases));
+    this.applyPredicate(withTopLevelPhases(cur, phases, this.phaseAttr()));
     this.phaseSessionNode(statePath).set(phases);
   }
 
@@ -995,7 +1002,10 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
 
     this.effect(() => {
       const toggles = (this.ctx.tree.at(['screen', 'phaseToggles']).get<PhaseToggle[]>() ?? []) as PhaseToggle[];
-      const scoped = topLevelPhases(this.ctx.tree.at(['screen', 'predicate']).get<Predicate | null>() ?? null);
+      const scoped = topLevelPhases(
+        this.ctx.tree.at(['screen', 'predicate']).get<Predicate | null>() ?? null,
+        phaseAttrOf(toggles),
+      );
       this.paintPhaseDropdown(wrap, trigger, panel, toggles, new Set<Phase>(scoped));
     }, 'filterbar.phaseToggles');
   }
@@ -1045,9 +1055,10 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
    *  Advanced editor + the toggles repaint. */
   private togglePhase(phase: Phase): void {
     const toggles = (this.ctx.tree.at(['screen', 'phaseToggles']).peek<PhaseToggle[]>() ?? []) as PhaseToggle[];
+    const attr = phaseAttrOf(toggles);
     const all = toggles.map((t) => t.phase);
     const cur = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
-    const curPhases = topLevelPhases(cur);
+    const curPhases = topLevelPhases(cur, attr);
 
     let next: Set<Phase>;
     if (curPhases.length === 0) {
@@ -1060,7 +1071,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     }
     // Covering all phases (or none) ⇒ no restriction ⇒ drop the leaf.
     const phases = next.size >= all.length ? [] : all.filter((p) => next.has(p));
-    this.applyPredicate(withTopLevelPhases(cur, phases));
+    this.applyPredicate(withTopLevelPhases(cur, phases, attr));
     // Remember the user's phase choice for THIS session only (in-memory).
     const sp = this.config.screenStatePath;
     if (sp !== undefined) this.phaseSessionNode(sp).set(phases);
@@ -1255,6 +1266,14 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.destroyChild(this.predicateChild);
     this.predicateChild = this.spawn('PredicateFilter', this.predicateConfig, this.predicateHost);
   }
+}
+
+/** The card_ref attribute a screen's phase toggles scope. All toggles in one
+ *  group share it (the seed's `attr`); the Comms screen uses `comm_status`, the
+ *  rest `status`. Empty toggle set → 'status' (the only place a leaf could be
+ *  composed without toggles is a no-op). */
+function phaseAttrOf(toggles: readonly PhaseToggle[]): string {
+  return toggles[0]?.attr ?? 'status';
 }
 
 /** Prompt for text (browser prompt; null when unavailable / cancelled). */

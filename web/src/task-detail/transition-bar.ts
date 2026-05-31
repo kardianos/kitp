@@ -84,6 +84,14 @@ export interface TransitionBarConfig extends BaseControlConfig {
    * card id. Not declarative — a plain callback handed in at spawn.
    */
   onChanged?: (toCardId: bigint, attributeName: string) => void;
+  /**
+   * Surface the first `progress` (active→active) transition as a PRIMARY inline
+   * button instead of folding every progress step into the compact "Status ▾"
+   * dropdown; remaining progress (+ triage) steps stay in the dropdown for
+   * aux/extra workflow actions. Used by the comm thread bar so each comm shows
+   * a clear primary next-step button. Default false (task bars stay compact).
+   */
+  progressPrimary?: boolean;
 }
 
 declare module '../core/control.js' {
@@ -340,10 +348,21 @@ export class TransitionBar extends Control<TransitionBarConfig> {
       this.barEl.append(this.splitButton('close', m.close[0]!, m.close.slice(1)));
     }
 
-    // progress (+ progress_triage as a "Triage" subgroup): single Status ▾ menu.
-    const progressItems = this.progressItems();
-    if (progressItems.length > 0) {
-      this.barEl.append(this.dropdownButton('progress', 'Status', progressItems));
+    // progress (+ progress_triage as a "Triage" subgroup). Default: a single
+    // "Status ▾" dropdown. With progressPrimary (the comm bar), surface the
+    // FIRST progress step as a primary button and keep the rest (+ triage) in
+    // the dropdown for aux/extra workflow actions.
+    if (this.config.progressPrimary && m.progress.length > 0) {
+      const rest: DropItem[] = [
+        ...m.progress.slice(1).map((t): DropItem => ({ transition: t })),
+        ...m.progress_triage.map((t): DropItem => ({ transition: t, group: 'Triage' })),
+      ];
+      this.barEl.append(this.splitButtonWith('progress', m.progress[0]!, rest, 'Status'));
+    } else {
+      const progressItems = this.progressItems();
+      if (progressItems.length > 0) {
+        this.barEl.append(this.dropdownButton('progress', 'Status', progressItems));
+      }
     }
 
     // reopen (+ retriage / recategorize): positive primary + a dropdown.
@@ -390,7 +409,7 @@ export class TransitionBar extends Control<TransitionBarConfig> {
    * bucket with only retriage/recategorize items).
    */
   private splitButtonWith(
-    bucket: 'close' | 'reopen',
+    bucket: 'close' | 'reopen' | 'progress',
     primary: TransitionRow | undefined,
     rest: DropItem[],
     fallbackLabel: string,

@@ -173,6 +173,7 @@ export { TagChip, registerTagChip } from './grid/tag-chip.js';
 // Inbox (list layout): the control + its registrar, the pure reorder helpers,
 // and the write specs (user_card_sort.set / user_card_agent.set|clear).
 export { Inbox, registerInbox, _resetInboxDragState } from './inbox/inbox.js';
+export { CommsList, registerCommsList } from './comms/comms-list.js';
 export { InboxViewToggles, registerInboxViewToggles } from './inbox/inbox-view-toggles.js';
 export { NewTaskButton, registerNewTaskButton } from './quick-entry/new-task-button.js';
 export {
@@ -451,6 +452,7 @@ export {
   type CommentUpdateOutput,
 } from './task-detail/comment-specs.js';
 export { registerCommThreadSpecs } from './task-detail/comm-specs.js';
+export { CommThreads, registerCommThreads } from './task-detail/task-comm-threads.js';
 export { loadView, saveView } from './filter/view-persistence.js';
 export { trapFocus, captureFocus } from './util/focus-trap.js';
 export {

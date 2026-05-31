@@ -290,13 +290,62 @@ test('readPhaseToggles: parses the phase_scope group from toggle_groups (ignores
     },
   };
   assert.deepEqual(M.readPhaseToggles(screen), [
-    { label: 'Triage', phase: 'triage', defaultOn: false },
-    { label: 'Active', phase: 'active', defaultOn: true },
-    { label: 'Closed', phase: 'terminal', defaultOn: false },
+    { label: 'Triage', phase: 'triage', defaultOn: false, attr: 'status' },
+    { label: 'Active', phase: 'active', defaultOn: true, attr: 'status' },
+    { label: 'Closed', phase: 'terminal', defaultOn: false, attr: 'status' },
   ]);
   // Absent / malformed → [] (never throws).
   assert.deepEqual(M.readPhaseToggles({ id: 1n, attributes: {} }), []);
   assert.deepEqual(M.readPhaseToggles({ id: 1n, attributes: { toggle_groups: 'nope{' } }), []);
+});
+
+test('readPhaseToggles: carries the predicate attr (comm_status on the Comms screen)', () => {
+  const screen = {
+    id: 9n,
+    attributes: {
+      toggle_groups: JSON.stringify([
+        {
+          name: 'phase_scope',
+          items: [
+            { name: 'active', label: 'Active', predicate: { attr: 'comm_status', op: 'has_phase', values: ['active'] }, default_on: true },
+            { name: 'terminal', label: 'Resolved', predicate: { attr: 'comm_status', op: 'has_phase', values: ['terminal'] }, default_on: false },
+          ],
+        },
+      ]),
+    },
+  };
+  // UNIFORM filter: all three phases, in canonical order. The screen declared
+  // only active + terminal (comm_status); Triage is synthesized default-off,
+  // inheriting the comm_status attr — so a future triage/spam comm status is
+  // filterable with no per-screen edit.
+  assert.deepEqual(M.readPhaseToggles(screen), [
+    { label: 'Triage', phase: 'triage', defaultOn: false, attr: 'comm_status' },
+    { label: 'Active', phase: 'active', defaultOn: true, attr: 'comm_status' },
+    { label: 'Resolved', phase: 'terminal', defaultOn: false, attr: 'comm_status' },
+  ]);
+});
+
+test('readPhaseToggles: a flow-derived attr override wins over the toggle_groups attr', () => {
+  // A task-style toggle_groups (attr=status) on a screen whose flow is the comm
+  // flow → the derived override forces every toggle onto comm_status, so the
+  // attr is never hand-authored per screen.
+  const screen = {
+    id: 9n,
+    attributes: {
+      toggle_groups: JSON.stringify([
+        {
+          name: 'phase_scope',
+          items: [
+            { name: 'active', label: 'Active', predicate: { attr: 'status', op: 'has_phase', values: ['active'] }, default_on: true },
+          ],
+        },
+      ]),
+    },
+  };
+  const toggles = M.readPhaseToggles(screen, 'comm_status');
+  assert.deepEqual(toggles.map((t) => t.attr), ['comm_status', 'comm_status', 'comm_status']);
+  assert.deepEqual(toggles.map((t) => t.phase), ['triage', 'active', 'terminal']);
+  assert.equal(toggles.find((t) => t.phase === 'active').defaultOn, true);
 });
 
 // (Removed: there is no fallbackLayoutForSlug / slug→layout map any more — a
