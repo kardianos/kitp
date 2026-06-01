@@ -27,14 +27,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/andybalholm/brotli"
 )
 
 // preferredEncodings lists the response Content-Encodings the cache can
 // produce, in server-preference order (best ratio first). Negotiation picks
-// the first entry the client accepts; a client that accepts neither gets the
-// asset uncompressed via the plain FileServer path. Both are stdlib-only — no
-// extra dependency. To add brotli, prepend "br" here and a case in compressBytes.
-var preferredEncodings = []string{"gzip", "deflate"}
+// the first entry the client accepts; a client that accepts none gets the
+// asset uncompressed via the plain FileServer path. brotli (the only non-stdlib
+// dep) leads since it beats gzip-9 by ~15-20% on JS/CSS and modern browsers
+// prefer it; gzip/deflate remain the universal fallbacks.
+var preferredEncodings = []string{"br", "gzip", "deflate"}
 
 // minCompressSize skips compressing tiny files where the encoding framing
 // overhead (and the lost conditional-GET / Range support) isn't worth it.
@@ -183,6 +186,15 @@ func clientAccepts(accept, enc string) bool {
 func compressBytes(encoding string, data []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	switch encoding {
+	case "br":
+		bw := brotli.NewWriterLevel(&buf, brotli.BestCompression)
+		if _, err := bw.Write(data); err != nil {
+			_ = bw.Close()
+			return nil, err
+		}
+		if err := bw.Close(); err != nil {
+			return nil, err
+		}
 	case "gzip":
 		zw, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
 		if err != nil {

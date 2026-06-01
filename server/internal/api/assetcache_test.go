@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/andybalholm/brotli"
 )
 
 func TestNegotiateEncoding(t *testing.T) {
@@ -20,11 +22,13 @@ func TestNegotiateEncoding(t *testing.T) {
 		{"", ""},
 		{"gzip", "gzip"},
 		{"deflate", "deflate"},
+		{"br", "br"},
 		{"gzip, deflate", "gzip"},        // server preference: gzip before deflate
 		{"deflate, gzip", "gzip"},        // header order doesn't override preference
-		{"br", ""},                       // unsupported → identity
+		{"gzip, br", "br"},               // br wins regardless of header order
+		{"br;q=0, gzip", "gzip"},         // br explicitly refused → next preference
 		{"gzip;q=0, deflate", "deflate"}, // gzip explicitly refused
-		{"*", "gzip"},                    // wildcard admits the top preference
+		{"*", "br"},                      // wildcard admits the top preference
 		{"identity", ""},
 	}
 	for _, c := range cases {
@@ -90,6 +94,30 @@ func TestServeCompressedGzip(t *testing.T) {
 	}
 	if len(w.Body.Bytes()) >= len(raw) {
 		t.Fatalf("compressed body (%d) not smaller than raw (%d)", len(w.Body.Bytes()), len(raw))
+	}
+}
+
+func TestServeCompressedBrotli(t *testing.T) {
+	full := writeAsset(t)
+	raw, _ := os.ReadFile(full)
+	cache := newAssetCache()
+
+	r := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	r.Header.Set("Accept-Encoding", "br")
+	w := httptest.NewRecorder()
+
+	if !serveCompressed(w, r, cache, full) {
+		t.Fatal("serveCompressed returned false, want true (brotli should apply)")
+	}
+	if got := w.Result().Header.Get("Content-Encoding"); got != "br" {
+		t.Fatalf("Content-Encoding = %q, want br", got)
+	}
+	got, _ := io.ReadAll(brotli.NewReader(w.Result().Body))
+	if string(got) != string(raw) {
+		t.Fatal("brotli-decompressed body does not match source")
+	}
+	if w.Body.Len() >= len(raw) {
+		t.Fatalf("brotli body (%d) not smaller than raw (%d)", w.Body.Len(), len(raw))
 	}
 }
 

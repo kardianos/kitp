@@ -3,6 +3,7 @@ module github.com/kitp/kitp/server
 go 1.26.2
 
 require (
+	github.com/andybalholm/brotli v1.2.1
 	github.com/emersion/go-imap v1.0.0-beta.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.9.2
