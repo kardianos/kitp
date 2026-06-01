@@ -5312,6 +5312,58 @@ select optgroup {
   outline: none;
   box-shadow: 0 0 0 2px var(--color-focus-halo);
 }
+/* Collapsed-add: chips + reveal/search share one row; the add-combobox stays
+   hidden behind a "+ <label>" button until the operator reveals it. */
+.kf-refpicker--inline-add {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-1x);
+}
+.kf-refpicker--inline-add .kf-refpicker__chips {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.kf-refpicker--inline-add .kf-combobox {
+  /* The revealed search box is transient (re-collapses on close), so keep it
+   * compact rather than letting it stretch across the row. */
+  flex: 0 1 13rem;
+  min-width: 0;
+}
+.kf-refpicker--inline-add .kf-refpicker__add-btn {
+  flex: 0 0 auto;
+}
+.kf-refpicker--collapsed .kf-combobox {
+  display: none;
+}
+.kf-refpicker:not(.kf-refpicker--collapsed) .kf-refpicker__add-btn {
+  display: none;
+}
+.kf-refpicker__add-btn {
+  font: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-muted);
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color var(--duration-fast) var(--ease-standard),
+    background var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard);
+}
+.kf-refpicker__add-btn:hover {
+  color: var(--color-fg-strong);
+  background: var(--color-fill-hover);
+  border-color: var(--color-border-strong);
+}
+.kf-refpicker__add-btn:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-focus-halo);
+}
 
 /* ==========================================================================
    Task detail (/task/:id) — #33 shell + attribute side panel.
@@ -5372,6 +5424,22 @@ select optgroup {
   gap: var(--space-h);
   padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--color-hairline);
+}
+/* Top nav row: Back (left) shares one line with #id + Refresh (right). */
+.task-detail__nav-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.task-detail__nav-bar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.task-detail__nav-bar-right .task-detail__refresh {
+  align-self: auto;
+  margin-left: 0;
 }
 /* "Back to list" affordance at the top of the header (mirrors q/Esc). */
 .task-detail__back,
@@ -6275,8 +6343,11 @@ select optgroup {
   border-color: var(--color-accent);
   color: var(--color-accent);
 }
+/* The comm-status transition bar shares the comm-head row, sitting to the
+   right of the status badge (#actions inline with status). */
 .task-comms__transitions {
-  margin-top: var(--space-1);
+  flex: 0 0 auto;
+  margin: 0;
 }
 
 /* ---- start-comm form ---- */
@@ -7071,32 +7142,38 @@ textarea.task-comms__form-input {
 
 /* ---- tags editor (compact mini-grid: prefix label | chips + add) ---- */
 .tags-editor__body {
-  display: grid;
-  /* prefix labels in a narrow auto column, chips fill the rest.  align-baseline
-   * keeps the label baseline level with the chip text in each row. */
-  grid-template-columns: auto 1fr;
-  align-items: baseline;
-  column-gap: var(--space-2);
+  display: flex;
+  flex-direction: column;
   row-gap: var(--space-h);
   padding: var(--space-1x) var(--space-2);
 }
 .tags-editor__empty {
-  grid-column: 1 / -1;
   font-size: var(--text-xs);
 }
+/* One flex row per prefix: a fixed-width label column (so chips across every
+ * row start at the SAME x — no jagged left edge) beside a flex-wrap chip area.
+ * A single long prefix ellipsises rather than blowing the column out for all. */
 .tags-editor__slot {
-  display: contents; /* lift label + value into the parent grid as one row */
+  display: flex;
+  align-items: baseline;
+  column-gap: var(--space-2);
 }
 .tags-editor__slot-label {
+  flex: 0 0 5.5rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--text-2xs);
   font-weight: var(--weight-semibold);
   letter-spacing: 0.02em;
   text-transform: lowercase;
-  white-space: nowrap;
   /* Hug the right side of the label column so chips read nice and close. */
   text-align: right;
 }
 .tags-editor__slot-value {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -7104,6 +7181,11 @@ textarea.task-comms__form-input {
 }
 .tags-editor__slot-empty {
   font-size: var(--text-2xs);
+}
+.tags-editor__slot-add {
+  /* Pull the `+` add control to the right edge so every row's add trigger
+   * lines up in a clean column, regardless of how many chips precede it. */
+  margin-left: auto;
 }
 .tags-editor__slot-add .kf-combobox {
   /* The per-slot add control is just a `+` trigger — keep it small + inline so

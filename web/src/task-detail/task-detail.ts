@@ -304,6 +304,12 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     header.className = 'task-detail__header';
     header.dataset.region = 'detail.header';
 
+    // Top nav row: "Back to list" (left) sharing one line with the task #id and
+    // the Refresh affordance (right) — keeps the header compact instead of
+    // stacking back / refresh / id on separate lines.
+    const navRow = document.createElement('div');
+    navRow.className = 'task-detail__nav-bar';
+
     // Visible "Back to list" affordance — mirrors the q/Esc chord: returns to
     // the saved source list (inbox/grid/kanban), not a browser-history step.
     const back = document.createElement('button');
@@ -314,7 +320,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     back.setAttribute('aria-label', 'Back to list');
     back.textContent = '‹ Back to list';
     this.listen(back, 'click', () => this.goBack());
-    header.append(back);
+
+    const navRight = document.createElement('div');
+    navRight.className = 'task-detail__nav-bar-right';
+
+    const idLine = document.createElement('span');
+    idLine.className = 'task-detail__id muted';
+    idLine.dataset.taskDetailId = '';
+    idLine.textContent = this.taskId === null ? '#—' : `#${this.taskId.toString()}`;
 
     // "Refresh" — re-fetch the comm threads + comments/activity feed to pick up
     // messages that arrived since load (no polling/long-poll; user-initiated).
@@ -326,8 +339,11 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     refresh.setAttribute('aria-label', 'Refresh comms and comments');
     refresh.textContent = '↻ Refresh';
     this.listen(refresh, 'click', () => this.refreshFeeds());
-    header.append(refresh);
     this.refreshBtn = refresh;
+
+    navRight.append(idLine, refresh);
+    navRow.append(back, navRight);
+    header.append(navRow);
 
     const headerTop = document.createElement('div');
     headerTop.className = 'task-detail__header-top';
@@ -348,12 +364,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 
     headerTop.append(titleHost, transitions);
 
-    const idLine = document.createElement('p');
-    idLine.className = 'task-detail__id muted';
-    idLine.dataset.taskDetailId = '';
-    idLine.textContent = this.taskId === null ? '#—' : `#${this.taskId.toString()}`;
-
-    header.append(headerTop, idLine);
+    header.append(headerTop);
     main.append(header);
 
     // Description block.

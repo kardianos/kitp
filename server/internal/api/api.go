@@ -303,6 +303,8 @@ func (s *Server) MountSPAGated(mux *http.ServeMux, webDir string, cfg SPAGateCon
 func spaHandler(webDir string, cfg SPAGateConfig) http.Handler {
 	fs := http.FileServer(http.Dir(webDir))
 	indexPath := filepath.Join(webDir, "index.html")
+	// Memoised gzip/deflate renditions of static assets (see assetcache.go).
+	assets := newAssetCache()
 
 	// serveDoc gates index.html behind the session (when enabled) then
 	// serves it. Returns after writing a redirect when unauthenticated.
@@ -341,6 +343,13 @@ func spaHandler(webDir string, cfg SPAGateConfig) http.Handler {
 			// served without the session check.
 			if full == indexPath {
 				serveDoc(w, r)
+				return
+			}
+			// All static assets vary on Accept-Encoding (some get a cached
+			// compressed rendition); set it once so shared caches key the
+			// compressed and identity renditions separately.
+			w.Header().Set("Vary", "Accept-Encoding")
+			if serveCompressed(w, r, assets, full) {
 				return
 			}
 			fs.ServeHTTP(w, r)

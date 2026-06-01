@@ -1,0 +1,253 @@
+package api
+
+// Static-asset compression cache.
+//
+// The SPA bundle (app.js / css / json / svg / source maps) is served straight
+// off the filesystem by http.FileServer. Those files never change between
+// builds, so compressing them on every request wastes CPU. This cache
+// memoises the gzip / deflate rendition of each asset in memory, keyed by
+// {path, encoding}, and re-validates against the source file's mod-time + size
+// so a redeploy or dev hot-reload transparently rebuilds the entry.
+//
+// Concurrency: a single RWMutex guards the map. The (expensive) compression
+// runs OUTSIDE the lock — the lock only brackets the map read / write — so
+// concurrent first-hits on different assets don't serialise. A racing
+// double-compress of the SAME asset is harmless (both produce identical bytes;
+// the last writer wins).
+
+import (
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"fmt"
+	"mime"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+)
+
+// preferredEncodings lists the response Content-Encodings the cache can
+// produce, in server-preference order (best ratio first). Negotiation picks
+// the first entry the client accepts; a client that accepts neither gets the
+// asset uncompressed via the plain FileServer path. Both are stdlib-only — no
+// extra dependency. To add brotli, prepend "br" here and a case in compressBytes.
+var preferredEncodings = []string{"gzip", "deflate"}
+
+// minCompressSize skips compressing tiny files where the encoding framing
+// overhead (and the lost conditional-GET / Range support) isn't worth it.
+const minCompressSize = 512
+
+// assetCacheKey identifies one compressed rendition of a static asset.
+type assetCacheKey struct {
+	path     string // absolute filesystem path under webDir
+	encoding string // one of preferredEncodings
+}
+
+// cachedAsset is a compressed rendition plus the source-file stamp it was built
+// from; a mismatch on the stamp invalidates the entry (file changed on disk).
+type cachedAsset struct {
+	body    []byte
+	modUnix int64
+	size    int64
+}
+
+// assetCache memoises compressed renditions of static files in memory.
+type assetCache struct {
+	mu      sync.RWMutex
+	entries map[assetCacheKey]cachedAsset
+}
+
+func newAssetCache() *assetCache {
+	return &assetCache{entries: make(map[assetCacheKey]cachedAsset)}
+}
+
+// get returns the cached body for key when present AND still matching the
+// source file's current mod-time + size.
+func (c *assetCache) get(key assetCacheKey, modUnix, size int64) ([]byte, bool) {
+	c.mu.RLock()
+	e, ok := c.entries[key]
+	c.mu.RUnlock()
+	if !ok || e.modUnix != modUnix || e.size != size {
+		return nil, false
+	}
+	return e.body, true
+}
+
+func (c *assetCache) put(key assetCacheKey, body []byte, modUnix, size int64) {
+	c.mu.Lock()
+	c.entries[key] = cachedAsset{body: body, modUnix: modUnix, size: size}
+	c.mu.Unlock()
+}
+
+// serveCompressed writes a cached gzip/deflate rendition of the file at `full`
+// when the client accepts one and the file is worth compressing. It returns
+// true when it has fully written the response; false (having written NOTHING)
+// to let the caller fall back to the plain http.FileServer path — for identity
+// clients, HEAD requests, unknown/incompressible content types, tiny files, or
+// any stat/read/compress error (FileServer then handles Range + conditional
+// GET, which the compressed path intentionally doesn't).
+func serveCompressed(w http.ResponseWriter, r *http.Request, cache *assetCache, full string) bool {
+	if r.Method != http.MethodGet {
+		return false // HEAD etc.: no body to compress
+	}
+	enc := negotiateEncoding(r.Header.Get("Accept-Encoding"))
+	if enc == "" {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(full))
+	ct := assetContentType(ext)
+	if ct == "" || !isCompressibleType(ct) {
+		return false
+	}
+	st, err := os.Stat(full)
+	if err != nil || st.IsDir() || st.Size() < minCompressSize {
+		return false
+	}
+	modUnix := st.ModTime().UnixNano()
+	size := st.Size()
+
+	key := assetCacheKey{path: full, encoding: enc}
+	body, ok := cache.get(key, modUnix, size)
+	if !ok {
+		raw, err := os.ReadFile(full)
+		if err != nil {
+			return false
+		}
+		body, err = compressBytes(enc, raw)
+		if err != nil {
+			return false
+		}
+		// If compression didn't actually shrink it, don't bother — serve
+		// identity via the fallback path.
+		if len(body) >= len(raw) {
+			return false
+		}
+		cache.put(key, body, modUnix, size)
+	}
+
+	h := w.Header()
+	h.Set("Content-Type", ct)
+	h.Set("Content-Encoding", enc)
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body) // a write error on a closed client conn is not actionable
+	return true
+}
+
+// negotiateEncoding picks the best supported Content-Encoding the client
+// accepts from its Accept-Encoding header, or "" for identity.
+func negotiateEncoding(accept string) string {
+	if accept == "" {
+		return ""
+	}
+	for _, enc := range preferredEncodings {
+		if clientAccepts(accept, enc) {
+			return enc
+		}
+	}
+	return ""
+}
+
+// clientAccepts reports whether the Accept-Encoding header admits `enc` (either
+// named explicitly or via the `*` wildcard) with a non-zero q-value.
+func clientAccepts(accept, enc string) bool {
+	for _, part := range strings.Split(accept, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name := part
+		q := 1.0
+		if i := strings.IndexByte(part, ';'); i >= 0 {
+			name = strings.TrimSpace(part[:i])
+			for _, p := range strings.Split(part[i+1:], ";") {
+				p = strings.TrimSpace(p)
+				if v, ok := strings.CutPrefix(p, "q="); ok {
+					if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+						q = f
+					}
+				}
+			}
+		}
+		if (name == enc || name == "*") && q > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// compressBytes returns `data` compressed with the named encoding at best ratio.
+func compressBytes(encoding string, data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	switch encoding {
+	case "gzip":
+		zw, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := zw.Write(data); err != nil {
+			_ = zw.Close()
+			return nil, err
+		}
+		if err := zw.Close(); err != nil {
+			return nil, err
+		}
+	case "deflate":
+		fw, err := flate.NewWriter(&buf, flate.BestCompression)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := fw.Write(data); err != nil {
+			_ = fw.Close()
+			return nil, err
+		}
+		if err := fw.Close(); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("assetcache: unsupported encoding %q", encoding)
+	}
+	return buf.Bytes(), nil
+}
+
+// assetContentType resolves the Content-Type for an asset by extension, with a
+// couple of fallbacks the stdlib mime table misses (.map, .wasm). Returns "" when
+// unknown — the caller then declines to compress and lets FileServer sniff.
+func assetContentType(ext string) string {
+	if ct := mime.TypeByExtension(ext); ct != "" {
+		return ct
+	}
+	switch ext {
+	case ".map":
+		return "application/json"
+	case ".wasm":
+		return "application/wasm"
+	}
+	return ""
+}
+
+// isCompressibleType reports whether a Content-Type is worth compressing
+// (text + the common structured-text application types). Binary media (images,
+// fonts, video) are already compressed and would only waste CPU.
+func isCompressibleType(ct string) bool {
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i] // drop any "; charset=…"
+	}
+	ct = strings.TrimSpace(ct)
+	if strings.HasPrefix(ct, "text/") {
+		return true
+	}
+	switch ct {
+	case "application/json",
+		"application/javascript",
+		"application/manifest+json",
+		"application/wasm",
+		"application/xml",
+		"image/svg+xml":
+		return true
+	}
+	return false
+}

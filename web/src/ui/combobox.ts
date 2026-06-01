@@ -69,6 +69,13 @@ export interface ComboboxConfig<V = unknown> extends BaseControlConfig {
   disabled?: boolean;
   /** Fired with the newly selected value on each pick. */
   onChange?: (value: V | null) => void;
+  /**
+   * Fired whenever the menu transitions open → closed, by ANY path: a pick, Esc,
+   * Tab, or an outside-click self-close. Lets a host collapse affordances that
+   * were only shown while the menu was open (e.g. RefPicker's reveal-on-demand
+   * add field). Fires after the menu is already closed.
+   */
+  onClose?: () => void;
   /** ARIA label for the trigger. */
   'aria-label'?: string;
 }
@@ -224,7 +231,8 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
     // Bump so any in-flight async delivery is discarded.
     this.loadSeq++;
     this.triggerEl.setAttribute('aria-expanded', 'false');
-    this.popover?.close();
+    this.popover?.close(); // owner-initiated close — does NOT fire Popover.onClose
+    this.config.onClose?.();
   }
 
   /* ---------------------------------------------------------------- internals */
@@ -238,6 +246,7 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
     this.clearDebounce();
     this.loadSeq++;
     this.triggerEl.setAttribute('aria-expanded', 'false');
+    this.config.onClose?.();
   }
 
   private buildPanel(panel: HTMLElement): void {

@@ -301,3 +301,82 @@ test('multi: duplicate add is a no-op (dedupe)', async () => {
   assert.deepEqual(rp.getValues(), [1n], 'values unchanged');
   rp.destroy();
 });
+
+test('multi collapsedAdd: starts collapsed with a "+ <label>" button, no dropdown', () => {
+  const api = stubApi();
+  const rp = mountRefPicker(
+    {
+      cardType: 'person',
+      multi: true,
+      collapsedAdd: true,
+      addLabel: 'recipient',
+      values: [1n],
+      currentLabels: { 1: 'dave' },
+    },
+    api,
+  );
+
+  // Root carries the inline-add + collapsed classes (regression: these used to
+  // be dropped because createRoot ran before the fields were initialised).
+  assert.ok(rp.el.classList.contains('kf-refpicker--inline-add'), 'inline-add class applied');
+  assert.ok(rp.el.classList.contains('kf-refpicker--collapsed'), 'starts collapsed');
+
+  // The "+ recipient" reveal button is present and shows the label.
+  const add = rp.el.querySelector('[data-rp-add]');
+  assert.ok(add, 'reveal button rendered');
+  assert.equal(add.textContent, '+ recipient');
+
+  // Chips still render (the existing recipient).
+  assert.equal(rp.el.querySelectorAll('[data-rp-chip]').length, 1);
+
+  // Clicking the button reveals the combobox (drops the collapsed class).
+  add.click();
+  assert.ok(!rp.el.classList.contains('kf-refpicker--collapsed'), 'reveal un-collapses');
+  rp.destroy();
+});
+
+test('multi collapsedAdd: re-collapses after a pick (and after blur/Esc)', async () => {
+  const api = stubApi();
+  const emitted = [];
+  const rp = mountRefPicker(
+    {
+      cardType: 'person',
+      multi: true,
+      collapsedAdd: true,
+      addLabel: 'recipient',
+      onChangeMulti: (vs) => emitted.push(vs),
+    },
+    api,
+  );
+
+  // Reveal → menu opens, no longer collapsed.
+  rp.el.querySelector('[data-rp-add]').click();
+  assert.ok(!rp.el.classList.contains('kf-refpicker--collapsed'), 'revealed');
+  await flushMicrotasks();
+
+  // Pick an option → chip added AND the field re-collapses.
+  api.calls.at(-1).onOk({ rows: [{ id: 5n, title: 'dave' }] });
+  options()[0].click();
+  assert.deepEqual(emitted.at(-1), [5n], 'pick emitted');
+  assert.equal(rp.el.querySelectorAll('[data-rp-chip]').length, 1, 'chip added');
+  assert.ok(rp.el.classList.contains('kf-refpicker--collapsed'), 're-collapsed after pick');
+
+  // Reveal again, then a self-close (Esc/outside-click) also re-collapses.
+  rp.el.querySelector('[data-rp-add]').click();
+  assert.ok(!rp.el.classList.contains('kf-refpicker--collapsed'), 'revealed again');
+  rp.combo.closeMenu();
+  assert.ok(rp.el.classList.contains('kf-refpicker--collapsed'), 're-collapsed on close');
+  rp.destroy();
+});
+
+test('multi collapsedAdd: empty shows only the "+" button (no placeholder text)', () => {
+  const api = stubApi();
+  const rp = mountRefPicker(
+    { cardType: 'person', multi: true, collapsedAdd: true, addLabel: 'recipient', values: [] },
+    api,
+  );
+  assert.equal(rp.el.querySelectorAll('[data-rp-chip]').length, 0, 'no chips');
+  assert.equal(rp.el.querySelector('.kf-refpicker__empty'), null, 'no placeholder text');
+  assert.ok(rp.el.querySelector('[data-rp-add]'), 'reveal button is the empty affordance');
+  rp.destroy();
+});

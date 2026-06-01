@@ -57,6 +57,15 @@ export interface RefPickerConfig extends BaseControlConfig {
   /** When true, render the chips + add-combobox multi editor (card_ref[]). */
   multi?: boolean;
   /**
+   * Multi mode only: keep the add-combobox hidden behind a "+ <addLabel>"
+   * button, so the picker shows just its chips at rest and only reveals the
+   * search field once the operator opts in. Reverts to collapsed on the next
+   * repaint. Ignored in single mode.
+   */
+  collapsedAdd?: boolean;
+  /** Label for the collapsed-add affordance (e.g. 'recipient' → "+ recipient"). */
+  addLabel?: string;
+  /**
    * Dotted tree path holding a `bigint | null` parent-card id; when set +
    * non-null, scopes `card.search` to that parent's direct children. Peeked at
    * fire time.
@@ -107,6 +116,8 @@ export class RefPicker extends Control<RefPickerConfig> {
   private readonly labels = new Map<string, string>();
 
   private readonly isMulti: boolean = false;
+  /** Multi-mode: keep the add-combobox behind a "+ <addLabel>" reveal button. */
+  private readonly collapsedAdd: boolean = false;
 
   /** The single-mode Combobox, or the multi-mode add-combobox. */
   private combo: Combobox<bigint> | null = null;
@@ -119,6 +130,7 @@ export class RefPicker extends Control<RefPickerConfig> {
   constructor(...args: ConstructorParameters<typeof Control<RefPickerConfig>>) {
     super(...args);
     this.isMulti = this.config.multi === true;
+    this.collapsedAdd = this.isMulti && this.config.collapsedAdd === true;
     this.value = this.config.value ?? null;
     this.values = (this.config.values ?? []).slice();
     // Seed the label cache from the host-provided known labels.
@@ -140,7 +152,17 @@ export class RefPicker extends Control<RefPickerConfig> {
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('div');
-    el.className = this.isMulti ? 'kf-refpicker kf-refpicker--multi' : 'kf-refpicker';
+    // Read this.config (set before super() calls createRoot), NOT this.isMulti /
+    // this.collapsedAdd — those field initializers run AFTER super() under
+    // ES2022 define-class-fields, so they're still undefined here.
+    const multi = this.config.multi === true;
+    let cls = multi ? 'kf-refpicker kf-refpicker--multi' : 'kf-refpicker';
+    // Collapsed-add lays chips + reveal/search inline on one row and starts
+    // collapsed (combobox hidden, "+ <label>" button showing).
+    if (multi && this.config.collapsedAdd === true) {
+      cls += ' kf-refpicker--inline-add kf-refpicker--collapsed';
+    }
+    el.className = cls;
     el.dataset.control = 'RefPicker';
     return el;
   }
@@ -188,12 +210,23 @@ export class RefPicker extends Control<RefPickerConfig> {
   /* -------------------------------- multi -------------------------------- */
 
   private renderMulti(): void {
+    // Collapsed-add: a "+ <label>" button leads the row (reveals the search
+    // combobox on demand), so the row reads "[+ recipient] [chip] [chip]" and
+    // the revealed search box also sits on the left. Omitted when disabled.
+    if (this.collapsedAdd && this.config.disabled !== true) {
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'kf-refpicker__add-btn';
+      add.dataset.rpAdd = '';
+      add.textContent = `+ ${this.config.addLabel ?? 'Add'}`;
+      this.listen(add, 'click', () => this.revealAdd());
+      this.el.appendChild(add);
+    }
+
     const chips = document.createElement('div');
     chips.className = 'kf-refpicker__chips';
     chips.dataset.rpChips = '';
-    this.el.appendChild(chips);
     this.chipsEl = chips;
-    this.renderChips();
 
     // The add-combobox: each pick appends to `values` (no single "current"
     // value — selecting adds a chip and clears the combobox selection so the
@@ -208,13 +241,26 @@ export class RefPicker extends Control<RefPickerConfig> {
     this.combo = cb;
     cb.parent = this;
     this.children.add(cb);
-    cb.mount(this.el);
+
+    // Collapsed-add: combobox before chips (so it reveals on the left, after
+    // the "+" button). Normal multi: chips first, then the add-combobox.
+    if (this.collapsedAdd) {
+      cb.mount(this.el);
+      this.el.appendChild(chips);
+    } else {
+      this.el.appendChild(chips);
+      cb.mount(this.el);
+    }
+    this.renderChips();
   }
 
   private renderChips(): void {
     if (this.chipsEl === null) return;
     this.chipsEl.replaceChildren();
     if (this.values.length === 0) {
+      // Collapsed-add shows the "+ <label>" button as the empty affordance, so
+      // skip the redundant placeholder text.
+      if (this.collapsedAdd) return;
       const empty = document.createElement('span');
       empty.className = 'kf-refpicker__empty muted';
       empty.textContent = this.config.placeholder ?? 'No selections';
@@ -244,6 +290,18 @@ export class RefPicker extends Control<RefPickerConfig> {
 
       this.chipsEl.appendChild(chip);
     }
+  }
+
+  /** Reveal the collapsed add-combobox and open it (one extra click buys the
+   *  search field; it stays revealed until the next repaint re-collapses it). */
+  private revealAdd(): void {
+    this.el.classList.remove('kf-refpicker--collapsed');
+    this.combo?.openMenu();
+  }
+
+  /** Re-hide the add-combobox behind the "+ <label>" button (collapsed-add). */
+  private recollapse(): void {
+    if (this.collapsedAdd) this.el.classList.add('kf-refpicker--collapsed');
   }
 
   private addValue(id: bigint): void {
@@ -282,6 +340,9 @@ export class RefPicker extends Control<RefPickerConfig> {
         : {}),
       ...(this.config.disabled === true ? { disabled: true } : {}),
       ...(this.config['aria-label'] ? { 'aria-label': this.config['aria-label'] } : {}),
+      // Collapsed-add: re-hide the search field once the menu closes (by a pick,
+      // Esc, Tab, or outside-click) so it doesn't linger after use.
+      ...(this.collapsedAdd ? { onClose: (): void => this.recollapse() } : {}),
       loadOptions: (query: string, deliver: (opts: ComboboxOption<bigint>[]) => void): void => {
         this.runSearch(query, deliver);
       },

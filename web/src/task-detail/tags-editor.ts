@@ -1,9 +1,11 @@
 /**
  * TagsEditor (#36) — the applied-tags editor for the Task detail, laid out as
- * a COMPACT MINI-GRID: one row per tag prefix, prefix label on the left and
- * the slot's chips + add-control on the right (single CSS grid, no nested
- * card stacks). Sibling chrome (the attribute panel + Related panel) reads
- * the same flat layout, so the whole right rail stays in one register.
+ * a COMPACT FLEX LIST: one row per tag prefix, prefix label in a fixed-width
+ * left column and the slot's chips + add-control flowing on the right (no
+ * nested card stacks). The fixed label column keeps chips aligned across rows
+ * without one long prefix blowing the column out. Sibling chrome (the attribute
+ * panel + Related panel) reads the same flat layout, so the whole right rail
+ * stays in one register.
  *
  * Mounts into the TaskDetail's `[data-slot="tags"]` region. Tags are a
  * `card_ref[]` attribute (`tags`) whose values are `tag` cards with a `path`
@@ -273,9 +275,9 @@ export class TagsEditor extends Control<TagsEditorConfig> {
   }
 
   /**
-   * One row in the mini-grid: a flat `<div data-tag-slot="<prefix>">` carrying
-   * the label cell + the value cell. Styling lays the body out as a CSS grid
-   * with two tracks so the labels align across rows like an attribute panel.
+   * One row in the flex list: a `<div data-tag-slot="<prefix>">` carrying the
+   * label cell + the value cell. Styling gives the label a fixed-width column
+   * so the labels align across rows like an attribute panel.
    */
   private buildSlotRow(slotKey: string): HTMLElement {
     const slot = document.createElement('div');

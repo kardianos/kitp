@@ -288,17 +288,17 @@ export class CommThreads extends Control<CommThreadsConfig> {
     const info = this.statusInfo.get(comm.commStatus.toString());
     badge.dataset.phase = info?.phase ?? '';
     badge.textContent = info !== undefined ? info.label : `#${comm.commStatus}`;
-    top.append(subj, thread, badge);
-    card.append(top);
 
     // Comm-status transition bar: reuses the task TransitionBar, bound to the
     // comm card's `comm_status` flow, so the thread can be advanced and closed
-    // (Resolve → terminal) inline. onChanged reloads so the badge + filter
-    // counts re-resolve from server truth.
+    // (Resolve → terminal) inline. It sits on the SAME row as the subject +
+    // status badge (to the badge's right) to keep the comm header compact.
+    // onChanged reloads so the badge + filter counts re-resolve from server.
     const barHost = document.createElement('div');
     barHost.className = 'task-comms__transitions';
     barHost.dataset.commTransitions = '';
-    card.append(barHost);
+    top.append(subj, thread, badge, barHost);
+    card.append(top);
     const bar = this.spawn(
       'TransitionBar',
       {
@@ -334,6 +334,8 @@ export class CommThreads extends Control<CommThreadsConfig> {
         type: 'RefPicker',
         cardType: 'person',
         multi: true,
+        collapsedAdd: true,
+        addLabel: 'recipient',
         values: comm.recipients.slice(),
         currentLabels: labels,
         'aria-label': 'Recipients',
