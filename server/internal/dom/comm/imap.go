@@ -24,11 +24,26 @@
 // threading + insert logic is the imapClient interface; tests inject
 // a fake that feeds canned InboundMessage values into RunOnce.
 //
-//	KITP_COMM_IMAP_TICK_SEC=60   poll interval; default 60s
-//	KITP_COMM_IMAP_DRY_RUN=0     when "1", log and continue without
-//	                             opening an IMAP connection
-//	KITP_COMM_IMAP_INSECURE=0    when "1", allow plaintext IMAP (no
-//	                             TLS); dev only
+//	KITP_COMM_IMAP_TICK_SEC=60     poll interval; default 60s
+//	KITP_COMM_IMAP_DRY_RUN=0       when "1", log and continue without
+//	                               opening an IMAP connection
+//	KITP_COMM_IMAP_INSECURE=0      when "1", allow plaintext IMAP (no
+//	                               TLS); dev only
+//	KITP_COMM_BODY_PRIORITY=plain,html
+//	                               comma-separated order in which to source a
+//	                               new task's description from the message's
+//	                               body parts. Tokens: "plain" (text/plain via
+//	                               mailmd.FromText) and "html" (text/html via
+//	                               mailmd.FromHTML). The first token whose part
+//	                               is present wins; a part that's absent or
+//	                               empty falls through to the next. "plain" or
+//	                               "html" alone restricts to that one type.
+//	                               Unrecognised / empty → the plain,html
+//	                               default.
+//	KITP_COMM_SAVE_RAW_EMAIL=0     when "1", attach the verbatim RFC822
+//	                               message as a `.eml` file on the task — a
+//	                               debugging aid for refining body-conversion
+//	                               rules against real problem mail
 package comm
 
 import (
@@ -60,6 +75,8 @@ import (
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/job"
+	"github.com/kitp/kitp/server/internal/mailmd"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
@@ -75,7 +92,17 @@ type IMAPPoller struct {
 	tick      time.Duration
 	dryRun    bool
 	insecure  bool
-	logger    *slog.Logger
+	// bodyPriority is the ordered set of body extractors a new task's
+	// description is sourced from (resolved once from KITP_COMM_BODY_PRIORITY
+	// at construction). The first extractor whose body part exists wins; see
+	// resolveBodyPriority / descriptionMarkdown.
+	bodyPriority []bodyExtractor
+	// saveRawEmail persists the verbatim RFC822 message as a `.eml`
+	// attachment on the task when set (KITP_COMM_SAVE_RAW_EMAIL=1). Off by
+	// default; a debugging aid for deriving better body-conversion rules
+	// from real problem mail.
+	saveRawEmail bool
+	logger       *slog.Logger
 
 	// dial is the imapClient factory the loop calls each tick. Tests
 	// swap it for a stub that returns a fake; production uses the real
@@ -150,7 +177,23 @@ type InboundMessage struct {
 	Cc          string // address-list; comma-joined like To
 	Subject     string
 	ThreadIDHdr string // X-Kitp-Thread-Id header value, if present
-	Body        string // plain-text body (text/html stripped to plain)
+	Body        string // plain-text body for the reply bubble (text/plain part, else text/html stripped to plain)
+	// BodyPlain is the message's text/plain part ONLY — empty when the
+	// message carried no plain arm (unlike Body, which falls back to stripped
+	// HTML). The description's body-priority selector uses this to tell "has a
+	// real plain part" from "only HTML was available".
+	BodyPlain string
+	// BodyHTML is the raw text/html part of the message, when one was present
+	// (multipart/alternative html arm, or a top-level text/html body). Empty
+	// for plain-text-only mail. The description's body-priority selector feeds
+	// it to mailmd.FromHTML so the initial task description can keep the
+	// sender's formatting.
+	BodyHTML string
+	// Raw is the verbatim RFC822 byte buffer the message was parsed from.
+	// Retained so the ingest path can persist it as a `.eml` attachment when
+	// KITP_COMM_SAVE_RAW_EMAIL=1 (a debugging aid for refining the body
+	// conversion rules against real problem mail).
+	Raw []byte
 	// Attachments captures every multipart part with a
 	// Content-Disposition of `attachment` (or any non-text part), so
 	// the ingest path can recognise round-trip attachments and skip
@@ -182,12 +225,14 @@ func newIMAPPoller(pool *store.Pool, channelID int64, tick time.Duration) *IMAPP
 		tick = 5 * time.Second
 	}
 	p := &IMAPPoller{
-		pool:      pool,
-		channelID: channelID,
-		tick:      tick,
-		dryRun:    os.Getenv("KITP_COMM_IMAP_DRY_RUN") == "1",
-		insecure:  os.Getenv("KITP_COMM_IMAP_INSECURE") == "1",
-		logger:    slog.Default(),
+		pool:         pool,
+		channelID:    channelID,
+		tick:         tick,
+		dryRun:       os.Getenv("KITP_COMM_IMAP_DRY_RUN") == "1",
+		insecure:     os.Getenv("KITP_COMM_IMAP_INSECURE") == "1",
+		bodyPriority: resolveBodyPriority(os.Getenv("KITP_COMM_BODY_PRIORITY")),
+		saveRawEmail: os.Getenv("KITP_COMM_SAVE_RAW_EMAIL") == "1",
+		logger:       slog.Default(),
 	}
 	p.dial = dialIMAP
 	return p
@@ -716,6 +761,20 @@ func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx pgx.Tx, snap *s
 				slog.String("error", err.Error()))
 		}
 	}
+	if parentTaskID != 0 && p.saveRawEmail && len(m.Raw) > 0 {
+		// Debugging aid (KITP_COMM_SAVE_RAW_EMAIL=1): keep the verbatim
+		// message so we can replay it against the body-conversion rules when
+		// a description comes out wrong. Best-effort — never fail the inbound
+		// over it.
+		name := fmt.Sprintf("inbound-uid-%d.eml", m.UID)
+		if _, err := storeAttachment(ctx, tx, parentTaskID, replyID, name, "message/rfc822", m.Raw, actorID); err != nil {
+			p.logger.LogAttrs(ctx, slog.LevelWarn, "imap save raw email failed",
+				slog.Int64("channel_id", p.channelID),
+				slog.Int64("comm_id", commID),
+				slog.Int64("reply_id", replyID),
+				slog.String("error", err.Error()))
+		}
+	}
 	if err := p.syncCommRecipientsFromInbound(ctx, tx, snap, commID, m, actorID); err != nil {
 		// Log but don't fail the whole inbound — the message + reply
 		// landed; participant tracking can be fixed up later by an
@@ -765,77 +824,133 @@ func (p *IMAPPoller) ingestInboundAttachments(
 		// Round-trip dedup: same digest on the same parent task ⇒
 		// reuse the existing attachment row, just link it to the
 		// inbound reply via reply_body_attachment.
-		var existingAttID int64
-		err := tx.QueryRow(ctx, `
+		db := named.New()
+		db.Set("card_id", parentTaskID)
+		db.Set("sha", digest)
+		dedupSQL, dedupArgs, err := db.Compile(`
 			SELECT a.id
 			FROM attachment a
 			JOIN file f ON f.id = a.file_id
-			WHERE a.card_id = $1
+			WHERE a.card_id = :card_id
 			  AND a.deleted_at IS NULL
-			  AND f.sha256 = $2
+			  AND f.sha256 = :sha
 			LIMIT 1
-		`, parentTaskID, digest).Scan(&existingAttID)
+		`)
+		if err != nil {
+			return fmt.Errorf("ingestInboundAttachments: dedup compile: %w", err)
+		}
+		var existingAttID int64
+		err = tx.QueryRow(ctx, dedupSQL, dedupArgs...).Scan(&existingAttID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("ingestInboundAttachments: dedup lookup: %w", err)
 		}
 		if existingAttID != 0 {
-			if _, err := tx.Exec(ctx, `
+			lb := named.New()
+			lb.Set("reply_id", replyID)
+			lb.Set("attachment_id", existingAttID)
+			linkSQL, linkArgs, err := lb.Compile(`
 				INSERT INTO reply_body_attachment (reply_body_id, attachment_id)
-				VALUES ($1, $2)
+				VALUES (:reply_id, :attachment_id)
 				ON CONFLICT DO NOTHING
-			`, replyID, existingAttID); err != nil {
+			`)
+			if err != nil {
+				return fmt.Errorf("ingestInboundAttachments: link compile: %w", err)
+			}
+			if _, err := tx.Exec(ctx, linkSQL, linkArgs...); err != nil {
 				return fmt.Errorf("ingestInboundAttachments: link existing: %w", err)
 			}
 			continue
 		}
 
-		// Novel content. The cas_blob inserts are gated by ON
-		// CONFLICT — the same digest may already live in CAS from
-		// another card's attachment, in which case we just reuse
-		// those bytes. file + attachment rows are always new.
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO cas_blob (address, size_bytes, mime_type, storage_kind)
-			VALUES ($1, $2, $3, 'pg')
-			ON CONFLICT (address) DO NOTHING
-		`, digest, int64(len(a.Bytes)), mt); err != nil {
-			return fmt.Errorf("ingestInboundAttachments: cas_blob: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO cas_blob_data (address, data)
-			VALUES ($1, $2)
-			ON CONFLICT (address) DO NOTHING
-		`, digest, a.Bytes); err != nil {
-			return fmt.Errorf("ingestInboundAttachments: cas_blob_data: %w", err)
-		}
-		var fileID int64
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO file (filename, size_bytes, mime_type, created_by, sha256)
-			VALUES ($1, $2, $3, $4, $5)
-			RETURNING id
-		`, filename, int64(len(a.Bytes)), mt, actorID, digest).Scan(&fileID); err != nil {
-			return fmt.Errorf("ingestInboundAttachments: file insert: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO file_chunk (file_id, seq, cas_address, chunk_size)
-			VALUES ($1, 0, $2, $3)
-		`, fileID, digest, int64(len(a.Bytes))); err != nil {
-			return fmt.Errorf("ingestInboundAttachments: file_chunk insert: %w", err)
-		}
-		var newAttID int64
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO attachment (card_id, file_id)
-			VALUES ($1, $2) RETURNING id
-		`, parentTaskID, fileID).Scan(&newAttID); err != nil {
-			return fmt.Errorf("ingestInboundAttachments: attachment insert: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO reply_body_attachment (reply_body_id, attachment_id)
-			VALUES ($1, $2)
-		`, replyID, newAttID); err != nil {
-			return fmt.Errorf("ingestInboundAttachments: link new: %w", err)
+		// Novel content: store the bytes as a fresh attachment on the task,
+		// linked to this reply. storeAttachment recomputes the digest, but
+		// CAS bytes are reused on conflict so no duplicate blob lands.
+		if _, err := storeAttachment(ctx, tx, parentTaskID, replyID, filename, mt, a.Bytes, actorID); err != nil {
+			return fmt.Errorf("ingestInboundAttachments: %w", err)
 		}
 	}
 	return nil
+}
+
+// storeAttachment persists data as a new file + attachment on parentTaskID
+// and links it to replyID via reply_body_attachment, returning the new
+// attachment id. It follows the same shape as the file.create handler —
+// cas_blob (ON CONFLICT on the digest, so identical bytes already in CAS are
+// reused), cas_blob_data (idem), a file row with sha256 set, one file_chunk
+// pointing at the blob, the attachment row, then the reply link — but folds
+// the whole chain into ONE data-modifying CTE statement so it's a single
+// round-trip inside the caller's tx. (The standalone cas.PgBackend.Put /
+// file.create paths each open their own tx or assume bytes are pre-uploaded,
+// so neither composes into the poller's per-message tx.) The file_chunk →
+// cas_blob FK is satisfied because non-deferrable FK checks run at end of
+// statement, by which point the blob CTE has inserted the address. Callers
+// that want round-trip dedup must look for an existing attachment first; this
+// helper always creates a new file + attachment row.
+func storeAttachment(
+	ctx context.Context,
+	tx pgx.Tx,
+	parentTaskID int64,
+	replyID int64,
+	filename string,
+	mimeType string,
+	data []byte,
+	actorID int64,
+) (int64, error) {
+	sum := sha256.Sum256(data)
+	digest := hex.EncodeToString(sum[:])
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	if filename == "" {
+		filename = "attachment"
+	}
+
+	b := named.New()
+	b.Set("address", digest)
+	b.Set("size", int64(len(data)))
+	b.Set("mime", mimeType)
+	b.Set("data", data)
+	b.Set("filename", filename)
+	b.Set("actor", actorID)
+	b.Set("card_id", parentTaskID)
+	b.Set("reply_id", replyID)
+	sql, args, err := b.Compile(`
+		WITH blob AS (
+			INSERT INTO cas_blob (address, size_bytes, mime_type, storage_kind)
+			VALUES (:address, :size, :mime, 'pg')
+			ON CONFLICT (address) DO NOTHING
+		),
+		blob_data AS (
+			INSERT INTO cas_blob_data (address, data)
+			VALUES (:address, :data)
+			ON CONFLICT (address) DO NOTHING
+		),
+		new_file AS (
+			INSERT INTO file (filename, size_bytes, mime_type, created_by, sha256)
+			VALUES (:filename, :size, :mime, :actor, :address)
+			RETURNING id
+		),
+		new_chunk AS (
+			INSERT INTO file_chunk (file_id, seq, cas_address, chunk_size)
+			SELECT id, 0, :address, :size FROM new_file
+		),
+		new_attach AS (
+			INSERT INTO attachment (card_id, file_id)
+			SELECT :card_id, id FROM new_file
+			RETURNING id
+		)
+		INSERT INTO reply_body_attachment (reply_body_id, attachment_id)
+		SELECT :reply_id, id FROM new_attach
+		RETURNING attachment_id
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("storeAttachment: compile: %w", err)
+	}
+	var newAttID int64
+	if err := tx.QueryRow(ctx, sql, args...).Scan(&newAttID); err != nil {
+		return 0, fmt.Errorf("storeAttachment: %w", err)
+	}
+	return newAttID, nil
 }
 
 // Silence the unused-import lints when the file is built without the
@@ -987,7 +1102,7 @@ func (p *IMAPPoller) createTaskAndComm(ctx context.Context, tx pgx.Tx, snap *sch
 		val  json.RawMessage
 	}{
 		{"title", jstr(subject)},
-		{"description", jstr(m.Body)},
+		{"description", jstr(p.descriptionMarkdown(m))},
 		{"status", jid(intakeStatusID)},
 	}
 	for _, w := range taskAttrs {
@@ -1045,6 +1160,85 @@ func (p *IMAPPoller) createTaskAndComm(ctx context.Context, tx pgx.Tx, snap *sch
 
 	// First received reply, mirroring the channel-driven inbound capture.
 	return p.appendReceivedReply(ctx, tx, snap, commID, m, actorID)
+}
+
+// descriptionMarkdown builds the Markdown stored in a new task's description.
+// The description renders through the web client's Markdown sink, so a raw
+// plain-text body (whose single newlines collapse to spaces) reads as one
+// run-on paragraph; the mailmd converters fix that. Which body part is the
+// source — and in what order parts are tried — is governed by the poller's
+// resolved bodyPriority (KITP_COMM_BODY_PRIORITY). The first extractor whose
+// part is present and non-empty wins; if none match (e.g. priority is "html"
+// only but the message is plain text), we fall back to converting whatever
+// text we have so the description is never empty.
+func (p *IMAPPoller) descriptionMarkdown(m InboundMessage) string {
+	for _, e := range p.bodyPriority {
+		md, err := e.extract(m)
+		if err != nil {
+			// errSkipBody (the only error these return) means "this body type
+			// isn't present" — try the next in priority order.
+			continue
+		}
+		return md
+	}
+	return mailmd.FromText(m.Body)
+}
+
+// errSkipBody signals that a bodyExtractor found no content of its type, so
+// the priority loop should fall through to the next extractor.
+var errSkipBody = errors.New("comm: no body of this type")
+
+// bodyExtractor converts one kind of message body part into description
+// Markdown. extract returns errSkipBody when the message carries no part of
+// that kind (or it converts to nothing), so descriptionMarkdown can try the
+// next extractor in priority order.
+type bodyExtractor struct {
+	name    string
+	extract func(InboundMessage) (string, error)
+}
+
+// extractPlainDescription sources the description from the text/plain part.
+func extractPlainDescription(m InboundMessage) (string, error) {
+	if strings.TrimSpace(m.BodyPlain) == "" {
+		return "", errSkipBody
+	}
+	return mailmd.FromText(m.BodyPlain), nil
+}
+
+// extractHTMLDescription sources the description from the text/html part.
+func extractHTMLDescription(m InboundMessage) (string, error) {
+	if strings.TrimSpace(m.BodyHTML) == "" {
+		return "", errSkipBody
+	}
+	md := strings.TrimSpace(mailmd.FromHTML(m.BodyHTML))
+	if md == "" {
+		return "", errSkipBody
+	}
+	return md, nil
+}
+
+// resolveBodyPriority parses KITP_COMM_BODY_PRIORITY into an ordered list of
+// extractors. Tokens are comma-separated, lowercased, de-duplicated; only
+// "plain" and "html" are recognised. An empty / unrecognised setting (or one
+// that yields no valid tokens) falls back to the plain-then-html default.
+func resolveBodyPriority(env string) []bodyExtractor {
+	avail := map[string]bodyExtractor{
+		"plain": {name: "plain", extract: extractPlainDescription},
+		"html":  {name: "html", extract: extractHTMLDescription},
+	}
+	var out []bodyExtractor
+	seen := map[string]bool{}
+	for _, tok := range strings.Split(env, ",") {
+		tok = strings.ToLower(strings.TrimSpace(tok))
+		if e, ok := avail[tok]; ok && !seen[tok] {
+			out = append(out, e)
+			seen[tok] = true
+		}
+	}
+	if len(out) == 0 {
+		return []bodyExtractor{avail["plain"], avail["html"]}
+	}
+	return out
 }
 
 // ---- threading ----
@@ -1113,7 +1307,7 @@ func lastNLines(s string, n int) string {
 // directly callable by tests that want to exercise the parse path
 // without standing up a fake imapClient.
 func ParseInboundMessage(uid uint32, raw []byte) (InboundMessage, error) {
-	out := InboundMessage{UID: uid}
+	out := InboundMessage{UID: uid, Raw: raw}
 	msg, err := mail.ReadMessage(strings.NewReader(string(raw)))
 	if err != nil {
 		return out, fmt.Errorf("mail.ReadMessage: %w", err)
@@ -1143,14 +1337,23 @@ func ParseInboundMessage(uid uint32, raw []byte) (InboundMessage, error) {
 		// here so a typical multipart/mixed { multipart/alternative
 		// { text/plain, text/html }, attachment, ... } message yields
 		// both the plain body and the attachment list.
-		bodyText, atts := walkMultipart(body, ctypeRaw)
-		out.Body = bodyText
+		plain, htmlBody, atts := walkMultipart(body, ctypeRaw)
+		out.BodyPlain = plain
+		out.BodyHTML = htmlBody
+		out.Body = plain
+		if plain == "" && htmlBody != "" {
+			// No plain arm: the reply bubble still wants readable text, so
+			// fall back to the tag-stripped HTML (the historical behaviour).
+			out.Body = stripHTMLTags(htmlBody)
+		}
 		out.Attachments = atts
 	case strings.HasPrefix(ctypeLow, "text/html"):
 		// Apply Content-Transfer-Encoding first (quoted-printable / base64)
 		// so QP markers don't survive into the stripped output — same rule
-		// walkMultipart applies per-part.
+		// walkMultipart applies per-part. No text/plain part, so BodyPlain
+		// stays empty (the "plain" extractor will skip).
 		decoded := decodeTransferEncoding(body, msg.Header.Get("Content-Transfer-Encoding"))
+		out.BodyHTML = string(decoded)
 		out.Body = stripHTMLTags(string(decoded))
 	default:
 		// text/plain or unknown — treat as plain text. Apply the message's
@@ -1160,25 +1363,28 @@ func ParseInboundMessage(uid uint32, raw []byte) (InboundMessage, error) {
 		// stored body verbatim.
 		decoded := decodeTransferEncoding(body, msg.Header.Get("Content-Transfer-Encoding"))
 		out.Body = string(decoded)
+		out.BodyPlain = out.Body
 	}
 	return out, nil
 }
 
 // walkMultipart parses a multipart body via stdlib `mime/multipart`
-// and returns (body text, attachments). text/plain wins over
-// text/html for the body; non-text parts (or any part with a
+// and returns (plain text, html, attachments). text/plain is captured as
+// the plain body and text/html (if any) is returned raw so the caller can
+// both render a reply bubble (plain, tag-stripped) and build a richer task
+// description (mailmd.FromHTML). Non-text parts (or any part with a
 // `Content-Disposition: attachment` header) are appended to the
 // attachments list. One level of nested multipart is unwound — most
 // real-world messages stop at depth 1 (multipart/mixed wrapping a
 // multipart/alternative).
-func walkMultipart(body []byte, contentType string) (string, []InboundAttachment) {
+func walkMultipart(body []byte, contentType string) (string, string, []InboundAttachment) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		return string(body), nil
+		return string(body), "", nil
 	}
 	boundary, ok := params["boundary"]
 	if !ok || boundary == "" {
-		return string(body), nil
+		return string(body), "", nil
 	}
 	var plain, htmlFallback string
 	var atts []InboundAttachment
@@ -1201,10 +1407,13 @@ func walkMultipart(body []byte, contentType string) (string, []InboundAttachment
 		disp, dispParams, _ := mime.ParseMediaType(p.Header.Get("Content-Disposition"))
 		dispLow := strings.ToLower(disp)
 		if strings.HasPrefix(partCTLow, "multipart/") {
-			nestedBody, nestedAtts := walkMultipart(decoded, partCT)
-			if plain == "" && nestedBody != "" {
+			nestedPlain, nestedHTML, nestedAtts := walkMultipart(decoded, partCT)
+			if plain == "" && nestedPlain != "" {
 				// Prefer nested text body when we haven't found one yet.
-				plain = nestedBody
+				plain = nestedPlain
+			}
+			if htmlFallback == "" && nestedHTML != "" {
+				htmlFallback = nestedHTML
 			}
 			atts = append(atts, nestedAtts...)
 			continue
@@ -1242,14 +1451,7 @@ func walkMultipart(body []byte, contentType string) (string, []InboundAttachment
 			}
 		}
 	}
-	bodyText := plain
-	if bodyText == "" && htmlFallback != "" {
-		bodyText = stripHTMLTags(htmlFallback)
-	}
-	if bodyText == "" {
-		bodyText = ""
-	}
-	return strings.TrimSpace(bodyText), atts
+	return strings.TrimSpace(plain), htmlFallback, atts
 }
 
 // decodeTransferEncoding undoes the Content-Transfer-Encoding wrapping
@@ -1283,14 +1485,14 @@ func decodeTransferEncoding(raw []byte, encoding string) []byte {
 }
 
 // htmlTagRegex strips HTML tags. Greedy on the content between < and >.
-// The spec says v1 is plain text only — sophisticated HTML→Markdown
-// conversion is explicitly out of scope.
 var htmlTagRegex = regexp.MustCompile(`<[^>]+>`)
 
-// stripHTMLTags removes every tag from an HTML body, collapses runs
-// of whitespace, and unescapes a couple of common entities. The
-// output is intentionally lossy — operators who need rich formatting
-// will follow up in v2.
+// stripHTMLTags removes every tag from an HTML body, collapses runs of
+// whitespace, and unescapes a couple of common entities. Used for the plain
+// reply-bubble text (rendered verbatim, not as Markdown). The richer
+// approximate HTML→Markdown conversion used for the initial task description
+// lives in internal/mailmd (mailmd.FromHTML); this function stays
+// intentionally lossy for the plain-text surface.
 func stripHTMLTags(s string) string {
 	noTags := htmlTagRegex.ReplaceAllString(s, "")
 	// A small subset of HTML entities; covers > 95% of inbound mail.

@@ -483,6 +483,42 @@ func TestIMAPPollerHTMLStrip(t *testing.T) {
 	}
 }
 
+// TestIMAPPollerCapturesHTMLAndRaw covers the fields the Markdown-description
+// path depends on: a multipart/alternative message exposes its plain arm as
+// Body (for the reply bubble) AND its html arm as BodyHTML (for the richer
+// task description), and Raw retains the verbatim bytes for the optional
+// save-raw-email debugging attachment.
+func TestIMAPPollerCapturesHTMLAndRaw(t *testing.T) {
+	raw := "From: alice@example.com\r\n" +
+		"To: kitp@example.com\r\n" +
+		"Subject: Mixed\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/alternative; boundary=\"BOUND\"\r\n" +
+		"\r\n" +
+		"--BOUND\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"plain body\r\n" +
+		"--BOUND\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n" +
+		"\r\n" +
+		"<p>html <b>body</b></p>\r\n" +
+		"--BOUND--\r\n"
+	m, err := comm.ParseInboundMessage(7, []byte(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !strings.Contains(m.Body, "plain body") {
+		t.Errorf("Body=%q want plain arm", m.Body)
+	}
+	if !strings.Contains(m.BodyHTML, "<b>body</b>") {
+		t.Errorf("BodyHTML=%q want raw html arm", m.BodyHTML)
+	}
+	if string(m.Raw) != raw {
+		t.Errorf("Raw not retained verbatim")
+	}
+}
+
 // TestIMAPPollerTopLevelQuotedPrintable covers a SINGLE-PART text/plain
 // message whose Content-Transfer-Encoding is quoted-printable. The
 // header's `=E2=80=AA` (U+202A LRE) MUST decode to the UTF-8 byte run,
