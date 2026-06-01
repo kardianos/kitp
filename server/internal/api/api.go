@@ -270,7 +270,23 @@ func (s *Server) MountSPAGated(mux *http.ServeMux, webDir string, cfg SPAGateCon
 			// "GET /" + "/api/" as ambiguous (different methods +
 			// different paths, neither dominates). spaHandler
 			// itself rejects non-GET methods with 405.
-			mux.Handle("/", spaHandler(webDir, cfg))
+			assets := newAssetCache()
+			mux.Handle("/", spaHandler(webDir, cfg, assets))
+			// Pre-compress the bundle (app.js / styles.css …) in the
+			// background so the first request serves cached bytes
+			// instead of paying brotli-11 inline. Best-effort; never
+			// blocks boot. Source maps are warmed lazily (see warm).
+			go func() {
+				start := time.Now()
+				n := assets.warm(webDir)
+				if s.Logger != nil {
+					s.Logger.Info("asset cache warmed",
+						slog.Int("renditions", n),
+						slog.String("dir", webDir),
+						slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+					)
+				}
+			}()
 			return
 		}
 		// webDir was set but missing — fall through to the JSON root and
@@ -300,11 +316,9 @@ func (s *Server) MountSPAGated(mux *http.ServeMux, webDir string, cfg SPAGateCon
 // request) first requires a valid session; with none it 302s to the
 // SSO start path carrying the original local path as a validated
 // `redirect`. Real static assets bypass the gate entirely.
-func spaHandler(webDir string, cfg SPAGateConfig) http.Handler {
+func spaHandler(webDir string, cfg SPAGateConfig, assets *assetCache) http.Handler {
 	fs := http.FileServer(http.Dir(webDir))
 	indexPath := filepath.Join(webDir, "index.html")
-	// Memoised gzip/deflate renditions of static assets (see assetcache.go).
-	assets := newAssetCache()
 
 	// serveDoc gates index.html behind the session (when enabled) then
 	// serves it. Returns after writing a redirect when unauthenticated.

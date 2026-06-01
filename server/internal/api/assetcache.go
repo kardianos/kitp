@@ -20,6 +20,7 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"fmt"
+	"io/fs"
 	"mime"
 	"net/http"
 	"os"
@@ -85,6 +86,72 @@ func (c *assetCache) put(key assetCacheKey, body []byte, modUnix, size int64) {
 	c.mu.Unlock()
 }
 
+// build reads + compresses the file at `full` with `enc`, stores the rendition,
+// and returns it. ok is false (nothing cached) when the file can't be read or
+// the compressed form isn't smaller than the source — the caller then serves
+// identity. The caller is responsible for having validated enc + content-type.
+func (c *assetCache) build(full, enc string, modUnix, size int64) (body []byte, ok bool) {
+	raw, err := os.ReadFile(full)
+	if err != nil {
+		return nil, false
+	}
+	body, err = compressBytes(enc, raw)
+	if err != nil || len(body) >= len(raw) {
+		return nil, false // compression failed or didn't shrink it
+	}
+	c.put(assetCacheKey{path: full, encoding: enc}, body, modUnix, size)
+	return body, true
+}
+
+// warm walks webDir and pre-compresses every servable asset into the cache for
+// each preferred encoding, so the FIRST real request for the big bundle
+// (app.js / styles.css) serves cached bytes instead of paying brotli-11 inline.
+// Source maps (*.map) are skipped: they're large and only fetched with devtools
+// open, so they tolerate the one-off on-demand cost — warming them would burn
+// startup CPU compressing megabytes almost nobody downloads. Best-effort:
+// unreadable / non-compressible / non-shrinking files are skipped. Returns the
+// number of cached renditions built.
+//
+// Safe to run in a background goroutine: the cache is mutex-guarded, and a
+// racing on-demand compress of the same asset just overwrites identical bytes.
+func (c *assetCache) warm(webDir string) int {
+	built := 0
+	_ = filepath.WalkDir(webDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return nil // skip unreadable entries; keep walking the rest
+		}
+		built += c.warmFile(path)
+		return nil
+	})
+	return built
+}
+
+// warmFile pre-compresses one file into every preferred encoding, returning the
+// count of renditions built (0 when the file isn't a warmable asset).
+func (c *assetCache) warmFile(full string) int {
+	ext := strings.ToLower(filepath.Ext(full))
+	if ext == ".map" {
+		return 0 // source maps: latency-tolerant + large — warm on demand only
+	}
+	ct := assetContentType(ext)
+	if ct == "" || !isCompressibleType(ct) {
+		return 0
+	}
+	st, err := os.Stat(full)
+	if err != nil || st.IsDir() || st.Size() < minCompressSize {
+		return 0
+	}
+	modUnix := st.ModTime().UnixNano()
+	size := st.Size()
+	built := 0
+	for _, enc := range preferredEncodings {
+		if _, ok := c.build(full, enc, modUnix, size); ok {
+			built++
+		}
+	}
+	return built
+}
+
 // serveCompressed writes a cached gzip/deflate rendition of the file at `full`
 // when the client accepts one and the file is worth compressing. It returns
 // true when it has fully written the response; false (having written NOTHING)
@@ -112,23 +179,15 @@ func serveCompressed(w http.ResponseWriter, r *http.Request, cache *assetCache, 
 	modUnix := st.ModTime().UnixNano()
 	size := st.Size()
 
-	key := assetCacheKey{path: full, encoding: enc}
-	body, ok := cache.get(key, modUnix, size)
+	body, ok := cache.get(assetCacheKey{path: full, encoding: enc}, modUnix, size)
 	if !ok {
-		raw, err := os.ReadFile(full)
-		if err != nil {
+		// Cache miss (cold, or the warm walk skipped it / it changed). Compress
+		// + cache inline; build returns ok=false to fall back to identity when
+		// the file is unreadable or doesn't actually shrink.
+		body, ok = cache.build(full, enc, modUnix, size)
+		if !ok {
 			return false
 		}
-		body, err = compressBytes(enc, raw)
-		if err != nil {
-			return false
-		}
-		// If compression didn't actually shrink it, don't bother — serve
-		// identity via the fallback path.
-		if len(body) >= len(raw) {
-			return false
-		}
-		cache.put(key, body, modUnix, size)
 	}
 
 	h := w.Header()

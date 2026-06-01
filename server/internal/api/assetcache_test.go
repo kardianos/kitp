@@ -177,6 +177,50 @@ func TestServeCompressedSkipsTinyAndBinary(t *testing.T) {
 	}
 }
 
+func TestAssetCacheWarm(t *testing.T) {
+	dir := t.TempDir()
+	js := strings.Repeat("export const x = 1; // padding padding padding\n", 200)
+	if err := os.WriteFile(filepath.Join(dir, "app.js"), []byte(js), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	css := strings.Repeat(".a{color:red} /* padding padding padding padding */\n", 200)
+	if err := os.WriteFile(filepath.Join(dir, "styles.css"), []byte(css), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A big source map (should be SKIPPED) and a tiny file (below threshold).
+	if err := os.WriteFile(filepath.Join(dir, "app.js.map"), []byte(strings.Repeat("m", 5000)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tiny.js"), []byte("x=1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cache := newAssetCache()
+	n := cache.warm(dir)
+
+	// 2 warmable files × 3 encodings (br, gzip, deflate) = 6 renditions.
+	if n != 6 {
+		t.Fatalf("warm built %d renditions, want 6 (app.js + styles.css × 3 encodings)", n)
+	}
+	if len(cache.entries) != 6 {
+		t.Fatalf("cache holds %d entries, want 6", len(cache.entries))
+	}
+	// The source map must not have been warmed.
+	for k := range cache.entries {
+		if strings.HasSuffix(k.path, ".map") {
+			t.Fatalf("source map was warmed: %v", k)
+		}
+	}
+
+	// A warmed asset serves straight from cache (no compression on the request
+	// path): point build at a guaranteed-stale stamp and confirm get() still hits.
+	full := filepath.Join(dir, "app.js")
+	st, _ := os.Stat(full)
+	if _, ok := cache.get(assetCacheKey{path: full, encoding: "br"}, st.ModTime().UnixNano(), st.Size()); !ok {
+		t.Fatal("warmed app.js (br) not present in cache")
+	}
+}
+
 func TestAssetCacheReuseAndInvalidation(t *testing.T) {
 	full := writeAsset(t)
 	cache := newAssetCache()
