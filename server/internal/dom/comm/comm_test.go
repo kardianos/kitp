@@ -658,6 +658,40 @@ func TestCommListForTask(t *testing.T) {
 	if r2.Title != "Second" || len(r2.Replies) != 0 {
 		t.Errorf("r2 mismatch: %+v", r2)
 	}
+
+	// acked defaults true (no inbound yet → nothing to handle). It MUST survive
+	// the SQLFunc → Go-struct → wire round-trip: a missing CommRow.Acked field
+	// silently drops the key, the client defaults it true, and the detail then
+	// disagrees with the comms list (which reads the attribute_value directly).
+	if !r1.Acked || !r2.Acked {
+		t.Errorf("acked default: r1=%v r2=%v want true,true", r1.Acked, r2.Acked)
+	}
+
+	// Manually nack c1, then re-list: the false must round-trip, not snap back
+	// to the default true.
+	var ackOut comm.CommSetAckOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "ack", Endpoint: "comm", Action: "set_ack", Data: json.RawMessage(
+			fmt.Sprintf(`{"comm_id":"%d","acked":false}`, c1.CommID)),
+	}, &ackOut)
+	if ackOut.Acked {
+		t.Errorf("set_ack(false) returned acked=true")
+	}
+	var list2 comm.CommListForTaskOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "l2", Endpoint: "comm", Action: "list_for_task", Data: json.RawMessage(
+			fmt.Sprintf(`{"task_id":"%d"}`, f.taskID)),
+	}, &list2)
+	got2 := map[int64]comm.CommRow{}
+	for _, r := range list2.Rows {
+		got2[r.ID] = r
+	}
+	if got2[c1.CommID].Acked {
+		t.Errorf("c1 acked should be false after nack; got true (round-trip dropped the field?)")
+	}
+	if !got2[c2.CommID].Acked {
+		t.Errorf("c2 acked should remain true; got false")
+	}
 }
 
 // ---- comm_log.list ----

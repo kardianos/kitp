@@ -18,7 +18,7 @@ import { Control, type BaseControlConfig } from '../core/control.js';
 import { SPEC } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { navigate, taskUrl } from '../shell/router.js';
-import { applySearchFilter, type Predicate } from '../filter/predicate.js';
+import { applySearchFilter, upsertTopLevelLeaf, leaf, type Predicate } from '../filter/predicate.js';
 
 export interface CommsListConfig extends BaseControlConfig {
   type: 'CommsList';
@@ -39,6 +39,9 @@ export class CommsList extends Control<CommsListConfig> {
   private statusInfo = new Map<string, { label: string; phase: string }>();
   /** task card id → title, for the parent-task chip. */
   private taskTitles = new Map<string, string>();
+  /** When true, the list is narrowed to threads needing an ACK (a received
+   *  message arrived and no operator has marked the thread handled). */
+  private needsAckOnly = false;
   /** Keyboard cursor into the rendered comm list (j/k/↑↓ move it, Enter opens). */
   private selectedIndex = 0;
   /** Set once the remembered cursor has been restored on the first load. */
@@ -65,6 +68,23 @@ export class CommsList extends Control<CommsListConfig> {
     h.textContent = 'COMMS';
     head.append(h);
     this.headEl = h;
+
+    // "Needs ACK" filter — narrows to threads with an unacknowledged inbound
+    // message (acked=false). Server-side: ANDs an `acked eq false` leaf into
+    // the query predicate (re-fires the load effect via the local toggle).
+    const ackToggle = document.createElement('button');
+    ackToggle.type = 'button';
+    ackToggle.className = 'comms-list__ack-filter';
+    ackToggle.dataset.commsAckFilter = '';
+    ackToggle.textContent = 'Needs ACK';
+    ackToggle.setAttribute('aria-pressed', 'false');
+    this.listen(ackToggle, 'click', () => {
+      this.needsAckOnly = !this.needsAckOnly;
+      ackToggle.setAttribute('aria-pressed', this.needsAckOnly ? 'true' : 'false');
+      this.loadComms();
+    });
+    head.append(ackToggle);
+
     this.el.append(head);
 
     const list = document.createElement('div');
@@ -184,8 +204,14 @@ export class CommsList extends Control<CommsListConfig> {
     const pid = this.projectId();
     if (pid === null) return;
     const search = this.ctx.tree.at(['screen', 'search']).peek<string>() ?? '';
-    const predicate = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
+    let predicate = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
     const fields = this.ctx.tree.at(['screen', 'searchFields']).peek<string[]>() ?? ['title'];
+    // "Needs ACK" narrows to threads with an unacknowledged inbound message.
+    // `acked eq false` matches only comms carrying an explicit acked=false row
+    // (inbound sets it; the default-true case has no row, so it's excluded).
+    if (this.needsAckOnly) {
+      predicate = upsertTopLevelLeaf(predicate, leaf('acked', 'eq', [false]));
+    }
     const { where, tree } = applySearchFilter(search, fields, predicate);
     const input: Record<string, unknown> = {
       cardTypeName: 'comm',
@@ -289,12 +315,25 @@ export class CommsList extends Control<CommsListConfig> {
     badge.dataset.phase = info?.phase ?? '';
     badge.textContent = info !== undefined ? info.label : '—';
 
+    // Needs-ACK marker: a received message awaits handling (acked is an
+    // explicit false on the comm). Drives a left-edge accent + a small chip.
+    const needsAck = comm.attributes['acked'] === false;
+    row.dataset.needsAck = needsAck ? 'true' : 'false';
+
     const main = document.createElement('div');
     main.className = 'comms-list__main';
     const subject = document.createElement('span');
     subject.className = 'comms-list__subject';
     const title = comm.attributes['title'];
     subject.textContent = typeof title === 'string' && title.length > 0 ? title : '(no subject)';
+    if (needsAck) {
+      const flag = document.createElement('span');
+      flag.className = 'comms-list__needs-ack';
+      flag.dataset.commsNeedsAck = '';
+      flag.textContent = 'Needs ACK';
+      subject.append(' ');
+      subject.append(flag);
+    }
     const parent = document.createElement('span');
     parent.className = 'comms-list__task muted';
     const taskId = comm.parent_card_id;

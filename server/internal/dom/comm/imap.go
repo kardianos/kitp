@@ -742,6 +742,15 @@ func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx store.Querier, 
 	if err := appendCardRefList(ctx, tx, commID, "replies", replyID, snap, actorID); err != nil {
 		return err
 	}
+	// A newly received message marks the thread unhandled: clear the comm's
+	// `acked` flag so it surfaces in the "Needs ACK" filter until an operator
+	// acknowledges it via comm.set_ack. Tolerate an older snapshot without the
+	// attribute_def (skip rather than fail the whole inbound).
+	if ad, ok := snap.AttrByName["acked"]; ok {
+		if err := writeAttributeValue(ctx, tx, commID, ad.ID, json.RawMessage("false"), actorID); err != nil {
+			return fmt.Errorf("appendReceivedReply: clear acked: %w", err)
+		}
+	}
 	// Resolve the comm's parent task once so attachment ingest can
 	// dedup against existing attachments on that task (round-trip
 	// recognition) without re-querying per attachment.

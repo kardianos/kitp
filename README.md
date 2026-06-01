@@ -125,6 +125,7 @@ client, or set it for a confidential client (recommended — see
 | KITP_COMM_SMTP_DRY_RUN | 0 | 1 logs the would-be message instead of sending. |
 | KITP_COMM_IMAP_DRY_RUN | 0 | 1 polls without mutating mailbox state. |
 | KITP_COMM_IMAP_INSECURE | 0 | 1 allows non-TLS IMAP (dev only). |
+| KITP_PUBLIC_URL | (unset) | External base URL of the install (e.g. `https://kitp.example.com`; trailing slash optional). When set, outbound mail to a kitp user (a person with a login) carries a `<base>/task/<id>` deep link in the footer. Unset disables the link. |
 | KITP_ACTIVITY_SINK_DRY_RUN | 0 | 1 runs the activity sink without emitting. |
 
 ### Attachments and content store

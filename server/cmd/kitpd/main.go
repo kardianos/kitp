@@ -24,6 +24,12 @@
 //	KITP_COMM_IMAP_INSECURE   — when "1", allow plaintext IMAP (no TLS); dev only
 //	KITP_COMM_LOG_RETENTION_DAYS — days to keep comm_log rows; default 30
 //	KITP_COMM_LOG_PRUNE_HOURS — comm_log prune cadence in hours; default 24
+//	KITP_PUBLIC_URL           — external base URL of the install (e.g.
+//	                            "https://kitp.example.com", no trailing
+//	                            slash needed). When set, outbound mail to a
+//	                            kitp user (a person linked to a login)
+//	                            carries a "<base>/task/<id>" deep link in
+//	                            the footer. Unset disables the link.
 //	KITP_CSP_REPORT_ONLY      — when "1", flips CSP to soft-launch mode
 //	                            (Content-Security-Policy-Report-Only)
 //	KITP_CSP_REPORT_URI       — when set, emits a report-uri directive
@@ -517,7 +523,10 @@ func runHTTP() error {
 	smtpTick := time.Duration(envInt("KITP_COMM_SMTP_TICK_SEC", 10)) * time.Second
 	imapTick := time.Duration(envInt("KITP_COMM_IMAP_TICK_SEC", 60)) * time.Second
 	activityTick := time.Duration(envInt("KITP_ACTIVITY_SINK_TICK_SEC", 30)) * time.Second
-	smtpPool := comm.NewSMTPPool(pool, smtpTick, logger)
+	// External base URL for task deep links in outbound mail to kitp users
+	// (e.g. https://kitp.example.com). Empty disables the footer link.
+	publicURL := strings.TrimSpace(os.Getenv("KITP_PUBLIC_URL"))
+	smtpPool := comm.NewSMTPPool(pool, smtpTick, logger, publicURL)
 	imapPool := comm.NewIMAPPool(pool, imapTick, logger)
 	activityPool := activitysink.NewMSGraphPool(pool, activityTick, logger)
 

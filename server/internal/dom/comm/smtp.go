@@ -41,6 +41,7 @@ import (
 	"net/smtp"
 	"net/textproto"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,6 +69,12 @@ type SMTPSender struct {
 	tick      time.Duration
 	dryRun    bool
 	logger    *slog.Logger
+	// publicURL is the install's externally-reachable base URL
+	// (KITP_PUBLIC_URL). When set, outbound mail to a recipient who is a
+	// kitp USER (a person linked to a login via user_account_person) gets a
+	// "<publicURL>/task/<id>" deep link appended below the signature. Empty
+	// (the default) disables the footer link entirely.
+	publicURL string
 	// transport is the function the loop calls to actually ship a
 	// message. Tests swap it for a recording stub; production sets it
 	// to sendSMTP. Nil = use the default (sendSMTP, or a no-op in
@@ -107,7 +114,7 @@ func NewSMTPSenderForTest(pool *store.Pool, channelID int64, tick time.Duration)
 // reply_body card. Internal callers (processOne) use buildMIME
 // directly.
 func BuildMIMEForTest(from, to, subject, body, threadID string) []byte {
-	return buildMIME(from, to, subject, body, "", threadID, nil)
+	return buildMIME(from, to, subject, body, "", threadID, "", nil)
 }
 
 // newSMTPSender builds the struct without starting the goroutine.
@@ -133,6 +140,13 @@ func (s *SMTPSender) SetLogger(l *slog.Logger) {
 	if l != nil {
 		s.logger = l
 	}
+}
+
+// SetPublicURL sets the install's external base URL (KITP_PUBLIC_URL),
+// used to build the "/task/<id>" deep link appended to mail sent to kitp
+// users. Empty leaves the footer link off.
+func (s *SMTPSender) SetPublicURL(u string) {
+	s.publicURL = strings.TrimRight(strings.TrimSpace(u), "/")
 }
 
 // SetTransport swaps the SMTP transport. Tests inject a recording
@@ -191,6 +205,11 @@ type pendingReply struct {
 	signatureMode string // channel's signature_mode: '' | none | comm_name | user_name
 	channelName   string // comm_channel title (for comm_name mode)
 	authorName    string // reply author's user_account.display_name (for user_name mode)
+	// taskID is the comm's parent task card id; toIsUser is true when the To
+	// address matches a person linked to a login (user_account_person). Both
+	// gate the "/task/<id>" deep link appended to the body (see processOne).
+	taskID   int64
+	toIsUser bool
 }
 
 // RunOnce executes one scan + send cycle synchronously. Exported so
@@ -257,7 +276,13 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 		return fmt.Errorf("smtp sender: reply %d attachments %d > cap %d",
 			r.replyID, total, MaxReplyAttachmentBytes)
 	}
-	msg := buildMIME(r.from, r.to, r.subject, r.body, r.signature, r.threadID, atts)
+	// Append a task deep link only for kitp users, and only when a public
+	// base URL is configured.
+	taskURL := ""
+	if s.publicURL != "" && r.toIsUser && r.taskID > 0 {
+		taskURL = s.publicURL + "/task/" + strconv.FormatInt(r.taskID, 10)
+	}
+	msg := buildMIME(r.from, r.to, r.subject, r.body, r.signature, r.threadID, taskURL, atts)
 
 	var sendErr error
 	if s.dryRun {
@@ -325,6 +350,22 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = rb.id AND ad.name='reply_subject'), '')   AS reply_subject,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = rb.id AND ad.name='reply_body_text'), '') AS reply_body,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = cm.id AND ad.name='thread_id'), '')       AS thread_id,
+			COALESCE(cm.parent_card_id, 0)                                                                                                                              AS task_id,
+			-- to_is_user: does the To address (reply_to) belong to a kitp USER,
+			-- i.e. a person card linked to a login via user_account_person?
+			-- Drives the "/task/<id>" deep link appended for users only.
+			EXISTS (
+				SELECT 1
+				FROM attribute_value pe
+				JOIN attribute_def adpe ON adpe.id = pe.attribute_def_id AND adpe.name = 'email'
+				JOIN card p ON p.id = pe.card_id AND p.deleted_at IS NULL
+				JOIN card_type ctp ON ctp.id = p.card_type_id AND ctp.name = 'person'
+				JOIN user_account_person uap ON uap.person_card_id = p.id
+				WHERE lower(pe.value #>> '{}') = lower(COALESCE((
+					SELECT value #>> '{}' FROM attribute_value av2 JOIN attribute_def ad2 ON ad2.id = av2.attribute_def_id
+					WHERE av2.card_id = rb.id AND ad2.name='reply_to'), ''))
+				  AND lower(pe.value #>> '{}') <> ''
+			)                                                                                                                                                          AS to_is_user,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='smtp_host'), '')       AS smtp_host,
 			COALESCE((SELECT (value)::text::int FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='smtp_port' AND jsonb_typeof(value)='number'), 0) AS smtp_port,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='smtp_username'), '')   AS smtp_username,
@@ -379,6 +420,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			&r.replyID, &r.commID, &r.channelID, &r.projectID,
 			&r.to, &r.from, &r.subject, &r.body,
 			&r.threadID,
+			&r.taskID, &r.toIsUser,
 			&r.smtpHost, &r.smtpPort, &r.smtpUser, &r.fromAddress,
 			&r.channelName, &r.signatureMode, &r.authorName,
 			&r.smtpPass,
@@ -479,7 +521,7 @@ func resolveSignature(mode, channelName, authorName string) string {
 // the wire protocol) and emit a single Content-Type header for
 // plain-text UTF-8. Quoted-printable / multipart MIME is out of scope
 // for v1 (the spec calls out "plain text only").
-func buildMIME(from, to, subject, body, signature, threadID string, atts []mimeAttachment) []byte {
+func buildMIME(from, to, subject, body, signature, threadID, taskURL string, atts []mimeAttachment) []byte {
 	suffix := "[#" + threadID + "]"
 	subjectFinal := subject
 	switch {
@@ -500,6 +542,12 @@ func buildMIME(from, to, subject, body, signature, threadID string, atts []mimeA
 	// recipient sees "…body…\n\n-<channel>". Skipped when unnamed.
 	if sig := strings.TrimSpace(signature); sig != "" {
 		bodyNorm += "\r\n\r\n-" + sig
+	}
+	// For mail to a kitp user, append the task deep link below the signature
+	// (caller passes a non-empty taskURL only for user recipients with a
+	// configured public URL).
+	if link := strings.TrimSpace(taskURL); link != "" {
+		bodyNorm += "\r\n\r\n" + link
 	}
 	bodyWithRef := bodyNorm + "\r\n\r\nRef: " + threadID + "\r\n"
 
@@ -813,13 +861,15 @@ type SMTPPool struct {
 
 // NewSMTPPool builds the pool. tick is the per-sender cadence hint (the
 // real cadence is the owning job's Interval); logger is threaded to each
-// sender.
-func NewSMTPPool(pool *store.Pool, tick time.Duration, logger *slog.Logger) *SMTPPool {
+// sender. publicURL (KITP_PUBLIC_URL) is threaded to each sender so mail to
+// kitp users carries a task deep link; empty disables the link.
+func NewSMTPPool(pool *store.Pool, tick time.Duration, logger *slog.Logger, publicURL string) *SMTPPool {
 	m := &SMTPPool{pool: pool}
 	m.wp = job.NewWorkerPool[int64, *SMTPSender](
 		func(id int64) *SMTPSender {
 			s := newSMTPSender(pool, id, tick)
 			s.SetLogger(logger)
+			s.SetPublicURL(publicURL)
 			return s
 		},
 		// Discard the per-channel error: TickOnce already logged it, and

@@ -34,12 +34,15 @@ type TaskPurgeOutput struct {
 // RegisterTaskPurge installs the handler. Manager/admin only.
 func RegisterTaskPurge(_ *store.Pool) {
 	reg.Register(reg.Handler{
-		Endpoint:     "task",
-		Action:       "purge",
-		Doc:          "Permanently delete a task (and its comms / reply_bodies / attachments / activity). Refuses when live sub-tasks or flow references exist. UI must gate this behind a strong confirm.",
-		InputType:    reflect.TypeFor[TaskPurgeInput](),
-		OutputType:   reflect.TypeFor[TaskPurgeOutput](),
-		AllowedRoles: []string{"worker", "manager", "admin"},
+		Endpoint:   "task",
+		Action:     "purge",
+		Doc:        "Permanently delete a task (and its comms / reply_bodies / attachments / activity). Refuses when live sub-tasks or flow references exist. UI must gate this behind a strong confirm.",
+		InputType:  reflect.TypeFor[TaskPurgeInput](),
+		OutputType: reflect.TypeFor[TaskPurgeOutput](),
+		// Manager/admin only — hard delete is destructive and irreversible. The
+		// (role, task, card.delete) role_grant further gates this: workers have
+		// no such grant, managers/admins do (see db/schema/seed.hcsv).
+		AllowedRoles: []string{"manager", "admin"},
 		ProcessName:  "card.delete",
 		CardTypeID:   cardTypeFromTaskPurgeInput,
 		// Unified handler — body lives in

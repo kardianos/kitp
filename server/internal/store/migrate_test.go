@@ -39,8 +39,8 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// 14 built-in card_types + the predicate_snippet card_type
 		// introduced for named filters = 15.
 		{`SELECT count(*) FROM card_type`, 15},
-		{`SELECT count(*) FROM attribute_def`, 62},
-		{`SELECT count(*) FROM edge`, 93},
+		{`SELECT count(*) FROM attribute_def`, 64},
+		{`SELECT count(*) FROM edge`, 94},
 		{`SELECT count(*) FROM process`, 6},
 		{`SELECT count(*) FROM process_step`, 7},
 		// Template's status flow + 12 transitions (Gate 11), plus the
@@ -149,6 +149,69 @@ func TestForwardMigrationsReachExistingDB(t *testing.T) {
 	}
 }
 
+// TestForwardMigration0004CommAcked proves migration 0004 reconciles an
+// already-seeded DB that predates the comm-ACK feature: the `acked`
+// attribute_def, its comm edge, and the (manager, task, card.delete) grant all
+// reappear on the next boot even though the one-time install seed never
+// re-runs. This is the exact path that errored in the field — a seed-only
+// change for `acked` left existing DBs without the attribute, so comm.set_ack
+// raised "attribute_def acked missing".
+func TestForwardMigration0004CommAcked(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0004")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	// Simulate a pre-0004 install: drop the acked edge + attribute_def and the
+	// manager card.delete grant, plus 0004's ledger row (baseline stays, so the
+	// one-time seed remains gated off — exactly like a real upgraded install).
+	for _, stmt := range []string{
+		`DELETE FROM edge e USING attribute_def ad
+		   WHERE e.attribute_def_id = ad.id AND ad.name = 'acked'`,
+		`DELETE FROM attribute_def WHERE name = 'acked'`,
+		`DELETE FROM role_grant
+		   WHERE role_id = (SELECT id FROM role WHERE name='manager')
+		     AND card_type_id = (SELECT id FROM card_type WHERE name='task')
+		     AND process_id = (SELECT id FROM process WHERE name='card.delete')`,
+		`DELETE FROM schema_version WHERE name = '0004_comm_acked_and_manager_purge'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0004 (%s): %v", stmt, err)
+		}
+	}
+
+	// A normal boot re-applies the missing migration (seed does NOT re-run).
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+
+	assertExists := func(label, q string) {
+		var ok bool
+		if err := pool.QueryRow(ctx, q).Scan(&ok); err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+		if !ok {
+			t.Errorf("%s: migration 0004 did not restore the row on the existing DB", label)
+		}
+	}
+	assertExists("acked attribute_def", `SELECT EXISTS(SELECT 1 FROM attribute_def WHERE name='acked')`)
+	assertExists("comm→acked edge", `
+		SELECT EXISTS(SELECT 1 FROM edge e
+		  JOIN card_type ct ON ct.id = e.card_type_id AND ct.name='comm'
+		  JOIN attribute_def ad ON ad.id = e.attribute_def_id AND ad.name='acked')`)
+	assertExists("manager task card.delete grant", `
+		SELECT EXISTS(SELECT 1 FROM role_grant rg
+		  JOIN role r ON r.id = rg.role_id AND r.name='manager'
+		  JOIN card_type ct ON ct.id = rg.card_type_id AND ct.name='task'
+		  JOIN process p ON p.id = rg.process_id AND p.name='card.delete')`)
+
+	// Idempotent: a further boot is a clean no-op (ledger row present → skipped).
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("third apply (idempotent): %v", err)
+	}
+}
+
 // TestApplySchemaWithTestDemo applies the install seed plus the stable
 // test_demo.hcsv fixture (NOT the dev demo.hcsv, which is allowed to
 // grow freely). The counts here are stable by design — changing
@@ -179,8 +242,8 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{`SELECT count(*) FROM card`, 30},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 15},
-		{`SELECT count(*) FROM attribute_def`, 62},
-		{`SELECT count(*) FROM edge`, 93},
+		{`SELECT count(*) FROM attribute_def`, 64},
+		{`SELECT count(*) FROM edge`, 94},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.

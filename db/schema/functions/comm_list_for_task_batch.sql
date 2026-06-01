@@ -84,6 +84,17 @@ BEGIN
                                 WHERE av.card_id = c.id AND ad.name = 'comm_status'
                                   AND jsonb_typeof(av.value) = 'number'
                             ), 0)::text,
+                            -- Per-thread "handled" flag. A received inbound
+                            -- reply clears it (acked=false); an operator sets
+                            -- it true via comm.set_ack. Defaults true (no
+                            -- inbound yet ⇒ nothing to handle).
+                            'acked', COALESCE((
+                                SELECT av.value = to_jsonb(true)
+                                FROM attribute_value av
+                                JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                WHERE av.card_id = c.id AND ad.name = 'acked'
+                                  AND jsonb_typeof(av.value) = 'boolean'
+                            ), true),
                             'recipients',  (
                                 -- Decode comm_recipients card_ref[] —
                                 -- tolerate stored ints + numeric strings,

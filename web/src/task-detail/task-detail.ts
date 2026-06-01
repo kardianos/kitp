@@ -60,7 +60,9 @@ import {
   type AttrSchema,
 } from '../filter/attribute-schema.js';
 import type { RefPinnedOption } from '../ui/ref-picker.js';
-import { peekCurrentPersonId } from '../auth/auth-state.js';
+import { peekCurrentPersonId, isAdmin, hasRole } from '../auth/auth-state.js';
+import { Popover } from '../ui/popover.js';
+import { GRID_SPEC } from '../grid/specs.js';
 import type { TransitionBar } from './transition-bar.js';
 import type { TaskComments } from './task-comments.js';
 import type { CommThreads } from './task-comm-threads.js';
@@ -204,6 +206,16 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private commsHost!: HTMLElement;
   private commThreads: CommThreads | null = null;
 
+  /** Read-only status badge in the nav row (next to #id). Phase-toned. */
+  private statusBadgeEl!: HTMLElement;
+  /** status card id → {label, phase} for the header status badge. */
+  private readonly statusInfo = new Map<string, { label: string; phase: string }>();
+
+  /** The open overflow-menu popover, disposed on close / destroy. */
+  private actionsMenu: Popover | null = null;
+  /** The type-DELETE-to-confirm purge dialog node (built lazily). */
+  private purgeConfirmEl: HTMLElement | null = null;
+
   /** The header "Refresh" button, held so the background poll can repaint its
    *  synced (green) ↔ new-content (orange-blinking) state. */
   private refreshBtn: HTMLButtonElement | null = null;
@@ -329,6 +341,15 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     idLine.dataset.taskDetailId = '';
     idLine.textContent = this.taskId === null ? '#—' : `#${this.taskId.toString()}`;
 
+    // Read-only status badge — phase-toned, sits next to the #id. The
+    // editable changer is the TransitionBar (header-top); this is the at-a-
+    // glance current state. Hidden until the status pool + task resolve.
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'task-detail__status';
+    statusBadge.dataset.taskStatusBadge = '';
+    statusBadge.style.display = 'none';
+    this.statusBadgeEl = statusBadge;
+
     // "Refresh" — re-fetch the comm threads + comments/activity feed to pick up
     // messages that arrived since load (no polling/long-poll; user-initiated).
     const refresh = document.createElement('button');
@@ -341,9 +362,35 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.listen(refresh, 'click', () => this.refreshFeeds());
     this.refreshBtn = refresh;
 
-    navRight.append(idLine, refresh);
+    // "…" overflow menu — hosts the role-gated "Delete forever" action. Hidden
+    // until the auth identity resolves to a manager/admin (effect below); the
+    // server enforces the same gate on task.purge.
+    const actions = document.createElement('button');
+    actions.type = 'button';
+    actions.className = 'task-detail__actions';
+    actions.dataset.taskActions = '';
+    actions.title = 'More actions';
+    actions.setAttribute('aria-label', 'More actions');
+    actions.setAttribute('aria-haspopup', 'menu');
+    actions.textContent = '⋯';
+    actions.style.display = 'none';
+    this.listen(actions, 'click', () => this.toggleActionsMenu(actions));
+
+    navRight.append(idLine, statusBadge, refresh, actions);
     navRow.append(back, navRight);
     header.append(navRow);
+
+    // Reveal the "…" menu only for manager/admin (reactive — auth lands after
+    // the boot /auth/me probe, possibly after this render).
+    this.effect(() => {
+      const allowed = isAdmin(this.ctx.tree) || hasRole(this.ctx.tree, 'manager');
+      actions.style.display = allowed ? '' : 'none';
+    }, 'taskDetail.actionsRole');
+    this.onDestroy(() => {
+      this.actionsMenu?.destroy();
+      this.actionsMenu = null;
+      this.closePurgeConfirm();
+    });
 
     const headerTop = document.createElement('div');
     headerTop.className = 'task-detail__header-top';
@@ -515,9 +562,47 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     // response lands, gated by isAlive() so a torn-down screen never delivers.
     this.loadSchema();
     this.loadTask();
+    this.loadStatusPool();
   }
 
   /* ------------------------------- loads -------------------------------- */
+
+  /** Load the shared `status` value-cards so the header badge can resolve the
+   *  task's current status to a label + phase (mirrors comms-list / CommThreads).
+   *  Repaints the badge on arrival in case the task already landed. */
+  private loadStatusPool(): void {
+    this.ctx.api.callByName(
+      SPEC.selectWithAttributes,
+      { cardTypeName: 'status' },
+      (out) => {
+        if (!this.isAlive()) return;
+        const rows = (out as SelectWithAttributesOutput).rows ?? [];
+        for (const r of rows) {
+          const a = r.attributes;
+          const label = typeof a['title'] === 'string' && a['title'].length > 0 ? a['title'] : `#${r.id.toString()}`;
+          this.statusInfo.set(r.id.toString(), { label, phase: r.phase ?? '' });
+        }
+        this.paintStatusBadge();
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /** Paint the read-only header status badge from the task's `status` ref and
+   *  the loaded status pool. Hidden until both resolve. */
+  private paintStatusBadge(): void {
+    const el = this.statusBadgeEl;
+    if (el === undefined) return;
+    const sid = this.task === null ? null : asAttrId(this.task.attributes['status']);
+    const info = sid === null ? undefined : this.statusInfo.get(sid.toString());
+    if (info === undefined) {
+      el.style.display = 'none';
+      return;
+    }
+    el.style.display = '';
+    el.dataset.phase = info.phase;
+    el.textContent = info.label;
+  }
 
   /** Load the task card_type's editable attribute schema (attribute_def.select). */
   private loadSchema(): void {
@@ -690,6 +775,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.renderTitle();
     this.renderDescription();
     this.renderPanel();
+    this.paintStatusBadge();
     this.mountTransitionBar();
     this.mountComments();
     this.mountComms();
@@ -725,6 +811,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
             };
           }
           this.panel.seedAttr(attributeName, toCardId);
+          this.paintStatusBadge();
           if (this.isAlive()) {
             this.resolveRefLabels();
             // The transition wrote an attr_update + status row to the stream —
@@ -1199,6 +1286,116 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     }
     const parent = this.task?.parent_card_id;
     navigate(typeof parent === 'bigint' && parent > 0n ? projectUrl(parent) : '/projects');
+  }
+
+  /* --------------------------- actions menu (…) -------------------------- */
+
+  /** Toggle the "…" overflow menu. Built lazily as a Popover anchored to the
+   *  trigger; currently holds the manager/admin-only "Delete forever" item. */
+  private toggleActionsMenu(anchor: HTMLElement): void {
+    if (this.actionsMenu !== null) {
+      this.actionsMenu.destroy();
+      this.actionsMenu = null;
+      return;
+    }
+    const menu = new Popover(anchor, { placement: 'bottom-end', width: '12rem', onClose: () => { this.actionsMenu = null; } });
+    const panel = menu.element;
+    panel.classList.add('task-detail__menu');
+    panel.dataset.taskActionsMenu = '';
+    panel.setAttribute('role', 'menu');
+    panel.setAttribute('aria-label', 'Task actions');
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'task-detail__menu-item task-detail__menu-item--danger';
+    del.dataset.taskPurge = '';
+    del.setAttribute('role', 'menuitem');
+    del.textContent = 'Delete forever';
+    this.listen(del, 'click', () => {
+      menu.destroy();
+      this.actionsMenu = null;
+      this.openPurgeConfirm();
+    });
+    panel.append(del);
+
+    this.actionsMenu = menu;
+    menu.open();
+  }
+
+  /** Open the type-DELETE-to-confirm dialog, then hard-delete via task.purge.
+   *  Mirrors the bulk grid's confirm (shares the `.bulk-confirm*` styling). */
+  private openPurgeConfirm(): void {
+    if (this.taskId === null) return;
+    this.closePurgeConfirm();
+
+    const dialog = document.createElement('div');
+    dialog.className = 'bulk-confirm';
+    dialog.dataset.taskPurgeConfirm = '';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-label', 'Confirm delete forever');
+
+    const msg = document.createElement('p');
+    msg.className = 'bulk-confirm__msg';
+    msg.textContent =
+      'Permanently delete this task and its comms / messages / attachments? ' +
+      'This cannot be undone. Type DELETE to confirm.';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'bulk-confirm__input';
+    input.setAttribute('aria-label', 'Type DELETE to confirm');
+    input.placeholder = 'DELETE';
+
+    const row = document.createElement('div');
+    row.className = 'bulk-confirm__actions';
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'bulk-confirm__cancel';
+    cancel.textContent = 'Cancel';
+    this.listen(cancel, 'click', () => this.closePurgeConfirm());
+
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'bulk-confirm__confirm';
+    confirm.dataset.taskPurgeAccept = '';
+    confirm.textContent = 'Delete forever';
+    confirm.disabled = true;
+    this.listen(confirm, 'click', () => this.doPurge());
+
+    this.listen(input, 'input', () => {
+      confirm.disabled = input.value.trim() !== 'DELETE';
+    });
+
+    row.append(cancel, confirm);
+    dialog.append(msg, input, row);
+    this.el.append(dialog);
+    this.purgeConfirmEl = dialog;
+    input.focus();
+  }
+
+  private closePurgeConfirm(): void {
+    if (this.purgeConfirmEl !== null) {
+      this.purgeConfirmEl.remove();
+      this.purgeConfirmEl = null;
+    }
+  }
+
+  /** Fire task.purge for the focal task; navigate back to the source list on
+   *  success. Server re-checks the manager/admin gate. */
+  private doPurge(): void {
+    if (this.taskId === null) return;
+    this.closePurgeConfirm();
+    this.ctx.api.callByName(
+      GRID_SPEC.taskPurge,
+      { cardId: this.taskId },
+      () => {
+        if (!this.isAlive()) return;
+        this.goBack();
+      },
+      { alive: () => this.isAlive() },
+    );
   }
 
   /** `e c` — focus the comment composer (in the #35 comments slot). */

@@ -39,6 +39,7 @@ import type { ActionBinding } from '../core/data.js';
 import { SPEC } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { GRID_SPEC } from './specs.js';
+import { isAdmin, hasRole } from '../auth/auth-state.js';
 import type { RefPicker } from '../ui/ref-picker.js';
 import type { Combobox } from '../ui/combobox.js';
 import type { RefAxis } from '../filter/vocabulary.js';
@@ -371,6 +372,10 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
       const n = this.selectionCount();
       bar.style.display = n === 0 ? 'none' : '';
       count.textContent = `${n} task${n === 1 ? '' : 's'} selected`;
+      // "Delete forever" is a manager/admin-only hard delete (server enforces
+      // the same gate on task.purge); hide the group for everyone else.
+      const canPurge = isAdmin(this.ctx.tree) || hasRole(this.ctx.tree, 'manager');
+      purge.style.display = canPurge ? '' : 'none';
     }, 'bulk.count');
   }
 

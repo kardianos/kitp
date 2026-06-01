@@ -110,6 +110,7 @@ reply_body_text,       text,        true, null, false
 delivery_status,       text,        true, null, false
 reply_author,          number,      true, null, false
 comm_recipients,       card_ref[],  true, $card_type.person, false
+acked,                 bool,        true, null, false
 person_kind,           text,        true, null, false
 sink_kind,             text,        true, null, false
 msgraph_tenant_id,     text,        true, null, false
@@ -203,6 +204,7 @@ $card_type.comm,         $attribute_def.thread_id,         true,  2
 $card_type.comm,         $attribute_def.comm_status,       true,  3
 $card_type.comm,         $attribute_def.replies,           false, 4
 $card_type.comm,         $attribute_def.comm_recipients,   false, 5
+$card_type.comm,         $attribute_def.acked,             false, 6
 $card_type.reply_body,   $attribute_def.reply_to,          false, 0
 $card_type.reply_body,   $attribute_def.reply_from,        true,  1
 $card_type.reply_body,   $attribute_def.reply_subject,     false, 2
@@ -275,10 +277,11 @@ role_id, card_type_id, process_id
 `[$role.worker, $role.manager]`, `[$card_type.project, $card_type.screen, $card_type.filter, $card_type.status, $card_type.predicate_snippet]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
 
 
-## table role_grant | doc="manager-only: CRUD on the enum_managed VALUE cards (milestone / component / tag) — the 'Values' admin screen. Workers are deliberately excluded (they assign existing values to tasks but don't curate the value set); admins get this via the admin grant below." | on_conflict="role_id, card_type_id, process_id"
+## table role_grant | doc="manager-only: CRUD on the enum_managed VALUE cards (milestone / component / tag) — the 'Values' admin screen. Workers are deliberately excluded (they assign existing values to tasks but don't curate the value set); admins get this via the admin grant below. ALSO grants card.delete on task so a manager (not a plain worker) can hard-delete / 'Delete forever' a task via task.purge — which gates on (task, card.delete)." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
 $role.manager, `[$card_type.milestone, $card_type.component, $card_type.tag]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
+$role.manager, $card_type.task, $process."card.delete"
 
 
 ## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references). The three comm card_types (comm_channel, comm, reply_body) are admin-only configuration surface; managers get a lighter cut on comm via the manager grant." | on_conflict="role_id, card_type_id, process_id"

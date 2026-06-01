@@ -225,6 +225,47 @@ BEGIN
   END IF;
 END $$;`,
 	},
+	{
+		// Per-thread comm ACK + manager hard-delete. These rows live in
+		// seed.hcsv (so fresh installs get them), but the one-time seed never
+		// re-runs on an existing DB — so add them here too:
+		//   1. the `acked` bool attribute_def + its comm edge (the per-thread
+		//      "handled" flag; comm.set_ack raises if the attribute is absent),
+		//   2. the (manager, task, card.delete) role_grant so a manager can
+		//      "Delete forever" via task.purge.
+		// Idempotent — ON CONFLICT DO NOTHING makes it a no-op on a fresh DB
+		// whose seed already carries all three.
+		id: "0004_comm_acked_and_manager_purge",
+		sql: `
+DO $$
+DECLARE
+  _acked_def bigint;
+  _comm_ct   bigint := (SELECT id FROM card_type WHERE name = 'comm');
+  _task_ct   bigint := (SELECT id FROM card_type WHERE name = 'task');
+  _mgr       bigint := (SELECT id FROM role WHERE name = 'manager');
+  _del       bigint := (SELECT id FROM process WHERE name = 'card.delete');
+BEGIN
+  -- 1. comm acked attribute_def.
+  INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+  VALUES ('acked', 'bool', NULL, true, false)
+  ON CONFLICT (name) DO NOTHING;
+  SELECT id INTO _acked_def FROM attribute_def WHERE name = 'acked';
+
+  -- 2. Bind acked to the comm card_type.
+  IF _comm_ct IS NOT NULL AND _acked_def IS NOT NULL THEN
+    INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+    VALUES (_comm_ct, _acked_def, false, 6)
+    ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;
+  END IF;
+
+  -- 3. Manager card.delete on task (task.purge / "Delete forever").
+  IF _mgr IS NOT NULL AND _task_ct IS NOT NULL AND _del IS NOT NULL THEN
+    INSERT INTO role_grant (role_id, card_type_id, process_id)
+    VALUES (_mgr, _task_ct, _del)
+    ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
+  END IF;
+END $$;`,
+	},
 }
 
 // ledgerDDL creates the schema-version ledger. Kept here (not in the generated

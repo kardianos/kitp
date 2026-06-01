@@ -164,6 +164,12 @@ type CommRow struct {
 	CommStatus int64      `json:"comm_status,string" mcp:"desc=value-card id of the comm's comm_status attribute"`
 	Recipients reg.IDs    `json:"recipients" mcp:"desc=person card ids on the comm_recipients attribute; current thread-level To: list for outbound replies"`
 	Replies    []ReplyRow `json:"replies" mcp:"desc=reply_body rows attached via the replies card_ref[] attribute"`
+	// Acked is the per-thread "handled" flag. Defaults true (no acked row yet ⇒
+	// nothing to handle); a received inbound reply clears it to false. Must be a
+	// real field on this struct — otherwise the SQL row's `acked` key is dropped
+	// on decode and the client defaults it true, disagreeing with the comms list
+	// (which reads the attribute_value directly).
+	Acked bool `json:"acked" mcp:"desc=true when the thread has been acknowledged/handled; false when a received message awaits an ACK"`
 }
 
 // ReplyRow is one reply_body card materialised for the comms screen.
@@ -358,6 +364,7 @@ func Register(p *store.Pool) {
 	registerPersonGrantAccount(p)
 	registerPersonMerge(p)
 	registerCommSetRecipients(p)
+	registerCommSetAck(p)
 }
 
 // cardTypeFromReplyPostInput walks comm → parent task and returns the

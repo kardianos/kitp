@@ -25,6 +25,7 @@ import {
   COMM_LIST_FOR_TASK_SPEC,
   COMM_CREATE_SPEC,
   COMM_SET_RECIPIENTS_SPEC,
+  COMM_SET_ACK_SPEC,
   REPLY_POST_SPEC,
   type CommRow,
   type CommListForTaskOutput,
@@ -270,6 +271,8 @@ export class CommThreads extends Control<CommThreadsConfig> {
     const card = document.createElement('div');
     card.className = 'task-comms__comm';
     card.dataset.commRow = comm.id.toString();
+    // `data-needs-ack` (the warning tint) is set by paintAck() below, the
+    // single source of truth for the ACK visual.
 
     // Header: subject + thread badge.
     const top = document.createElement('div');
@@ -297,7 +300,28 @@ export class CommThreads extends Control<CommThreadsConfig> {
     const barHost = document.createElement('div');
     barHost.className = 'task-comms__transitions';
     barHost.dataset.commTransitions = '';
-    top.append(subj, thread, badge, barHost);
+
+    // ACK toggle — per-thread "handled" signal. A received inbound reply
+    // clears it server-side (acked=false → "Needs ACK"); clicking marks the
+    // thread handled ("Acked ✓"). Lets the comms screen filter to unhandled
+    // threads.
+    const ack = document.createElement('button');
+    ack.type = 'button';
+    ack.className = 'btn task-comms__ack';
+    ack.dataset.commAck = '';
+    // Single source of truth for the ACK visual (button label/title + the
+    // card's needs-ack tint), reused by the optimistic toggle below so a click
+    // updates in place — no list reload.
+    const paintAck = (acked: boolean): void => {
+      ack.dataset.acked = acked ? 'true' : 'false';
+      ack.textContent = acked ? 'Acked ✓' : 'Needs ACK';
+      ack.title = acked ? 'Mark this thread as needing attention' : 'Mark this thread as handled';
+      card.dataset.needsAck = acked ? 'false' : 'true';
+    };
+    paintAck(comm.acked);
+    this.listen(ack, 'click', () => this.doSetAck(comm, paintAck));
+
+    top.append(subj, thread, badge, ack, barHost);
     card.append(top);
     const bar = this.spawn(
       'TransitionBar',
@@ -316,35 +340,16 @@ export class CommThreads extends Control<CommThreadsConfig> {
     );
     this.bars.push(bar);
 
-    // Recipients — an editable RefPicker over person (display + edit in one).
-    const recipRow = document.createElement('div');
-    recipRow.className = 'task-comms__recipients';
-    const recipLabel = document.createElement('span');
-    recipLabel.className = 'task-comms__field-label muted';
-    recipLabel.textContent = 'To';
-    const recipHost = document.createElement('div');
-    recipHost.className = 'task-comms__recipients-picker';
-    recipRow.append(recipLabel, recipHost);
-    card.append(recipRow);
+    // Recipients — the shared compact "To [+ recipient] [chips]" editor.
     const labels: Record<string, string> = {};
     for (const id of comm.recipients) labels[id.toString()] = this.personLabels.get(id.toString()) ?? `#${id}`;
-    const rp = this.spawn(
-      'RefPicker',
-      {
-        type: 'RefPicker',
-        cardType: 'person',
-        multi: true,
-        collapsedAdd: true,
-        addLabel: 'recipient',
+    card.append(
+      this.buildRecipientsRow({
         values: comm.recipients.slice(),
         currentLabels: labels,
-        'aria-label': 'Recipients',
-        placeholder: 'Add recipient…',
-        onChangeMulti: (values: bigint[]) => this.doSetRecipients(comm.id, values),
-      },
-      recipHost,
-    ) as RefPicker;
-    this.pickers.push(rp);
+        onChange: (values) => this.doSetRecipients(comm.id, values),
+      }),
+    );
 
     // Replies (the email envelopes), oldest first.
     const replies = document.createElement('ul');
@@ -375,40 +380,113 @@ export class CommThreads extends Control<CommThreadsConfig> {
     }
     card.append(replies);
 
-    // Reply composer.
+    // Reply composer — the shared compact composer with its inline Send
+    // button (Mod+Enter to send).
+    card.append(
+      this.buildComposer({
+        placeholder: 'Reply… (Mod+Enter to send)',
+        ariaLabel: 'Reply',
+        sendLabel: 'Send',
+        onSubmit: (body) => this.doReply(comm.id, body),
+      }).el,
+    );
+
+    return card;
+  }
+
+  /** Build the shared compact comm composer: an auto-sizing textarea with
+   *  Mod+Enter (Cmd/Ctrl+Enter) as the submit chord. Reused by the per-comm
+   *  reply composer AND the new-comm form's message field so the two never
+   *  drift. When `sendLabel` is set the composer renders its own inline Send
+   *  button (the standalone reply case); when omitted the textarea stands
+   *  alone and the caller drives `submit()` from its own action button (the
+   *  new-comm form's "Start comm"), so the form keeps a proper, primary-sized
+   *  action row instead of a tiny inline button. `onSubmit` receives the
+   *  trimmed body (empty allowed only when `allowEmpty`); the textarea clears
+   *  after submit unless `clearOnSubmit === false`. */
+  private buildComposer(opts: {
+    placeholder: string;
+    ariaLabel: string;
+    sendLabel?: string;
+    rows?: number;
+    allowEmpty?: boolean;
+    clearOnSubmit?: boolean;
+    onSubmit: (body: string) => void;
+  }): { el: HTMLElement; submit: () => void } {
     const composer = document.createElement('div');
     composer.className = 'task-comms__reply-composer';
     const ta = document.createElement('textarea');
     ta.className = 'task-comms__reply-input';
     ta.dataset.replyInput = '';
-    ta.rows = 2;
-    ta.placeholder = 'Reply… (Mod+Enter to send)';
-    ta.setAttribute('aria-label', 'Reply');
+    ta.rows = opts.rows ?? 2;
+    ta.placeholder = opts.placeholder;
+    ta.setAttribute('aria-label', opts.ariaLabel);
     this.listen(ta, 'input', () => fitTextarea(ta));
-    const send = document.createElement('button');
-    send.type = 'button';
-    send.className = 'btn task-comms__reply-send';
-    send.dataset.replySend = '';
-    send.textContent = 'Send';
-    const doSend = (): void => {
+    const submit = (): void => {
       const body = ta.value.trim();
-      if (body === '') return;
-      ta.value = '';
-      fitTextarea(ta);
-      this.doReply(comm.id, body);
+      if (body === '' && opts.allowEmpty !== true) return;
+      if (opts.clearOnSubmit !== false) {
+        ta.value = '';
+        fitTextarea(ta);
+      }
+      opts.onSubmit(body);
     };
-    this.listen(send, 'click', () => doSend());
     this.listen(ta, 'keydown', (e) => {
       const ev = e as KeyboardEvent;
       if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
         ev.preventDefault();
-        doSend();
+        submit();
       }
     });
-    composer.append(ta, send);
-    card.append(composer);
+    composer.append(ta);
+    if (opts.sendLabel !== undefined) {
+      const send = document.createElement('button');
+      send.type = 'button';
+      send.className = 'btn task-comms__reply-send';
+      send.dataset.replySend = '';
+      send.textContent = opts.sendLabel;
+      this.listen(send, 'click', () => submit());
+      composer.append(send);
+    }
+    return { el: composer, submit };
+  }
 
-    return card;
+  /** Build the shared recipients editor — a "To" label beside a `person`
+   *  RefPicker in collapsed-add mode ("+ recipient" pill + chips). Used by
+   *  BOTH the per-comm header AND the new-comm form so the two render and
+   *  behave identically (the drift the screenshots showed). Pushes the picker
+   *  onto {@link pickers} for disposal on repaint. */
+  private buildRecipientsRow(opts: {
+    values: bigint[];
+    currentLabels?: Record<string, string>;
+    onChange: (values: bigint[]) => void;
+  }): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'task-comms__recipients';
+    const label = document.createElement('span');
+    label.className = 'task-comms__field-label muted';
+    label.textContent = 'To';
+    const host = document.createElement('div');
+    host.className = 'task-comms__recipients-picker';
+    row.append(label, host);
+    const rp = this.spawn(
+      'RefPicker',
+      {
+        type: 'RefPicker',
+        cardType: 'person',
+        multi: true,
+        collapsedAdd: true,
+        addLabel: 'recipient',
+        values: opts.values.slice(),
+        ...(opts.currentLabels ? { currentLabels: opts.currentLabels } : {}),
+        'aria-label': 'Recipients',
+        placeholder: 'Add recipient…',
+        onChangeMulti: (values: bigint[]) => opts.onChange(values),
+      },
+      host,
+    ) as RefPicker;
+    this.pickers.push(rp);
+    return row;
   }
 
   /* --------------------------- start-comm form -------------------------- */
@@ -442,25 +520,14 @@ export class CommThreads extends Control<CommThreadsConfig> {
     this.pickers.push(channelPicker);
     channelRow.append(channelHost);
 
-    const recipRow = this.field('Recipients');
-    const recipHost = document.createElement('div');
-    const recipPicker = this.spawn(
-      'RefPicker',
-      {
-        type: 'RefPicker',
-        cardType: 'person',
-        multi: true,
-        values: [],
-        'aria-label': 'Recipients',
-        placeholder: 'Add recipient…',
-        onChangeMulti: (values: bigint[]) => {
-          this.newRecipients = values;
-        },
+    // Recipients — the SAME shared editor the per-comm header uses, so the new
+    // comm renders the compact "To [+ recipient] [chips]" row identically.
+    const recipRow = this.buildRecipientsRow({
+      values: [],
+      onChange: (values) => {
+        this.newRecipients = values;
       },
-      recipHost,
-    ) as RefPicker;
-    this.pickers.push(recipPicker);
-    recipRow.append(recipHost);
+    });
 
     const subjectRow = this.field('Subject');
     const subject = document.createElement('input');
@@ -470,15 +537,25 @@ export class CommThreads extends Control<CommThreadsConfig> {
     subject.placeholder = 'Subject (defaults to task title)';
     subjectRow.append(subject);
 
+    // Message — the shared compact composer rendered bare (no inline Send);
+    // the form's "Start comm" button below drives its submit(), and Mod+Enter
+    // creates too. A multi-line initial message (rows=3) so the box doesn't
+    // read as a cramped single line; the initial message is optional
+    // (allowEmpty) and we don't clear on submit since the whole form closes
+    // on success (doCreate → toggleStartForm).
     const msgRow = this.field('Message');
-    const message = document.createElement('textarea');
-    message.className = 'task-comms__form-input';
-    message.dataset.commsMessage = '';
-    message.rows = 3;
-    message.placeholder = 'Optional initial message';
-    this.listen(message, 'input', () => fitTextarea(message));
-    msgRow.append(message);
+    const composer = this.buildComposer({
+      placeholder: 'Message… (Mod+Enter to send)',
+      ariaLabel: 'Message',
+      rows: 3,
+      allowEmpty: true,
+      clearOnSubmit: false,
+      onSubmit: (body) => this.doCreate(subject.value, body),
+    });
+    msgRow.append(composer.el);
 
+    // Proper action row: primary "Start comm" + "Cancel", grouped and
+    // right-aligned (matches the rest of the app's form footers).
     const actions = document.createElement('div');
     actions.className = 'task-comms__form-actions';
     const create = document.createElement('button');
@@ -486,7 +563,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
     create.className = 'btn btn--primary task-comms__form-create';
     create.dataset.commsCreate = '';
     create.textContent = 'Start comm';
-    this.listen(create, 'click', () => this.doCreate(subject.value, message.value));
+    this.listen(create, 'click', () => composer.submit());
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'btn task-comms__form-cancel';
@@ -541,6 +618,34 @@ export class CommThreads extends Control<CommThreadsConfig> {
         this.config.onLocalWrite?.();
       },
       { alive: () => this.isAlive() },
+    );
+  }
+
+  /** Toggle the per-thread ACK as a MANUAL, optimistic, in-place edit. One
+   *  network trip (the set_ack write); no list reload — reloading would
+   *  re-fetch every comm and re-mount each comm's TransitionBar, which is the
+   *  "multiple network trips" a single click was causing. Reverts the visual
+   *  if the write fails. Mirrors doSetRecipients. */
+  private doSetAck(comm: CommRow, paint: (acked: boolean) => void): void {
+    const next = !comm.acked;
+    comm.acked = next; // optimistic local truth + visual
+    paint(next);
+    this.ctx.api.callByName(
+      COMM_SET_ACK_SPEC,
+      { commId: comm.id, acked: next },
+      () => {
+        // Our own attr_update — advance the parent's poll baseline so it isn't
+        // read as inbound "new content". No reload needed.
+        if (this.isAlive()) this.config.onLocalWrite?.();
+      },
+      {
+        alive: () => this.isAlive(),
+        onErr: () => {
+          if (!this.isAlive()) return;
+          comm.acked = !next; // revert on failure
+          paint(!next);
+        },
+      },
     );
   }
 

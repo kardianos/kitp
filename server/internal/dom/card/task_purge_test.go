@@ -209,3 +209,32 @@ func TestTaskPurge_RefusesWorker(t *testing.T) {
 		t.Fatal("worker should be unauthorized for task.purge")
 	}
 }
+
+// TestTaskPurge_AllowsManager confirms the (manager, task, card.delete)
+// grant added alongside the AllowedRoles tightening lets a manager purge.
+func TestTaskPurge_AllowsManager(t *testing.T) {
+	f := seedPurgeScene(t, "kitp_test_task_purge_manager")
+	ctx := context.Background()
+	var mgrID int64
+	if err := f.sp.P.QueryRow(ctx, `
+		INSERT INTO user_account (display_name) VALUES ('mgr-1') RETURNING id
+	`).Scan(&mgrID); err != nil {
+		t.Fatalf("manager user: %v", err)
+	}
+	if _, err := f.sp.P.Exec(ctx, `
+		INSERT INTO user_role (user_id, role_id) SELECT $1, id FROM role WHERE name='manager'
+	`, mgrID); err != nil {
+		t.Fatalf("manager grant: %v", err)
+	}
+	mgrCtx := auth.WithUser(ctx, &auth.UserCtx{ID: mgrID, DisplayName: "mgr-1"})
+	resp := f.srv.Dispatch(mgrCtx, api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "pg", Endpoint: "task", Action: "purge", Data: json.RawMessage(
+			fmt.Sprintf(`{"card_id":"%d"}`, f.taskID))},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("manager should be authorized for task.purge; got %+v", resp.Subresponses[0])
+	}
+	if got := countOn(t, f.sp, `SELECT count(*) FROM card WHERE id = $1`, f.taskID); got != 0 {
+		t.Errorf("card row remains after manager purge: %d", got)
+	}
+}

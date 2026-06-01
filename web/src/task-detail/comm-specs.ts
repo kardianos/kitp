@@ -22,6 +22,7 @@ import type { Api } from '../core/api.js';
 export const COMM_LIST_FOR_TASK_SPEC = 'comm.list_for_task';
 export const COMM_CREATE_SPEC = 'comm.create';
 export const COMM_SET_RECIPIENTS_SPEC = 'comm.set_recipients';
+export const COMM_SET_ACK_SPEC = 'comm.set_ack';
 export const REPLY_POST_SPEC = 'reply.post';
 export const COMM_UNSEEN_COUNT_SPEC = 'comm.unseen_count';
 
@@ -55,6 +56,9 @@ export interface CommRow {
   commStatus: bigint;
   recipients: bigint[];
   replies: ReplyRow[];
+  /** Per-thread "handled" flag. false ⇒ a received message awaits an ACK.
+   *  Defaults true (no inbound yet ⇒ nothing to handle). */
+  acked: boolean;
 }
 
 export interface CommListForTaskInput {
@@ -91,6 +95,14 @@ export interface ReplyPostInput {
 }
 export interface ReplyPostOutput {
   replyId: bigint;
+}
+
+export interface CommSetAckInput {
+  commId: bigint;
+  acked: boolean;
+}
+export interface CommSetAckOutput {
+  acked: boolean;
 }
 
 /* ------------------------------ decode helpers ---------------------------- */
@@ -140,6 +152,9 @@ function decodeComm(j: Record<string, unknown>): CommRow {
     commStatus: asId(j['comm_status']),
     recipients: asIdList(j['recipients']),
     replies: asArray(j['replies']).map((r) => decodeReply(asObj(r))),
+    // Default true when absent (older server) — only an explicit false marks
+    // the thread as needing an ACK.
+    acked: j['acked'] !== false,
   };
 }
 
@@ -204,6 +219,14 @@ export function registerCommThreadSpecs(api: Api): void {
           unseenCount: typeof j['unseen_count'] === 'number' ? j['unseen_count'] : Number(j['unseen_count'] ?? 0),
         };
       },
+    });
+  }
+  if (!api.registry.has({ endpoint: 'comm', action: 'set_ack' })) {
+    api.define<CommSetAckInput, CommSetAckOutput>({
+      endpoint: 'comm',
+      action: 'set_ack',
+      encode: (i) => ({ comm_id: i.commId, acked: i.acked }),
+      decode: (raw): CommSetAckOutput => ({ acked: asObj(raw)['acked'] === true }),
     });
   }
   if (!api.registry.has({ endpoint: 'reply', action: 'post' })) {

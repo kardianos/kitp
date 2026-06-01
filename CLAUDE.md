@@ -1,5 +1,42 @@
 # kitp — repo notes for Claude
 
+## Schema changes & migrations (READ FIRST when editing `db/schema`)
+
+The schema is declarative in `db/schema/*.hcsv` and applied on startup
+by `store.ApplySchema` (`server/internal/store/migrate.go`) — there is
+no `db/migrations/` directory. `ApplySchema` has THREE tiers, and which
+one carries your change matters:
+
+1. **DDL** (tables, indexes, **functions**) — emitted as
+   `CREATE … IF NOT EXISTS` / `CREATE OR REPLACE` and re-applied on
+   EVERY boot. Structural changes and PL/pgSQL functions
+   (`db/schema/functions/*.sql`, declared via `## function` in
+   `schema.hcsv`) propagate to existing DBs automatically.
+
+2. **Seed** (`seed.hcsv`: built-in `attribute_def` / `edge` /
+   `role_grant` / template cards) — **one-time bootstrap. It NEVER
+   re-runs on an already-initialised database.** A new seed row reaches
+   FRESH installs (and all tests, which use fresh DBs) but is INVISIBLE
+   to every existing deployment.
+
+3. **Forward migrations** — the append-only `migrations` list in
+   `migrate.go`. This is the ONLY path that reconciles seeded DATA onto
+   an already-seeded DB (flip an `attribute_def` flag, add a
+   `role_grant`, add a new built-in `attribute_def` + its `edge`,
+   backfill a value). Run-once, gated by a `schema_version` ledger row.
+
+**Rule of thumb:** any change to `seed.hcsv` data that an existing
+install must also get REQUIRES a paired, idempotent forward migration in
+`migrate.go` (use `ON CONFLICT DO NOTHING` / `WHERE NOT EXISTS` so it's a
+no-op on fresh DBs whose seed already has it). Migrations are APPEND-ONLY
+— never edit/reorder a shipped one; add a new `NNNN_*` entry. Forgetting
+this ships a feature that works in tests and on fresh DBs but errors in
+the field (e.g. a handler that references a missing `attribute_def`).
+
+The stable-count tests in `server/internal/store/migrate_test.go`
+(`attribute_def` / `edge` / `card` totals) MUST be updated in the same
+edit when you add seed rows, or they fail.
+
 ## SQL named parameters
 
 Every Postgres query in the Go backend should use `internal/named`
