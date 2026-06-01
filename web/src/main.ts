@@ -589,7 +589,11 @@ function boot(): void {
   // it mounts — otherwise its chords wouldn't be live until the next click.
   const rootSig = signal<Control | null>(root, 'root-control');
   const activeSig = activeControlSignal(root);
-  hotkeys = new HotkeyController({ root: rootSig, active: activeSig });
+  // The current screen body (route control). Its WHOLE subtree's hotkeys stay
+  // in scope regardless of focus, so clicking the sidebar / search box never
+  // drops the screen's keys. Set in onBodyMount below.
+  const screenSig = signal<Control | null>(null, 'hotkeys.screen');
+  hotkeys = new HotkeyController({ root: rootSig, active: activeSig, screen: screenSig });
   const isWithin = (c: Control | null, ancestor: Control | null): boolean => {
     for (let x = c; x; x = x.parent) if (x === ancestor) return true;
     return false;
@@ -615,6 +619,7 @@ function boot(): void {
     routeBody = body;
     screenActive = body;
     activeSig.set(body);
+    screenSig.set(body); // its whole subtree's hotkeys are now in scope page-wide
   };
 
   // Mount AFTER the hotkey wiring so the initial route body's onBodyMount lands.

@@ -837,6 +837,18 @@ test('Inbox: Enter / o on a focused row opens the task detail', async () => {
   assert.equal(location.pathname, `/task/${id}`, '`o` opened the task detail');
 });
 
+test('Inbox: Enter on the focused BODY opens the logical cursor row (not just a focused row)', async () => {
+  const transport = recordingInboxTransport();
+  const { dispatcher, inbox } = bootInbox(transport);
+  await settle(dispatcher);
+
+  // The cursor defaults to row 0; Enter on the body container (the case after
+  // j/k navigation, where the row itself isn't DOM-focused) opens that row.
+  const id = visibleRows(inbox)[0].dataset.cardId;
+  inbox.el.dispatchEvent({ type: 'keydown', key: 'Enter', target: inbox.el });
+  assert.equal(location.pathname, `/task/${id}`, 'Enter on the body opened the cursor row');
+});
+
 test('Inbox: a click on the delegate <select> does NOT navigate', async () => {
   const transport = recordingInboxTransport({ agents: [{ id: '900', display_name: 'Agent A' }] });
   const { dispatcher, inbox } = bootInbox(transport);

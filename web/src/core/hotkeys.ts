@@ -20,7 +20,7 @@
  */
 
 import { Signal, computed, type ReadonlySignal } from './signal.js';
-import type { Control } from './control.js';
+import { controlTreeVersion, type Control } from './control.js';
 
 /** One declared binding. `binding` is canonical: "r", "Mod+Enter", "g p". */
 export interface HotkeyBinding {
@@ -96,52 +96,77 @@ function chainToRoot(control: Control | null): Control[] {
   return chain;
 }
 
+/** Overlay bindings get this added to their tree depth so an open modal/menu
+ *  shadows everything below it, no matter how deep the screen subtree goes. */
+const OVERLAY_DEPTH_BOOST = 1_000_000;
+
+/** Distance from the root (root = 0). The shadowing key: a deeper control's
+ *  binding wins over a shallower one for the same token. */
+function depthOf(c: Control): number {
+  let d = 0;
+  for (let x = c.parent; x; x = x.parent) d++;
+  return d;
+}
+
+/** Merge one control's declared bindings into `map` at `depth` (deeper / ties
+ *  shadow shallower). Tier 0 groups as 'global'; deeper tiers as the owning
+ *  control's type (help-overlay grouping). */
+function addControlBindings(map: Map<string, ResolvedBinding>, control: Control, depth: number): void {
+  const scope = depth === 0 ? 'global' : control.type;
+  for (const b of control.hotkeys()) {
+    const aliases = typeof b.binding === 'string' ? [b.binding] : b.binding;
+    for (const alias of aliases) {
+      const token = normalizeToken(alias);
+      const existing = map.get(token);
+      if (!existing || depth >= existing.depth) {
+        map.set(token, {
+          run: b.run,
+          fireInInputs: b.fireInInputs === true,
+          depth,
+          ...(b.label !== undefined ? { label: b.label } : {}),
+          scope,
+        });
+      }
+    }
+  }
+}
+
+/** Pre-order DFS over a control's whole subtree. Defensive about
+ *  `childControls` (test stubs / control-shaped objects may omit it). */
+function walkSubtree(control: Control, visit: (c: Control) => void): void {
+  visit(control);
+  const kids = typeof control.childControls === 'function' ? control.childControls() : [];
+  for (const child of kids) walkSubtree(child, visit);
+}
+
 /**
- * Pure derivation of the active binding map for a scope chain: the root tier
- * first, then the active control's chain (deepest wins on a shared token), then
- * the overlay's chain at the deepest positions so it shadows all. Shared by the
- * live `bindings` computed and the untracked {@link HotkeyController.snapshotFor}
- * (which the help overlay uses to list a SPECIFIC scope's keys — e.g. the route
- * screen — regardless of transient focus).
+ * Derive the active binding map from the LIVE control tree — not from transient
+ * focus. A control's hotkeys are in scope because it is MOUNTED:
+ *
+ *   - root tier        — the always-on global scope (depth 0);
+ *   - focused chain    — the focused control's ancestry, so chrome-specific keys
+ *                        are live while chrome holds focus;
+ *   - screen subtree   — the ENTIRE current screen body subtree, ALWAYS, so the
+ *                        page's hotkeys (/, j/k, Enter, …) stay live regardless
+ *                        of where focus sits (sidebar, search box, …). This is
+ *                        the fix for "clicking the navbar drops the screen keys";
+ *   - overlay          — an open modal/menu, depth-boosted so it shadows all.
+ *
+ * Shadowing is by true tree depth (deeper wins), so a deep body control beats a
+ * shallow chrome control on a shared token. Shared by the live `bindings`
+ * computed and the untracked {@link HotkeyController.snapshotFor}.
  */
 function deriveBindings(
   rootControl: Control | null,
   activeControl: Control | null,
   overlayControl: Control | null,
+  screenControl: Control | null,
 ): Map<string, ResolvedBinding> {
   const map = new Map<string, ResolvedBinding>();
-  const chain = chainToRoot(activeControl);
-  // Ensure the root tier is represented even when nothing is active.
-  if (rootControl && !chain.includes(rootControl)) chain.unshift(rootControl);
-  // Overlay tier wins: append its chain at the deepest positions.
-  if (overlayControl) {
-    for (const c of chainToRoot(overlayControl)) {
-      if (!chain.includes(c)) chain.push(c);
-    }
-  }
-
-  chain.forEach((control, depth) => {
-    // Tier 0 is the always-on global scope; deeper tiers group under the owning
-    // control's type in the help overlay.
-    const scope = depth === 0 ? 'global' : control.type;
-    for (const b of control.hotkeys()) {
-      const aliases = typeof b.binding === 'string' ? [b.binding] : b.binding;
-      for (const alias of aliases) {
-        const token = normalizeToken(alias);
-        const existing = map.get(token);
-        // Deeper scope (higher depth) shadows shallower bindings.
-        if (!existing || depth >= existing.depth) {
-          map.set(token, {
-            run: b.run,
-            fireInInputs: b.fireInInputs === true,
-            depth,
-            ...(b.label !== undefined ? { label: b.label } : {}),
-            scope,
-          });
-        }
-      }
-    }
-  });
+  if (rootControl) addControlBindings(map, rootControl, 0);
+  for (const c of chainToRoot(activeControl)) addControlBindings(map, c, depthOf(c));
+  if (screenControl) walkSubtree(screenControl, (c) => addControlBindings(map, c, depthOf(c)));
+  for (const c of chainToRoot(overlayControl)) addControlBindings(map, c, depthOf(c) + OVERLAY_DEPTH_BOOST);
   return map;
 }
 
@@ -157,6 +182,13 @@ export interface HotkeyControllerOptions {
    * overlay opens/closes; nothing registers/unregisters bindings.
    */
   overlay?: ReadonlySignal<Control | null>;
+  /**
+   * The current screen body (the route's mounted control). Its ENTIRE subtree's
+   * hotkeys are always in scope, regardless of focus — so the page's keys stay
+   * live when focus is on the sidebar / search box / other chrome. Set it when
+   * the route body (re)mounts; nothing registers per-binding.
+   */
+  screen?: ReadonlySignal<Control | null>;
   /** Attach the keydown listener to this target (default: document). */
   target?: EventTarget;
 }
@@ -165,6 +197,7 @@ export class HotkeyController {
   private readonly active: ReadonlySignal<Control | null>;
   private readonly root: ReadonlySignal<Control | null>;
   private readonly overlay: ReadonlySignal<Control | null> | null;
+  private readonly screen: ReadonlySignal<Control | null> | null;
   private readonly target: EventTarget;
   /** Pending chord prefix (e.g. after "g" we wait for the second key). */
   private chordPrefix = '';
@@ -181,12 +214,20 @@ export class HotkeyController {
     this.active = opts.active;
     this.root = opts.root;
     this.overlay = opts.overlay ?? null;
+    this.screen = opts.screen ?? null;
     this.target = opts.target ?? document;
 
-    this.bindings = computed(
-      () => deriveBindings(this.root.get(), this.active.get(), this.overlay?.get() ?? null),
-      'hotkeys.binding-map',
-    );
+    this.bindings = computed(() => {
+      // Re-derive whenever the control tree changes (mount/unmount) — this is
+      // what makes hotkeys "declaratively loaded on control load".
+      controlTreeVersion.get();
+      return deriveBindings(
+        this.root.get(),
+        this.active.get(),
+        this.overlay?.get() ?? null,
+        this.screen?.get() ?? null,
+      );
+    }, 'hotkeys.binding-map');
   }
 
   /** Start listening. Returns a disposer. */
@@ -214,7 +255,9 @@ export class HotkeyController {
    * only) when `control` is null.
    */
   snapshotFor(control: Control | null): Map<string, ResolvedBinding> {
-    return deriveBindings(this.root.peek(), control, this.overlay?.peek() ?? null);
+    // Treat `control` as BOTH the focused chain and the screen subtree, so the
+    // help overlay lists every key live for that screen (its whole subtree).
+    return deriveBindings(this.root.peek(), control, this.overlay?.peek() ?? null, control);
   }
 
   private onKeydown(e: KeyboardEvent): void {

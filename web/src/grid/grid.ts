@@ -52,7 +52,7 @@ import { Control, type BaseControlConfig } from '../core/control.js';
 import type { QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { signal } from '../core/signal.js';
-import { virtualList } from '../core/virtual-list.js';
+import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
 import { navigate, taskUrl } from '../shell/router.js';
 import { publishTaskNav } from '../shell/task-nav.js';
 import { SPEC } from '../kanban/specs.js';
@@ -160,7 +160,14 @@ export class Grid extends Control<GridConfig> {
   private headerPopovers: Popover[] = [];
   /** The body (virtualList viewport) + the live list handle (recreated on rebuild). */
   private bodyEl: HTMLElement | null = null;
-  private vlHandle: { dispose: () => void } | null = null;
+  private vlHandle: VirtualListHandle | null = null;
+  /** Logical keyboard cursor (a row DATA index, -1 = none). Survives row
+   *  recycling: the cursor class is repainted onto whichever physical row shows
+   *  this index. The last-rendered item model is cached for the scroll math. */
+  private cursorIndex = -1;
+  private itemsCache: GroupItem<CardWithAttrs>[] = [];
+  /** Set once the remembered cursor has been restored on the first load. */
+  private cursorRestored = false;
   /** The table element — its inline `--grid-cols` is computed from this.columns
    *  + per-column widths (#28), so the CSS grid tracks match the dynamic set. */
   private tableEl: HTMLElement | null = null;
@@ -424,6 +431,30 @@ export class Grid extends Control<GridConfig> {
       empty.textContent = this.tasksLoaded ? 'No tasks match this filter.' : 'Loading…';
     }, 'grid.empty');
 
+    // Search box ArrowDown hands focus to the body (screen.enterBodyNonce):
+    // place the cursor on the first row + focus the body so j/k/↑↓/Enter operate.
+    this.effect(() => {
+      const n = this.ctx.tree.at(['screen', 'enterBodyNonce']).get<number>() ?? 0;
+      if (n === 0) return;
+      const idxs = this.rowIndices();
+      if (idxs.length === 0) return;
+      if (this.cursorIndex < 0) this.cursorIndex = idxs[0]!;
+      this.scrollCursorIntoView();
+      this.repaintCursor();
+      this.el.focus();
+    }, 'grid.enterBody');
+
+    // Enter / o on the focused body opens the cursor row. A focused ROW handles
+    // its own Enter (row keydown); this is the container-focused case.
+    this.listen(this.el, 'keydown', (ev) => {
+      const e = ev as KeyboardEvent;
+      if (e.key !== 'Enter' && e.key !== 'o') return;
+      const t = e.target as HTMLElement | null;
+      if (t && typeof t.closest === 'function' && t.closest('[data-grid-row]')) return;
+      e.preventDefault();
+      this.openCursorRow();
+    });
+
     // Rows render through the recycling virtualList: `body` is the scroll
     // viewport, a fixed pool of row nodes is content-swapped on scroll (no
     // churn → no flash). The list renders a FLAT `GroupItem` sequence — either
@@ -543,7 +574,25 @@ export class Grid extends Control<GridConfig> {
       const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
       // Mark loaded BEFORE the leaf write so the empty-state effect reads it.
       this.tasksLoaded = true;
-      this.ctx.tree.at(this.tasksPath).set(rows);
+      this.ctx.tree.at(this.tasksPath).set(rows); // triggers a render → itemsCache
+      // Restore the remembered LOGICAL cursor (by card id) on the first load
+      // after (re)mount so returning from a task re-highlights its row. Deferred
+      // a microtask so the just-scheduled render has populated itemsCache.
+      if (!this.cursorRestored) {
+        this.cursorRestored = true;
+        const want = this.rememberedCursorId();
+        if (want !== undefined) {
+          queueMicrotask(() => {
+            if (!this.isAlive()) return;
+            const item = this.itemsCache.find((it) => it.kind === 'row' && it.row.id === want);
+            if (item && item.kind === 'row') {
+              this.cursorIndex = item.idx;
+              this.scrollCursorIntoView();
+              this.repaintCursor();
+            }
+          });
+        }
+      }
     });
 
     // Each lookup lands a stringified-id → label map at grid.lookups.<name>,
@@ -914,7 +963,8 @@ export class Grid extends Control<GridConfig> {
         this.ctx.tree.at(['grid', 'lookups', 'tick']).get();
         this.ctx.tree.at(['grid', 'groupVersion']).get();
         this.ctx.tree.at(SELECTION_VERSION_PATH).get();
-        return this.buildItems();
+        this.itemsCache = this.buildItems();
+        return this.itemsCache;
       },
       create: (el) => this.buildRowShell(el),
       update: (el, item) => this.fillItem(el, item),
@@ -1232,6 +1282,7 @@ export class Grid extends Control<GridConfig> {
   private openRow(el: HTMLElement): void {
     const idStr = el.dataset.cardId;
     if (idStr === undefined || idStr === '') return;
+    this.rememberCardId(BigInt(idStr)); // so returning re-highlights this row
     const tasks = (this.ctx.tree.at(['grid', 'tasks']).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
     publishTaskNav(this.ctx.tree, tasks.map((t) => t.id));
     navigate(taskUrl(idStr));
@@ -1339,7 +1390,7 @@ export class Grid extends Control<GridConfig> {
       if (count) count.textContent = `· ${item.count}`;
     } else {
       this.makeRowMode(el);
-      this.fillRow(el, item.row);
+      this.fillRow(el, item.row, item.idx);
     }
   }
 
@@ -1350,8 +1401,10 @@ export class Grid extends Control<GridConfig> {
    * task (and whenever the lookups tick re-renders the window). Cells are
    * cleared + rebuilt in place — the cell shells from `makeRowMode` persist.
    */
-  private fillRow(el: HTMLElement, row: CardWithAttrs): void {
+  private fillRow(el: HTMLElement, row: CardWithAttrs, index: number): void {
     el.dataset.cardId = row.id.toString();
+    el.dataset.index = String(index);
+    el.classList.toggle('grid__row--cursor', index === this.cursorIndex);
     const cells = el.children;
     // Cell 0 is the leading select cell — render its checked state from the
     // TREE set (recycling-safe: a pooled node shows a different task on scroll,
@@ -1718,8 +1771,101 @@ export class Grid extends Control<GridConfig> {
   override hotkeys(): readonly import('../core/hotkeys.js').HotkeyBinding[] {
     return [
       { binding: 'n', label: 'New task', run: () => this.ctx.bus?.emit('quickCreateOpen') },
+      // Row cursor: j/k + ↑↓ move a LOGICAL cursor (by data index, survives row
+      // recycling) and auto-scroll it into view at the edge; Enter / o opens it.
+      // NOT fireInInputs — the search box's ArrowDown hands focus down instead.
+      { binding: 'j', label: 'Next row', run: () => this.moveCursor(1) },
+      { binding: 'k', label: 'Previous row', run: () => this.moveCursor(-1) },
+      { binding: 'ArrowDown', label: 'Next row', run: () => this.moveCursor(1) },
+      { binding: 'ArrowUp', label: 'Previous row', run: () => this.moveCursor(-1) },
       ...(this.config.hotkeys ?? []),
     ];
+  }
+
+  /** The logical row indices currently in the rendered item model (row items). */
+  private rowIndices(): number[] {
+    return this.itemsCache.filter((it) => it.kind === 'row').map((it) => (it as { idx: number }).idx);
+  }
+
+  /** Move the logical cursor by `delta` (clamped to the row range), scroll it
+   *  into view at the edge, and repaint. Starts at the first row when unset. */
+  private moveCursor(delta: number): void {
+    const idxs = this.rowIndices();
+    if (idxs.length === 0) return;
+    const lo = idxs[0]!;
+    const hi = idxs[idxs.length - 1]!;
+    const next = this.cursorIndex < 0 ? lo : Math.max(lo, Math.min(hi, this.cursorIndex + delta));
+    this.cursorIndex = next;
+    this.scrollCursorIntoView();
+    this.repaintCursor();
+    this.rememberCursor();
+    // Keep the body focused so Enter / o opens the cursor row even when j/k
+    // arrived as page-wide hotkeys from outside the grid.
+    this.el.focus({ preventScroll: true });
+  }
+
+  /* ---- logical-cursor persistence (remember across nav, by card id) ------- */
+
+  private cursorNode() {
+    const pid = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
+    if (pid === null) return null;
+    return this.ctx.tree.at(['session', 'cursor', 'grid', pid.toString()]);
+  }
+  private rememberedCursorId(): bigint | undefined {
+    const v = this.cursorNode()?.peek<bigint>();
+    return typeof v === 'bigint' ? v : undefined;
+  }
+  /** Persist a card id as this screen's remembered cursor (the moved-to cursor
+   *  row, or a clicked row that opens directly). */
+  private rememberCardId(id: bigint): void {
+    this.cursorNode()?.set(id);
+  }
+  private rememberCursor(): void {
+    const item = this.itemsCache.find((it) => it.kind === 'row' && it.idx === this.cursorIndex);
+    if (item && item.kind === 'row') this.rememberCardId(item.row.id);
+  }
+
+  /** Auto-scroll the cursor's row into view only when it's outside the viewport
+   *  (edge nav). Uses its PHYSICAL position in the rendered item model (headers
+   *  included), then re-windows synchronously so the row paints. */
+  private scrollCursorIntoView(): void {
+    const body = this.bodyEl;
+    if (body === null || this.cursorIndex < 0) return;
+    const phys = this.itemsCache.findIndex((it) => it.kind === 'row' && (it as { idx: number }).idx === this.cursorIndex);
+    if (phys < 0) return;
+    const top = phys * GRID_ROW_HEIGHT;
+    const bottom = top + GRID_ROW_HEIGHT;
+    const vh = body.clientHeight || 0;
+    const st = body.scrollTop || 0;
+    let nextTop = st;
+    if (top < st) nextTop = top;
+    else if (bottom > st + vh) nextTop = bottom - vh;
+    if (nextTop !== st) {
+      body.scrollTop = nextTop;
+      this.vlHandle?.refresh();
+    }
+  }
+
+  /** Toggle the cursor class onto whichever rendered row shows the cursor index. */
+  private repaintCursor(): void {
+    if (this.bodyEl === null) return;
+    const rows = this.bodyEl.querySelectorAll?.('[data-grid-row]') ?? [];
+    for (const node of rows as unknown as HTMLElement[]) {
+      const on = Number(node.dataset?.index ?? '-1') === this.cursorIndex;
+      node.classList?.toggle('grid__row--cursor', on);
+    }
+  }
+
+  /** Open the cursor row's task detail (keyboard Enter / o on the focused grid). */
+  private openCursorRow(): void {
+    const item = this.itemsCache.find(
+      (it) => it.kind === 'row' && (it as { idx: number }).idx === this.cursorIndex,
+    );
+    if (item === undefined || item.kind !== 'row') return;
+    this.rememberCardId(item.row.id);
+    const tasks = (this.ctx.tree.at(['grid', 'tasks']).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+    publishTaskNav(this.ctx.tree, tasks.map((t) => t.id));
+    navigate(taskUrl(item.row.id.toString()));
   }
 }
 

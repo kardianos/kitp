@@ -204,3 +204,43 @@ test('CommsList: an empty result resolves to the empty message (not stuck on Loa
   assert.equal(empty.style.display, '', 'empty placeholder visible');
   assert.equal(empty.textContent, 'No comms in this view.', 'loaded-gate flipped off "Loading…"');
 });
+
+test('CommsList: the search-box ArrowDown hand-off focuses the body', async () => {
+  const h = harness();
+  const { dispatcher, api } = bootApi(h.transport);
+  const { c, tree } = mount(api, 'active');
+  await settle(dispatcher);
+  assert.notEqual(document.activeElement, c.el, 'body not focused before the hand-off');
+
+  // ScreenFilterBar bumps this nonce on ArrowDown in the search box.
+  tree.at(['screen', 'enterBodyNonce']).set(1);
+  await flushMicrotasks();
+
+  assert.equal(document.activeElement, c.el, 'body takes focus so j/k/Enter operate here');
+  const row = c.el.querySelector('[data-comm-row]');
+  assert.ok(row.classList.contains('comms-list__row--selected'), 'first comm is the cursor');
+});
+
+test('CommsList: restores the remembered logical cursor on (re)mount', async () => {
+  const h = harness();
+  const { dispatcher, api } = bootApi(h.transport);
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(PROJECT);
+  // No phase leaf → both comms (145 active, 200 terminal) render.
+  tree.at(['screen', 'predicate']).set(null);
+  tree.at(['screen', 'search']).set('');
+  tree.at(['screen', 'searchFields']).set(['title']);
+  // Pre-seed the remembered cursor as if a prior visit opened comm 200.
+  tree.at(['session', 'cursor', 'comms', PROJECT.toString()]).set(200n);
+
+  const c = M.Control.New('CommsList', { type: 'CommsList' }, { api, tree });
+  c.mount(document.createElement('div'));
+  document.body.appendChild(c.el);
+  await settle(dispatcher);
+
+  const rows = [...c.el.querySelectorAll('[data-comm-row]')];
+  assert.equal(rows.length, 2, 'both comms rendered');
+  const sel = rows.find((r) => r.classList.contains('comms-list__row--selected'));
+  assert.ok(sel, 'a row is highlighted on return');
+  assert.equal(sel.dataset.commRow, '200', 'the REMEMBERED comm (not index 0) is the cursor');
+});

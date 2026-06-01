@@ -111,6 +111,19 @@ interface ControlCtor {
 const controlOwners = new WeakMap<HTMLElement, Control>();
 
 /**
+ * Bumped on EVERY control mount + destroy. The HotkeyController's binding map is
+ * a `computed` that reads this, so the active hotkey set is re-derived from the
+ * live control tree whenever the tree changes — i.e. a control's hotkeys become
+ * live because it MOUNTED, not because it's focused. This is the framework-level
+ * "hotkeys are declaratively loaded on control load" signal. Lazy: the computed
+ * just marks dirty here and recomputes on the next keydown read — no eager work.
+ */
+export const controlTreeVersion = signal(0, 'control.tree-version');
+function bumpControlTree(): void {
+  controlTreeVersion.set(controlTreeVersion.peek() + 1);
+}
+
+/**
  * The DEEPEST mounted control whose root element is `node` or an ancestor of it
  * — i.e. the control that "owns" the focused/clicked node. Walks up the DOM and
  * returns the first registered root. null when the node is outside every
@@ -188,6 +201,7 @@ export abstract class Control<Cfg extends BaseControlConfig = BaseControlConfig>
     // registered any named handlers / inline-fault effect the bindings target.
     this.data = new DataController(this.dataHost(), this.ctx.tree);
     this.data.wire();
+    bumpControlTree(); // a newly-mounted control's hotkeys join the live set
   }
 
   /** True between mount() and destroy(). Used by the dispatcher's alive gate. */
@@ -471,6 +485,7 @@ export abstract class Control<Cfg extends BaseControlConfig = BaseControlConfig>
     this.el.remove();
     this.mounted = false;
     this.parent = null;
+    bumpControlTree(); // its hotkeys leave the live set
   }
 
   /** Walk owned children (one level). Used by the hotkey tree derivation. */

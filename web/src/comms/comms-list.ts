@@ -39,6 +39,10 @@ export class CommsList extends Control<CommsListConfig> {
   private statusInfo = new Map<string, { label: string; phase: string }>();
   /** task card id → title, for the parent-task chip. */
   private taskTitles = new Map<string, string>();
+  /** Keyboard cursor into the rendered comm list (j/k/↑↓ move it, Enter opens). */
+  private selectedIndex = 0;
+  /** Set once the remembered cursor has been restored on the first load. */
+  private cursorRestored = false;
 
   private headEl!: HTMLElement;
   private listEl!: HTMLElement;
@@ -48,6 +52,7 @@ export class CommsList extends Control<CommsListConfig> {
     const el = document.createElement('section');
     el.className = 'comms-list';
     el.dataset.control = 'CommsList';
+    el.tabIndex = -1; // programmatically focusable (search-box ArrowDown hand-off)
     return el;
   }
 
@@ -89,6 +94,86 @@ export class CommsList extends Control<CommsListConfig> {
       this.ctx.tree.at(['screen', 'searchFields']).get();
       this.loadComms();
     }, 'commsList.query');
+
+    // Enter / o on the focused body opens the selected comm's task. A focused
+    // ROW handles its own Enter (row keydown); this is the container-focused case.
+    this.listen(this.el, 'keydown', (ev) => {
+      const e = ev as KeyboardEvent;
+      if (e.key !== 'Enter' && e.key !== 'o') return;
+      const t = e.target as HTMLElement | null;
+      if (t && typeof t.closest === 'function' && t.closest('[data-comm-row]')) return;
+      e.preventDefault();
+      this.openSelected();
+    });
+
+    // Search box ArrowDown hands focus here (screen.enterBodyNonce).
+    this.effect(() => {
+      const n = this.ctx.tree.at(['screen', 'enterBodyNonce']).get<number>() ?? 0;
+      if (n === 0 || this.comms.length === 0) return;
+      if (this.selectedIndex < 0 || this.selectedIndex >= this.comms.length) this.selectedIndex = 0;
+      this.repaintSelection();
+      this.el.focus();
+    }, 'commsList.enterBody');
+  }
+
+  override hotkeys(): readonly import('../core/hotkeys.js').HotkeyBinding[] {
+    return [
+      { binding: 'j', run: () => this.moveSelection(1), label: 'Next comm' },
+      { binding: 'k', run: () => this.moveSelection(-1), label: 'Previous comm' },
+      { binding: 'ArrowDown', run: () => this.moveSelection(1), label: 'Next comm' },
+      { binding: 'ArrowUp', run: () => this.moveSelection(-1), label: 'Previous comm' },
+    ];
+  }
+
+  private moveSelection(delta: number): void {
+    if (this.comms.length === 0) return;
+    this.selectedIndex = Math.max(0, Math.min(this.comms.length - 1, this.selectedIndex + delta));
+    this.repaintSelection();
+    this.rememberCursor();
+    // All rows are rendered (no virtualList), so scroll the logical cursor's row
+    // into view at the edge.
+    const row = this.listEl.querySelector?.(`[data-comm-row][data-index="${this.selectedIndex}"]`);
+    (row as HTMLElement | null)?.scrollIntoView?.({ block: 'nearest' });
+    // Keep the body focused so Enter / o opens the cursor comm even when j/k
+    // arrived as page-wide hotkeys from outside the list.
+    this.el.focus({ preventScroll: true });
+  }
+
+  /** Re-apply the selected class to the rendered rows by their data-index. */
+  private repaintSelection(): void {
+    const rows = this.listEl.querySelectorAll?.('[data-comm-row]') ?? [];
+    for (const node of rows as unknown as HTMLElement[]) {
+      const on = Number(node.dataset?.index ?? '-1') === this.selectedIndex;
+      node.classList?.toggle('comms-list__row--selected', on);
+      node.setAttribute?.('aria-selected', on ? 'true' : 'false');
+    }
+  }
+
+  private openSelected(): void {
+    const comm = this.comms[this.selectedIndex];
+    if (comm === undefined) return;
+    this.rememberCardId(comm.id);
+    const taskId = comm.parent_card_id;
+    if (taskId !== undefined) navigate(taskUrl(taskId.toString()));
+  }
+
+  /* ---- logical-cursor persistence (remember across nav, by comm id) ------- */
+
+  private cursorNode() {
+    const pid = this.projectId();
+    if (pid === null) return null;
+    return this.ctx.tree.at(['session', 'cursor', 'comms', pid.toString()]);
+  }
+  private rememberedCursorId(): bigint | undefined {
+    const v = this.cursorNode()?.peek<bigint>();
+    return typeof v === 'bigint' ? v : undefined;
+  }
+  private rememberCardId(id: bigint): void {
+    this.cursorNode()?.set(id);
+  }
+  private rememberCursor(): void {
+    const comm = this.comms[this.selectedIndex];
+    if (comm !== undefined) this.rememberCardId(comm.id);
   }
 
   private projectId(): bigint | null {
@@ -117,7 +202,25 @@ export class CommsList extends Control<CommsListConfig> {
         if (!this.isAlive()) return;
         this.comms = ((out as { rows?: CardWithAttrs[] }).rows ?? []) as CardWithAttrs[];
         this.loaded = true;
+        // Restore the remembered logical cursor (by comm id) on the first load
+        // after (re)mount so returning from a task re-highlights its comm.
+        let restored = false;
+        if (!this.cursorRestored) {
+          this.cursorRestored = true;
+          const want = this.rememberedCursorId();
+          if (want !== undefined) {
+            const i = this.comms.findIndex((c) => c.id === want);
+            if (i >= 0) {
+              this.selectedIndex = i;
+              restored = true;
+            }
+          }
+        }
         this.paint();
+        if (restored) {
+          const row = this.listEl.querySelector?.(`[data-comm-row][data-index="${this.selectedIndex}"]`);
+          (row as HTMLElement | null)?.scrollIntoView?.({ block: 'nearest' });
+        }
       },
       { alive: () => this.isAlive() },
     );
@@ -160,15 +263,21 @@ export class CommsList extends Control<CommsListConfig> {
     this.listEl.replaceChildren();
     this.emptyEl.textContent = this.loaded ? 'No comms in this view.' : 'Loading…';
     this.emptyEl.style.display = this.comms.length === 0 ? '' : 'none';
-    for (const comm of this.comms) this.listEl.append(this.renderRow(comm));
+    if (this.selectedIndex >= this.comms.length) this.selectedIndex = Math.max(0, this.comms.length - 1);
+    this.comms.forEach((comm, i) => this.listEl.append(this.renderRow(comm, i)));
   }
 
-  private renderRow(comm: CardWithAttrs): HTMLElement {
+  private renderRow(comm: CardWithAttrs, index: number): HTMLElement {
     const row = document.createElement('div');
     row.className = 'comms-list__row';
     row.dataset.commRow = comm.id.toString();
+    row.dataset.index = String(index);
     row.setAttribute('role', 'listitem');
     row.tabIndex = 0;
+    if (index === this.selectedIndex) {
+      row.classList.add('comms-list__row--selected');
+      row.setAttribute('aria-selected', 'true');
+    }
 
     const badge = document.createElement('span');
     badge.className = 'comms-list__status';
@@ -198,6 +307,7 @@ export class CommsList extends Control<CommsListConfig> {
     row.append(badge, main);
 
     const open = (): void => {
+      this.rememberCardId(comm.id); // so returning re-highlights this comm
       if (taskId !== undefined) navigate(taskUrl(taskId.toString()));
     };
     this.listen(row, 'click', open);

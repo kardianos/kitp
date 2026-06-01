@@ -57,7 +57,7 @@ import { Control, type BaseControlConfig } from '../core/control.js';
 import type { ActionBinding, QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { AUTH_USER_PATH, peekCurrentUserId, type AuthUser } from '../auth/auth-state.js';
-import { virtualList } from '../core/virtual-list.js';
+import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
 import { DropPlaceholder, computeDropTarget, applySettle, FlipAnimator } from '../ui/drag-placeholder.js';
 import { navigate, taskUrl } from '../shell/router.js';
 import { publishTaskNav } from '../shell/task-nav.js';
@@ -138,6 +138,10 @@ export class Inbox extends Control<InboxConfig> {
    *  freshly-mounted Inbox never flashes empty-then-fill. */
   private tasksLoaded = false;
 
+  /** Set once the remembered cursor has been restored on the first load after
+   *  (re)mount — so a later refetch doesn't yank the cursor back. */
+  private cursorRestored = false;
+
   /**
    * Active group-by axis (the RESOLVED `screen.groupAxis` from the shared
    * ScreenFilterBar's GROUP picker), or null for a flat list. When set, rows are
@@ -170,6 +174,12 @@ export class Inbox extends Control<InboxConfig> {
   /** FLIP slider: records row positions before a reorder and slides them to
    *  their new slots after the in-place re-render. */
   private readonly flip = new FlipAnimator(() => this.listBody, '[data-inbox-row]');
+
+  /** The virtualList handle + the flat item model it last rendered. Held so the
+   *  logical cursor can scroll its (possibly off-screen) row into view: set
+   *  scrollTop, re-window via refresh(), then repaint the cursor. */
+  private vl: VirtualListHandle | null = null;
+  private itemsCache: GroupItem<CardWithAttrs>[] = [];
 
   private get tasksPath(): string[] {
     return (this.config.tasksPath ?? 'inbox.tasks').split('.');
@@ -440,6 +450,31 @@ export class Inbox extends Control<InboxConfig> {
     /* ------------------------------ reactivity ----------------------------- */
     const tasksNode = this.ctx.tree.at(this.tasksPath);
 
+    // Open the selected row with Enter / o when the BODY holds focus. A focused
+    // ROW handles its own Enter (row keydown); this catches the container-focused
+    // case (e.g. right after the search box handed focus down via ArrowDown).
+    this.listen(this.el, 'keydown', (ev) => {
+      const e = ev as KeyboardEvent;
+      if (e.key !== 'Enter' && e.key !== 'o') return;
+      const t = e.target as HTMLElement | null;
+      if (t && typeof t.closest === 'function' && t.closest('[data-inbox-row]')) return;
+      e.preventDefault();
+      this.openSelected();
+    });
+
+    // The search box's ArrowDown bumps `screen.enterBodyNonce` to hand focus to
+    // the body. Take focus + ensure a visible cursor so j/k/↑↓/Enter operate here.
+    this.effect(() => {
+      const n = this.ctx.tree.at(['screen', 'enterBodyNonce']).get<number>() ?? 0;
+      if (n === 0) return;
+      const rows = this.currentRows();
+      if (rows.length === 0) return;
+      if (this.selectedIndex < 0 || this.selectedIndex >= rows.length) this.selectedIndex = 0;
+      this.scrollSelectedIntoView();
+      this.repaintSelection();
+      this.el.focus();
+    }, 'inbox.enterBody');
+
     // Inline self-represented load fault (onError: 'self' on the reads).
     this.effect(() => {
       const f = this.fault.get();
@@ -482,12 +517,14 @@ export class Inbox extends Control<InboxConfig> {
         this.ctx.tree.at(['inbox', 'routing']).get();
         this.ctx.tree.at(['inbox', 'groupVersion']).get();
         const rows = (tasksNode.get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
-        return this.buildItems(rows);
+        this.itemsCache = this.buildItems(rows);
+        return this.itemsCache;
       },
       create: (el) => this.buildRowShell(el),
       update: (el, item) => this.fillItem(el, item),
       name: 'inbox.rows',
     });
+    this.vl = vl;
     this.onDestroy(() => vl.dispose());
 
     // The shared gliding drop placeholder (#5), in the list viewport's content
@@ -618,10 +655,37 @@ export class Inbox extends Control<InboxConfig> {
       // Mark loaded BEFORE writing the leaf so the empty-state effect (which
       // re-runs on the leaf write) reads the resolved flag.
       this.tasksLoaded = true;
+      // Restore the remembered LOGICAL cursor (by card id) on the FIRST load
+      // after (re)mount, so returning from a task re-highlights its row.
+      let restored = false;
+      if (!this.cursorRestored) {
+        this.cursorRestored = true;
+        const want = this.rememberedCursorId();
+        if (want !== undefined) {
+          const display =
+            this.group === null
+              ? sortByPersonal(rows.slice())
+              : sortGrouped(rows.slice(), this.group.attr, this.groupDir);
+          const i = display.findIndex((r) => r.id === want);
+          if (i >= 0) {
+            this.selectedIndex = i;
+            restored = true;
+          }
+        }
+      }
       this.ctx.tree.at(this.tasksPath).set(rows);
       // Keep the keyboard selection in range after a reload.
       if (this.selectedIndex >= rows.length) {
         this.selectedIndex = rows.length === 0 ? 0 : rows.length - 1;
+      }
+      if (restored) {
+        // After the virtualList renders the new rows, bring the restored cursor
+        // into view + paint it (the row may have been off-screen).
+        queueMicrotask(() => {
+          if (!this.isAlive()) return;
+          this.scrollSelectedIntoView();
+          this.repaintSelection();
+        });
       }
     });
 
@@ -1195,6 +1259,7 @@ export class Inbox extends Control<InboxConfig> {
     // newIdx (after the moved row is removed, the remaining target shifts).
     this.reorderTo(row.id, newIdx);
     this.selectedIndex = newIdx;
+    this.scrollSelectedIntoView();
     this.repaintSelection();
   }
 
@@ -1206,6 +1271,7 @@ export class Inbox extends Control<InboxConfig> {
     if (i < 0) return;
     this.selectedIndex = i;
     this.repaintSelection();
+    this.rememberCursor();
   }
 
   /** Open a task, publishing the inbox's row order first so task-detail
@@ -1215,11 +1281,68 @@ export class Inbox extends Control<InboxConfig> {
     navigate(taskUrl(idStr));
   }
 
+  /** Open the currently-selected row (keyboard Enter / o on the focused body). */
+  private openSelected(): void {
+    const row = this.currentRows()[this.selectedIndex];
+    if (row !== undefined) this.openTask(row.id.toString());
+  }
+
+  /* ---- logical-cursor persistence (remember across nav, by card id) ------- */
+
+  /** The session leaf holding this screen's remembered cursor card id, keyed by
+   *  project so different projects don't cross-contaminate. Null when no project
+   *  is in scope yet. */
+  private cursorNode() {
+    const pid = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
+    if (pid === null) return null;
+    return this.ctx.tree.at(['session', 'cursor', 'list', pid.toString()]);
+  }
+  private rememberedCursorId(): bigint | undefined {
+    const v = this.cursorNode()?.peek<bigint>();
+    return typeof v === 'bigint' ? v : undefined;
+  }
+  /** Persist the current cursor's card id so it survives a nav-away + return. */
+  private rememberCursor(): void {
+    const row = this.currentRows()[this.selectedIndex];
+    if (row !== undefined) this.cursorNode()?.set(row.id);
+  }
+
   private moveSelection(delta: number): void {
     const rows = this.currentRows();
     if (rows.length === 0) return;
     this.selectedIndex = move(rows.length, this.selectedIndex, delta);
+    this.scrollSelectedIntoView();
     this.repaintSelection();
+    this.rememberCursor();
+    // Keep the body focused as the cursor moves so Enter / o (the container
+    // keydown) opens the cursor row — even when j/k arrived as page-wide hotkeys
+    // from outside the body. preventScroll: our own scroll math owns the view.
+    this.el.focus({ preventScroll: true });
+  }
+
+  /** Auto-scroll the LOGICAL selected row into view when it sits outside the
+   *  viewport (edge nav), then let the re-window render it. The cursor is the
+   *  logical index, so it survives row recycling — we find the selected row's
+   *  PHYSICAL position in the rendered item model (headers included) and scroll
+   *  only when it's off-screen. */
+  private scrollSelectedIntoView(): void {
+    const body = this.listBody;
+    if (body === null) return;
+    const phys = this.itemsCache.findIndex(
+      (it) => it.kind === 'row' && it.idx === this.selectedIndex,
+    );
+    if (phys < 0) return;
+    const top = phys * INBOX_ROW_HEIGHT;
+    const bottom = top + INBOX_ROW_HEIGHT;
+    const vh = body.clientHeight || 0;
+    const st = body.scrollTop || 0;
+    let next = st;
+    if (top < st) next = top; // above the viewport → align to top
+    else if (bottom > st + vh) next = bottom - vh; // below → align to bottom
+    if (next !== st) {
+      body.scrollTop = next;
+      this.vl?.refresh(); // re-window synchronously at the new scrollTop
+    }
   }
 
   /** Re-apply the selected class to the currently visible pooled rows by their
@@ -1257,12 +1380,12 @@ export class Inbox extends Control<InboxConfig> {
       { binding: 'n', run: () => this.ctx.bus?.emit('quickCreateOpen'), label: 'New task' },
       { binding: 'j', run: () => this.moveSelection(1), label: 'Next task' },
       { binding: 'k', run: () => this.moveSelection(-1), label: 'Previous task' },
-      // Up/Down also navigate rows while the filter-bar search input has focus
-      // (typing in the search shouldn't strand the cursor — Up/Down don't move
-      // the caret in a text input, so this is safe). Left/Right stay default
-      // (they DO move the caret) so typing isn't hijacked.
-      { binding: 'ArrowDown', run: () => this.moveSelection(1), label: 'Next task', fireInInputs: true },
-      { binding: 'ArrowUp', run: () => this.moveSelection(-1), label: 'Previous task', fireInInputs: true },
+      // Up/Down move the cursor too. NOT fireInInputs: they fire when the body
+      // (or anything that isn't a text field) holds focus; the search box's own
+      // ArrowDown hands focus to the body instead (see ScreenFilterBar), so the
+      // arrows never hijack the caret while typing.
+      { binding: 'ArrowDown', run: () => this.moveSelection(1), label: 'Next task' },
+      { binding: 'ArrowUp', run: () => this.moveSelection(-1), label: 'Previous task' },
       { binding: ['Shift+j', 'Shift+ArrowDown'], run: () => this.reorderSelected(1), label: 'Move row down' },
       { binding: ['Shift+k', 'Shift+ArrowUp'], run: () => this.reorderSelected(-1), label: 'Move row up' },
       ...(this.config.hotkeys ?? []),

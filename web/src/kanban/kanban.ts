@@ -205,6 +205,19 @@ export class Kanban extends Control<KanbanConfig> {
    *  creates fresh ones so no effect / scroll listener / ResizeObserver leaks. */
   private columnLists: VirtualListHandle[] = [];
 
+  /** The LOGICAL card cursor — a (column, lane, card-id) coordinate, NOT a
+   *  focused DOM node, so it survives card recycling. j/k move within a column,
+   *  h/l across columns; the highlight + auto-scroll (board horizontally, column
+   *  body vertically) follow it. Null until the user navigates / it's restored. */
+  private cursor: { columnKey: string; laneKey: string | undefined; cardId: bigint } | null = null;
+  /** Set once the remembered cursor has been restored on the first board render. */
+  private cursorRestored = false;
+  /** Per-(lane, column) last-focused card id. h/l returns the cursor to where it
+   *  last sat in each column instead of snapping to the top every time — the
+   *  vertical position is tracked per column, not shared across the board. Keyed
+   *  by {@link columnMemoryKey}; updated whenever the cursor settles (revealCursor). */
+  private readonly columnCursorMemory = new Map<string, bigint>();
+
   /** Live per-column drop placeholders (#1) — created with each column, glide
    *  to the insertion gap during a drag. Disposed with the column lists on a
    *  board rebuild + on destroy so no detached nodes / timers leak. */
@@ -423,6 +436,7 @@ export class Kanban extends Control<KanbanConfig> {
     const board = document.createElement('div');
     board.className = 'kanban__columns scroll-x';
     board.dataset.kanbanBoard = '';
+    board.tabIndex = -1; // programmatically focusable so Enter opens the cursor card
     this.boardEl = board;
 
     this.el.append(fault, board);
@@ -521,7 +535,35 @@ export class Kanban extends Control<KanbanConfig> {
       this.ctx.tree.at(['kanban', 'workflowStatusIds']).get(); // re-key when workflow lands
       const axis = this.activeAxisCards();
       this.renderBoard(board, tasks, axis);
+      // Restore the remembered logical cursor on the first render after (re)mount.
+      this.restoreCursor(tasks);
+      // Keep the cursor's (column, lane) coordinate consistent with the axis
+      // that was just rendered. A GROUP / LANE switch — or the persisted group
+      // axis resolving AFTER a cursor restore — re-keys the columns, which would
+      // otherwise strand the cursor's stored column key against the old axis and
+      // make j/k/h/l silently no-op (the card no longer sits in that bucket).
+      this.syncCursorColumn();
     }, 'kanban.board');
+
+    // Enter / o on the focused board opens the cursor card. A focused CARD
+    // handles its own Enter (card keydown); this is the board-focused case.
+    this.listen(board, 'keydown', (ev) => {
+      const e = ev as KeyboardEvent;
+      if (e.key !== 'Enter' && e.key !== 'o') return;
+      const t = e.target as HTMLElement | null;
+      if (t && typeof t.closest === 'function' && t.closest('[data-kanban-card]')) return;
+      e.preventDefault();
+      this.openCursor();
+    });
+
+    // The search box's ArrowDown hands focus to the board (screen.enterBodyNonce);
+    // place the cursor on the first card so j/k/h/l/Enter operate on the board.
+    this.effect(() => {
+      const n = this.ctx.tree.at(['screen', 'enterBodyNonce']).get<number>() ?? 0;
+      if (n === 0) return;
+      if (this.cursor === null) this.cursorToFirst();
+      else this.revealCursor();
+    }, 'kanban.enterBody');
 
     // Dispose any live column virtualLists when the Kanban itself is torn down.
     this.onDestroy(() => this.disposeColumnLists());
@@ -978,6 +1020,13 @@ export class Kanban extends Control<KanbanConfig> {
   private openCard(el: HTMLElement): void {
     const idStr = el.dataset.cardId;
     if (idStr === undefined || idStr === '') return;
+    // Land the cursor on the clicked card + remember it, so returning re-
+    // highlights it (matches the keyboard cursor).
+    const col = el.closest?.('[data-kanban-column]') as HTMLElement | null | undefined;
+    if (col) {
+      this.cursor = { columnKey: col.dataset?.column ?? '', laneKey: col.dataset?.laneKey ?? undefined, cardId: BigInt(idStr) };
+    }
+    this.rememberCardId(BigInt(idStr));
     const tasks = (this.ctx.tree.at(['kanban', 'tasks']).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
     publishTaskNav(this.ctx.tree, tasks.map((t) => t.id));
     navigate(taskUrl(idStr));
@@ -987,6 +1036,11 @@ export class Kanban extends Control<KanbanConfig> {
    *  data-card-id from the ITEM so the drag payload + drop reads are current. */
   private fillCard(el: HTMLElement, card: CardWithAttrs): void {
     el.dataset.cardId = card.id.toString();
+    // The keyboard-cursor highlight class MUST match `.card--cursor` (styles.css)
+    // and `repaintCursor` — so the ring survives a board rebuild / card recycle
+    // that re-runs fillCard without a following repaintCursor (e.g. an async axis
+    // / workflow-status load re-keying the columns after a cursor restore).
+    el.classList.toggle('card--cursor', this.cursor !== null && card.id === this.cursor.cardId);
     // The card that just moved settles into its new slot; every other fill
     // clears the class so a recycled node never keeps a stale animation. The id
     // persists past the optimistic re-render (cleared on the next dragstart), so
@@ -1173,10 +1227,11 @@ export class Kanban extends Control<KanbanConfig> {
       { binding: 'ArrowLeft', label: 'Previous column', run: () => this.navColumn(-1) },
       { binding: 'j', label: 'Next card', run: () => this.navCard(1) },
       { binding: 'k', label: 'Previous card', run: () => this.navCard(-1) },
-      // ArrowUp/Down also navigate cards while the search input has focus
-      // (Up/Down don't move the text caret, so it's safe to hijack).
-      { binding: 'ArrowDown', label: 'Next card', run: () => this.navCard(1), fireInInputs: true },
-      { binding: 'ArrowUp', label: 'Previous card', run: () => this.navCard(-1), fireInInputs: true },
+      // ArrowUp/Down navigate cards when the board (not a text field) holds
+      // focus. NOT fireInInputs — the search box's own ArrowDown hands focus to
+      // the board instead (see ScreenFilterBar), so arrows never hijack typing.
+      { binding: 'ArrowDown', label: 'Next card', run: () => this.navCard(1) },
+      { binding: 'ArrowUp', label: 'Previous card', run: () => this.navCard(-1) },
       { binding: 'Shift+L', label: 'Move card → next column', run: () => this.moveFocused(1) },
       { binding: 'Shift+H', label: 'Move card → previous column', run: () => this.moveFocused(-1) },
       ...(this.config.hotkeys ?? []),
@@ -1190,79 +1245,231 @@ export class Kanban extends Control<KanbanConfig> {
     if (board === null) return [];
     return Array.from(board.querySelectorAll?.('[data-kanban-column]') ?? []) as HTMLElement[];
   }
-  private visibleCardsIn(col: HTMLElement): HTMLElement[] {
-    return (Array.from(col.querySelectorAll?.('[data-kanban-card]') ?? []) as HTMLElement[]).filter(
-      (c) => c.style?.display !== 'none',
-    );
-  }
-  private focusedCard(): HTMLElement | null {
-    const a = (typeof document !== 'undefined' ? document.activeElement : null) as HTMLElement | null;
-    return a !== null && a.dataset?.kanbanCard !== undefined ? a : null;
-  }
-  private columnOf(card: HTMLElement): HTMLElement | null {
-    return (card.closest?.('[data-kanban-column]') ?? null) as HTMLElement | null;
+
+  /** Tasks currently on the board (logical card source). */
+  private boardTasks(): CardWithAttrs[] {
+    return (this.ctx.tree.at(this.tasksPath).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
   }
 
-  /** j/k — focus the next/prev visible card in the focused card's column (or the
-   *  first card on the board when nothing is focused). */
-  private navCard(dir: 1 | -1): void {
-    const card = this.focusedCard();
-    if (card === null) {
-      for (const col of this.boardColumns()) {
-        const cs = this.visibleCardsIn(col);
-        if (cs.length > 0) {
-          cs[0]?.focus?.();
-          return;
-        }
+  /** Column elements in the given lane (or the un-laned board), in render order.
+   *  Columns are never virtualized, so this DOM order is the logical column
+   *  order; only their CARDS recycle. */
+  private columnsInLane(laneKey: string | undefined): HTMLElement[] {
+    return this.boardColumns().filter((c) => (c.dataset.laneKey ?? undefined) === laneKey);
+  }
+
+  /** Stable key for {@link columnCursorMemory} — a (lane, column) coordinate.
+   *  The Unit-Separator (U+001F) joiner can't appear in either id-or-`__unset__`
+   *  key, so distinct coordinates never collide. */
+  private columnMemoryKey(columnKey: string, laneKey: string | undefined): string {
+    return `${laneKey ?? ''}\u001f${columnKey}`;
+  }
+
+  /** The card the cursor should land on when ENTERING a column via h/l: the last
+   *  card it sat on there (if still present), else the column's first card. Keeps
+   *  the vertical position per column rather than resetting to the top. */
+  private columnEntryCardId(columnKey: string, laneKey: string | undefined, cards: readonly CardWithAttrs[]): bigint {
+    const remembered = this.columnCursorMemory.get(this.columnMemoryKey(columnKey, laneKey));
+    if (remembered !== undefined && cards.some((c) => c.id === remembered)) return remembered;
+    return cards[0]!.id;
+  }
+
+  /** The DOM column element the cursor points into. */
+  private cursorColEl(): HTMLElement | null {
+    if (this.cursor === null) return null;
+    return this.columnsInLane(this.cursor.laneKey).find((c) => c.dataset.column === this.cursor!.columnKey) ?? null;
+  }
+
+  /** Re-derive the cursor's (column, lane) keys from its card's CURRENT axis
+   *  values, so the coordinate tracks the axis the board is rendered under. The
+   *  stored keys go stale when the GROUP / LANE axis changes (or resolves async
+   *  after a restore); left unsynced, {@link bucketColumn} would look the cursor
+   *  card up in a bucket that no longer holds it and j/k/h/l would no-op. A no-op
+   *  itself when the keys already match or the card has left the board. */
+  private syncCursorColumn(): void {
+    if (this.cursor === null) return;
+    const card = this.boardTasks().find((t) => t.id === this.cursor!.cardId);
+    if (card === undefined) return;
+    const laned = this.lane !== null && !this.laneIsColumnAxis(this.lane);
+    const columnKey = this.keyer(this.axis)(card);
+    const laneKey = laned ? this.keyer(this.lane)(card) : undefined;
+    if (columnKey === this.cursor.columnKey && laneKey === this.cursor.laneKey) return;
+    this.cursor = { columnKey, laneKey, cardId: this.cursor.cardId };
+  }
+
+  /** Place the cursor on the first card of the first non-empty column. */
+  private cursorToFirst(): void {
+    for (const col of this.boardColumns()) {
+      const columnKey = col.dataset.column;
+      if (columnKey === undefined) continue;
+      const laneKey = col.dataset.laneKey ?? undefined;
+      const cards = this.bucketColumn(this.boardTasks(), columnKey, laneKey);
+      if (cards.length > 0) {
+        this.cursor = { columnKey, laneKey, cardId: cards[0]!.id };
+        this.revealCursor();
+        return;
       }
+    }
+  }
+
+  /** j/k — move the LOGICAL cursor within its column (by card id, so it survives
+   *  card recycling), auto-scrolling the column body at the edge. */
+  private navCard(dir: 1 | -1): void {
+    if (this.cursor === null) {
+      this.cursorToFirst();
       return;
     }
-    const col = this.columnOf(card);
-    if (col === null) return;
-    const cards = this.visibleCardsIn(col);
-    const j = cards.indexOf(card) + dir;
-    if (j >= 0 && j < cards.length) cards[j]?.focus?.();
+    const cards = this.bucketColumn(this.boardTasks(), this.cursor.columnKey, this.cursor.laneKey);
+    const i = cards.findIndex((c) => c.id === this.cursor!.cardId);
+    const j = i + dir;
+    if (j < 0 || j >= cards.length) return;
+    this.cursor = { ...this.cursor, cardId: cards[j]!.id };
+    this.revealCursor();
   }
 
-  /** h/l — focus the first visible card in the adjacent column. */
+  /** h/l — move the cursor to the first card of the next/prev non-empty column in
+   *  the same lane, auto-scrolling the board horizontally. */
   private navColumn(dir: 1 | -1): void {
-    const cols = this.boardColumns();
-    if (cols.length === 0) return;
-    const card = this.focusedCard();
-    let ci = 0;
-    if (card !== null) {
-      const col = this.columnOf(card);
-      ci = col !== null ? cols.indexOf(col) : 0;
-    } else {
-      ci = dir > 0 ? -1 : cols.length; // step into the first/last column
+    if (this.cursor === null) {
+      this.cursorToFirst();
+      return;
     }
+    const cols = this.columnsInLane(this.cursor.laneKey);
+    const ci = cols.findIndex((c) => c.dataset.column === this.cursor!.columnKey);
+    for (let s = ci + dir; s >= 0 && s < cols.length; s += dir) {
+      const columnKey = cols[s]!.dataset.column;
+      if (columnKey === undefined) continue;
+      const cards = this.bucketColumn(this.boardTasks(), columnKey, this.cursor.laneKey);
+      if (cards.length > 0) {
+        const cardId = this.columnEntryCardId(columnKey, this.cursor.laneKey, cards);
+        this.cursor = { columnKey, laneKey: this.cursor.laneKey, cardId };
+        this.revealCursor();
+        return;
+      }
+    }
+  }
+
+  /** Shift+H/L — move the CURSOR card to the adjacent column (cross-column re-key
+   *  on the active axis); the cursor follows the card to its new column. */
+  private moveFocused(dir: 1 | -1): void {
+    if (this.cursor === null) return;
+    const cols = this.columnsInLane(this.cursor.laneKey);
+    const ci = cols.findIndex((c) => c.dataset.column === this.cursor!.columnKey);
     const next = ci + dir;
     if (next < 0 || next >= cols.length) return;
-    const cs = this.visibleCardsIn(cols[next] as HTMLElement);
-    if (cs.length > 0) cs[0]?.focus?.();
-  }
-
-  /** Shift+H/L — move the focused card to the adjacent column (cross-column
-   *  re-key on the active axis), reusing the optimistic moveTask action. */
-  private moveFocused(dir: 1 | -1): void {
-    const cardEl = this.focusedCard();
-    if (cardEl === null) return;
-    const idStr = cardEl.dataset.cardId;
-    if (idStr === undefined || idStr === '') return;
-    const cols = this.boardColumns();
-    const col = this.columnOf(cardEl);
-    if (col === null) return;
-    const next = cols.indexOf(col) + dir;
-    if (next < 0 || next >= cols.length) return;
-    const key = (cols[next] as HTMLElement).dataset.column;
+    const key = cols[next]!.dataset.column;
     if (key === undefined) return;
-    const cardId = BigInt(idStr);
-    const tasks = (this.ctx.tree.at(this.tasksPath).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
-    const card = tasks.find((t) => t.id === cardId);
+    const cardId = this.cursor.cardId;
+    const card = this.boardTasks().find((t) => t.id === cardId);
     if (card === undefined) return;
     // Re-key the card's column axis — moveTask for a scalar axis, tag.apply /
     // tag.remove for a tag-prefix axis (preserving the card's other tags).
     this.rekeyAxis(card, cardId, this.axis, key);
+    this.cursor = { columnKey: key, laneKey: this.cursor.laneKey, cardId };
+    this.revealCursor();
+  }
+
+  /** Bring the cursor card into view — board scrolls HORIZONTALLY to its column,
+   *  the column body scrolls VERTICALLY to the card (edge-only) — then re-render
+   *  so the cursor highlight lands on the (possibly newly-rendered) card. */
+  private revealCursor(): void {
+    const col = this.cursorColEl();
+    if (col !== null && this.cursor !== null) {
+      col.scrollIntoView?.({ inline: 'nearest', block: 'nearest' }); // horizontal (+ lane)
+      const body = col.querySelector?.('[data-kanban-column-body]') as HTMLElement | null;
+      if (body !== null) {
+        const cards = this.bucketColumn(this.boardTasks(), this.cursor.columnKey, this.cursor.laneKey);
+        const idx = cards.findIndex((c) => c.id === this.cursor!.cardId);
+        if (idx >= 0) {
+          const top = idx * KANBAN_CARD_HEIGHT;
+          const bottom = top + KANBAN_CARD_HEIGHT;
+          const vh = body.clientHeight || 0;
+          const st = body.scrollTop || 0;
+          let nextTop = st;
+          if (top < st) nextTop = top;
+          else if (bottom > st + vh) nextTop = bottom - vh;
+          if (nextTop !== st) body.scrollTop = nextTop;
+        }
+      }
+    }
+    // Re-render every column so a card scrolled into view renders; then repaint
+    // the cursor class directly (the virtualList key-skip would otherwise skip
+    // fillCard for unchanged slots, stranding the old highlight).
+    for (const vl of this.columnLists) vl.refresh();
+    this.repaintCursor();
+    this.rememberCursorCard();
+    this.boardEl?.focus({ preventScroll: true });
+  }
+
+  /** Toggle the cursor class onto the rendered card matching the cursor id (and
+   *  off every other) — independent of the virtualList's content-skip. */
+  private repaintCursor(): void {
+    if (this.boardEl === null) return;
+    const want = this.cursor !== null ? this.cursor.cardId.toString() : null;
+    const cards = this.boardEl.querySelectorAll?.('[data-kanban-card]') ?? [];
+    for (const node of cards as unknown as HTMLElement[]) {
+      node.classList?.toggle('card--cursor', want !== null && node.dataset?.cardId === want);
+    }
+  }
+
+  /** Open the cursor card's task detail (Enter / o on the focused board). */
+  private openCursor(): void {
+    if (this.cursor === null) return;
+    publishTaskNav(this.ctx.tree, this.boardTasks().map((t) => t.id));
+    navigate(taskUrl(this.cursor.cardId.toString()));
+  }
+
+  /* ---- logical-cursor persistence (remember across nav, by card id) ------- */
+
+  private cursorNode() {
+    const pid = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
+    if (pid === null) return null;
+    return this.ctx.tree.at(['session', 'cursor', 'kanban', pid.toString()]);
+  }
+  private rememberedCursorId(): bigint | undefined {
+    const v = this.cursorNode()?.peek<bigint>();
+    return typeof v === 'bigint' ? v : undefined;
+  }
+  private rememberCardId(id: bigint): void {
+    this.cursorNode()?.set(id);
+  }
+  private rememberCursorCard(): void {
+    if (this.cursor === null) return;
+    this.rememberCardId(this.cursor.cardId);
+    // Track the vertical position PER column so h/l returns here, not the top.
+    this.columnCursorMemory.set(
+      this.columnMemoryKey(this.cursor.columnKey, this.cursor.laneKey),
+      this.cursor.cardId,
+    );
+  }
+
+  /** Restore the remembered cursor (by card id) — locate the card in the current
+   *  tasks, derive its column/lane, and reveal it. Called once per (re)mount. */
+  private restoreCursor(tasks: readonly CardWithAttrs[]): void {
+    // Wait for a non-empty render (the first board effect runs against an empty
+    // tasks leaf, before the load lands) so we restore against real data.
+    if (this.cursorRestored || tasks.length === 0) return;
+    this.cursorRestored = true;
+    const want = this.rememberedCursorId();
+    if (want === undefined) return;
+    const card = tasks.find((t) => t.id === want);
+    if (card === undefined) return;
+    const laned = this.lane !== null && !this.laneIsColumnAxis(this.lane);
+    this.cursor = {
+      columnKey: this.keyer(this.axis)(card),
+      laneKey: laned ? this.keyer(this.lane)(card) : undefined,
+      cardId: want,
+    };
+    // Defer the reveal one microtask: on a cold return-mount (e.g. coming back
+    // from a task after jump-nav) the column virtual-lists haven't windowed /
+    // laid out yet, so a synchronous revealCursor scrolls against a column body
+    // with no clientHeight and the restored card never comes into view. Waiting
+    // a microtask lets the initial render settle first — mirrors the inbox/grid
+    // restore deferral.
+    queueMicrotask(() => {
+      if (!this.isAlive()) return;
+      this.revealCursor();
+    });
   }
 
   /**

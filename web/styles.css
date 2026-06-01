@@ -1190,6 +1190,12 @@ select optgroup {
 .card:active {
   cursor: grabbing;
 }
+/* Logical keyboard cursor (j/k/h/l) — a focus-ring-style outline that follows
+   the (column, card) coordinate, distinct from drag/hover states. */
+.card--cursor {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -1px;
+}
 .card--dragging {
   opacity: 0.5;
   box-shadow: var(--shadow-drag);
@@ -1615,6 +1621,12 @@ select optgroup {
 .grid__row--selected {
   background: var(--color-accent-soft);
   box-shadow: inset 3px 0 0 var(--color-accent);
+}
+/* Keyboard cursor (j/k) — a focus-ring-style outline, distinct from the
+   accent-fill of a bulk-selected row (the two can coexist on one row). */
+.grid__row--cursor {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
 }
 
 /* ---- group section header (group_by_attr) — a full-width band the recycling
@@ -8116,6 +8128,10 @@ textarea.task-comms__form-input {
 .comms-list__row:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--color-focus-halo);
+}
+.comms-list__row--selected {
+  background: var(--color-accent-soft);
+  box-shadow: inset 2px 0 0 0 var(--color-accent);
 }
 .comms-list__main {
   display: flex;

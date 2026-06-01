@@ -155,3 +155,41 @@ test('a fireInInputs binding STILL fires inside a textarea (Mod+Enter)', () => {
   assert.deepEqual(fired, ['save'], 'fireInInputs binding fired');
   dispose();
 });
+
+test('screen-subtree hotkeys stay live while focus is on chrome (global-scope fix)', () => {
+  fired = [];
+  // Tree: root → [chrome, screen]. The focused (active) control is the chrome
+  // sidebar; the screen body is its SIBLING — not in the active chain — yet its
+  // hotkeys must still be live because it is mounted (the `screen` tier).
+  const root = { type: 'Root', parent: null, hotkeys: () => [], childControls: () => [] };
+  const chrome = {
+    type: 'Navbar',
+    parent: root,
+    hotkeys: () => [{ binding: 'c', run: () => fired.push('chrome') }],
+    childControls: () => [],
+  };
+  const screen = {
+    type: 'Inbox',
+    parent: root,
+    hotkeys: () => [{ binding: 'j', run: () => fired.push('j') }],
+    childControls: () => [],
+  };
+  root.childControls = () => [chrome, screen];
+
+  const rootSig = M.signal(root, 'root');
+  const activeSig = M.signal(chrome, 'active'); // focus is on the navbar
+  const screenSig = M.signal(screen, 'screen'); // current screen body
+  const hk = new M.HotkeyController({ root: rootSig, active: activeSig, screen: screenSig, target: document });
+  const dispose = hk.start();
+
+  // `j` belongs to the screen body, which is NOT in the focused chain — it fires
+  // anyway (this is the "clicking the navbar drops the screen keys" fix).
+  assert.equal(press(document.body, 'j'), true, "screen's j fired though focus is on chrome");
+  assert.deepEqual(fired, ['j']);
+
+  // The focused chrome control's own key still works.
+  fired = [];
+  assert.equal(press(document.body, 'c'), true);
+  assert.deepEqual(fired, ['chrome']);
+  dispose();
+});

@@ -1042,3 +1042,111 @@ test('Kanban: a LANE axis splits the board into swim lanes', async () => {
   await settle(dispatcher);
   assert.equal(kanban.el.querySelectorAll('[data-kanban-lane]').length, 0, 'no lanes when laneAxis cleared');
 });
+
+test('Kanban: restores the remembered logical cursor (card highlighted) on (re)mount', async () => {
+  const { dispatcher, api } = bootApi(M.mockTransport());
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(M.DEMO_PROJECT_ID);
+  // Pre-seed the remembered cursor as if a prior visit opened card 202 (in M1).
+  tree.at(['session', 'cursor', 'kanban', M.DEMO_PROJECT_ID.toString()]).set(202n);
+  const scope = {
+    get projectId() {
+      return tree.at(['scope', 'projectId']).peek() ?? null;
+    },
+  };
+  const kanban = M.Control.New('Kanban', { type: 'Kanban' }, { api, tree, scope });
+  kanban.mount(new FakeElement('div'));
+  await settle(dispatcher);
+  await Promise.resolve(); // drain the queued revealCursor microtask
+
+  const card = kanban.el
+    .querySelectorAll('[data-kanban-card]')
+    .find((c) => c.dataset.cardId === '202');
+  assert.ok(card, 'card 202 rendered');
+  assert.ok(
+    card.classList.contains('card--cursor'),
+    'the remembered card (logical, not physical) is the cursor on return',
+  );
+});
+
+test('Kanban: the cursor highlight survives a structural board rebuild (axis re-key)', async () => {
+  // A board rebuild (axis / workflow-status lands async in the real app, or a
+  // GROUP change) re-runs fillCard for every card; the cursor ring must come
+  // back on the cursor card, not vanish — regression for the dead-class bug
+  // where fillCard tagged `kanban-card--cursor` (unstyled) instead of
+  // `card--cursor`, so the ring disappeared after any re-key.
+  const { dispatcher, tree, kanban } = bootMultiAxisKanban();
+  await settle(dispatcher);
+
+  // Land the cursor on card 201 (milestone axis, column 32).
+  kanban.navCard(1);
+  await Promise.resolve();
+  const cursorIds = () =>
+    kanban.el
+      .querySelectorAll('[data-kanban-card]')
+      .filter((c) => c.classList.contains('card--cursor'))
+      .map((c) => c.dataset.cardId);
+  assert.deepEqual(cursorIds(), ['201'], 'cursor ring on the first card');
+
+  // Re-key the columns to the status axis — a full structural rebuild.
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
+  await settle(dispatcher);
+
+  assert.deepEqual(cursorIds(), ['201'], 'the cursor ring follows 201 across the rebuild');
+});
+
+test('Kanban: h/l remembers the per-column vertical position (does not snap to top)', async () => {
+  const { dispatcher, tree, kanban } = bootMultiAxisKanban();
+  await settle(dispatcher);
+  // Group by status so two columns each hold multiple cards: To do (50) has
+  // 201 + 202; Doing (51) has 203.
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
+  await settle(dispatcher);
+
+  // Cursor → first card of To do (201), then j down to 202.
+  kanban.navCard(1); // cursorToFirst → 201
+  kanban.navCard(1); // → 202
+  await Promise.resolve();
+  assert.equal(kanban.cursor.cardId, 202n, 'cursor parked on 202 in the To do column');
+
+  // l → Doing column (lands on its first card 203).
+  kanban.navColumn(1);
+  await Promise.resolve();
+  assert.equal(kanban.cursor.cardId, 203n, 'moved into Doing');
+
+  // h → back to To do: returns to 202 (the remembered position), NOT 201 (top).
+  kanban.navColumn(-1);
+  await Promise.resolve();
+  assert.equal(kanban.cursor.cardId, 202n, 'h returned to the remembered card 202, not the top (201)');
+});
+
+test('Kanban: the cursor keeps navigating after the axis changes under it (no stale column)', async () => {
+  // Regression: when the GROUP axis changes AFTER the cursor is placed (in the
+  // real app the persisted group view resolves async, just after a cursor
+  // restore on return from task detail), the cursor's stored column key was left
+  // pointing at the OLD axis's bucket — so j/k/h/l silently no-op'd even though
+  // the card was still highlighted + the board focused. The board render re-syncs
+  // the cursor's (column, lane) to the current axis so nav keeps working.
+  const { dispatcher, tree, kanban } = bootMultiAxisKanban();
+  await settle(dispatcher);
+
+  // Place the cursor under the DEFAULT milestone axis: card 201 sits in milestone
+  // column 32.
+  kanban.navCard(1);
+  await Promise.resolve();
+  assert.equal(kanban.cursor.cardId, 201n);
+  assert.equal(kanban.cursor.columnKey, '32', 'cursor column keyed by milestone (axis at placement)');
+
+  // Now the GROUP axis switches to status — 201's status is 50, so its column
+  // key must follow to '50', not stay stranded on the milestone id '32'.
+  tree.at(['screen', 'groupAxis']).set({ attr: 'status', lookup: 'statuses' });
+  await settle(dispatcher);
+  await Promise.resolve();
+  assert.equal(kanban.cursor.columnKey, '50', 'cursor column re-synced to the status axis');
+
+  // j must still move (201 → 202, both in status 50) rather than no-op against a
+  // dead bucket.
+  kanban.navCard(1);
+  await Promise.resolve();
+  assert.equal(kanban.cursor.cardId, 202n, 'j navigates after the axis change (cursor not stranded)');
+});

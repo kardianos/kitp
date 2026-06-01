@@ -440,6 +440,15 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       const sp = this.config.screenStatePath;
       if (sp !== undefined) this.searchSessionNode(sp).set(search.value);
     });
+    // ArrowDown from the search box hands keyboard focus to the screen body so
+    // the user can keep arrowing / j-k into the rows. Bump a tree nonce the body
+    // watches (decoupled — the bar doesn't reach into the body's DOM).
+    this.listen(search, 'keydown', (e) => {
+      if ((e as KeyboardEvent).key !== 'ArrowDown') return;
+      e.preventDefault();
+      const node = this.ctx.tree.at(['screen', 'enterBodyNonce']);
+      node.set((node.peek<number>() ?? 0) + 1);
+    });
     this.listen(advanced, 'click', () => {
       const open = panel.style.display === 'none';
       panel.style.display = open ? '' : 'none';
