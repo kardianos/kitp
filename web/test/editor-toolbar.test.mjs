@@ -46,8 +46,8 @@ function stubEngine() {
 const ALL_ACTIONS = [
   'bold', 'italic', 'strike', 'code',
   'h1', 'h2', 'h3',
-  'bullet', 'ordered', 'quote', 'codeblock',
-  'link', 'undo', 'redo',
+  'bullet', 'ordered', 'quote', 'codeblock', 'hr',
+  'link', 'undo', 'redo', 'raw',
 ];
 
 test('renders a button per action and a click runs that command', () => {

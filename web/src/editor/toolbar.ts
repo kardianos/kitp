@@ -36,12 +36,16 @@ const GROUPS: ToolbarButton[][] = [
     { action: 'ordered', label: '1.', title: 'Numbered list' },
     { action: 'quote', label: '❝', title: 'Blockquote' },
     { action: 'codeblock', label: '{ }', title: 'Code block' },
+    { action: 'hr', label: '―', title: 'Horizontal rule' },
   ],
   [{ action: 'link', label: '🔗', title: 'Link' }],
   [
     { action: 'undo', label: '↶', title: 'Undo (Ctrl/Cmd+Z)' },
     { action: 'redo', label: '↷', title: 'Redo' },
   ],
+  // Mode toggle: WYSIWYG <-> raw-Markdown source. Pressed state reflects the
+  // current mode; the engine disables the other buttons while raw is on.
+  [{ action: 'raw', label: 'M↓', title: 'Edit raw Markdown source' }],
 ];
 
 export interface EditorToolbar {

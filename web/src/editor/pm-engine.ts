@@ -45,6 +45,7 @@ import {
 import type { EditorAction, EngineFactory, EngineHooks, EngineInit } from './engine.js';
 import { editorSchema, nodes, marks } from './schema.js';
 import { parseMarkdown, serializeMarkdown } from './markdown.js';
+import { fitTextarea } from '../util/autosize.js';
 
 /* ----------------------------- plugins --------------------------- */
 
@@ -249,11 +250,25 @@ function commandFor(action: EditorAction, state: any): Command | null {
         : wrapInList(nodes.ordered_list);
     case 'quote':
       return ancestorActive(state, nodes.blockquote) ? null : wrapIn(nodes.blockquote);
+    case 'hr': return insertHorizontalRule;
     case 'undo': return undo;
     case 'redo': return redo;
-    case 'link': return null;
+    // `link` prompts for a URL (execLink); `raw` swaps the editing surface
+    // (handled in exec). Neither maps to a plain document command.
+    case 'link':
+    case 'raw': return null;
   }
 }
+
+/** Replace the selection with a horizontal-rule node. Round-trips to `---`
+ *  through the default markdown serializer/parser. */
+const insertHorizontalRule: Command = (state: any, dispatch?: (tr: any) => void): boolean => {
+  if (!nodes.horizontal_rule.create) return false;
+  if (dispatch) {
+    dispatch(state.tr.replaceSelectionWith(nodes.horizontal_rule.create()).scrollIntoView());
+  }
+  return true;
+};
 
 function actionActive(action: EditorAction, state: any): boolean {
   switch (action) {
@@ -269,6 +284,10 @@ function actionActive(action: EditorAction, state: any): boolean {
     case 'bullet': return ancestorActive(state, nodes.bullet_list);
     case 'ordered': return ancestorActive(state, nodes.ordered_list);
     case 'quote': return ancestorActive(state, nodes.blockquote);
+    // `hr` is a one-shot insert (never "pressed"); `raw` mode is tracked by the
+    // engine, not the document, so its active state is resolved in the wrapper.
+    case 'hr':
+    case 'raw':
     case 'undo':
     case 'redo': return false;
   }
@@ -336,21 +355,110 @@ export const createProseMirrorEngine: EngineFactory = (host, init, hooks) => {
   const onBlur = (): void => hooks.onBlur?.();
   view.dom.addEventListener('blur', onBlur);
 
+  /* ----------------------------- raw mode -------------------------- */
+  // When raw mode is on, the WYSIWYG view's DOM is hidden and a <textarea> shows
+  // the document's Markdown source for direct editing. The two surfaces never
+  // co-edit: entering raw serializes the live doc into the textarea; leaving raw
+  // re-parses the (possibly edited) textarea back into the doc. So getMarkdown /
+  // setMarkdown / focus / isFocused stay correct in either mode and no edit is
+  // lost across a toggle — the host's getValue()/setValue() are mode-agnostic.
+  let rawArea: HTMLTextAreaElement | null = null;
+  let rawCleanup: (() => void) | null = null;
+  const isRaw = (): boolean => rawArea !== null;
+
+  function enterRaw(): void {
+    if (rawArea !== null) return;
+    const ta = document.createElement('textarea');
+    // Mirror the textarea fallback engine so per-site CSS (border/padding/size)
+    // carries over from the contenteditable to the raw surface unchanged.
+    ta.className = init.editableClassName ?? 'rich-editor__textarea';
+    ta.value = serializeMarkdown(view.state.doc);
+    ta.rows = init.minRows ?? 3;
+    if (init.placeholder !== undefined) ta.placeholder = init.placeholder;
+    if (init.ariaLabel !== undefined) ta.setAttribute('aria-label', init.ariaLabel);
+    ta.disabled = disabled;
+    for (const [k, v] of Object.entries(init.editableAttrs ?? {})) ta.setAttribute(k, v);
+    const onRawInput = (): void => {
+      fitTextarea(ta);
+      hooks.onInput(ta.value);
+    };
+    const onRawKeydown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        hooks.onCancel();
+      } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        hooks.onCommit(ta.value);
+      }
+    };
+    const onRawBlur = (): void => hooks.onBlur?.();
+    ta.addEventListener('input', onRawInput);
+    ta.addEventListener('keydown', onRawKeydown as EventListener);
+    ta.addEventListener('blur', onRawBlur);
+    rawCleanup = (): void => {
+      ta.removeEventListener('input', onRawInput);
+      ta.removeEventListener('keydown', onRawKeydown as EventListener);
+      ta.removeEventListener('blur', onRawBlur);
+    };
+    // Hide the WYSIWYG surface (kept mounted so the view stays live) and show
+    // the textarea in its place at the bottom of the edit area.
+    view.dom.style.display = 'none';
+    host.append(ta);
+    rawArea = ta;
+    queueMicrotask(() => fitTextarea(ta));
+  }
+
+  function exitRaw(): void {
+    if (rawArea === null) return;
+    const md = rawArea.value;
+    rawCleanup?.();
+    rawCleanup = null;
+    rawArea.remove();
+    rawArea = null;
+    view.dom.style.display = '';
+    // Re-parse the edited source back into the document.
+    view.updateState(buildState(md, hooks, init));
+    // The doc may have changed; let the host re-read it.
+    hooks.onInput(serializeMarkdown(view.state.doc));
+  }
+
   return {
-    getMarkdown: () => serializeMarkdown(view.state.doc),
-    setMarkdown: (md) => view.updateState(buildState(md, hooks, init)),
+    getMarkdown: () => (rawArea !== null ? rawArea.value : serializeMarkdown(view.state.doc)),
+    setMarkdown: (md) => {
+      if (rawArea !== null) {
+        rawArea.value = md;
+        fitTextarea(rawArea);
+      } else {
+        view.updateState(buildState(md, hooks, init));
+      }
+    },
     setDisabled: (d) => {
       disabled = d;
       view.setProps({ editable: () => !disabled });
+      if (rawArea !== null) rawArea.disabled = d;
     },
-    focus: () => view.focus(),
-    isFocused: () => view.hasFocus(),
+    focus: () => (rawArea !== null ? rawArea.focus() : view.focus()),
+    isFocused: () =>
+      rawArea !== null ? document.activeElement === rawArea : view.hasFocus(),
     destroy: () => {
+      rawCleanup?.();
+      rawArea?.remove();
       view.dom.removeEventListener('blur', onBlur);
       view.destroy();
     },
     supportsCommands: () => true,
     exec: (action) => {
+      if (action === 'raw') {
+        if (isRaw()) exitRaw();
+        else enterRaw();
+        hooks.onSelectionChange?.();
+        // Move focus to the now-active surface.
+        if (rawArea !== null) rawArea.focus();
+        else view.focus();
+        return;
+      }
+      // Formatting commands are no-ops while editing raw source.
+      if (isRaw()) return;
       if (action === 'link') {
         execLink(view);
         return;
@@ -359,8 +467,15 @@ export const createProseMirrorEngine: EngineFactory = (host, init, hooks) => {
       if (cmd) cmd(view.state, view.dispatch);
       view.focus();
     },
-    isActive: (action) => actionActive(action, view.state),
+    isActive: (action) => {
+      if (action === 'raw') return isRaw();
+      return actionActive(action, view.state);
+    },
     can: (action) => {
+      // The raw toggle itself is always available; everything else is disabled
+      // while raw source is showing (there's no document selection to act on).
+      if (action === 'raw') return true;
+      if (isRaw()) return false;
       const state: any = view.state;
       if (action === 'link') {
         return !state.selection.empty || markActive(state, marks.link);

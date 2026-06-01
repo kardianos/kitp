@@ -62,6 +62,7 @@ const IDEMPOTENT_CASES = [
   ['ordered list', '1. first\n\n2. second'],
   ['blockquote', '> quoted line'],
   ['code block', '```\nconst x = 1;\n```'],
+  ['horizontal rule', 'above\n\n---\n\nbelow'],
   ['table', '| H1 | H2 |\n| --- | --- |\n| a | b |\n| c | d |'],
   ['table with alignment', '| L | C | R |\n| :--- | :---: | ---: |\n| a | b | c |'],
   ['table with inline marks', '| name | note |\n| --- | --- |\n| **bob** | a ~~old~~ value |'],
@@ -75,6 +76,16 @@ for (const [name, md] of IDEMPOTENT_CASES) {
     assert.equal(twice, once, `expected a fixed point.\n--- once ---\n${once}\n--- twice ---\n${twice}`);
   });
 }
+
+test('a horizontal rule parses to a horizontal_rule node and serializes to ---', () => {
+  const doc = parseMarkdown('above\n\n---\n\nbelow');
+  let sawHr = false;
+  doc.descendants((node) => {
+    if (node.type.name === 'horizontal_rule') sawHr = true;
+  });
+  assert.ok(sawHr, 'expected a horizontal_rule node in the parsed doc');
+  assert.match(serializeMarkdown(doc), /\n---\n/, 'expected --- in the serialized markdown');
+});
 
 /* -------------------------------------------------------------------------- */
 /* Tables — the custom glue. Structure + alignment must survive.               */

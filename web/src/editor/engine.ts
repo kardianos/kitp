@@ -53,9 +53,16 @@ export type EditorAction =
   | 'ordered'
   | 'quote'
   | 'codeblock'
+  | 'hr'
   | 'link'
   | 'undo'
-  | 'redo';
+  | 'redo'
+  // Toggles the editor between WYSIWYG and a raw-Markdown <textarea>. Unlike the
+  // others this isn't a document edit — the engine swaps its own editing surface
+  // (see pm-engine.ts). `isActive('raw')` reports the current mode; `can(...)` of
+  // every formatting action is false while raw is on (only undo/redo/raw stay
+  // live). The textarea fallback engine has no rich mode, so it's inert there.
+  | 'raw';
 
 /** The things an engine reports outward. The owning RichEditor forwards these
  *  to its caller's optional callbacks. */
