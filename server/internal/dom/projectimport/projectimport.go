@@ -310,7 +310,7 @@ const (
 // the function reads from `_parsed_*` keys that don't appear on
 // UploadInput, so wrapping each input in a generic map is the
 // cleanest way to fit through the `[]any` channel.
-func preRunUpload(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+func preRunUpload(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 	out := make([]any, len(ins))
 	for i, raw := range ins {
 		in := raw.(UploadInput)
@@ -348,7 +348,7 @@ func preRunUpload(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 // preRunPreview reads the CSV bytes + parses every row (no preview
 // truncation), then augments the input. The PL/pgSQL function walks
 // `_parsed_header` + `_parsed_rows` directly.
-func preRunPreview(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+func preRunPreview(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 	out := make([]any, len(ins))
 	for i, raw := range ins {
 		in := raw.(PreviewInput)
@@ -385,7 +385,7 @@ func preRunPreview(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 }
 
 // preRunCommit mirrors preRunPreview but for CommitInput.
-func preRunCommit(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+func preRunCommit(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 	out := make([]any, len(ins))
 	for i, raw := range ins {
 		in := raw.(CommitInput)
@@ -422,7 +422,7 @@ func preRunCommit(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 // `job_not_found` *reg.HandlerError when the row is missing — the
 // SQL function would surface the same code on its own loop, but the
 // PreRun hook needs to short-circuit the file read.
-func lookupJobFileID(ctx context.Context, tx pgx.Tx, jobID int64) (int64, error) {
+func lookupJobFileID(ctx context.Context, tx store.Querier, jobID int64) (int64, error) {
 	var fileID int64
 	err := tx.QueryRow(ctx, `SELECT file_id FROM import_job WHERE id = $1`, jobID).Scan(&fileID)
 	if err != nil {
@@ -439,7 +439,7 @@ func lookupJobFileID(ctx context.Context, tx pgx.Tx, jobID int64) (int64, error)
 // preserves the value when we hand it through the map shape. The
 // dispatcher's input encoding goes through json.Marshal on the slice,
 // which writes maps verbatim — without the explicit string cast the
-// SQL function's NULLIF(...,'')::bigint chain would fight a JSON number.
+// SQL function's NULLIF(...,”)::bigint chain would fight a JSON number.
 func formatInt64(v int64) string {
 	if v == 0 {
 		return "0"

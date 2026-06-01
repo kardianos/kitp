@@ -7,8 +7,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/dom/echo"
 	"github.com/kitp/kitp/server/internal/reg"
@@ -55,7 +53,7 @@ func registerCoalescingHandlers(t *testing.T, log *runCallLog) {
 		InputType:    reflect.TypeFor[echoCountingInput](),
 		OutputType:   reflect.TypeFor[echoCountingOutput](),
 		AllowedRoles: []string{reg.RolePublic},
-		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		Run: func(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 			log.Note(len(ins))
 			outs := make([]any, len(ins))
 			for i, raw := range ins {
@@ -70,7 +68,7 @@ func registerCoalescingHandlers(t *testing.T, log *runCallLog) {
 		InputType:    reflect.TypeFor[otherInput](),
 		OutputType:   reflect.TypeFor[otherOutput](),
 		AllowedRoles: []string{reg.RolePublic},
-		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		Run: func(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 			log.Note(-len(ins)) // negative so we can tell which handler ran
 			outs := make([]any, len(ins))
 			for i, raw := range ins {

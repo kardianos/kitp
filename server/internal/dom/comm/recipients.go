@@ -102,7 +102,7 @@ func scopeCardFromCommID(_ context.Context, _ reg.ValidationPool, raw any) (int6
 // reads still see "no recipients").
 func writeCommRecipients(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx store.Querier,
 	snap *schema.Snapshot,
 	commID int64,
 	ids []int64,
@@ -129,7 +129,7 @@ func writeCommRecipients(
 // participant list without losing prior participants.
 func mergeCommRecipients(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx store.Querier,
 	snap *schema.Snapshot,
 	commID int64,
 	add []int64,
@@ -164,4 +164,3 @@ func mergeCommRecipients(
 	}
 	return added, nil
 }
-

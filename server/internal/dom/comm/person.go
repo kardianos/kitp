@@ -61,7 +61,7 @@ type PersonUpsertByEmailOutput struct {
 // in one place.
 func upsertPersonByEmail(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx store.Querier,
 	snap *schema.Snapshot,
 	email, displayName, kindIfNew string,
 	actorID int64,

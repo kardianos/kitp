@@ -501,8 +501,9 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 		return out
 	}
 
-	// One transaction per HTTP request (N-SRV-1).
-	tx, err := s.Pool.BeginTx(ctx)
+	// One transaction per HTTP request (N-SRV-1). store.Tx: handlers receive
+	// it as a store.Querier, so a hook can't commit/roll back the request tx.
+	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		// DB infra failure — redact the driver error (A5).
 		s.abortWithError(ctx, out.Subresponses, 0, "tx_begin", err)

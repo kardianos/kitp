@@ -483,7 +483,7 @@ func resolveAttr(snap *schema.Snapshot, name string) (int64, error) {
 
 // writeCardCreateActivity inserts a card_create activity row. Mirrors
 // the in-tx helper in dom/projectstamp.
-func writeCardCreateActivity(ctx context.Context, tx pgx.Tx, cardID, actorID int64) error {
+func writeCardCreateActivity(ctx context.Context, tx store.Querier, cardID, actorID int64) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO activity (card_id, kind, actor_id) VALUES ($1, 'card_create', $2)
 	`, cardID, actorID)
@@ -496,7 +496,7 @@ func writeCardCreateActivity(ctx context.Context, tx pgx.Tx, cardID, actorID int
 // package doesn't depend on projectstamp.
 func writeAttributeValue(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx store.Querier,
 	cardID, attributeDefID int64,
 	value json.RawMessage,
 	actorID int64,
@@ -523,7 +523,7 @@ func writeAttributeValue(
 
 // readAttributeValueRaw fetches the current jsonb value of (cardID,
 // attrName) or returns ("null", false) when no row exists.
-func readAttributeValueRaw(ctx context.Context, tx pgx.Tx, cardID int64, attrName string) (json.RawMessage, bool, error) {
+func readAttributeValueRaw(ctx context.Context, tx store.Querier, cardID int64, attrName string) (json.RawMessage, bool, error) {
 	var raw []byte
 	err := tx.QueryRow(ctx, `
 		SELECT av.value
@@ -561,7 +561,7 @@ func readAttributeValueRaw(ctx context.Context, tx pgx.Tx, cardID int64, attrNam
 // commFlowDefaultStatus reads the default_create_status_id of the comm
 // flow (the flow on attribute_def comm_status) scoped to projectID.
 // Returns 0 if no flow / default is set.
-func commFlowDefaultStatus(ctx context.Context, tx pgx.Tx, projectID, commStatusAttrID int64) (int64, error) {
+func commFlowDefaultStatus(ctx context.Context, tx store.Querier, projectID, commStatusAttrID int64) (int64, error) {
 	var defaultID int64
 	err := tx.QueryRow(ctx, `
 		SELECT COALESCE(default_create_status_id, 0)
@@ -580,7 +580,7 @@ func commFlowDefaultStatus(ctx context.Context, tx pgx.Tx, projectID, commStatus
 
 // uniqueThreadID generates a thread_id and confirms no comm card
 // already carries it. Retries up to 5 times before giving up.
-func uniqueThreadID(ctx context.Context, tx pgx.Tx) (string, error) {
+func uniqueThreadID(ctx context.Context, tx store.Querier) (string, error) {
 	for attempt := 0; attempt < 5; attempt++ {
 		candidate, err := generateThreadID()
 		if err != nil {
@@ -606,7 +606,7 @@ func uniqueThreadID(ctx context.Context, tx pgx.Tx) (string, error) {
 // appendCardRefList reads the current value of a card_ref[] attribute
 // on cardID, appends appendID to it, and writes it back via the same
 // activity + attribute_value path.
-func appendCardRefList(ctx context.Context, tx pgx.Tx, cardID int64, attrName string, appendID int64, snap *schema.Snapshot, actorID int64) error {
+func appendCardRefList(ctx context.Context, tx store.Querier, cardID int64, attrName string, appendID int64, snap *schema.Snapshot, actorID int64) error {
 	ad, ok := snap.AttrByName[attrName]
 	if !ok {
 		return fmt.Errorf("comm: append: attribute_def %q missing", attrName)

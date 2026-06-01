@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // Handler is the canonical descriptor for a single batch action.
@@ -128,7 +129,7 @@ type Handler struct {
 	//
 	// Only invoked when SQLFunc is set AND the function call
 	// succeeded. Ignored for Run-style handlers.
-	PostRun func(ctx context.Context, tx pgx.Tx, ins []any, outs []any) error
+	PostRun func(ctx context.Context, tx store.Querier, ins []any, outs []any) error
 	// PreRun runs BEFORE the SQL function is invoked, inside the
 	// same request tx. Used for Go-side input normalisation that
 	// genuinely needs DB access (e.g. project.import reading CSV
@@ -145,8 +146,8 @@ type Handler struct {
 	//
 	// Only invoked when SQLFunc is set. Ignored for Run-style
 	// handlers.
-	PreRun func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error)
-	Run    func(ctx context.Context, tx pgx.Tx, ins []any) (outs []any, err error)
+	PreRun func(ctx context.Context, tx store.Querier, ins []any) ([]any, error)
+	Run    func(ctx context.Context, tx store.Querier, ins []any) (outs []any, err error)
 }
 
 // Sentinel role names recognised by the dispatcher's gate. They are not

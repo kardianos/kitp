@@ -19,9 +19,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/kitp/kitp/server/internal/reg"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 //go:embed content/*.md
@@ -102,7 +101,7 @@ func Register() {
 	})
 }
 
-func runGetTopic(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+func runGetTopic(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 	outs := make([]any, len(ins))
 	for i, raw := range ins {
 		in := raw.(GetTopicInput)
@@ -115,7 +114,7 @@ func runGetTopic(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
 	return outs, nil
 }
 
-func runGetScreen(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+func runGetScreen(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 	outs := make([]any, len(ins))
 	for i, raw := range ins {
 		in := raw.(GetScreenInput)
@@ -158,7 +157,7 @@ func firstH1(body, fallback string) string {
 // + filter prose. Missing attributes degrade gracefully: an unknown
 // layout drops the primer; an absent / unparseable predicate falls
 // through to a generic "every task in this project" line.
-func buildScreenHelp(ctx context.Context, tx pgx.Tx, screenID int64) (string, string, error) {
+func buildScreenHelp(ctx context.Context, tx store.Querier, screenID int64) (string, string, error) {
 	attrs, err := loadCardAttrs(ctx, tx, screenID)
 	if err != nil {
 		return "", "", err
@@ -198,7 +197,7 @@ func buildScreenHelp(ctx context.Context, tx pgx.Tx, screenID int64) (string, st
 // buildFilterProse renders the per-screen sentence describing what the
 // default filter selects. When the screen has no default filter we
 // return the no-filter line.
-func buildFilterProse(ctx context.Context, tx pgx.Tx, filterID int64) (string, error) {
+func buildFilterProse(ctx context.Context, tx store.Querier, filterID int64) (string, error) {
 	if filterID == 0 {
 		return "This view shows every task in the project, with no extra filter applied.", nil
 	}
@@ -221,7 +220,7 @@ func buildFilterProse(ctx context.Context, tx pgx.Tx, filterID int64) (string, e
 // loadCardAttrs returns the attribute_value map for a single card id.
 // Returns an empty map (not an error) when the card has no attributes;
 // returns an error only on query failure.
-func loadCardAttrs(ctx context.Context, tx pgx.Tx, cardID int64) (map[string]json.RawMessage, error) {
+func loadCardAttrs(ctx context.Context, tx store.Querier, cardID int64) (map[string]json.RawMessage, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT ad.name, av.value
 		FROM attribute_value av

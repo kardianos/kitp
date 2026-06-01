@@ -25,8 +25,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/mcp"
 	"github.com/kitp/kitp/server/internal/reg"
@@ -109,8 +107,8 @@ func Register(p *store.Pool) {
 // Role-aware filtering loads the caller's role set once per Run via
 // auth.LoadUserRoles and reuses it across every input slot in the
 // dispatcher's coalesced batch.
-func runSearch(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
-	return func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+func runSearch(p *store.Pool) func(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
+	return func(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 		all := reg.All()
 
 		// Lazy-load the role set: Tests + IncludeUnavailable=true skip

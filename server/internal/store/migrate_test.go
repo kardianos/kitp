@@ -40,7 +40,7 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// introduced for named filters = 15.
 		{`SELECT count(*) FROM card_type`, 15},
 		{`SELECT count(*) FROM attribute_def`, 62},
-		{`SELECT count(*) FROM edge`, 92},
+		{`SELECT count(*) FROM edge`, 93},
 		{`SELECT count(*) FROM process`, 6},
 		{`SELECT count(*) FROM process_step`, 7},
 		// Template's status flow + 12 transitions (Gate 11), plus the
@@ -180,7 +180,7 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 15},
 		{`SELECT count(*) FROM attribute_def`, 62},
-		{`SELECT count(*) FROM edge`, 92},
+		{`SELECT count(*) FROM edge`, 93},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.

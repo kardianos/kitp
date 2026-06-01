@@ -4,13 +4,13 @@
 // of three values:
 //
 //   - "enabled"         — normal operation (the default; missing/empty
-//                          attribute reads as enabled so legacy channels
-//                          keep working without a migration).
+//     attribute reads as enabled so legacy channels
+//     keep working without a migration).
 //   - "disabled-admin"  — an admin has explicitly paused the channel.
 //   - "disabled-fault"  — the channel's own runtime tripped a fault
-//                          condition (e.g. IMAP auth failure or
-//                          sustained backoff). The admin re-enables
-//                          after acknowledging the underlying issue.
+//     condition (e.g. IMAP auth failure or
+//     sustained backoff). The admin re-enables
+//     after acknowledging the underlying issue.
 //
 // The status is generic across every channel type — email today,
 // internal/agent comms tomorrow. Each runtime's poll/send loop calls
@@ -36,9 +36,9 @@ import (
 // Channel status values. Keep these strings stable — they appear in
 // seed.hcsv defaults, the admin client, and any saved filters.
 const (
-	ChannelStatusEnabled        = "enabled"
-	ChannelStatusDisabledAdmin  = "disabled-admin"
-	ChannelStatusDisabledFault  = "disabled-fault"
+	ChannelStatusEnabled       = "enabled"
+	ChannelStatusDisabledAdmin = "disabled-admin"
+	ChannelStatusDisabledFault = "disabled-fault"
 )
 
 // ValidChannelStatus reports whether s is one of the three accepted
@@ -170,7 +170,7 @@ func updateChannelStatus(ctx context.Context, pool *store.Pool, channelID int64,
 	return nil
 }
 
-func lookupAttrDefID(ctx context.Context, tx pgx.Tx, name string) (int64, error) {
+func lookupAttrDefID(ctx context.Context, tx store.Querier, name string) (int64, error) {
 	var id int64
 	if err := tx.QueryRow(ctx,
 		`SELECT id FROM attribute_def WHERE name = $1`, name,

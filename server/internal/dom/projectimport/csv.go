@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // readFileBytes assembles every chunk for fileID into one byte slice.
@@ -20,7 +20,7 @@ import (
 //
 // The query orders by file_chunk.seq so the reassembled bytes match
 // what file.create stored.
-func readFileBytes(ctx context.Context, tx pgx.Tx, fileID int64) ([]byte, error) {
+func readFileBytes(ctx context.Context, tx store.Querier, fileID int64) ([]byte, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT b.data
 		FROM file_chunk fc

@@ -26,8 +26,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/activity"
@@ -63,7 +61,7 @@ func registerGateProbe(endpoint, action string, allowed []string) {
 		// exercises ONLY the role-name gate, not the per-row scope
 		// check. Opt out so the register-time guard doesn't fire.
 		GlobalScope: true,
-		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		Run: func(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 			outs := make([]any, len(ins))
 			for i, raw := range ins {
 				outs[i] = gateOutput{N: raw.(gateInput).N + 1}
@@ -143,7 +141,7 @@ func TestRegisterPanicsOnEmptyAllowedRoles(t *testing.T) {
 		Action:     "no_roles",
 		InputType:  reflect.TypeFor[gateInput](),
 		OutputType: reflect.TypeFor[gateOutput](),
-		Run:        func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) { return ins, nil },
+		Run:        func(ctx context.Context, tx store.Querier, ins []any) ([]any, error) { return ins, nil },
 	})
 }
 

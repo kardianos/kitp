@@ -13,8 +13,6 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/proc"
 	"github.com/kitp/kitp/server/internal/reg"
@@ -45,7 +43,7 @@ func installFixtureRegistry(t *testing.T) reg.Handler {
 			AllowedRoles: allowed,
 			// Fixture handler — no row-level authz exercised here.
 			GlobalScope: true,
-			Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+			Run: func(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 				return ins, nil
 			},
 		})
@@ -251,7 +249,7 @@ func TestSearchFiltersByCallerRoles(t *testing.T) {
 		InputType:    reflect.TypeFor[fakeIn](),
 		OutputType:   reflect.TypeFor[fakeOut](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
-		Run:          func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) { return ins, nil },
+		Run:          func(ctx context.Context, tx store.Querier, ins []any) ([]any, error) { return ins, nil },
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "probe",
@@ -260,7 +258,7 @@ func TestSearchFiltersByCallerRoles(t *testing.T) {
 		InputType:    reflect.TypeFor[fakeIn](),
 		OutputType:   reflect.TypeFor[fakeOut](),
 		AllowedRoles: []string{"admin"},
-		Run:          func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) { return ins, nil },
+		Run:          func(ctx context.Context, tx store.Querier, ins []any) ([]any, error) { return ins, nil },
 	})
 	proc.Register(sp)
 

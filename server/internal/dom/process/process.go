@@ -28,7 +28,7 @@ type Process struct {
 }
 
 // Lookup finds a process by name. Returns (proc, true) if found, (nil, false) otherwise.
-func Lookup(ctx context.Context, tx pgx.Tx, name string) (*Process, error) {
+func Lookup(ctx context.Context, tx store.Querier, name string) (*Process, error) {
 	var p Process
 	row := tx.QueryRow(ctx, `SELECT id, name FROM process WHERE name = $1`, name)
 	if err := row.Scan(&p.ID, &p.Name); err != nil {

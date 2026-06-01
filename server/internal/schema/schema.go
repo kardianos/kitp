@@ -56,8 +56,17 @@ type Snapshot struct {
 	AllowedAttrs map[int64]map[int64]Edge
 }
 
+// Queryer is the minimal read surface Load needs. pgx.Tx, *pgxpool.Pool and
+// store.Tx all satisfy it structurally, so Load works from a raw tx, the pool,
+// or a composable transaction handle without this package importing any of
+// them.
+type Queryer interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // Load reads card_type, attribute_def, and edge into a Snapshot using tx.
-func Load(ctx context.Context, tx pgx.Tx) (*Snapshot, error) {
+func Load(ctx context.Context, tx Queryer) (*Snapshot, error) {
 	s := &Snapshot{
 		CardTypeByName:    map[string]CardType{},
 		CardTypeByID:      map[int64]CardType{},

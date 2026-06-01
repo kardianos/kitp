@@ -568,7 +568,10 @@ func (p *IMAPPoller) processOne(ctx context.Context, projectID, intakeStatusID i
 	threadID, source := extractThreadID(m)
 
 	actorID := auth.ActorOrSystem(ctx)
-	tx, err := p.pool.BeginTx(ctx)
+	// Root transaction for this message. Everything below runs on tx (a
+	// store.Querier); only this frame commits/rolls back. The deferred
+	// Rollback is unconditional and a no-op once Commit has run.
+	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -676,7 +679,7 @@ func (p *IMAPPoller) logParseError(ctx context.Context, projectID int64, m Inbou
 // by channel_ref — the spec calls out cross-channel matches as a
 // false-positive risk worth warning about, but functionally the
 // match is global within the install.
-func (p *IMAPPoller) findCommByThreadID(ctx context.Context, tx pgx.Tx, threadID string) (int64, error) {
+func (p *IMAPPoller) findCommByThreadID(ctx context.Context, tx store.Querier, threadID string) (int64, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `
 		SELECT av.card_id
@@ -702,7 +705,7 @@ func (p *IMAPPoller) findCommByThreadID(ctx context.Context, tx pgx.Tx, threadID
 // Mirrors insertReceivedReply but accepts the full inbound envelope
 // (From/To) so the reply_to / reply_from rows reflect who actually
 // sent the message rather than empty strings.
-func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx pgx.Tx, snap *schema.Snapshot, commID int64, m InboundMessage, actorID int64) error {
+func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx store.Querier, snap *schema.Snapshot, commID int64, m InboundMessage, actorID int64) error {
 	replyCTID, err := resolveCardType(snap, "reply_body")
 	if err != nil {
 		return err
@@ -803,7 +806,7 @@ func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx pgx.Tx, snap *s
 // attachment row on the parent task.
 func (p *IMAPPoller) ingestInboundAttachments(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx store.Querier,
 	parentTaskID int64,
 	replyID int64,
 	atts []InboundAttachment,
@@ -888,7 +891,7 @@ func (p *IMAPPoller) ingestInboundAttachments(
 // helper always creates a new file + attachment row.
 func storeAttachment(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx store.Querier,
 	parentTaskID int64,
 	replyID int64,
 	filename string,
@@ -967,7 +970,7 @@ var _ = textproto.MIMEHeader{}
 // the thread, an operator can edit recipients via the UI.
 func (p *IMAPPoller) syncCommRecipientsFromInbound(
 	ctx context.Context,
-	tx pgx.Tx,
+	tx store.Querier,
 	snap *schema.Snapshot,
 	commID int64,
 	m InboundMessage,
@@ -1040,7 +1043,7 @@ func (p *IMAPPoller) syncCommRecipientsFromInbound(
 // from_address attribute, or "" when none is set. Used by the
 // inbound recipient sync to exclude the channel's own envelope
 // from the participant list.
-func loadChannelFromAddress(ctx context.Context, tx pgx.Tx, channelID int64) (string, error) {
+func loadChannelFromAddress(ctx context.Context, tx store.Querier, channelID int64) (string, error) {
 	var out string
 	err := tx.QueryRow(ctx, `
 		SELECT COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = $1 AND ad.name='from_address'), '')
@@ -1058,7 +1061,7 @@ func loadChannelFromAddress(ctx context.Context, tx pgx.Tx, channelID int64) (st
 // The task gets title=subject, description=body, status=intake_status.
 // The comm gets a fresh thread_id, channel_ref pointing at this
 // channel, and the comm flow's default_create_status_id (or open).
-func (p *IMAPPoller) createTaskAndComm(ctx context.Context, tx pgx.Tx, snap *schema.Snapshot, projectID, intakeStatusID int64, m InboundMessage, actorID int64) error {
+func (p *IMAPPoller) createTaskAndComm(ctx context.Context, tx store.Querier, snap *schema.Snapshot, projectID, intakeStatusID int64, m InboundMessage, actorID int64) error {
 	taskCTID, err := resolveCardType(snap, "task")
 	if err != nil {
 		return err

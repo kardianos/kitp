@@ -30,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/schema"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // CardWhereGroup is the recursive predicate-tree wire shape. A group has
@@ -67,7 +68,7 @@ type CardWhereTreeNode struct {
 // with a clear error.
 type compileCtx struct {
 	ctx     context.Context
-	tx      pgx.Tx
+	tx      store.Querier
 	addArg  func(any) string
 	snap    *schema.Snapshot
 	visited map[int64]bool
@@ -91,7 +92,7 @@ type compileCtx struct {
 // predicate_snippet card (op="snippet") so the compiler can dereference
 // the stored predicate at compile time. Callers that don't pass these
 // and hit a snippet leaf get an explicit error.
-func CompileTree(ctx context.Context, tx pgx.Tx, g CardWhereGroup, addArg func(any) string, snap *schema.Snapshot) (string, error) {
+func CompileTree(ctx context.Context, tx store.Querier, g CardWhereGroup, addArg func(any) string, snap *schema.Snapshot) (string, error) {
 	c := &compileCtx{ctx: ctx, tx: tx, addArg: addArg, snap: snap, visited: map[int64]bool{}}
 	return compileTree(g, c)
 }

@@ -26,11 +26,11 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/reg"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // runSQLFunc executes the handler's PL/pgSQL function once per
@@ -38,7 +38,7 @@ import (
 // decoded `OutputType`; failures abort the group via a
 // `*reg.HandlerError` whose `InputIndex` points at the offending
 // leaf.
-func (s *Server) runSQLFunc(ctx context.Context, tx pgx.Tx, group []prepared, ins []any) ([]any, error) {
+func (s *Server) runSQLFunc(ctx context.Context, tx store.Querier, group []prepared, ins []any) ([]any, error) {
 	h := group[0].Handler
 	if h.SQLFunc == "" {
 		return nil, fmt.Errorf("runSQLFunc: handler %s.%s missing SQLFunc", h.Endpoint, h.Action)

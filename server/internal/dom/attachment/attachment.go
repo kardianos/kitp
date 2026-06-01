@@ -242,8 +242,8 @@ func scopeCardFromDeleteInput(_ *store.Pool) func(ctx context.Context, pool reg.
 // rather than aborting the batch. The attachment row stays valid.
 // Storage absence (tests) is treated the same as a non-image MIME —
 // we just leave thumb_file_id=0.
-func doThumbnails(p *store.Pool) func(ctx context.Context, tx pgx.Tx, ins []any, outs []any) error {
-	return func(ctx context.Context, tx pgx.Tx, ins []any, outs []any) error {
+func doThumbnails(p *store.Pool) func(ctx context.Context, tx store.Querier, ins []any, outs []any) error {
+	return func(ctx context.Context, tx store.Querier, ins []any, outs []any) error {
 		// Test mode (or before SetThumbDeps fires from main): nothing
 		// to do. The legacy runCreate behaved the same way.
 		if p == nil || thumbDeps.storage == nil {

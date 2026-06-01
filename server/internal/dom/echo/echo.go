@@ -6,9 +6,8 @@ import (
 	"context"
 	"reflect"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/kitp/kitp/server/internal/reg"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // PingInput is the wire shape for echo.ping. The handler simply echoes
@@ -35,7 +34,7 @@ func Register() {
 		InputType:    reflect.TypeFor[PingInput](),
 		OutputType:   reflect.TypeFor[PingOutput](),
 		AllowedRoles: []string{reg.RolePublic},
-		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		Run: func(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 			outs := make([]any, len(ins))
 			for i, raw := range ins {
 				in := raw.(PingInput)

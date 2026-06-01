@@ -22,8 +22,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/job"
 	"github.com/kitp/kitp/server/internal/reg"
@@ -159,7 +157,7 @@ func Register(pool *store.Pool, ctl Controller) {
 	})
 }
 
-func runList(_ context.Context, _ pgx.Tx, ins []any) ([]any, error) {
+func runList(_ context.Context, _ store.Querier, ins []any) ([]any, error) {
 	ctl := loadController()
 	if ctl == nil {
 		return nil, fmt.Errorf("scheduler.list: %w", errNoScheduler)
@@ -176,7 +174,7 @@ func runList(_ context.Context, _ pgx.Tx, ins []any) ([]any, error) {
 	return outs, nil
 }
 
-func runTrigger(ctx context.Context, _ pgx.Tx, ins []any) ([]any, error) {
+func runTrigger(ctx context.Context, _ store.Querier, ins []any) ([]any, error) {
 	ctl := loadController()
 	if ctl == nil {
 		return nil, fmt.Errorf("scheduler.run: %w", errNoScheduler)

@@ -13,9 +13,8 @@ import (
 	"reflect"
 	"sync/atomic"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/kitp/kitp/server/internal/reg"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // Snapshot is the wire shape returned by config.get.
@@ -55,7 +54,7 @@ func Register() {
 		InputType:    reflect.TypeFor[GetInput](),
 		OutputType:   reflect.TypeFor[GetOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
-		Run: func(ctx context.Context, tx pgx.Tx, ins []any) ([]any, error) {
+		Run: func(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 			cur := snapshot.Load()
 			var s Snapshot
 			if cur != nil {

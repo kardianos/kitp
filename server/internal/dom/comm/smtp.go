@@ -406,7 +406,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 // shaped identically to every other attribute_update in kitp.
 func (s *SMTPSender) recordResult(ctx context.Context, r pendingReply, newStatus, logKind string, detail map[string]any) error {
 	actorID := auth.ActorOrSystem(ctx)
-	tx, err := s.pool.BeginTx(ctx)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
