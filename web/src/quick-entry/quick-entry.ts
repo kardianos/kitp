@@ -41,6 +41,7 @@
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
+import { RichEditor } from '../editor/rich-editor.js';
 import { splitPath, type QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
@@ -196,7 +197,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
   /** DOM handles built once in render(). */
   private panelEl: HTMLElement | null = null;
   private titleInput: HTMLInputElement | null = null;
-  private descInput: HTMLTextAreaElement | null = null;
+  private descEditor: RichEditor | null = null;
   private moreBtn: HTMLButtonElement | null = null;
   private moreRegion: HTMLElement | null = null;
   private errorEl: HTMLElement | null = null;
@@ -300,14 +301,19 @@ export class QuickEntry extends Control<QuickEntryConfig> {
 
     // Description.
     const descField = labeledField('Description');
-    const descInput = document.createElement('textarea');
-    descInput.className = 'qe-overlay__input qe-overlay__textarea';
-    descInput.dataset.qeDescription = '';
-    descInput.rows = 3;
-    descInput.placeholder = 'Description (optional)';
-    descField.append(descInput);
-    this.descInput = descInput;
-    this.listen(descInput, 'keydown', (ev) => this.onDescriptionKeydown(ev as KeyboardEvent));
+    // Markdown description editor. Mod+Enter submits; Escape closes the overlay
+    // (the editor's keymap owns these — plain Enter is a newline).
+    this.descEditor = new RichEditor({
+      value: '',
+      placeholder: 'Description (optional)',
+      minRows: 3,
+      editableClassName: 'qe-overlay__input qe-overlay__textarea',
+      editableAttrs: { 'data-qe-description': '' },
+      onCommit: () => this.submit(true),
+      onCancel: () => this.requestClose(),
+    });
+    this.onDestroy(() => this.descEditor?.destroy());
+    descField.append(this.descEditor.el);
 
     // "+ More details" disclosure.
     const more = document.createElement('button');
@@ -538,7 +544,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
   /** Clear the per-submission inputs + tear down spawned pickers/editors. */
   private resetForm(): void {
     if (this.titleInput) this.titleInput.value = '';
-    if (this.descInput) this.descInput.value = '';
+    this.descEditor?.setValue('', true);
     this.assigneeId = null;
     this.tagIds = [];
     this.pendingAttachments = [];
@@ -552,7 +558,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
   /** Clear the inputs but keep the overlay open + details expanded (Enter path). */
   private clearForNext(): void {
     if (this.titleInput) this.titleInput.value = '';
-    if (this.descInput) this.descInput.value = '';
+    this.descEditor?.setValue('', true);
     // Keep the assignee selection (the user chose it / it came from prefill).
     this.tagIds = [];
     this.pendingAttachments = [];
@@ -864,20 +870,6 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     }
   }
 
-  private onDescriptionKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      this.requestClose();
-      return;
-    }
-    // Mod+Enter commits from the textarea (plain Enter is a newline).
-    if (e.key === 'Enter' && isMod(e)) {
-      e.preventDefault();
-      e.stopPropagation();
-      this.submit(true);
-    }
-  }
 
   private onPanelKeydown(e: KeyboardEvent): void {
     // Title/description handle their own keys + stopPropagation; this catches
@@ -1040,7 +1032,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     const input: QuickEntrySubmitInput = {
       cardTypeName: this.cardType,
       title,
-      description: (this.descInput?.value ?? '').trim(),
+      description: (this.descEditor?.getValue() ?? '').trim(),
       prefill,
     };
     if (parentCardId !== null) input.parentCardId = parentCardId;
@@ -1083,7 +1075,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     this.submitting = on;
     if (this.submittingEl) this.submittingEl.style.display = on ? '' : 'none';
     if (this.titleInput) this.titleInput.disabled = on;
-    if (this.descInput) this.descInput.disabled = on;
+    this.descEditor?.setDisabled(on);
   }
 
   private showSuccessToast(newCardId: bigint): void {

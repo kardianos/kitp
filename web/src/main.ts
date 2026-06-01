@@ -33,6 +33,7 @@ import { Api } from './core/api.js';
 import { Control, controlForNode, type ControlContext, type ChildConfig } from './core/control.js';
 import './core/not-found.js'; // side effect: installs the NotFound factory path
 import './util/markdown-control.js'; // side effect: registers the Markdown control + sink
+import './editor/install.js'; // side effect: upgrades RichEditor to the ProseMirror engine
 import { HotkeyController, activeControlSignal } from './core/hotkeys.js';
 import { registerKanbanSpecs } from './kanban/specs.js';
 import { registerKanbanControls } from './kanban/kanban.js';

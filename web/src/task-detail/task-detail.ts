@@ -48,7 +48,7 @@
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { PanelModel } from './panel-model.js';
 import { setMarkdown } from '../util/markdown-control.js';
-import { fitTextarea } from '../util/autosize.js';
+import { RichEditor } from '../editor/rich-editor.js';
 import { navigate, taskUrl, projectUrl } from '../shell/router.js';
 import { taskNavNeighbor, taskNavListUrl } from '../shell/task-nav.js';
 import { SPEC, type SelectWithAttributesOutput, type AttributeUpdateOutput } from '../kanban/specs.js';
@@ -236,9 +236,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    *  without a stray blur committing a half-finished draft. */
   private descSaveBtn: HTMLButtonElement | null = null;
   private descCancelBtn: HTMLButtonElement | null = null;
-  /** The live textarea while editing — held so the Save button can read its
-   *  value without a DOM query. */
-  private descInputEl: HTMLTextAreaElement | null = null;
+  /** The live editor while editing — held so the Save button can read its
+   *  value (getValue) without a DOM query, and so it can be torn down. */
+  private descEditor: RichEditor | null = null;
 
   /** Per-row child editors (RefPicker / DatePicker) so we can dispose on rebuild. */
   private rowChildren: Control[] = [];
@@ -392,7 +392,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     descSave.textContent = 'Save';
     descSave.style.display = 'none';
     this.listen(descSave, 'click', () => {
-      if (this.descInputEl !== null) this.commitDescription(this.descInputEl.value);
+      if (this.descEditor !== null) this.commitDescription(this.descEditor.getValue());
     });
     this.descSaveBtn = descSave;
 
@@ -412,6 +412,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     const descHost = document.createElement('div');
     descHost.className = 'task-detail__desc-host';
     this.descHost = descHost;
+    // The description editor holds engine state (a ProseMirror view, later) that
+    // needs explicit teardown on control destroy.
+    this.onDestroy(() => this.descEditor?.destroy());
     descSection.append(descLabel, descHost);
     main.append(descSection);
 
@@ -1094,40 +1097,37 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   }
 
   private renderDescription(): void {
+    this.descEditor?.destroy();
+    this.descEditor = null;
     this.descHost.replaceChildren();
-    // Toggle the label-row action buttons: ✎ when reading, Save + Cancel
-    // when editing.  The textarea NO LONGER commits on blur — the user can
-    // paste back and forth from another window without the draft committing.
+    // Toggle the label-row action buttons: ✎ when reading, Save + Cancel when
+    // editing. The editor NEVER commits on blur — the user can paste back and
+    // forth from another window without the draft committing.
     if (this.descEditBtn) this.descEditBtn.style.display = this.editingDescription ? 'none' : '';
     if (this.descSaveBtn) this.descSaveBtn.style.display = this.editingDescription ? '' : 'none';
     if (this.descCancelBtn) this.descCancelBtn.style.display = this.editingDescription ? '' : 'none';
 
     if (this.editingDescription) {
-      const ta = document.createElement('textarea');
-      ta.className = 'task-detail__desc-input';
-      ta.dataset.taskDescInput = '';
-      ta.value = this.descriptionText();
-      ta.rows = 3; // a floor; the field auto-grows with content (fitTextarea)
-      ta.setAttribute('aria-label', 'Task description');
-      ta.placeholder = 'Markdown supported · Mod+Enter or Save to commit';
-      this.descHost.append(ta);
-      this.descInputEl = ta;
-      this.listen(ta, 'keydown', (e) => this.onDescriptionKeydown(e as KeyboardEvent, ta));
-      this.listen(ta, 'input', () => fitTextarea(ta));
-      queueMicrotask(() => {
-        ta.focus();
-        fitTextarea(ta);
+      this.descEditor = new RichEditor({
+        value: this.descriptionText(),
+        ariaLabel: 'Task description',
+        placeholder: 'Markdown supported · Mod+Enter or Save to commit',
+        editableClassName: 'task-detail__desc-input',
+        editableAttrs: { 'data-task-desc-input': '' },
+        onCommit: (md) => this.commitDescription(md),
+        onCancel: () => this.cancelDescriptionEdit(),
       });
+      this.descHost.append(this.descEditor.el);
+      queueMicrotask(() => this.descEditor?.focus());
       return;
     }
 
-    this.descInputEl = null;
     const body = document.createElement('div');
     body.className = 'task-detail__desc-body';
     body.dataset.taskDescBody = '';
     const text = this.descriptionText();
     if (text.length > 0) {
-      // The single sanctioned innerHTML sink (renderMarkdown → DOMPurify).
+      // The single sanctioned Markdown sink (createElement via DOMSerializer).
       setMarkdown(body, text);
     } else {
       body.classList.add('muted');
@@ -1270,17 +1270,6 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     value.append(prev, count, next);
     row.append(label, value);
     host.append(row);
-  }
-
-  private onDescriptionKeydown(e: KeyboardEvent, ta: HTMLTextAreaElement): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      this.cancelDescriptionEdit();
-    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      this.commitDescription(ta.value);
-    }
-    // Bare Enter inserts a newline (textarea default).
   }
 
   private commitDescription(raw: string): void {

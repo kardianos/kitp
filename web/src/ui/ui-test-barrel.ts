@@ -18,6 +18,8 @@ export {
 } from './combobox.js';
 export { DatePicker, registerDatePicker, type DatePickerConfig } from './datepicker.js';
 export { RefPicker, registerRefPicker, type RefPickerConfig } from './ref-picker.js';
+export { createToolbar, type EditorToolbar } from '../editor/toolbar.js';
+export type { EditorAction, EditorEngine } from '../editor/engine.js';
 export {
   registerCardSearchSpec,
   CARD_SEARCH_SPEC,

@@ -48,6 +48,7 @@
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
+import { RichEditor } from '../editor/rich-editor.js';
 import type { ActionBinding, QueryBinding } from '../core/data.js';
 import type { HotkeyBinding } from '../core/hotkeys.js';
 import type { ApiFault } from '../core/dispatch.js';
@@ -805,12 +806,21 @@ export class ProjectList extends Control<ProjectListConfig> {
     const descSpan = document.createElement('span');
     descSpan.className = 'qe-dialog__label';
     descSpan.textContent = 'Description';
-    const descInput = document.createElement('textarea');
-    descInput.className = 'qe-dialog__input qe-dialog__textarea';
-    descInput.dataset.qeDescription = '';
-    descInput.rows = 4;
-    descInput.placeholder = 'Add a description… (optional)';
-    descLabel.append(descSpan, descInput);
+    // Markdown description editor (same WYSIWYG component as the task
+    // description). Mod+Enter commits the dialog's primary action; Escape
+    // closes. `commitPrimary` / `dialog` are referenced lazily (defined below)
+    // and only invoked at event time.
+    const descEditor = new RichEditor({
+      value: '',
+      placeholder: 'Add a description… (optional)',
+      minRows: 4,
+      editableClassName: 'qe-dialog__input qe-dialog__textarea',
+      editableAttrs: { 'data-qe-description': '' },
+      onCommit: () => commitPrimary(),
+      onCancel: () => dialog.close(),
+    });
+    this.onDestroy(() => descEditor.destroy());
+    descLabel.append(descSpan, descEditor.el);
     moreRegion.append(descLabel);
 
     /* --- Template controls (CREATE mode only) --- */
@@ -941,7 +951,7 @@ export class ProjectList extends Control<ProjectListConfig> {
         origTitle = '';
         origDesc = '';
         titleInput.value = '';
-        descInput.value = '';
+        descEditor.setValue('', true);
         isTmpl.checked = false;
         rebuildTemplateOptions();
         copySel.value = '';
@@ -957,7 +967,7 @@ export class ProjectList extends Control<ProjectListConfig> {
         origTitle = title;
         origDesc = description;
         titleInput.value = title;
-        descInput.value = description;
+        descEditor.setValue(description, true);
         // Auto-expand the details region when there's an existing description.
         showDesc(description.length > 0);
         applyMode();
@@ -982,10 +992,10 @@ export class ProjectList extends Control<ProjectListConfig> {
         focusEl(titleInput);
         return;
       }
-      this.fireCreate(title, descInput.value.trim(), isTmpl.checked, copySel.value);
+      this.fireCreate(title, descEditor.getValue().trim(), isTmpl.checked, copySel.value);
       if (keepOpen) {
         titleInput.value = '';
-        descInput.value = '';
+        descEditor.setValue('', true);
         isTmpl.checked = false;
         rebuildTemplateOptions();
         copySel.value = '';
@@ -1005,7 +1015,7 @@ export class ProjectList extends Control<ProjectListConfig> {
         focusEl(titleInput);
         return;
       }
-      const desc = descInput.value.trim();
+      const desc = descEditor.getValue().trim();
       this.fireEdit(editId, { title, description: desc }, { title: origTitle, description: origDesc });
       dialog.close();
     };
@@ -1048,19 +1058,7 @@ export class ProjectList extends Control<ProjectListConfig> {
         }
       }
     });
-    this.listen(descInput, 'keydown', (ev) => {
-      const e = ev as KeyboardEvent;
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        dialog.close();
-        return;
-      }
-      // Mod+Enter commits from the description field (textarea Enter = newline).
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        commitPrimary();
-      }
-    });
+    // (Description Esc/Mod+Enter are handled by the editor's own keymap above.)
 
     return dialog;
   }

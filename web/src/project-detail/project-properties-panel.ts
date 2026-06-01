@@ -32,6 +32,7 @@
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
+import { RichEditor } from '../editor/rich-editor.js';
 import {
   SPEC,
   type SelectWithAttributesOutput,
@@ -94,7 +95,7 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
   private panelBody!: HTMLElement;
 
   private titleInput: HTMLInputElement | null = null;
-  private descInput: HTMLTextAreaElement | null = null;
+  private descEditor: RichEditor | null = null;
 
   /** Per-row child editors (RefPicker / DatePicker) to dispose on rebuild. */
   private rowChildren: Control[] = [];
@@ -160,6 +161,8 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
     const descHost = document.createElement('div');
     this.descHost = descHost;
     descField.append(descHost);
+    // The description editor holds engine state (a ProseMirror view) to tear down.
+    this.onDestroy(() => this.descEditor?.destroy());
 
     /* --- Attributes section --- */
     const attrsSection = document.createElement('section');
@@ -356,27 +359,23 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
   }
 
   private renderDescription(): void {
+    this.descEditor?.destroy();
+    this.descEditor = null;
     this.descHost.replaceChildren();
-    const ta = document.createElement('textarea');
-    ta.className = 'project-props__input project-props__textarea';
-    ta.dataset.projectPropsDesc = '';
-    ta.value = this.descriptionText();
-    ta.rows = 5;
-    ta.setAttribute('aria-label', 'Project description');
-    ta.placeholder = 'Markdown supported · Mod+Enter to save';
-    this.descInput = ta;
-    this.listen(ta, 'keydown', (ev) => {
-      const e = ev as KeyboardEvent;
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        this.commitDescription(ta.value);
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        ta.value = this.descriptionText();
-      }
+    // Live-commit inline editor (no Save button): Mod+Enter and blur both
+    // commit; Escape reverts to the stored value.
+    this.descEditor = new RichEditor({
+      value: this.descriptionText(),
+      ariaLabel: 'Project description',
+      placeholder: 'Markdown supported · Mod+Enter to save',
+      minRows: 5,
+      editableClassName: 'project-props__input project-props__textarea',
+      editableAttrs: { 'data-project-props-desc': '' },
+      onCommit: (md) => this.commitDescription(md),
+      onBlur: () => this.commitDescription(this.descEditor?.getValue() ?? ''),
+      onCancel: () => this.descEditor?.setValue(this.descriptionText(), true),
     });
-    this.listen(ta, 'blur', () => this.commitDescription(ta.value));
-    this.descHost.append(ta);
+    this.descHost.append(this.descEditor.el);
   }
 
   private commitDescription(raw: string): void {
@@ -627,7 +626,7 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
     // Title / description have no row valueEl; repaint their fields + tell the
     // host so the header tracks the optimistic change.
     if (name === 'title' && this.titleInput) this.titleInput.value = this.titleText();
-    if (name === 'description' && this.descInput) this.descInput.value = this.descriptionText();
+    if (name === 'description') this.descEditor?.setValue(this.descriptionText());
     this.config.onSaved?.(project);
 
     this.ctx.api.callByName(
@@ -647,8 +646,7 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
           }
           onDone?.();
           if (name === 'title' && this.titleInput) this.titleInput.value = this.titleText();
-          if (name === 'description' && this.descInput)
-            this.descInput.value = this.descriptionText();
+          if (name === 'description') this.descEditor?.setValue(this.descriptionText(), true);
           if (this.project !== null) this.config.onSaved?.(this.project);
           if (errEl) {
             errEl.style.display = '';

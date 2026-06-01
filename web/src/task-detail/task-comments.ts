@@ -36,7 +36,7 @@
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { setMarkdown } from '../util/markdown-control.js';
-import { fitTextarea } from '../util/autosize.js';
+import { RichEditor } from '../editor/rich-editor.js';
 import { AUTH_USER_PATH, peekCurrentUserId, type AuthUser } from '../auth/auth-state.js';
 import { ADMIN_SPEC, type UserListOutput, type AttributeDefListOutput } from '../admin/specs.js';
 import { schemaForCardType, type AttrSchema } from '../filter/attribute-schema.js';
@@ -137,6 +137,10 @@ export class TaskComments extends Control<TaskCommentsConfig> {
   /* DOM regions held so loads / posts repaint without a full re-render. */
   private commentsBody!: HTMLElement;
   private composerHost!: HTMLElement;
+  /** The composer's editor (recreated each paint; needs explicit teardown). */
+  private composerEditor: RichEditor | null = null;
+  /** Live per-comment edit editors, keyed by comment id-as-string. */
+  private readonly editEditors = new Map<string, RichEditor>();
   private feedBody!: HTMLElement;
 
   constructor(...args: ConstructorParameters<typeof Control<TaskCommentsConfig>>) {
@@ -217,6 +221,14 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     } else {
       this.el.append(feedSection);
     }
+
+    // Editors hold engine state (a ProseMirror view, later) that needs explicit
+    // teardown; this control owns the composer + any open per-comment editors.
+    this.onDestroy(() => {
+      this.composerEditor?.destroy();
+      for (const ed of this.editEditors.values()) ed.destroy();
+      this.editEditors.clear();
+    });
 
     this.paintComments();
     this.paintComposer();
@@ -396,6 +408,10 @@ export class TaskComments extends Control<TaskCommentsConfig> {
   }
 
   private paintComments(): void {
+    // Tear down editors from the previous paint before the list is rebuilt;
+    // renderEditor re-creates them (seeded from the preserved per-comment draft).
+    for (const ed of this.editEditors.values()) ed.destroy();
+    this.editEditors.clear();
     this.commentsBody.replaceChildren();
     const list = this.comments();
 
@@ -482,7 +498,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
       const bodyEl = document.createElement('div');
       bodyEl.className = 'task-comments__body';
       bodyEl.dataset.commentBody = '';
-      // The single sanctioned innerHTML sink (renderMarkdown → DOMPurify).
+      // The single sanctioned Markdown sink (createElement via DOMSerializer).
       setMarkdown(bodyEl, c.body);
       li.append(bodyEl);
     }
@@ -497,28 +513,21 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     const wrap = document.createElement('div');
     wrap.className = 'task-comments__edit';
 
-    const ta = document.createElement('textarea');
-    ta.className = 'task-comments__edit-input';
-    ta.dataset.commentEditInput = '';
-    ta.value = state.draft;
-    ta.rows = 3;
-    ta.disabled = state.busy;
-    ta.setAttribute('aria-label', 'Edit comment');
-    this.listen(ta, 'input', () => {
-      const cur = this.edits.get(c.id.toString());
-      if (cur !== undefined) cur.draft = ta.value;
+    const editor = new RichEditor({
+      value: state.draft,
+      ariaLabel: 'Edit comment',
+      disabled: state.busy,
+      editableClassName: 'task-comments__edit-input',
+      editableAttrs: { 'data-comment-edit-input': '' },
+      onInput: (md) => {
+        const cur = this.edits.get(c.id.toString());
+        if (cur !== undefined) cur.draft = md;
+      },
+      onCommit: () => this.commitEdit(c),
+      onCancel: () => this.cancelEdit(c.id),
     });
-    this.listen(ta, 'keydown', (e) => {
-      const ev = e as KeyboardEvent;
-      if (ev.key === 'Escape') {
-        ev.preventDefault();
-        this.cancelEdit(c.id);
-      } else if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
-        ev.preventDefault();
-        this.commitEdit(c);
-      }
-    });
-    wrap.append(ta);
+    this.editEditors.set(c.id.toString(), editor);
+    wrap.append(editor.el);
 
     const actions = document.createElement('div');
     actions.className = 'task-comments__edit-actions';
@@ -542,7 +551,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     actions.append(cancel, save);
     wrap.append(actions);
 
-    queueMicrotask(() => ta.focus());
+    queueMicrotask(() => editor.focus());
     return wrap;
   }
 
@@ -597,33 +606,27 @@ export class TaskComments extends Control<TaskCommentsConfig> {
   /* ------------------------------ composer ------------------------------ */
 
   private paintComposer(): void {
+    this.composerEditor?.destroy();
+    this.composerEditor = null;
     this.composerHost.replaceChildren();
 
-    const ta = document.createElement('textarea');
-    ta.className = 'task-comments__composer-input';
-    ta.dataset.commentInput = '';
-    ta.value = this.composerDraft;
-    ta.rows = 3;
-    ta.disabled = this.posting;
-    ta.placeholder = 'Add a comment…';
-    ta.setAttribute('aria-label', 'Add a comment');
-    this.listen(ta, 'input', () => {
-      this.composerDraft = ta.value;
-      fitTextarea(ta); // grow with the comment as it's typed (capped at ~45vh)
-      // Toggle the Comment button's disabled state without a full repaint.
-      const btn = this.composerHost.querySelector<HTMLButtonElement>('[data-comment-submit]');
-      if (btn !== null) btn.disabled = this.posting || this.composerDraft.trim() === '';
+    const editor = new RichEditor({
+      value: this.composerDraft,
+      placeholder: 'Add a comment…',
+      ariaLabel: 'Add a comment',
+      disabled: this.posting,
+      editableClassName: 'task-comments__composer-input',
+      editableAttrs: { 'data-comment-input': '' },
+      onInput: (md) => {
+        this.composerDraft = md;
+        // Toggle the Comment button's disabled state without a full repaint.
+        const btn = this.composerHost.querySelector<HTMLButtonElement>('[data-comment-submit]');
+        if (btn !== null) btn.disabled = this.posting || this.composerDraft.trim() === '';
+      },
+      onCommit: () => this.postComment(),
     });
-    this.listen(ta, 'keydown', (e) => {
-      const ev = e as KeyboardEvent;
-      if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
-        ev.preventDefault();
-        this.postComment();
-      }
-    });
-    this.composerHost.append(ta);
-    // Fit a preserved draft on (re)paint once layout is available.
-    queueMicrotask(() => fitTextarea(ta));
+    this.composerEditor = editor;
+    this.composerHost.append(editor.el);
 
     const foot = document.createElement('div');
     foot.className = 'task-comments__composer-foot';
