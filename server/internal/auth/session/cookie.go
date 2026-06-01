@@ -23,26 +23,29 @@ type CookieOptions struct {
 }
 
 // Set writes the kitp_session cookie with the supplied id.
-// HttpOnly + SameSite=Strict + Path=/. Secure unless InsecureCookie.
+// HttpOnly + SameSite=Lax + Path=/. Secure unless InsecureCookie.
 //
-// SameSite=Strict note: Strict blocks the cookie from being sent on
-// top-level cross-site navigations, including the redirect from the
-// OIDC provider back to /api/v1/auth/oidc/callback. That callback
-// works anyway because it CREATES the session (Set-Cookie on the
-// redirect response — no need to READ a pre-existing cookie). If a
-// future feature ever needs to READ the session inside an
-// OP-initiated callback (e.g. a "link my second provider" flow that
-// expects an already-signed-in user), this constant becomes a
-// silent foot-gun — switch that single endpoint's cookie read to
-// Lax, or relax the default here. See
-// DI-8 in docs/DESIGN_INVARIANTS.md.
+// SameSite=Lax (NOT Strict): the OIDC sign-in returns the browser to
+// the app via a top-level navigation whose initiator is the identity
+// provider (a cross-site origin, e.g. login.microsoftonline.com). The
+// /callback endpoint sets this cookie and then 302s to the post-login
+// landing path ("/"). Under Strict the browser WITHHOLDS the cookie on
+// that landing request — it's still part of an IdP-initiated cross-site
+// navigation chain — so the SPA gate sees no session, bounces back to
+// the SSO start endpoint, the IdP silently re-authenticates, and the
+// user is stuck in a redirect LOOP. Lax sends the cookie on top-level
+// GET navigations (exactly the post-login redirect) while still
+// withholding it on cross-site subresource loads and cross-site POSTs,
+// so CSRF protection on the mutating POST /api/v1/batch surface is
+// preserved (and same-origin API calls carry the cookie regardless of
+// SameSite). See DI-8 in docs/DESIGN_INVARIANTS.md.
 func Set(w http.ResponseWriter, id string, opts CookieOptions) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    id,
 		Path:     "/",
 		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 		Secure:   !opts.InsecureCookie,
 		MaxAge:   int(opts.MaxAge.Seconds()),
 	})
@@ -56,7 +59,7 @@ func Clear(w http.ResponseWriter, insecure bool) {
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 		Secure:   !insecure,
 		MaxAge:   -1,
 	})

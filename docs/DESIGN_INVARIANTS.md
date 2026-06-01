@@ -191,26 +191,40 @@ not hot-path, so no functional index is needed.
 
 ---
 
-## DI-8 — Session cookie `SameSite=Strict` is intentional; revisit only for redirect-read flows
+## DI-8 — Session cookie is `SameSite=Lax` (required by the OIDC return navigation)
 
-**Rule.** The `kitp_session` cookie is `SameSite=Strict`. This is correct
-*because the OIDC callback only ever creates a fresh cookie and never
-reads a pre-existing one*. If a future feature needs to READ the session
-inside an OP-initiated top-level callback (e.g. "link a second provider"
-on an already-signed-in user), Strict will silently drop the cookie —
-switch that endpoint's read to `Lax` (or relax the default) at that
-point.
+**Rule.** The `kitp_session` cookie is `SameSite=Lax`. It MUST NOT be
+`Strict`: the OIDC callback sets the cookie and then 302s the browser to
+the post-login landing path, and that landing request is still part of a
+top-level navigation chain *initiated by the identity provider* (a
+cross-site origin). Strict withholds the cookie on such a request, so the
+SPA gate reads no session and redirects back to the SSO start endpoint;
+the IdP re-authenticates via its own session and the user is stuck in a
+silent redirect **loop**.
 
-**Why.** Strict blocks cookies on top-level cross-site navigations; the
-OIDC dance is exactly such a navigation. It happens to be safe today only
-because of the create-not-read property — a foot-gun worth documenting so
-a future change doesn't get a silent auth failure.
+**Why the create-not-read framing was wrong.** The original rationale —
+"Strict is safe because the callback only CREATES a cookie, never reads a
+pre-existing one" — accounted for the `/callback` request but not the
+*next hop*. After `/callback` sets the cookie and redirects to `/`, the
+SPA document gate (`spaAuthed`) READS the cookie on that `/` request,
+which is still IdP-initiated and cross-site under Strict. Hence the loop
+(intermittent in the field: a manual reload / address-bar navigation is
+same-site and DOES carry a Strict cookie, so users sometimes escaped it).
 
-**Enforced in.** A comment block above `Set` in
-`auth/session/cookie.go` (this was a docs-only fix — no behavioral
-change).
+**CSRF posture.** Lax still withholds the cookie on cross-site subresource
+loads and cross-site POSTs, so the mutating `POST /api/v1/batch` surface
+keeps its cross-site-POST CSRF protection. Same-origin requests (the SPA
+calling its own API) carry the cookie regardless of SameSite, so nothing
+in-app changes. The only thing Lax newly permits — the cookie on a
+top-level cross-site GET — is exactly the post-login return, and KITP has
+no state-changing GET endpoints.
 
-**Originally:** B11 (LOW), resolved 2026-05-21 (docs-only).
+**Enforced in.** `http.SameSiteLaxMode` in `Set` / `Clear` in
+`auth/session/cookie.go`.
+
+**Originally:** B11 (LOW), 2026-05-21 (docs-only, chose Strict);
+**corrected 2026-06-01** to Lax after an Entra sign-in redirect loop —
+the Strict choice was a latent bug, not a safe default.
 
 ---
 
