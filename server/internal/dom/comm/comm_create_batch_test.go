@@ -291,18 +291,51 @@ func TestCommCreateBatch_ProjectMismatch(t *testing.T) {
 	}
 }
 
-// TestCommCreateBatch_InitialMessage — initial_message materialises a
-// reply_body card with delivery_status='received' + the body, and
-// appends its id to comm.replies.
+// TestCommCreateBatch_InitialMessage — an initial_message is an OUTBOUND
+// message the actor sends to the recipients: it materialises a reply_body
+// card with delivery_status='pending' (so the SMTP sender ships it), the
+// channel's from_address as reply_from, the recipient emails as the reply_to
+// To: snapshot, and reply_author = actor — then appends its id to
+// comm.replies. (Regression: it used to be stored 'received', which rendered
+// it as inbound-from-the-recipient and was never sent.)
 func TestCommCreateBatch_InitialMessage(t *testing.T) {
 	pool := store.TestPool(t, "kitp_test_comm_create_batch_initial")
 	f := seedCommCreateFixture(t, pool)
+	ctx := context.Background()
+
+	// The channel needs a from_address for the outbound reply_from snapshot.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		SELECT $1, ad.id, to_jsonb($2::text) FROM attribute_def ad WHERE ad.name='from_address'
+	`, f.channelID, "support@acme.test"); err != nil {
+		t.Fatalf("seed from_address: %v", err)
+	}
+
+	mkPerson := func(email string) int64 {
+		var id int64
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name='person' RETURNING id
+		`).Scan(&id); err != nil {
+			t.Fatalf("mkPerson: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO attribute_value (card_id, attribute_def_id, value)
+			SELECT $1, ad.id, to_jsonb($2::text) FROM attribute_def ad WHERE ad.name='email'
+		`, id, email); err != nil {
+			t.Fatalf("person email: %v", err)
+		}
+		return id
+	}
+	p1 := mkPerson("a@example.com")
+	p2 := mkPerson("b@example.com")
+
 	rows := callCommCreateBatch(t, pool, auth.SystemUserID, []map[string]any{
 		{
-			"task_id":         intToStr(f.taskID),
-			"channel_id":      intToStr(f.channelID),
-			"subject":         "Login issue",
-			"initial_message": "Cannot log in",
+			"task_id":              intToStr(f.taskID),
+			"channel_id":           intToStr(f.channelID),
+			"subject":              "Login issue",
+			"initial_message":      "Cannot log in",
+			"recipient_person_ids": []string{intToStr(p1), intToStr(p2)},
 		},
 	})
 	if !rows[0].OK {
@@ -313,7 +346,6 @@ func TestCommCreateBatch_InitialMessage(t *testing.T) {
 	}
 	_ = json.Unmarshal(rows[0].Result, &got)
 
-	ctx := context.Background()
 	var repliesJSON []byte
 	if err := pool.QueryRow(ctx, `
 		SELECT av.value FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
@@ -329,23 +361,65 @@ func TestCommCreateBatch_InitialMessage(t *testing.T) {
 		t.Fatalf("replies=%v want one entry", replyIDs)
 	}
 
-	var status, body, subject string
+	var status, body, subject, replyFrom, replyTo string
+	var replyAuthor int64
 	if err := pool.QueryRow(ctx, `
 		SELECT
 			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='delivery_status'),
 			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_body_text'),
-			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_subject')
-	`, replyIDs[0]).Scan(&status, &body, &subject); err != nil {
+			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_subject'),
+			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_from'),
+			(SELECT av.value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_to'),
+			(SELECT (av.value)::text::bigint FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_author')
+	`, replyIDs[0]).Scan(&status, &body, &subject, &replyFrom, &replyTo, &replyAuthor); err != nil {
 		t.Fatalf("reply attrs: %v", err)
 	}
-	if status != "received" {
-		t.Errorf("delivery_status=%q want received", status)
+	if status != "pending" {
+		t.Errorf("delivery_status=%q want pending (outbound, queued for SMTP)", status)
 	}
 	if body != "Cannot log in" {
 		t.Errorf("body=%q", body)
 	}
 	if subject != "Login issue" {
 		t.Errorf("subject=%q", subject)
+	}
+	if replyFrom != "support@acme.test" {
+		t.Errorf("reply_from=%q want the channel from_address", replyFrom)
+	}
+	if replyTo != "a@example.com, b@example.com" {
+		t.Errorf("reply_to=%q want the recipient To: snapshot", replyTo)
+	}
+	if replyAuthor != auth.SystemUserID {
+		t.Errorf("reply_author=%d want actor %d", replyAuthor, auth.SystemUserID)
+	}
+}
+
+// TestCommCreateBatch_InitialMessageNeedsRecipients — an initial message is
+// sent TO someone, so omitting recipient_person_ids is rejected up front
+// (before any card insert) with code='no_recipients', leaving no orphan comm.
+func TestCommCreateBatch_InitialMessageNeedsRecipients(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_comm_create_batch_initial_norecip")
+	f := seedCommCreateFixture(t, pool)
+	rows := callCommCreateBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{
+			"task_id":         intToStr(f.taskID),
+			"channel_id":      intToStr(f.channelID),
+			"initial_message": "Hello?",
+		},
+	})
+	if rows[0].OK || rows[0].Code != "no_recipients" {
+		t.Errorf("want no_recipients; got %+v", rows[0])
+	}
+	// No comm card should have been created for the failed row.
+	var commCount int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM card c JOIN card_type ct ON ct.id = c.card_type_id
+		WHERE ct.name = 'comm' AND c.parent_card_id = $1
+	`, f.taskID).Scan(&commCount); err != nil {
+		t.Fatalf("count comms: %v", err)
+	}
+	if commCount != 0 {
+		t.Errorf("orphan comm card(s) created: %d", commCount)
 	}
 }
 

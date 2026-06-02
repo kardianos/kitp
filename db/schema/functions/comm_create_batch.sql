@@ -27,9 +27,11 @@
 --   10. Append the new comm_id to the parent task's `comms` card_ref[]
 --       attribute (tolerating string + numeric stored forms in legacy
 --       data, then canonicalising to numbers on write).
---   11. Optional initial_message: INSERT a reply_body card with
---       delivery_status='received' + the five reply_body attributes,
---       then append its id to comm.replies.
+--   11. Optional initial_message: an OUTBOUND message the actor sends to
+--       the recipients. INSERT a reply_body card the reply.post way —
+--       delivery_status='pending' (SMTP picks it up), reply_from/reply_to
+--       snapshots + reply_author — then append its id to comm.replies.
+--       Requires recipients (guarded up front).
 --
 -- Result JSON shape matches `comm.CommCreateOutput`:
 --   {"comm_id": "<bigint>", "thread_id": "<10-char alphanumeric>"}
@@ -77,6 +79,10 @@ DECLARE
     _reply_subject_def bigint;
     _reply_body_text_def bigint;
     _delivery_status_def bigint;
+    _reply_author_def bigint;
+    _from_address text;
+    _to_snapshot text;
+    _recip_emails text[];
     _ids bigint[];
     _bad_msg text;
     _bad_id bigint;
@@ -106,11 +112,13 @@ BEGIN
     SELECT id INTO _reply_subject_def   FROM attribute_def WHERE name = 'reply_subject';
     SELECT id INTO _reply_body_text_def FROM attribute_def WHERE name = 'reply_body_text';
     SELECT id INTO _delivery_status_def FROM attribute_def WHERE name = 'delivery_status';
+    SELECT id INTO _reply_author_def    FROM attribute_def WHERE name = 'reply_author';
     IF _title_def IS NULL OR _channel_ref_def IS NULL OR _thread_id_def IS NULL
        OR _comm_status_def IS NULL OR _comm_recipients_def IS NULL
        OR _comms_def IS NULL OR _replies_def IS NULL
        OR _reply_to_def IS NULL OR _reply_from_def IS NULL OR _reply_subject_def IS NULL
-       OR _reply_body_text_def IS NULL OR _delivery_status_def IS NULL THEN
+       OR _reply_body_text_def IS NULL OR _delivery_status_def IS NULL
+       OR _reply_author_def IS NULL THEN
         RAISE EXCEPTION 'comm.create: required attribute_defs missing'
             USING ERRCODE = 'P0001';
     END IF;
@@ -138,6 +146,20 @@ BEGIN
            OR _channel_id IS NULL OR _channel_id = 0 THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 'comm.create: task_id and channel_id are required'::text,
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+
+        -- An initial_message is an OUTBOUND message the actor sends to the
+        -- comm's recipients (queued for SMTP), so it needs at least one
+        -- recipient to address. Reject up front — BEFORE any card insert —
+        -- so a missing send target never leaves an orphan comm card behind.
+        IF _initial_message <> ''
+           AND (_recipients_raw IS NULL
+                OR jsonb_typeof(_recipients_raw) <> 'array'
+                OR jsonb_array_length(_recipients_raw) = 0) THEN
+            RETURN QUERY SELECT _idx, false, 'no_recipients'::text,
+                'comm.create: an initial message is sent to the recipients, so recipient_person_ids is required when initial_message is set'::text,
                 NULL::jsonb;
             CONTINUE;
         END IF;
@@ -390,10 +412,50 @@ BEGIN
             SET value = EXCLUDED.value,
                 last_activity_id = EXCLUDED.last_activity_id;
 
-        -- 11. Optional initial inbound message → reply_body card with
-        --     delivery_status='received'. Five attribute writes via the
-        --     ordinality-join idiom, then append the id to comm.replies.
+        -- 11. Optional initial message. This is an OUTBOUND message the actor
+        --     is SENDING to the comm's recipients — NOT inbound mail from
+        --     them — so it's materialised exactly like reply.post does:
+        --     delivery_status='pending' (the SMTP sender's loadPending only
+        --     scans 'pending'), reply_from = channel from_address, reply_to =
+        --     recipient To: snapshot, reply_author = actor (so the signer +
+        --     UI resolve the sender). It therefore renders on the right and
+        --     actually ships. The early guard above guarantees recipients
+        --     exist here. Six attribute writes via the ordinality-join idiom,
+        --     then append the id to comm.replies.
         IF _initial_message <> '' THEN
+            -- Channel from_address (best-effort; mirrors reply.post step 4).
+            _from_address := '';
+            SELECT COALESCE(av.value #>> '{}', '')
+              INTO _from_address
+            FROM attribute_value av
+            JOIN attribute_def ad ON ad.id = av.attribute_def_id
+            WHERE av.card_id = _channel_id AND ad.name = 'from_address';
+            IF _from_address IS NULL THEN
+                _from_address := '';
+            END IF;
+
+            -- To: snapshot = recipient person emails in recipient-list order
+            -- (mirrors reply.post step 3). comm_recipients was just written in
+            -- step 9; persons without an email degrade out gracefully.
+            WITH rec AS (
+                SELECT (e.v)::text::bigint AS person_id, e.ord
+                FROM attribute_value av
+                JOIN attribute_def ad ON ad.id = av.attribute_def_id,
+                     LATERAL jsonb_array_elements(av.value) WITH ORDINALITY AS e(v, ord)
+                WHERE av.card_id = _comm_id
+                  AND ad.name = 'comm_recipients'
+                  AND jsonb_typeof(av.value) = 'array'
+                  AND jsonb_typeof(e.v) = 'number'
+            )
+            SELECT array_agg(em.email ORDER BY rec.ord)
+              INTO _recip_emails
+            FROM rec
+            JOIN attribute_value pav ON pav.card_id = rec.person_id
+            JOIN attribute_def pad  ON pad.id = pav.attribute_def_id AND pad.name = 'email',
+                 LATERAL (SELECT pav.value #>> '{}' AS email) em
+            WHERE em.email IS NOT NULL AND em.email <> '';
+            _to_snapshot := COALESCE(array_to_string(_recip_emails, ', '), '');
+
             INSERT INTO card (card_type_id) VALUES (_reply_ct_id)
             RETURNING id INTO _reply_id;
             INSERT INTO activity (card_id, kind, actor_id)
@@ -401,11 +463,12 @@ BEGIN
 
             WITH writes(ord, attr_def_id, value) AS (
                 VALUES
-                    (1, _reply_to_def,        to_jsonb(''::text)),
-                    (2, _reply_from_def,      to_jsonb(''::text)),
+                    (1, _reply_to_def,        to_jsonb(_to_snapshot)),
+                    (2, _reply_from_def,      to_jsonb(_from_address)),
                     (3, _reply_subject_def,   to_jsonb(_subject)),
                     (4, _reply_body_text_def, to_jsonb(_initial_message)),
-                    (5, _delivery_status_def, to_jsonb('received'::text))
+                    (5, _delivery_status_def, to_jsonb('pending'::text)),
+                    (6, _reply_author_def,    to_jsonb(comm_create_batch.actor_id))
             ),
             ins_activity AS (
                 INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)

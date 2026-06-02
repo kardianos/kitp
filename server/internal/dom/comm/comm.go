@@ -137,7 +137,7 @@ type CommCreateInput struct {
 	TaskID             int64   `json:"task_id,string" mcp:"required,desc=task card id this comm attaches to"`
 	ChannelID          int64   `json:"channel_id,string" mcp:"required,desc=comm_channel card id this comm uses"`
 	Subject            string  `json:"subject,omitempty" mcp:"desc=display title on the comm card; defaults to the task's title when empty (outbound replies always use {thread_id} + task.title for the email Subject header at send time, regardless of this value)"`
-	InitialMessage     string  `json:"initial_message,omitempty" mcp:"desc=optional inbound message text; when set, a reply_body row with delivery_status='received' is created and appended to the comm's replies attribute"`
+	InitialMessage     string  `json:"initial_message,omitempty" mcp:"desc=optional first message to SEND to the recipients; when set, a reply_body row with delivery_status='pending' (authored by the actor, queued for SMTP) is created and appended to the comm's replies attribute. Requires recipient_person_ids"`
 	RecipientPersonIDs reg.IDs `json:"recipient_person_ids,omitempty" mcp:"desc=initial participants; each id must reference a person card. Stored in the comm_recipients attribute and used as the To: list when an operator authors a reply"`
 }
 
@@ -288,7 +288,7 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "comm",
 		Action:       "create",
-		Doc:          "Admin-only: create a comm card under a task. Generates a 10-char alphanumeric thread_id, sets channel_ref + comm_status (the project's comm flow default_create_status_id), appends the new comm to the task's comms attribute, and (when initial_message is provided) creates a received-direction reply_body row.",
+		Doc:          "Admin-only: create a comm card under a task. Generates a 10-char alphanumeric thread_id, sets channel_ref + comm_status (the project's comm flow default_create_status_id), appends the new comm to the task's comms attribute, and (when initial_message is provided) creates an outbound reply_body row (delivery_status='pending', queued for SMTP) — which requires recipient_person_ids.",
 		InputType:    reflect.TypeFor[CommCreateInput](),
 		OutputType:   reflect.TypeFor[CommCreateOutput](),
 		AllowedRoles: []string{"admin"},

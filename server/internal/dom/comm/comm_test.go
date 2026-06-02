@@ -467,14 +467,22 @@ func TestCommCreateWithInitialMessage(t *testing.T) {
 	var setOut comm.ChannelSetOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "ch", Endpoint: "comm_channel", Action: "set", Data: json.RawMessage(
-			fmt.Sprintf(`{"project_id":"%d","name":"Support","channel_type":"email"}`, f.projectID)),
+			fmt.Sprintf(`{"project_id":"%d","name":"Support","channel_type":"email","from_address":"support@acme.test"}`, f.projectID)),
 	}, &setOut)
+
+	// An initial message is OUTBOUND — sent to the recipients — so it needs
+	// at least one recipient. Resolve a contact to a person id first.
+	var pOut comm.PersonUpsertByEmailOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "p", Endpoint: "person", Action: "upsert_by_email",
+		Data: json.RawMessage(`{"email":"customer@example.com","kind":"contact"}`),
+	}, &pOut)
 
 	var ccOut comm.CommCreateOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "c", Endpoint: "comm", Action: "create", Data: json.RawMessage(
-			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Login issue","initial_message":"Cannot log in"}`,
-				f.taskID, setOut.ChannelID)),
+			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Login issue","initial_message":"Cannot log in","recipient_person_ids":["%d"]}`,
+				f.taskID, setOut.ChannelID, pOut.PersonID)),
 	}, &ccOut)
 
 	// Look up the comm's replies attribute, expect 1 entry referencing
@@ -495,24 +503,34 @@ func TestCommCreateWithInitialMessage(t *testing.T) {
 	if len(replyIDs) != 1 {
 		t.Fatalf("expected 1 reply, got %d", len(replyIDs))
 	}
-	// The reply_body should carry delivery_status='received' and the body text.
-	var status, body, subject string
+	// The initial message is OUTBOUND: delivery_status='pending' (so SMTP
+	// ships it), the channel from_address as reply_from, the recipient as the
+	// reply_to To: snapshot, and the body/subject we supplied.
+	var status, body, subject, replyFrom, replyTo string
 	if err := f.sp.P.QueryRow(ctx, `
 		SELECT
 			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='delivery_status'),
 			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_body_text'),
-			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_subject')
-	`, replyIDs[0]).Scan(&status, &body, &subject); err != nil {
+			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_subject'),
+			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_from'),
+			(SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id=$1 AND ad.name='reply_to')
+	`, replyIDs[0]).Scan(&status, &body, &subject, &replyFrom, &replyTo); err != nil {
 		t.Fatalf("reply attrs: %v", err)
 	}
-	if status != "received" {
-		t.Errorf("delivery_status=%q want received", status)
+	if status != "pending" {
+		t.Errorf("delivery_status=%q want pending (outbound, queued for SMTP)", status)
 	}
 	if body != "Cannot log in" {
 		t.Errorf("body=%q want 'Cannot log in'", body)
 	}
 	if subject != "Login issue" {
 		t.Errorf("subject=%q want 'Login issue'", subject)
+	}
+	if replyFrom != "support@acme.test" {
+		t.Errorf("reply_from=%q want the channel from_address", replyFrom)
+	}
+	if replyTo != "customer@example.com" {
+		t.Errorf("reply_to=%q want the recipient To: snapshot", replyTo)
 	}
 }
 
@@ -537,13 +555,16 @@ func TestCommUnseenCount(t *testing.T) {
 		t.Fatalf("baseline unseen=%d want 0", base.UnseenCount)
 	}
 
-	// A comm with an initial message materialises a received reply_body.
+	// A genuinely RECEIVED (inbound) message is what the bell counts. Create a
+	// plain comm, then seed an inbound reply the way the IMAP poller would —
+	// comm.create's initial_message is OUTBOUND and no longer feeds this count.
 	var ccOut comm.CommCreateOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "c", Endpoint: "comm", Action: "create", Data: json.RawMessage(
-			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Login issue","initial_message":"Cannot log in"}`,
+			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Login issue"}`,
 				f.taskID, setOut.ChannelID)),
 	}, &ccOut)
+	seedReceivedReply(t, f, ccOut.CommID, "Cannot log in")
 
 	// since=0 now sees exactly the one received comm, with a real latest id.
 	var one comm.UnseenCountOutput
@@ -612,13 +633,14 @@ func TestCommListForTask(t *testing.T) {
 			fmt.Sprintf(`{"project_id":"%d","name":"Support","channel_type":"email"}`, f.projectID)),
 	}, &setOut)
 
-	// Two comms on the same task, one with an initial message.
+	// Two comms on the same task; the first has one inbound (received) reply.
 	var c1, c2 comm.CommCreateOutput
 	dispatch(t, f, api.SubRequest{
 		ID: "c1", Endpoint: "comm", Action: "create", Data: json.RawMessage(
-			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"First","initial_message":"Hello"}`,
+			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"First"}`,
 				f.taskID, setOut.ChannelID)),
 	}, &c1)
+	seedReceivedReply(t, f, c1.CommID, "Hello")
 	dispatch(t, f, api.SubRequest{
 		ID: "c2", Endpoint: "comm", Action: "create", Data: json.RawMessage(
 			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":"Second"}`,
@@ -817,6 +839,49 @@ func TestPermission(t *testing.T) {
 }
 
 // ---- reply.post ----
+
+// seedReceivedReply inserts an INBOUND received reply_body into the given
+// comm, mirroring what the IMAP poller's appendReceivedReply does: a
+// reply_body card with delivery_status='received' + body text, a card_create
+// activity (the unseen_count cursor), appended to the comm's replies array.
+// comm.create no longer fabricates received messages — its initial_message is
+// an outbound send — so tests that need genuine inbound mail seed it here.
+func seedReceivedReply(t *testing.T, f *fixture, commID int64, body string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	var replyID int64
+	if err := f.sp.P.QueryRow(ctx, `
+		INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name='reply_body' RETURNING id
+	`).Scan(&replyID); err != nil {
+		t.Fatalf("seedReceivedReply card: %v", err)
+	}
+	if _, err := f.sp.P.Exec(ctx, `
+		INSERT INTO activity (card_id, kind, actor_id) VALUES ($1, 'card_create', $2)
+	`, replyID, auth.SystemUserID); err != nil {
+		t.Fatalf("seedReceivedReply activity: %v", err)
+	}
+	if _, err := f.sp.P.Exec(ctx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		SELECT $1, ad.id, to_jsonb('received'::text) FROM attribute_def ad WHERE ad.name='delivery_status'
+	`, replyID); err != nil {
+		t.Fatalf("seedReceivedReply status: %v", err)
+	}
+	if _, err := f.sp.P.Exec(ctx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		SELECT $1, ad.id, to_jsonb($2::text) FROM attribute_def ad WHERE ad.name='reply_body_text'
+	`, replyID, body); err != nil {
+		t.Fatalf("seedReceivedReply body: %v", err)
+	}
+	if _, err := f.sp.P.Exec(ctx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		SELECT $1, ad.id, jsonb_build_array(to_jsonb($2::bigint)) FROM attribute_def ad WHERE ad.name='replies'
+		ON CONFLICT (card_id, attribute_def_id) DO UPDATE
+			SET value = COALESCE(attribute_value.value, '[]'::jsonb) || jsonb_build_array(to_jsonb($2::bigint))
+	`, commID, replyID); err != nil {
+		t.Fatalf("seedReceivedReply replies append: %v", err)
+	}
+	return replyID
+}
 
 // createCommForReply creates one comm under the fixture's task and
 // returns its id. Optionally configures the channel's from_address.

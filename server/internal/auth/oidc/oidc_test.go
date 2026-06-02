@@ -254,6 +254,77 @@ func TestProvisionCreatesPersonCard(t *testing.T) {
 	}
 }
 
+// TestReloginPreservesInAppRename guards the rule that OIDC sets display_name
+// only at first provision: once a user renames themselves in-app
+// (user.set_display_name → user_account.display_name), a later login with a
+// different IdP name claim must NOT clobber it. Email still syncs from the
+// claim on re-login.
+func TestReloginPreservesInAppRename(t *testing.T) {
+	op := newFakeOP(t)
+	pool := store.TestPool(t, "kitp_test_oidc_rename")
+	v := oidc.NewValidator(&oidc.Config{
+		Issuer:   op.server.URL,
+		Audience: "kitp-web",
+	}, pool)
+	ctx := context.Background()
+	now := time.Now()
+
+	// First login provisions the row with the IdP-claimed name.
+	first := op.signToken(t, jwt.MapClaims{
+		"iss":   op.server.URL,
+		"aud":   "kitp-web",
+		"sub":   "rename-sub",
+		"name":  "Idp Original",
+		"email": "rename@example.invalid",
+		"exp":   now.Add(time.Hour).Unix(),
+	})
+	userID, _, err := v.Resolve(ctx, first)
+	if err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	var got string
+	if err := pool.QueryRow(ctx, `SELECT display_name FROM user_account WHERE id = $1`, userID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "Idp Original" {
+		t.Fatalf("after first login display_name = %q, want %q", got, "Idp Original")
+	}
+
+	// Simulate an in-app rename (what user.set_display_name does).
+	if _, err := pool.Exec(ctx, `UPDATE user_account SET display_name = 'My Custom Name' WHERE id = $1`, userID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-login with a DIFFERENT name + email claim. The changed claims miss
+	// the sub cache, so provisionUser runs its re-login branch.
+	second := op.signToken(t, jwt.MapClaims{
+		"iss":   op.server.URL,
+		"aud":   "kitp-web",
+		"sub":   "rename-sub",
+		"name":  "Idp Changed",
+		"email": "rename2@example.invalid",
+		"exp":   now.Add(time.Hour).Unix(),
+	})
+	id2, _, err := v.Resolve(ctx, second)
+	if err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if id2 != userID {
+		t.Fatalf("re-login resolved to a different user: %d vs %d", id2, userID)
+	}
+
+	var name, email string
+	if err := pool.QueryRow(ctx, `SELECT display_name, coalesce(email, '') FROM user_account WHERE id = $1`, userID).Scan(&name, &email); err != nil {
+		t.Fatal(err)
+	}
+	if name != "My Custom Name" {
+		t.Errorf("re-login clobbered in-app name: display_name = %q, want %q", name, "My Custom Name")
+	}
+	if email != "rename2@example.invalid" {
+		t.Errorf("re-login should still sync email: email = %q, want %q", email, "rename2@example.invalid")
+	}
+}
+
 func TestProvisionAppliesMultipleRoles(t *testing.T) {
 	op := newFakeOP(t)
 	pool := store.TestPool(t, "kitp_test_oidc_roles")

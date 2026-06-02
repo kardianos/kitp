@@ -622,13 +622,17 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 			return 0, "", fmt.Errorf("oidc: provision link: %w", err)
 		}
 	} else {
-		// Update display_name + email if they changed (cheap upsert-ish).
+		// Re-login of an existing user. Sync email if the claim carries one,
+		// but DO NOT touch display_name: it's set once at first provision and
+		// thereafter owned by the app (user.set_display_name). Re-stamping the
+		// IdP claim here would clobber a name the user changed in-app on every
+		// login. (displayName is still computed above — it feeds the
+		// fresh-insert + pre-created-attach branches, just not this one.)
 		if _, err := tx.Exec(ctx, `
 			UPDATE user_account
-			SET display_name = $2,
-			    email = CASE WHEN $3 = '' THEN email ELSE $3 END
+			SET email = CASE WHEN $2 = '' THEN email ELSE $2 END
 			WHERE id = $1
-		`, userID, displayName, email); err != nil {
+		`, userID, email); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision update: %w", err)
 		}
 	}
