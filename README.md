@@ -153,11 +153,36 @@ client, or set it for a confidential client (recommended — see
 | KITP_CSP_REPORT_ONLY | 0 | 1 sends CSP as report-only. |
 | KITP_CSP_REPORT_URI | (unset) | CSP violation report endpoint. |
 
-### MCP (the `kitpd mcp` subcommand)
+### MCP (agent tool access)
+
+The same handler registry the web client drives is exposed to agents as an
+MCP tool surface, over two transports:
+
+- **Remote HTTP — `POST /api/v1/mcp`.** The "Streamable HTTP" MCP transport
+  (one JSON-RPC 2.0 message per request; `application/json` response, or
+  `204` for notifications). Authenticate with
+  `Authorization: Bearer <user_token value>` — each request is resolved
+  fresh against the token Manager (no server-side MCP session), and the
+  request runs **as that token's `user_account`**, so per-handler authz sees
+  the authenticated actor. Mint a token with the `user_token.create` API
+  (`user_token.list` / `user_token.revoke` manage them); the typical setup is
+  a human creating an agent account (`agent.create`) and binding a token to
+  it. Use `proc.search` over the connection to discover available tools.
+
+  ```
+  curl -X POST https://kitp.example.com/api/v1/mcp \
+    -H 'Authorization: Bearer <user_token value>' \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+  ```
+
+- **Local stdio — the `kitpd mcp` subcommand.** Speaks MCP over stdin/stdout
+  for a co-located client. With `KITP_TOKEN` unset it acts as the built-in
+  System user; set it to a `user_token` value to act as that token's user.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| KITP_TOKEN | (unset) | Bearer token; when set, MCP acts as that token's user instead of System. |
+| KITP_TOKEN | (unset) | Bearer token for the `kitpd mcp` stdio transport; when set, MCP acts as that token's user instead of System. (The HTTP endpoint takes its token from the `Authorization` header instead.) |
 
 ## Authentication & authorization
 
