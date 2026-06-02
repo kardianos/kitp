@@ -81,6 +81,9 @@ export function createToolbar(engine: EditorEngine): EditorToolbar {
       btn.title = b.title;
       btn.setAttribute('aria-label', b.title);
       btn.textContent = b.label;
+      // Mouse-only tool: stay out of the keyboard tab order so Tab moves
+      // straight from title to description body, not through every button.
+      btn.tabIndex = -1;
       // Keep the editor's selection/focus — a toolbar click must not blur it.
       const onMouseDown = (e: MouseEvent): void => e.preventDefault();
       const onClick = (): void => {

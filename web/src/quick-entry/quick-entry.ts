@@ -306,7 +306,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     this.descEditor = new RichEditor({
       value: '',
       placeholder: 'Description (optional)',
-      minRows: 3,
+      minRows: 6,
       editableClassName: 'qe-overlay__input qe-overlay__textarea',
       editableAttrs: { 'data-qe-description': '' },
       onCommit: () => this.submit(true),
