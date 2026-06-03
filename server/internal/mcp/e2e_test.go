@@ -128,10 +128,10 @@ func TestMCPSubprocess_Initialize_ToolsList_ToolsCall(t *testing.T) {
 		if got.Error != nil {
 			t.Fatalf("tools/list error: %v", got.Error)
 		}
-		// Must include echo__ping, proc__search, and a representative
-		// write handler (card__insert / attribute__update) so we know
-		// the full toolset is wired correctly.
-		want := []string{"echo__ping", "proc__search", "card__insert", "attribute__update"}
+		// Must include the proc__batch meta-tool, proc__search, and
+		// representative curated handlers so we know the curated surface
+		// is wired correctly.
+		want := []string{"proc__batch", "echo__ping", "proc__search", "card__insert", "attribute__update"}
 		gotNames := make(map[string]bool, len(got.Result.Tools))
 		for _, tt := range got.Result.Tools {
 			gotNames[tt.Name] = true
@@ -140,6 +140,54 @@ func TestMCPSubprocess_Initialize_ToolsList_ToolsCall(t *testing.T) {
 			if !gotNames[w] {
 				t.Errorf("tools/list missing %q. got: %v", w, gotNames)
 			}
+		}
+		// Non-curated handlers must NOT be advertised as standalone
+		// tools — they stay reachable only via proc__search + proc__batch.
+		for _, hidden := range []string{"user_token__create", "user_role__set", "flow__set", "comm__set_recipients"} {
+			if gotNames[hidden] {
+				t.Errorf("tools/list should not advertise non-curated %q", hidden)
+			}
+		}
+	}
+
+	// 2b. proc__batch reaches a non-curated op (role__list) and runs it
+	// through the same dispatcher path, returning a per-op result.
+	resp = send(t, "tools/call", 22, map[string]any{
+		"name": "proc__batch",
+		"arguments": map[string]any{
+			"ops": []map[string]any{
+				{"endpoint": "role", "action": "list", "data": map[string]any{}},
+			},
+		},
+	})
+	{
+		var got struct {
+			Result struct {
+				IsError bool `json:"isError"`
+				Data    struct {
+					Results []struct {
+						Idx  int    `json:"idx"`
+						OK   bool   `json:"ok"`
+						Code string `json:"code"`
+					} `json:"results"`
+				} `json:"data"`
+			} `json:"result"`
+			Error any `json:"error"`
+		}
+		if err := json.Unmarshal(resp, &got); err != nil {
+			t.Fatalf("proc__batch decode: %v: %s", err, resp)
+		}
+		if got.Error != nil {
+			t.Fatalf("proc__batch error: %v", got.Error)
+		}
+		if got.Result.IsError {
+			t.Fatalf("proc__batch envelope isError=true: %s", resp)
+		}
+		if len(got.Result.Data.Results) != 1 {
+			t.Fatalf("proc__batch want 1 result, got %d: %s", len(got.Result.Data.Results), resp)
+		}
+		if r := got.Result.Data.Results[0]; !r.OK {
+			t.Fatalf("proc__batch role.list op failed: code=%q", r.Code)
 		}
 	}
 
@@ -237,7 +285,6 @@ func serverRoot(t *testing.T) string {
 	t.Fatalf("go.mod not found above %s", wd)
 	return ""
 }
-
 
 // poolDSN extracts the DSN that store.TestPool used to create the pool.
 // We rely on the same env var fallback as TestPool (DATABASE_URL or the

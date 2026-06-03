@@ -157,6 +157,75 @@ func Register(p *store.Pool) {
 		SQLFunc: "attachment_create_batch",
 		PostRun: doThumbnails(p),
 	})
+	reg.Register(reg.Handler{
+		Endpoint:   "attachment",
+		Action:     "download_url",
+		Doc:        "Mint a time-limited, signed URL for an attachment's bytes (mode: download|view|thumb). GET the URL with no auth header — e.g. `curl -o file <url>` — to stream the file straight to disk. The link expires after a few minutes.",
+		InputType:  reflect.TypeFor[DownloadURLInput](),
+		OutputType: reflect.TypeFor[DownloadURLOutput](),
+		// Read-shaped: resolves metadata + signs a link, writes nothing.
+		IsRead:       true,
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		ProcessName:  "card.update",
+		// Same gate as attachment.delete + the streaming routes: the
+		// caller must hold card.update on the attachment's project. The
+		// minted signature then stands in for this check on the public
+		// /dl route (which carries no credential). Input has only the
+		// attachment id, so dereference attachment → card for both the
+		// card_type (authz) and the scope card (per-row scope pass).
+		CardTypeID:  cardTypeFromDownloadURLInput(p),
+		ScopeCardID: scopeCardFromDownloadURLInput(p),
+		// Unified handler — body in
+		// db/schema/functions/attachment_download_url_batch.sql. The SQL
+		// resolves file metadata; PostRun (signDownloadURLs) fills in the
+		// signed url + expires_at Go-side (the secret lives in-process).
+		SQLFunc: "attachment_download_url_batch",
+		PostRun: signDownloadURLs,
+	})
+}
+
+// cardTypeFromDownloadURLInput resolves the card_type of the
+// attachment's owning card so the dispatcher can scope-check the
+// actor's card.update grant. Mirrors cardTypeFromDeleteInput — input
+// carries only the attachment id. Returns 0 (skip authz) on a missing
+// attachment; the SQL handler then surfaces the not-found.
+func cardTypeFromDownloadURLInput(_ *store.Pool) func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+	return func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+		id := raw.(DownloadURLInput).ID
+		var cardTypeID int64
+		err := pool.QueryRow(ctx, `
+			SELECT c.card_type_id
+			FROM attachment a
+			JOIN card c ON c.id = a.card_id
+			WHERE a.id = $1
+		`, id).Scan(&cardTypeID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return 0, nil
+			}
+			return 0, fmt.Errorf("attachment.download_url: card_type lookup: %w", err)
+		}
+		return cardTypeID, nil
+	}
+}
+
+// scopeCardFromDownloadURLInput dereferences the attachment to its
+// owning card so the per-row scope pass can walk card → project (BE-H3
+// / A2). Mirrors scopeCardFromDeleteInput. Returns (0, nil) on a
+// missing attachment.
+func scopeCardFromDownloadURLInput(_ *store.Pool) func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+	return func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
+		id := raw.(DownloadURLInput).ID
+		var cardID int64
+		err := pool.QueryRow(ctx, `SELECT card_id FROM attachment WHERE id = $1`, id).Scan(&cardID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return 0, nil
+			}
+			return 0, fmt.Errorf("attachment.download_url: card_id lookup: %w", err)
+		}
+		return cardID, nil
+	}
 }
 
 // cardTypeFromCreateInput resolves the attaching card's card_type so the

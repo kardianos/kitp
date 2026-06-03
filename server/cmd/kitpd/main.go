@@ -55,6 +55,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log"
@@ -526,6 +527,21 @@ func runHTTP() error {
 	// External base URL for task deep links in outbound mail to kitp users
 	// (e.g. https://kitp.example.com). Empty disables the footer link.
 	publicURL := strings.TrimSpace(os.Getenv("KITP_PUBLIC_URL"))
+	// Secret for signing attachment download links (attachment.download_url
+	// → the public /api/v1/attachment/{id}/dl route). A configured
+	// KITP_LINK_SECRET lets every instance behind a load balancer verify
+	// each other's links and survives restarts; absent one, fall back to
+	// an ephemeral per-process key (fine for single-instance dev — links
+	// just stop working on restart / across instances).
+	linkSecret := []byte(strings.TrimSpace(os.Getenv("KITP_LINK_SECRET")))
+	if len(linkSecret) == 0 {
+		linkSecret = make([]byte, 32)
+		if _, err := rand.Read(linkSecret); err != nil {
+			return fmt.Errorf("generate ephemeral attachment-link secret: %w", err)
+		}
+		logger.Warn("KITP_LINK_SECRET unset; using an ephemeral per-process key for attachment download links (links break on restart and across instances)")
+	}
+	attachment.SetLinkDeps(publicURL, linkSecret)
 	smtpPool := comm.NewSMTPPool(pool, smtpTick, logger, publicURL)
 	imapPool := comm.NewIMAPPool(pool, imapTick, logger)
 	activityPool := activitysink.NewMSGraphPool(pool, activityTick, logger)

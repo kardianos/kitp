@@ -41,7 +41,7 @@ type Config struct {
 //   - GET …/download  — Content-Disposition: attachment (forces save-as)
 //   - GET …/view      — Content-Disposition: inline (renders in browser)
 //   - GET …/thumb     — Content-Disposition: inline + targets the
-//                       attachment's thumb_file_id; 404 when no thumb
+//     attachment's thumb_file_id; 404 when no thumb
 func Mount(rt *api.Router, cfg Config) {
 	rt.Authed("GET /api/v1/attachment/{id}/download", func(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.UserCtx) error {
 		return handleStream(ctx, w, r, cfg, streamModeDownload)
@@ -51,6 +51,16 @@ func Mount(rt *api.Router, cfg Config) {
 	})
 	rt.Authed("GET /api/v1/attachment/{id}/thumb", func(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.UserCtx) error {
 		return handleStream(ctx, w, r, cfg, streamModeThumb)
+	})
+	// Public, signature-gated streaming route. Unlike the three Authed
+	// routes above, this one carries no session/bearer credential — a
+	// valid HMAC signature (minted by the attachment.download_url
+	// dispatcher endpoint, which ran the card.update-on-project gate
+	// against the requesting agent) IS the capability. Bytes for all
+	// three modes flow through the same streamBytes core; mode + the
+	// signed exp + sig ride in the query string. See link.go.
+	rt.Public("GET /api/v1/attachment/{id}/dl", func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+		return handleSignedStream(ctx, w, r, cfg)
 	})
 }
 
@@ -95,7 +105,16 @@ func handleStream(ctx context.Context, w http.ResponseWriter, r *http.Request, c
 	if err := requireAttachmentAccess(ctx, cfg.Pool, user.ID, id); err != nil {
 		return err
 	}
+	return streamBytes(ctx, w, cfg, id, mode)
+}
 
+// streamBytes is the credential-agnostic streaming core shared by the
+// Authed routes (which call requireAttachmentAccess first) and the
+// public signed /dl route (which verifies an HMAC signature first). It
+// assumes the caller has already established access to `id`; it only
+// resolves the file row + chunks and copies bytes to the writer.
+func streamBytes(ctx context.Context, w http.ResponseWriter, cfg Config, id int64, mode streamMode) error {
+	var err error
 	// One round-trip to fetch the chosen file row's metadata + the
 	// ordered chunk list. The same query covers all three modes — the
 	// only knob is which `file` row to JOIN against (file_id vs.

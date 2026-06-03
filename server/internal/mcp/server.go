@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"sync"
 
 	"github.com/kitp/kitp/server/internal/api"
@@ -85,8 +86,18 @@ func ToolsFor(ctx context.Context, pool auth.RolesPool) []Tool {
 	}
 
 	out := make([]Tool, 0, len(hs))
+	// The proc__batch meta-tool is the role-gated conduit to every
+	// handler NOT individually advertised below: an LLM discovers an
+	// op + its schema via proc.search, then invokes it here. Advertise
+	// it to any signed-in caller (public-only sessions get the typed
+	// public tools but not the batch escape hatch).
+	if signedIn {
+		out = append(out, batchMetaTool())
+	}
 	for _, h := range hs {
-		if allowedForActor(h, signedIn, loadRoles) {
+		// MCP advertises a deliberately small, curated set (curated.go).
+		// The rest stay reachable via proc__batch + proc.search.
+		if isCuratedTool(h) && allowedForActor(h, signedIn, loadRoles) {
 			out = append(out, toolFromHandler(h))
 		}
 	}
@@ -134,6 +145,41 @@ func toolFromHandler(h reg.Handler) Tool {
 	}
 }
 
+// batchMetaToolName is the synthetic tool that dispatches arbitrary
+// dispatcher ops. It is NOT a registered handler — handleToolsCall
+// intercepts it before reg.Lookup. Named under the `proc` endpoint to
+// sit alongside its discovery sibling proc.search.
+const batchMetaToolName = "proc__batch"
+
+// batchMetaTool is the one advertised conduit to every dispatcher op
+// that isn't individually flagged MCPTool. Pair it with proc.search:
+// discover an op's name + input schema, then submit it here. Multiple
+// ops run in one call, mirroring the HTTP /api/v1/batch envelope; each
+// is role- and authz-checked exactly as a direct call would be.
+func batchMetaTool() Tool {
+	opSchema := &Schema{
+		Type: "object",
+		Properties: map[string]*Schema{
+			"endpoint": {Type: "string", Description: "dispatcher endpoint, e.g. card (from proc.search)"},
+			"action":   {Type: "string", Description: "dispatcher action, e.g. set_phase (from proc.search)"},
+			"data":     {Type: "object", Description: "arguments object for the op; shape comes from the op's input_schema in proc.search", AdditionalProperties: true},
+		},
+		Required: []string{"endpoint", "action"},
+	}
+	return Tool{
+		Name: batchMetaToolName,
+		Description: "Invoke one or more dispatcher operations not in this tool list. " +
+			"First call proc__search to discover an op's endpoint/action + input_schema, " +
+			"then submit ops here. Each op is role- and authz-checked like a direct call. " +
+			"Returns one result per op: {idx, ok, code, message, data}.",
+		InputSchema: &Schema{
+			Type:       "object",
+			Properties: map[string]*Schema{"ops": {Type: "array", Description: "operations to run, in order", Items: opSchema}},
+			Required:   []string{"ops"},
+		},
+	}
+}
+
 // Server speaks MCP JSON-RPC 2.0 over an io.Reader / io.Writer pair
 // (typically stdin / stdout when run as a child process). It is
 // stateless across calls; each tools/call opens its own DB tx via the
@@ -163,10 +209,10 @@ type jsonrpcRequest struct {
 
 // jsonrpcResponse mirrors it on the way out.
 type jsonrpcResponse struct {
-	JSONRPC string         `json:"jsonrpc"`
+	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,string,omitempty"`
-	Result  any            `json:"result,omitempty"`
-	Error   *jsonrpcError  `json:"error,omitempty"`
+	Result  any             `json:"result,omitempty"`
+	Error   *jsonrpcError   `json:"error,omitempty"`
 }
 
 type jsonrpcError struct {
@@ -238,6 +284,18 @@ type initializeResult struct {
 // Soft conventions only — the handlers don't enforce these. Keep it
 // short; MCP clients render this verbatim.
 const serverInstructions = `kitp MCP conventions
+
+Tool surface: only the common agent-facing operations are listed as
+individual tools. Everything else (admin, schema/flow authoring,
+identity, comms management, ...) is reachable but not listed:
+
+- proc__search — discover any operation: returns its endpoint/action,
+  doc, and input_schema/output_schema. Filter with {query} or
+  {endpoint, action}; {all:true} dumps the whole catalogue.
+- proc__batch — invoke one or more of those operations in a single
+  call: {ops:[{endpoint, action, data}, ...]}. Each op is role- and
+  authz-checked exactly like a listed tool. Use this for anything not
+  in the tool list.
 
 Default filters for card reads (card.select_with_attributes, card.search):
 
@@ -313,6 +371,11 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonrpcRequest) {
 	}
 	if p.Name == "" {
 		s.writeError(req.ID, -32602, "tool name is required", nil)
+		return
+	}
+
+	if p.Name == batchMetaToolName {
+		s.handleBatchTool(ctx, req, p.Arguments)
 		return
 	}
 
@@ -393,6 +456,104 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonrpcRequest) {
 			map[string]any{"type": "text", "text": string(dataBuf)},
 		},
 		"data": json.RawMessage(dataBuf),
+	})
+}
+
+// batchToolParams is the wire shape for the proc__batch meta-tool.
+type batchToolParams struct {
+	Ops []struct {
+		Endpoint string          `json:"endpoint"`
+		Action   string          `json:"action"`
+		Data     json.RawMessage `json:"data"`
+	} `json:"ops"`
+}
+
+// handleBatchTool dispatches the proc__batch meta-tool: each op becomes
+// one SubRequest through the SAME dispatcher path tools/call and the
+// HTTP /api/v1/batch route use, so the role gate, per-row authz, and
+// per-handler timeouts apply identically. The whole batch runs in one
+// request tx (dispatcher semantics); per-op outcomes come back as a
+// results array. The envelope itself is a successful tool result
+// (isError=false) — op-level failures live in each result's ok/code,
+// matching the HTTP batch contract.
+func (s *Server) handleBatchTool(ctx context.Context, req jsonrpcRequest, rawArgs json.RawMessage) {
+	var p batchToolParams
+	if len(rawArgs) > 0 {
+		if err := json.Unmarshal(rawArgs, &p); err != nil {
+			s.writeError(req.ID, -32602, "invalid params: "+err.Error(), nil)
+			return
+		}
+	}
+	if len(p.Ops) == 0 {
+		s.writeError(req.ID, -32602, "proc__batch requires a non-empty ops array", nil)
+		return
+	}
+
+	subs := make([]api.SubRequest, len(p.Ops))
+	for i, op := range p.Ops {
+		if op.Endpoint == "" || op.Action == "" {
+			s.writeError(req.ID, -32602, "proc__batch: each op needs endpoint + action", nil)
+			return
+		}
+		data := op.Data
+		if len(data) == 0 {
+			data = json.RawMessage(`{}`)
+		}
+		subs[i] = api.SubRequest{
+			ID:       "mcp-batch-" + strconv.Itoa(i),
+			Type:     "data",
+			Endpoint: op.Endpoint,
+			Action:   op.Action,
+			Data:     data,
+		}
+	}
+
+	resp := s.dispatcher.Dispatch(ctx, api.BatchRequest{Subrequests: subs})
+
+	// Map back to a per-op result array, preserving input order. The
+	// dispatcher indexes subresponses by input position (see api.Dispatch),
+	// so positional mapping is safe; we also surface code/message/detail
+	// from any op-level rejection.
+	type opResult struct {
+		Idx     int    `json:"idx"`
+		OK      bool   `json:"ok"`
+		Code    string `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
+		Data    any    `json:"data,omitempty"`
+		Detail  any    `json:"detail,omitempty"`
+	}
+	results := make([]opResult, len(p.Ops))
+	for i := range p.Ops {
+		r := opResult{Idx: i}
+		if i < len(resp.Subresponses) {
+			sr := resp.Subresponses[i]
+			r.OK = sr.OK
+			if sr.OK {
+				r.Data = sr.Data
+			} else if sr.Error != nil {
+				r.Code = sr.Error.Code
+				r.Message = sr.Error.Message
+				r.Detail = sr.Error.Detail
+			}
+		} else {
+			r.Code = "internal"
+			r.Message = "no subresponse returned for op"
+		}
+		results[i] = r
+	}
+
+	payload := map[string]any{"results": results}
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		s.writeError(req.ID, -32603, "internal: marshal batch results: "+err.Error(), nil)
+		return
+	}
+	s.writeResult(req.ID, map[string]any{
+		"isError": false,
+		"content": []any{
+			map[string]any{"type": "text", "text": string(buf)},
+		},
+		"data": json.RawMessage(buf),
 	})
 }
 

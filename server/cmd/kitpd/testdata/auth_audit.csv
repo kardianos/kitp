@@ -7,6 +7,7 @@ dispatcher,,,agent.create,$authenticated,"Create an agent owned by the calling u
 dispatcher,,,agent.delete,$authenticated,"Delete an agent owned by the calling user (or by any admin). Cascades sessions, tokens, and user_card_agent rows. Rejects when the actor is itself an agent."
 dispatcher,,,attachment.create,admin;manager;worker,Link an existing file (created via file.create) to a card. Inserts the attachment row + an attachment_create activity in one tx.
 dispatcher,,,attachment.delete,admin;manager;worker,Soft-delete an attachment. The file + chunks linger until the CAS reaper sweeps them.
+dispatcher,,,attachment.download_url,admin;manager;worker,"Mint a time-limited, signed URL for an attachment's bytes (mode: download|view|thumb). GET the URL with no auth header — e.g. `curl -o file <url>` — to stream the file straight to disk. The link expires after a few minutes."
 dispatcher,,,attachment.list,$authenticated,"List active attachments for a card, newest first."
 dispatcher,,,attribute.update,admin;manager;worker,Set an attribute value on a card; emits one activity row and one upsert per write.
 dispatcher,,,attribute_def.insert,admin,"Admin-only: insert a new attribute_def with optional initial edges, in one tx."
@@ -22,8 +23,9 @@ dispatcher,,,card.set_phase,admin;manager;worker,Set the structural phase column
 dispatcher,,,card.undelete,admin;manager;worker,Undo a previous soft-delete by clearing deleted_at on the card.
 dispatcher,,,card_type.select,$authenticated,List every card_type row known to the server (built-in types are seeded via migration).
 dispatcher,,,cas.missing_chunks,admin;manager;worker,"Given a list of cas_blob addresses, return the subset NOT currently stored. Used by the client as an upload pre-flight: bytes for the missing addresses are POSTed to /api/v1/cas/chunk; everything else is skipped."
-dispatcher,,,comm.create,admin,"Admin-only: create a comm card under a task. Generates a 10-char alphanumeric thread_id, sets channel_ref + comm_status (the project's comm flow default_create_status_id), appends the new comm to the task's comms attribute, and (when initial_message is provided) creates a received-direction reply_body row."
+dispatcher,,,comm.create,admin,"Admin-only: create a comm card under a task. Generates a 10-char alphanumeric thread_id, sets channel_ref + comm_status (the project's comm flow default_create_status_id), appends the new comm to the task's comms attribute, and (when initial_message is provided) creates an outbound reply_body row (delivery_status='pending', queued for SMTP) — which requires recipient_person_ids."
 dispatcher,,,comm.list_for_task,$authenticated,"Return every comm card under the task, hydrated with its replies (reply_body cards listed in the comm's replies attribute). Read-side affordance for the task detail screen; any authenticated user may call."
+dispatcher,,,comm.set_ack,admin;manager;worker,"Set the per-thread `acked` flag on a comm card (true = handled, default; false = re-open). A received inbound reply clears it automatically. Authz: worker / manager / admin (matches the manager grant on comm)."
 dispatcher,,,comm.set_recipients,admin;manager;worker,Replace the comm_recipients participant list on a comm card. Pass an empty array to clear. Each id must reference a person card. Authz: worker / manager / admin (matches the manager grant on comm).
 dispatcher,,,comm.unseen_count,$authenticated,"Cheap count of newly received comms (inbound reply_body cards) across every project the caller can see, with create-activity id > since_activity_id. Drives the header notification bell; any authenticated user may call."
 dispatcher,,,comm_channel.list,admin,"Admin-only: list comm_channel cards configured under a project, joined with their comm_secret row so has_imap_password / has_smtp_password indicate which passwords have been set without exposing the encrypted bytes."
@@ -60,7 +62,7 @@ dispatcher,,,role_mapping.set,admin,Admin-only: upsert one role_mapping row.
 dispatcher,,,tag.apply,admin;manager;worker,Apply a tag card to a target card; mutually-exclusive sibling tags at the same root are removed atomically.
 dispatcher,,,tag.remove,admin;manager;worker,Remove a tag card from a target card.
 dispatcher,,,task.move,admin;manager;worker,"Bump a task (and optionally its sub-tree) to a different project, clearing per-project classification so the user re-classifies in the destination."
-dispatcher,,,task.purge,admin;manager;worker,Permanently delete a task (and its comms / reply_bodies / attachments / activity). Refuses when live sub-tasks or flow references exist. UI must gate this behind a strong confirm.
+dispatcher,,,task.purge,admin;manager,Permanently delete a task (and its comms / reply_bodies / attachments / activity). Refuses when live sub-tasks or flow references exist. UI must gate this behind a strong confirm.
 dispatcher,,,user.list_with_roles,admin,List every user_account row with role assignments and resolved project titles for scoped grants. Used by the admin UI.
 dispatcher,,,user.select,$authenticated,List every user_account row sorted by display_name.
 dispatcher,,,user.set_display_name,admin,"Update user_account.display_name for one user_account row. The /auth/me probe reads display_name straight from this column, so this is what powers the shell's signed-in user chip — renaming the linked person card (attribute.update on title) does NOT propagate here. Admin-only; no-op (ok=true) when the value already matches."
@@ -85,6 +87,7 @@ http_route,authed,POST /api/v1/auth/dev-impersonate,,,
 http_route,authed,POST /api/v1/batch,,,
 http_route,authed,POST /api/v1/cas/chunk,,,
 http_route,bearer,POST /api/v1/mcp,,,
+http_route,public,GET /api/v1/attachment/{id}/dl,,,
 http_route,public,GET /api/v1/auth/me,,,
 http_route,public,GET /api/v1/auth/oidc/callback,,,
 http_route,public,GET /api/v1/auth/oidc/start,,,
