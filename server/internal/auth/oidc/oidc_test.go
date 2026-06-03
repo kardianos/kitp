@@ -254,6 +254,178 @@ func TestProvisionCreatesPersonCard(t *testing.T) {
 	}
 }
 
+// seedPersonCard inserts a global person card with the given attribute
+// values (e.g. {"title": "X", "email": "x@y", "person_kind": "contact"})
+// directly, the way person.upsert_by_email materialises a contact. Returns
+// the new card id. last_activity_id is left NULL (nullable column).
+func seedPersonCard(t *testing.T, pool *pgxpool.Pool, attrs map[string]string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	var personID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO card (card_type_id, parent_card_id)
+		SELECT id, NULL FROM card_type WHERE name = 'person'
+		RETURNING id
+	`).Scan(&personID); err != nil {
+		t.Fatalf("seed person card: %v", err)
+	}
+	for name, val := range attrs {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO attribute_value (card_id, attribute_def_id, value)
+			SELECT $1, id, to_jsonb($3::text) FROM attribute_def WHERE name = $2
+		`, personID, name, val); err != nil {
+			t.Fatalf("seed attr %s: %v", name, err)
+		}
+	}
+	return personID
+}
+
+// TestProvisionReusesExistingContact covers the dedup rule: when a person
+// card already exists for the sign-in email (a contact materialised from an
+// inbound email, or an admin-added assignee with no login), the first OIDC
+// sign-in reuses that card as the basis of the user instead of duplicating
+// the person. The reused card is elevated to person_kind='member' so the new
+// user is assignable. email_verified=true so the email-trust gate (DI-4)
+// permits reuse.
+func TestProvisionReusesExistingContact(t *testing.T) {
+	op := newFakeOP(t)
+	pool := store.TestPool(t, "kitp_test_oidc_reuse_contact")
+	v := oidc.NewValidator(&oidc.Config{Issuer: op.server.URL, Audience: "kitp-web"}, pool)
+	ctx := context.Background()
+	now := time.Now()
+
+	const email = "reuse-contact@example.invalid"
+	personID := seedPersonCard(t, pool, map[string]string{
+		"title":       "Old Contact Name",
+		"email":       email,
+		"person_kind": "contact",
+	})
+
+	tok := op.signToken(t, jwt.MapClaims{
+		"iss": op.server.URL, "aud": "kitp-web",
+		"sub": "reuse-contact-sub", "name": "Real Name",
+		"email": email, "email_verified": true,
+		"exp": now.Add(time.Hour).Unix(),
+	})
+	userID, _, err := v.Resolve(ctx, tok)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	// The user links to the PRE-EXISTING person card — no duplicate.
+	var linked int64
+	if err := pool.QueryRow(ctx, `
+		SELECT person_card_id FROM user_account_person WHERE user_account_id = $1
+	`, userID).Scan(&linked); err != nil {
+		t.Fatalf("link missing: %v", err)
+	}
+	if linked != personID {
+		t.Errorf("linked person = %d, want reused %d", linked, personID)
+	}
+
+	// Exactly one person card carries this email — the contact was not
+	// duplicated.
+	var nPersons int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM card c
+		JOIN attribute_value av ON av.card_id = c.id
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE c.card_type_id = (SELECT id FROM card_type WHERE name='person')
+		  AND c.deleted_at IS NULL AND ad.name = 'email'
+		  AND lower(av.value #>> '{}') = $1
+	`, email).Scan(&nPersons); err != nil {
+		t.Fatal(err)
+	}
+	if nPersons != 1 {
+		t.Errorf("person cards with email = %d, want 1 (no duplicate)", nPersons)
+	}
+
+	// Elevated to member (assignable).
+	var kind string
+	if err := pool.QueryRow(ctx, `
+		SELECT av.value #>> '{}' FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE av.card_id = $1 AND ad.name = 'person_kind'
+	`, personID).Scan(&kind); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "member" {
+		t.Errorf("person_kind = %q, want member (elevated)", kind)
+	}
+}
+
+// TestProvisionAttachesToLinkedPersonByAttr covers reusing an EXISTING user
+// matched via the person's email attribute, even when user_account.email is
+// blank (so the older user_account.email fallback misses). Mirrors a person
+// pre-created as an assignee then granted a login whose email lives only on
+// the card. First sign-in attaches the sub to that account — it does not mint
+// a second one.
+func TestProvisionAttachesToLinkedPersonByAttr(t *testing.T) {
+	op := newFakeOP(t)
+	pool := store.TestPool(t, "kitp_test_oidc_reuse_linked")
+	v := oidc.NewValidator(&oidc.Config{Issuer: op.server.URL, Audience: "kitp-web"}, pool)
+	ctx := context.Background()
+	now := time.Now()
+
+	const email = "linked-by-attr@example.invalid"
+	personID := seedPersonCard(t, pool, map[string]string{
+		"title":       "Pre User",
+		"email":       email,
+		"person_kind": "member",
+	})
+	// Pre-created login: NULL oidc_sub AND NULL email, linked to the person.
+	var preUser int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO user_account (display_name) VALUES ('Pre User') RETURNING id
+	`).Scan(&preUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO user_account_person (user_account_id, person_card_id) VALUES ($1, $2)
+	`, preUser, personID); err != nil {
+		t.Fatal(err)
+	}
+
+	tok := op.signToken(t, jwt.MapClaims{
+		"iss": op.server.URL, "aud": "kitp-web",
+		"sub": "linked-attr-sub", "name": "Real Name",
+		"email": email, "email_verified": true,
+		"exp": now.Add(time.Hour).Unix(),
+	})
+	userID, _, err := v.Resolve(ctx, tok)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if userID != preUser {
+		t.Errorf("resolved to user %d, want pre-existing %d (attached, not duplicated)", userID, preUser)
+	}
+
+	var sub string
+	var gotEmail *string
+	if err := pool.QueryRow(ctx, `
+		SELECT oidc_sub, email FROM user_account WHERE id = $1
+	`, preUser).Scan(&sub, &gotEmail); err != nil {
+		t.Fatal(err)
+	}
+	if sub != "linked-attr-sub" {
+		t.Errorf("oidc_sub = %q, want attached sub", sub)
+	}
+	if gotEmail == nil || *gotEmail != email {
+		t.Errorf("email = %v, want backfilled %q", gotEmail, email)
+	}
+
+	// Still exactly one user_account linked to this person.
+	var nUsers int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM user_account_person WHERE person_card_id = $1
+	`, personID).Scan(&nUsers); err != nil {
+		t.Fatal(err)
+	}
+	if nUsers != 1 {
+		t.Errorf("user links to person = %d, want 1 (no second account)", nUsers)
+	}
+}
+
 // TestReloginPreservesInAppRename guards the rule that OIDC sets display_name
 // only at first provision: once a user renames themselves in-app
 // (user.set_display_name → user_account.display_name), a later login with a

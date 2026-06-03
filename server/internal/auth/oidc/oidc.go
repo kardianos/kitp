@@ -552,6 +552,95 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 			userID = preID
 			attached = true
 		}
+		if !attached {
+			// No pre-created user_account matched by email, but a
+			// person card might already exist for this human — a
+			// contact materialised from an inbound email, or an
+			// assignee an admin added without a login. Reuse it as the
+			// basis of the user rather than duplicating the person card
+			// (and splitting the human's comms / assignment history
+			// across two cards). Gated on the same email-trust check as
+			// the pre-created fallback: reuse binds our sub to an
+			// existing person, so an unverified-email OP must not drive
+			// it (DI-4).
+			var (
+				personID     int64
+				linkedUserID *int64
+				linkedHasSub bool
+			)
+			perErr := tx.QueryRow(ctx, `
+				SELECT c.id, uap.user_account_id,
+				       coalesce(ua.oidc_sub IS NOT NULL, false)
+				FROM card c
+				JOIN attribute_value av ON av.card_id = c.id
+				JOIN attribute_def ad ON ad.id = av.attribute_def_id
+				LEFT JOIN user_account_person uap ON uap.person_card_id = c.id
+				LEFT JOIN user_account ua ON ua.id = uap.user_account_id
+				WHERE c.card_type_id = (SELECT id FROM card_type WHERE name = 'person')
+				  AND c.deleted_at IS NULL
+				  AND ad.name = 'email'
+				  AND lower(av.value #>> '{}') = lower($1)
+				ORDER BY c.id
+				LIMIT 1
+			`, email).Scan(&personID, &linkedUserID, &linkedHasSub)
+			if perErr != nil && !errors.Is(perErr, pgx.ErrNoRows) {
+				return 0, "", fmt.Errorf("oidc: person-reuse lookup: %w", perErr)
+			}
+			switch {
+			case errors.Is(perErr, pgx.ErrNoRows):
+				// No existing person — fall through to fresh insert.
+			case linkedUserID != nil && !linkedHasSub:
+				// The person already has a login (admin pre-created via
+				// person.create tier='user' / person.grant_account) whose
+				// oidc_sub is still NULL. Attach our sub to it — same as
+				// the user_account email fallback above, but matched via
+				// the person's email attribute, which can differ from a
+				// NULL / stale user_account.email.
+				if _, uErr := tx.Exec(ctx, `
+					UPDATE user_account
+					SET oidc_sub = $1,
+					    email = CASE WHEN coalesce(email, '') = '' THEN NULLIF($2, '') ELSE email END,
+					    display_name = CASE WHEN coalesce(display_name, '') = '' THEN $3 ELSE display_name END
+					WHERE id = $4
+				`, sub, email, displayName, *linkedUserID); uErr != nil {
+					return 0, "", fmt.Errorf("oidc: attach sub to linked person: %w", uErr)
+				}
+				userID = *linkedUserID
+				attached = true
+			case linkedUserID == nil:
+				// A contact or assignee with no login. Elevate it: mint a
+				// user_account, link it to the existing person card, and
+				// promote person_kind to 'member' so the new user is
+				// assignable. The person's title / email / history stay.
+				if err := tx.QueryRow(ctx, `
+					INSERT INTO user_account (oidc_sub, display_name, email)
+					VALUES ($1, $2, NULLIF($3, ''))
+					RETURNING id
+				`, sub, displayName, email).Scan(&userID); err != nil {
+					return 0, "", fmt.Errorf("oidc: provision insert (reuse person): %w", err)
+				}
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO user_account_person (user_account_id, person_card_id)
+					VALUES ($1, $2)
+				`, userID, personID); err != nil {
+					return 0, "", fmt.Errorf("oidc: link reused person: %w", err)
+				}
+				if err := elevatePersonKind(ctx, tx, personID, userID); err != nil {
+					return 0, "", err
+				}
+				attached = true
+			default:
+				// linkedUserID != nil && linkedHasSub: the person already
+				// belongs to a DIFFERENT OIDC subject. We can't rebind
+				// another subject's account (DI-4) and merging accounts is
+				// out of scope, so fall through to a fresh, separate
+				// user_account + person card; an admin resolves the
+				// duplicate via person.merge.
+				slog.Default().LogAttrs(ctx, slog.LevelWarn,
+					"oidc: email matches a person owned by a different sub; provisioning a separate account",
+					slog.String("sub", sub), slog.Int64("person_card_id", personID))
+			}
+		}
 	}
 	if !attached {
 		// No row matched by sub OR by pre-created email. Insert a
@@ -726,6 +815,45 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		return 0, "", fmt.Errorf("oidc: provision commit: %w", err)
 	}
 	return userID, displayName, nil
+}
+
+// elevatePersonKind promotes a reused person card to person_kind='member'
+// (assignable) when it isn't already one — a contact materialised from an
+// inbound email, or an assignee an admin added, becomes a full member on
+// first login. No-op (and no activity row) when the card is already a
+// member. Writes the attr_update activity + value upsert so the change
+// shows in the card's history, mirroring the fresh-provision attribute
+// writes above. Runs inside the provisioning tx.
+func elevatePersonKind(ctx context.Context, tx pgx.Tx, personCardID, actorID int64) error {
+	var actID int64
+	err := tx.QueryRow(ctx, `
+		INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
+		SELECT $1, 'attr_update', ad.id,
+		       (SELECT value FROM attribute_value WHERE card_id = $1 AND attribute_def_id = ad.id),
+		       to_jsonb('member'::text), $2
+		FROM attribute_def ad
+		WHERE ad.name = 'person_kind'
+		  AND coalesce(
+		        (SELECT value #>> '{}' FROM attribute_value WHERE card_id = $1 AND attribute_def_id = ad.id),
+		        '') <> 'member'
+		RETURNING id
+	`, personCardID, actorID).Scan(&actID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // already a member — nothing to elevate
+	}
+	if err != nil {
+		return fmt.Errorf("oidc: elevate person_kind activity: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
+		SELECT $1, ad.id, to_jsonb('member'::text), $2
+		FROM attribute_def ad WHERE ad.name = 'person_kind'
+		ON CONFLICT (card_id, attribute_def_id) DO UPDATE
+			SET value = EXCLUDED.value, last_activity_id = EXCLUDED.last_activity_id
+	`, personCardID, actID); err != nil {
+		return fmt.Errorf("oidc: elevate person_kind value: %w", err)
+	}
+	return nil
 }
 
 // grantAdminIfInitMode grants [userID] the global admin role iff no
