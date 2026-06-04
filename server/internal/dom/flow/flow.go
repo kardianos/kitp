@@ -136,6 +136,7 @@ type StepSetInput struct {
 	Label          string `json:"label" mcp:"required,desc=button text shown in TransitionBar"`
 	RequiresRoleID int64  `json:"requires_role_id,string,omitempty" mcp:"desc=optional role id required to fire the transition; omitted / 0 = any authenticated user"`
 	SortOrder      int32  `json:"sort_order,omitempty" mcp:"desc=ordering within the same UI bucket"`
+	Standalone     bool   `json:"standalone,omitempty" mcp:"desc=presentation bit: true = its own button in the TransitionBar, false = folded into the overflow dropdown"`
 }
 
 // StepSetOutput surfaces the id.
@@ -169,6 +170,7 @@ type StepListRow struct {
 	RequiresRoleID   int64  `json:"requires_role_id,string,omitempty" mcp:"desc=role id required to fire; 0 / omitted = any authenticated user"`
 	RequiresRoleName string `json:"requires_role_name,omitempty" mcp:"desc=name of the required role for display"`
 	SortOrder        int32  `json:"sort_order" mcp:"desc=ordering within the same UI bucket"`
+	Standalone       bool   `json:"standalone" mcp:"desc=presentation bit: true = its own button, false = overflow dropdown"`
 }
 
 // StepListOutput wraps the rows in a stable envelope.
@@ -206,6 +208,7 @@ type AvailableTransition struct {
 	RequiresRoleID   int64  `json:"requires_role_id,string,omitempty" mcp:"desc=role id required to fire this transition; 0 = any authenticated"`
 	RequiresRoleName string `json:"requires_role_name,omitempty" mcp:"desc=role name required, empty when no role gate"`
 	SortOrder        int32  `json:"sort_order" mcp:"desc=display order within UI bucket"`
+	Standalone       bool   `json:"standalone" mcp:"desc=presentation bit: true = its own button in the TransitionBar, false = folded into the overflow dropdown"`
 	Allowed          bool   `json:"allowed" mcp:"desc=true if the calling actor's roles satisfy requires_role_id (or it's NULL)"`
 }
 

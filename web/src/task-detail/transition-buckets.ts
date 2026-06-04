@@ -57,6 +57,13 @@ export interface TransitionRow {
   requiresRoleName: string;
   /** Display order within the UI bucket. */
   sortOrder: number;
+  /**
+   * Presentation bit authored on the flow_step row (identical for task AND
+   * comm status): true → render as its own button; false → fold into the
+   * bar's overflow dropdown. The single source of truth for button-vs-menu
+   * placement — phase only drives tone/grouping, not shape.
+   */
+  standalone: boolean;
   /** True if the calling actor's roles satisfy `requiresRoleId` (server bit). */
   allowed: boolean;
 }

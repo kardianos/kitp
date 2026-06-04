@@ -329,7 +329,6 @@ export class CommThreads extends Control<CommThreadsConfig> {
         type: 'TransitionBar',
         cardId: comm.id.toString(),
         statusAttr: 'comm_status',
-        progressPrimary: true,
         onChanged: () => {
           if (!this.isAlive()) return;
           this.loadComms();

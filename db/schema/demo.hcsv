@@ -145,19 +145,19 @@ name,                            attribute_def_id,      scope_card_id, default_c
 
 ## table flow_step | doc="12 transitions copied from the template's task flow. Buckets (from.phase, to.phase) drive the TransitionBar's UI category: triage→active = Accept, triage→terminal = Reject, active→active = progress, active→terminal = Close, terminal→active = Reopen." | on_conflict="flow_id, from_card_id, to_card_id, label"
 ### rows
-flow_id,         from_card_id,  to_card_id,  label,            sort_order
-@flow_default,   @s_new_idea,   @s_todo,     "Accept",         1
-@flow_default,   @s_new_idea,   @s_cancel,   "Reject",         2
-@flow_default,   @s_todo,       @s_doing,    "Start",          1
-@flow_default,   @s_doing,      @s_review,   "Send to review", 1
-@flow_default,   @s_review,     @s_done,     "Approve",        1
-@flow_default,   @s_doing,      @s_done,     "Done",           2
-@flow_default,   @s_todo,       @s_done,     "Done",           3
-@flow_default,   @s_todo,       @s_cancel,   "Cancel",         4
-@flow_default,   @s_doing,      @s_cancel,   "Cancel",         5
-@flow_default,   @s_review,     @s_cancel,   "Cancel",         6
-@flow_default,   @s_done,       @s_todo,     "Reopen",         1
-@flow_default,   @s_cancel,     @s_todo,     "Reopen",         2
+flow_id,         from_card_id,  to_card_id,  label,            sort_order, standalone
+@flow_default,   @s_new_idea,   @s_todo,     "Accept",         1,          true
+@flow_default,   @s_new_idea,   @s_cancel,   "Reject",         2,          true
+@flow_default,   @s_todo,       @s_doing,    "Start",          1,          false
+@flow_default,   @s_doing,      @s_review,   "Send to review", 1,          false
+@flow_default,   @s_review,     @s_done,     "Approve",        1,          true
+@flow_default,   @s_doing,      @s_done,     "Done",           2,          true
+@flow_default,   @s_todo,       @s_done,     "Done",           3,          true
+@flow_default,   @s_todo,       @s_cancel,   "Cancel",         4,          false
+@flow_default,   @s_doing,      @s_cancel,   "Cancel",         5,          false
+@flow_default,   @s_review,     @s_cancel,   "Cancel",         6,          false
+@flow_default,   @s_done,       @s_todo,     "Reopen",         1,          true
+@flow_default,   @s_cancel,     @s_todo,     "Reopen",         2,          true
 
 
 ## table card | under=proj_default | doc="Comm status value-cards for Default Project's comm flow (email_comm_spec Gate 2). Same `status` card_type as the task statuses but they answer the `comm_status` attribute; the comm lifecycle (Open → In progress → Resolved) is tracked independently of the task status flow so a task can be 'Doing' while its email thread is 'Resolved'." | on_conflict="id"
@@ -176,10 +176,10 @@ name,                        attribute_def_id,           scope_card_id, default_
 
 ## table flow_step | doc="Comm flow transitions (email_comm_spec Gate 2): Open → In progress (start working), In progress → Resolved (resolve), Resolved → Open (reopen)." | on_conflict="flow_id, from_card_id, to_card_id, label"
 ### rows
-flow_id,     from_card_id,  to_card_id,    label,           sort_order
-@flow_comm,  @cs_open,      @cs_progress,  "Start working", 1
-@flow_comm,  @cs_progress,  @cs_resolved,  "Resolve",       1
-@flow_comm,  @cs_resolved,  @cs_open,      "Reopen",        1
+flow_id,     from_card_id,  to_card_id,    label,           sort_order, standalone
+@flow_comm,  @cs_open,      @cs_progress,  "Start working", 1,          true
+@flow_comm,  @cs_progress,  @cs_resolved,  "Resolve",       1,          true
+@flow_comm,  @cs_resolved,  @cs_open,      "Reopen",        1,          true
 
 
 ## table card | under=proj_default | alias=sc_comms | doc="Comms screen (email_comm_spec Gate 7). Lists tasks with attached comms (the 'Comms attached' default_filter below). flow_ref points at the comm flow so the TransitionBar shows comm-status transitions; toggle_groups filter by comm_status phase (Active / Resolved) rather than task status; default_create_status overrides to 'Open' (the comm flow's create default)."
@@ -366,19 +366,19 @@ name,                       attribute_def_id,      scope_card_id, default_create
 
 ## table flow_step | doc="Mobile App's 12 task transitions — same labels and shape as Default Project, just pointing at Mobile App's status cards." | on_conflict="flow_id, from_card_id, to_card_id, label"
 ### rows
-flow_id,      from_card_id,     to_card_id,      label,            sort_order
-@mob_flow,    @mob_s_new_idea,  @mob_s_todo,     "Accept",         1
-@mob_flow,    @mob_s_new_idea,  @mob_s_cancel,   "Reject",         2
-@mob_flow,    @mob_s_todo,      @mob_s_doing,    "Start",          1
-@mob_flow,    @mob_s_doing,     @mob_s_review,   "Send to review", 1
-@mob_flow,    @mob_s_review,    @mob_s_done,     "Approve",        1
-@mob_flow,    @mob_s_doing,     @mob_s_done,     "Done",           2
-@mob_flow,    @mob_s_todo,      @mob_s_done,     "Done",           3
-@mob_flow,    @mob_s_todo,      @mob_s_cancel,   "Cancel",         4
-@mob_flow,    @mob_s_doing,     @mob_s_cancel,   "Cancel",         5
-@mob_flow,    @mob_s_review,    @mob_s_cancel,   "Cancel",         6
-@mob_flow,    @mob_s_done,      @mob_s_todo,     "Reopen",         1
-@mob_flow,    @mob_s_cancel,    @mob_s_todo,     "Reopen",         2
+flow_id,      from_card_id,     to_card_id,      label,            sort_order, standalone
+@mob_flow,    @mob_s_new_idea,  @mob_s_todo,     "Accept",         1,          true
+@mob_flow,    @mob_s_new_idea,  @mob_s_cancel,   "Reject",         2,          true
+@mob_flow,    @mob_s_todo,      @mob_s_doing,    "Start",          1,          false
+@mob_flow,    @mob_s_doing,     @mob_s_review,   "Send to review", 1,          false
+@mob_flow,    @mob_s_review,    @mob_s_done,     "Approve",        1,          true
+@mob_flow,    @mob_s_doing,     @mob_s_done,     "Done",           2,          true
+@mob_flow,    @mob_s_todo,      @mob_s_done,     "Done",           3,          true
+@mob_flow,    @mob_s_todo,      @mob_s_cancel,   "Cancel",         4,          false
+@mob_flow,    @mob_s_doing,     @mob_s_cancel,   "Cancel",         5,          false
+@mob_flow,    @mob_s_review,    @mob_s_cancel,   "Cancel",         6,          false
+@mob_flow,    @mob_s_done,      @mob_s_todo,     "Reopen",         1,          true
+@mob_flow,    @mob_s_cancel,    @mob_s_todo,     "Reopen",         2,          true
 
 
 ## table card | under=proj_mobile | doc="Mobile App comm status value-cards — independent set from Default Project's, same Open → In progress → Resolved comm lifecycle bound to this project's comm flow." | on_conflict="id"
@@ -397,10 +397,10 @@ name,                    attribute_def_id,           scope_card_id, default_crea
 
 ## table flow_step | doc="Mobile App comm flow transitions — same shape as Default Project, pointing at Mobile App's comm-status cards." | on_conflict="flow_id, from_card_id, to_card_id, label"
 ### rows
-flow_id,         from_card_id,      to_card_id,         label,           sort_order
-@mob_flow_comm,  @mob_cs_open,      @mob_cs_progress,   "Start working", 1
-@mob_flow_comm,  @mob_cs_progress,  @mob_cs_resolved,   "Resolve",       1
-@mob_flow_comm,  @mob_cs_resolved,  @mob_cs_open,       "Reopen",        1
+flow_id,         from_card_id,      to_card_id,         label,           sort_order, standalone
+@mob_flow_comm,  @mob_cs_open,      @mob_cs_progress,   "Start working", 1,          true
+@mob_flow_comm,  @mob_cs_progress,  @mob_cs_resolved,   "Resolve",       1,          true
+@mob_flow_comm,  @mob_cs_resolved,  @mob_cs_open,       "Reopen",        1,          true
 
 
 ## table card | under=proj_mobile | alias=mob_sc_comms | doc="Mobile App Comms screen. No hotkey (Default Project claims the single-letter keys, like the other Mobile App screens). flow_ref → the comm flow; toggle_groups filter by comm_status phase; default_create_status → 'Open'."

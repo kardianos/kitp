@@ -145,12 +145,20 @@ func ApplySchema(ctx context.Context, pool *pgxpool.Pool, opts hcsv.GenerateOpti
 // in the schema_version ledger by its id. See ApplySchema for the contract.
 //
 // Rules for this list:
-//   - DATA only — flipping a built-in attribute_def flag, resyncing a sequence,
-//     adding a role_grant, backfilling a column value. NEVER tables / columns /
-//     indexes / functions (those stay declarative in db/schema and reapply via
-//     the idempotent DDL on every boot).
+//   - DATA reconciliation is the primary use — flipping a built-in
+//     attribute_def flag, resyncing a sequence, adding a role_grant, backfilling
+//     a column value.
+//   - ADDITIVE column DDL is the one structural exception: `ALTER TABLE …
+//     ADD COLUMN IF NOT EXISTS …`. The declarative DDL only emits
+//     `CREATE TABLE IF NOT EXISTS`, which CANNOT add a column to an existing
+//     table — so a new column reaches already-initialised DBs ONLY via a
+//     migration here. Still NEVER put a CREATE/DROP/RENAME of tables / indexes /
+//     functions here (those stay declarative and reapply on every boot); and
+//     never a destructive column change (DROP / RENAME / type-narrowing).
 //   - Each `sql` MUST be idempotent: it also runs (as a no-op) on a fresh DB,
-//     whose current seed already reflects the change.
+//     whose current seed already reflects the change. `ADD COLUMN IF NOT EXISTS`
+//     satisfies this — the column is already present from the fresh DB's
+//     CREATE TABLE, so the ALTER is a no-op there.
 //   - APPEND ONLY. Never reorder, renumber, or edit a shipped migration's sql —
 //     a row already recorded by id will be skipped forever, so a change to its
 //     sql would silently never apply. Need a correction? add a NEW migration.
@@ -265,6 +273,21 @@ BEGIN
     ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
   END IF;
 END $$;`,
+	},
+	{
+		// flow_step.standalone — the per-transition "render as its own button vs
+		// fold into the overflow dropdown" bit the TransitionBar now reads (task +
+		// comm status alike). It's declared in db/schema/schema.hcsv, so fresh DBs
+		// get it via CREATE TABLE — but CREATE TABLE IF NOT EXISTS can't add it to
+		// an existing flow_step, and every flow_step handler now references the
+		// column, so an existing install would hard-fail without this. Additive +
+		// idempotent: a no-op on any DB that already has the column.
+		//
+		// Existing rows default to false (everything in the dropdown); admins set
+		// the bit per transition via the Workflows editor. Fresh/reset DBs instead
+		// get the curated seed values that reproduce the previous look.
+		id:  "0005_flow_step_standalone",
+		sql: `ALTER TABLE flow_step ADD COLUMN IF NOT EXISTS standalone boolean NOT NULL DEFAULT false`,
 	},
 }
 

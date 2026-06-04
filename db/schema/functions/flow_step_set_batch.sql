@@ -37,6 +37,7 @@ DECLARE
     _label text;
     _requires_role_id bigint;
     _sort_order int;
+    _standalone boolean;
     _target_card_type_id bigint;
     _has_target boolean;
     _ctid bigint;
@@ -77,6 +78,9 @@ BEGIN
         EXCEPTION WHEN invalid_text_representation THEN
             _sort_order := 0;
         END;
+        -- Presentation bit: true = standalone button, false = overflow
+        -- dropdown. Absent/invalid → false (the column default).
+        _standalone := COALESCE((_raw->>'standalone')::boolean, false);
 
         -- 1. Presence checks.
         IF _flow_id = 0 THEN
@@ -148,9 +152,9 @@ BEGIN
         -- 4. Insert / update.
         BEGIN
             IF _id = 0 THEN
-                INSERT INTO flow_step (flow_id, from_card_id, to_card_id, label, requires_role_id, sort_order)
+                INSERT INTO flow_step (flow_id, from_card_id, to_card_id, label, requires_role_id, sort_order, standalone)
                 VALUES (_flow_id, _from_id, _to_id, _label,
-                    NULLIF(_requires_role_id, 0), _sort_order)
+                    NULLIF(_requires_role_id, 0), _sort_order, _standalone)
                 RETURNING id INTO _new_id;
             ELSE
                 UPDATE flow_step SET
@@ -159,7 +163,8 @@ BEGIN
                     to_card_id = _to_id,
                     label = _label,
                     requires_role_id = NULLIF(_requires_role_id, 0),
-                    sort_order = _sort_order
+                    sort_order = _sort_order,
+                    standalone = _standalone
                 WHERE id = _id
                 RETURNING id INTO _new_id;
                 IF NOT FOUND THEN

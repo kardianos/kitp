@@ -349,27 +349,27 @@ name,                 attribute_def_id,             scope_card_id, default_creat
 
 ## table flow_step | doc="12 transitions for the standard status flow. Buckets (from.phase, to.phase) drive the TransitionBar's UI category: triage→active = Accept, triage→terminal = Reject, active→active = progress, active→terminal = Close, terminal→active = Reopen." | on_conflict="flow_id, from_card_id, to_card_id, label"
 ### rows
-flow_id,           from_card_id,  to_card_id,     label,             sort_order
-@tpl_flow_status,  @tpl_s_idea,   @tpl_s_todo,    "Accept",          1
-@tpl_flow_status,  @tpl_s_idea,   @tpl_s_cancel,  "Reject",          2
-@tpl_flow_status,  @tpl_s_todo,   @tpl_s_doing,   "Start",           1
-@tpl_flow_status,  @tpl_s_doing,  @tpl_s_review,  "Send to review",  1
-@tpl_flow_status,  @tpl_s_review, @tpl_s_done,    "Approve",         1
-@tpl_flow_status,  @tpl_s_doing,  @tpl_s_done,    "Done",            2
-@tpl_flow_status,  @tpl_s_todo,   @tpl_s_done,    "Done",            3
-@tpl_flow_status,  @tpl_s_todo,   @tpl_s_cancel,  "Cancel",          4
-@tpl_flow_status,  @tpl_s_doing,  @tpl_s_cancel,  "Cancel",          5
-@tpl_flow_status,  @tpl_s_review, @tpl_s_cancel,  "Cancel",          6
-@tpl_flow_status,  @tpl_s_done,   @tpl_s_todo,    "Reopen",          1
-@tpl_flow_status,  @tpl_s_cancel, @tpl_s_todo,    "Reopen",          2
+flow_id,           from_card_id,  to_card_id,     label,             sort_order, standalone
+@tpl_flow_status,  @tpl_s_idea,   @tpl_s_todo,    "Accept",          1,          true
+@tpl_flow_status,  @tpl_s_idea,   @tpl_s_cancel,  "Reject",          2,          true
+@tpl_flow_status,  @tpl_s_todo,   @tpl_s_doing,   "Start",           1,          false
+@tpl_flow_status,  @tpl_s_doing,  @tpl_s_review,  "Send to review",  1,          false
+@tpl_flow_status,  @tpl_s_review, @tpl_s_done,    "Approve",         1,          true
+@tpl_flow_status,  @tpl_s_doing,  @tpl_s_done,    "Done",            2,          true
+@tpl_flow_status,  @tpl_s_todo,   @tpl_s_done,    "Done",            3,          true
+@tpl_flow_status,  @tpl_s_todo,   @tpl_s_cancel,  "Cancel",          4,          false
+@tpl_flow_status,  @tpl_s_doing,  @tpl_s_cancel,  "Cancel",          5,          false
+@tpl_flow_status,  @tpl_s_review, @tpl_s_cancel,  "Cancel",          6,          false
+@tpl_flow_status,  @tpl_s_done,   @tpl_s_todo,    "Reopen",          1,          true
+@tpl_flow_status,  @tpl_s_cancel, @tpl_s_todo,    "Reopen",          2,          true
 
 
 ## table flow_step | doc="Comm flow transitions (Gate 2 of email_comm_spec): Open → In progress (start working), In progress → Resolved (resolve), Resolved → Open (reopen). Three labels mirror the lightweight helpdesk lifecycle described in the spec." | on_conflict="flow_id, from_card_id, to_card_id, label"
 ### rows
-flow_id,         from_card_id,     to_card_id,        label,           sort_order
-@tpl_flow_comm,  @tpl_cs_open,     @tpl_cs_progress,  "Start working", 1
-@tpl_flow_comm,  @tpl_cs_progress, @tpl_cs_resolved,  "Resolve",       1
-@tpl_flow_comm,  @tpl_cs_resolved, @tpl_cs_open,      "Reopen",        1
+flow_id,         from_card_id,     to_card_id,        label,           sort_order, standalone
+@tpl_flow_comm,  @tpl_cs_open,     @tpl_cs_progress,  "Start working", 1,          true
+@tpl_flow_comm,  @tpl_cs_progress, @tpl_cs_resolved,  "Resolve",       1,          true
+@tpl_flow_comm,  @tpl_cs_resolved, @tpl_cs_open,      "Reopen",        1,          true
 
 
 -- Template screens. Six screen cards, all six built-in layouts. The

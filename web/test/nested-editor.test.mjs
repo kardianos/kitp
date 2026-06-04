@@ -302,9 +302,11 @@ test('Workflows: dragging a transition reorders within its from-group (#14)', as
   await settle(dispatcher);
   await selectFirstRow(ctrl, dispatcher);
 
-  // The from=101 group is [900 (sort 0), 901 (sort 1)]. Drag 901 by its handle
-  // and drop on the group container — the shim resolves the slot to 0 (front),
-  // so the two steps swap their sort_order slots (0 ↔ 1).
+  // The from=101 group is [900, 901]. Drag 901 by its handle and drop on the
+  // group container — the shim resolves the slot to 0 (front), so the new order
+  // [901, 900] is renumbered with a fresh ascending (i+1)*10 ladder: 901→10,
+  // 900→20. (A fresh ladder, not slot-reuse, so reorder works even when the
+  // group's values tie — the bug being fixed.)
   const handle = ctrl.el.querySelector('[data-ne-step-drag="901"]');
   assert.ok(handle, 'each step row has a drag handle');
   const group = ctrl.el.querySelector('[data-ne-from-group="101"]');
@@ -314,8 +316,8 @@ test('Workflows: dragging a transition reorders within its from-group (#14)', as
 
   const sets = writesFor(transport, 'flow_step.set');
   const byId = Object.fromEntries(sets.map((s) => [String(s.data.id), s.data.sort_order]));
-  assert.equal(byId['901'], 0, '901 took the first slot');
-  assert.equal(byId['900'], 1, '900 took the second slot');
+  assert.equal(byId['901'], 10, '901 took the first slot');
+  assert.equal(byId['900'], 20, '900 took the second slot');
   assert.equal(byId['902'], undefined, 'a step in a DIFFERENT from-group is untouched');
 });
 
@@ -372,6 +374,54 @@ test('Workflows: adding a transition fires flow_step.set with the draft', async 
   assert.equal(sets[0].data.to_card_id, '101');
   assert.equal(sets[0].data.label, 'Reopen');
   assert.equal(sets[0].data.sort_order, 5);
+});
+
+test('Workflows: adding a transition with a BLANK sort lands it last (max+10), not 0', async () => {
+  const transport = nestedTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountMD(api, M.adminScreenConfig('workflows'));
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+
+  ctrl.el.querySelector('[data-ne-step-add]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  const form = ctrl.el.querySelector('[data-ne-step-form]');
+  // New transition in the from=101 group (existing sort_orders 0, 1) with the
+  // sort field left BLANK. The fix lands it at max(group)+10 = 11 — a 0 would
+  // tie with siblings, sort alphabetically, AND block later drag-reorder.
+  form.querySelector('[data-ne-from]').value = '101';
+  form.querySelector('[data-ne-to]').value = '103';
+  form.querySelector('[data-ne-label]').value = 'Park';
+  // (sort input left at its empty default)
+  form.querySelector('[data-ne-step-submit]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+
+  const sets = writesFor(transport, 'flow_step.set');
+  assert.equal(sets.length, 1, 'one flow_step.set fired');
+  assert.equal(sets[0].data.sort_order, 11, 'blank sort → max(group=1)+10');
+});
+
+test('Workflows: the standalone bit round-trips through the modal checkbox', async () => {
+  const transport = nestedTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountMD(api, M.adminScreenConfig('workflows'));
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+
+  ctrl.el.querySelector('[data-ne-step-add]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  const form = ctrl.el.querySelector('[data-ne-step-form]');
+  form.querySelector('[data-ne-from]').value = '102';
+  form.querySelector('[data-ne-to]').value = '101';
+  form.querySelector('[data-ne-label]').value = 'Reopen';
+  const check = form.querySelector('[data-ne-standalone]');
+  assert.ok(check, 'the modal exposes a standalone checkbox');
+  check.checked = true;
+  form.querySelector('[data-ne-step-submit]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+
+  const sets = writesFor(transport, 'flow_step.set');
+  assert.equal(sets[0].data.standalone, true, 'checked → standalone:true on the wire');
 });
 
 test('Workflows: Edit loads a draft then Save fires flow_step.set with the id', async () => {

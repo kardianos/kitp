@@ -55,7 +55,8 @@ BEGIN
                     'label',              fs.label,
                     'requires_role_id',   COALESCE(fs.requires_role_id, 0)::text,
                     'requires_role_name', COALESCE(r.name, ''),
-                    'sort_order',         fs.sort_order
+                    'sort_order',         fs.sort_order,
+                    'standalone',         fs.standalone
                 ) ORDER BY fs.sort_order, fs.label, fs.id
             )
             FROM flow_step fs

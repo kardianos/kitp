@@ -14,17 +14,13 @@
  * available steps whenever the task's status changes (after its own fire, OR
  * when the TaskDetail's panel commits status — via {@link reload}).
  *
- * Render: the available transitions are BUCKETED by category derived from
- * `(from.phase → to.phase)` (see transition-buckets.ts). Within a bucket a
- * primary button + (when several) a dropdown:
- *   - accept   (triage→active)   : positive button per transition.
- *   - reject   (triage→terminal) : danger button per transition.
- *   - defer    (active→triage)   : neutral button per transition.
- *   - close    (active→terminal) : split — first = primary danger, rest in menu.
- *   - progress (active→active)   : single `Status ▾` dropdown (+ progress_triage
- *                                  as a "Triage" subgroup).
- *   - reopen   (terminal→active) : positive primary + dropdown for retriage /
- *                                  recategorize.
+ * Render: each transition's `standalone` bit (authored on the flow_step row,
+ * identical for task AND comm status) decides its presentation — `true` → its
+ * own button, `false` → folded into one overflow "Status ▾" dropdown. The
+ * (from.phase → to.phase) bucket only drives the button's TONE and the
+ * dropdown's grouping (see transition-buckets.ts), NOT whether it's a button
+ * vs a menu item. Buttons + menu items are emitted in canonical bucket order so
+ * the bar stays phase-grouped regardless of which steps are standalone.
  *
  * Fire (optimistic): clicking a transition fires `attribute.update` setting the
  * status attr to the step's `toCardId` — the local status patches + the bar
@@ -57,12 +53,30 @@ import {
   bucketOf,
   groupByBucket,
   hasAnyTransition,
+  ALL_BUCKETS,
   BUCKET_TONE,
   type BucketMap,
   type BucketTone,
+  type TransitionBucket,
   type TransitionPhase,
   type TransitionRow,
 } from './transition-buckets.js';
+
+/**
+ * Dropdown sub-heading per bucket — the phase-derived grouping shown when more
+ * than one bucket folds into the overflow menu ("phase still drives grouping").
+ */
+const MENU_GROUP: Record<TransitionBucket, string> = {
+  progress_triage: 'Triage',
+  accept: 'Accept',
+  reject: 'Reject',
+  defer: 'Defer',
+  progress: 'Progress',
+  close: 'Close',
+  retriage: 'Re-triage',
+  reopen: 'Reopen',
+  recategorize: 'Recategorize',
+};
 
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
@@ -84,14 +98,6 @@ export interface TransitionBarConfig extends BaseControlConfig {
    * card id. Not declarative — a plain callback handed in at spawn.
    */
   onChanged?: (toCardId: bigint, attributeName: string) => void;
-  /**
-   * Surface the first `progress` (active→active) transition as a PRIMARY inline
-   * button instead of folding every progress step into the compact "Status ▾"
-   * dropdown; remaining progress (+ triage) steps stay in the dropdown for
-   * aux/extra workflow actions. Used by the comm thread bar so each comm shows
-   * a clear primary next-step button. Default false (task bars stay compact).
-   */
-  progressPrimary?: boolean;
 }
 
 declare module '../core/control.js' {
@@ -338,163 +344,77 @@ export class TransitionBar extends Control<TransitionBarConfig> {
       return;
     }
 
-    // accept / reject / defer: one inline button per transition.
-    for (const t of m.accept) this.barEl.append(this.inlineButton(t, 'accept'));
-    for (const t of m.reject) this.barEl.append(this.inlineButton(t, 'reject'));
-    for (const t of m.defer) this.barEl.append(this.inlineButton(t, 'defer'));
-
-    // close: split button — first primary (danger), the rest in a dropdown.
-    if (m.close.length > 0) {
-      this.barEl.append(this.splitButton('close', m.close[0]!, m.close.slice(1)));
-    }
-
-    // progress (+ progress_triage as a "Triage" subgroup). Default: a single
-    // "Status ▾" dropdown. With progressPrimary (the comm bar), surface the
-    // FIRST progress step as a primary button and keep the rest (+ triage) in
-    // the dropdown for aux/extra workflow actions.
-    if (this.config.progressPrimary && m.progress.length > 0) {
-      const rest: DropItem[] = [
-        ...m.progress.slice(1).map((t): DropItem => ({ transition: t })),
-        ...m.progress_triage.map((t): DropItem => ({ transition: t, group: 'Triage' })),
-      ];
-      this.barEl.append(this.splitButtonWith('progress', m.progress[0]!, rest, 'Status'));
-    } else {
-      const progressItems = this.progressItems();
-      if (progressItems.length > 0) {
-        this.barEl.append(this.dropdownButton('progress', 'Status', progressItems));
+    // Bit-driven: every transition renders as a standalone button
+    // (standalone=true) or folds into ONE overflow "Status ▾" dropdown
+    // (standalone=false). Iterate buckets in canonical order so buttons + menu
+    // items stay phase-grouped; the bucket supplies the button TONE only.
+    const menuItems: DropItem[] = [];
+    const menuBuckets = new Set<TransitionBucket>();
+    for (const bucket of ALL_BUCKETS) {
+      for (const t of m[bucket]) {
+        if (t.standalone) {
+          this.barEl.append(this.standaloneButton(t, bucket));
+        } else {
+          menuItems.push({ transition: t });
+          menuBuckets.add(bucket);
+        }
       }
     }
-
-    // reopen (+ retriage / recategorize): positive primary + a dropdown.
-    const reopenItems = this.reopenItems();
-    if (m.reopen.length > 0 || reopenItems.length > 0) {
-      const primary = m.reopen[0];
-      const rest = [
-        ...m.reopen.slice(1).map((t): DropItem => ({ transition: t })),
-        ...reopenItems,
-      ];
-      this.barEl.append(this.splitButtonWith('reopen', primary, rest, 'Reopen'));
+    if (menuItems.length > 0) {
+      // Group the dropdown by bucket only when more than one phase-bucket folds
+      // in ("phase still drives grouping"); a single-bucket menu needs no header.
+      if (menuBuckets.size > 1) {
+        for (const it of menuItems) it.group = MENU_GROUP[bucketOf(it.transition)];
+      }
+      this.barEl.append(this.overflowDropdown(menuItems));
     }
   }
 
-  /** A single inline button for the accept/reject/defer buckets. */
-  private inlineButton(t: TransitionRow, bucket: 'accept' | 'reject' | 'defer'): HTMLElement {
-    const tone = BUCKET_TONE[bucket];
-    const btn = this.makeButton(t, tone, bucket);
+  /** A standalone transition button, toned by its phase bucket. */
+  private standaloneButton(t: TransitionRow, bucket: TransitionBucket): HTMLElement {
+    const btn = this.makeButton(t, BUCKET_TONE[bucket], bucket);
     btn.dataset.testid = `transition-${bucket}`;
     return btn;
   }
 
   /**
-   * A split button: a primary action + a chevron toggling a dropdown of the
-   * remaining transitions. Used for `close` (primary = first close step).
+   * The single overflow dropdown that holds every non-standalone transition,
+   * grouped by phase bucket. Neutral-toned (it spans buckets); the items carry
+   * their own bucket via {@link DropItem}.
    */
-  private splitButton(
-    bucket: 'close',
-    primary: TransitionRow,
-    rest: TransitionRow[],
-  ): HTMLElement {
-    return this.splitButtonWith(
-      bucket,
-      primary,
-      rest.map((t) => ({ transition: t })),
-      '',
-    );
-  }
-
-  /**
-   * The general split button: an optional primary transition + a dropdown of
-   * the remaining {@link DropItem}s. When `primary` is undefined the toggle
-   * carries `fallbackLabel` and there is no primary action button (the reopen
-   * bucket with only retriage/recategorize items).
-   */
-  private splitButtonWith(
-    bucket: 'close' | 'reopen' | 'progress',
-    primary: TransitionRow | undefined,
-    rest: DropItem[],
-    fallbackLabel: string,
-  ): HTMLElement {
-    const tone = BUCKET_TONE[bucket];
+  private overflowDropdown(items: DropItem[]): HTMLElement {
     const wrap = document.createElement('div');
-    wrap.className = `transition-bar__split transition-bar__split--${tone}`;
-    wrap.dataset.testid = `transition-${bucket}-split`;
-
-    if (primary !== undefined) {
-      const btn = this.makeButton(primary, tone, bucket, /*inSplit*/ true);
-      btn.dataset.testid = `transition-${bucket}-primary`;
-      btn.classList.add('transition-bar__split-primary');
-      wrap.append(btn);
-    }
-
-    if (rest.length > 0) {
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.className = 'transition-bar__split-toggle';
-      toggle.dataset.testid = `transition-${bucket}-toggle`;
-      toggle.setAttribute('aria-haspopup', 'menu');
-      toggle.setAttribute(
-        'aria-label',
-        primary === undefined ? `${fallbackLabel} options` : 'Pick another state',
-      );
-      toggle.disabled = this.busy || this.loading;
-      if (primary === undefined && fallbackLabel.length > 0) {
-        const lbl = document.createElement('span');
-        lbl.textContent = fallbackLabel;
-        toggle.append(lbl);
-      }
-      toggle.append(chevron());
-      this.listen(toggle, 'click', (e) => {
-        e.stopPropagation();
-        this.toggleMenu(toggle, rest, bucket);
-      });
-      wrap.append(toggle);
-    }
-
-    return wrap;
-  }
-
-  /** A standalone dropdown button (the `progress` Status ▾ menu). */
-  private dropdownButton(
-    bucket: 'progress',
-    label: string,
-    items: DropItem[],
-  ): HTMLElement {
-    const tone = BUCKET_TONE[bucket];
-    const wrap = document.createElement('div');
-    wrap.className = `transition-bar__split transition-bar__split--${tone}`;
-    wrap.dataset.testid = `transition-${bucket}-trigger`;
+    wrap.className = 'transition-bar__split transition-bar__split--neutral';
+    wrap.dataset.testid = 'transition-menu-trigger';
 
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'transition-bar__split-primary transition-bar__split-toggle';
-    toggle.dataset.testid = `transition-${bucket}-toggle`;
-    toggle.dataset.bucket = bucket;
+    toggle.dataset.testid = 'transition-menu-toggle';
+    toggle.dataset.bucket = 'menu';
     toggle.setAttribute('aria-haspopup', 'menu');
     toggle.setAttribute('aria-label', 'Change status');
     toggle.disabled = this.busy || this.loading;
     const lbl = document.createElement('span');
-    lbl.textContent = label;
+    lbl.textContent = 'Status';
     toggle.append(lbl, chevron());
     this.listen(toggle, 'click', (e) => {
       e.stopPropagation();
-      this.toggleMenu(toggle, items, bucket);
+      this.toggleMenu(toggle, items, 'menu');
     });
     wrap.append(toggle);
     return wrap;
   }
 
-  /** Build one transition button (inline OR split-primary). */
+  /** Build one transition button. */
   private makeButton(
     t: TransitionRow,
     tone: BucketTone,
     bucket: string,
-    inSplit = false,
   ): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = inSplit
-      ? 'transition-bar__btn transition-bar__btn--in-split'
-      : `transition-bar__btn transition-bar__btn--${tone}`;
+    btn.className = `transition-bar__btn transition-bar__btn--${tone}`;
     btn.dataset.bucket = bucket;
     btn.dataset.stepId = t.id.toString();
     btn.disabled = this.busy || this.loading || !t.allowed;
@@ -663,22 +583,6 @@ export class TransitionBar extends Control<TransitionBarConfig> {
 
   private roleHint(t: TransitionRow): string {
     return t.requiresRoleName.length > 0 ? `Needs ${t.requiresRoleName}` : '';
-  }
-
-  /** progress dropdown items: progress_triage (as "Triage" group) then progress. */
-  private progressItems(): DropItem[] {
-    const out: DropItem[] = [];
-    for (const t of this.buckets.progress_triage) out.push({ transition: t, group: 'Triage' });
-    for (const t of this.buckets.progress) out.push({ transition: t });
-    return out;
-  }
-
-  /** reopen dropdown extras: retriage (group) then recategorize (group). */
-  private reopenItems(): DropItem[] {
-    const out: DropItem[] = [];
-    for (const t of this.buckets.retriage) out.push({ transition: t, group: 'Re-triage' });
-    for (const t of this.buckets.recategorize) out.push({ transition: t, group: 'Recategorize' });
-    return out;
   }
 }
 

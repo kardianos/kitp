@@ -212,6 +212,62 @@ func TestForwardMigration0004CommAcked(t *testing.T) {
 	}
 }
 
+// TestForwardMigration0005FlowStepStandalone proves migration 0005 adds the
+// flow_step.standalone column to an already-initialised DB that predates it.
+// This is the column-DDL exception to the "migrations are DATA" rule: the
+// declarative DDL only emits CREATE TABLE IF NOT EXISTS, which can't add a
+// column to an existing table, so without this migration every flow_step
+// handler (which now references standalone) would hard-fail in the field.
+func TestForwardMigration0005FlowStepStandalone(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0005")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	// Simulate a pre-0005 install: drop the column + 0005's ledger row (baseline
+	// stays, so the one-time seed stays gated off — like a real upgrade).
+	for _, stmt := range []string{
+		`ALTER TABLE flow_step DROP COLUMN standalone`,
+		`DELETE FROM schema_version WHERE name = '0005_flow_step_standalone'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0005 (%s): %v", stmt, err)
+		}
+	}
+
+	// A normal boot re-applies the missing migration; the column reappears.
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	var hasCol bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'flow_step' AND column_name = 'standalone')
+	`).Scan(&hasCol); err != nil {
+		t.Fatalf("check column: %v", err)
+	}
+	if !hasCol {
+		t.Fatal("migration 0005 did not add flow_step.standalone on the existing DB")
+	}
+
+	// Backfilled rows default to false (NOT NULL DEFAULT) — no NULLs leak in.
+	var nulls int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM flow_step WHERE standalone IS NULL`).Scan(&nulls); err != nil {
+		t.Fatalf("count nulls: %v", err)
+	}
+	if nulls != 0 {
+		t.Errorf("standalone has %d NULL rows; expected 0 (NOT NULL DEFAULT false)", nulls)
+	}
+
+	// Idempotent: a further boot is a clean no-op (ledger row present → skipped),
+	// and ADD COLUMN IF NOT EXISTS would be a no-op even if it ran.
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("third apply (idempotent): %v", err)
+	}
+}
+
 // TestApplySchemaWithTestDemo applies the install seed plus the stable
 // test_demo.hcsv fixture (NOT the dev demo.hcsv, which is allowed to
 // grow freely). The counts here are stable by design — changing

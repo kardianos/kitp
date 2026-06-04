@@ -93,6 +93,7 @@ function decodeRow(j: Record<string, unknown>): TransitionRow {
     requiresRoleId: asId(j['requires_role_id']),
     requiresRoleName: asStr(j['requires_role_name']),
     sortOrder: asNum(j['sort_order']),
+    standalone: j['standalone'] === true,
     allowed: j['allowed'] === true,
   };
 }

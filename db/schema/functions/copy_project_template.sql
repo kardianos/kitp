@@ -49,6 +49,7 @@ DECLARE
     _step_label text;
     _step_role_id bigint;
     _step_sort_order int;
+    _step_standalone boolean;
     _mapped_from bigint;
     _mapped_to bigint;
     _av_card_id bigint;
@@ -174,8 +175,8 @@ BEGIN
     FOR _flow_src_id, _new_flow_id IN
         SELECT src_flow_id, new_flow_id FROM _flow_remap
     LOOP
-        FOR _step_from, _step_to, _step_label, _step_role_id, _step_sort_order IN
-            SELECT from_card_id, to_card_id, label, requires_role_id, sort_order
+        FOR _step_from, _step_to, _step_label, _step_role_id, _step_sort_order, _step_standalone IN
+            SELECT from_card_id, to_card_id, label, requires_role_id, sort_order, standalone
             FROM flow_step WHERE flow_id = _flow_src_id
         LOOP
             SELECT new_id INTO _mapped_from FROM _remap WHERE src_id = _step_from;
@@ -186,8 +187,8 @@ BEGIN
             IF NOT FOUND THEN
                 CONTINUE;
             END IF;
-            INSERT INTO flow_step (flow_id, from_card_id, to_card_id, label, requires_role_id, sort_order)
-            VALUES (_new_flow_id, _mapped_from, _mapped_to, _step_label, _step_role_id, _step_sort_order);
+            INSERT INTO flow_step (flow_id, from_card_id, to_card_id, label, requires_role_id, sort_order, standalone)
+            VALUES (_new_flow_id, _mapped_from, _mapped_to, _step_label, _step_role_id, _step_sort_order, _step_standalone);
         END LOOP;
     END LOOP;
 

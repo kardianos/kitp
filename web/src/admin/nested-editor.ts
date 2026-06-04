@@ -179,6 +179,9 @@ export interface FlowStepDraft {
   label: string;
   requiresRoleId: string;
   sortOrder: string;
+  /** Presentation bit: true → standalone button in the TransitionBar, false →
+   *  folded into the bar's overflow dropdown. Read identically for task + comm. */
+  standalone: boolean;
 }
 
 /** Validate a flow_step draft: non-empty label + distinct non-zero from/to. */
@@ -830,6 +833,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         label: '',
         requiresRoleId: '',
         sortOrder: '',
+        standalone: false,
       }),
     );
     frag.append(addBtn);
@@ -888,6 +892,16 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     label.textContent = `${s.label} → ${to}`;
     row.append(label);
 
+    // At-a-glance presentation indicator: standalone button vs overflow menu.
+    const present = document.createElement('span');
+    present.className = 'nested-editor__step-present muted';
+    present.dataset.neStandaloneBadge = s.standalone ? '1' : '0';
+    present.textContent = s.standalone ? 'button' : 'menu';
+    present.title = s.standalone
+      ? 'Shown as its own button on the status bar'
+      : 'Tucked into the “Status ▾” dropdown';
+    row.append(present);
+
     if (s.requires_role_name !== '') {
       const role = document.createElement('span');
       role.className = 'nested-editor__step-role muted';
@@ -908,6 +922,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         label: s.label,
         requiresRoleId: s.requires_role_id === '0' ? '' : s.requires_role_id,
         sortOrder: String(s.sort_order),
+        standalone: s.standalone,
       } satisfies FlowStepDraft);
     });
     row.append(edit);
@@ -995,6 +1010,12 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     sortInput.placeholder = 'e.g. 1';
     sortInput.value = draft.sortOrder;
 
+    const standaloneInput = document.createElement('input');
+    standaloneInput.type = 'checkbox';
+    standaloneInput.className = 'nested-editor__step-check';
+    standaloneInput.dataset.neStandalone = '';
+    standaloneInput.checked = draft.standalone;
+
     // Each control gets a label + a one-line help caption.
     const field = (labelText: string, control: HTMLElement, help: string): HTMLElement => {
       const wrap = document.createElement('label');
@@ -1015,6 +1036,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       field('Button label', labelInput, 'The action text the user sees on the status bar.'),
       field('Required role', roleSel, 'Who may use this transition — leave as “any role” for no restriction.'),
       field('Sort order', sortInput, 'Lower numbers list first among a status’s buttons.'),
+      field('Standalone button', standaloneInput, 'On = its own button on the status bar; off = tucked into the “Status ▾” dropdown.'),
     );
 
     const err = document.createElement('div');
@@ -1036,6 +1058,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         label: labelInput.value,
         requiresRoleId: roleSel.value,
         sortOrder: sortInput.value,
+        standalone: standaloneInput.checked,
       };
       const v = validateStepDraft(d);
       if (!v.ok) {
@@ -1071,6 +1094,15 @@ export class NestedEditor extends Control<NestedEditorConfig> {
 
   private saveStep(flowId: string, d: FlowStepDraft, onDone?: () => void): void {
     this.clearFault();
+    // On INSERT with a blank sort order, land the new transition AFTER the
+    // existing ones in its from-group (max + 10) instead of 0 — a 0 would tie
+    // with siblings, sort alphabetically, AND block drag-reorder (a tied group
+    // can't be renumbered). An explicit value is respected as authored.
+    const inserting = d.id === '' || d.id === '0';
+    const sortOrder =
+      inserting && d.sortOrder.trim() === ''
+        ? this.nextStepSortOrder(d.fromCardId)
+        : parseSortOrder(d.sortOrder);
     this.ctx.api.callByName(
       'flow_step.set',
       {
@@ -1080,7 +1112,8 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         toCardId: d.toCardId,
         label: d.label.trim(),
         requiresRoleId: d.requiresRoleId,
-        sortOrder: parseSortOrder(d.sortOrder),
+        sortOrder,
+        standalone: d.standalone,
       },
       () => {
         if (!this.isAlive()) return;
@@ -1092,12 +1125,28 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   }
 
   /**
+   * The sort_order to give a NEW transition in a from-group: 10 past the
+   * group's current max (10, 20, 30… ladder), so it lands last and carries a
+   * distinct value. Reads the loaded steps from the tree.
+   */
+  private nextStepSortOrder(fromCardId: string): number {
+    const steps = this.ctx.tree.at(this.p('steps')).peek<FlowStepRow[]>() ?? [];
+    let max = 0;
+    for (const s of steps) {
+      if (s.from_card_id === fromCardId && s.sort_order > max) max = s.sort_order;
+    }
+    return max + 10;
+  }
+
+  /**
    * Drag-reorder a step WITHIN its from-group to `slot` (insertion index with
-   * the dragged step removed). The group's existing sort_order values are its
-   * "slots" in the flow's global ordering; we reassign them to the steps in the
-   * new order so only this group's relative order changes (other groups, whose
-   * steps interleave in the global sequence, are untouched). Persists each
-   * changed step via flow_step.set, then reloads once.
+   * the dragged step removed). Reassigns the whole group a fresh ascending
+   * `(i+1)*10` ladder so the new order is always representable — reusing the
+   * group's existing values broke when they tied (e.g. all 0 for freshly-added
+   * steps), leaving reorder a silent no-op. The TransitionBar only ever shows
+   * one from-group at a time (list_for_card filters to the card's current
+   * status), so renumbering a group can't disturb cross-group ordering.
+   * Persists each changed step via flow_step.set, then reloads once.
    */
   private reorderSteps(flowId: string, bucketSteps: readonly FlowStepRow[], movedId: string, slot: number): void {
     const idx = bucketSteps.findIndex((s) => s.id === movedId);
@@ -1107,10 +1156,9 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     next.splice(Math.max(0, Math.min(slot, next.length)), 0, moved!);
     if (next.every((s, i) => s.id === bucketSteps[i]?.id)) return; // no change
 
-    // The group's sort_order slots, ascending, reassigned to the new order.
-    const slots = bucketSteps.map((s) => s.sort_order).slice().sort((a, b) => a - b);
+    // Fresh ladder; only persist rows whose value actually changes.
     const changes = next
-      .map((s, i) => ({ s, want: slots[i] ?? (i + 1) * 10 }))
+      .map((s, i) => ({ s, want: (i + 1) * 10 }))
       .filter(({ s, want }) => s.sort_order !== want);
     if (changes.length === 0) return;
 
@@ -1130,6 +1178,9 @@ export class NestedEditor extends Control<NestedEditorConfig> {
           label: s.label,
           requiresRoleId: s.requires_role_id === '0' ? '' : s.requires_role_id,
           sortOrder: want,
+          // Preserve the presentation bit — flow_step.set overwrites the whole
+          // row, so omitting it would silently reset standalone to false.
+          standalone: s.standalone,
         },
         done,
         { alive: () => this.isAlive(), onErr: (f) => this.showFault('flow_step.set', f) },

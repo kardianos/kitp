@@ -417,6 +417,7 @@ export interface FlowStepRow {
   requires_role_id: string;
   requires_role_name: string;
   sort_order: number;
+  standalone: boolean;
 }
 export interface FlowStepListInput {
   flowId: bigint | string;
@@ -434,6 +435,7 @@ export interface FlowStepSetInput {
   label: string;
   requiresRoleId?: bigint | string;
   sortOrder?: number;
+  standalone?: boolean;
 }
 export interface FlowStepSetOutput {
   id: string;
@@ -883,6 +885,7 @@ function decodeFlowStepRow(j: Record<string, unknown>): FlowStepRow {
     requires_role_id: asStr(j['requires_role_id']),
     requires_role_name: asStr(j['requires_role_name']),
     sort_order: asNum(j['sort_order']),
+    standalone: j['standalone'] === true,
   };
 }
 
@@ -1234,6 +1237,7 @@ export function registerAdminSpecs(api: Api): void {
           to_card_id: i.toCardId,
           label: i.label,
           sort_order: i.sortOrder ?? 0,
+          standalone: i.standalone ?? false,
         };
         if (i.id !== undefined && String(i.id) !== '' && String(i.id) !== '0') m['id'] = i.id;
         if (i.requiresRoleId !== undefined && String(i.requiresRoleId) !== '' && String(i.requiresRoleId) !== '0') {

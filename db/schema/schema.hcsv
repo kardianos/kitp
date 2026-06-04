@@ -394,7 +394,7 @@ default_create_status_id, bigint, , , , card.id,
 created_at, timestamptz, , false, now(), ,
 
 
-## table flow_step | doc="One transition edge in a flow. from_card_id and to_card_id both point at value cards on the same attribute_def as the flow. Tasks always have a real status value-card (status is a required attribute), so there is no 'from unset' case — every transition is real → real. label is the button text; the UI category (Accept / Reject / Close / Reopen / progress) is derived at render time from (from_card.phase, to_card.phase). requires_role_id NULL means any authenticated user. sort_order orders entries within the same UI bucket for deterministic rendering." | unique="flow_id, from_card_id, to_card_id, label"
+## table flow_step | doc="One transition edge in a flow. from_card_id and to_card_id both point at value cards on the same attribute_def as the flow. Tasks always have a real status value-card (status is a required attribute), so there is no 'from unset' case — every transition is real → real. label is the button text; the UI TONE (positive/danger/accent/neutral) is derived at render time from (from_card.phase, to_card.phase). requires_role_id NULL means any authenticated user. sort_order orders entries for deterministic rendering. standalone is the presentation bit the TransitionBar reads identically for task AND comm status: true = its own button, false = folded into the bar's overflow dropdown." | unique="flow_id, from_card_id, to_card_id, label"
 
 ### columns
 name, type, pk, nullable, default, references, on_delete
@@ -405,6 +405,7 @@ to_card_id, bigint, , false, , card.id,
 label, text, , false, , ,
 requires_role_id, bigint, , , , role.id,
 sort_order, int, , false, 0, ,
+standalone, boolean, , false, false, ,
 created_at, timestamptz, , false, now(), ,
 
 

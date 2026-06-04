@@ -74,21 +74,25 @@ function step(id, fromId, fromPhase, toId, toLabel, toPhase, label, opts = {}) {
     requires_role_id: opts.requiresRoleId ?? '0',
     requires_role_name: opts.requiresRoleName ?? '',
     sort_order: opts.sortOrder ?? 0,
+    standalone: opts.standalone ?? false,
     allowed: opts.allowed ?? true,
   };
 }
 
 /**
- * Steps available when the card sits in TODO (active): two active→active
- * progress moves, one active→terminal close, and one role-gated active→terminal
- * close. After firing the progress→DOING move the reload returns a single step.
+ * Steps available when the card sits in TODO (active): a standalone "Close"
+ * button (standalone=true), plus two non-standalone steps that fold into the
+ * overflow "Status ▾" dropdown — a progress move (Start work) and a role-gated
+ * close (Won't fix). Exercises buttons, the grouped dropdown, and role-gating in
+ * one fixture. After firing, the reload returns a single standalone step.
  */
 function todoSteps() {
   return [
-    step(101, TODO_ID, 'active', DOING_ID, 'Doing', 'active', 'Start work', { sortOrder: 0 }),
-    step(102, TODO_ID, 'active', DONE_ID, 'Done', 'terminal', 'Close', { sortOrder: 1 }),
+    step(101, TODO_ID, 'active', DOING_ID, 'Doing', 'active', 'Start work', { sortOrder: 0, standalone: false }),
+    step(102, TODO_ID, 'active', DONE_ID, 'Done', 'terminal', 'Close', { sortOrder: 1, standalone: true }),
     step(103, TODO_ID, 'active', WONTFIX_ID, "Won't fix", 'terminal', "Won't fix", {
       sortOrder: 2,
+      standalone: false,
       requiresRoleId: '9',
       requiresRoleName: 'manager',
       allowed: false,
@@ -96,9 +100,9 @@ function todoSteps() {
   ];
 }
 
-/** Steps available after moving to DOING — one progress move back/forward. */
+/** Steps available after moving to DOING — one standalone close button. */
 function doingSteps() {
-  return [step(104, DOING_ID, 'active', DONE_ID, 'Done', 'terminal', 'Close', { sortOrder: 0 })];
+  return [step(104, DOING_ID, 'active', DONE_ID, 'Done', 'terminal', 'Close', { sortOrder: 0, standalone: true })];
 }
 
 /**
@@ -219,22 +223,23 @@ test('TransitionBar: the (from,to) phase pair maps to the right UI bucket', () =
 /* Load + bucketed render.                                                     */
 /* -------------------------------------------------------------------------- */
 
-test('TransitionBar: loads flow_step.list_for_card and renders bucketed transitions', async () => {
+test('TransitionBar: loads flow_step.list_for_card and renders the standalone button + overflow dropdown', async () => {
   const { transport } = barMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { bar } = mountBar(api);
   await settle(dispatcher);
 
-  // active→active (Start work) → progress bucket → a Status ▾ dropdown trigger.
+  // standalone=true (Close) → its own button, toned by its close bucket.
+  const closeBtn = bar.el.querySelector('[data-testid="transition-close"]');
+  assert.ok(closeBtn, 'standalone close step → its own button');
+  assert.equal(closeBtn.textContent, 'Close');
+  assert.equal(closeBtn.dataset.stepId, '102');
+
+  // standalone=false (Start work + Won't fix) → folded into one overflow dropdown.
   assert.ok(
-    bar.el.querySelector('[data-testid="transition-progress-trigger"]'),
-    'progress bucket → Status dropdown',
+    bar.el.querySelector('[data-testid="transition-menu-toggle"]'),
+    'non-standalone steps → overflow "Status ▾" dropdown',
   );
-  // active→terminal (Close + Won't fix) → close split button, primary = Close.
-  const closePrimary = bar.el.querySelector('[data-testid="transition-close-primary"]');
-  assert.ok(closePrimary, 'close bucket → split button');
-  assert.equal(closePrimary.textContent, 'Close');
-  assert.equal(closePrimary.dataset.stepId, '102');
 });
 
 /* -------------------------------------------------------------------------- */
@@ -249,8 +254,8 @@ test('TransitionBar: clicking a transition fires attribute.update(status → to)
 
   assert.equal(state.listCall, 1, 'initial load fired once');
 
-  // The Close primary moves status → DONE (terminal).
-  bar.el.querySelector('[data-testid="transition-close-primary"]').click();
+  // The standalone Close button moves status → DONE (terminal).
+  bar.el.querySelector('[data-testid="transition-close"]').click();
   await settle(dispatcher);
 
   const u = updates.find((x) => x.attribute_name === 'status');
@@ -260,12 +265,13 @@ test('TransitionBar: clicking a transition fires attribute.update(status → to)
 
   // Optimistic reload: a second flow_step.list_for_card fired after success.
   assert.ok(state.listCall >= 2, 'available steps reloaded after the move');
-  // The reloaded set (doingSteps) has only a Close split (no progress dropdown).
+  // The reloaded set (doingSteps) is one standalone button, no overflow menu.
   assert.equal(
-    bar.el.querySelector('[data-testid="transition-progress-trigger"]'),
+    bar.el.querySelector('[data-testid="transition-menu-toggle"]'),
     null,
-    'progress dropdown gone after reload',
+    'overflow dropdown gone after reload',
   );
+  assert.ok(bar.el.querySelector('[data-testid="transition-close"]'), 'standalone close button after reload');
 });
 
 /* -------------------------------------------------------------------------- */
@@ -278,14 +284,15 @@ test('TransitionBar: a not-allowed step renders disabled with the required-role 
   const { bar } = mountBar(api);
   await settle(dispatcher);
 
-  // The "Won't fix" close step (id 103) is role-gated (manager). It lives in the
-  // close split's dropdown — open it and inspect the disabled item.
-  const toggle = bar.el.querySelector('[data-testid="transition-close-toggle"]');
-  assert.ok(toggle, 'close split has a dropdown toggle (2 close steps)');
+  // The "Won't fix" close step (id 103) is role-gated (manager) and
+  // non-standalone → it lives in the overflow "Status ▾" dropdown. Open it and
+  // inspect the disabled item.
+  const toggle = bar.el.querySelector('[data-testid="transition-menu-toggle"]');
+  assert.ok(toggle, 'overflow dropdown toggle present');
   toggle.click();
   await flushMicrotasks();
 
-  const items = [...document.querySelectorAll('[data-testid="transition-close-item"]')];
+  const items = [...document.querySelectorAll('[data-testid="transition-menu-item"]')];
   const gated = items.find((el) => el.dataset.stepId === '103');
   assert.ok(gated, "the role-gated Won't fix item rendered");
   assert.equal(gated.disabled, true, 'role-gated step is disabled');
@@ -304,8 +311,8 @@ test('TransitionBar: a flow_disallowed response renders the rejection banner wit
   const { bar } = mountBar(api);
   await settle(dispatcher);
 
-  // Fire the Close primary → the mock returns the V13 flow_disallowed envelope.
-  bar.el.querySelector('[data-testid="transition-close-primary"]').click();
+  // Fire the standalone Close button → the mock returns the V13 envelope.
+  bar.el.querySelector('[data-testid="transition-close"]').click();
   await settle(dispatcher);
 
   // No write recorded (the reject came back), and the banner is pinned to the bar.
@@ -422,7 +429,7 @@ test('TransitionBar: TaskDetail mounts it into the transitions slot', async () =
   const bar = slot.querySelector('[data-control="TransitionBar"]');
   assert.ok(bar, 'TransitionBar mounted into the transitions slot');
   assert.ok(
-    bar.querySelector('[data-testid="transition-close-primary"]'),
+    bar.querySelector('[data-testid="transition-close"]'),
     'the mounted bar rendered its loaded transitions',
   );
 });

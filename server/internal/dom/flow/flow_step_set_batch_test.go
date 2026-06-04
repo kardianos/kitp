@@ -97,6 +97,58 @@ func TestFlowStepSetBatch_Happy(t *testing.T) {
 	}
 }
 
+// TestFlowStepSetBatch_Standalone pins the presentation bit round-trip:
+// insert with standalone=true persists it; a later update sets it back to
+// false (it is NOT a sticky/partial field — the handler always writes the
+// supplied value, defaulting to false when absent).
+func TestFlowStepSetBatch_Standalone(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_flow_step_set_batch_standalone")
+	f := seedFlowBatchFixture(t, pool)
+	flowID := seedFlowRow(t, f, "Std")
+
+	rows := callFlowStepSetBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{
+			"flow_id":      jsonInt(flowID),
+			"from_card_id": jsonInt(f.triageID),
+			"to_card_id":   jsonInt(f.doingID),
+			"label":        "Start",
+			"standalone":   true,
+		},
+	})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("insert: %+v", rows)
+	}
+	var got struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rows[0].Result, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	readStandalone := func() bool {
+		t.Helper()
+		var b bool
+		if err := pool.QueryRow(context.Background(),
+			`SELECT standalone FROM flow_step WHERE id = $1::bigint`, got.ID).Scan(&b); err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	if !readStandalone() {
+		t.Errorf("standalone not persisted on insert")
+	}
+
+	// Update WITHOUT standalone → falls back to the false default.
+	rows = callFlowStepSetBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"id": got.ID, "flow_id": jsonInt(flowID), "from_card_id": jsonInt(f.triageID), "to_card_id": jsonInt(f.doingID), "label": "Start"},
+	})
+	if !rows[0].OK {
+		t.Fatalf("update: %+v", rows[0])
+	}
+	if readStandalone() {
+		t.Errorf("standalone should default to false when omitted on update")
+	}
+}
+
 func TestFlowStepSetBatch_MultiRow(t *testing.T) {
 	pool := store.TestPool(t, "kitp_test_flow_step_set_batch_multi")
 	f := seedFlowBatchFixture(t, pool)

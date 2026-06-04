@@ -104,6 +104,7 @@ BEGIN
                     'requires_role_id',   COALESCE(fs.requires_role_id, 0)::text,
                     'requires_role_name', COALESCE(r.name, ''),
                     'sort_order',         fs.sort_order,
+                    'standalone',         fs.standalone,
                     'allowed', (
                         fs.requires_role_id IS NULL
                         OR EXISTS (

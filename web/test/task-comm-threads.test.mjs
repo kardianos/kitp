@@ -77,7 +77,7 @@ function respond(sr) {
         ? [{ id: '28', flow_id: '4', flow_name: 'comm', attribute_def_id: '44', attribute_def_name: 'comm_status',
              from_card_id: '54', from_label: 'Open', from_phase: 'active',
              to_card_id: '55', to_label: 'In progress', to_phase: 'active',
-             label: 'Start working', requires_role_id: '0', requires_role_name: '', sort_order: 1, allowed: true }]
+             label: 'Start working', requires_role_id: '0', requires_role_name: '', sort_order: 1, standalone: true, allowed: true }]
         : [];
     return { id: sr.id, ok: true, data: { rows } };
   }
@@ -144,13 +144,12 @@ test('CommThreads: a comm-bound TransitionBar mounts with the comm-flow step', a
   const host = openRow.querySelector('[data-comm-transitions]');
   assert.ok(host, 'transition host present on the comm');
   assert.ok(host.querySelector('[data-control="TransitionBar"]'), 'TransitionBar mounted');
-  // progressPrimary: the first progress step (Open→In progress) is a PRIMARY
-  // inline button, not buried in a dropdown. With no other active→active steps
-  // the dropdown toggle is absent (nothing aux to show).
+  // The comm "Start working" step is standalone=true → its own button (the
+  // comm flow seeds each next-step standalone), not buried in a dropdown.
   assert.doesNotMatch(host.textContent, /No status changes/, 'a transition is available');
-  const primary = host.querySelector('[data-testid="transition-progress-primary"]');
-  assert.ok(primary, 'progress primary button present');
-  assert.match(primary.textContent, /Start working/, 'primary button shows the comm-flow step');
+  const primary = host.querySelector('[data-testid="transition-progress"]');
+  assert.ok(primary, 'standalone progress button present');
+  assert.match(primary.textContent, /Start working/, 'button shows the comm-flow step');
 });
 
 test('CommThreads: the phase-filter chips narrow threads by comm_status phase', async () => {
