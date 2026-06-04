@@ -538,6 +538,18 @@ export class AppShell extends Control<AppShellConfig> {
       setMenuOpen(false);
       navigate('/account');
     });
+    // "My Agents" — every signed-in user manages their own agents (the screen +
+    // server scope them to the owner). Distinct from the admin-only, all-users
+    // Agents screen under the ADMIN rail section.
+    const agentsBtn = document.createElement('button');
+    agentsBtn.type = 'button';
+    agentsBtn.className = 'shell__user-menu-item';
+    agentsBtn.dataset.userMenuAgents = '';
+    agentsBtn.textContent = 'My Agents';
+    this.listen(agentsBtn, 'click', () => {
+      setMenuOpen(false);
+      navigate('/agents');
+    });
     const logoutBtn = document.createElement('button');
     logoutBtn.type = 'button';
     logoutBtn.className = 'shell__user-menu-item';
@@ -547,7 +559,7 @@ export class AppShell extends Control<AppShellConfig> {
       setMenuOpen(false);
       logout();
     });
-    menu.append(accountBtn, logoutBtn);
+    menu.append(accountBtn, agentsBtn, logoutBtn);
 
     this.listen(chip, 'click', () => setMenuOpen(menu.style.display === 'none'));
     // Dismiss on outside-click / Esc (document-tier; cleaned up on destroy).
@@ -1097,6 +1109,24 @@ export class AppShell extends Control<AppShellConfig> {
         // The signed-in user's read-only profile (rail user-menu → Account).
         this.setCrumb('Account');
         return this.spawn('AccountPage', { type: 'AccountPage' } as ChildConfig, outlet);
+      }
+      case 'agents': {
+        // Per-user "My Agents" (rail user-menu → /agents): the owner-scoped
+        // Agents control, reachable by any signed-in user. Resolved through the
+        // same config seam via a fixed personal key, so the shell holds no
+        // screen knowledge (mirrors the 'admin' case). Null (identity not yet
+        // resolved) falls through to the NotFound placeholder.
+        const myAgents = this.config.adminConfigFor?.('my_agents');
+        if (myAgents) {
+          this.setCrumb((myAgents as { title?: string }).title ?? 'My Agents');
+          return this.spawn(myAgents.type, myAgents, outlet);
+        }
+        this.setCrumb('Not found');
+        return this.spawn(
+          `NoRoute:${route.path}`,
+          { type: `NoRoute:${route.path}`, path: route.path } as ChildConfig,
+          outlet,
+        );
       }
       case 'admin': {
         // Resolve `/admin/:key` to a MasterDetail config via the boot resolver.

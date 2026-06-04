@@ -1040,3 +1040,56 @@ test('Users: a user with no linked person shows the "— (none)" placeholder + n
   assert.ok(personSection.querySelector('[data-md-relation-none]'), 'none placeholder shown');
   assert.equal(personSection.querySelector('[data-md-relation-remove]'), null, 'no Unlink without a link');
 });
+
+/* -------------------------------------------------------------------------- */
+/* My Agents (ownAgentsScreen): owner-scoped list lands the caller's agents.   */
+/* -------------------------------------------------------------------------- */
+
+function agentsTransport(agentRows) {
+  const sent = { selectInputs: [] };
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      const subresponses = req.subrequests.map((sr) => {
+        const key = `${sr.endpoint}.${sr.action}`;
+        if (key === 'user.select') {
+          const data = sr.data ?? {};
+          sent.selectInputs.push(data);
+          const parent = data.parent_user_id;
+          const rows =
+            parent === undefined || parent === null
+              ? agentRows
+              : agentRows.filter((r) => String(r.parent_user_id) === String(parent));
+          return { id: sr.id, ok: true, data: { rows } };
+        }
+        return { id: sr.id, ok: false, error: { code: 'unknown_handler', message: `mock has no ${key}` } };
+      });
+      return { status: 200, text: JSON.stringify({ subresponses }) };
+    },
+  };
+  transport.sent = sent;
+  return transport;
+}
+
+test('My Agents: ownAgentsScreen sends parent_user_id and lands only the owner agents', async () => {
+  const ag1 = { id: '7', display_name: 'AG1', parent_user_id: '1', parent_user_name: 'System', is_agent: true };
+  const other = { id: '8', display_name: 'OtherAgent', parent_user_id: '2', parent_user_name: 'Other', is_agent: true };
+  const transport = agentsTransport([ag1, other]);
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl, tree } = mountMD(api, M.ownAgentsScreen(1n));
+  await settle(dispatcher);
+
+  // The list query carried the owner filter on the wire.
+  const sel = transport.sent.selectInputs.at(-1);
+  assert.ok(sel, 'a user.select fired');
+  assert.equal(String(sel.parent_user_id), '1', 'parent_user_id sent');
+  assert.equal(sel.is_agent, true, 'is_agent sent');
+
+  // Only the owner's agent landed, under the user.agents scope.
+  const items = tree.at(['user', 'agents', 'items']).peek();
+  assert.ok(Array.isArray(items) && items.length === 1, `one owned agent landed; got ${JSON.stringify(items)}`);
+  assert.equal(items[0].id, '7');
+
+  const rows = visibleRows(ctrl.el);
+  assert.match(rows[0].textContent, /AG1/);
+});

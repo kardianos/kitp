@@ -78,6 +78,10 @@ test('matchRoute: /activity → activity; activityUrl builds it', () => {
   assert.equal(M.activityUrl(), '/activity');
 });
 
+test('matchRoute: /agents → agents (per-user My Agents, requireAuth)', () => {
+  assert.equal(M.matchRoute('/agents').name, 'agents');
+});
+
 test('matchRoute: /project/:id → project with the id param', () => {
   const m = M.matchRoute('/project/42');
   assert.equal(m.name, 'project');
@@ -243,6 +247,8 @@ test('routeGuard: requireAdmin admits an admin, redirects a non-admin to /projec
     ok: false,
     redirectTo: '/projects',
   });
+  // …but the per-user My Agents screen (requireAuth) admits the same non-admin.
+  assert.deepEqual(M.routeGuard(M.matchRoute('/agents')), { ok: true });
 
   // Admin → admit.
   landAuth(tree, { isAdmin: true });

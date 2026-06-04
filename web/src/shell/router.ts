@@ -50,6 +50,7 @@ export type RouteName =
   | 'task'
   | 'activity'
   | 'account'
+  | 'agents'
   | 'admin'
   | 'notfound';
 
@@ -90,6 +91,10 @@ const ROUTES: readonly RoutePattern[] = [
   { pattern: '/task/:id', name: 'task', guard: 'requireAuth' },
   { pattern: '/activity', name: 'activity', guard: 'requireAuth' },
   { pattern: '/account', name: 'account', guard: 'requireAuth' },
+  // Per-user "My Agents" — every signed-in user manages their OWN agents, so
+  // requireAuth (NOT requireAdmin). The admin-wide Agents screen stays under
+  // /admin/agents.
+  { pattern: '/agents', name: 'agents', guard: 'requireAuth' },
   { pattern: '/admin/:key', name: 'admin', guard: 'requireAdmin' },
 ];
 

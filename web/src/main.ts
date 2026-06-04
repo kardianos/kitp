@@ -27,7 +27,7 @@
 
 import { signal } from './core/signal.js';
 import { tree } from './core/tree.js';
-import { loadAuthUser } from './auth/auth-state.js';
+import { loadAuthUser, peekCurrentUserId } from './auth/auth-state.js';
 import { Dispatcher, fetchTransport, type ApiFault, type Transport } from './core/dispatch.js';
 import { Api } from './core/api.js';
 import { Control, controlForNode, type ControlContext, type ChildConfig } from './core/control.js';
@@ -64,7 +64,7 @@ import { registerPeopleManager } from './admin/people-manager.js';
 import { registerSchedulerJobs } from './admin/scheduler-jobs.js';
 import { registerRecordForm } from './admin/record-form.js';
 import { registerAdminSpecs } from './admin/specs.js';
-import { adminScreenConfig, ADMIN_VIEWS, MANAGER_ADMIN_VIEWS, ADMIN_SECTION, type AdminView } from './admin/screens.js';
+import { adminScreenConfig, ownAgentsScreen, ADMIN_VIEWS, MANAGER_ADMIN_VIEWS, ADMIN_SECTION, type AdminView } from './admin/screens.js';
 import { registerPredicateFilter } from './filter/predicate-filter.js';
 import { registerQuickChips } from './filter/quick-chips.js';
 import { registerNamedFilters } from './filter/named-filters.js';
@@ -486,8 +486,17 @@ function boot(): void {
     })),
     // The resolver guards on the known view set so an unknown `/admin/:key`
     // returns null → the AppShell renders its NotFound placeholder (preserved).
-    adminConfigFor: (key: string): ChildConfig | null =>
-      (ADMIN_VIEWS as string[]).includes(key) ? (adminScreenConfig(key as AdminView) as ChildConfig) : null,
+    adminConfigFor: (key: string): ChildConfig | null => {
+      // The per-user "My Agents" screen (rail user-menu → /agents) resolves
+      // through the SAME seam under a fixed personal key, so the shell keeps no
+      // screen knowledge. It's owner-scoped to the signed-in user (read here at
+      // resolve time); null id (unresolved identity) → NotFound placeholder.
+      if (key === 'my_agents') {
+        const myId = peekCurrentUserId(tree);
+        return myId === null ? null : (ownAgentsScreen(myId) as unknown as ChildConfig);
+      }
+      return (ADMIN_VIEWS as string[]).includes(key) ? (adminScreenConfig(key as AdminView) as ChildConfig) : null;
+    },
     // Global-tier hotkeys raised as intents (derived, hierarchical).
     hotkeys: shellHotkeys((intent) => bus.emit(intent)),
     // The HelpOverlay (`?`) renders the LIVE binding set. The HotkeyController

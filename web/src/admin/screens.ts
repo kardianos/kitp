@@ -606,6 +606,35 @@ export const AGENTS_SCREEN: MasterDetailConfig = {
   },
 };
 
+/**
+ * Per-user "My Agents" — the SAME control as AGENTS_SCREEN, owner-scoped to the
+ * signed-in user. Reuses the whole config (detail pane, nested tokens + roles
+ * editor, create/delete); the only differences are the owner filter on the list
+ * query (`parentUserId` → so even an admin sees only THEIR OWN agents here, not
+ * every agent) and a private tree slot so its state can't collide with the
+ * admin instance. `myId` is read at instantiation time. The server enforces the
+ * same floor in user_select_batch, so this filter is the UI half of a
+ * server-guaranteed scope, not the security boundary. The owner column is
+ * dropped from the row — it's always the signed-in user.
+ *
+ * Like contactsScreen()/usersScreen(), the owner-scoped config is run through
+ * `masterDetailScreen()` so its declarative list query + create/delete actions
+ * are BUILT onto `.queries`/`.actions` — the control reads those, so a raw
+ * config (no bindings) would mount an empty, inert screen.
+ */
+export function ownAgentsScreen(myId: bigint): MasterDetailConfig {
+  return masterDetailScreen({
+    ...AGENTS_SCREEN,
+    title: 'My Agents',
+    scopeKey: 'user.agents',
+    list: {
+      ...AGENTS_SCREEN.list,
+      input: { isAgent: { lit: true }, parentUserId: { lit: myId } },
+      row: { title: 'display_name' },
+    },
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Comm Channels = comm_channel.list (NON-CARD source, project-scoped, RO).    */
 /* -------------------------------------------------------------------------- */

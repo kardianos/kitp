@@ -9,7 +9,12 @@
 -- Empty/absent filters mean "match everything". Rows are sorted by
 -- (display_name, id) for stable UI rendering.
 --
--- Authz (RoleAuthenticated) runs pre-tx in Go.
+-- Authz (RoleAuthenticated) runs pre-tx in Go, but visibility of AGENT
+-- rows is enforced here, per-row: a caller only ever sees agents they
+-- parent, unless they hold the global admin role. Human rows
+-- (is_agent=false) stay fully listable so assignee pickers are
+-- unaffected. This is the security floor for the per-user "My Agents"
+-- screen — the client cannot widen it by hand-crafting parent_user_id.
 --
 -- Result JSON shape matches `user.SelectOutput`:
 --   {"rows": [{"id": "<bigint>", "display_name": "...",
@@ -38,7 +43,15 @@ DECLARE
     _has_agent boolean;
     _is_agent boolean;
     _payload jsonb;
+    _actor_is_admin boolean;
 BEGIN
+    -- Whether the caller holds the global (unscoped) admin role. Computed
+    -- once; gates whether agent rows owned by OTHER users are visible.
+    SELECT EXISTS (
+        SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
+        WHERE ur.user_id = actor_id AND r.name = 'admin' AND ur.scope_card_id IS NULL
+    ) INTO _actor_is_admin;
+
     FOR _idx, _raw IN
         SELECT (r.ord - 1)::int, r.value
         FROM jsonb_array_elements(inputs) WITH ORDINALITY AS r(value, ord)
@@ -87,6 +100,14 @@ BEGIN
                 ))
                 AND (NOT _has_parent OR ua.parent_user_id = _parent_id)
                 AND (NOT _has_agent  OR ua.is_agent = _is_agent)
+                -- Agent rows are visible only to their parent or a global
+                -- admin; humans stay fully listable. Enforced regardless of
+                -- the parent_user_id filter the caller passed.
+                AND (
+                    NOT ua.is_agent
+                    OR _actor_is_admin
+                    OR ua.parent_user_id = actor_id
+                )
         ), '[]'::jsonb))
         INTO _payload;
 

@@ -216,6 +216,78 @@ func TestUserSelectBatch_MultiInputDifferentFilters(t *testing.T) {
 	}
 }
 
+// seedUser inserts a plain human user_account with no role grants — i.e. a
+// non-admin (the System user, by contrast, holds the global admin role).
+func seedUser(t *testing.T, pool *pgxpool.Pool, name string) int64 {
+	t.Helper()
+	var uid int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO user_account (display_name) VALUES ($1) RETURNING id`, name,
+	).Scan(&uid); err != nil {
+		t.Fatalf("seed user %s: %v", name, err)
+	}
+	return uid
+}
+
+func unmarshalSelect(t *testing.T, raw json.RawMessage) map[string]bool {
+	t.Helper()
+	var out selectOut
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal select: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, r := range out.Rows {
+		ids[r.ID] = true
+	}
+	return ids
+}
+
+// TestUserSelectBatch_AgentVisibilityScoping pins the per-row floor enforced
+// in the function (not just the UI): a non-admin caller sees ONLY the agents
+// they parent — even when they ask for another user's via parent_user_id — an
+// admin sees every agent, and human rows stay fully listable for everyone so
+// assignee pickers are unaffected.
+func TestUserSelectBatch_AgentVisibilityScoping(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_user_select_agent_scope")
+	userA := seedUser(t, pool, "human-a")
+	userB := seedUser(t, pool, "human-b")
+	agentA := seedAgent(t, pool, "agent-of-a", userA)
+	agentB := seedAgent(t, pool, "agent-of-b", userB)
+	aStr := strconv.FormatInt(agentA, 10)
+	bStr := strconv.FormatInt(agentB, 10)
+
+	// Non-admin userA asks for ALL agents → gets only their own.
+	rows := callBatch(t, pool, "user_select_batch", userA, []map[string]any{{"is_agent": true}})
+	got := unmarshalSelect(t, rows[0].Result)
+	if !got[aStr] {
+		t.Errorf("userA should see their own agent %s", aStr)
+	}
+	if got[bStr] {
+		t.Errorf("userA must NOT see userB's agent %s", bStr)
+	}
+
+	// Non-admin userA tries to widen via parent_user_id=userB → still nothing.
+	rows = callBatch(t, pool, "user_select_batch", userA, []map[string]any{
+		{"is_agent": true, "parent_user_id": strconv.FormatInt(userB, 10)},
+	})
+	if unmarshalSelect(t, rows[0].Result)[bStr] {
+		t.Errorf("userA widened to userB's agent %s via parent_user_id; floor leaked", bStr)
+	}
+
+	// Admin (System) sees every agent.
+	rows = callBatch(t, pool, "user_select_batch", auth.SystemUserID, []map[string]any{{"is_agent": true}})
+	got = unmarshalSelect(t, rows[0].Result)
+	if !got[aStr] || !got[bStr] {
+		t.Errorf("admin should see both agents; got %+v", got)
+	}
+
+	// Humans stay fully listable for a non-admin (assignee-picker path).
+	rows = callBatch(t, pool, "user_select_batch", userA, []map[string]any{{"is_agent": false}})
+	if !unmarshalSelect(t, rows[0].Result)[strconv.FormatInt(userB, 10)] {
+		t.Errorf("non-admin should still see human userB")
+	}
+}
+
 // =============================================================
 // user_list_with_roles_batch
 // =============================================================
