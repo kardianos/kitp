@@ -232,6 +232,10 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private attachmentsPreviewHost!: HTMLElement;
   private tagsHost!: HTMLElement;
   private relatedHost!: HTMLElement;
+  /** Main-column host the RelatedTasksPanel paints its read-only navigable
+   *  parent/child summary into (clickable links + phase icon + status). The
+   *  rail's `relatedHost` keeps the editing controls. */
+  private relatedSummaryHost!: HTMLElement;
   /** The mounted #36 controls (idempotent mount; refresh hooks). */
   private attachmentsSection: AttachmentsSection | null = null;
   private tagsEditor: TagsEditor | null = null;
@@ -475,6 +479,17 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.onDestroy(() => this.descEditor?.destroy());
     descSection.append(descLabel, descHost);
     main.append(descSection);
+
+    // Read-only RELATED TASKS summary — the navigable parent link + child list
+    // (clickable, phase icon, status). The RelatedTasksPanel paints into this
+    // main-column host while its editing controls stay in the right rail
+    // (#36). Hidden until there's a parent or at least one child.
+    const relatedSummary = document.createElement('section');
+    relatedSummary.className = 'task-detail__related-summary';
+    relatedSummary.dataset.region = 'detail.related';
+    relatedSummary.style.display = 'none';
+    this.relatedSummaryHost = relatedSummary;
+    main.append(relatedSummary);
 
     // Attachment preview strip (image + PDF tiles) — the AttachmentsSection
     // (right rail) paints into this main-column host so the previews sit in the
@@ -1063,6 +1078,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     const cfg: Record<string, unknown> = {
       type: 'RelatedTasksPanel',
       cardId: this.taskId.toString(),
+      summaryHost: this.relatedSummaryHost,
       onChanged: (parentTaskId: bigint | null, relationship: string | null) => {
         if (this.task !== null) {
           this.task.attributes = {

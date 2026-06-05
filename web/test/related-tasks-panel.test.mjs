@@ -40,19 +40,30 @@ function taskRow(id, title, parentTask, relationship) {
   return { id: String(id), card_type_id: '5', card_type_name: 'task', attributes };
 }
 
-/** Transport serving card.select_with_attributes (children) + card.search +
+/** Transport serving card.select_with_attributes (children / status pool /
+ *  parent resolve, differentiated by the wire shape) + card.search +
  *  attribute.update (records every write). */
 function relatedHarness(opts = {}) {
   const updates = [];
   const children = opts.children ?? [];
+  const statuses = opts.statuses ?? [];
+  const parentTasks = opts.parentTasks ?? [];
   const tasks = opts.tasks ?? { 80: 'Epic A', 81: 'Epic B' };
 
   function respond(sr) {
     const k = `${sr.endpoint}.${sr.action}`;
     const data = sr.data ?? {};
     if (k === 'card.select_with_attributes') {
-      // The children query carries a parent_task = me predicate.
-      return { id: sr.id, ok: true, data: { rows: children } };
+      // The children query carries a `parent_task = me` predicate; the status
+      // pool asks for card_type_name 'status'; the parent resolve asks for
+      // 'task' with no predicate.
+      if (Array.isArray(data.where) && data.where.length > 0) {
+        return { id: sr.id, ok: true, data: { rows: children } };
+      }
+      if (data.card_type_name === 'status') {
+        return { id: sr.id, ok: true, data: { rows: statuses } };
+      }
+      return { id: sr.id, ok: true, data: { rows: parentTasks } };
     }
     if (k === 'card.search') {
       let rows;
@@ -152,6 +163,38 @@ test('RelatedTasksPanel: Set parent fires attribute.update(parent_task)+(parent_
   );
 });
 
+test('RelatedTasksPanel: Add existing child sets the picked task parent_task = me + relationship', async () => {
+  const h = relatedHarness({ children: [] });
+  const { dispatcher, api } = bootApi(h.transport);
+  const c = mount(api);
+  await settle(dispatcher);
+
+  // Open the add-existing-child picker.
+  c.el.querySelector('[data-related-add-existing]').click();
+  await flushMicrotasks();
+  assert.ok(c.el.querySelector('[data-related-child-picker]'), 'child picker opened');
+
+  // Drive the pick + Add through the same path the RefPicker onChange/Save take.
+  c.addExistingChild(95n, 'blocker');
+  await settle(dispatcher);
+
+  // The WRITE targets the picked child (95), pointing its parent_task at us (54).
+  assert.ok(
+    h.updates.some(
+      (u) => u.attribute_name === 'parent_task' && u.card_id?.toString() === '95' && u.value?.toString() === '54',
+    ),
+    'attribute.update(card 95, parent_task = 54) fired',
+  );
+  assert.ok(
+    h.updates.some(
+      (u) => u.attribute_name === 'parent_relationship' && u.card_id?.toString() === '95' && u.value === 'blocker',
+    ),
+    'attribute.update(card 95, parent_relationship = blocker) fired',
+  );
+  // The picker closed back to the action buttons.
+  assert.ok(c.el.querySelector('[data-related-add-existing]'), 'reverts to the action buttons after Add');
+});
+
 test('RelatedTasksPanel: the relationship dropdown commits parent_relationship', async () => {
   const h = relatedHarness({ children: [] });
   const { dispatcher, api } = bootApi(h.transport);
@@ -168,6 +211,76 @@ test('RelatedTasksPanel: the relationship dropdown commits parent_relationship',
     h.updates.some((u) => u.attribute_name === 'parent_relationship' && u.value === 'related'),
     'relationship change committed',
   );
+});
+
+/** A `status` value-card row: { label (title), phase }. */
+function statusRow(id, title, phase) {
+  return { id: String(id), card_type_id: '7', card_type_name: 'status', phase, attributes: { title } };
+}
+/** A task row carrying a top-level phase + a `status` ref attribute. */
+function taskWithStatus(id, title, phase, statusId, parentTask, relationship) {
+  const r = taskRow(id, title, parentTask, relationship);
+  r.phase = phase;
+  r.attributes.status = String(statusId);
+  return r;
+}
+
+test('RelatedTasksPanel: body summary renders clickable parent + children with phase + status', async () => {
+  const h = relatedHarness({
+    children: [
+      taskWithStatus(91, 'Sub one', 'triage', 11, CARD_ID, 'subtask'),
+      taskWithStatus(92, 'Sub two', 'active', 12, CARD_ID, 'blocker'),
+    ],
+    parentTasks: [taskWithStatus(80, 'Epic A', 'active', 12)],
+    statuses: [statusRow(11, 'Backlog', 'triage'), statusRow(12, 'Doing', 'active')],
+  });
+  const { dispatcher, api } = bootApi(h.transport);
+  const summaryHost = document.createElement('section');
+  mount(api, { parentTaskId: '80', parentRelationship: 'subtask', summaryHost });
+  await settle(dispatcher);
+
+  // Parent summary row: clickable <a href="/task/80">, phase icon, status text.
+  const parentRow = summaryHost.querySelector('[data-related-summary-parent]');
+  assert.ok(parentRow, 'parent summary row rendered in the body host');
+  const parentLink = parentRow.querySelector('a.related-tasks__chip--link');
+  assert.equal(parentLink.tagName, 'A', 'parent is an anchor');
+  assert.equal(parentLink.getAttribute('href'), '/task/80', 'parent link points at the task');
+  assert.match(parentLink.textContent, /#80 Epic A/, 'parent label shown');
+  assert.equal(parentRow.querySelector('.related-summary__phase').dataset.phase, 'active', 'parent phase icon toned');
+  assert.equal(parentRow.querySelector('.related-summary__status').textContent, 'Doing', 'parent status label');
+
+  // Children summary list: two clickable rows with phase icons + status labels.
+  const childLinks = [...summaryHost.querySelectorAll('[data-related-summary-children] a.related-tasks__chip--link')];
+  assert.equal(childLinks.length, 2, 'two child links in the body summary');
+  assert.deepEqual(
+    childLinks.map((a) => a.getAttribute('href')).sort(),
+    ['/task/91', '/task/92'],
+    'child links point at their tasks',
+  );
+  const childStatuses = [...summaryHost.querySelectorAll('[data-related-summary-children] .related-summary__status')]
+    .map((s) => s.textContent)
+    .sort();
+  assert.deepEqual(childStatuses, ['Backlog', 'Doing'], 'child status labels resolved from the pool');
+
+  // The click is intercepted for in-app navigation (preventDefault) rather than
+  // a full page load — the anchor href above is the navigation target.
+  const evt = new globalThis.window.MouseEvent('click', { bubbles: true, cancelable: true });
+  childLinks.find((a) => a.getAttribute('href') === '/task/91').dispatchEvent(evt);
+  assert.ok(evt.defaultPrevented, 'child link click is intercepted for SPA navigation');
+});
+
+test('RelatedTasksPanel: rail parent + child chips are clickable links', async () => {
+  const h = relatedHarness({ children: [taskRow(91, 'Sub one', CARD_ID, 'subtask')] });
+  const { dispatcher, api } = bootApi(h.transport);
+  const c = mount(api, { parentTaskId: '80', parentRelationship: 'subtask', parentLabel: 'Epic A' });
+  await settle(dispatcher);
+
+  const parentChip = c.el.querySelector('[data-related-parent-chip]');
+  assert.equal(parentChip.tagName, 'A', 'rail parent chip is an anchor');
+  assert.equal(parentChip.getAttribute('href'), '/task/80', 'rail parent chip links to the parent');
+  const childChip = c.el.querySelector('[data-related-child-chip]');
+  assert.equal(childChip.tagName, 'A', 'rail child chip is an anchor');
+  assert.equal(childChip.getAttribute('href'), '/task/91', 'rail child chip links to the child');
 });
 
 test('RelatedTasksPanel: Remove clears parent_task + parent_relationship', async () => {

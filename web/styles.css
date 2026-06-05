@@ -7404,6 +7404,109 @@ textarea.task-comms__form-input {
 .related-tasks__btn {
   font-size: var(--text-xs);
 }
+/* Children-block footer: "+ New sub-task" + "+ Add existing" sit in a row that
+   wraps when the rail is narrow. */
+.related-tasks__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.related-tasks__new-subtask,
+.related-tasks__add-existing {
+  font-size: var(--text-xs);
+}
+/* Clickable parent/child chip — keeps the chip ellipsis layout but reads as a
+   link (the editing rail chips + the body-summary links share this). */
+.related-tasks__chip--link {
+  color: var(--color-fg);
+  text-decoration: none;
+  cursor: pointer;
+}
+.related-tasks__chip--link:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Read-only RELATED TASKS summary in the task-detail MAIN body — the          */
+/* navigable parent link + child list (clickable, phase icon, status). The     */
+/* editing controls stay in the right-rail RelatedTasksPanel.                  */
+/* -------------------------------------------------------------------------- */
+.task-detail__related-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.related-summary__block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.related-summary__label {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.related-summary__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.related-summary__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1x);
+  min-width: 0;
+}
+.related-summary__link {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--text-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Phase icon — glyph tinted by phase, mirroring the status-badge tones. */
+.related-summary__phase {
+  flex: 0 0 auto;
+  font-size: var(--text-sm);
+  line-height: 1;
+  color: var(--color-muted);
+}
+.related-summary__phase[data-phase="triage"] {
+  color: var(--color-accent);
+}
+.related-summary__phase[data-phase="active"] {
+  color: var(--color-success);
+}
+.related-summary__phase[data-phase="terminal"] {
+  color: var(--color-muted);
+}
+.related-summary__status {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  padding: var(--space-h) var(--space-1x);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+}
+.related-summary__status[data-phase="triage"] {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.related-summary__status[data-phase="active"] {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+.related-summary__status[data-phase="terminal"] {
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+}
 
 /* -------------------------------------------------------------------------- */
 /* Project detail (the `project` layout body — ProjectLayout).                 */
