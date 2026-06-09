@@ -478,8 +478,24 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
 
   protected orderRows(rows: CardWithAttrs[]): CardWithAttrs[] {
     if (this.group !== null) return sortGrouped(rows.slice(), this.group.attr, this.groupDir);
-    if (this.config.personalSort === true) return sortByPersonal(rows.slice());
-    return rows.slice();
+    const base = this.config.personalSort === true ? sortByPersonal(rows.slice()) : rows.slice();
+    return this.idFirst(base);
+  }
+
+  /** When the active search is a bare card id (NNNN), surface the exact-id row
+   *  first — the "jump to #ID" affordance the search bar advertises. A no-op for
+   *  any non-numeric search or when no loaded row matches. (Grouping keeps its
+   *  bucket order; the id match still appears, just inside its bucket.) */
+  protected idFirst(rows: CardWithAttrs[]): CardWithAttrs[] {
+    const needle = (this.ctx.tree.at(['screen', 'search']).peek<string>() ?? '').trim();
+    if (!/^\d+$/.test(needle)) return rows;
+    const want = BigInt(needle);
+    const i = rows.findIndex((r) => r.id === want);
+    if (i <= 0) return rows;
+    const out = rows.slice();
+    const [hit] = out.splice(i, 1);
+    out.unshift(hit!);
+    return out;
   }
 
   protected computeItems(rows: CardWithAttrs[]): GroupItem<CardWithAttrs>[] {

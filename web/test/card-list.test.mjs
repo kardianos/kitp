@@ -215,6 +215,19 @@ test('CardListBody/comms: switching the comm_status phase filter re-queries (act
   assert.equal(rows[0].dataset.cardId, '200');
 });
 
+test('CardListBody/comms: a bare numeric search surfaces the exact-id row first (jump to #ID)', async () => {
+  const { dispatcher, api } = bootApi(harness().transport);
+  // No predicate → both comms render in server order [145, 200].
+  const { c, tree } = mount(api, null);
+  await settle(dispatcher);
+  assert.equal(filledRows(c)[0].dataset.cardId, '145', 'default order has 145 first');
+
+  // Searching the bare id of the SECOND comm pulls it to the top.
+  tree.at(['screen', 'search']).set('200');
+  await settle(dispatcher);
+  assert.equal(filledRows(c)[0].dataset.cardId, '200', 'exact-id match is first on a numeric search');
+});
+
 test('CardListBody/comms: the "Needs ACK" flag toggle composes acked=false into the query and narrows the list', async () => {
   const { dispatcher, api } = bootApi(harness().transport);
   // No phase predicate → both comms render initially.

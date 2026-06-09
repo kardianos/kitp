@@ -151,6 +151,53 @@ func TestCardSelectWithAttrsBatch_Happy(t *testing.T) {
 	}
 }
 
+// TestCardSelectWithAttrsBatch_IdSearch — the synthetic `id` predicate matches
+// the card's own primary key, powering the search bar's numeric "jump to #ID".
+// The OR(id eq N, title contains …) shape the client builds returns the exact
+// card even when its title doesn't contain the digits; a wrong id matches none.
+func TestCardSelectWithAttrsBatch_IdSearch(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_swa_id_search")
+	projectID, taskID := seedProjectWithTask(t, pool, "happy")
+
+	// OR(id eq taskID, title contains "zzz") — the title leaf can't match, so a
+	// hit proves the id leaf compiled to `c.id = taskID`.
+	rows := callCardSelectWithAttrsBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{
+			"parent_card_id": strconv.FormatInt(projectID, 10),
+			"card_type_name": "task",
+			"tree": map[string]any{
+				"connective": "or",
+				"children": []any{
+					map[string]any{"attr": "id", "op": "eq", "values": []any{strconv.FormatInt(taskID, 10)}},
+					map[string]any{"attr": "title", "op": "contains", "values": []any{"zzz-no-match"}},
+				},
+			},
+		},
+	})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("id search failed: %+v", rows)
+	}
+	res := decodeSWA(t, rows[0].Result)
+	if len(res.Rows) != 1 || res.Rows[0].ID != strconv.FormatInt(taskID, 10) {
+		t.Fatalf("id search rows=%+v, want exactly task %d", res.Rows, taskID)
+	}
+
+	// A non-matching id returns nothing (and the unmatched title leaf too).
+	rows = callCardSelectWithAttrsBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{
+			"parent_card_id": strconv.FormatInt(projectID, 10),
+			"card_type_name": "task",
+			"tree":           map[string]any{"attr": "id", "op": "eq", "values": []any{"9999999"}},
+		},
+	})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("id miss failed: %+v", rows)
+	}
+	if res := decodeSWA(t, rows[0].Result); len(res.Rows) != 0 {
+		t.Errorf("wrong-id search returned %d rows, want 0", len(res.Rows))
+	}
+}
+
 // TestCardSelectWithAttrsBatch_Empty — no matching rows returns
 // an empty rows array (not null).
 func TestCardSelectWithAttrsBatch_Empty(t *testing.T) {

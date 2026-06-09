@@ -278,7 +278,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     const search = document.createElement('input');
     search.type = 'search';
     search.className = 'filterbar__search';
-    search.placeholder = 'Search tasks…';
+    search.placeholder = 'Search or #ID…';
     search.dataset.filterSearch = '';
     this.searchEl = search;
 

@@ -155,6 +155,31 @@ BEGIN
         RAISE EXCEPTION 'card_compile_predicate: bad attribute name %', _attr;
     END IF;
 
+    -- Synthetic `id` attribute: match the card's OWN primary key (c.id), not an
+    -- attribute_value. Powers the search bar's numeric "jump to #ID" — a bare
+    -- NNNN query ORs an `{attr:'id', op:'eq', values:[NNNN]}` leaf in so the
+    -- card with that id surfaces regardless of its title. Equality only; a
+    -- non-numeric value can't be a card id, so it compiles to FALSE rather than
+    -- raising (keeps the OR'd title-search leaf as the live clause).
+    IF _attr = 'id' THEN
+        IF _op NOT IN ('=', 'eq') THEN
+            RAISE EXCEPTION 'card_compile_predicate: id supports only equality, got %', _op;
+        END IF;
+        IF NOT (node ? 'values') AND node ? 'value' THEN
+            _v := node->'value';
+        ELSE
+            _v := COALESCE(node->'values'->0, 'null'::jsonb);
+        END IF;
+        IF jsonb_typeof(_v) = 'number'
+           OR (jsonb_typeof(_v) = 'string' AND (_v #>> '{}') ~ '^[0-9]+$') THEN
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v) AS r(p, i);
+            RETURN jsonb_build_object(
+                'sql', format('c.id = ($1->>%s)::bigint', _val_idx::text),
+                'params', params);
+        END IF;
+        RETURN jsonb_build_object('sql', 'FALSE', 'params', params);
+    END IF;
+
     -- Resolve attr value_type for canonicalization. Missing attribute_def
     -- pass-through (matches Go-side behaviour of leaving raw value alone).
     SELECT value_type INTO _value_type FROM attribute_def WHERE name = _attr LIMIT 1;

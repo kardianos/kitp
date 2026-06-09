@@ -1328,7 +1328,7 @@ export class Grid extends CardListCore<GridConfig> {
    */
   protected override computeItems(tasks: CardWithAttrs[]): GroupItem<CardWithAttrs>[] {
     const g = this.group;
-    if (g === null) return walkGrouped(tasks, null, () => '');
+    if (g === null) return walkGrouped(this.idFirst(tasks), null, () => '');
     if (g.tagPrefix !== undefined) return this.buildTagPrefixItems(tasks, g.tagPrefix);
     return walkGrouped(tasks, g.attr, (key) => this.groupKeyLabel(key, g.lookup));
   }

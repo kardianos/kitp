@@ -325,6 +325,42 @@ test('applySearchFilter: multi-field search wraps the needle in an OR group on t
   });
 });
 
+test('applySearchFilter: a bare numeric needle ORs an exact id match with the text search (jump to #ID)', () => {
+  const { applySearchFilter } = M;
+  const out = applySearchFilter('127', ['title'], null);
+  // Even a single-field numeric search rides `tree` (the OR forces it): the
+  // exact-id leaf surfaces card #127 regardless of its title; the title-contains
+  // leaf keeps ordinary matches. Tree leaves use the plural `values` shape.
+  assert.equal(out.where, undefined, 'numeric search rides on tree, not where[]');
+  assert.deepEqual(out.tree, {
+    connective: 'or',
+    children: [
+      { attr: 'id', op: 'eq', values: ['127'] },
+      { attr: 'title', op: 'contains', values: ['127'] },
+    ],
+  });
+});
+
+test('applySearchFilter: numeric needle ORs the id match across every search field', () => {
+  const { applySearchFilter } = M;
+  const out = applySearchFilter('42', ['title', 'description'], null);
+  assert.deepEqual(out.tree, {
+    connective: 'or',
+    children: [
+      { attr: 'id', op: 'eq', values: ['42'] },
+      { attr: 'title', op: 'contains', values: ['42'] },
+      { attr: 'description', op: 'contains', values: ['42'] },
+    ],
+  });
+});
+
+test('applySearchFilter: a non-numeric needle does NOT add an id leaf (stays the plain text search)', () => {
+  const { applySearchFilter } = M;
+  const out = applySearchFilter('12a', ['title'], null);
+  assert.deepEqual(out.where, [{ attr: 'title', op: 'contains', value: '12a' }]);
+  assert.equal(out.tree, undefined);
+});
+
 test('applySearchFilter: single-field search + structured predicate AND-fold on tree (where[] would be ignored)', () => {
   // The Go server uses `tree` when set and IGNORES `where[]`. So a structured
   // predicate (which must ride on tree) plus a single-field search needs the

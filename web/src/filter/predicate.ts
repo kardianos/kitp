@@ -611,9 +611,24 @@ export function applySearchFilter(
   // so the where-leaf path may stay singular; the tree-leaf path must use
   // the plural form. The SQL fallback compiler (card_compile_predicate.sql)
   // handles both shapes — only the Go path is strict.
+  // A bare numeric needle (NNNN) is treated as a "jump to #ID": the synthetic
+  // `id eq NNNN` leaf (compiled to `c.id = NNNN` server-side) is OR'd with the
+  // normal text search so the exact card surfaces even when its title doesn't
+  // contain the digits, while title/description matches still appear. Riding an
+  // OR forces the `tree` path (the server uses `tree` when set), so the numeric
+  // branch always builds a tree regardless of field count.
+  const isIdQuery = /^\d+$/.test(needle);
   let searchLeaves: WireNode[] = [];
   let searchTree: WireNode | null = null;
-  if (effective.length === 1) {
+  if (isIdQuery && effective.length > 0) {
+    searchTree = {
+      connective: 'or',
+      children: [
+        { attr: 'id', op: 'eq', values: [needle] },
+        ...effective.map((attr) => ({ attr, op: 'contains', values: [needle] })),
+      ],
+    };
+  } else if (effective.length === 1) {
     searchLeaves = [{ attr: effective[0], op: 'contains', value: needle }];
   } else if (effective.length > 1) {
     searchTree = {
@@ -628,7 +643,7 @@ export function applySearchFilter(
   // the {searchTree} branch already builds that, and the single-field branch
   // re-shapes its leaf to the plural form before merging into a tree below.
   const singleSearchLeafAsTree: WireNode | null =
-    effective.length === 1
+    !isIdQuery && effective.length === 1
       ? { attr: effective[0], op: 'contains', values: [needle] }
       : null;
   const searchClauseForTree: WireNode | null = searchTree ?? singleSearchLeafAsTree;
