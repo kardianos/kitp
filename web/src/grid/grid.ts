@@ -730,18 +730,48 @@ export class Grid extends CardListCore<GridConfig> {
     return ['2.25rem', ...tracks].join(' ');
   }
 
-  /** Set the table's inline `--grid-cols` (guarded — the minimal test DOM shim
-   *  has no CSSStyleDeclaration.setProperty). */
-  private setGridCols(value: string): void {
-    const style = this.tableEl?.style as { setProperty?: (k: string, v: string) => void } | undefined;
-    if (style !== undefined && typeof style.setProperty === 'function') {
-      style.setProperty('--grid-cols', value);
-    }
+  /** The MINIMUM width of a column's track: its resized px, else the kind
+   *  default (a `minmax()` column contributes its min). `liveKey`/`livePx`
+   *  override one column mid-resize, mirroring {@link colsString}. */
+  private colMinTrack(col: ColumnDef, liveKey?: string, livePx?: number): string {
+    if (col.key === liveKey && livePx !== undefined) return `${Math.max(48, Math.round(livePx))}px`;
+    const w = this.columnConfig().widths[col.key];
+    if (typeof w === 'number') return `${Math.max(48, w)}px`;
+    const t = this.defaultTrack(col);
+    const m = /^minmax\(\s*([^,]+),/.exec(t);
+    return m !== null ? m[1]!.trim() : t;
   }
 
-  /** Set the table's inline `--grid-cols` from the current columns + widths (#28). */
+  /** `--grid-min-width`: the leading select track + every column's MIN track, as
+   *  a `calc()` sum (mixed rem/px). This is the TRUE total column width (incl.
+   *  resized px + the hidden/reordered set), so the header, the body spacer, the
+   *  rows, and the group headers all span exactly the columns — no stale static
+   *  constant. When the columns fit the viewport the `1fr`/`2fr` tracks still
+   *  flex (min-width stays below the viewport); when they don't, every row's
+   *  background + hairline span the full scroll width instead of clipping at the
+   *  viewport edge. */
+  private colsMinWidth(liveKey?: string, livePx?: number): string {
+    const parts = ['2.25rem', ...this.columns.map((c) => this.colMinTrack(c, liveKey, livePx))];
+    return `calc(${parts.join(' + ')})`;
+  }
+
+  /** Set an inline custom property on the table (guarded — the minimal test DOM
+   *  shim has no CSSStyleDeclaration.setProperty). */
+  private setTableVar(name: string, value: string): void {
+    const style = this.tableEl?.style as { setProperty?: (k: string, v: string) => void } | undefined;
+    if (style !== undefined && typeof style.setProperty === 'function') {
+      style.setProperty(name, value);
+    }
+  }
+  private setGridCols(value: string): void {
+    this.setTableVar('--grid-cols', value);
+  }
+
+  /** Set the table's inline `--grid-cols` + `--grid-min-width` from the current
+   *  columns + widths (#28). */
   private applyGridCols(): void {
     this.setGridCols(this.colsString());
+    this.setTableVar('--grid-min-width', this.colsMinWidth());
   }
 
   /** Begin a header-edge resize drag for `col`. */
@@ -755,6 +785,9 @@ export class Grid extends CardListCore<GridConfig> {
       const px = Math.max(48, Math.round(startW + (ev.clientX - startX)));
       this.pendingResize = { key: col.key, px };
       this.setGridCols(this.colsString(col.key, px));
+      // Keep the min-width in lock-step so the rows' background + hairlines span
+      // the live width while dragging (no clip flicker past the viewport edge).
+      this.setTableVar('--grid-min-width', this.colsMinWidth(col.key, px));
     };
     const onUp = (): void => {
       document.removeEventListener('pointermove', onMove);
