@@ -57,6 +57,22 @@ BEGIN
                     'doc',                      COALESCE(f.doc, ''),
                     'attribute_def_id',         f.attribute_def_id::text,
                     'attribute_def_name',       ad.name,
+                    -- The card_type this flow's governed attribute_def is bound
+                    -- to (status → task, comm_status → comm). The screen lists
+                    -- THAT card_type, so the filter bar scopes its editor /
+                    -- chips / axes to it — no hardcoded card_type per layout.
+                    -- A status attribute is REQUIRED on exactly the entity type
+                    -- whose lifecycle it governs (task.status / comm.comm_status
+                    -- are is_required), so prefer the required binding when the
+                    -- def happens to be bound (optionally) to other types too;
+                    -- ct.id only breaks a genuine tie deterministically.
+                    'attribute_def_card_type_name', COALESCE((
+                        SELECT ct.name FROM edge e
+                        JOIN card_type ct ON ct.id = e.card_type_id
+                        WHERE e.attribute_def_id = f.attribute_def_id
+                        ORDER BY e.is_required DESC, ct.id
+                        LIMIT 1
+                    ), ''),
                     'scope_card_id',            f.scope_card_id::text,
                     -- Joined display name for the scope project card (its `title`
                     -- attribute), so the UI shows a name rather than a raw id.

@@ -186,7 +186,7 @@ var migrations = []migration{
 	},
 	{
 		// The Comms screen now lists comm cards directly (layout 'comms' → the
-		// CommsList body) instead of tasks-with-comms (layout 'list' → Inbox),
+		// generic CardListBody) instead of tasks-with-comms (layout 'list' → Inbox),
 		// so its comm_status phase filter actually scopes comm cards. Flip the
 		// layout on every existing comms-slug screen (template + stamped). And
 		// drop any task-only `default_filter` ("Comms attached") wired onto a
@@ -288,6 +288,94 @@ END $$;`,
 		// get the curated seed values that reproduce the previous look.
 		id:  "0005_flow_step_standalone",
 		sql: `ALTER TABLE flow_step ADD COLUMN IF NOT EXISTS standalone boolean NOT NULL DEFAULT false`,
+	},
+	{
+		// Migration 0003 flipped the comms screen to list comm cards directly and
+		// dropped the task-only "Comms attached" default_filter WIRING, but the
+		// filter CARD itself (predicate `comms exists`) was left parented to the
+		// comms screen — so it still surfaces as a selectable preset and, applied
+		// to comm cards (which carry no `comms` attribute), matches NOTHING. Drop
+		// the orphaned filter card + its attribute_value / activity rows. Scoped
+		// to filter cards under a comms-slug screen whose predicate is EXACTLY the
+		// seeded `comms exists` snippet, so a user's own comms-screen filter is
+		// untouched. Idempotent: fresh seeds no longer ship the card (nothing to
+		// match) and a re-run finds the row already gone.
+		id: "0006_drop_comms_attached_filter",
+		sql: `
+DO $$
+DECLARE
+  _slug_def  bigint := (SELECT id FROM attribute_def WHERE name = 'slug');
+  _pred_def  bigint := (SELECT id FROM attribute_def WHERE name = 'predicate');
+  _screen_ct bigint := (SELECT id FROM card_type WHERE name = 'screen');
+  _filter_ct bigint := (SELECT id FROM card_type WHERE name = 'filter');
+  _dead bigint[];
+BEGIN
+  IF _slug_def IS NULL OR _pred_def IS NULL OR _screen_ct IS NULL OR _filter_ct IS NULL THEN
+    RETURN;
+  END IF;
+  SELECT array_agg(f.id) INTO _dead
+  FROM card f
+  JOIN card s ON s.id = f.parent_card_id AND s.card_type_id = _screen_ct
+  WHERE f.card_type_id = _filter_ct
+    AND EXISTS (
+      SELECT 1 FROM attribute_value sv
+      WHERE sv.card_id = s.id AND sv.attribute_def_id = _slug_def
+        AND sv.value #>> '{}' = 'comms'
+    )
+    AND EXISTS (
+      SELECT 1 FROM attribute_value pv
+      WHERE pv.card_id = f.id AND pv.attribute_def_id = _pred_def
+        AND pv.value #>> '{}' = '{"attr":"comms","op":"exists"}'
+    );
+  IF _dead IS NULL THEN
+    RETURN;
+  END IF;
+  -- attribute_value first (its last_activity_id FKs activity), then activity,
+  -- then the card row itself.
+  DELETE FROM attribute_value WHERE card_id = ANY(_dead);
+  DELETE FROM activity        WHERE card_id = ANY(_dead);
+  DELETE FROM card            WHERE id      = ANY(_dead);
+END $$;`,
+	},
+	{
+		// Migration 0003 flipped comms screens list→comms by SLUG, gated once.
+		// A project stamped AFTER 0003 ran (from a pre-comms-layout template, or
+		// any legacy straggler) can still carry a comms screen at layout 'list'
+		// — which renders the task Inbox while the filter bar scopes to `comm`,
+		// the exact body/filter mismatch that returns zero rows. Re-assert the
+		// invariant FLOW-DRIVEN (not by slug, so a renamed comms screen is also
+		// caught): any `screen` at layout 'list' whose `flow_ref` governs the
+		// `comm_status` attribute lists comms, so its body MUST be the CardListBody
+		// (layout 'comms'). Idempotent: fresh seeds already ship layout 'comms'
+		// (no 'list' row matches) and a re-run finds nothing left to flip.
+		id: "0007_comms_screen_layout_by_flow",
+		sql: `
+DO $$
+DECLARE
+  _layout_def   bigint := (SELECT id FROM attribute_def WHERE name = 'layout');
+  _flow_ref_def bigint := (SELECT id FROM attribute_def WHERE name = 'flow_ref');
+  _comm_status  bigint := (SELECT id FROM attribute_def WHERE name = 'comm_status');
+  _screen_ct    bigint := (SELECT id FROM card_type WHERE name = 'screen');
+BEGIN
+  IF _layout_def IS NULL OR _flow_ref_def IS NULL OR _comm_status IS NULL OR _screen_ct IS NULL THEN
+    RETURN;
+  END IF;
+  UPDATE attribute_value lav
+  SET value = to_jsonb('comms'::text)
+  WHERE lav.attribute_def_id = _layout_def
+    AND lav.value #>> '{}' = 'list'
+    AND EXISTS (
+      SELECT 1
+      FROM card c
+      JOIN attribute_value fv ON fv.card_id = c.id
+        AND fv.attribute_def_id = _flow_ref_def
+        AND jsonb_typeof(fv.value) = 'number'
+      JOIN flow f ON f.id = (fv.value)::text::bigint
+      WHERE c.id = lav.card_id
+        AND c.card_type_id = _screen_ct
+        AND f.attribute_def_id = _comm_status
+    );
+END $$;`,
 	},
 }
 

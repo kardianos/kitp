@@ -182,15 +182,10 @@ flow_id,     from_card_id,  to_card_id,    label,           sort_order, standalo
 @flow_comm,  @cs_resolved,  @cs_open,      "Reopen",        1,          true
 
 
-## table card | under=proj_default | alias=sc_comms | doc="Comms screen (email_comm_spec Gate 7). Lists tasks with attached comms (the 'Comms attached' default_filter below). flow_ref points at the comm flow so the TransitionBar shows comm-status transitions; toggle_groups filter by comm_status phase (Active / Resolved) rather than task status; default_create_status overrides to 'Open' (the comm flow's create default)."
+## table card | under=proj_default | alias=sc_comms | doc="Comms screen (email_comm_spec Gate 7). Lists the project's comm cards directly (layout 'comms' → the generic CardListBody, cardType=comm). flow_ref points at the comm flow so the TransitionBar shows comm-status transitions; toggle_groups filter by comm_status phase (Active / Resolved) rather than task status; default_create_status overrides to 'Open' (the comm flow's create default)."
 ### rows
 card_type_id,      parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,    default_create_status, alias,    toggle_groups
 $card_type.screen, parent,         "Comms", comms,  comms, c,      7,          @flow_comm,  @cs_open,              sc_comms, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"comm_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Resolved","predicate":{"attr":"comm_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
-
-## table card | under=sc_comms | doc="Default filter for the Comms screen: tasks that have any attached comm cards."
-### rows
-card_type_id,      parent_card_id, title,            predicate
-$card_type.filter, parent,         "Comms attached", `{"attr":"comms","op":"exists"}`
 
 
 ## table card | under=proj_default | doc="25 dense tasks. status is round-robin so every state has at least a few rows; 'Closed:'-prefixed titles force Done so a manually-curated terminal example survives the rotation. sort_order is task_idx * 100 (the loader can't compute that, so each row carries its literal value). due_date is the demo-only non-built-in attribute defined above; a mix of past, today-ish, and future ISO dates exercises overdue / upcoming display."
@@ -407,11 +402,6 @@ flow_id,         from_card_id,      to_card_id,         label,           sort_or
 ### rows
 card_type_id,      parent_card_id, title,   layout, slug,  sort_order, flow_ref,        default_create_status, alias,        toggle_groups
 $card_type.screen, parent,         "Comms", comms,  comms, 7,          @mob_flow_comm,  @mob_cs_open,          mob_sc_comms, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Active","predicate":{"attr":"comm_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Resolved","predicate":{"attr":"comm_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
-
-## table card | under=mob_sc_comms | doc="Default filter for the Mobile App Comms screen: tasks that have any attached comm cards."
-### rows
-card_type_id,      parent_card_id, title,            predicate
-$card_type.filter, parent,         "Comms attached", `{"attr":"comms","op":"exists"}`
 
 
 ## table card | under=proj_mobile | doc="Mobile App tasks. Smaller fixture than Default Project (8 tasks vs ~29) — variety more than density. status round-robin so every active state has at least one row; a closed task survives the rotation for terminal-state coverage."

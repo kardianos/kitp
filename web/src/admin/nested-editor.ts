@@ -1520,8 +1520,12 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       none.textContent = 'No filters on this screen yet.';
       list.append(none);
     }
+    // The card_type the screen's body lists (flow-derived; status→task,
+    // comm_status→comm). Scopes the predicate builder's attribute vocabulary so
+    // a comm screen's filter offers comm attributes, not task's.
+    const cardType = this.screenCardType(screen);
     for (const f of filters) {
-      list.append(this.buildFilterRow(screen.id, f, defaultFilter));
+      list.append(this.buildFilterRow(screen.id, f, defaultFilter, cardType));
     }
     frag.append(list);
 
@@ -1639,7 +1643,24 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     );
   }
 
-  private buildFilterRow(screenId: string, f: Record<string, unknown>, defaultFilter: string): HTMLElement {
+  /**
+   * The card_type the screen's body lists, derived from its `flow_ref` the SAME
+   * way the runtime does (screen-resolve `ScreenPresetSet.cardType`): the flow's
+   * governed attribute_def's bound card_type (status→task, comm_status→comm).
+   * Falls back to 'task' when the screen has no explicit flow_ref or the flow /
+   * card_type can't be resolved — matching the runtime default. The predicate
+   * builder scopes its attribute vocabulary to this, so a Comms screen's filter
+   * offers comm attributes (comm_status, acked, …) instead of task's.
+   */
+  private screenCardType(screen: MasterDetailItem): string {
+    const flowRef = fieldText(screen.raw, 'attributes.flow_ref');
+    if (flowRef === '' || flowRef === '0') return 'task';
+    const flows = (this.ctx.tree.at(this.p('flows')).peek<FlowRow[]>() ?? []) as FlowRow[];
+    const ct = flows.find((fl) => fl.id === flowRef)?.attribute_def_card_type_name;
+    return typeof ct === 'string' && ct !== '' ? ct : 'task';
+  }
+
+  private buildFilterRow(screenId: string, f: Record<string, unknown>, defaultFilter: string, cardType: string): HTMLElement {
     const id = fieldText(f, 'id');
     const row = document.createElement('div');
     row.className = 'nested-editor__filter-row';
@@ -1692,7 +1713,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     row.append(del);
 
     if (editingId === id) {
-      row.append(this.buildPredicateEditor(screenId, id, f));
+      row.append(this.buildPredicateEditor(screenId, id, f, cardType));
     }
 
     return row;
@@ -1700,7 +1721,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
 
   /** Mount a PredicateFilter for the filter card's predicate; commit writes the
    *  JSON predicate back to the card's `predicate` attribute. */
-  private buildPredicateEditor(screenId: string, filterId: string, f: Record<string, unknown>): HTMLElement {
+  private buildPredicateEditor(screenId: string, filterId: string, f: Record<string, unknown>, cardType: string): HTMLElement {
     const slot = document.createElement('div');
     slot.className = 'nested-editor__predicate';
     slot.dataset.nePredicate = filterId;
@@ -1734,8 +1755,11 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       {
         type: 'PredicateFilter',
         valuePath: predPath.join('.'),
-        // Filter predicates target task cards (the card_type filters apply to).
-        schema: { cardType: 'task' },
+        // Scope the predicate vocabulary to the card_type the screen lists
+        // (flow-derived; comm screen → comm). The runtime filter bar scopes the
+        // same way (screen-host predicateCardType), so the saved predicate and
+        // the live bar can't disagree on what attributes exist.
+        schema: { cardType },
         // The universal view builder: also edit Group by + Sort by here.
         groupPath: groupPath.join('.'),
         sortPath: sortPath.join('.'),

@@ -47,6 +47,7 @@ import {
   readExtraColumns,
   readTagPrefixColumns,
   readPhaseToggles,
+  bodyConfigForLayout,
   screenStatePath,
   type ScreenPresetSet,
 } from '../filter/screen-resolve.js';
@@ -99,10 +100,10 @@ declare module '../core/control.js' {
  */
 const LAYOUT_TO_CONTROL: Record<string, string> = {
   kanban: 'Kanban',
-  list: 'Inbox',
+  list: 'CardListBody',
   grid: 'Grid',
   project: 'Project',
-  comms: 'CommsList',
+  comms: 'CardListBody',
 };
 
 /** Layouts that support the swim-lane (2nd) axis. Only the Kanban splits its
@@ -134,6 +135,13 @@ export class ScreenHost extends Control<ScreenHostConfig> {
   private barHost: HTMLElement | null = null;
   private barControl: Control | null = null;
   private barLayout: string | null = null;
+  /** The card_type the resolved screen's body lists, derived from its flow
+   *  (see ScreenPresetSet.cardType). The filter bar scopes its editor / chips /
+   *  axes to this so non-applicable attributes are hidden. Undefined until the
+   *  screen resolves (and for flow-less screens) → the bar keeps its `task`
+   *  default. Set in onScreenResolved BEFORE dispatchBody so spawnFilterBar
+   *  reads the resolved value. */
+  private bodyCardType: string | undefined;
   /** The (project, slug) preset key, computed in render() and reused by the
    *  filter bar whenever it's (re)spawned. */
   private statePath: string[] = [];
@@ -298,6 +306,17 @@ export class ScreenHost extends Control<ScreenHostConfig> {
       .at(['screen', 'phaseToggles'])
       .set(set.screen !== null ? readPhaseToggles(set.screen, set.phaseAttr) : []);
 
+    // The card_type the body lists (flow-derived; status→task, comm_status→comm).
+    // ONE source of truth landed in the tree: the CardListBody reads it to scope
+    // its query AND the ScreenFilterBar reads it to scope its editor/chips/axes,
+    // so the body's card_type and the filter's card_type can never disagree (the
+    // bug class where the body listed `task` while the bar filtered `comm`).
+    // Defaults to 'task' for a flow-less / missing screen.
+    this.ctx.tree.at(['screen', 'cardType']).set(set.cardType ?? 'task');
+    // The flow's governed attribute (status / comm_status) — the CardListBody
+    // shows it as a phase-toned lead badge. Empty when the screen has no flow.
+    this.ctx.tree.at(['screen', 'phaseAttr']).set(set.phaseAttr ?? '');
+
     if (set.screen === null) {
       // No screen card for this slug → keep the fallback body + announce "no
       // screen" so the bar still renders its default-filter fallback. If we
@@ -311,6 +330,10 @@ export class ScreenHost extends Control<ScreenHostConfig> {
 
     node.child('screenId').set(set.screen.id);
     node.child('resolved').set(true);
+
+    // The card_type the body lists (flow-derived) — recorded BEFORE dispatchBody
+    // so the (re)spawned filter bar scopes its editor / chips / axes to it.
+    this.bodyCardType = set.cardType;
 
     // Drive the body off the resolved screen card's `layout`. Re-dispatch only
     // when it actually differs from what we painted (avoids a needless tear-down
@@ -364,6 +387,12 @@ export class ScreenHost extends Control<ScreenHostConfig> {
         requireGroup: layoutRequiresGroup(layout),
         defaultGroup: defaultGroupForLayout(layout),
         viewActions: viewActionsForLayout(layout),
+        // Scope the filter editor / quick-chips / group axes to the card_type
+        // the resolved screen's body lists (flow-derived; see bodyCardType), so
+        // non-applicable attributes are hidden — the Comms screen lists `comm`,
+        // every task layout lists `task`. Undefined (no flow) → the bar's `task`
+        // default. No hardcoded card_type per layout.
+        ...(this.bodyCardType !== undefined ? { predicateCardType: this.bodyCardType } : {}),
       } as ChildConfig,
       this.barHost,
     );
@@ -395,6 +424,9 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     // load-bearing graceful-degradation path) — never throws.
     const bodyConfig: ChildConfig = {
       type: bodyType,
+      // Layout-derived presentation preset (compact comm list, etc.), then any
+      // explicit per-descriptor bodyConfig overrides on top.
+      ...bodyConfigForLayout(layout),
       ...(this.config.screen.bodyConfig ?? {}),
     };
     this.bodyControl = this.spawn(bodyType, bodyConfig, this.bodyHost);

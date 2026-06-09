@@ -1262,8 +1262,7 @@ select optgroup {
     box-shadow: 0 0 0 0 transparent;
   }
 }
-.card--settling,
-.inbox__row--settling {
+.card--settling {
   animation: drop-settle var(--duration-slow, 320ms) var(--ease-standard);
 }
 
@@ -2144,44 +2143,11 @@ select optgroup {
 }
 
 /* ==========================================================================
-   Inbox (list layout) — the personal-sorted task inbox. A header with the two
-   scope toggles (mine-only + routed-to-me) and the agent-view banner, then the
-   recycling virtualList body of task rows (grip + id/title + status/assignee +
-   the per-row delegate picker). The shared ScreenFilterBar is mounted ABOVE the
-   body by the ScreenHost; the inbox only styles its own header + rows.
+   Inbox view toggles — the "Mine only" / "Routed to me" buttons (the
+   InboxViewToggles control) mounted on the ScreenFilterBar's View row. The list
+   body itself is the unified CardListBody (`.card-list`, below); these are the
+   only inbox-specific styles left after the Inbox/Comms control consolidation.
    ========================================================================== */
-.inbox {
-  --density: compact;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  height: 100%;
-  min-height: 0;
-  outline: none;
-}
-.inbox__header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3) 0;
-}
-.inbox__agent-banner {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-h) var(--space-2);
-  border: 1px solid var(--color-accent-ring);
-  border-radius: var(--radius-md);
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-medium);
-}
-.inbox__agent-banner::before {
-  content: "⚡";
-}
 .inbox__toggles {
   display: inline-flex;
   align-items: center;
@@ -2215,239 +2181,6 @@ select optgroup {
   background: var(--color-accent-soft);
   border-color: var(--color-accent-ring);
   color: var(--color-accent);
-}
-
-.inbox__fault {
-  flex: 0 0 auto;
-  margin: 0 var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
-  color: var(--color-danger);
-  background: var(--color-danger-soft);
-  border: 1px solid var(--color-danger-ring);
-  border-radius: var(--radius-md);
-}
-
-/* The body is the virtualList scroll VIEWPORT: a positioned, overflow-y:auto
-   box that fills the remaining height. The recycling row pool lives inside it. */
-.inbox__list {
-  flex: 1 1 auto;
-  min-height: 0;
-  position: relative;
-  overflow-y: auto;
-  padding: 0 var(--space-3);
-}
-
-/* ---- task rows: fixed-height (virtualList positions by this px height, which
-   MUST equal INBOX_ROW_HEIGHT=56 in inbox.ts) ---- */
-.inbox__row {
-  box-sizing: border-box;
-  height: 56px;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
-  /* The slot the virtualList tiles is 56px; inset the visible card a touch so
-     consecutive rows show a hairline gap rather than touching. */
-  margin: 2px 0;
-  border: 1px solid transparent;
-  /* Hairline below each row so consecutive cards don't visually run together
-     (the 4px gap from `margin: 2px 0` alone reads as "almost touching"). The
-     `--selected` state's `border-color` overrides all four sides, so the
-     selected ring still wins. */
-  border-bottom-color: var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  cursor: pointer;
-  font-variant-numeric: var(--nums-tabular);
-}
-.inbox__row:hover {
-  background: var(--color-fill-hover);
-}
-.inbox__row:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--color-focus-halo);
-}
-.inbox__row--selected {
-  border-color: var(--color-accent-ring);
-  background: var(--color-surface-raised);
-  box-shadow: inset 2px 0 0 0 var(--color-accent);
-}
-.inbox__row--dragging {
-  opacity: 0.5;
-  box-shadow: var(--shadow-drag);
-  transform: scale(1.01);
-}
-/* Brighter leading indicator for a row the user has personally ordered vs the
-   muted server-default order. */
-.inbox__row--ordered .inbox__grip {
-  color: var(--color-accent);
-}
-
-/* ---- group section header (GROUP picker active): same fixed slot height as a
-   row (the virtualList positions by INBOX_ROW_HEIGHT=56), an accent band that
-   reads as a section divider. Clicking it flips the group direction. ---- */
-.inbox__group-header {
-  box-sizing: border-box;
-  height: 56px;
-  margin: 2px 0;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border: none;
-  border-top: 1px solid var(--color-accent-ring);
-  border-bottom: 1px solid var(--color-accent-ring);
-  background: var(--color-accent-soft);
-  color: var(--color-fg-strong);
-  font-size: var(--text-2xs);
-  font-weight: var(--weight-semibold);
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background var(--duration-fast) var(--ease-standard);
-}
-.inbox__group-header:hover {
-  background: var(--color-fill-hover);
-}
-.inbox__group-header:focus-visible {
-  outline: 2px solid var(--color-focus-ring);
-  outline-offset: -2px;
-}
-.inbox__group-arrow {
-  color: var(--color-accent);
-  font-size: var(--text-xs);
-  line-height: 1;
-}
-.inbox__group-label {
-  color: var(--color-fg-strong);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.inbox__group-count {
-  color: var(--color-muted);
-  font-weight: var(--weight-medium);
-  text-transform: none;
-}
-
-.inbox__grip {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1rem;
-  align-self: stretch;
-  cursor: grab;
-  user-select: none;
-  color: var(--color-muted);
-  border-radius: var(--radius-sm);
-}
-.inbox__grip:hover {
-  background: var(--color-surface-sunken);
-}
-
-.inbox__main {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.inbox__line1 {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.inbox__id {
-  flex: 0 0 auto;
-  font-size: var(--text-xs);
-  color: var(--color-muted);
-}
-.inbox__title {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-  color: var(--color-fg);
-}
-.inbox__line2 {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.inbox__status-pill {
-  flex: 0 0 auto;
-  font-size: var(--text-2xs);
-  font-weight: var(--weight-semibold);
-  padding: var(--space-h) var(--space-1x);
-  border-radius: var(--radius-sm);
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
-}
-.inbox__assignee {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: var(--text-xs);
-  color: var(--color-muted);
-}
-.inbox__priority {
-  flex: 0 0 auto;
-  font-size: var(--text-2xs);
-  font-weight: var(--weight-semibold);
-  text-transform: capitalize;
-  padding: var(--space-h) var(--space-1x);
-  border-radius: var(--radius-sm);
-  background: var(--color-fill-hover);
-  color: var(--color-muted);
-}
-.inbox__priority[data-priority="high"] {
-  background: var(--color-danger-soft);
-  color: var(--color-danger);
-}
-.inbox__priority[data-priority="med"],
-.inbox__priority[data-priority="medium"] {
-  background: var(--color-warning);
-  color: var(--color-warning-fg);
-}
-.inbox__priority[data-priority="low"] {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
-}
-
-.inbox__delegate {
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: var(--text-xs);
-  padding: var(--space-h) var(--space-1x);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg);
-  color: var(--color-fg);
-  cursor: pointer;
-}
-.inbox__delegate:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--color-focus-halo);
-}
-
-.inbox__empty {
-  flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-10) var(--space-4);
-  text-align: center;
-  font-size: var(--text-base);
-  color: var(--color-muted);
 }
 
 /* ==========================================================================
@@ -8547,30 +8280,42 @@ textarea.task-comms__form-input {
   margin-top: var(--space-1);
 }
 
-/* -------------------------------------------------------------------------- */
-/* CommsList — the `comms` screen layout (lists comm cards by comm_status).    */
-/* -------------------------------------------------------------------------- */
-.comms-list {
+/* ==========================================================================
+   CardListBody — the unified config-driven list control (src/cardlist/) that
+   replaced the separate Inbox + Comms list controls. ONE rule-set drives both
+   presentations: `[data-presentation="compact"]` (comms: one-line subject +
+   parent chip + Needs-ACK flag) and `[data-presentation="list"]` (inbox:
+   two-line #id/title + status/assignee/priority columns + delegate picker). The
+   body is virtualised (src/core/virtual-list.ts) for BOTH presentations, so the
+   rows container is a positioned scroll viewport and every row/header is a
+   fixed-height (ROW_HEIGHT=56 in card-list.ts) absolutely-positioned slot.
+   ========================================================================== */
+.card-list {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3);
+  height: 100%;
   min-height: 0;
+  outline: none;
 }
-.comms-list__head {
+.card-list__head {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) 0;
 }
-.comms-list__heading {
+.card-list__heading {
   font-size: var(--text-xs);
   font-weight: var(--weight-semibold);
   letter-spacing: 0.04em;
 }
-/* "Needs ACK" filter toggle in the comms-list head. */
-.comms-list__ack-filter {
+/* The flag-filter toggle (comms "Needs ACK"): pushed to the right of the head,
+   tinted warning when engaged (aria-pressed). */
+.card-list__flag-filter {
   margin-left: auto;
   flex: 0 0 auto;
+  font: inherit;
   padding: var(--space-h) var(--space-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -8580,75 +8325,56 @@ textarea.task-comms__form-input {
   font-weight: var(--weight-semibold);
   cursor: pointer;
 }
-.comms-list__ack-filter:hover {
+.card-list__flag-filter:hover {
   background: var(--color-fill-hover);
 }
-.comms-list__ack-filter[aria-pressed="true"] {
+.card-list__flag-filter[aria-pressed="true"] {
   background: var(--color-warning-soft, rgba(214, 158, 46, 0.15));
   color: var(--color-warning, #b7791f);
   border-color: var(--color-warning, #d69e2e);
 }
-/* Per-row needs-ack chip + left-edge accent. */
-.comms-list__needs-ack {
-  display: inline-block;
-  padding: 0 var(--space-1x);
-  border-radius: var(--radius-sm);
-  background: var(--color-warning-soft, rgba(214, 158, 46, 0.15));
-  color: var(--color-warning, #b7791f);
-  font-size: var(--text-2xs);
-  font-weight: var(--weight-semibold);
-  vertical-align: middle;
+
+/* The virtualList scroll VIEWPORT: a positioned, overflow-y:auto box filling the
+   remaining height. The recycling row pool lives inside it (slots are absolutely
+   positioned + sized inline by the virtualList). */
+.card-list__rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow-y: auto;
+  padding: 0 var(--space-3);
 }
-.comms-list__row[data-needs-ack="true"] {
-  border-left: 3px solid var(--color-warning, #d69e2e);
-}
-.comms-list__rows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-.comms-list__row {
+
+/* ---- rows: fixed-height slots (virtualList positions by 56px) ---- */
+.card-list__row {
+  box-sizing: border-box;
+  height: 56px;
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md, 8px);
-  background: var(--color-bg);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid transparent;
+  border-bottom-color: var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
   cursor: pointer;
+  font-variant-numeric: var(--nums-tabular);
 }
-.comms-list__row:hover {
+.card-list__row:hover {
   background: var(--color-fill-hover);
 }
-.comms-list__row:focus-visible {
+.card-list__row:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--color-focus-halo);
 }
-.comms-list__row--selected {
-  background: var(--color-accent-soft);
+.card-list__row--selected {
+  border-color: var(--color-accent-ring);
+  background: var(--color-surface-raised);
   box-shadow: inset 2px 0 0 0 var(--color-accent);
 }
-.comms-list__main {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-h);
-  min-width: 0;
-  flex: 1 1 auto;
-}
-.comms-list__subject {
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium, 500);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.comms-list__task {
-  font-size: var(--text-xs);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.comms-list__status {
+
+/* Phase-toned status badge (lead element). */
+.card-list__status {
   flex: 0 0 auto;
   font-size: var(--text-2xs);
   font-weight: var(--weight-semibold);
@@ -8657,23 +8383,154 @@ textarea.task-comms__form-input {
   background: var(--color-fill-hover);
   color: var(--color-muted);
 }
-.comms-list__status[data-phase="triage"] {
+.card-list__status[data-phase="triage"] {
   background: var(--color-accent-soft);
   color: var(--color-accent);
 }
-.comms-list__status[data-phase="active"] {
+.card-list__status[data-phase="active"] {
   background: var(--color-success-soft);
   color: var(--color-success);
 }
-.comms-list__status[data-phase="terminal"] {
+.card-list__status[data-phase="terminal"] {
   background: var(--color-fill-hover);
   color: var(--color-muted);
 }
-.comms-list__empty {
-  margin: 0;
-  min-height: 8rem;
+
+.card-list__main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.card-list__line1 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.card-list__id {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+}
+.card-list__subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-fg);
+}
+.card-list__line2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.card-list__parent {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-xs);
+}
+/* Secondary columns (assignee, priority) rendered as chips on line 2. */
+.card-list__col {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  padding: var(--space-h) var(--space-1x);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+/* The per-row Needs-ACK flag chip (acked=false). */
+.card-list__flag {
+  display: inline-block;
+  margin-left: var(--space-1);
+  padding: 0 var(--space-1x);
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-soft, rgba(214, 158, 46, 0.15));
+  color: var(--color-warning, #b7791f);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  vertical-align: middle;
+}
+.card-list__delegate {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: var(--text-xs);
+  padding: var(--space-h) var(--space-1x);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-fg);
+  cursor: pointer;
+}
+.card-list__delegate:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--color-focus-halo);
+}
+
+/* ---- group section header (GROUP picker active): same 56px slot as a row, an
+   accent band reading as a section divider; click flips group direction. ---- */
+.card-list__group-header {
+  box-sizing: border-box;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: none;
+  border-top: 1px solid var(--color-accent-ring);
+  border-bottom: 1px solid var(--color-accent-ring);
+  background: var(--color-accent-soft);
+  color: var(--color-fg-strong);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.card-list__group-header:hover {
+  background: var(--color-fill-hover);
+}
+.card-list__group-header:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+.card-list__group-arrow {
+  color: var(--color-accent);
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+.card-list__group-label {
+  color: var(--color-fg-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-list__group-count {
+  font-weight: var(--weight-medium);
+  text-transform: none;
+}
+
+.card-list__empty {
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: var(--text-sm);
+  padding: var(--space-10) var(--space-4);
+  text-align: center;
+  font-size: var(--text-base);
+}
+
+/* Compact (comms) presentation: id is hidden by the control, so line 1 is just
+   the subject; keep the parent chip readable as the secondary line. */
+.card-list[data-presentation="compact"] .card-list__subject {
+  font-weight: var(--weight-medium, 500);
 }

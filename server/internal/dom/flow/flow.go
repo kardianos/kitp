@@ -82,16 +82,20 @@ type ListInput struct {
 
 // ListRow is one flow joined to its attribute_def name.
 type ListRow struct {
-	ID                      int64  `json:"id,string" mcp:"desc=flow id"`
-	Name                    string `json:"name" mcp:"desc=flow display name"`
-	Doc                     string `json:"doc,omitempty" mcp:"desc=human-readable description"`
-	AttributeDefID          int64  `json:"attribute_def_id,string" mcp:"desc=attribute_def the flow governs"`
-	AttributeDefName        string `json:"attribute_def_name" mcp:"desc=name of that attribute_def for display"`
-	ScopeCardID             int64  `json:"scope_card_id,string" mcp:"desc=project card id this flow is scoped to"`
-	ScopeProjectTitle       string `json:"scope_project_title" mcp:"desc=joined display title of the scope project card"`
-	DefaultCreateStatusID   int64  `json:"default_create_status_id,string,omitempty" mcp:"desc=value-card id used as the new-task default; 0 / omitted = none"`
-	DefaultCreateStatusName string `json:"default_create_status_name" mcp:"desc=joined display title of the default-create status card"`
-	CreatedAt               string `json:"created_at" mcp:"desc=RFC3339 creation timestamp"`
+	ID               int64  `json:"id,string" mcp:"desc=flow id"`
+	Name             string `json:"name" mcp:"desc=flow display name"`
+	Doc              string `json:"doc,omitempty" mcp:"desc=human-readable description"`
+	AttributeDefID   int64  `json:"attribute_def_id,string" mcp:"desc=attribute_def the flow governs"`
+	AttributeDefName string `json:"attribute_def_name" mcp:"desc=name of that attribute_def for display"`
+	// Card_type the governed attribute_def is bound to (status→task,
+	// comm_status→comm). The screen lists this card_type, so the client scopes
+	// its filter editor / chips / group axes to it instead of a hardcoded type.
+	AttributeDefCardTypeName string `json:"attribute_def_card_type_name" mcp:"desc=card_type the governed attribute_def is bound to (status→task, comm_status→comm)"`
+	ScopeCardID              int64  `json:"scope_card_id,string" mcp:"desc=project card id this flow is scoped to"`
+	ScopeProjectTitle        string `json:"scope_project_title" mcp:"desc=joined display title of the scope project card"`
+	DefaultCreateStatusID    int64  `json:"default_create_status_id,string,omitempty" mcp:"desc=value-card id used as the new-task default; 0 / omitted = none"`
+	DefaultCreateStatusName  string `json:"default_create_status_name" mcp:"desc=joined display title of the default-create status card"`
+	CreatedAt                string `json:"created_at" mcp:"desc=RFC3339 creation timestamp"`
 }
 
 // ListOutput wraps the rows in a stable envelope.

@@ -42,8 +42,7 @@ import { registerGrid } from './grid/grid.js';
 import { registerGridColumns } from './grid/grid-columns.js';
 import { registerBulkActionBar } from './grid/bulk-action-bar.js';
 import { registerTagChip } from './grid/tag-chip.js';
-import { registerInbox } from './inbox/inbox.js';
-import { registerCommsList } from './comms/comms-list.js';
+import { registerCardListBody } from './cardlist/card-list.js';
 import { registerInboxViewToggles } from './inbox/inbox-view-toggles.js';
 import { registerInboxSpecs } from './inbox/specs.js';
 import { registerScreenFilterBar } from './shell/screen-filter-bar.js';
@@ -263,14 +262,12 @@ function boot(): void {
   // The Grid's selection-driven bulk-action bar (assign / move / purge); the
   // Grid spawns it as a child below the table.
   registerBulkActionBar();
-  // The Inbox (list layout body). ScreenHost maps `list` → 'Inbox'; registering
-  // it makes a `list` screen resolve here instead of the NotFound placeholder.
-  registerInbox();
   // The Inbox's "Mine only" / "Routed to me" view toggles — mounted on the
   // filter bar's View row (viewActions seam) rather than the Inbox body.
   registerInboxViewToggles();
-  // The `comms` layout body: lists comm cards filtered by comm_status phase.
-  registerCommsList();
+  // The generic config-driven list body (the `comms` layout today; Inbox/Grid
+  // fold into it next). Lists screen.cardType cards filtered by the flow phase.
+  registerCardListBody();
   registerProjectList();
   // The `project` layout body: the Project detail / overview. ScreenHost maps
   // `project` → 'Project'; registering it makes a screen card with

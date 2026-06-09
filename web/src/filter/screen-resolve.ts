@@ -110,6 +110,53 @@ export function viewActionsForLayout(layout: string): Array<{ type: string }> {
   }
 }
 
+/**
+ * Per-layout body CONFIG — the "config one level up" the generic CardListBody
+ * reads instead of branching on card_type internally. A layout maps to a
+ * presentation preset; the card_type itself is flow-derived (screen.cardType),
+ * so this only carries presentation choices that aren't derivable from the
+ * schema yet (the parent-card chip's type, an optional boolean flag column, and
+ * whether a row opens itself or its parent). Empty object for layouts whose body
+ * isn't the CardListBody. ScreenHost spreads this into the spawned body config.
+ */
+export function bodyConfigForLayout(layout: string): Record<string, unknown> {
+  switch (layout) {
+    case 'list':
+      // The personal-sorted task inbox: two-line rows (id+title / status pill +
+      // assignee + priority), group-by, Shift+j/k personal-sort reorder, per-row
+      // delegate-to-agent, and the Mine-only / Routed-to-me view toggles. cardType
+      // is flow-derived (task); the status badge is the flow attr.
+      return {
+        presentation: 'list',
+        showId: true,
+        loadTaskLookups: true,
+        group: true,
+        personalSort: true,
+        delegate: true,
+        viewToggles: true,
+        columns: [
+          { attr: 'assignee', kind: 'ref', lookup: 'persons' },
+          { attr: 'priority', kind: 'text' },
+        ],
+      };
+    case 'comms':
+      // A comm lists comm cards: phase-toned comm_status badge (flow-derived) +
+      // subject + a chip linking its parent TASK; a received-but-unhandled
+      // message shows a "Needs ACK" flag (acked=false) and the row opens the
+      // parent task (where the thread is replied to / advanced / closed).
+      return {
+        presentation: 'compact',
+        parentChipCardType: 'task',
+        flagAttr: 'acked',
+        flagLabel: 'Needs ACK',
+        openTarget: 'parent',
+        order: [{ field: 'created_at', direction: 'DESC' }],
+      };
+    default:
+      return {};
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Attribute accessors (parity with screen_preset.svelte.ts).                  */
 /* -------------------------------------------------------------------------- */
@@ -394,6 +441,13 @@ export interface ScreenPresetSet {
    *  comm flows). Undefined when the screen has no flow_ref or the lookup
    *  failed — readPhaseToggles then falls back to the toggle_groups attr. */
   phaseAttr?: string;
+  /** The card_type the screen's body lists, DERIVED from the same flow: the
+   *  card_type the flow's governed attribute_def is bound to (`status` → `task`,
+   *  `comm_status` → `comm`). The filter bar scopes its editor / chips / axes to
+   *  THIS type so non-applicable attributes are hidden — no hardcoded card_type
+   *  per layout. Undefined when the screen has no flow_ref / the lookup failed,
+   *  in which case the filter bar keeps its `task` default. */
+  cardType?: string;
 }
 
 /** Read a screen card's `flow_ref` (a flow id, stored as a number) as a string
@@ -447,7 +501,7 @@ export function loadScreenAndFilters(
   //   - the project's flows, to derive the phase attr from the screen's flow_ref.
   let screenRows: CardWithAttrs[] | null = null;
   let filterRows: CardWithAttrs[] | null = null;
-  let flowRows: Array<{ id?: unknown; attribute_def_name?: unknown }> | null = null;
+  let flowRows: Array<{ id?: unknown; attribute_def_name?: unknown; attribute_def_card_type_name?: unknown }> | null = null;
 
   const finish = (): void => {
     // Wait for all three legs. The screen read is load-bearing: on its failure
@@ -467,7 +521,17 @@ export function loadScreenAndFilters(
     const flowRef = readFlowRef(screen);
     const match = flowRef === null ? undefined : flowRows.find((r) => String(r.id) === flowRef);
     const phaseAttr = typeof match?.attribute_def_name === 'string' ? match.attribute_def_name : undefined;
-    onResult({ screen, filters, defaultFilter, ...(phaseAttr !== undefined ? { phaseAttr } : {}) });
+    // The card_type the screen lists, derived from the SAME flow as phaseAttr
+    // (its attribute_def's bound card_type). Empty string → treat as absent.
+    const ct = match?.attribute_def_card_type_name;
+    const cardType = typeof ct === 'string' && ct !== '' ? ct : undefined;
+    onResult({
+      screen,
+      filters,
+      defaultFilter,
+      ...(phaseAttr !== undefined ? { phaseAttr } : {}),
+      ...(cardType !== undefined ? { cardType } : {}),
+    });
   };
 
   api.callByName(

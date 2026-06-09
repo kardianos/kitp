@@ -351,7 +351,7 @@ test('Kanban moveTask: optimistic patch ROLLS BACK on fault (auto)', async () =>
 
 test('layoutToControlType maps known layouts and flags unknowns', () => {
   assert.equal(M.layoutToControlType('kanban'), 'Kanban');
-  assert.equal(M.layoutToControlType('list'), 'Inbox');
+  assert.equal(M.layoutToControlType('list'), 'CardListBody');
   assert.equal(M.layoutToControlType('grid'), 'Grid');
   assert.equal(M.layoutToControlType('project'), 'Project');
   assert.match(M.layoutToControlType('bogus'), /UnknownLayout/);

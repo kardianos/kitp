@@ -142,6 +142,10 @@ export interface FlowRow {
   doc?: string;
   attribute_def_id?: string;
   attribute_def_name?: string;
+  /** Card_type the governed attribute_def is bound to (status→task,
+   *  comm_status→comm). Used to scope the screen's filter bar to the card_type
+   *  the screen lists — see screen-resolve `ScreenPresetSet.cardType`. */
+  attribute_def_card_type_name?: string;
   scope_card_id?: string;
   /** Joined display name of the scope project card (its `title`). */
   scope_project_title?: string;
@@ -755,7 +759,7 @@ function decodeAttributeDefRow(j: Record<string, unknown>): AttributeDefRow {
   return out;
 }
 
-function decodeFlowRow(j: Record<string, unknown>): FlowRow {
+export function decodeFlowRow(j: Record<string, unknown>): FlowRow {
   const out: FlowRow = { id: asStr(j['id']), name: asStr(j['name']) };
   const doc = asStrOpt(j['doc']);
   if (doc !== undefined) out.doc = doc;
@@ -763,6 +767,8 @@ function decodeFlowRow(j: Record<string, unknown>): FlowRow {
   if (adid !== undefined) out.attribute_def_id = adid;
   const adn = asStrOpt(j['attribute_def_name']);
   if (adn !== undefined) out.attribute_def_name = adn;
+  const adct = asStrOpt(j['attribute_def_card_type_name']);
+  if (adct !== undefined) out.attribute_def_card_type_name = adct;
   const scope = asStrOpt(j['scope_card_id']);
   if (scope !== undefined) out.scope_card_id = scope;
   const scopeTitle = asStrOpt(j['scope_project_title']);

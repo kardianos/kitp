@@ -150,6 +150,7 @@ export {
   type ScreenPresetSet,
   type PhaseToggle,
 } from './filter/screen-resolve.js';
+export { decodeFlowRow } from './admin/specs.js';
 export {
   TAG_PREFIX_OPTION,
   tagPrefixOptionValue,
@@ -172,8 +173,7 @@ export { TagChip, registerTagChip } from './grid/tag-chip.js';
 
 // Inbox (list layout): the control + its registrar, the pure reorder helpers,
 // and the write specs (user_card_sort.set / user_card_agent.set|clear).
-export { Inbox, registerInbox, _resetInboxDragState } from './inbox/inbox.js';
-export { CommsList, registerCommsList } from './comms/comms-list.js';
+export { CardListBody, registerCardListBody } from './cardlist/card-list.js';
 export { InboxViewToggles, registerInboxViewToggles } from './inbox/inbox-view-toggles.js';
 export { NewTaskButton, registerNewTaskButton } from './quick-entry/new-task-button.js';
 export {

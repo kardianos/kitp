@@ -24,7 +24,7 @@ before(async () => {
 /* -------------------------------------------------------------------------- */
 
 function nestedTransport(opts = {}) {
-  const { blockFlowDelete = false, edgeUsage = 0, filterPredicate = '' } = opts;
+  const { blockFlowDelete = false, edgeUsage = 0, filterPredicate = '', commScreen = false } = opts;
   const sent = { writes: [] };
   const rec = (key, data) => sent.writes.push({ key, data: data ?? {} });
 
@@ -71,6 +71,28 @@ function nestedTransport(opts = {}) {
   const screenRows = [
     { id: '60', card_type_name: 'screen', parent_card_id: '31', attributes: { title: 'Board', slug: 'board', layout: 'kanban', default_filter: '70' } },
   ];
+  // A comm screen variant: its flow_ref points at a comm flow (whose governed
+  // attribute_def is bound to the `comm` card_type), so the predicate editor
+  // must scope to `comm` — not the hardcoded `task`.
+  if (commScreen) {
+    flowRows.push({
+      id: '51',
+      name: 'Comm flow',
+      attribute_def_id: '3',
+      attribute_def_name: 'comm_status',
+      attribute_def_card_type_name: 'comm',
+      scope_card_id: '31',
+    });
+    attributeDefs.push({
+      id: '3',
+      name: 'comm_status',
+      value_type: 'card_ref',
+      target_card_type_name: 'comm_status',
+      is_built_in: false,
+      bound_to: [{ card_type_id: '12', card_type_name: 'comm', ordering: 1 }],
+    });
+    screenRows[0].attributes.flow_ref = 51;
+  }
   let filterRows = [
     { id: '70', card_type_name: 'filter', parent_card_id: '60', attributes: { title: 'Mine', predicate: filterPredicate } },
     { id: '71', card_type_name: 'filter', parent_card_id: '60', attributes: { title: 'All', predicate: '' } },
@@ -742,6 +764,42 @@ test('Screens: editing a filter title fires attribute.update on the filter card'
   assert.equal(updates.length, 1);
   assert.equal(String(updates[0].data.card_id), '70');
   assert.equal(updates[0].data.value, 'Just mine');
+});
+
+test('Screens: the predicate editor scopes its attributes to the screen card_type (task flow → task)', async () => {
+  const { dispatcher, api } = bootApi(nestedTransport());
+  const { ctrl } = mountMD(api, M.adminScreenConfig('screens'));
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+
+  ctrl.el.querySelector('[data-ne-filter-edit="70"]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  ctrl.el.querySelector('[data-pred-add-leaf]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+
+  const names = ctrl.el.querySelector('[data-pred-attr]').children.map((o) => o.value);
+  // The default (flow-less) screen lists `task` → its task-bound `status` attr
+  // is offered; the comm-only `comm_status` is not.
+  assert.ok(names.includes('status'), `task attribute offered (got ${names})`);
+});
+
+test('Screens: a comm screen scopes the predicate editor to comm attributes (was hardcoded to task)', async () => {
+  // The screen's flow_ref points at a comm flow → the predicate builder must
+  // offer comm attributes (comm_status), not the task `status`. This is the bug:
+  // defining a filter on the Comms screen used to only expose task attributes.
+  const { dispatcher, api } = bootApi(nestedTransport({ commScreen: true }));
+  const { ctrl } = mountMD(api, M.adminScreenConfig('screens'));
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+
+  ctrl.el.querySelector('[data-ne-filter-edit="70"]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  ctrl.el.querySelector('[data-pred-add-leaf]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+
+  const names = ctrl.el.querySelector('[data-pred-attr]').children.map((o) => o.value);
+  assert.ok(names.includes('comm_status'), `comm attribute offered (got ${names})`);
+  assert.ok(!names.includes('status'), `task-only attribute NOT offered for a comm screen (got ${names})`);
 });
 
 /* -------------------------------------------------------------------------- */

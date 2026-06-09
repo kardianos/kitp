@@ -52,14 +52,15 @@ func callFlowListBatch(t *testing.T, pool *pgxpool.Pool, actorID int64, inputs a
 // decoding from SQL).
 type listPayload struct {
 	Rows []struct {
-		ID                    string `json:"id"`
-		Name                  string `json:"name"`
-		Doc                   string `json:"doc"`
-		AttributeDefID        string `json:"attribute_def_id"`
-		AttributeDefName      string `json:"attribute_def_name"`
-		ScopeCardID           string `json:"scope_card_id"`
-		DefaultCreateStatusID string `json:"default_create_status_id"`
-		CreatedAt             string `json:"created_at"`
+		ID                       string `json:"id"`
+		Name                     string `json:"name"`
+		Doc                      string `json:"doc"`
+		AttributeDefID           string `json:"attribute_def_id"`
+		AttributeDefName         string `json:"attribute_def_name"`
+		AttributeDefCardTypeName string `json:"attribute_def_card_type_name"`
+		ScopeCardID              string `json:"scope_card_id"`
+		DefaultCreateStatusID    string `json:"default_create_status_id"`
+		CreatedAt                string `json:"created_at"`
 	} `json:"rows"`
 }
 
@@ -88,8 +89,50 @@ func TestFlowListBatch_Happy(t *testing.T) {
 	if r.AttributeDefName != "status" {
 		t.Errorf("attr=%q", r.AttributeDefName)
 	}
+	// The governed `status` attribute_def is bound to the `task` card_type — the
+	// card_type the screen lists, which the client scopes its filter bar to.
+	if r.AttributeDefCardTypeName != "task" {
+		t.Errorf("attr_card_type=%q want %q", r.AttributeDefCardTypeName, "task")
+	}
 	if r.ID != jsonInt(flowID) {
 		t.Errorf("id=%q want %q", r.ID, jsonInt(flowID))
+	}
+}
+
+// The card_type derivation must prefer the REQUIRED binding (the entity whose
+// lifecycle the status governs) over a merely-lower card_type id. `status` is
+// is_required on `task`; we add an OPTIONAL binding to `project` (a lower
+// card_type id) so a naive ORDER BY ct.id would mis-pick `project`.
+func TestFlowListBatch_CardTypePrefersRequiredBinding(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_flow_list_batch_cardtype")
+	f := seedFlowBatchFixture(t, pool)
+	_ = seedFlowRow(t, f, "Standard")
+
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+		SELECT (SELECT id FROM card_type WHERE name='project'), $1, false, 9
+		ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING
+	`, f.statusAttrID); err != nil {
+		t.Fatalf("optional project edge: %v", err)
+	}
+
+	rows := callFlowListBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"scope_card_id": jsonInt(f.projectID)},
+	})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("list: %+v", rows)
+	}
+	var got listPayload
+	if err := json.Unmarshal(rows[0].Result, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Rows) != 1 {
+		t.Fatalf("got %d rows, want 1: %+v", len(got.Rows), got.Rows)
+	}
+	if got.Rows[0].AttributeDefCardTypeName != "task" {
+		t.Errorf("attr_card_type=%q want %q (required binding must win over lower ct.id)",
+			got.Rows[0].AttributeDefCardTypeName, "task")
 	}
 }
 

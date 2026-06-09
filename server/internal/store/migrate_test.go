@@ -30,10 +30,11 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		{`SELECT count(*) FROM user_account_person`, 1}, // System's link
 		// 1 System person + 1 template project + 6 template statuses +
 		// 3 template comm statuses (Gate 2 of email_comm_spec) +
-		// 6 template screens + 1 Comms screen + 1 "Comms attached"
-		// filter card (Gate 7 of email_comm_spec) + 3 more seeded
-		// in later gates = 22.
-		{`SELECT count(*) FROM card`, 22},
+		// 6 template screens + 1 Comms screen + 3 more seeded in later
+		// gates = 21. (The "Comms attached" filter card was dropped — it
+		// is meaningless on the comm-listing comms screen; see migration
+		// 0006_drop_comms_attached_filter.)
+		{`SELECT count(*) FROM card`, 21},
 		{`SELECT count(*) FROM user_role`, 3}, // admin + manager + worker on user 1
 		{`SELECT count(*) FROM role`, 5},      // viewer, commenter, worker, manager, admin (no wildcard 'system')
 		// 14 built-in card_types + the predicate_snippet card_type
@@ -268,6 +269,173 @@ func TestForwardMigration0005FlowStepStandalone(t *testing.T) {
 	}
 }
 
+// TestForwardMigration0006DropCommsAttachedFilter proves migration 0006
+// deletes the orphaned task-only "Comms attached" filter card (predicate
+// `comms exists`) from an existing comms screen — the fresh seed no longer
+// ships it, so the happy-path tests only exercise 0006's no-op branch. It
+// also confirms a user's OWN comms-screen filter (a different predicate) is
+// spared by the predicate-scoped match.
+func TestForwardMigration0006DropCommsAttachedFilter(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0006")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	// The single comms-slug screen card the template seeds.
+	var commsScreenID int64
+	if err := pool.QueryRow(ctx, `
+		SELECT c.id FROM card c
+		JOIN attribute_value sv ON sv.card_id = c.id
+		 AND sv.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'slug')
+		WHERE c.card_type_id = (SELECT id FROM card_type WHERE name = 'screen')
+		  AND sv.value #>> '{}' = 'comms'
+	`).Scan(&commsScreenID); err != nil {
+		t.Fatalf("find comms screen: %v", err)
+	}
+
+	// Simulate a pre-0006 install: re-create the orphaned "Comms attached"
+	// filter under the comms screen, plus a DECOY user filter that must
+	// survive; then drop 0006's ledger row so the next boot re-runs it.
+	mkFilter := func(title, predicate string) int64 {
+		var id int64
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO card (card_type_id, parent_card_id)
+			VALUES ((SELECT id FROM card_type WHERE name = 'filter'), $1)
+			RETURNING id`, commsScreenID).Scan(&id); err != nil {
+			t.Fatalf("insert filter card: %v", err)
+		}
+		for _, av := range []struct{ name, value string }{{"title", title}, {"predicate", predicate}} {
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO attribute_value (card_id, attribute_def_id, value)
+				VALUES ($1, (SELECT id FROM attribute_def WHERE name = $2), to_jsonb($3::text))`,
+				id, av.name, av.value); err != nil {
+				t.Fatalf("insert %s attr: %v", av.name, err)
+			}
+		}
+		return id
+	}
+	orphan := mkFilter("Comms attached", `{"attr":"comms","op":"exists"}`)
+	decoy := mkFilter("My comms", `{"attr":"comm_status","op":"has_phase","values":["active"]}`)
+
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_version WHERE name = '0006_drop_comms_attached_filter'`); err != nil {
+		t.Fatalf("drop 0006 ledger: %v", err)
+	}
+
+	// A normal boot re-runs 0006; the orphan card + its attribute rows vanish.
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM card WHERE id = $1`, orphan).Scan(&n); err != nil {
+		t.Fatalf("count orphan card: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("orphan 'Comms attached' filter card survived migration 0006 (count=%d)", n)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM attribute_value WHERE card_id = $1`, orphan).Scan(&n); err != nil {
+		t.Fatalf("count orphan attrs: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("orphan filter's attribute_value rows survived (count=%d)", n)
+	}
+
+	// The user's own comms-screen filter (different predicate) is untouched.
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM card WHERE id = $1`, decoy).Scan(&n); err != nil {
+		t.Fatalf("count decoy card: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("user's own comms filter was wrongly deleted by 0006 (count=%d)", n)
+	}
+
+	// Idempotent: a further boot is a clean no-op.
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("third apply (idempotent): %v", err)
+	}
+}
+
+// TestForwardMigration0007CommsScreenLayoutByFlow proves migration 0007 flips
+// a comms-flow-bound `screen` stuck at layout 'list' (a straggler stamped after
+// 0003 ran) back to 'comms', so its body is the comm-listing CardListBody rather
+// than the task Inbox. Fresh seeds already ship layout 'comms', so the happy
+// path only exercises 0007's no-op branch; here we force a 'list' value, drop
+// the ledger row, and prove the re-run flips it while leaving a non-comm-flow
+// 'list' screen (the seeded Inbox) untouched.
+func TestForwardMigration0007CommsScreenLayoutByFlow(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0007")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	// The seeded comms screen + the seeded Inbox (a `status`-flow list screen).
+	var commsScreenID, inboxScreenID int64
+	if err := pool.QueryRow(ctx, `
+		SELECT c.id FROM card c
+		JOIN attribute_value sv ON sv.card_id = c.id
+		 AND sv.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'slug')
+		WHERE c.card_type_id = (SELECT id FROM card_type WHERE name = 'screen')
+		  AND sv.value #>> '{}' = 'comms'
+	`).Scan(&commsScreenID); err != nil {
+		t.Fatalf("find comms screen: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT c.id FROM card c
+		JOIN attribute_value sv ON sv.card_id = c.id
+		 AND sv.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'slug')
+		WHERE c.card_type_id = (SELECT id FROM card_type WHERE name = 'screen')
+		  AND sv.value #>> '{}' = 'inbox'
+	`).Scan(&inboxScreenID); err != nil {
+		t.Fatalf("find inbox screen: %v", err)
+	}
+
+	// Force the comms screen back to layout 'list' (the straggler condition) and
+	// drop 0007's ledger row so the next boot re-runs it.
+	setLayout := func(id int64, v string) {
+		if _, err := pool.Exec(ctx, `
+			UPDATE attribute_value SET value = to_jsonb($2::text)
+			WHERE card_id = $1 AND attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'layout')`,
+			id, v); err != nil {
+			t.Fatalf("force layout %q on %d: %v", v, id, err)
+		}
+	}
+	setLayout(commsScreenID, "list")
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_version WHERE name = '0007_comms_screen_layout_by_flow'`); err != nil {
+		t.Fatalf("drop 0007 ledger: %v", err)
+	}
+
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+
+	layoutOf := func(id int64) string {
+		var v string
+		if err := pool.QueryRow(ctx, `
+			SELECT value #>> '{}' FROM attribute_value
+			WHERE card_id = $1 AND attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'layout')`,
+			id).Scan(&v); err != nil {
+			t.Fatalf("read layout of %d: %v", id, err)
+		}
+		return v
+	}
+	if got := layoutOf(commsScreenID); got != "comms" {
+		t.Errorf("comms screen layout = %q after 0007, want %q", got, "comms")
+	}
+	// The status-flow Inbox is layout 'list' and must NOT be flipped.
+	if got := layoutOf(inboxScreenID); got != "list" {
+		t.Errorf("inbox screen layout = %q, want %q (0007 must only touch comm-flow screens)", got, "list")
+	}
+
+	// Idempotent: a further boot is a clean no-op (comms already 'comms').
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("third apply (idempotent): %v", err)
+	}
+	if got := layoutOf(commsScreenID); got != "comms" {
+		t.Errorf("comms screen layout drifted to %q on idempotent re-run", got)
+	}
+}
+
 // TestApplySchemaWithTestDemo applies the install seed plus the stable
 // test_demo.hcsv fixture (NOT the dev demo.hcsv, which is allowed to
 // grow freely). The counts here are stable by design — changing
@@ -289,13 +457,13 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{`SELECT count(*) FROM user_account_person`, 2},
 		// System: admin+manager+worker. frank: admin.
 		{`SELECT count(*) FROM user_role`, 4},
-		// 21 seed cards (template project + 6 statuses + 3 comm statuses
+		// 20 seed cards (template project + 6 statuses + 3 comm statuses
 		// from Gate 2 of email_comm_spec + 6 screens + 1 Comms screen
-		// + 1 "Comms attached" filter from Gate 7 of email_comm_spec
-		// + 3 more seeded in later gates)
+		// + 3 more seeded in later gates; the "Comms attached" filter was
+		// dropped — see migration 0006_drop_comms_attached_filter)
 		// + 9 test_demo cards (2 persons + 1 project + 1 milestone
-		// + 1 status + 2 tasks + 1 screen + 1 filter) = 30.
-		{`SELECT count(*) FROM card`, 30},
+		// + 1 status + 2 tasks + 1 screen + 1 filter) = 29.
+		{`SELECT count(*) FROM card`, 29},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 15},
 		{`SELECT count(*) FROM attribute_def`, 64},
@@ -360,8 +528,8 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		want  int64
 	}{
 		{`SELECT count(*) FROM card_type`, 15},
-		// 21 seed cards + 9 test_demo cards = 30 (see TestApplySchemaWithTestDemo).
-		{`SELECT count(*) FROM card`, 30},
+		// 20 seed cards + 9 test_demo cards = 29 (see TestApplySchemaWithTestDemo).
+		{`SELECT count(*) FROM card`, 29},
 		{`SELECT count(*) FROM user_account`, 2},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM flow`, 2},

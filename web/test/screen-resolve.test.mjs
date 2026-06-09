@@ -79,6 +79,7 @@ function screenMockTransport(opts = {}) {
     const attrs = { slug: 'grid', layout: 'grid', title: 'Grid' };
     if (defaultFilterId !== undefined) attrs.default_filter = String(defaultFilterId);
     if (opts.toggleGroups !== undefined) attrs.toggle_groups = opts.toggleGroups;
+    if (opts.flowRef !== undefined) attrs.flow_ref = String(opts.flowRef);
     return {
       id: String(SCREEN_GRID_ID),
       card_type_id: '20',
@@ -161,7 +162,17 @@ function screenMockTransport(opts = {}) {
     }
     if (key === 'flow.list') {
       sent.flowReads++;
-      return { id: sr.id, ok: true, data: { rows: [] } };
+      // When the screen carries a flow_ref, return a matching flow row so
+      // loadScreenAndFilters can derive phaseAttr + cardType from it.
+      const rows =
+        opts.flowRef !== undefined
+          ? [{
+              id: String(opts.flowRef),
+              attribute_def_name: opts.flowAttr ?? 'status',
+              attribute_def_card_type_name: opts.flowCardType ?? 'task',
+            }]
+          : [];
+      return { id: sr.id, ok: true, data: { rows } };
     }
     if (key === 'card.insert') {
       sent.inserts.push(sr.data ?? {});
@@ -206,7 +217,10 @@ function bootApi(transport) {
       endpoint: 'flow',
       action: 'list',
       encode: (i) => (i.scopeCardId !== undefined ? { scope_card_id: i.scopeCardId } : {}),
-      decode: (raw) => raw,
+      // Use the REAL flow-row decode (not a passthrough) so this exercises the
+      // same field mapping production uses — otherwise a dropped field (e.g.
+      // attribute_def_card_type_name) would pass here but break in the app.
+      decode: (raw) => ({ rows: ((raw?.rows ?? [])).map((r) => M.decodeFlowRow(r)) }),
     });
   }
   return { dispatcher, api };
@@ -423,6 +437,30 @@ test('loadScreenAndFilters: resolves the screen by slug + loads its filters', as
   // The win: screen + filters + flows resolve in ONE POST, not three sequential
   // round-trips — so the screen paints once instead of flashing per stage.
   assert.equal(transport.sent.batches, 1, 'all three reads coalesced into a single batch');
+});
+
+test('loadScreenAndFilters: derives phaseAttr + cardType from the screen flow (comm_status → comm)', async () => {
+  // The screen's flow_ref → a flow governing `comm_status`, which is bound to
+  // the `comm` card_type. Both the phase attr AND the body card_type the filter
+  // bar scopes to come from that SAME flow row — no hardcoded card_type.
+  const transport = screenMockTransport({ flowRef: 900n, flowAttr: 'comm_status', flowCardType: 'comm' });
+  const { dispatcher, api } = bootApi(transport);
+  let result = null;
+  M.loadScreenAndFilters(api, PROJECT_ID, 'grid', (set) => (result = set));
+  await settle(dispatcher);
+  assert.ok(result, 'callback fired');
+  assert.equal(result.phaseAttr, 'comm_status', 'phaseAttr derived from the flow');
+  assert.equal(result.cardType, 'comm', 'cardType derived from the flow attr binding');
+});
+
+test('loadScreenAndFilters: no flow_ref → cardType undefined (filter bar keeps its task default)', async () => {
+  const transport = screenMockTransport(); // no flowRef → flow.list returns []
+  const { dispatcher, api } = bootApi(transport);
+  let result = null;
+  M.loadScreenAndFilters(api, PROJECT_ID, 'grid', (set) => (result = set));
+  await settle(dispatcher);
+  assert.ok(result, 'callback fired');
+  assert.equal(result.cardType, undefined, 'no flow → no derived cardType');
 });
 
 /* -------------------------------------------------------------------------- */

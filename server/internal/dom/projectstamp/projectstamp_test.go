@@ -689,10 +689,11 @@ func TestStampPermissionWorker(t *testing.T) {
 // creates a 'Standard Project Template' project (is_template=true)
 // carrying 6 task-status value-cards, 3 comm-status value-cards (Gate 2
 // of email_comm_spec), 7 screens (6 original + Comms from Gate 7 of
-// email_comm_spec), 1 filter card ("Comms attached", child of the
-// Comms screen), 2 flows (status + comm), 12+3=15 flow_steps. Stamping
-// from that template should produce a fresh project with the same
-// shape (independent ids).
+// email_comm_spec), no filter cards (the template-only "Comms attached"
+// filter was dropped — see migration 0006_drop_comms_attached_filter),
+// 2 flows (status + comm), 12+3=15 flow_steps. Stamping from that
+// template should produce a fresh project with the same shape
+// (independent ids).
 func TestStampFromInstallSeedTemplate(t *testing.T) {
 	f := setup(t, "kitp_test_projectstamp_install_seed")
 	// Don't seedTemplate — use the seeded one.
@@ -719,15 +720,15 @@ func TestStampFromInstallSeedTemplate(t *testing.T) {
 	// Descendant counts under the new project. Nine status cards
 	// (6 task statuses + 3 comm statuses from Gate 2 of
 	// email_comm_spec), seven screens (6 original + the Comms screen
-	// from Gate 7 of email_comm_spec), one filter ("Comms attached",
-	// the child of the Comms screen — no other seeded screen carries
-	// a filter card); no milestones / components / tags in the
-	// install-seed template.
+	// from Gate 7 of email_comm_spec), no filter cards (the
+	// template-only "Comms attached" filter was dropped — see migration
+	// 0006_drop_comms_attached_filter); no milestones / components /
+	// tags in the install-seed template.
 	type want struct {
 		typ string
 		n   int
 	}
-	for _, w := range []want{{"status", 9}, {"screen", 7}, {"milestone", 0}, {"filter", 1}} {
+	for _, w := range []want{{"status", 9}, {"screen", 7}, {"milestone", 0}, {"filter", 0}} {
 		var got int
 		if err := f.sp.P.QueryRow(f.ctx, `
 			WITH RECURSIVE walk AS (
@@ -794,12 +795,12 @@ func TestStampFromInstallSeedTemplate(t *testing.T) {
 // TestStampedProjectHasCommsScreen exercises Gate 7 of email_comm_spec:
 // the install-seed template carries a "Comms" screen card (slug=comms,
 // layout=comms, hotkey=c) with flow_ref pointing at the template's comm
-// flow, default_create_status pointing at the "Open" comm status, and
-// a "Comms attached" filter child carrying predicate {op:"exists",
-// attr:"comms"}. Stamping the template must reproduce all of those —
-// with flow_ref / default_create_status remapped to the new project's
-// own comm flow + Open status card, and the predicate's `comms`
-// attribute name passing through unchanged.
+// flow and default_create_status pointing at the "Open" comm status.
+// Stamping the template must reproduce those — with flow_ref /
+// default_create_status remapped to the new project's own comm flow +
+// Open status card — and the screen must carry NO filter child (the
+// template-only "Comms attached" filter was dropped; see migration
+// 0006_drop_comms_attached_filter).
 func TestStampedProjectHasCommsScreen(t *testing.T) {
 	f := setup(t, "kitp_test_projectstamp_comms_screen")
 
@@ -910,39 +911,20 @@ func TestStampedProjectHasCommsScreen(t *testing.T) {
 		t.Errorf("comms screen default_create_status = %d, want %d (new 'Open' status id)", defaultCreate, openStatusID)
 	}
 
-	// Locate the "Comms attached" filter child under the Comms screen
-	// (by predicate carrying op:'exists' on the comms attribute).
-	var filterID int64
-	var filterTitle string
-	var predicate string
+	// The stamped Comms screen carries NO filter child: the template-only
+	// "Comms attached" filter was dropped (it's meaningless on the
+	// comm-listing screen — comm cards have no `comms` attribute, so the
+	// predicate matched nothing; see migration 0006_drop_comms_attached_filter).
+	var filterN int
 	if err := f.sp.P.QueryRow(f.ctx, `
-		SELECT c.id,
-		       (SELECT av.value #>> '{}' FROM attribute_value av
-		        JOIN attribute_def ad ON ad.id = av.attribute_def_id
-		        WHERE av.card_id = c.id AND ad.name = 'title'),
-		       (SELECT av.value #>> '{}' FROM attribute_value av
-		        JOIN attribute_def ad ON ad.id = av.attribute_def_id
-		        WHERE av.card_id = c.id AND ad.name = 'predicate')
-		FROM card c
+		SELECT count(*) FROM card c
 		JOIN card_type ct ON ct.id = c.card_type_id
-		WHERE c.parent_card_id = $1
-		  AND ct.name = 'filter'
-	`, commsScreenID).Scan(&filterID, &filterTitle, &predicate); err != nil {
-		t.Fatalf("locate Comms attached filter under the stamped Comms screen: %v", err)
+		WHERE c.parent_card_id = $1 AND ct.name = 'filter'
+	`, commsScreenID).Scan(&filterN); err != nil {
+		t.Fatalf("count filter children of stamped comms screen: %v", err)
 	}
-	if filterTitle != "Comms attached" {
-		t.Errorf("filter title = %q, want %q", filterTitle, "Comms attached")
-	}
-	// Parse the predicate JSON and check op + attr.
-	var pnode map[string]any
-	if err := json.Unmarshal([]byte(predicate), &pnode); err != nil {
-		t.Fatalf("predicate parse: %v (raw=%s)", err, predicate)
-	}
-	if op, _ := pnode["op"].(string); op != "exists" {
-		t.Errorf("predicate op = %q, want %q (V10 spelling; is_set was dropped)", op, "exists")
-	}
-	if attr, _ := pnode["attr"].(string); attr != "comms" {
-		t.Errorf("predicate attr = %q, want %q", attr, "comms")
+	if filterN != 0 {
+		t.Errorf("stamped comms screen has %d filter children, want 0", filterN)
 	}
 }
 

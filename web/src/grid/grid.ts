@@ -48,13 +48,12 @@
  *   - grouping (group_by_attr walk) + bulk selection + infinite scroll.
  */
 
-import { Control, type BaseControlConfig } from '../core/control.js';
+import { Control } from '../core/control.js';
 import type { QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { signal } from '../core/signal.js';
-import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
-import { navigate, taskUrl } from '../shell/router.js';
-import { publishTaskNav } from '../shell/task-nav.js';
+import { virtualList } from '../core/virtual-list.js';
+import { CardListCore, type CardListCoreConfig } from '../cardlist/core.js';
 import { SPEC } from '../kanban/specs.js';
 import { asAttrId, type CardWithAttrs } from '../kanban/kanban-helpers.js';
 import type { CardWherePredicate } from '../projects/project-helpers.js';
@@ -99,15 +98,11 @@ import type { DatePicker } from '../ui/datepicker.js';
  */
 const GRID_ROW_HEIGHT = 34;
 
-/** Tree paths the selection model lives at (tree-backed → recycling-safe). */
-const SELECTION_PATH = ['grid', 'selection'];
-const SELECTION_VERSION_PATH = ['grid', 'selectionVersion'];
-
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry types.                                */
 /* -------------------------------------------------------------------------- */
 
-export interface GridConfig extends BaseControlConfig {
+export interface GridConfig extends CardListCoreConfig {
   type: 'Grid';
   /** Tree path the loaded task rows live at. Default 'grid.tasks'. */
   tasksPath?: string;
@@ -130,7 +125,39 @@ type LabelMap = Record<string, string>;
 /* Grid control.                                                               */
 /* -------------------------------------------------------------------------- */
 
-export class Grid extends Control<GridConfig> {
+export class Grid extends CardListCore<GridConfig> {
+  /* ---- CardListCore wiring: keep the Grid's own `grid.*` leaf namespace, its
+   *  dense table row, and its column-sort wire order. The shared base owns the
+   *  query bump, lookups, virtual list, j/k cursor, bulk selection, and group
+   *  walk; the Grid supplies only the table chrome + cell machinery below. ---- */
+  protected override leafPrefix(): string {
+    return 'grid';
+  }
+  protected override get rowsPath(): string[] {
+    return (this.config.tasksPath ?? 'grid.tasks').split('.');
+  }
+  protected override rowSelector(): string {
+    return '[data-grid-row]';
+  }
+  protected override selectedClass(): string {
+    return 'grid__row--cursor';
+  }
+  /** The Grid keeps its own cursor-memory bucket (`session.cursor.grid.<pid>`)
+   *  so it doesn't share a remembered row with the inbox/comms task lists. */
+  protected override cursorNode() {
+    const pid = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
+    if (pid === null) return null;
+    return this.ctx.tree.at(['session', 'cursor', 'grid', pid.toString()]);
+  }
+  /** CardListCore's abstract per-row hooks. The Grid's own {@link fillItem}
+   *  override drives the recycling pool (a dense multi-cell table row + a
+   *  full-width group header), so these just delegate to its row builders. */
+  protected ensureRowMode(el: HTMLElement): void {
+    this.makeRowMode(el);
+  }
+  protected fillRowCard(el: HTMLElement, card: CardWithAttrs, index: number): void {
+    this.fillRow(el, card, index);
+  }
   /**
    * The DATA-DRIVEN column set (#17): ID/Title + ref columns from the schema
    * axes + tag-prefix + Tags + the screen's extra_columns + Created/Last-
@@ -149,25 +176,14 @@ export class Grid extends Control<GridConfig> {
   private headerEl: HTMLElement | null = null;
   /** The persistent select-all header cell (kept across column rebuilds). */
   private selectAllCell: HTMLElement | null = null;
-  /** The last row toggled by a plain (non-shift) click/Space — the anchor a
-   *  subsequent Shift+click extends a range from. Cleared lazily (a stale id
-   *  that's scrolled out of the loaded set just yields no range). */
-  private selectionAnchor: string | null = null;
   /** Per-column header sort handles, keyed by col.key (sortable columns only). */
   private headerCells = new Map<string, { cell: HTMLElement; arrow: HTMLElement; field: string }>();
   /** Per-column filter funnels (ref columns) + the popovers, rebuilt with the header. */
   private headerFilters: Array<{ funnel: HTMLElement; attr: string }> = [];
   private headerPopovers: Popover[] = [];
-  /** The body (virtualList viewport) + the live list handle (recreated on rebuild). */
+  /** The body element — the virtualList viewport (CardListCore owns the handle as
+   *  `this.vlist` and the rendered item model as `this.items`). */
   private bodyEl: HTMLElement | null = null;
-  private vlHandle: VirtualListHandle | null = null;
-  /** Logical keyboard cursor (a row DATA index, -1 = none). Survives row
-   *  recycling: the cursor class is repainted onto whichever physical row shows
-   *  this index. The last-rendered item model is cached for the scroll math. */
-  private cursorIndex = -1;
-  private itemsCache: GroupItem<CardWithAttrs>[] = [];
-  /** Set once the remembered cursor has been restored on the first load. */
-  private cursorRestored = false;
   /** The table element — its inline `--grid-cols` is computed from this.columns
    *  + per-column widths (#28), so the CSS grid tracks match the dynamic set. */
   private tableEl: HTMLElement | null = null;
@@ -188,24 +204,10 @@ export class Grid extends Control<GridConfig> {
    */
   private editing: { cardId: string; key: string; cell: HTMLElement; child: Control | null } | null = null;
 
-  /** Active header-click sort; null = server default (ORDER BY c.id). */
+  /** Active header-click sort; null = server default (ORDER BY c.id). The
+   *  group-by attr + direction live on CardListCore (`this.group` / `groupDir`);
+   *  the Grid prepends the group key to the wire order in {@link applyOrder}. */
   private sort: SortState | null = null;
-
-  /**
-   * Active group-by attr (resolved from the GROUP picker's `screen.group`
-   * value), or null for a flat list. Drives BOTH the wire `order[]` (the group
-   * key is prepended so rows arrive bucketed) and the body's flat
-   * header+row item model the virtualList renders.
-   */
-  private group: GroupAttr | null = null;
-
-  /**
-   * Direction of the group sort key (asc/desc of the group attr). A group-header
-   * click flips it — which flips the first wire `order[]` key's direction, so
-   * the next response reverses bucket order; within-group row order stays the
-   * column sort. Reset to 'asc' whenever the group attr itself changes.
-   */
-  private groupDir: 'asc' | 'desc' = 'asc';
 
   private get tasksPath(): string[] {
     return (this.config.tasksPath ?? 'grid.tasks').split('.');
@@ -312,14 +314,11 @@ export class Grid extends Control<GridConfig> {
     if (groupVersionNode.peek<number>() === undefined) groupVersionNode.set(0);
 
     // Bulk-selection model: a Set<string> of stringified card ids in the TREE
-    // (so the recycling row `update` reads it to render each row's checked
-    // state — NEVER node-resident state). The version leaf is bumped on every
-    // selection change so the virtualList re-windows + the BulkActionBar's
-    // count/visibility effect re-runs. Seed both BEFORE the data layer wires.
-    const selectionNode = this.ctx.tree.at(SELECTION_PATH);
-    if (!(selectionNode.peek() instanceof Set)) selectionNode.set(new Set<string>());
-    const selectionVersionNode = this.ctx.tree.at(SELECTION_VERSION_PATH);
-    if (selectionVersionNode.peek<number>() === undefined) selectionVersionNode.set(0);
+    // (grid.selection / grid.selectionVersion) — the recycling row `update`
+    // reads it (never node-resident state), and the BulkActionBar shares the
+    // same leaves. CardListCore owns the model; seed it before the data layer
+    // wires.
+    this.seedSelection();
 
     /* ------------------------------ filter bar ----------------------------- */
     // Default: rely on the shared ScreenFilterBar that ScreenHost mounts above
@@ -431,30 +430,6 @@ export class Grid extends Control<GridConfig> {
       empty.textContent = this.tasksLoaded ? 'No tasks match this filter.' : 'Loading…';
     }, 'grid.empty');
 
-    // Search box ArrowDown hands focus to the body (screen.enterBodyNonce):
-    // place the cursor on the first row + focus the body so j/k/↑↓/Enter operate.
-    this.effect(() => {
-      const n = this.ctx.tree.at(['screen', 'enterBodyNonce']).get<number>() ?? 0;
-      if (n === 0) return;
-      const idxs = this.rowIndices();
-      if (idxs.length === 0) return;
-      if (this.cursorIndex < 0) this.cursorIndex = idxs[0]!;
-      this.scrollCursorIntoView();
-      this.repaintCursor();
-      this.el.focus();
-    }, 'grid.enterBody');
-
-    // Enter / o on the focused body opens the cursor row. A focused ROW handles
-    // its own Enter (row keydown); this is the container-focused case.
-    this.listen(this.el, 'keydown', (ev) => {
-      const e = ev as KeyboardEvent;
-      if (e.key !== 'Enter' && e.key !== 'o') return;
-      const t = e.target as HTMLElement | null;
-      if (t && typeof t.closest === 'function' && t.closest('[data-grid-row]')) return;
-      e.preventDefault();
-      this.openCursorRow();
-    });
-
     // Rows render through the recycling virtualList: `body` is the scroll
     // viewport, a fixed pool of row nodes is content-swapped on scroll (no
     // churn → no flash). The list renders a FLAT `GroupItem` sequence — either
@@ -470,11 +445,22 @@ export class Grid extends Control<GridConfig> {
     // `update` toggles which is shown. NO key: a row's CONTENT changes while
     // its id + slot index stay fixed when a card_ref lookup lands late (the
     // tick bumps), so update() runs for every visible slot on each render.
+    //
+    // CardListCore reads `this.listEl` + `this.rowHeight` for the cursor scroll
+    // math, so point them at the grid body before wiring.
+    this.listEl = body;
+    this.rowHeight = GRID_ROW_HEIGHT;
     this.createVirtualList();
-    this.onDestroy(() => this.vlHandle?.dispose());
+    this.onDestroy(() => this.vlist?.dispose());
     this.onDestroy(() => {
       for (const p of this.headerPopovers) p.destroy();
     });
+
+    // CardListCore's shared cursor interactions: the search-box ArrowDown →
+    // body hand-off (screen.enterBodyNonce) + the container-focused Enter / o
+    // opens the cursor row. emptyEl stays null so the base skips its empty
+    // effect — the Grid keeps its own "No tasks match…" message below.
+    this.wireListInteractions();
 
     // Single header-sort effect (replaces per-column effects so a column rebuild
     // can't leak them): repaints every header cell's arrow on a sort / group-dir
@@ -552,7 +538,7 @@ export class Grid extends Control<GridConfig> {
       if ((next?.attr ?? null) !== (this.group?.attr ?? null)) this.groupDir = 'asc';
       this.group = next;
       this.applyOrder();
-      this.bumpGroup();
+      this.rebuildItems(); // bump grid.groupVersion → body re-walks the item model
       this.bumpQuery();
     }, 'grid.groupWatch');
 
@@ -574,21 +560,22 @@ export class Grid extends Control<GridConfig> {
       const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
       // Mark loaded BEFORE the leaf write so the empty-state effect reads it.
       this.tasksLoaded = true;
-      this.ctx.tree.at(this.tasksPath).set(rows); // triggers a render → itemsCache
+      this.ctx.tree.at(this.tasksPath).set(rows); // triggers a render → this.items
       // Restore the remembered LOGICAL cursor (by card id) on the first load
       // after (re)mount so returning from a task re-highlights its row. Deferred
-      // a microtask so the just-scheduled render has populated itemsCache.
+      // a microtask so the just-scheduled render has populated this.items. Uses
+      // CardListCore's cursor (selectedIndex + the shared paint/scroll helpers).
       if (!this.cursorRestored) {
         this.cursorRestored = true;
         const want = this.rememberedCursorId();
         if (want !== undefined) {
           queueMicrotask(() => {
             if (!this.isAlive()) return;
-            const item = this.itemsCache.find((it) => it.kind === 'row' && it.row.id === want);
-            if (item && item.kind === 'row') {
-              this.cursorIndex = item.idx;
-              this.scrollCursorIntoView();
-              this.repaintCursor();
+            const i = this.displayRows().findIndex((c) => c.id === want);
+            if (i >= 0) {
+              this.selectedIndex = i;
+              this.scrollSelectedIntoView();
+              this.repaintSelection();
             }
           });
         }
@@ -659,98 +646,13 @@ export class Grid extends Control<GridConfig> {
    * `grid.selectionVersion` (a one-way write outside any tracked effect, so the
    * cascade rules hold) which re-windows the virtualList + repaints the header.
    */
-  private selection(): Set<string> {
-    const s = this.ctx.tree.at(SELECTION_PATH).peek<Set<string>>();
-    return s instanceof Set ? s : new Set<string>();
-  }
-
-  /** Is a card id currently selected? (Peek — callers read it inside fillRow.) */
-  private isSelected(id: bigint): boolean {
-    return this.selection().has(id.toString());
-  }
-
-  /** Replace the selection set + bump the version. One-way, cascade-safe. */
-  private setSelection(next: Set<string>): void {
-    this.ctx.tree.at(SELECTION_PATH).set(next);
-    const node = this.ctx.tree.at(SELECTION_VERSION_PATH);
-    node.set((node.peek<number>() ?? 0) + 1);
-  }
-
-  /**
-   * Select a row from a checkbox click / Space press, by its live
-   * `data-card-id` (never node state).
-   *
-   * - Plain gesture (`extend=false`): toggle just this row, and record it as
-   *   the range ANCHOR for a later Shift+click.
-   * - Shift gesture (`extend=true`): add every row between the anchor and the
-   *   clicked row (inclusive, in the order shown — group walk included) to the
-   *   selection, the spreadsheet / Gmail idiom. The anchor then moves to the
-   *   clicked row so a further Shift+click extends from here. With no anchor
-   *   yet (or one scrolled out of the loaded set) it falls back to a toggle.
-   */
+  /** Select a row from a checkbox click / Space press, by its live
+   *  `data-card-id` (never node state) — delegates to CardListCore's shared
+   *  multi-select model (plain toggle + anchor, Shift = range from the anchor). */
   private selectRow(el: HTMLElement, extend: boolean): void {
     const idStr = el.dataset.cardId;
     if (idStr === undefined || idStr === '') return;
-
-    if (extend && this.selectionAnchor !== null && this.selectionAnchor !== idStr) {
-      const order = this.orderedRowIds();
-      const a = order.indexOf(this.selectionAnchor);
-      const b = order.indexOf(idStr);
-      if (a !== -1 && b !== -1) {
-        const lo = Math.min(a, b);
-        const hi = Math.max(a, b);
-        const next = new Set(this.selection());
-        for (let i = lo; i <= hi; i++) next.add(order[i]!);
-        this.setSelection(next);
-        this.selectionAnchor = idStr;
-        return;
-      }
-    }
-
-    const next = new Set(this.selection());
-    if (next.has(idStr)) next.delete(idStr);
-    else next.add(idStr);
-    this.setSelection(next);
-    this.selectionAnchor = idStr;
-  }
-
-  /** Row card-ids (stringified) in the order currently DISPLAYED — the group
-   *  walk order when grouped, the server order otherwise. Drives Shift+click
-   *  range selection so "between the two" matches what the user sees. */
-  private orderedRowIds(): string[] {
-    const ids: string[] = [];
-    for (const item of this.buildItems()) {
-      if (item.kind === 'row') ids.push(item.row.id.toString());
-    }
-    return ids;
-  }
-
-  /** All loaded task ids (stringified) — the select-all universe. */
-  private allTaskIds(): string[] {
-    const tasks = (this.ctx.tree.at(this.tasksPath).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
-    return tasks.map((t) => t.id.toString());
-  }
-
-  /** Header tri-state over the loaded tasks: 'none' | 'some' | 'all'. */
-  private selectAllState(): 'none' | 'some' | 'all' {
-    const ids = this.allTaskIds();
-    if (ids.length === 0) return 'none';
-    const sel = this.selection();
-    let hits = 0;
-    for (const id of ids) if (sel.has(id)) hits += 1;
-    if (hits === 0) return 'none';
-    return hits === ids.length ? 'all' : 'some';
-  }
-
-  /** Select every loaded task, or clear when already all-selected. */
-  private toggleSelectAll(): void {
-    if (this.selectAllState() === 'all') {
-      this.setSelection(new Set<string>());
-      return;
-    }
-    const next = new Set(this.selection());
-    for (const id of this.allTaskIds()) next.add(id);
-    this.setSelection(next);
+    this.toggleRowSelection(idStr, extend);
   }
 
   /* ------------------------------- header ------------------------------- */
@@ -949,11 +851,14 @@ export class Grid extends Control<GridConfig> {
     }
   }
 
-  /** (Re)create the recycling virtualList over the current columns. */
+  /** (Re)create the recycling virtualList over the current columns. The shared
+   *  CardListCore reads the rendered item model from `this.items` (its cursor +
+   *  selection + select-all helpers walk it), so populate that — not a private
+   *  cache. The handle lives at `this.vlist` (the base disposes it on destroy). */
   private createVirtualList(): void {
     if (this.bodyEl === null) return;
-    this.vlHandle?.dispose();
-    this.vlHandle = virtualList<GroupItem<CardWithAttrs>>({
+    this.vlist?.dispose();
+    this.vlist = virtualList<GroupItem<CardWithAttrs>>({
       container: this.bodyEl,
       rowHeight: GRID_ROW_HEIGHT,
       data: () => {
@@ -961,10 +866,11 @@ export class Grid extends Control<GridConfig> {
         // the group version so a GROUP / group-dir change re-walks; the selection
         // version so a toggle re-paints the visible checkboxes.
         this.ctx.tree.at(['grid', 'lookups', 'tick']).get();
+        this.ctx.tree.at(this.selectionVersionPath).get();
+        const rows = (this.ctx.tree.at(this.rowsPath).get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
         this.ctx.tree.at(['grid', 'groupVersion']).get();
-        this.ctx.tree.at(SELECTION_VERSION_PATH).get();
-        this.itemsCache = this.buildItems();
-        return this.itemsCache;
+        this.items = this.computeItems(rows);
+        return this.items;
       },
       create: (el) => this.buildRowShell(el),
       update: (el, item) => this.fillItem(el, item),
@@ -999,7 +905,7 @@ export class Grid extends Control<GridConfig> {
 
     // Repaint the tri-state on every selection change (reads the version leaf).
     this.effect(() => {
-      this.ctx.tree.at(SELECTION_VERSION_PATH).get(); // subscribe
+      this.ctx.tree.at(this.selectionVersionPath).get(); // subscribe
       const state = this.selectAllState();
       box.checked = state === 'all';
       box.indeterminate = state === 'some';
@@ -1181,11 +1087,11 @@ export class Grid extends Control<GridConfig> {
    * reverses bucket order; within-group order keeps the column sort. Wired to
    * both the group-section header click and the group column's table header.
    */
-  private toggleGroupDir(): void {
+  protected override toggleGroupDir(): void {
     if (this.group === null) return;
     this.groupDir = this.groupDir === 'asc' ? 'desc' : 'asc';
     this.applyOrder();
-    this.bumpGroup(); // repaint header arrows (group column reads the version)
+    this.rebuildItems(); // repaint header arrows (group column reads the version)
     this.bumpQuery();
   }
 
@@ -1258,7 +1164,7 @@ export class Grid extends Control<GridConfig> {
         this.toggleGroupDir();
         return;
       }
-      this.openRow(el);
+      this.openRowIndex(Number(el.dataset.index ?? '-1'));
     });
     // Keyboard open: Enter or `o` on the focused row navigates into the task;
     // Space toggles the row's bulk selection (the spreadsheet / Gmail idiom, so
@@ -1268,24 +1174,12 @@ export class Grid extends Control<GridConfig> {
       const k = (ev as KeyboardEvent).key;
       if (k === 'Enter' || k === 'o') {
         ev.preventDefault();
-        this.openRow(el);
+        this.openRowIndex(Number(el.dataset.index ?? '-1'));
       } else if (k === ' ' || k === 'Spacebar' || k === 'Space') {
         ev.preventDefault();
         this.selectRow(el, (ev as KeyboardEvent).shiftKey);
       }
     });
-  }
-
-  /** Navigate into a row's task detail (`/task/:id`), reading the live card id.
-   *  Publishes the current row order first so task-detail prev/next nav (#18)
-   *  walks the same sequence the grid shows. */
-  private openRow(el: HTMLElement): void {
-    const idStr = el.dataset.cardId;
-    if (idStr === undefined || idStr === '') return;
-    this.rememberCardId(BigInt(idStr)); // so returning re-highlights this row
-    const tasks = (this.ctx.tree.at(['grid', 'tasks']).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
-    publishTaskNav(this.ctx.tree, tasks.map((t) => t.id));
-    navigate(taskUrl(idStr));
   }
 
   /** Reset a pooled node to ROW mode: the `.grid__row` cell grid (a leading
@@ -1358,7 +1252,7 @@ export class Grid extends Control<GridConfig> {
   /** Reconfigure a pooled node to GROUP-HEADER mode: a single full-width header
    *  with an arrow (group dir), label, and `· count`. Rebuilds only on the
    *  transition out of row mode; subsequent header fills reuse the children. */
-  private makeHeaderMode(el: HTMLElement): void {
+  protected override makeHeaderMode(el: HTMLElement): void {
     if (el.dataset.gridGroupHeader !== undefined) return;
     delete el.dataset.gridRow;
     delete el.dataset.cardId;
@@ -1378,8 +1272,9 @@ export class Grid extends Control<GridConfig> {
   }
 
   /** Discriminate a flat GroupItem onto a pooled node: header content for a
-   *  `group` item, the data-row cells for a `row` item. */
-  private fillItem(el: HTMLElement, item: GroupItem<CardWithAttrs>): void {
+   *  `group` item, the data-row cells for a `row` item. (Overrides the base
+   *  card-list fillItem — the Grid renders a dense multi-cell table row.) */
+  protected override fillItem(el: HTMLElement, item: GroupItem<CardWithAttrs>): void {
     if (item.kind === 'group') {
       this.makeHeaderMode(el);
       el.dataset.groupKey = item.key;
@@ -1404,7 +1299,7 @@ export class Grid extends Control<GridConfig> {
   private fillRow(el: HTMLElement, row: CardWithAttrs, index: number): void {
     el.dataset.cardId = row.id.toString();
     el.dataset.index = String(index);
-    el.classList.toggle('grid__row--cursor', index === this.cursorIndex);
+    el.classList.toggle(this.selectedClass(), index === this.selectedIndex);
     const cells = el.children;
     // Cell 0 is the leading select cell — render its checked state from the
     // TREE set (recycling-safe: a pooled node shows a different task on scroll,
@@ -1431,12 +1326,11 @@ export class Grid extends Control<GridConfig> {
    * tasks into `[{kind:'group'}, {kind:'row'}, …]` via walkGrouped, resolving
    * card_ref group keys to their display label through the matching lookup map.
    */
-  private buildItems(): GroupItem<CardWithAttrs>[] {
-    const tasks = (this.ctx.tree.at(this.tasksPath).get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+  protected override computeItems(tasks: CardWithAttrs[]): GroupItem<CardWithAttrs>[] {
     const g = this.group;
     if (g === null) return walkGrouped(tasks, null, () => '');
     if (g.tagPrefix !== undefined) return this.buildTagPrefixItems(tasks, g.tagPrefix);
-    return walkGrouped(tasks, g.attr, (key) => this.labelForGroupKey(key, g.lookup));
+    return walkGrouped(tasks, g.attr, (key) => this.groupKeyLabel(key, g.lookup));
   }
 
   /**
@@ -1481,22 +1375,6 @@ export class Grid extends Control<GridConfig> {
     const unset = buckets.get(GROUP_EMPTY_KEY);
     if (unset !== undefined && unset.length > 0) emit(GROUP_EMPTY_KEY, '(unset)', unset);
     return out;
-  }
-
-  /** Resolve a group key to its display label: a card_ref id goes through the
-   *  group attr's lookup map; scalars are their own label. Coerces the key via
-   *  {@link asAttrId} so an un-revived wire form (digit-string for un-primed
-   *  card_ref attrs like `originator`) still resolves a name. */
-  private labelForGroupKey(key: unknown, lookup: string | null): string {
-    if (lookup !== null) {
-      const id = asAttrId(key);
-      if (id !== null) {
-        const map = (this.ctx.tree.at(['grid', 'lookups', lookup]).peek<LabelMap>() ?? {}) as LabelMap;
-        const k = id.toString();
-        return map[k] ?? `#${k}`;
-      }
-    }
-    return String(key);
   }
 
   /** Repopulate one cell for a task + column, resolving ref labels from lookups. */
@@ -1748,124 +1626,20 @@ export class Grid extends Control<GridConfig> {
     this.ctx.tree.at(['grid', 'tree']).set(tree);
   }
 
-  /** Bump the tasks-query version leaf so the `{ signal }` trigger refires. A
-   *  plain write outside any tracked effect — one-way, cascade-safe. */
-  private bumpQuery(): void {
-    const node = this.ctx.tree.at(['grid', 'queryVersion']);
-    node.set((node.peek<number>() ?? 0) + 1);
-  }
-
-  /** Bump the group version leaf so the body's virtualList re-walks the items
-   *  (group attr / direction change) WITHOUT re-issuing the tasks query — and
-   *  the group column header repaints its arrow. One-way, cascade-safe. */
-  private bumpGroup(): void {
-    const node = this.ctx.tree.at(['grid', 'groupVersion']);
-    node.set((node.peek<number>() ?? 0) + 1);
-  }
-
   /**
    * Screen-tier hotkeys. `n` opens the global quick-entry overlay scoped to the
-   * current project (raised as the `quickCreateOpen` bus intent the AppShell's
-   * QuickEntry listens for).
+   * current project. j/k + ↑↓ drive the shared CardListCore row cursor (a
+   * logical row index that survives recycling; auto-scrolls + Enter / o opens).
    */
   override hotkeys(): readonly import('../core/hotkeys.js').HotkeyBinding[] {
     return [
       { binding: 'n', label: 'New task', run: () => this.ctx.bus?.emit('quickCreateOpen') },
-      // Row cursor: j/k + ↑↓ move a LOGICAL cursor (by data index, survives row
-      // recycling) and auto-scroll it into view at the edge; Enter / o opens it.
-      // NOT fireInInputs — the search box's ArrowDown hands focus down instead.
-      { binding: 'j', label: 'Next row', run: () => this.moveCursor(1) },
-      { binding: 'k', label: 'Previous row', run: () => this.moveCursor(-1) },
-      { binding: 'ArrowDown', label: 'Next row', run: () => this.moveCursor(1) },
-      { binding: 'ArrowUp', label: 'Previous row', run: () => this.moveCursor(-1) },
+      { binding: 'j', label: 'Next row', run: () => this.moveSelection(1) },
+      { binding: 'k', label: 'Previous row', run: () => this.moveSelection(-1) },
+      { binding: 'ArrowDown', label: 'Next row', run: () => this.moveSelection(1) },
+      { binding: 'ArrowUp', label: 'Previous row', run: () => this.moveSelection(-1) },
       ...(this.config.hotkeys ?? []),
     ];
-  }
-
-  /** The logical row indices currently in the rendered item model (row items). */
-  private rowIndices(): number[] {
-    return this.itemsCache.filter((it) => it.kind === 'row').map((it) => (it as { idx: number }).idx);
-  }
-
-  /** Move the logical cursor by `delta` (clamped to the row range), scroll it
-   *  into view at the edge, and repaint. Starts at the first row when unset. */
-  private moveCursor(delta: number): void {
-    const idxs = this.rowIndices();
-    if (idxs.length === 0) return;
-    const lo = idxs[0]!;
-    const hi = idxs[idxs.length - 1]!;
-    const next = this.cursorIndex < 0 ? lo : Math.max(lo, Math.min(hi, this.cursorIndex + delta));
-    this.cursorIndex = next;
-    this.scrollCursorIntoView();
-    this.repaintCursor();
-    this.rememberCursor();
-    // Keep the body focused so Enter / o opens the cursor row even when j/k
-    // arrived as page-wide hotkeys from outside the grid.
-    this.el.focus({ preventScroll: true });
-  }
-
-  /* ---- logical-cursor persistence (remember across nav, by card id) ------- */
-
-  private cursorNode() {
-    const pid = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
-    if (pid === null) return null;
-    return this.ctx.tree.at(['session', 'cursor', 'grid', pid.toString()]);
-  }
-  private rememberedCursorId(): bigint | undefined {
-    const v = this.cursorNode()?.peek<bigint>();
-    return typeof v === 'bigint' ? v : undefined;
-  }
-  /** Persist a card id as this screen's remembered cursor (the moved-to cursor
-   *  row, or a clicked row that opens directly). */
-  private rememberCardId(id: bigint): void {
-    this.cursorNode()?.set(id);
-  }
-  private rememberCursor(): void {
-    const item = this.itemsCache.find((it) => it.kind === 'row' && it.idx === this.cursorIndex);
-    if (item && item.kind === 'row') this.rememberCardId(item.row.id);
-  }
-
-  /** Auto-scroll the cursor's row into view only when it's outside the viewport
-   *  (edge nav). Uses its PHYSICAL position in the rendered item model (headers
-   *  included), then re-windows synchronously so the row paints. */
-  private scrollCursorIntoView(): void {
-    const body = this.bodyEl;
-    if (body === null || this.cursorIndex < 0) return;
-    const phys = this.itemsCache.findIndex((it) => it.kind === 'row' && (it as { idx: number }).idx === this.cursorIndex);
-    if (phys < 0) return;
-    const top = phys * GRID_ROW_HEIGHT;
-    const bottom = top + GRID_ROW_HEIGHT;
-    const vh = body.clientHeight || 0;
-    const st = body.scrollTop || 0;
-    let nextTop = st;
-    if (top < st) nextTop = top;
-    else if (bottom > st + vh) nextTop = bottom - vh;
-    if (nextTop !== st) {
-      body.scrollTop = nextTop;
-      this.vlHandle?.refresh();
-    }
-  }
-
-  /** Toggle the cursor class onto whichever rendered row shows the cursor index. */
-  private repaintCursor(): void {
-    if (this.bodyEl === null) return;
-    const rows = this.bodyEl.querySelectorAll?.('[data-grid-row]') ?? [];
-    for (const node of rows as unknown as HTMLElement[]) {
-      const on = Number(node.dataset?.index ?? '-1') === this.cursorIndex;
-      node.classList?.toggle('grid__row--cursor', on);
-    }
-  }
-
-  /** Open the cursor row's task detail (keyboard Enter / o on the focused grid). */
-  private openCursorRow(): void {
-    const item = this.itemsCache.find(
-      (it) => it.kind === 'row' && (it as { idx: number }).idx === this.cursorIndex,
-    );
-    if (item === undefined || item.kind !== 'row') return;
-    this.rememberCardId(item.row.id);
-    const tasks = (this.ctx.tree.at(['grid', 'tasks']).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
-    publishTaskNav(this.ctx.tree, tasks.map((t) => t.id));
-    navigate(taskUrl(item.row.id.toString()));
   }
 }
 
