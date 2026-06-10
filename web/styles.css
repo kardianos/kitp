@@ -2276,6 +2276,11 @@ select optgroup {
   background: var(--color-bg, var(--color-surface));
   color: var(--color-fg);
 }
+/* Destination picker host inside the task-detail "Move to project" dialog. */
+.bulk-confirm__picker {
+  display: flex;
+  flex-direction: column;
+}
 .bulk-confirm__actions {
   display: flex;
   justify-content: flex-end;

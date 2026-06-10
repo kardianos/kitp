@@ -28,7 +28,13 @@
 import { signal } from './core/signal.js';
 import { tree } from './core/tree.js';
 import { loadAuthUser, peekCurrentUserId } from './auth/auth-state.js';
-import { Dispatcher, fetchTransport, type ApiFault, type Transport } from './core/dispatch.js';
+import {
+  Dispatcher,
+  fetchTransport,
+  SIBLING_ABORT_REASON,
+  type ApiFault,
+  type Transport,
+} from './core/dispatch.js';
 import { Api } from './core/api.js';
 import { Control, controlForNode, type ControlContext, type ChildConfig } from './core/control.js';
 import './core/not-found.js'; // side effect: installs the NotFound factory path
@@ -168,7 +174,7 @@ function boot(): void {
   // sub_error fault). Because the single reused toast is last-wins, the sibling
   // noise was masking the real cause. Log it, but don't toast it over the offender.
   dispatcher.onFault('aborted', (f) => {
-    if (f.reason === 'batch aborted by sibling sub-request') {
+    if (f.reason === SIBLING_ABORT_REASON) {
       // eslint-disable-next-line no-console
       console.warn('[fault]', describeFault(f));
       return;

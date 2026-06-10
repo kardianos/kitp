@@ -67,6 +67,16 @@ export type FaultKind = ApiFault['kind'];
 /** The fault variant for a given kind (narrows listener payloads). */
 export type FaultOf<K extends FaultKind> = Extract<ApiFault, { kind: K }>;
 
+/**
+ * The `reason` the backend stamps on every NON-offending sub-request when one
+ * sibling in the same batch fails (see server `api.go` — `ErrorEnvelope{Code:
+ * "aborted", Message: "batch aborted by sibling sub-request"}`). It's pure
+ * noise: the real cause rides a separate `sub_error` fault on the offender.
+ * Both the central fault funnel (`main.ts`) and every self-represented control
+ * (`Control.setFault`) drop it so the genuine error is the one that surfaces.
+ */
+export const SIBLING_ABORT_REASON = 'batch aborted by sibling sub-request';
+
 /* -------------------------------------------------------------------------- */
 /* Typed errors (mirror client/src/dispatch/errors.ts).                       */
 /* -------------------------------------------------------------------------- */

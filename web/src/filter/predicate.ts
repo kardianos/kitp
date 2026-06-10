@@ -579,6 +579,30 @@ export const SEARCH_FIELD_VALUES = ['title', 'description', 'comments'] as const
 export type SearchField = (typeof SEARCH_FIELD_VALUES)[number];
 const SEARCH_FIELDS_SET: ReadonlySet<string> = new Set(SEARCH_FIELD_VALUES as readonly string[]);
 
+/** Cap on a comma-separated id-search list so a giant paste can't balloon the
+ *  compiled param array. Beyond this the list is truncated (still matches the
+ *  first N ids). */
+const MAX_ID_LIST = 200;
+
+/**
+ * Parse a search needle as a list of card ids: a single `NNNN` or a
+ * comma-separated `NNNN,NNNN,…` (surrounding whitespace tolerated). Returns the
+ * id strings (deduped, capped at {@link MAX_ID_LIST}) or `null` when the needle
+ * isn't a pure id / id-list. A single id keeps the "jump to #ID" OR-with-text
+ * behaviour; a multi-id list drives an `id in […]` match (no text OR — a comma
+ * list is unambiguously ids).
+ */
+export function parseIdList(needle: string): string[] | null {
+  if (!/^\s*\d+(\s*,\s*\d+)*\s*$/.test(needle)) return null;
+  const seen = new Set<string>();
+  for (const part of needle.split(',')) {
+    const id = part.trim();
+    if (id.length > 0) seen.add(id);
+    if (seen.size >= MAX_ID_LIST) break;
+  }
+  return seen.size > 0 ? [...seen] : null;
+}
+
 /**
  * Project the shared search needle + the chosen search fields + the Advanced
  * structured predicate down to the `card.select_with_attributes` wire fields
@@ -617,14 +641,23 @@ export function applySearchFilter(
   // contain the digits, while title/description matches still appear. Riding an
   // OR forces the `tree` path (the server uses `tree` when set), so the numeric
   // branch always builds a tree regardless of field count.
-  const isIdQuery = /^\d+$/.test(needle);
+  //
+  // A comma-separated id list (NNNN,NNNN,…) instead emits a single `id in […]`
+  // leaf so every listed card surfaces at once. No text OR here — a comma list
+  // is unambiguously a set of ids, and "12,34" wouldn't usefully match titles.
+  const idList = parseIdList(needle);
+  const isSingleId = idList !== null && idList.length === 1;
+  const isIdListQuery = idList !== null && idList.length > 1;
+  const isIdQuery = isSingleId || isIdListQuery;
   let searchLeaves: WireNode[] = [];
   let searchTree: WireNode | null = null;
-  if (isIdQuery && effective.length > 0) {
+  if (isIdListQuery) {
+    searchTree = { attr: 'id', op: 'in', values: idList };
+  } else if (isSingleId && effective.length > 0) {
     searchTree = {
       connective: 'or',
       children: [
-        { attr: 'id', op: 'eq', values: [needle] },
+        { attr: 'id', op: 'eq', values: idList },
         ...effective.map((attr) => ({ attr, op: 'contains', values: [needle] })),
       ],
     };

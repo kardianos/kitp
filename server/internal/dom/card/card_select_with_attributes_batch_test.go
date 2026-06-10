@@ -198,6 +198,51 @@ func TestCardSelectWithAttrsBatch_IdSearch(t *testing.T) {
 	}
 }
 
+// TestCardSelectWithAttrsBatch_IdListSearch — the synthetic `id` predicate's
+// `in` op matches the card's primary key against a LIST of ids, powering the
+// search bar's comma-separated id list. A real id in the list matches; bogus
+// and non-numeric entries are simply skipped (never raise).
+func TestCardSelectWithAttrsBatch_IdListSearch(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_swa_id_list")
+	projectID, taskID := seedProjectWithTask(t, pool, "happy")
+
+	// id in [taskID, 9999999, "not-a-number"] — only the real id can match, so a
+	// single hit proves the IN compiled to `c.id = ANY(...)` and skipped the
+	// bogus + non-numeric members.
+	rows := callCardSelectWithAttrsBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{
+			"parent_card_id": strconv.FormatInt(projectID, 10),
+			"card_type_name": "task",
+			"tree": map[string]any{
+				"attr": "id", "op": "in",
+				"values": []any{strconv.FormatInt(taskID, 10), "9999999", "not-a-number"},
+			},
+		},
+	})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("id-list search failed: %+v", rows)
+	}
+	res := decodeSWA(t, rows[0].Result)
+	if len(res.Rows) != 1 || res.Rows[0].ID != strconv.FormatInt(taskID, 10) {
+		t.Fatalf("id-list search rows=%+v, want exactly task %d", res.Rows, taskID)
+	}
+
+	// An all-non-numeric / empty id list matches nothing (compiles to FALSE).
+	rows = callCardSelectWithAttrsBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{
+			"parent_card_id": strconv.FormatInt(projectID, 10),
+			"card_type_name": "task",
+			"tree":           map[string]any{"attr": "id", "op": "in", "values": []any{"abc"}},
+		},
+	})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("empty id-list failed: %+v", rows)
+	}
+	if res := decodeSWA(t, rows[0].Result); len(res.Rows) != 0 {
+		t.Errorf("all-non-numeric id list returned %d rows, want 0", len(res.Rows))
+	}
+}
+
 // TestCardSelectWithAttrsBatch_Empty — no matching rows returns
 // an empty rows array (not null).
 func TestCardSelectWithAttrsBatch_Empty(t *testing.T) {

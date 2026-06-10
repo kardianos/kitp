@@ -22,7 +22,7 @@
 
 import { effect, signal, type Signal } from './signal.js';
 import type { HotkeyBinding } from './hotkeys.js';
-import type { ApiFault } from './dispatch.js';
+import { SIBLING_ABORT_REASON, type ApiFault } from './dispatch.js';
 import {
   DataController,
   type ActionBinding,
@@ -258,6 +258,13 @@ export abstract class Control<Cfg extends BaseControlConfig = BaseControlConfig>
 
   /** Deliver a fault to this control's inline representation (the 'self' route). */
   setFault(fault: ApiFault): void {
+    // Drop the sibling-abort noise the backend stamps on every non-offending
+    // sub-request when a batch sibling fails: it's not THIS control's load
+    // error, and surfacing it (e.g. "Failed to load grid: aborted…") masks the
+    // real cause, which rides a separate `sub_error` fault on the offender
+    // (delivered to its own onError route — `top` toasts it via the funnel).
+    // Mirrors the central funnel's handling in `main.ts`.
+    if (fault.kind === 'aborted' && fault.reason === SIBLING_ABORT_REASON) return;
     this.fault.set(fault);
   }
 

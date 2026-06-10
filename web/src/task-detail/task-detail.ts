@@ -218,6 +218,11 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private actionsMenu: Popover | null = null;
   /** The type-DELETE-to-confirm purge dialog node (built lazily). */
   private purgeConfirmEl: HTMLElement | null = null;
+  /** The "Move to project" dialog node (built lazily), its destination picker
+   *  child (disposed on close), and the picked destination project id. */
+  private moveConfirmEl: HTMLElement | null = null;
+  private movePicker: Control | null = null;
+  private moveTargetProject: bigint | null = null;
 
   /** The header "Refresh" button, held so the background poll can repaint its
    *  synced (green) ↔ new-content (orange-blinking) state. */
@@ -1343,6 +1348,23 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     panel.setAttribute('role', 'menu');
     panel.setAttribute('aria-label', 'Task actions');
 
+    // "Move to project…" — re-parent this task (and its sub-tree) under a
+    // different project, clearing per-project classification so it's re-triaged
+    // in the destination (server `task.move`). Same manager/admin gate as the
+    // menu itself; the bulk-grid surface offers the multi-select equivalent.
+    const move = document.createElement('button');
+    move.type = 'button';
+    move.className = 'task-detail__menu-item';
+    move.dataset.taskMove = '';
+    move.setAttribute('role', 'menuitem');
+    move.textContent = 'Move to project…';
+    this.listen(move, 'click', () => {
+      menu.destroy();
+      this.actionsMenu = null;
+      this.openMoveDialog();
+    });
+    panel.append(move);
+
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'task-detail__menu-item task-detail__menu-item--danger';
@@ -1358,6 +1380,108 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 
     this.actionsMenu = menu;
     menu.open();
+  }
+
+  /**
+   * Open the "Move to project" dialog: a project RefPicker + Cancel/Move. On
+   * Move it fires `task.move` for the focal task (destination intake status
+   * resolved server-side; the user re-classifies in the destination), then
+   * navigates to the task in its new project. Mirrors {@link openPurgeConfirm}'s
+   * structure and reuses the shared `.bulk-confirm*` dialog styling.
+   */
+  private openMoveDialog(): void {
+    if (this.taskId === null) return;
+    this.closeMoveDialog();
+    this.moveTargetProject = null;
+
+    const dialog = document.createElement('div');
+    dialog.className = 'bulk-confirm';
+    dialog.dataset.taskMoveDialog = '';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-label', 'Move task to project');
+
+    const msg = document.createElement('p');
+    msg.className = 'bulk-confirm__msg';
+    msg.textContent =
+      'Move this task (and any sub-tasks) to another project. ' +
+      'Status, milestone, component and tags are cleared so you can re-classify in the destination.';
+
+    const pickerHost = document.createElement('div');
+    pickerHost.className = 'bulk-confirm__picker';
+
+    const row = document.createElement('div');
+    row.className = 'bulk-confirm__actions';
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'bulk-confirm__cancel';
+    cancel.textContent = 'Cancel';
+    this.listen(cancel, 'click', () => this.closeMoveDialog());
+
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'bulk-confirm__confirm';
+    confirm.dataset.taskMoveAccept = '';
+    confirm.textContent = 'Move';
+    confirm.disabled = true;
+    this.listen(confirm, 'click', () => this.doMove());
+
+    // Destination picker — a project RefPicker (global, like the bulk bar's).
+    this.movePicker = this.spawn(
+      'RefPicker',
+      {
+        type: 'RefPicker',
+        cardType: 'project',
+        value: null,
+        placeholder: 'Destination project…',
+        'aria-label': 'Destination project',
+        onChange: (v: bigint | null) => {
+          this.moveTargetProject = v;
+          confirm.disabled = v === null;
+        },
+      },
+      pickerHost,
+    );
+
+    row.append(cancel, confirm);
+    dialog.append(msg, pickerHost, row);
+    this.el.append(dialog);
+    this.moveConfirmEl = dialog;
+  }
+
+  private closeMoveDialog(): void {
+    if (this.movePicker !== null) {
+      this.destroyChild(this.movePicker);
+      this.movePicker = null;
+    }
+    if (this.moveConfirmEl !== null) {
+      this.moveConfirmEl.remove();
+      this.moveConfirmEl = null;
+    }
+    this.moveTargetProject = null;
+  }
+
+  /** Fire `task.move` for the focal task; navigate to the destination project's
+   *  board on success. Server re-checks the manager/admin gate + validates the
+   *  move. We leave the detail rather than re-loading it in place: the task's
+   *  classification was cleared and its project context changed, and navigating
+   *  to the SAME `/task/:id` URL is a no-op (no reload). Landing on the
+   *  destination board both guarantees a fresh load and shows where it went. */
+  private doMove(): void {
+    const taskId = this.taskId;
+    const dest = this.moveTargetProject;
+    if (taskId === null || dest === null) return;
+    this.closeMoveDialog();
+    this.ctx.api.callByName(
+      GRID_SPEC.taskMove,
+      { cardId: taskId, newProjectId: dest },
+      () => {
+        if (!this.isAlive()) return;
+        navigate(projectUrl(dest));
+      },
+      { alive: () => this.isAlive() },
+    );
   }
 
   /** Open the type-DELETE-to-confirm dialog, then hard-delete via task.purge.

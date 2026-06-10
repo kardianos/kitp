@@ -88,6 +88,7 @@ export {
   notOf,
   emptyRoot,
   applySearchFilter,
+  parseIdList,
   SEARCH_FIELD_VALUES,
 } from './filter/predicate.js';
 export {

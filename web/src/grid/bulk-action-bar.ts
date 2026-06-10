@@ -640,13 +640,53 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
   /** A destination project was picked: fire `task.move` for every selected card. */
   private onMovePicked(projectId: bigint | null): void {
     if (projectId === null) return;
-    const ids = this.selectedIds();
+    const ids = this.moveRoots(this.selectedIds());
     if (ids.length === 0) return;
     this.burst(() => {
       for (const cardId of ids) {
         this.intent('bulkMove', { cardId, newProjectId: projectId });
       }
     });
+  }
+
+  /**
+   * Reduce a selection to the tasks that should actually be MOVED, dropping any
+   * selected card that's a `parent_task` descendant of another selected card.
+   *
+   * `task.move` cascades by default: moving a parent re-parents its whole
+   * sub-tree (walked via the `parent_task` self-ref). So if the user selects a
+   * parent AND one of its descendants, the parent's move already relocates the
+   * descendant — and the descendant's own (now redundant) move would then see
+   * itself already in the destination and fail `same_project`, aborting the
+   * whole batch (the coalesced grid re-query included → "Failed to load grid:
+   * aborted…"). Pruning descendants here keeps the move idempotent and leaves
+   * the cascade as the single mechanism for sub-tree moves.
+   *
+   * The `parent_task` graph is read from the loaded grid rows (`grid.tasks`);
+   * every selected id is one of those rows, so the chain among the selection is
+   * fully resolvable. The walk carries the depth-16 cap (matches the server
+   * cascade + CLAUDE.md card-tree cap) so a malformed parent_task cycle can't
+   * loop.
+   */
+  private moveRoots(ids: bigint[]): bigint[] {
+    if (ids.length <= 1) return ids;
+    const rows = (this.ctx.tree.at(['grid', 'tasks']).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
+    const parentOf = new Map<string, string>();
+    for (const r of rows) {
+      const pt = r.attributes?.['parent_task'];
+      if (typeof pt === 'bigint') parentOf.set(String(r.id), String(pt));
+      else if (typeof pt === 'number') parentOf.set(String(r.id), String(pt));
+    }
+    const selected = new Set(ids.map(String));
+    const descendsFromSelected = (id: bigint): boolean => {
+      let cur = parentOf.get(String(id));
+      for (let depth = 0; cur !== undefined && depth < 16; depth++) {
+        if (selected.has(cur)) return true;
+        cur = parentOf.get(cur);
+      }
+      return false;
+    };
+    return ids.filter((id) => !descendsFromSelected(id));
   }
 
   /* -------------------------------- purge --------------------------------- */

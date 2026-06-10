@@ -361,6 +361,38 @@ test('applySearchFilter: a non-numeric needle does NOT add an id leaf (stays the
   assert.equal(out.tree, undefined);
 });
 
+test('applySearchFilter: a comma-separated id list emits a single `id in [...]` leaf (no text OR)', () => {
+  const { applySearchFilter } = M;
+  const out = applySearchFilter('123,32,67534,433', ['title', 'description'], null);
+  // A multi-id list is unambiguously a set of ids: one `id in` leaf, no
+  // title/description OR. Rides `tree` (server uses tree when set).
+  assert.equal(out.where, undefined, 'id-list search rides on tree, not where[]');
+  assert.deepEqual(out.tree, { attr: 'id', op: 'in', values: ['123', '32', '67534', '433'] });
+});
+
+test('applySearchFilter: id list tolerates surrounding whitespace and dedupes', () => {
+  const { applySearchFilter } = M;
+  const out = applySearchFilter(' 12 , 34 , 12 ', ['title'], null);
+  assert.deepEqual(out.tree, { attr: 'id', op: 'in', values: ['12', '34'] });
+});
+
+test('applySearchFilter: a list with any non-numeric part is NOT an id list (plain text search)', () => {
+  const { applySearchFilter } = M;
+  const out = applySearchFilter('12,ab', ['title'], null);
+  assert.deepEqual(out.where, [{ attr: 'title', op: 'contains', value: '12,ab' }]);
+  assert.equal(out.tree, undefined);
+});
+
+test('parseIdList: single id, list, whitespace, and rejections', () => {
+  const { parseIdList } = M;
+  assert.deepEqual(parseIdList('123'), ['123']);
+  assert.deepEqual(parseIdList('1,2,3'), ['1', '2', '3']);
+  assert.deepEqual(parseIdList(' 1 , 2 '), ['1', '2']);
+  assert.equal(parseIdList('12a'), null);
+  assert.equal(parseIdList('1,,2'), null, 'empty member breaks the pattern');
+  assert.equal(parseIdList(''), null);
+});
+
 test('applySearchFilter: single-field search + structured predicate AND-fold on tree (where[] would be ignored)', () => {
   // The Go server uses `tree` when set and IGNORES `where[]`. So a structured
   // predicate (which must ride on tree) plus a single-field search needs the

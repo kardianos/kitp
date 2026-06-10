@@ -158,26 +158,47 @@ BEGIN
     -- Synthetic `id` attribute: match the card's OWN primary key (c.id), not an
     -- attribute_value. Powers the search bar's numeric "jump to #ID" — a bare
     -- NNNN query ORs an `{attr:'id', op:'eq', values:[NNNN]}` leaf in so the
-    -- card with that id surfaces regardless of its title. Equality only; a
-    -- non-numeric value can't be a card id, so it compiles to FALSE rather than
-    -- raising (keeps the OR'd title-search leaf as the live clause).
+    -- card with that id surfaces regardless of its title; a comma-separated list
+    -- emits `{attr:'id', op:'in', values:[…]}` to surface every listed card at
+    -- once. Equality + membership only; a non-numeric value can't be a card id,
+    -- so it's skipped (the leaf compiles to FALSE if nothing numeric remains)
+    -- rather than raising — keeping any OR'd title-search leaf as the live clause.
     IF _attr = 'id' THEN
-        IF _op NOT IN ('=', 'eq') THEN
-            RAISE EXCEPTION 'card_compile_predicate: id supports only equality, got %', _op;
-        END IF;
-        IF NOT (node ? 'values') AND node ? 'value' THEN
-            _v := node->'value';
-        ELSE
-            _v := COALESCE(node->'values'->0, 'null'::jsonb);
-        END IF;
-        IF jsonb_typeof(_v) = 'number'
-           OR (jsonb_typeof(_v) = 'string' AND (_v #>> '{}') ~ '^[0-9]+$') THEN
-            SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v) AS r(p, i);
+        IF _op IN ('=', 'eq') THEN
+            IF NOT (node ? 'values') AND node ? 'value' THEN
+                _v := node->'value';
+            ELSE
+                _v := COALESCE(node->'values'->0, 'null'::jsonb);
+            END IF;
+            IF jsonb_typeof(_v) = 'number'
+               OR (jsonb_typeof(_v) = 'string' AND (_v #>> '{}') ~ '^[0-9]+$') THEN
+                SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v) AS r(p, i);
+                RETURN jsonb_build_object(
+                    'sql', format('c.id = ($1->>%s)::bigint', _val_idx::text),
+                    'params', params);
+            END IF;
+            RETURN jsonb_build_object('sql', 'FALSE', 'params', params);
+        ELSIF _op = 'in' THEN
+            -- Match c.id against every NUMERIC value in the list. Non-numeric
+            -- entries are dropped; an empty / all-non-numeric list → FALSE.
+            _placeholders := ARRAY[]::text[];
+            FOR _v IN SELECT value FROM jsonb_array_elements(COALESCE(node->'values', '[]'::jsonb))
+            LOOP
+                IF jsonb_typeof(_v) = 'number'
+                   OR (jsonb_typeof(_v) = 'string' AND (_v #>> '{}') ~ '^[0-9]+$') THEN
+                    SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v) AS r(p, i);
+                    _placeholders := array_append(_placeholders,
+                        format('($1->>%s)::bigint', _val_idx::text));
+                END IF;
+            END LOOP;
+            IF array_length(_placeholders, 1) IS NULL THEN
+                RETURN jsonb_build_object('sql', 'FALSE', 'params', params);
+            END IF;
             RETURN jsonb_build_object(
-                'sql', format('c.id = ($1->>%s)::bigint', _val_idx::text),
+                'sql', format('c.id = ANY(ARRAY[%s]::bigint[])', array_to_string(_placeholders, ', ')),
                 'params', params);
         END IF;
-        RETURN jsonb_build_object('sql', 'FALSE', 'params', params);
+        RAISE EXCEPTION 'card_compile_predicate: id supports only equality or in, got %', _op;
     END IF;
 
     -- Resolve attr value_type for canonicalization. Missing attribute_def
