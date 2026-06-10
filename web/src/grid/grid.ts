@@ -67,6 +67,7 @@ import {
   removeTopLevelLeaf,
 } from '../filter/predicate.js';
 import { Popover } from '../ui/popover.js';
+import { rowLink, setRowLinkHref } from '../shell/popout.js';
 import {
   buildGridColumns,
   estimateTagPrefixColumnPx,
@@ -1221,7 +1222,9 @@ export class Grid extends CardListCore<GridConfig> {
    *  cell; the row's checkbox click handler is wired ONCE here (it reads the
    *  live data-card-id, never stale node state). */
   private makeRowMode(el: HTMLElement): void {
-    if (el.dataset.gridRow !== undefined && el.children.length === this.columns.length + 1) return;
+    // Children = leading select cell + one cell per column + the stretched row
+    // link (last child, covers the row for ⌘/middle/right-click → new tab).
+    if (el.dataset.gridRow !== undefined && el.children.length === this.columns.length + 2) return;
     delete el.dataset.gridGroupHeader;
     el.className = 'grid__row';
     el.dataset.gridRow = '';

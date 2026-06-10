@@ -705,8 +705,15 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
     this.selectedIndex = index;
     this.rememberCardId(card.id);
     publishTaskNav(this.ctx.tree, this.displayRows().map((c) => c.id));
-    const targetId = this.config.openTarget === 'parent' ? card.parent_card_id : card.id;
+    const targetId = this.openTargetId(card);
     if (targetId !== undefined) navigate(taskUrl(targetId.toString()));
+  }
+
+  /** The card a row OPENS — itself, or its parent when `openTarget: 'parent'`
+   *  (the comms screen opens the underlying task, not the comm row). Shared by
+   *  the in-place open and the pop-out link so both always agree on a target. */
+  protected openTargetId(card: CardWithAttrs): bigint | undefined {
+    return this.config.openTarget === 'parent' ? card.parent_card_id : card.id;
   }
 
   /* ---- bulk selection mode (the Grid's checkbox multi-select) -------------- */

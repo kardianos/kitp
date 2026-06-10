@@ -429,6 +429,10 @@ test('CardListBody/inbox: renders tasks in personal order with id + status badge
   assert.equal(rows.length, 3, 'three task rows');
   assert.equal(rows[0].dataset.cardId, '301');
   assert.equal(rows[0].querySelector('[data-role="id"]').textContent, '#301');
+  // The #id is a real link to the task, and a trailing pop-out icon links there
+  // too — both let the row open in a new tab without losing the in-place click.
+  assert.equal(rows[0].querySelector('[data-role="id"]').getAttribute('href'), '/task/301');
+  assert.equal(rows[0].querySelector('[data-role="popout"]').getAttribute('href'), '/task/301');
   assert.equal(rows[0].querySelector('[data-role="badge"]').textContent, 'Todo');
   assert.equal(rows[0].querySelector('[data-role="badge"]').dataset.phase, 'active');
   const cols = [...rows[0].querySelectorAll('[data-col]')].map((c) => `${c.dataset.col}=${c.textContent}`);

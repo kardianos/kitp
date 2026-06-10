@@ -14,6 +14,7 @@ import { Control } from '../core/control.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { asAttrId } from '../kanban/kanban-helpers.js';
 import { CardListCore, type CardListCoreConfig, titleOf, idKey } from './core.js';
+import { popoutIcon, idLink, setPopoutTarget } from '../shell/popout.js';
 
 const ROW_HEIGHT = 56;
 
@@ -132,8 +133,8 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
     main.className = 'card-list__main';
     const line1 = document.createElement('div');
     line1.className = 'card-list__line1';
-    const idEl = document.createElement('span');
-    idEl.className = 'card-list__id muted';
+    const idEl = idLink();
+    idEl.classList.add('card-list__id', 'muted');
     idEl.dataset.role = 'id';
     const subject = document.createElement('span');
     subject.className = 'card-list__subject';
@@ -170,6 +171,11 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
       el.append(delegate);
     }
 
+    const pop = popoutIcon();
+    pop.classList.add('card-list__popout');
+    pop.dataset.role = 'popout';
+    el.append(pop);
+
     const open = (): void => this.openRowIndex(Number(el.dataset.index ?? '-1'));
     this.listen(el, 'click', open);
     this.listen(el, 'keydown', (ev) => {
@@ -197,11 +203,24 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
     badge.textContent = info !== undefined ? info.label : '—';
     badge.style.display = badgeAttr === '' ? 'none' : '';
 
-    const idEl = el.querySelector('[data-role="id"]') as HTMLElement;
+    // The pop-out / id-link open the SAME card the row opens (its parent on the
+    // comms screen). No target → no link: hide the popout, drop the id href.
+    const target = this.openTargetId(card);
+    const idEl = el.querySelector('[data-role="id"]') as HTMLAnchorElement;
     if (this.config.showId === true) {
       idEl.textContent = `#${card.id.toString()}`;
+      if (target !== undefined) setPopoutTarget(idEl, target);
+      else idEl.removeAttribute('href');
       idEl.style.display = '';
     } else idEl.style.display = 'none';
+
+    const pop = el.querySelector('[data-role="popout"]') as HTMLAnchorElement | null;
+    if (pop) {
+      if (target !== undefined) {
+        setPopoutTarget(pop, target);
+        pop.style.display = '';
+      } else pop.style.display = 'none';
+    }
 
     const subject = el.querySelector('[data-role="subject"]') as HTMLElement;
     const flag = el.querySelector('[data-role="flag"]') as HTMLElement;

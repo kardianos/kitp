@@ -54,6 +54,7 @@ import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
 import { DropPlaceholder, computeDropTarget, applySettle, FlipAnimator } from '../ui/drag-placeholder.js';
 import { navigate, taskUrl } from '../shell/router.js';
 import { publishTaskNav } from '../shell/task-nav.js';
+import { popoutIcon, idLink, setPopoutTarget } from '../shell/popout.js';
 import { SPEC } from './specs.js';
 import {
   bucketByKey,
@@ -975,7 +976,15 @@ export class Kanban extends Control<KanbanConfig> {
     meta.className = 'card__meta muted';
     meta.dataset.role = 'meta';
 
-    el.append(grip, title, meta);
+    // Pop-out icon in the card's top-right corner (absolutely positioned via
+    // CSS, hover-revealed). The card is natively draggable; the icon's own
+    // draggable=false + click stopPropagation keep it click-to-open-new-tab and
+    // out of the way of the drag gesture. href set per fill.
+    const pop = popoutIcon();
+    pop.classList.add('card__popout');
+    pop.dataset.role = 'popout';
+
+    el.append(grip, title, meta, pop);
 
     this.listen(el, 'dragstart', (ev) => {
       // Read the CURRENT card id from the node — set per fill, never stale.
@@ -1053,10 +1062,13 @@ export class Kanban extends Control<KanbanConfig> {
     // Richer card (#25): #id · assignee · tag chips (resolved from the axis
     // lookups; falls back to ids until those lists land + the board re-renders).
     meta.replaceChildren();
-    const idEl = document.createElement('span');
-    idEl.className = 'card__id';
+    const idEl = idLink();
+    idEl.classList.add('card__id');
     idEl.textContent = `#${card.id.toString()}`;
+    setPopoutTarget(idEl, card.id);
     meta.append(idEl);
+    const pop = childByRole(el, 'popout');
+    if (pop) setPopoutTarget(pop as HTMLAnchorElement, card.id);
 
     const tags = card.attributes['tags'];
     if (Array.isArray(tags)) {
