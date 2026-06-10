@@ -32,8 +32,9 @@ import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
 import { navigate, taskUrl } from '../shell/router.js';
 import { publishTaskNav } from '../shell/task-nav.js';
 import { applySearchFilter, type Predicate, type WireNode } from '../filter/predicate.js';
-import { walkGrouped, type GroupAttr, type GroupItem } from '../filter/group-axis.js';
+import { walkGrouped, GROUP_EMPTY_KEY, type GroupAttr, type GroupItem } from '../filter/group-axis.js';
 import { applyPersonalReorder, move, planPersonalReorder, sortByPersonal, sortGrouped } from '../inbox/inbox-helpers.js';
+import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
 import { AUTH_USER_PATH, peekCurrentUserId, type AuthUser } from '../auth/auth-state.js';
 
 export type LabelMap = Record<string, string>;
@@ -244,6 +245,13 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
   protected rowHeight = 56;
   protected selectionAnchor: string | null = null;
 
+  /** Drag-to-reorder (personalSort lists): the gliding insertion bar, the id of
+   *  the row currently being dragged, and the live insertion slot under the
+   *  pointer. The grip is the drag source; the scroll viewport is the drop zone. */
+  private dropBar: DropPlaceholder | null = null;
+  private draggingRowId: string | null = null;
+  private dropSlot: number | null = null;
+
   /** The default body (cardlist) shares; the Grid overrides leafPrefix() →'grid'. */
   static override queries: readonly QueryBinding[] = buildCardListQueries('cardlist');
   static override actions: readonly ActionBinding[] = buildCardListActions('cardlist');
@@ -365,6 +373,102 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
       e.preventDefault();
       this.openRowIndex(this.selectedIndex);
     });
+    this.wireRowDrag();
+  }
+
+  /** Container-level drag-to-reorder wiring (personalSort lists only). The grip
+   *  on each row (see {@link makeRowGrip}) is the native-DnD source; the scroll
+   *  viewport is the drop zone: dragover glides the insertion bar to the gap
+   *  under the pointer, drop commits the move via {@link reorderTo}. Wired once;
+   *  reads the dragged id + live slot off instance state, never a captured row. */
+  private wireRowDrag(): void {
+    if (this.config.personalSort !== true) return;
+    this.dropBar = new DropPlaceholder(this.listEl);
+    this.onDestroy(() => this.dropBar?.destroy());
+    this.listen(this.listEl, 'dragover', (ev) => {
+      if (this.draggingRowId === null) return;
+      ev.preventDefault(); // mark the viewport a valid drop target
+      const t = this.dropTargetFor((ev as DragEvent).clientY, this.draggingRowId);
+      this.dropSlot = t.insertAt;
+      this.dropBar?.showAtY(t.y);
+    });
+    this.listen(this.listEl, 'drop', (ev) => {
+      if (this.draggingRowId === null) return;
+      ev.preventDefault();
+      if (this.dropSlot !== null) {
+        this.reorderTo(BigInt(this.draggingRowId), this.dropSlot);
+        this.dropBar?.pulse();
+        // Land the cursor on the row that just moved so Shift+J/K continues there.
+        const moved = this.draggingRowId;
+        const idx = this.displayRows().findIndex((r) => r.id.toString() === moved);
+        if (idx >= 0) {
+          this.selectedIndex = idx;
+          this.repaintSelection();
+          this.rememberCursor();
+        }
+      }
+      this.draggingRowId = null;
+      this.dropSlot = null;
+    });
+  }
+
+  /** Resolve the insertion point + bar-y for a pointer at `clientY`. Ungrouped:
+   *  the slot among all other rows. Grouped: the slot is taken among the dragged
+   *  row's OWN group only (so the bar + drop clamp to that group's span), then
+   *  offset by the group's start in the display order to land a full-list index. */
+  private dropTargetFor(clientY: number, draggedId: string): { insertAt: number; y: number } {
+    if (this.group === null) {
+      const t = computeDropTarget(this.listEl, clientY, draggedId, this.rowSelector());
+      return { insertAt: t.slot, y: t.y };
+    }
+    const display = this.displayRows();
+    const dragged = display.find((r) => r.id.toString() === draggedId);
+    const gk = dragged !== undefined ? this.groupKeyOf(dragged) : '';
+    const same = new Set(display.filter((r) => this.groupKeyOf(r) === gk).map((r) => r.id.toString()));
+    const lo = display.findIndex((r) => this.groupKeyOf(r) === gk);
+    const t = computeDropTarget(this.listEl, clientY, draggedId, this.rowSelector(), (id) => same.has(id));
+    return { insertAt: Math.max(0, lo) + t.slot, y: t.y };
+  }
+
+  /** Build a drag grip for a personalSort row — the native-DnD source. ensureRowMode
+   *  appends it (lifted above the stretched row link via z-index in styles.css).
+   *  Reads the live card id off the row's dataset at drag time, never captured:
+   *  the pooled node recycles to a different card on scroll. */
+  protected makeRowGrip(el: HTMLElement): HTMLElement {
+    const grip = document.createElement('span');
+    grip.className = 'card-list__grip';
+    grip.dataset.role = 'grip';
+    grip.textContent = '⋮⋮';
+    grip.setAttribute('aria-hidden', 'true');
+    grip.draggable = true;
+    // A click on the grip must never open the row (it sits over the row link).
+    this.listen(grip, 'click', (ev) => ev.stopPropagation());
+    this.listen(grip, 'dragstart', (ev) => {
+      const id = el.dataset.cardId;
+      // No linear order to rewrite while grouped, or a row with no id → no drag.
+      if (!this.reorderEnabled() || id === undefined || id === '') {
+        ev.preventDefault();
+        return;
+      }
+      this.draggingRowId = id;
+      el.classList.add('card-list__row--dragging');
+      const dt = (ev as DragEvent).dataTransfer;
+      if (dt) {
+        dt.effectAllowed = 'move';
+        dt.setData('text/plain', id); // textContent only — never markup
+        dt.setDragImage?.(el, 12, 12); // ghost the whole row, not the tiny grip
+      }
+    });
+    this.listen(grip, 'dragend', () => {
+      el.classList.remove('card-list__row--dragging');
+      // A drop already cleared these; this also covers a cancelled / outside drop.
+      if (this.draggingRowId !== null) {
+        this.draggingRowId = null;
+        this.dropSlot = null;
+        this.dropBar?.hide();
+      }
+    });
+    return grip;
   }
 
   protected coreHotkeys(): import('../core/hotkeys.js').HotkeyBinding[] {
@@ -648,26 +752,73 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
   }
 
   protected reorderSelected(delta: number): void {
-    if (this.config.personalSort !== true || this.group !== null) return;
+    if (!this.reorderEnabled()) return;
     const rows = this.displayRows();
     if (rows.length < 2 || this.selectedIndex < 0 || this.selectedIndex >= rows.length) return;
     const row = rows[this.selectedIndex];
     if (row === undefined) return;
-    const newIdx = move(rows.length, this.selectedIndex, delta);
+    let newIdx = move(rows.length, this.selectedIndex, delta);
+    if (this.group !== null) {
+      // Grouped → clamp the move to the row's own group: Shift+J/K reorders
+      // within the group and stops at its first / last row.
+      const [lo, hi] = this.groupSpan(rows, this.groupKeyOf(row));
+      newIdx = Math.max(lo, Math.min(hi - 1, newIdx));
+    }
     if (newIdx === this.selectedIndex) return;
-    const updates = planPersonalReorder(rows, row.id, newIdx);
-    const reordered = applyPersonalReorder(
-      (this.ctx.tree.at(this.rowsPath).peek<CardWithAttrs[]>() ?? []) as CardWithAttrs[],
-      row.id,
-      newIdx,
-    );
-    this.ctx.tree.at(this.rowsPath).set(reordered);
+    this.reorderTo(row.id, newIdx);
     this.selectedIndex = newIdx;
-    this.rebuildItems();
-    for (const u of updates) this.intent('reorderRow', { cardId: u.cardId, sortOrder: u.sortOrder });
     this.scrollSelectedIntoView();
     this.repaintSelection();
     this.rememberCursor();
+  }
+
+  /** Personal-sort reorder is available on any personalSort list. When grouped it
+   *  reorders WITHIN the dragged/selected row's group (a drop can't cross a group
+   *  boundary — that would mean changing the group attribute, not reordering).
+   *  Gates both the keyboard Shift+J/K path and the drag grip. */
+  protected reorderEnabled(): boolean {
+    return this.config.personalSort === true;
+  }
+
+  /** A card's group key under the active group axis, matching {@link walkGrouped}
+   *  (the unset / null / '' bucket → {@link GROUP_EMPTY_KEY}). '' when ungrouped. */
+  protected groupKeyOf(card: CardWithAttrs): string {
+    if (this.group === null) return '';
+    const v = card.attributes[this.group.attr];
+    return v === undefined || v === null || v === '' ? GROUP_EMPTY_KEY : String(v);
+  }
+
+  /** The half-open `[lo, hi)` span of `gk`'s rows within the display order. Groups
+   *  are contiguous in the display sequence, so this is one run. `[0, 0]` if none. */
+  protected groupSpan(rows: readonly CardWithAttrs[], gk: string): [number, number] {
+    let lo = -1;
+    let hi = -1;
+    for (let i = 0; i < rows.length; i++) {
+      if (this.groupKeyOf(rows[i]!) === gk) {
+        if (lo < 0) lo = i;
+        hi = i + 1;
+      }
+    }
+    return lo < 0 ? [0, 0] : [lo, hi];
+  }
+
+  /** Move `movedId` to `insertAt` (a slot among the OTHER rows — the same count
+   *  {@link computeDropTarget} returns and the keyboard path's clamped index):
+   *  optimistically re-stamp `personal_sort_order`, rebuild, and fire the minimal
+   *  `reorderRow` writes. Shared by Shift+J/K and the drag grip. */
+  protected reorderTo(movedId: bigint, insertAt: number): void {
+    if (!this.reorderEnabled()) return;
+    // Operate on the DISPLAY order (grouped or flat) for BOTH the plan and the
+    // re-stamp, so a grouped reorder re-canonicalises `personal_sort_order` to
+    // follow the grouped order — the moved row lands in its group, every other
+    // row keeps its display position. displayRows() is the same set as rowsPath
+    // (filtering is server-side), so writing it back loses nothing.
+    const rows = this.displayRows();
+    const updates = planPersonalReorder(rows, movedId, insertAt);
+    const reordered = applyPersonalReorder(rows, movedId, insertAt);
+    this.ctx.tree.at(this.rowsPath).set(reordered);
+    this.rebuildItems();
+    for (const u of updates) this.intent('reorderRow', { cardId: u.cardId, sortOrder: u.sortOrder });
   }
 
   protected repaintSelection(): void {

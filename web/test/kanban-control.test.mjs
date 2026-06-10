@@ -106,10 +106,9 @@ test('Kanban query lands tasks + milestones and buckets into columns', async () 
     ['201', '202'],
     'M1 bucketed its two tasks in sort_order',
   );
-  // The card's #id is a real link to its task, and the corner pop-out icon
-  // links there too — both open the task in a new tab.
-  assert.equal(m1Cards[0].querySelector('.card__id').getAttribute('href'), '/task/201');
-  assert.equal(m1Cards[0].querySelector('[data-role="popout"]').getAttribute('href'), '/task/201');
+  // The card carries a stretched <a> to its task so ⌘/middle/right-click opens
+  // a new tab anywhere on the card; a plain click still opens in-place.
+  assert.equal(m1Cards[0].querySelector('[data-role="rowlink"]').getAttribute('href'), '/task/201');
   const unset = cols[3];
   const unsetCards = visibleCards(unset);
   assert.deepEqual(

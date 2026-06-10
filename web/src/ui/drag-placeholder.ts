@@ -96,6 +96,7 @@ export function computeDropTarget(
   clientY: number,
   draggedId: string,
   itemSelector: string,
+  accept: (cardId: string) => boolean = () => true,
 ): DropTarget {
   const vrect = viewport.getBoundingClientRect?.();
   if (!vrect) return { slot: 0, y: 0 };
@@ -106,6 +107,9 @@ export function computeDropTarget(
   for (const node of nodes) {
     if (node.style?.display === 'none') continue;
     if (node.dataset?.cardId === draggedId) continue;
+    // Group-scoped drag (grouped inbox): only same-group rows count, so the slot
+    // + bar clamp to the group's span — a drop never crosses a group boundary.
+    if (!accept(node.dataset?.cardId ?? '')) continue;
     const rect = node.getBoundingClientRect?.();
     if (!rect || (rect.top === 0 && rect.bottom === 0)) continue;
     const topY = rect.top - vrect.top + scrollTop;

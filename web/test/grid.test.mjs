@@ -276,11 +276,11 @@ test('Grid: tasks query lands and rows render in declared column order', async (
   // leading select cell precedes the 11 data cells).
   const cells = rows[0].querySelectorAll('[data-grid-col]');
   assert.equal(cells.length, 12, 'a select cell plus eleven data cells in the first row');
-  // The #id is rendered as a real link (id-link) to the row's task, with a
-  // hover-revealed pop-out icon beside it — assert on the link's own text.
   const idCell = cells.find((c) => c.dataset.gridCol === 'id');
-  assert.equal(idCell.querySelector('.id-link').textContent, '#201');
-  assert.equal(idCell.querySelector('.id-link').getAttribute('href'), '/task/201');
+  assert.equal(idCell.textContent, '#201');
+  // The row carries a stretched <a> to its task so ⌘/middle/right-click opens a
+  // new tab anywhere on the row; a plain click still opens in-place.
+  assert.equal(rows[0].querySelector('.row-link').getAttribute('href'), '/task/201');
   const titleCell = cells.find((c) => c.dataset.gridCol === 'attributes.title');
   assert.equal(titleCell.textContent, 'Wire pickers');
 });

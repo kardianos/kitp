@@ -429,10 +429,9 @@ test('CardListBody/inbox: renders tasks in personal order with id + status badge
   assert.equal(rows.length, 3, 'three task rows');
   assert.equal(rows[0].dataset.cardId, '301');
   assert.equal(rows[0].querySelector('[data-role="id"]').textContent, '#301');
-  // The #id is a real link to the task, and a trailing pop-out icon links there
-  // too — both let the row open in a new tab without losing the in-place click.
-  assert.equal(rows[0].querySelector('[data-role="id"]').getAttribute('href'), '/task/301');
-  assert.equal(rows[0].querySelector('[data-role="popout"]').getAttribute('href'), '/task/301');
+  // The row carries a stretched <a> to its task so ⌘/middle/right-click opens a
+  // new tab anywhere on the row; a plain click still opens in-place.
+  assert.equal(rows[0].querySelector('[data-role="rowlink"]').getAttribute('href'), '/task/301');
   assert.equal(rows[0].querySelector('[data-role="badge"]').textContent, 'Todo');
   assert.equal(rows[0].querySelector('[data-role="badge"]').dataset.phase, 'active');
   const cols = [...rows[0].querySelectorAll('[data-col]')].map((c) => `${c.dataset.col}=${c.textContent}`);
@@ -462,6 +461,82 @@ test('CardListBody/inbox: Shift+j reorder fires user_card_sort.set + optimistica
   await settle(dispatcher);
   assert.ok(h.sortSets.length >= 1, 'a user_card_sort.set fired');
   assert.equal(filledRows(c)[0].dataset.cardId, '302', '302 is now on top (301 moved down)');
+});
+
+test('CardListBody/inbox: dragging a row by its grip reorders it (fires user_card_sort.set)', async () => {
+  const h = inboxHarness();
+  const { dispatcher, api } = bootInbox(h.transport);
+  const { c } = mountInbox(api);
+  await settle(dispatcher);
+  const rows = filledRows(c);
+  assert.equal(rows[1].dataset.cardId, '302', 'task 302 starts in the second slot');
+  const grip = rows[1].querySelector('[data-role="grip"]');
+  assert.ok(grip, 'a drag grip is rendered on each personal-sort row');
+  // Native DnD: grab 302 by its grip, drag over the list (shim has no layout, so
+  // computeDropTarget resolves to slot 0 = top), and drop.
+  const listEl = c.el.querySelector('[data-card-list-rows]');
+  const drag = (type, extra = {}) => {
+    const ev = document.createEvent('Event');
+    ev.initEvent(type, true, true);
+    return Object.assign(ev, extra);
+  };
+  grip.dispatchEvent(drag('dragstart'));
+  assert.ok(rows[1].classList.contains('card-list__row--dragging'), 'the dragged row dims');
+  listEl.dispatchEvent(drag('dragover', { clientY: 0 }));
+  listEl.dispatchEvent(drag('drop', { clientY: 0 }));
+  await settle(dispatcher);
+  assert.ok(h.sortSets.length >= 1, 'a user_card_sort.set fired from the drop');
+  assert.equal(filledRows(c)[0].dataset.cardId, '302', '302 dropped onto the top slot');
+});
+
+test('CardListBody/inbox: grouped Shift+J/K reorders WITHIN the group and stops at its boundary', async () => {
+  const h = inboxHarness();
+  const { dispatcher, api } = bootInbox(h.transport);
+  const { c, tree } = mountInbox(api);
+  await settle(dispatcher);
+  // Group by assignee: alice = {301, 303}, bob = {302}. Display clusters alice
+  // (by personal sort: 301, 303) then bob (302).
+  tree.at(['screen', 'groupAxis']).set({ attr: 'assignee', lookup: 'persons' });
+  await settle(dispatcher);
+  assert.deepEqual(filledRows(c).map((r) => r.dataset.cardId), ['301', '303', '302'], 'grouped order');
+  // Cursor onto 303 (alice's 2nd), then move it UP — it reorders within alice.
+  assert.ok(runHotkey(c, 'Next'), 'Next moves the cursor');
+  assert.ok(runHotkey(c, 'Move up'), 'Move up present when grouped');
+  await settle(dispatcher);
+  assert.ok(h.sortSets.length >= 1, 'a user_card_sort.set fired');
+  assert.deepEqual(filledRows(c).map((r) => r.dataset.cardId), ['303', '301', '302'], '303 rose within alice');
+  // 301 is now alice's last row. Trying to move it DOWN must not cross into bob.
+  const before = h.sortSets.length;
+  assert.ok(runHotkey(c, 'Next'), 'Next → cursor onto 301 (alice last)');
+  assert.ok(runHotkey(c, 'Move down'), 'Move down present');
+  await settle(dispatcher);
+  assert.equal(h.sortSets.length, before, 'no write — the move is clamped at the group boundary');
+  assert.deepEqual(filledRows(c).map((r) => r.dataset.cardId), ['303', '301', '302'], 'order unchanged (no cross-group)');
+});
+
+test('CardListBody/inbox: a grouped row still drags by its grip (reorders within its group)', async () => {
+  const h = inboxHarness();
+  const { dispatcher, api } = bootInbox(h.transport);
+  const { c, tree } = mountInbox(api);
+  await settle(dispatcher);
+  tree.at(['screen', 'groupAxis']).set({ attr: 'assignee', lookup: 'persons' });
+  await settle(dispatcher);
+  const rows = filledRows(c); // [301, 303, 302]
+  const grip = rows[1].querySelector('[data-role="grip"]'); // 303 (alice's 2nd)
+  assert.ok(grip, 'grip is rendered on grouped rows too');
+  const listEl = c.el.querySelector('[data-card-list-rows]');
+  const drag = (type, extra = {}) => {
+    const ev = document.createEvent('Event');
+    ev.initEvent(type, true, true);
+    return Object.assign(ev, extra);
+  };
+  grip.dispatchEvent(drag('dragstart'));
+  listEl.dispatchEvent(drag('dragover', { clientY: 0 }));
+  listEl.dispatchEvent(drag('drop', { clientY: 0 }));
+  await settle(dispatcher);
+  assert.ok(h.sortSets.length >= 1, 'the grouped drop fired a user_card_sort.set');
+  // 303 stays in alice (its assignee is unchanged) — never lands in bob's group.
+  assert.deepEqual(filledRows(c).map((r) => r.dataset.cardId), ['303', '301', '302'], '303 reordered within alice');
 });
 
 test('CardListBody/inbox: mine_only ANDs assignee = the signed-in user id', async () => {

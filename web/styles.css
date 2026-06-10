@@ -360,90 +360,36 @@ select optgroup {
 }
 
 /* ==========================================================================
-   Pop-out affordances — open a card's task in a NEW tab. Two real <a> links
-   on the /task/:id route: the #id itself is a link (.id-link), plus a dedicated
-   ↗ icon (.popout). Both are pointer conveniences hover-revealed on dense rows
-   (keyboard opens in-place via the row's Enter / `o`); on touch (no hover) the
-   icon is always shown.
+   Stretched row link — a real <a> covering the whole row / card so the browser
+   gives ⌘/Ctrl-click, middle-click and right-click → "Open in new tab/window"
+   for free, anywhere on the row. A plain left-click is handled in-place (the
+   anchor preventDefaults and the click bubbles to the row's own open handler).
+   It sits UNDER the row's interactive controls, which are lifted above it with
+   z-index so they keep their own clicks. The owning row/card is already an
+   absolutely-positioned virtualList slot, so this anchors to it; `isolation`
+   scopes the z-index battle to one row.
    ========================================================================== */
-
-/* The #id rendered as a link: reads as the plain id text, not a default link. */
-.id-link {
-  color: inherit;
-  text-decoration: none;
-  cursor: pointer;
-}
-.id-link:hover {
-  text-decoration: underline;
-}
-
-/* The dedicated ↗ icon — shared look; per-surface rules below place + size it. */
-.popout {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  color: var(--color-muted);
-  text-decoration: none;
-  line-height: 1;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  opacity: 0;
-  transition:
-    opacity var(--duration-fast) var(--ease-standard),
-    background var(--duration-fast) var(--ease-standard),
-    color var(--duration-fast) var(--ease-standard);
-}
-.popout:hover {
-  background: var(--color-fill-hover);
-  color: var(--color-fg);
-}
-.popout:focus-visible {
-  outline: 2px solid var(--color-focus-ring);
-  outline-offset: 1px;
-  opacity: 1;
-}
-@media (hover: none) {
-  .popout {
-    opacity: 1;
-  }
-}
-
-/* Grid — beside the #id in the id cell, so it shares the id's visibility
-   (nothing is frozen under horizontal scroll). */
-.grid__popout {
-  width: 1.25rem;
-  align-self: stretch;
-  font-size: var(--text-sm);
-}
-.grid__row:hover .grid__popout,
-.grid__row:focus-within .grid__popout {
-  opacity: 1;
-}
-
-/* Kanban — top-right corner of the card (grip is bottom-left, title up top). */
-.card__popout {
+.row-link {
   position: absolute;
-  top: var(--space-1);
-  right: var(--space-1);
-  width: 1.5rem;
-  height: 1.5rem;
-  font-size: var(--text-sm);
+  inset: 0;
+  z-index: 1;
+  /* No text / box of its own — it is a transparent click surface. */
+  display: block;
+  text-decoration: none;
+  color: inherit;
 }
-.card:hover .card__popout,
-.card:focus-within .card__popout {
-  opacity: 1;
+.grid__row,
+.card-list__row,
+.card {
+  isolation: isolate;
 }
-
-/* List — trailing item on the row; reserves its slot so reveal never shifts. */
-.card-list__popout {
-  width: 1.75rem;
-  height: 1.75rem;
-  font-size: var(--text-md);
-}
-.card-list__row:hover .card-list__popout,
-.card-list__row:focus-within .card-list__popout {
-  opacity: 1;
+/* Interactive controls must stay above the stretched link to receive clicks. */
+.grid__cell.grid-select,
+.grid__cell--editable,
+.card-list__delegate,
+.card-list__grip {
+  position: relative;
+  z-index: 2;
 }
 /* Notification bell + its count badge (new received comms). */
 .iconbtn--bell {
@@ -8478,6 +8424,33 @@ textarea.task-comms__form-input {
   border-color: var(--color-accent-ring);
   background: var(--color-surface-raised);
   box-shadow: inset 2px 0 0 0 var(--color-accent);
+}
+/* Drag grip (personal-sort reorder, leftmost). Always visible but muted so the
+   affordance is discoverable; brightens on row hover. cursor:grab → grabbing. */
+.card-list__grip {
+  flex: 0 0 auto;
+  min-width: 10px;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-h);
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  line-height: 1;
+  letter-spacing: -2px;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.card-list__row:hover .card-list__grip {
+  color: var(--color-fg);
+}
+.card-list__grip:active {
+  cursor: grabbing;
+}
+/* The row being dragged dims so the gliding insertion bar reads as the target. */
+.card-list__row--dragging {
+  opacity: 0.4;
 }
 
 /* Phase-toned status badge (lead element). */

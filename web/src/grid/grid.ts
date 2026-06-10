@@ -1283,6 +1283,15 @@ export class Grid extends CardListCore<GridConfig> {
       }
       el.append(cell);
     }
+
+    // Stretched full-row link (CSS: position:absolute; inset:0; under the cells
+    // but over the row background). A plain click bubbles to the row's open
+    // handler below; a modified / middle click opens the task in a new tab
+    // natively. Appended LAST so fillRow's cell loop (offset by the select cell)
+    // never indexes it; href set per fill. The select + editable cells lift
+    // above it via z-index (styles.css) so they still receive their own clicks.
+    const link = rowLink();
+    el.append(link);
   }
 
   /** Reconfigure a pooled node to GROUP-HEADER mode: a single full-width header
@@ -1353,6 +1362,13 @@ export class Grid extends CardListCore<GridConfig> {
       const cell = cells[i + 1] as HTMLElement | undefined;
       if (!cell) continue;
       this.fillCell(cell, row, this.columns[i]!);
+    }
+    // Last child is the stretched row link — point it at the row's open target.
+    const link = el.querySelector('.row-link') as HTMLAnchorElement | null;
+    if (link) {
+      const target = this.openTargetId(row);
+      if (target !== undefined) setRowLinkHref(link, target);
+      else link.removeAttribute('href');
     }
   }
 
