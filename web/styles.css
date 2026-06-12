@@ -1417,11 +1417,17 @@ select optgroup {
   min-width: 0;
   overflow: hidden;
   align-items: center;
-  gap: var(--space-h);
+  gap: var(--space-1x);
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   font-variant-numeric: var(--nums-tabular);
   color: var(--color-muted);
+}
+/* Optical alignment: the id's digit ink sits ~1px higher than the priority
+   bars / tag chips beside it (all three boxes ARE flex-centered) — nudge
+   the number down so the row reads as one line. */
+.card__meta .card__id {
+  transform: translateY(1px);
 }
 /* Card richness (#25): tag chips on each card. */
 .card__tag {
