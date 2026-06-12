@@ -27,7 +27,13 @@ before(async () => {
   const { window } = new JSDOM('<!doctype html><html><body></body></html>');
   globalThis.window = window;
   globalThis.document = window.document;
-  globalThis.navigator = window.navigator;
+  // Node ≥21 exposes globalThis.navigator as getter-only; plain assignment
+  // throws. defineProperty replaces it on any Node version.
+  Object.defineProperty(globalThis, 'navigator', {
+    value: window.navigator,
+    writable: true,
+    configurable: true,
+  });
 
   await esbuild.build({
     entryPoints: {
