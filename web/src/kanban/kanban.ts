@@ -81,11 +81,15 @@ import { icon } from '../ui/icons.js';
 import { statusIcon } from '../ui/status-icon.js';
 /**
  * Fixed virtual-list row height (px) for a kanban card slot: the compact card
- * (grip + title + meta, ~56px) plus the inter-card gap baked in. The card fills
- * the slot with a bottom margin for the visual gap; the virtualList tiles slots
- * by this exact height. Mirror in `.col__body .card` / slot height in CSS.
+ * (grip + title + meta) plus the inter-card gap baked in. The virtualList
+ * tiles slots by this exact pitch; buildCardShell shrinks the visible card to
+ * HEIGHT − GAP (overriding the slot's inline 64px) so adjacent cards show a
+ * true Linear-style gap. test/kanban-card-layout.test.mjs pins the visible
+ * height.
  */
 const KANBAN_CARD_HEIGHT = 64;
+/** Visible gap (px) between stacked cards, inside each slot's pitch. */
+const KANBAN_CARD_GAP = 8;
 
 /** The default axis when no GROUP is picked: group columns by milestone. The
  *  attr is shared with the filter bar (via screen-resolve) so the board's
@@ -976,6 +980,10 @@ export class Kanban extends Control<KanbanConfig> {
     el.dataset.kanbanCard = '';
     el.draggable = true;
     el.tabIndex = 0;
+    // The slot el IS the card: shrink it inside the fixed slot pitch so
+    // stacked cards show a real gap (the virtualList's inline height would
+    // otherwise make borders abut edge-to-edge).
+    el.style.height = `${KANBAN_CARD_HEIGHT - KANBAN_CARD_GAP}px`;
 
     const grip = document.createElement('span');
     grip.className = 'card__grip muted';

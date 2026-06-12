@@ -1265,15 +1265,13 @@ select optgroup {
   min-height: var(--space-12);
   max-height: calc(100vh - 16rem);
 }
-/* Each card is a virtualList slot (64px tall, positioned absolutely + sized
-   inline by the list). The vertical gap between cards is created by the card's
-   own bottom margin-equivalent: we shrink the visible card inside the slot via
-   padding so adjacent slots show a clear hairline gap. */
+/* Each card is a virtualList slot (positioned absolutely + sized inline by
+   the list at the 64px pitch). The vertical gap between stacked cards is
+   baked into the slot pitch: buildCardShell (kanban.ts) shrinks the visible
+   card to pitch − KANBAN_CARD_GAP via inline height, which inline-sizing
+   means CSS could never do from here. This rule owns the side insets only. */
 .col__body .card {
-  /* The visible card sits inside the 64px slot with a bottom gutter so stacked
-     cards read as separated tiles (the recycling slots themselves abut). */
   margin: 0 var(--space-2);
-  height: calc(100% - var(--space-2));
 }
 .col__empty {
   padding: var(--space-5) var(--space-2);
