@@ -1,12 +1,11 @@
 /* kitp web — hand-authored CSS, no Tailwind, no build.
  *
  * Implements web/design/DESIGN-LANGUAGE.md against the designer-owned token
- * layer (web/design/tokens.css): a One-UI-calm CHROME + Ubiquiti-dense DATA.
- * The governing rule is "clean chrome, dense data" — two density registers,
- * one language:
+ * layer (web/design/tokens.css): a Linear-inspired compact language — one
+ * tight surface, two density registers a half-step apart:
  *
  *   COMFORTABLE chrome  — AppShell topbar/rail/user-chip, ProjectList cards,
- *     the create/edit dialog, primary (pill) buttons, search Field.
+ *     the create/edit dialog, rounded-rect buttons, search Field.
  *   COMPACT data        — ScreenFilterBar, Kanban columns + task cards,
  *     hairline-bordered, tabular-nums, tight but never cramped.
  *

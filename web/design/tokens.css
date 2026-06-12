@@ -2,11 +2,10 @@
    kitp web — design tokens. Hand-authored, no build step, no Tailwind.
    styles.css imports this and references var(--…) only.
 
-   DESIGN LANGUAGE (web/design/DESIGN-LANGUAGE.md): a blend of
-   Samsung One UI (calm, rounded, spacious, friendly — for the CHROME) and
-   Ubiquiti / UniFi (cool-neutral, hairline-crisp, one confident accent,
-   dense-but-elegant DATA). The governing rule is **clean chrome, dense
-   data**: two density registers, one language.
+   DESIGN LANGUAGE (web/design/DESIGN-LANGUAGE.md): Linear-inspired —
+   compact, typographically confident (Inter, 14px body), hairline-crisp,
+   one confident indigo accent, colorful phase iconography, fast snappy
+   motion. Two density registers a half-step apart, one language.
 
    This is a DELIBERATE divergence from the Svelte client's app.css tokens
    (which this file used to byte-match). The web client now owns its own
