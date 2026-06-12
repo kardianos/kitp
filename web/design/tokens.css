@@ -230,15 +230,19 @@
   --z-help: 70;          /* keyboard-help overlay — absorbs all input */
 
   /* ------------------------------------------------------------------------
-     MOTION — subtle, smooth, One-UI-calm. Zeroed under reduced-motion.
+     MOTION — fast, snappy, Linear-feel. Zeroed under reduced-motion.
+     micro = hover/press feedback; fast = popover/menu enter; base =
+     screen mount / modal.
      ---------------------------------------------------------------------- */
-  --duration-fast: 120ms;
-  --duration-base: 200ms;
+  --duration-micro: 70ms;
+  --duration-fast: 100ms;
+  --duration-base: 160ms;
   --duration-slow: 280ms;
   --duration-flip: 420ms;   /* kanban card reflow */
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1.1); /* One-UI gentle overshoot */
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1.1); /* gentle overshoot */
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* snappy decel — enters */
 
   /* ------------------------------------------------------------------------
      LAYOUT CONSTANTS (the shell's fixed dimensions)
@@ -413,6 +417,7 @@ body {
    everywhere with no per-component code. */
 @media (prefers-reduced-motion: reduce) {
   :root {
+    --duration-micro: 0ms;
     --duration-fast: 0ms;
     --duration-base: 0ms;
     --duration-slow: 0ms;

@@ -628,6 +628,12 @@ export class AppShell extends Control<AppShellConfig> {
       bodyControl = this.renderRoute(route, boardConfig, outlet);
       // Make the freshly-mounted body the active hotkey scope (boot wiring).
       this.onBodyMount?.(bodyControl);
+      // Screen-mount transition: re-add the enter class so the new body rises
+      // in (the forced reflow restarts the CSS animation; reduced-motion zeroes
+      // its duration, and jsdom ignores animations entirely).
+      outlet.classList.remove('shell__outlet--enter');
+      void outlet.offsetWidth;
+      outlet.classList.add('shell__outlet--enter');
     }, 'shell.outlet');
 
     // DEFAULT PROJECT scope-section visibility — REACTIVE on `scope.projectId`
