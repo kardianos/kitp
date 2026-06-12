@@ -72,6 +72,14 @@ body {
   border-radius: var(--radius-md);
 }
 
+/* Programmatic-only focus receivers (tabindex="-1": the kanban board, grid
+   body, task-detail root, …) exist to catch hotkeys after a keyboard move —
+   they paint their own cursor/row indicators, and they can never be reached
+   with Tab, so the browser ring around the whole container is pure noise. */
+:where([tabindex="-1"]):focus-visible {
+  outline: none;
+}
+
 /* Native <select> dropdown popups follow `color-scheme` (set per theme in
    tokens.css). But an author-styled <select> (custom background) makes
    Chromium paint the popup's FIRST frame with the light UA default before the
