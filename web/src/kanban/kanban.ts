@@ -77,6 +77,7 @@ import {
   topLevelPhases,
 } from '../filter/predicate.js';
 
+import { icon } from '../ui/icons.js';
 /**
  * Fixed virtual-list row height (px) for a kanban card slot: the compact card
  * (grip + title + meta, ~56px) plus the inter-card gap baked in. The card fills
@@ -965,7 +966,7 @@ export class Kanban extends Control<KanbanConfig> {
 
     const grip = document.createElement('span');
     grip.className = 'card__grip muted';
-    grip.textContent = '⋮⋮';
+    grip.append(icon('grip-vertical', 14));
     grip.setAttribute('aria-hidden', 'true');
 
     const title = document.createElement('div');

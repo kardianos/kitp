@@ -75,6 +75,7 @@ import type { AttachmentsSection } from './attachments-section.js';
 import type { TagsEditor } from './tags-editor.js';
 import type { RelatedTasksPanel } from './related-tasks-panel.js';
 import type { PostChunk } from './upload.js';
+import { icon } from '../ui/icons.js';
 
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
@@ -334,7 +335,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     back.dataset.taskBack = '';
     back.title = 'Back to list (q or Esc)';
     back.setAttribute('aria-label', 'Back to list');
-    back.textContent = '‹ Back to list';
+    back.append(icon('chevron-left', 14), document.createTextNode(' Back to list'));
     this.listen(back, 'click', () => this.goBack());
 
     const navRight = document.createElement('div');
@@ -362,7 +363,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     refresh.dataset.taskRefresh = '';
     refresh.title = 'Check for new comms & comments';
     refresh.setAttribute('aria-label', 'Refresh comms and comments');
-    refresh.textContent = '↻ Refresh';
+    refresh.append(icon('refresh-cw', 14), document.createTextNode(' Refresh'));
     this.listen(refresh, 'click', () => this.refreshFeeds());
     this.refreshBtn = refresh;
 
@@ -376,7 +377,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     actions.title = 'More actions';
     actions.setAttribute('aria-label', 'More actions');
     actions.setAttribute('aria-haspopup', 'menu');
-    actions.textContent = '⋯';
+    actions.append(icon('ellipsis'));
     actions.style.display = 'none';
     this.listen(actions, 'click', () => this.toggleActionsMenu(actions));
 
@@ -441,7 +442,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     descEdit.dataset.taskDescEdit = '';
     descEdit.title = 'Edit description';
     descEdit.setAttribute('aria-label', 'Edit description');
-    descEdit.textContent = '✎';
+    descEdit.append(icon('pencil', 14));
     this.listen(descEdit, 'click', () => this.startDescriptionEdit());
     this.descEditBtn = descEdit;
 
@@ -940,7 +941,10 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     const fresh = this.pollNewCount > 0;
     btn.classList.toggle('task-detail__refresh--new', fresh);
     btn.classList.toggle('task-detail__refresh--synced', !fresh);
-    btn.textContent = fresh ? `↻ ${this.pollNewCount} new` : '↻ Refresh';
+    btn.replaceChildren(
+      icon('refresh-cw', 14),
+      document.createTextNode(fresh ? ` ${this.pollNewCount} new` : ' Refresh'),
+    );
     btn.title = fresh
       ? `${this.pollNewCount} new comm${this.pollNewCount === 1 ? '' : 's'} / comment${this.pollNewCount === 1 ? '' : 's'} — click to load`
       : 'Up to date · click to check for new comms & comments';
@@ -1158,7 +1162,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     edit.dataset.taskTitleEdit = '';
     edit.title = 'Edit title';
     edit.setAttribute('aria-label', 'Edit title');
-    edit.textContent = '✎';
+    edit.append(icon('pencil', 14));
     this.listen(edit, 'click', () => this.startTitleEdit());
     this.titleHost.append(h1, edit);
   }
@@ -1470,7 +1474,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     prev.type = 'button';
     prev.className = 'task-detail__nav-btn';
     prev.dataset.taskNavPrev = '';
-    prev.textContent = '‹';
+    prev.append(icon('chevron-left', 14));
     prev.title = 'Previous task ([)';
     prev.setAttribute('aria-label', 'Previous task');
     prev.disabled = idx === 0;
@@ -1485,7 +1489,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     next.type = 'button';
     next.className = 'task-detail__nav-btn';
     next.dataset.taskNavNext = '';
-    next.textContent = '›';
+    next.append(icon('chevron-right', 14));
     next.title = 'Next task (])';
     next.setAttribute('aria-label', 'Next task');
     next.disabled = idx === list.length - 1;

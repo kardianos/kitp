@@ -48,6 +48,7 @@ import {
   type TagRemoveOutput,
 } from './attachment-specs.js';
 
+import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                  */
 /* -------------------------------------------------------------------------- */
@@ -332,7 +333,7 @@ export class TagsEditor extends Control<TagsEditorConfig> {
     remove.className = 'tag-chip__remove';
     remove.dataset.tagRemove = id.toString();
     remove.setAttribute('aria-label', `Remove ${this.chipLabelFor(id, slotKey)}`);
-    remove.textContent = '×';
+    remove.append(icon('x', 12));
     remove.disabled = this.busy;
     this.listen(remove, 'click', () => this.removeTag(id));
     chip.append(remove);

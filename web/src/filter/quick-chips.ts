@@ -41,6 +41,7 @@ import {
   removeTopLevelLeaf,
 } from './predicate.js';
 
+import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Config + the pinned chip set.                                              */
 /* -------------------------------------------------------------------------- */
@@ -192,7 +193,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
     const caret = document.createElement('span');
     caret.className = 'filterbar__chip-caret';
     caret.setAttribute('aria-hidden', 'true');
-    caret.textContent = '▾';
+    caret.append(icon('chevron-down', 14));
     trigger.append(caret);
 
     // The clear-X — hidden until the chip has an active leaf. Its own button so
@@ -202,7 +203,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
     clearEl.className = 'filterbar__chip-clear';
     clearEl.dataset.quickChipClear = def.attr;
     clearEl.setAttribute('aria-label', `Clear ${def.label} filter`);
-    clearEl.textContent = '×';
+    clearEl.append(icon('x', 12));
     clearEl.style.display = 'none';
     trigger.append(clearEl);
 

@@ -36,6 +36,7 @@ import { splitPath } from '../core/data.js';
 import { Combobox, type ComboboxOption } from './combobox.js';
 import { CARD_SEARCH_SPEC, type CardSearchOutput } from './specs.js';
 
+import { icon } from './icons.js';
 /** A pinned quick-pick (e.g. "Self") always shown atop the single-mode list. */
 export type RefPinnedOption = ComboboxOption<bigint>;
 
@@ -283,7 +284,7 @@ export class RefPicker extends Control<RefPickerConfig> {
         remove.className = 'kf-refpicker__chip-remove';
         remove.dataset.rpRemove = String(id);
         remove.setAttribute('aria-label', `Remove ${this.labelFor(id)}`);
-        remove.textContent = '×';
+        remove.append(icon('x', 14));
         this.listen(remove, 'click', () => this.removeValue(id));
         chip.appendChild(remove);
       }

@@ -90,6 +90,7 @@ import type { AttrSchema } from '../filter/attribute-schema.js';
 import type { RefPicker } from '../ui/ref-picker.js';
 import type { DatePicker } from '../ui/datepicker.js';
 
+import { setIcon, icon } from '../ui/icons.js';
 /**
  * Fixed virtual-list row height (px). Matches the compact grid row: one line of
  * 13px data text at 1.3 leading + 2 × --pad-compact-y (0.375rem = 6px) padding,
@@ -879,7 +880,7 @@ export class Grid extends CardListCore<GridConfig> {
         cell.setAttribute('aria-sort', 'none');
       } else {
         cell.dataset.sortDir = dir;
-        arrow.textContent = dir === 'asc' ? '↑' : '↓';
+        setIcon(arrow, dir === 'asc' ? 'arrow-up' : 'arrow-down', 12);
         cell.setAttribute('aria-sort', dir === 'asc' ? 'ascending' : 'descending');
       }
     }
@@ -998,7 +999,7 @@ export class Grid extends CardListCore<GridConfig> {
       funnel.dataset.gridColFilter = col.attrName;
       funnel.setAttribute('aria-label', `Filter ${col.label}`);
       funnel.title = `Filter ${col.label}`;
-      funnel.textContent = '⏷';
+      funnel.append(icon('chevron-down', 12));
       cell.append(funnel);
       this.headerFilters.push({ funnel, attr: col.attrName });
       this.buildColumnFilterPopover(col, funnel);
@@ -1325,7 +1326,7 @@ export class Grid extends CardListCore<GridConfig> {
       el.dataset.groupKey = item.key;
       el.dataset.groupDir = this.groupDir;
       const [arrow, label, count] = el.children as unknown as HTMLElement[];
-      if (arrow) arrow.textContent = this.groupDir === 'asc' ? '↑' : '↓';
+      if (arrow) setIcon(arrow, this.groupDir === 'asc' ? 'arrow-up' : 'arrow-down', 12);
       if (label) label.textContent = item.label;
       if (count) count.textContent = `· ${item.count}`;
     } else {

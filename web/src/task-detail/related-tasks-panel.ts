@@ -36,6 +36,7 @@ import { splitPath } from '../core/data.js';
 import { navigate, taskUrl } from '../shell/router.js';
 import type { RefPicker } from '../ui/ref-picker.js';
 
+import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                  */
 /* -------------------------------------------------------------------------- */
@@ -514,7 +515,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
     remove.dataset.relatedRemoveParent = '';
     remove.title = 'Remove parent (make standalone)';
     remove.setAttribute('aria-label', 'Remove parent');
-    remove.textContent = '×';
+    remove.append(icon('x', 14));
     remove.disabled = this.busy;
     this.listen(remove, 'click', () => this.removeParent());
     row.append(remove);
@@ -660,7 +661,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
     unlink.dataset.relatedUnlinkChild = child.id.toString();
     unlink.title = "Unlink (clears child's parent)";
     unlink.setAttribute('aria-label', 'Unlink child');
-    unlink.textContent = '×';
+    unlink.append(icon('x', 14));
     this.listen(unlink, 'click', () => this.unlinkChild(child.id));
     li.append(unlink);
 

@@ -67,6 +67,7 @@ import {
   topLevelLeaves,
 } from './activity-predicate.js';
 
+import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Config.                                                                     */
 /* -------------------------------------------------------------------------- */
@@ -861,7 +862,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       handle.draggable = true;
       handle.setAttribute('aria-hidden', 'true');
       handle.title = 'Drag to reorder';
-      handle.textContent = '⠿';
+      handle.append(icon('grip-vertical', 14));
       this.listen(handle, 'dragstart', (ev) => {
         this.draggingStepId = s.id;
         this.draggingStepFrom = s.from_card_id;

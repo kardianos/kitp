@@ -65,6 +65,7 @@ import {
 } from './submission.js';
 import { navigate, taskUrl } from '../shell/router.js';
 
+import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
 /* -------------------------------------------------------------------------- */
@@ -682,7 +683,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     remove.className = 'qe-overlay__attr-remove';
     remove.dataset.qeAttrRemove = '';
     remove.setAttribute('aria-label', 'Remove field');
-    remove.textContent = '×';
+    remove.append(icon('x', 14));
 
     rowEl.append(select, valueHost, remove);
 
@@ -846,7 +847,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
       remove.className = 'qe-overlay__attach-remove';
       remove.dataset.qeAttachRemove = String(att.id);
       remove.setAttribute('aria-label', `Remove ${att.file.name}`);
-      remove.textContent = '×';
+      remove.append(icon('x', 14));
       this.listen(remove, 'click', () => this.removeAttachment(att.id));
       row.append(remove);
       this.attachListEl.append(row);

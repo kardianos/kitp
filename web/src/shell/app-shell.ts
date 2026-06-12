@@ -62,6 +62,7 @@ import {
   type CommUnseenCountInput,
   type CommUnseenCountOutput,
 } from '../task-detail/comm-specs.js';
+import { icon, setIcon, type IconName } from '../ui/icons.js';
 
 export interface ProjectScopeOption {
   /** bigint id as a string ('' = all projects). */
@@ -339,7 +340,7 @@ export class AppShell extends Control<AppShellConfig> {
       brand.textContent = text;
     }, 'shell.brand');
 
-    const collapse = iconButton('‹', 'Collapse rail');
+    const collapse = iconButton('chevron-left', 'Collapse rail');
     collapse.classList.add('shell__collapse');
 
     // Project-scope Picker (native <select>; the Picker common control lands later).
@@ -394,20 +395,20 @@ export class AppShell extends Control<AppShellConfig> {
 
     const right = document.createElement('div');
     right.className = 'shell__topbar-right';
-    const themeBtn = iconButton(currentTheme() === HTML_THEME_DARK ? '☀' : '☾', 'Toggle theme');
+    const themeBtn = iconButton(currentTheme() === HTML_THEME_DARK ? 'sun' : 'moon', 'Toggle theme');
     themeBtn.dataset.themeToggle = '';
     // Instructions ("About this screen"): opens the help overlay, which renders
     // the current screen's authored instructions markdown, then an <hr>, then
     // the live keyboard-shortcut cheatsheet. Previously a dead "▥ Toggle panel"
     // button; now wired to the same `toggleHelp` intent the `?` chord raises.
-    const instructionsBtn = iconButton('ⓘ', 'About this screen');
+    const instructionsBtn = iconButton('info', 'About this screen');
     instructionsBtn.dataset.instructionsToggle = '';
-    const helpBtn = iconButton('?', 'Keyboard shortcuts');
+    const helpBtn = iconButton({ text: '?' }, 'Keyboard shortcuts');
     helpBtn.dataset.helpToggle = '';
 
     // Notification bell: a count badge for newly received comms. Clicking opens
     // the global Activity view and marks the current latest as seen.
-    const bell = iconButton('✉', 'No new messages');
+    const bell = iconButton('mail', 'No new messages');
     bell.classList.add('iconbtn--bell');
     bell.dataset.commsBell = '';
     const badge = document.createElement('span');
@@ -503,7 +504,7 @@ export class AppShell extends Control<AppShellConfig> {
     chip.setAttribute('aria-expanded', 'false');
     const avatar = document.createElement('span');
     avatar.className = 'shell__avatar';
-    avatar.textContent = '⊙';
+    avatar.append(icon('circle-user'));
     const name = document.createElement('span');
     name.className = 'shell__user-name';
     name.dataset.userName = '';
@@ -517,7 +518,7 @@ export class AppShell extends Control<AppShellConfig> {
     }, 'shell.userChip');
     const caret = document.createElement('span');
     caret.className = 'shell__user-caret muted';
-    caret.textContent = '▾';
+    caret.append(icon('chevron-down', 14));
     chip.append(avatar, name, caret);
 
     // The expanding menu (Account / Logout), hidden until the chip is clicked.
@@ -652,7 +653,7 @@ export class AppShell extends Control<AppShellConfig> {
     this.listen(themeBtn, 'click', () => {
       const next = currentTheme() === HTML_THEME_DARK ? HTML_THEME_LIGHT : HTML_THEME_DARK;
       setTheme(next);
-      themeBtn.textContent = next === HTML_THEME_DARK ? '☀' : '☾';
+      setIcon(themeBtn, next === HTML_THEME_DARK ? 'sun' : 'moon');
     });
     this.listen(helpBtn, 'click', () => this.intent('toggleHelp'));
     this.listen(instructionsBtn, 'click', () => this.intent('toggleInstructions'));
@@ -1007,7 +1008,7 @@ export class AppShell extends Control<AppShellConfig> {
     lbl.textContent = label;
     const caret = document.createElement('span');
     caret.className = 'shell__section-caret';
-    caret.textContent = '▸';
+    caret.append(icon('chevron-right', 14));
     toggle.append(lbl, caret);
 
     const list = document.createElement('div');
@@ -1028,7 +1029,7 @@ export class AppShell extends Control<AppShellConfig> {
     this.listen(toggle, 'click', () => {
       const collapsed = list.classList.toggle('shell__admin-list--collapsed');
       toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-      caret.textContent = collapsed ? '▸' : '▾';
+      setIcon(caret, collapsed ? 'chevron-right' : 'chevron-down', 14);
     });
     this.adminSections.push({ chrome: [toggle, list], gates });
   }
@@ -1203,11 +1204,14 @@ function capitalise(s: string): string {
 /* DOM helpers (textContent only).                                            */
 /* -------------------------------------------------------------------------- */
 
-function iconButton(glyph: string, title: string): HTMLButtonElement {
+/** Icon buttons take an IconName; `{ text }` keeps letter-like glyphs (the
+ *  `?` help button) as plain text. */
+function iconButton(name: IconName | { text: string }, title: string): HTMLButtonElement {
   const b = document.createElement('button');
   b.type = 'button';
   b.className = 'iconbtn';
-  b.textContent = glyph;
+  if (typeof name === 'string') b.append(icon(name));
+  else b.textContent = name.text;
   b.title = title;
   b.setAttribute('aria-label', title);
   return b;

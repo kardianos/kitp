@@ -346,6 +346,18 @@ select optgroup {
   gap: var(--space-1);
 }
 
+/* ---- inline SVG icons (src/ui/icons.ts) ---- */
+/* Stroke inherits currentColor, so icons tint with the surrounding text
+   (hover/disabled states included) with no per-state rules. */
+.icon {
+  display: inline-block;
+  flex: none;
+  vertical-align: -0.125em;
+}
+/* Icons composed next to text (e.g. "‹ Back to list") get breathing room
+   from the host's gap/whitespace; inside square buttons they centre via
+   the button's flex. */
+
 /* ---- icon buttons (chrome) ---- */
 .iconbtn {
   font: inherit;

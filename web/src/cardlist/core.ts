@@ -37,6 +37,7 @@ import { applyPersonalReorder, move, planPersonalReorder, sortByPersonal, sortGr
 import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
 import { AUTH_USER_PATH, peekCurrentUserId, type AuthUser } from '../auth/auth-state.js';
 
+import { icon } from '../ui/icons.js';
 export type LabelMap = Record<string, string>;
 export interface AgentOption {
   id: bigint;
@@ -438,7 +439,7 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
     const grip = document.createElement('span');
     grip.className = 'card-list__grip';
     grip.dataset.role = 'grip';
-    grip.textContent = '⋮⋮';
+    grip.append(icon('grip-vertical', 14));
     grip.setAttribute('aria-hidden', 'true');
     grip.draggable = true;
     // A click on the grip must never open the row (it sits over the row link).
