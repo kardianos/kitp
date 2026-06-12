@@ -62,12 +62,12 @@
   /* A near-invisible inner fill that lifts a chrome card off the page. */
   --color-fill-hover: var(--neutral-100);
 
-  /* ---- accent — one confident UniFi-blue ---- */
-  --color-accent: #006fff;          /* UniFi blue                       */
-  --color-accent-hover: #0a60e0;    /* pressed / hover                  */
-  --color-accent-strong: #0a52c2;   /* active                           */
+  /* ---- accent — one confident Linear-indigo ---- */
+  --color-accent: #5e6ad2;          /* Linear indigo                    */
+  --color-accent-hover: #6770d6;    /* pressed / hover                  */
+  --color-accent-strong: #4f58c4;   /* active                           */
   --color-accent-fg: #ffffff;
-  --color-accent-tint: #e8f1ff;     /* opaque pale fill for soft chips  */
+  --color-accent-tint: #edeefb;     /* opaque pale fill for soft chips  */
 
   /* ---- destructive ---- */
   --color-danger: #e0335b;
@@ -99,8 +99,8 @@
   --color-section: rgba(20, 29, 40, 0.7);
 
   /* ---- derived translucent "soft" fills (chips / badges / alerts) ---- */
-  --color-accent-soft: rgba(0, 111, 255, 0.1);
-  --color-accent-ring: rgba(0, 111, 255, 0.42);
+  --color-accent-soft: rgba(94, 106, 210, 0.11);
+  --color-accent-ring: rgba(94, 106, 210, 0.45);
   --color-danger-soft: rgba(224, 51, 91, 0.1);
   --color-danger-ring: rgba(224, 51, 91, 0.42);
   --color-success-soft: rgba(27, 166, 114, 0.12);
@@ -108,7 +108,7 @@
 
   /* Focus ring color + a soft halo used by every interactive control. */
   --color-focus-ring: var(--color-accent);
-  --color-focus-halo: rgba(0, 111, 255, 0.18);
+  --color-focus-halo: rgba(94, 106, 210, 0.2);
 
   /* Backdrop scrim behind modals / slide-overs. */
   --color-scrim: rgba(20, 29, 40, 0.4);
@@ -283,11 +283,11 @@
   --color-hairline: #243140;
   --color-fill-hover: #1b2632;
 
-  --color-accent: #3d92ff;
-  --color-accent-hover: #5aa3ff;
-  --color-accent-strong: #2f80ee;
-  --color-accent-fg: #061320;
-  --color-accent-tint: #16273c;
+  --color-accent: #7b83eb;
+  --color-accent-hover: #8f96f0;
+  --color-accent-strong: #6a73e0;
+  --color-accent-fg: #101129;
+  --color-accent-tint: #232645;
 
   --color-danger: #ff6b8a;
   --color-danger-fg: #2a0710;
@@ -306,15 +306,15 @@
   --phase-terminal: #7b83eb;
   --phase-terminal-soft: rgba(123, 131, 235, 0.18);
 
-  --color-accent-soft: rgba(61, 146, 255, 0.18);
-  --color-accent-ring: rgba(61, 146, 255, 0.5);
+  --color-accent-soft: rgba(123, 131, 235, 0.2);
+  --color-accent-ring: rgba(123, 131, 235, 0.55);
   --color-danger-soft: rgba(255, 107, 138, 0.18);
   --color-danger-ring: rgba(255, 107, 138, 0.5);
   --color-success-soft: rgba(61, 220, 160, 0.18);
   --color-success-ring: rgba(61, 220, 160, 0.5);
 
   --color-focus-ring: var(--color-accent);
-  --color-focus-halo: rgba(61, 146, 255, 0.26);
+  --color-focus-halo: rgba(123, 131, 235, 0.3);
   --color-scrim: rgba(0, 0, 0, 0.62);
 
   /* Deepen + soften shadows on the dark bg so elevation still reads without
@@ -347,11 +347,11 @@
     --color-hairline: #243140;
     --color-fill-hover: #1b2632;
 
-    --color-accent: #3d92ff;
-    --color-accent-hover: #5aa3ff;
-    --color-accent-strong: #2f80ee;
-    --color-accent-fg: #061320;
-    --color-accent-tint: #16273c;
+    --color-accent: #7b83eb;
+    --color-accent-hover: #8f96f0;
+    --color-accent-strong: #6a73e0;
+    --color-accent-fg: #101129;
+    --color-accent-tint: #232645;
 
     --color-danger: #ff6b8a;
     --color-danger-fg: #2a0710;
@@ -370,15 +370,15 @@
     --phase-terminal: #7b83eb;
     --phase-terminal-soft: rgba(123, 131, 235, 0.18);
 
-    --color-accent-soft: rgba(61, 146, 255, 0.18);
-    --color-accent-ring: rgba(61, 146, 255, 0.5);
+    --color-accent-soft: rgba(123, 131, 235, 0.2);
+    --color-accent-ring: rgba(123, 131, 235, 0.55);
     --color-danger-soft: rgba(255, 107, 138, 0.18);
     --color-danger-ring: rgba(255, 107, 138, 0.5);
     --color-success-soft: rgba(61, 220, 160, 0.18);
     --color-success-ring: rgba(61, 220, 160, 0.5);
 
     --color-focus-ring: var(--color-accent);
-    --color-focus-halo: rgba(61, 146, 255, 0.26);
+    --color-focus-halo: rgba(123, 131, 235, 0.3);
     --color-scrim: rgba(0, 0, 0, 0.62);
 
     --shadow-xs: 0 1px 1.5px rgba(0, 0, 0, 0.5);
