@@ -194,8 +194,8 @@ select optgroup {
 }
 
 /* ==========================================================================
-   BUTTONS — comfortable register. Pill primary, soft neutral. Big targets
-   that work for both touch (Samsung) and precise pointer (Ubiquiti).
+   BUTTONS — Linear-compact: rounded-rect (not pill), 32px-ish targets,
+   soft neutral with a confident primary.
    ========================================================================== */
 .btn {
   font: inherit;
@@ -205,10 +205,10 @@ select optgroup {
   align-items: center;
   justify-content: center;
   gap: var(--space-1x);
-  min-height: 2.25rem;
-  padding: var(--space-1x) var(--space-4);
+  min-height: 2rem;
+  padding: var(--space-1x) var(--space-3);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-md);
   background: var(--color-surface);
   color: var(--color-fg);
   cursor: pointer;
@@ -393,8 +393,8 @@ select optgroup {
 .iconbtn {
   font: inherit;
   font-size: var(--text-md);
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 2rem;
+  height: 2rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
