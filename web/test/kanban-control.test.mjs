@@ -1046,7 +1046,7 @@ test('Kanban: a LANE axis splits the board into swim lanes', async () => {
   assert.equal(kanban.el.querySelectorAll('[data-kanban-lane]').length, 0, 'no lanes when laneAxis cleared');
 });
 
-test('Kanban: restores the remembered logical cursor (card highlighted) on (re)mount', async () => {
+test('Kanban: restores the remembered logical cursor SILENTLY on (re)mount', async () => {
   const { dispatcher, api } = bootApi(M.mockTransport());
   const tree = new M.TreeNode({}, []);
   tree.at(['scope', 'projectId']).set(M.DEMO_PROJECT_ID);
@@ -1066,10 +1066,24 @@ test('Kanban: restores the remembered logical cursor (card highlighted) on (re)m
     .querySelectorAll('[data-kanban-card]')
     .find((c) => c.dataset.cardId === '202');
   assert.ok(card, 'card 202 rendered');
-  assert.ok(
-    card.classList.contains('card--cursor'),
-    'the remembered card (logical, not physical) is the cursor on return',
+  // The restore is LOGICAL only: no card wears the ring after a return (a
+  // mouse user backing out of a task must not see an outline)...
+  assert.equal(
+    kanban.el
+      .querySelectorAll('[data-kanban-card]')
+      .filter((c) => c.classList.contains('card--cursor')).length,
+    0,
+    'no cursor ring right after the silent restore',
   );
+  assert.equal(kanban.cursor?.cardId, 202n, 'the logical cursor anchors on the remembered card');
+  // ...but the first keyboard move resumes from the remembered card AND
+  // reveals the ring.
+  kanban.navCard(1);
+  await Promise.resolve();
+  const ringed = kanban.el
+    .querySelectorAll('[data-kanban-card]')
+    .filter((c) => c.classList.contains('card--cursor'));
+  assert.equal(ringed.length, 1, 'first keyboard move reveals the ring');
 });
 
 test('Kanban: the cursor highlight survives a structural board rebuild (axis re-key)', async () => {

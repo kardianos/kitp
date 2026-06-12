@@ -220,6 +220,10 @@ export class Kanban extends Control<KanbanConfig> {
   private cursor: { columnKey: string; laneKey: string | undefined; cardId: bigint } | null = null;
   /** Set once the remembered cursor has been restored on the first board render. */
   private cursorRestored = false;
+  /** The cursor RING paints only after the keyboard actually drives the cursor
+   *  (j/k/h/l, board entry). A restore or a mouse-click sets the LOGICAL
+   *  cursor silently — returning from a task must not outline the card. */
+  private cursorVisible = false;
   /** Per-(lane, column) last-focused card id. h/l returns the cursor to where it
    *  last sat in each column instead of snapping to the top every time — the
    *  vertical position is tracked per column, not shared across the board. Keyed
@@ -569,6 +573,7 @@ export class Kanban extends Control<KanbanConfig> {
     this.effect(() => {
       const n = this.ctx.tree.at(['screen', 'enterBodyNonce']).get<number>() ?? 0;
       if (n === 0) return;
+      this.cursorVisible = true;
       if (this.cursor === null) this.cursorToFirst();
       else this.revealCursor();
     }, 'kanban.enterBody');
@@ -1052,8 +1057,9 @@ export class Kanban extends Control<KanbanConfig> {
   private openCard(el: HTMLElement): void {
     const idStr = el.dataset.cardId;
     if (idStr === undefined || idStr === '') return;
-    // Land the cursor on the clicked card + remember it, so returning re-
-    // highlights it (matches the keyboard cursor).
+    // Land the LOGICAL cursor on the clicked card + remember it, so returning
+    // anchors j/k where the user left off (no visible ring until the keyboard
+    // drives the cursor — see cursorVisible).
     const col = el.closest?.('[data-kanban-column]') as HTMLElement | null | undefined;
     if (col) {
       this.cursor = { columnKey: col.dataset?.column ?? '', laneKey: col.dataset?.laneKey ?? undefined, cardId: BigInt(idStr) };
@@ -1072,7 +1078,10 @@ export class Kanban extends Control<KanbanConfig> {
     // and `repaintCursor` — so the ring survives a board rebuild / card recycle
     // that re-runs fillCard without a following repaintCursor (e.g. an async axis
     // / workflow-status load re-keying the columns after a cursor restore).
-    el.classList.toggle('card--cursor', this.cursor !== null && card.id === this.cursor.cardId);
+    el.classList.toggle(
+      'card--cursor',
+      this.cursorVisible && this.cursor !== null && card.id === this.cursor.cardId,
+    );
     // The card that just moved settles into its new slot; every other fill
     // clears the class so a recycled node never keeps a stale animation. The id
     // persists past the optimistic re-render (cleared on the next dragstart), so
@@ -1346,6 +1355,7 @@ export class Kanban extends Control<KanbanConfig> {
 
   /** Place the cursor on the first card of the first non-empty column. */
   private cursorToFirst(): void {
+    this.cursorVisible = true;
     for (const col of this.boardColumns()) {
       const columnKey = col.dataset.column;
       if (columnKey === undefined) continue;
@@ -1362,6 +1372,7 @@ export class Kanban extends Control<KanbanConfig> {
   /** j/k — move the LOGICAL cursor within its column (by card id, so it survives
    *  card recycling), auto-scrolling the column body at the edge. */
   private navCard(dir: 1 | -1): void {
+    this.cursorVisible = true;
     if (this.cursor === null) {
       this.cursorToFirst();
       return;
@@ -1369,7 +1380,12 @@ export class Kanban extends Control<KanbanConfig> {
     const cards = this.bucketColumn(this.boardTasks(), this.cursor.columnKey, this.cursor.laneKey);
     const i = cards.findIndex((c) => c.id === this.cursor!.cardId);
     const j = i + dir;
-    if (j < 0 || j >= cards.length) return;
+    if (j < 0 || j >= cards.length) {
+      // Edge of the column: the cursor doesn't move, but the ring must still
+      // reveal (a silently-restored cursor becomes visible on the first press).
+      this.revealCursor();
+      return;
+    }
     this.cursor = { ...this.cursor, cardId: cards[j]!.id };
     this.revealCursor();
   }
@@ -1377,6 +1393,7 @@ export class Kanban extends Control<KanbanConfig> {
   /** h/l — move the cursor to the first card of the next/prev non-empty column in
    *  the same lane, auto-scrolling the board horizontally. */
   private navColumn(dir: 1 | -1): void {
+    this.cursorVisible = true;
     if (this.cursor === null) {
       this.cursorToFirst();
       return;
@@ -1394,12 +1411,15 @@ export class Kanban extends Control<KanbanConfig> {
         return;
       }
     }
+    // Edge of the board: no move, but reveal the (possibly restored) ring.
+    this.revealCursor();
   }
 
   /** Shift+H/L — move the CURSOR card to the adjacent column (cross-column re-key
    *  on the active axis); the cursor follows the card to its new column. */
   private moveFocused(dir: 1 | -1): void {
     if (this.cursor === null) return;
+    this.cursorVisible = true;
     const cols = this.columnsInLane(this.cursor.laneKey);
     const ci = cols.findIndex((c) => c.dataset.column === this.cursor!.columnKey);
     const next = ci + dir;
@@ -1452,7 +1472,7 @@ export class Kanban extends Control<KanbanConfig> {
    *  off every other) — independent of the virtualList's content-skip. */
   private repaintCursor(): void {
     if (this.boardEl === null) return;
-    const want = this.cursor !== null ? this.cursor.cardId.toString() : null;
+    const want = this.cursorVisible && this.cursor !== null ? this.cursor.cardId.toString() : null;
     const cards = this.boardEl.querySelectorAll?.('[data-kanban-card]') ?? [];
     for (const node of cards as unknown as HTMLElement[]) {
       node.classList?.toggle('card--cursor', want !== null && node.dataset?.cardId === want);
