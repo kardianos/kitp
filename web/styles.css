@@ -1968,12 +1968,24 @@ select optgroup {
 
 /* ---- priority signal bars (src/ui/priority-icon.ts) ----
  * A priority/<leaf> tag renders as 1–3 filled bars in place of a pill —
- * level reads by shape, not by a loud color block. */
+ * level reads primarily by shape, with a very faded per-level tint
+ * (sage → ochre → dusty red; desaturated mid-tones legible on light AND
+ * dark). Urgent keeps the full danger red. */
 .priority-ind {
   display: inline-flex;
   align-items: center;
   flex: none;
   color: var(--color-muted);
+}
+.priority-ind[data-priority="low"] {
+  color: #85a58e;
+}
+.priority-ind[data-priority="med"],
+.priority-ind[data-priority="medium"] {
+  color: #b5a25c;
+}
+.priority-ind[data-priority="high"] {
+  color: #bf8484;
 }
 .priority-ind[data-priority="urgent"] {
   color: var(--color-danger);
