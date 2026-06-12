@@ -11,7 +11,7 @@
    This is a DELIBERATE divergence from the Svelte client's app.css tokens
    (which this file used to byte-match). The web client now owns its own
    palette + scale. Light and dark are BOTH first-class, designed surfaces
-   — dark is a deep cool-neutral, not a naive invert.
+   — dark is a neutral near-black, not a naive invert.
 
    Theme strategy (unchanged contract — the controls toggle `data-theme`
    on <html>):
@@ -251,37 +251,37 @@
 }
 
 /* --------------------------------------------------------------------------
-   DARK — explicit choice. A designed deep cool-neutral (not pure black,
-   not an invert): a desaturated navy-slate base with the SAME hierarchy as
-   light. High-legibility text, the accent lifted for contrast on dark.
+   DARK — explicit choice. A designed neutral near-black (Linear-style; no
+   blue cast, not an invert) with the SAME hierarchy as light.
+   High-legibility text, the accent lifted for contrast on dark.
    -------------------------------------------------------------------------- */
 [data-theme="dark"] {
   color-scheme: dark;
 
-  --neutral-0: #0d141d;    /* base page                       */
-  --neutral-25: #0a1018;   /* deepest (page tint)             */
-  --neutral-50: #131c27;   /* raised surface / rail / topbar  */
-  --neutral-100: #1b2632;  /* hover fill, sunken              */
-  --neutral-200: #283544;  /* hairline border                 */
-  --neutral-300: #364557;  /* strong border / divider         */
-  --neutral-400: #5b6b7d;  /* disabled fg                     */
-  --neutral-500: #8a98a9;  /* muted text                      */
-  --neutral-600: #a6b3c2;  /* secondary text                  */
-  --neutral-700: #c2cdd9;  /* body-strong                     */
-  --neutral-800: #dbe3ec;  /* headings                        */
-  --neutral-900: #eef2f7;  /* max-contrast text               */
+  --neutral-0: #141517;    /* base page                       */
+  --neutral-25: #0f1011;   /* deepest (page tint)             */
+  --neutral-50: #17181a;   /* raised surface / rail / topbar  */
+  --neutral-100: #1f2023;  /* hover fill, sunken              */
+  --neutral-200: #27282c;  /* hairline border                 */
+  --neutral-300: #323338;  /* strong border / divider         */
+  --neutral-400: #5e6066;  /* disabled fg                     */
+  --neutral-500: #8f939c;  /* muted text                      */
+  --neutral-600: #a9adb5;  /* secondary text                  */
+  --neutral-700: #c4c7cd;  /* body-strong                     */
+  --neutral-800: #dcdee2;  /* headings                        */
+  --neutral-900: #ececee;  /* max-contrast text               */
 
-  --color-bg: #0a1018;
-  --color-surface: #131c27;
-  --color-surface-raised: #18222f;
-  --color-surface-sunken: #0f1721;
-  --color-fg: #eef2f7;
+  --color-bg: #0f1011;
+  --color-surface: #17181a;
+  --color-surface-raised: #1c1d20;
+  --color-surface-sunken: #121315;
+  --color-fg: #ececee;
   --color-fg-strong: #ffffff;
-  --color-muted: #8a98a9;
-  --color-border: #283544;
-  --color-border-strong: #354655;
-  --color-hairline: #243140;
-  --color-fill-hover: #1b2632;
+  --color-muted: #8f939c;
+  --color-border: #27282c;
+  --color-border-strong: #323338;
+  --color-hairline: #232428;
+  --color-fill-hover: #1f2023;
 
   --color-accent: #7b83eb;
   --color-accent-hover: #8f96f0;
@@ -299,8 +299,8 @@
   --color-on-image: #ffffff;
   --color-section: rgba(238, 242, 247, 0.16);
 
-  --phase-triage: #8a98a9;
-  --phase-triage-soft: rgba(138, 152, 169, 0.16);
+  --phase-triage: #8f939c;
+  --phase-triage-soft: rgba(143, 147, 156, 0.16);
   --phase-active: #f2c94c;
   --phase-active-soft: rgba(242, 201, 76, 0.16);
   --phase-terminal: #7b83eb;
@@ -335,17 +335,17 @@
   :root[data-theme="auto"] {
     color-scheme: dark;
 
-    --color-bg: #0a1018;
-    --color-surface: #131c27;
-    --color-surface-raised: #18222f;
-    --color-surface-sunken: #0f1721;
-    --color-fg: #eef2f7;
+    --color-bg: #0f1011;
+    --color-surface: #17181a;
+    --color-surface-raised: #1c1d20;
+    --color-surface-sunken: #121315;
+    --color-fg: #ececee;
     --color-fg-strong: #ffffff;
-    --color-muted: #8a98a9;
-    --color-border: #283544;
-    --color-border-strong: #354655;
-    --color-hairline: #243140;
-    --color-fill-hover: #1b2632;
+    --color-muted: #8f939c;
+    --color-border: #27282c;
+    --color-border-strong: #323338;
+    --color-hairline: #232428;
+    --color-fill-hover: #1f2023;
 
     --color-accent: #7b83eb;
     --color-accent-hover: #8f96f0;
@@ -363,8 +363,8 @@
     --color-on-image: #ffffff;
     --color-section: rgba(238, 242, 247, 0.16);
 
-    --phase-triage: #8a98a9;
-    --phase-triage-soft: rgba(138, 152, 169, 0.16);
+    --phase-triage: #8f939c;
+    --phase-triage-soft: rgba(143, 147, 156, 0.16);
     --phase-active: #f2c94c;
     --phase-active-soft: rgba(242, 201, 76, 0.16);
     --phase-terminal: #7b83eb;
