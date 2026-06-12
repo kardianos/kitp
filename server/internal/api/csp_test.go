@@ -13,7 +13,7 @@ func TestCSP_EnforcedHeader(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	h := api.CSP(api.CSPConfig{})(inner)
+	h := api.CSP(api.CSPConfig{UpgradeInsecure: true})(inner)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
@@ -44,6 +44,15 @@ func TestCSP_EnforcedHeader(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("CSP missing %q\nfull header: %s", want, got)
 		}
+	}
+
+	// Without UpgradeInsecure (a dev / plain-HTTP LAN deploy) the upgrade
+	// directive must be absent — it would rewrite every asset fetch to
+	// https:// and blank the page on a non-loopback HTTP host.
+	recDev := httptest.NewRecorder()
+	api.CSP(api.CSPConfig{})(inner).ServeHTTP(recDev, httptest.NewRequest("GET", "/", nil))
+	if strings.Contains(recDev.Header().Get("Content-Security-Policy"), "upgrade-insecure-requests") {
+		t.Error("upgrade-insecure-requests present without UpgradeInsecure")
 	}
 
 	// Negative checks: nothing 'unsafe-*' or wildcard should leak in.
