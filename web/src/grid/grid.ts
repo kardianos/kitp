@@ -92,6 +92,7 @@ import type { DatePicker } from '../ui/datepicker.js';
 
 import { setIcon, icon } from '../ui/icons.js';
 import { statusIcon } from '../ui/status-icon.js';
+import { priorityIcon } from '../ui/priority-icon.js';
 /**
  * Fixed virtual-list row height (px). Matches the compact grid row: one line of
  * 13px data text at 1.3 leading + 2 × --pad-compact-y (0.375rem = 6px) padding,
@@ -1474,6 +1475,15 @@ export class Grid extends CardListCore<GridConfig> {
         } else {
           const colorMap = (this.ctx.tree.at(['grid', 'lookups', 'tagColors']).peek<LabelMap>() ?? {}) as LabelMap;
           for (const m of matches) {
+            // The priority sub-column renders Linear-style signal bars
+            // instead of a pill (level reads by shape, not color).
+            if (col.prefix === 'priority') {
+              const bars = priorityIcon(m.suffix);
+              if (bars !== null) {
+                cell.append(bars);
+                continue;
+              }
+            }
             const pill = document.createElement('span');
             pill.className = 'grid__pill';
             const color = colorMap[m.id.toString()];

@@ -367,8 +367,14 @@ test('Grid: resolves card_ref labels from the lookup tree paths', async () => {
   assert.equal(cellText('attributes.status'), 'Todo', 'status id → status name');
   assert.equal(cellText('attributes.milestone_ref'), 'M1', 'milestone id → title');
   assert.equal(cellText('attributes.component_ref'), 'Frontend', 'component id → title');
-  // Priority is now a data-driven tag-prefix column (tag `priority/high` → "high").
-  assert.equal(cellText('tag:priority'), 'high', 'priority tag-prefix pill');
+  // Priority is a data-driven tag-prefix column rendered as Linear-style
+  // signal bars (no text) — see src/ui/priority-icon.ts.
+  const priorityInd = row
+    .querySelectorAll('[data-grid-col]')
+    .find((c) => c.dataset.gridCol === 'tag:priority')
+    .querySelector('.priority-ind');
+  assert.ok(priorityInd, 'priority renders the signal-bars indicator');
+  assert.equal(priorityInd.dataset.priority, 'high', 'bars carry the priority level');
   // Created / Last-activity now decode from the top-level wire fields (#20).
   assert.equal(cellText('created_at'), '2026-05-20', 'created_at top-level → Created column');
   assert.equal(cellText('last_activity_at'), '2026-05-22', 'last_activity_at → Last activity column');
@@ -489,12 +495,13 @@ test('Grid: tag-prefix sub-columns render one pill per matching tag (suffix only
   const cells = row.querySelectorAll('[data-grid-col]');
   const cellByCol = (field) => cells.find((c) => c.dataset.gridCol === field);
 
-  // priority slot — the only path matching `priority/` is `priority/high`, color "red".
+  // priority slot — the only path matching `priority/` is `priority/high`.
+  // Priority renders as signal bars (shape encodes the level), not a pill.
   const priorityCell = cellByCol('tag:priority');
-  const priorityPills = priorityCell.querySelectorAll('.grid__pill');
-  assert.equal(priorityPills.length, 1, 'one priority pill');
-  assert.equal(priorityPills[0].textContent, 'high', 'priority pill shows the suffix only');
-  assert.equal(priorityPills[0].dataset.tagColor, 'red', 'priority pill carries the "red" palette tone');
+  assert.equal(priorityCell.querySelectorAll('.grid__pill').length, 0, 'no pill in the priority cell');
+  const bars = priorityCell.querySelectorAll('.priority-ind');
+  assert.equal(bars.length, 1, 'one signal-bars indicator');
+  assert.equal(bars[0].dataset.priority, 'high', 'bars carry the priority level');
 
   // area slot — path `area/frontend/ui` lands here with suffix `frontend/ui` and color "blue".
   const areaCell = cellByCol('tag:area');

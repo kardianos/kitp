@@ -1870,6 +1870,9 @@ select optgroup {
  * Values screen) and shared with `.tag-chip` — see the [data-tag-color="..."]
  * palette below. */
 .grid__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   font-size: var(--text-2xs);
   font-weight: var(--weight-semibold);
   text-transform: capitalize;
@@ -1881,99 +1884,93 @@ select optgroup {
 }
 
 /* ---- shared tag/pill palette tones (read off [data-tag-color="..."]) ----
- * Both the grid pill and the .tag-chip wear these — change the admin
- * Values screen's color picker and every surface re-tones consistently.
- * The 15-tone set walks the colour wheel; tokens fall back to inline hex so
- * the chip still tones cleanly even when a project theme overrides --color-*. */
+ * Linear-style: the chip itself stays NEUTRAL (surface + hairline + fg
+ * text); the tag's `color` attribute renders as a small leading dot, so a
+ * tagged board reads calm instead of a wall of tinted pills. Both the grid
+ * pill and the .tag-chip share the hook — change the admin Values screen's
+ * color picker and every surface re-dots consistently. The 15-tone set
+ * walks the colour wheel; mid-saturation hexes legible on light AND dark. */
+.grid__pill[data-tag-color]::before,
+.tag-chip[data-tag-color]::before {
+  content: "";
+  flex: none;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: var(--radius-pill);
+  background: var(--tag-dot, var(--color-muted));
+}
 .grid__pill[data-tag-color="red"],
 .tag-chip[data-tag-color="red"] {
-  background: var(--color-danger-soft, #ffd6d3);
-  color: var(--color-danger, #9b1c0f);
-  border-color: var(--color-danger-soft, #ffd6d3);
+  --tag-dot: #e5484d;
 }
 .grid__pill[data-tag-color="orange"],
 .tag-chip[data-tag-color="orange"] {
-  background: #ffe2c4;
-  color: #a04a00;
-  border-color: #ffe2c4;
+  --tag-dot: #f76b15;
 }
 .grid__pill[data-tag-color="amber"],
 .tag-chip[data-tag-color="amber"] {
-  background: var(--color-warning, #fff0c4);
-  color: var(--color-warning-fg, #7a5300);
-  border-color: var(--color-warning, #fff0c4);
+  --tag-dot: #ffb224;
 }
 .grid__pill[data-tag-color="yellow"],
 .tag-chip[data-tag-color="yellow"] {
-  background: #fff3a8;
-  color: #6e5600;
-  border-color: #fff3a8;
+  --tag-dot: #f5d90a;
 }
 .grid__pill[data-tag-color="lime"],
 .tag-chip[data-tag-color="lime"] {
-  background: #e2f7c4;
-  color: #4d7a00;
-  border-color: #e2f7c4;
+  --tag-dot: #99d52a;
 }
 .grid__pill[data-tag-color="green"],
 .tag-chip[data-tag-color="green"] {
-  background: var(--color-success-soft, #d1fadf);
-  color: var(--color-success, #027a48);
-  border-color: var(--color-success-soft, #d1fadf);
+  --tag-dot: #30a46c;
 }
 .grid__pill[data-tag-color="teal"],
 .tag-chip[data-tag-color="teal"] {
-  background: #c7f0eb;
-  color: #036b6b;
-  border-color: #c7f0eb;
+  --tag-dot: #12a594;
 }
 .grid__pill[data-tag-color="cyan"],
 .tag-chip[data-tag-color="cyan"] {
-  background: #cdebf9;
-  color: #006b94;
-  border-color: #cdebf9;
+  --tag-dot: #00a2c7;
 }
 .grid__pill[data-tag-color="blue"],
 .tag-chip[data-tag-color="blue"] {
-  background: var(--color-accent-soft, #d8e7ff);
-  color: var(--color-accent, #1e4ea8);
-  border-color: var(--color-accent-soft, #d8e7ff);
+  --tag-dot: #0091ff;
 }
 .grid__pill[data-tag-color="indigo"],
 .tag-chip[data-tag-color="indigo"] {
-  background: #dde0fb;
-  color: #344b9a;
-  border-color: #dde0fb;
+  --tag-dot: #3e63dd;
 }
 .grid__pill[data-tag-color="purple"],
 .tag-chip[data-tag-color="purple"] {
-  background: var(--color-purple-soft, #ede0ff);
-  color: var(--color-purple, #6638b0);
-  border-color: var(--color-purple-soft, #ede0ff);
+  --tag-dot: #8e4ec6;
 }
 .grid__pill[data-tag-color="magenta"],
 .tag-chip[data-tag-color="magenta"] {
-  background: #f6cef4;
-  color: #931e7d;
-  border-color: #f6cef4;
+  --tag-dot: #d6409f;
 }
 .grid__pill[data-tag-color="pink"],
 .tag-chip[data-tag-color="pink"] {
-  background: #fcd9e6;
-  color: #a8326c;
-  border-color: #fcd9e6;
+  --tag-dot: #e93d82;
 }
 .grid__pill[data-tag-color="brown"],
 .tag-chip[data-tag-color="brown"] {
-  background: #ead9c4;
-  color: #6b4423;
-  border-color: #ead9c4;
+  --tag-dot: #ad7f58;
 }
 .grid__pill[data-tag-color="gray"],
 .tag-chip[data-tag-color="gray"] {
-  background: var(--color-fill-hover);
+  --tag-dot: #8d8d8d;
+}
+
+/* ---- priority signal bars (src/ui/priority-icon.ts) ----
+ * A priority/<leaf> tag renders as 1–3 filled bars in place of a pill —
+ * level reads by shape, not by a loud color block. */
+.priority-ind {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
   color: var(--color-muted);
-  border-color: var(--color-fill-hover);
+}
+.priority-ind[data-priority="urgent"] {
+  color: var(--color-danger);
 }
 
 /* ---- muted em-dash for empty cells ---- */

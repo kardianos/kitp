@@ -137,8 +137,12 @@ test('TagsEditor: seeded tags render as chips with the SUFFIX label (slot strips
   const prioritySlot = slots.find((s) => s.dataset.tagSlot === 'priority');
   const priorityChip = prioritySlot.querySelector('[data-tag-chip]');
   assert.equal(priorityChip.dataset.tagChip, '10', 'the applied priority tag (10) shows in the priority slot');
-  // The chip carries the tag's color from the catalogue load → palette tone CSS hook.
-  assert.equal(priorityChip.dataset.tagColor, 'red', 'priority/high renders with its "red" palette tone');
+  // Priority chips lead with the signal-bars indicator instead of wearing a
+  // palette tone (the bars encode the level by shape).
+  assert.equal(priorityChip.dataset.tagColor, undefined, 'priority chip wears no palette tone');
+  const chipBars = priorityChip.querySelector('.priority-ind');
+  assert.ok(chipBars, 'priority chip leads with the signal bars');
+  assert.equal(chipBars.dataset.priority, 'high', 'bars carry the priority level');
   const areaSlot = slots.find((s) => s.dataset.tagSlot === 'area');
   const areaChip = areaSlot.querySelector('[data-tag-chip]');
   assert.equal(areaChip.dataset.tagColor, 'blue', 'area/api renders with its "blue" palette tone');

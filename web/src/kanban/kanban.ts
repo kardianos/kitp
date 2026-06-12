@@ -79,6 +79,7 @@ import {
 
 import { icon } from '../ui/icons.js';
 import { statusIcon } from '../ui/status-icon.js';
+import { isPriorityPath, priorityIcon } from '../ui/priority-icon.js';
 /**
  * Fixed virtual-list row height (px) for a kanban card slot: the compact card
  * (grip + title + meta) plus the inter-card gap baked in. The virtualList
@@ -1098,13 +1099,22 @@ export class Kanban extends Control<KanbanConfig> {
         if (typeof t !== 'bigint') continue;
         const ac = tagAxis.find((c) => c.id === t);
         const path = ac?.label ?? `#${t.toString()}`;
+        const leaf = path.includes('/') ? (path.split('/').filter(Boolean).pop() ?? path) : path;
+        // A priority tag renders as Linear-style signal bars, not a pill.
+        if (isPriorityPath(path)) {
+          const bars = priorityIcon(leaf);
+          if (bars !== null) {
+            meta.append(bars);
+            continue;
+          }
+        }
         const chip = document.createElement('span');
         chip.className = 'tag-chip card__tag';
         chip.dataset.tagChip = '';
         if (ac?.color !== undefined) chip.dataset.tagColor = ac.color;
         const lbl = document.createElement('span');
         lbl.className = 'tag-chip__label';
-        lbl.textContent = path.includes('/') ? (path.split('/').filter(Boolean).pop() ?? path) : path;
+        lbl.textContent = leaf;
         chip.append(lbl);
         meta.append(chip);
       }
