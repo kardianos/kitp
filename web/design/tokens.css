@@ -375,6 +375,9 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  /* Inter Variable alternates (vendored in assets/fonts/): cv05 = lowercase
+     l with tail, ss01 = open digits. Both are taste — cheap to drop. */
+  font-feature-settings: "cv05", "ss01";
 }
 
 /* Respect reduced-motion: zero out the kanban flip + every transition. The
