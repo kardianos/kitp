@@ -77,6 +77,7 @@ import type { RelatedTasksPanel } from './related-tasks-panel.js';
 import type { PostChunk } from './upload.js';
 import { icon } from '../ui/icons.js';
 
+import { statusIcon } from '../ui/status-icon.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
 /* -------------------------------------------------------------------------- */
@@ -617,7 +618,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     }
     el.style.display = '';
     el.dataset.phase = info.phase;
-    el.textContent = info.label;
+    el.replaceChildren(statusIcon(info.phase), document.createTextNode(info.label));
   }
 
   /** Load the task card_type's editable attribute schema (attribute_def.select). */

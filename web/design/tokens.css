@@ -81,6 +81,17 @@
   --color-warning: #d98412;
   --color-warning-fg: #ffffff;
 
+  /* ---- workflow-phase palette (status icons + badges) -------------------
+     One hue per phase, Linear-style: queued = gray, in-flight = yellow,
+     done = indigo. Every status surface (chips, icons, kanban headers)
+     reads these so the state color is consistent app-wide. */
+  --phase-triage: #7c8796;
+  --phase-triage-soft: rgba(124, 135, 150, 0.14);
+  --phase-active: #b88a00;
+  --phase-active-soft: rgba(217, 165, 20, 0.16);
+  --phase-terminal: #5e6ad2;
+  --phase-terminal-soft: rgba(94, 106, 210, 0.13);
+
   /* ---- foreground on an always-dark surface (lightbox, avatar tiles) --- */
   --color-on-image: #ffffff;
 
@@ -285,6 +296,13 @@
   --color-on-image: #ffffff;
   --color-section: rgba(238, 242, 247, 0.16);
 
+  --phase-triage: #8a98a9;
+  --phase-triage-soft: rgba(138, 152, 169, 0.16);
+  --phase-active: #f2c94c;
+  --phase-active-soft: rgba(242, 201, 76, 0.16);
+  --phase-terminal: #7b83eb;
+  --phase-terminal-soft: rgba(123, 131, 235, 0.18);
+
   --color-accent-soft: rgba(61, 146, 255, 0.18);
   --color-accent-ring: rgba(61, 146, 255, 0.5);
   --color-danger-soft: rgba(255, 107, 138, 0.18);
@@ -341,6 +359,13 @@
 
     --color-on-image: #ffffff;
     --color-section: rgba(238, 242, 247, 0.16);
+
+    --phase-triage: #8a98a9;
+    --phase-triage-soft: rgba(138, 152, 169, 0.16);
+    --phase-active: #f2c94c;
+    --phase-active-soft: rgba(242, 201, 76, 0.16);
+    --phase-terminal: #7b83eb;
+    --phase-terminal-soft: rgba(123, 131, 235, 0.18);
 
     --color-accent-soft: rgba(61, 146, 255, 0.18);
     --color-accent-ring: rgba(61, 146, 255, 0.5);

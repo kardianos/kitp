@@ -358,6 +358,37 @@ select optgroup {
    from the host's gap/whitespace; inside square buttons they centre via
    the button's flex. */
 
+/* ---- status (phase) icons — src/ui/status-icon.ts ---- */
+/* Shape encodes progress (dashed → half-pie → filled+check); the tint
+   comes from the shared --phase-* palette in tokens.css so every status
+   surface agrees on the state color. */
+.status-icon {
+  display: inline-flex;
+  flex: none;
+  line-height: 1;
+  color: var(--color-muted);
+}
+.status-icon[data-phase="triage"] {
+  color: var(--phase-triage);
+}
+.status-icon[data-phase="active"] {
+  color: var(--phase-active);
+}
+.status-icon[data-phase="terminal"] {
+  color: var(--phase-terminal);
+}
+/* Status badges that host an icon next to their label. Additive layout
+   only — each chip keeps its own tone/typography rules. */
+.task-detail__status,
+.task-comms__status,
+.related-summary__status,
+.card-list__status,
+.grid__ref--status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+}
+
 /* ---- icon buttons (chrome) ---- */
 .iconbtn {
   font: inherit;
@@ -5449,16 +5480,16 @@ select optgroup {
   color: var(--color-muted);
 }
 .task-detail__status[data-phase="triage"] {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
+  background: var(--phase-triage-soft);
+  color: var(--phase-triage);
 }
 .task-detail__status[data-phase="active"] {
-  background: var(--color-success-soft);
-  color: var(--color-success);
+  background: var(--phase-active-soft);
+  color: var(--phase-active);
 }
 .task-detail__status[data-phase="terminal"] {
-  background: var(--color-fill-hover);
-  color: var(--color-muted);
+  background: var(--phase-terminal-soft);
+  color: var(--phase-terminal);
 }
 /* "…" overflow-menu trigger in the nav row. */
 .task-detail__actions {
@@ -6196,16 +6227,16 @@ select optgroup {
   color: var(--color-muted);
 }
 .task-comms__status[data-phase="triage"] {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
+  background: var(--phase-triage-soft);
+  color: var(--phase-triage);
 }
 .task-comms__status[data-phase="active"] {
-  background: var(--color-success-soft);
-  color: var(--color-success);
+  background: var(--phase-active-soft);
+  color: var(--phase-active);
 }
 .task-comms__status[data-phase="terminal"] {
-  background: var(--color-fill-hover);
-  color: var(--color-muted);
+  background: var(--phase-terminal-soft);
+  color: var(--phase-terminal);
 }
 /* Per-thread ACK toggle in the comm header. */
 .task-comms__ack {
@@ -7294,13 +7325,13 @@ textarea.task-comms__form-input {
   color: var(--color-muted);
 }
 .related-summary__phase[data-phase="triage"] {
-  color: var(--color-accent);
+  color: var(--phase-triage);
 }
 .related-summary__phase[data-phase="active"] {
-  color: var(--color-success);
+  color: var(--phase-active);
 }
 .related-summary__phase[data-phase="terminal"] {
-  color: var(--color-muted);
+  color: var(--phase-terminal);
 }
 .related-summary__status {
   flex: 0 0 auto;
@@ -7312,16 +7343,16 @@ textarea.task-comms__form-input {
   color: var(--color-muted);
 }
 .related-summary__status[data-phase="triage"] {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
+  background: var(--phase-triage-soft);
+  color: var(--phase-triage);
 }
 .related-summary__status[data-phase="active"] {
-  background: var(--color-success-soft);
-  color: var(--color-success);
+  background: var(--phase-active-soft);
+  color: var(--phase-active);
 }
 .related-summary__status[data-phase="terminal"] {
-  background: var(--color-fill-hover);
-  color: var(--color-muted);
+  background: var(--phase-terminal-soft);
+  color: var(--phase-terminal);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -8494,16 +8525,16 @@ textarea.task-comms__form-input {
   color: var(--color-muted);
 }
 .card-list__status[data-phase="triage"] {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
+  background: var(--phase-triage-soft);
+  color: var(--phase-triage);
 }
 .card-list__status[data-phase="active"] {
-  background: var(--color-success-soft);
-  color: var(--color-success);
+  background: var(--phase-active-soft);
+  color: var(--phase-active);
 }
 .card-list__status[data-phase="terminal"] {
-  background: var(--color-fill-hover);
-  color: var(--color-muted);
+  background: var(--phase-terminal-soft);
+  color: var(--phase-terminal);
 }
 
 .card-list__main {

@@ -31,6 +31,7 @@ import {
   type CommListForTaskOutput,
 } from './comm-specs.js';
 
+import { statusIcon } from '../ui/status-icon.js';
 export interface CommThreadsConfig extends BaseControlConfig {
   type: 'CommThreads';
   /** The focal task id (string from the route). */
@@ -290,7 +291,10 @@ export class CommThreads extends Control<CommThreadsConfig> {
     badge.dataset.commStatusBadge = '';
     const info = this.statusInfo.get(comm.commStatus.toString());
     badge.dataset.phase = info?.phase ?? '';
-    badge.textContent = info !== undefined ? info.label : `#${comm.commStatus}`;
+    badge.append(
+      statusIcon(info?.phase ?? ''),
+      document.createTextNode(info !== undefined ? info.label : `#${comm.commStatus}`),
+    );
 
     // Comm-status transition bar: reuses the task TransitionBar, bound to the
     // comm card's `comm_status` flow, so the thread can be advanced and closed

@@ -37,6 +37,7 @@ import { navigate, taskUrl } from '../shell/router.js';
 import type { RefPicker } from '../ui/ref-picker.js';
 
 import { icon } from '../ui/icons.js';
+import { statusIcon } from '../ui/status-icon.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                  */
 /* -------------------------------------------------------------------------- */
@@ -743,7 +744,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
       const status = document.createElement('span');
       status.className = 'related-summary__status muted';
       status.dataset.phase = info.phase;
-      status.textContent = info.label;
+      status.append(statusIcon(info.phase), document.createTextNode(info.label));
       row.append(status);
     }
     return row;
@@ -1028,22 +1029,12 @@ function relationshipLabel(r: string): string {
   return RELATIONSHIP_OPTIONS.find((x) => x.value === r)?.label ?? r;
 }
 
-/** Per-phase glyph for the summary's phase icon (terminal=done, active=in
- *  progress, triage=not started). Colour comes from the `[data-phase]` tone. */
-const PHASE_GLYPH: Readonly<Record<string, string>> = {
-  triage: '○',
-  active: '◐',
-  terminal: '●',
-};
-
-/** A small phase-toned icon (an `[data-phase]` span) for a related task. */
+/** A small phase-toned icon for a related task — the shared status icon
+ *  (src/ui/status-icon.ts) wearing this panel's class for sizing/layout. */
 function phaseIcon(phase: string): HTMLElement {
-  const span = document.createElement('span');
-  span.className = 'related-summary__phase';
-  span.dataset.phase = phase;
-  span.textContent = PHASE_GLYPH[phase] ?? '○';
+  const span = statusIcon(phase);
+  span.classList.add('related-summary__phase');
   span.title = phase !== '' ? `Phase: ${phase}` : 'Phase: unknown';
-  span.setAttribute('aria-hidden', 'true');
   return span;
 }
 

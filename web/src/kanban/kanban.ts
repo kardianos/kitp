@@ -78,6 +78,7 @@ import {
 } from '../filter/predicate.js';
 
 import { icon } from '../ui/icons.js';
+import { statusIcon } from '../ui/status-icon.js';
 /**
  * Fixed virtual-list row height (px) for a kanban card slot: the compact card
  * (grip + title + meta, ~56px) plus the inter-card gap baked in. The card fills
@@ -851,11 +852,17 @@ export class Kanban extends Control<KanbanConfig> {
       Object.keys(buckets),
     );
     const labelById = new Map<string, string>();
-    for (const a of axis) labelById.set(a.id.toString(), this.axisLabelOf(a, this.axis));
+    // Phase per axis value — only status cards carry one; a status-grouped
+    // board gets the phase icon in its column headers.
+    const phaseById = new Map<string, string>();
+    for (const a of axis) {
+      labelById.set(a.id.toString(), this.axisLabelOf(a, this.axis));
+      if (a.phase !== undefined) phaseById.set(a.id.toString(), a.phase);
+    }
     const cols: HTMLElement[] = [];
     for (const key of order) {
       const label = key === UNSET_KEY ? '(unset)' : (labelById.get(key) ?? `#${key}`);
-      cols.push(this.renderColumn(key, label, laneKey));
+      cols.push(this.renderColumn(key, label, laneKey, phaseById.get(key)));
     }
     return cols;
   }
@@ -863,7 +870,12 @@ export class Kanban extends Control<KanbanConfig> {
   /** One column: header (label · count · +) + a body of TaskCards + drop zone.
    *  The card list reads the tasks leaf reactively (via `bucketColumn`), so it
    *  recycles in place on a move; the count + empty placeholder track it. */
-  private renderColumn(columnKey: string, label: string, laneKey?: string): HTMLElement {
+  private renderColumn(
+    columnKey: string,
+    label: string,
+    laneKey?: string,
+    phase?: string,
+  ): HTMLElement {
     const col = document.createElement('div');
     col.className = 'col';
     col.dataset.kanbanColumn = '';
@@ -888,6 +900,7 @@ export class Kanban extends Control<KanbanConfig> {
     // opens with no lane prefill).
     add.title = 'Quick-add a task in this column';
     this.listen(add, 'click', () => this.openQuickEntry(columnKey, laneKey));
+    if (phase !== undefined) header.append(statusIcon(phase));
     header.append(labelEl, count, add);
 
     const body = document.createElement('div');

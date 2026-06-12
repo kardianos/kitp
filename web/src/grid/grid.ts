@@ -91,6 +91,7 @@ import type { RefPicker } from '../ui/ref-picker.js';
 import type { DatePicker } from '../ui/datepicker.js';
 
 import { setIcon, icon } from '../ui/icons.js';
+import { statusIcon } from '../ui/status-icon.js';
 /**
  * Fixed virtual-list row height (px). Matches the compact grid row: one line of
  * 13px data text at 1.3 leading + 2 × --pad-compact-y (0.375rem = 6px) padding,
@@ -595,7 +596,19 @@ export class Grid extends CardListCore<GridConfig> {
     };
 
     this.handler('landPersons', landLabels('persons', titleAttr));
-    this.handler('landStatuses', landLabels('statuses', titleOrName));
+    // Statuses also feed the inherited statusInfo map (label + phase) so the
+    // status cells can draw the phase icon next to the label.
+    this.handler('landStatuses', (out) => {
+      const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+      this.statusInfo.clear();
+      const map: LabelMap = {};
+      for (const r of rows) {
+        this.statusInfo.set(r.id.toString(), { label: titleOrName(r), phase: r.phase ?? '' });
+        map[r.id.toString()] = titleOrName(r);
+      }
+      this.ctx.tree.at(['grid', 'lookups', 'statuses']).set(map);
+      this.tickLookups();
+    });
     this.handler('landMilestones', landLabels('milestones', titleOrName));
     this.handler('landComponents', landLabels('components', titleOrName));
     // Tags carry an extra COLOR axis (`color` attribute → small named palette).
@@ -1633,7 +1646,14 @@ export class Grid extends CardListCore<GridConfig> {
     const key = id.toString();
     const span = document.createElement('span');
     span.className = 'grid__ref';
-    span.textContent = map[key] ?? `#${key}`;
+    if (lookup === 'statuses') {
+      // Status cells lead with the phase icon (label stays the textContent).
+      span.classList.add('grid__ref--status');
+      const info = this.statusInfo.get(key);
+      span.append(statusIcon(info?.phase ?? ''), document.createTextNode(map[key] ?? `#${key}`));
+    } else {
+      span.textContent = map[key] ?? `#${key}`;
+    }
     cell.append(span);
   }
 
