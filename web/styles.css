@@ -1299,11 +1299,15 @@ select optgroup {
   overflow: hidden;
   cursor: grab;
   transition:
+    background var(--duration-micro) var(--ease-standard),
     border-color var(--duration-fast) var(--ease-standard),
     box-shadow var(--duration-fast) var(--ease-standard),
     transform var(--duration-fast) var(--ease-standard);
 }
 .card:hover {
+  /* Whole-card lift (Linear-style): the interior brightens slightly so the
+     hovered card reads at a glance, not just its border. */
+  background: var(--color-fill-hover);
   border-color: var(--color-border-strong);
   box-shadow: var(--shadow-sm);
 }
