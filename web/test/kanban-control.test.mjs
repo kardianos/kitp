@@ -1086,6 +1086,36 @@ test('Kanban: restores the remembered logical cursor SILENTLY on (re)mount', asy
   assert.equal(ringed.length, 1, 'first keyboard move reveals the ring');
 });
 
+test('Kanban: real mouse movement dismisses the cursor ring (logical cursor kept)', async () => {
+  const { dispatcher, kanban } = bootMultiAxisKanban();
+  await settle(dispatcher);
+
+  // Keyboard nav reveals the ring.
+  kanban.navCard(1);
+  await Promise.resolve();
+  const ringCount = () =>
+    kanban.el
+      .querySelectorAll('[data-kanban-card]')
+      .filter((c) => c.classList.contains('card--cursor')).length;
+  assert.equal(ringCount(), 1, 'ring visible after keyboard nav');
+  const anchored = kanban.cursor?.cardId;
+
+  const board = kanban.el.querySelectorAll('[data-kanban-board]')[0] ?? kanban.el;
+  // First pointermove only samples the position (a synthetic move fired by
+  // auto-scroll under a stationary pointer must NOT dismiss)...
+  board.dispatchEvent({ type: 'pointermove', clientX: 10, clientY: 10 });
+  assert.equal(ringCount(), 1, 'stationary/synthetic pointermove keeps the ring');
+  // ...real motion (coordinates changed) dismisses the ring.
+  board.dispatchEvent({ type: 'pointermove', clientX: 24, clientY: 18 });
+  assert.equal(ringCount(), 0, 'real mouse movement hides the ring');
+  assert.equal(kanban.cursor?.cardId, anchored, 'the logical cursor survives for the next j/k');
+
+  // The next keyboard press brings the ring straight back.
+  kanban.navCard(1);
+  await Promise.resolve();
+  assert.equal(ringCount(), 1, 'keyboard nav re-reveals the ring');
+});
+
 test('Kanban: the cursor highlight survives a structural board rebuild (axis re-key)', async () => {
   // A board rebuild (axis / workflow-status lands async in the real app, or a
   // GROUP change) re-runs fillCard for every card; the cursor ring must come

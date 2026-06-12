@@ -557,6 +557,23 @@ export class Kanban extends Control<KanbanConfig> {
       this.syncCursorColumn();
     }, 'kanban.board');
 
+    // Switching back to the mouse dismisses the keyboard-cursor ring: real
+    // pointer movement over the board hides it (the LOGICAL cursor stays, so
+    // j/k resume from the same card). Coordinates are compared because the
+    // browser re-fires a synthetic pointermove when keyboard navigation
+    // auto-scrolls content under a stationary pointer — only actual motion
+    // counts as "using the mouse again".
+    let lastPointer: { x: number; y: number } | null = null;
+    this.listen(board, 'pointermove', (ev) => {
+      const e = ev as PointerEvent;
+      const moved = lastPointer !== null && (lastPointer.x !== e.clientX || lastPointer.y !== e.clientY);
+      lastPointer = { x: e.clientX, y: e.clientY };
+      if (moved && this.cursorVisible) {
+        this.cursorVisible = false;
+        this.repaintCursor();
+      }
+    });
+
     // Enter / o on the focused board opens the cursor card. A focused CARD
     // handles its own Enter (card keydown); this is the board-focused case.
     this.listen(board, 'keydown', (ev) => {
