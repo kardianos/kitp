@@ -79,7 +79,7 @@ import {
 
 import { icon } from '../ui/icons.js';
 import { statusIcon } from '../ui/status-icon.js';
-import { isPriorityPath, priorityIcon } from '../ui/priority-icon.js';
+import { isPriorityPath, priorityIcon, priorityPlaceholder } from '../ui/priority-icon.js';
 /**
  * Fixed virtual-list row height (px) for a kanban card slot: the compact card
  * (grip + title + meta) plus the inter-card gap baked in. The virtualList
@@ -1092,7 +1092,13 @@ export class Kanban extends Control<KanbanConfig> {
     const link = childByRole(el, 'rowlink');
     if (link) setRowLinkHref(link as HTMLAnchorElement, card.id);
 
+    // The priority indicator leads the row right after the id — ALWAYS:
+    // a card without a priority reserves the same footprint (placeholder),
+    // so tag chips start from one x position across every card. Priority is
+    // pulled out of data order; other tags keep theirs.
     const tags = card.attributes['tags'];
+    let bars: HTMLElement | null = null;
+    const chips: HTMLElement[] = [];
     if (Array.isArray(tags)) {
       const tagAxis = (this.ctx.tree.at(['kanban', 'axis', 'tags']).peek<AxisCard[]>() ?? []) as AxisCard[];
       for (const t of tags) {
@@ -1101,12 +1107,9 @@ export class Kanban extends Control<KanbanConfig> {
         const path = ac?.label ?? `#${t.toString()}`;
         const leaf = path.includes('/') ? (path.split('/').filter(Boolean).pop() ?? path) : path;
         // A priority tag renders as Linear-style signal bars, not a pill.
-        if (isPriorityPath(path)) {
-          const bars = priorityIcon(leaf);
-          if (bars !== null) {
-            meta.append(bars);
-            continue;
-          }
+        if (isPriorityPath(path) && bars === null) {
+          bars = priorityIcon(leaf);
+          if (bars !== null) continue;
         }
         const chip = document.createElement('span');
         chip.className = 'tag-chip card__tag';
@@ -1116,9 +1119,10 @@ export class Kanban extends Control<KanbanConfig> {
         lbl.className = 'tag-chip__label';
         lbl.textContent = leaf;
         chip.append(lbl);
-        meta.append(chip);
+        chips.push(chip);
       }
     }
+    meta.append(bars ?? priorityPlaceholder(), ...chips);
   }
 
   /**

@@ -1977,6 +1977,11 @@ select optgroup {
   flex: none;
   color: var(--color-muted);
 }
+/* Reserved footprint for cards with no priority — same width as the bars
+   svg so sibling chips align across cards. */
+.priority-ind--none {
+  width: 14px;
+}
 .priority-ind[data-priority="low"] {
   color: #85a58e;
 }

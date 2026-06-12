@@ -29,6 +29,18 @@ export function isPriorityPath(path: string): boolean {
 }
 
 /**
+ * An empty box the exact footprint of the bars, so surfaces that lead with
+ * the priority indicator (kanban card meta) keep the slot reserved on
+ * cards WITHOUT a priority — sibling chips line up across cards.
+ */
+export function priorityPlaceholder(): HTMLElement {
+  const span = document.createElement('span');
+  span.className = 'priority-ind priority-ind--none';
+  span.setAttribute('aria-hidden', 'true');
+  return span;
+}
+
+/**
  * Build the signal-bars indicator for a priority leaf ('low' | 'med' |
  * 'medium' | 'high' | 'urgent', case-insensitive). Returns null for an
  * unrecognised leaf — callers keep their regular chip in that case.
