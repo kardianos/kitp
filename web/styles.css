@@ -6275,6 +6275,29 @@ select optgroup {
 }
 
 /* -------------------------------------------------------------------------- */
+/* EXPERIMENT (ui-refresh-inter branch): keep Inter on the long-form reading   */
+/* surfaces but enlarge + loosen + slightly weight them, instead of switching  */
+/* to a serif. Same surfaces the serif experiment targeted, so the two can be  */
+/* A/B'd. If kardianos prefers this, fold the values into the base rules; if    */
+/* he prefers the serif, drop this block. UI chrome is untouched.              */
+/* -------------------------------------------------------------------------- */
+.markdown,
+.rich-editor .ProseMirror {
+  font-size: var(--text-md); /* 13px → 15px */
+  line-height: 1.65;
+  font-weight: 450; /* Inter Variable: a touch heavier reads crisper at body size */
+}
+.task-detail__title {
+  font-weight: 650;
+}
+.task-activity__text,
+.activity-screen__group-summary {
+  font-size: var(--text-base); /* → 14px */
+  line-height: 1.5;
+  font-weight: 450;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Task-detail COMMS (email threads) — start form + per-comm cards + replies.  */
 /* The section shipped unstyled; this gives the subject + message the most      */
 /* attention (prominent subject, line-break-preserving message bodies).         */
