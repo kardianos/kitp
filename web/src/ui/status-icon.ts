@@ -112,11 +112,19 @@ export function statusGlyphs(
      *  set is one workflow (kanban axis) or many (the grid's global list). */
     groupKey?: string;
   }>,
+  /** When set (non-empty), only these status ids count toward the active ramp —
+   *  the project's task-flow statuses. Keeps the grid / task-detail / etc. (which
+   *  load ALL of a project's status cards, including ones from other flows) in
+   *  step with the flow-scoped kanban. Active statuses outside the set get no
+   *  fill (they're not part of the visible workflow and carry no tasks). */
+  flowIds?: ReadonlySet<string> | null,
 ): Map<string, { fill?: number; terminalKind?: 'done' | 'cancelled' }> {
   const out = new Map<string, { fill?: number; terminalKind?: 'done' | 'cancelled' }>();
+  const scoped = flowIds != null && flowIds.size > 0;
   const groups = new Map<string, typeof items[number][]>();
   for (const s of items) {
     if (s.phase !== 'active') continue;
+    if (scoped && !flowIds.has(s.idStr)) continue;
     const g = groups.get(s.groupKey ?? '');
     if (g) g.push(s);
     else groups.set(s.groupKey ?? '', [s]);
@@ -153,6 +161,10 @@ export function statusGlyphs(
  */
 export interface StatusInfo extends StatusGlyph {
   label: string;
+  /** The status value-card's `sort_order` — sequences the active ramp. */
+  sortOrder?: number;
+  /** The status's parent (workflow) — groups the ramp. */
+  groupKey?: string;
 }
 
 /**
@@ -164,23 +176,23 @@ export interface StatusInfo extends StatusGlyph {
  */
 export function applyStatusGlyphs(
   map: Map<string, StatusInfo>,
-  rows: ReadonlyArray<{
-    id: { toString(): string };
-    phase?: string;
-    parent_card_id?: { toString(): string };
-    attributes?: Record<string, unknown>;
-  }>,
+  flowIds?: ReadonlySet<string> | null,
 ): void {
-  const items = rows
-    .filter((r) => r.phase !== undefined && r.phase !== '')
-    .map((r) => ({
-      idStr: r.id.toString(),
-      phase: r.phase as string,
-      sortOrder: Number(r.attributes?.['sort_order'] ?? 0),
-      label: map.get(r.id.toString())?.label ?? '',
-      groupKey: r.parent_card_id?.toString() ?? '',
+  const items = [...map.entries()]
+    .filter(([, v]) => v.phase !== undefined && v.phase !== '')
+    .map(([idStr, v]) => ({
+      idStr,
+      phase: v.phase,
+      sortOrder: v.sortOrder ?? 0,
+      label: v.label,
+      groupKey: v.groupKey ?? '',
     }));
-  for (const [id, variant] of statusGlyphs(items)) {
+  // Reset prior variants so a status dropped from the flow scope loses its fill.
+  for (const v of map.values()) {
+    delete v.fill;
+    delete v.terminalKind;
+  }
+  for (const [id, variant] of statusGlyphs(items, flowIds)) {
     const entry = map.get(id);
     if (entry) Object.assign(entry, variant);
   }

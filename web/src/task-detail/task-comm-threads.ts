@@ -180,9 +180,16 @@ export class CommThreads extends Control<CommThreadsConfig> {
         if (!this.isAlive()) return;
         const rows = ((out as { rows?: CardWithAttrs[] }).rows ?? []) as CardWithAttrs[];
         for (const r of rows) {
-          this.statusInfo.set(String(r.id), { label: statusLabel(r), phase: r.phase ?? '' });
+          this.statusInfo.set(String(r.id), {
+            label: statusLabel(r),
+            phase: r.phase ?? '',
+            sortOrder: Number(r.attributes['sort_order'] ?? 0),
+            groupKey: r.parent_card_id?.toString() ?? '',
+          });
         }
-        applyStatusGlyphs(this.statusInfo, rows);
+        // Comm statuses follow the comm flow (not the task flow), so the ramp
+        // stays over the loaded comm-status set rather than scope.workflowStatusIds.
+        applyStatusGlyphs(this.statusInfo);
         this.paintFilter();
         this.paintList(); // late labels → repaint badges
       },
