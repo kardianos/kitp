@@ -208,7 +208,7 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
     const info = sid !== null ? this.statusInfo.get(sid) : undefined;
     badge.dataset.phase = info?.phase ?? '';
     badge.replaceChildren(
-      statusIcon(info?.phase ?? ''),
+      statusIcon(info ?? ''),
       document.createTextNode(info !== undefined ? info.label : '—'),
     );
     badge.style.display = badgeAttr === '' ? 'none' : '';

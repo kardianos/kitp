@@ -31,7 +31,7 @@ import {
   type CommListForTaskOutput,
 } from './comm-specs.js';
 
-import { statusIcon } from '../ui/status-icon.js';
+import { statusIcon, applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 export interface CommThreadsConfig extends BaseControlConfig {
   type: 'CommThreads';
   /** The focal task id (string from the route). */
@@ -59,7 +59,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
   /** person id → display name, for recipient chips/labels. */
   private personLabels = new Map<string, string>();
   /** status card id → {label, phase}, for the comm_status badge + section filter. */
-  private statusInfo = new Map<string, { label: string; phase: string }>();
+  private statusInfo = new Map<string, StatusInfo>();
   /** Per-section comm_status phase filter ('' = all phases). Filters the rendered
    *  comm list independently of the task's own status. */
   private phaseFilter: '' | 'triage' | 'active' | 'terminal' = '';
@@ -182,6 +182,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
         for (const r of rows) {
           this.statusInfo.set(String(r.id), { label: statusLabel(r), phase: r.phase ?? '' });
         }
+        applyStatusGlyphs(this.statusInfo, rows);
         this.paintFilter();
         this.paintList(); // late labels → repaint badges
       },
@@ -292,7 +293,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
     const info = this.statusInfo.get(comm.commStatus.toString());
     badge.dataset.phase = info?.phase ?? '';
     badge.append(
-      statusIcon(info?.phase ?? ''),
+      statusIcon(info ?? ''),
       document.createTextNode(info !== undefined ? info.label : `#${comm.commStatus}`),
     );
 

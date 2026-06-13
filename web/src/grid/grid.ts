@@ -91,7 +91,7 @@ import type { RefPicker } from '../ui/ref-picker.js';
 import type { DatePicker } from '../ui/datepicker.js';
 
 import { setIcon, icon } from '../ui/icons.js';
-import { statusIcon } from '../ui/status-icon.js';
+import { statusIcon, applyStatusGlyphs } from '../ui/status-icon.js';
 import { priorityIcon } from '../ui/priority-icon.js';
 /**
  * Fixed virtual-list row height (px). Matches the compact grid row: one line of
@@ -607,6 +607,7 @@ export class Grid extends CardListCore<GridConfig> {
         this.statusInfo.set(r.id.toString(), { label: titleOrName(r), phase: r.phase ?? '' });
         map[r.id.toString()] = titleOrName(r);
       }
+      applyStatusGlyphs(this.statusInfo, rows);
       this.ctx.tree.at(['grid', 'lookups', 'statuses']).set(map);
       this.tickLookups();
     });
@@ -1660,7 +1661,7 @@ export class Grid extends CardListCore<GridConfig> {
       // Status cells lead with the phase icon (label stays the textContent).
       span.classList.add('grid__ref--status');
       const info = this.statusInfo.get(key);
-      span.append(statusIcon(info?.phase ?? ''), document.createTextNode(map[key] ?? `#${key}`));
+      span.append(statusIcon(info ?? ''), document.createTextNode(map[key] ?? `#${key}`));
     } else {
       span.textContent = map[key] ?? `#${key}`;
     }

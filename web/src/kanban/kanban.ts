@@ -78,7 +78,7 @@ import {
 } from '../filter/predicate.js';
 
 import { icon } from '../ui/icons.js';
-import { statusIcon } from '../ui/status-icon.js';
+import { statusIcon, statusGlyphs, type StatusGlyph } from '../ui/status-icon.js';
 import { isPriorityPath, priorityIcon, priorityPlaceholder } from '../ui/priority-icon.js';
 /**
  * Fixed virtual-list row height (px) for a kanban card slot: the compact card
@@ -879,17 +879,36 @@ export class Kanban extends Control<KanbanConfig> {
       Object.keys(buckets),
     );
     const labelById = new Map<string, string>();
-    // Phase per axis value — only status cards carry one; a status-grouped
-    // board gets the phase icon in its column headers.
-    const phaseById = new Map<string, string>();
+    // Glyph per axis value — only status cards carry a phase; a status-grouped
+    // board gets the phase icon in its column headers. The within-phase variant
+    // (active pie sweep, terminal ✓/✕) ramps over the status axis so sibling
+    // statuses (Todo/Doing/Review, Done/Cancelled) read distinctly.
+    const glyphById = new Map<string, StatusGlyph>();
+    const statusItems: { idStr: string; phase: string; sortOrder: number; label: string }[] = [];
     for (const a of axis) {
-      labelById.set(a.id.toString(), this.axisLabelOf(a, this.axis));
-      if (a.phase !== undefined) phaseById.set(a.id.toString(), a.phase);
+      const label = this.axisLabelOf(a, this.axis);
+      labelById.set(a.id.toString(), label);
+      if (a.phase !== undefined) {
+        // The board's status axis is already one workflow, so every status
+        // shares a group — the ramp runs over all of them. `sortOrder` is the
+        // AxisCard's pre-resolved value-card order.
+        statusItems.push({
+          idStr: a.id.toString(),
+          phase: a.phase,
+          sortOrder: a.sortOrder,
+          label,
+          groupKey: '',
+        });
+      }
+    }
+    const variants = statusGlyphs(statusItems);
+    for (const s of statusItems) {
+      glyphById.set(s.idStr, { phase: s.phase, ...variants.get(s.idStr) });
     }
     const cols: HTMLElement[] = [];
     for (const key of order) {
       const label = key === UNSET_KEY ? '(unset)' : (labelById.get(key) ?? `#${key}`);
-      cols.push(this.renderColumn(key, label, laneKey, phaseById.get(key)));
+      cols.push(this.renderColumn(key, label, laneKey, glyphById.get(key)));
     }
     return cols;
   }
@@ -901,7 +920,7 @@ export class Kanban extends Control<KanbanConfig> {
     columnKey: string,
     label: string,
     laneKey?: string,
-    phase?: string,
+    glyph?: StatusGlyph,
   ): HTMLElement {
     const col = document.createElement('div');
     col.className = 'col';
@@ -927,7 +946,7 @@ export class Kanban extends Control<KanbanConfig> {
     // opens with no lane prefill).
     add.title = 'Quick-add a task in this column';
     this.listen(add, 'click', () => this.openQuickEntry(columnKey, laneKey));
-    if (phase !== undefined) header.append(statusIcon(phase));
+    if (glyph !== undefined) header.append(statusIcon(glyph));
     header.append(labelEl, count, add);
 
     const body = document.createElement('div');

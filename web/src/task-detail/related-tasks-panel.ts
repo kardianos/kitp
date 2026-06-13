@@ -37,7 +37,7 @@ import { navigate, taskUrl } from '../shell/router.js';
 import type { RefPicker } from '../ui/ref-picker.js';
 
 import { icon } from '../ui/icons.js';
-import { statusIcon } from '../ui/status-icon.js';
+import { statusIcon, applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                  */
 /* -------------------------------------------------------------------------- */
@@ -122,7 +122,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
 
   /** Status pool: status card id (string) → { label, phase } — for the body
    *  summary's status text (mirrors TaskDetail's badge resolution). */
-  private readonly statusInfo = new Map<string, { label: string; phase: string }>();
+  private readonly statusInfo = new Map<string, StatusInfo>();
   /** The current parent's phase (top-level card phase), once resolved. */
   private parentPhase = '';
   /** The current parent's `status` ref id, once resolved (for the summary). */
@@ -423,6 +423,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
           const label = typeof a['title'] === 'string' && a['title'].length > 0 ? a['title'] : `#${r.id.toString()}`;
           this.statusInfo.set(r.id.toString(), { label, phase: r.phase ?? '' });
         }
+        applyStatusGlyphs(this.statusInfo, rows);
         this.paintSummary();
       },
       { alive: () => this.isAlive() },
@@ -744,7 +745,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
       const status = document.createElement('span');
       status.className = 'related-summary__status muted';
       status.dataset.phase = info.phase;
-      status.append(statusIcon(info.phase), document.createTextNode(info.label));
+      status.append(statusIcon(info), document.createTextNode(info.label));
       row.append(status);
     }
     return row;
