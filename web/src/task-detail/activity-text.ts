@@ -37,6 +37,17 @@ function resolveActor(actorId: bigint, userNames?: IdMap): string {
   return userNames?.[k] ?? `user#${k}`;
 }
 
+/** A value counts as "empty" (no setting) when it's null/undefined, the empty
+ *  string, or an empty array (e.g. a never-set assignee or a cleared tag set).
+ *  Drives the "set …" / "cleared …" phrasing so the activity feed never shows
+ *  a bare empty-set placeholder. */
+function isEmptyValue(v: unknown): boolean {
+  if (v === null || v === undefined) return true;
+  if (typeof v === 'string' && v === '') return true;
+  if (Array.isArray(v) && v.length === 0) return true;
+  return false;
+}
+
 function formatAttrValue(
   attrName: string | undefined,
   v: unknown,
@@ -44,7 +55,7 @@ function formatAttrValue(
   cardTitles?: IdMap,
   tagPaths?: IdMap,
 ): string {
-  if (v === null || v === undefined) return '∅';
+  if (v === null || v === undefined) return '—';
   // Per-attribute special cases for ref shapes the kernel treats differently
   // from "look up the bigint in cardTitles":
   //   - assignee   → person-name map (separate from value-card titles)
@@ -61,7 +72,7 @@ function formatAttrValue(
     }
     case 'tags':
       if (Array.isArray(v)) {
-        if (v.length === 0) return '∅';
+        if (v.length === 0) return '—';
         return v
           .map((id) => {
             const k = idKey(id);
@@ -172,8 +183,16 @@ export function formatActivityText(
       if (name === 'description') return `${actor} edited the description.`;
       if (name === 'sort_order') return `${actor} reordered the card.`;
       const label = humaniseAttribute(name);
-      const oldS = formatAttrValue(name, row.valueOld, userNames, cardTitles, tagPaths);
+      // Phrase by which side is empty so an "unset → value" row reads
+      // "set X to Y" rather than "changed X from ∅ to Y" (the empty-set glyph
+      // confused readers). Only a genuine value→value edit shows "from … to …".
+      const oldEmpty = isEmptyValue(row.valueOld);
+      const newEmpty = isEmptyValue(row.valueNew);
+      if (oldEmpty && newEmpty) return `${actor} changed ${label}.`;
       const newS = formatAttrValue(name, row.valueNew, userNames, cardTitles, tagPaths);
+      if (oldEmpty) return `${actor} set ${label} to ${newS}`;
+      const oldS = formatAttrValue(name, row.valueOld, userNames, cardTitles, tagPaths);
+      if (newEmpty) return `${actor} cleared ${label} (was ${oldS})`;
       return `${actor} changed ${label} from ${oldS} to ${newS}`;
     }
     case 'attachment_create': {
