@@ -34,12 +34,6 @@ import (
 type CSPConfig struct {
 	ReportOnly bool
 	Reporter   string
-	// UpgradeInsecure emits `upgrade-insecure-requests`, rewriting http://
-	// subresource fetches to https://. Wire it on for production (TLS)
-	// deployments only: browsers exempt loopback, so dev on localhost never
-	// notices, but a plain-HTTP LAN deploy (intranet box, home lab) serves a
-	// blank page as every asset upgrade fails the TLS handshake.
-	UpgradeInsecure bool
 }
 
 // CSP returns an http middleware that sets the Content-Security-
@@ -49,7 +43,7 @@ func CSP(cfg CSPConfig) func(http.Handler) http.Handler {
 	if cfg.ReportOnly {
 		header = "Content-Security-Policy-Report-Only"
 	}
-	value := buildCSP(cfg.Reporter, cfg.UpgradeInsecure)
+	value := buildCSP(cfg.Reporter)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set(header, value)
@@ -84,10 +78,10 @@ func CSP(cfg CSPConfig) func(http.Handler) http.Handler {
 //   - `frame-ancestors 'none'` refuses to be embedded in any other
 //     site's iframe (modern equivalent of `X-Frame-Options: DENY`).
 //
-//   - `upgrade-insecure-requests` (production only — see
-//     CSPConfig.UpgradeInsecure) rewrites accidental http:// asset
-//     refs to https://.
-func buildCSP(reporter string, upgradeInsecure bool) string {
+// `upgrade-insecure-requests` is intentionally NOT emitted: HTTPS is
+// terminated at the reverse-proxy edge, and the directive would blank
+// every asset fetch on a plain-HTTP LAN deploy.
+func buildCSP(reporter string) string {
 	directives := []string{
 		"default-src 'none'",
 		"script-src 'self'",
@@ -100,9 +94,6 @@ func buildCSP(reporter string, upgradeInsecure bool) string {
 		"base-uri 'none'",
 		"form-action 'self'",
 		"frame-ancestors 'none'",
-	}
-	if upgradeInsecure {
-		directives = append(directives, "upgrade-insecure-requests")
 	}
 	if reporter != "" {
 		directives = append(directives, "report-uri "+reporter)

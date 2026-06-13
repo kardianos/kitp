@@ -689,11 +689,6 @@ func runHTTP() error {
 	cspMW := api.CSP(api.CSPConfig{
 		ReportOnly: os.Getenv("KITP_CSP_REPORT_ONLY") == "1",
 		Reporter:   os.Getenv("KITP_CSP_REPORT_URI"),
-		// Production deployments sit behind TLS; upgrade their stray http://
-		// refs. Dev includes plain-HTTP LAN installs, where the upgrade
-		// would break every asset fetch (loopback is browser-exempt, so
-		// localhost dev never sees the difference either way).
-		UpgradeInsecure: env == "production",
 	})
 	// The per-request http access line lives in LoggingMiddleware; only mount
 	// it when request logging is on, so the default chain is RequestID → CSP →
