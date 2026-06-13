@@ -16,11 +16,12 @@
     <link rel="icon" href="/assets/favicon-16.png" sizes="16x16" type="image/png" />
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
     <meta name="theme-color" content="#5e6ad2" />
-    <!-- Preload the primary text face (crossorigin is required for font
-         preloads even same-origin; the italic face loads on demand). -->
+    <!-- Preload the primary UI text face (Source Sans 3, used by the chrome on
+         first paint; crossorigin is required for font preloads even same-
+         origin). The serif content face + the italic faces load on demand. -->
     <link
       rel="preload"
-      href="/assets/fonts/InterVariable.woff2"
+      href="/assets/fonts/SourceSans3Variable.woff2"
       as="font"
       type="font/woff2"
       crossorigin

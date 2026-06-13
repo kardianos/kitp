@@ -155,8 +155,12 @@
      (Linear-compact). Grids/tables opt into tabular-nums +
      tighter leading via --leading-data on the data surfaces.
      ---------------------------------------------------------------------- */
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
-    Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-sans: "Source Sans 3", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  /* Body serif for long-form / dense reading text (task descriptions, the
+     activity log, comments, task titles). UI chrome stays on --font-sans. */
+  --font-serif: "Source Serif 4", Charter, "Bitstream Charter", "Iowan Old Style",
+    Georgia, Cambria, ui-serif, serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", monospace;
 
@@ -400,6 +404,9 @@ html,
 body {
   background-color: var(--color-bg);
   color: var(--color-fg);
+  /* Chrome/structure uses the sans (Source Sans 3); long-form reading content
+     opts into the serif (Source Serif 4) per the rules further below. The two
+     are a matched superfamily, so the split harmonises. */
   font-family: var(--font-sans);
   font-size: var(--text-base);
   line-height: var(--leading-normal);
