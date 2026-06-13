@@ -38,6 +38,7 @@ import type { RefPicker } from '../ui/ref-picker.js';
 
 import { icon } from '../ui/icons.js';
 import { statusIcon, applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
+import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                  */
 /* -------------------------------------------------------------------------- */
@@ -224,6 +225,17 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
       const nonce = this.ctx.tree.at(['tasks', 'createdNonce']).get<number>() ?? 0;
       if (nonce > 0 && this.cardId !== null) this.loadChildren();
     }, 'related.refreshOnCreate');
+    // Re-scope the related-task status glyphs to the flow once it lands.
+    this.effect(() => {
+      this.ctx.tree.at(['scope', 'workflowStatusIds']).get();
+      this.rescopeStatusGlyphs();
+    }, 'related.statusFlowScope');
+  }
+
+  /** Recompute the status glyphs against the current task-flow scope + repaint. */
+  private rescopeStatusGlyphs(): void {
+    applyStatusGlyphs(this.statusInfo, peekWorkflowStatusIds(this.ctx));
+    this.paintSummary();
   }
 
   /**
@@ -421,10 +433,14 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
         for (const r of rows) {
           const a = r.attributes;
           const label = typeof a['title'] === 'string' && a['title'].length > 0 ? a['title'] : `#${r.id.toString()}`;
-          this.statusInfo.set(r.id.toString(), { label, phase: r.phase ?? '' });
+          this.statusInfo.set(r.id.toString(), {
+            label,
+            phase: r.phase ?? '',
+            sortOrder: Number(a['sort_order'] ?? 0),
+            groupKey: r.parent_card_id?.toString() ?? '',
+          });
         }
-        applyStatusGlyphs(this.statusInfo, rows);
-        this.paintSummary();
+        this.rescopeStatusGlyphs();
       },
       { alive: () => this.isAlive() },
     );

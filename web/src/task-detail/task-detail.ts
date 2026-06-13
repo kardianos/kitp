@@ -78,6 +78,7 @@ import type { PostChunk } from './upload.js';
 import { icon } from '../ui/icons.js';
 
 import { statusIcon, applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
+import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
 /* -------------------------------------------------------------------------- */
@@ -392,6 +393,11 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       const allowed = isAdmin(this.ctx.tree) || hasRole(this.ctx.tree, 'manager');
       actions.style.display = allowed ? '' : 'none';
     }, 'taskDetail.actionsRole');
+    // Re-scope the status badge glyph to the task flow once it lands.
+    this.effect(() => {
+      this.ctx.tree.at(['scope', 'workflowStatusIds']).get();
+      this.rescopeStatusBadge();
+    }, 'taskDetail.statusFlowScope');
     this.onDestroy(() => {
       this.actionsMenu?.destroy();
       this.actionsMenu = null;
@@ -597,10 +603,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         for (const r of rows) {
           const a = r.attributes;
           const label = typeof a['title'] === 'string' && a['title'].length > 0 ? a['title'] : `#${r.id.toString()}`;
-          this.statusInfo.set(r.id.toString(), { label, phase: r.phase ?? '' });
+          this.statusInfo.set(r.id.toString(), {
+            label,
+            phase: r.phase ?? '',
+            sortOrder: Number(a['sort_order'] ?? 0),
+            groupKey: r.parent_card_id?.toString() ?? '',
+          });
         }
-        applyStatusGlyphs(this.statusInfo, rows);
-        this.paintStatusBadge();
+        this.rescopeStatusBadge();
       },
       { alive: () => this.isAlive() },
     );
@@ -608,6 +618,12 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 
   /** Paint the read-only header status badge from the task's `status` ref and
    *  the loaded status pool. Hidden until both resolve. */
+  /** Recompute the status badge glyph against the current task-flow scope. */
+  private rescopeStatusBadge(): void {
+    applyStatusGlyphs(this.statusInfo, peekWorkflowStatusIds(this.ctx));
+    this.paintStatusBadge();
+  }
+
   private paintStatusBadge(): void {
     const el = this.statusBadgeEl;
     if (el === undefined) return;

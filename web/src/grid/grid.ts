@@ -92,6 +92,7 @@ import type { DatePicker } from '../ui/datepicker.js';
 
 import { setIcon, icon } from '../ui/icons.js';
 import { statusIcon, applyStatusGlyphs } from '../ui/status-icon.js';
+import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
 import { priorityIcon } from '../ui/priority-icon.js';
 /**
  * Fixed virtual-list row height (px). Matches the compact grid row: one line of
@@ -425,6 +426,13 @@ export class Grid extends CardListCore<GridConfig> {
       fault.textContent = `Failed to load grid: ${describeFault(f)}`;
     }, 'grid.fault');
 
+    // Re-scope the status icon ramp to the project's task flow when it lands
+    // (it may resolve after the statuses) so the grid's glyphs match the kanban.
+    this.effect(() => {
+      this.ctx.tree.at(['scope', 'workflowStatusIds']).get();
+      this.rescopeStatusGlyphs();
+    }, 'grid.statusFlowScope');
+
     // Empty-state toggle reads only the tasks leaf (cascade-safe). Until the
     // first load lands, show "Loading…" rather than the empty message so a
     // freshly-mounted Grid doesn't flash "no tasks" then fill.
@@ -604,12 +612,16 @@ export class Grid extends CardListCore<GridConfig> {
       this.statusInfo.clear();
       const map: LabelMap = {};
       for (const r of rows) {
-        this.statusInfo.set(r.id.toString(), { label: titleOrName(r), phase: r.phase ?? '' });
+        this.statusInfo.set(r.id.toString(), {
+          label: titleOrName(r),
+          phase: r.phase ?? '',
+          sortOrder: Number(r.attributes['sort_order'] ?? 0),
+          groupKey: r.parent_card_id?.toString() ?? '',
+        });
         map[r.id.toString()] = titleOrName(r);
       }
-      applyStatusGlyphs(this.statusInfo, rows);
       this.ctx.tree.at(['grid', 'lookups', 'statuses']).set(map);
-      this.tickLookups();
+      this.rescopeStatusGlyphs();
     });
     this.handler('landMilestones', landLabels('milestones', titleOrName));
     this.handler('landComponents', landLabels('components', titleOrName));
@@ -650,6 +662,14 @@ export class Grid extends CardListCore<GridConfig> {
   private tickLookups(): void {
     const node = this.ctx.tree.at(['grid', 'lookups', 'tick']);
     node.set((node.peek<number>() ?? 0) + 1);
+  }
+
+  /** Recompute the status icon glyphs against the current task-flow scope and
+   *  repaint the status cells. Called on status land and when the flow set
+   *  lands (which may be after the statuses). */
+  private rescopeStatusGlyphs(): void {
+    applyStatusGlyphs(this.statusInfo, peekWorkflowStatusIds(this.ctx));
+    this.tickLookups();
   }
 
   /* ------------------------------ selection ------------------------------- */

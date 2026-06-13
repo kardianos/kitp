@@ -63,6 +63,7 @@ import {
   type CommUnseenCountOutput,
 } from '../task-detail/comm-specs.js';
 import { icon, setIcon, type IconName } from '../ui/icons.js';
+import { loadWorkflowStatusIds } from '../ui/workflow-statuses.js';
 
 export interface ProjectScopeOption {
   /** bigint id as a string ('' = all projects). */
@@ -492,6 +493,14 @@ export class AppShell extends Control<AppShellConfig> {
         for (const el of section.chrome) el.style.display = anyVisible ? '' : 'none';
       }
     }, 'shell.adminSection');
+
+    // Load the active project's task-flow status set into scope.workflowStatusIds
+    // (one owner) so every status surface scopes its Linear-style icon ramp to
+    // the same statuses the kanban shows — see ui/workflow-statuses.ts.
+    this.effect(() => {
+      const pid = this.ctx.tree.at(['scope', 'projectId']).get<bigint | null>() ?? null;
+      loadWorkflowStatusIds(this.ctx, pid, () => this.isAlive());
+    }, 'shell.workflowStatuses');
 
     // User chip (rail foot) — a button that expands a menu with Account + Logout.
     const userWrap = document.createElement('div');

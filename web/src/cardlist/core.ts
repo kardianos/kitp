@@ -29,6 +29,7 @@ import { SPEC } from '../kanban/specs.js';
 import { INBOX_SPEC } from '../inbox/specs.js';
 import { asAttrId, type CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
+import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
 import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
 import { navigate, taskUrl } from '../shell/router.js';
 import { publishTaskNav } from '../shell/task-nav.js';
@@ -350,6 +351,19 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
       this.applyFilterAndOrder();
       this.bumpQuery();
     }, 'cardList.query');
+
+    // Re-scope the status icon ramp to the task flow when it lands (it may
+    // resolve after the statuses) so the badges match the kanban.
+    this.effect(() => {
+      this.ctx.tree.at(['scope', 'workflowStatusIds']).get();
+      this.rescopeStatusGlyphs();
+    }, 'cardList.statusFlowScope');
+  }
+
+  /** Recompute the status glyphs against the current task-flow scope + repaint. */
+  protected rescopeStatusGlyphs(): void {
+    applyStatusGlyphs(this.statusInfo, peekWorkflowStatusIds(this.ctx));
+    this.refreshView();
   }
 
   protected wireListInteractions(): void {
@@ -532,12 +546,16 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
       this.statusInfo.clear();
       const map: LabelMap = {};
       for (const r of rows) {
-        this.statusInfo.set(r.id.toString(), { label: labelOf(r), phase: r.phase ?? '' });
+        this.statusInfo.set(r.id.toString(), {
+          label: labelOf(r),
+          phase: r.phase ?? '',
+          sortOrder: Number(r.attributes['sort_order'] ?? 0),
+          groupKey: r.parent_card_id?.toString() ?? '',
+        });
         map[r.id.toString()] = labelOf(r);
       }
-      applyStatusGlyphs(this.statusInfo, rows);
       this.ctx.tree.at(this.px('lookups', 'statuses')).set(map);
-      this.refreshView();
+      this.rescopeStatusGlyphs();
     });
     this.handler('landPersons', landLabels('persons'));
     this.handler('landMilestones', landLabels('milestones'));
