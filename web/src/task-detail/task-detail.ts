@@ -77,7 +77,7 @@ import type { RelatedTasksPanel } from './related-tasks-panel.js';
 import type { PostChunk } from './upload.js';
 import { icon } from '../ui/icons.js';
 
-import { statusIcon } from '../ui/status-icon.js';
+import { statusIcon, applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
 /* -------------------------------------------------------------------------- */
@@ -211,7 +211,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   /** Read-only status badge in the nav row (next to #id). Phase-toned. */
   private statusBadgeEl!: HTMLElement;
   /** status card id → {label, phase} for the header status badge. */
-  private readonly statusInfo = new Map<string, { label: string; phase: string }>();
+  private readonly statusInfo = new Map<string, StatusInfo>();
 
   /** The open overflow-menu popover, disposed on close / destroy. */
   private actionsMenu: Popover | null = null;
@@ -599,6 +599,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
           const label = typeof a['title'] === 'string' && a['title'].length > 0 ? a['title'] : `#${r.id.toString()}`;
           this.statusInfo.set(r.id.toString(), { label, phase: r.phase ?? '' });
         }
+        applyStatusGlyphs(this.statusInfo, rows);
         this.paintStatusBadge();
       },
       { alive: () => this.isAlive() },
@@ -618,7 +619,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     }
     el.style.display = '';
     el.dataset.phase = info.phase;
-    el.replaceChildren(statusIcon(info.phase), document.createTextNode(info.label));
+    el.replaceChildren(statusIcon(info), document.createTextNode(info.label));
   }
 
   /** Load the task card_type's editable attribute schema (attribute_def.select). */

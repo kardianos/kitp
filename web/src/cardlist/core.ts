@@ -28,6 +28,7 @@ import type { ActionBinding, QueryBinding } from '../core/data.js';
 import { SPEC } from '../kanban/specs.js';
 import { INBOX_SPEC } from '../inbox/specs.js';
 import { asAttrId, type CardWithAttrs } from '../kanban/kanban-helpers.js';
+import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
 import { navigate, taskUrl } from '../shell/router.js';
 import { publishTaskNav } from '../shell/task-nav.js';
@@ -230,7 +231,7 @@ export function buildCardListActions(p: string): ActionBinding[] {
 }
 
 export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCoreConfig> extends Control<Cfg> {
-  protected statusInfo = new Map<string, { label: string; phase: string }>();
+  protected statusInfo = new Map<string, StatusInfo>();
   protected parentTitles = new Map<string, string>();
   protected loaded = false;
   protected flaggedOnly = false;
@@ -534,6 +535,7 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
         this.statusInfo.set(r.id.toString(), { label: labelOf(r), phase: r.phase ?? '' });
         map[r.id.toString()] = labelOf(r);
       }
+      applyStatusGlyphs(this.statusInfo, rows);
       this.ctx.tree.at(this.px('lookups', 'statuses')).set(map);
       this.refreshView();
     });
