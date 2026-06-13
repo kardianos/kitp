@@ -400,6 +400,15 @@
    Root document defaults. Bind the page to the tokens + enable the One-UI
    font niceties (kerning, ligatures) once Inter is present.
    -------------------------------------------------------------------------- */
+html {
+  /* Keep the root at the browser default (16px) so every rem token resolves
+     at its designed size. Setting font-size in *rem* on html is self-
+     referential — it resolves against 16px, lands html at 14px, and then
+     silently shrinks the WHOLE rem scale ~12.5% (body 14px→12.25px, the 13px
+     "sm" description →11.4px, …), which is the bulk of the "dense text reads
+     blurry" report. Body — not html — carries the 14px default below. */
+  font-size: 100%;
+}
 html,
 body {
   background-color: var(--color-bg);
@@ -408,7 +417,6 @@ body {
      opts into the serif (Source Serif 4) per the rules further below. The two
      are a matched superfamily, so the split harmonises. */
   font-family: var(--font-sans);
-  font-size: var(--text-base);
   line-height: var(--leading-normal);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -416,6 +424,11 @@ body {
   /* Inter Variable alternates (vendored in assets/fonts/): cv05 = lowercase
      l with tail, ss01 = open digits. Both are taste — cheap to drop. */
   font-feature-settings: "cv05", "ss01";
+}
+body {
+  /* The 14px body default lives on body (not html) so it doesn't shrink the
+     rem scale — see the html rule above. */
+  font-size: var(--text-base);
 }
 
 /* Respect reduced-motion: zero out the kanban flip + every transition. The
