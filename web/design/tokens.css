@@ -421,9 +421,6 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
-  /* Inter Variable alternates (vendored in assets/fonts/): cv05 = lowercase
-     l with tail, ss01 = open digits. Both are taste — cheap to drop. */
-  font-feature-settings: "cv05", "ss01";
 }
 body {
   /* The 14px body default lives on body (not html) so it doesn't shrink the
