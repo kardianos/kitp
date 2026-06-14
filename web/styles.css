@@ -542,7 +542,9 @@ select optgroup {
 .shell__link {
   font: inherit;
   font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
+  /* Semibold (not medium): Source Sans 3 reads lighter than Inter, so the rail
+     items need the extra weight to hold presence as the UI sans. */
+  font-weight: var(--weight-semibold);
   display: flex;
   align-items: center;
   justify-content: space-between;
