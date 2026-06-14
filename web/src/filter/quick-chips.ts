@@ -111,6 +111,9 @@ type OptionsMap = Record<string, ChipOption[]>;
 
 interface ChipView {
   def: QuickChipDef;
+  /** The chip's outer wrapper — hidden until the chip has a value or is
+   *  revealed via the "+ Filter" menu (Linear-style on-demand filters). */
+  wrap: HTMLElement;
   trigger: HTMLButtonElement;
   labelEl: HTMLSpanElement;
   clearEl: HTMLButtonElement;
@@ -126,6 +129,9 @@ interface ChipView {
 
 export class QuickChips extends Control<QuickChipsConfig> {
   private chips: ChipView[] = [];
+  /** The "+ Filter" add-menu (reveals hidden chips on demand). */
+  private addPopover: Popover | null = null;
+  private addListEl: HTMLUListElement | null = null;
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('div');
@@ -139,6 +145,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
   protected render(): void {
     const defs = this.config.chips ?? DEFAULT_TASK_CHIPS;
     for (const def of defs) this.chips.push(this.buildChip(def));
+    this.buildAddFilter();
 
     // ONE reactive effect: reads the shared predicate + the options map and
     // repaints every chip's active state (trigger label/count + the open menu's
@@ -148,6 +155,8 @@ export class QuickChips extends Control<QuickChipsConfig> {
       const predicate = this.readPredicate();
       const options = this.readOptions();
       for (const chip of this.chips) this.paintChip(chip, predicate, options);
+      // Keep the open "+ Filter" menu in sync if a chip cleared elsewhere.
+      if (this.addPopover?.isOpen) this.renderAddMenu();
     }, 'quickChips.sync');
   }
 
@@ -214,7 +223,14 @@ export class QuickChips extends Control<QuickChipsConfig> {
       placement: 'bottom-start',
       width: 'anchor',
       clampHeight: true,
-      onClose: () => trigger.setAttribute('aria-expanded', 'false'),
+      onClose: () => {
+        trigger.setAttribute('aria-expanded', 'false');
+        // Fold the chip back off the bar if it closed with no value (added via
+        // "+ Filter" but nothing picked, or its last value just unchecked).
+        if (selectedValues(this.peekPredicate(), def.attr).length === 0) {
+          wrap.style.display = 'none';
+        }
+      },
     });
     const panel = popover.element;
     panel.classList.add('filterbar__chip-panel');
@@ -226,6 +242,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
 
     const chip: ChipView = {
       def,
+      wrap,
       trigger,
       labelEl,
       clearEl,
@@ -235,8 +252,9 @@ export class QuickChips extends Control<QuickChipsConfig> {
     };
 
     this.listen(trigger, 'click', (e) => {
-      // A click on the clear-X clears the leaf; anywhere else toggles the menu.
-      if (e.target === clearEl) {
+      // A click on the clear-X (or the icon inside it) clears the leaf; anywhere
+      // else toggles the menu.
+      if (clearEl.contains(e.target as Node)) {
         e.preventDefault();
         this.clearChip(chip);
         return;
@@ -256,6 +274,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
   /* ------------------------------- open/paint ---------------------------- */
 
   private openChip(chip: ChipView): void {
+    chip.wrap.style.display = ''; // ensure visible (e.g. just added via "+ Filter")
     // Rebuild the menu from the LIVE selection + options on every open.
     this.renderMenu(chip, this.peekPredicate(), this.readOptionsPeek());
     chip.trigger.setAttribute('aria-expanded', 'true');
@@ -271,6 +290,10 @@ export class QuickChips extends Control<QuickChipsConfig> {
   private paintChip(chip: ChipView, predicate: Predicate | null, options: OptionsMap): void {
     chip.selected = selectedValues(predicate, chip.def.attr);
     const count = chip.selected.length;
+
+    // On-demand visibility: a chip shows only while it carries a value or its
+    // picker is open (just added via "+ Filter"). Empty + closed → folded away.
+    chip.wrap.style.display = count > 0 || chip.popover.isOpen ? '' : 'none';
 
     if (count === 0) {
       chip.labelEl.textContent = chip.def.label;
@@ -345,7 +368,93 @@ export class QuickChips extends Control<QuickChipsConfig> {
       chip.popover.close();
       chip.trigger.setAttribute('aria-expanded', 'false');
     }
-    this.commit(chip.def.attr, []);
+    this.commit(chip.def.attr, []); // count→0 + closed popover → repaint folds it away
+  }
+
+  /* ------------------------------ + Filter ------------------------------- */
+
+  /** The "+ Filter" trigger + its menu of not-yet-shown chips. Appended after
+   *  the chips so it trails the active ones (which collapse when hidden). */
+  private buildAddFilter(): void {
+    const wrap = document.createElement('div');
+    wrap.className = 'filterbar__chip-wrap';
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'filterbar__chip filterbar__add-filter';
+    trigger.dataset.addFilter = '';
+    trigger.setAttribute('aria-haspopup', 'menu');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-label', 'Add a filter');
+    const plus = document.createElement('span');
+    plus.className = 'filterbar__chip-caret';
+    plus.setAttribute('aria-hidden', 'true');
+    plus.append(icon('plus', 14));
+    const label = document.createElement('span');
+    label.className = 'filterbar__chip-label';
+    label.textContent = 'Filter';
+    trigger.append(plus, label);
+    wrap.append(trigger);
+    this.el.append(wrap);
+
+    const popover = new Popover(trigger, {
+      placement: 'bottom-start',
+      clampHeight: true,
+      onClose: () => trigger.setAttribute('aria-expanded', 'false'),
+    });
+    this.addPopover = popover;
+    const panel = popover.element;
+    panel.classList.add('filterbar__chip-panel');
+    const list = document.createElement('ul');
+    list.className = 'filterbar__chip-list';
+    list.setAttribute('role', 'menu');
+    panel.append(list);
+    this.addListEl = list;
+
+    this.listen(trigger, 'click', () => {
+      if (popover.isOpen) {
+        popover.close();
+        trigger.setAttribute('aria-expanded', 'false');
+      } else {
+        this.renderAddMenu();
+        trigger.setAttribute('aria-expanded', 'true');
+        popover.open();
+      }
+    });
+    this.onDestroy(() => popover.destroy());
+  }
+
+  /** Populate the "+ Filter" menu with the chips not currently on the bar. */
+  private renderAddMenu(): void {
+    const list = this.addListEl;
+    if (list === null) return;
+    list.replaceChildren();
+    const hidden = this.chips.filter((c) => c.wrap.style.display === 'none');
+    if (hidden.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'filterbar__chip-empty muted';
+      li.textContent = 'All filters added';
+      list.append(li);
+      this.addPopover?.reposition();
+      return;
+    }
+    for (const chip of hidden) {
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'filterbar__chip-option';
+      btn.setAttribute('role', 'menuitem');
+      const text = document.createElement('span');
+      text.className = 'filterbar__chip-option-label';
+      text.textContent = chip.def.label;
+      btn.append(text);
+      this.listen(btn, 'click', () => {
+        this.addPopover?.close();
+        this.openChip(chip); // reveals the chip + opens its picker
+      });
+      li.append(btn);
+      list.append(li);
+    }
+    this.addPopover?.reposition();
   }
 
   /**
