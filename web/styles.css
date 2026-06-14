@@ -1035,17 +1035,10 @@ select optgroup {
   white-space: nowrap;
   color: var(--color-muted);
 }
-/* Phase text + the preset "⋯" menu match the muted resting tone of the bar
-   icons, brightening to fg on hover / when open (like .filterbar__iconbtn). */
+/* Phase text matches the muted resting tone of the bar icons, brightening to
+   fg on hover / when open (like .filterbar__iconbtn). */
 .filterbar__phase-trigger:hover,
 .filterbar__phase-trigger[aria-expanded='true'] {
-  color: var(--color-fg);
-}
-.filter-preset__menu-trigger .icon {
-  color: var(--color-muted);
-}
-.filter-preset__menu-trigger:hover .icon,
-.filter-preset__menu-trigger[aria-expanded='true'] .icon {
   color: var(--color-fg);
 }
 .filterbar__phase-menu {
@@ -5179,6 +5172,38 @@ select optgroup {
   color: var(--color-muted);
   font-size: var(--text-sm);
 }
+/* Footer action buttons (e.g. the View dropdown's Save / Rename / Delete),
+   pinned below the option list with a divider. */
+.kf-combobox__footer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--color-border);
+}
+.kf-combobox__action {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: var(--space-1x) var(--space-3);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--color-fg);
+  cursor: pointer;
+}
+.kf-combobox__action:hover:not(:disabled) {
+  background: var(--color-surface-sunken);
+}
+.kf-combobox__action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.kf-combobox__action--danger {
+  color: var(--color-danger, #e2504a);
+}
 
 /* ---- DatePicker ---- */
 .kf-datepicker {
@@ -6912,34 +6937,6 @@ textarea.task-comms__form-input {
 
 /* The dropdown menu (composes .kf-popover for the surface look). */
 /* View-actions overflow menu (#4) — mirrors the transition-bar menu. */
-.filter-preset__menu {
-  display: flex;
-  flex-direction: column;
-  padding: var(--space-1) 0;
-  min-width: 13rem;
-  font-size: var(--text-sm);
-}
-.filter-preset__menu-item {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  padding: var(--space-1x) var(--space-3);
-  font: inherit;
-  font-size: var(--text-sm);
-  text-align: left;
-  border: 0;
-  background: transparent;
-  color: var(--color-fg);
-  cursor: pointer;
-}
-.filter-preset__menu-item:hover:not(:disabled) {
-  background: var(--color-surface-sunken);
-}
-.filter-preset__menu-item:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
 .transition-bar__menu {
   display: flex;
   flex-direction: column;

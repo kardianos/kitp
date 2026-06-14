@@ -23,11 +23,9 @@
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { Combobox } from '../ui/combobox.js';
-import { Popover } from '../ui/popover.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { readTitle } from './screen-resolve.js';
 
-import { icon } from '../ui/icons.js';
 export interface FilterPresetSelectorConfig extends BaseControlConfig {
   type: 'FilterPresetSelector';
   /** Tree path holding the saved filter cards (CardWithAttrs[]). Read reactively. */
@@ -54,9 +52,6 @@ declare module '../core/control.js' {
 
 export class FilterPresetSelector extends Control<FilterPresetSelectorConfig> {
   private combo: Combobox<string> | null = null;
-  private setDefaultBtn: HTMLButtonElement | null = null;
-  private renameBtn: HTMLButtonElement | null = null;
-  private deleteBtn: HTMLButtonElement | null = null;
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('div');
@@ -87,58 +82,13 @@ export class FilterPresetSelector extends Control<FilterPresetSelectorConfig> {
       comboHost,
     ) as Combobox<string>;
 
-    // Actions collapsed behind a "⋯" overflow menu (#4): Save (always) + the
-    // active-only Set default / Rename / Delete. The bar owns the writes via the
-    // callbacks; this control is presentation + intent only.
-    const kebab = document.createElement('button');
-    kebab.type = 'button';
-    kebab.className = 'btn btn--icon filter-preset__menu-trigger';
-    kebab.dataset.filterPresetMenu = '';
-    kebab.setAttribute('aria-haspopup', 'menu');
-    kebab.setAttribute('aria-expanded', 'false');
-    kebab.setAttribute('aria-label', 'View actions');
-    kebab.title = 'View actions';
-    kebab.append(icon('ellipsis'));
-    this.el.append(kebab);
-
-    const menu = new Popover(kebab, {
-      placement: 'bottom-end',
-      onClose: () => kebab.setAttribute('aria-expanded', 'false'),
-    });
-    const panel = menu.element;
-    panel.classList.add('filter-preset__menu');
-    panel.setAttribute('role', 'menu');
-
-    const saveBtn = menuItem('Save current as new view…', 'filter-preset__save');
-    const setDefaultBtn = menuItem('Set as default', 'filter-preset__set-default');
-    const renameBtn = menuItem('Rename…', 'filter-preset__rename');
-    const deleteBtn = menuItem('Delete…', 'filter-preset__delete');
-    this.setDefaultBtn = setDefaultBtn;
-    this.renameBtn = renameBtn;
-    this.deleteBtn = deleteBtn;
-    panel.append(saveBtn, setDefaultBtn, renameBtn, deleteBtn);
-
-    const run = (fn?: () => void): void => {
-      menu.close();
-      fn?.();
-    };
-    this.listen(saveBtn, 'click', () => run(this.config.onSave));
-    this.listen(setDefaultBtn, 'click', () => run(this.config.onSetDefault));
-    this.listen(renameBtn, 'click', () => run(this.config.onRename));
-    this.listen(deleteBtn, 'click', () => run(this.config.onDelete));
-    this.listen(kebab, 'click', () => {
-      if (menu.isOpen) {
-        menu.close();
-      } else {
-        kebab.setAttribute('aria-expanded', 'true');
-        menu.open();
-      }
-    });
-    this.onDestroy(() => menu.destroy());
-
     // Reactively re-sync the Combobox options from the filters list AND the
-    // active id from the cache leaf. One-way derive: reads the two leaves +
-    // writes only DOM / the combo's imperative state (never a watched dep).
+    // active id from the cache leaf, and (re)publish the view-action footer
+    // buttons with their current enabled state. One-way derive: reads the two
+    // leaves + writes only the combo's imperative state (never a watched dep).
+    // The "⋯" overflow menu is gone — Save / Set default / Rename / Delete now
+    // live in the footer of the "View" dropdown (#4); the bar still owns the
+    // writes via the callbacks, this control stays presentation + intent only.
     const filtersNode = this.ctx.tree.at(this.config.filtersPath.split('.'));
     const activeNode = this.ctx.tree.at(this.config.activeIdPath.split('.'));
     this.effect(() => {
@@ -149,11 +99,14 @@ export class FilterPresetSelector extends Control<FilterPresetSelectorConfig> {
       // fire onChange — purely programmatic sync).
       this.combo?.setOptions(options);
       this.combo?.setValue(activeId === null ? null : activeId.toString());
-      // Disable the active-only actions when nothing is selected.
+      // The active-only actions disable when nothing is selected.
       const enabled = activeId !== null;
-      this.setActionEnabled(this.setDefaultBtn, enabled);
-      this.setActionEnabled(this.renameBtn, enabled);
-      this.setActionEnabled(this.deleteBtn, enabled);
+      this.combo?.setFooterActions([
+        { label: 'Save current as new view…', onRun: () => this.config.onSave?.() },
+        { label: 'Set as default', onRun: () => this.config.onSetDefault?.(), disabled: !enabled },
+        { label: 'Rename…', onRun: () => this.config.onRename?.(), disabled: !enabled },
+        { label: 'Delete…', onRun: () => this.config.onDelete?.(), disabled: !enabled, variant: 'danger' },
+      ]);
     }, 'filterPreset.sync');
   }
 
@@ -169,20 +122,6 @@ export class FilterPresetSelector extends Control<FilterPresetSelectorConfig> {
     }
   }
 
-  private setActionEnabled(btn: HTMLButtonElement | null, enabled: boolean): void {
-    if (btn === null) return;
-    btn.disabled = !enabled;
-    btn.classList.toggle('is-disabled', !enabled);
-  }
-}
-
-function menuItem(text: string, cls: string): HTMLButtonElement {
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.className = `filter-preset__menu-item ${cls}`;
-  b.setAttribute('role', 'menuitem');
-  b.textContent = text;
-  return b;
 }
 
 export function registerFilterPresetSelector(): void {
