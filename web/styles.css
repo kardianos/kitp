@@ -808,43 +808,83 @@ select optgroup {
   padding-top: var(--space-1);
   padding-bottom: var(--space-1);
 }
-.filterbar__search {
-  font: inherit;
-  font-size: var(--text-sm);
+/* Square icon-only button (Search / Filter / Display triggers). Inherits .btn
+   for the border + surface; we just pin it square at the 2rem .btn height. */
+.filterbar__iconbtn {
+  width: 2rem;
+  padding: 0;
+  justify-content: center;
+}
+.filterbar__iconbtn .icon {
+  color: var(--color-muted);
+}
+.filterbar__iconbtn:hover .icon,
+.filterbar__iconbtn[aria-expanded='true'] .icon {
+  color: var(--color-fg);
+}
+/* Search collapses to a magnifier icon and expands into a flex-grow input. */
+.filterbar__search-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+.filterbar__search-wrap--expanded {
   flex: 1;
   min-width: 12rem;
-  min-height: 1.875rem;
-  padding: var(--space-1) var(--space-3);
+  min-height: 2rem;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface-sunken);
-  color: var(--color-fg);
   transition:
     border-color var(--duration-fast) var(--ease-standard),
     box-shadow var(--duration-fast) var(--ease-standard),
     background var(--duration-fast) var(--ease-standard);
 }
-.filterbar__search::placeholder {
-  color: var(--color-muted);
-}
-.filterbar__search:focus-visible {
-  outline: none;
+.filterbar__search-wrap--expanded:focus-within {
   border-color: var(--color-accent);
   background: var(--color-surface);
   box-shadow: 0 0 0 3px var(--color-focus-halo);
+}
+/* When expanded the toggle becomes a bare leading magnifier (no border/bg). */
+.filterbar__search-wrap--expanded .filterbar__search-toggle {
+  width: auto;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 var(--space-1) 0 var(--space-2);
+}
+/* The input is collapsed (zero-width, focusable) until the wrap expands. */
+.filterbar__search {
+  font: inherit;
+  font-size: var(--text-sm);
+  flex: 0 1 0;
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-fg);
+  opacity: 0;
+  pointer-events: none;
+}
+.filterbar__search-wrap--expanded .filterbar__search {
+  flex: 1;
+  width: auto;
+  opacity: 1;
+  pointer-events: auto;
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
+  outline: none;
+}
+.filterbar__search-wrap--expanded .filterbar__search-toggle:focus-visible {
+  outline: none;
+}
+.filterbar__search::placeholder {
+  color: var(--color-muted);
 }
 .filterbar__clear {
   min-height: 1.875rem;
   padding: var(--space-1) var(--space-3);
 }
-/* "Display" trigger (GROUP/LANES live in its popover) + the popover panel. */
-.filterbar__display {
-  min-height: 1.875rem;
-  padding: var(--space-1) var(--space-3);
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-}
+/* "Display" icon trigger (GROUP/LANES live in its popover) + the popover panel. */
 .filterbar__display-wrap {
   position: relative;
   display: inline-flex;
@@ -1041,14 +1081,6 @@ select optgroup {
 }
 .filterbar__chip--active .filterbar__chip-caret {
   color: var(--color-accent);
-}
-/* The "+ Filter" entry is a rectangular button matching the Phase box it sits
-   beside on the View row (the .btn / phase-trigger metrics), not a pill. */
-.filterbar__add-filter {
-  min-height: 2rem;
-  padding: var(--space-1x) var(--space-3);
-  font-size: var(--text-sm);
-  border-radius: var(--radius-md);
 }
 .filterbar__chip-clear {
   display: inline-flex;

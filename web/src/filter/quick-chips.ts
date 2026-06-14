@@ -404,19 +404,13 @@ export class QuickChips extends Control<QuickChipsConfig> {
     this.addWrap = wrap;
     const trigger = document.createElement('button');
     trigger.type = 'button';
-    trigger.className = 'filterbar__chip filterbar__add-filter';
+    trigger.className = 'btn filterbar__iconbtn filterbar__add-filter';
     trigger.dataset.addFilter = '';
     trigger.setAttribute('aria-haspopup', 'menu');
     trigger.setAttribute('aria-expanded', 'false');
     trigger.setAttribute('aria-label', 'Add a filter');
-    const plus = document.createElement('span');
-    plus.className = 'filterbar__chip-caret';
-    plus.setAttribute('aria-hidden', 'true');
-    plus.append(icon('plus', 14));
-    const label = document.createElement('span');
-    label.className = 'filterbar__chip-label';
-    label.textContent = 'Filter';
-    trigger.append(plus, label);
+    trigger.title = 'Filter';
+    trigger.append(icon('list-filter', 16));
     wrap.append(trigger);
     this.el.append(wrap);
 

@@ -288,17 +288,13 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     displayWrap.className = 'filterbar__display-wrap';
     const displayBtn = document.createElement('button');
     displayBtn.type = 'button';
-    displayBtn.className = 'btn filterbar__display';
+    displayBtn.className = 'btn filterbar__iconbtn filterbar__display';
     displayBtn.dataset.filterDisplay = '';
     displayBtn.setAttribute('aria-haspopup', 'menu');
     displayBtn.setAttribute('aria-expanded', 'false');
-    const displayLabel = document.createElement('span');
-    displayLabel.textContent = 'Display';
-    const displayCaret = document.createElement('span');
-    displayCaret.className = 'filterbar__chip-caret';
-    displayCaret.setAttribute('aria-hidden', 'true');
-    displayCaret.append(icon('chevron-down', 14));
-    displayBtn.append(displayLabel, displayCaret);
+    displayBtn.setAttribute('aria-label', 'Display');
+    displayBtn.title = 'Display';
+    displayBtn.append(icon('sliders-horizontal', 16));
     displayWrap.append(displayBtn);
 
     // An inline dropdown (not a detached popover) so the GROUP/LANE selects stay
@@ -353,15 +349,52 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
        applyAxes once the data-driven axes resolve. */
     bar.append(displayWrap, chipsHost);
 
-    // Search box — flex-grows to fill the middle; always matches title,
-    // description and comments (see the searchFields seed above).
+    // Search — a magnifier icon that expands into the input on click (or "/"),
+    // collapsing back when the field is emptied + blurred. The wrap flex-grows
+    // so the expanded field fills the middle and Advanced/Clear stay right. The
+    // search always matches title/description/comments (see the seed above).
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'filterbar__search-wrap';
+    searchWrap.dataset.searchWrap = '';
+    const searchToggle = document.createElement('button');
+    searchToggle.type = 'button';
+    searchToggle.className = 'btn filterbar__iconbtn filterbar__search-toggle';
+    searchToggle.dataset.searchToggle = '';
+    searchToggle.setAttribute('aria-label', 'Search');
+    searchToggle.title = 'Search';
+    searchToggle.append(icon('search', 16));
     const search = document.createElement('input');
     search.type = 'search';
     search.className = 'filterbar__search';
     search.placeholder = 'Search or #ID…';
     search.dataset.filterSearch = '';
     this.searchEl = search;
-    bar.append(search);
+    searchWrap.append(searchToggle, search);
+    bar.append(searchWrap);
+
+    const setSearchExpanded = (open: boolean): void => {
+      searchWrap.classList.toggle('filterbar__search-wrap--expanded', open);
+      searchToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    this.listen(searchToggle, 'click', () => {
+      setSearchExpanded(true);
+      search.focus();
+    });
+    // Focus expands (so "/" → focusScreenSearch reveals the field); blur collapses
+    // only when empty, so an active query stays visible.
+    this.listen(search, 'focus', () => setSearchExpanded(true));
+    this.listen(search, 'blur', () => {
+      if ((search.value ?? '') === '') setSearchExpanded(false);
+    });
+    // Keep expansion in sync with the shared search leaf — a restored / preset /
+    // cleared query expands or collapses the field even when focus never moved.
+    this.effect(() => {
+      const q = this.ctx.tree.at(['screen', 'search']).get<string>() ?? '';
+      if (q !== '') setSearchExpanded(true);
+      else if (typeof document === 'undefined' || document.activeElement !== search) {
+        setSearchExpanded(false);
+      }
+    }, 'filterbar.searchExpand');
 
     // Advanced toggle (expands the structured PredicateFilter) + Clear, pushed
     // to the right edge by the flex-grow search.
