@@ -400,10 +400,12 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     // to the right edge by the flex-grow search.
     const advanced = document.createElement('button');
     advanced.type = 'button';
-    advanced.className = 'btn filterbar__advanced';
+    advanced.className = 'btn filterbar__iconbtn filterbar__advanced';
     advanced.dataset.filterAdvanced = '';
     advanced.setAttribute('aria-expanded', 'false');
-    advanced.textContent = 'Advanced';
+    advanced.setAttribute('aria-label', 'Advanced filters');
+    advanced.title = 'Advanced filters';
+    advanced.append(icon('list-tree', 16));
 
     const clear = document.createElement('button');
     clear.type = 'button';

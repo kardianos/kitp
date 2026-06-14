@@ -913,12 +913,12 @@ select optgroup {
 .filterbar__display-section:not(:first-child) {
   margin-top: var(--space-1);
 }
-.filterbar__advanced {
-  min-height: 1.875rem;
-  padding: var(--space-1) var(--space-3);
-}
 .filterbar__advanced--open {
   border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+/* Open state tints the icon accent (overrides the muted .filterbar__iconbtn). */
+.filterbar__advanced--open .icon {
   color: var(--color-accent);
 }
 
