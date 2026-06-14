@@ -48,6 +48,7 @@ import {
   type UploadPhase,
 } from './upload.js';
 
+import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                  */
 /* -------------------------------------------------------------------------- */
@@ -478,7 +479,7 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
     del.dataset.attachmentDelete = row.id.toString();
     del.title = `Remove ${row.filename}`;
     del.setAttribute('aria-label', `Remove ${row.filename}`);
-    del.textContent = '×';
+    del.append(icon('x', 14));
     this.listen(del, 'click', () => this.onDelete(row));
     li.append(del);
 
@@ -641,7 +642,7 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
     prev.className = 'attachments__gallery-nav attachments__gallery-prev';
     prev.dataset.galleryPrev = '';
     prev.setAttribute('aria-label', 'Previous');
-    prev.textContent = '‹';
+    prev.append(icon('chevron-left'));
     this.listen(prev, 'click', (e) => {
       e.stopPropagation();
       this.galleryStep(-1);
@@ -652,7 +653,7 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
     next.className = 'attachments__gallery-nav attachments__gallery-next';
     next.dataset.galleryNext = '';
     next.setAttribute('aria-label', 'Next');
-    next.textContent = '›';
+    next.append(icon('chevron-right'));
     this.listen(next, 'click', (e) => {
       e.stopPropagation();
       this.galleryStep(1);
@@ -663,7 +664,7 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
     close.className = 'attachments__gallery-close';
     close.dataset.galleryClose = '';
     close.setAttribute('aria-label', 'Close');
-    close.textContent = '×';
+    close.append(icon('x'));
     this.listen(close, 'click', (e) => {
       e.stopPropagation();
       this.closeGallery();

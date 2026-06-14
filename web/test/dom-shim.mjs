@@ -250,6 +250,16 @@ export function installDomShim() {
     // markdown.test.mjs does), so this just lets the hook register harmlessly.
     nodeType: 9,
     createElement: (tag) => new FakeElement(tag),
+    // SVG elements (the src/ui/icons.ts icon() factory). The shim doesn't
+    // model namespaces — an svg FakeElement is enough: icon() only calls
+    // setAttribute/classList/innerHTML on it, and no test inspects icon
+    // internals.
+    createElementNS: (_ns, tag) => new FakeElement(tag),
+    createTextNode: (text) => {
+      const t = new FakeElement('#text');
+      t.textContent = String(text);
+      return t;
+    },
     // A DocumentFragment is, for our purposes, just a transient container the
     // shim treats like an element: append() collects nodes, and append()-ing
     // the fragment elsewhere splices its children in.

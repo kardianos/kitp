@@ -1,65 +1,92 @@
 # web/ — Design Language
 
-> **Owner direction (2026-05-24):** the `web/` client should feel appealing to a
-> **Samsung phone (One UI)** and **Ubiquiti/UniFi** user — *while still* carrying
-> the full power filters and data-grid display. This file is the design north
-> star for the token evolution + control styling pass; the existing mocks
-> (`mock-*.md`) define layout/structure, this defines *feel*.
+> **Direction (2026-06-11):** the `web/` client takes its feel from
+> **Linear** (linear.app) — compact, fast, typographically confident, with
+> colorful state iconography and snappy micro-motion — while keeping the
+> full power filters and data-grid display. This supersedes the earlier
+> One UI + UniFi blend (2026-05-24), whose clean-chrome/dense-data lineage
+> still shows in the two density registers below.
 
-## The vibe (two references, blended)
+## The vibe
 
-- **Samsung One UI** — calm, rounded, spacious, friendly. Large corner radii,
-  pill-shaped primary buttons, generous padding, big touch targets, smooth and
-  unhurried. Light **and** dark are both first-class. Content-forward; chrome
-  recedes.
-- **Ubiquiti / UniFi** — clean, professional dashboard. Cool neutral palette
-  with one confident accent, crisp 1px hairline borders, restrained soft
-  shadows, a strong deep-neutral dark mode, and **dense, information-rich data
-  tables/grids that still look elegant**. Technical but approachable.
+- **Linear** — one tight, compact surface; hierarchy from weight and
+  spacing more than size. 14px body, shallow heading ramp, rounded-rect
+  (not pill) controls, crisp hairlines, neutral near-black dark mode,
+  one confident indigo accent, and per-state colorful icons (the status
+  shapes). Motion is fast and decisive: 70–160ms, snappy decel, nothing
+  unhurried.
+- Kept from the previous language: light **and** dark are both designed,
+  first-class surfaces; dense data is a feature, not a compromise;
+  hairline borders on data, soft shadows only on floating surfaces.
 
-## The governing rule: clean chrome, dense data
+## The governing rule: one compact language, two density registers
 
-Do **not** trade power for minimalism. The clean/friendly aesthetic applies to
-the *chrome* (nav, dialogs, project cards, primary actions); the *data
-surfaces* (grid rows, the filter bar, kanban cards, attribute tables) stay
-**dense and fully powerful** — just crisp and well-organized. Two density
-registers, one language:
+The registers survive, but they're a half-step apart now (Linear-compact),
+not a contrast:
 
 | Register | Where | Feel |
 |---|---|---|
-| **Comfortable** | app shell / rail / topbar, dialogs, project cards, primary buttons, empty states | generous spacing, large radius, big targets, One-UI calm |
-| **Compact** | data grid rows, ScreenFilterBar, kanban cards, attribute key/value tables | tight spacing, hairline borders, tabular numerals, Ubiquiti density — never cramped, never dumbed-down |
+| **Comfortable** | app shell / rail / topbar, dialogs, project cards, primary buttons, empty states | tight-but-breathing: 8–12px pads, 44px topbar, 32px buttons |
+| **Compact** | data grid rows, ScreenFilterBar, kanban cards, attribute key/value tables | hairline borders, tabular numerals, 4–12px pads — never cramped, never dumbed-down |
 
-## Token directions (for the tokens.css evolution)
+## Tokens (web/design/tokens.css)
 
-This is a deliberate **divergence** from the byte-matched-to-Svelte tokens —
-the new client gets its own language. Evolve, don't just inherit:
+- **Typography** — Inter Variable, vendored in `assets/fonts/` (OFL) and
+  actually shipped (`@font-face` in styles.css + preload in index.html).
+  Body 14px (`--text-base`), ramp md 15 / lg 17 / xl 20 / 2xl 24.
+  `cv05`/`ss01` alternates on the root. Tabular-nums + `--leading-data`
+  on data surfaces.
+- **Radius** — Linear-squarer: controls 6–8px (`--radius-sm/md`), panels
+  10–12px (`--radius-lg/xl`); buttons are rounded-rect (`--radius-md`),
+  NOT pill. Chips/badges/counts stay pills. Grid cells near-square.
+- **Color** — light keeps the cool-neutral ramp; dark is a **neutral
+  near-black** (page `#0f1011`, surface `#17181a` — no blue cast).
+  Accent is **Linear indigo** (`#5e6ad2` light / `#7b83eb` dark). Both
+  were isolated single commits — revert one commit to undo either.
+- **Phase palette** — `--phase-triage` (gray) / `--phase-active`
+  (yellow) / `--phase-terminal` (indigo) + `-soft` fills, defined in all
+  three theme blocks. Every status surface (chips, icons, kanban
+  headers, grid cells) reads these — never hardcode a state color.
+- **Motion** — `--duration-micro` 70ms (hover/press), `--duration-fast`
+  100ms (popover/menu enter), `--duration-base` 160ms (screen mount,
+  modals), `--ease-out` for enters. ALL durations zero out under
+  `prefers-reduced-motion` via the tokens block — never bypass it.
 
-- **Radius** — bump up: cards/dialogs ~12–16px, buttons pill/large, inputs
-  ~8–10px. Data-grid cells stay near-square (crisp).
-- **Spacing** — add a comfortable track (cards/dialogs/nav) and a compact track
-  (grid/filter rows) off one base scale; expose a density var so data surfaces
-  opt into compact.
-- **Color** — calm cool-neutral base (grays with a faint blue cast), ONE
-  confident accent (UniFi-blue family), restrained semantics. Dark mode is a
-  deep neutral (not pure black), high-legibility — designed, not inverted.
-- **Borders** — crisp 1px hairlines on data tables/rows; near-borderless soft
-  cards in the chrome.
-- **Elevation** — subtle, soft shadows for *floating* surfaces (popovers,
-  dialogs, dropdowns); flat + hairline for inline/data.
-- **Typography** — clear hierarchy, slightly larger comfortable base;
-  **tabular-nums** + tighter line-height in grids/tables. One type family.
-- **Motion** — subtle, smooth, One-UI-calm; always honor
-  `prefers-reduced-motion`.
-- **Input modality** — comfortable targets that work for both touch (Samsung
-  phone) and precise pointer (Ubiquiti desktop dashboard).
+## Icons
+
+- **Chrome icons** — `src/ui/icons.ts`: one typed `icon(name, size?)`
+  factory over vendored Lucide path data (ISC — license + add-an-icon
+  recipe in `web/vendor/lucide/`). Stroke 1.75, `currentColor`, so icons
+  tint with the surrounding text. No unicode glyph icons; the `?` help
+  button is the one deliberate text glyph.
+- **Status icons** — `src/ui/status-icon.ts`: hand-drawn phase shapes
+  (dashed ring = triage, ring + half-pie = active, filled disc + check =
+  terminal, dotted = unknown) tinted by the `--phase-*` tokens via
+  `.status-icon[data-phase]`. Shape encodes progress, so state reads
+  without color. Badge labels always remain the element's `textContent`
+  (icons are decorative, `aria-hidden`).
+
+## Motion idioms
+
+- Hover/press feedback at `--duration-micro`; pressed buttons scale
+  (0.97 / 0.94 for icon buttons).
+- Floating surfaces enter via the shared `pop-enter` keyframe (3px
+  drop-in + settle, `--duration-fast --ease-out`). The Popover helper
+  adds `kf-popover--enter` on first resolved position.
+- Route swaps re-add `.shell__outlet--enter` (AppShell) — the new screen
+  rises in 4px + fade at `--duration-base`.
+- Virtualized rows transition **background only** — never layout
+  properties.
+- The kanban FLIP reflow (`--duration-flip`) is its own system; leave it.
 
 ## How this gets applied
 
-1. Evolve `web/design/tokens.css` toward the above (new radius/spacing/color/
-   shadow scales + a density var). It will no longer be byte-identical to
-   `client/src/app.css` — that's intended.
-2. Restyle `web/styles.css` (AppShell, ProjectList, Kanban, ScreenFilterBar) to
-   the evolved tokens, applying the comfortable/compact split.
-3. Every future control follows this doc + the tokens; the mocks' structure
-   stays, the feel upgrades.
+1. Tokens first: if a change can land in `tokens.css`, it must.
+   `styles.css` references `var(--…)` only and never redefines tokens.
+2. The dark theme is TWO blocks (`[data-theme="dark"]` + the
+   `prefers-color-scheme` duplicate). Every `--color-*` change must land
+   in both, byte-identical; `--neutral-*` lives only in the data-theme
+   block.
+3. Selectors/`data-*` hooks are load-bearing (tests) — new classes are
+   additive only.
+4. Every future control follows this doc + the tokens.

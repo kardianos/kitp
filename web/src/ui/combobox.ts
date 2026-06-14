@@ -29,6 +29,7 @@
 import { Control, type BaseControlConfig, type ControlContext } from '../core/control.js';
 import { Popover } from './popover.js';
 
+import { icon } from './icons.js';
 export interface ComboboxOption<V = unknown> {
   value: V;
   label: string;
@@ -146,7 +147,7 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
     const caret = document.createElement('span');
     caret.className = 'kf-combobox__caret';
     caret.setAttribute('aria-hidden', 'true');
-    caret.textContent = '▾'; // ▾
+    caret.append(icon('chevron-down', 14));
     trigger.appendChild(caret);
 
     this.el.appendChild(trigger);

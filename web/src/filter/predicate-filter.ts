@@ -69,6 +69,7 @@ import {
   ME_REF_TOKEN,
 } from './predicate.js';
 
+import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
 /* -------------------------------------------------------------------------- */
@@ -393,7 +394,7 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
       rm.className = 'btn predfilter__remove';
       rm.dataset.predSortRemove = '';
       rm.setAttribute('aria-label', 'Remove sort');
-      rm.textContent = '×';
+      rm.append(icon('x', 14));
       this.listen(rm, 'click', () => this.writeSort(segs, cur.filter((_, j) => j !== i)));
 
       rowEl.append(attrSel, dirSel, rm);
@@ -636,7 +637,7 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
       removeBtn.className = 'btn predfilter__remove';
       removeBtn.dataset.predRemoveGroup = '';
       removeBtn.setAttribute('aria-label', 'Remove group');
-      removeBtn.textContent = '×';
+      removeBtn.append(icon('x', 14));
       // Removal is from the parent; we look up the parent via a closure passed
       // down. Simpler: the parent renders this group and owns its children, so
       // the remove handler is installed by the parent (see child loop below).
@@ -734,7 +735,7 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
     removeBtn.className = 'btn predfilter__remove';
     removeBtn.dataset.predRemoveLeaf = '';
     removeBtn.setAttribute('aria-label', 'Remove leaf');
-    removeBtn.textContent = '×';
+    removeBtn.append(icon('x', 14));
     this.listen(removeBtn, 'click', () => this.removeChild(parent, leaf.id));
 
     row.append(attrSel, opSel, valueWrap, removeBtn);

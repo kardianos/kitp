@@ -60,6 +60,7 @@ import {
   type IdMap,
 } from './activity-text.js';
 
+import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                  */
 /* -------------------------------------------------------------------------- */
@@ -485,7 +486,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
       editBtn.dataset.commentEdit = '';
       editBtn.title = 'Edit comment';
       editBtn.setAttribute('aria-label', 'Edit comment');
-      editBtn.textContent = '✎';
+      editBtn.append(icon('pencil', 14));
       this.listen(editBtn, 'click', () => this.startEdit(c));
       meta.append(editBtn);
     }

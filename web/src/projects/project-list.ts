@@ -59,6 +59,7 @@ import { navigate, projectUrl } from '../shell/router.js';
 import { PROJECT_SPEC } from './specs.js';
 import { clampIndex, projectDescription, projectTitle, TEMPLATE_INCLUSION_LEAF } from './project-helpers.js';
 
+import { icon } from '../ui/icons.js';
 /**
  * Fixed virtual-list row height (px) for a project row: a comfortable card with
  * a title line + a meta/subtitle line + generous --space-3 padding. Mirror this
@@ -568,7 +569,7 @@ export class ProjectList extends Control<ProjectListConfig> {
     edit.type = 'button';
     edit.className = 'iconbtn projects__edit';
     edit.dataset.projectEdit = '';
-    edit.textContent = '✎';
+    edit.append(icon('pencil', 14));
     edit.title = 'Edit project properties';
 
     li.append(open, edit);

@@ -75,7 +75,10 @@ import type { AttachmentsSection } from './attachments-section.js';
 import type { TagsEditor } from './tags-editor.js';
 import type { RelatedTasksPanel } from './related-tasks-panel.js';
 import type { PostChunk } from './upload.js';
+import { icon } from '../ui/icons.js';
 
+import { statusIcon, applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
+import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
 /* -------------------------------------------------------------------------- */
@@ -209,7 +212,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   /** Read-only status badge in the nav row (next to #id). Phase-toned. */
   private statusBadgeEl!: HTMLElement;
   /** status card id → {label, phase} for the header status badge. */
-  private readonly statusInfo = new Map<string, { label: string; phase: string }>();
+  private readonly statusInfo = new Map<string, StatusInfo>();
 
   /** The open overflow-menu popover, disposed on close / destroy. */
   private actionsMenu: Popover | null = null;
@@ -334,7 +337,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     back.dataset.taskBack = '';
     back.title = 'Back to list (q or Esc)';
     back.setAttribute('aria-label', 'Back to list');
-    back.textContent = '‹ Back to list';
+    back.append(icon('chevron-left', 14), document.createTextNode(' Back to list'));
     this.listen(back, 'click', () => this.goBack());
 
     const navRight = document.createElement('div');
@@ -362,7 +365,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     refresh.dataset.taskRefresh = '';
     refresh.title = 'Check for new comms & comments';
     refresh.setAttribute('aria-label', 'Refresh comms and comments');
-    refresh.textContent = '↻ Refresh';
+    refresh.append(icon('refresh-cw', 14), document.createTextNode(' Refresh'));
     this.listen(refresh, 'click', () => this.refreshFeeds());
     this.refreshBtn = refresh;
 
@@ -376,7 +379,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     actions.title = 'More actions';
     actions.setAttribute('aria-label', 'More actions');
     actions.setAttribute('aria-haspopup', 'menu');
-    actions.textContent = '⋯';
+    actions.append(icon('ellipsis'));
     actions.style.display = 'none';
     this.listen(actions, 'click', () => this.toggleActionsMenu(actions));
 
@@ -390,6 +393,11 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       const allowed = isAdmin(this.ctx.tree) || hasRole(this.ctx.tree, 'manager');
       actions.style.display = allowed ? '' : 'none';
     }, 'taskDetail.actionsRole');
+    // Re-scope the status badge glyph to the task flow once it lands.
+    this.effect(() => {
+      this.ctx.tree.at(['scope', 'workflowStatusIds']).get();
+      this.rescopeStatusBadge();
+    }, 'taskDetail.statusFlowScope');
     this.onDestroy(() => {
       this.actionsMenu?.destroy();
       this.actionsMenu = null;
@@ -441,7 +449,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     descEdit.dataset.taskDescEdit = '';
     descEdit.title = 'Edit description';
     descEdit.setAttribute('aria-label', 'Edit description');
-    descEdit.textContent = '✎';
+    descEdit.append(icon('pencil', 14));
     this.listen(descEdit, 'click', () => this.startDescriptionEdit());
     this.descEditBtn = descEdit;
 
@@ -595,9 +603,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         for (const r of rows) {
           const a = r.attributes;
           const label = typeof a['title'] === 'string' && a['title'].length > 0 ? a['title'] : `#${r.id.toString()}`;
-          this.statusInfo.set(r.id.toString(), { label, phase: r.phase ?? '' });
+          this.statusInfo.set(r.id.toString(), {
+            label,
+            phase: r.phase ?? '',
+            sortOrder: Number(a['sort_order'] ?? 0),
+            groupKey: r.parent_card_id?.toString() ?? '',
+          });
         }
-        this.paintStatusBadge();
+        this.rescopeStatusBadge();
       },
       { alive: () => this.isAlive() },
     );
@@ -605,6 +618,12 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 
   /** Paint the read-only header status badge from the task's `status` ref and
    *  the loaded status pool. Hidden until both resolve. */
+  /** Recompute the status badge glyph against the current task-flow scope. */
+  private rescopeStatusBadge(): void {
+    applyStatusGlyphs(this.statusInfo, peekWorkflowStatusIds(this.ctx));
+    this.paintStatusBadge();
+  }
+
   private paintStatusBadge(): void {
     const el = this.statusBadgeEl;
     if (el === undefined) return;
@@ -616,7 +635,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     }
     el.style.display = '';
     el.dataset.phase = info.phase;
-    el.textContent = info.label;
+    el.replaceChildren(statusIcon(info), document.createTextNode(info.label));
   }
 
   /** Load the task card_type's editable attribute schema (attribute_def.select). */
@@ -940,7 +959,10 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     const fresh = this.pollNewCount > 0;
     btn.classList.toggle('task-detail__refresh--new', fresh);
     btn.classList.toggle('task-detail__refresh--synced', !fresh);
-    btn.textContent = fresh ? `↻ ${this.pollNewCount} new` : '↻ Refresh';
+    btn.replaceChildren(
+      icon('refresh-cw', 14),
+      document.createTextNode(fresh ? ` ${this.pollNewCount} new` : ' Refresh'),
+    );
     btn.title = fresh
       ? `${this.pollNewCount} new comm${this.pollNewCount === 1 ? '' : 's'} / comment${this.pollNewCount === 1 ? '' : 's'} — click to load`
       : 'Up to date · click to check for new comms & comments';
@@ -1158,7 +1180,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     edit.dataset.taskTitleEdit = '';
     edit.title = 'Edit title';
     edit.setAttribute('aria-label', 'Edit title');
-    edit.textContent = '✎';
+    edit.append(icon('pencil', 14));
     this.listen(edit, 'click', () => this.startTitleEdit());
     this.titleHost.append(h1, edit);
   }
@@ -1470,7 +1492,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     prev.type = 'button';
     prev.className = 'task-detail__nav-btn';
     prev.dataset.taskNavPrev = '';
-    prev.textContent = '‹';
+    prev.append(icon('chevron-left', 14));
     prev.title = 'Previous task ([)';
     prev.setAttribute('aria-label', 'Previous task');
     prev.disabled = idx === 0;
@@ -1485,7 +1507,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     next.type = 'button';
     next.className = 'task-detail__nav-btn';
     next.dataset.taskNavNext = '';
-    next.textContent = '›';
+    next.append(icon('chevron-right', 14));
     next.title = 'Next task (])';
     next.setAttribute('aria-label', 'Next task');
     next.disabled = idx === list.length - 1;

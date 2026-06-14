@@ -16,6 +16,7 @@ import { buildGridColumns, extractTagPrefixes, type ColumnDef } from './grid-hel
 import type { RefAxis } from '../filter/vocabulary.js';
 import type { AttrSchema } from '../filter/attribute-schema.js';
 
+import { icon } from '../ui/icons.js';
 export interface GridColumnsConfig extends BaseControlConfig {
   type: 'GridColumns';
 }
@@ -165,7 +166,7 @@ export class GridColumns extends Control<GridColumnsConfig> {
       const up = document.createElement('button');
       up.type = 'button';
       up.className = 'grid__columns-move';
-      up.textContent = '↑';
+      up.append(icon('arrow-up', 12));
       up.disabled = i === 0;
       up.setAttribute('aria-label', `Move ${col.label} up`);
       this.listen(up, 'click', () => {
@@ -175,7 +176,7 @@ export class GridColumns extends Control<GridColumnsConfig> {
       const down = document.createElement('button');
       down.type = 'button';
       down.className = 'grid__columns-move';
-      down.textContent = '↓';
+      down.append(icon('arrow-down', 12));
       down.disabled = i === ordered.length - 1;
       down.setAttribute('aria-label', `Move ${col.label} down`);
       this.listen(down, 'click', () => {

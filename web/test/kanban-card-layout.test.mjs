@@ -63,9 +63,10 @@ function buildPage(css, tagCount) {
 <div class="kanban">
   <div class="col" style="width:260px">
     <div class="col__cards">
-      <!-- The Kanban virtualList fixes each card to KANBAN_CARD_HEIGHT (64px) and
-           absolutely positions it; mirror that here so overflow behaves as in app. -->
-      <div class="card" id="card-under-test" style="position:relative;height:64px;width:240px;">
+      <!-- The Kanban tiles slots at KANBAN_CARD_HEIGHT (64px) and buildCardShell
+           shrinks the visible card to 56px (HEIGHT − KANBAN_CARD_GAP); mirror
+           that here so overflow behaves as in app. -->
+      <div class="card" id="card-under-test" style="position:relative;height:56px;width:240px;">
         <span class="card__grip muted" aria-hidden="true">⋮⋮</span>
         <div class="card__title" data-role="title">A fairly long task title that should ellipsize on one line</div>
         <div class="card__meta muted" data-role="meta">
@@ -142,7 +143,7 @@ test('kanban card: many tags never push the title out or overflow the card box',
   assert.equal(
     res.overflows,
     false,
-    `card overflowed its fixed 64px box (scrollH=${res.scrollH} > clientH=${res.clientH}): ` +
+    `card overflowed its fixed 56px box (scrollH=${res.scrollH} > clientH=${res.clientH}): ` +
       `tags must clip/truncate on one line, not wrap and spill onto the next card`,
   );
   assert.equal(
@@ -153,7 +154,7 @@ test('kanban card: many tags never push the title out or overflow the card box',
   // Sanity: the title actually rendered (one line of real text), and the card
   // stayed at its fixed height.
   assert.ok(res.titleHeight > 0, 'title rendered');
-  assert.ok(res.cardHeight <= 72, `card height stayed bounded (~64px), got ${res.cardHeight}`);
+  assert.ok(res.cardHeight <= 64, `card height stayed bounded (~56px), got ${res.cardHeight}`);
 });
 
 test('kanban card: a card with no tags also keeps the title visible (control)', async (t) => {

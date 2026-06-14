@@ -78,8 +78,9 @@ func CSP(cfg CSPConfig) func(http.Handler) http.Handler {
 //   - `frame-ancestors 'none'` refuses to be embedded in any other
 //     site's iframe (modern equivalent of `X-Frame-Options: DENY`).
 //
-//   - `upgrade-insecure-requests` rewrites accidental http:// asset
-//     refs to https:// in production.
+// `upgrade-insecure-requests` is intentionally NOT emitted: HTTPS is
+// terminated at the reverse-proxy edge, and the directive would blank
+// every asset fetch on a plain-HTTP LAN deploy.
 func buildCSP(reporter string) string {
 	directives := []string{
 		"default-src 'none'",
@@ -93,7 +94,6 @@ func buildCSP(reporter string) string {
 		"base-uri 'none'",
 		"form-action 'self'",
 		"frame-ancestors 'none'",
-		"upgrade-insecure-requests",
 	}
 	if reporter != "" {
 		directives = append(directives, "report-uri "+reporter)
