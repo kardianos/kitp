@@ -995,6 +995,20 @@ select optgroup {
 .filterbar__phase-trigger {
   font-size: var(--text-sm);
   white-space: nowrap;
+  color: var(--color-muted);
+}
+/* Phase text + the preset "⋯" menu match the muted resting tone of the bar
+   icons, brightening to fg on hover / when open (like .filterbar__iconbtn). */
+.filterbar__phase-trigger:hover,
+.filterbar__phase-trigger[aria-expanded='true'] {
+  color: var(--color-fg);
+}
+.filter-preset__menu-trigger .icon {
+  color: var(--color-muted);
+}
+.filter-preset__menu-trigger:hover .icon,
+.filter-preset__menu-trigger[aria-expanded='true'] .icon {
+  color: var(--color-fg);
 }
 .filterbar__phase-menu {
   position: absolute;
