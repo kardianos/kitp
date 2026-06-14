@@ -6283,18 +6283,23 @@ select optgroup {
 /* -------------------------------------------------------------------------- */
 .markdown,
 .rich-editor .ProseMirror {
-  font-size: var(--text-md); /* 13px → 15px */
-  line-height: 1.65;
-  font-weight: 450; /* Inter Variable: a touch heavier reads crisper at body size */
+  font-size: var(--text-md); /* 15px — matches Linear's body */
+  line-height: 1.6;
+  font-weight: 450;
+  /* Slight NEGATIVE tracking — Inter's optical recommendation at body size and
+     what Linear uses; tightening (not loosening) is the crispness trick. */
+  letter-spacing: -0.006em;
 }
 .task-detail__title {
   font-weight: 650;
+  letter-spacing: -0.012em; /* tighter on the larger heading, Linear-style */
 }
 .task-activity__text,
 .activity-screen__group-summary {
-  font-size: var(--text-base); /* → 14px */
+  font-size: var(--text-base); /* 14px */
   line-height: 1.5;
   font-weight: 450;
+  letter-spacing: -0.006em;
 }
 
 /* -------------------------------------------------------------------------- */
