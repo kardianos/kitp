@@ -418,15 +418,28 @@ test('ScreenFilterBar: a flat-AND predicate feeds the Grid tasks query where[] (
   assert.equal(last.tree, undefined, 'no tree for a flat-AND predicate');
   assert.ok(transport.sent.taskInputs.length > firesBefore, 'predicate edit refired the tasks query');
 
-  // Add a search term → it composes (ANDs) into the same where[] alongside the leaf.
+  // Add a search term → search now matches title/description/comments, so it
+  // rides an OR-group on the `tree` path and AND-folds the predicate leaf
+  // alongside it (where[] is cleared — the server uses `tree` when set).
   const search = host.el.findByControl('ScreenFilterBar')[0].querySelector('[data-filter-search]');
   setInput(search, 'rate');
   await settle(dispatcher);
   const composed = transport.sent.taskInputs[transport.sent.taskInputs.length - 1];
-  assert.deepEqual(composed.where, [
-    { attr: 'title', op: 'contains', value: 'rate' },
-    { attr: 'milestone_ref', op: 'in', values: ['32'] },
-  ], 'search leaf + predicate leaf compose in where[]');
+  assert.equal(composed.where, undefined, 'multi-field search forces the tree path, clearing where[]');
+  assert.deepEqual(composed.tree, {
+    connective: 'and',
+    children: [
+      {
+        connective: 'or',
+        children: [
+          { attr: 'title', op: 'contains', values: ['rate'] },
+          { attr: 'description', op: 'contains', values: ['rate'] },
+          { attr: 'comments', op: 'contains', values: ['rate'] },
+        ],
+      },
+      { attr: 'milestone_ref', op: 'in', values: ['32'] },
+    ],
+  }, 'search OR-group ANDs with the predicate leaf in the tree');
 });
 
 /* -------------------------------------------------------------------------- */

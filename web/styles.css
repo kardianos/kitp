@@ -949,9 +949,6 @@ select optgroup {
    an active chip carries an accent tint + a count + a clear-X. The chip leaf
    composes into the SAME screen.predicate the Advanced editor edits.
    ========================================================================== */
-.filterbar__row--chips {
-  gap: var(--space-2);
-}
 /* Phase-scope filter (#31): a DROPDOWN of phase checkboxes on the View line.
    The trigger summarises the shown phases; the panel drops below it. */
 .filterbar__phase {
@@ -979,41 +976,6 @@ select optgroup {
   box-shadow: var(--shadow-md, 0 4px 16px rgb(0 0 0 / 0.18));
 }
 .filterbar__phase-option {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  white-space: nowrap;
-}
-/* Search-fields dropdown — same dropdown idiom as Phase, pinned right of the
-   search input. The trigger reads "In: Title, Description" so the user can
-   tell at a glance which fields the search matches against. */
-.filterbar__search-fields {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-.filterbar__search-fields-trigger {
-  font-size: var(--text-sm);
-  white-space: nowrap;
-}
-.filterbar__search-fields-menu {
-  position: absolute;
-  top: calc(100% + var(--space-1));
-  right: 0;
-  z-index: var(--z-popover, 50);
-  min-width: 11rem;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-md, 0 4px 16px rgb(0 0 0 / 0.18));
-}
-.filterbar__search-fields-option {
   display: flex;
   align-items: center;
   gap: var(--space-2);

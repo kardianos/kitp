@@ -202,62 +202,50 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.ctx.tree.at(['screen', 'laneGroup']).set('');
     this.ctx.tree.at(['screen', 'search']).set('');
 
+    // The search box now always matches title, description and comments — the
+    // per-field "In:" dropdown is gone. Seed the leaf before the data layer wires
+    // so the first query (and every consumer) reads the full field set.
+    this.ctx.tree.at(['screen', 'searchFields']).set(['title', 'description', 'comments']);
+
     // Host for the QuickChips control (the "+ Filter" entry + its active chips),
-    // (re)spawned by applyAxes once the schema resolves. It rides INLINE on the
-    // View row right after the Phase box (so the lone "+ Filter" trigger doesn't
-    // own a whole row); only screens without a View row fall back to row 3.
+    // (re)spawned by applyAxes once the schema resolves. It rides inline on the
+    // bar between Display and the search box.
     const chipsHost = document.createElement('div');
+    chipsHost.className = 'filterbar__chips-inline';
     this.chipsHostEl = chipsHost;
-    let chipsOnViewRow = false;
 
-    /* ---- row 1: the NAMED/SAVED filter picker (when wired to a screen) +
-           any screen-registered view actions, pulled right. ---- */
-    const viewActions = this.config.viewActions ?? [];
-    if (this.config.screenStatePath !== undefined || viewActions.length > 0) {
-      const row1 = document.createElement('div');
-      row1.className = 'filterbar__row filterbar__row--presets';
-      this.el.append(row1);
-      if (this.config.screenStatePath !== undefined) {
-        const dotted = this.config.screenStatePath.join('.');
-        this.spawn(
-          'FilterPresetSelector',
-          {
-            type: 'FilterPresetSelector',
-            filtersPath: `${dotted}.filters`,
-            activeIdPath: `${dotted}.activeFilterId`,
-            onPick: (id: bigint | null) => this.applyPreset(id),
-            onSave: () => this.saveCurrentAsNew(),
-            onSetDefault: () => this.setActiveAsDefault(),
-            onRename: () => this.renameActive(),
-            onDelete: () => this.deleteActive(),
-          } as ChildConfig,
-          row1,
-        );
-      }
-      // Phase-scope filter (#31): a DROPDOWN of phase checkboxes ON the View
-      // line (not its own row). Shown only when the screen defines phase
-      // toggles; the checked set defaults to the screen's base phase (seeded by
-      // applyDefaultOnFirstVisit) and edits the `status has_phase` scope.
-      this.buildPhaseDropdown(row1);
+    /* ---- the bar is ONE row now: the saved-view picker, Phase, Display, the
+           "+ Filter" entry + active chips, the search box (flex-grows), then
+           Advanced / Clear and any screen view actions pulled to the right. ---- */
+    const bar = document.createElement('div');
+    bar.className = 'filterbar__row filterbar__row--presets';
+    this.el.append(bar);
 
-      // The "+ Filter" entry + active chips sit inline right after Phase.
-      chipsHost.className = 'filterbar__chips-inline';
-      row1.append(chipsHost);
-      chipsOnViewRow = true;
-
-      // Screen-specific view actions (e.g. Grid → Columns), right-aligned.
-      if (viewActions.length > 0) {
-        const actions = document.createElement('div');
-        actions.className = 'filterbar__view-actions';
-        actions.dataset.filterbarViewActions = '';
-        row1.append(actions);
-        for (const action of viewActions) this.spawn(action.type, action, actions);
-      }
+    // Saved-view picker (VIEW + "Default …" combo + ⋯ menu), when wired to a screen.
+    if (this.config.screenStatePath !== undefined) {
+      const dotted = this.config.screenStatePath.join('.');
+      this.spawn(
+        'FilterPresetSelector',
+        {
+          type: 'FilterPresetSelector',
+          filtersPath: `${dotted}.filters`,
+          activeIdPath: `${dotted}.activeFilterId`,
+          onPick: (id: bigint | null) => this.applyPreset(id),
+          onSave: () => this.saveCurrentAsNew(),
+          onSetDefault: () => this.setActiveAsDefault(),
+          onRename: () => this.renameActive(),
+          onDelete: () => this.deleteActive(),
+        } as ChildConfig,
+        bar,
+      );
     }
 
-    /* ---- row 2: the v1 working subset (GROUP + search + Advanced + Clear) ---- */
-    const row2 = document.createElement('div');
-    row2.className = 'filterbar__row';
+    // Phase-scope dropdown (#31): phase checkboxes; self-hides when the screen
+    // defines no phase toggles. Edits the `status has_phase` scope.
+    this.buildPhaseDropdown(bar);
+
+    /* ---- GROUP + LANE pickers (tucked behind the "Display" menu), the search
+           box, and Advanced / Clear — all appended onto the single bar below. ---- */
 
     // GROUP-by Picker (native <select> — the Picker common control lands later).
     const groupWrap = document.createElement('label');
@@ -355,20 +343,28 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       }
     });
 
+    // Display sits left of the "+ Filter" entry + active chips.
+    /* ---- the QUICK-CHIPS surface (pinned per-attribute one-tap filters) ----
+       Each chip toggles a top-level `attr in [...]` leaf in 'screen.predicate'
+       via applyPredicate — the SAME write the preset/Advanced surfaces use, so
+       the Advanced editor re-seeds on a chip pick and the chips re-read the
+       shared predicate reactively. Saved/"Named" filters (predicate snippets)
+       are folded into the "+ Filter" menu; QuickChips itself is (re)spawned by
+       applyAxes once the data-driven axes resolve. */
+    bar.append(displayWrap, chipsHost);
+
+    // Search box — flex-grows to fill the middle; always matches title,
+    // description and comments (see the searchFields seed above).
     const search = document.createElement('input');
     search.type = 'search';
     search.className = 'filterbar__search';
     search.placeholder = 'Search or #ID…';
     search.dataset.filterSearch = '';
     this.searchEl = search;
+    bar.append(search);
 
-    // Search-fields dropdown — controls which fields the title-search runs
-    // against. Defaults to title only; the checkbox list adds description /
-    // comments. Pinned right of the search input so it reads as "search in:"
-    // configuration; persists via the standard view path so re-nav restores it.
-    const searchFields = this.buildSearchFieldsDropdown();
-
-    // Advanced toggle — expands the structured PredicateFilter panel.
+    // Advanced toggle (expands the structured PredicateFilter) + Clear, pushed
+    // to the right edge by the flex-grow search.
     const advanced = document.createElement('button');
     advanced.type = 'button';
     advanced.className = 'btn filterbar__advanced';
@@ -380,22 +376,16 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     clear.type = 'button';
     clear.className = 'btn filterbar__clear';
     clear.textContent = 'Clear';
+    bar.append(advanced, clear);
 
-    row2.append(displayWrap, search, searchFields, advanced, clear);
-    this.el.append(row2);
-
-    /* ---- the QUICK-CHIPS surface (pinned per-attribute one-tap filters) ----
-       Each chip toggles a top-level `attr in [...]` leaf in 'screen.predicate'
-       via applyPredicate — the SAME write the preset/Advanced surfaces use, so
-       the Advanced editor re-seeds on a chip pick and the chips re-read the
-       shared predicate reactively on any other surface's edit. It rides inline
-       on the View row (above); screens with no View row get it as its own row.
-       Saved/"Named" filters (predicate snippets) are folded into QuickChips'
-       "+ Filter" menu, so there's no standalone Named control here. QuickChips
-       itself is (re)spawned by applyAxes once the data-driven axes resolve. */
-    if (!chipsOnViewRow) {
-      chipsHost.className = 'filterbar__row filterbar__row--chips';
-      this.el.append(chipsHost);
+    // Screen-specific view actions (e.g. Grid → Columns / "+ New"), far right.
+    const viewActions = this.config.viewActions ?? [];
+    if (viewActions.length > 0) {
+      const actions = document.createElement('div');
+      actions.className = 'filterbar__view-actions';
+      actions.dataset.filterbarViewActions = '';
+      bar.append(actions);
+      for (const action of viewActions) this.spawn(action.type, action, actions);
     }
 
     /* ---- the Advanced panel: a structured PredicateFilter over the task type ---- */
@@ -982,113 +972,6 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
    * to the base phase the screen seeded). A child-panel dropdown (not a body-
    * mounted popover) so it stays in the bar's DOM + works under the test shim.
    */
-  /**
-   * Build the SEARCH-FIELDS dropdown — pinned to the right of the search input.
-   * A trigger button + a panel of three checkboxes (Title / Description /
-   * Comments) selecting which fields the search text matches against. Defaults
-   * to title only (the existing behaviour). The active set lives at
-   * `screen.searchFields`; consumers (Kanban / Grid / Inbox `applyFilter`) read
-   * it to build their wire predicate.
-   */
-  private buildSearchFieldsDropdown(): HTMLElement {
-    const wrap = document.createElement('div');
-    wrap.className = 'filterbar__search-fields';
-    wrap.dataset.filterSearchFields = '';
-
-    const trigger = document.createElement('button');
-    trigger.type = 'button';
-    trigger.className = 'btn filterbar__search-fields-trigger';
-    trigger.dataset.filterSearchFieldsTrigger = '';
-    trigger.setAttribute('aria-haspopup', 'true');
-    trigger.setAttribute('aria-expanded', 'false');
-    trigger.textContent = 'In: Title';
-
-    const panel = document.createElement('div');
-    panel.className = 'filterbar__search-fields-menu';
-    panel.dataset.filterSearchFieldsMenu = '';
-    panel.style.display = 'none';
-
-    wrap.append(trigger, panel);
-
-    const setOpen = (open: boolean): void => {
-      panel.style.display = open ? '' : 'none';
-      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
-    };
-    this.listen(trigger, 'click', (ev) => {
-      (ev as Event).stopPropagation();
-      setOpen(panel.style.display === 'none');
-    });
-    this.listen(panel, 'click', (ev) => (ev as Event).stopPropagation());
-    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
-      this.listen(document, 'click', () => setOpen(false));
-    }
-
-    // Seed the leaf BEFORE the data layer wires so the consumers' applyFilter
-    // sees a populated set on the first run. `restoreView` later overwrites
-    // this with the persisted value when one exists.
-    this.ctx.tree.at(['screen', 'searchFields']).set(['title']);
-
-    // Paint the panel + the trigger label reactively from the active set.
-    this.effect(() => {
-      const active = (this.ctx.tree.at(['screen', 'searchFields']).get<string[]>() ?? ['title']);
-      this.paintSearchFieldsDropdown(trigger, panel, active);
-    }, 'filterbar.searchFields');
-
-    return wrap;
-  }
-
-  /** (Re)render the search-fields trigger label + checkbox panel. The trigger
-   *  reads "In: Title" / "In: Title, Description" / "In: Title, Description,
-   *  Comments". Toggling a box mutates `screen.searchFields`; the title box
-   *  refuses to deselect — leaving the search empty would render the input
-   *  inert without an obvious reason. */
-  private paintSearchFieldsDropdown(
-    trigger: HTMLElement,
-    panel: HTMLElement,
-    active: readonly string[],
-  ): void {
-    const FIELDS: ReadonlyArray<{ value: string; label: string; locked?: boolean }> = [
-      { value: 'title', label: 'Title', locked: true },
-      { value: 'description', label: 'Description' },
-      { value: 'comments', label: 'Comments' },
-    ];
-    const set = new Set(active);
-    trigger.textContent = `In: ${FIELDS.filter((f) => set.has(f.value)).map((f) => f.label).join(', ') || 'Title'}`;
-
-    panel.replaceChildren();
-    for (const f of FIELDS) {
-      const option = document.createElement('label');
-      option.className = 'filterbar__search-fields-option';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.className = 'filterbar__search-fields-check';
-      cb.dataset.filterSearchField = f.value;
-      cb.checked = set.has(f.value);
-      if (f.locked === true) cb.disabled = true;
-      const text = document.createElement('span');
-      text.textContent = f.label;
-      option.append(cb, text);
-      this.listen(cb, 'change', () => this.toggleSearchField(f.value));
-      panel.append(option);
-    }
-  }
-
-  /** Toggle one search field on `screen.searchFields`. Title stays pinned —
-   *  the box renders disabled too — so the search input never becomes inert. */
-  private toggleSearchField(field: string): void {
-    if (field === 'title') return;
-    const cur = (this.ctx.tree.at(['screen', 'searchFields']).peek<string[]>() ?? ['title']).slice();
-    const i = cur.indexOf(field);
-    if (i >= 0) cur.splice(i, 1);
-    else cur.push(field);
-    // Always preserve a canonical title/description/comments ordering so the
-    // persisted value comparison + the trigger label stay stable.
-    const order = ['title', 'description', 'comments'];
-    cur.sort((a, b) => order.indexOf(a) - order.indexOf(b));
-    if (!cur.includes('title')) cur.unshift('title');
-    this.ctx.tree.at(['screen', 'searchFields']).set(cur);
-  }
-
   private buildPhaseDropdown(row: HTMLElement): void {
     const wrap = document.createElement('div');
     wrap.className = 'filterbar__phase';
