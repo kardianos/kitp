@@ -1027,6 +1027,14 @@ select optgroup {
   gap: var(--space-2);
   flex-wrap: wrap;
 }
+/* QuickChips host when it rides inline on the View row (next to Phase) rather
+   than owning its own row — an inline-flex group that wraps if chips pile up. */
+.filterbar__chips-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
 .filterbar__chip-wrap {
   display: inline-flex;
 }
@@ -1071,6 +1079,14 @@ select optgroup {
 }
 .filterbar__chip--active .filterbar__chip-caret {
   color: var(--color-accent);
+}
+/* The "+ Filter" entry is a rectangular button matching the Phase box it sits
+   beside on the View row (the .btn / phase-trigger metrics), not a pill. */
+.filterbar__add-filter {
+  min-height: 2rem;
+  padding: var(--space-1x) var(--space-3);
+  font-size: var(--text-sm);
+  border-radius: var(--radius-md);
 }
 .filterbar__chip-clear {
   display: inline-flex;

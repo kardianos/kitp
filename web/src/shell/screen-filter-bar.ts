@@ -202,6 +202,14 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.ctx.tree.at(['screen', 'laneGroup']).set('');
     this.ctx.tree.at(['screen', 'search']).set('');
 
+    // Host for the QuickChips control (the "+ Filter" entry + its active chips),
+    // (re)spawned by applyAxes once the schema resolves. It rides INLINE on the
+    // View row right after the Phase box (so the lone "+ Filter" trigger doesn't
+    // own a whole row); only screens without a View row fall back to row 3.
+    const chipsHost = document.createElement('div');
+    this.chipsHostEl = chipsHost;
+    let chipsOnViewRow = false;
+
     /* ---- row 1: the NAMED/SAVED filter picker (when wired to a screen) +
            any screen-registered view actions, pulled right. ---- */
     const viewActions = this.config.viewActions ?? [];
@@ -231,6 +239,11 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       // toggles; the checked set defaults to the screen's base phase (seeded by
       // applyDefaultOnFirstVisit) and edits the `status has_phase` scope.
       this.buildPhaseDropdown(row1);
+
+      // The "+ Filter" entry + active chips sit inline right after Phase.
+      chipsHost.className = 'filterbar__chips-inline';
+      row1.append(chipsHost);
+      chipsOnViewRow = true;
 
       // Screen-specific view actions (e.g. Grid → Columns), right-aligned.
       if (viewActions.length > 0) {
@@ -371,22 +384,19 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     row2.append(displayWrap, search, searchFields, advanced, clear);
     this.el.append(row2);
 
-    /* ---- row 3: the QUICK-CHIPS row (pinned per-attribute one-tap filters) ---- */
-    // Each chip toggles a top-level `attr in [...]` leaf in 'screen.predicate'
-    // via applyPredicate — the SAME write the preset/Advanced surfaces use, so
-    // the Advanced editor re-seeds on a chip pick and the chips re-read the
-    // shared predicate reactively on any other surface's edit.
-    const chipsHost = document.createElement('div');
-    chipsHost.className = 'filterbar__row filterbar__row--chips';
-    this.el.append(chipsHost);
-    this.chipsHostEl = chipsHost;
-
-    // Saved/"Named" filters (predicate snippets) are now folded into QuickChips'
-    // "+ Filter" menu (a single add-a-filter entry point), so there's no
-    // standalone Named control here.
-    // QuickChips is (re)spawned by applyAxes once the data-driven axes resolve,
-    // so its chip set + option values come from the project's attribute schema
-    // rather than a hardcoded list.
+    /* ---- the QUICK-CHIPS surface (pinned per-attribute one-tap filters) ----
+       Each chip toggles a top-level `attr in [...]` leaf in 'screen.predicate'
+       via applyPredicate — the SAME write the preset/Advanced surfaces use, so
+       the Advanced editor re-seeds on a chip pick and the chips re-read the
+       shared predicate reactively on any other surface's edit. It rides inline
+       on the View row (above); screens with no View row get it as its own row.
+       Saved/"Named" filters (predicate snippets) are folded into QuickChips'
+       "+ Filter" menu, so there's no standalone Named control here. QuickChips
+       itself is (re)spawned by applyAxes once the data-driven axes resolve. */
+    if (!chipsOnViewRow) {
+      chipsHost.className = 'filterbar__row filterbar__row--chips';
+      this.el.append(chipsHost);
+    }
 
     /* ---- the Advanced panel: a structured PredicateFilter over the task type ---- */
     const panel = document.createElement('div');
