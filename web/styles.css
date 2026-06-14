@@ -830,6 +830,9 @@ select optgroup {
 .filterbar__search-wrap--expanded {
   flex: 1;
   min-width: 12rem;
+  /* Grow to fill, but cap it so the field doesn't stretch to the far edge on a
+     wide window — Advanced/Clear sit just past it, with slack to the right. */
+  max-width: 36rem;
   min-height: 2rem;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
