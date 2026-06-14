@@ -443,6 +443,46 @@ test('ScreenFilterBar: a flat-AND predicate feeds the Grid tasks query where[] (
 });
 
 /* -------------------------------------------------------------------------- */
+/* Search-scope segments — All / Title / Description / Comments narrow the      */
+/* shared screen.searchFields; the active scope is the highlighted pill.        */
+/* -------------------------------------------------------------------------- */
+
+test('ScreenFilterBar: search-scope segments narrow screen.searchFields', async () => {
+  const transport = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { host, tree } = mountScreen(api);
+  await settle(dispatcher);
+
+  const bar = host.el.findByControl('ScreenFilterBar')[0];
+  const seg = bar.querySelector('[data-search-scopes]');
+  assert.ok(seg, 'the scope segments render');
+  const byScope = (k) => seg.querySelector(`[data-search-scope="${k}"]`);
+  const isActive = (k) => byScope(k).classList.contains('filterbar__searchseg-btn--active');
+
+  // Default: All (every text field) is the active scope.
+  assert.deepEqual(tree.at(['screen', 'searchFields']).peek(), ['title', 'description', 'comments'], 'defaults to all fields');
+  assert.ok(isActive('all'), 'All highlighted by default');
+
+  // Pick Title → narrows to title only + the highlight moves.
+  byScope('title').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  assert.deepEqual(tree.at(['screen', 'searchFields']).peek(), ['title'], 'Title narrows to title only');
+  assert.ok(isActive('title') && !isActive('all'), 'highlight moved to Title');
+
+  // Pick Comments → just comments.
+  byScope('comments').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  assert.deepEqual(tree.at(['screen', 'searchFields']).peek(), ['comments'], 'Comments narrows to comments only');
+  assert.ok(isActive('comments'), 'highlight moved to Comments');
+
+  // Back to All → every text field again.
+  byScope('all').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  assert.deepEqual(tree.at(['screen', 'searchFields']).peek(), ['title', 'description', 'comments'], 'All restores every field');
+  assert.ok(isActive('all'), 'All highlighted again');
+});
+
+/* -------------------------------------------------------------------------- */
 /* A structured predicate (OR) feeds the v2 tree input.                        */
 /* -------------------------------------------------------------------------- */
 

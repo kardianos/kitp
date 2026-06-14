@@ -883,6 +883,41 @@ select optgroup {
 .filterbar__search::placeholder {
   color: var(--color-muted);
 }
+/* Search-scope segments (All / Title / Description / Comments) pinned to the
+   right inside the expanded field. Hidden until the field expands. */
+.filterbar__searchseg {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: var(--space-h);
+  margin-right: var(--space-1);
+  padding-left: var(--space-1);
+}
+.filterbar__search-wrap--expanded .filterbar__searchseg {
+  display: inline-flex;
+}
+.filterbar__searchseg-btn {
+  font: inherit;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-pill, 999px);
+  padding: var(--space-h) var(--space-2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+.filterbar__searchseg-btn:hover {
+  color: var(--color-fg);
+}
+.filterbar__searchseg-btn--active {
+  color: var(--color-fg);
+  background: var(--color-surface-raised);
+}
 /* "Display" icon trigger (GROUP/LANES live in its popover) + the popover panel. */
 .filterbar__display-wrap {
   position: relative;

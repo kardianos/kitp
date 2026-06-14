@@ -369,7 +369,30 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     search.placeholder = 'Search or #ID…';
     search.dataset.filterSearch = '';
     this.searchEl = search;
-    searchWrap.append(searchToggle, search);
+
+    // Search-scope segments inside the field (Linear-style): All / Title /
+    // Description / Comments. The active scope is a highlighted pill; picking one
+    // narrows screen.searchFields ("All" = every text field). Shown only when the
+    // field is expanded (CSS gates it on --expanded).
+    const searchSeg = document.createElement('div');
+    searchSeg.className = 'filterbar__searchseg';
+    searchSeg.dataset.searchScopes = '';
+    for (const scope of SEARCH_SCOPES) {
+      const segBtn = document.createElement('button');
+      segBtn.type = 'button';
+      segBtn.className = 'filterbar__searchseg-btn';
+      segBtn.dataset.searchScope = scope.key;
+      segBtn.textContent = scope.label;
+      // mousedown would blur (and collapse) the input before the click lands;
+      // preventDefault keeps focus on the field so picking a scope stays open.
+      this.listen(segBtn, 'mousedown', (e) => (e as Event).preventDefault());
+      this.listen(segBtn, 'click', () => {
+        this.ctx.tree.at(['screen', 'searchFields']).set([...scope.fields]);
+        search.focus();
+      });
+      searchSeg.append(segBtn);
+    }
+    searchWrap.append(searchToggle, search, searchSeg);
     bar.append(searchWrap);
 
     const setSearchExpanded = (open: boolean): void => {
@@ -381,9 +404,12 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       search.focus();
     });
     // Focus expands (so "/" → focusScreenSearch reveals the field); blur collapses
-    // only when empty, so an active query stays visible.
+    // only when empty AND focus left the field entirely (not when it moved to a
+    // scope segment), so an active query — or a scope pick — keeps it open.
     this.listen(search, 'focus', () => setSearchExpanded(true));
-    this.listen(search, 'blur', () => {
+    this.listen(search, 'blur', (e) => {
+      const to = (e as FocusEvent).relatedTarget as Node | null;
+      if (to !== null && searchWrap.contains(to)) return;
       if ((search.value ?? '') === '') setSearchExpanded(false);
     });
     // Keep expansion in sync with the shared search leaf — a restored / preset /
@@ -395,6 +421,15 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
         setSearchExpanded(false);
       }
     }, 'filterbar.searchExpand');
+    // Highlight the active scope segment from the shared searchFields leaf.
+    this.effect(() => {
+      const active = searchScopeKey(this.ctx.tree.at(['screen', 'searchFields']).get<string[]>() ?? []);
+      for (const el of Array.from(searchSeg.children) as HTMLElement[]) {
+        const on = el.dataset.searchScope === active;
+        el.classList.toggle('filterbar__searchseg-btn--active', on);
+        el.setAttribute('aria-pressed', on ? 'true' : 'false');
+      }
+    }, 'filterbar.searchScope');
 
     // Advanced toggle (expands the structured PredicateFilter) + Clear, pushed
     // to the right edge by the flex-grow search.
@@ -1312,6 +1347,28 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.destroyChild(this.predicateChild);
     this.predicateChild = this.spawn('PredicateFilter', this.predicateConfig, this.predicateHost);
   }
+}
+
+/** The search-scope segments shown inside the expanded search field. "All"
+ *  matches every text field; the others narrow the search to one. The `fields`
+ *  arrays are what land in `screen.searchFields` (consumed by the Grid / Kanban
+ *  / Inbox search compile). */
+const SEARCH_SCOPES: ReadonlyArray<{ key: string; label: string; fields: string[] }> = [
+  { key: 'all', label: 'All', fields: ['title', 'description', 'comments'] },
+  { key: 'title', label: 'Title', fields: ['title'] },
+  { key: 'description', label: 'Description', fields: ['description'] },
+  { key: 'comments', label: 'Comments', fields: ['comments'] },
+];
+
+/** Which scope segment the current `searchFields` set maps to: all three (or
+ *  more) → 'all'; a single known field → that field; anything else → 'all'. */
+function searchScopeKey(fields: readonly string[]): string {
+  const set = new Set(fields);
+  if (set.size >= 3) return 'all';
+  if (set.size === 1 && (fields[0] === 'title' || fields[0] === 'description' || fields[0] === 'comments')) {
+    return fields[0];
+  }
+  return 'all';
 }
 
 /** The card_ref attribute a screen's phase toggles scope. All toggles in one
