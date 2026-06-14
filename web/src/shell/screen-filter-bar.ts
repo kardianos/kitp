@@ -47,7 +47,6 @@
 import { Control, type BaseControlConfig, type ChildConfig } from '../core/control.js';
 import type { PredicateFilterConfig } from '../filter/predicate-filter.js';
 import type { QuickChipsConfig } from '../filter/quick-chips.js';
-import type { NamedFiltersConfig } from '../filter/named-filters.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { optimistic } from '../core/tree.js';
 import {
@@ -382,23 +381,9 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.el.append(chipsHost);
     this.chipsHostEl = chipsHost;
 
-    // The "Named" multi-select — toggles reusable predicate-fragment leaves
-    // (`snippet` op → predicate_snippet cards) on the SAME tree. Picking a
-    // snippet adds a top-level snippet-id leaf the server expands + cycle-guards;
-    // routes through applyPredicate so the Advanced editor + chips reflect it.
-    // Reads scope.projectId to scope its snippet load + screen.predicate for its
-    // active state (consistent with every other surface).
-    this.spawn(
-      'NamedFilters',
-      {
-        type: 'NamedFilters',
-        predicatePath: 'screen.predicate',
-        snippetsPath: 'screen.snippets',
-        projectIdPath: 'scope.projectId',
-        onCommit: (next: Predicate | null) => this.applyPredicate(next),
-      } as NamedFiltersConfig,
-      chipsHost,
-    );
+    // Saved/"Named" filters (predicate snippets) are now folded into QuickChips'
+    // "+ Filter" menu (a single add-a-filter entry point), so there's no
+    // standalone Named control here.
     // QuickChips is (re)spawned by applyAxes once the data-driven axes resolve,
     // so its chip set + option values come from the project's attribute schema
     // rather than a hardcoded list.
@@ -809,6 +794,8 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
         chips,
         predicatePath: 'screen.predicate',
         optionsPath: 'screen.predicateOptions',
+        snippetsPath: 'screen.snippets',
+        projectIdPath: 'scope.projectId',
         onCommit: (next: Predicate | null) => this.applyPredicate(next),
       } as QuickChipsConfig,
       this.chipsHostEl,

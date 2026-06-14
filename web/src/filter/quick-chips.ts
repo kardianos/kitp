@@ -40,6 +40,8 @@ import {
   upsertTopLevelLeaf,
   removeTopLevelLeaf,
 } from './predicate.js';
+import { selectedSnippetIds, setSelectedSnippets } from './snippet-predicate.js';
+import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 
 import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
@@ -90,6 +92,15 @@ export interface QuickChipsConfig extends BaseControlConfig {
    * editor. (Presentation + intent only — the chips never write the tree.)
    */
   onCommit?: (next: Predicate | null) => void;
+  /**
+   * Dotted tree path the loaded `predicate_snippet` cards land under (the saved
+   * "Named" filters, now folded into the "+ Filter" menu). Default
+   * 'screen.snippets'. Omit/empty to disable saved filters entirely.
+   */
+  snippetsPath?: string;
+  /** Dotted tree path of the project id scoping the snippet load. Default
+   *  'scope.projectId'. */
+  projectIdPath?: string;
 }
 
 declare module '../core/control.js' {
@@ -129,9 +140,13 @@ interface ChipView {
 
 export class QuickChips extends Control<QuickChipsConfig> {
   private chips: ChipView[] = [];
-  /** The "+ Filter" add-menu (reveals hidden chips on demand). */
+  /** The "+ Filter" add-menu (reveals hidden chips + saved filters on demand). */
   private addPopover: Popover | null = null;
   private addListEl: HTMLUListElement | null = null;
+  private addWrap: HTMLElement | null = null;
+  /** Active saved-filter (snippet) chips, keyed by snippet id-string. */
+  private snippetChips = new Map<string, HTMLElement>();
+  private loadedSnippetKey: string | null = null;
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('div');
@@ -147,6 +162,12 @@ export class QuickChips extends Control<QuickChipsConfig> {
     for (const def of defs) this.chips.push(this.buildChip(def));
     this.buildAddFilter();
 
+    // Load the project's saved filters (predicate snippets) into the snippets
+    // leaf so "+ Filter" can offer them — reactive on the project id.
+    this.effect(() => {
+      this.loadSnippets();
+    }, 'quickChips.snippetLoad');
+
     // ONE reactive effect: reads the shared predicate + the options map and
     // repaints every chip's active state (trigger label/count + the open menu's
     // checkboxes). One-way — reads the two leaves, writes only DOM. A predicate
@@ -155,6 +176,8 @@ export class QuickChips extends Control<QuickChipsConfig> {
       const predicate = this.readPredicate();
       const options = this.readOptions();
       for (const chip of this.chips) this.paintChip(chip, predicate, options);
+      // Active saved filters render as chips alongside the attribute chips.
+      this.reconcileSnippetChips(predicate);
       // Keep the open "+ Filter" menu in sync if a chip cleared elsewhere.
       if (this.addPopover?.isOpen) this.renderAddMenu();
     }, 'quickChips.sync');
@@ -378,6 +401,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
   private buildAddFilter(): void {
     const wrap = document.createElement('div');
     wrap.className = 'filterbar__chip-wrap';
+    this.addWrap = wrap;
     const trigger = document.createElement('button');
     trigger.type = 'button';
     trigger.className = 'filterbar__chip filterbar__add-filter';
@@ -423,38 +447,152 @@ export class QuickChips extends Control<QuickChipsConfig> {
     this.onDestroy(() => popover.destroy());
   }
 
-  /** Populate the "+ Filter" menu with the chips not currently on the bar. */
+  /** Populate the "+ Filter" menu: the attribute chips not on the bar, then a
+   *  "Saved" section of the project's not-yet-applied saved filters. */
   private renderAddMenu(): void {
     const list = this.addListEl;
     if (list === null) return;
     list.replaceChildren();
     const hidden = this.chips.filter((c) => c.wrap.style.display === 'none');
-    if (hidden.length === 0) {
+    const activeSnips = new Set(selectedSnippetIds(this.peekPredicate()));
+    const savedAvail = this.snippetOptions(false).filter((s) => !activeSnips.has(s.key));
+
+    for (const chip of hidden) {
+      list.append(this.addMenuItem(chip.def.label, () => this.openChip(chip)));
+    }
+    if (savedAvail.length > 0) {
+      const header = document.createElement('li');
+      header.className = 'filterbar__chip-menu-header muted';
+      header.textContent = 'Saved';
+      list.append(header);
+      for (const s of savedAvail) {
+        list.append(this.addMenuItem(s.title, () => this.toggleSnippet(s.id, true)));
+      }
+    }
+    if (hidden.length === 0 && savedAvail.length === 0) {
       const li = document.createElement('li');
       li.className = 'filterbar__chip-empty muted';
       li.textContent = 'All filters added';
       list.append(li);
-      this.addPopover?.reposition();
-      return;
-    }
-    for (const chip of hidden) {
-      const li = document.createElement('li');
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'filterbar__chip-option';
-      btn.setAttribute('role', 'menuitem');
-      const text = document.createElement('span');
-      text.className = 'filterbar__chip-option-label';
-      text.textContent = chip.def.label;
-      btn.append(text);
-      this.listen(btn, 'click', () => {
-        this.addPopover?.close();
-        this.openChip(chip); // reveals the chip + opens its picker
-      });
-      li.append(btn);
-      list.append(li);
     }
     this.addPopover?.reposition();
+  }
+
+  /** A "+ Filter" menu row that closes the menu and runs [onPick]. */
+  private addMenuItem(label: string, onPick: () => void): HTMLLIElement {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'filterbar__chip-option';
+    btn.setAttribute('role', 'menuitem');
+    const text = document.createElement('span');
+    text.className = 'filterbar__chip-option-label';
+    text.textContent = label;
+    btn.append(text);
+    this.listen(btn, 'click', () => {
+      this.addPopover?.close();
+      onPick();
+    });
+    li.append(btn);
+    return li;
+  }
+
+  /* ---------------------------- saved filters ---------------------------- */
+
+  private snippetsSegs(): string[] {
+    return splitPath(this.config.snippetsPath ?? 'screen.snippets');
+  }
+
+  /** (Re)load the project's predicate_snippet cards into the snippets leaf,
+   *  deduped on the project key. No-op when no snippetsPath is configured. */
+  private loadSnippets(): void {
+    if (this.config.snippetsPath === '') return;
+    const pid =
+      this.ctx.tree
+        .at(splitPath(this.config.projectIdPath ?? 'scope.projectId'))
+        .get<bigint | null>() ?? null;
+    const key = pid === null ? 'none' : pid.toString();
+    if (key === this.loadedSnippetKey) return;
+    this.loadedSnippetKey = key;
+    const node = this.ctx.tree.at(this.snippetsSegs());
+    if (pid === null) {
+      node.set([]);
+      return;
+    }
+    this.ctx.api.callByName(
+      'card.select_with_attributes',
+      { cardTypeName: 'predicate_snippet', parentCardId: pid },
+      (out) => node.set(((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? []),
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  /** The loaded saved filters as {id, key, title}. `reactive` subscribes (use in
+   *  the sync effect); the no-arg/peek form is also the test/host hook. */
+  snippetOptions(reactive = false): { id: bigint; key: string; title: string }[] {
+    const leaf = this.ctx.tree.at(this.snippetsSegs());
+    const rows = (reactive ? leaf.get<CardWithAttrs[]>() : leaf.peek<CardWithAttrs[]>()) ?? [];
+    return rows.map((r) => {
+      const t = r.attributes?.['title'];
+      return {
+        id: r.id,
+        key: r.id.toString(),
+        title: typeof t === 'string' && t.length > 0 ? t : `#${r.id.toString()}`,
+      };
+    });
+  }
+
+  /** Add/remove snippet chips so the bar reflects the active snippet leaves. */
+  private reconcileSnippetChips(predicate: Predicate | null): void {
+    const active = new Set(selectedSnippetIds(predicate));
+    const byKey = new Map(this.snippetOptions(true).map((s) => [s.key, s]));
+    for (const [key, wrap] of this.snippetChips) {
+      if (!active.has(key)) {
+        wrap.remove();
+        this.snippetChips.delete(key);
+      }
+    }
+    for (const key of active) {
+      if (this.snippetChips.has(key)) continue;
+      const opt = byKey.get(key) ?? { id: BigInt(key), key, title: `#${key}` };
+      this.snippetChips.set(key, this.buildSnippetChip(opt));
+    }
+  }
+
+  /** A chip for an active saved filter — label + clear (no value picker). */
+  private buildSnippetChip(opt: { id: bigint; key: string; title: string }): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'filterbar__chip-wrap';
+    const chip = document.createElement('span');
+    chip.className = 'filterbar__chip filterbar__chip--active filterbar__chip--snippet';
+    chip.dataset.snippetChip = opt.key;
+    const label = document.createElement('span');
+    label.className = 'filterbar__chip-label';
+    label.textContent = opt.title;
+    const clearEl = document.createElement('button');
+    clearEl.type = 'button';
+    clearEl.className = 'filterbar__chip-clear';
+    clearEl.setAttribute('aria-label', `Remove ${opt.title} filter`);
+    clearEl.append(icon('x', 12));
+    chip.append(label, clearEl);
+    wrap.append(chip);
+    if (this.addWrap !== null) this.el.insertBefore(wrap, this.addWrap);
+    else this.el.append(wrap);
+    this.listen(clearEl, 'click', (e) => {
+      e.preventDefault();
+      this.toggleSnippet(opt.id, false);
+    });
+    return wrap;
+  }
+
+  /** Apply (on) or remove a saved filter, committing the next predicate. */
+  private toggleSnippet(id: bigint, on: boolean): void {
+    const cur = this.peekPredicate();
+    const ids = selectedSnippetIds(cur)
+      .map((s) => BigInt(s))
+      .filter((x) => x !== id);
+    if (on) ids.push(id);
+    this.config.onCommit?.(setSelectedSnippets(cur, ids));
   }
 
   /**
@@ -504,6 +642,26 @@ export class QuickChips extends Control<QuickChipsConfig> {
   /** Clear the chip for [attr] (drop its top-level leaf). Test/host hook. */
   clearChipLeaf(attr: string): void {
     this.commit(attr, []);
+  }
+
+  /** The ids of the saved filters (snippets) currently AND-ed into the shared
+   *  predicate, as decimal strings. Test/host hook (mirrors the old
+   *  NamedFilters.activeSnippetIds()). */
+  activeSnippetIds(): string[] {
+    return selectedSnippetIds(this.peekPredicate());
+  }
+
+  /** Toggle saved filter [id] in/out of the shared predicate and fire onCommit —
+   *  the exact path a "Saved" menu item / snippet-chip X takes, without opening
+   *  the menu. Test/host hook. */
+  toggleSnippetId(id: bigint): void {
+    const active = new Set(this.activeSnippetIds());
+    this.toggleSnippet(id, !active.has(id.toString()));
+  }
+
+  /** Drop every active saved filter at once. Test/host hook. */
+  clearSnippets(): void {
+    this.config.onCommit?.(setSelectedSnippets(this.peekPredicate(), []));
   }
 }
 

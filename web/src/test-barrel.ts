@@ -114,14 +114,11 @@ export {
   type QuickChipDef,
 } from './filter/quick-chips.js';
 export {
-  NamedFilters,
-  registerNamedFilters,
   SNIPPET_ATTR,
   snippetLeaf,
   selectedSnippetIds,
   setSelectedSnippets,
-  type NamedFiltersConfig,
-} from './filter/named-filters.js';
+} from './filter/snippet-predicate.js';
 export { registerFilterSpecs } from './filter/specs.js';
 export {
   FilterPresetSelector,

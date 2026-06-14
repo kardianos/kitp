@@ -72,7 +72,6 @@ import { registerAdminSpecs } from './admin/specs.js';
 import { adminScreenConfig, ownAgentsScreen, ADMIN_VIEWS, MANAGER_ADMIN_VIEWS, ADMIN_SECTION, type AdminView } from './admin/screens.js';
 import { registerPredicateFilter } from './filter/predicate-filter.js';
 import { registerQuickChips } from './filter/quick-chips.js';
-import { registerNamedFilters } from './filter/named-filters.js';
 import { registerFilterSpecs } from './filter/specs.js';
 import { registerFilterPresetSelector } from './filter/filter-preset-selector.js';
 import { registerFilterCardSpecs } from './filter/filter-card-specs.js';
@@ -295,11 +294,6 @@ function boot(): void {
   // top-level `attr in [...]` leaf in the SAME 'screen.predicate' tree the
   // Advanced editor + named filters edit; idempotent register.
   registerQuickChips();
-  // The "Named" multi-select the ScreenFilterBar mounts in the chips row —
-  // toggles reusable predicate-fragment leaves (`snippet` op → predicate_snippet
-  // cards) on the SAME 'screen.predicate' tree; the server expands the snippet
-  // id leaf + cycle-guards. Idempotent register.
-  registerNamedFilters();
   // The saved-view picker the ScreenFilterBar mounts in row 1 (lists the
   // screen's `filter` cards; picking one applies its predicate + group).
   registerFilterPresetSelector();

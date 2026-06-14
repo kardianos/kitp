@@ -37,7 +37,6 @@ before(async () => {
   M.registerGrid();
   M.registerPredicateFilter();
   M.registerQuickChips();
-  M.registerNamedFilters();
 });
 
 const PROJECT_ID = 100n;
@@ -658,25 +657,33 @@ test('QuickChips: a predicate change from ANOTHER surface reflects in the chip a
 });
 
 /* -------------------------------------------------------------------------- */
-/* NAMED FILTERS — the "Named" multi-select toggles snippet-id leaves.          */
-/* Picking a snippet emits a `{op:'snippet', values:[id]}` top-level leaf into   */
-/* screen.predicate (the server expands it); un-picking removes it. Keyed by     */
-/* snippet id (one leaf per snippet) so multiple snippets AND together.          */
+/* SAVED FILTERS — the "Saved" section of QuickChips's "+ Filter" menu toggles   */
+/* snippet-id leaves. Picking a snippet emits a `{op:'snippet', values:[id]}`    */
+/* top-level leaf into screen.predicate (the server expands it) and shows a      */
+/* snippet chip; un-picking removes both. Keyed by snippet id (one leaf per      */
+/* snippet) so multiple snippets AND together.                                   */
 /* -------------------------------------------------------------------------- */
 
-/** The NamedFilters control INSTANCE (carries the toggle/clear/read hooks). */
+/** The QuickChips control INSTANCE carries the saved-filter hooks now that the
+ *  former NamedFilters control is merged into the "+ Filter" menu. */
 function namedFiltersControl(host) {
-  return findControl(host, 'NamedFilters');
+  return findControl(host, 'QuickChips');
 }
 
-test('NamedFilters: the snippet store loads predicate_snippet cards for the project', async () => {
+/** The snippet chip for [id] inside QuickChips, or null when not shown. */
+function snippetChip(host, id) {
+  const cc = host.el.findByControl('QuickChips')[0];
+  return cc ? cc.querySelector(`[data-snippet-chip="${id}"]`) : null;
+}
+
+test('Saved filters: the snippet store loads predicate_snippet cards for the project', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);
   await settle(dispatcher);
 
   const nf = namedFiltersControl(host);
-  assert.ok(nf, 'NamedFilters control instance');
+  assert.ok(nf, 'QuickChips control instance (carries the saved-filter hooks)');
 
   // The scoped load landed the project's snippet cards at screen.snippets.
   const rows = tree.at(['screen', 'snippets']).peek();
@@ -690,7 +697,7 @@ test('NamedFilters: the snippet store loads predicate_snippet cards for the proj
   assert.deepEqual(opts.map((o) => o.key), ['900', '901'], 'keyed by snippet id');
 });
 
-test('NamedFilters: picking a snippet adds a snippet-id leaf to screen.predicate (server expands it)', async () => {
+test('Saved filters: picking a snippet adds a snippet-id leaf to screen.predicate (server expands it)', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);
@@ -708,9 +715,13 @@ test('NamedFilters: picking a snippet adds a snippet-id leaf to screen.predicate
     'a single snippet → a bare snippet leaf carrying the id',
   );
   assert.deepEqual(nf.activeSnippetIds(), ['900'], 'control reflects the active snippet');
-  const trigger = host.el.findByControl('NamedFilters')[0].querySelector('[data-named-filters]');
-  assert.ok(trigger.classList.contains('filterbar__chip--active'), 'trigger is tinted active');
-  assert.ok(trigger.querySelector('.filterbar__chip-label').textContent.includes('1'), 'count reflects 1');
+  const chip = snippetChip(host, '900');
+  assert.ok(chip, 'snippet chip rendered for the active saved filter');
+  assert.ok(chip.classList.contains('filterbar__chip--active'), 'snippet chip is tinted active');
+  assert.ok(
+    chip.querySelector('.filterbar__chip-label').textContent.includes('My open work'),
+    'chip carries the snippet title',
+  );
 
   // It fed the live tasks query. A bare snippet leaf is a flat-AND-of-leaves, so
   // it crosses on `where[]` as the wire leaf the SQL compiler dispatches on
@@ -726,7 +737,7 @@ test('NamedFilters: picking a snippet adds a snippet-id leaf to screen.predicate
   assert.equal(last.tree, undefined, 'a single snippet leaf stays flat-AND (where[])');
 });
 
-test('NamedFilters: un-picking a snippet removes its leaf from screen.predicate', async () => {
+test('Saved filters: un-picking a snippet removes its leaf from screen.predicate', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);
@@ -742,12 +753,10 @@ test('NamedFilters: un-picking a snippet removes its leaf from screen.predicate'
   M.flushSync?.();
   assert.equal(tree.at(['screen', 'predicate']).peek(), null, 'snippet leaf removed → predicate null');
   assert.deepEqual(nf.activeSnippetIds(), [], 'no active snippet');
-  const trigger = host.el.findByControl('NamedFilters')[0].querySelector('[data-named-filters]');
-  assert.ok(!trigger.classList.contains('filterbar__chip--active'), 'trigger no longer active');
-  assert.equal(trigger.querySelector('.filterbar__chip-clear').style.display, 'none', 'clear-X hidden');
+  assert.equal(snippetChip(host, '900'), null, 'snippet chip removed when the saved filter is dropped');
 });
 
-test('NamedFilters: two snippets AND together as one leaf each', async () => {
+test('Saved filters: two snippets AND together as one leaf each', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);
@@ -775,7 +784,7 @@ test('NamedFilters: two snippets AND together as one leaf each', async () => {
   assert.equal(tree.at(['screen', 'predicate']).peek(), null, 'clear drops all snippet leaves');
 });
 
-test('NamedFilters: active state reflects an external predicate change', async () => {
+test('Saved filters: active state reflects an external predicate change', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);
@@ -790,11 +799,11 @@ test('NamedFilters: active state reflects an external predicate change', async (
   M.flushSync?.();
 
   assert.deepEqual(nf.activeSnippetIds(), ['901'], 'reflects the externally-written snippet leaf');
-  const trigger = host.el.findByControl('NamedFilters')[0].querySelector('[data-named-filters]');
-  assert.ok(trigger.classList.contains('filterbar__chip--active'), 'trigger becomes active');
+  const chip = snippetChip(host, '901');
+  assert.ok(chip && chip.classList.contains('filterbar__chip--active'), 'snippet chip appears for the external write');
 });
 
-test('NamedFilters: a snippet leaf composes with a quick-chip leaf + an Advanced leaf in the root AND', async () => {
+test('Saved filters: a snippet leaf composes with a quick-chip leaf + an Advanced leaf in the root AND', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);

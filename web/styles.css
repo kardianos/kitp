@@ -1157,6 +1157,16 @@ select optgroup {
   color: var(--color-muted);
   font-size: var(--text-sm);
 }
+/* "Saved" section label in the "+ Filter" menu (separates attribute filters
+   from saved/named filters). */
+.filterbar__chip-menu-header {
+  padding: var(--space-2) var(--space-3) var(--space-h);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
 
 /* The "Named" multi-select — toggles reusable predicate-snippet leaves on the
    SAME screen.predicate tree. It reuses the chip pill + checkbox-menu styling;
