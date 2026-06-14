@@ -880,10 +880,6 @@ select optgroup {
 .filterbar__search::placeholder {
   color: var(--color-muted);
 }
-.filterbar__clear {
-  min-height: 1.875rem;
-  padding: var(--space-1) var(--space-3);
-}
 /* "Display" icon trigger (GROUP/LANES live in its popover) + the popover panel. */
 .filterbar__display-wrap {
   position: relative;

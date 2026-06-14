@@ -407,8 +407,10 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
 
     const clear = document.createElement('button');
     clear.type = 'button';
-    clear.className = 'btn filterbar__clear';
-    clear.textContent = 'Clear';
+    clear.className = 'btn filterbar__iconbtn filterbar__clear';
+    clear.setAttribute('aria-label', 'Clear filters');
+    clear.title = 'Clear filters';
+    clear.append(icon('paintbrush', 16));
     bar.append(advanced, clear);
 
     // Screen-specific view actions (e.g. Grid → Columns / "+ New"), far right.
