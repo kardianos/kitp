@@ -311,7 +311,7 @@ test('ScreenFilterBar: screen-registered viewActions mount pulled-right on the V
   assert.ok(row1 && row1.querySelector('[data-filterbar-view-actions]'), 'view actions sit on the View row');
 });
 
-test('ScreenFilterBar: kanban requires a group — picker defaults to milestone, no "No group" option', async () => {
+test('ScreenFilterBar: kanban requires a group — picker defaults to status, no "No group" option', async () => {
   const { dispatcher, api } = bootApi(taskMockTransport());
   const tree = new M.TreeNode({}, []);
   tree.at(['scope', 'projectId']).set(PROJECT_ID);
@@ -328,9 +328,9 @@ test('ScreenFilterBar: kanban requires a group — picker defaults to milestone,
   host.mount(new FakeElement('div'));
   await settle(dispatcher);
 
-  // The board seeds the group to its default axis (milestone), so the picker is
+  // The board seeds the group to its default axis (status), so the picker is
   // in sync with the board from the first paint (not "No group").
-  assert.equal(tree.at(['screen', 'group']).peek(), 'milestone_ref', 'group seeded to milestone');
+  assert.equal(tree.at(['screen', 'group']).peek(), 'status', 'group seeded to status');
 
   // Once the data-driven axes land, the GROUP picker has no "No group" entry.
   const groupEl = host.el.querySelectorAll('[data-filter-group]')[0];

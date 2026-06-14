@@ -78,6 +78,9 @@ test('Kanban query lands tasks + milestones and buckets into columns', async () 
   const kanban = M.Control.New('Kanban', { type: 'Kanban' }, ctx);
   const host = new FakeElement('div');
   kanban.mount(host); // mount wires the data layer → fires the two queries
+  // This test asserts milestone columns; pin the axis (the board now defaults
+  // to status).
+  tree.at(['screen', 'groupAxis']).set({ attr: 'milestone_ref', lookup: 'milestones' });
 
   await settle(dispatcher);
 
@@ -466,7 +469,7 @@ function multiAxisKanbanTransport() {
   return transport;
 }
 
-function bootMultiAxisKanban() {
+function bootMultiAxisKanban({ groupAxis = { attr: 'milestone_ref', lookup: 'milestones' } } = {}) {
   const transport = multiAxisKanbanTransport();
   const { dispatcher, api } = bootApi(transport);
   const tree = new M.TreeNode({}, []);
@@ -479,6 +482,10 @@ function bootMultiAxisKanban() {
   const ctx = { api, tree, scope };
   const kanban = M.Control.New('Kanban', { type: 'Kanban' }, ctx);
   kanban.mount(new FakeElement('div'));
+  // Most tests exercise milestone grouping, so default the axis to milestone
+  // here (status tests override it after boot). Pass `{ groupAxis: null }` to
+  // exercise the board's real default axis (status).
+  if (groupAxis !== null) tree.at(['screen', 'groupAxis']).set(groupAxis);
   return { transport, dispatcher, tree, kanban };
 }
 
@@ -511,21 +518,21 @@ test('Kanban: multi-field search ships a v2 leaf shape the server accepts', asyn
   }
 });
 
-test('Kanban: no GROUP set → default milestone axis (unchanged)', async () => {
-  const { dispatcher, kanban } = bootMultiAxisKanban();
+test('Kanban: no GROUP set → default status axis', async () => {
+  const { dispatcher, kanban } = bootMultiAxisKanban({ groupAxis: null });
   await settle(dispatcher);
-  // No screen.group → columns keyed by milestone value-cards (32/33/34) + unset.
+  // No screen.group → columns keyed by the board's default axis (status: 50/51)
+  // + unset.
   const cols = kanban.el.querySelectorAll('[data-kanban-column]');
   assert.deepEqual(
     cols.map((c) => c.dataset.column),
-    ['32', '33', '34', '__unset__'],
-    'default axis buckets by milestone_ref',
+    ['50', '51', '__unset__'],
+    'default axis buckets by status',
   );
-  // Column 32 holds the two milestone-32 tasks (201, 203).
-  assert.deepEqual(
-    visibleCards(cols[0]).map((c) => c.dataset.cardId),
-    ['201', '203'],
-    'milestone 32 column holds its tasks',
+  assert.equal(
+    cols[0].querySelector('.col__label').textContent,
+    'To do',
+    'first column is the To do status',
   );
 });
 
@@ -802,6 +809,7 @@ test('Kanban: column order follows the value-cards\' explicit sort_order', async
   const ctx = { api, tree, scope };
   const kanban = M.Control.New('Kanban', { type: 'Kanban' }, ctx);
   kanban.mount(new FakeElement('div'));
+  tree.at(['screen', 'groupAxis']).set({ attr: 'milestone_ref', lookup: 'milestones' });
   await settle(dispatcher);
 
   // Columns ordered by milestone sort_order (1: 33, 2: 34, 3: 32) + (unset).
@@ -1003,9 +1011,10 @@ test('Kanban: column "+" raises quickCreateOpen prefilled to that column axis', 
 
   const kanban = M.Control.New('Kanban', { type: 'Kanban' }, ctx);
   kanban.mount(new FakeElement('div'));
+  tree.at(['screen', 'groupAxis']).set({ attr: 'milestone_ref', lookup: 'milestones' });
   await settle(dispatcher);
 
-  // Click the "+" on the M1 milestone column (key '32'); default axis = milestone.
+  // Click the "+" on the M1 milestone column (key '32'); axis = milestone.
   const add = kanban.el.querySelectorAll('[data-kanban-column-add]').find(
     (b) => b.dataset.kanbanColumnAdd === '32',
   );

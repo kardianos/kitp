@@ -96,7 +96,7 @@ const KANBAN_CARD_GAP = 8;
  *  attr is shared with the filter bar (via screen-resolve) so the board's
  *  fallback and the GROUP picker's default can't drift apart. */
 const DEFAULT_AXIS_ATTR = KANBAN_DEFAULT_GROUP_ATTR;
-const DEFAULT_AXIS_LOOKUP = 'milestones';
+const DEFAULT_AXIS_LOOKUP = 'statuses';
 
 /* -------------------------------------------------------------------------- */
 /* Configs + declaration-merged registry types.                              */
