@@ -657,7 +657,7 @@ test('QuickChips: a predicate change from ANOTHER surface reflects in the chip a
 });
 
 /* -------------------------------------------------------------------------- */
-/* SAVED FILTERS — the "Saved" section of QuickChips's "+ Filter" menu toggles   */
+/* PRESET FILTERS — the "Presets" section of QuickChips's "+ Filter" menu toggles */
 /* snippet-id leaves. Picking a snippet emits a `{op:'snippet', values:[id]}`    */
 /* top-level leaf into screen.predicate (the server expands it) and shows a      */
 /* snippet chip; un-picking removes both. Keyed by snippet id (one leaf per      */

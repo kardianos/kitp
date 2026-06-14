@@ -448,7 +448,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
   }
 
   /** Populate the "+ Filter" menu: the attribute chips not on the bar, then a
-   *  "Saved" section of the project's not-yet-applied saved filters. */
+   *  "Presets" section of the project's not-yet-applied predicate-snippet filters. */
   private renderAddMenu(): void {
     const list = this.addListEl;
     if (list === null) return;
@@ -463,7 +463,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
     if (savedAvail.length > 0) {
       const header = document.createElement('li');
       header.className = 'filterbar__chip-menu-header muted';
-      header.textContent = 'Saved';
+      header.textContent = 'Presets';
       list.append(header);
       for (const s of savedAvail) {
         list.append(this.addMenuItem(s.title, () => this.toggleSnippet(s.id, true)));
@@ -652,7 +652,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
   }
 
   /** Toggle saved filter [id] in/out of the shared predicate and fire onCommit —
-   *  the exact path a "Saved" menu item / snippet-chip X takes, without opening
+   *  the exact path a "Presets" menu item / snippet-chip X takes, without opening
    *  the menu. Test/host hook. */
   toggleSnippetId(id: bigint): void {
     const active = new Set(this.activeSnippetIds());
