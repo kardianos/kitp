@@ -27,6 +27,7 @@ import { Popover } from '../ui/popover.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { readTitle } from './screen-resolve.js';
 
+import { icon } from '../ui/icons.js';
 export interface FilterPresetSelectorConfig extends BaseControlConfig {
   type: 'FilterPresetSelector';
   /** Tree path holding the saved filter cards (CardWithAttrs[]). Read reactively. */
@@ -97,7 +98,7 @@ export class FilterPresetSelector extends Control<FilterPresetSelectorConfig> {
     kebab.setAttribute('aria-expanded', 'false');
     kebab.setAttribute('aria-label', 'View actions');
     kebab.title = 'View actions';
-    kebab.textContent = '⋯';
+    kebab.append(icon('ellipsis'));
     this.el.append(kebab);
 
     const menu = new Popover(kebab, {

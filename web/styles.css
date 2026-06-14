@@ -1,12 +1,11 @@
 /* kitp web — hand-authored CSS, no Tailwind, no build.
  *
  * Implements web/design/DESIGN-LANGUAGE.md against the designer-owned token
- * layer (web/design/tokens.css): a One-UI-calm CHROME + Ubiquiti-dense DATA.
- * The governing rule is "clean chrome, dense data" — two density registers,
- * one language:
+ * layer (web/design/tokens.css): a Linear-inspired compact language — one
+ * tight surface, two density registers a half-step apart:
  *
  *   COMFORTABLE chrome  — AppShell topbar/rail/user-chip, ProjectList cards,
- *     the create/edit dialog, primary (pill) buttons, search Field.
+ *     the create/edit dialog, rounded-rect buttons, search Field.
  *   COMPACT data        — ScreenFilterBar, Kanban columns + task cards,
  *     hairline-bordered, tabular-nums, tight but never cramped.
  *
@@ -15,6 +14,24 @@
  */
 
 @import url("./design/tokens.css");
+
+/* Inter Variable, vendored in web/assets/fonts/ (see its README + OFL.txt).
+   Absolute /assets/ URLs so the paths resolve from the bundle root at any
+   SPA route depth (same reasoning as the favicons in index.html). */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/assets/fonts/InterVariable.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/assets/fonts/InterVariable-Italic.woff2") format("woff2");
+}
 
 *,
 *::before,
@@ -53,6 +70,14 @@ body {
   outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-md);
+}
+
+/* Programmatic-only focus receivers (tabindex="-1": the kanban board, grid
+   body, task-detail root, …) exist to catch hotkeys after a keyboard move —
+   they paint their own cursor/row indicators, and they can never be reached
+   with Tab, so the browser ring around the whole container is pure noise. */
+:where([tabindex="-1"]):focus-visible {
+  outline: none;
 }
 
 /* Native <select> dropdown popups follow `color-scheme` (set per theme in
@@ -176,8 +201,8 @@ select optgroup {
 }
 
 /* ==========================================================================
-   BUTTONS — comfortable register. Pill primary, soft neutral. Big targets
-   that work for both touch (Samsung) and precise pointer (Ubiquiti).
+   BUTTONS — Linear-compact: rounded-rect (not pill), 32px-ish targets,
+   soft neutral with a confident primary.
    ========================================================================== */
 .btn {
   font: inherit;
@@ -187,26 +212,26 @@ select optgroup {
   align-items: center;
   justify-content: center;
   gap: var(--space-1x);
-  min-height: 2.25rem;
-  padding: var(--space-1x) var(--space-4);
+  min-height: 2rem;
+  padding: var(--space-1x) var(--space-3);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-md);
   background: var(--color-surface);
   color: var(--color-fg);
   cursor: pointer;
   white-space: nowrap;
   transition:
-    background var(--duration-fast) var(--ease-standard),
-    border-color var(--duration-fast) var(--ease-standard),
-    box-shadow var(--duration-fast) var(--ease-standard),
-    transform var(--duration-fast) var(--ease-standard);
+    background var(--duration-micro) var(--ease-standard),
+    border-color var(--duration-micro) var(--ease-standard),
+    box-shadow var(--duration-micro) var(--ease-standard),
+    transform var(--duration-micro) var(--ease-standard);
 }
 .btn:hover {
   background: var(--color-fill-hover);
   border-color: var(--color-border-strong);
 }
 .btn:active {
-  transform: translateY(0.5px);
+  transform: scale(0.97);
 }
 .btn:focus-visible {
   outline: 2px solid var(--color-focus-ring);
@@ -328,12 +353,55 @@ select optgroup {
   gap: var(--space-1);
 }
 
+/* ---- inline SVG icons (src/ui/icons.ts) ---- */
+/* Stroke inherits currentColor, so icons tint with the surrounding text
+   (hover/disabled states included) with no per-state rules. */
+.icon {
+  display: inline-block;
+  flex: none;
+  vertical-align: -0.125em;
+}
+/* Icons composed next to text (e.g. "‹ Back to list") get breathing room
+   from the host's gap/whitespace; inside square buttons they centre via
+   the button's flex. */
+
+/* ---- status (phase) icons — src/ui/status-icon.ts ---- */
+/* Shape encodes progress (dashed → half-pie → filled+check); the tint
+   comes from the shared --phase-* palette in tokens.css so every status
+   surface agrees on the state color. */
+.status-icon {
+  display: inline-flex;
+  flex: none;
+  line-height: 1;
+  color: var(--color-muted);
+}
+.status-icon[data-phase="triage"] {
+  color: var(--phase-triage);
+}
+.status-icon[data-phase="active"] {
+  color: var(--phase-active);
+}
+.status-icon[data-phase="terminal"] {
+  color: var(--phase-terminal);
+}
+/* Status badges that host an icon next to their label. Additive layout
+   only — each chip keeps its own tone/typography rules. */
+.task-detail__status,
+.task-comms__status,
+.related-summary__status,
+.card-list__status,
+.grid__ref--status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+}
+
 /* ---- icon buttons (chrome) ---- */
 .iconbtn {
   font: inherit;
   font-size: var(--text-md);
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 2rem;
+  height: 2rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -343,8 +411,12 @@ select optgroup {
   color: var(--color-muted);
   cursor: pointer;
   transition:
-    background var(--duration-fast) var(--ease-standard),
-    color var(--duration-fast) var(--ease-standard);
+    background var(--duration-micro) var(--ease-standard),
+    color var(--duration-micro) var(--ease-standard),
+    transform var(--duration-micro) var(--ease-standard);
+}
+.iconbtn:active {
+  transform: scale(0.94);
 }
 .iconbtn:hover {
   background: var(--color-fill-hover);
@@ -449,8 +521,8 @@ select optgroup {
   color: var(--color-fg);
   cursor: pointer;
   transition:
-    background var(--duration-fast) var(--ease-standard),
-    color var(--duration-fast) var(--ease-standard);
+    background var(--duration-micro) var(--ease-standard),
+    color var(--duration-micro) var(--ease-standard);
 }
 .shell__link:hover {
   background: var(--color-fill-hover);
@@ -554,6 +626,8 @@ select optgroup {
   box-shadow: var(--shadow-md);
   overflow: hidden;
   z-index: var(--z-sticky);
+  animation: pop-enter var(--duration-fast) var(--ease-out);
+  transform-origin: bottom;
 }
 .shell__user-menu-item {
   font: inherit;
@@ -622,6 +696,21 @@ select optgroup {
   min-height: 0;
   height: 100%;
   background: var(--color-bg);
+}
+/* Screen mount — a quick rise+fade on the freshly-rendered screen body.
+   AppShell re-adds this class on every route swap (reflow-restarted). */
+@keyframes outlet-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.shell__outlet--enter > * {
+  animation: outlet-enter var(--duration-base) var(--ease-out);
 }
 .screen-host {
   display: flex;
@@ -1184,15 +1273,13 @@ select optgroup {
   min-height: var(--space-12);
   max-height: calc(100vh - 16rem);
 }
-/* Each card is a virtualList slot (64px tall, positioned absolutely + sized
-   inline by the list). The vertical gap between cards is created by the card's
-   own bottom margin-equivalent: we shrink the visible card inside the slot via
-   padding so adjacent slots show a clear hairline gap. */
+/* Each card is a virtualList slot (positioned absolutely + sized inline by
+   the list at the 64px pitch). The vertical gap between stacked cards is
+   baked into the slot pitch: buildCardShell (kanban.ts) shrinks the visible
+   card to pitch − KANBAN_CARD_GAP via inline height, which inline-sizing
+   means CSS could never do from here. This rule owns the side insets only. */
 .col__body .card {
-  /* The visible card sits inside the 64px slot with a bottom gutter so stacked
-     cards read as separated tiles (the recycling slots themselves abut). */
   margin: 0 var(--space-2);
-  height: calc(100% - var(--space-2));
 }
 .col__empty {
   padding: var(--space-5) var(--space-2);
@@ -1220,11 +1307,15 @@ select optgroup {
   overflow: hidden;
   cursor: grab;
   transition:
+    background var(--duration-micro) var(--ease-standard),
     border-color var(--duration-fast) var(--ease-standard),
     box-shadow var(--duration-fast) var(--ease-standard),
     transform var(--duration-fast) var(--ease-standard);
 }
 .card:hover {
+  /* Whole-card lift (Linear-style): the interior brightens slightly so the
+     hovered card reads at a glance, not just its border. */
+  background: var(--color-fill-hover);
   border-color: var(--color-border-strong);
   box-shadow: var(--shadow-sm);
 }
@@ -1338,11 +1429,17 @@ select optgroup {
   min-width: 0;
   overflow: hidden;
   align-items: center;
-  gap: var(--space-h);
+  gap: var(--space-1x);
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   font-variant-numeric: var(--nums-tabular);
   color: var(--color-muted);
+}
+/* Optical alignment: the id's digit ink sits ~1px higher than the priority
+   bars / tag chips beside it (all three boxes ARE flex-centered) — nudge
+   the number down so the row reads as one line. */
+.card__meta .card__id {
+  transform: translateY(1px);
 }
 /* Card richness (#25): tag chips on each card. */
 .card__tag {
@@ -1791,6 +1888,9 @@ select optgroup {
  * Values screen) and shared with `.tag-chip` — see the [data-tag-color="..."]
  * palette below. */
 .grid__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   font-size: var(--text-2xs);
   font-weight: var(--weight-semibold);
   text-transform: capitalize;
@@ -1802,99 +1902,110 @@ select optgroup {
 }
 
 /* ---- shared tag/pill palette tones (read off [data-tag-color="..."]) ----
- * Both the grid pill and the .tag-chip wear these — change the admin
- * Values screen's color picker and every surface re-tones consistently.
- * The 15-tone set walks the colour wheel; tokens fall back to inline hex so
- * the chip still tones cleanly even when a project theme overrides --color-*. */
+ * Linear-style: the chip itself stays NEUTRAL (surface + hairline + fg
+ * text); the tag's `color` attribute renders as a small leading dot, so a
+ * tagged board reads calm instead of a wall of tinted pills. Both the grid
+ * pill and the .tag-chip share the hook — change the admin Values screen's
+ * color picker and every surface re-dots consistently. The 15-tone set
+ * walks the colour wheel; mid-saturation hexes legible on light AND dark. */
+.grid__pill[data-tag-color]::before,
+.tag-chip[data-tag-color]::before {
+  content: "";
+  flex: none;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: var(--radius-pill);
+  background: var(--tag-dot, var(--color-muted));
+}
 .grid__pill[data-tag-color="red"],
 .tag-chip[data-tag-color="red"] {
-  background: var(--color-danger-soft, #ffd6d3);
-  color: var(--color-danger, #9b1c0f);
-  border-color: var(--color-danger-soft, #ffd6d3);
+  --tag-dot: #e5484d;
 }
 .grid__pill[data-tag-color="orange"],
 .tag-chip[data-tag-color="orange"] {
-  background: #ffe2c4;
-  color: #a04a00;
-  border-color: #ffe2c4;
+  --tag-dot: #f76b15;
 }
 .grid__pill[data-tag-color="amber"],
 .tag-chip[data-tag-color="amber"] {
-  background: var(--color-warning, #fff0c4);
-  color: var(--color-warning-fg, #7a5300);
-  border-color: var(--color-warning, #fff0c4);
+  --tag-dot: #ffb224;
 }
 .grid__pill[data-tag-color="yellow"],
 .tag-chip[data-tag-color="yellow"] {
-  background: #fff3a8;
-  color: #6e5600;
-  border-color: #fff3a8;
+  --tag-dot: #f5d90a;
 }
 .grid__pill[data-tag-color="lime"],
 .tag-chip[data-tag-color="lime"] {
-  background: #e2f7c4;
-  color: #4d7a00;
-  border-color: #e2f7c4;
+  --tag-dot: #99d52a;
 }
 .grid__pill[data-tag-color="green"],
 .tag-chip[data-tag-color="green"] {
-  background: var(--color-success-soft, #d1fadf);
-  color: var(--color-success, #027a48);
-  border-color: var(--color-success-soft, #d1fadf);
+  --tag-dot: #30a46c;
 }
 .grid__pill[data-tag-color="teal"],
 .tag-chip[data-tag-color="teal"] {
-  background: #c7f0eb;
-  color: #036b6b;
-  border-color: #c7f0eb;
+  --tag-dot: #12a594;
 }
 .grid__pill[data-tag-color="cyan"],
 .tag-chip[data-tag-color="cyan"] {
-  background: #cdebf9;
-  color: #006b94;
-  border-color: #cdebf9;
+  --tag-dot: #00a2c7;
 }
 .grid__pill[data-tag-color="blue"],
 .tag-chip[data-tag-color="blue"] {
-  background: var(--color-accent-soft, #d8e7ff);
-  color: var(--color-accent, #1e4ea8);
-  border-color: var(--color-accent-soft, #d8e7ff);
+  --tag-dot: #0091ff;
 }
 .grid__pill[data-tag-color="indigo"],
 .tag-chip[data-tag-color="indigo"] {
-  background: #dde0fb;
-  color: #344b9a;
-  border-color: #dde0fb;
+  --tag-dot: #3e63dd;
 }
 .grid__pill[data-tag-color="purple"],
 .tag-chip[data-tag-color="purple"] {
-  background: var(--color-purple-soft, #ede0ff);
-  color: var(--color-purple, #6638b0);
-  border-color: var(--color-purple-soft, #ede0ff);
+  --tag-dot: #8e4ec6;
 }
 .grid__pill[data-tag-color="magenta"],
 .tag-chip[data-tag-color="magenta"] {
-  background: #f6cef4;
-  color: #931e7d;
-  border-color: #f6cef4;
+  --tag-dot: #d6409f;
 }
 .grid__pill[data-tag-color="pink"],
 .tag-chip[data-tag-color="pink"] {
-  background: #fcd9e6;
-  color: #a8326c;
-  border-color: #fcd9e6;
+  --tag-dot: #e93d82;
 }
 .grid__pill[data-tag-color="brown"],
 .tag-chip[data-tag-color="brown"] {
-  background: #ead9c4;
-  color: #6b4423;
-  border-color: #ead9c4;
+  --tag-dot: #ad7f58;
 }
 .grid__pill[data-tag-color="gray"],
 .tag-chip[data-tag-color="gray"] {
-  background: var(--color-fill-hover);
+  --tag-dot: #8d8d8d;
+}
+
+/* ---- priority signal bars (src/ui/priority-icon.ts) ----
+ * A priority/<leaf> tag renders as 1–3 filled bars in place of a pill —
+ * level reads primarily by shape, with a very faded per-level tint
+ * (sage → ochre → dusty red; desaturated mid-tones legible on light AND
+ * dark). Urgent keeps the full danger red. */
+.priority-ind {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
   color: var(--color-muted);
-  border-color: var(--color-fill-hover);
+}
+/* Reserved footprint for cards with no priority — same width as the bars
+   svg so sibling chips align across cards. */
+.priority-ind--none {
+  width: 14px;
+}
+.priority-ind[data-priority="low"] {
+  color: #85a58e;
+}
+.priority-ind[data-priority="med"],
+.priority-ind[data-priority="medium"] {
+  color: #b5a25c;
+}
+.priority-ind[data-priority="high"] {
+  color: #bf8484;
+}
+.priority-ind[data-priority="urgent"] {
+  color: var(--color-danger);
 }
 
 /* ---- muted em-dash for empty cells ---- */
@@ -2484,7 +2595,26 @@ select optgroup {
    ========================================================================== */
 /* Modal (shared overlay helper) — centered panel + backdrop, used by the
    workflow Edit-transition editor and other focused forms. */
+@keyframes modal-scrim-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes modal-panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
 .modal-backdrop {
+  animation: modal-scrim-enter var(--duration-base) var(--ease-standard);
   position: fixed;
   inset: 0;
   display: flex;
@@ -2497,6 +2627,7 @@ select optgroup {
   z-index: var(--z-modal);
 }
 .modal__panel {
+  animation: modal-panel-enter var(--duration-base) var(--ease-out);
   width: min(34rem, 92vw);
   max-height: 80vh;
   overflow: auto;
@@ -4756,6 +4887,24 @@ select optgroup {
    ========================================================================== */
 
 /* ---- The shared Popover panel (every floating surface) ---- */
+/* Shared floating-surface enter — fast drop-in + settle (Linear-feel).
+   Explicit `to` keyframe: the Popover helper reveals via INLINE opacity, and
+   an implicit `to` would read that mid-flight. */
+@keyframes pop-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.kf-popover--enter {
+  animation: pop-enter var(--duration-fast) var(--ease-out);
+  transform-origin: top;
+}
+
 .kf-popover {
   /* position/left/top/opacity/pointer-events are set inline by the Popover
      helper; this owns only the surface look. */
@@ -5419,16 +5568,16 @@ select optgroup {
   color: var(--color-muted);
 }
 .task-detail__status[data-phase="triage"] {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
+  background: var(--phase-triage-soft);
+  color: var(--phase-triage);
 }
 .task-detail__status[data-phase="active"] {
-  background: var(--color-success-soft);
-  color: var(--color-success);
+  background: var(--phase-active-soft);
+  color: var(--phase-active);
 }
 .task-detail__status[data-phase="terminal"] {
-  background: var(--color-fill-hover);
-  color: var(--color-muted);
+  background: var(--phase-terminal-soft);
+  color: var(--phase-terminal);
 }
 /* "…" overflow-menu trigger in the nav row. */
 .task-detail__actions {
@@ -6126,6 +6275,34 @@ select optgroup {
 }
 
 /* -------------------------------------------------------------------------- */
+/* EXPERIMENT (ui-refresh-inter branch): keep Inter on the long-form reading   */
+/* surfaces but enlarge + loosen + slightly weight them, instead of switching  */
+/* to a serif. Same surfaces the serif experiment targeted, so the two can be  */
+/* A/B'd. If kardianos prefers this, fold the values into the base rules; if    */
+/* he prefers the serif, drop this block. UI chrome is untouched.              */
+/* -------------------------------------------------------------------------- */
+.markdown,
+.rich-editor .ProseMirror {
+  font-size: var(--text-md); /* 15px — matches Linear's body */
+  line-height: 1.6;
+  font-weight: 450;
+  /* Slight NEGATIVE tracking — Inter's optical recommendation at body size and
+     what Linear uses; tightening (not loosening) is the crispness trick. */
+  letter-spacing: -0.006em;
+}
+.task-detail__title {
+  font-weight: 650;
+  letter-spacing: -0.012em; /* tighter on the larger heading, Linear-style */
+}
+.task-activity__text,
+.activity-screen__group-summary {
+  font-size: var(--text-base); /* 14px */
+  line-height: 1.5;
+  font-weight: 450;
+  letter-spacing: -0.006em;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Task-detail COMMS (email threads) — start form + per-comm cards + replies.  */
 /* The section shipped unstyled; this gives the subject + message the most      */
 /* attention (prominent subject, line-break-preserving message bodies).         */
@@ -6166,16 +6343,16 @@ select optgroup {
   color: var(--color-muted);
 }
 .task-comms__status[data-phase="triage"] {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
+  background: var(--phase-triage-soft);
+  color: var(--phase-triage);
 }
 .task-comms__status[data-phase="active"] {
-  background: var(--color-success-soft);
-  color: var(--color-success);
+  background: var(--phase-active-soft);
+  color: var(--phase-active);
 }
 .task-comms__status[data-phase="terminal"] {
-  background: var(--color-fill-hover);
-  color: var(--color-muted);
+  background: var(--phase-terminal-soft);
+  color: var(--phase-terminal);
 }
 /* Per-thread ACK toggle in the comm header. */
 .task-comms__ack {
@@ -7264,13 +7441,13 @@ textarea.task-comms__form-input {
   color: var(--color-muted);
 }
 .related-summary__phase[data-phase="triage"] {
-  color: var(--color-accent);
+  color: var(--phase-triage);
 }
 .related-summary__phase[data-phase="active"] {
-  color: var(--color-success);
+  color: var(--phase-active);
 }
 .related-summary__phase[data-phase="terminal"] {
-  color: var(--color-muted);
+  color: var(--phase-terminal);
 }
 .related-summary__status {
   flex: 0 0 auto;
@@ -7282,16 +7459,16 @@ textarea.task-comms__form-input {
   color: var(--color-muted);
 }
 .related-summary__status[data-phase="triage"] {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
+  background: var(--phase-triage-soft);
+  color: var(--phase-triage);
 }
 .related-summary__status[data-phase="active"] {
-  background: var(--color-success-soft);
-  color: var(--color-success);
+  background: var(--phase-active-soft);
+  color: var(--phase-active);
 }
 .related-summary__status[data-phase="terminal"] {
-  background: var(--color-fill-hover);
-  color: var(--color-muted);
+  background: var(--phase-terminal-soft);
+  color: var(--phase-terminal);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -8413,6 +8590,9 @@ textarea.task-comms__form-input {
   cursor: pointer;
   font-variant-numeric: var(--nums-tabular);
 }
+.card-list__row {
+  transition: background var(--duration-micro) var(--ease-standard);
+}
 .card-list__row:hover {
   background: var(--color-fill-hover);
 }
@@ -8464,16 +8644,16 @@ textarea.task-comms__form-input {
   color: var(--color-muted);
 }
 .card-list__status[data-phase="triage"] {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
+  background: var(--phase-triage-soft);
+  color: var(--phase-triage);
 }
 .card-list__status[data-phase="active"] {
-  background: var(--color-success-soft);
-  color: var(--color-success);
+  background: var(--phase-active-soft);
+  color: var(--phase-active);
 }
 .card-list__status[data-phase="terminal"] {
-  background: var(--color-fill-hover);
-  color: var(--color-muted);
+  background: var(--phase-terminal-soft);
+  color: var(--phase-terminal);
 }
 
 .card-list__main {

@@ -45,6 +45,7 @@ import { schemaForCardType, type AttrSchema } from '../filter/attribute-schema.j
 import type { RefPicker } from '../ui/ref-picker.js';
 import type { DatePicker } from '../ui/datepicker.js';
 
+import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Config.                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -136,7 +137,7 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
     closeBtn.className = 'iconbtn project-props__close';
     closeBtn.dataset.projectPropsClose = '';
     closeBtn.setAttribute('aria-label', 'Close');
-    closeBtn.textContent = '×';
+    closeBtn.append(icon('x', 14));
     this.listen(closeBtn, 'click', () => this.close());
     head.append(headTitle, closeBtn);
 

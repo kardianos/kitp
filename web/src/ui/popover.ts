@@ -127,6 +127,7 @@ export class Popover {
     // Reset to the inert pre-position state in case this is a re-open.
     this.panel.style.opacity = '0';
     this.panel.style.pointerEvents = 'none';
+    this.panel.classList.remove('kf-popover--enter');
     document.body.appendChild(this.panel);
 
     this.applyWidth();
@@ -222,6 +223,8 @@ export class Popover {
         panel.style.top = `${y}px`;
         panel.style.opacity = '1';
         panel.style.pointerEvents = 'auto';
+        // First reveal kicks the enter animation (idempotent on repositions).
+        panel.classList.add('kf-popover--enter');
       });
     });
   }

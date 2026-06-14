@@ -38,12 +38,18 @@ func TestCSP_EnforcedHeader(t *testing.T) {
 		"base-uri 'none'",
 		"form-action 'self'",
 		"frame-ancestors 'none'",
-		"upgrade-insecure-requests",
 	}
 	for _, want := range musts {
 		if !strings.Contains(got, want) {
 			t.Errorf("CSP missing %q\nfull header: %s", want, got)
 		}
+	}
+
+	// upgrade-insecure-requests is intentionally never emitted: HTTPS is
+	// terminated at the reverse-proxy edge, and the directive would blank
+	// every asset fetch on a plain-HTTP LAN deploy.
+	if strings.Contains(got, "upgrade-insecure-requests") {
+		t.Errorf("CSP unexpectedly contains upgrade-insecure-requests\nfull header: %s", got)
 	}
 
 	// Negative checks: nothing 'unsafe-*' or wildcard should leak in.

@@ -97,7 +97,9 @@ lint:
 # page would blank out. (This supersedes web/build.mjs — see its header.)
 web:
 	cd web && $(ESBUILD) app=src/main.ts styles=styles.css \
-		--bundle --format=esm --target=es2022 --sourcemap --outdir=dist
+		--bundle --format=esm --target=es2022 --sourcemap --outdir=dist \
+		--external:/assets/*
+	cd web && cp -r assets dist/assets
 	cd web && sed -e 's#\./dist/app\.js#/app.js#' -e 's#\./styles\.css#/styles.css#' \
 		index.html > dist/index.html
 
@@ -107,6 +109,7 @@ web:
 web-dev:
 	cd web && $(ESBUILD) app=src/main.ts styles=styles.css \
 		--bundle --format=esm --target=es2022 --sourcemap --outdir=dist \
+		--external:/assets/* \
 		--servedir=. --serve=127.0.0.1:$(WEB_PORT)
 
 # ---------- container image (GHCR) ------------------------------------------

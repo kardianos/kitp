@@ -15,11 +15,21 @@
     <link rel="icon" href="/assets/favicon-32.png" sizes="32x32" type="image/png" />
     <link rel="icon" href="/assets/favicon-16.png" sizes="16x16" type="image/png" />
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
-    <meta name="theme-color" content="#006fff" />
+    <meta name="theme-color" content="#5e6ad2" />
+    <!-- Preload the primary text face (crossorigin is required for font
+         preloads even same-origin; the italic face loads on demand). -->
+    <link
+      rel="preload"
+      href="/assets/fonts/InterVariable.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
     <link rel="stylesheet" href="./styles.css" />
     <!--
       Design tokens are owned by web/design/tokens.css; styles.css imports them
-      and references only var(--…). We do NOT edit web/design/.
+      and references only var(--…). Palette/scale changes belong in tokens.css,
+      never as redefinitions in styles.css.
     -->
   </head>
   <body>

@@ -90,6 +90,10 @@ import type { AttrSchema } from '../filter/attribute-schema.js';
 import type { RefPicker } from '../ui/ref-picker.js';
 import type { DatePicker } from '../ui/datepicker.js';
 
+import { setIcon, icon } from '../ui/icons.js';
+import { statusIcon, applyStatusGlyphs } from '../ui/status-icon.js';
+import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
+import { priorityIcon } from '../ui/priority-icon.js';
 /**
  * Fixed virtual-list row height (px). Matches the compact grid row: one line of
  * 13px data text at 1.3 leading + 2 × --pad-compact-y (0.375rem = 6px) padding,
@@ -422,6 +426,13 @@ export class Grid extends CardListCore<GridConfig> {
       fault.textContent = `Failed to load grid: ${describeFault(f)}`;
     }, 'grid.fault');
 
+    // Re-scope the status icon ramp to the project's task flow when it lands
+    // (it may resolve after the statuses) so the grid's glyphs match the kanban.
+    this.effect(() => {
+      this.ctx.tree.at(['scope', 'workflowStatusIds']).get();
+      this.rescopeStatusGlyphs();
+    }, 'grid.statusFlowScope');
+
     // Empty-state toggle reads only the tasks leaf (cascade-safe). Until the
     // first load lands, show "Loading…" rather than the empty message so a
     // freshly-mounted Grid doesn't flash "no tasks" then fill.
@@ -594,7 +605,24 @@ export class Grid extends CardListCore<GridConfig> {
     };
 
     this.handler('landPersons', landLabels('persons', titleAttr));
-    this.handler('landStatuses', landLabels('statuses', titleOrName));
+    // Statuses also feed the inherited statusInfo map (label + phase) so the
+    // status cells can draw the phase icon next to the label.
+    this.handler('landStatuses', (out) => {
+      const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
+      this.statusInfo.clear();
+      const map: LabelMap = {};
+      for (const r of rows) {
+        this.statusInfo.set(r.id.toString(), {
+          label: titleOrName(r),
+          phase: r.phase ?? '',
+          sortOrder: Number(r.attributes['sort_order'] ?? 0),
+          groupKey: r.parent_card_id?.toString() ?? '',
+        });
+        map[r.id.toString()] = titleOrName(r);
+      }
+      this.ctx.tree.at(['grid', 'lookups', 'statuses']).set(map);
+      this.rescopeStatusGlyphs();
+    });
     this.handler('landMilestones', landLabels('milestones', titleOrName));
     this.handler('landComponents', landLabels('components', titleOrName));
     // Tags carry an extra COLOR axis (`color` attribute → small named palette).
@@ -634,6 +662,14 @@ export class Grid extends CardListCore<GridConfig> {
   private tickLookups(): void {
     const node = this.ctx.tree.at(['grid', 'lookups', 'tick']);
     node.set((node.peek<number>() ?? 0) + 1);
+  }
+
+  /** Recompute the status icon glyphs against the current task-flow scope and
+   *  repaint the status cells. Called on status land and when the flow set
+   *  lands (which may be after the statuses). */
+  private rescopeStatusGlyphs(): void {
+    applyStatusGlyphs(this.statusInfo, peekWorkflowStatusIds(this.ctx));
+    this.tickLookups();
   }
 
   /* ------------------------------ selection ------------------------------- */
@@ -879,7 +915,7 @@ export class Grid extends CardListCore<GridConfig> {
         cell.setAttribute('aria-sort', 'none');
       } else {
         cell.dataset.sortDir = dir;
-        arrow.textContent = dir === 'asc' ? '↑' : '↓';
+        setIcon(arrow, dir === 'asc' ? 'arrow-up' : 'arrow-down', 12);
         cell.setAttribute('aria-sort', dir === 'asc' ? 'ascending' : 'descending');
       }
     }
@@ -998,7 +1034,7 @@ export class Grid extends CardListCore<GridConfig> {
       funnel.dataset.gridColFilter = col.attrName;
       funnel.setAttribute('aria-label', `Filter ${col.label}`);
       funnel.title = `Filter ${col.label}`;
-      funnel.textContent = '⏷';
+      funnel.append(icon('chevron-down', 12));
       cell.append(funnel);
       this.headerFilters.push({ funnel, attr: col.attrName });
       this.buildColumnFilterPopover(col, funnel);
@@ -1325,7 +1361,7 @@ export class Grid extends CardListCore<GridConfig> {
       el.dataset.groupKey = item.key;
       el.dataset.groupDir = this.groupDir;
       const [arrow, label, count] = el.children as unknown as HTMLElement[];
-      if (arrow) arrow.textContent = this.groupDir === 'asc' ? '↑' : '↓';
+      if (arrow) setIcon(arrow, this.groupDir === 'asc' ? 'arrow-up' : 'arrow-down', 12);
       if (label) label.textContent = item.label;
       if (count) count.textContent = `· ${item.count}`;
     } else {
@@ -1460,6 +1496,15 @@ export class Grid extends CardListCore<GridConfig> {
         } else {
           const colorMap = (this.ctx.tree.at(['grid', 'lookups', 'tagColors']).peek<LabelMap>() ?? {}) as LabelMap;
           for (const m of matches) {
+            // The priority sub-column renders Linear-style signal bars
+            // instead of a pill (level reads by shape, not color).
+            if (col.prefix === 'priority') {
+              const bars = priorityIcon(m.suffix);
+              if (bars !== null) {
+                cell.append(bars);
+                continue;
+              }
+            }
             const pill = document.createElement('span');
             pill.className = 'grid__pill';
             const color = colorMap[m.id.toString()];
@@ -1632,7 +1677,14 @@ export class Grid extends CardListCore<GridConfig> {
     const key = id.toString();
     const span = document.createElement('span');
     span.className = 'grid__ref';
-    span.textContent = map[key] ?? `#${key}`;
+    if (lookup === 'statuses') {
+      // Status cells lead with the phase icon (label stays the textContent).
+      span.classList.add('grid__ref--status');
+      const info = this.statusInfo.get(key);
+      span.append(statusIcon(info ?? ''), document.createTextNode(map[key] ?? `#${key}`));
+    } else {
+      span.textContent = map[key] ?? `#${key}`;
+    }
     cell.append(span);
   }
 

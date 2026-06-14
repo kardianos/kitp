@@ -19,6 +19,7 @@ import { SPEC, type SelectWithAttributesOutput } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
 
+import { icon } from '../ui/icons.js';
 export interface EnumManagerConfig extends BaseControlConfig {
   type: 'EnumManager';
   /** Dotted tree path holding the active project id. Default 'scope.projectId'. */
@@ -649,7 +650,7 @@ export class EnumManager extends Control<EnumManagerConfig> {
     handle.draggable = true;
     handle.setAttribute('aria-hidden', 'true');
     handle.title = 'Drag to reorder';
-    handle.textContent = '⠿';
+    handle.append(icon('grip-vertical', 14));
     this.listen(handle, 'dragstart', (ev) => {
       this.draggingValueId = card.id;
       this.draggingCardType = e.cardType;
@@ -697,7 +698,7 @@ export class EnumManager extends Control<EnumManagerConfig> {
     remove.className = 'btn btn-danger enum-manager__value-remove';
     remove.dataset.enumRemove = card.id.toString();
     remove.setAttribute('aria-label', 'Remove');
-    remove.textContent = '×';
+    remove.append(icon('x', 14));
     this.listen(remove, 'click', () => this.removeValue(card));
 
     // Flow-bound value types (status): a phase selector per value. Changing it

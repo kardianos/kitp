@@ -2,16 +2,15 @@
    kitp web — design tokens. Hand-authored, no build step, no Tailwind.
    styles.css imports this and references var(--…) only.
 
-   DESIGN LANGUAGE (web/design/DESIGN-LANGUAGE.md): a blend of
-   Samsung One UI (calm, rounded, spacious, friendly — for the CHROME) and
-   Ubiquiti / UniFi (cool-neutral, hairline-crisp, one confident accent,
-   dense-but-elegant DATA). The governing rule is **clean chrome, dense
-   data**: two density registers, one language.
+   DESIGN LANGUAGE (web/design/DESIGN-LANGUAGE.md): Linear-inspired —
+   compact, typographically confident (Inter, 14px body), hairline-crisp,
+   one confident indigo accent, colorful phase iconography, fast snappy
+   motion. Two density registers a half-step apart, one language.
 
    This is a DELIBERATE divergence from the Svelte client's app.css tokens
    (which this file used to byte-match). The web client now owns its own
    palette + scale. Light and dark are BOTH first-class, designed surfaces
-   — dark is a deep cool-neutral, not a naive invert.
+   — dark is a neutral near-black, not a naive invert.
 
    Theme strategy (unchanged contract — the controls toggle `data-theme`
    on <html>):
@@ -62,12 +61,12 @@
   /* A near-invisible inner fill that lifts a chrome card off the page. */
   --color-fill-hover: var(--neutral-100);
 
-  /* ---- accent — one confident UniFi-blue ---- */
-  --color-accent: #006fff;          /* UniFi blue                       */
-  --color-accent-hover: #0a60e0;    /* pressed / hover                  */
-  --color-accent-strong: #0a52c2;   /* active                           */
+  /* ---- accent — one confident Linear-indigo ---- */
+  --color-accent: #5e6ad2;          /* Linear indigo                    */
+  --color-accent-hover: #6770d6;    /* pressed / hover                  */
+  --color-accent-strong: #4f58c4;   /* active                           */
   --color-accent-fg: #ffffff;
-  --color-accent-tint: #e8f1ff;     /* opaque pale fill for soft chips  */
+  --color-accent-tint: #edeefb;     /* opaque pale fill for soft chips  */
 
   /* ---- destructive ---- */
   --color-danger: #e0335b;
@@ -81,6 +80,17 @@
   --color-warning: #d98412;
   --color-warning-fg: #ffffff;
 
+  /* ---- workflow-phase palette (status icons + badges) -------------------
+     One hue per phase, Linear-style: queued = gray, in-flight = yellow,
+     done = indigo. Every status surface (chips, icons, kanban headers)
+     reads these so the state color is consistent app-wide. */
+  --phase-triage: #7c8796;
+  --phase-triage-soft: rgba(124, 135, 150, 0.14);
+  --phase-active: #b88a00;
+  --phase-active-soft: rgba(217, 165, 20, 0.16);
+  --phase-terminal: #5e6ad2;
+  --phase-terminal-soft: rgba(94, 106, 210, 0.13);
+
   /* ---- foreground on an always-dark surface (lightbox, avatar tiles) --- */
   --color-on-image: #ffffff;
 
@@ -88,8 +98,8 @@
   --color-section: rgba(20, 29, 40, 0.7);
 
   /* ---- derived translucent "soft" fills (chips / badges / alerts) ---- */
-  --color-accent-soft: rgba(0, 111, 255, 0.1);
-  --color-accent-ring: rgba(0, 111, 255, 0.42);
+  --color-accent-soft: rgba(94, 106, 210, 0.11);
+  --color-accent-ring: rgba(94, 106, 210, 0.45);
   --color-danger-soft: rgba(224, 51, 91, 0.1);
   --color-danger-ring: rgba(224, 51, 91, 0.42);
   --color-success-soft: rgba(27, 166, 114, 0.12);
@@ -97,7 +107,7 @@
 
   /* Focus ring color + a soft halo used by every interactive control. */
   --color-focus-ring: var(--color-accent);
-  --color-focus-halo: rgba(0, 111, 255, 0.18);
+  --color-focus-halo: rgba(94, 106, 210, 0.2);
 
   /* Backdrop scrim behind modals / slide-overs. */
   --color-scrim: rgba(20, 29, 40, 0.4);
@@ -130,17 +140,19 @@
   --space-12: 3rem;       /* 48 */
   --space-16: 4rem;       /* 64 */
 
-  /* Density tracks. Comfortable is the default register. */
-  --gap-comfortable: var(--space-4);
-  --pad-comfortable-x: var(--space-4);
-  --pad-comfortable-y: var(--space-3);
+  /* Density tracks. Comfortable is the default register — tuned toward
+     Linear-compact so chrome and data read as one tight surface; compact
+     stays a half-step denser for grids/cards. */
+  --gap-comfortable: var(--space-3);
+  --pad-comfortable-x: var(--space-3);
+  --pad-comfortable-y: var(--space-2);
   --gap-compact: var(--space-2);
   --pad-compact-x: var(--space-3);
-  --pad-compact-y: var(--space-1x);
+  --pad-compact-y: var(--space-1);
 
   /* ------------------------------------------------------------------------
-     TYPOGRAPHY — one family, clear hierarchy. Comfortable base is 14.5px-ish
-     (slightly larger than the old 14). Grids/tables opt into tabular-nums +
+     TYPOGRAPHY — one family, clear hierarchy. Body base is 14px
+     (Linear-compact). Grids/tables opt into tabular-nums +
      tighter leading via --leading-data on the data surfaces.
      ---------------------------------------------------------------------- */
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
@@ -148,15 +160,17 @@
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", monospace;
 
-  /* font-size rungs. Names match usage. */
+  /* font-size rungs. Names match usage. Linear-compact: body sits at 14px
+     and the heading ramp is shallow — hierarchy comes from weight + space
+     more than size. */
   --text-2xs: 0.6875rem;  /* 11px — role hints, group labels  */
   --text-xs: 0.75rem;     /* 12px — chips, meta, card #id      */
   --text-sm: 0.8125rem;   /* 13px — DATA / compact control     */
-  --text-base: 0.9375rem; /* 15px — comfortable body default   */
-  --text-md: 1rem;        /* 16px — emphasis body              */
-  --text-lg: 1.1875rem;   /* 19px — task title / dialog H2     */
-  --text-xl: 1.375rem;    /* 22px — screen H1                  */
-  --text-2xl: 1.625rem;   /* 26px — projects H1                */
+  --text-base: 0.875rem;  /* 14px — body default               */
+  --text-md: 0.9375rem;   /* 15px — emphasis body              */
+  --text-lg: 1.0625rem;   /* 17px — task title / dialog H2     */
+  --text-xl: 1.25rem;     /* 20px — screen H1                  */
+  --text-2xl: 1.5rem;     /* 24px — projects H1                */
 
   --leading-tight: 1.2;
   --leading-snug: 1.35;
@@ -175,17 +189,16 @@
   --nums-tabular: tabular-nums;
 
   /* ------------------------------------------------------------------------
-     RADIUS — bumped per the design language. Cards/dialogs rounded
-     (12–16px), buttons pill/large, inputs ~9px; data-grid cells stay
-     near-square (crisp).
+     RADIUS — Linear-squarer: controls sit at 6–8px, panels/dialogs at
+     10–16px; data-grid cells stay near-square (crisp).
      ---------------------------------------------------------------------- */
   --radius-xs: 0.25rem;    /* 4   — data-grid cells, grips        */
   --radius-sm: 0.375rem;   /* 6   — chips, dense controls         */
-  --radius-md: 0.5625rem;  /* 9   — inputs, buttons, kanban cards */
-  --radius-lg: 0.75rem;    /* 12  — panels, columns, rows         */
-  --radius-xl: 1rem;       /* 16  — dialogs, project cards        */
-  --radius-2xl: 1.25rem;   /* 20  — large hero surfaces           */
-  --radius-pill: 9999px;   /* pill buttons, avatars               */
+  --radius-md: 0.5rem;     /* 8   — inputs, buttons, kanban cards */
+  --radius-lg: 0.625rem;   /* 10  — panels, columns, rows         */
+  --radius-xl: 0.75rem;    /* 12  — dialogs, project cards        */
+  --radius-2xl: 1rem;      /* 16  — large hero surfaces           */
+  --radius-pill: 9999px;   /* pills, avatars                      */
   --radius-full: 9999px;   /* alias, kept for back-compat         */
 
   /* ------------------------------------------------------------------------
@@ -216,64 +229,68 @@
   --z-help: 70;          /* keyboard-help overlay — absorbs all input */
 
   /* ------------------------------------------------------------------------
-     MOTION — subtle, smooth, One-UI-calm. Zeroed under reduced-motion.
+     MOTION — fast, snappy, Linear-feel. Zeroed under reduced-motion.
+     micro = hover/press feedback; fast = popover/menu enter; base =
+     screen mount / modal.
      ---------------------------------------------------------------------- */
-  --duration-fast: 120ms;
-  --duration-base: 200ms;
+  --duration-micro: 70ms;
+  --duration-fast: 100ms;
+  --duration-base: 160ms;
   --duration-slow: 280ms;
   --duration-flip: 420ms;   /* kanban card reflow */
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1.1); /* One-UI gentle overshoot */
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1.1); /* gentle overshoot */
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* snappy decel — enters */
 
   /* ------------------------------------------------------------------------
      LAYOUT CONSTANTS (the shell's fixed dimensions)
      ---------------------------------------------------------------------- */
-  --rail-width: 14.5rem;        /* ~232px left nav — a touch wider/airier */
+  --rail-width: 13.5rem;        /* ~216px left nav — Linear-compact       */
   --rail-width-collapsed: 0;
-  --topbar-height: 3.5rem;      /* 56px — comfortable chrome bar          */
+  --topbar-height: 2.75rem;     /* 44px — compact chrome bar              */
   --detail-rail-width: 20rem;   /* 320px task-detail right rail           */
   --kanban-col-width: 25.5rem;  /* 408px (50% wider than original 272px)  */
 }
 
 /* --------------------------------------------------------------------------
-   DARK — explicit choice. A designed deep cool-neutral (not pure black,
-   not an invert): a desaturated navy-slate base with the SAME hierarchy as
-   light. High-legibility text, the accent lifted for contrast on dark.
+   DARK — explicit choice. A designed neutral near-black (Linear-style; no
+   blue cast, not an invert) with the SAME hierarchy as light.
+   High-legibility text, the accent lifted for contrast on dark.
    -------------------------------------------------------------------------- */
 [data-theme="dark"] {
   color-scheme: dark;
 
-  --neutral-0: #0d141d;    /* base page                       */
-  --neutral-25: #0a1018;   /* deepest (page tint)             */
-  --neutral-50: #131c27;   /* raised surface / rail / topbar  */
-  --neutral-100: #1b2632;  /* hover fill, sunken              */
-  --neutral-200: #283544;  /* hairline border                 */
-  --neutral-300: #364557;  /* strong border / divider         */
-  --neutral-400: #5b6b7d;  /* disabled fg                     */
-  --neutral-500: #8a98a9;  /* muted text                      */
-  --neutral-600: #a6b3c2;  /* secondary text                  */
-  --neutral-700: #c2cdd9;  /* body-strong                     */
-  --neutral-800: #dbe3ec;  /* headings                        */
-  --neutral-900: #eef2f7;  /* max-contrast text               */
+  --neutral-0: #141517;    /* base page                       */
+  --neutral-25: #0f1011;   /* deepest (page tint)             */
+  --neutral-50: #17181a;   /* raised surface / rail / topbar  */
+  --neutral-100: #1f2023;  /* hover fill, sunken              */
+  --neutral-200: #27282c;  /* hairline border                 */
+  --neutral-300: #323338;  /* strong border / divider         */
+  --neutral-400: #5e6066;  /* disabled fg                     */
+  --neutral-500: #8f939c;  /* muted text                      */
+  --neutral-600: #a9adb5;  /* secondary text                  */
+  --neutral-700: #c4c7cd;  /* body-strong                     */
+  --neutral-800: #dcdee2;  /* headings                        */
+  --neutral-900: #ececee;  /* max-contrast text               */
 
-  --color-bg: #0a1018;
-  --color-surface: #131c27;
-  --color-surface-raised: #18222f;
-  --color-surface-sunken: #0f1721;
-  --color-fg: #eef2f7;
+  --color-bg: #0f1011;
+  --color-surface: #17181a;
+  --color-surface-raised: #1c1d20;
+  --color-surface-sunken: #121315;
+  --color-fg: #ececee;
   --color-fg-strong: #ffffff;
-  --color-muted: #8a98a9;
-  --color-border: #283544;
-  --color-border-strong: #354655;
-  --color-hairline: #243140;
-  --color-fill-hover: #1b2632;
+  --color-muted: #8f939c;
+  --color-border: #27282c;
+  --color-border-strong: #323338;
+  --color-hairline: #232428;
+  --color-fill-hover: #1f2023;
 
-  --color-accent: #3d92ff;
-  --color-accent-hover: #5aa3ff;
-  --color-accent-strong: #2f80ee;
-  --color-accent-fg: #061320;
-  --color-accent-tint: #16273c;
+  --color-accent: #7b83eb;
+  --color-accent-hover: #8f96f0;
+  --color-accent-strong: #6a73e0;
+  --color-accent-fg: #101129;
+  --color-accent-tint: #232645;
 
   --color-danger: #ff6b8a;
   --color-danger-fg: #2a0710;
@@ -285,15 +302,22 @@
   --color-on-image: #ffffff;
   --color-section: rgba(238, 242, 247, 0.16);
 
-  --color-accent-soft: rgba(61, 146, 255, 0.18);
-  --color-accent-ring: rgba(61, 146, 255, 0.5);
+  --phase-triage: #8f939c;
+  --phase-triage-soft: rgba(143, 147, 156, 0.16);
+  --phase-active: #f2c94c;
+  --phase-active-soft: rgba(242, 201, 76, 0.16);
+  --phase-terminal: #7b83eb;
+  --phase-terminal-soft: rgba(123, 131, 235, 0.18);
+
+  --color-accent-soft: rgba(123, 131, 235, 0.2);
+  --color-accent-ring: rgba(123, 131, 235, 0.55);
   --color-danger-soft: rgba(255, 107, 138, 0.18);
   --color-danger-ring: rgba(255, 107, 138, 0.5);
   --color-success-soft: rgba(61, 220, 160, 0.18);
   --color-success-ring: rgba(61, 220, 160, 0.5);
 
   --color-focus-ring: var(--color-accent);
-  --color-focus-halo: rgba(61, 146, 255, 0.26);
+  --color-focus-halo: rgba(123, 131, 235, 0.3);
   --color-scrim: rgba(0, 0, 0, 0.62);
 
   /* Deepen + soften shadows on the dark bg so elevation still reads without
@@ -314,23 +338,23 @@
   :root[data-theme="auto"] {
     color-scheme: dark;
 
-    --color-bg: #0a1018;
-    --color-surface: #131c27;
-    --color-surface-raised: #18222f;
-    --color-surface-sunken: #0f1721;
-    --color-fg: #eef2f7;
+    --color-bg: #0f1011;
+    --color-surface: #17181a;
+    --color-surface-raised: #1c1d20;
+    --color-surface-sunken: #121315;
+    --color-fg: #ececee;
     --color-fg-strong: #ffffff;
-    --color-muted: #8a98a9;
-    --color-border: #283544;
-    --color-border-strong: #354655;
-    --color-hairline: #243140;
-    --color-fill-hover: #1b2632;
+    --color-muted: #8f939c;
+    --color-border: #27282c;
+    --color-border-strong: #323338;
+    --color-hairline: #232428;
+    --color-fill-hover: #1f2023;
 
-    --color-accent: #3d92ff;
-    --color-accent-hover: #5aa3ff;
-    --color-accent-strong: #2f80ee;
-    --color-accent-fg: #061320;
-    --color-accent-tint: #16273c;
+    --color-accent: #7b83eb;
+    --color-accent-hover: #8f96f0;
+    --color-accent-strong: #6a73e0;
+    --color-accent-fg: #101129;
+    --color-accent-tint: #232645;
 
     --color-danger: #ff6b8a;
     --color-danger-fg: #2a0710;
@@ -342,15 +366,22 @@
     --color-on-image: #ffffff;
     --color-section: rgba(238, 242, 247, 0.16);
 
-    --color-accent-soft: rgba(61, 146, 255, 0.18);
-    --color-accent-ring: rgba(61, 146, 255, 0.5);
+    --phase-triage: #8f939c;
+    --phase-triage-soft: rgba(143, 147, 156, 0.16);
+    --phase-active: #f2c94c;
+    --phase-active-soft: rgba(242, 201, 76, 0.16);
+    --phase-terminal: #7b83eb;
+    --phase-terminal-soft: rgba(123, 131, 235, 0.18);
+
+    --color-accent-soft: rgba(123, 131, 235, 0.2);
+    --color-accent-ring: rgba(123, 131, 235, 0.55);
     --color-danger-soft: rgba(255, 107, 138, 0.18);
     --color-danger-ring: rgba(255, 107, 138, 0.5);
     --color-success-soft: rgba(61, 220, 160, 0.18);
     --color-success-ring: rgba(61, 220, 160, 0.5);
 
     --color-focus-ring: var(--color-accent);
-    --color-focus-halo: rgba(61, 146, 255, 0.26);
+    --color-focus-halo: rgba(123, 131, 235, 0.3);
     --color-scrim: rgba(0, 0, 0, 0.62);
 
     --shadow-xs: 0 1px 1.5px rgba(0, 0, 0, 0.5);
@@ -365,16 +396,32 @@
    Root document defaults. Bind the page to the tokens + enable the One-UI
    font niceties (kerning, ligatures) once Inter is present.
    -------------------------------------------------------------------------- */
+html {
+  /* Keep the root at the browser default (16px) so every rem token resolves
+     at its designed size. Setting font-size in *rem* on html is self-
+     referential — it resolves against 16px, lands html at 14px, and then
+     silently shrinks the WHOLE rem scale ~12.5% (body 14px→12.25px, etc.),
+     which is the bulk of the "dense text reads blurry" report. Body — not
+     html — carries the 14px default below. */
+  font-size: 100%;
+}
 html,
 body {
   background-color: var(--color-bg);
   color: var(--color-fg);
   font-family: var(--font-sans);
-  font-size: var(--text-base);
   line-height: var(--leading-normal);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  /* Inter Variable alternates (vendored in assets/fonts/): cv05 = lowercase
+     l with tail, ss01 = open digits. Both are taste — cheap to drop. */
+  font-feature-settings: "cv05", "ss01";
+}
+body {
+  /* The 14px body default lives on body (not html) so it doesn't shrink the
+     rem scale — see the html rule above. */
+  font-size: var(--text-base);
 }
 
 /* Respect reduced-motion: zero out the kanban flip + every transition. The
@@ -382,6 +429,7 @@ body {
    everywhere with no per-component code. */
 @media (prefers-reduced-motion: reduce) {
   :root {
+    --duration-micro: 0ms;
     --duration-fast: 0ms;
     --duration-base: 0ms;
     --duration-slow: 0ms;

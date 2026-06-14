@@ -46,6 +46,7 @@ import {
   type PredicateLeaf,
 } from './predicate.js';
 
+import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Snippet leaf shape + snippet-id-keyed top-level helpers.                    */
 /* -------------------------------------------------------------------------- */
@@ -236,7 +237,7 @@ export class NamedFilters extends Control<NamedFiltersConfig> {
     const caret = document.createElement('span');
     caret.className = 'filterbar__chip-caret';
     caret.setAttribute('aria-hidden', 'true');
-    caret.textContent = '▾';
+    caret.append(icon('chevron-down', 14));
     trigger.append(caret);
 
     // The clear-X — hidden until at least one snippet is active. Its own button
@@ -246,7 +247,7 @@ export class NamedFilters extends Control<NamedFiltersConfig> {
     clearEl.className = 'filterbar__chip-clear';
     clearEl.dataset.namedFiltersClear = '';
     clearEl.setAttribute('aria-label', 'Clear named filters');
-    clearEl.textContent = '×';
+    clearEl.append(icon('x', 12));
     clearEl.style.display = 'none';
     trigger.append(clearEl);
 

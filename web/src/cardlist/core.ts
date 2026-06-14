@@ -28,6 +28,8 @@ import type { ActionBinding, QueryBinding } from '../core/data.js';
 import { SPEC } from '../kanban/specs.js';
 import { INBOX_SPEC } from '../inbox/specs.js';
 import { asAttrId, type CardWithAttrs } from '../kanban/kanban-helpers.js';
+import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
+import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
 import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
 import { navigate, taskUrl } from '../shell/router.js';
 import { publishTaskNav } from '../shell/task-nav.js';
@@ -37,6 +39,7 @@ import { applyPersonalReorder, move, planPersonalReorder, sortByPersonal, sortGr
 import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
 import { AUTH_USER_PATH, peekCurrentUserId, type AuthUser } from '../auth/auth-state.js';
 
+import { icon } from '../ui/icons.js';
 export type LabelMap = Record<string, string>;
 export interface AgentOption {
   id: bigint;
@@ -229,7 +232,7 @@ export function buildCardListActions(p: string): ActionBinding[] {
 }
 
 export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCoreConfig> extends Control<Cfg> {
-  protected statusInfo = new Map<string, { label: string; phase: string }>();
+  protected statusInfo = new Map<string, StatusInfo>();
   protected parentTitles = new Map<string, string>();
   protected loaded = false;
   protected flaggedOnly = false;
@@ -348,6 +351,19 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
       this.applyFilterAndOrder();
       this.bumpQuery();
     }, 'cardList.query');
+
+    // Re-scope the status icon ramp to the task flow when it lands (it may
+    // resolve after the statuses) so the badges match the kanban.
+    this.effect(() => {
+      this.ctx.tree.at(['scope', 'workflowStatusIds']).get();
+      this.rescopeStatusGlyphs();
+    }, 'cardList.statusFlowScope');
+  }
+
+  /** Recompute the status glyphs against the current task-flow scope + repaint. */
+  protected rescopeStatusGlyphs(): void {
+    applyStatusGlyphs(this.statusInfo, peekWorkflowStatusIds(this.ctx));
+    this.refreshView();
   }
 
   protected wireListInteractions(): void {
@@ -438,7 +454,7 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
     const grip = document.createElement('span');
     grip.className = 'card-list__grip';
     grip.dataset.role = 'grip';
-    grip.textContent = '⋮⋮';
+    grip.append(icon('grip-vertical', 14));
     grip.setAttribute('aria-hidden', 'true');
     grip.draggable = true;
     // A click on the grip must never open the row (it sits over the row link).
@@ -530,11 +546,16 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
       this.statusInfo.clear();
       const map: LabelMap = {};
       for (const r of rows) {
-        this.statusInfo.set(r.id.toString(), { label: labelOf(r), phase: r.phase ?? '' });
+        this.statusInfo.set(r.id.toString(), {
+          label: labelOf(r),
+          phase: r.phase ?? '',
+          sortOrder: Number(r.attributes['sort_order'] ?? 0),
+          groupKey: r.parent_card_id?.toString() ?? '',
+        });
         map[r.id.toString()] = labelOf(r);
       }
       this.ctx.tree.at(this.px('lookups', 'statuses')).set(map);
-      this.refreshView();
+      this.rescopeStatusGlyphs();
     });
     this.handler('landPersons', landLabels('persons'));
     this.handler('landMilestones', landLabels('milestones'));

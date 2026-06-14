@@ -14,6 +14,7 @@
 
 import { trapFocus, captureFocus } from '../util/focus-trap.js';
 
+import { icon } from './icons.js';
 export interface ModalOptions {
   /** Heading shown in the panel header. */
   title?: string;
@@ -59,7 +60,7 @@ export class Modal {
     close.className = 'modal__close';
     close.dataset.modalClose = '';
     close.setAttribute('aria-label', 'Close');
-    close.textContent = '×';
+    close.append(icon('x', 14));
     close.addEventListener('click', () => this.close(true));
     header.append(title, close);
 

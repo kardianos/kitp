@@ -116,6 +116,7 @@ const ADMIN_LINK_LABELS: Record<AdminView, string> = {
 };
 import { mockTransport } from './kanban/mock-data.js';
 
+import { icon } from './ui/icons.js';
 /** Flip to true to hit the live kitpd at /api/v1/batch (cookie-auth, SSO). */
 const USE_REAL_BACKEND = true;
 
@@ -738,7 +739,7 @@ function createFaultToast(): FaultToast {
   close.type = 'button';
   close.className = 'fault-toast__close';
   close.setAttribute('aria-label', 'Dismiss');
-  close.textContent = '×';
+  close.append(icon('x', 14));
 
   el.append(dot, msg, close);
   document.body.append(el);

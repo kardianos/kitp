@@ -48,6 +48,9 @@ import {
   type TagRemoveOutput,
 } from './attachment-specs.js';
 
+import { icon } from '../ui/icons.js';
+import { isPriorityPath, priorityIcon } from '../ui/priority-icon.js';
+import { tagPathLeaf } from '../grid/grid-helpers.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                  */
 /* -------------------------------------------------------------------------- */
@@ -315,10 +318,18 @@ export class TagsEditor extends Control<TagsEditorConfig> {
     // editor, the grid, and the kanban card — coloured by data-tag-color.
     chip.className = 'tag-chip tags-editor__chip';
     chip.dataset.tagChip = id.toString();
-    const color = this.colors.get(String(id));
-    if (color !== undefined && color !== '') chip.dataset.tagColor = color;
     const path = this.paths.get(String(id));
     if (path !== undefined && path.length > 0) chip.title = path;
+
+    // A priority tag leads with the signal bars (in place of the color dot);
+    // everything else wears its palette color as a dot via data-tag-color.
+    const bars = path !== undefined && isPriorityPath(path) ? priorityIcon(tagPathLeaf(path)) : null;
+    if (bars !== null) {
+      chip.append(bars);
+    } else {
+      const color = this.colors.get(String(id));
+      if (color !== undefined && color !== '') chip.dataset.tagColor = color;
+    }
 
     const label = document.createElement('span');
     // Two classes so existing tests that probe `.tags-editor__chip-label`
@@ -332,7 +343,7 @@ export class TagsEditor extends Control<TagsEditorConfig> {
     remove.className = 'tag-chip__remove';
     remove.dataset.tagRemove = id.toString();
     remove.setAttribute('aria-label', `Remove ${this.chipLabelFor(id, slotKey)}`);
-    remove.textContent = '×';
+    remove.append(icon('x', 12));
     remove.disabled = this.busy;
     this.listen(remove, 'click', () => this.removeTag(id));
     chip.append(remove);

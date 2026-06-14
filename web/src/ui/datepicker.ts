@@ -17,6 +17,7 @@
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { Popover } from './popover.js';
 
+import { icon as svgIcon } from './icons.js';
 export interface DatePickerConfig extends BaseControlConfig {
   type: 'DatePicker';
   /** Initial value as ISO `YYYY-MM-DD`, or null. */
@@ -106,7 +107,7 @@ export class DatePicker extends Control<DatePickerConfig> {
     const icon = document.createElement('span');
     icon.className = 'kf-datepicker__icon';
     icon.setAttribute('aria-hidden', 'true');
-    icon.textContent = '▦';
+    icon.append(svgIcon('calendar', 14));
     trigger.appendChild(icon);
 
     this.el.appendChild(trigger);
@@ -206,7 +207,7 @@ export class DatePicker extends Control<DatePickerConfig> {
     prev.className = 'kf-datepicker__nav';
     prev.dataset.dpPrev = '';
     prev.setAttribute('aria-label', 'Previous month');
-    prev.textContent = '‹';
+    prev.append(svgIcon('chevron-left', 14));
     const monthLabel = document.createElement('span');
     monthLabel.className = 'kf-datepicker__month';
     const next = document.createElement('button');
@@ -214,7 +215,7 @@ export class DatePicker extends Control<DatePickerConfig> {
     next.className = 'kf-datepicker__nav';
     next.dataset.dpNext = '';
     next.setAttribute('aria-label', 'Next month');
-    next.textContent = '›';
+    next.append(svgIcon('chevron-right', 14));
     header.append(prev, monthLabel, next);
     panel.appendChild(header);
     this.monthLabelEl = monthLabel;
