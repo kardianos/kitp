@@ -837,6 +837,46 @@ select optgroup {
   min-height: 1.875rem;
   padding: var(--space-1) var(--space-3);
 }
+/* "Display" trigger (GROUP/LANES live in its popover) + the popover panel. */
+.filterbar__display {
+  min-height: 1.875rem;
+  padding: var(--space-1) var(--space-3);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.filterbar__display-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.filterbar__display-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: var(--z-dropdown);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  min-width: 13rem;
+  background: var(--color-surface-raised);
+  color: var(--color-fg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+/* Section label above each option list (Group by / Lanes). */
+.filterbar__display-section {
+  padding: var(--space-1) var(--space-2) var(--space-h);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.filterbar__display-section:not(:first-child) {
+  margin-top: var(--space-1);
+}
 .filterbar__advanced {
   min-height: 1.875rem;
   padding: var(--space-1) var(--space-3);

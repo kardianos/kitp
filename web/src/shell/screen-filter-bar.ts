@@ -68,6 +68,7 @@ import { refAxesForCardType, type RefAxis, type CardTypeRow } from '../filter/vo
 import { schemaForCardType } from '../filter/attribute-schema.js';
 import { loadView, saveView } from '../filter/view-persistence.js';
 import { groupAxisForAttr, type GroupAttr } from '../filter/group-axis.js';
+import { icon } from '../ui/icons.js';
 import { exclusiveRoots, tagPrefixOptionValue, tagRootLabel } from '../filter/tag-prefix.js';
 import type { AttributeDefRow } from '../admin/specs.js';
 
@@ -161,6 +162,11 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
   private groupEl: HTMLSelectElement | null = null;
   /** The LANE picker (swim lanes — a 2nd group axis); empty = no lanes. */
   private laneEl: HTMLSelectElement | null = null;
+  /** Hosts for the custom (menu-styled) GROUP/LANE option lists in the Display
+   *  menu. The native selects above stay (hidden) as the value/change source;
+   *  these lists mirror them with the same look as the "+ Filter" menu. */
+  private groupListHost: HTMLElement | null = null;
+  private laneListHost: HTMLElement | null = null;
   /** True once the persisted view has been restored — gates the persist effect
    *  so it never writes the transient pre-restore seed over a saved view. */
   private viewRestored = false;
@@ -275,6 +281,68 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       laneWrap.append(laneLabel, lane);
     }
 
+    // "Display" menu — tuck the GROUP + LANE pickers behind a compact trigger so
+    // they don't clutter the bar (Linear-style). The selects are built above
+    // (this.groupEl / this.laneEl) and mounted into this popover's panel.
+    const displayWrap = document.createElement('div');
+    displayWrap.className = 'filterbar__display-wrap';
+    const displayBtn = document.createElement('button');
+    displayBtn.type = 'button';
+    displayBtn.className = 'btn filterbar__display';
+    displayBtn.dataset.filterDisplay = '';
+    displayBtn.setAttribute('aria-haspopup', 'menu');
+    displayBtn.setAttribute('aria-expanded', 'false');
+    const displayLabel = document.createElement('span');
+    displayLabel.textContent = 'Display';
+    const displayCaret = document.createElement('span');
+    displayCaret.className = 'filterbar__chip-caret';
+    displayCaret.setAttribute('aria-hidden', 'true');
+    displayCaret.append(icon('chevron-down', 14));
+    displayBtn.append(displayLabel, displayCaret);
+    displayWrap.append(displayBtn);
+
+    // An inline dropdown (not a detached popover) so the GROUP/LANE selects stay
+    // in the bar's DOM — restore/persist + tests reach them whether open or not.
+    const displayMenu = document.createElement('div');
+    displayMenu.className = 'filterbar__display-menu';
+    displayMenu.dataset.filterDisplayMenu = '';
+    displayMenu.style.display = 'none';
+    // Keep the native selects in the DOM (value/change/restore plumbing) but
+    // hidden; render visible menu-styled option lists that mirror + drive them
+    // so the Display menu matches the "+ Filter" menu's look.
+    groupWrap.style.display = 'none';
+    const groupListHost = document.createElement('div');
+    this.groupListHost = groupListHost;
+    displayMenu.append(groupWrap, groupListHost);
+    if (laneWrap !== null) {
+      laneWrap.style.display = 'none';
+      const laneListHost = document.createElement('div');
+      this.laneListHost = laneListHost;
+      displayMenu.append(laneWrap, laneListHost);
+    }
+    displayWrap.append(displayMenu);
+
+    const setDisplayOpen = (open: boolean): void => {
+      if (open) this.renderDisplayLists(); // fresh from the selects' current state
+      displayMenu.style.display = open ? '' : 'none';
+      displayBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    this.listen(displayBtn, 'click', (e) => {
+      e.stopPropagation();
+      setDisplayOpen(displayMenu.style.display === 'none');
+    });
+    // Dismiss on outside pointer / Escape, like the other menus.
+    this.listen(document, 'pointerdown', (e) => {
+      if (displayMenu.style.display !== 'none' && !displayWrap.contains(e.target as Node)) {
+        setDisplayOpen(false);
+      }
+    });
+    this.listen(document, 'keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Escape' && displayMenu.style.display !== 'none') {
+        setDisplayOpen(false);
+      }
+    });
+
     const search = document.createElement('input');
     search.type = 'search';
     search.className = 'filterbar__search';
@@ -301,9 +369,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     clear.className = 'btn filterbar__clear';
     clear.textContent = 'Clear';
 
-    row2.append(groupWrap);
-    if (laneWrap !== null) row2.append(laneWrap);
-    row2.append(search, searchFields, advanced, clear);
+    row2.append(displayWrap, search, searchFields, advanced, clear);
     this.el.append(row2);
 
     /* ---- row 3: the QUICK-CHIPS row (pinned per-attribute one-tap filters) ---- */
@@ -671,6 +737,60 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     }
     sel.value = current;
     if (sel.value !== current) sel.value = fallback;
+  }
+
+  /** Rebuild the Display menu's GROUP/LANE option lists from the (hidden) native
+   *  selects, styled like the "+ Filter" menu. Called each time the menu opens
+   *  so it reflects the selects' current options + value. */
+  private renderDisplayLists(): void {
+    this.renderAxisList(this.groupListHost, this.groupEl, 'Group by');
+    this.renderAxisList(this.laneListHost, this.laneEl, 'Lanes');
+  }
+
+  /** One labelled radio list mirroring a native <select>; a pick sets the
+   *  select's value + dispatches `change` (so all existing wiring runs). */
+  private renderAxisList(
+    host: HTMLElement | null,
+    sel: HTMLSelectElement | null,
+    title: string,
+  ): void {
+    if (host === null || sel === null) return;
+    host.replaceChildren();
+    const header = document.createElement('div');
+    header.className = 'filterbar__display-section';
+    header.textContent = title;
+    const list = document.createElement('ul');
+    list.className = 'filterbar__chip-list';
+    list.setAttribute('role', 'menu');
+    for (const opt of Array.from(sel.options)) {
+      const checked = opt.value === sel.value;
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'filterbar__chip-option';
+      btn.setAttribute('role', 'menuitemradio');
+      btn.setAttribute('aria-checked', checked ? 'true' : 'false');
+      if (checked) btn.classList.add('filterbar__chip-option--checked');
+      const box = document.createElement('span');
+      box.className = 'filterbar__chip-check';
+      box.setAttribute('aria-hidden', 'true');
+      box.textContent = checked ? '✓' : '';
+      const text = document.createElement('span');
+      text.className = 'filterbar__chip-option-label';
+      text.textContent = opt.textContent ?? opt.value;
+      btn.append(box, text);
+      const value = opt.value;
+      this.listen(btn, 'click', () => {
+        if (sel.value !== value) {
+          sel.value = value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        this.renderDisplayLists(); // refresh the checkmarks
+      });
+      li.append(btn);
+      list.append(li);
+    }
+    host.append(header, list);
   }
 
   /** (Re)spawn QuickChips with chip defs derived from the axes (one chip per
