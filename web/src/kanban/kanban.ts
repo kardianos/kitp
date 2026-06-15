@@ -88,7 +88,7 @@ import { isPriorityPath, priorityIcon, priorityPlaceholder } from '../ui/priorit
  * cards show a true gap. test/kanban-card-layout.test.mjs pins the visible
  * height.
  */
-const KANBAN_CARD_HEIGHT = 104;
+const KANBAN_CARD_HEIGHT = 112;
 /** Visible gap (px) between stacked cards, inside each slot's pitch. */
 const KANBAN_CARD_GAP = 8;
 

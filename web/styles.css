@@ -1584,6 +1584,9 @@ select optgroup {
 .card__meta {
   grid-column: 2;
   grid-row: 2;
+  /* Drop the priority+tags row clear of the title (the mockup sits it lower,
+     not tucked under the second line). */
+  margin-top: var(--space-2);
   display: flex;
   /* One line of tags, clipped at the card edge — never wrap (wrapping grows the
      card past its fixed height and spills onto the next card). Tags truncate;
