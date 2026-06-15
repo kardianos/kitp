@@ -679,16 +679,27 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
    */
   private loadVocabulary(): void {
     const cardType = this.predicateCardType;
+    // The attribute_def + card_type schema is global + structural — it doesn't
+    // change between screens. Cache it in the tree so a screen switch derives the
+    // axes (and spawns the chips + "+ Filter" button) SYNCHRONOUSLY from cache,
+    // in the same paint as the rest of the bar, rather than popping them in a
+    // network round-trip later. Only the first mount this session pays the fetch;
+    // option cards (project-scoped, mutable) still (re)load each time below.
+    const defsNode = this.ctx.tree.at(['vocab', 'attrDefs']);
+    const typesNode = this.ctx.tree.at(['vocab', 'cardTypes']);
+    const cachedDefs = defsNode.peek<AttributeDefRow[]>() ?? null;
+    const cachedTypes = typesNode.peek<CardTypeRow[]>() ?? null;
+    if (cachedDefs !== null && cachedTypes !== null) {
+      this.deriveVocab(cachedDefs, cachedTypes, cardType);
+      return;
+    }
     let defs: AttributeDefRow[] | null = null;
     let types: CardTypeRow[] | null = null;
     const derive = (): void => {
       if (defs === null || types === null || !this.isAlive()) return;
-      // Publish the full attribute schema so the Grid can type its data-driven
-      // `extra_columns` (date vs text/number rendering) off the same load.
-      this.ctx.tree.at(['screen', 'attrSchema']).set(schemaForCardType(defs, cardType));
-      const axes = refAxesForCardType(defs, types, cardType);
-      this.applyAxes(axes);
-      this.loadAxisOptions(axes, types);
+      defsNode.set(defs);
+      typesNode.set(types);
+      this.deriveVocab(defs, types, cardType);
     };
     this.ctx.api.callByName(
       'attribute_def.select',
@@ -710,6 +721,19 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       },
       { alive: () => this.isAlive() },
     );
+  }
+
+  /** Derive + apply the vocabulary (attr schema, chip/group axes, option loads)
+   *  for `cardType` from the cached-or-fetched schema rows. Splitting this out
+   *  lets the cache-hit path run it synchronously (no chip pop-in on re-mount). */
+  private deriveVocab(defs: AttributeDefRow[], types: CardTypeRow[], cardType: string): void {
+    if (!this.isAlive()) return;
+    // Publish the full attribute schema so the Grid can type its data-driven
+    // `extra_columns` (date vs text/number rendering) off the same load.
+    this.ctx.tree.at(['screen', 'attrSchema']).set(schemaForCardType(defs, cardType));
+    const axes = refAxesForCardType(defs, types, cardType);
+    this.applyAxes(axes);
+    this.loadAxisOptions(axes, types);
   }
 
   /**
