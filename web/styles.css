@@ -1002,6 +1002,11 @@ select optgroup {
 .filter-preset__combo {
   min-width: 11rem;
 }
+/* The View dropdown matches the bar buttons' hover — the base Combobox only
+   shifts its border, so add the .btn fill so it highlights the same way. */
+.filter-preset__combo .kf-combobox__trigger:hover {
+  background: var(--color-fill-hover);
+}
 /* Compact action buttons (Save / Set default / Rename / Delete). Reuse .btn
    sizing but tucked to the dense track + a muted resting state. */
 .btn--xs {
