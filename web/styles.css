@@ -791,6 +791,19 @@ select optgroup {
   gap: var(--gap-compact);
   flex-wrap: wrap;
 }
+/* Functional grouping on the bar: the first element of each group gets extra
+   left margin (on top of the row gap) so context / refine / layout / reset read
+   as distinct clusters rather than one undifferentiated row. */
+.filterbar__grp {
+  margin-left: var(--space-3);
+}
+/* Thin divider that isolates the destructive Clear button from the rest. */
+.filterbar__divider {
+  align-self: center;
+  width: 1px;
+  height: 1.25rem;
+  background: var(--color-border);
+}
 .filterbar__group {
   display: inline-flex;
   align-items: center;

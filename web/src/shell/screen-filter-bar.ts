@@ -346,8 +346,8 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
        the Advanced editor re-seeds on a chip pick and the chips re-read the
        shared predicate reactively. Saved/"Named" filters (predicate snippets)
        are folded into the "+ Filter" menu; QuickChips itself is (re)spawned by
-       applyAxes once the data-driven axes resolve. */
-    bar.append(displayWrap, chipsHost);
+       applyAxes once the data-driven axes resolve. The chips host + Display are
+       appended in their functional groups further below. */
 
     // Search — a magnifier icon that expands into the input on click (or "/"),
     // collapsing back when the field is emptied + blurred. The wrap flex-grows
@@ -393,7 +393,6 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       searchSeg.append(segBtn);
     }
     searchWrap.append(searchToggle, search, searchSeg);
-    bar.append(searchWrap);
 
     const setSearchExpanded = (open: boolean): void => {
       searchWrap.classList.toggle('filterbar__search-wrap--expanded', open);
@@ -431,8 +430,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       }
     }, 'filterbar.searchScope');
 
-    // Advanced toggle (expands the structured PredicateFilter) + Clear, pushed
-    // to the right edge by the flex-grow search.
+    // Advanced toggle (expands the structured PredicateFilter).
     const advanced = document.createElement('button');
     advanced.type = 'button';
     advanced.className = 'btn filterbar__iconbtn filterbar__advanced';
@@ -442,13 +440,26 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     advanced.title = 'Advanced filters';
     advanced.append(icon('list-tree', 16));
 
+    // Clear (reset) — destructive, so it's isolated behind a divider at the end.
     const clear = document.createElement('button');
     clear.type = 'button';
     clear.className = 'btn filterbar__iconbtn filterbar__clear';
     clear.setAttribute('aria-label', 'Clear filters');
     clear.title = 'Clear filters';
     clear.append(icon('paintbrush', 16));
-    bar.append(advanced, clear);
+    const clearDivider = document.createElement('span');
+    clearDivider.className = 'filterbar__divider filterbar__grp';
+    clearDivider.setAttribute('aria-hidden', 'true');
+
+    // Lay the bar out in functional groups, each separated by an extra gap
+    // (.filterbar__grp adds inter-group margin on top of the row's base gap):
+    //   context (View + Phase, appended above) · refine (Filter / Advanced /
+    //   Search) · layout (Display) · reset (Clear behind the divider). Search
+    //   flex-grows when expanded, so it fills the middle and pushes Display /
+    //   Clear to the right.
+    chipsHost.classList.add('filterbar__grp');
+    displayWrap.classList.add('filterbar__grp');
+    bar.append(chipsHost, advanced, searchWrap, displayWrap, clearDivider, clear);
 
     // Screen-specific view actions (e.g. Grid → Columns / "+ New"), far right.
     const viewActions = this.config.viewActions ?? [];
