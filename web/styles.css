@@ -1446,10 +1446,10 @@ select optgroup {
 .card {
   display: grid;
   grid-template-columns: auto 1fr;
-  /* Three stacked rows grouped at the top: title, priority+tags, then the
-     ticket id — an even rhythm (the id gets a touch more gap above it), rather
-     than the id pinned hard to the bottom. */
-  grid-template-rows: auto auto auto;
+  /* Row 1 is a FIXED two-line title height (font-size × line-height × 2) so the
+     priority+tags row — and the id below it — sit at the same y on EVERY card,
+     whether the title is one line or two. Then tags, then the ticket id. */
+  grid-template-rows: calc(var(--text-sm) * var(--leading-data) * 2) auto auto;
   align-items: start;
   gap: var(--space-1) var(--space-2);
   padding: var(--space-2) var(--space-2x);
@@ -1572,9 +1572,8 @@ select optgroup {
   font-weight: var(--weight-medium);
   color: var(--color-fg-strong);
   align-self: start;
-  /* Up to TWO lines, then ellipsize (Linear-style). The taller fixed card height
-     reserves room for the second line; min-width:0 lets it shrink inside the 1fr
-     grid track. A 1-line title just leaves the second line empty. */
+  /* Up to two lines, then ellipsize; the fixed two-line grid row above holds the
+     tags row in place regardless of title length. min-width:0 lets it shrink. */
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
