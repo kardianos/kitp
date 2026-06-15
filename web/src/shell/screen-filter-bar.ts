@@ -1109,7 +1109,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     // Trigger summary: the on-phase labels, or "All" when nothing is scoped out.
     const onLabels = toggles.filter((t) => active.size === 0 || active.has(t.phase)).map((t) => t.label);
     const summary = onLabels.length === toggles.length ? 'All' : onLabels.join(', ') || 'None';
-    trigger.textContent = `Phase: ${summary}`;
+    trigger.textContent = summary;
 
     panel.replaceChildren();
     for (const t of toggles) {
