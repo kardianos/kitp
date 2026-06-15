@@ -1572,16 +1572,29 @@ select optgroup {
   min-width: 0;
   overflow: hidden;
 }
-.card__meta {
+/* Rows 2 (priority+tags · date) and 3 (id · assignee): a flex line with the
+   left content clipping and the right meta pinned to the edge. */
+.card__row {
   grid-column: 1;
-  grid-row: 2;
-  /* Drop the priority+tags row clear of the title (the mockup sits it lower,
-     not tucked under the second line). */
-  margin-top: var(--space-1x);
   display: flex;
-  /* One line of tags, clipped at the card edge — never wrap (wrapping grows the
-     card past its fixed height and spills onto the next card). Tags truncate;
-     the title above is never affected. */
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+/* Row 2 sits clear of the title; row 3 sits a touch below row 2. */
+.card__row--meta {
+  grid-row: 2;
+  margin-top: var(--space-1x);
+}
+.card__row--id {
+  grid-row: 3;
+  margin-top: var(--space-1);
+}
+.card__meta {
+  /* Left side of row 2 — grows + clips so a heavily-tagged card never pushes
+     the date out (tags truncate on one line, never wrap). */
+  flex: 1 1 auto;
+  display: flex;
   flex-wrap: nowrap;
   min-width: 0;
   overflow: hidden;
@@ -1592,16 +1605,36 @@ select optgroup {
   font-variant-numeric: var(--nums-tabular);
   color: var(--color-muted);
 }
-/* The ticket id on its own row, just below the priority + tags (with a little
-   extra gap above it so it reads as a quiet footer). */
+/* Created date — pinned to the right of the tags row. */
+.card__date {
+  flex: none;
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: var(--text-2xs);
+  color: var(--color-muted);
+}
 .card__idrow {
-  grid-column: 1;
-  grid-row: 3;
-  margin-top: var(--space-1);
+  flex: 0 0 auto;
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   font-variant-numeric: var(--nums-tabular);
   color: var(--color-muted);
+}
+/* Assignee avatar (initials) — pinned to the right of the id row. */
+.card__assignee {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  line-height: 1;
 }
 /* Card richness (#25): tag chips on each card. */
 .card__tag {

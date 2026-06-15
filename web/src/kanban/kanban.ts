@@ -88,7 +88,7 @@ import { isPriorityPath, priorityIcon, priorityPlaceholder } from '../ui/priorit
  * cards show a true gap. test/kanban-card-layout.test.mjs pins the visible
  * height.
  */
-const KANBAN_CARD_HEIGHT = 112;
+const KANBAN_CARD_HEIGHT = 120;
 /** Visible gap (px) between stacked cards, inside each slot's pitch. */
 const KANBAN_CARD_GAP = 8;
 
@@ -1030,15 +1030,27 @@ export class Kanban extends Control<KanbanConfig> {
     title.className = 'card__title';
     title.dataset.role = 'title';
 
-    // Priority + tag chips ride right under the title; the ticket id gets its
-    // own row, pinned lower at the bottom of the card (Linear-style).
+    // Row 2: priority + tag chips on the left (clip), created date on the right.
+    const metaRow = document.createElement('div');
+    metaRow.className = 'card__row card__row--meta';
     const tags = document.createElement('div');
     tags.className = 'card__meta muted';
     tags.dataset.role = 'tags';
+    const date = document.createElement('div');
+    date.className = 'card__date muted';
+    date.dataset.role = 'date';
+    metaRow.append(tags, date);
 
+    // Row 3: ticket id on the left, the assignee avatar on the right.
     const idRow = document.createElement('div');
-    idRow.className = 'card__idrow muted';
-    idRow.dataset.role = 'id';
+    idRow.className = 'card__row card__row--id';
+    const idText = document.createElement('span');
+    idText.className = 'card__idrow muted';
+    idText.dataset.role = 'id';
+    const assignee = document.createElement('span');
+    assignee.className = 'card__assignee';
+    assignee.dataset.role = 'assignee';
+    idRow.append(idText, assignee);
 
     // Stretched full-row link covering the card — ⌘/middle/right-click → new
     // tab natively. The card is itself natively draggable; the link's own
@@ -1048,7 +1060,7 @@ export class Kanban extends Control<KanbanConfig> {
     const link = rowLink();
     link.dataset.role = 'rowlink';
 
-    el.append(title, tags, idRow, link);
+    el.append(title, metaRow, idRow, link);
 
     this.listen(el, 'dragstart', (ev) => {
       // Read the CURRENT card id from the node — set per fill, never stale.
@@ -1139,6 +1151,28 @@ export class Kanban extends Control<KanbanConfig> {
     idRow.append(idEl);
     const link = childByRole(el, 'rowlink');
     if (link) setRowLinkHref(link as HTMLAnchorElement, card.id);
+
+    // Created date (top-level audit field) on the right of the tags row.
+    const dateEl = childByRole(el, 'date');
+    if (dateEl) {
+      dateEl.textContent = card.created_at ? `Created ${formatCardDate(card.created_at)}` : '';
+    }
+    // Assignee avatar (initials) on the right of the id row — resolved from the
+    // persons axis (id → name); hidden when the task is unassigned.
+    const assigneeEl = childByRole(el, 'assignee');
+    if (assigneeEl) {
+      const aid = card.attributes['assignee'];
+      const persons = (this.ctx.tree.at(['kanban', 'axis', 'persons']).peek<AxisCard[]>() ?? []) as AxisCard[];
+      const name = typeof aid === 'bigint' ? (persons.find((p) => p.id === aid)?.label ?? '') : '';
+      if (name !== '') {
+        assigneeEl.textContent = personInitials(name);
+        assigneeEl.title = name;
+        assigneeEl.style.display = '';
+      } else {
+        assigneeEl.textContent = '';
+        assigneeEl.style.display = 'none';
+      }
+    }
 
     // The priority indicator leads the row right after the id — ALWAYS:
     // a card without a priority reserves the same footprint (placeholder),
@@ -1768,6 +1802,23 @@ function childByRole(root: HTMLElement, role: string): HTMLElement | null {
     if (found) return found;
   }
   return null;
+}
+
+/** Short "Mon D" rendering of an ISO timestamp for the card's created date
+ *  (e.g. "Jun 10"). Empty string for an unparseable / missing value. */
+function formatCardDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/** Up to two initials for an avatar: first letters of the first + last word, or
+ *  the first two characters of a single-word name. Uppercased. */
+function personInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 function describeFault(f: ApiFault): string {
