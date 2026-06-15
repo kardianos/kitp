@@ -88,7 +88,7 @@ import { isPriorityPath, priorityIcon, priorityPlaceholder } from '../ui/priorit
  * cards show a true gap. test/kanban-card-layout.test.mjs pins the visible
  * height.
  */
-const KANBAN_CARD_HEIGHT = 120;
+const KANBAN_CARD_HEIGHT = 112;
 /** Visible gap (px) between stacked cards, inside each slot's pitch. */
 const KANBAN_CARD_GAP = 8;
 
@@ -1157,21 +1157,16 @@ export class Kanban extends Control<KanbanConfig> {
     if (dateEl) {
       dateEl.textContent = card.created_at ? `Created ${formatCardDate(card.created_at)}` : '';
     }
-    // Assignee avatar (initials) on the right of the id row — resolved from the
-    // persons axis (id → name); hidden when the task is unassigned.
+    // Assignee NAME on the right of the id row — resolved from the persons axis
+    // (id → name); hidden when the task is unassigned.
     const assigneeEl = childByRole(el, 'assignee');
     if (assigneeEl) {
       const aid = card.attributes['assignee'];
       const persons = (this.ctx.tree.at(['kanban', 'axis', 'persons']).peek<AxisCard[]>() ?? []) as AxisCard[];
       const name = typeof aid === 'bigint' ? (persons.find((p) => p.id === aid)?.label ?? '') : '';
-      if (name !== '') {
-        assigneeEl.textContent = personInitials(name);
-        assigneeEl.title = name;
-        assigneeEl.style.display = '';
-      } else {
-        assigneeEl.textContent = '';
-        assigneeEl.style.display = 'none';
-      }
+      assigneeEl.textContent = name;
+      assigneeEl.title = name;
+      assigneeEl.style.display = name !== '' ? '' : 'none';
     }
 
     // The priority indicator leads the row right after the id — ALWAYS:
@@ -1810,15 +1805,6 @@ function formatCardDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-/** Up to two initials for an avatar: first letters of the first + last word, or
- *  the first two characters of a single-word name. Uppercased. */
-function personInitials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return '?';
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 function describeFault(f: ApiFault): string {

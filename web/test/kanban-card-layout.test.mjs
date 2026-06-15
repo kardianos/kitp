@@ -63,11 +63,11 @@ function buildPage(css, tagCount) {
 <div class="kanban">
   <div class="col" style="width:260px">
     <div class="col__cards">
-      <!-- The Kanban tiles slots at KANBAN_CARD_HEIGHT (120px) and buildCardShell
-           shrinks the visible card to 112px (HEIGHT − KANBAN_CARD_GAP); mirror
+      <!-- The Kanban tiles slots at KANBAN_CARD_HEIGHT (112px) and buildCardShell
+           shrinks the visible card to 104px (HEIGHT − KANBAN_CARD_GAP); mirror
            that here so overflow behaves as in app. Row 2 = priority+tags · date;
-           row 3 = ticket id · assignee avatar. -->
-      <div class="card" id="card-under-test" style="position:relative;height:112px;width:240px;">
+           row 3 = ticket id . assignee name. -->
+      <div class="card" id="card-under-test" style="position:relative;height:104px;width:240px;">
         <div class="card__title" data-role="title">A fairly long task title that should wrap to at most two lines and then ellipsize cleanly</div>
         <div class="card__row card__row--meta">
           <div class="card__meta muted" data-role="tags">${tags}</div>
@@ -75,7 +75,7 @@ function buildPage(css, tagCount) {
         </div>
         <div class="card__row card__row--id">
           <span class="card__idrow muted" data-role="id"><span class="card__id">#201</span></span>
-          <span class="card__assignee" data-role="assignee">SM</span>
+          <span class="card__assignee" data-role="assignee">Spencer McCormack</span>
         </div>
       </div>
     </div>
@@ -158,7 +158,7 @@ test('kanban card: many tags never push the title out or overflow the card box',
   // Sanity: the title actually rendered (one line of real text), and the card
   // stayed at its fixed height.
   assert.ok(res.titleHeight > 0, 'title rendered');
-  assert.ok(res.cardHeight <= 120, `card height stayed bounded (~112px), got ${res.cardHeight}`);
+  assert.ok(res.cardHeight <= 112, `card height stayed bounded (~104px), got ${res.cardHeight}`);
 });
 
 test('kanban card: a card with no tags also keeps the title visible (control)', async (t) => {
