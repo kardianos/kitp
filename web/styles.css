@@ -4963,9 +4963,10 @@ select optgroup {
    ========================================================================== */
 .markdown {
   word-break: break-word;
-  /* Reading-surface prose tuned to match Claude Desktop: ~16px body, relaxed
-     line-height, and em-based block rhythm so headings/spacing scale with it. */
-  font-size: 1rem;
+  /* Reading-surface prose: 15px body, relaxed line-height, em-based block
+     rhythm (headings + spacing scale from the body). 15px is a deliberate fixed
+     reading size — a touch tighter than the 1rem default. */
+  font-size: 15px;
   line-height: 1.65;
   color: var(--color-fg);
 }
