@@ -5545,6 +5545,11 @@ select optgroup {
   flex-direction: column;
   gap: var(--space-4);
   min-width: 0;
+  /* Cap the content to a readable measure and centre it in the (1fr) track,
+     Linear-style — long descriptions otherwise run the full panel width. */
+  width: 100%;
+  max-width: 48rem;
+  margin-inline: auto;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface);
