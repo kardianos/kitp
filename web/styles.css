@@ -1446,9 +1446,10 @@ select optgroup {
 .card {
   display: grid;
   grid-template-columns: auto 1fr;
-  /* Title row grows to fill the slot; the meta row pins to the BOTTOM (Linear-
-     style), so a short title leaves the gap below it rather than a ragged void. */
-  grid-template-rows: 1fr auto;
+  /* Four rows: title, priority+tags, a flexible spacer, then the ticket id
+     pinned at the bottom (Linear-style) — the spacer pushes the id low and
+     leaves a short card's gap below the tags rather than a ragged void. */
+  grid-template-rows: auto auto 1fr auto;
   align-items: start;
   gap: var(--space-h) var(--space-2);
   padding: var(--space-2) var(--space-2x);
@@ -1459,8 +1460,8 @@ select optgroup {
   line-height: var(--leading-data);
   /* The card is a FIXED-height virtualList slot (KANBAN_CARD_HEIGHT). Clip to the
      box so a heavily-tagged card can never spill its content onto the
-     neighbouring card. The title (grid row 1) wraps to at most two lines; the
-     meta row (row 2) clips. See test/kanban-card-layout.test.mjs. */
+     neighbouring card. The title (row 1) wraps to at most two lines; the
+     priority+tags row (row 2) clips. See test/kanban-card-layout.test.mjs. */
   overflow: hidden;
   cursor: grab;
   transition:
@@ -1556,7 +1557,7 @@ select optgroup {
 }
 
 .card__grip {
-  grid-row: 1 / span 2;
+  grid-row: 1 / -1;
   align-self: center;
   cursor: grab;
   font-size: var(--text-xs);
@@ -1565,6 +1566,8 @@ select optgroup {
   letter-spacing: -0.1em;
 }
 .card__title {
+  grid-column: 2;
+  grid-row: 1;
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   color: var(--color-fg-strong);
@@ -1581,6 +1584,7 @@ select optgroup {
 }
 .card__meta {
   grid-column: 2;
+  grid-row: 2;
   display: flex;
   /* One line of tags, clipped at the card edge — never wrap (wrapping grows the
      card past its fixed height and spills onto the next card). Tags truncate;
@@ -1595,11 +1599,16 @@ select optgroup {
   font-variant-numeric: var(--nums-tabular);
   color: var(--color-muted);
 }
-/* Optical alignment: the id's digit ink sits ~1px higher than the priority
-   bars / tag chips beside it (all three boxes ARE flex-centered) — nudge
-   the number down so the row reads as one line. */
-.card__meta .card__id {
-  transform: translateY(1px);
+/* The ticket id on its own bottom row (grid row 4), pinned low by the spacer
+   above it — sits below the priority + tags. */
+.card__idrow {
+  grid-column: 2;
+  grid-row: 4;
+  align-self: end;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: var(--nums-tabular);
+  color: var(--color-muted);
 }
 /* Card richness (#25): tag chips on each card. */
 .card__tag {

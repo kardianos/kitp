@@ -88,7 +88,7 @@ import { isPriorityPath, priorityIcon, priorityPlaceholder } from '../ui/priorit
  * cards show a true gap. test/kanban-card-layout.test.mjs pins the visible
  * height.
  */
-const KANBAN_CARD_HEIGHT = 96;
+const KANBAN_CARD_HEIGHT = 104;
 /** Visible gap (px) between stacked cards, inside each slot's pitch. */
 const KANBAN_CARD_GAP = 8;
 
@@ -1035,9 +1035,15 @@ export class Kanban extends Control<KanbanConfig> {
     title.className = 'card__title';
     title.dataset.role = 'title';
 
-    const meta = document.createElement('div');
-    meta.className = 'card__meta muted';
-    meta.dataset.role = 'meta';
+    // Priority + tag chips ride right under the title; the ticket id gets its
+    // own row, pinned lower at the bottom of the card (Linear-style).
+    const tags = document.createElement('div');
+    tags.className = 'card__meta muted';
+    tags.dataset.role = 'tags';
+
+    const idRow = document.createElement('div');
+    idRow.className = 'card__idrow muted';
+    idRow.dataset.role = 'id';
 
     // Stretched full-row link covering the card — ⌘/middle/right-click → new
     // tab natively. The card is itself natively draggable; the link's own
@@ -1047,7 +1053,7 @@ export class Kanban extends Control<KanbanConfig> {
     const link = rowLink();
     link.dataset.role = 'rowlink';
 
-    el.append(grip, title, meta, link);
+    el.append(grip, title, tags, idRow, link);
 
     this.listen(el, 'dragstart', (ev) => {
       // Read the CURRENT card id from the node — set per fill, never stale.
@@ -1124,15 +1130,18 @@ export class Kanban extends Control<KanbanConfig> {
     applySettle(el, 'card--settling', this.settleCardId !== null && card.id === this.settleCardId);
     const title = childByRole(el, 'title');
     if (title) title.textContent = titleOf(card);
-    const meta = childByRole(el, 'meta');
-    if (meta === null) return;
-    // Richer card (#25): #id · assignee · tag chips (resolved from the axis
-    // lookups; falls back to ids until those lists land + the board re-renders).
-    meta.replaceChildren();
+    const tagsRow = childByRole(el, 'tags');
+    const idRow = childByRole(el, 'id');
+    if (tagsRow === null || idRow === null) return;
+    // Richer card (#25): the ticket #id sits on its own bottom row; priority +
+    // tag chips (resolved from the axis lookups; falls back to ids until those
+    // lists land + the board re-renders) ride the row right under the title.
+    tagsRow.replaceChildren();
+    idRow.replaceChildren();
     const idEl = document.createElement('span');
     idEl.className = 'card__id';
     idEl.textContent = `#${card.id.toString()}`;
-    meta.append(idEl);
+    idRow.append(idEl);
     const link = childByRole(el, 'rowlink');
     if (link) setRowLinkHref(link as HTMLAnchorElement, card.id);
 
@@ -1166,7 +1175,7 @@ export class Kanban extends Control<KanbanConfig> {
         chips.push(chip);
       }
     }
-    meta.append(bars ?? priorityPlaceholder(), ...chips);
+    tagsRow.append(bars ?? priorityPlaceholder(), ...chips);
   }
 
   /**

@@ -63,16 +63,15 @@ function buildPage(css, tagCount) {
 <div class="kanban">
   <div class="col" style="width:260px">
     <div class="col__cards">
-      <!-- The Kanban tiles slots at KANBAN_CARD_HEIGHT (96px) and buildCardShell
-           shrinks the visible card to 88px (HEIGHT − KANBAN_CARD_GAP); mirror
-           that here so overflow behaves as in app. -->
-      <div class="card" id="card-under-test" style="position:relative;height:88px;width:240px;">
+      <!-- The Kanban tiles slots at KANBAN_CARD_HEIGHT (104px) and buildCardShell
+           shrinks the visible card to 96px (HEIGHT − KANBAN_CARD_GAP); mirror
+           that here so overflow behaves as in app. priority+tags ride row 2; the
+           ticket id sits on its own bottom row. -->
+      <div class="card" id="card-under-test" style="position:relative;height:96px;width:240px;">
         <span class="card__grip muted" aria-hidden="true">⋮⋮</span>
         <div class="card__title" data-role="title">A fairly long task title that should wrap to at most two lines and then ellipsize cleanly</div>
-        <div class="card__meta muted" data-role="meta">
-          <span class="card__id">#201</span>
-          ${tags}
-        </div>
+        <div class="card__meta muted" data-role="tags">${tags}</div>
+        <div class="card__idrow muted" data-role="id"><span class="card__id">#201</span></div>
       </div>
     </div>
   </div>
@@ -154,7 +153,7 @@ test('kanban card: many tags never push the title out or overflow the card box',
   // Sanity: the title actually rendered (one line of real text), and the card
   // stayed at its fixed height.
   assert.ok(res.titleHeight > 0, 'title rendered');
-  assert.ok(res.cardHeight <= 96, `card height stayed bounded (~88px), got ${res.cardHeight}`);
+  assert.ok(res.cardHeight <= 104, `card height stayed bounded (~96px), got ${res.cardHeight}`);
 });
 
 test('kanban card: a card with no tags also keeps the title visible (control)', async (t) => {
