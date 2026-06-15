@@ -81,14 +81,14 @@ import { icon } from '../ui/icons.js';
 import { statusIcon, statusGlyphs, type StatusGlyph } from '../ui/status-icon.js';
 import { isPriorityPath, priorityIcon, priorityPlaceholder } from '../ui/priority-icon.js';
 /**
- * Fixed virtual-list row height (px) for a kanban card slot: the compact card
- * (grip + title + meta) plus the inter-card gap baked in. The virtualList
- * tiles slots by this exact pitch; buildCardShell shrinks the visible card to
- * HEIGHT − GAP (overriding the slot's inline 64px) so adjacent cards show a
- * true Linear-style gap. test/kanban-card-layout.test.mjs pins the visible
+ * Fixed virtual-list row height (px) for a kanban card slot: the card (grip +
+ * up-to-two-line title + bottom meta row) plus the inter-card gap baked in,
+ * sized like a Linear issue card. The virtualList tiles slots by this exact
+ * pitch; buildCardShell shrinks the visible card to HEIGHT − GAP so adjacent
+ * cards show a true gap. test/kanban-card-layout.test.mjs pins the visible
  * height.
  */
-const KANBAN_CARD_HEIGHT = 64;
+const KANBAN_CARD_HEIGHT = 96;
 /** Visible gap (px) between stacked cards, inside each slot's pitch. */
 const KANBAN_CARD_GAP = 8;
 

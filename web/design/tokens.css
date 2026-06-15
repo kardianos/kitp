@@ -254,7 +254,7 @@
   --rail-width-collapsed: 0;
   --topbar-height: 2.75rem;     /* 44px — compact chrome bar              */
   --detail-rail-width: 20rem;   /* 320px task-detail right rail           */
-  --kanban-col-width: 25.5rem;  /* 408px (50% wider than original 272px)  */
+  --kanban-col-width: 21rem;    /* 336px — Linear-style column width       */
 }
 
 /* --------------------------------------------------------------------------
