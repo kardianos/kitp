@@ -797,11 +797,14 @@ select optgroup {
 .filterbar__grp {
   margin-left: var(--space-3);
 }
-/* Thin divider that isolates the destructive Clear button from the rest. */
+/* Thin divider that isolates the destructive Clear button from the rest.
+   Symmetric inline margin (on top of the row gap) so it sits centered in the
+   space between the refine group and Clear, not hugging either side. */
 .filterbar__divider {
   align-self: center;
   width: 1px;
   height: 1.25rem;
+  margin-inline: var(--space-2);
   background: var(--color-border);
 }
 .filterbar__group {
