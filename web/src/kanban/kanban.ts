@@ -1026,11 +1026,6 @@ export class Kanban extends Control<KanbanConfig> {
     // otherwise make borders abut edge-to-edge).
     el.style.height = `${KANBAN_CARD_HEIGHT - KANBAN_CARD_GAP}px`;
 
-    const grip = document.createElement('span');
-    grip.className = 'card__grip muted';
-    grip.append(icon('grip-vertical', 14));
-    grip.setAttribute('aria-hidden', 'true');
-
     const title = document.createElement('div');
     title.className = 'card__title';
     title.dataset.role = 'title';
@@ -1053,7 +1048,7 @@ export class Kanban extends Control<KanbanConfig> {
     const link = rowLink();
     link.dataset.role = 'rowlink';
 
-    el.append(grip, title, tags, idRow, link);
+    el.append(title, tags, idRow, link);
 
     this.listen(el, 'dragstart', (ev) => {
       // Read the CURRENT card id from the node — set per fill, never stale.

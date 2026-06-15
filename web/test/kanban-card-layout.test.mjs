@@ -12,7 +12,7 @@
 //
 // Harness: inline the production CSS (tokens.css + styles.css) into a temp
 // HTML page that reproduces the card DOM (mirrors Kanban.buildCardShell /
-// fillCard — grip + .card__title + .card__meta{#id, assignee, .card__tag*}),
+// fillCard — .card__title + .card__meta{#id, assignee, .card__tag*}),
 // run `chrome --headless --dump-dom`, and parse a JSON result the page writes
 // into a <pre>. Skips cleanly when no Chrome binary is present.
 
@@ -68,7 +68,6 @@ function buildPage(css, tagCount) {
            that here so overflow behaves as in app. priority+tags ride row 2; the
            ticket id sits on its own bottom row. -->
       <div class="card" id="card-under-test" style="position:relative;height:104px;width:240px;">
-        <span class="card__grip muted" aria-hidden="true">⋮⋮</span>
         <div class="card__title" data-role="title">A fairly long task title that should wrap to at most two lines and then ellipsize cleanly</div>
         <div class="card__meta muted" data-role="tags">${tags}</div>
         <div class="card__idrow muted" data-role="id"><span class="card__id">#201</span></div>
