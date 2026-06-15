@@ -450,15 +450,17 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     const clearDivider = document.createElement('span');
     clearDivider.className = 'filterbar__divider';
     clearDivider.setAttribute('aria-hidden', 'true');
+    // A matching divider between the view-setup cluster and the refine group.
+    const refineDivider = document.createElement('span');
+    refineDivider.className = 'filterbar__divider';
+    refineDivider.setAttribute('aria-hidden', 'true');
 
-    // Lay the bar out in functional groups, separated by an extra gap
-    // (.filterbar__grp margin on each group's first element):
-    //   view setup (View · Phase · Display) · refine (Filter · Advanced ·
-    //   Search) · reset (Clear, behind a centered divider). Display rides with
-    //   the left cluster — it configures the view, like View / Phase. Search
-    //   flex-grows when expanded, filling the middle + pushing Clear right.
-    chipsHost.classList.add('filterbar__grp');
-    bar.append(displayWrap, chipsHost, advanced, searchWrap, clearDivider, clear);
+    // Lay the bar out in functional groups, separated by centered dividers:
+    //   view setup (View · Phase · Display) │ refine (Filter · Advanced ·
+    //   Search) │ reset (Clear). Display rides with the left cluster — it
+    //   configures the view, like View / Phase. Search flex-grows when expanded,
+    //   filling the middle + pushing Clear right.
+    bar.append(displayWrap, refineDivider, chipsHost, advanced, searchWrap, clearDivider, clear);
 
     // Screen-specific view actions (e.g. Grid → Columns / "+ New"), far right.
     const viewActions = this.config.viewActions ?? [];
