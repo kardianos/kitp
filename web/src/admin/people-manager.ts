@@ -31,6 +31,7 @@ import { trapFocus, captureFocus } from '../util/focus-trap.js';
 import { EditableField } from '../ui/editable-field.js';
 import { AUTH_USER_PATH, type AuthUser } from '../auth/auth-state.js';
 
+import { icon } from '../ui/icons.js';
 /** A human-readable message for a merge fault — surfaces the server's
  *  'merge_login_conflict' (and other sub_error) text in the merge dialog. */
 function mergeFaultMessage(f: ApiFault): string {
@@ -320,7 +321,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     remove.dataset.peopleRemove = '';
     remove.title = 'Remove';
     remove.setAttribute('aria-label', `Remove ${r.title || `#${r.id.toString()}`}`);
-    remove.textContent = '✕';
+    remove.append(icon('x', 14));
     this.listen(remove, 'click', () => this.openRemoveDialog(r));
 
     // Merge: fold this (duplicate) person into another, repointing every
@@ -363,7 +364,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
       rm.className = 'people-manager__role-remove';
       rm.dataset.peopleRoleRemove = role.role_name;
       rm.setAttribute('aria-label', `Revoke ${role.role_name}`);
-      rm.textContent = '✕';
+      rm.append(icon('x', 14));
       this.listen(rm, 'click', () => this.revokeRole(r, role));
       chip.append(label, rm);
       wrap.append(chip);

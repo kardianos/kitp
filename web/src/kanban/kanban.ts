@@ -77,13 +77,20 @@ import {
   topLevelPhases,
 } from '../filter/predicate.js';
 
+import { icon } from '../ui/icons.js';
+import { statusIcon, statusGlyphs, type StatusGlyph } from '../ui/status-icon.js';
+import { isPriorityPath, priorityIcon, priorityPlaceholder } from '../ui/priority-icon.js';
 /**
  * Fixed virtual-list row height (px) for a kanban card slot: the compact card
- * (grip + title + meta, ~56px) plus the inter-card gap baked in. The card fills
- * the slot with a bottom margin for the visual gap; the virtualList tiles slots
- * by this exact height. Mirror in `.col__body .card` / slot height in CSS.
+ * (grip + title + meta) plus the inter-card gap baked in. The virtualList
+ * tiles slots by this exact pitch; buildCardShell shrinks the visible card to
+ * HEIGHT − GAP (overriding the slot's inline 64px) so adjacent cards show a
+ * true Linear-style gap. test/kanban-card-layout.test.mjs pins the visible
+ * height.
  */
 const KANBAN_CARD_HEIGHT = 64;
+/** Visible gap (px) between stacked cards, inside each slot's pitch. */
+const KANBAN_CARD_GAP = 8;
 
 /** The default axis when no GROUP is picked: group columns by milestone. The
  *  attr is shared with the filter bar (via screen-resolve) so the board's
@@ -213,6 +220,10 @@ export class Kanban extends Control<KanbanConfig> {
   private cursor: { columnKey: string; laneKey: string | undefined; cardId: bigint } | null = null;
   /** Set once the remembered cursor has been restored on the first board render. */
   private cursorRestored = false;
+  /** The cursor RING paints only after the keyboard actually drives the cursor
+   *  (j/k/h/l, board entry). A restore or a mouse-click sets the LOGICAL
+   *  cursor silently — returning from a task must not outline the card. */
+  private cursorVisible = false;
   /** Per-(lane, column) last-focused card id. h/l returns the cursor to where it
    *  last sat in each column instead of snapping to the top every time — the
    *  vertical position is tracked per column, not shared across the board. Keyed
@@ -546,6 +557,23 @@ export class Kanban extends Control<KanbanConfig> {
       this.syncCursorColumn();
     }, 'kanban.board');
 
+    // Switching back to the mouse dismisses the keyboard-cursor ring: real
+    // pointer movement over the board hides it (the LOGICAL cursor stays, so
+    // j/k resume from the same card). Coordinates are compared because the
+    // browser re-fires a synthetic pointermove when keyboard navigation
+    // auto-scrolls content under a stationary pointer — only actual motion
+    // counts as "using the mouse again".
+    let lastPointer: { x: number; y: number } | null = null;
+    this.listen(board, 'pointermove', (ev) => {
+      const e = ev as PointerEvent;
+      const moved = lastPointer !== null && (lastPointer.x !== e.clientX || lastPointer.y !== e.clientY);
+      lastPointer = { x: e.clientX, y: e.clientY };
+      if (moved && this.cursorVisible) {
+        this.cursorVisible = false;
+        this.repaintCursor();
+      }
+    });
+
     // Enter / o on the focused board opens the cursor card. A focused CARD
     // handles its own Enter (card keydown); this is the board-focused case.
     this.listen(board, 'keydown', (ev) => {
@@ -562,6 +590,7 @@ export class Kanban extends Control<KanbanConfig> {
     this.effect(() => {
       const n = this.ctx.tree.at(['screen', 'enterBodyNonce']).get<number>() ?? 0;
       if (n === 0) return;
+      this.cursorVisible = true;
       if (this.cursor === null) this.cursorToFirst();
       else this.revealCursor();
     }, 'kanban.enterBody');
@@ -850,11 +879,36 @@ export class Kanban extends Control<KanbanConfig> {
       Object.keys(buckets),
     );
     const labelById = new Map<string, string>();
-    for (const a of axis) labelById.set(a.id.toString(), this.axisLabelOf(a, this.axis));
+    // Glyph per axis value — only status cards carry a phase; a status-grouped
+    // board gets the phase icon in its column headers. The within-phase variant
+    // (active pie sweep, terminal ✓/✕) ramps over the status axis so sibling
+    // statuses (Todo/Doing/Review, Done/Cancelled) read distinctly.
+    const glyphById = new Map<string, StatusGlyph>();
+    const statusItems: { idStr: string; phase: string; sortOrder: number; label: string }[] = [];
+    for (const a of axis) {
+      const label = this.axisLabelOf(a, this.axis);
+      labelById.set(a.id.toString(), label);
+      if (a.phase !== undefined) {
+        // The board's status axis is already one workflow, so every status
+        // shares a group — the ramp runs over all of them. `sortOrder` is the
+        // AxisCard's pre-resolved value-card order.
+        statusItems.push({
+          idStr: a.id.toString(),
+          phase: a.phase,
+          sortOrder: a.sortOrder,
+          label,
+          groupKey: '',
+        });
+      }
+    }
+    const variants = statusGlyphs(statusItems);
+    for (const s of statusItems) {
+      glyphById.set(s.idStr, { phase: s.phase, ...variants.get(s.idStr) });
+    }
     const cols: HTMLElement[] = [];
     for (const key of order) {
       const label = key === UNSET_KEY ? '(unset)' : (labelById.get(key) ?? `#${key}`);
-      cols.push(this.renderColumn(key, label, laneKey));
+      cols.push(this.renderColumn(key, label, laneKey, glyphById.get(key)));
     }
     return cols;
   }
@@ -862,7 +916,12 @@ export class Kanban extends Control<KanbanConfig> {
   /** One column: header (label · count · +) + a body of TaskCards + drop zone.
    *  The card list reads the tasks leaf reactively (via `bucketColumn`), so it
    *  recycles in place on a move; the count + empty placeholder track it. */
-  private renderColumn(columnKey: string, label: string, laneKey?: string): HTMLElement {
+  private renderColumn(
+    columnKey: string,
+    label: string,
+    laneKey?: string,
+    glyph?: StatusGlyph,
+  ): HTMLElement {
     const col = document.createElement('div');
     col.className = 'col';
     col.dataset.kanbanColumn = '';
@@ -887,6 +946,7 @@ export class Kanban extends Control<KanbanConfig> {
     // opens with no lane prefill).
     add.title = 'Quick-add a task in this column';
     this.listen(add, 'click', () => this.openQuickEntry(columnKey, laneKey));
+    if (glyph !== undefined) header.append(statusIcon(glyph));
     header.append(labelEl, count, add);
 
     const body = document.createElement('div');
@@ -962,10 +1022,14 @@ export class Kanban extends Control<KanbanConfig> {
     el.dataset.kanbanCard = '';
     el.draggable = true;
     el.tabIndex = 0;
+    // The slot el IS the card: shrink it inside the fixed slot pitch so
+    // stacked cards show a real gap (the virtualList's inline height would
+    // otherwise make borders abut edge-to-edge).
+    el.style.height = `${KANBAN_CARD_HEIGHT - KANBAN_CARD_GAP}px`;
 
     const grip = document.createElement('span');
     grip.className = 'card__grip muted';
-    grip.textContent = '⋮⋮';
+    grip.append(icon('grip-vertical', 14));
     grip.setAttribute('aria-hidden', 'true');
 
     const title = document.createElement('div');
@@ -1029,8 +1093,9 @@ export class Kanban extends Control<KanbanConfig> {
   private openCard(el: HTMLElement): void {
     const idStr = el.dataset.cardId;
     if (idStr === undefined || idStr === '') return;
-    // Land the cursor on the clicked card + remember it, so returning re-
-    // highlights it (matches the keyboard cursor).
+    // Land the LOGICAL cursor on the clicked card + remember it, so returning
+    // anchors j/k where the user left off (no visible ring until the keyboard
+    // drives the cursor — see cursorVisible).
     const col = el.closest?.('[data-kanban-column]') as HTMLElement | null | undefined;
     if (col) {
       this.cursor = { columnKey: col.dataset?.column ?? '', laneKey: col.dataset?.laneKey ?? undefined, cardId: BigInt(idStr) };
@@ -1049,7 +1114,10 @@ export class Kanban extends Control<KanbanConfig> {
     // and `repaintCursor` — so the ring survives a board rebuild / card recycle
     // that re-runs fillCard without a following repaintCursor (e.g. an async axis
     // / workflow-status load re-keying the columns after a cursor restore).
-    el.classList.toggle('card--cursor', this.cursor !== null && card.id === this.cursor.cardId);
+    el.classList.toggle(
+      'card--cursor',
+      this.cursorVisible && this.cursor !== null && card.id === this.cursor.cardId,
+    );
     // The card that just moved settles into its new slot; every other fill
     // clears the class so a recycled node never keeps a stale animation. The id
     // persists past the optimistic re-render (cleared on the next dragstart), so
@@ -1069,24 +1137,37 @@ export class Kanban extends Control<KanbanConfig> {
     const link = childByRole(el, 'rowlink');
     if (link) setRowLinkHref(link as HTMLAnchorElement, card.id);
 
+    // The priority indicator leads the row right after the id — ALWAYS:
+    // a card without a priority reserves the same footprint (placeholder),
+    // so tag chips start from one x position across every card. Priority is
+    // pulled out of data order; other tags keep theirs.
     const tags = card.attributes['tags'];
+    let bars: HTMLElement | null = null;
+    const chips: HTMLElement[] = [];
     if (Array.isArray(tags)) {
       const tagAxis = (this.ctx.tree.at(['kanban', 'axis', 'tags']).peek<AxisCard[]>() ?? []) as AxisCard[];
       for (const t of tags) {
         if (typeof t !== 'bigint') continue;
         const ac = tagAxis.find((c) => c.id === t);
         const path = ac?.label ?? `#${t.toString()}`;
+        const leaf = path.includes('/') ? (path.split('/').filter(Boolean).pop() ?? path) : path;
+        // A priority tag renders as Linear-style signal bars, not a pill.
+        if (isPriorityPath(path) && bars === null) {
+          bars = priorityIcon(leaf);
+          if (bars !== null) continue;
+        }
         const chip = document.createElement('span');
         chip.className = 'tag-chip card__tag';
         chip.dataset.tagChip = '';
         if (ac?.color !== undefined) chip.dataset.tagColor = ac.color;
         const lbl = document.createElement('span');
         lbl.className = 'tag-chip__label';
-        lbl.textContent = path.includes('/') ? (path.split('/').filter(Boolean).pop() ?? path) : path;
+        lbl.textContent = leaf;
         chip.append(lbl);
-        meta.append(chip);
+        chips.push(chip);
       }
     }
+    meta.append(bars ?? priorityPlaceholder(), ...chips);
   }
 
   /**
@@ -1310,6 +1391,7 @@ export class Kanban extends Control<KanbanConfig> {
 
   /** Place the cursor on the first card of the first non-empty column. */
   private cursorToFirst(): void {
+    this.cursorVisible = true;
     for (const col of this.boardColumns()) {
       const columnKey = col.dataset.column;
       if (columnKey === undefined) continue;
@@ -1326,6 +1408,7 @@ export class Kanban extends Control<KanbanConfig> {
   /** j/k — move the LOGICAL cursor within its column (by card id, so it survives
    *  card recycling), auto-scrolling the column body at the edge. */
   private navCard(dir: 1 | -1): void {
+    this.cursorVisible = true;
     if (this.cursor === null) {
       this.cursorToFirst();
       return;
@@ -1333,7 +1416,12 @@ export class Kanban extends Control<KanbanConfig> {
     const cards = this.bucketColumn(this.boardTasks(), this.cursor.columnKey, this.cursor.laneKey);
     const i = cards.findIndex((c) => c.id === this.cursor!.cardId);
     const j = i + dir;
-    if (j < 0 || j >= cards.length) return;
+    if (j < 0 || j >= cards.length) {
+      // Edge of the column: the cursor doesn't move, but the ring must still
+      // reveal (a silently-restored cursor becomes visible on the first press).
+      this.revealCursor();
+      return;
+    }
     this.cursor = { ...this.cursor, cardId: cards[j]!.id };
     this.revealCursor();
   }
@@ -1341,6 +1429,7 @@ export class Kanban extends Control<KanbanConfig> {
   /** h/l — move the cursor to the first card of the next/prev non-empty column in
    *  the same lane, auto-scrolling the board horizontally. */
   private navColumn(dir: 1 | -1): void {
+    this.cursorVisible = true;
     if (this.cursor === null) {
       this.cursorToFirst();
       return;
@@ -1358,12 +1447,15 @@ export class Kanban extends Control<KanbanConfig> {
         return;
       }
     }
+    // Edge of the board: no move, but reveal the (possibly restored) ring.
+    this.revealCursor();
   }
 
   /** Shift+H/L — move the CURSOR card to the adjacent column (cross-column re-key
    *  on the active axis); the cursor follows the card to its new column. */
   private moveFocused(dir: 1 | -1): void {
     if (this.cursor === null) return;
+    this.cursorVisible = true;
     const cols = this.columnsInLane(this.cursor.laneKey);
     const ci = cols.findIndex((c) => c.dataset.column === this.cursor!.columnKey);
     const next = ci + dir;
@@ -1416,7 +1508,7 @@ export class Kanban extends Control<KanbanConfig> {
    *  off every other) — independent of the virtualList's content-skip. */
   private repaintCursor(): void {
     if (this.boardEl === null) return;
-    const want = this.cursor !== null ? this.cursor.cardId.toString() : null;
+    const want = this.cursorVisible && this.cursor !== null ? this.cursor.cardId.toString() : null;
     const cards = this.boardEl.querySelectorAll?.('[data-kanban-card]') ?? [];
     for (const node of cards as unknown as HTMLElement[]) {
       node.classList?.toggle('card--cursor', want !== null && node.dataset?.cardId === want);

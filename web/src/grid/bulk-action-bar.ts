@@ -44,6 +44,7 @@ import type { RefPicker } from '../ui/ref-picker.js';
 import type { Combobox } from '../ui/combobox.js';
 import type { RefAxis } from '../filter/vocabulary.js';
 
+import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
 /* -------------------------------------------------------------------------- */
@@ -570,7 +571,7 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
       rm.className = 'bulk-bar__chip-remove';
       rm.dataset.bulkStagedRemove = s.name;
       rm.setAttribute('aria-label', `Remove ${s.label}`);
-      rm.textContent = '✕';
+      rm.append(icon('x', 14));
       this.listen(rm, 'click', () => this.removeStaged(s.name));
       chip.append(label, rm);
       this.stagedEl.append(chip);

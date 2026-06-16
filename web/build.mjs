@@ -33,6 +33,12 @@ const common = {
   // are imported by relative path from src/util/markdown.ts
   // (../../vendor/dompurify.js, ../../vendor/marked.js). esbuild resolves and
   // bundles them out of the box — no import map or alias is required.
+  //
+  // Absolute /assets/* url()s (the @font-face srcs in styles.css) are served
+  // from the bundle root at runtime — copyAssets() ships the files — so
+  // esbuild must leave them as-is rather than try to resolve them at build
+  // time.
+  external: ['/assets/*'],
 };
 
 // Emit a self-contained dist/index.html. The source index.html references

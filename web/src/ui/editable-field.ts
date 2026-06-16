@@ -10,6 +10,9 @@
  * (e.g. after a reload) when not mid-edit.
  */
 
+
+import { icon } from './icons.js';
+
 export interface EditableFieldOptions {
   value: string;
   /** Fired with the trimmed-or-raw new value when it differs from the current. */
@@ -59,7 +62,7 @@ export class EditableField {
     edit.dataset.editableEdit = '';
     edit.setAttribute('aria-label', this.opts.ariaLabel ?? 'Edit');
     edit.title = this.opts.ariaLabel ?? 'Edit';
-    edit.textContent = '✎';
+    edit.append(icon('pencil', 14));
     edit.addEventListener('click', () => this.enterEdit());
 
     this.el.replaceChildren(text, edit);

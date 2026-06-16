@@ -62,6 +62,7 @@ import {
   type TransitionRow,
 } from './transition-buckets.js';
 
+import { icon } from '../ui/icons.js';
 /**
  * Dropdown sub-heading per bucket — the phase-derived grouping shown when more
  * than one bucket folds into the overflow menu ("phase still drives grouping").
@@ -527,7 +528,7 @@ export class TransitionBar extends Control<TransitionBarConfig> {
     dismiss.dataset.testid = 'transition-banner-dismiss';
     dismiss.setAttribute('aria-label', 'Dismiss');
     dismiss.title = 'Dismiss';
-    dismiss.textContent = '×';
+    dismiss.append(icon('x', 14));
     this.listen(dismiss, 'click', () => {
       this.banner = null;
       this.paintBanner();

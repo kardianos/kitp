@@ -20,6 +20,7 @@
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { tagPathLeaf } from './grid-helpers.js';
 
+import { icon } from '../ui/icons.js';
 export interface TagChipConfig extends BaseControlConfig {
   type: 'TagChip';
   /** The full tag path (e.g. `area/frontend/ui`). The chip shows the leaf. */
@@ -68,7 +69,7 @@ export class TagChip extends Control<TagChipConfig> {
       remove.type = 'button';
       remove.className = 'tag-chip__remove';
       remove.dataset.tagRemove = '';
-      remove.textContent = '×';
+      remove.append(icon('x', 12));
       remove.setAttribute('aria-label', `Remove tag ${path}`);
       this.el.append(remove);
       this.listen(remove, 'click', (ev) => {

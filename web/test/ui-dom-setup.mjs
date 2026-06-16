@@ -65,7 +65,13 @@ export function installUiDom() {
   globalThis.HTMLElement = window.HTMLElement;
   globalThis.ShadowRoot = window.ShadowRoot;
   globalThis.Window = window.Window;
-  globalThis.navigator = window.navigator;
+  // Node ≥21 exposes globalThis.navigator as getter-only; plain assignment
+  // throws. defineProperty replaces it on any Node version.
+  Object.defineProperty(globalThis, 'navigator', {
+    value: window.navigator,
+    writable: true,
+    configurable: true,
+  });
   globalThis.requestAnimationFrame = window.requestAnimationFrame.bind(window);
   globalThis.cancelAnimationFrame = window.cancelAnimationFrame.bind(window);
   globalThis.getComputedStyle = window.getComputedStyle.bind(window);

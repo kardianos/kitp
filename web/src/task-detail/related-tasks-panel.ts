@@ -36,6 +36,9 @@ import { splitPath } from '../core/data.js';
 import { navigate, taskUrl } from '../shell/router.js';
 import type { RefPicker } from '../ui/ref-picker.js';
 
+import { icon } from '../ui/icons.js';
+import { statusIcon, applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
+import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                  */
 /* -------------------------------------------------------------------------- */
@@ -120,7 +123,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
 
   /** Status pool: status card id (string) → { label, phase } — for the body
    *  summary's status text (mirrors TaskDetail's badge resolution). */
-  private readonly statusInfo = new Map<string, { label: string; phase: string }>();
+  private readonly statusInfo = new Map<string, StatusInfo>();
   /** The current parent's phase (top-level card phase), once resolved. */
   private parentPhase = '';
   /** The current parent's `status` ref id, once resolved (for the summary). */
@@ -222,6 +225,17 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
       const nonce = this.ctx.tree.at(['tasks', 'createdNonce']).get<number>() ?? 0;
       if (nonce > 0 && this.cardId !== null) this.loadChildren();
     }, 'related.refreshOnCreate');
+    // Re-scope the related-task status glyphs to the flow once it lands.
+    this.effect(() => {
+      this.ctx.tree.at(['scope', 'workflowStatusIds']).get();
+      this.rescopeStatusGlyphs();
+    }, 'related.statusFlowScope');
+  }
+
+  /** Recompute the status glyphs against the current task-flow scope + repaint. */
+  private rescopeStatusGlyphs(): void {
+    applyStatusGlyphs(this.statusInfo, peekWorkflowStatusIds(this.ctx));
+    this.paintSummary();
   }
 
   /**
@@ -419,9 +433,14 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
         for (const r of rows) {
           const a = r.attributes;
           const label = typeof a['title'] === 'string' && a['title'].length > 0 ? a['title'] : `#${r.id.toString()}`;
-          this.statusInfo.set(r.id.toString(), { label, phase: r.phase ?? '' });
+          this.statusInfo.set(r.id.toString(), {
+            label,
+            phase: r.phase ?? '',
+            sortOrder: Number(a['sort_order'] ?? 0),
+            groupKey: r.parent_card_id?.toString() ?? '',
+          });
         }
-        this.paintSummary();
+        this.rescopeStatusGlyphs();
       },
       { alive: () => this.isAlive() },
     );
@@ -514,7 +533,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
     remove.dataset.relatedRemoveParent = '';
     remove.title = 'Remove parent (make standalone)';
     remove.setAttribute('aria-label', 'Remove parent');
-    remove.textContent = '×';
+    remove.append(icon('x', 14));
     remove.disabled = this.busy;
     this.listen(remove, 'click', () => this.removeParent());
     row.append(remove);
@@ -660,7 +679,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
     unlink.dataset.relatedUnlinkChild = child.id.toString();
     unlink.title = "Unlink (clears child's parent)";
     unlink.setAttribute('aria-label', 'Unlink child');
-    unlink.textContent = '×';
+    unlink.append(icon('x', 14));
     this.listen(unlink, 'click', () => this.unlinkChild(child.id));
     li.append(unlink);
 
@@ -742,7 +761,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
       const status = document.createElement('span');
       status.className = 'related-summary__status muted';
       status.dataset.phase = info.phase;
-      status.textContent = info.label;
+      status.append(statusIcon(info), document.createTextNode(info.label));
       row.append(status);
     }
     return row;
@@ -1027,22 +1046,12 @@ function relationshipLabel(r: string): string {
   return RELATIONSHIP_OPTIONS.find((x) => x.value === r)?.label ?? r;
 }
 
-/** Per-phase glyph for the summary's phase icon (terminal=done, active=in
- *  progress, triage=not started). Colour comes from the `[data-phase]` tone. */
-const PHASE_GLYPH: Readonly<Record<string, string>> = {
-  triage: '○',
-  active: '◐',
-  terminal: '●',
-};
-
-/** A small phase-toned icon (an `[data-phase]` span) for a related task. */
+/** A small phase-toned icon for a related task — the shared status icon
+ *  (src/ui/status-icon.ts) wearing this panel's class for sizing/layout. */
 function phaseIcon(phase: string): HTMLElement {
-  const span = document.createElement('span');
-  span.className = 'related-summary__phase';
-  span.dataset.phase = phase;
-  span.textContent = PHASE_GLYPH[phase] ?? '○';
+  const span = statusIcon(phase);
+  span.classList.add('related-summary__phase');
   span.title = phase !== '' ? `Phase: ${phase}` : 'Phase: unknown';
-  span.setAttribute('aria-hidden', 'true');
   return span;
 }
 

@@ -61,6 +61,7 @@ import {
 } from './specs.js';
 import type { PostChunk } from '../task-detail/upload.js';
 
+import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
 /* -------------------------------------------------------------------------- */
@@ -200,7 +201,7 @@ export class ImportWizard extends Control<ImportWizardConfig> {
     closeBtn.className = 'import-wizard__close';
     closeBtn.dataset.iwClose = '';
     closeBtn.setAttribute('aria-label', 'Close');
-    closeBtn.textContent = '×';
+    closeBtn.append(icon('x', 14));
     this.listen(closeBtn, 'click', () => this.requestClose());
     header.append(heading, closeBtn);
 

@@ -31,6 +31,7 @@ import {
   type CommListForTaskOutput,
 } from './comm-specs.js';
 
+import { statusIcon, applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 export interface CommThreadsConfig extends BaseControlConfig {
   type: 'CommThreads';
   /** The focal task id (string from the route). */
@@ -58,7 +59,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
   /** person id → display name, for recipient chips/labels. */
   private personLabels = new Map<string, string>();
   /** status card id → {label, phase}, for the comm_status badge + section filter. */
-  private statusInfo = new Map<string, { label: string; phase: string }>();
+  private statusInfo = new Map<string, StatusInfo>();
   /** Per-section comm_status phase filter ('' = all phases). Filters the rendered
    *  comm list independently of the task's own status. */
   private phaseFilter: '' | 'triage' | 'active' | 'terminal' = '';
@@ -179,8 +180,16 @@ export class CommThreads extends Control<CommThreadsConfig> {
         if (!this.isAlive()) return;
         const rows = ((out as { rows?: CardWithAttrs[] }).rows ?? []) as CardWithAttrs[];
         for (const r of rows) {
-          this.statusInfo.set(String(r.id), { label: statusLabel(r), phase: r.phase ?? '' });
+          this.statusInfo.set(String(r.id), {
+            label: statusLabel(r),
+            phase: r.phase ?? '',
+            sortOrder: Number(r.attributes['sort_order'] ?? 0),
+            groupKey: r.parent_card_id?.toString() ?? '',
+          });
         }
+        // Comm statuses follow the comm flow (not the task flow), so the ramp
+        // stays over the loaded comm-status set rather than scope.workflowStatusIds.
+        applyStatusGlyphs(this.statusInfo);
         this.paintFilter();
         this.paintList(); // late labels → repaint badges
       },
@@ -290,7 +299,10 @@ export class CommThreads extends Control<CommThreadsConfig> {
     badge.dataset.commStatusBadge = '';
     const info = this.statusInfo.get(comm.commStatus.toString());
     badge.dataset.phase = info?.phase ?? '';
-    badge.textContent = info !== undefined ? info.label : `#${comm.commStatus}`;
+    badge.append(
+      statusIcon(info ?? ''),
+      document.createTextNode(info !== undefined ? info.label : `#${comm.commStatus}`),
+    );
 
     // Comm-status transition bar: reuses the task TransitionBar, bound to the
     // comm card's `comm_status` flow, so the thread can be advanced and closed
