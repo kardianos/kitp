@@ -461,6 +461,64 @@ func TestCommCreate(t *testing.T) {
 	}
 }
 
+// TestCommCreateAuthzScope: comm.create is no longer admin-only. A worker
+// scoped to the task's project may start a comm (gated on the seeded
+// (comm, card.create) grant, walked from the parent task → project); a
+// worker scoped to a DIFFERENT project is denied by the per-row scope pass.
+func TestCommCreateAuthzScope(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_comm_create_authz")
+
+	// Channel + a second project are admin-only / admin-authored setup.
+	var setOut comm.ChannelSetOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "ch", Endpoint: "comm_channel", Action: "set", Data: json.RawMessage(
+			fmt.Sprintf(`{"project_id":"%d","name":"Support","channel_type":"email"}`, f.projectID)),
+	}, &setOut)
+
+	var otherProj card.InsertOutput
+	dispatch(t, f, api.SubRequest{
+		ID: "p2", Endpoint: "card", Action: "insert", Data: json.RawMessage(
+			`{"card_type_name":"project","title":"Other Project"}`),
+	}, &otherProj)
+
+	// mkWorker creates a worker scoped to scopeCardID and returns its ctx.
+	mkWorker := func(name string, scopeCardID int64) context.Context {
+		var uid int64
+		if err := f.sp.P.QueryRow(f.ctx, `INSERT INTO user_account (display_name) VALUES ($1) RETURNING id`, name).Scan(&uid); err != nil {
+			t.Fatalf("%s user: %v", name, err)
+		}
+		if _, err := f.sp.P.Exec(f.ctx, `
+			INSERT INTO user_role (user_id, role_id, scope_card_id)
+			SELECT $1, id, $2 FROM role WHERE name='worker'
+		`, uid, scopeCardID); err != nil {
+			t.Fatalf("%s grant: %v", name, err)
+		}
+		return auth.WithUser(context.Background(), &auth.UserCtx{ID: uid, DisplayName: name})
+	}
+
+	commCreate := func(subject string) api.SubRequest {
+		return api.SubRequest{ID: "c", Endpoint: "comm", Action: "create", Data: json.RawMessage(
+			fmt.Sprintf(`{"task_id":"%d","channel_id":"%d","subject":%q}`, f.taskID, setOut.ChannelID, subject))}
+	}
+
+	// In-project worker: allowed.
+	inCtx := mkWorker("comm-worker-in", f.projectID)
+	resp := f.srv.Dispatch(inCtx, api.BatchRequest{Subrequests: []api.SubRequest{commCreate("From in-scope worker")}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("in-project worker comm.create should succeed: %+v", resp.Subresponses[0])
+	}
+
+	// Out-of-project worker: denied by the per-row scope pass.
+	outCtx := mkWorker("comm-worker-out", otherProj.ID)
+	resp = f.srv.Dispatch(outCtx, api.BatchRequest{Subrequests: []api.SubRequest{commCreate("From out-of-scope worker")}})
+	if resp.Subresponses[0].OK {
+		t.Fatalf("out-of-project worker comm.create should be denied, got OK")
+	}
+	if e := resp.Subresponses[0].Error; e == nil || e.Code != "unauthorized" {
+		t.Errorf("expected unauthorized, got %+v", resp.Subresponses[0].Error)
+	}
+}
+
 func TestCommCreateWithInitialMessage(t *testing.T) {
 	f := setupAdmin(t, "kitp_test_comm_create_initial")
 
@@ -828,14 +886,9 @@ func TestPermission(t *testing.T) {
 		t.Errorf("expected unauthorized, got %+v", resp.Subresponses[0].Error)
 	}
 
-	// Worker can't create comms either.
-	resp = f.srv.Dispatch(workerCtx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "x", Endpoint: "comm", Action: "create", Data: json.RawMessage(
-			fmt.Sprintf(`{"task_id":"%d","channel_id":"1"}`, f.taskID))},
-	}})
-	if resp.Subresponses[0].OK {
-		t.Fatal("worker should be unauthorized for comm.create")
-	}
+	// comm.create, by contrast, is NOT admin-only — a project-scoped worker
+	// may start a comm. That allow/deny boundary is covered by
+	// TestCommCreateAuthzScope.
 }
 
 // ---- reply.post ----

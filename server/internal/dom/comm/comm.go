@@ -10,13 +10,15 @@
 // store.setCommSecretKey / buildPgxPool from the KITP_COMM_SECRET_KEY
 // env var (dev default applied when unset, with a one-shot warning).
 //
-// Authz: every handler is admin-only. The comm_channel + comm +
-// reply_body card_types are admin-only configuration surface per the
-// install seed's role_grant rows; the handler-level AllowedRoles +
-// authzAdmin guard mirrors that. Managers retain the lighter
-// card.update / comment.post grants on comm via the existing
-// attribute.update / comment.insert handlers; only authoring the
-// comm card itself is gated here.
+// Authz: comm_channel.* and comm_log.list are admin-only configuration
+// surface (handler-level AllowedRoles + authzAdmin), mirroring the
+// install seed's admin-only role_grant on the comm_channel / reply_body
+// card_types. comm.create + reply.post, by contrast, are per-row
+// authorized: a worker / manager scoped to the parent task's project may
+// start a comm (gated on the seeded (comm, card.create) grant) or author
+// a reply (gated on the parent task's card.update) — so anyone who can
+// open a task can communicate within it. comm.list_for_task /
+// comm.unseen_count are readable by any authenticated user.
 //
 // Tests in comm_test.go exercise every handler shape.
 package comm
@@ -288,11 +290,20 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "comm",
 		Action:       "create",
-		Doc:          "Admin-only: create a comm card under a task. Generates a 10-char alphanumeric thread_id, sets channel_ref + comm_status (the project's comm flow default_create_status_id), appends the new comm to the task's comms attribute, and (when initial_message is provided) creates an outbound reply_body row (delivery_status='pending', queued for SMTP) — which requires recipient_person_ids.",
+		Doc:          "Create a comm card under a task (worker / manager / admin, scoped to the task's project). Generates a 10-char alphanumeric thread_id, sets channel_ref + comm_status (the project's comm flow default_create_status_id), appends the new comm to the task's comms attribute, and (when initial_message is provided) creates an outbound reply_body row (delivery_status='pending', queued for SMTP) — which requires recipient_person_ids.",
 		InputType:    reflect.TypeFor[CommCreateInput](),
 		OutputType:   reflect.TypeFor[CommCreateOutput](),
-		AllowedRoles: []string{"admin"},
-		Authz:        authzAdmin,
+		// Anyone who can open a task can start a comm within it: the per-row
+		// scope pass gates on the seeded (comm, card.create) grant that
+		// worker / manager hold (db/schema/seed.hcsv), scoped to the parent
+		// task's project. comm.create's input names the parent task_id (not
+		// card_id), so an explicit ScopeCardID resolver supplies the walk
+		// start (task → project) — without it a project-scoped worker /
+		// manager is denied (BE-H3 / A2).
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		ProcessName:  "card.create",
+		CardTypeID:   commCardTypeID,
+		ScopeCardID:  scopeCardFromCommCreateInput,
 		// Unified handler — body lives in
 		// db/schema/functions/comm_create_batch.sql. Per Phase 4 of
 		// docs/UNIFIED_HANDLER_PLAN.md the SQL function owns the full
@@ -398,6 +409,31 @@ func cardTypeFromReplyPostInput(ctx context.Context, pool reg.ValidationPool, ra
 // reg.Handler.ScopeCardID for reply.post (BE-H3 / A2).
 func scopeCardFromReplyPostInput(_ context.Context, _ reg.ValidationPool, raw any) (int64, error) {
 	return raw.(ReplyPostInput).CommID, nil
+}
+
+// commCardTypeID returns the comm card_type_id so the dispatcher can
+// scope-check comm.create against the actor's (comm, card.create) grant —
+// the grant worker / manager already hold per db/schema/seed.hcsv. The
+// result is input-independent (comm.create always authors a comm card).
+// Returns 0 (skip authz) only if the comm card_type is somehow absent,
+// matching cardTypeFromName's "let the handler surface the failure" rule.
+func commCardTypeID(ctx context.Context, pool reg.ValidationPool, _ any) (int64, error) {
+	var id int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM card_type WHERE name = 'comm'`).Scan(&id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return id, nil
+}
+
+// scopeCardFromCommCreateInput returns the parent task id the per-row
+// scope pass walks up from (task → project). comm.create's input names it
+// task_id (not card_id), so the reflection fallback can't find it — this
+// resolver supplies the walk start. Used as reg.Handler.ScopeCardID.
+func scopeCardFromCommCreateInput(_ context.Context, _ reg.ValidationPool, raw any) (int64, error) {
+	return raw.(CommCreateInput).TaskID, nil
 }
 
 // authzAdmin requires the actor to hold the admin or system role

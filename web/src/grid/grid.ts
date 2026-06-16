@@ -667,7 +667,7 @@ export class Grid extends CardListCore<GridConfig> {
   /** Recompute the status icon glyphs against the current task-flow scope and
    *  repaint the status cells. Called on status land and when the flow set
    *  lands (which may be after the statuses). */
-  private rescopeStatusGlyphs(): void {
+  protected override rescopeStatusGlyphs(): void {
     applyStatusGlyphs(this.statusInfo, peekWorkflowStatusIds(this.ctx));
     this.tickLookups();
   }

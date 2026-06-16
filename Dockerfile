@@ -37,6 +37,7 @@ COPY web/ ./
 # (which does the same copyAssets step), minified for production (no sourcemaps).
 RUN esbuild app=src/main.ts styles=styles.css \
         --bundle --format=esm --target=es2022 --minify --outdir=dist \
+        --external:/assets/* \
  && sed -e 's#\./dist/app\.js#/app.js#' -e 's#\./styles\.css#/styles.css#' \
         index.html > dist/index.html \
  && cp -r assets dist/assets

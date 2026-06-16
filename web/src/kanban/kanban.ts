@@ -897,7 +897,6 @@ export class Kanban extends Control<KanbanConfig> {
           phase: a.phase,
           sortOrder: a.sortOrder,
           label,
-          groupKey: '',
         });
       }
     }
