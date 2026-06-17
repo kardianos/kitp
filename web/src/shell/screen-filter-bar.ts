@@ -1110,11 +1110,14 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       (ev as Event).stopPropagation();
       setOpen(panel.style.display === 'none');
     });
-    // Keep the menu open while ticking boxes; close on an outside click (best-
-    // effort — the shim may not bubble, which is fine: tests drive directly).
+    // Keep the menu open while ticking boxes; close on an outside pointerdown.
+    // pointerdown (not click) so opening a SIBLING dropdown — whose trigger
+    // stops click propagation (e.g. the Display menu) — still dismisses this one.
     this.listen(panel, 'click', (ev) => (ev as Event).stopPropagation());
     if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
-      this.listen(document, 'click', () => setOpen(false));
+      this.listen(document, 'pointerdown', (e) => {
+        if (panel.style.display !== 'none' && !wrap.contains(e.target as Node)) setOpen(false);
+      });
     }
 
     this.effect(() => {
