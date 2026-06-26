@@ -81,14 +81,14 @@ import { icon } from '../ui/icons.js';
 import { statusIcon, statusGlyphs, type StatusGlyph } from '../ui/status-icon.js';
 import { isPriorityPath, priorityIcon, priorityPlaceholder } from '../ui/priority-icon.js';
 /**
- * Fixed virtual-list row height (px) for a kanban card slot: the compact card
- * (grip + title + meta) plus the inter-card gap baked in. The virtualList
- * tiles slots by this exact pitch; buildCardShell shrinks the visible card to
- * HEIGHT − GAP (overriding the slot's inline 64px) so adjacent cards show a
- * true Linear-style gap. test/kanban-card-layout.test.mjs pins the visible
+ * Fixed virtual-list row height (px) for a kanban card slot: the card (grip +
+ * up-to-two-line title + bottom meta row) plus the inter-card gap baked in,
+ * sized like a Linear issue card. The virtualList tiles slots by this exact
+ * pitch; buildCardShell shrinks the visible card to HEIGHT − GAP so adjacent
+ * cards show a true gap. test/kanban-card-layout.test.mjs pins the visible
  * height.
  */
-const KANBAN_CARD_HEIGHT = 64;
+const KANBAN_CARD_HEIGHT = 112;
 /** Visible gap (px) between stacked cards, inside each slot's pitch. */
 const KANBAN_CARD_GAP = 8;
 
@@ -96,7 +96,7 @@ const KANBAN_CARD_GAP = 8;
  *  attr is shared with the filter bar (via screen-resolve) so the board's
  *  fallback and the GROUP picker's default can't drift apart. */
 const DEFAULT_AXIS_ATTR = KANBAN_DEFAULT_GROUP_ATTR;
-const DEFAULT_AXIS_LOOKUP = 'milestones';
+const DEFAULT_AXIS_LOOKUP = 'statuses';
 
 /* -------------------------------------------------------------------------- */
 /* Configs + declaration-merged registry types.                              */
@@ -1026,18 +1026,31 @@ export class Kanban extends Control<KanbanConfig> {
     // otherwise make borders abut edge-to-edge).
     el.style.height = `${KANBAN_CARD_HEIGHT - KANBAN_CARD_GAP}px`;
 
-    const grip = document.createElement('span');
-    grip.className = 'card__grip muted';
-    grip.append(icon('grip-vertical', 14));
-    grip.setAttribute('aria-hidden', 'true');
-
     const title = document.createElement('div');
     title.className = 'card__title';
     title.dataset.role = 'title';
 
-    const meta = document.createElement('div');
-    meta.className = 'card__meta muted';
-    meta.dataset.role = 'meta';
+    // Row 2: priority + tag chips on the left (clip), created date on the right.
+    const metaRow = document.createElement('div');
+    metaRow.className = 'card__row card__row--meta';
+    const tags = document.createElement('div');
+    tags.className = 'card__meta muted';
+    tags.dataset.role = 'tags';
+    const date = document.createElement('div');
+    date.className = 'card__date muted';
+    date.dataset.role = 'date';
+    metaRow.append(tags, date);
+
+    // Row 3: ticket id on the left, the assignee avatar on the right.
+    const idRow = document.createElement('div');
+    idRow.className = 'card__row card__row--id';
+    const idText = document.createElement('span');
+    idText.className = 'card__idrow muted';
+    idText.dataset.role = 'id';
+    const assignee = document.createElement('span');
+    assignee.className = 'card__assignee';
+    assignee.dataset.role = 'assignee';
+    idRow.append(idText, assignee);
 
     // Stretched full-row link covering the card — ⌘/middle/right-click → new
     // tab natively. The card is itself natively draggable; the link's own
@@ -1047,7 +1060,7 @@ export class Kanban extends Control<KanbanConfig> {
     const link = rowLink();
     link.dataset.role = 'rowlink';
 
-    el.append(grip, title, meta, link);
+    el.append(title, metaRow, idRow, link);
 
     this.listen(el, 'dragstart', (ev) => {
       // Read the CURRENT card id from the node — set per fill, never stale.
@@ -1124,17 +1137,37 @@ export class Kanban extends Control<KanbanConfig> {
     applySettle(el, 'card--settling', this.settleCardId !== null && card.id === this.settleCardId);
     const title = childByRole(el, 'title');
     if (title) title.textContent = titleOf(card);
-    const meta = childByRole(el, 'meta');
-    if (meta === null) return;
-    // Richer card (#25): #id · assignee · tag chips (resolved from the axis
-    // lookups; falls back to ids until those lists land + the board re-renders).
-    meta.replaceChildren();
+    const tagsRow = childByRole(el, 'tags');
+    const idRow = childByRole(el, 'id');
+    if (tagsRow === null || idRow === null) return;
+    // Richer card (#25): the ticket #id sits on its own bottom row; priority +
+    // tag chips (resolved from the axis lookups; falls back to ids until those
+    // lists land + the board re-renders) ride the row right under the title.
+    tagsRow.replaceChildren();
+    idRow.replaceChildren();
     const idEl = document.createElement('span');
     idEl.className = 'card__id';
     idEl.textContent = `#${card.id.toString()}`;
-    meta.append(idEl);
+    idRow.append(idEl);
     const link = childByRole(el, 'rowlink');
     if (link) setRowLinkHref(link as HTMLAnchorElement, card.id);
+
+    // Created date (top-level audit field) on the right of the tags row.
+    const dateEl = childByRole(el, 'date');
+    if (dateEl) {
+      dateEl.textContent = card.created_at ? `Created ${formatCardDate(card.created_at)}` : '';
+    }
+    // Assignee NAME on the right of the id row — resolved from the persons axis
+    // (id → name); hidden when the task is unassigned.
+    const assigneeEl = childByRole(el, 'assignee');
+    if (assigneeEl) {
+      const aid = card.attributes['assignee'];
+      const persons = (this.ctx.tree.at(['kanban', 'axis', 'persons']).peek<AxisCard[]>() ?? []) as AxisCard[];
+      const name = typeof aid === 'bigint' ? (persons.find((p) => p.id === aid)?.label ?? '') : '';
+      assigneeEl.textContent = name;
+      assigneeEl.title = name;
+      assigneeEl.style.display = name !== '' ? '' : 'none';
+    }
 
     // The priority indicator leads the row right after the id — ALWAYS:
     // a card without a priority reserves the same footprint (placeholder),
@@ -1166,7 +1199,7 @@ export class Kanban extends Control<KanbanConfig> {
         chips.push(chip);
       }
     }
-    meta.append(bars ?? priorityPlaceholder(), ...chips);
+    tagsRow.append(bars ?? priorityPlaceholder(), ...chips);
   }
 
   /**
@@ -1764,6 +1797,14 @@ function childByRole(root: HTMLElement, role: string): HTMLElement | null {
     if (found) return found;
   }
   return null;
+}
+
+/** Short "Mon D" rendering of an ISO timestamp for the card's created date
+ *  (e.g. "Jun 10"). Empty string for an unparseable / missing value. */
+function formatCardDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function describeFault(f: ApiFault): string {

@@ -387,7 +387,7 @@ test('layoutRequiresGroup / defaultGroupForLayout: only the board (kanban) requi
   assert.equal(M.layoutRequiresGroup('list'), false, 'inbox does not');
   // The kanban's default group matches its board axis (one shared constant).
   assert.equal(M.defaultGroupForLayout('kanban'), M.KANBAN_DEFAULT_GROUP_ATTR);
-  assert.equal(M.KANBAN_DEFAULT_GROUP_ATTR, 'milestone_ref');
+  assert.equal(M.KANBAN_DEFAULT_GROUP_ATTR, 'status');
   assert.equal(M.defaultGroupForLayout('grid'), '', 'flat layouts default to No group');
 });
 

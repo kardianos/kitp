@@ -37,7 +37,6 @@ before(async () => {
   M.registerGrid();
   M.registerPredicateFilter();
   M.registerQuickChips();
-  M.registerNamedFilters();
 });
 
 const PROJECT_ID = 100n;
@@ -311,7 +310,7 @@ test('ScreenFilterBar: screen-registered viewActions mount pulled-right on the V
   assert.ok(row1 && row1.querySelector('[data-filterbar-view-actions]'), 'view actions sit on the View row');
 });
 
-test('ScreenFilterBar: kanban requires a group — picker defaults to milestone, no "No group" option', async () => {
+test('ScreenFilterBar: kanban requires a group — picker defaults to status, no "No group" option', async () => {
   const { dispatcher, api } = bootApi(taskMockTransport());
   const tree = new M.TreeNode({}, []);
   tree.at(['scope', 'projectId']).set(PROJECT_ID);
@@ -328,9 +327,9 @@ test('ScreenFilterBar: kanban requires a group — picker defaults to milestone,
   host.mount(new FakeElement('div'));
   await settle(dispatcher);
 
-  // The board seeds the group to its default axis (milestone), so the picker is
+  // The board seeds the group to its default axis (status), so the picker is
   // in sync with the board from the first paint (not "No group").
-  assert.equal(tree.at(['screen', 'group']).peek(), 'milestone_ref', 'group seeded to milestone');
+  assert.equal(tree.at(['screen', 'group']).peek(), 'status', 'group seeded to status');
 
   // Once the data-driven axes land, the GROUP picker has no "No group" entry.
   const groupEl = host.el.querySelectorAll('[data-filter-group]')[0];
@@ -419,15 +418,68 @@ test('ScreenFilterBar: a flat-AND predicate feeds the Grid tasks query where[] (
   assert.equal(last.tree, undefined, 'no tree for a flat-AND predicate');
   assert.ok(transport.sent.taskInputs.length > firesBefore, 'predicate edit refired the tasks query');
 
-  // Add a search term → it composes (ANDs) into the same where[] alongside the leaf.
+  // Add a search term → search now matches title/description/comments, so it
+  // rides an OR-group on the `tree` path and AND-folds the predicate leaf
+  // alongside it (where[] is cleared — the server uses `tree` when set).
   const search = host.el.findByControl('ScreenFilterBar')[0].querySelector('[data-filter-search]');
   setInput(search, 'rate');
   await settle(dispatcher);
   const composed = transport.sent.taskInputs[transport.sent.taskInputs.length - 1];
-  assert.deepEqual(composed.where, [
-    { attr: 'title', op: 'contains', value: 'rate' },
-    { attr: 'milestone_ref', op: 'in', values: ['32'] },
-  ], 'search leaf + predicate leaf compose in where[]');
+  assert.equal(composed.where, undefined, 'multi-field search forces the tree path, clearing where[]');
+  assert.deepEqual(composed.tree, {
+    connective: 'and',
+    children: [
+      {
+        connective: 'or',
+        children: [
+          { attr: 'title', op: 'contains', values: ['rate'] },
+          { attr: 'description', op: 'contains', values: ['rate'] },
+          { attr: 'comments', op: 'contains', values: ['rate'] },
+        ],
+      },
+      { attr: 'milestone_ref', op: 'in', values: ['32'] },
+    ],
+  }, 'search OR-group ANDs with the predicate leaf in the tree');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Search-scope segments — All / Title / Description / Comments narrow the      */
+/* shared screen.searchFields; the active scope is the highlighted pill.        */
+/* -------------------------------------------------------------------------- */
+
+test('ScreenFilterBar: search-scope segments narrow screen.searchFields', async () => {
+  const transport = taskMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { host, tree } = mountScreen(api);
+  await settle(dispatcher);
+
+  const bar = host.el.findByControl('ScreenFilterBar')[0];
+  const seg = bar.querySelector('[data-search-scopes]');
+  assert.ok(seg, 'the scope segments render');
+  const byScope = (k) => seg.querySelector(`[data-search-scope="${k}"]`);
+  const isActive = (k) => byScope(k).classList.contains('filterbar__searchseg-btn--active');
+
+  // Default: All (every text field) is the active scope.
+  assert.deepEqual(tree.at(['screen', 'searchFields']).peek(), ['title', 'description', 'comments'], 'defaults to all fields');
+  assert.ok(isActive('all'), 'All highlighted by default');
+
+  // Pick Title → narrows to title only + the highlight moves.
+  byScope('title').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  assert.deepEqual(tree.at(['screen', 'searchFields']).peek(), ['title'], 'Title narrows to title only');
+  assert.ok(isActive('title') && !isActive('all'), 'highlight moved to Title');
+
+  // Pick Comments → just comments.
+  byScope('comments').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  assert.deepEqual(tree.at(['screen', 'searchFields']).peek(), ['comments'], 'Comments narrows to comments only');
+  assert.ok(isActive('comments'), 'highlight moved to Comments');
+
+  // Back to All → every text field again.
+  byScope('all').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  assert.deepEqual(tree.at(['screen', 'searchFields']).peek(), ['title', 'description', 'comments'], 'All restores every field');
+  assert.ok(isActive('all'), 'All highlighted again');
 });
 
 /* -------------------------------------------------------------------------- */
@@ -658,25 +710,33 @@ test('QuickChips: a predicate change from ANOTHER surface reflects in the chip a
 });
 
 /* -------------------------------------------------------------------------- */
-/* NAMED FILTERS — the "Named" multi-select toggles snippet-id leaves.          */
-/* Picking a snippet emits a `{op:'snippet', values:[id]}` top-level leaf into   */
-/* screen.predicate (the server expands it); un-picking removes it. Keyed by     */
-/* snippet id (one leaf per snippet) so multiple snippets AND together.          */
+/* PRESET FILTERS — the "Presets" section of QuickChips's "+ Filter" menu toggles */
+/* snippet-id leaves. Picking a snippet emits a `{op:'snippet', values:[id]}`    */
+/* top-level leaf into screen.predicate (the server expands it) and shows a      */
+/* snippet chip; un-picking removes both. Keyed by snippet id (one leaf per      */
+/* snippet) so multiple snippets AND together.                                   */
 /* -------------------------------------------------------------------------- */
 
-/** The NamedFilters control INSTANCE (carries the toggle/clear/read hooks). */
+/** The QuickChips control INSTANCE carries the saved-filter hooks now that the
+ *  former NamedFilters control is merged into the "+ Filter" menu. */
 function namedFiltersControl(host) {
-  return findControl(host, 'NamedFilters');
+  return findControl(host, 'QuickChips');
 }
 
-test('NamedFilters: the snippet store loads predicate_snippet cards for the project', async () => {
+/** The snippet chip for [id] inside QuickChips, or null when not shown. */
+function snippetChip(host, id) {
+  const cc = host.el.findByControl('QuickChips')[0];
+  return cc ? cc.querySelector(`[data-snippet-chip="${id}"]`) : null;
+}
+
+test('Saved filters: the snippet store loads predicate_snippet cards for the project', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);
   await settle(dispatcher);
 
   const nf = namedFiltersControl(host);
-  assert.ok(nf, 'NamedFilters control instance');
+  assert.ok(nf, 'QuickChips control instance (carries the saved-filter hooks)');
 
   // The scoped load landed the project's snippet cards at screen.snippets.
   const rows = tree.at(['screen', 'snippets']).peek();
@@ -690,7 +750,7 @@ test('NamedFilters: the snippet store loads predicate_snippet cards for the proj
   assert.deepEqual(opts.map((o) => o.key), ['900', '901'], 'keyed by snippet id');
 });
 
-test('NamedFilters: picking a snippet adds a snippet-id leaf to screen.predicate (server expands it)', async () => {
+test('Saved filters: picking a snippet adds a snippet-id leaf to screen.predicate (server expands it)', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);
@@ -708,9 +768,13 @@ test('NamedFilters: picking a snippet adds a snippet-id leaf to screen.predicate
     'a single snippet → a bare snippet leaf carrying the id',
   );
   assert.deepEqual(nf.activeSnippetIds(), ['900'], 'control reflects the active snippet');
-  const trigger = host.el.findByControl('NamedFilters')[0].querySelector('[data-named-filters]');
-  assert.ok(trigger.classList.contains('filterbar__chip--active'), 'trigger is tinted active');
-  assert.ok(trigger.querySelector('.filterbar__chip-label').textContent.includes('1'), 'count reflects 1');
+  const chip = snippetChip(host, '900');
+  assert.ok(chip, 'snippet chip rendered for the active saved filter');
+  assert.ok(chip.classList.contains('filterbar__chip--active'), 'snippet chip is tinted active');
+  assert.ok(
+    chip.querySelector('.filterbar__chip-label').textContent.includes('My open work'),
+    'chip carries the snippet title',
+  );
 
   // It fed the live tasks query. A bare snippet leaf is a flat-AND-of-leaves, so
   // it crosses on `where[]` as the wire leaf the SQL compiler dispatches on
@@ -726,7 +790,7 @@ test('NamedFilters: picking a snippet adds a snippet-id leaf to screen.predicate
   assert.equal(last.tree, undefined, 'a single snippet leaf stays flat-AND (where[])');
 });
 
-test('NamedFilters: un-picking a snippet removes its leaf from screen.predicate', async () => {
+test('Saved filters: un-picking a snippet removes its leaf from screen.predicate', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);
@@ -742,12 +806,10 @@ test('NamedFilters: un-picking a snippet removes its leaf from screen.predicate'
   M.flushSync?.();
   assert.equal(tree.at(['screen', 'predicate']).peek(), null, 'snippet leaf removed → predicate null');
   assert.deepEqual(nf.activeSnippetIds(), [], 'no active snippet');
-  const trigger = host.el.findByControl('NamedFilters')[0].querySelector('[data-named-filters]');
-  assert.ok(!trigger.classList.contains('filterbar__chip--active'), 'trigger no longer active');
-  assert.equal(trigger.querySelector('.filterbar__chip-clear').style.display, 'none', 'clear-X hidden');
+  assert.equal(snippetChip(host, '900'), null, 'snippet chip removed when the saved filter is dropped');
 });
 
-test('NamedFilters: two snippets AND together as one leaf each', async () => {
+test('Saved filters: two snippets AND together as one leaf each', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);
@@ -775,7 +837,7 @@ test('NamedFilters: two snippets AND together as one leaf each', async () => {
   assert.equal(tree.at(['screen', 'predicate']).peek(), null, 'clear drops all snippet leaves');
 });
 
-test('NamedFilters: active state reflects an external predicate change', async () => {
+test('Saved filters: active state reflects an external predicate change', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);
@@ -790,11 +852,11 @@ test('NamedFilters: active state reflects an external predicate change', async (
   M.flushSync?.();
 
   assert.deepEqual(nf.activeSnippetIds(), ['901'], 'reflects the externally-written snippet leaf');
-  const trigger = host.el.findByControl('NamedFilters')[0].querySelector('[data-named-filters]');
-  assert.ok(trigger.classList.contains('filterbar__chip--active'), 'trigger becomes active');
+  const chip = snippetChip(host, '901');
+  assert.ok(chip && chip.classList.contains('filterbar__chip--active'), 'snippet chip appears for the external write');
 });
 
-test('NamedFilters: a snippet leaf composes with a quick-chip leaf + an Advanced leaf in the root AND', async () => {
+test('Saved filters: a snippet leaf composes with a quick-chip leaf + an Advanced leaf in the root AND', async () => {
   const transport = taskMockTransport();
   const { dispatcher, api } = bootApi(transport);
   const { host, tree } = mountScreen(api);

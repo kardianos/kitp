@@ -37,6 +37,21 @@ export interface ComboboxOption<V = unknown> {
 }
 
 /**
+ * An action button pinned to the FOOTER of the panel, below the option list
+ * (separated by a divider). Unlike options, picking one runs `onRun` instead of
+ * selecting a value — for "Save as new view…", "Delete…", etc. The menu closes
+ * before `onRun` fires. Hosts that need reactive enable/disable call
+ * {@link Combobox.setFooterActions} from their sync effect.
+ */
+export interface ComboboxAction {
+  label: string;
+  onRun: () => void;
+  disabled?: boolean;
+  /** 'danger' tints the action (e.g. Delete). */
+  variant?: 'default' | 'danger';
+}
+
+/**
  * Async loader, callback-dispatcher form. Invoked with the current query and a
  * `deliver` sink; call `deliver(options)` when the underlying request settles.
  * Late/stale deliveries are dropped by the control. Errors are the caller's to
@@ -64,6 +79,8 @@ export interface ComboboxConfig<V = unknown> extends BaseControlConfig {
   pinnedOptions?: ComboboxOption<V>[];
   /** Async option loader (callback-dispatcher form). When set, switches to async mode. */
   loadOptions?: ComboboxLoad<V>;
+  /** Action buttons pinned below the option list (see {@link ComboboxAction}). */
+  footerActions?: ComboboxAction[];
   /** Trigger placeholder when nothing is selected. */
   placeholder?: string;
   /** Disable the control. */
@@ -106,6 +123,8 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
   private labelEl!: HTMLSpanElement;
   private searchEl!: HTMLInputElement;
   private listEl!: HTMLUListElement;
+  private footerEl: HTMLElement | null = null;
+  private footerActions: ComboboxAction[] = [];
 
   /** Monotonic load counter so a stale async delivery resolves into a no-op. */
   private loadSeq = 0;
@@ -116,6 +135,7 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
     this.value = this.config.value ?? null;
     this.staticOptions = this.config.options ?? [];
     this.pinnedOptions = this.config.pinnedOptions ?? [];
+    this.footerActions = this.config.footerActions ?? [];
     this.isAsync = typeof this.config.loadOptions === 'function';
   }
 
@@ -205,6 +225,13 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
     }
   }
 
+  /** Imperatively replace the footer action buttons (programmatic sync). Hosts
+   *  call this from a reactive effect to keep enable/disable state current. */
+  setFooterActions(actions: ComboboxAction[]): void {
+    this.footerActions = actions;
+    this.renderFooter();
+  }
+
   /** Imperatively open the menu (e.g. a keyboard chord on a parent screen). */
   openMenu(): void {
     if (this.config.disabled === true || this.isMenuOpen()) return;
@@ -270,6 +297,12 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
     panel.appendChild(list);
     this.listEl = list;
 
+    const footer = document.createElement('div');
+    footer.className = 'kf-combobox__footer';
+    panel.appendChild(footer);
+    this.footerEl = footer;
+    this.renderFooter();
+
     this.listen(search, 'input', () => {
       this.query = search.value;
       this.highlightIdx = 0;
@@ -283,6 +316,34 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
     });
     this.listen(search, 'keydown', (e) => this.onMenuKeydown(e as KeyboardEvent));
     this.listen(list, 'keydown', (e) => this.onMenuKeydown(e as KeyboardEvent));
+  }
+
+  /** (Re)build the footer action buttons. Hidden entirely when there are none. */
+  private renderFooter(): void {
+    const footer = this.footerEl;
+    if (footer === null) return;
+    footer.replaceChildren();
+    if (this.footerActions.length === 0) {
+      footer.style.display = 'none';
+      return;
+    }
+    footer.style.display = '';
+    for (const action of this.footerActions) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'kf-combobox__action';
+      if (action.variant === 'danger') btn.classList.add('kf-combobox__action--danger');
+      btn.textContent = action.label;
+      if (action.disabled === true) {
+        btn.disabled = true;
+        btn.classList.add('is-disabled');
+      }
+      this.listen(btn, 'click', () => {
+        this.closeMenu();
+        action.onRun();
+      });
+      footer.appendChild(btn);
+    }
   }
 
   private recomputeFiltered(): void {

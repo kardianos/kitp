@@ -74,7 +74,7 @@ export function screenStatePath(projectId: bigint | null, slug: string): string[
  *  and the filter bar's default GROUP value can't drift apart (the bug where
  *  the picker said "No group" while the board grouped by milestone). The Kanban
  *  imports this as its `DEFAULT_AXIS_ATTR`. */
-export const KANBAN_DEFAULT_GROUP_ATTR = 'milestone_ref';
+export const KANBAN_DEFAULT_GROUP_ATTR = 'status';
 
 /** Layouts that REQUIRE a grouping axis: a board has columns, so it can't be
  *  "ungrouped". Only the Kanban — the Grid / Inbox render a flat list and keep

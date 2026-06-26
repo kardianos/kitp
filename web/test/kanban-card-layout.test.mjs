@@ -12,7 +12,7 @@
 //
 // Harness: inline the production CSS (tokens.css + styles.css) into a temp
 // HTML page that reproduces the card DOM (mirrors Kanban.buildCardShell /
-// fillCard — grip + .card__title + .card__meta{#id, assignee, .card__tag*}),
+// fillCard — .card__title + .card__meta{#id, assignee, .card__tag*}),
 // run `chrome --headless --dump-dom`, and parse a JSON result the page writes
 // into a <pre>. Skips cleanly when no Chrome binary is present.
 
@@ -63,15 +63,19 @@ function buildPage(css, tagCount) {
 <div class="kanban">
   <div class="col" style="width:260px">
     <div class="col__cards">
-      <!-- The Kanban tiles slots at KANBAN_CARD_HEIGHT (64px) and buildCardShell
-           shrinks the visible card to 56px (HEIGHT − KANBAN_CARD_GAP); mirror
-           that here so overflow behaves as in app. -->
-      <div class="card" id="card-under-test" style="position:relative;height:56px;width:240px;">
-        <span class="card__grip muted" aria-hidden="true">⋮⋮</span>
-        <div class="card__title" data-role="title">A fairly long task title that should ellipsize on one line</div>
-        <div class="card__meta muted" data-role="meta">
-          <span class="card__id">#201</span>
-          ${tags}
+      <!-- The Kanban tiles slots at KANBAN_CARD_HEIGHT (112px) and buildCardShell
+           shrinks the visible card to 104px (HEIGHT − KANBAN_CARD_GAP); mirror
+           that here so overflow behaves as in app. Row 2 = priority+tags · date;
+           row 3 = ticket id . assignee name. -->
+      <div class="card" id="card-under-test" style="position:relative;height:104px;width:240px;">
+        <div class="card__title" data-role="title">A fairly long task title that should wrap to at most two lines and then ellipsize cleanly</div>
+        <div class="card__row card__row--meta">
+          <div class="card__meta muted" data-role="tags">${tags}</div>
+          <div class="card__date muted" data-role="date">Created Jun 10</div>
+        </div>
+        <div class="card__row card__row--id">
+          <span class="card__idrow muted" data-role="id"><span class="card__id">#201</span></span>
+          <span class="card__assignee" data-role="assignee">Spencer McCormack</span>
         </div>
       </div>
     </div>
@@ -154,7 +158,7 @@ test('kanban card: many tags never push the title out or overflow the card box',
   // Sanity: the title actually rendered (one line of real text), and the card
   // stayed at its fixed height.
   assert.ok(res.titleHeight > 0, 'title rendered');
-  assert.ok(res.cardHeight <= 64, `card height stayed bounded (~56px), got ${res.cardHeight}`);
+  assert.ok(res.cardHeight <= 112, `card height stayed bounded (~104px), got ${res.cardHeight}`);
 });
 
 test('kanban card: a card with no tags also keeps the title visible (control)', async (t) => {

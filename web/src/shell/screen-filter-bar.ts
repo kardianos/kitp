@@ -47,7 +47,6 @@
 import { Control, type BaseControlConfig, type ChildConfig } from '../core/control.js';
 import type { PredicateFilterConfig } from '../filter/predicate-filter.js';
 import type { QuickChipsConfig } from '../filter/quick-chips.js';
-import type { NamedFiltersConfig } from '../filter/named-filters.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { optimistic } from '../core/tree.js';
 import {
@@ -68,6 +67,7 @@ import { refAxesForCardType, type RefAxis, type CardTypeRow } from '../filter/vo
 import { schemaForCardType } from '../filter/attribute-schema.js';
 import { loadView, saveView } from '../filter/view-persistence.js';
 import { groupAxisForAttr, type GroupAttr } from '../filter/group-axis.js';
+import { icon } from '../ui/icons.js';
 import { exclusiveRoots, tagPrefixOptionValue, tagRootLabel } from '../filter/tag-prefix.js';
 import type { AttributeDefRow } from '../admin/specs.js';
 
@@ -161,6 +161,11 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
   private groupEl: HTMLSelectElement | null = null;
   /** The LANE picker (swim lanes — a 2nd group axis); empty = no lanes. */
   private laneEl: HTMLSelectElement | null = null;
+  /** Hosts for the custom (menu-styled) GROUP/LANE option lists in the Display
+   *  menu. The native selects above stay (hidden) as the value/change source;
+   *  these lists mirror them with the same look as the "+ Filter" menu. */
+  private groupListHost: HTMLElement | null = null;
+  private laneListHost: HTMLElement | null = null;
   /** True once the persisted view has been restored — gates the persist effect
    *  so it never writes the transient pre-restore seed over a saved view. */
   private viewRestored = false;
@@ -197,49 +202,50 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.ctx.tree.at(['screen', 'laneGroup']).set('');
     this.ctx.tree.at(['screen', 'search']).set('');
 
-    /* ---- row 1: the NAMED/SAVED filter picker (when wired to a screen) +
-           any screen-registered view actions, pulled right. ---- */
-    const viewActions = this.config.viewActions ?? [];
-    if (this.config.screenStatePath !== undefined || viewActions.length > 0) {
-      const row1 = document.createElement('div');
-      row1.className = 'filterbar__row filterbar__row--presets';
-      this.el.append(row1);
-      if (this.config.screenStatePath !== undefined) {
-        const dotted = this.config.screenStatePath.join('.');
-        this.spawn(
-          'FilterPresetSelector',
-          {
-            type: 'FilterPresetSelector',
-            filtersPath: `${dotted}.filters`,
-            activeIdPath: `${dotted}.activeFilterId`,
-            onPick: (id: bigint | null) => this.applyPreset(id),
-            onSave: () => this.saveCurrentAsNew(),
-            onSetDefault: () => this.setActiveAsDefault(),
-            onRename: () => this.renameActive(),
-            onDelete: () => this.deleteActive(),
-          } as ChildConfig,
-          row1,
-        );
-      }
-      // Phase-scope filter (#31): a DROPDOWN of phase checkboxes ON the View
-      // line (not its own row). Shown only when the screen defines phase
-      // toggles; the checked set defaults to the screen's base phase (seeded by
-      // applyDefaultOnFirstVisit) and edits the `status has_phase` scope.
-      this.buildPhaseDropdown(row1);
+    // The search box now always matches title, description and comments — the
+    // per-field "In:" dropdown is gone. Seed the leaf before the data layer wires
+    // so the first query (and every consumer) reads the full field set.
+    this.ctx.tree.at(['screen', 'searchFields']).set(['title', 'description', 'comments']);
 
-      // Screen-specific view actions (e.g. Grid → Columns), right-aligned.
-      if (viewActions.length > 0) {
-        const actions = document.createElement('div');
-        actions.className = 'filterbar__view-actions';
-        actions.dataset.filterbarViewActions = '';
-        row1.append(actions);
-        for (const action of viewActions) this.spawn(action.type, action, actions);
-      }
+    // Host for the QuickChips control (the "+ Filter" entry + its active chips),
+    // (re)spawned by applyAxes once the schema resolves. It rides inline on the
+    // bar between Display and the search box.
+    const chipsHost = document.createElement('div');
+    chipsHost.className = 'filterbar__chips-inline';
+    this.chipsHostEl = chipsHost;
+
+    /* ---- the bar is ONE row now: the saved-view picker, Phase, Display, the
+           "+ Filter" entry + active chips, the search box (flex-grows), then
+           Advanced / Clear and any screen view actions pulled to the right. ---- */
+    const bar = document.createElement('div');
+    bar.className = 'filterbar__row filterbar__row--presets';
+    this.el.append(bar);
+
+    // Saved-view picker (VIEW + "Default …" combo + ⋯ menu), when wired to a screen.
+    if (this.config.screenStatePath !== undefined) {
+      const dotted = this.config.screenStatePath.join('.');
+      this.spawn(
+        'FilterPresetSelector',
+        {
+          type: 'FilterPresetSelector',
+          filtersPath: `${dotted}.filters`,
+          activeIdPath: `${dotted}.activeFilterId`,
+          onPick: (id: bigint | null) => this.applyPreset(id),
+          onSave: () => this.saveCurrentAsNew(),
+          onSetDefault: () => this.setActiveAsDefault(),
+          onRename: () => this.renameActive(),
+          onDelete: () => this.deleteActive(),
+        } as ChildConfig,
+        bar,
+      );
     }
 
-    /* ---- row 2: the v1 working subset (GROUP + search + Advanced + Clear) ---- */
-    const row2 = document.createElement('div');
-    row2.className = 'filterbar__row';
+    // Phase-scope dropdown (#31): phase checkboxes; self-hides when the screen
+    // defines no phase toggles. Edits the `status has_phase` scope.
+    this.buildPhaseDropdown(bar);
+
+    /* ---- GROUP + LANE pickers (tucked behind the "Display" menu), the search
+           box, and Advanced / Clear — all appended onto the single bar below. ---- */
 
     // GROUP-by Picker (native <select> — the Picker common control lands later).
     const groupWrap = document.createElement('label');
@@ -275,6 +281,88 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       laneWrap.append(laneLabel, lane);
     }
 
+    // "Display" menu — tuck the GROUP + LANE pickers behind a compact trigger so
+    // they don't clutter the bar (Linear-style). The selects are built above
+    // (this.groupEl / this.laneEl) and mounted into this popover's panel.
+    const displayWrap = document.createElement('div');
+    displayWrap.className = 'filterbar__display-wrap';
+    const displayBtn = document.createElement('button');
+    displayBtn.type = 'button';
+    displayBtn.className = 'btn filterbar__iconbtn filterbar__display';
+    displayBtn.dataset.filterDisplay = '';
+    displayBtn.setAttribute('aria-haspopup', 'menu');
+    displayBtn.setAttribute('aria-expanded', 'false');
+    displayBtn.setAttribute('aria-label', 'Display');
+    displayBtn.title = 'Display';
+    displayBtn.append(icon('sliders-horizontal', 16));
+    displayWrap.append(displayBtn);
+
+    // An inline dropdown (not a detached popover) so the GROUP/LANE selects stay
+    // in the bar's DOM — restore/persist + tests reach them whether open or not.
+    const displayMenu = document.createElement('div');
+    displayMenu.className = 'filterbar__display-menu';
+    displayMenu.dataset.filterDisplayMenu = '';
+    displayMenu.style.display = 'none';
+    // Keep the native selects in the DOM (value/change/restore plumbing) but
+    // hidden; render visible menu-styled option lists that mirror + drive them
+    // so the Display menu matches the "+ Filter" menu's look.
+    groupWrap.style.display = 'none';
+    const groupListHost = document.createElement('div');
+    this.groupListHost = groupListHost;
+    displayMenu.append(groupWrap, groupListHost);
+    if (laneWrap !== null) {
+      laneWrap.style.display = 'none';
+      const laneListHost = document.createElement('div');
+      this.laneListHost = laneListHost;
+      displayMenu.append(laneWrap, laneListHost);
+    }
+    displayWrap.append(displayMenu);
+
+    const setDisplayOpen = (open: boolean): void => {
+      if (open) this.renderDisplayLists(); // fresh from the selects' current state
+      displayMenu.style.display = open ? '' : 'none';
+      displayBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    this.listen(displayBtn, 'click', (e) => {
+      e.stopPropagation();
+      setDisplayOpen(displayMenu.style.display === 'none');
+    });
+    // Dismiss on outside pointer / Escape, like the other menus.
+    this.listen(document, 'pointerdown', (e) => {
+      if (displayMenu.style.display !== 'none' && !displayWrap.contains(e.target as Node)) {
+        setDisplayOpen(false);
+      }
+    });
+    this.listen(document, 'keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Escape' && displayMenu.style.display !== 'none') {
+        setDisplayOpen(false);
+      }
+    });
+
+    // Display sits left of the "+ Filter" entry + active chips.
+    /* ---- the QUICK-CHIPS surface (pinned per-attribute one-tap filters) ----
+       Each chip toggles a top-level `attr in [...]` leaf in 'screen.predicate'
+       via applyPredicate — the SAME write the preset/Advanced surfaces use, so
+       the Advanced editor re-seeds on a chip pick and the chips re-read the
+       shared predicate reactively. Saved/"Named" filters (predicate snippets)
+       are folded into the "+ Filter" menu; QuickChips itself is (re)spawned by
+       applyAxes once the data-driven axes resolve. The chips host + Display are
+       appended in their functional groups further below. */
+
+    // Search — a magnifier icon that expands into the input on click (or "/"),
+    // collapsing back when the field is emptied + blurred. The wrap flex-grows
+    // so the expanded field fills the middle and Advanced/Clear stay right. The
+    // search always matches title/description/comments (see the seed above).
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'filterbar__search-wrap';
+    searchWrap.dataset.searchWrap = '';
+    const searchToggle = document.createElement('button');
+    searchToggle.type = 'button';
+    searchToggle.className = 'btn filterbar__iconbtn filterbar__search-toggle';
+    searchToggle.dataset.searchToggle = '';
+    searchToggle.setAttribute('aria-label', 'Search');
+    searchToggle.title = 'Search';
+    searchToggle.append(icon('search', 16));
     const search = document.createElement('input');
     search.type = 'search';
     search.className = 'filterbar__search';
@@ -282,60 +370,107 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     search.dataset.filterSearch = '';
     this.searchEl = search;
 
-    // Search-fields dropdown — controls which fields the title-search runs
-    // against. Defaults to title only; the checkbox list adds description /
-    // comments. Pinned right of the search input so it reads as "search in:"
-    // configuration; persists via the standard view path so re-nav restores it.
-    const searchFields = this.buildSearchFieldsDropdown();
+    // Search-scope segments inside the field (Linear-style): All / Title /
+    // Description / Comments. The active scope is a highlighted pill; picking one
+    // narrows screen.searchFields ("All" = every text field). Shown only when the
+    // field is expanded (CSS gates it on --expanded).
+    const searchSeg = document.createElement('div');
+    searchSeg.className = 'filterbar__searchseg';
+    searchSeg.dataset.searchScopes = '';
+    for (const scope of SEARCH_SCOPES) {
+      const segBtn = document.createElement('button');
+      segBtn.type = 'button';
+      segBtn.className = 'filterbar__searchseg-btn';
+      segBtn.dataset.searchScope = scope.key;
+      segBtn.textContent = scope.label;
+      // mousedown would blur (and collapse) the input before the click lands;
+      // preventDefault keeps focus on the field so picking a scope stays open.
+      this.listen(segBtn, 'mousedown', (e) => (e as Event).preventDefault());
+      this.listen(segBtn, 'click', () => {
+        this.ctx.tree.at(['screen', 'searchFields']).set([...scope.fields]);
+        search.focus();
+      });
+      searchSeg.append(segBtn);
+    }
+    searchWrap.append(searchToggle, search, searchSeg);
 
-    // Advanced toggle — expands the structured PredicateFilter panel.
+    const setSearchExpanded = (open: boolean): void => {
+      searchWrap.classList.toggle('filterbar__search-wrap--expanded', open);
+      searchToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    this.listen(searchToggle, 'click', () => {
+      setSearchExpanded(true);
+      search.focus();
+    });
+    // Focus expands (so "/" → focusScreenSearch reveals the field); blur collapses
+    // only when empty AND focus left the field entirely (not when it moved to a
+    // scope segment), so an active query — or a scope pick — keeps it open.
+    this.listen(search, 'focus', () => setSearchExpanded(true));
+    this.listen(search, 'blur', (e) => {
+      const to = (e as FocusEvent).relatedTarget as Node | null;
+      if (to !== null && searchWrap.contains(to)) return;
+      if ((search.value ?? '') === '') setSearchExpanded(false);
+    });
+    // Keep expansion in sync with the shared search leaf — a restored / preset /
+    // cleared query expands or collapses the field even when focus never moved.
+    this.effect(() => {
+      const q = this.ctx.tree.at(['screen', 'search']).get<string>() ?? '';
+      if (q !== '') setSearchExpanded(true);
+      else if (typeof document === 'undefined' || document.activeElement !== search) {
+        setSearchExpanded(false);
+      }
+    }, 'filterbar.searchExpand');
+    // Highlight the active scope segment from the shared searchFields leaf.
+    this.effect(() => {
+      const active = searchScopeKey(this.ctx.tree.at(['screen', 'searchFields']).get<string[]>() ?? []);
+      for (const el of Array.from(searchSeg.children) as HTMLElement[]) {
+        const on = el.dataset.searchScope === active;
+        el.classList.toggle('filterbar__searchseg-btn--active', on);
+        el.setAttribute('aria-pressed', on ? 'true' : 'false');
+      }
+    }, 'filterbar.searchScope');
+
+    // Advanced toggle (expands the structured PredicateFilter).
     const advanced = document.createElement('button');
     advanced.type = 'button';
-    advanced.className = 'btn filterbar__advanced';
+    advanced.className = 'btn filterbar__iconbtn filterbar__advanced';
     advanced.dataset.filterAdvanced = '';
     advanced.setAttribute('aria-expanded', 'false');
-    advanced.textContent = 'Advanced';
+    advanced.setAttribute('aria-label', 'Advanced filters');
+    advanced.title = 'Advanced filters';
+    advanced.append(icon('list-tree', 16));
 
+    // Clear (reset) — destructive, so it's isolated behind a divider at the end.
     const clear = document.createElement('button');
     clear.type = 'button';
-    clear.className = 'btn filterbar__clear';
-    clear.textContent = 'Clear';
+    clear.className = 'btn filterbar__iconbtn filterbar__clear';
+    clear.setAttribute('aria-label', 'Clear filters');
+    clear.title = 'Clear filters';
+    clear.append(icon('paintbrush', 16));
+    const clearDivider = document.createElement('span');
+    clearDivider.className = 'filterbar__divider';
+    clearDivider.setAttribute('aria-hidden', 'true');
+    // A matching divider between the view-setup cluster and the refine group.
+    const refineDivider = document.createElement('span');
+    refineDivider.className = 'filterbar__divider';
+    refineDivider.setAttribute('aria-hidden', 'true');
 
-    row2.append(groupWrap);
-    if (laneWrap !== null) row2.append(laneWrap);
-    row2.append(search, searchFields, advanced, clear);
-    this.el.append(row2);
+    // Lay the bar out in functional groups, separated by centered dividers:
+    //   view setup (View · Phase · Display) │ refine (Filter · Advanced ·
+    //   Search) │ reset (Clear). Display rides with the left cluster — it
+    //   configures the view, like View / Phase. Search flex-grows when expanded,
+    //   filling the middle + pushing Clear right.
+    bar.append(displayWrap, refineDivider, chipsHost, advanced, searchWrap, clearDivider, clear);
 
-    /* ---- row 3: the QUICK-CHIPS row (pinned per-attribute one-tap filters) ---- */
-    // Each chip toggles a top-level `attr in [...]` leaf in 'screen.predicate'
-    // via applyPredicate — the SAME write the preset/Advanced surfaces use, so
-    // the Advanced editor re-seeds on a chip pick and the chips re-read the
-    // shared predicate reactively on any other surface's edit.
-    const chipsHost = document.createElement('div');
-    chipsHost.className = 'filterbar__row filterbar__row--chips';
-    this.el.append(chipsHost);
-    this.chipsHostEl = chipsHost;
-
-    // The "Named" multi-select — toggles reusable predicate-fragment leaves
-    // (`snippet` op → predicate_snippet cards) on the SAME tree. Picking a
-    // snippet adds a top-level snippet-id leaf the server expands + cycle-guards;
-    // routes through applyPredicate so the Advanced editor + chips reflect it.
-    // Reads scope.projectId to scope its snippet load + screen.predicate for its
-    // active state (consistent with every other surface).
-    this.spawn(
-      'NamedFilters',
-      {
-        type: 'NamedFilters',
-        predicatePath: 'screen.predicate',
-        snippetsPath: 'screen.snippets',
-        projectIdPath: 'scope.projectId',
-        onCommit: (next: Predicate | null) => this.applyPredicate(next),
-      } as NamedFiltersConfig,
-      chipsHost,
-    );
-    // QuickChips is (re)spawned by applyAxes once the data-driven axes resolve,
-    // so its chip set + option values come from the project's attribute schema
-    // rather than a hardcoded list.
+    // Screen-specific view actions (e.g. Grid → Columns / "+ New"), far right.
+    const viewActions = this.config.viewActions ?? [];
+    if (viewActions.length > 0) {
+      const actions = document.createElement('div');
+      actions.className = 'filterbar__view-actions';
+      actions.dataset.filterbarViewActions = '';
+      bar.append(actions);
+      for (const action of viewActions) this.spawn(action.type, action, actions);
+    }
 
     /* ---- the Advanced panel: a structured PredicateFilter over the task type ---- */
     const panel = document.createElement('div');
@@ -544,16 +679,27 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
    */
   private loadVocabulary(): void {
     const cardType = this.predicateCardType;
+    // The attribute_def + card_type schema is global + structural — it doesn't
+    // change between screens. Cache it in the tree so a screen switch derives the
+    // axes (and spawns the chips + "+ Filter" button) SYNCHRONOUSLY from cache,
+    // in the same paint as the rest of the bar, rather than popping them in a
+    // network round-trip later. Only the first mount this session pays the fetch;
+    // option cards (project-scoped, mutable) still (re)load each time below.
+    const defsNode = this.ctx.tree.at(['vocab', 'attrDefs']);
+    const typesNode = this.ctx.tree.at(['vocab', 'cardTypes']);
+    const cachedDefs = defsNode.peek<AttributeDefRow[]>() ?? null;
+    const cachedTypes = typesNode.peek<CardTypeRow[]>() ?? null;
+    if (cachedDefs !== null && cachedTypes !== null) {
+      this.deriveVocab(cachedDefs, cachedTypes, cardType);
+      return;
+    }
     let defs: AttributeDefRow[] | null = null;
     let types: CardTypeRow[] | null = null;
     const derive = (): void => {
       if (defs === null || types === null || !this.isAlive()) return;
-      // Publish the full attribute schema so the Grid can type its data-driven
-      // `extra_columns` (date vs text/number rendering) off the same load.
-      this.ctx.tree.at(['screen', 'attrSchema']).set(schemaForCardType(defs, cardType));
-      const axes = refAxesForCardType(defs, types, cardType);
-      this.applyAxes(axes);
-      this.loadAxisOptions(axes, types);
+      defsNode.set(defs);
+      typesNode.set(types);
+      this.deriveVocab(defs, types, cardType);
     };
     this.ctx.api.callByName(
       'attribute_def.select',
@@ -575,6 +721,19 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       },
       { alive: () => this.isAlive() },
     );
+  }
+
+  /** Derive + apply the vocabulary (attr schema, chip/group axes, option loads)
+   *  for `cardType` from the cached-or-fetched schema rows. Splitting this out
+   *  lets the cache-hit path run it synchronously (no chip pop-in on re-mount). */
+  private deriveVocab(defs: AttributeDefRow[], types: CardTypeRow[], cardType: string): void {
+    if (!this.isAlive()) return;
+    // Publish the full attribute schema so the Grid can type its data-driven
+    // `extra_columns` (date vs text/number rendering) off the same load.
+    this.ctx.tree.at(['screen', 'attrSchema']).set(schemaForCardType(defs, cardType));
+    const axes = refAxesForCardType(defs, types, cardType);
+    this.applyAxes(axes);
+    this.loadAxisOptions(axes, types);
   }
 
   /**
@@ -673,6 +832,60 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     if (sel.value !== current) sel.value = fallback;
   }
 
+  /** Rebuild the Display menu's GROUP/LANE option lists from the (hidden) native
+   *  selects, styled like the "+ Filter" menu. Called each time the menu opens
+   *  so it reflects the selects' current options + value. */
+  private renderDisplayLists(): void {
+    this.renderAxisList(this.groupListHost, this.groupEl, 'Group by');
+    this.renderAxisList(this.laneListHost, this.laneEl, 'Lanes');
+  }
+
+  /** One labelled radio list mirroring a native <select>; a pick sets the
+   *  select's value + dispatches `change` (so all existing wiring runs). */
+  private renderAxisList(
+    host: HTMLElement | null,
+    sel: HTMLSelectElement | null,
+    title: string,
+  ): void {
+    if (host === null || sel === null) return;
+    host.replaceChildren();
+    const header = document.createElement('div');
+    header.className = 'filterbar__display-section';
+    header.textContent = title;
+    const list = document.createElement('ul');
+    list.className = 'filterbar__chip-list';
+    list.setAttribute('role', 'menu');
+    for (const opt of Array.from(sel.options)) {
+      const checked = opt.value === sel.value;
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'filterbar__chip-option';
+      btn.setAttribute('role', 'menuitemradio');
+      btn.setAttribute('aria-checked', checked ? 'true' : 'false');
+      if (checked) btn.classList.add('filterbar__chip-option--checked');
+      const box = document.createElement('span');
+      box.className = 'filterbar__chip-check';
+      box.setAttribute('aria-hidden', 'true');
+      box.textContent = checked ? '✓' : '';
+      const text = document.createElement('span');
+      text.className = 'filterbar__chip-option-label';
+      text.textContent = opt.textContent ?? opt.value;
+      btn.append(box, text);
+      const value = opt.value;
+      this.listen(btn, 'click', () => {
+        if (sel.value !== value) {
+          sel.value = value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        this.renderDisplayLists(); // refresh the checkmarks
+      });
+      li.append(btn);
+      list.append(li);
+    }
+    host.append(header, list);
+  }
+
   /** (Re)spawn QuickChips with chip defs derived from the axes (one chip per
    *  card_ref attr; optionKey = its target card_type). */
   private spawnChips(axes: RefAxis[]): void {
@@ -689,6 +902,8 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
         chips,
         predicatePath: 'screen.predicate',
         optionsPath: 'screen.predicateOptions',
+        snippetsPath: 'screen.snippets',
+        projectIdPath: 'scope.projectId',
         onCommit: (next: Predicate | null) => this.applyPredicate(next),
       } as QuickChipsConfig,
       this.chipsHostEl,
@@ -865,113 +1080,6 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
    * to the base phase the screen seeded). A child-panel dropdown (not a body-
    * mounted popover) so it stays in the bar's DOM + works under the test shim.
    */
-  /**
-   * Build the SEARCH-FIELDS dropdown — pinned to the right of the search input.
-   * A trigger button + a panel of three checkboxes (Title / Description /
-   * Comments) selecting which fields the search text matches against. Defaults
-   * to title only (the existing behaviour). The active set lives at
-   * `screen.searchFields`; consumers (Kanban / Grid / Inbox `applyFilter`) read
-   * it to build their wire predicate.
-   */
-  private buildSearchFieldsDropdown(): HTMLElement {
-    const wrap = document.createElement('div');
-    wrap.className = 'filterbar__search-fields';
-    wrap.dataset.filterSearchFields = '';
-
-    const trigger = document.createElement('button');
-    trigger.type = 'button';
-    trigger.className = 'btn filterbar__search-fields-trigger';
-    trigger.dataset.filterSearchFieldsTrigger = '';
-    trigger.setAttribute('aria-haspopup', 'true');
-    trigger.setAttribute('aria-expanded', 'false');
-    trigger.textContent = 'In: Title';
-
-    const panel = document.createElement('div');
-    panel.className = 'filterbar__search-fields-menu';
-    panel.dataset.filterSearchFieldsMenu = '';
-    panel.style.display = 'none';
-
-    wrap.append(trigger, panel);
-
-    const setOpen = (open: boolean): void => {
-      panel.style.display = open ? '' : 'none';
-      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
-    };
-    this.listen(trigger, 'click', (ev) => {
-      (ev as Event).stopPropagation();
-      setOpen(panel.style.display === 'none');
-    });
-    this.listen(panel, 'click', (ev) => (ev as Event).stopPropagation());
-    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
-      this.listen(document, 'click', () => setOpen(false));
-    }
-
-    // Seed the leaf BEFORE the data layer wires so the consumers' applyFilter
-    // sees a populated set on the first run. `restoreView` later overwrites
-    // this with the persisted value when one exists.
-    this.ctx.tree.at(['screen', 'searchFields']).set(['title']);
-
-    // Paint the panel + the trigger label reactively from the active set.
-    this.effect(() => {
-      const active = (this.ctx.tree.at(['screen', 'searchFields']).get<string[]>() ?? ['title']);
-      this.paintSearchFieldsDropdown(trigger, panel, active);
-    }, 'filterbar.searchFields');
-
-    return wrap;
-  }
-
-  /** (Re)render the search-fields trigger label + checkbox panel. The trigger
-   *  reads "In: Title" / "In: Title, Description" / "In: Title, Description,
-   *  Comments". Toggling a box mutates `screen.searchFields`; the title box
-   *  refuses to deselect — leaving the search empty would render the input
-   *  inert without an obvious reason. */
-  private paintSearchFieldsDropdown(
-    trigger: HTMLElement,
-    panel: HTMLElement,
-    active: readonly string[],
-  ): void {
-    const FIELDS: ReadonlyArray<{ value: string; label: string; locked?: boolean }> = [
-      { value: 'title', label: 'Title', locked: true },
-      { value: 'description', label: 'Description' },
-      { value: 'comments', label: 'Comments' },
-    ];
-    const set = new Set(active);
-    trigger.textContent = `In: ${FIELDS.filter((f) => set.has(f.value)).map((f) => f.label).join(', ') || 'Title'}`;
-
-    panel.replaceChildren();
-    for (const f of FIELDS) {
-      const option = document.createElement('label');
-      option.className = 'filterbar__search-fields-option';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.className = 'filterbar__search-fields-check';
-      cb.dataset.filterSearchField = f.value;
-      cb.checked = set.has(f.value);
-      if (f.locked === true) cb.disabled = true;
-      const text = document.createElement('span');
-      text.textContent = f.label;
-      option.append(cb, text);
-      this.listen(cb, 'change', () => this.toggleSearchField(f.value));
-      panel.append(option);
-    }
-  }
-
-  /** Toggle one search field on `screen.searchFields`. Title stays pinned —
-   *  the box renders disabled too — so the search input never becomes inert. */
-  private toggleSearchField(field: string): void {
-    if (field === 'title') return;
-    const cur = (this.ctx.tree.at(['screen', 'searchFields']).peek<string[]>() ?? ['title']).slice();
-    const i = cur.indexOf(field);
-    if (i >= 0) cur.splice(i, 1);
-    else cur.push(field);
-    // Always preserve a canonical title/description/comments ordering so the
-    // persisted value comparison + the trigger label stay stable.
-    const order = ['title', 'description', 'comments'];
-    cur.sort((a, b) => order.indexOf(a) - order.indexOf(b));
-    if (!cur.includes('title')) cur.unshift('title');
-    this.ctx.tree.at(['screen', 'searchFields']).set(cur);
-  }
-
   private buildPhaseDropdown(row: HTMLElement): void {
     const wrap = document.createElement('div');
     wrap.className = 'filterbar__phase';
@@ -1002,11 +1110,14 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       (ev as Event).stopPropagation();
       setOpen(panel.style.display === 'none');
     });
-    // Keep the menu open while ticking boxes; close on an outside click (best-
-    // effort — the shim may not bubble, which is fine: tests drive directly).
+    // Keep the menu open while ticking boxes; close on an outside pointerdown.
+    // pointerdown (not click) so opening a SIBLING dropdown — whose trigger
+    // stops click propagation (e.g. the Display menu) — still dismisses this one.
     this.listen(panel, 'click', (ev) => (ev as Event).stopPropagation());
     if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
-      this.listen(document, 'click', () => setOpen(false));
+      this.listen(document, 'pointerdown', (e) => {
+        if (panel.style.display !== 'none' && !wrap.contains(e.target as Node)) setOpen(false);
+      });
     }
 
     this.effect(() => {
@@ -1037,7 +1148,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     // Trigger summary: the on-phase labels, or "All" when nothing is scoped out.
     const onLabels = toggles.filter((t) => active.size === 0 || active.has(t.phase)).map((t) => t.label);
     const summary = onLabels.length === toggles.length ? 'All' : onLabels.join(', ') || 'None';
-    trigger.textContent = `Phase: ${summary}`;
+    trigger.textContent = summary;
 
     panel.replaceChildren();
     for (const t of toggles) {
@@ -1275,6 +1386,28 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.destroyChild(this.predicateChild);
     this.predicateChild = this.spawn('PredicateFilter', this.predicateConfig, this.predicateHost);
   }
+}
+
+/** The search-scope segments shown inside the expanded search field. "All"
+ *  matches every text field; the others narrow the search to one. The `fields`
+ *  arrays are what land in `screen.searchFields` (consumed by the Grid / Kanban
+ *  / Inbox search compile). */
+const SEARCH_SCOPES: ReadonlyArray<{ key: string; label: string; fields: string[] }> = [
+  { key: 'all', label: 'All', fields: ['title', 'description', 'comments'] },
+  { key: 'title', label: 'Title', fields: ['title'] },
+  { key: 'description', label: 'Description', fields: ['description'] },
+  { key: 'comments', label: 'Comments', fields: ['comments'] },
+];
+
+/** Which scope segment the current `searchFields` set maps to: all three (or
+ *  more) → 'all'; a single known field → that field; anything else → 'all'. */
+function searchScopeKey(fields: readonly string[]): string {
+  const set = new Set(fields);
+  if (set.size >= 3) return 'all';
+  if (set.size === 1 && (fields[0] === 'title' || fields[0] === 'description' || fields[0] === 'comments')) {
+    return fields[0];
+  }
+  return 'all';
 }
 
 /** The card_ref attribute a screen's phase toggles scope. All toggles in one

@@ -791,6 +791,17 @@ select optgroup {
   gap: var(--gap-compact);
   flex-wrap: wrap;
 }
+/* Thin divider between functional groups on the bar (view setup │ refine │
+   reset). Isolates the destructive Clear button and separates the clusters.
+   Symmetric inline margin (on top of the row gap) so it sits centered in the
+   space between the refine group and Clear, not hugging either side. */
+.filterbar__divider {
+  align-self: center;
+  width: 1px;
+  height: 1.25rem;
+  margin-inline: var(--space-2);
+  background: var(--color-border);
+}
 .filterbar__group {
   display: inline-flex;
   align-items: center;
@@ -808,41 +819,155 @@ select optgroup {
   padding-top: var(--space-1);
   padding-bottom: var(--space-1);
 }
-.filterbar__search {
-  font: inherit;
-  font-size: var(--text-sm);
+/* Square icon-only button (Search / Filter / Display triggers). Inherits .btn
+   for the border + surface; we just pin it square at the 2rem .btn height. */
+.filterbar__iconbtn {
+  width: 2rem;
+  padding: 0;
+  justify-content: center;
+}
+.filterbar__iconbtn .icon {
+  color: var(--color-muted);
+}
+.filterbar__iconbtn:hover .icon,
+.filterbar__iconbtn[aria-expanded='true'] .icon {
+  color: var(--color-fg);
+}
+/* Search collapses to a magnifier icon and expands into a flex-grow input. */
+.filterbar__search-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+.filterbar__search-wrap--expanded {
   flex: 1;
   min-width: 12rem;
-  min-height: 1.875rem;
-  padding: var(--space-1) var(--space-3);
+  /* Grow to fill, but cap it so the field doesn't stretch to the far edge on a
+     wide window — Advanced/Clear sit just past it, with slack to the right. */
+  max-width: 36rem;
+  min-height: 2rem;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface-sunken);
-  color: var(--color-fg);
   transition:
     border-color var(--duration-fast) var(--ease-standard),
     box-shadow var(--duration-fast) var(--ease-standard),
     background var(--duration-fast) var(--ease-standard);
 }
-.filterbar__search::placeholder {
-  color: var(--color-muted);
-}
-.filterbar__search:focus-visible {
-  outline: none;
+.filterbar__search-wrap--expanded:focus-within {
   border-color: var(--color-accent);
   background: var(--color-surface);
   box-shadow: 0 0 0 3px var(--color-focus-halo);
 }
-.filterbar__clear {
-  min-height: 1.875rem;
-  padding: var(--space-1) var(--space-3);
+/* When expanded the toggle becomes a bare leading magnifier (no border/bg). */
+.filterbar__search-wrap--expanded .filterbar__search-toggle {
+  width: auto;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 var(--space-1) 0 var(--space-2);
 }
-.filterbar__advanced {
-  min-height: 1.875rem;
-  padding: var(--space-1) var(--space-3);
+/* The input is collapsed (zero-width, focusable) until the wrap expands. */
+.filterbar__search {
+  font: inherit;
+  font-size: var(--text-sm);
+  flex: 0 1 0;
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-fg);
+  opacity: 0;
+  pointer-events: none;
+}
+.filterbar__search-wrap--expanded .filterbar__search {
+  flex: 1;
+  width: auto;
+  opacity: 1;
+  pointer-events: auto;
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
+  outline: none;
+}
+.filterbar__search-wrap--expanded .filterbar__search-toggle:focus-visible {
+  outline: none;
+}
+.filterbar__search::placeholder {
+  color: var(--color-muted);
+}
+/* Search-scope segments (All / Title / Description / Comments) pinned to the
+   right inside the expanded field. Hidden until the field expands. */
+.filterbar__searchseg {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: var(--space-h);
+  margin-right: var(--space-1);
+  padding-left: var(--space-1);
+}
+.filterbar__search-wrap--expanded .filterbar__searchseg {
+  display: inline-flex;
+}
+.filterbar__searchseg-btn {
+  font: inherit;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-pill, 999px);
+  padding: var(--space-h) var(--space-2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+.filterbar__searchseg-btn:hover {
+  color: var(--color-fg);
+}
+.filterbar__searchseg-btn--active {
+  color: var(--color-fg);
+  background: var(--color-surface-raised);
+}
+/* "Display" icon trigger (GROUP/LANES live in its popover) + the popover panel. */
+.filterbar__display-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.filterbar__display-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: var(--z-dropdown);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  min-width: 13rem;
+  background: var(--color-surface-raised);
+  color: var(--color-fg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+/* Section label above each option list (Group by / Lanes). */
+.filterbar__display-section {
+  padding: var(--space-1) var(--space-2) var(--space-h);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.filterbar__display-section:not(:first-child) {
+  margin-top: var(--space-1);
 }
 .filterbar__advanced--open {
   border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+/* Open state tints the icon accent (overrides the muted .filterbar__iconbtn). */
+.filterbar__advanced--open .icon {
   color: var(--color-accent);
 }
 
@@ -877,6 +1002,11 @@ select optgroup {
 .filter-preset__combo {
   min-width: 11rem;
 }
+/* The View dropdown matches the bar buttons' hover — the base Combobox only
+   shifts its border, so add the .btn fill so it highlights the same way. */
+.filter-preset__combo .kf-combobox__trigger:hover {
+  background: var(--color-fill-hover);
+}
 /* Compact action buttons (Save / Set default / Rename / Delete). Reuse .btn
    sizing but tucked to the dense track + a muted resting state. */
 .btn--xs {
@@ -909,9 +1039,6 @@ select optgroup {
    an active chip carries an accent tint + a count + a clear-X. The chip leaf
    composes into the SAME screen.predicate the Advanced editor edits.
    ========================================================================== */
-.filterbar__row--chips {
-  gap: var(--space-2);
-}
 /* Phase-scope filter (#31): a DROPDOWN of phase checkboxes on the View line.
    The trigger summarises the shown phases; the panel drops below it. */
 .filterbar__phase {
@@ -922,6 +1049,13 @@ select optgroup {
 .filterbar__phase-trigger {
   font-size: var(--text-sm);
   white-space: nowrap;
+  color: var(--color-muted);
+}
+/* Phase text matches the muted resting tone of the bar icons, brightening to
+   fg on hover / when open (like .filterbar__iconbtn). */
+.filterbar__phase-trigger:hover,
+.filterbar__phase-trigger[aria-expanded='true'] {
+  color: var(--color-fg);
 }
 .filterbar__phase-menu {
   position: absolute;
@@ -946,43 +1080,16 @@ select optgroup {
   cursor: pointer;
   white-space: nowrap;
 }
-/* Search-fields dropdown — same dropdown idiom as Phase, pinned right of the
-   search input. The trigger reads "In: Title, Description" so the user can
-   tell at a glance which fields the search matches against. */
-.filterbar__search-fields {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-.filterbar__search-fields-trigger {
-  font-size: var(--text-sm);
-  white-space: nowrap;
-}
-.filterbar__search-fields-menu {
-  position: absolute;
-  top: calc(100% + var(--space-1));
-  right: 0;
-  z-index: var(--z-popover, 50);
-  min-width: 11rem;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-md, 0 4px 16px rgb(0 0 0 / 0.18));
-}
-.filterbar__search-fields-option {
+.filterbar__chips {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  white-space: nowrap;
+  flex-wrap: wrap;
 }
-.filterbar__chips {
-  display: flex;
+/* QuickChips host when it rides inline on the View row (next to Phase) rather
+   than owning its own row — an inline-flex group that wraps if chips pile up. */
+.filterbar__chips-inline {
+  display: inline-flex;
   align-items: center;
   gap: var(--space-2);
   flex-wrap: wrap;
@@ -1116,6 +1223,16 @@ select optgroup {
   padding: var(--space-2) var(--space-3);
   color: var(--color-muted);
   font-size: var(--text-sm);
+}
+/* "Saved" section label in the "+ Filter" menu (separates attribute filters
+   from saved/named filters). */
+.filterbar__chip-menu-header {
+  padding: var(--space-2) var(--space-3) var(--space-h);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--color-muted);
 }
 
 /* The "Named" multi-select — toggles reusable predicate-snippet leaves on the
@@ -1328,19 +1445,23 @@ select optgroup {
 /* ---- task card (compact) ---- */
 .card {
   display: grid;
-  grid-template-columns: auto 1fr;
-  grid-template-rows: auto auto;
-  gap: var(--space-h) var(--space-2);
+  grid-template-columns: minmax(0, 1fr);
+  /* Row 1 is a FIXED two-line title height (font-size × line-height × 2) so the
+     priority+tags row — and the id below it — sit at the same y on EVERY card,
+     whether the title is one line or two. Then tags, then the ticket id. */
+  grid-template-rows: calc(var(--text-sm) * var(--leading-data) * 2) auto auto;
+  align-items: start;
+  gap: var(--space-1) var(--space-2);
   padding: var(--space-2) var(--space-2x);
   background: var(--color-surface);
   border: 1px solid var(--color-hairline);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-xs);
   line-height: var(--leading-data);
-  /* The card is a FIXED-height virtualList slot (KANBAN_CARD_HEIGHT=64). Clip to
-     the box so a heavily-tagged card can never spill its content onto the
-     neighbouring card and obscure ITS title. Title stays (grid row 1, top);
-     tags (row 2) clip. See test/kanban-card-layout.test.mjs. */
+  /* The card is a FIXED-height virtualList slot (KANBAN_CARD_HEIGHT). Clip to the
+     box so a heavily-tagged card can never spill its content onto the
+     neighbouring card. The title (row 1) wraps to at most two lines; the
+     priority+tags row (row 2) clips. See test/kanban-card-layout.test.mjs. */
   overflow: hidden;
   cursor: grab;
   transition:
@@ -1435,33 +1556,45 @@ select optgroup {
   animation: drop-settle var(--duration-slow, 320ms) var(--ease-standard);
 }
 
-.card__grip {
-  grid-row: 1 / span 2;
-  align-self: center;
-  cursor: grab;
-  font-size: var(--text-xs);
-  line-height: 1;
-  color: var(--color-border-strong);
-  letter-spacing: -0.1em;
-}
 .card__title {
+  grid-column: 1;
+  grid-row: 1;
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   color: var(--color-fg-strong);
-  /* The title is ALWAYS one fully-visible line; a long title ellipsizes rather
-     than wrapping (which would grow row 1 and push content out). min-width:0
-     lets it shrink + ellipsize inside the 1fr grid track. */
-  white-space: nowrap;
+  align-self: start;
+  /* Up to two lines, then ellipsize; the fixed two-line grid row above holds the
+     tags row in place regardless of title length. min-width:0 lets it shrink. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
+}
+/* Rows 2 (priority+tags · date) and 3 (id · assignee): a flex line with the
+   left content clipping and the right meta pinned to the edge. */
+.card__row {
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+/* Row 2 sits clear of the title; row 3 sits a touch below row 2. */
+.card__row--meta {
+  grid-row: 2;
+  margin-top: var(--space-1x);
+}
+.card__row--id {
+  grid-row: 3;
+  margin-top: var(--space-1);
 }
 .card__meta {
-  grid-column: 2;
+  /* Left side of row 2 — grows + clips so a heavily-tagged card never pushes
+     the date out (tags truncate on one line, never wrap). */
+  flex: 1 1 auto;
   display: flex;
-  /* One line of tags, clipped at the card edge — never wrap (wrapping grows the
-     card past its fixed height and spills onto the next card). Tags truncate;
-     the title above is never affected. */
   flex-wrap: nowrap;
   min-width: 0;
   overflow: hidden;
@@ -1472,11 +1605,32 @@ select optgroup {
   font-variant-numeric: var(--nums-tabular);
   color: var(--color-muted);
 }
-/* Optical alignment: the id's digit ink sits ~1px higher than the priority
-   bars / tag chips beside it (all three boxes ARE flex-centered) — nudge
-   the number down so the row reads as one line. */
-.card__meta .card__id {
-  transform: translateY(1px);
+/* Created date — pinned to the right of the tags row. */
+.card__date {
+  flex: none;
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: var(--text-2xs);
+  color: var(--color-muted);
+}
+.card__idrow {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: var(--nums-tabular);
+  color: var(--color-muted);
+}
+/* Assignee name — pinned to the right of the id row; shrinks + ellipsizes so a
+   long name never pushes the #id out. */
+.card__assignee {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-2xs);
+  color: var(--color-muted);
 }
 /* Card richness (#25): tag chips on each card. */
 .card__tag {
@@ -4809,35 +4963,50 @@ select optgroup {
    ========================================================================== */
 .markdown {
   word-break: break-word;
-  font-size: var(--text-sm);
-  line-height: var(--leading-normal);
+  /* Reading-surface prose: 15px body, relaxed line-height, em-based block
+     rhythm (headings + spacing scale from the body). 15px is a deliberate fixed
+     reading size — a touch tighter than the 1rem default. */
+  font-size: 15px;
+  line-height: 1.65;
   color: var(--color-fg);
 }
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
 .markdown h1 {
-  font-size: var(--text-lg);
+  font-size: 1.4em;
   font-weight: var(--weight-semibold);
-  margin: var(--space-3) 0 var(--space-2);
+  line-height: 1.3;
+  margin: 1.4em 0 0.5em;
 }
 .markdown h2 {
-  font-size: var(--text-md);
+  font-size: 1.2em;
   font-weight: var(--weight-semibold);
-  margin: var(--space-2x) 0 var(--space-2);
+  line-height: 1.3;
+  margin: 1.4em 0 0.5em;
 }
 .markdown h3,
 .markdown h4,
 .markdown h5,
 .markdown h6 {
-  font-size: var(--text-base);
+  font-size: 1.05em;
   font-weight: var(--weight-semibold);
-  margin: var(--space-2) 0 var(--space-1);
+  line-height: 1.35;
+  margin: 1.2em 0 0.4em;
 }
 .markdown p {
-  margin: var(--space-1) 0;
+  margin: 0 0 0.75em;
+}
+.markdown strong {
+  font-weight: var(--weight-semibold);
 }
 .markdown ul,
 .markdown ol {
-  margin: var(--space-1) 0;
-  padding-left: var(--space-6);
+  margin: 0 0 0.75em;
+  padding-left: 1.5em;
 }
 .markdown ul {
   list-style: disc;
@@ -4846,13 +5015,13 @@ select optgroup {
   list-style: decimal;
 }
 .markdown li {
-  margin: var(--space-h) 0;
+  margin: 0.25em 0;
 }
 .markdown code {
   font-family: var(--font-mono);
-  font-size: 0.85em;
+  font-size: 0.875em;
   background: var(--color-surface-sunken);
-  padding: 0.05em 0.3em;
+  padding: 0.1em 0.35em;
   border-radius: var(--radius-xs);
 }
 .markdown pre {
@@ -4860,12 +5029,12 @@ select optgroup {
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
   overflow-x: auto;
-  margin: var(--space-2) 0;
+  margin: 0 0 0.75em;
 }
 .markdown pre code {
   background: transparent;
   padding: 0;
-  font-size: var(--text-sm);
+  font-size: 0.85em;
 }
 .markdown blockquote {
   border-left: 3px solid var(--color-border);
@@ -5070,6 +5239,38 @@ select optgroup {
   padding: var(--space-2) var(--space-3);
   color: var(--color-muted);
   font-size: var(--text-sm);
+}
+/* Footer action buttons (e.g. the View dropdown's Save / Rename / Delete),
+   pinned below the option list with a divider. */
+.kf-combobox__footer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--color-border);
+}
+.kf-combobox__action {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: var(--space-1x) var(--space-3);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--color-fg);
+  cursor: pointer;
+}
+.kf-combobox__action:hover:not(:disabled) {
+  background: var(--color-surface-sunken);
+}
+.kf-combobox__action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.kf-combobox__action--danger {
+  color: var(--color-danger, #e2504a);
 }
 
 /* ---- DatePicker ---- */
@@ -5390,6 +5591,11 @@ select optgroup {
   flex-direction: column;
   gap: var(--space-4);
   min-width: 0;
+  /* Cap the content to a readable measure and centre it in the (1fr) track,
+     Linear-style — long descriptions otherwise run the full panel width. */
+  width: 100%;
+  max-width: 48rem;
+  margin-inline: auto;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface);
@@ -5710,7 +5916,8 @@ select optgroup {
   gap: var(--space-1);
 }
 .task-detail__desc-body {
-  font-size: var(--text-sm);
+  /* Font-size is owned by .markdown (Claude-Desktop reading size); don't
+     override it back down here. */
   color: var(--color-fg);
 }
 .task-detail__desc-input {
@@ -6804,34 +7011,6 @@ textarea.task-comms__form-input {
 
 /* The dropdown menu (composes .kf-popover for the surface look). */
 /* View-actions overflow menu (#4) — mirrors the transition-bar menu. */
-.filter-preset__menu {
-  display: flex;
-  flex-direction: column;
-  padding: var(--space-1) 0;
-  min-width: 13rem;
-  font-size: var(--text-sm);
-}
-.filter-preset__menu-item {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  padding: var(--space-1x) var(--space-3);
-  font: inherit;
-  font-size: var(--text-sm);
-  text-align: left;
-  border: 0;
-  background: transparent;
-  color: var(--color-fg);
-  cursor: pointer;
-}
-.filter-preset__menu-item:hover:not(:disabled) {
-  background: var(--color-surface-sunken);
-}
-.filter-preset__menu-item:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
 .transition-bar__menu {
   display: flex;
   flex-direction: column;
