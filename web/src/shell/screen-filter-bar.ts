@@ -67,7 +67,7 @@ import { refAxesForCardType, type RefAxis, type CardTypeRow } from '../filter/vo
 import { schemaForCardType } from '../filter/attribute-schema.js';
 import { loadView, saveView } from '../filter/view-persistence.js';
 import { groupAxisForAttr, type GroupAttr } from '../filter/group-axis.js';
-import { icon } from '../ui/icons.js';
+import { icon, type IconName } from '../ui/icons.js';
 import { exclusiveRoots, tagPrefixOptionValue, tagRootLabel } from '../filter/tag-prefix.js';
 import type { AttributeDefRow } from '../admin/specs.js';
 
@@ -294,7 +294,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     displayBtn.setAttribute('aria-expanded', 'false');
     displayBtn.setAttribute('aria-label', 'Display');
     displayBtn.title = 'Display';
-    displayBtn.append(icon('sliders-horizontal', 16));
+    displayBtn.append(icon('square-stack', 16));
     displayWrap.append(displayBtn);
 
     // An inline dropdown (not a detached popover) so the GROUP/LANE selects stay
@@ -446,7 +446,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     clear.className = 'btn filterbar__iconbtn filterbar__clear';
     clear.setAttribute('aria-label', 'Clear filters');
     clear.title = 'Clear filters';
-    clear.append(icon('paintbrush', 16));
+    clear.append(icon('eraser', 16));
     const clearDivider = document.createElement('span');
     clearDivider.className = 'filterbar__divider';
     clearDivider.setAttribute('aria-hidden', 'true');
@@ -836,22 +836,27 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
    *  selects, styled like the "+ Filter" menu. Called each time the menu opens
    *  so it reflects the selects' current options + value. */
   private renderDisplayLists(): void {
-    this.renderAxisList(this.groupListHost, this.groupEl, 'Group by');
+    this.renderAxisList(this.groupListHost, this.groupEl, 'Group by', 'square-stack');
     this.renderAxisList(this.laneListHost, this.laneEl, 'Lanes');
   }
 
   /** One labelled radio list mirroring a native <select>; a pick sets the
-   *  select's value + dispatches `change` (so all existing wiring runs). */
+   *  select's value + dispatches `change` (so all existing wiring runs). An
+   *  optional leading icon labels the section (e.g. Group by). */
   private renderAxisList(
     host: HTMLElement | null,
     sel: HTMLSelectElement | null,
     title: string,
+    iconName?: IconName,
   ): void {
     if (host === null || sel === null) return;
     host.replaceChildren();
     const header = document.createElement('div');
     header.className = 'filterbar__display-section';
-    header.textContent = title;
+    if (iconName !== undefined) header.append(icon(iconName, 14));
+    const titleText = document.createElement('span');
+    titleText.textContent = title;
+    header.append(titleText);
     const list = document.createElement('ul');
     list.className = 'filterbar__chip-list';
     list.setAttribute('role', 'menu');

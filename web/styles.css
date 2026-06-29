@@ -431,6 +431,31 @@ select optgroup {
   gap: 0.35em;
 }
 
+/* Grid status cell reads as a phase-tinted pill (like the list/kanban chips):
+   the icon keeps its precise per-status colour, the pill carries the phase tone.
+   inline-flex above already shrinks it to its content. */
+.grid__ref--status {
+  width: fit-content;
+  max-width: 100%;
+  padding: var(--space-h) var(--space-1x);
+  border-radius: var(--radius-sm);
+  font-weight: var(--weight-semibold);
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+}
+.grid__ref--status[data-phase="triage"] {
+  background: var(--phase-triage-soft);
+  color: var(--phase-triage);
+}
+.grid__ref--status[data-phase="active"] {
+  background: var(--phase-active-soft);
+  color: var(--phase-active);
+}
+.grid__ref--status[data-phase="terminal"] {
+  background: var(--phase-terminal-soft);
+  color: var(--phase-terminal);
+}
+
 /* ---- icon buttons (chrome) ---- */
 .iconbtn {
   font: inherit;
@@ -841,9 +866,8 @@ select optgroup {
 .filterbar__search-wrap--expanded {
   flex: 1;
   min-width: 12rem;
-  /* Grow to fill, but cap it so the field doesn't stretch to the far edge on a
-     wide window — Advanced/Clear sit just past it, with slack to the right. */
-  max-width: 36rem;
+  /* Grow to fill all the room the flex row leaves; Advanced/Clear and any
+     other trailing controls keep their intrinsic width to the right. */
   min-height: 2rem;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
@@ -952,12 +976,20 @@ select optgroup {
 }
 /* Section label above each option list (Group by / Lanes). */
 .filterbar__display-section {
+  display: flex;
+  align-items: center;
+  gap: var(--space-h);
   padding: var(--space-1) var(--space-2) var(--space-h);
   font-size: var(--text-2xs);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
   color: var(--color-muted);
+}
+.filterbar__display-section .icon {
+  /* Slightly brighter than the muted label so the glyph reads first. */
+  color: var(--color-fg-subtle, var(--color-fg));
+  flex: none;
 }
 .filterbar__display-section:not(:first-child) {
   margin-top: var(--space-1);
@@ -1372,6 +1404,32 @@ select optgroup {
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
   color: var(--color-fg-strong);
+}
+/* Status-axis column title as a phase-tinted pill (icon keeps its per-status
+   colour); the inner label drops its strong tone so the pill colour reads. */
+.col__status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: var(--space-h) var(--space-1x);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+}
+.col__status-pill[data-phase="triage"] {
+  background: var(--phase-triage-soft);
+  color: var(--phase-triage);
+}
+.col__status-pill[data-phase="active"] {
+  background: var(--phase-active-soft);
+  color: var(--phase-active);
+}
+.col__status-pill[data-phase="terminal"] {
+  background: var(--phase-terminal-soft);
+  color: var(--phase-terminal);
+}
+.col__status-pill .col__label {
+  color: inherit;
 }
 .col__count {
   font-size: var(--text-2xs);

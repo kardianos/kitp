@@ -16,7 +16,6 @@ import { asAttrId } from '../kanban/kanban-helpers.js';
 import { CardListCore, type CardListCoreConfig, titleOf, idKey } from './core.js';
 import { rowLink, setRowLinkHref } from '../shell/popout.js';
 
-import { statusIcon } from '../ui/status-icon.js';
 const ROW_HEIGHT = 56;
 
 /** A secondary column shown as a chip on the row (assignee, priority, …). */
@@ -207,10 +206,7 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
     const sid = badgeAttr === '' ? null : idKey(card.attributes[badgeAttr]);
     const info = sid !== null ? this.statusInfo.get(sid) : undefined;
     badge.dataset.phase = info?.phase ?? '';
-    badge.replaceChildren(
-      statusIcon(info ?? ''),
-      document.createTextNode(info !== undefined ? info.label : '—'),
-    );
+    badge.replaceChildren(document.createTextNode(info !== undefined ? info.label : '—'));
     badge.style.display = badgeAttr === '' ? 'none' : '';
 
     // The row link opens the SAME card the row opens — its parent on the comms

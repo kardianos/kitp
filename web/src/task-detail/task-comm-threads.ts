@@ -31,7 +31,7 @@ import {
   type CommListForTaskOutput,
 } from './comm-specs.js';
 
-import { statusIcon, applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
+import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 export interface CommThreadsConfig extends BaseControlConfig {
   type: 'CommThreads';
   /** The focal task id (string from the route). */
@@ -300,7 +300,6 @@ export class CommThreads extends Control<CommThreadsConfig> {
     const info = this.statusInfo.get(comm.commStatus.toString());
     badge.dataset.phase = info?.phase ?? '';
     badge.append(
-      statusIcon(info ?? ''),
       document.createTextNode(info !== undefined ? info.label : `#${comm.commStatus}`),
     );
 

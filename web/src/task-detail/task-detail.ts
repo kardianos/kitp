@@ -77,7 +77,7 @@ import type { RelatedTasksPanel } from './related-tasks-panel.js';
 import type { PostChunk } from './upload.js';
 import { icon } from '../ui/icons.js';
 
-import { statusIcon, applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
+import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
@@ -640,7 +640,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     }
     el.style.display = '';
     el.dataset.phase = info.phase;
-    el.replaceChildren(statusIcon(info), document.createTextNode(info.label));
+    el.textContent = info.label;
   }
 
   /** Load the task card_type's editable attribute schema (attribute_def.select). */

@@ -91,7 +91,7 @@ import type { RefPicker } from '../ui/ref-picker.js';
 import type { DatePicker } from '../ui/datepicker.js';
 
 import { setIcon, icon } from '../ui/icons.js';
-import { statusIcon, applyStatusGlyphs } from '../ui/status-icon.js';
+import { applyStatusGlyphs } from '../ui/status-icon.js';
 import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
 import { priorityIcon } from '../ui/priority-icon.js';
 /**
@@ -1681,7 +1681,8 @@ export class Grid extends CardListCore<GridConfig> {
       // Status cells lead with the phase icon (label stays the textContent).
       span.classList.add('grid__ref--status');
       const info = this.statusInfo.get(key);
-      span.append(statusIcon(info ?? ''), document.createTextNode(map[key] ?? `#${key}`));
+      span.dataset.phase = info?.phase ?? '';
+      span.append(document.createTextNode(map[key] ?? `#${key}`));
     } else {
       span.textContent = map[key] ?? `#${key}`;
     }

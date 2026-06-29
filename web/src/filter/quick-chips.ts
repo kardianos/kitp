@@ -410,7 +410,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
     trigger.setAttribute('aria-expanded', 'false');
     trigger.setAttribute('aria-label', 'Add a filter');
     trigger.title = 'Filter';
-    trigger.append(icon('list-filter', 16));
+    trigger.append(icon('funnel', 16));
     wrap.append(trigger);
     this.el.append(wrap);
 

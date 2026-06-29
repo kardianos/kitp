@@ -78,7 +78,7 @@ import {
 } from '../filter/predicate.js';
 
 import { icon } from '../ui/icons.js';
-import { statusIcon, statusGlyphs, type StatusGlyph } from '../ui/status-icon.js';
+import { type StatusGlyph } from '../ui/status-icon.js';
 import { isPriorityPath, priorityIcon, priorityPlaceholder } from '../ui/priority-icon.js';
 /**
  * Fixed virtual-list row height (px) for a kanban card slot: the card (grip +
@@ -879,30 +879,13 @@ export class Kanban extends Control<KanbanConfig> {
       Object.keys(buckets),
     );
     const labelById = new Map<string, string>();
-    // Glyph per axis value — only status cards carry a phase; a status-grouped
-    // board gets the phase icon in its column headers. The within-phase variant
-    // (active pie sweep, terminal ✓/✕) ramps over the status axis so sibling
-    // statuses (Todo/Doing/Review, Done/Cancelled) read distinctly.
+    // Phase per axis value — only status cards carry a phase; a status-grouped
+    // board tints its column-header pill by phase (triage/active/terminal).
     const glyphById = new Map<string, StatusGlyph>();
-    const statusItems: { idStr: string; phase: string; sortOrder: number; label: string }[] = [];
     for (const a of axis) {
       const label = this.axisLabelOf(a, this.axis);
       labelById.set(a.id.toString(), label);
-      if (a.phase !== undefined) {
-        // The board's status axis is already one workflow, so every status
-        // shares a group — the ramp runs over all of them. `sortOrder` is the
-        // AxisCard's pre-resolved value-card order.
-        statusItems.push({
-          idStr: a.id.toString(),
-          phase: a.phase,
-          sortOrder: a.sortOrder,
-          label,
-        });
-      }
-    }
-    const variants = statusGlyphs(statusItems);
-    for (const s of statusItems) {
-      glyphById.set(s.idStr, { phase: s.phase, ...variants.get(s.idStr) });
+      if (a.phase !== undefined) glyphById.set(a.id.toString(), { phase: a.phase });
     }
     const cols: HTMLElement[] = [];
     for (const key of order) {
@@ -945,8 +928,17 @@ export class Kanban extends Control<KanbanConfig> {
     // opens with no lane prefill).
     add.title = 'Quick-add a task in this column';
     this.listen(add, 'click', () => this.openQuickEntry(columnKey, laneKey));
-    if (glyph !== undefined) header.append(statusIcon(glyph));
-    header.append(labelEl, count, add);
+    // Status columns wear their label in a phase-tinted pill (matching the
+    // grid/list status chips); non-status axes keep the plain label.
+    if (glyph !== undefined) {
+      const pill = document.createElement('span');
+      pill.className = 'col__status-pill';
+      pill.dataset.phase = glyph.phase;
+      pill.append(labelEl);
+      header.append(pill, count, add);
+    } else {
+      header.append(labelEl, count, add);
+    }
 
     const body = document.createElement('div');
     body.className = 'col__body scroll-y';

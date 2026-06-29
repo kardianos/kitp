@@ -761,7 +761,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
       const status = document.createElement('span');
       status.className = 'related-summary__status muted';
       status.dataset.phase = info.phase;
-      status.append(statusIcon(info), document.createTextNode(info.label));
+      status.append(document.createTextNode(info.label));
       row.append(status);
     }
     return row;
