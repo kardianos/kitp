@@ -363,6 +363,16 @@ func spaHandler(webDir string, cfg SPAGateConfig, assets *assetCache) http.Handl
 			// compressed rendition); set it once so shared caches key the
 			// compressed and identity renditions separately.
 			w.Header().Set("Vary", "Accept-Encoding")
+			// Content-stable media under /assets/ (vendored fonts, icons,
+			// images) never change without a path change, so let the browser
+			// keep them for a year and skip re-fetching on every reload — the
+			// single biggest repeat-load win on a slow uplink. The root bundle
+			// (app.js / styles.css) is intentionally NOT cached here: it keeps
+			// a fixed name across deploys, so it must revalidate (a future
+			// content-hashed filename would let it be immutable too).
+			if strings.HasPrefix(r.URL.Path, "/assets/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
 			if serveCompressed(w, r, assets, full) {
 				return
 			}
@@ -416,7 +426,10 @@ func (s *Server) HandleBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := s.Dispatch(r.Context(), req)
-	writeJSON(w, http.StatusOK, resp)
+	// Batch reads are the largest responses (a project's cards + attributes
+	// can be hundreds of KB of JSON); compress inline so a constrained uplink
+	// isn't the bottleneck. Falls back to identity when the client opts out.
+	writeJSONCompressed(w, r, http.StatusOK, resp)
 }
 
 // prepared captures one effective sub-request: a leaf handler invocation
