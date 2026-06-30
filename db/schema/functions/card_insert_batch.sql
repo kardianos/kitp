@@ -92,6 +92,21 @@ BEGIN
         _phase := COALESCE(_raw->>'phase', '');
         _attrs := COALESCE(_raw->'attributes', '{}'::jsonb);
 
+        -- Subtask ergonomic: a top-level `parent_task` id is spliced into the
+        -- attributes map so it rides the SAME edge / cross-project / activity
+        -- pipeline as any card_ref attribute (an unsupported card_type fails
+        -- with edge_violation; a cross-project parent with cross_project_ref).
+        -- parent_relationship defaults to 'subtask' unless the caller set it
+        -- via attributes. Explicit `attributes` entries win (no overwrite).
+        IF NULLIF(_raw->>'parent_task', '') IS NOT NULL THEN
+            IF NOT (_attrs ? 'parent_task') THEN
+                _attrs := _attrs || jsonb_build_object('parent_task', _raw->>'parent_task');
+            END IF;
+            IF NOT (_attrs ? 'parent_relationship') THEN
+                _attrs := _attrs || jsonb_build_object('parent_relationship', 'subtask');
+            END IF;
+        END IF;
+
         -- 1. Resolve card_type.
         SELECT ct.id, ct.allow_self_parent,
                ct.parent_card_type_id IS NOT NULL,

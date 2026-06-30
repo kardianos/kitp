@@ -203,3 +203,67 @@ func TestCardSearchBatch_Visibility(t *testing.T) {
 		t.Errorf("system: got %d hits, want 2", got)
 	}
 }
+
+// TestCardSearchBatch_ExcludeTerminal — `exclude_terminal` drops tasks whose
+// `status` value-card is terminal, keeping only open (triage/active) work. The
+// subtask parent/child picker relies on this so done tasks don't crowd the
+// recency-capped list.
+func TestCardSearchBatch_ExcludeTerminal(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_card_search_batch_exclude_terminal")
+	ctx := context.Background()
+	project := seedCardOfType(t, pool, "project", nil)
+
+	// Two status value-cards: one active, one terminal.
+	doing := seedCardWithTitle(t, pool, "status", &project, "Doing")
+	done := seedCardWithTitle(t, pool, "status", &project, "Done")
+	if _, err := pool.Exec(ctx, `UPDATE card SET phase='active' WHERE id=$1`, doing); err != nil {
+		t.Fatalf("phase active: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE card SET phase='terminal' WHERE id=$1`, done); err != nil {
+		t.Fatalf("phase terminal: %v", err)
+	}
+
+	openTask := seedCardWithTitle(t, pool, "task", &project, "Open task")
+	closedTask := seedCardWithTitle(t, pool, "task", &project, "Closed task")
+	setCardRefAttr(t, pool, openTask, "status", doing)
+	setCardRefAttr(t, pool, closedTask, "status", done)
+
+	// Baseline: both tasks come back (scoped to this project so seeded
+	// demo tasks in the fresh DB don't count).
+	res := callCardSearchBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"card_type_name": "task", "parent_card_id": strconv.FormatInt(project, 10)},
+	})
+	if len(res) != 1 || !res[0].OK {
+		t.Fatalf("baseline: want one ok row, got %+v", res)
+	}
+	if got := len(parseSearchHits(t, res[0].Result)); got != 2 {
+		t.Fatalf("baseline: want 2 hits, got %d", got)
+	}
+
+	// exclude_terminal drops the done task, keeps the open one.
+	res = callCardSearchBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"card_type_name": "task", "parent_card_id": strconv.FormatInt(project, 10), "exclude_terminal": true},
+	})
+	hits := parseSearchHits(t, res[0].Result)
+	if len(hits) != 1 || hits[0].ID != strconv.FormatInt(openTask, 10) {
+		t.Errorf("exclude_terminal: want only open task %d, got %+v", openTask, hits)
+	}
+	_ = closedTask
+}
+
+// setCardRefAttr writes a card_ref attribute_value directly (bypassing the
+// dispatcher) — value stored as the JSON number the card_ref convention uses.
+func setCardRefAttr(t *testing.T, pool *pgxpool.Pool, cardID int64, attrName string, refID int64) {
+	t.Helper()
+	ctx := context.Background()
+	var defID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM attribute_def WHERE name=$1`, attrName).Scan(&defID); err != nil {
+		t.Fatalf("attr def %s: %v", attrName, err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		VALUES ($1, $2, to_jsonb($3::bigint))
+	`, cardID, defID, refID); err != nil {
+		t.Fatalf("attr write %s: %v", attrName, err)
+	}
+}

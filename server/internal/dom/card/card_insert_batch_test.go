@@ -192,3 +192,81 @@ func TestCardInsertBatch_ParentNotFound(t *testing.T) {
 		t.Errorf("code=%q, want 'parent_not_found'", rows[0].Code)
 	}
 }
+
+// insertOne calls card_insert_batch with a single input and returns the new
+// card id, failing the test on a non-ok row (surfacing code+message).
+func insertOne(t *testing.T, pool *pgxpool.Pool, input map[string]any) int64 {
+	t.Helper()
+	rows := callCardInsertBatch(t, pool, auth.SystemUserID, []map[string]any{input})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("insert %+v: not ok: %+v", input, rows)
+	}
+	var got struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rows[0].Result, &got); err != nil {
+		t.Fatalf("unmarshal id: %v", err)
+	}
+	id, err := strconv.ParseInt(got.ID, 10, 64)
+	if err != nil || id == 0 {
+		t.Fatalf("bad id %q: %v", got.ID, err)
+	}
+	return id
+}
+
+// readStringAttr reads a card's text/card_ref attribute as text (” if absent).
+func readStringAttr(t *testing.T, pool *pgxpool.Pool, cardID int64, attrName string) string {
+	t.Helper()
+	var v string
+	err := pool.QueryRow(context.Background(), `
+		SELECT COALESCE(av.value #>> '{}', '')
+		FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = $2
+		WHERE av.card_id = $1
+	`, cardID, attrName).Scan(&v)
+	if err != nil {
+		return "" // no row → attribute unset
+	}
+	return v
+}
+
+// TestCardInsertBatch_ParentTaskSubtask — passing `parent_task` at create time
+// nests the new task under an existing task (sets the parent_task card_ref the
+// UI parent/child panel reads) and defaults parent_relationship to 'subtask',
+// all via the shared attribute pipeline.
+func TestCardInsertBatch_ParentTaskSubtask(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_card_insert_batch_parent_task")
+
+	// A real project (template copied → has status value-cards so task
+	// inserts can resolve their required default status).
+	proj := insertOne(t, pool, map[string]any{"card_type_name": "project", "title": "P"})
+	projStr := strconv.FormatInt(proj, 10)
+
+	parent := insertOne(t, pool, map[string]any{
+		"card_type_name": "task", "parent_card_id": projStr, "title": "Parent",
+	})
+	child := insertOne(t, pool, map[string]any{
+		"card_type_name": "task", "parent_card_id": projStr, "title": "Child",
+		"parent_task": strconv.FormatInt(parent, 10),
+	})
+
+	// The child's parent_task points at the parent (stored as a JSON number
+	// per the card_ref convention) — i.e. it shows up as the parent's child.
+	if got := readStringAttr(t, pool, child, "parent_task"); got != strconv.FormatInt(parent, 10) {
+		t.Errorf("parent_task=%q, want %d", got, parent)
+	}
+	// parent_relationship defaulted to 'subtask'.
+	if got := readStringAttr(t, pool, child, "parent_relationship"); got != "subtask" {
+		t.Errorf("parent_relationship=%q, want 'subtask'", got)
+	}
+
+	// An explicit parent_relationship in attributes wins over the default.
+	child2 := insertOne(t, pool, map[string]any{
+		"card_type_name": "task", "parent_card_id": projStr, "title": "Child2",
+		"parent_task": strconv.FormatInt(parent, 10),
+		"attributes":  map[string]any{"parent_relationship": "blocker"},
+	})
+	if got := readStringAttr(t, pool, child2, "parent_relationship"); got != "blocker" {
+		t.Errorf("explicit parent_relationship=%q, want 'blocker'", got)
+	}
+}

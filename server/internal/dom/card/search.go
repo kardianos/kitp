@@ -41,6 +41,12 @@ type SearchInput struct {
 	// typeahead in the same project as the editing task — matches the
 	// per-project reference scoping enforced on the write side.
 	ParentCardID *int64 `json:"parent_card_id,string,omitempty" mcp:"desc=optional parent card id filter; used by per-project picker scoping"`
+	// ExcludeTerminal drops cards whose `status` value-card is in the
+	// terminal phase (i.e. keeps only triage/active "open" work). Used by
+	// the subtask parent/child picker so done tasks don't crowd the
+	// recency-capped list. A card with no `status` attribute (most non-task
+	// types) is unaffected.
+	ExcludeTerminal bool `json:"exclude_terminal,omitempty" mcp:"desc=if true, drop cards whose status value-card is terminal (keep only open triage/active work)"`
 }
 
 // SearchHit is one result row.

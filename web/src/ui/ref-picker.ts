@@ -72,6 +72,13 @@ export interface RefPickerConfig extends BaseControlConfig {
    * fire time.
    */
   parentScopePath?: string;
+  /**
+   * When true, `card.search` drops candidates whose `status` value-card is
+   * terminal — i.e. only open (triage/active) work is offered. Used by the
+   * subtask parent/child pickers so done tasks don't crowd the list. Has no
+   * effect for target types without a `status` attribute.
+   */
+  excludeTerminal?: boolean;
   /** Known label for the current single value, shown before the menu opens. */
   currentLabel?: string;
   /** Known labels for current multi values, keyed by stringified id. */
@@ -365,6 +372,7 @@ export class RefPicker extends Control<RefPickerConfig> {
     if (query !== '') input['query'] = query;
     const parent = this.peekParentScope();
     if (parent !== null) input['parentCardId'] = parent;
+    if (this.config.excludeTerminal === true) input['excludeTerminal'] = true;
 
     this.ctx.api.callByName(
       CARD_SEARCH_SPEC,

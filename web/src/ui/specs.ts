@@ -42,6 +42,9 @@ export interface CardSearchInput {
   parentCardId?: bigint;
   /** Optional row cap (server clamps 1..200, default 50). */
   limit?: number;
+  /** When true, drop candidates whose `status` value-card is terminal (keep
+   *  only open triage/active work). No effect for types without a status. */
+  excludeTerminal?: boolean;
 }
 
 /** One search hit — the minimal shape a ref editor needs to render an option. */
@@ -103,6 +106,7 @@ export function registerCardSearchSpec(api: Api): void {
       if (i.ids !== undefined && i.ids.length > 0) m['ids'] = i.ids;
       if (i.parentCardId !== undefined) m['parent_card_id'] = i.parentCardId;
       if (i.limit !== undefined) m['limit'] = i.limit;
+      if (i.excludeTerminal === true) m['exclude_terminal'] = true;
       return m;
     },
     decode: (raw): CardSearchOutput => ({

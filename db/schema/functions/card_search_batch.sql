@@ -37,6 +37,7 @@ DECLARE
     _ids_raw jsonb;
     _el jsonb;
     _el_val bigint;
+    _exclude_terminal boolean;
 BEGIN
     FOR _idx, _raw IN
         SELECT (r.ord - 1)::int, r.value
@@ -63,6 +64,8 @@ BEGIN
         EXCEPTION WHEN invalid_text_representation THEN
             _parent_card_id := NULL;
         END;
+
+        _exclude_terminal := COALESCE((_raw->>'exclude_terminal')::boolean, false);
 
         -- numeric_id: only set when the query parses cleanly as a
         -- positive bigint (matches Go's strconv.ParseInt + > 0 gate).
@@ -139,6 +142,20 @@ BEGIN
                       )
                       AND (_ids IS NULL OR c.id = ANY(_ids))
                       AND (_parent_card_id IS NULL OR c.parent_card_id = _parent_card_id)
+                      -- Open-work filter: drop cards whose `status` value-card
+                      -- sits in the terminal phase. Cards with no `status`
+                      -- attribute (most non-task types) are kept — the NOT
+                      -- EXISTS is vacuously true. `status` is a card_ref stored
+                      -- as a JSON number; #>> '{}' yields the id text.
+                      AND (NOT _exclude_terminal OR NOT EXISTS (
+                        SELECT 1
+                        FROM attribute_value sav
+                        JOIN attribute_def sad
+                          ON sad.id = sav.attribute_def_id AND sad.name = 'status'
+                        JOIN card sc ON sc.id = (sav.value #>> '{}')::bigint
+                        WHERE sav.card_id = c.id
+                          AND sc.phase = 'terminal'
+                      ))
                       AND EXISTS (
                         -- depth < 16 caps the parent walk (CLAUDE.md cap;
                         -- matches card_ancestors / scopeWalkDepth) so a

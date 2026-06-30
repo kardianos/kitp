@@ -306,6 +306,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
         type: 'RefPicker',
         cardType: 'task',
         value: this.pendingChildId,
+        excludeTerminal: true,
         ...(this.parentScopePath() ? { parentScopePath: this.parentScopePath() } : {}),
         'aria-label': 'Child task',
         placeholder: 'Search tasks…',
@@ -556,6 +557,7 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
         type: 'RefPicker',
         cardType: 'task',
         value: this.pendingParentId,
+        excludeTerminal: true,
         ...(this.parentScopePath() ? { parentScopePath: this.parentScopePath() } : {}),
         'aria-label': 'Parent task',
         placeholder: 'Search tasks…',
@@ -745,18 +747,22 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
     }
   }
 
-  /** One clickable summary row: phase icon + `#id Title` link + status text. */
-  private summaryRow(id: bigint, phase: string, statusId: bigint | null): HTMLElement {
+  /** One clickable summary row: phase icon + `#id Title` link + status text.
+   *  `cardPhase` is the task card's own `phase` column — a never-updated
+   *  'triage' default for task cards — so it's only a fallback: the icon
+   *  derives from the task's STATUS value-card phase (the real phase, via
+   *  statusInfo) whenever the status has resolved. */
+  private summaryRow(id: bigint, cardPhase: string, statusId: bigint | null): HTMLElement {
     const row = document.createElement('div');
     row.className = 'related-summary__row';
 
-    row.append(phaseIcon(phase));
+    const info = statusId === null ? undefined : this.statusInfo.get(statusId.toString());
+    row.append(phaseIcon(info?.phase ?? cardPhase));
 
     const link = this.taskChip(id, this.labelFor(id));
     link.classList.add('related-summary__link');
     row.append(link);
 
-    const info = statusId === null ? undefined : this.statusInfo.get(statusId.toString());
     if (info !== undefined) {
       const status = document.createElement('span');
       status.className = 'related-summary__status muted';

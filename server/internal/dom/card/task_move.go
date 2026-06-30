@@ -59,9 +59,11 @@ type TaskMoveOutput struct {
 // SOURCE alone isn't enough.
 func RegisterTaskMove(_ *store.Pool) {
 	reg.Register(reg.Handler{
-		Endpoint:     "task",
-		Action:       "move",
-		Doc:          "Bump a task (and optionally its sub-tree) to a different project, clearing per-project classification so the user re-classifies in the destination.",
+		Endpoint: "task",
+		Action:   "move",
+		Doc: "Move a task (and optionally its sub-tree) to a DIFFERENT project, clearing per-project classification so the user re-classifies in the destination. " +
+			"This is a cross-project move, NOT subtask nesting: source and destination must be different projects (a same-project call returns same_project). " +
+			"To nest one task under another as a subtask, set the child's parent_task attribute via attribute.update, or pass parent_task to card.insert at create time.",
 		InputType:    reflect.TypeFor[TaskMoveInput](),
 		OutputType:   reflect.TypeFor[TaskMoveOutput](),
 		AllowedRoles: []string{"worker", "manager", "admin"},

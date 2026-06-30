@@ -24,10 +24,19 @@ import (
 // attribute_value+activity pipeline so the activity stream shows
 // kind='card_create' plus one kind='attr_update' per initial attribute.
 type InsertInput struct {
-	CardTypeName string                     `json:"card_type_name" mcp:"required,desc=name of the card_type to create (e.g. project, task)"`
-	ParentCardID *int64                     `json:"parent_card_id,string,omitempty" mcp:"desc=parent card id; nil for top-level project cards"`
-	Title        string                     `json:"title" mcp:"required,desc=value for the built-in title attribute"`
-	Attributes   map[string]json.RawMessage `json:"attributes,omitempty" mcp:"desc=optional map of additional attribute name to JSON value"`
+	CardTypeName string `json:"card_type_name" mcp:"required,desc=name of the card_type to create (e.g. project, task)"`
+	ParentCardID *int64 `json:"parent_card_id,string,omitempty" mcp:"desc=STRUCTURAL parent card id (the enclosing project for a task); nil for top-level project cards. NOT the subtask link — see parent_task"`
+	// ParentTask nests a NEW task under an existing task as a subtask: it
+	// sets the `parent_task` card_ref attribute (and defaults the
+	// `parent_relationship` annotation to 'subtask' when Attributes doesn't
+	// supply one), which is exactly what the task UI's parent/child panel
+	// reads. This is the discoverable, first-class way to create a child
+	// task — distinct from parent_card_id (which stays the project). The
+	// parent must be a task in the SAME project (cross-project parents are
+	// rejected with cross_project_ref by the shared attribute pipeline).
+	ParentTask *int64                     `json:"parent_task,string,omitempty" mcp:"desc=nest this new task under an existing task as a subtask (sets the parent_task link the UI parent/child panel uses); parent must be a task in the same project. Distinct from parent_card_id"`
+	Title      string                     `json:"title" mcp:"required,desc=value for the built-in title attribute"`
+	Attributes map[string]json.RawMessage `json:"attributes,omitempty" mcp:"desc=optional map of additional attribute name to JSON value"`
 	// Optional initial value for the structural `phase` column. Empty
 	// means "let the column default apply" (triage). When set, must be
 	// one of triage|active|terminal — `phase` is otherwise unreachable
@@ -73,9 +82,10 @@ type SelectOutput struct {
 // writers note one statement-group per Run for the write counter.
 func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
-		Endpoint:   "card",
-		Action:     "insert",
-		Doc:        "Insert a new card with the given card_type, optional parent, and initial title plus attributes.",
+		Endpoint: "card",
+		Action:   "insert",
+		Doc: "Insert a new card with the given card_type, optional structural parent (parent_card_id), and initial title plus attributes. " +
+			"To create a TASK as a subtask of another task, pass parent_task (the existing parent task's id) — that sets the parent/child link the task UI shows, distinct from parent_card_id which is the enclosing project.",
 		InputType:  reflect.TypeFor[InsertInput](),
 		OutputType: reflect.TypeFor[InsertOutput](),
 		// Worker can insert tasks; manager/admin can insert any card type.

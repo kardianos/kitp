@@ -226,12 +226,16 @@ function taskWithStatus(id, title, phase, statusId, parentTask, relationship) {
 }
 
 test('RelatedTasksPanel: body summary renders clickable parent + children with phase + status', async () => {
+  // Every task's own `phase` column is the never-updated 'triage' default
+  // (task cards never carry a real phase — it lives on the status value-card).
+  // The summary phase icons must therefore tone from each task's STATUS phase
+  // (Backlog=triage, Doing=active), NOT from this always-'triage' card phase.
   const h = relatedHarness({
     children: [
       taskWithStatus(91, 'Sub one', 'triage', 11, CARD_ID, 'subtask'),
-      taskWithStatus(92, 'Sub two', 'active', 12, CARD_ID, 'blocker'),
+      taskWithStatus(92, 'Sub two', 'triage', 12, CARD_ID, 'blocker'),
     ],
-    parentTasks: [taskWithStatus(80, 'Epic A', 'active', 12)],
+    parentTasks: [taskWithStatus(80, 'Epic A', 'triage', 12)],
     statuses: [statusRow(11, 'Backlog', 'triage'), statusRow(12, 'Doing', 'active')],
   });
   const { dispatcher, api } = bootApi(h.transport);
@@ -246,7 +250,9 @@ test('RelatedTasksPanel: body summary renders clickable parent + children with p
   assert.equal(parentLink.tagName, 'A', 'parent is an anchor');
   assert.equal(parentLink.getAttribute('href'), '/task/80', 'parent link points at the task');
   assert.match(parentLink.textContent, /#80 Epic A/, 'parent label shown');
-  assert.equal(parentRow.querySelector('.related-summary__phase').dataset.phase, 'active', 'parent phase icon toned');
+  // Parent's card.phase is 'triage' but its status (Doing) is active → the
+  // icon must read 'active', proving it derives from the status, not card.phase.
+  assert.equal(parentRow.querySelector('.related-summary__phase').dataset.phase, 'active', 'parent phase icon toned by STATUS phase, not the always-triage card.phase');
   assert.equal(parentRow.querySelector('.related-summary__status').textContent, 'Doing', 'parent status label');
 
   // Children summary list: two clickable rows with phase icons + status labels.
@@ -261,6 +267,13 @@ test('RelatedTasksPanel: body summary renders clickable parent + children with p
     .map((s) => s.textContent)
     .sort();
   assert.deepEqual(childStatuses, ['Backlog', 'Doing'], 'child status labels resolved from the pool');
+  // Child phase icons tone from STATUS phase too: Sub two (Doing=active) reads
+  // 'active' even though its card.phase is 'triage'. With the old card.phase
+  // source both would be 'triage'.
+  const childPhases = [...summaryHost.querySelectorAll('[data-related-summary-children] .related-summary__phase')]
+    .map((s) => s.dataset.phase)
+    .sort();
+  assert.deepEqual(childPhases, ['active', 'triage'], 'child phase icons derive from STATUS phase, not the always-triage card.phase');
 
   // The click is intercepted for in-app navigation (preventDefault) rather than
   // a full page load — the anchor href above is the navigation target.
