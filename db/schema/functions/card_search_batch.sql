@@ -11,7 +11,11 @@
 --      a bigint[]. NULL when empty/missing.
 --   4. SELECT (id, title) hits filtered by card_type + visibility +
 --      query (ILIKE on title OR exact id match via the numeric arm) +
---      optional ids[] + optional parent_card_id. Ordered newest-first.
+--      optional ids[] + optional parent_card_id + optional exclude_terminal.
+--      Ordered newest-first. An EXACT id lookup (numeric query = c.id)
+--      bypasses the convenience filters (parent_card_id + exclude_terminal)
+--      so a known id resolves from any project/phase; card_type + visibility
+--      still apply.
 --
 -- Result JSON shape matches `card.SearchOutput`:
 --   {"rows": [{"id": "<bigint>", "title": "..."}]}
@@ -141,13 +145,25 @@ BEGIN
                         OR (_numeric_id IS NOT NULL AND c.id = _numeric_id)
                       )
                       AND (_ids IS NULL OR c.id = ANY(_ids))
-                      AND (_parent_card_id IS NULL OR c.parent_card_id = _parent_card_id)
+                      -- Project scope + the open-work filter below are CONVENIENCE
+                      -- scoping for browsing/typeahead. An exact id lookup (the
+                      -- query parsed to a positive bigint = c.id) BYPASSES both,
+                      -- so you can jump straight to a task by id in any project or
+                      -- phase. `c.id = _numeric_id` is NULL (→ not matched) when
+                      -- the query isn't numeric, so non-id searches stay scoped.
+                      -- Visibility (the EXISTS below) is authz and ALWAYS applies.
+                      AND (_parent_card_id IS NULL
+                           OR c.parent_card_id = _parent_card_id
+                           OR c.id = _numeric_id)
                       -- Open-work filter: drop cards whose `status` value-card
                       -- sits in the terminal phase. Cards with no `status`
                       -- attribute (most non-task types) are kept — the NOT
                       -- EXISTS is vacuously true. `status` is a card_ref stored
-                      -- as a JSON number; #>> '{}' yields the id text.
-                      AND (NOT _exclude_terminal OR NOT EXISTS (
+                      -- as a JSON number; #>> '{}' yields the id text. An exact
+                      -- id lookup bypasses this too (see above).
+                      AND (NOT _exclude_terminal
+                           OR c.id = _numeric_id
+                           OR NOT EXISTS (
                         SELECT 1
                         FROM attribute_value sav
                         JOIN attribute_def sad

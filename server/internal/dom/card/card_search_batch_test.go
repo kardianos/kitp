@@ -251,6 +251,56 @@ func TestCardSearchBatch_ExcludeTerminal(t *testing.T) {
 	_ = closedTask
 }
 
+// TestCardSearchBatch_IDLookupBypassesFilters — an exact id query resolves a
+// task from ANY project/phase, ignoring the parent_card_id + exclude_terminal
+// convenience filters. A non-id (title) query stays scoped to them. Visibility
+// still applies (system actor here sees all).
+func TestCardSearchBatch_IDLookupBypassesFilters(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_card_search_batch_id_lookup")
+	ctx := context.Background()
+
+	projA := seedCardOfType(t, pool, "project", nil)
+	projB := seedCardOfType(t, pool, "project", nil)
+
+	done := seedCardWithTitle(t, pool, "status", &projA, "Done")
+	if _, err := pool.Exec(ctx, `UPDATE card SET phase='terminal' WHERE id=$1`, done); err != nil {
+		t.Fatalf("phase terminal: %v", err)
+	}
+
+	// A terminal task in project A, and a task in project B.
+	closedInA := seedCardWithTitle(t, pool, "task", &projA, "Closed-in-A")
+	setCardRefAttr(t, pool, closedInA, "status", done)
+	taskInB := seedCardWithTitle(t, pool, "task", &projB, "Task-in-B")
+
+	scopeA := strconv.FormatInt(projA, 10)
+
+	// id lookup of the TERMINAL task in A — bypasses exclude_terminal.
+	res := callCardSearchBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"card_type_name": "task", "parent_card_id": scopeA, "exclude_terminal": true,
+			"query": strconv.FormatInt(closedInA, 10)},
+	})
+	if hits := parseSearchHits(t, res[0].Result); len(hits) != 1 || hits[0].ID != strconv.FormatInt(closedInA, 10) {
+		t.Errorf("id lookup of terminal task: want [%d], got %+v", closedInA, hits)
+	}
+
+	// id lookup of a task in project B while scoped to A — bypasses parent_card_id.
+	res = callCardSearchBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"card_type_name": "task", "parent_card_id": scopeA,
+			"query": strconv.FormatInt(taskInB, 10)},
+	})
+	if hits := parseSearchHits(t, res[0].Result); len(hits) != 1 || hits[0].ID != strconv.FormatInt(taskInB, 10) {
+		t.Errorf("cross-project id lookup: want [%d], got %+v", taskInB, hits)
+	}
+
+	// A NON-id (title) search for project B's task, scoped to A, still excludes it.
+	res = callCardSearchBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"card_type_name": "task", "parent_card_id": scopeA, "query": "Task-in-B"},
+	})
+	if hits := parseSearchHits(t, res[0].Result); len(hits) != 0 {
+		t.Errorf("title search must stay project-scoped: want [], got %+v", hits)
+	}
+}
+
 // setCardRefAttr writes a card_ref attribute_value directly (bypassing the
 // dispatcher) — value stored as the JSON number the card_ref convention uses.
 func setCardRefAttr(t *testing.T, pool *pgxpool.Pool, cardID int64, attrName string, refID int64) {
