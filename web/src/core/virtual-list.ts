@@ -187,8 +187,11 @@ export function virtualList<Item>(opts: VirtualListOptions<Item>): VirtualListHa
   content.style.top = '0';
   content.style.left = '0';
   content.style.right = '0';
-  // `will-change` hints the compositor; the translate moves the whole window.
-  content.style.willChange = 'transform';
+  // No `will-change: transform` here: permanently promoting the content layer
+  // rasterizes the row text into a GPU backing texture that, at fractional
+  // display scaling, gets resampled and reads as blurry at rest. The translate
+  // still works composited-on-demand; the recycling pool repaints content on
+  // every scroll anyway, so pre-promotion bought little.
 
   spacer.append(content);
   container.append(spacer);

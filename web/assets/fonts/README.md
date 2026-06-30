@@ -29,3 +29,17 @@ a sans reads less comfortably for sustained text.
 
 Two faces each, fetched on demand — italic only when a page renders italic
 text.
+
+# Go Mono
+
+The code/identifier monospace (`--font-mono`): inline + block code, record IDs
+(`#67`), key-chord hints, and raw-data dumps. A screen-first mono (Bigelow &
+Holmes, drawn for the Go project) with even color and unambiguous `0`/`O` ·
+`1`/`l`/`I`. Unlike the Source faces it has no variable axis, so it's vendored
+as four discrete static faces (converted from the upstream TTFs to woff2):
+
+- `Go-Mono.woff2` — regular (400).
+- `Go-Mono-Italic.woff2` — italic (400).
+- `Go-Mono-Bold.woff2` — bold (700).
+- `Go-Mono-Bold-Italic.woff2` — bold italic (700).
+- `Go-Mono-LICENSE.txt` — the BSD-3-Clause license the Go fonts ship under.

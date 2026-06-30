@@ -55,6 +55,40 @@
   src: url("/assets/fonts/SourceSerif4Variable-Italic.woff2") format("woff2");
 }
 
+/* Go Mono (Bigelow & Holmes, BSD-3 — see fonts README), vendored in
+   web/assets/fonts/. The code/id/keys monospace (--font-mono): a screen-first
+   mono with even color and unambiguous 0/O · 1/l/I. Unlike the Source faces it
+   ships as discrete static weights (no variable axis), so four faces — normal
+   + bold, each with its italic. */
+@font-face {
+  font-family: "Go Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/Go-Mono.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Go Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/assets/fonts/Go-Mono-Italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Go Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/assets/fonts/Go-Mono-Bold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Go Mono";
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/assets/fonts/Go-Mono-Bold-Italic.woff2") format("woff2");
+}
+
 *,
 *::before,
 *::after {

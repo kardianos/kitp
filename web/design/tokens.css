@@ -161,8 +161,11 @@
      activity log, comments, task titles). UI chrome stays on --font-sans. */
   --font-serif: "Source Serif 4", Charter, "Bitstream Charter", "Iowan Old Style",
     Georgia, Cambria, ui-serif, serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-    "Liberation Mono", monospace;
+  /* Vendored Go Mono (see @font-face in styles.css) — a screen-first mono for
+     code / IDs / key-chords. Falls back to the system mono stack if it fails
+     to load. */
+  --font-mono: "Go Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Consolas, "Liberation Mono", monospace;
 
   /* font-size rungs. Names match usage. Linear-compact: body sits at 14px
      and the heading ramp is shallow — hierarchy comes from weight + space
@@ -418,8 +421,10 @@ body {
      are a matched superfamily, so the split harmonises. */
   font-family: var(--font-sans);
   line-height: var(--leading-normal);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  /* No forced grayscale antialiasing: leaving font-smoothing at the browser
+     default keeps subpixel AA where the platform offers it, so text renders
+     heavier and sharper instead of the thin/washed-out macOS look on
+     non-Retina / fractional-scale displays. */
   text-rendering: optimizeLegibility;
 }
 body {
