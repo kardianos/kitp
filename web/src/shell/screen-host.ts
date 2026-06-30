@@ -122,9 +122,6 @@ export class ScreenHost extends Control<ScreenHostConfig> {
   private bodyHost: HTMLElement | null = null;
   private bodyControl: Control | null = null;
   private currentLayout = '';
-  /** The slug-derived fallback layout ('unknown' for a custom slug only the
-   *  screen card knows); used to render NotFound iff resolution finds no card. */
-  private seedLayout = '';
   /** The transient "resolving…" placeholder shown instead of flashing NotFound
    *  while a custom slug's screen card loads. Removed once a body dispatches. */
   private loadingEl: HTMLElement | null = null;
@@ -212,11 +209,10 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     this.el.append(bodyHost);
     this.bodyHost = bodyHost;
 
-    this.seedLayout = seedLayout;
     // A screen's layout is known only to its card. Rather than flash the red
     // NotFound placeholder for the 'unknown' seed while that card loads, defer to
     // a neutral "resolving…" body; onScreenResolved dispatches the real layout
-    // (or NotFound iff the screen genuinely doesn't exist).
+    // (or redirects to the project's default screen iff this slug has no card).
     const willResolve = this.config.resolveScreen !== false && projectId !== null;
     if (seedLayout === 'unknown' && willResolve) {
       this.renderLoadingBody();
@@ -318,13 +314,28 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     this.ctx.tree.at(['screen', 'phaseAttr']).set(set.phaseAttr ?? '');
 
     if (set.screen === null) {
-      // No screen card for this slug → keep the fallback body + announce "no
-      // screen" so the bar still renders its default-filter fallback. If we
-      // DEFERRED (a custom slug whose card didn't resolve), nothing is painted
-      // yet — now show the genuine NotFound for the missing screen.
-      if (this.bodyControl === null) this.dispatchBody(this.seedLayout);
-      node.child('screenId').set(null);
-      node.child('resolved').set(true);
+      // No screen card for this slug in the scoped project. Two sub-cases:
+      //
+      //  (a) A concrete seed layout already painted a body (a caller that
+      //      passed its own `screen.layout`) → keep it + announce "no screen"
+      //      so the bar still renders its default-filter fallback.
+      //
+      //  (b) We were DEFERRING on an 'unknown' seed (the common case: a slug
+      //      carried across a project switch, or a stale deep-link, that THIS
+      //      project doesn't have). Don't flash the red NotFound — redirect to
+      //      the project's DEFAULT (first) screen, so switching projects lands
+      //      on the same-named screen when it exists and the default when it
+      //      doesn't. A genuinely screenless project falls through
+      //      resolveDefaultScreen to NotFound there (no slug to land on). The
+      //      first screen's slug always has a card, so this can't loop.
+      if (this.bodyControl !== null) {
+        node.child('screenId').set(null);
+        node.child('resolved').set(true);
+        return;
+      }
+      const projectId = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
+      if (projectId !== null) this.resolveDefaultScreen(projectId);
+      else this.dispatchBody('unknown');
       return;
     }
 

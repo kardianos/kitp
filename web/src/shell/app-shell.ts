@@ -677,11 +677,12 @@ export class AppShell extends Control<AppShellConfig> {
       // The scope picker is a project SWITCHER. STAY ON THE SAME SCREEN: if the
       // current route is a screen, carry its slug to the new project so a switch
       // doesn't snap you back to the board every time. The ScreenHost resolves
-      // that slug's card in the new project (or degrades to a loading→NotFound
-      // when it has no such screen — the data-driven rail lists what it does
-      // have). Off a screen route (projects list / admin / a task), land on the
-      // project's default board. The route effect mirrors `scope.projectId` from
-      // the route, so the body's `{ signal }` query refires.
+      // that slug's card in the new project; when the new project has NO such
+      // screen it redirects to that project's default (first) screen rather than
+      // erroring (see ScreenHost.onScreenResolved). Off a screen route (projects
+      // list / admin / a task), land on the project's default board. The route
+      // effect mirrors `scope.projectId` from the route, so the body's
+      // `{ signal }` query refires.
       if (id === null) return;
       const route = this.ctx.tree.at([...ROUTER_PATH]).peek<RouteMatch>() ?? null;
       const slug = route !== null && route.name === 'screen' ? route.params['slug'] : undefined;

@@ -140,7 +140,10 @@ function screenMockTransport(opts = {}) {
       switch (data.card_type_name) {
         case 'screen':
           sent.screenReads++;
-          return { id: sr.id, ok: true, data: { rows: [screenRow()] } };
+          // `opts.screenRows` overrides the default single 'grid' screen — used
+          // by the redirect test to serve a project whose screens DON'T include
+          // the requested slug.
+          return { id: sr.id, ok: true, data: { rows: opts.screenRows ?? [screenRow()] } };
         case 'filter':
           sent.filterReads++;
           return { id: sr.id, ok: true, data: { rows: FILTERS } };
@@ -485,6 +488,53 @@ test('ScreenHost: a screen card resolved by slug re-dispatches the body to its l
   assert.equal(body.findByControl('Grid').length, 1, 'grid layout → Grid control');
   assert.equal(tree.at([...statePath, 'screenId']).peek(), SCREEN_GRID_ID, 'screen id landed at the (project,slug) key');
   assert.equal(tree.at([...statePath, 'filters']).peek().length, 2, 'filters landed at the (project,slug) key');
+});
+
+test('ScreenHost: a slug with no screen card redirects to the project default (first) screen, not NotFound', async () => {
+  // The project-switch case: the user carries slug 'grid' to a project that
+  // has 'board' (sort_order 0) + 'list' (10) but NO 'grid'. ScreenHost must
+  // redirect to the FIRST screen by sort_order ('board'), never paint the red
+  // NotFound. (Rows returned out of order to prove the sort, not arrival.)
+  const screen = (id, slug, layout, sortOrder) => ({
+    id: String(id),
+    card_type_id: '20',
+    card_type_name: 'screen',
+    parent_card_id: String(PROJECT_ID),
+    attributes: { slug, layout, title: slug, sort_order: sortOrder },
+  });
+  const transport = screenMockTransport({
+    screenRows: [screen(702n, 'list', 'grid', 10), screen(701n, 'board', 'kanban', 0)],
+  });
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  M.installRouter(tree); // bind navigate() so the redirect lands a route leaf
+
+  // Mount the host the way the SCREEN route does: an 'unknown' seed layout, so
+  // it shows a loading body (no bodyControl) and DEFERS to resolution — the
+  // path that must redirect when the slug has no card. (mountHost seeds a
+  // concrete 'kanban' layout, which paints a body and is the wrong shape here.)
+  tree.at(['scope', 'projectId']).set(PROJECT_ID);
+  const ctx = { api, tree, scope: { get projectId() { return tree.at(['scope', 'projectId']).peek() ?? null; } } };
+  const host = M.Control.New(
+    'ScreenHost',
+    { type: 'ScreenHost', screen: { slug: 'grid', layout: 'unknown', title: 'Grid' }, resolveScreen: true },
+    ctx,
+  );
+  host.mount(new FakeElement('div'));
+
+  await settle(dispatcher);
+
+  const route = tree.at(['router', 'route']).peek();
+  assert.equal(route.name, 'screen', 'redirected to a screen route (not NotFound)');
+  assert.equal(route.params.slug, 'board', 'landed on the first screen by sort_order');
+  assert.equal(route.params.id, PROJECT_ID.toString(), 'stayed in the same project');
+  // The host that redirected never dispatched a body, so it never flashed the
+  // 'unknown' NotFound layout (dataset.layout is only set by dispatchBody).
+  assert.equal(
+    host.el.querySelector('.screen-host__body')?.dataset.layout,
+    undefined,
+    'no body dispatched on the redirecting host — no NotFound flash',
+  );
 });
 
 /* -------------------------------------------------------------------------- */
