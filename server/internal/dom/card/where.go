@@ -174,6 +174,27 @@ func compileNode(n CardWhereTreeNode, c *compileCtx) (string, error) {
 // inbox-style queries (a missing assignee never matches "assignee=alice"
 // nor "assignee != alice"). Switch to a stricter "attribute exists AND
 // is not equal" by combining `exists` and `ne` in an AND group.
+// classGuard returns the value_type_id band predicate for `attr` so the
+// partitioned attribute_value indexes are usable: structured attributes
+// (number/bool/date/card_ref/…) live in the `(attribute_def_id, value)`
+// btree (value_type_id < 1000); text lives in the trigram (>= 1000). The
+// predicate is redundant-but-true for the attr's own rows (value_type_id
+// derives from the def's immutable value_type), so it never changes
+// results — it only lets the planner pick the right partial index. When
+// the class is unknown (no snapshot / unmapped attr) it returns "" so the
+// query stays correct, just unindexed for that leaf. Mirrors the
+// `_class_guard` logic in card_compile_predicate.sql.
+func classGuard(attr string, snap *schema.Snapshot) string {
+	switch snap.ValueType(attr) {
+	case "":
+		return ""
+	case "text":
+		return " AND av.value_type_id >= 1000"
+	default:
+		return " AND av.value_type_id < 1000"
+	}
+}
+
 func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 	addArg := c.addArg
 	snap := c.snap
@@ -271,8 +292,8 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 		val := CanonicalizeFilterValue(n.Attr, snap, singleValue(n.Values))
 		return fmt.Sprintf(`EXISTS (
 			SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
-			WHERE av.card_id = c.id AND ad.name = %s AND av.value = %s::jsonb
-		)`, addArg(n.Attr), addArg(string(val))), nil
+			WHERE av.card_id = c.id AND ad.name = %s AND av.value = %s::jsonb%s
+		)`, addArg(n.Attr), addArg(string(val)), classGuard(n.Attr, snap)), nil
 	case "!=", "ne":
 		// card_ref[]: "!= X" means "the array does NOT contain X".
 		if snap.ValueType(n.Attr) == "card_ref[]" {
@@ -285,8 +306,8 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 		val := CanonicalizeFilterValue(n.Attr, snap, singleValue(n.Values))
 		return fmt.Sprintf(`NOT EXISTS (
 			SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
-			WHERE av.card_id = c.id AND ad.name = %s AND av.value = %s::jsonb
-		)`, addArg(n.Attr), addArg(string(val))), nil
+			WHERE av.card_id = c.id AND ad.name = %s AND av.value = %s::jsonb%s
+		)`, addArg(n.Attr), addArg(string(val)), classGuard(n.Attr, snap)), nil
 	case "in":
 		if len(n.Values) == 0 {
 			return "FALSE", nil
@@ -310,8 +331,8 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 		}
 		return fmt.Sprintf(`EXISTS (
 			SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
-			WHERE av.card_id = c.id AND ad.name = %s AND av.value IN (%s)
-		)`, addArg(n.Attr), strings.Join(placeholders, ", ")), nil
+			WHERE av.card_id = c.id AND ad.name = %s AND av.value IN (%s)%s
+		)`, addArg(n.Attr), strings.Join(placeholders, ", "), classGuard(n.Attr, snap)), nil
 	case "not in":
 		if len(n.Values) == 0 {
 			// Empty "not in" is vacuously true (nothing is in the empty
@@ -336,8 +357,8 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 		}
 		return fmt.Sprintf(`NOT EXISTS (
 			SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
-			WHERE av.card_id = c.id AND ad.name = %s AND av.value IN (%s)
-		)`, addArg(n.Attr), strings.Join(placeholders, ", ")), nil
+			WHERE av.card_id = c.id AND ad.name = %s AND av.value IN (%s)%s
+		)`, addArg(n.Attr), strings.Join(placeholders, ", "), classGuard(n.Attr, snap)), nil
 	case "exists":
 		return fmt.Sprintf(`EXISTS (
 			SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
@@ -472,8 +493,8 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 		}
 		return fmt.Sprintf(`EXISTS (
 			SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
-			WHERE av.card_id = c.id AND ad.name = %s AND av.value::text ILIKE %s
-		)`, addArg(n.Attr), addArg("%"+needle+"%")), nil
+			WHERE av.card_id = c.id AND ad.name = %s AND av.value::text ILIKE %s%s
+		)`, addArg(n.Attr), addArg("%"+needle+"%"), classGuard(n.Attr, snap)), nil
 	default:
 		return "", fmt.Errorf("unsupported op %q", n.Op)
 	}

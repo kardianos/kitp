@@ -64,6 +64,19 @@ func ApplySchema(ctx context.Context, pool *pgxpool.Pool, opts hcsv.GenerateOpti
 		return fmt.Errorf("create schema_version: %w", err)
 	}
 
+	// Pre-DDL column bootstrap. The generated index DDL (re-applied every boot)
+	// references attribute_value.value_type_id in its partial predicates, but
+	// CREATE TABLE IF NOT EXISTS can't add that column to an already-initialised
+	// DB — and CREATE INDEX IF NOT EXISTS parses (and fails on) a predicate's
+	// column even when the index already exists. So ensure the column is present
+	// BEFORE the generated DDL runs. Idempotent: a no-op on a fresh DB (the table
+	// doesn't exist yet → the DDL below creates it WITH the column) and on an
+	// already-migrated DB (column present). The 0008 migration backfills it and
+	// sets NOT NULL.
+	if _, err := tx.Exec(ctx, preDDL); err != nil {
+		return fmt.Errorf("apply pre-ddl: %w", err)
+	}
+
 	// DDL is idempotent and additive — always apply.
 	if parts.DDL != "" {
 		if _, err := tx.Exec(ctx, parts.DDL); err != nil {
@@ -155,6 +168,11 @@ func ApplySchema(ctx context.Context, pool *pgxpool.Pool, opts hcsv.GenerateOpti
 //     migration here. Still NEVER put a CREATE/DROP/RENAME of tables / indexes /
 //     functions here (those stay declarative and reapply on every boot); and
 //     never a destructive column change (DROP / RENAME / type-narrowing).
+//     ONE narrow index exception: replacing an existing index's PREDICATE (e.g.
+//     making it partial) can't be done declaratively — CREATE INDEX IF NOT
+//     EXISTS skips an already-named index — so a guarded DROP/CREATE of that
+//     index may live here (see 0008). Guard it on pg_indexes.indexdef so it's a
+//     no-op once the new form is in place.
 //   - Each `sql` MUST be idempotent: it also runs (as a no-op) on a fresh DB,
 //     whose current seed already reflects the change. `ADD COLUMN IF NOT EXISTS`
 //     satisfies this — the column is already present from the fresh DB's
@@ -377,7 +395,55 @@ BEGIN
     );
 END $$;`,
 	},
+	{
+		// attribute_value.value_type_id — denormalized storage-class id so the
+		// value indexes can partition structured (JSONB → (attribute_def_id,
+		// value) btree, <1000) from text (→ trigram, >=1000). Without it a large
+		// markdown `description` overflows the 2704-byte btree tuple cap and the
+		// write fails with an opaque "internal error". The column is bootstrapped
+		// before the generated DDL (see preDDL) and kept correct on new rows by
+		// the attribute_value_set_type_id trigger; here we backfill existing rows,
+		// enforce NOT NULL, and swap both indexes to their partitioned form.
+		//
+		// The index DROP/CREATE below is the deliberate, narrow exception to the
+		// "no index DDL in migrations" rule (see the type doc): replacing an index
+		// PREDICATE is impossible via the declarative CREATE INDEX IF NOT EXISTS
+		// (it skips an already-named index), so the swap must run once here. Each
+		// swap is guarded on pg_indexes.indexdef, so it's a no-op once the partial
+		// form is present (every fresh DB, and re-runs).
+		// Plain top-level statements (no DO block): index DROP/CREATE inside a
+		// plpgsql block with an intervening pg_indexes scan can reference a
+		// just-dropped index via a cached plan ("could not open relation with
+		// OID"). The swaps are unconditional but idempotent — DROP IF EXISTS
+		// then CREATE always lands on the partitioned form; on a fresh DB this
+		// rebuilds the (small, just-seeded) index once, which is harmless.
+		id: "0008_attribute_value_type_id",
+		sql: `
+UPDATE attribute_value av
+   SET value_type_id = av_value_type_id(ad.value_type)
+  FROM attribute_def ad
+ WHERE ad.id = av.attribute_def_id
+   AND av.value_type_id IS NULL;
+
+ALTER TABLE attribute_value ALTER COLUMN value_type_id SET NOT NULL;
+
+DROP INDEX IF EXISTS attribute_value_def_value;
+CREATE INDEX attribute_value_def_value
+  ON attribute_value (attribute_def_id, value)
+  WHERE value_type_id < 1000;
+
+DROP INDEX IF EXISTS attribute_value_trgm;
+CREATE INDEX attribute_value_trgm
+  ON attribute_value USING gin ((value::text) gin_trgm_ops)
+  WHERE value_type_id >= 1000;`,
+	},
 }
+
+// preDDL bootstraps columns that the generated index DDL references but that
+// CREATE TABLE IF NOT EXISTS can't add to an already-initialised DB. Applied
+// before the generated DDL (see ApplySchema). Must stay idempotent and use
+// IF EXISTS / IF NOT EXISTS so it's a no-op on both fresh and migrated DBs.
+const preDDL = `ALTER TABLE IF EXISTS attribute_value ADD COLUMN IF NOT EXISTS value_type_id int;`
 
 // ledgerDDL creates the schema-version ledger. Kept here (not in the generated
 // schema) because it must exist before the generated DDL/seed is gated on it.

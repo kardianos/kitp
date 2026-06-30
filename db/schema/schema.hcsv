@@ -178,19 +178,20 @@ created_at, timestamptz, , false, now(),
 name, columns
 idx_activity_card_id_created_at, "card_id, created_at"
 
-## table attribute_value | doc="Current value of one attribute on one card. last_activity_id points at the activity row that set this value." | primary_key="card_id, attribute_def_id"
+## table attribute_value | doc="Current value of one attribute on one card. last_activity_id points at the activity row that set this value. value_type_id denormalizes the def's storage class onto the row (<1000 = structured/JSONB, >=1000 = plain text) so the value indexes can partition by class without a join: structured values get the (attribute_def_id, value) btree for equality, text values get the trigram and are kept OUT of the btree (a large markdown body would otherwise overflow the 2704-byte btree tuple cap). Set by the attribute_value_set_type_id trigger from attribute_def.value_type, which is immutable." | primary_key="card_id, attribute_def_id"
 
 ### columns
 name, type, nullable, references
 card_id, bigint, false, card.id
 attribute_def_id, bigint, false, attribute_def.id
-value, jsonb, , 
+value, jsonb, ,
+value_type_id, int, false,
 last_activity_id, bigint, , activity.id
 
 ### indexes
 name, columns, expressions, using, where
-attribute_value_trgm, , "(value::text) gin_trgm_ops", gin,
-attribute_value_def_value, "attribute_def_id, value", , ,
+attribute_value_trgm, , "(value::text) gin_trgm_ops", gin, "value_type_id >= 1000"
+attribute_value_def_value, "attribute_def_id, value", , , "value_type_id < 1000"
 attribute_value_def_card, "attribute_def_id, card_id", , ,
 attribute_value_def_ref, , "attribute_def_id, ((value)::text::bigint)", , "jsonb_typeof(value) = 'number'"
 
@@ -464,6 +465,8 @@ updated_at, timestamptz, , false, now(), ,
 -- dispatcher's wrapper code is one shape.
 -- ---------------------------------------------------------------------
 
+## function av_value_type_id | doc="Map an attribute_def.value_type to its storage-class id, denormalized onto attribute_value.value_type_id. <1000 = structured (JSONB equality via the (attribute_def_id, value) btree); >=1000 = plain text (trigram only, kept out of the btree so a large markdown body can't overflow the 2704-byte btree tuple cap). Single source of the mapping for both the attribute_value_set_type_id trigger and the backfill migration." | path="functions/av_value_type_id.sql" | arg_types="text"
+## function attribute_value_set_type_id | doc="BEFORE INSERT trigger on attribute_value: sets value_type_id from the def's value_type via av_value_type_id. value_type is immutable per def and attribute_def_id never changes, so set-on-insert keeps the denormalized class correct with no re-sync. The body also declares the trigger; DROP TRIGGER IF EXISTS + CREATE TRIGGER re-apply it each boot." | path="functions/attribute_value_set_type_id.sql" | arg_types=""
 ## function card_ancestors | doc="Shared capped parent_card_id walk (A1 / BE-C1 / SEC-1). Returns the ancestor chain of a card (inclusive) with a 0-based depth column; the recursive arm carries WHERE depth < 16 so a parent cycle can't pin a connection. The single source of the depth cap (A15d)." | path="functions/card_ancestors.sql" | arg_types="bigint"
 ## function card_enclosing_project | doc="Resolve a card's enclosing project (first card_type='project' ancestor within the depth cap) via card_ancestors. Canonical card→project resolver (A10 / BE-M3); declared after card_ancestors because its SQL body references it at create time." | path="functions/card_enclosing_project.sql" | arg_types="bigint"
 ## function card_ref_cross_project | doc="Check whether a card's stored card_ref / card_ref[] values would cross a project boundary for a given target enclosing project (A11 / BE-M5). Returns the first offending (attr, value_card, value_project) or no rows. Reuses card_enclosing_project; declared after it. Used by card.move to re-validate the cross-project ref invariant on re-parent." | path="functions/card_ref_cross_project.sql" | arg_types="bigint, bigint"

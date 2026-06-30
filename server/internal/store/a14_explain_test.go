@@ -10,17 +10,22 @@ import (
 
 // TestA14_ExplainValueFirstFilter is a throwaway diagnostic (A14): seed a
 // few thousand attribute_value rows and confirm a value-first
-// `attribute_def_id = X AND value = Y` filter takes an index path
-// (attribute_value_def_value), not a seq scan. Run with -v to see the plan.
+// `attribute_def_id = X AND value = Y` filter on a STRUCTURED attribute
+// takes an index path (the partitioned attribute_value_def_value btree),
+// not a seq scan. The btree is now partial (value_type_id < 1000), so the
+// query carries the same class guard the predicate compiler appends — that's
+// what lets the planner use the partial index (proven: dropping the guard
+// falls back to a seq scan). Text attributes intentionally live outside this
+// btree (trigram only). Run with -v to see the plan.
 func TestA14_ExplainValueFirstFilter(t *testing.T) {
 	pool := store.TestPool(t, "kitp_a14_explain")
 	ctx := context.Background()
 
-	// Two attribute_defs; many value-cards under them. Seed ~4000 rows.
+	// Two structured (number) attribute_defs; many value-cards under them.
 	_, err := pool.Exec(ctx, `
 		INSERT INTO card_type(name) VALUES ('a14ct') ON CONFLICT DO NOTHING;
-		INSERT INTO attribute_def(name, value_type) VALUES ('a14_status','text') ON CONFLICT DO NOTHING;
-		INSERT INTO attribute_def(name, value_type) VALUES ('a14_other','text') ON CONFLICT DO NOTHING;
+		INSERT INTO attribute_def(name, value_type) VALUES ('a14_status','number') ON CONFLICT DO NOTHING;
+		INSERT INTO attribute_def(name, value_type) VALUES ('a14_other','number') ON CONFLICT DO NOTHING;
 	`)
 	if err != nil { t.Fatalf("seed defs: %v", err) }
 
@@ -35,12 +40,12 @@ func TestA14_ExplainValueFirstFilter(t *testing.T) {
 
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO attribute_value(card_id, attribute_def_id, value)
-		SELECT c.id, $1, to_jsonb('s' || (c.id % 20)::text)
+		SELECT c.id, $1, to_jsonb(c.id % 20)
 		FROM card c WHERE c.card_type_id = $2
 	`, defStatus, ctID); err != nil { t.Fatalf("seed status values: %v", err) }
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO attribute_value(card_id, attribute_def_id, value)
-		SELECT c.id, $1, to_jsonb('o' || (c.id % 50)::text)
+		SELECT c.id, $1, to_jsonb(c.id % 50)
 		FROM card c WHERE c.card_type_id = $2
 	`, defOther, ctID); err != nil { t.Fatalf("seed other values: %v", err) }
 
@@ -49,7 +54,7 @@ func TestA14_ExplainValueFirstFilter(t *testing.T) {
 	rows, err := pool.Query(ctx, `
 		EXPLAIN (FORMAT TEXT)
 		SELECT card_id FROM attribute_value
-		WHERE attribute_def_id = $1 AND value = to_jsonb('s7'::text)
+		WHERE attribute_def_id = $1 AND value = to_jsonb(7) AND value_type_id < 1000
 	`, defStatus)
 	if err != nil { t.Fatalf("explain: %v", err) }
 	defer rows.Close()

@@ -60,6 +60,12 @@ DECLARE
     _attr text;
     _op text;
     _value_type text;
+    -- value_type_id band predicate so the partitioned attribute_value
+    -- indexes are usable: structured (<1000) → (attribute_def_id, value)
+    -- btree; text (>=1000) → trigram. Redundant-but-true for the attr's
+    -- own rows, so it never changes results. Mirrors classGuard() in
+    -- internal/dom/card/where.go.
+    _class_guard text;
     _values jsonb;
     _v jsonb;
     _v_canon jsonb;
@@ -204,6 +210,11 @@ BEGIN
     -- Resolve attr value_type for canonicalization. Missing attribute_def
     -- pass-through (matches Go-side behaviour of leaving raw value alone).
     SELECT value_type INTO _value_type FROM attribute_def WHERE name = _attr LIMIT 1;
+    _class_guard := CASE
+        WHEN _value_type IS NULL OR _value_type = '' THEN ''
+        WHEN _value_type = 'text' THEN ' AND av.value_type_id >= 1000'
+        ELSE ' AND av.value_type_id < 1000'
+    END;
 
     -- Normalise: v1 single-value `value` to v2 `values:[v]`. v1 op '='
     -- aliases to v2 'eq'; '!=' to 'ne'. Same set translation logic.
@@ -239,8 +250,8 @@ BEGIN
             SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
             _sql := format(
                 'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
-                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value = ($1->%s)::jsonb)',
-                _attr_idx::text, _val_idx::text);
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value = ($1->%s)::jsonb%s)',
+                _attr_idx::text, _val_idx::text, _class_guard);
         END IF;
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
@@ -265,8 +276,8 @@ BEGIN
             SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v_canon) AS r(p, i);
             _sql := format(
                 'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
-                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value = ($1->%s)::jsonb)',
-                _attr_idx::text, _val_idx::text);
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value = ($1->%s)::jsonb%s)',
+                _attr_idx::text, _val_idx::text, _class_guard);
         END IF;
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
@@ -301,9 +312,10 @@ BEGIN
         ELSE
             _sql := format(
                 'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
-                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value IN (%s))',
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value IN (%s)%s)',
                 _attr_idx::text,
-                array_to_string(_placeholders, ', '));
+                array_to_string(_placeholders, ', '),
+                _class_guard);
         END IF;
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
@@ -337,9 +349,10 @@ BEGIN
         ELSE
             _sql := format(
                 'NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
-                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value IN (%s))',
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value IN (%s)%s)',
                 _attr_idx::text,
-                array_to_string(_placeholders, ', '));
+                array_to_string(_placeholders, ', '),
+                _class_guard);
         END IF;
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 
@@ -462,8 +475,8 @@ BEGIN
             SELECT p, i INTO params, _val_idx FROM _ph_push(params, to_jsonb('%' || _needle || '%')) AS r(p, i);
             _sql := format(
                 'EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id ' ||
-                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value::text ILIKE ($1->>%s))',
-                _attr_idx::text, _val_idx::text);
+                'WHERE av.card_id = c.id AND ad.name = ($1->>%s) AND av.value::text ILIKE ($1->>%s)%s)',
+                _attr_idx::text, _val_idx::text, _class_guard);
         END IF;
         RETURN jsonb_build_object('sql', _sql, 'params', params);
 

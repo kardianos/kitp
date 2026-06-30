@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/schema/hcsv"
@@ -626,5 +627,99 @@ func TestApplySchemaAdoptsPreLedgerDB(t *testing.T) {
 	}
 	if steps != 15 {
 		t.Errorf("flow_step after adoption: got %d, want 15 (seed must not re-run)", steps)
+	}
+}
+
+// TestForwardMigration0008ValueTypeId proves the value_type_id upgrade reaches
+// an already-initialised DB that predates it: the column is bootstrapped before
+// the generated DDL (preDDL), backfilled + made NOT NULL by migration 0008, and
+// both indexes are swapped to their partitioned (structured-btree / text-trgm)
+// form. It also confirms the payoff — a large incompressible text value, which
+// the old non-partial btree rejected, now writes successfully.
+func TestForwardMigration0008ValueTypeId(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0008")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	// Simulate a pre-0008 install: drop the trigger + column + partial indexes,
+	// recreate the OLD non-partial indexes, and remove 0008's ledger row
+	// (baseline stays, so the one-time seed remains gated off).
+	for _, stmt := range []string{
+		`DROP TRIGGER IF EXISTS attribute_value_set_type_id_trg ON attribute_value`,
+		`DROP INDEX IF EXISTS attribute_value_def_value`,
+		`DROP INDEX IF EXISTS attribute_value_trgm`,
+		`ALTER TABLE attribute_value DROP COLUMN IF EXISTS value_type_id`,
+		`CREATE INDEX attribute_value_def_value ON attribute_value (attribute_def_id, value)`,
+		`CREATE INDEX attribute_value_trgm ON attribute_value USING gin ((value::text) gin_trgm_ops)`,
+		`DELETE FROM schema_version WHERE name = '0008_attribute_value_type_id'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0008 (%s): %v", stmt, err)
+		}
+	}
+
+	// A normal boot re-applies the missing migration (seed does NOT re-run).
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+
+	// Column present, NOT NULL, and every existing seed row was backfilled.
+	var nullCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM attribute_value WHERE value_type_id IS NULL`).Scan(&nullCount); err != nil {
+		t.Fatalf("null check: %v", err)
+	}
+	if nullCount != 0 {
+		t.Errorf("backfill left %d rows with NULL value_type_id", nullCount)
+	}
+	// Both classes are represented (text titles → >=1000, status refs → <1000).
+	var bands int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(DISTINCT (value_type_id >= 1000)) FROM attribute_value
+	`).Scan(&bands); err != nil {
+		t.Fatalf("band check: %v", err)
+	}
+	if bands < 2 {
+		t.Errorf("expected both storage-class bands present after backfill, got %d", bands)
+	}
+
+	// Indexes are now partitioned.
+	assertPartial := func(name, pred string) {
+		var def string
+		if err := pool.QueryRow(ctx,
+			`SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1`,
+			name).Scan(&def); err != nil {
+			t.Fatalf("indexdef %s: %v", name, err)
+		}
+		if !strings.Contains(def, pred) {
+			t.Errorf("%s not partitioned after upgrade: %s", name, def)
+		}
+	}
+	assertPartial("attribute_value_def_value", "value_type_id < 1000")
+	assertPartial("attribute_value_trgm", "value_type_id >= 1000")
+
+	// The payoff: a large incompressible text value now writes (old btree rejected it).
+	var ctID, defID, cardID int64
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO card_type(name) VALUES ('up8ct') ON CONFLICT DO NOTHING;
+		INSERT INTO attribute_def(name, value_type) VALUES ('up8desc','text') ON CONFLICT DO NOTHING;
+	`); err != nil {
+		t.Fatalf("seed big-text def: %v", err)
+	}
+	pool.QueryRow(ctx, `SELECT id FROM card_type WHERE name='up8ct'`).Scan(&ctID)
+	pool.QueryRow(ctx, `SELECT id FROM attribute_def WHERE name='up8desc'`).Scan(&defID)
+	pool.QueryRow(ctx, `INSERT INTO card(card_type_id) VALUES ($1) RETURNING id`, ctID).Scan(&cardID)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO attribute_value(card_id, attribute_def_id, value)
+		VALUES ($1, $2, to_jsonb((SELECT string_agg(md5(g::text), '') FROM generate_series(1,200) g)))
+	`, cardID, defID); err != nil {
+		t.Fatalf("large text write after upgrade failed: %v", err)
+	}
+
+	// Idempotent: a further boot is a clean no-op.
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("third apply (idempotent): %v", err)
 	}
 }
