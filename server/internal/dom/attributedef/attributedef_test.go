@@ -110,12 +110,13 @@ func TestSelectCarriesEnumManaged(t *testing.T) {
 	for _, r := range out.Rows {
 		got[r.Name] = r.EnumManaged
 	}
-	// Seed flags milestone_ref / component_ref / tags as enum_managed; others off.
+	// Seed flags the managed value-card refs (milestone_ref / component_ref /
+	// status / tags) as enum_managed; plain refs like assignee stay off.
 	want := map[string]bool{
 		"milestone_ref": true,
 		"component_ref": true,
 		"tags":          true,
-		"status":        false,
+		"status":        true,
 		"assignee":      false,
 	}
 	for name, exp := range want {

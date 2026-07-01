@@ -125,6 +125,7 @@ func Register(p *store.Pool) {
 		// db/schema/functions/attribute_def_select_batch.sql per Phase
 		// 5 of docs/UNIFIED_HANDLER_PLAN.md.
 		SQLFunc: "attribute_def_select_batch",
+		IsRead:  true,
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "attribute_def",

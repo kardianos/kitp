@@ -16,7 +16,11 @@
     },
     "parent_card_id": {
       "type": "string",
-      "description": "parent card id; nil for top-level project cards"
+      "description": "STRUCTURAL parent card id (the enclosing project for a task); nil for top-level project cards. NOT the subtask link — see parent_task"
+    },
+    "parent_task": {
+      "type": "string",
+      "description": "nest this new task under an existing task as a subtask (sets the parent_task link the UI parent/child panel uses); parent must be a task in the same project. Distinct from parent_card_id"
     },
     "phase": {
       "type": "string",

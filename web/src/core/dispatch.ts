@@ -198,6 +198,8 @@ type Decode<R> = (raw: unknown) => R;
 
 interface Pending {
   sub: SubRequest;
+  /** Read-only & safe to coalesce with byte-identical siblings in one flush. */
+  dedup: boolean;
   decode: Decode<unknown>;
   /** Scope token — when killed, the response is dropped (control destroyed). */
   alive: () => boolean;
@@ -227,6 +229,14 @@ export interface RawRequestArgs {
   data?: unknown;
   decode?: Decode<unknown>;
   alive?: () => boolean;
+  /**
+   * Opt this request into same-flush coalescing: byte-identical dedup requests
+   * (same endpoint/action/data, no ref/key) collapse to ONE wire sub-request,
+   * and the shared response fans out to every caller. Set ONLY for reads — a
+   * read is a pure function of its input within one batch, so the merged
+   * response is correct; merging writes would silently drop a mutation.
+   */
+  dedup?: boolean;
 }
 
 export class Dispatcher {
@@ -291,6 +301,7 @@ export class Dispatcher {
 
     this.queue.push({
       sub,
+      dedup: args.dedup === true && args.ref === undefined && args.key === undefined,
       decode: (args.decode as Decode<unknown>) ?? ((raw) => raw),
       alive: args.alive ?? alwaysAlive,
       onOk,
@@ -351,7 +362,30 @@ export class Dispatcher {
     const batch = this.queue;
     this.queue = [];
 
-    const body = stringifyBigInt({ subrequests: batch.map((p) => trimSub(p.sub)) });
+    // Read-dedup: collapse byte-identical dedup-eligible reads to ONE wire
+    // sub-request. `respIdOf` maps every pending's id to the id whose response
+    // carries its result (its own, or the leader it folded into). The server
+    // dedups too; doing it here also shrinks the request body and the work the
+    // server must fan back out.
+    const respIdOf = new Map<string, string>();
+    const leaderByKey = new Map<string, string>();
+    const wire: Array<Record<string, unknown>> = [];
+    for (const p of batch) {
+      if (p.dedup) {
+        const s = p.sub;
+        const key = `${s.endpoint} ${s.action} ${stringifyBigInt(s.data ?? null)}`;
+        const leader = leaderByKey.get(key);
+        if (leader !== undefined) {
+          respIdOf.set(s.id, leader);
+          continue; // folded into the leader; not sent
+        }
+        leaderByKey.set(key, s.id);
+      }
+      respIdOf.set(p.sub.id, p.sub.id);
+      wire.push(trimSub(p.sub));
+    }
+
+    const body = stringifyBigInt({ subrequests: wire });
 
     let resp: { status: number; text: string };
     try {
@@ -400,7 +434,7 @@ export class Dispatcher {
     }
 
     for (const p of batch) {
-      const sr = subs.get(p.sub.id);
+      const sr = subs.get(respIdOf.get(p.sub.id) ?? p.sub.id);
       if (!sr) {
         const fault: ApiFault = { kind: 'aborted', reason: 'missing_subresponse' };
         this.emitFault(fault);

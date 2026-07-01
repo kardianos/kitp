@@ -136,7 +136,7 @@ export interface DataHost {
         specKey: string,
         data: unknown,
         onOk: (out: unknown) => void,
-        opts?: { onErr?: (f: ApiFault) => void; alive?: () => boolean },
+        opts?: { onErr?: (f: ApiFault) => void; alive?: () => boolean; dedup?: boolean },
       ): string;
     };
     tree: TreeNode;
@@ -310,6 +310,10 @@ export class DataController {
       {
         alive: () => this.host.isAlive(),
         onErr: (f) => this.routeError(q.onError ?? 'self', f),
+        // Queries are reads: identical ones firing in the same flush (the same
+        // reference list requested by several bindings on a screen) coalesce
+        // to one wire sub-request and share the response.
+        dedup: true,
       },
     );
   }

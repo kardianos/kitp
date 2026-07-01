@@ -84,6 +84,7 @@ func Register() {
 		// db/schema/functions/user_select_batch.sql per Phase 5 of
 		// docs/UNIFIED_HANDLER_PLAN.md.
 		SQLFunc: "user_select_batch",
+		IsRead:  true,
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "user",

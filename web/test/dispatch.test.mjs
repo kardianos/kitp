@@ -234,3 +234,37 @@ test('IN-FLIGHT SIGNAL: an HTTP error path also releases the count', async () =>
   await disp.flushNow();
   assert.equal(disp.inFlight.peek(), 0, 'failAll released the in-flight count');
 });
+
+test('read dedup: identical dedup-flagged reads collapse to one wire sub and fan out', async () => {
+  const { Dispatcher } = D;
+  const t = recordingTransport((req) => ({
+    status: 200,
+    text: JSON.stringify({
+      subresponses: req.subrequests.map((s) => ({ id: s.id, ok: true, data: { n: s.data?.n ?? null } })),
+    }),
+  }));
+  const disp = new Dispatcher({ transport: t });
+  const got = [];
+  const push = (k) => (o) => got.push([k, o]);
+  // three byte-identical dedup reads
+  disp.request({ endpoint: 'r', action: 'get', data: { n: 1 }, dedup: true }, push('a'));
+  disp.request({ endpoint: 'r', action: 'get', data: { n: 1 }, dedup: true }, push('b'));
+  disp.request({ endpoint: 'r', action: 'get', data: { n: 1 }, dedup: true }, push('c'));
+  // distinct data → its own wire sub
+  disp.request({ endpoint: 'r', action: 'get', data: { n: 2 }, dedup: true }, push('d'));
+  // identical but NOT dedup-flagged (writes) → both sent, never merged
+  disp.request({ endpoint: 'w', action: 'set', data: { n: 1 } }, push('e'));
+  disp.request({ endpoint: 'w', action: 'set', data: { n: 1 } }, push('f'));
+
+  await disp.flushNow();
+
+  assert.equal(t.sent.length, 1, 'one POST');
+  const subs = t.sent[0].subrequests;
+  assert.equal(subs.length, 4, `wire subrequests=${subs.length}, want 4 (read n=1 deduped, read n=2, 2 writes)`);
+  assert.equal(got.length, 6, 'all six callbacks delivered');
+  for (const id of ['a', 'b', 'c']) {
+    const e = got.find(([k]) => k === id);
+    assert.deepEqual(e[1], { n: 1 }, `${id} received the shared leader response`);
+  }
+  assert.deepEqual(got.find(([k]) => k === 'd')[1], { n: 2 }, 'distinct read kept separate');
+});

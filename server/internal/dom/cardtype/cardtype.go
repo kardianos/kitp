@@ -41,5 +41,6 @@ func Register() {
 		// Unified handler — body lives in
 		// db/schema/functions/card_type_select_batch.sql.
 		SQLFunc: "card_type_select_batch",
+		IsRead:  true,
 	})
 }

@@ -75,6 +75,11 @@ export interface CallOptions {
   onErr?: (fault: ApiFault) => void;
   /** Drop the response if this returns false at delivery (control destroyed). */
   alive?: () => boolean;
+  /**
+   * Opt into same-flush coalescing of byte-identical requests (set only for
+   * reads — the data layer sets it for queries). See RawRequestArgs.dedup.
+   */
+  dedup?: boolean;
 }
 
 /**
@@ -133,6 +138,7 @@ export class Api {
         data: encoded,
         decode: spec.decode as (raw: unknown) => unknown,
         ...(alive ? { alive } : {}),
+        ...(opts.dedup ? { dedup: true } : {}),
       },
       (decoded) => onOk(decoded as O),
       // The dispatcher already emitted the typed ApiFault to the central

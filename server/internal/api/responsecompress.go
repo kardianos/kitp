@@ -37,7 +37,14 @@ const (
 // read); tiny responses don't benefit and can stay on writeJSON.
 func writeJSONCompressed(w http.ResponseWriter, r *http.Request, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	// Idempotency-keyed requests are mutations: the idempotency layer captures
+	// the response bytes, JSON-parses them to decide cacheability, and replays
+	// them verbatim. A compressed buffer breaks that parse + replay, so keep
+	// these identity (their responses are small — compression buys nothing).
 	enc := negotiateEncoding(r.Header.Get("Accept-Encoding"))
+	if r.Header.Get("Idempotency-Key") != "" {
+		enc = ""
+	}
 	if enc == "" {
 		w.WriteHeader(status)
 		encodeJSON(w, v)

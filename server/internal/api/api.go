@@ -200,7 +200,10 @@ func (s *Server) MountBatch(rt *Router, decorators ...AuthedDecorator) {
 			return BadRequest("bad_request", fmt.Sprintf("malformed json: %v", err))
 		}
 		resp := s.Dispatch(ctx, req)
-		writeJSON(w, http.StatusOK, resp)
+		// Compress the (often hundreds-of-KB) batch read inline; negotiated
+		// from Accept-Encoding, identity fallback. This is the production
+		// batch path (HandleBatch is the test/legacy Mount path).
+		writeJSONCompressed(w, r, http.StatusOK, resp)
 		return nil
 	})
 	// Apply in reverse so decorators[0] ends up outermost — caller
@@ -460,7 +463,23 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 		s.logBatch(ctx, 0, time.Since(start), "ok")
 		return out
 	}
+
+	// Read-dedup: identical read sub-requests within one batch (same
+	// endpoint/action/data, no idempotency key or ref) are a pure function of
+	// (actor, input) inside the single request tx, so they yield byte-identical
+	// responses. Run only the first occurrence ("leader") and mirror its result
+	// into the duplicate slots — a screen that over-fetches the same reference
+	// list (attribute_def, status, …) several times then costs one execution.
+	dupOf := dedupReadSubrequests(req.Subrequests)
+
 	defer func() {
+		// Mirror each leader's response into its duplicate slots (keeping each
+		// duplicate's own ID) before outcome detection + logging run.
+		for dup, leader := range dupOf {
+			r := out.Subresponses[leader]
+			r.ID = req.Subrequests[dup].ID
+			out.Subresponses[dup] = r
+		}
 		// Determine outcome by inspecting the result slots.
 		outcome := "ok"
 		for _, sr := range out.Subresponses {
@@ -487,6 +506,9 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 	// deferred to pass 2 so we can preload referenced cards in one query.
 	var prepped []prepared
 	for i, sr := range req.Subrequests {
+		if _, isDup := dupOf[i]; isDup {
+			continue // deduped read; its slot is filled from the leader in the defer
+		}
 		expanded, err := s.expandSubrequest(ctx, i, sr)
 		if err != nil {
 			// expandSubrequest returns curated validation HandlerErrors
@@ -623,6 +645,40 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 	}
 	committed = true
 	return out
+}
+
+// dedupReadSubrequests finds repeated read sub-requests within one batch and
+// maps every repeat (by outer index) to the first occurrence ("leader").
+// Eligibility is deliberately conservative: the (endpoint, action) must resolve
+// to a registered read handler (Handler.IsRead), the `data` bytes must match
+// exactly, and the sub-request must carry no idempotency `key` or `ref` (those
+// opt into per-occurrence handling). Returns nil when there's nothing to dedup.
+//
+// Keying on the raw `data` bytes never merges semantically-different requests —
+// at worst it misses a dedup when two equivalent payloads serialise
+// differently, which is safe. Writes are never deduped (IsRead gates them out).
+func dedupReadSubrequests(subs []SubRequest) map[int]int {
+	var dup map[int]int
+	seen := make(map[string]int, len(subs))
+	for i, sr := range subs {
+		if len(sr.Key) > 0 || len(sr.Ref) > 0 {
+			continue
+		}
+		h, ok := reg.Lookup(sr.Endpoint, sr.Action)
+		if !ok || !h.IsRead {
+			continue
+		}
+		key := sr.Endpoint + "\x00" + sr.Action + "\x00" + string(sr.Data)
+		if leader, ok := seen[key]; ok {
+			if dup == nil {
+				dup = make(map[int]int)
+			}
+			dup[i] = leader
+			continue
+		}
+		seen[key] = i
+	}
+	return dup
 }
 
 // expandSubrequest resolves a SubRequest to one or more prepared records.

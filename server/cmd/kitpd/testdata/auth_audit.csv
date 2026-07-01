@@ -13,7 +13,7 @@ dispatcher,,,attribute.update,admin;manager;worker,Set an attribute value on a c
 dispatcher,,,attribute_def.insert,admin,"Admin-only: insert a new attribute_def with optional initial edges, in one tx."
 dispatcher,,,attribute_def.select,$authenticated,List every attribute_def with the card_types it is bound to via edge.
 dispatcher,,,card.delete,admin;manager;worker,Soft-delete a card; the row is hidden from default selects but kept for activity history.
-dispatcher,,,card.insert,admin;manager;worker,"Insert a new card with the given card_type, optional parent, and initial title plus attributes."
+dispatcher,,,card.insert,admin;manager;worker,"Insert a new card with the given card_type, optional structural parent (parent_card_id), and initial title plus attributes. To create a TASK as a subtask of another task, pass parent_task (the existing parent task's id) — that sets the parent/child link the task UI shows, distinct from parent_card_id which is the enclosing project."
 dispatcher,,,card.merge,admin;manager,"Fold one or more duplicate cards of the same card_type into a survivor: repoint every card_ref / card_ref[] reference to the survivor and soft-delete the losers. For deduplicating value cards (milestones / components / tags) and, via person.merge, people."
 dispatcher,,,card.move,admin;manager;worker,Re-parent a card under a different parent of a compatible card_type.
 dispatcher,,,card.search,$authenticated,"Lightweight typeahead read for ref:* picker dropdowns. Returns (id, title) of cards in card_type_name that match query (substring) and/or ids."
@@ -61,7 +61,7 @@ dispatcher,,,role_mapping.list,admin,List every role_mapping row (claim value ->
 dispatcher,,,role_mapping.set,admin,Admin-only: upsert one role_mapping row.
 dispatcher,,,tag.apply,admin;manager;worker,Apply a tag card to a target card; mutually-exclusive sibling tags at the same root are removed atomically.
 dispatcher,,,tag.remove,admin;manager;worker,Remove a tag card from a target card.
-dispatcher,,,task.move,admin;manager;worker,"Bump a task (and optionally its sub-tree) to a different project, clearing per-project classification so the user re-classifies in the destination."
+dispatcher,,,task.move,admin;manager;worker,"Move a task (and optionally its sub-tree) to a DIFFERENT project, clearing per-project classification so the user re-classifies in the destination. This is a cross-project move, NOT subtask nesting: source and destination must be different projects (a same-project call returns same_project). To nest one task under another as a subtask, set the child's parent_task attribute via attribute.update, or pass parent_task to card.insert at create time."
 dispatcher,,,task.purge,admin;manager,Permanently delete a task (and its comms / reply_bodies / attachments / activity). Refuses when live sub-tasks or flow references exist. UI must gate this behind a strong confirm.
 dispatcher,,,user.list_with_roles,admin,List every user_account row with role assignments and resolved project titles for scoped grants. Used by the admin UI.
 dispatcher,,,user.select,$authenticated,List every user_account row sorted by display_name.
