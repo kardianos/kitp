@@ -179,11 +179,38 @@ func serveCompressed(w http.ResponseWriter, r *http.Request, cache *assetCache, 
 	modUnix := st.ModTime().UnixNano()
 	size := st.Size()
 
+	// ETag identifies this exact compressed rendition by {size, mod-time,
+	// encoding}. Encoding is IN the tag because the br / gzip / deflate
+	// renditions are distinct representations — Vary: Accept-Encoding (set by
+	// the caller) keeps shared caches from crossing them, and a distinct tag
+	// keeps a gzip client from being 304'd against a br entry. A client that
+	// already holds a matching rendition echoes it in If-None-Match; we then
+	// answer 304 without reading, compressing, or transmitting the body. That's
+	// the single biggest repeat-load win on a slow uplink: the fixed-name root
+	// bundle (app.js / styles.css) otherwise re-downloads in full on every
+	// navigation because this path — bypassing http.FileServer — emitted no
+	// validator at all. A stale validator (file changed → new mod-time/size →
+	// new tag) simply won't match and falls through to a fresh 200.
+	etag := fmt.Sprintf(`"%x-%x-%s"`, size, modUnix, enc)
+	if inm := r.Header.Get("If-None-Match"); inm != "" && etagMatch(inm, etag) {
+		// 304 carries only the validator + caching metadata, never a body or
+		// the Content-Type/Encoding/Length representation headers (mirrors
+		// net/http's writeNotModified). Vary was already set by the caller.
+		h := w.Header()
+		h.Set("ETag", etag)
+		if h.Get("Cache-Control") == "" {
+			h.Set("Cache-Control", "no-cache")
+		}
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
+
 	body, ok := cache.get(assetCacheKey{path: full, encoding: enc}, modUnix, size)
 	if !ok {
 		// Cache miss (cold, or the warm walk skipped it / it changed). Compress
 		// + cache inline; build returns ok=false to fall back to identity when
-		// the file is unreadable or doesn't actually shrink.
+		// the file is unreadable or doesn't actually shrink. Nothing has been
+		// written to the header map yet, so the FileServer fallback stays clean.
 		body, ok = cache.build(full, enc, modUnix, size)
 		if !ok {
 			return false
@@ -193,10 +220,36 @@ func serveCompressed(w http.ResponseWriter, r *http.Request, cache *assetCache, 
 	h := w.Header()
 	h.Set("Content-Type", ct)
 	h.Set("Content-Encoding", enc)
+	h.Set("ETag", etag)
+	// Store-but-revalidate: the browser keeps the bytes and confirms them with a
+	// cheap conditional GET (the ETag above → 304). Skip when the caller already
+	// pinned a stronger policy — the content-hashed bundle under /assets/ is
+	// immutable and never needs to revalidate at all.
+	if h.Get("Cache-Control") == "" {
+		h.Set("Cache-Control", "no-cache")
+	}
 	h.Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body) // a write error on a closed client conn is not actionable
 	return true
+}
+
+// etagMatch reports whether an If-None-Match header value admits `etag`. It
+// handles the "*" wildcard and a comma-separated list, and compares weakly
+// (strips any "W/" prefix on either side) per RFC 7232 §2.3.2 — our tags are
+// strong, but an intermediary cache may weaken them on revalidation.
+func etagMatch(inm, etag string) bool {
+	inm = strings.TrimSpace(inm)
+	if inm == "*" {
+		return true
+	}
+	want := strings.TrimPrefix(etag, "W/")
+	for _, part := range strings.Split(inm, ",") {
+		if strings.TrimPrefix(strings.TrimSpace(part), "W/") == want {
+			return true
+		}
+	}
+	return false
 }
 
 // negotiateEncoding picks the best supported Content-Encoding the client

@@ -143,6 +143,118 @@ func TestServeCompressedDeflate(t *testing.T) {
 	}
 }
 
+func TestServeCompressedETagConditional(t *testing.T) {
+	full := writeAsset(t)
+	cache := newAssetCache()
+
+	// First request: a full 200 carrying an ETag + revalidation policy.
+	r := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	r.Header.Set("Accept-Encoding", "br")
+	w := httptest.NewRecorder()
+	if !serveCompressed(w, r, cache, full) {
+		t.Fatal("serveCompressed returned false on first request")
+	}
+	res := w.Result()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("first request status = %d, want 200", res.StatusCode)
+	}
+	etag := res.Header.Get("ETag")
+	if etag == "" {
+		t.Fatal("200 response carries no ETag")
+	}
+	if cc := res.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache", cc)
+	}
+
+	// Second request echoing the ETag: 304 with no body and none of the
+	// representation headers (Content-Type/Encoding/Length).
+	r2 := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	r2.Header.Set("Accept-Encoding", "br")
+	r2.Header.Set("If-None-Match", etag)
+	w2 := httptest.NewRecorder()
+	if !serveCompressed(w2, r2, cache, full) {
+		t.Fatal("serveCompressed returned false on conditional request")
+	}
+	res2 := w2.Result()
+	if res2.StatusCode != http.StatusNotModified {
+		t.Fatalf("conditional status = %d, want 304", res2.StatusCode)
+	}
+	if w2.Body.Len() != 0 {
+		t.Fatalf("304 wrote a %d-byte body, want 0", w2.Body.Len())
+	}
+	if ce := res2.Header.Get("Content-Encoding"); ce != "" {
+		t.Fatalf("304 set Content-Encoding %q, want none", ce)
+	}
+	if got := res2.Header.Get("ETag"); got != etag {
+		t.Fatalf("304 ETag = %q, want echoed %q", got, etag)
+	}
+
+	// After the file changes (new stamp → new tag), the old validator must NOT
+	// 304 — the client has to pull the fresh bytes.
+	bigger := strings.Repeat("export const y = 2; // different different\n", 300)
+	if err := os.WriteFile(full, []byte(bigger), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r3 := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	r3.Header.Set("Accept-Encoding", "br")
+	r3.Header.Set("If-None-Match", etag)
+	w3 := httptest.NewRecorder()
+	serveCompressed(w3, r3, cache, full)
+	if w3.Result().StatusCode == http.StatusNotModified {
+		t.Fatal("stale ETag wrongly produced a 304 after the file changed")
+	}
+}
+
+func TestServeCompressedETagPerEncoding(t *testing.T) {
+	full := writeAsset(t)
+	cache := newAssetCache()
+
+	etagFor := func(enc string) string {
+		r := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+		r.Header.Set("Accept-Encoding", enc)
+		w := httptest.NewRecorder()
+		if !serveCompressed(w, r, cache, full) {
+			t.Fatalf("serveCompressed returned false for %s", enc)
+		}
+		return w.Result().Header.Get("ETag")
+	}
+	// br and gzip are distinct representations → distinct tags, so a gzip client
+	// can't be validated against the br entry (and vice-versa).
+	if etagFor("br") == etagFor("gzip") {
+		t.Fatal("br and gzip renditions share an ETag")
+	}
+
+	// A cross-encoding validator must not 304.
+	r := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	r.Header.Set("Accept-Encoding", "br")
+	r.Header.Set("If-None-Match", etagFor("gzip"))
+	w := httptest.NewRecorder()
+	serveCompressed(w, r, cache, full)
+	if w.Result().StatusCode == http.StatusNotModified {
+		t.Fatal("cross-encoding ETag wrongly produced a 304")
+	}
+}
+
+func TestETagMatch(t *testing.T) {
+	const et = `"abc-def-br"`
+	cases := []struct {
+		inm  string
+		want bool
+	}{
+		{`"abc-def-br"`, true},
+		{"*", true},
+		{`W/"abc-def-br"`, true},          // weak client tag matches strong server tag
+		{`"other", "abc-def-br"`, true},   // present in a list
+		{`"other"`, false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := etagMatch(c.inm, et); got != c.want {
+			t.Errorf("etagMatch(%q, %q) = %v, want %v", c.inm, et, got, c.want)
+		}
+	}
+}
+
 func TestServeCompressedIdentityFallthrough(t *testing.T) {
 	full := writeAsset(t)
 	cache := newAssetCache()

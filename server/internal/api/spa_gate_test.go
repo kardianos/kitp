@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
@@ -129,6 +130,71 @@ func TestSPAGate_AssetServedWhenUnauthenticated(t *testing.T) {
 	}
 	if rec.Body.String() != "console.log('asset');" {
 		t.Errorf("asset body = %q", rec.Body.String())
+	}
+}
+
+// A content-hashed bundle under /assets/ (build.mjs emits assets/<name>-<hash>.js)
+// must be served with BOTH the year-long immutable Cache-Control (the /assets/
+// rule) AND an ETag (the compressed path), and answer a matching conditional
+// GET with a 304. Regression guard for the assetcache × /assets/ interaction:
+// immutable must survive serveCompressed, and the ETag must be added.
+func TestSPAGate_HashedBundleImmutableAndConditional(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>doc</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	assetsDir := filepath.Join(dir, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Above minCompressSize and highly compressible so serveCompressed engages.
+	big := strings.Repeat("export const x = 1; // padding padding padding\n", 200)
+	if err := os.WriteFile(filepath.Join(assetsDir, "app-DEADBEEF.js"), []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := api.NewServer(nil)
+	mux := http.NewServeMux()
+	srv.MountSPAGated(mux, dir, api.SPAGateConfig{
+		SessionResolver: unauthedResolver(),
+		Enabled:         true,
+		LoginStartPath:  "/api/v1/auth/oidc/start",
+	})
+
+	const immutable = "public, max-age=31536000, immutable"
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/app-DEADBEEF.js", nil)
+	req.Header.Set("Accept-Encoding", "br")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != immutable {
+		t.Fatalf("Cache-Control = %q, want %q (must survive serveCompressed)", cc, immutable)
+	}
+	if enc := rec.Header().Get("Content-Encoding"); enc != "br" {
+		t.Fatalf("Content-Encoding = %q, want br", enc)
+	}
+	etag := rec.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("hashed bundle served without an ETag")
+	}
+
+	// Conditional GET echoing the ETag → 304, immutable preserved, empty body.
+	req2 := httptest.NewRequest(http.MethodGet, "/assets/app-DEADBEEF.js", nil)
+	req2.Header.Set("Accept-Encoding", "br")
+	req2.Header.Set("If-None-Match", etag)
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("conditional status = %d, want 304", rec2.Code)
+	}
+	if rec2.Body.Len() != 0 {
+		t.Fatalf("304 wrote %d body bytes, want 0", rec2.Body.Len())
+	}
+	if cc := rec2.Header().Get("Cache-Control"); cc != immutable {
+		t.Fatalf("304 Cache-Control = %q, want %q preserved", cc, immutable)
 	}
 }
 

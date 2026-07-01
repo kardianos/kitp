@@ -366,13 +366,17 @@ func spaHandler(webDir string, cfg SPAGateConfig, assets *assetCache) http.Handl
 			// compressed rendition); set it once so shared caches key the
 			// compressed and identity renditions separately.
 			w.Header().Set("Vary", "Accept-Encoding")
-			// Content-stable media under /assets/ (vendored fonts, icons,
-			// images) never change without a path change, so let the browser
-			// keep them for a year and skip re-fetching on every reload — the
-			// single biggest repeat-load win on a slow uplink. The root bundle
-			// (app.js / styles.css) is intentionally NOT cached here: it keeps
-			// a fixed name across deploys, so it must revalidate (a future
-			// content-hashed filename would let it be immutable too).
+			// Everything under /assets/ is content-stable: vendored fonts,
+			// icons, images, AND the content-hashed app/style bundle emitted by
+			// build.mjs (assets/<name>-<hash>.js|css). The hash changes whenever
+			// the bytes do, so the browser can keep them for a year and skip
+			// re-fetching on every reload — the single biggest repeat-load win
+			// on a slow uplink; a redeploy busts the cache via the new hash in
+			// index.html. Any compressible asset here still gets an ETag from
+			// serveCompressed, so a forced revalidation is a cheap 304 — the
+			// immutable hint just means the browser normally won't even ask. A
+			// dev/non-hashed bundle served at the root gets no immutable hint
+			// but still revalidates via that same ETag (Cache-Control: no-cache).
 			if strings.HasPrefix(r.URL.Path, "/assets/") {
 				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			}

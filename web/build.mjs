@@ -43,20 +43,43 @@ const common = {
 
 // Emit a self-contained dist/index.html. The source index.html references
 // ./dist/app.js + ./styles.css (so `npm run dev` serving web/ works). In the
-// shipped dist/ the bundle is served at GET / by kitpd with an SPA fallback:
-// any deep route (e.g. /project/1/screen/kanban) is served the SAME index.html.
-// RELATIVE asset paths would then resolve against the deep URL
-// (→ /project/1/screen/app.js → the fallback returns index.html as "JS" → the
-// module fails to parse → BLANK PAGE). So rewrite the asset refs to ABSOLUTE
-// (`/app.js`, `/styles.css`), which resolve to the bundle root regardless of
-// the current route depth.
-async function writeDistIndex() {
+// shipped dist/ the bundle is served by kitpd with an SPA fallback: any deep
+// route (e.g. /project/1/screen/kanban) is served the SAME index.html. RELATIVE
+// asset paths would then resolve against the deep URL (→ /project/1/screen/app.js
+// → the fallback returns index.html as "JS" → the module fails to parse → BLANK
+// PAGE). So rewrite the asset refs to the ABSOLUTE, content-hashed paths under
+// /assets/ (`/assets/app-<hash>.js`, `/assets/styles-<hash>.css`) resolved from
+// the build metafile — they resolve from the bundle root regardless of route
+// depth, AND kitpd serves anything under /assets/ with a year-long `immutable`
+// Cache-Control, so a redeploy (new hash) busts the cache without ever
+// re-downloading unchanged bytes. See bundleHrefs.
+async function writeDistIndex(appHref, cssHref) {
   const src = await readFile('index.html', 'utf8');
-  const out = src.replace('./dist/app.js', '/app.js').replace('./styles.css', '/styles.css');
-  if (out === src) {
-    throw new Error('build: index.html no longer references ./dist/app.js — update the rewrite');
+  if (!src.includes('./dist/app.js') || !src.includes('./styles.css')) {
+    throw new Error('build: index.html no longer references ./dist/app.js + ./styles.css — update the rewrite');
   }
+  const out = src.replace('./dist/app.js', appHref).replace('./styles.css', cssHref);
   await writeFile('dist/index.html', out);
+}
+
+// bundleHrefs reads the esbuild metafile and returns the absolute, root-relative
+// URLs of the hashed JS + CSS entry outputs (e.g. `/assets/app-A1B2C3D4.js`).
+// Each output records the `entryPoint` it came from, so we map back to the two
+// entry names rather than pattern-matching filenames; sourcemaps (.map) are
+// skipped. Throws if either entry can't be resolved (a build-shape change we'd
+// want to fail loudly on rather than ship an index.html with dangling refs).
+function bundleHrefs(metafile) {
+  let appHref, cssHref;
+  for (const [outPath, meta] of Object.entries(metafile.outputs)) {
+    if (outPath.endsWith('.map')) continue;
+    const href = '/' + outPath.replace(/^dist\//, ''); // dist/assets/app-HASH.js → /assets/app-HASH.js
+    if (meta.entryPoint === 'src/main.ts') appHref = href;
+    else if (meta.entryPoint === 'styles.css') cssHref = href;
+  }
+  if (!appHref || !cssHref) {
+    throw new Error(`build: could not resolve hashed bundle outputs from metafile (app=${appHref}, css=${cssHref})`);
+  }
+  return { appHref, cssHref };
 }
 
 // Copy static icon assets (favicons, apple-touch, general-use PNGs) into the
@@ -68,14 +91,25 @@ async function copyAssets() {
 }
 
 if (serve) {
+  // Dev: stable, UN-hashed names (dist/app.js, dist/styles.css) so the source
+  // index.html's ./dist/app.js ref keeps resolving across watch rebuilds. No
+  // content hashing here — that's a production-only cache-busting concern.
   const ctx = await esbuild.context(common);
   await ctx.watch();
   // esbuild's own static file server — serves web/ (so index.html + dist/).
   const { host, port } = await ctx.serve({ servedir: '.', host: '127.0.0.1' });
   console.log(`\nkitp web dev server: http://${host}:${port}/  (Ctrl-C to stop)`);
 } else {
-  await esbuild.build(common);
-  await writeDistIndex();
+  // Production: content-hash the entry outputs under dist/assets/ so kitpd's
+  // immutable /assets/ caching (see server/internal/api/api.go) applies and a
+  // redeploy busts the cache via a new hash. metafile drives the index rewrite.
+  const result = await esbuild.build({
+    ...common,
+    entryNames: 'assets/[name]-[hash]',
+    metafile: true,
+  });
+  const { appHref, cssHref } = bundleHrefs(result.metafile);
+  await writeDistIndex(appHref, cssHref);
   await copyAssets();
-  console.log('built self-contained dist/ (index.html, app.js, styles.css, assets/)');
+  console.log(`built self-contained dist/ (index.html, assets/, ${appHref}, ${cssHref})`);
 }
