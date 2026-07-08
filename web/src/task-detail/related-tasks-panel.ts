@@ -964,9 +964,12 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
   /* -------------------------------- helpers ----------------------------- */
 
   /**
-   * A clickable `#id Title` chip that navigates to the task on click. Rendered
-   * as an `<a>` so it's keyboard-accessible and shows the target on hover; the
-   * click is intercepted for in-app (history) navigation.
+   * A clickable `#id Title` chip that navigates to the task. Rendered as a real
+   * `<a href>` so it's keyboard-accessible, shows the target on hover, and gives
+   * ⌘/Ctrl-click, middle-click and right-click → "Open in new tab/window" for
+   * free. Only a PLAIN left-click is intercepted for in-app (history)
+   * navigation; a modified click is left to the browser so it opens a new
+   * tab/window (mirrors the row-link guard in shell/popout.ts).
    */
   private taskChip(id: bigint, label: string): HTMLElement {
     const a = document.createElement('a');
@@ -975,7 +978,9 @@ export class RelatedTasksPanel extends Control<RelatedTasksPanelConfig> {
     a.textContent = `#${id.toString()} ${label}`;
     a.title = `Go to #${id.toString()}`;
     this.listen(a, 'click', (e) => {
-      e.preventDefault();
+      const ev = e as MouseEvent;
+      if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return; // browser opens a new tab/window
+      ev.preventDefault();
       navigate(taskUrl(id));
     });
     return a;

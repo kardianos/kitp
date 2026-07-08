@@ -275,11 +275,18 @@ test('RelatedTasksPanel: body summary renders clickable parent + children with p
     .sort();
   assert.deepEqual(childPhases, ['active', 'triage'], 'child phase icons derive from STATUS phase, not the always-triage card.phase');
 
-  // The click is intercepted for in-app navigation (preventDefault) rather than
-  // a full page load — the anchor href above is the navigation target.
-  const evt = new globalThis.window.MouseEvent('click', { bubbles: true, cancelable: true });
-  childLinks.find((a) => a.getAttribute('href') === '/task/91').dispatchEvent(evt);
-  assert.ok(evt.defaultPrevented, 'child link click is intercepted for SPA navigation');
+  // A PLAIN click is intercepted for in-app navigation (preventDefault) rather
+  // than a full page load — the anchor href above is the navigation target.
+  const child91 = childLinks.find((a) => a.getAttribute('href') === '/task/91');
+  const plain = new globalThis.window.MouseEvent('click', { bubbles: true, cancelable: true });
+  child91.dispatchEvent(plain);
+  assert.ok(plain.defaultPrevented, 'plain child link click is intercepted for SPA navigation');
+
+  // A MODIFIED click (⌘/Ctrl) is LEFT to the browser so it opens a new
+  // tab/window — the handler must NOT preventDefault on the real anchor.
+  const mod = new globalThis.window.MouseEvent('click', { bubbles: true, cancelable: true, metaKey: true });
+  child91.dispatchEvent(mod);
+  assert.equal(mod.defaultPrevented, false, '⌘/Ctrl-click is not intercepted → opens a new tab');
 });
 
 test('RelatedTasksPanel: rail parent + child chips are clickable links', async () => {

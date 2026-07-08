@@ -236,7 +236,11 @@ export class Grid extends CardListCore<GridConfig> {
       when: { signal: 'grid.queryVersion' },
       input: {
         cardTypeName: { lit: 'task' },
-        parentCardId: { from: 'scope.projectId' },
+        // Enclosing-project subtree (NOT a direct parent_card_id match) so tasks
+        // nested under another task — subtasks whose structural parent is the
+        // epic, not the project — still appear on the board. Mirrors the list
+        // screens (CardListCore) which already scope tasks by projectId.
+        projectId: { from: 'scope.projectId' },
         order: { from: 'grid.order' },
         where: { from: 'grid.where' },
         tree: { from: 'grid.tree' },
@@ -244,7 +248,7 @@ export class Grid extends CardListCore<GridConfig> {
       // Stay idle until a project scope resolves — no cross-project flash on
       // the initial (scope=null) fire. The { signal } trigger refires once a
       // project is picked (the grid bumps queryVersion on scope change too).
-      skipWhenNull: ['parentCardId'],
+      skipWhenNull: ['projectId'],
       result: { method: 'landTasks' },
       onError: 'self',
     },

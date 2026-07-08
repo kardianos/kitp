@@ -325,6 +325,21 @@ test('Grid: a child task leads its title with a relation symbol keyed to its typ
   assert.equal(soloTitle.textContent, 'API rate limits');
 });
 
+test('Grid: tasks query scopes by enclosing-project subtree (project_id), not direct parent_card_id', async () => {
+  const { transport, sent } = gridMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  mountGrid(api, tree);
+  await settle(dispatcher);
+
+  // The wire input for the tasks read carries project_id (the ancestor-walk
+  // scope that also catches tasks nested under another task) and NOT
+  // parent_card_id (the old direct-child-only match that hid subtasks).
+  const q = sent.taskInputs[sent.taskInputs.length - 1];
+  assert.equal(q.project_id, String(PROJECT_ID), 'tasks scoped by enclosing project subtree');
+  assert.equal(q.parent_card_id, undefined, 'no direct parent_card_id filter on the tasks query');
+});
+
 /* -------------------------------------------------------------------------- */
 /* The body is a recycling virtualList scroll viewport (spacer + content +     */
 /* a FIXED pool of recycled row nodes), NOT a node-per-task reconciler.        */

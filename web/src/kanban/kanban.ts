@@ -266,7 +266,10 @@ export class Kanban extends Control<KanbanConfig> {
       when: { signal: 'kanban.queryVersion' },
       input: {
         cardTypeName: { lit: 'task' },
-        parentCardId: { from: 'scope.projectId' },
+        // Enclosing-project subtree (NOT a direct parent_card_id match) so tasks
+        // nested under another task still appear as columns' cards. Mirrors the
+        // list screens (CardListCore) which already scope tasks by projectId.
+        projectId: { from: 'scope.projectId' },
         order: { lit: [{ field: 'attributes.sort_order', direction: 'ASC' }] },
         // Search + Advanced predicate, resolved at fire time (see applyFilter).
         where: { from: 'kanban.where' },
@@ -276,7 +279,7 @@ export class Kanban extends Control<KanbanConfig> {
       // Stay idle until a project scope resolves — avoids loading every
       // project's tasks on the initial (scope=null) fire. The { signal }
       // trigger refires this once kanban.queryVersion is bumped on scope change.
-      skipWhenNull: ['parentCardId'],
+      skipWhenNull: ['projectId'],
       result: { method: 'landTasks' },
       onError: 'self',
     },

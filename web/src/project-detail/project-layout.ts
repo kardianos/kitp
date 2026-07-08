@@ -16,7 +16,8 @@
  *     title until it lands), and Export (#42) / Import (#41) HOOK buttons (each
  *     fires a `bus.emit` intent + logs a TODO — the two real flows land later).
  *   - TASK COLLECTION: the project's child tasks
- *     (`card.select_with_attributes` parentCardId=project) rendered as a simple
+ *     (`card.select_with_attributes` projectId=project — the whole enclosing-
+ *     project subtree, so tasks nested under another task appear too) as a
  *     selectable list. The screen reads the SHARED ScreenFilterBar's
  *     `screen.search` + `screen.predicate` leaves (the bar is mounted by the
  *     ScreenHost above this body) and narrows the loaded rows client-side
@@ -355,7 +356,10 @@ export class ProjectLayout extends Control<ProjectLayoutConfig> {
 
     const input: Record<string, unknown> = {
       cardTypeName: this.taskCardType,
-      parentCardId: id,
+      // Enclosing-project subtree (NOT a direct parent_card_id match) so tasks
+      // nested under another task appear here too — mirrors the grid / kanban /
+      // list screens. `id` is the in-scope project card id.
+      projectId: id,
     };
     if (where.length > 0) input['where'] = where;
 
