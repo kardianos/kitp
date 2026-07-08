@@ -438,6 +438,64 @@ test('CardListBody/inbox: renders tasks in personal order with id + status badge
   assert.ok(cols.includes('assignee=alice'), `assignee column resolved (got ${cols})`);
 });
 
+test('CardListBody/inbox: child task rows lead with a typed relation symbol; standalone rows do not', async () => {
+  // A custom harness whose task rows include a subtask (parent_task set) and a
+  // plain task, so we can assert the relation slot fills only for the child.
+  const rowsData = [
+    {
+      id: '401',
+      card_type_name: 'task',
+      attributes: { title: 'Migrate session storage', status: 40, parent_task: 84, parent_relationship: 'subtask' },
+      personal_sort_order: 100,
+    },
+    {
+      id: '402',
+      card_type_name: 'task',
+      attributes: { title: 'API limits', status: 41 },
+      personal_sort_order: 200,
+    },
+  ];
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      const respond = (sr) => {
+        const key = `${sr.endpoint}.${sr.action}`;
+        const data = sr.data ?? {};
+        if (key === 'card.select_with_attributes') {
+          const ct = data.card_type_name;
+          if (ct === 'status') {
+            return { id: sr.id, ok: true, data: { rows: TASK_STATUSES.map((s) => ({ id: s.id, phase: s.phase, attributes: { title: s.title } })) } };
+          }
+          if (ct === 'task') return { id: sr.id, ok: true, data: { rows: rowsData } };
+          return { id: sr.id, ok: true, data: { rows: [] } };
+        }
+        if (key === 'user_card_agent.list') return { id: sr.id, ok: true, data: { rows: [] } };
+        return { id: sr.id, ok: true, data: { rows: [] } };
+      };
+      return { status: 200, text: JSON.stringify({ subresponses: req.subrequests.map(respond) }) };
+    },
+  };
+
+  const { dispatcher, api } = bootInbox(transport);
+  const { c } = mountInbox(api);
+  await settle(dispatcher);
+
+  const rows = filledRows(c);
+  const child = rows.find((r) => r.dataset.cardId === '401');
+  const solo = rows.find((r) => r.dataset.cardId === '402');
+
+  const rel = child.querySelector('[data-role="relation"]');
+  assert.notEqual(rel.style.display, 'none', 'child row relation slot is visible');
+  const ind = rel.querySelector('.relation-ind');
+  assert.ok(ind, 'child row carries a relation indicator');
+  assert.equal(ind.dataset.relation, 'subtask', 'indicator encodes the subtask relationship');
+  assert.match(child.querySelector('[data-role="subject"]').textContent, /Migrate session storage/);
+
+  const soloRel = solo.querySelector('[data-role="relation"]');
+  assert.equal(soloRel.style.display, 'none', 'standalone row relation slot is hidden');
+  assert.equal(soloRel.querySelector('.relation-ind'), null, 'standalone row has no relation indicator');
+});
+
 test('CardListBody/inbox: GROUP picker (screen.groupAxis) buckets into header + row sections', async () => {
   const { dispatcher, api } = bootInbox(inboxHarness().transport);
   const { c, tree } = mountInbox(api);

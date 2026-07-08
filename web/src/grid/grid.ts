@@ -94,6 +94,7 @@ import { setIcon, icon } from '../ui/icons.js';
 import { applyStatusGlyphs } from '../ui/status-icon.js';
 import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
 import { priorityIcon } from '../ui/priority-icon.js';
+import { relationIcon } from '../ui/relation-icon.js';
 /**
  * Fixed virtual-list row height (px). Matches the compact grid row: one line of
  * 13px data text at 1.3 leading + 2 × --pad-compact-y (0.375rem = 6px) padding,
@@ -1480,9 +1481,14 @@ export class Grid extends CardListCore<GridConfig> {
       case 'id':
         cell.textContent = `#${row.id.toString()}`;
         break;
-      case 'title':
-        cell.textContent = strAttr(row, 'title') ?? '(untitled)';
+      case 'title': {
+        // A child task leads with a relation symbol (sub-task / blocker /
+        // related) before its title so the parent/child link reads at a glance.
+        const rel = relationIcon(row);
+        if (rel !== null) cell.append(rel);
+        cell.append(document.createTextNode(strAttr(row, 'title') ?? '(untitled)'));
         break;
+      }
       case 'ref':
         // A single card_ref attr: resolve its id via the target type's lookup.
         this.setRefCell(cell, row, col.attrName ?? '', col.lookup ?? '');

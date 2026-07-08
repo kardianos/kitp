@@ -285,6 +285,46 @@ test('Grid: tasks query lands and rows render in declared column order', async (
   assert.equal(titleCell.textContent, 'Wire pickers');
 });
 
+test('Grid: a child task leads its title with a relation symbol keyed to its type', async () => {
+  const child = {
+    id: '303',
+    card_type_id: '5',
+    card_type_name: 'task',
+    parent_card_id: String(PROJECT_ID),
+    phase: 'active',
+    attributes: { title: 'JWKS validation blocker', parent_task: '84', parent_relationship: 'blocker' },
+  };
+  const standalone = {
+    id: '304',
+    card_type_id: '5',
+    card_type_name: 'task',
+    parent_card_id: String(PROJECT_ID),
+    phase: 'active',
+    attributes: { title: 'API rate limits' },
+  };
+  const { transport } = gridMockTransport([child, standalone]);
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const grid = mountGrid(api, tree);
+  await settle(dispatcher);
+
+  const rows = visibleGridRows(grid.el);
+  const titleOf = (row) =>
+    row.querySelectorAll('[data-grid-col]').find((c) => c.dataset.gridCol === 'attributes.title');
+
+  // Child row: relation indicator present, typed 'blocker', title text intact.
+  const childTitle = titleOf(rows.find((r) => r.dataset.cardId === '303'));
+  const ind = childTitle.querySelector('.relation-ind');
+  assert.ok(ind, 'child task title carries a relation indicator');
+  assert.equal(ind.dataset.relation, 'blocker', 'indicator encodes the relationship type');
+  assert.match(childTitle.textContent, /JWKS validation blocker/, 'title text still rendered');
+
+  // Standalone row: no indicator, title unchanged.
+  const soloTitle = titleOf(rows.find((r) => r.dataset.cardId === '304'));
+  assert.equal(soloTitle.querySelector('.relation-ind'), null, 'standalone task has no relation indicator');
+  assert.equal(soloTitle.textContent, 'API rate limits');
+});
+
 /* -------------------------------------------------------------------------- */
 /* The body is a recycling virtualList scroll viewport (spacer + content +     */
 /* a FIXED pool of recycled row nodes), NOT a node-per-task reconciler.        */

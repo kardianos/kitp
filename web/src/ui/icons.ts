@@ -35,7 +35,10 @@ export type IconName =
   | 'list-tree'
   | 'square-stack'
   | 'eraser'
-  | 'funnel';
+  | 'funnel'
+  | 'corner-down-right'
+  | 'ban'
+  | 'link';
 
 const ICON_MARKUP: Record<IconName, string> = {
   mail: '<path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7" /><rect x="2" y="4" width="20" height="16" rx="2" />',
@@ -79,6 +82,10 @@ const ICON_MARKUP: Record<IconName, string> = {
     '<path d="M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21" /><path d="m5.082 11.09 8.828 8.828" />',
   funnel:
     '<path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z" />',
+  'corner-down-right': '<path d="m15 10 5 5-5 5" /><path d="M4 4v7a4 4 0 0 0 4 4h12" />',
+  ban: '<circle cx="12" cy="12" r="10" /><path d="M4.929 4.929 19.07 19.071" />',
+  link:
+    '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />',
 };
 
 const SVG_NS = 'http://www.w3.org/2000/svg';

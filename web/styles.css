@@ -2291,6 +2291,23 @@ select optgroup {
   color: var(--color-danger);
 }
 
+/* ---- parent/child relation indicator (leads a child task's title) ---- */
+.relation-ind {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--color-muted);
+  vertical-align: text-bottom;
+}
+.relation-ind .icon {
+  width: 14px;
+  height: 14px;
+}
+/* A blocker reads with a warning tone; sub-task / related stay muted. */
+.relation-ind[data-relation="blocker"] {
+  color: var(--color-danger);
+}
+
 /* ---- muted em-dash for empty cells ---- */
 .grid__dash {
   color: var(--color-muted);
@@ -8975,6 +8992,12 @@ textarea.task-comms__form-input {
 .card-list__id {
   flex: 0 0 auto;
   font-size: var(--text-xs);
+}
+.card-list__relation {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
 }
 .card-list__subject {
   flex: 1 1 auto;

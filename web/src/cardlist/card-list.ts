@@ -15,6 +15,7 @@ import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { asAttrId } from '../kanban/kanban-helpers.js';
 import { CardListCore, type CardListCoreConfig, titleOf, idKey } from './core.js';
 import { rowLink, setRowLinkHref } from '../shell/popout.js';
+import { relationIcon } from '../ui/relation-icon.js';
 
 const ROW_HEIGHT = 56;
 
@@ -140,6 +141,11 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
     const idEl = document.createElement('span');
     idEl.className = 'card-list__id muted';
     idEl.dataset.role = 'id';
+    // Parent/child relation symbol slot — filled per-card in fillRowCard (empty
+    // for standalone tasks). Sits between the #id and the subject.
+    const relation = document.createElement('span');
+    relation.className = 'card-list__relation';
+    relation.dataset.role = 'relation';
     const subject = document.createElement('span');
     subject.className = 'card-list__subject';
     subject.dataset.role = 'subject';
@@ -148,7 +154,7 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
     flag.dataset.role = 'flag';
     flag.style.display = 'none';
     subject.append(flag);
-    line1.append(idEl, subject);
+    line1.append(idEl, relation, subject);
     const line2 = document.createElement('div');
     line2.className = 'card-list__line2';
     line2.dataset.role = 'cols';
@@ -223,6 +229,16 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
       idEl.textContent = `#${card.id.toString()}`;
       idEl.style.display = '';
     } else idEl.style.display = 'none';
+
+    const relation = el.querySelector('[data-role="relation"]') as HTMLElement;
+    const rel = relationIcon(card);
+    if (rel !== null) {
+      relation.replaceChildren(rel);
+      relation.style.display = '';
+    } else {
+      relation.replaceChildren();
+      relation.style.display = 'none';
+    }
 
     const subject = el.querySelector('[data-role="subject"]') as HTMLElement;
     const flag = el.querySelector('[data-role="flag"]') as HTMLElement;
