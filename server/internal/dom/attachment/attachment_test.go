@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
@@ -58,8 +59,10 @@ func setup(t *testing.T, schema string) (http.Handler, *api.Server, *store.Pool)
 		MaxBytes: 4 * 1024 * 1024, // 4 MB per chunk for tests
 	})
 	attachment.Mount(rt, attachment.Config{
-		Pool:    sp,
-		Storage: storage,
+		Pool:           sp,
+		Storage:        storage,
+		Dispatcher:     srv,
+		MaxUploadBytes: testUploadMaxBytes,
 	})
 	srv.MountBatch(rt)
 	// Server-side thumb generation is opt-in (main wires this); tests
@@ -68,11 +71,20 @@ func setup(t *testing.T, schema string) (http.Handler, *api.Server, *store.Pool)
 	// returns false for "text/plain".
 	attachment.SetThumbDeps(storage, nil)
 	t.Cleanup(func() { attachment.SetThumbDeps(nil, nil) })
+	// Signing secret for attachment.upload_url / download_url. No public
+	// URL, so minted links are site-relative and replay straight into
+	// the test mux.
+	attachment.SetLinkDeps("", []byte("test-secret-0123456789abcdef"))
+	t.Cleanup(func() { attachment.SetLinkDeps("", nil) })
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", rt.Mux())
 	return mux, srv, sp
 }
+
+// testUploadMaxBytes is the whole-file cap setup gives the signed
+// upload route.
+const testUploadMaxBytes = 3 << 20
 
 // uploadChunk POSTs one chunk via the multipart route and returns the
 // {address, size_bytes} response.
@@ -438,3 +450,119 @@ func TestActivityRows(t *testing.T) {
 	}
 }
 
+// mintUploadURL asks the dispatcher (as the System User) for a signed
+// one-shot upload link onto cardID.
+func mintUploadURL(t *testing.T, srv *api.Server, cardID int64, filename, mime string) string {
+	t.Helper()
+	data, err := json.Marshal(struct {
+		CardID   int64  `json:"card_id,string"`
+		Filename string `json:"filename"`
+		MimeType string `json:"mime_type"`
+	}{CardID: cardID, Filename: filename, MimeType: mime})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp := srv.Dispatch(auth.WithSystemUser(context.Background()), api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "u", Endpoint: "attachment", Action: "upload_url", Data: data},
+	}})
+	if !resp.Subresponses[0].OK {
+		t.Fatalf("upload_url: %+v", resp.Subresponses[0].Error)
+	}
+	var out attachment.UploadURLOutput
+	b, _ := json.Marshal(resp.Subresponses[0].Data)
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("decode upload_url: %v", err)
+	}
+	if out.URL == "" {
+		t.Fatalf("upload_url returned no url: %+v", out)
+	}
+	return out.URL
+}
+
+// TestSignedUpload: the MCP path — mint a link through the dispatcher,
+// then send the raw bytes to it with NO credential (the test router's
+// Public tier). The file must be chunked server-side, attached to the
+// card, and download byte-for-byte. Both PUT (curl -T) and POST
+// (curl --data-binary) are accepted.
+func TestSignedUpload(t *testing.T) {
+	handler, srv, sp := setup(t, "kitp_test_attachment_signed_upload")
+	pid := makeProject(t, srv)
+	// 2.5 MiB spans three 1 MiB server-side chunks.
+	whole := bytes.Repeat([]byte("kitp-signed-upload-payload\n"), (5<<20)/2/27)
+
+	for _, method := range []string{"PUT", "POST"} {
+		t.Run(method, func(t *testing.T) {
+			link := mintUploadURL(t, srv, pid, "notes v2.txt", "text/plain")
+			req := httptest.NewRequest(method, link, bytes.NewReader(whole))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusCreated {
+				t.Fatalf("upload: %d: %s", rr.Code, rr.Body.String())
+			}
+			var att attachment.CreateOutput
+			if err := json.Unmarshal(rr.Body.Bytes(), &att); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if att.ID == 0 || att.CardID != pid || att.Filename != "notes v2.txt" ||
+				att.MimeType != "text/plain" || att.SizeBytes != int64(len(whole)) {
+				t.Fatalf("attachment = %+v", att)
+			}
+
+			var chunks int
+			if err := sp.P.QueryRow(context.Background(),
+				`SELECT count(*) FROM file_chunk WHERE file_id = $1`, att.FileID).Scan(&chunks); err != nil {
+				t.Fatalf("count chunks: %v", err)
+			}
+			if chunks != 3 {
+				t.Fatalf("file_chunk rows = %d, want 3", chunks)
+			}
+
+			dl := httptest.NewRequest("GET", fmt.Sprintf("/api/v1/attachment/%d/download", att.ID), nil)
+			dlRR := httptest.NewRecorder()
+			handler.ServeHTTP(dlRR, dl)
+			if dlRR.Code != 200 || !bytes.Equal(dlRR.Body.Bytes(), whole) {
+				t.Fatalf("download: %d, %d bytes (want %d)", dlRR.Code, dlRR.Body.Len(), len(whole))
+			}
+		})
+	}
+}
+
+// TestSignedUploadRejections: oversize and empty bodies, a tampered
+// link, and a minting request the SQL validator refuses.
+func TestSignedUploadRejections(t *testing.T) {
+	handler, srv, _ := setup(t, "kitp_test_attachment_signed_upload_reject")
+	pid := makeProject(t, srv)
+	link := mintUploadURL(t, srv, pid, "a.txt", "text/plain")
+
+	cases := []struct {
+		name       string
+		link       string
+		body       []byte
+		wantStatus int
+	}{
+		{name: "oversize", link: link, body: make([]byte, testUploadMaxBytes+1), wantStatus: http.StatusRequestEntityTooLarge},
+		{name: "empty", link: link, wantStatus: http.StatusBadRequest},
+		{name: "tampered filename", link: strings.Replace(link, "filename=a.txt", "filename=b.txt", 1), body: []byte("x"), wantStatus: http.StatusForbidden},
+		{name: "tampered card", link: strings.Replace(link, fmt.Sprintf("card_id=%d", pid), fmt.Sprintf("card_id=%d", pid+1), 1), body: []byte("x"), wantStatus: http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("PUT", tc.link, bytes.NewReader(tc.body))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			if rr.Code != tc.wantStatus {
+				t.Fatalf("status %d, want %d: %s", rr.Code, tc.wantStatus, rr.Body.String())
+			}
+		})
+	}
+
+	t.Run("mint refuses name without extension", func(t *testing.T) {
+		resp := srv.Dispatch(auth.WithSystemUser(context.Background()), api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "u", Endpoint: "attachment", Action: "upload_url", Data: json.RawMessage(
+				fmt.Sprintf(`{"card_id":"%d","filename":"README"}`, pid))},
+		}})
+		if resp.Subresponses[0].OK {
+			t.Fatalf("want rejection, got %+v", resp.Subresponses[0])
+		}
+	})
+}

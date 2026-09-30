@@ -9,6 +9,7 @@ dispatcher,,,attachment.create,admin;manager;worker,Link an existing file (creat
 dispatcher,,,attachment.delete,admin;manager;worker,Soft-delete an attachment. The file + chunks linger until the CAS reaper sweeps them.
 dispatcher,,,attachment.download_url,admin;manager;worker,"Mint a time-limited, signed URL for an attachment's bytes (mode: download|view|thumb). GET the URL with no auth header — e.g. `curl -o file <url>` — to stream the file straight to disk. The link expires after a few minutes."
 dispatcher,,,attachment.list,$authenticated,"List active attachments for a card, newest first."
+dispatcher,,,attachment.upload_url,admin;manager;worker,"Mint a time-limited, signed one-shot URL for uploading a file as an attachment on a card. PUT the raw file bytes to the URL with no auth header — e.g. `curl -T ./report.pdf '<url>'` — and the server stores the bytes, creates the file, and attaches it to the card in one step, responding with the attachment row. The link expires after a few minutes; the size cap is config.get's attachment_max_bytes."
 dispatcher,,,attribute.update,admin;manager;worker,Set an attribute value on a card; emits one activity row and one upsert per write.
 dispatcher,,,attribute_def.insert,admin,"Admin-only: insert a new attribute_def with optional initial edges, in one tx."
 dispatcher,,,attribute_def.select,$authenticated,List every attribute_def with the card_types it is bound to via edge.
@@ -91,5 +92,7 @@ http_route,public,GET /api/v1/attachment/{id}/dl,,,
 http_route,public,GET /api/v1/auth/me,,,
 http_route,public,GET /api/v1/auth/oidc/callback,,,
 http_route,public,GET /api/v1/auth/oidc/start,,,
+http_route,public,POST /api/v1/attachment/upload,,,
 http_route,public,POST /api/v1/auth/dev-login,,,
 http_route,public,POST /api/v1/auth/logout,,,
+http_route,public,PUT /api/v1/attachment/upload,,,

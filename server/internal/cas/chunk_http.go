@@ -60,8 +60,7 @@ func handleChunkUpload(
 	// MaxBytesReader caps the body before any read — exceeding it
 	// surfaces as http.MaxBytesError on the next Read.
 	r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxBytes)
-	hasher := NewHashingReader(r.Body)
-	buf, err := io.ReadAll(hasher)
+	buf, err := io.ReadAll(r.Body)
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) ||
@@ -76,21 +75,12 @@ func handleChunkUpload(
 		// log the cause and return a generic message to the client.
 		return api.Internal(fmt.Errorf("read_chunk: %w", err))
 	}
-	address := hasher.Address()
 	size := int64(len(buf))
-	head := cfg.Storage.Head()
-	if head == nil {
-		return api.Internal(fmt.Errorf("no CAS backend configured"))
-	}
-	// Idempotent: skip the write if a backend already has the bytes.
-	exists, err := cfg.Storage.Has(ctx, address)
+	// Idempotent: Storage.Put skips the write if a backend already has
+	// the bytes.
+	address, err := cfg.Storage.Put(ctx, mime, buf)
 	if err != nil {
-		return api.Internal(fmt.Errorf("cas has: %w", err))
-	}
-	if !exists {
-		if err := head.Put(ctx, address, mime, size, buf); err != nil {
-			return api.Internal(fmt.Errorf("cas put: %w", err))
-		}
+		return api.Internal(fmt.Errorf("cas put: %w", err))
 	}
 	// Inline anonymous struct + json.Encoder so quoting / escaping is
 	// correct by construction. Avoid hand-built `{"key":value}` —

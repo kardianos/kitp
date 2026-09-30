@@ -82,19 +82,26 @@ func verifyDownloadURL(id int64, mode string, exp int64, sig string, now int64) 
 	if len(linkDeps.secret) == 0 {
 		return api.Internal(fmt.Errorf("attachment.download_url: link secret not configured"))
 	}
+	return verifyLink("download", signLinkPayload(id, mode, exp), sig, exp, now)
+}
+
+// verifyLink is the expiry + signature check shared by the download and
+// upload links: `want` is the freshly-computed signature for the
+// presented fields, `sig` the one on the URL. `kind` only flavours the
+// 403 message.
+func verifyLink(kind, want, sig string, exp, now int64) error {
 	if exp < now {
-		return api.Forbidden("download link expired")
+		return api.Forbidden(kind + " link expired")
 	}
 	if exp > now+int64((linkTTL+linkSkew).Seconds()) {
-		return api.Forbidden("download link not valid")
+		return api.Forbidden(kind + " link not valid")
 	}
-	want := signLinkPayload(id, mode, exp)
 	// Constant-time compare on the raw MACs. hmac.Equal handles the
 	// length check; decode failures fall through to a non-equal compare.
 	got, _ := base64.RawURLEncoding.DecodeString(sig)
 	wantRaw, _ := base64.RawURLEncoding.DecodeString(want)
 	if !hmac.Equal(got, wantRaw) {
-		return api.Forbidden("download link not valid")
+		return api.Forbidden(kind + " link not valid")
 	}
 	return nil
 }

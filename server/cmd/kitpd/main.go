@@ -433,7 +433,9 @@ func runHTTP() error {
 	//   - cas.Mount installs POST /api/v1/cas/chunk for the per-chunk
 	//     upload (cap = ATTACHMENT_CHUNK_MAX_MB).
 	//   - attachment.Mount installs GET /api/v1/attachment/{id}/
-	//     download which streams the chunks back in order.
+	//     download which streams the chunks back in order, plus the
+	//     signed /dl + /upload routes MCP agents use (links minted by
+	//     attachment.download_url / attachment.upload_url).
 	//   - file.create / attachment.create / attachment.list /
 	//     attachment.delete go through the JSON batch dispatcher (see
 	//     registerHandlers).
@@ -443,8 +445,10 @@ func runHTTP() error {
 		MaxBytes: chunkMaxBytes,
 	})
 	attachment.Mount(apiRouter, attachment.Config{
-		Pool:    pool,
-		Storage: storage,
+		Pool:           pool,
+		Storage:        storage,
+		Dispatcher:     srv,
+		MaxUploadBytes: maxAttachBytes,
 	})
 	// Project export (phases 3 + 4 of PROJECT_PORTABILITY_PLAN.md) —
 	// streams text/csv, .xlsx, or application/zip via dedicated HTTP
@@ -527,8 +531,9 @@ func runHTTP() error {
 	// External base URL for task deep links in outbound mail to kitp users
 	// (e.g. https://kitp.example.com). Empty disables the footer link.
 	publicURL := strings.TrimSpace(os.Getenv("KITP_PUBLIC_URL"))
-	// Secret for signing attachment download links (attachment.download_url
-	// → the public /api/v1/attachment/{id}/dl route). A configured
+	// Secret for signing attachment links (attachment.download_url → the
+	// public /api/v1/attachment/{id}/dl route; attachment.upload_url → the
+	// public /api/v1/attachment/upload route). A configured
 	// KITP_LINK_SECRET lets every instance behind a load balancer verify
 	// each other's links and survives restarts; absent one, fall back to
 	// an ephemeral per-process key (fine for single-instance dev — links

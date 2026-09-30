@@ -3,8 +3,6 @@ package attachment
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -132,24 +130,11 @@ func generateThumb(
 	}
 	data := jpegBuf.Bytes()
 
-	// 3. CAS write. Compute the SHA-256 ourselves so we can reuse the
-	//    existing dedupe path (Has → skip Put when bytes already
-	//    present).
-	sum := sha256.Sum256(data)
-	addr := hex.EncodeToString(sum[:])
-
-	head := storage.Head()
-	if head == nil {
-		return 0, fmt.Errorf("thumb: no cas backend configured")
-	}
-	exists, err := storage.Has(ctx, addr)
+	// 3. CAS write. Storage.Put dedupes (Has → skip the write when the
+	//    bytes are already present).
+	addr, err := storage.Put(ctx, thumbMime, data)
 	if err != nil {
-		return 0, fmt.Errorf("thumb: cas has: %w", err)
-	}
-	if !exists {
-		if err := head.Put(ctx, addr, thumbMime, int64(len(data)), data); err != nil {
-			return 0, fmt.Errorf("thumb: cas put: %w", err)
-		}
+		return 0, fmt.Errorf("thumb: %w", err)
 	}
 
 	// 4. Insert the `file` + `file_chunk` rows in one tx (separate from

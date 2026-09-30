@@ -10,8 +10,10 @@
 //     calls file.create first (with the chunk list)
 //     and feeds the resulting id here.
 //
-// Plus one HTTP route outside the dispatcher: GET
-// /api/v1/attachment/{id}/download streams the chunks back in order.
+// Plus HTTP routes outside the dispatcher: GET
+// /api/v1/attachment/{id}/download streams the chunks back in order,
+// and the signed /dl + /upload routes let an MCP agent move bytes with
+// a link minted by attachment.download_url / attachment.upload_url.
 package attachment
 
 import (
@@ -181,6 +183,29 @@ func Register(p *store.Pool) {
 		// signed url + expires_at Go-side (the secret lives in-process).
 		SQLFunc: "attachment_download_url_batch",
 		PostRun: signDownloadURLs,
+	})
+	reg.Register(reg.Handler{
+		Endpoint:   "attachment",
+		Action:     "upload_url",
+		Doc:        "Mint a time-limited, signed one-shot URL for uploading a file as an attachment on a card. PUT the raw file bytes to the URL with no auth header — e.g. `curl -T ./report.pdf '<url>'` — and the server stores the bytes, creates the file, and attaches it to the card in one step, responding with the attachment row. The link expires after a few minutes; the size cap is config.get's attachment_max_bytes.",
+		InputType:  reflect.TypeFor[UploadURLInput](),
+		OutputType: reflect.TypeFor[UploadURLOutput](),
+		// Read-shaped: validates the target + signs a link, writes
+		// nothing. The writes happen on the public upload route, which
+		// re-dispatches file.create + attachment.create as the signed
+		// actor (see upload.go).
+		IsRead:       true,
+		AllowedRoles: []string{"worker", "manager", "admin"},
+		// Same gate as attachment.create: card.update on the target
+		// card's project. Input carries card_id, so the per-row scope
+		// pass reflects it directly.
+		ProcessName: "card.update",
+		CardTypeID:  cardTypeFromUploadURLInput,
+		// Unified handler — body in
+		// db/schema/functions/attachment_upload_url_batch.sql. PostRun
+		// (signUploadURLs) binds the actor + expiry and signs Go-side.
+		SQLFunc: "attachment_upload_url_batch",
+		PostRun: signUploadURLs,
 	})
 }
 

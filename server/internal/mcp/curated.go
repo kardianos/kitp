@@ -37,13 +37,14 @@ var curatedTools = map[string]bool{
 	// Comments.
 	"comment__insert": true,
 	"comment__update": true,
-	// Attachments + the file/CAS upload plumbing they depend on.
+	// Attachments. Bytes move over signed links (upload_url /
+	// download_url) so an agent needs no session cookie; the browser's
+	// cas/chunk + file.create plumbing stays reachable via proc__batch.
 	"attachment__list":         true,
 	"attachment__create":       true,
+	"attachment__upload_url":   true,
 	"attachment__download_url": true,
 	"attachment__delete":       true,
-	"file__create":             true,
-	"cas__missing_chunks":      true,
 	// Tags.
 	"tag__apply":  true,
 	"tag__remove": true,

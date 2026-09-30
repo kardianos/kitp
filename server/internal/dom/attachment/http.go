@@ -17,13 +17,20 @@ import (
 	"github.com/kitp/kitp/server/internal/store"
 )
 
-// Config wires the download HTTP route into the rest of the server. The
-// upload side is two pieces now (POST /api/v1/cas/chunk + the
+// Config wires the attachment HTTP routes into the rest of the server.
+// The browser upload side is two pieces (POST /api/v1/cas/chunk + the
 // attachment.create dispatcher endpoint), wired separately by
-// `cas.Mount` and `attachment.Register`.
+// `cas.Mount` and `attachment.Register`; the signed one-shot upload
+// route (see upload.go) lives here and needs the dispatcher.
 type Config struct {
 	Pool    *store.Pool
 	Storage *cas.Storage
+	// Dispatcher runs file.create + attachment.create for the signed
+	// upload route, as the actor the link was minted for.
+	Dispatcher *api.Server
+	// MaxUploadBytes caps the whole-file body on the signed upload
+	// route (ATTACHMENT_MAX_MB). Zero uses defaultUploadMaxBytes.
+	MaxUploadBytes int64
 }
 
 // Mount registers the streaming download / inline view / thumbnail
@@ -62,6 +69,17 @@ func Mount(rt *api.Router, cfg Config) {
 	rt.Public("GET /api/v1/attachment/{id}/dl", func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 		return handleSignedStream(ctx, w, r, cfg)
 	})
+	// Public, signature-gated one-shot upload — the write-side twin of
+	// /dl. A link minted by attachment.upload_url (which ran the
+	// card.update-on-project gate against the requesting agent) lets an
+	// MCP client attach a file with a plain `curl -T`, no session cookie
+	// or bearer header. PUT is what `curl -T` sends; POST covers
+	// `curl --data-binary @file`. See upload.go.
+	upload := func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+		return handleSignedUpload(ctx, w, r, cfg)
+	}
+	rt.Public("PUT /api/v1/attachment/upload", upload)
+	rt.Public("POST /api/v1/attachment/upload", upload)
 }
 
 type streamMode int

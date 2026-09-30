@@ -18,7 +18,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 )
 
@@ -92,44 +91,6 @@ func AddressOf(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// HashingReader wraps an io.Reader and computes its SHA-256 as bytes flow
-// through. Pass to Backend.Put when you need the address before / during
-// the write, then call Address() once the read drains.
-//
-// Typical use: wrap the request body with a TeeReader-style hasher in a
-// staging buffer, write through to the backend, then look up the address
-// after the body fully drains. This package's PgBackend does the buffering
-// for you — see PgBackend.PutRequest.
-type HashingReader struct {
-	src io.Reader
-	h   hash.Hash
-	n   int64
-}
-
-// NewHashingReader wraps src so reads update an internal SHA-256 state.
-func NewHashingReader(src io.Reader) *HashingReader {
-	return &HashingReader{src: src, h: sha256.New()}
-}
-
-func (r *HashingReader) Read(p []byte) (int, error) {
-	n, err := r.src.Read(p)
-	if n > 0 {
-		_, _ = r.h.Write(p[:n])
-		r.n += int64(n)
-	}
-	return n, err
-}
-
-// Address finalises the hash and returns the hex-encoded SHA-256.
-func (r *HashingReader) Address() string {
-	return hex.EncodeToString(r.h.Sum(nil))
-}
-
-// BytesRead returns the number of bytes pulled through the reader.
-func (r *HashingReader) BytesRead() int64 {
-	return r.n
-}
-
 // GetAll fetches every address in `addresses` and streams the bytes
 // to `w` in the order supplied. The chain walks backends in order;
 // on ErrNotFound it falls through to the next backend, on any other
@@ -185,4 +146,26 @@ func (s *Storage) Head() Backend {
 		return nil
 	}
 	return s.backends[0]
+}
+
+// Put hashes data and writes it through the head backend, skipping the
+// write when any backend already holds the address (identical bytes
+// collapse to one blob). Returns the SHA-256 address. `data` is not
+// retained after Put returns, so callers may reuse the buffer.
+func (s *Storage) Put(ctx context.Context, mimeType string, data []byte) (string, error) {
+	head := s.Head()
+	if head == nil {
+		return "", errors.New("cas: no backend configured")
+	}
+	address := AddressOf(data)
+	exists, err := s.Has(ctx, address)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		if err := head.Put(ctx, address, mimeType, int64(len(data)), data); err != nil {
+			return "", fmt.Errorf("cas: %s: put: %w", head.Kind(), err)
+		}
+	}
+	return address, nil
 }
