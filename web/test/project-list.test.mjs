@@ -866,3 +866,39 @@ test('"Create as template" (blank) fires card.insert with is_template=true', asy
     'no project.stamp for a blank template',
   );
 });
+
+test('the project dialog asks before discarding typed work (× / Cancel), closes at once when untouched', () => {
+  const { api } = bootApi(M.mockTransport());
+  const { ctrl } = mountProjectList(api, SEED);
+  const dialog = ctrl.el.querySelector('[data-quick-entry]');
+  const clickSel = (sel) => ctrl.el.querySelector(sel).dispatchEvent({ type: 'click' });
+  const prompt = () => ctrl.el.querySelector('[data-dismiss-guard]');
+
+  for (const closeSel of ['[data-qe-dismiss]', '[data-qe-cancel]']) {
+    // Create, untouched → closes at once.
+    ctrl.intent('quickCreateOpen');
+    clickSel(closeSel);
+    assert.equal(dialog.style.display, 'none', `${closeSel}: untouched create closed`);
+
+    // Create, typed → asks; Discard closes.
+    ctrl.intent('quickCreateOpen');
+    ctrl.el.querySelector('[data-qe-title]').value = 'Half-typed project';
+    clickSel(closeSel);
+    assert.equal(dialog.style.display, '', `${closeSel}: typed create stays open`);
+    assert.ok(prompt(), `${closeSel}: discard prompt shown`);
+    clickSel('[data-dismiss-discard]');
+    assert.equal(dialog.style.display, 'none', `${closeSel}: Discard closed it`);
+    assert.equal(prompt(), null, 'prompt gone with the dialog');
+  }
+
+  // Edit: unchanged → closes at once; a changed title → asks.
+  const edit = ctrl.el.querySelector('[data-project-edit]');
+  edit.dispatchEvent({ type: 'click', target: edit });
+  clickSel('[data-qe-cancel]');
+  assert.equal(dialog.style.display, 'none', 'unchanged edit closed');
+  edit.dispatchEvent({ type: 'click', target: edit });
+  ctrl.el.querySelector('[data-qe-title]').value = 'Renamed';
+  clickSel('[data-qe-cancel]');
+  assert.ok(prompt(), 'changed edit asks first');
+  assert.equal(dialog.style.display, '', 'still open');
+});

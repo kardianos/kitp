@@ -334,6 +334,8 @@ export {
 // Reusable anchored-UI primitives: the single floating impl + the two controls
 // that compose it.
 export { Popover, type PopoverOptions, type Placement } from './ui/popover.js';
+export { Modal, type ModalOptions } from './ui/modal.js';
+export { createDismissGuard, snapshotFields, nudge, type DismissGuard, type DismissGuardOptions } from './ui/dismiss-guard.js';
 export {
   Combobox,
   registerCombobox,

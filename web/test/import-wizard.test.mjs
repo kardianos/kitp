@@ -378,7 +378,7 @@ test('an upload failure surfaces inline and stays on the upload step', async () 
 /* Back returns to the previous step; Cancel/Esc closes.                       */
 /* -------------------------------------------------------------------------- */
 
-test('Back returns from map to upload; Cancel closes', async () => {
+test('Back returns from map to upload; Cancel asks before discarding the upload', async () => {
   const { transport } = importHarness();
   const { dispatcher, api } = bootApi(transport);
   const { wiz } = mountWizard(api);
@@ -389,13 +389,26 @@ test('Back returns from map to upload; Cancel closes', async () => {
   click(wiz.el.querySelector('[data-iw-back]'));
   assert.equal(wiz._stepForTest(), 'upload', 'Back moved to the upload step');
 
-  // On the first step Back doubles as Cancel → closes.
+  // On the first step Back doubles as Cancel. A file is already uploaded, so
+  // it asks first (dismiss guard) rather than silently throwing it away.
   assert.equal(wiz.el.querySelector('[data-iw-back]').textContent, 'Cancel');
   click(wiz.el.querySelector('[data-iw-back]'));
-  assert.equal(wiz.el.style.display, 'none', 'Cancel closed the wizard');
+  assert.equal(wiz.el.style.display, '', 'still open — the upload is not discarded silently');
+  assert.ok(wiz.el.querySelector('[data-dismiss-guard]'), 'discard prompt shown');
+  click(wiz.el.querySelector('[data-dismiss-discard]'));
+  assert.equal(wiz.el.style.display, 'none', 'Discard closed the wizard');
 });
 
-test('Esc closes the wizard', () => {
+test('a backdrop click never closes the wizard', () => {
+  const { transport } = importHarness();
+  const { api } = bootApi(transport);
+  const { wiz } = mountWizard(api);
+  wiz.open({ projectId: PROJECT_ID });
+  click(wiz.el.querySelector('[data-iw-backdrop]'));
+  assert.equal(wiz.el.style.display, '', 'backdrop click ignored');
+});
+
+test('Esc closes an untouched wizard at once', () => {
   const { transport } = importHarness();
   const { api } = bootApi(transport);
   const { wiz } = mountWizard(api);

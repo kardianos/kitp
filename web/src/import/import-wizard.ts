@@ -41,6 +41,7 @@
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { trapFocus } from '../util/focus-trap.js';
+import { createDismissGuard, nudge, type DismissGuard } from '../ui/dismiss-guard.js';
 import type { ApiFault } from '../core/dispatch.js';
 import type { Combobox, ComboboxOption } from '../ui/combobox.js';
 import { uploadCsv, autoMapping } from './import-helpers.js';
@@ -150,6 +151,8 @@ export class ImportWizard extends Control<ImportWizardConfig> {
   private nextBtn!: HTMLButtonElement;
   private nextLabelEl!: HTMLSpanElement;
   private lastFocused: Element | null = null;
+  /** Esc / × / Cancel policy: ask before discarding an in-progress import. */
+  private guard: DismissGuard | null = null;
   /** Focus-trap disposer while the wizard is open (#29). */
   private untrap: (() => void) | null = null;
 
@@ -171,22 +174,23 @@ export class ImportWizard extends Control<ImportWizardConfig> {
     root.setAttribute('aria-modal', 'true');
     root.setAttribute('aria-label', 'Import CSV');
 
-    const backdrop = document.createElement('button');
-    backdrop.type = 'button';
+    // The scrim is not a close target — a stray click must not throw away an
+    // uploaded file + mapping. It nudges the panel toward × / Cancel instead.
+    const backdrop = document.createElement('div');
     backdrop.className = 'import-wizard__backdrop';
     backdrop.dataset.iwBackdrop = '';
-    backdrop.setAttribute('aria-label', 'Close import');
-    backdrop.tabIndex = -1;
-    this.listen(backdrop, 'click', () => this.requestClose());
+    backdrop.setAttribute('aria-hidden', 'true');
 
     const panel = document.createElement('div');
     panel.className = 'import-wizard__panel';
     panel.dataset.iwPanel = '';
+    this.listen(backdrop, 'click', () => nudge(panel));
     this.listen(panel, 'keydown', (ev) => {
-      if ((ev as KeyboardEvent).key === 'Escape') {
+      // Skip an Esc a mapping combobox already used to close its menu.
+      if ((ev as KeyboardEvent).key === 'Escape' && !ev.defaultPrevented) {
         ev.preventDefault();
         ev.stopPropagation();
-        this.requestClose();
+        this.requestClose(true);
       }
     });
 
@@ -202,7 +206,7 @@ export class ImportWizard extends Control<ImportWizardConfig> {
     closeBtn.dataset.iwClose = '';
     closeBtn.setAttribute('aria-label', 'Close');
     closeBtn.append(icon('x', 14));
-    this.listen(closeBtn, 'click', () => this.requestClose());
+    this.listen(closeBtn, 'click', () => this.requestClose(false));
     header.append(heading, closeBtn);
 
     // Step indicator.
@@ -247,6 +251,14 @@ export class ImportWizard extends Control<ImportWizardConfig> {
     this.nextBtn = next;
 
     footer.append(back, next);
+    // Esc / × / Cancel ask before discarding an in-progress import; the
+    // prompt stands in for the footer while it shows.
+    this.guard = createDismissGuard({
+      host: footer,
+      isDirty: () => (this.file !== null || this.jobId !== null) && this.commitOut === null,
+      onDiscard: () => this.close(),
+      message: 'Discard this import? The uploaded file and column mapping will be lost.',
+    });
 
     panel.append(header, steps, error, body, footer);
     root.append(backdrop, panel);
@@ -281,6 +293,7 @@ export class ImportWizard extends Control<ImportWizardConfig> {
   close(): void {
     if (!this.opened) return;
     this.opened = false;
+    this.guard?.cancel();
     this.untrap?.();
     this.untrap = null;
     this.el.style.display = 'none';
@@ -289,9 +302,12 @@ export class ImportWizard extends Control<ImportWizardConfig> {
     this.lastFocused = null;
   }
 
-  private requestClose(): void {
+  /** A user dismiss gesture — Esc (`escape`) or × / Cancel. Closes at once
+   *  before anything is uploaded (or after the commit landed); otherwise asks. */
+  private requestClose(escape: boolean): void {
     if (this.uploading || this.committing) return;
-    this.close();
+    if (escape) this.guard?.escape();
+    else this.guard?.request();
   }
 
   private resetState(): void {
@@ -339,7 +355,7 @@ export class ImportWizard extends Control<ImportWizardConfig> {
   private onBack(): void {
     const idx = STEP_ORDER.indexOf(this.step);
     if (idx <= 0) {
-      this.requestClose();
+      this.requestClose(false);
       return;
     }
     this.setStep(STEP_ORDER[idx - 1]!);

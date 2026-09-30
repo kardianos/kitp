@@ -28,6 +28,7 @@ import { ADMIN_SPEC, type UserListOutput, type UserRow, type UserRoleAssignment 
 import { SPEC, type SelectWithAttributesOutput } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { trapFocus, captureFocus } from '../util/focus-trap.js';
+import { createDismissGuard, nudge, snapshotFields, type DismissGuard } from '../ui/dismiss-guard.js';
 import { EditableField } from '../ui/editable-field.js';
 import { AUTH_USER_PATH, type AuthUser } from '../auth/auth-state.js';
 
@@ -90,7 +91,8 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
   private segHost!: HTMLElement;
   private listHost!: HTMLElement;
   /** The open modal (create / remove), with its focus trap + opener-restore. */
-  private modal: { overlay: HTMLElement; release: () => void; restore: () => void } | null = null;
+  private modal: { overlay: HTMLElement; release: () => void; restore: () => void; guard: DismissGuard } | null =
+    null;
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('section');
@@ -541,8 +543,11 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
   /* ------------------------------- modal ---------------------------------- */
 
   /** Mount `panel` as a centered modal over a scrim, trapping Tab focus and
-   *  restoring focus to the opener on close. Backdrop click + Esc close it. */
-  private openModal(panel: HTMLElement, label: string): void {
+   *  restoring focus to the opener on close. Esc and the dialog's Cancel
+   *  ({@link dismissModal}) close it — asking first when a field changed since
+   *  open (the discard prompt stands in for `actions`). A backdrop click never
+   *  closes it; it nudges the panel. */
+  private openModal(panel: HTMLElement, label: string, actions: HTMLElement): void {
     this.closeModal();
     const restore = captureFocus();
 
@@ -552,23 +557,35 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
 
     const backdrop = document.createElement('div');
     backdrop.className = 'pm-modal__backdrop';
-    this.listen(backdrop, 'click', () => this.closeModal());
+    this.listen(backdrop, 'click', () => nudge(panel));
 
     panel.classList.add('pm-modal__panel');
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-modal', 'true');
     panel.setAttribute('aria-label', label);
+
+    const atOpen = snapshotFields(panel);
+    const guard = createDismissGuard({
+      host: actions,
+      isDirty: () => snapshotFields(panel) !== atOpen,
+      onDiscard: () => this.closeModal(),
+    });
     this.listen(panel, 'keydown', (ev) => {
-      if ((ev as KeyboardEvent).key === 'Escape') {
+      if ((ev as KeyboardEvent).key === 'Escape' && !ev.defaultPrevented) {
         ev.preventDefault();
-        this.closeModal();
+        guard.escape();
       }
     });
 
     overlay.append(backdrop, panel);
     this.el.append(overlay);
     const release = trapFocus(panel);
-    this.modal = { overlay, release, restore };
+    this.modal = { overlay, release, restore, guard };
+  }
+
+  /** The dialogs' Cancel: close, asking first when a field was changed. */
+  private dismissModal(): void {
+    this.modal?.guard.request();
   }
 
   private closeModal(): void {
@@ -636,7 +653,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     cancel.className = 'btn';
     cancel.dataset.peopleNewCancel = '';
     cancel.textContent = 'Cancel';
-    this.listen(cancel, 'click', () => this.closeModal());
+    this.listen(cancel, 'click', () => this.dismissModal());
     const create = document.createElement('button');
     create.type = 'button';
     create.className = 'btn btn-primary';
@@ -677,7 +694,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     });
 
     panel.append(title, this.field('Name', nameInput), emailField, this.field('Type', typeSel), hint, actions);
-    this.openModal(panel, 'Add person');
+    this.openModal(panel, 'Add person', actions);
     validate();
     nameInput.focus?.();
   }
@@ -732,7 +749,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     cancel.className = 'btn';
     cancel.dataset.peopleMergeCancel = '';
     cancel.textContent = 'Cancel';
-    this.listen(cancel, 'click', () => this.closeModal());
+    this.listen(cancel, 'click', () => this.dismissModal());
     const submit = document.createElement('button');
     submit.type = 'button';
     submit.className = 'btn btn-primary';
@@ -776,7 +793,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     });
 
     panel.append(title, intro, this.field('Survivor', sel), warn, actions);
-    this.openModal(panel, 'Merge duplicate');
+    this.openModal(panel, 'Merge duplicate', actions);
     validate();
   }
 
@@ -806,7 +823,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     cancel.className = 'btn';
     cancel.dataset.peopleRemoveCancel = '';
     cancel.textContent = 'Cancel';
-    this.listen(cancel, 'click', () => this.closeModal());
+    this.listen(cancel, 'click', () => this.dismissModal());
     const confirm = document.createElement('button');
     confirm.type = 'button';
     confirm.className = 'btn btn-danger';
@@ -816,7 +833,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     actions.append(cancel, confirm);
 
     panel.append(title, msg, actions);
-    this.openModal(panel, 'Remove person');
+    this.openModal(panel, 'Remove person', actions);
     confirm.focus?.();
   }
 

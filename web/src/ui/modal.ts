@@ -2,9 +2,14 @@
  * Modal — a centered, backdropped overlay for focused edit forms (e.g. the
  * workflow "Edit transition" editor). A lightweight lifecycle helper (NOT a
  * Control), mirroring Popover's shape: the caller fills `element` with content,
- * then open()/close()/destroy(). Esc and a backdrop click dismiss (firing
- * `onClose`); focus is trapped within the panel and restored to the opener on
- * close; body scroll is locked while open.
+ * then open()/close()/destroy(). Focus is trapped within the panel and restored
+ * to the opener on close; body scroll is locked while open.
+ *
+ * Dismissal follows the shared dismiss-guard policy (ui/dismiss-guard.ts): the
+ * × and Esc dismiss (firing `onClose`), but when the form was edited they first
+ * ask "Discard your changes?"; a backdrop click never dismisses (it nudges the
+ * panel). By default "edited" means any native field in the body changed since
+ * open() — pass `isDirty` for content that isn't plain fields.
  *
  * Mounting: prefers `document.body` (so the fixed overlay escapes any ancestor
  * overflow/stacking context), falling back to the `host` element when there's
@@ -13,6 +18,7 @@
  */
 
 import { trapFocus, captureFocus } from '../util/focus-trap.js';
+import { createDismissGuard, nudge, snapshotFields, type DismissGuard } from './dismiss-guard.js';
 
 import { icon } from './icons.js';
 export interface ModalOptions {
@@ -20,8 +26,11 @@ export interface ModalOptions {
   title?: string;
   /** Extra class on the panel (for per-use styling). */
   className?: string;
-  /** Fired on Esc / backdrop / × dismiss (NOT on a programmatic close()). */
+  /** Fired on an Esc / × dismiss (NOT on a programmatic close()). */
   onClose?: () => void;
+  /** True when dismissing would lose edits. Default: a native field in the
+   *  body changed since open() (see snapshotFields). */
+  isDirty?: () => boolean;
   /** Fallback mount target when there's no `document.body` (tests). */
   host?: HTMLElement;
 }
@@ -36,6 +45,9 @@ export class Modal {
   private releaseTrap: (() => void) | null = null;
   private restoreFocus: (() => void) | null = null;
   private onDocKeydown: ((e: Event) => void) | null = null;
+  private readonly guard: DismissGuard;
+  /** Field snapshot taken at open() — the default dirty baseline. */
+  private openSnapshot = '';
 
   constructor(opts: ModalOptions = {}) {
     this.opts = opts;
@@ -61,18 +73,29 @@ export class Modal {
     close.dataset.modalClose = '';
     close.setAttribute('aria-label', 'Close');
     close.append(icon('x', 14));
-    close.addEventListener('click', () => this.close(true));
+    close.addEventListener('click', () => this.guard.request());
     header.append(title, close);
 
     const body = document.createElement('div');
     body.className = 'modal__body';
     this.body = body;
 
-    panel.append(header, body);
+    // Empty until the discard prompt mounts here.
+    const footer = document.createElement('div');
+    footer.className = 'modal__footer';
+
+    panel.append(header, body, footer);
     backdrop.append(panel);
-    // Backdrop click (outside the panel) dismisses.
+    // A backdrop click (outside the panel) never dismisses — it would throw
+    // away the form on a stray click. Nudge toward the explicit × instead.
     backdrop.addEventListener('click', (e) => {
-      if (e.target === backdrop) this.close(true);
+      if (e.target === backdrop) nudge(panel);
+    });
+
+    this.guard = createDismissGuard({
+      host: footer,
+      isDirty: opts.isDirty ?? ((): boolean => snapshotFields(body) !== this.openSnapshot),
+      onDiscard: () => this.close(true),
     });
 
     this.backdrop = backdrop;
@@ -100,15 +123,19 @@ export class Modal {
       document.body.style.overflow = 'hidden';
     }
 
+    this.openSnapshot = snapshotFields(this.body);
     this.releaseTrap = trapFocus(this.panel);
+    // Bubble phase, so a control inside the panel (a combobox / popover
+    // closing its own menu) handles its Esc first; one it consumed never
+    // dismisses the modal too.
     this.onDocKeydown = (e: Event): void => {
-      if ((e as KeyboardEvent).key === 'Escape') {
+      if ((e as KeyboardEvent).key === 'Escape' && !e.defaultPrevented) {
         e.preventDefault();
-        this.close(true);
+        this.guard.escape();
       }
     };
     if (typeof document !== 'undefined') {
-      document.addEventListener('keydown', this.onDocKeydown, true);
+      document.addEventListener('keydown', this.onDocKeydown);
     }
 
     // Focus the first focusable in the panel.
@@ -118,14 +145,16 @@ export class Modal {
     first?.focus?.();
   }
 
-  /** Hide + tear down transient state. `fromSelf` (Esc/backdrop/×) fires onClose. */
+  /** Hide + tear down transient state. `fromSelf` (a confirmed Esc/× dismiss)
+   *  fires onClose. A programmatic close() skips the dirty check. */
   close(fromSelf = false): void {
     if (!this.opened) return;
     this.opened = false;
+    this.guard.cancel();
     this.releaseTrap?.();
     this.releaseTrap = null;
     if (this.onDocKeydown && typeof document !== 'undefined') {
-      document.removeEventListener('keydown', this.onDocKeydown, true);
+      document.removeEventListener('keydown', this.onDocKeydown);
     }
     this.onDocKeydown = null;
     if (this.backdrop.parentNode) this.backdrop.parentNode.removeChild(this.backdrop);

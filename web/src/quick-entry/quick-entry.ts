@@ -17,7 +17,13 @@
  *   - Plain Enter in the title  → submit + KEEP the overlay open (clear, refocus
  *     title for the next entry).
  *   - Mod+Enter (anywhere)      → submit + CLOSE.
- *   - Esc                       → cancel (close without submitting).
+ *   - Esc / × / Cancel          → cancel (close without submitting).
+ *
+ * Dismissal follows the shared {@link createDismissGuard} policy: a backdrop
+ * click never closes the overlay (it nudges the panel instead), and Esc / × /
+ * Cancel close straight away only when nothing has been entered — otherwise an
+ * inline "Discard this new task?" prompt asks first. An Esc a child control
+ * already consumed (closing a picker's dropdown) never reaches the dialog.
  * Attachments pre-upload to CAS via {@link uploadFile} BEFORE the batch fires;
  * once every file has an id, card.insert + tag.apply + attachment.create are
  * issued in ONE dispatcher tick (one batch, one transaction — see
@@ -48,6 +54,7 @@ import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import type { AttrSchema } from '../filter/attribute-schema.js';
 import { prepareFile, type PostChunk } from '../task-detail/upload.js';
 import { trapFocus } from '../util/focus-trap.js';
+import { createDismissGuard, nudge, type DismissGuard } from '../ui/dismiss-guard.js';
 import type { RefPicker } from '../ui/ref-picker.js';
 import {
   resolveDefaultCreateStatus,
@@ -189,6 +196,9 @@ export class QuickEntry extends Control<QuickEntryConfig> {
   private parentOverride: bigint | null = null;
 
   private assigneeId: bigint | null = null;
+  /** The assignee the form started from (prefill / kept across "Add & Another")
+   *  — only a CHANGE from it counts as entered work. */
+  private baselineAssigneeId: bigint | null = null;
   private tagIds: bigint[] = [];
   private attrRows: AttrRow[] = [];
   private nextRowId = 1;
@@ -213,6 +223,9 @@ export class QuickEntry extends Control<QuickEntryConfig> {
   /** Spawned pickers cleared on close so a re-open starts fresh. */
   private assigneePicker: RefPicker | null = null;
   private tagsPicker: RefPicker | null = null;
+
+  /** Esc / × / Cancel policy: ask before discarding entered work. */
+  private guard: DismissGuard | null = null;
 
   /** The success-toast singleton (built lazily on first success). */
   private toast: SuccessToast | null = null;
@@ -252,14 +265,16 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     root.setAttribute('aria-modal', 'true');
     root.setAttribute('aria-label', 'Quick entry');
 
-    // Backdrop scrim — a click closes (when not mid-submit).
-    const backdrop = document.createElement('button');
-    backdrop.type = 'button';
+    // Backdrop scrim — deliberately NOT a close target (a stray click must
+    // never throw away a half-typed task); it nudges the panel toward the
+    // explicit × / Cancel instead.
+    const backdrop = document.createElement('div');
     backdrop.className = 'qe-overlay__backdrop';
     backdrop.dataset.qeBackdrop = '';
-    backdrop.setAttribute('aria-label', 'Close quick entry');
-    backdrop.tabIndex = -1;
-    this.listen(backdrop, 'click', () => this.requestClose());
+    backdrop.setAttribute('aria-hidden', 'true');
+    this.listen(backdrop, 'click', () => {
+      if (this.panelEl) nudge(this.panelEl);
+    });
 
     const panel = document.createElement('div');
     panel.className = 'qe-overlay__panel';
@@ -275,7 +290,15 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     heading.className = 'qe-overlay__title';
     heading.dataset.qeHeading = '';
     heading.textContent = `New ${this.cardType}`;
-    header.append(heading);
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'iconbtn qe-overlay__dismiss';
+    dismiss.dataset.qeDismiss = '';
+    dismiss.setAttribute('aria-label', 'Close');
+    dismiss.title = 'Close';
+    dismiss.append(icon('x', 16));
+    this.listen(dismiss, 'click', () => this.requestDismiss(false));
+    header.append(heading, dismiss);
 
     /* -------------------------------- body ------------------------------- */
     const body = document.createElement('div');
@@ -307,11 +330,11 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     this.descEditor = new RichEditor({
       value: '',
       placeholder: 'Description (optional)',
-      minRows: 6,
+      minRows: 10,
       editableClassName: 'qe-overlay__input qe-overlay__textarea',
       editableAttrs: { 'data-qe-description': '' },
       onCommit: () => this.submit(true),
-      onCancel: () => this.requestClose(),
+      onCancel: () => this.requestDismiss(true),
     });
     this.onDestroy(() => this.descEditor?.destroy());
     descField.append(this.descEditor.el);
@@ -349,6 +372,12 @@ export class QuickEntry extends Control<QuickEntryConfig> {
 
     const buttons = document.createElement('div');
     buttons.className = 'qe-overlay__buttons';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn qe-overlay__cancel';
+    cancel.dataset.qeCancel = '';
+    cancel.textContent = 'Cancel';
+    this.listen(cancel, 'click', () => this.requestDismiss(false));
     const another = document.createElement('button');
     another.type = 'button';
     another.className = 'btn qe-overlay__another';
@@ -368,7 +397,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     addClose.className = 'btn btn-primary qe-overlay__close';
     addClose.dataset.qeAddClose = '';
     addClose.textContent = 'Add & Close';
-    buttons.append(another, addEdit, addClose);
+    buttons.append(cancel, another, addEdit, addClose);
     this.listen(another, 'click', () => this.submit(false));
     this.listen(addEdit, 'click', () => this.submit(true, true));
     this.listen(addClose, 'click', () => this.submit(true));
@@ -377,6 +406,13 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     hintRow.className = 'qe-overlay__hint-row';
     hintRow.append(hint, submitting);
     footer.append(hintRow, buttons);
+    // The discard prompt stands in for the footer while it shows.
+    this.guard = createDismissGuard({
+      host: footer,
+      isDirty: () => this.isDirty(),
+      onDiscard: () => this.close(),
+      message: `Discard this new ${this.cardType}? What you entered will be lost.`,
+    });
 
     panel.append(header, body, footer);
     root.append(backdrop, panel);
@@ -518,6 +554,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     if (this.prefill?.assigneeUserId !== undefined) {
       this.assigneeId = this.prefill.assigneeUserId;
     }
+    this.baselineAssigneeId = this.assigneeId;
 
     this.el.style.display = '';
     this.untrap?.();
@@ -525,10 +562,12 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     focusEl(this.titleInput);
   }
 
-  /** Close without submitting (Esc / backdrop / Add & Close after success). */
+  /** Close unconditionally (a confirmed dismiss, Add & Close after success, the
+   *  `quickCreateClose` intent). User gestures go through {@link requestDismiss}. */
   close(): void {
     if (!this.opened) return;
     this.opened = false;
+    this.guard?.cancel();
     this.untrap?.();
     this.untrap = null;
     this.el.style.display = 'none';
@@ -537,13 +576,29 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     this.lastFocused = null;
   }
 
-  private requestClose(): void {
+  /**
+   * A user dismiss gesture — Esc (`escape`) or the × / Cancel buttons. Closes
+   * at once when nothing has been entered; otherwise the guard asks first. Esc
+   * while that prompt shows backs out of it ("keep editing").
+   */
+  private requestDismiss(escape: boolean): void {
     if (this.submitting) return;
-    this.close();
+    if (escape) this.guard?.escape();
+    else this.guard?.request();
+  }
+
+  /** True when closing now would discard something the user entered. */
+  private isDirty(): boolean {
+    if ((this.titleInput?.value ?? '').trim() !== '') return true;
+    if ((this.descEditor?.getValue() ?? '').trim() !== '') return true;
+    if (this.tagIds.length > 0 || this.pendingAttachments.length > 0) return true;
+    if (this.collectAdditionalAttributes().length > 0) return true;
+    return this.assigneeId !== this.baselineAssigneeId;
   }
 
   /** Clear the per-submission inputs + tear down spawned pickers/editors. */
   private resetForm(): void {
+    this.guard?.cancel();
     if (this.titleInput) this.titleInput.value = '';
     this.descEditor?.setValue('', true);
     this.assigneeId = null;
@@ -560,7 +615,9 @@ export class QuickEntry extends Control<QuickEntryConfig> {
   private clearForNext(): void {
     if (this.titleInput) this.titleInput.value = '';
     this.descEditor?.setValue('', true);
-    // Keep the assignee selection (the user chose it / it came from prefill).
+    // Keep the assignee selection (the user chose it / it came from prefill) —
+    // it becomes the new baseline, so it alone doesn't make the form dirty.
+    this.baselineAssigneeId = this.assigneeId;
     this.tagIds = [];
     this.pendingAttachments = [];
     this.clearAttrRows();
@@ -860,7 +917,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      this.requestClose();
+      this.requestDismiss(true);
       return;
     }
     if (e.key === 'Enter') {
@@ -876,9 +933,12 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     // Title/description handle their own keys + stopPropagation; this catches
     // focus on the pickers / footer / attachments.
     if (e.key === 'Escape') {
+      // A child already consumed this Esc (a picker closing its dropdown) —
+      // it must not also dismiss the whole dialog.
+      if (e.defaultPrevented) return;
       e.preventDefault();
       e.stopPropagation();
-      this.requestClose();
+      this.requestDismiss(true);
       return;
     }
     if (e.key === 'Enter' && isMod(e)) {
@@ -906,6 +966,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
       focusEl(this.titleInput);
       return;
     }
+    this.guard?.cancel();
     this.clearError();
 
     // Parent: explicit override (project-layout) → current project scope.

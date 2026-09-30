@@ -60,6 +60,7 @@ import { PROJECT_SPEC } from './specs.js';
 import { clampIndex, projectDescription, projectTitle, TEMPLATE_INCLUSION_LEAF } from './project-helpers.js';
 
 import { icon } from '../ui/icons.js';
+import { createDismissGuard, nudge } from '../ui/dismiss-guard.js';
 /**
  * Fixed virtual-list row height (px) for a project row: a comfortable card with
  * a title line + a meta/subtitle line + generous --space-3 padding. Mirror this
@@ -776,6 +777,18 @@ export class ProjectList extends Control<ProjectListConfig> {
     const heading = document.createElement('h2');
     heading.className = 'qe-dialog__title';
     heading.textContent = 'New project';
+    // Explicit close — the scrim is not a close target (see the dismiss guard
+    // below).
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'iconbtn qe-dialog__dismiss';
+    dismiss.dataset.qeDismiss = '';
+    dismiss.setAttribute('aria-label', 'Close');
+    dismiss.title = 'Close';
+    dismiss.append(icon('x', 16));
+    const header = document.createElement('div');
+    header.className = 'qe-dialog__header';
+    header.append(heading, dismiss);
 
     /* --- Title field --- */
     const titleLabel = document.createElement('label');
@@ -818,7 +831,7 @@ export class ProjectList extends Control<ProjectListConfig> {
       editableClassName: 'qe-dialog__input qe-dialog__textarea',
       editableAttrs: { 'data-qe-description': '' },
       onCommit: () => commitPrimary(),
-      onCancel: () => dialog.close(),
+      onCancel: () => guard.escape(),
     });
     this.onDestroy(() => descEditor.destroy());
     descLabel.append(descSpan, descEditor.el);
@@ -885,6 +898,11 @@ export class ProjectList extends Control<ProjectListConfig> {
     del.textContent = 'Delete project';
     del.style.marginRight = 'auto';
     del.style.display = 'none';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn qe-dialog__cancel';
+    cancel.dataset.qeCancel = '';
+    cancel.textContent = 'Cancel';
     const another = document.createElement('button');
     another.type = 'button';
     another.className = 'btn qe-dialog__another';
@@ -895,9 +913,9 @@ export class ProjectList extends Control<ProjectListConfig> {
     primary.className = 'btn btn-primary qe-dialog__close';
     primary.dataset.qeAddClose = '';
     primary.textContent = 'Add & Close';
-    footer.append(del, another, primary);
+    footer.append(del, cancel, another, primary);
 
-    panel.append(heading, titleLabel, more, moreRegion, tmplRegion, hint, footer);
+    panel.append(header, titleLabel, more, moreRegion, tmplRegion, hint, footer);
     root.append(panel);
 
     // Keep the template <select> in sync with the loaded templates + the
@@ -944,9 +962,26 @@ export class ProjectList extends Control<ProjectListConfig> {
       }
     };
 
+    // Esc / × / Cancel: close straight away when nothing was entered (create)
+    // or changed (edit); otherwise ask before discarding. The prompt stands in
+    // for the footer while it shows.
+    const isDirty = (): boolean => {
+      const title = titleInput.value.trim();
+      const desc = descEditor.getValue().trim();
+      if (mode === 'edit') return title !== origTitle.trim() || desc !== origDesc.trim();
+      return title !== '' || desc !== '' || isTmpl.checked || copySel.value !== '';
+    };
+    const guard = createDismissGuard({
+      host: footer,
+      isDirty,
+      onDiscard: () => dialog.close(),
+      message: 'Discard your changes to this project?',
+    });
+
     const dialog: PropertiesDialog = {
       root,
       openCreate: () => {
+        guard.cancel();
         mode = 'create';
         editId = null;
         origTitle = '';
@@ -962,6 +997,7 @@ export class ProjectList extends Control<ProjectListConfig> {
         focusEl(titleInput);
       },
       openEdit: (id, title, description, isTemplate) => {
+        guard.cancel();
         mode = 'edit';
         editId = id;
         editIsTemplate = isTemplate;
@@ -976,6 +1012,7 @@ export class ProjectList extends Control<ProjectListConfig> {
         focusEl(titleInput);
       },
       close: () => {
+        guard.cancel();
         root.style.display = 'none';
       },
       isOpen: () => root.style.display !== 'none',
@@ -1028,6 +1065,20 @@ export class ProjectList extends Control<ProjectListConfig> {
 
     this.listen(another, 'click', () => add(true));
     this.listen(primary, 'click', () => commitPrimary());
+    this.listen(dismiss, 'click', () => guard.request());
+    this.listen(cancel, 'click', () => guard.request());
+    // The scrim never dismisses — a stray click must not lose the form.
+    this.listen(root, 'click', (ev) => {
+      if (ev.target === root) nudge(panel);
+    });
+    // Esc from anywhere else in the panel (checkbox / select / buttons). The
+    // title + description consume their own Esc first (defaultPrevented).
+    this.listen(panel, 'keydown', (ev) => {
+      const e = ev as KeyboardEvent;
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      e.preventDefault();
+      guard.escape();
+    });
     this.listen(del, 'click', () => {
       if (editId === null) return;
       const what = editIsTemplate ? 'template' : 'project';
@@ -1047,7 +1098,7 @@ export class ProjectList extends Control<ProjectListConfig> {
       const e = ev as KeyboardEvent;
       if (e.key === 'Escape') {
         e.preventDefault();
-        dialog.close();
+        guard.escape();
         return;
       }
       if (e.key === 'Enter') {

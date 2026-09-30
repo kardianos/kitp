@@ -941,7 +941,8 @@ export class NestedEditor extends Control<NestedEditorConfig> {
 
   /** Open the Add/Edit-transition editor in a modal (#16) — replaces the old
    *  inline-at-the-bottom form. Builds the form for `draft` into a fresh modal
-   *  and opens it; save closes it + reloads, Esc/×/backdrop dismiss. */
+   *  and opens it; save closes it + reloads. Esc / × dismiss — asking first
+   *  when a field was changed (the Modal's default dirty check). */
   private openStepModal(flowId: string, draft: FlowStepDraft): void {
     this.stepModal?.destroy();
     const valueCards = (this.ctx.tree.at(this.p('valueCards')).peek<Array<{ id: string; label: string }>>() ?? []) as Array<{ id: string; label: string }>;

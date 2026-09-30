@@ -327,3 +327,36 @@ test('PeopleManager merge: blocked when both people have a login (mirrors server
   sel.dispatchEvent({ type: 'change', target: sel });
   assert.equal(submit.disabled, false, 'merging a user into a no-login person is allowed');
 });
+
+test('PeopleManager dialogs never lose typed input to a stray dismiss', async () => {
+  const transport = recordingTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mount(api);
+  await settle(dispatcher);
+  const openNew = () => ctrl.el.querySelector('[data-people-new]').dispatchEvent({ type: 'click' });
+  const modal = () => ctrl.el.querySelector('[data-pm-modal]');
+  const clickSel = (sel) => ctrl.el.querySelector(sel).dispatchEvent({ type: 'click' });
+
+  // Untouched: Cancel closes at once.
+  openNew();
+  clickSel('[data-people-new-cancel]');
+  assert.equal(modal(), null, 'untouched form closed without a prompt');
+
+  // A backdrop click never closes it.
+  openNew();
+  clickSel('.pm-modal__backdrop');
+  assert.ok(modal(), 'backdrop click ignored');
+
+  // Typed: Cancel asks; Keep editing keeps the form; Discard closes.
+  ctrl.el.querySelector('[data-people-new-name]').value = 'Half typed';
+  clickSel('[data-people-new-cancel]');
+  assert.ok(modal(), 'still open');
+  assert.ok(ctrl.el.querySelector('[data-dismiss-guard]'), 'discard prompt shown');
+  clickSel('[data-dismiss-keep]');
+  assert.equal(ctrl.el.querySelector('[data-dismiss-guard]'), null, 'Keep editing hid the prompt');
+  assert.equal(ctrl.el.querySelector('[data-people-new-name]').value, 'Half typed', 'input kept');
+  clickSel('[data-people-new-cancel]');
+  clickSel('[data-dismiss-discard]');
+  assert.equal(modal(), null, 'Discard closed it');
+  assert.equal(transport.sent.creates.length, 0, 'nothing created');
+});

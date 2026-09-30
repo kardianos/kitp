@@ -14,6 +14,8 @@
  *     land in one batch after the pre-upload (file.create) pass;
  *   - Enter keeps the overlay open (clears for the next) / Mod+Enter closes /
  *     Esc cancels without submitting;
+ *   - the dismiss guard: Esc / × / Cancel ask before discarding typed work, a
+ *     backdrop click never closes, a child-consumed Esc never dismisses;
  *   - the success toast's Undo fires `card.delete` on the new task;
  *   - the default-create-status resolution chain (screen → flow → triage →
  *     active → error) — exercised through the pure resolver + end-to-end.
@@ -567,19 +569,120 @@ test('Mod+Enter submits and CLOSES the overlay', async () => {
   assert.equal(qe.el.style.display, 'none', 'overlay CLOSED after Mod+Enter');
 });
 
-test('Esc cancels without submitting', async () => {
+test('Esc on an untouched form closes at once, without submitting', async () => {
   const { transport, sent } = quickEntryHarness();
   const { dispatcher, api } = bootApi(transport);
   const { qe } = mountQuickEntry(api);
 
   qe.open();
-  const title = qe.el.querySelector('[data-qe-title]');
-  title.value = 'Abandoned';
-  keydown(title, 'Escape');
+  keydown(qe.el.querySelector('[data-qe-title]'), 'Escape');
   await settle(dispatcher);
 
-  assert.equal(qe.el.style.display, 'none', 'Esc closed the overlay');
+  assert.equal(qe.el.style.display, 'none', 'Esc closed the empty overlay');
+  assert.equal(qe.el.querySelector('[data-dismiss-guard]'), null, 'no prompt for an empty form');
   assert.equal(sentOf(sent, 'card', 'insert').length, 0, 'no insert fired on cancel');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Dismiss guard: typed work is never lost to a stray gesture.                 */
+/* -------------------------------------------------------------------------- */
+
+// Every explicit dismiss gesture: with something typed it asks first.
+const DISMISS_GESTURES = [
+  ['Esc in the title', (qe) => keydown(qe.el.querySelector('[data-qe-title]'), 'Escape')],
+  ['Esc from the footer', (qe) => keydown(qe.el.querySelector('[data-qe-add-close]'), 'Escape')],
+  ['the × button', (qe) => click(qe.el.querySelector('[data-qe-dismiss]'))],
+  ['the Cancel button', (qe) => click(qe.el.querySelector('[data-qe-cancel]'))],
+];
+
+for (const [name, dismiss] of DISMISS_GESTURES) {
+  test(`${name} with a typed title asks first; Keep editing keeps it, Discard closes`, async () => {
+    const { transport, sent } = quickEntryHarness();
+    const { dispatcher, api } = bootApi(transport);
+    const { qe } = mountQuickEntry(api);
+
+    qe.open();
+    setTitle(qe, 'Half-typed task');
+    dismiss(qe);
+    const prompt = qe.el.querySelector('[data-dismiss-guard]');
+    assert.ok(prompt, 'discard prompt shown');
+    assert.match(prompt.textContent, /Discard this new task\?/);
+    assert.equal(qe.el.style.display, '', 'overlay still open');
+
+    click(qe.el.querySelector('[data-dismiss-keep]'));
+    assert.equal(qe.el.querySelector('[data-dismiss-guard]'), null, 'Keep editing hid the prompt');
+    assert.equal(qe.el.querySelector('[data-qe-title]').value, 'Half-typed task', 'work kept');
+
+    dismiss(qe);
+    click(qe.el.querySelector('[data-dismiss-discard]'));
+    await settle(dispatcher);
+    assert.equal(qe.el.style.display, 'none', 'Discard closed the overlay');
+    assert.equal(sentOf(sent, 'card', 'insert').length, 0, 'nothing submitted');
+  });
+}
+
+test('a backdrop click never closes the overlay (empty or typed)', () => {
+  const { api } = bootApi(quickEntryHarness().transport);
+  const { qe } = mountQuickEntry(api);
+
+  qe.open();
+  click(qe.el.querySelector('[data-qe-backdrop]'));
+  assert.equal(qe.el.style.display, '', 'empty overlay stays open');
+
+  setTitle(qe, 'Typed');
+  click(qe.el.querySelector('[data-qe-backdrop]'));
+  assert.equal(qe.el.style.display, '', 'typed overlay stays open');
+  assert.equal(qe.el.querySelector('[data-dismiss-guard]'), null, 'backdrop does not even prompt');
+  assert.equal(qe.el.querySelector('[data-qe-title]').value, 'Typed');
+});
+
+test('Esc while the discard prompt shows backs out of it (keeps editing)', () => {
+  const { api } = bootApi(quickEntryHarness().transport);
+  const { qe } = mountQuickEntry(api);
+
+  qe.open();
+  setTitle(qe, 'Typed');
+  keydown(qe.el.querySelector('[data-qe-title]'), 'Escape');
+  assert.ok(qe.el.querySelector('[data-dismiss-guard]'), 'first Esc prompts');
+  keydown(qe.el.querySelector('[data-dismiss-keep]'), 'Escape');
+  assert.equal(qe.el.querySelector('[data-dismiss-guard]'), null, 'second Esc backs out');
+  assert.equal(qe.el.style.display, '', 'still open');
+});
+
+test('an Esc a child control consumed (closing its dropdown) does not dismiss', () => {
+  const { api } = bootApi(quickEntryHarness().transport);
+  const { qe } = mountQuickEntry(api);
+
+  qe.open();
+  // Stand-in for a RefPicker / DatePicker closing its menu: it handles Esc
+  // with preventDefault but lets the event bubble.
+  const child = qe.el.querySelector('[data-qe-more]');
+  child.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') e.preventDefault();
+  });
+  keydown(child, 'Escape');
+  assert.equal(qe.el.style.display, '', 'overlay stayed open');
+  assert.equal(qe.el.querySelector('[data-dismiss-guard]'), null, 'no prompt either');
+});
+
+test('clean states close without asking: prefilled assignee, and after Enter saved the task', async () => {
+  const { transport } = quickEntryHarness();
+  const { dispatcher, api } = bootApi(transport);
+  const { qe } = mountQuickEntry(api);
+
+  // A prefill (inbox "me") is not something the user entered.
+  qe.open({ prefill: { assigneeUserId: 7n } });
+  click(qe.el.querySelector('[data-qe-dismiss]'));
+  assert.equal(qe.el.style.display, 'none', 'prefill alone is clean');
+
+  // After Enter saves + clears for the next entry, the empty form is clean.
+  qe.open();
+  const title = setTitle(qe, 'Saved one');
+  keydown(title, 'Enter');
+  await settle(dispatcher);
+  assert.equal(qe.el.style.display, '', 'Enter kept it open');
+  click(qe.el.querySelector('[data-qe-cancel]'));
+  assert.equal(qe.el.style.display, 'none', 'cleared form closes without a prompt');
 });
 
 /* -------------------------------------------------------------------------- */

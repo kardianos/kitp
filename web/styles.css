@@ -2976,6 +2976,9 @@ select optgroup {
   flex-direction: column;
   gap: var(--space-2);
 }
+.modal__footer:empty {
+  display: none;
+}
 .qe-dialog {
   position: fixed;
   inset: 0;
@@ -3088,6 +3091,12 @@ select optgroup {
   gap: var(--space-2);
   margin-top: var(--space-1);
 }
+.qe-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
 
 /* ==========================================================================
    Quick-entry overlay — the global `n` fast-task-create flow. A centered
@@ -3100,7 +3109,7 @@ select optgroup {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 12vh var(--space-4) var(--space-4);
+  padding: 6vh var(--space-4) var(--space-4);
   z-index: var(--z-modal);
 }
 .qe-overlay__backdrop {
@@ -3116,8 +3125,8 @@ select optgroup {
 }
 .qe-overlay__panel {
   position: relative;
-  width: min(42rem, 94vw);
-  max-height: 86vh;
+  width: min(56rem, 94vw);
+  max-height: 90vh;
   display: flex;
   flex-direction: column;
   background: var(--color-surface-raised);
@@ -3127,9 +3136,13 @@ select optgroup {
   transition: width var(--duration-base) var(--ease-standard);
 }
 .qe-overlay__panel--wide {
-  width: min(50rem, 96vw);
+  width: min(68rem, 96vw);
 }
 .qe-overlay__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
   padding: var(--space-4) var(--space-6) var(--space-3);
   border-bottom: 1px solid var(--color-border);
 }
@@ -3193,7 +3206,7 @@ select optgroup {
 }
 .qe-overlay__textarea {
   resize: vertical;
-  min-height: 9rem;
+  min-height: 16rem;
   line-height: var(--leading-normal);
 }
 .qe-overlay__more {
@@ -3387,6 +3400,59 @@ select optgroup {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
+}
+/* Cancel sits apart on the left, away from the submit buttons. */
+.qe-overlay__cancel {
+  margin-right: auto;
+}
+
+/* ==========================================================================
+   Dismiss guard (ui/dismiss-guard.ts) — the shared "don't lose typed work"
+   policy for create/edit dialogs. The discard prompt replaces its host (the
+   dialog footer) while it shows; a backdrop click nudges the panel instead of
+   closing it.
+   ========================================================================== */
+.dismiss-guard-host[data-dismiss-prompt] > :not([data-dismiss-guard]) {
+  display: none !important;
+}
+.dismiss-guard {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-danger-ring);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-soft);
+  animation: modal-panel-enter var(--duration-base) var(--ease-out);
+}
+.dismiss-guard__msg {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-fg-strong);
+}
+.dismiss-guard__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+@keyframes dialog-nudge {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+.dialog-nudge {
+  animation: dialog-nudge 280ms var(--ease-standard);
+}
+@media (prefers-reduced-motion: reduce) {
+  .dialog-nudge {
+    animation: none;
+    box-shadow: var(--shadow-lg), 0 0 0 3px var(--color-focus-halo);
+  }
 }
 
 /* Quick-entry success toast (with Undo) — a single reused fixed-corner element,
