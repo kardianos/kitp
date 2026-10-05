@@ -10,10 +10,14 @@
 //  3. Body trailer line `Ref: <id>` (last ~20 lines).
 //
 // First match wins. Matched → append a reply_body card (delivery_status
-// = 'received') to the matched comm's replies list. Unmatched + the
-// channel has intake_status configured → create a new task with the
-// inbound subject/body and a fresh comm. Unmatched + no intake →
-// comm_log kind='unmatched_thread' and discard.
+// = 'received') to the matched comm's replies list. Unmatched but a
+// reply to a kitp notification email (In-Reply-To / References names a
+// notification Message-ID, see mailer.go) → comm_log
+// kind='notification_reply' and discard, so answering a digest never
+// files an intake task. Unmatched + the channel has intake_status
+// configured → create a new task with the inbound subject/body and a
+// fresh comm. Unmatched + no intake → comm_log kind='unmatched_thread'
+// and discard.
 //
 // Concurrency model mirrors SMTP: one poller per channel, never two.
 // On IMAP failure (auth, dial, fetch) the poll backs off exponentially
@@ -177,7 +181,15 @@ type InboundMessage struct {
 	Cc          string // address-list; comma-joined like To
 	Subject     string
 	ThreadIDHdr string // X-Kitp-Thread-Id header value, if present
-	Body        string // plain-text body for the reply bubble (text/plain part, else text/html stripped to plain)
+	// InReplyTo / References are the RFC 5322 threading headers. kitp
+	// doesn't thread comms by them (see extractThreadID) but uses them to
+	// recognise replies to notification email (IsNotificationReply).
+	InReplyTo  string
+	References string
+	// NotificationHdr is the X-Kitp-Notification header, present when the
+	// inbound message is (a bounce/copy of) a kitp notification email.
+	NotificationHdr string
+	Body            string // plain-text body for the reply bubble (text/plain part, else text/html stripped to plain)
 	// BodyPlain is the message's text/plain part ONLY — empty when the
 	// message carried no plain arm (unlike Body, which falls back to stripped
 	// HTML). The description's body-priority selector uses this to tell "has a
@@ -600,6 +612,22 @@ func (p *IMAPPoller) processOne(ctx context.Context, projectID, intakeStatusID i
 			slog.String("subject", m.Subject))
 		if err := p.appendReceivedReply(ctx, tx, snap, matchedCommID, m, actorID); err != nil {
 			return p.logParseError(ctx, projectID, m, err)
+		}
+	case IsNotificationReply(m):
+		// A reply (or auto-reply / bounce) to a notification digest. The
+		// notification mailbox doesn't read replies — log and drop.
+		p.logger.LogAttrs(ctx, slog.LevelInfo, "imap message dropped: reply to a notification email",
+			slog.Int64("channel_id", p.channelID),
+			slog.Int64("project_id", projectID),
+			slog.String("from", m.From),
+			slog.String("subject", m.Subject))
+		if err := LogEvent(ctx, tx, projectID, p.channelID, "notification_reply", map[string]any{
+			"message_id":  m.MessageID,
+			"from":        m.From,
+			"subject":     m.Subject,
+			"in_reply_to": m.InReplyTo,
+		}); err != nil {
+			return fmt.Errorf("comm_log notification_reply: %w", err)
 		}
 	case intakeStatusID != 0:
 		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap message → new task",
@@ -1330,6 +1358,9 @@ func ParseInboundMessage(uid uint32, raw []byte) (InboundMessage, error) {
 	out.Cc = strings.TrimSpace(msg.Header.Get("Cc"))
 	out.Subject = strings.TrimSpace(msg.Header.Get("Subject"))
 	out.ThreadIDHdr = strings.TrimSpace(msg.Header.Get("X-Kitp-Thread-Id"))
+	out.InReplyTo = strings.TrimSpace(msg.Header.Get("In-Reply-To"))
+	out.References = strings.TrimSpace(msg.Header.Get("References"))
+	out.NotificationHdr = strings.TrimSpace(msg.Header.Get(NotificationHeader))
 
 	// Case-sensitive for the boundary= parameter (boundaries are
 	// case-sensitive per RFC 2046); case-insensitive for the type

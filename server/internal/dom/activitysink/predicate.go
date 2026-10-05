@@ -27,7 +27,8 @@ import (
 //   - Op "attr_not_in" — leaf; inverse (still requires kind=attr_update;
 //                       non-attr rows are accepted by this op so it only
 //                       filters within the attr_update slice).
-//   - Op "actor_in" / "actor_not_in" — leaf; Values are decimal user ids.
+//   - Op "actor_in" / "actor_not_in" — leaf; Values are decimal user ids,
+//                       or "@me" (the subscriber, see WithMe).
 //
 // A predicate with Op == "" matches every row. Unknown ops fail closed
 // (return false) so a typo doesn't silently flood the channel.
@@ -115,6 +116,34 @@ func (p Predicate) Eval(row ActivityRow) bool {
 		return !inInt64String(row.ActorID, p.Values)
 	}
 	return false
+}
+
+// WithMe returns a copy of the predicate with every "@me" value in an
+// actor_in / actor_not_in leaf replaced by userID — so a personal
+// subscription can say "not done by me". Without a subscriber
+// (userID == 0, a broadcast sink) "@me" stays literal and matches no
+// actor.
+func (p Predicate) WithMe(userID int64) Predicate {
+	if userID == 0 {
+		return p
+	}
+	out := Predicate{Op: p.Op}
+	if len(p.Values) > 0 {
+		out.Values = make([]string, len(p.Values))
+		for i, v := range p.Values {
+			if v == meToken && (p.Op == "actor_in" || p.Op == "actor_not_in") {
+				v = strconv.FormatInt(userID, 10)
+			}
+			out.Values[i] = v
+		}
+	}
+	if len(p.Items) > 0 {
+		out.Items = make([]Predicate, len(p.Items))
+		for i, c := range p.Items {
+			out.Items[i] = c.WithMe(userID)
+		}
+	}
+	return out
 }
 
 func inStrings(needle string, hay []string) bool {

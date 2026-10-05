@@ -36,7 +36,7 @@ kitp.manager, $role.manager
 kitp.worker,  $role.worker
 
 
-## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel / activity_sink are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task. uses_phase=true marks card_types whose instances are flow-bound value-cards — the `phase` column on those rows is consulted by the predicate compiler (has_phase op) and the TransitionBar UI. Tasks / projects / etc. carry the column but never read it." | on_conflict="name"
+## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel / activity_sink are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task. activity_subscription cards (a user's personal notification subscription) parent under an activity_sink. uses_phase=true marks card_types whose instances are flow-bound value-cards — the `phase` column on those rows is consulted by the predicate compiler (has_phase op) and the TransitionBar UI. Tasks / projects / etc. carry the column but never read it." | on_conflict="name"
 ### rows
 name,              is_built_in, allow_self_parent, parent_card_type_id,    uses_phase
 project,           true,        false,             null,                   false
@@ -54,6 +54,7 @@ comm,              true,        false,             $card_type.task,        false
 reply_body,        true,        false,             null,                   false
 activity_sink,     true,        false,             $card_type.project,     false
 predicate_snippet, true,        false,             $card_type.project,     false
+activity_subscription, true,    false,             $card_type.activity_sink, false
 
 
 ## table attribute_def | doc="Built-in attribute definitions. Each pick-from-a-list attribute is a card_ref with target_card_type_id pointing at the card_type whose cards are the valid values." | on_conflict="name"
@@ -123,6 +124,8 @@ parent_relationship,   text,        true, null, false
 due_date,              date,        true, null, false
 originator,            card_ref,    true, $card_type.person, false
 color,                 text,        true, null, false
+subscriber,            card_ref,    true, $card_type.person, false
+rollup_minutes,        number,      true, null, false
 
 
 ## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"
@@ -220,6 +223,16 @@ $card_type.activity_sink, $attribute_def.msgraph_channel_id,   false, 5
 $card_type.activity_sink, $attribute_def.activity_filter,      false, 6
 $card_type.activity_sink, $attribute_def.channel_status,       false, 7
 $card_type.activity_sink, $attribute_def.channel_fault_reason, false, 8
+$card_type.activity_sink, $attribute_def.channel_ref,          false, 9
+$card_type.activity_sink, $attribute_def.rollup_minutes,       false, 10
+$card_type.activity_sink, $attribute_def.predicate,            false, 11
+$card_type.activity_subscription, $attribute_def.title,                true,  0
+$card_type.activity_subscription, $attribute_def.subscriber,           true,  1
+$card_type.activity_subscription, $attribute_def.activity_filter,      false, 2
+$card_type.activity_subscription, $attribute_def.predicate,            false, 3
+$card_type.activity_subscription, $attribute_def.rollup_minutes,       false, 4
+$card_type.activity_subscription, $attribute_def.channel_status,       false, 5
+$card_type.activity_subscription, $attribute_def.channel_fault_reason, false, 6
 $card_type.predicate_snippet, $attribute_def.title,     true,  0
 $card_type.predicate_snippet, $attribute_def.predicate, true,  1
 
@@ -233,6 +246,8 @@ card.delete
 comment.post
 task.update_with_comment
 user_card_sort.set
+activity_subscription.set
+activity_subscription.delete
 
 
 ## table process_step | doc="Process steps. task.update_with_comment is the compositional demo: update attrs then leave a comment in one tx." | on_conflict="process_id, ordinal"
@@ -245,6 +260,8 @@ $process."comment.post",             1, comment,        insert
 $process."task.update_with_comment", 1, attribute,      update
 $process."task.update_with_comment", 2, comment,        insert
 $process."user_card_sort.set",       1, user_card_sort, set
+$process."activity_subscription.set",    1, activity_subscription, set
+$process."activity_subscription.delete", 1, activity_subscription, delete
 
 
 ## table card | doc="Person card for the System User. Explicit id=1 mirrors user_account.id=1 so activity actor lookups and any task happen-to-be-assigned-to-System scenarios resolve. ON CONFLICT (id) DO NOTHING short-circuits the entire CTE chain on re-apply (the activity / attribute_value CTEs SELECT FROM the card CTE, so an empty result cascades through). Dev / demo person cards live in demo.hcsv." | on_conflict="id"
@@ -287,7 +304,13 @@ $role.manager, $card_type.task, $process."card.delete"
 ## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references). The three comm card_types (comm_channel, comm, reply_body) are admin-only configuration surface; managers get a lighter cut on comm via the manager grant." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
-$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status, $card_type.comm_channel, $card_type.comm, $card_type.reply_body, $card_type.activity_sink, $card_type.predicate_snippet]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
+$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status, $card_type.comm_channel, $card_type.comm, $card_type.reply_body, $card_type.activity_sink, $card_type.predicate_snippet, $card_type.activity_subscription]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
+
+
+## table role_grant | doc="Personal notification subscriptions: every project tier (viewer / commenter / worker / manager / admin) may create, edit and delete its OWN activity_subscription cards through the dedicated activity_subscription.set / .delete processes. The handler SQL enforces subscriber = the caller's person card (admins exempt, so they can clean up). The generic card.* processes on activity_subscription stay admin-only (admin grant above), so nobody can edit someone else's subscription through attribute.update." | on_conflict="role_id, card_type_id, process_id"
+### rows
+role_id, card_type_id, process_id
+`[$role.viewer, $role.commenter, $role.worker, $role.manager, $role.admin]`, $card_type.activity_subscription, `[$process."activity_subscription.set", $process."activity_subscription.delete"]`
 
 
 -- ---------------------------------------------------------------------

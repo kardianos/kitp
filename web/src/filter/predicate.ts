@@ -416,6 +416,47 @@ export function fromWhereLeaves(leaves: CardWherePredicate[]): Predicate {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Stored predicate JSON (text attributes)                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Decode a predicate stored as a JSON-text attribute (a filter card's
+ * `predicate`, a sink / subscription `card_filter`) to a {@link Predicate}, or
+ * null for an empty / unparseable value. The canonical stored shape is the BARE
+ * wire node (leaf or connective group — what {@link toWire} emits); the legacy
+ * `{ where }` / `{ tree }` wrapper an older build wrote is tolerated on load.
+ */
+export function predicateFromJsonString(raw: string): Predicate | null {
+  const t = raw.trim();
+  if (t === '') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(t);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(parsed)) return null;
+  try {
+    if (Array.isArray(parsed['where'])) return fromWhereLeaves(parsed['where'] as CardWherePredicate[]);
+    if (parsed['tree'] !== undefined && parsed['tree'] !== null) return fromWire(parsed['tree']);
+    return fromWire(parsed);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Encode a {@link Predicate} for a JSON-text attribute. `null` and the empty
+ * top-level AND (vacuously "match everything") store as '' so the attribute
+ * reads as "no filter" rather than a degenerate tree.
+ */
+export function predicateToJsonString(p: Predicate | null): string {
+  if (p === null) return '';
+  if (p.kind === 'group' && p.connective === 'and' && p.children.length === 0) return '';
+  return JSON.stringify(toWire(p));
+}
+
+/* -------------------------------------------------------------------------- */
 /* Quick-chip leaves (top-level `attr in [...]` slots in the root AND)         */
 /* -------------------------------------------------------------------------- */
 

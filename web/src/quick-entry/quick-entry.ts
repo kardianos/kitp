@@ -48,6 +48,7 @@
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { RichEditor } from '../editor/rich-editor.js';
+import { captionedField } from '../ui/captioned-field.js';
 import { splitPath, type QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
@@ -312,19 +313,17 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     this.errorEl = error;
 
     // Title.
-    const titleField = labeledField('Title');
     const titleInput = document.createElement('input');
     titleInput.type = 'text';
     titleInput.className = 'qe-overlay__input';
     titleInput.dataset.qeTitle = '';
     titleInput.placeholder = 'Title';
     titleInput.setAttribute('autocomplete', 'off');
-    titleField.append(titleInput);
+    const titleField = labeledField('Title', titleInput);
     this.titleInput = titleInput;
     this.listen(titleInput, 'keydown', (ev) => this.onTitleKeydown(ev as KeyboardEvent));
 
     // Description.
-    const descField = labeledField('Description');
     // Markdown description editor. Mod+Enter submits; Escape closes the overlay
     // (the editor's keymap owns these — plain Enter is a newline).
     this.descEditor = new RichEditor({
@@ -337,7 +336,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
       onCancel: () => this.requestDismiss(true),
     });
     this.onDestroy(() => this.descEditor?.destroy());
-    descField.append(this.descEditor.el);
+    const descField = labeledField('Description', this.descEditor.el);
 
     // "+ More details" disclosure.
     const more = document.createElement('button');
@@ -425,21 +424,19 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     region.dataset.qeMoreRegion = '';
 
     // Assignee (single RefPicker, spawned on first expand).
-    const assigneeField = labeledField('Assignee');
-    assigneeField.dataset.qeAssigneeField = '';
     const assigneeHost = document.createElement('div');
     assigneeHost.className = 'qe-overlay__picker';
     assigneeHost.dataset.qeAssignee = '';
-    assigneeField.append(assigneeHost);
+    const assigneeField = labeledField('Assignee', assigneeHost);
+    assigneeField.dataset.qeAssigneeField = '';
     this.assigneeHost = assigneeHost;
 
     // Tags (multi RefPicker).
-    const tagsField = labeledField('Tags');
-    tagsField.dataset.qeTagsField = '';
     const tagsHost = document.createElement('div');
     tagsHost.className = 'qe-overlay__picker';
     tagsHost.dataset.qeTags = '';
-    tagsField.append(tagsHost);
+    const tagsField = labeledField('Tags', tagsHost);
+    tagsField.dataset.qeTagsField = '';
     this.tagsHost = tagsHost;
 
     // Attributes ("+ Add field").
@@ -1270,14 +1267,10 @@ function createSuccessToast(): SuccessToast {
 /* Helpers.                                                                    */
 /* -------------------------------------------------------------------------- */
 
-function labeledField(label: string): HTMLElement {
-  const wrap = document.createElement('label');
-  wrap.className = 'qe-overlay__field';
-  const span = document.createElement('span');
-  span.className = 'qe-overlay__label';
-  span.textContent = label;
-  wrap.append(span);
-  return wrap;
+/** Caption + control in the overlay's field shell (a `<label>` only around a
+ *  native input — see ui/captioned-field.ts for why composites can't be). */
+function labeledField(label: string, control: HTMLElement): HTMLElement {
+  return captionedField(label, control, { field: 'qe-overlay__field', caption: 'qe-overlay__label' });
 }
 
 function isMod(e: KeyboardEvent): boolean {

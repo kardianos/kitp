@@ -39,12 +39,16 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		{`SELECT count(*) FROM user_role`, 3}, // admin + manager + worker on user 1
 		{`SELECT count(*) FROM role`, 5},      // viewer, commenter, worker, manager, admin (no wildcard 'system')
 		// 14 built-in card_types + the predicate_snippet card_type
-		// introduced for named filters = 15.
-		{`SELECT count(*) FROM card_type`, 15},
-		{`SELECT count(*) FROM attribute_def`, 64},
-		{`SELECT count(*) FROM edge`, 94},
-		{`SELECT count(*) FROM process`, 6},
-		{`SELECT count(*) FROM process_step`, 7},
+		// introduced for named filters + activity_subscription = 16.
+		{`SELECT count(*) FROM card_type`, 16},
+		// +subscriber, +rollup_minutes (personal notifications).
+		{`SELECT count(*) FROM attribute_def`, 66},
+		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
+		// +7 on activity_subscription.
+		{`SELECT count(*) FROM edge`, 104},
+		// +activity_subscription.set / .delete.
+		{`SELECT count(*) FROM process`, 8},
+		{`SELECT count(*) FROM process_step`, 9},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		{`SELECT count(*) FROM flow`, 2},
@@ -209,6 +213,83 @@ func TestForwardMigration0004CommAcked(t *testing.T) {
 		  JOIN process p ON p.id = rg.process_id AND p.name='card.delete')`)
 
 	// Idempotent: a further boot is a clean no-op (ledger row present → skipped).
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("third apply (idempotent): %v", err)
+	}
+}
+
+// TestForwardMigration0009ActivitySubscriptions proves migration 0009 brings
+// an already-seeded DB that predates personal notification subscriptions up
+// to the fresh-seed shape: the pending_since column, the activity_subscription
+// card_type, its attribute_defs / edges / processes / steps and every grant.
+// Without it activity_subscription.set raises on the missing card_type and
+// the pump fails reading pending_since on every existing install.
+func TestForwardMigration0009ActivitySubscriptions(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0009")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	counts := []string{
+		`SELECT count(*) FROM card_type`,
+		`SELECT count(*) FROM attribute_def`,
+		`SELECT count(*) FROM edge`,
+		`SELECT count(*) FROM process`,
+		`SELECT count(*) FROM process_step`,
+		`SELECT count(*) FROM role_grant`,
+	}
+	readCounts := func() []int64 {
+		out := make([]int64, len(counts))
+		for i, q := range counts {
+			if err := pool.QueryRow(ctx, q).Scan(&out[i]); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		return out
+	}
+	fresh := readCounts()
+
+	// Simulate a pre-0009 install: drop every row + the column 0009 adds,
+	// plus its ledger row (baseline stays, so the seed remains gated off).
+	for _, stmt := range []string{
+		`DELETE FROM role_grant WHERE card_type_id = (SELECT id FROM card_type WHERE name='activity_subscription')`,
+		`DELETE FROM process_step WHERE process_id IN (SELECT id FROM process WHERE name LIKE 'activity_subscription.%')`,
+		`DELETE FROM process WHERE name LIKE 'activity_subscription.%'`,
+		`DELETE FROM edge WHERE card_type_id = (SELECT id FROM card_type WHERE name='activity_subscription')`,
+		`DELETE FROM edge e USING attribute_def ad, card_type ct
+		   WHERE e.attribute_def_id = ad.id AND e.card_type_id = ct.id
+		     AND ct.name = 'activity_sink' AND ad.name IN ('channel_ref','rollup_minutes','predicate')`,
+		`DELETE FROM attribute_def WHERE name IN ('subscriber','rollup_minutes')`,
+		`DELETE FROM card_type WHERE name = 'activity_subscription'`,
+		`ALTER TABLE activity_sink_state DROP COLUMN pending_since`,
+		`DELETE FROM schema_version WHERE name = '0009_activity_subscriptions'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0009 (%s): %v", stmt, err)
+		}
+	}
+
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	got := readCounts()
+	for i, q := range counts {
+		if got[i] != fresh[i] {
+			t.Errorf("%s after 0009 = %d, want fresh-seed %d", q, got[i], fresh[i])
+		}
+	}
+	var hasCol bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM information_schema.columns
+		  WHERE table_schema = current_schema()
+		    AND table_name = 'activity_sink_state' AND column_name = 'pending_since')`).Scan(&hasCol); err != nil {
+		t.Fatalf("column probe: %v", err)
+	}
+	if !hasCol {
+		t.Error("activity_sink_state.pending_since missing after 0009")
+	}
+
 	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
 		t.Fatalf("third apply (idempotent): %v", err)
 	}
@@ -466,9 +547,9 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		// + 1 status + 2 tasks + 1 screen + 1 filter) = 29.
 		{`SELECT count(*) FROM card`, 29},
 		{`SELECT count(*) FROM role`, 5},
-		{`SELECT count(*) FROM card_type`, 15},
-		{`SELECT count(*) FROM attribute_def`, 64},
-		{`SELECT count(*) FROM edge`, 94},
+		{`SELECT count(*) FROM card_type`, 16},
+		{`SELECT count(*) FROM attribute_def`, 66},
+		{`SELECT count(*) FROM edge`, 104},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -528,7 +609,7 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		query string
 		want  int64
 	}{
-		{`SELECT count(*) FROM card_type`, 15},
+		{`SELECT count(*) FROM card_type`, 16},
 		// 20 seed cards + 9 test_demo cards = 29 (see TestApplySchemaWithTestDemo).
 		{`SELECT count(*) FROM card`, 29},
 		{`SELECT count(*) FROM user_account`, 2},

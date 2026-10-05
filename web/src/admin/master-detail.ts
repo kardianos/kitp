@@ -323,7 +323,6 @@ export interface MasterDetailConfig extends BaseControlConfig {
         | 'edgeMatrix'
         | 'screenFilters'
         | 'commChannelConfig'
-        | 'activitySinkConfig'
         | 'agentTokens'
         | 'roleMappings';
       scopeKey?: string;

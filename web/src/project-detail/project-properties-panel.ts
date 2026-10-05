@@ -46,6 +46,7 @@ import type { RefPicker } from '../ui/ref-picker.js';
 import type { DatePicker } from '../ui/datepicker.js';
 
 import { icon } from '../ui/icons.js';
+import { captionedField } from '../ui/captioned-field.js';
 /* -------------------------------------------------------------------------- */
 /* Config.                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -152,16 +153,14 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
     this.loadingEl = loading;
 
     /* --- Title field --- */
-    const titleField = this.field('Title');
     const titleHost = document.createElement('div');
     this.titleHost = titleHost;
-    titleField.append(titleHost);
+    const titleField = this.field('Title', titleHost);
 
     /* --- Description field (markdown source) --- */
-    const descField = this.field('Description');
     const descHost = document.createElement('div');
     this.descHost = descHost;
-    descField.append(descHost);
+    const descField = this.field('Description', descHost);
     // The description editor holds engine state (a ProseMirror view) to tear down.
     this.onDestroy(() => this.descEditor?.destroy());
 
@@ -674,14 +673,11 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
 
   /* -------------------------------- helpers ------------------------------ */
 
-  private field(label: string): HTMLElement {
-    const wrap = document.createElement('label');
-    wrap.className = 'project-props__field';
-    const span = document.createElement('span');
-    span.className = 'project-props__field-label muted';
-    span.textContent = label;
-    wrap.append(span);
-    return wrap;
+  /** Caption + host in the panel's field shell. The hosts hold composite
+   *  editors (the description RichEditor's toolbar is a row of buttons), so
+   *  this is a div group, never a <label> — see ui/captioned-field.ts. */
+  private field(label: string, control: HTMLElement): HTMLElement {
+    return captionedField(label, control, { field: 'project-props__field', caption: 'project-props__field-label muted' });
   }
 
   private disposeRowChildren(): void {

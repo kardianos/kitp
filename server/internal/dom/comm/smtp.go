@@ -114,7 +114,7 @@ func NewSMTPSenderForTest(pool *store.Pool, channelID int64, tick time.Duration)
 // reply_body card. Internal callers (processOne) use buildMIME
 // directly.
 func BuildMIMEForTest(from, to, subject, body, threadID string) []byte {
-	return buildMIME(from, to, subject, body, "", threadID, "", nil)
+	return buildMIME(from, to, subject, body, "", threadID, "", 0, nil)
 }
 
 // newSMTPSender builds the struct without starting the goroutine.
@@ -282,7 +282,7 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 	if s.publicURL != "" && r.toIsUser && r.taskID > 0 {
 		taskURL = s.publicURL + "/task/" + strconv.FormatInt(r.taskID, 10)
 	}
-	msg := buildMIME(r.from, r.to, r.subject, r.body, r.signature, r.threadID, taskURL, atts)
+	msg := buildMIME(r.from, r.to, r.subject, r.body, r.signature, r.threadID, taskURL, r.taskID, atts)
 
 	var sendErr error
 	if s.dryRun {
@@ -515,13 +515,15 @@ func resolveSignature(mode, channelName, authorName string) string {
 // when the caller didn't already include it (idempotency for users
 // who hand-edit the draft). The X-Kitp-Thread-Id header + body
 // trailer 'Ref:' line are always added — Gate 6's inbound parser
-// looks for any of the three.
+// looks for any of the three. When taskID > 0 a "Task: <id>" line sits
+// directly above the Ref: line, so every recipient (user or not, link
+// or not) can quote the task number back.
 //
 // We deliberately use \r\n line endings (SMTP convention; required by
 // the wire protocol) and emit a single Content-Type header for
 // plain-text UTF-8. Quoted-printable / multipart MIME is out of scope
 // for v1 (the spec calls out "plain text only").
-func buildMIME(from, to, subject, body, signature, threadID, taskURL string, atts []mimeAttachment) []byte {
+func buildMIME(from, to, subject, body, signature, threadID, taskURL string, taskID int64, atts []mimeAttachment) []byte {
 	suffix := "[#" + threadID + "]"
 	subjectFinal := subject
 	switch {
@@ -549,7 +551,11 @@ func buildMIME(from, to, subject, body, signature, threadID, taskURL string, att
 	if link := strings.TrimSpace(taskURL); link != "" {
 		bodyNorm += "\r\n\r\n" + link
 	}
-	bodyWithRef := bodyNorm + "\r\n\r\nRef: " + threadID + "\r\n"
+	trailer := "Ref: " + threadID + "\r\n"
+	if taskID > 0 {
+		trailer = "Task: " + strconv.FormatInt(taskID, 10) + "\r\n" + trailer
+	}
+	bodyWithRef := bodyNorm + "\r\n\r\n" + trailer
 
 	// Common headers.
 	var hdr strings.Builder

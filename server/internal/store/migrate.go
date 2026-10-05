@@ -437,6 +437,91 @@ CREATE INDEX attribute_value_trgm
   ON attribute_value USING gin ((value::text) gin_trgm_ops)
   WHERE value_type_id >= 1000;`,
 	},
+	{
+		// Personal notification subscriptions (email activity sinks). The
+		// seed.hcsv rows reach fresh installs only, so add them here too:
+		//   1. activity_sink_state.pending_since — the per-unit rollup clock
+		//      (additive column; the pump reads it every tick),
+		//   2. the activity_subscription card_type (parent: activity_sink),
+		//   3. the subscriber / rollup_minutes attribute_defs,
+		//   4. edges: channel_ref / rollup_minutes / predicate on
+		//      activity_sink, and the seven subscription edges,
+		//   5. the activity_subscription.set / .delete processes + steps,
+		//   6. grants: every tier on the two subscription processes, and
+		//      admin card.* on the new card_type.
+		// Idempotent — ADD COLUMN IF NOT EXISTS + ON CONFLICT DO NOTHING make
+		// it a no-op on a fresh DB whose seed already carries every row.
+		id: "0009_activity_subscriptions",
+		sql: `
+ALTER TABLE activity_sink_state ADD COLUMN IF NOT EXISTS pending_since timestamptz;
+
+DO $$
+DECLARE
+  _sink_ct   bigint := (SELECT id FROM card_type WHERE name = 'activity_sink');
+  _person_ct bigint := (SELECT id FROM card_type WHERE name = 'person');
+  _sub_ct    bigint;
+  _set_proc  bigint;
+  _del_proc  bigint;
+BEGIN
+  IF _sink_ct IS NULL OR _person_ct IS NULL THEN
+    RETURN;
+  END IF;
+
+  INSERT INTO card_type (name, parent_card_type_id, allow_self_parent, is_built_in, uses_phase)
+  VALUES ('activity_subscription', _sink_ct, false, true, false)
+  ON CONFLICT (name) DO NOTHING;
+  SELECT id INTO _sub_ct FROM card_type WHERE name = 'activity_subscription';
+
+  INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+  VALUES ('subscriber', 'card_ref', _person_ct, true, false),
+         ('rollup_minutes', 'number', NULL, true, false)
+  ON CONFLICT (name) DO NOTHING;
+
+  INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+  SELECT e.ct, ad.id, e.req, e.ord
+  FROM (VALUES
+    (_sink_ct, 'channel_ref',          false, 9),
+    (_sink_ct, 'rollup_minutes',       false, 10),
+    (_sink_ct, 'predicate',            false, 11),
+    (_sub_ct,  'title',                true,  0),
+    (_sub_ct,  'subscriber',           true,  1),
+    (_sub_ct,  'activity_filter',      false, 2),
+    (_sub_ct,  'predicate',            false, 3),
+    (_sub_ct,  'rollup_minutes',       false, 4),
+    (_sub_ct,  'channel_status',       false, 5),
+    (_sub_ct,  'channel_fault_reason', false, 6)
+  ) AS e(ct, attr, req, ord)
+  JOIN attribute_def ad ON ad.name = e.attr
+  ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;
+
+  INSERT INTO process (name)
+  VALUES ('activity_subscription.set'), ('activity_subscription.delete')
+  ON CONFLICT (name) DO NOTHING;
+  SELECT id INTO _set_proc FROM process WHERE name = 'activity_subscription.set';
+  SELECT id INTO _del_proc FROM process WHERE name = 'activity_subscription.delete';
+
+  INSERT INTO process_step (process_id, ordinal, endpoint, action)
+  VALUES (_set_proc, 1, 'activity_subscription', 'set'),
+         (_del_proc, 1, 'activity_subscription', 'delete')
+  ON CONFLICT (process_id, ordinal) DO NOTHING;
+
+  INSERT INTO role_grant (role_id, card_type_id, process_id)
+  SELECT r.id, _sub_ct, p.id
+  FROM role r
+  CROSS JOIN process p
+  WHERE r.name IN ('viewer', 'commenter', 'worker', 'manager', 'admin')
+    AND p.id IN (_set_proc, _del_proc)
+  ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
+
+  INSERT INTO role_grant (role_id, card_type_id, process_id)
+  SELECT r.id, _sub_ct, p.id
+  FROM role r
+  CROSS JOIN process p
+  WHERE r.name = 'admin'
+    AND p.name IN ('card.create', 'card.update', 'card.delete', 'comment.post', 'user_card_sort.set')
+  ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
+END $$;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

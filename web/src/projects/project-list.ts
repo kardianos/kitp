@@ -60,6 +60,7 @@ import { PROJECT_SPEC } from './specs.js';
 import { clampIndex, projectDescription, projectTitle, TEMPLATE_INCLUSION_LEAF } from './project-helpers.js';
 
 import { icon } from '../ui/icons.js';
+import { captionedField } from '../ui/captioned-field.js';
 import { createDismissGuard, nudge } from '../ui/dismiss-guard.js';
 /**
  * Fixed virtual-list row height (px) for a project row: a comfortable card with
@@ -815,11 +816,6 @@ export class ProjectList extends Control<ProjectListConfig> {
     moreRegion.dataset.qeMoreRegion = '';
     moreRegion.style.display = 'none';
 
-    const descLabel = document.createElement('label');
-    descLabel.className = 'qe-dialog__field';
-    const descSpan = document.createElement('span');
-    descSpan.className = 'qe-dialog__label';
-    descSpan.textContent = 'Description';
     // Markdown description editor (same WYSIWYG component as the task
     // description). Mod+Enter commits the dialog's primary action; Escape
     // closes. `commitPrimary` / `dialog` are referenced lazily (defined below)
@@ -834,8 +830,11 @@ export class ProjectList extends Control<ProjectListConfig> {
       onCancel: () => guard.escape(),
     });
     this.onDestroy(() => descEditor.destroy());
-    descLabel.append(descSpan, descEditor.el);
-    moreRegion.append(descLabel);
+    // A div field shell, not a <label>: a label would forward every click in
+    // the editor to its toolbar's Bold button (see ui/captioned-field.ts).
+    moreRegion.append(
+      captionedField('Description', descEditor.el, { field: 'qe-dialog__field', caption: 'qe-dialog__label' }),
+    );
 
     /* --- Template controls (CREATE mode only) --- */
     const tmplRegion = document.createElement('div');

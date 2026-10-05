@@ -29,7 +29,9 @@
 //	                            slash needed). When set, outbound mail to a
 //	                            kitp user (a person linked to a login)
 //	                            carries a "<base>/task/<id>" deep link in
-//	                            the footer. Unset disables the link.
+//	                            the footer, and notification digests link
+//	                            each task + the account page. Unset
+//	                            disables the links.
 //	KITP_CSP_REPORT_ONLY      — when "1", flips CSP to soft-launch mode
 //	                            (Content-Security-Policy-Report-Only)
 //	KITP_CSP_REPORT_URI       — when set, emits a report-uri directive
@@ -549,7 +551,7 @@ func runHTTP() error {
 	attachment.SetLinkDeps(publicURL, linkSecret)
 	smtpPool := comm.NewSMTPPool(pool, smtpTick, logger, publicURL)
 	imapPool := comm.NewIMAPPool(pool, imapTick, logger)
-	activityPool := activitysink.NewMSGraphPool(pool, activityTick, logger)
+	activityPool := activitysink.NewPool(pool, activityTick, logger, publicURL)
 
 	// comm_log retention prune. Deletes comm_log rows older than the
 	// configured retention window (default 30d). The cadence is set
@@ -632,7 +634,7 @@ func runHTTP() error {
 		},
 		{
 			Name:        "activitysink.pump",
-			Description: "Push matching activity rows to each enabled sink's external destination.",
+			Description: "Deliver matching activity to each enabled sink and personal notification subscription: Teams channel posts and rolled-up email digests.",
 			OnStartup:   true,
 			Interval:    activityTick,
 			Timeout:     job.MaxDefaultTimeout,

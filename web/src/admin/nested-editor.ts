@@ -30,12 +30,9 @@ import { EditableField } from '../ui/editable-field.js';
 import { readPath, fieldText, type MasterDetailItem } from './master-detail.js';
 import {
   type Predicate,
-  type WireNode,
-  toWire,
-  fromWire,
-  fromWhereLeaves,
+  predicateFromJsonString,
+  predicateToJsonString,
 } from '../filter/predicate.js';
-import type { CardWherePredicate } from '../projects/project-helpers.js';
 import type {
   FlowStepRow,
   CardTypeRow,
@@ -44,7 +41,6 @@ import type {
   FlowPreviewDeleteOutput,
   FlowStepBlocker,
   CommChannel,
-  ActivitySinkRow,
   UserTokenRow,
   RoleMappingRow,
   RoleRow,
@@ -54,20 +50,9 @@ import type {
   FlowRow,
   FlowListOutput,
 } from './specs.js';
-import {
-  type ActivityLeafOp,
-  ACTIVITY_LEAF_OPS,
-  ACTIVITY_KIND_OPTIONS,
-  activityPredicateFromString,
-  activityPredicateToString,
-  activityOpLabel,
-  appendLeaf,
-  removeLeafAt,
-  setConnective,
-  topLevelLeaves,
-} from './activity-predicate.js';
 
 import { icon } from '../ui/icons.js';
+import { captionedField } from '../ui/captioned-field.js';
 /* -------------------------------------------------------------------------- */
 /* Config.                                                                     */
 /* -------------------------------------------------------------------------- */
@@ -76,7 +61,6 @@ export type NestedEditorKind =
   | 'flowSteps'
   | 'edgeMatrix'
   | 'screenFilters'
-  | 'activitySinkConfig'
   | 'agentTokens'
   | 'roleMappings';
 
@@ -329,74 +313,6 @@ export function channelDraftToSet(d: CommChannelDraft, projectId: string): Recor
   return out;
 }
 
-export interface ActivitySinkDraft {
-  id: string;
-  name: string;
-  sinkKind: string;
-  msgraphTenantId: string;
-  msgraphClientId: string;
-  /** Blank on load; a non-empty value is the ONLY thing that writes the secret. */
-  msgraphClientSecret: string;
-  msgraphTeamId: string;
-  msgraphChannelId: string;
-  channelStatus: string;
-  /** The activity_filter predicate JSON string ('' = match every row). */
-  activityFilter: string;
-}
-
-export function emptySinkDraft(): ActivitySinkDraft {
-  return {
-    id: '0', name: '', sinkKind: 'msgraph_teams',
-    msgraphTenantId: '', msgraphClientId: '', msgraphClientSecret: '',
-    msgraphTeamId: '', msgraphChannelId: '', channelStatus: 'enabled',
-    activityFilter: '',
-  };
-}
-
-/** Hydrate a sink draft. The client SECRET always starts blank (never echoed). */
-export function sinkRowToDraft(row: ActivitySinkRow): ActivitySinkDraft {
-  return {
-    id: row.id,
-    name: row.name,
-    sinkKind: row.sink_kind === '' ? 'msgraph_teams' : row.sink_kind,
-    msgraphTenantId: row.msgraph_tenant_id ?? '',
-    msgraphClientId: (row as unknown as { msgraph_client_id?: string }).msgraph_client_id ?? '',
-    msgraphClientSecret: '',
-    msgraphTeamId: row.msgraph_team_id ?? '',
-    msgraphChannelId: row.msgraph_channel_id ?? '',
-    channelStatus: row.channel_status === '' ? 'enabled' : row.channel_status,
-    activityFilter: (row as unknown as { activity_filter?: string }).activity_filter ?? '',
-  };
-}
-
-export function validateSinkDraft(d: ActivitySinkDraft): Record<string, string> {
-  const errors: Record<string, string> = {};
-  if (d.name.trim() === '') errors['name'] = 'Sink name is required.';
-  if (d.sinkKind.trim() === '') errors['sinkKind'] = 'Sink kind is required.';
-  else if (d.sinkKind !== 'msgraph_teams') errors['sinkKind'] = "Sink kind 'msgraph_teams' is the only supported value in v1.";
-  return errors;
-}
-
-/** Convert a sink draft to the activity_sink.set wire input. The client secret
- *  is sent ONLY when non-empty; activity_filter is always sent (so clearing all
- *  leaves writes '' = match-everything). */
-export function sinkDraftToSet(d: ActivitySinkDraft, projectId: string): Record<string, unknown> {
-  const out: Record<string, unknown> = {
-    projectId,
-    name: d.name.trim(),
-    sinkKind: d.sinkKind.trim(),
-  };
-  if (d.id !== '' && d.id !== '0') out['id'] = d.id;
-  if (d.msgraphTenantId.trim() !== '') out['msgraphTenantId'] = d.msgraphTenantId.trim();
-  if (d.msgraphClientId.trim() !== '') out['msgraphClientId'] = d.msgraphClientId.trim();
-  if (d.msgraphClientSecret !== '') out['msgraphClientSecret'] = d.msgraphClientSecret;
-  if (d.msgraphTeamId.trim() !== '') out['msgraphTeamId'] = d.msgraphTeamId.trim();
-  if (d.msgraphChannelId.trim() !== '') out['msgraphChannelId'] = d.msgraphChannelId.trim();
-  out['activityFilter'] = d.activityFilter;
-  if (d.channelStatus !== '') out['channelStatus'] = d.channelStatus;
-  return out;
-}
-
 function isPositiveInt(s: string): boolean {
   if (!/^\d+$/.test(s.trim())) return false;
   const n = Number(s);
@@ -482,8 +398,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       // regardless of the parent Roles selection.
       if (this.config.kind === 'roleMappings') {
         this.renderRoleMappings();
-      } else if (this.config.kind === 'activitySinkConfig') {
-        this.renderSinkConfig(item);
       } else {
         this.renderEditor(item);
       }
@@ -521,13 +435,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         this.ctx.tree.at(this.p('editingId')).get();
         this.ctx.tree.at(this.p('flows')).get(); // workflow (#27) options
         break;
-      // activitySinkConfig does NOT subscribe to `draft`: every keystroke writes
-      // the draft (per-field update), and subscribing would re-render the whole
-      // form on each letter — replacing the live `<input>` and losing focus
-      // mid-word. Structural draft writes (hydrate on selection change, "+ New"
-      // click, save reset) call renderSinkConfig explicitly instead.
-      case 'activitySinkConfig':
-        break;
       case 'agentTokens':
         this.ctx.tree.at(this.p('tokens')).get();
         this.ctx.tree.at(this.p('mint')).get();
@@ -554,9 +461,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         break;
       case 'screenFilters':
         this.loadScreenFilters(item.id);
-        break;
-      case 'activitySinkConfig':
-        this.hydrateSinkDraft(item);
         break;
       case 'agentTokens':
         this.loadAgentDetail(item.id);
@@ -683,9 +587,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       case 'screenFilters':
         this.renderScreenFilters(item);
         break;
-      case 'activitySinkConfig':
-        this.renderSinkConfig(item);
-        break;
       case 'agentTokens':
         this.renderAgentTokens(item);
         break;
@@ -693,14 +594,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         // Rendered by renderRoleMappings() from the selection-independent path.
         break;
     }
-  }
-
-  /** Read the shared project scope (the comm-channel / activity-sink screens
-   *  are project-scoped; the parent MasterDetail list refires on this leaf). */
-  private scopeProjectId(): string {
-    const v = this.ctx.tree.at(['scope', 'projectId']).peek<unknown>();
-    if (v === null || v === undefined) return '';
-    return typeof v === 'bigint' ? v.toString() : String(v);
   }
 
   /* --------------------------- flow steps ------------------------------- */
@@ -1020,15 +913,14 @@ export class NestedEditor extends Control<NestedEditorConfig> {
 
     // Each control gets a label + a one-line help caption.
     const field = (labelText: string, control: HTMLElement, help: string): HTMLElement => {
-      const wrap = document.createElement('label');
-      wrap.className = 'nested-editor__step-field';
-      const lbl = document.createElement('span');
-      lbl.className = 'nested-editor__step-field-label';
-      lbl.textContent = labelText;
+      const wrap = captionedField(labelText, control, {
+        field: 'nested-editor__step-field',
+        caption: 'nested-editor__step-field-label',
+      });
       const hint = document.createElement('span');
       hint.className = 'nested-editor__step-field-help muted';
       hint.textContent = help;
-      wrap.append(lbl, control, hint);
+      wrap.append(hint);
       return wrap;
     };
 
@@ -1733,7 +1625,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     // `where[]`, structured → `tree`).
     const predPath = this.p(`predicate.${filterId}`);
     const raw = fieldText(f, 'attributes.predicate');
-    this.ctx.tree.at(predPath).set(fromFilterJson(raw));
+    this.ctx.tree.at(predPath).set(predicateFromJsonString(raw));
 
     // Seed the group + sort leaves from the filter card so the builder edits the
     // full view definition (predicate + group + sort), not just the predicate.
@@ -1776,7 +1668,9 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     save.textContent = 'Save view';
     this.listen(save, 'click', () => {
       const predicate = this.ctx.tree.at(predPath).peek<Predicate | null>() ?? null;
-      const json = predicate === null ? '' : JSON.stringify(toFilterJson(predicate));
+      // Canonical bare wire node (what the seed, screen-resolve.readPredicate() and
+      // the ScreenFilterBar's "save filter" read+write); '' when empty.
+      const json = predicateToJsonString(predicate);
       this.updateFilterAttr(screenId, filterId, 'predicate', json);
       // Persist the group + sort alongside the predicate (the full view def).
       this.updateFilterAttr(screenId, filterId, 'group_by_attr', this.ctx.tree.at(groupPath).peek<string>() ?? '');
@@ -1842,242 +1736,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       { cardId: screenId, attributeName: 'default_filter', value: filterId },
       () => { /* parent already patched optimistically */ },
       { alive: () => this.isAlive(), onErr: (f) => this.showFault('attribute.update (default_filter)', f) },
-    );
-  }
-
-  /* ----------------------- activity-sink config ------------------------- */
-
-  private hydrateSinkDraft(item: MasterDetailItem): void {
-    const node = this.ctx.tree.at(this.p('draft'));
-    const cur = node.peek<ActivitySinkDraft | null>() ?? null;
-    if (cur !== null && cur.id === item.id) return;
-    node.set(sinkRowToDraft(item.raw as unknown as ActivitySinkRow));
-    // Structural draft write (selection change): re-render explicitly since the
-    // render effect doesn't subscribe to `draft` (focus-survival rule).
-    this.renderSinkConfig(item);
-  }
-
-  private renderSinkConfig(item: MasterDetailItem | null): void {
-    const existing = this.ctx.tree.at(this.p('draft')).peek<ActivitySinkDraft | null>() ?? null;
-    const draft: ActivitySinkDraft | null =
-      existing ?? (item !== null ? sinkRowToDraft(item.raw as unknown as ActivitySinkRow) : null);
-
-    const frag = document.createDocumentFragment();
-    const heading = document.createElement('div');
-    heading.className = 'nested-editor__heading';
-    const title = document.createElement('h3');
-    title.className = 'nested-editor__title';
-    title.textContent = draft !== null && draft.id !== '0' && draft.id !== '' ? 'Sink configuration' : 'New sink';
-    heading.append(title);
-    const newBtn = document.createElement('button');
-    newBtn.type = 'button';
-    newBtn.className = 'btn nested-editor__config-new';
-    newBtn.dataset.neSinkNew = '';
-    newBtn.textContent = '+ New sink';
-    this.listen(newBtn, 'click', () => {
-      this.ctx.tree.at(this.p('draft')).set(emptySinkDraft());
-      this.renderSinkConfig(null);
-    });
-    heading.append(newBtn);
-    frag.append(heading);
-
-    if (draft === null) {
-      const hint = document.createElement('div');
-      hint.className = 'muted';
-      hint.dataset.neConfigEmpty = '';
-      hint.textContent = 'Select a sink to edit it, or add a new one.';
-      frag.append(hint);
-      this.el.replaceChildren(frag);
-      return;
-    }
-    const row = (item !== null ? item.raw : {}) as unknown as ActivitySinkRow;
-
-    const form = document.createElement('div');
-    form.className = 'nested-editor__config-form';
-    form.dataset.neSinkConfig = '';
-
-    const update = (patch: Partial<ActivitySinkDraft>): void => {
-      const next = { ...(this.ctx.tree.at(this.p('draft')).peek<ActivitySinkDraft>() ?? draft), ...patch };
-      this.ctx.tree.at(this.p('draft')).set(next);
-    };
-
-    form.append(this.textField('neName', 'Name', draft.name, (v) => update({ name: v })));
-    form.append(this.textField('neTenant', 'MS Graph tenant', draft.msgraphTenantId, (v) => update({ msgraphTenantId: v })));
-    form.append(this.textField('neClientId', 'MS Graph client id', draft.msgraphClientId, (v) => update({ msgraphClientId: v })));
-    form.append(this.secretField('neClientSecret', 'MS Graph client secret', draft.msgraphClientSecret, row.has_client_secret, (v) => update({ msgraphClientSecret: v })));
-    form.append(this.textField('neTeam', 'MS Graph team', draft.msgraphTeamId, (v) => update({ msgraphTeamId: v })));
-    form.append(this.textField('neChannel', 'MS Graph channel', draft.msgraphChannelId, (v) => update({ msgraphChannelId: v })));
-    form.append(this.selectField('neStatus', 'Status', CHANNEL_STATUS_OPTIONS, draft.channelStatus, (v) => update({ channelStatus: v })));
-    frag.append(form);
-
-    // The activity-filter editor (a predicate over single activity rows).
-    frag.append(this.buildActivityFilterEditor(draft, update, item));
-
-    const err = document.createElement('div');
-    err.className = 'nested-editor__config-error';
-    err.dataset.neConfigError = '';
-    err.style.display = 'none';
-    frag.append(err);
-
-    const save = document.createElement('button');
-    save.type = 'button';
-    save.className = 'btn btn-primary nested-editor__config-save';
-    save.dataset.neConfigSave = '';
-    save.textContent = 'Save sink';
-    this.listen(save, 'click', () => {
-      const d = (this.ctx.tree.at(this.p('draft')).peek<ActivitySinkDraft>() ?? draft);
-      const errors = validateSinkDraft(d);
-      const first = Object.values(errors)[0];
-      if (first !== undefined) {
-        err.style.display = '';
-        err.textContent = first;
-        return;
-      }
-      this.saveSink(d);
-    });
-    frag.append(save);
-    this.el.replaceChildren(frag);
-  }
-
-  /** The activity-filter editor: a list of top-level leaves over single activity
-   *  rows + an "Add leaf" mini-form + a connective (AND/OR) toggle. Stores the
-   *  JSON string on the draft's `activityFilter`. */
-  private buildActivityFilterEditor(
-    draft: ActivitySinkDraft,
-    update: (patch: Partial<ActivitySinkDraft>) => void,
-    item: MasterDetailItem | null,
-  ): HTMLElement {
-    const wrap = document.createElement('div');
-    wrap.className = 'nested-editor__activity-filter';
-    wrap.dataset.neActivityFilter = '';
-
-    const heading = document.createElement('div');
-    heading.className = 'nested-editor__field-label muted';
-    heading.textContent = 'Activity filter (which rows to push)';
-    wrap.append(heading);
-
-    const predicate = activityPredicateFromString(draft.activityFilter);
-    const leaves = topLevelLeaves(predicate);
-
-    if (predicate !== null && predicate.kind === 'composite' && predicate.items.length > 1) {
-      const conn = document.createElement('select');
-      conn.className = 'nested-editor__af-conn';
-      conn.dataset.neAfConn = '';
-      for (const op of ['and', 'or'] as const) {
-        const opt = document.createElement('option');
-        opt.value = op;
-        opt.textContent = activityOpLabel(op);
-        if (predicate.op === op) opt.selected = true;
-        conn.append(opt);
-      }
-      conn.value = predicate.op;
-      this.listen(conn, 'change', () => {
-        const next = setConnective(activityPredicateFromString(draft.activityFilter), conn.value as 'and' | 'or');
-        update({ activityFilter: activityPredicateToString(next) });
-        // Structural filter-tree change → re-render explicitly (the render
-        // effect doesn't track `draft`; keystroke updates skip re-render so
-        // text inputs keep focus, but the filter leaves list does need it).
-        this.renderSinkConfig(item);
-      });
-      wrap.append(conn);
-    }
-
-    const list = document.createElement('div');
-    list.className = 'nested-editor__af-leaves';
-    list.dataset.neAfLeaves = '';
-    if (leaves.length === 0) {
-      const none = document.createElement('div');
-      none.className = 'muted';
-      none.dataset.neAfEmpty = '';
-      none.textContent = 'No filter — push every activity row.';
-      list.append(none);
-    }
-    leaves.forEach((entry, i) => {
-      const r = document.createElement('div');
-      r.className = 'nested-editor__af-leaf';
-      r.dataset.neAfLeaf = String(i);
-      const txt = document.createElement('span');
-      txt.className = 'nested-editor__af-leaf-text';
-      txt.textContent = entry.summary;
-      r.append(txt);
-      const rm = document.createElement('button');
-      rm.type = 'button';
-      rm.className = 'btn btn-danger nested-editor__af-remove';
-      rm.dataset.neAfRemove = String(i);
-      rm.textContent = 'Remove';
-      this.listen(rm, 'click', () => {
-        const next = removeLeafAt(activityPredicateFromString(draft.activityFilter), i);
-        update({ activityFilter: activityPredicateToString(next) });
-        this.renderSinkConfig(item); // structural change — see connective handler above.
-      });
-      r.append(rm);
-      list.append(r);
-    });
-    wrap.append(list);
-
-    // Add-leaf mini-form: op select + comma-separated values.
-    const addForm = document.createElement('div');
-    addForm.className = 'nested-editor__af-add';
-    addForm.dataset.neAfAdd = '';
-
-    const opSel = document.createElement('select');
-    opSel.className = 'nested-editor__af-op';
-    opSel.dataset.neAfOp = '';
-    for (const op of ACTIVITY_LEAF_OPS) {
-      const opt = document.createElement('option');
-      opt.value = op;
-      opt.textContent = activityOpLabel(op);
-      opSel.append(opt);
-    }
-
-    const valInput = document.createElement('input');
-    valInput.type = 'text';
-    valInput.className = 'nested-editor__af-values';
-    valInput.dataset.neAfValues = '';
-    valInput.placeholder = 'values (comma-separated; e.g. card_create, comment)';
-
-    const hint = document.createElement('span');
-    hint.className = 'nested-editor__af-hint muted';
-    hint.textContent = `kinds: ${ACTIVITY_KIND_OPTIONS.map((k) => k.value).join(', ')}`;
-
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'btn nested-editor__af-add-btn';
-    addBtn.dataset.neAfAddBtn = '';
-    addBtn.textContent = '+ Add leaf';
-    this.listen(addBtn, 'click', () => {
-      const op = opSel.value as ActivityLeafOp;
-      const values = valInput.value.split(',').map((s) => s.trim()).filter((s) => s !== '');
-      if (values.length === 0) return;
-      const next = appendLeaf(activityPredicateFromString(draft.activityFilter), { kind: 'leaf', op, values });
-      update({ activityFilter: activityPredicateToString(next) });
-      this.renderSinkConfig(item); // structural change — see connective handler above.
-    });
-
-    addForm.append(opSel, valInput, addBtn, hint);
-    wrap.append(addForm);
-    return wrap;
-  }
-
-  private saveSink(d: ActivitySinkDraft): void {
-    const projectId = this.scopeProjectId();
-    if (projectId === '' || projectId === '0') {
-      this.setFault({ kind: 'sub_error', code: 'no_project', message: 'Pick a project before saving a sink.' });
-      return;
-    }
-    this.clearFault();
-    this.ctx.api.callByName(
-      'activity_sink.set',
-      sinkDraftToSet(d, projectId),
-      () => {
-        if (!this.isAlive()) return;
-        this.ctx.tree.at(this.p('draft')).set(null);
-        // Render-effect doesn't subscribe to `draft` (focus-survival rule), so
-        // re-render explicitly after the structural save reset.
-        this.renderSinkConfig(null);
-        this.reloadProjectScopedList('activity_sink.list');
-      },
-      { alive: () => this.isAlive(), onErr: (f) => this.showFault('activity_sink.set', f) },
     );
   }
 
@@ -2517,149 +2175,6 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       () => { if (this.isAlive()) this.loadRoleMappings(); },
       { alive: () => this.isAlive(), onErr: (f) => this.showFault('role_mapping.delete', f) },
     );
-  }
-
-  /* --------------------------- shared form bits ------------------------- */
-
-  /** A one-way text field (label + input). Commits its value to the supplied
-   *  setter on every input so the draft stays current without a re-render. */
-  private textField(role: string, label: string, value: string, onInput: (v: string) => void): HTMLElement {
-    const wrap = document.createElement('label');
-    wrap.className = 'nested-editor__config-field';
-    const span = document.createElement('span');
-    span.className = 'nested-editor__field-label muted';
-    span.textContent = label;
-    wrap.append(span);
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'nested-editor__config-input';
-    input.dataset[role] = '';
-    input.value = value;
-    this.listen(input, 'input', () => onInput(input.value));
-    wrap.append(input);
-    return wrap;
-  }
-
-  /**
-   * A WRITE-ONLY secret field: blank on load (the value is never echoed), with
-   * a state caption reading "configured" / "not set" from the row's has_* flag.
-   * A value typed here is the ONLY thing that writes the secret; left blank, the
-   * field is omitted from the payload (server preserves the stored cipher).
-   */
-  private secretField(role: string, label: string, value: string, configured: boolean, onInput: (v: string) => void): HTMLElement {
-    const wrap = document.createElement('label');
-    wrap.className = 'nested-editor__config-field nested-editor__config-secret';
-    const span = document.createElement('span');
-    span.className = 'nested-editor__field-label muted';
-    span.textContent = label;
-    wrap.append(span);
-    const input = document.createElement('input');
-    input.type = 'password';
-    input.className = 'nested-editor__config-input';
-    input.dataset[role] = '';
-    input.value = value;
-    input.placeholder = configured ? '•••••••• (leave blank to keep)' : 'not set — enter to configure';
-    this.listen(input, 'input', () => onInput(input.value));
-    wrap.append(input);
-    const state = document.createElement('span');
-    state.className = 'nested-editor__secret-state muted';
-    state.dataset.neSecretState = role;
-    state.textContent = configured ? 'configured' : 'not set';
-    wrap.append(state);
-    return wrap;
-  }
-
-  private selectField(role: string, label: string, options: ReadonlyArray<{ value: string; label: string }>, value: string, onChange: (v: string) => void): HTMLElement {
-    const wrap = document.createElement('label');
-    wrap.className = 'nested-editor__config-field';
-    const span = document.createElement('span');
-    span.className = 'nested-editor__field-label muted';
-    span.textContent = label;
-    wrap.append(span);
-    const sel = document.createElement('select');
-    sel.className = 'nested-editor__config-select';
-    sel.dataset[role] = '';
-    for (const o of options) {
-      const opt = document.createElement('option');
-      opt.value = o.value;
-      opt.textContent = o.label;
-      if (o.value === value) opt.selected = true;
-      sel.append(opt);
-    }
-    sel.value = value;
-    this.listen(sel, 'change', () => onChange(sel.value));
-    wrap.append(sel);
-    return wrap;
-  }
-
-  /**
-   * Reload the project-scoped parent list (comm_channel.list / activity_sink.
-   * list) and rewrite the parent MasterDetail's `items` leaf directly — the
-   * server-truth posture (a fresh create surfaces with its id; an edit reflects
-   * the canonical row). The parent's list query fires on the shared
-   * `scope.projectId` signal, which a save doesn't change, so we re-issue the
-   * read ourselves. One tree write outside any tracked effect — cascade-safe.
-   */
-  private reloadProjectScopedList(specKey: string): void {
-    const projectId = this.scopeProjectId();
-    if (projectId === '' || projectId === '0') return;
-    this.ctx.api.callByName(
-      specKey,
-      { projectId },
-      (out) => {
-        if (!this.isAlive()) return;
-        const rows = (out as { rows?: Array<Record<string, unknown>> }).rows ?? [];
-        const items = rows
-          .map((r) => {
-            const id = r['id'];
-            if (id === null || id === undefined) return null;
-            return { id: String(id), raw: r };
-          })
-          .filter((it): it is MasterDetailItem => it !== null);
-        this.ctx.tree.at(this.itemsPath).set(items);
-      },
-      { alive: () => this.isAlive(), onErr: (f) => this.showFault(specKey, f) },
-    );
-  }
-}
-
-/* -------------------------------------------------------------------------- */
-/* Filter-card predicate (de)serialization. A filter card stores its predicate */
-/* as the CANONICAL bare WIRE NODE (a leaf `{attr,op,...}` or a connective      */
-/* group) — the exact shape the seed, `screen-resolve.readPredicate()`, and the */
-/* ScreenFilterBar's "save filter" both read+write via toWire/fromWire. Using   */
-/* anything else (e.g. a `{where}/{tree}` wrapper) means a saved filter can't be */
-/* read back at runtime, and a seed/runtime predicate renders empty in the      */
-/* builder. Load tolerates the legacy `{where}/{tree}` wrapper an older build    */
-/* may have written.                                                            */
-/* -------------------------------------------------------------------------- */
-
-/** Encode a Predicate to the canonical filter-card wire node (caller stringifies). */
-function toFilterJson(predicate: Predicate): WireNode {
-  return toWire(predicate);
-}
-
-/** Decode a stored filter-card predicate JSON string to a Predicate (or null
- *  for an empty / unparseable value). Inverse of {@link toFilterJson}. */
-function fromFilterJson(raw: string): Predicate | null {
-  const t = raw.trim();
-  if (t === '') return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(t);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object') return null;
-  const obj = parsed as { where?: unknown; tree?: unknown };
-  try {
-    // Legacy wrapper tolerated on load.
-    if (Array.isArray(obj.where)) return fromWhereLeaves(obj.where as CardWherePredicate[]);
-    if (obj.tree !== undefined && obj.tree !== null) return fromWire(obj.tree);
-    // Canonical: a bare wire node (leaf or connective group).
-    return fromWire(parsed);
-  } catch {
-    return null;
   }
 }
 

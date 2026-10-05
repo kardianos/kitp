@@ -35,6 +35,7 @@ before(async () => {
   M.registerNestedEditor();
   M.registerRecordForm();
   M.registerPredicateFilter();
+  M.registerActivityFilterEditor();
   M.registerCombobox();
   M.registerRefPicker();
 });
@@ -63,7 +64,15 @@ function adminTransport() {
       id: '90', name: 'Teams feed', sink_kind: 'msgraph_teams',
       msgraph_tenant_id: 't-1', msgraph_client_id: 'c-1', msgraph_team_id: 'team-1',
       msgraph_channel_id: 'chan-1', activity_filter: '', channel_status: 'enabled',
+      channel_id: '0', channel_name: '', rollup_minutes: 0, card_filter: '', subscription_count: 0,
       has_client_secret: true, created_at: '2026-01-03T00:00:00Z',
+    },
+    {
+      id: '91', name: 'Project mail', sink_kind: 'email',
+      activity_filter: '', channel_status: 'enabled',
+      channel_id: '80', channel_name: 'Support inbox', rollup_minutes: 0,
+      card_filter: '{"attr":"assignee","op":"=","values":["@me"]}', subscription_count: 3,
+      has_client_secret: false, created_at: '2026-01-04T00:00:00Z',
     },
   ];
   let agentRows = [
@@ -92,6 +101,11 @@ function adminTransport() {
             return { id: sr.id, ok: true, data: { rows: channelRows } };
           case 'activity_sink.list':
             return { id: sr.id, ok: true, data: { rows: sinkRows } };
+          // The card-filter editor's vocabulary + ref-option loads.
+          case 'attribute_def.select':
+          case 'card_type.select':
+          case 'card.select_with_attributes':
+            return { id: sr.id, ok: true, data: { rows: [] } };
           case 'user.select':
             return { id: sr.id, ok: true, data: { rows: agentRows } };
           case 'user_token.list':
@@ -447,35 +461,149 @@ test('Comm Channels: typing a password sends ONLY that field', async () => {
 /* Activity Sinks config editor (write-only secret + filter).                  */
 /* -------------------------------------------------------------------------- */
 
-test('Activity Sinks: client_secret omitted when blank; adding a filter leaf saves the predicate JSON', async () => {
+test('Activity Sinks: client_secret omitted when blank; adding a filter condition saves the predicate JSON', async () => {
   const transport = adminTransport();
   const { dispatcher, api } = bootApi(transport);
   const { ctrl } = mountView(api, 'activity_sinks');
   await settle(dispatcher);
   await selectFirstRow(ctrl, dispatcher);
 
-  assert.equal(ctrl.el.querySelector('[data-ne-secret-state="neClientSecret"]').textContent, 'configured');
+  assert.match(ctrl.el.querySelector('[data-record-form-secret-state="msgraphClientSecret"]').textContent, /configured/);
 
-  // Add an activity-filter leaf (kind_in: comment) via the mini-form.
-  ctrl.el.querySelector('[data-ne-af-op]').value = 'kind_in';
-  ctrl.el.querySelector('[data-ne-af-values]').value = 'comment, card_create';
-  ctrl.el.querySelector('[data-ne-af-add-btn]').dispatchEvent({ type: 'click' });
+  // Add an event-filter condition (Event is any of: Comment, Card created) —
+  // kind ops pick from the closed kind list (checkboxes), not free text.
+  ctrl.el.querySelector('[data-af-op]').value = 'kind_in';
+  ctrl.el.querySelector('[data-af-choice="comment"]').checked = true;
+  ctrl.el.querySelector('[data-af-choice="card_create"]').checked = true;
+  ctrl.el.querySelector('[data-af-add-btn]').dispatchEvent({ type: 'click' });
   M.flushSync?.();
+  assert.ok(ctrl.el.querySelector('[data-af-leaf]'), 'a filter condition row rendered');
 
-  // A leaf row now renders.
-  assert.ok(ctrl.el.querySelector('[data-ne-af-leaf]'), 'a filter leaf row rendered');
-
-  ctrl.el.querySelector('[data-ne-config-save]').dispatchEvent({ type: 'click' });
+  ctrl.el.querySelector('[data-record-form-save]').dispatchEvent({ type: 'click' });
   await settle(dispatcher);
   const sets = writesFor(transport, 'activity_sink.set');
   assert.equal(sets.length, 1, 'one activity_sink.set fired');
-  assert.equal('msgraph_client_secret' in sets[0].data, false, 'client secret omitted (not typed)');
-  const filter = JSON.parse(sets[0].data.activity_filter);
+  const d = sets[0].data;
+  assert.equal('msgraph_client_secret' in d, false, 'client secret omitted (not typed)');
+  assert.equal(d.sink_kind, 'msgraph_teams');
+  assert.equal(d.rollup_minutes, 0, 'teams rollup always sent');
+  assert.equal(d.card_filter, '', 'card filter sent (empty = every card)');
+  assert.equal('channel_id' in d, false, 'no comm channel for a Teams sink');
+  const filter = JSON.parse(d.activity_filter);
   assert.equal(filter.op, 'and');
   assert.equal(filter.items.length, 1);
   assert.equal(filter.items[0].op, 'kind_in');
-  assert.deepEqual(filter.items[0].values, ['comment', 'card_create']);
+  assert.deepEqual(filter.items[0].values, ['card_create', 'comment']);
 });
+
+test('Activity Sinks: actor conditions offer no "Me" (a broadcast sink has no subscriber)', async () => {
+  const transport = adminTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountView(api, 'activity_sinks');
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+  const op = ctrl.el.querySelector('[data-af-op]');
+  op.value = 'actor_in';
+  op.dispatchEvent({ type: 'change' });
+  assert.ok(ctrl.el.querySelector('[data-af-values]'), 'typed user ids still offered');
+  assert.equal(ctrl.el.querySelector('[data-af-choice="@me"]'), null, 'no Me choice on the admin sink form');
+});
+
+test('Activity Sinks: email kind swaps Teams fields for a comm-channel picker and requires a channel', async () => {
+  const transport = adminTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountView(api, 'activity_sinks');
+  await settle(dispatcher);
+
+  ctrl.el.querySelector('[data-record-form-new]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  assert.ok(ctrl.el.querySelector('[data-record-form-field="msgraphTeamId"]'), 'a new sink defaults to Teams fields');
+  assert.equal(ctrl.el.querySelector('[data-record-form-field="channelId"]'), null, 'no channel picker for Teams');
+
+  const nameInput = ctrl.el.querySelector('[data-record-form-field="name"]');
+  nameInput.value = 'Notify';
+  nameInput.dispatchEvent({ type: 'input' });
+  const kind = ctrl.el.querySelector('[data-record-form-field="sinkKind"]');
+  kind.value = 'email';
+  kind.dispatchEvent({ type: 'change' });
+  await settle(dispatcher); // the channel options load (comm_channel.list)
+
+  assert.equal(ctrl.el.querySelector('[data-record-form-field="msgraphTeamId"]'), null, 'Teams fields hidden for email');
+  assert.equal(ctrl.el.querySelector('[data-record-form-field="rollupMinutes"]'), null, 'rollup is per-subscription for email');
+  const picker = ctrl.el.querySelector('[data-record-form-field="channelId"]');
+  assert.ok(picker, 'channel picker shown for email');
+  assert.ok(picker.children.some((o) => o.value === '80'), 'picker lists the project comm channels');
+
+  // Saving without a channel is blocked client-side.
+  ctrl.el.querySelector('[data-record-form-save]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  assert.equal(writesFor(transport, 'activity_sink.set').length, 0, 'no set without a channel');
+  assert.match(ctrl.el.querySelector('[data-record-form-error]').textContent, /comm channel/);
+
+  const picker2 = ctrl.el.querySelector('[data-record-form-field="channelId"]');
+  picker2.value = '80';
+  picker2.dispatchEvent({ type: 'change' });
+  ctrl.el.querySelector('[data-record-form-save]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  const sets = writesFor(transport, 'activity_sink.set');
+  assert.equal(sets.length, 1);
+  assert.equal(sets[0].data.sink_kind, 'email');
+  assert.equal(sets[0].data.channel_id, '80');
+  for (const k of ['msgraph_tenant_id', 'msgraph_team_id', 'rollup_minutes', 'msgraph_client_secret']) {
+    assert.equal(k in sets[0].data, false, `${k} not sent for an email sink`);
+  }
+});
+
+test('Activity Sinks: a stored card filter mounts the predicate builder and round-trips on save', async () => {
+  const transport = adminTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountView(api, 'activity_sinks');
+  await settle(dispatcher);
+  const rows = visibleRows(ctrl.el);
+  rows[1].dispatchEvent({ type: 'click' }); // the email sink
+  M.flushSync?.();
+  await settle(dispatcher);
+
+  const cardFilter = ctrl.el.querySelector('[data-record-form-field="cardFilter"]');
+  assert.ok(cardFilter, 'card filter field rendered');
+  assert.ok(cardFilter.querySelector('[data-control="PredicateFilter"]'), 'the shared PredicateFilter mounts');
+  assert.equal(ctrl.el.querySelector('[data-record-form-field="subscriptionCount"]').textContent, '3');
+
+  ctrl.el.querySelector('[data-record-form-save]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  const sets = writesFor(transport, 'activity_sink.set');
+  assert.equal(sets.length, 1);
+  assert.deepEqual(JSON.parse(sets[0].data.card_filter), { attr: 'assignee', op: '=', values: ['@me'] });
+  assert.equal(sets[0].data.channel_id, '80', 'stored channel kept');
+});
+
+const SINK_DRAFT_CASES = [
+  { name: 'teams ok', patch: { name: 'X' }, errs: [] },
+  { name: 'name required', patch: { name: '' }, errs: ['name'] },
+  { name: 'unknown kind', patch: { name: 'X', sinkKind: 'sms' }, errs: ['sinkKind'] },
+  { name: 'email needs channel', patch: { name: 'X', sinkKind: 'email' }, errs: ['channelId'] },
+  { name: 'email with channel', patch: { name: 'X', sinkKind: 'email', channelId: '80' }, errs: [] },
+  { name: 'rollup not a number', patch: { name: 'X', rollupMinutes: 'soon' }, errs: ['rollupMinutes'] },
+  { name: 'rollup over a day', patch: { name: 'X', rollupMinutes: '1441' }, errs: ['rollupMinutes'] },
+  { name: 'rollup ignored for email', patch: { name: 'X', sinkKind: 'email', channelId: '80', rollupMinutes: 'x' }, errs: [] },
+];
+for (const c of SINK_DRAFT_CASES) {
+  test(`validateSinkDraft: ${c.name}`, () => {
+    const errs = M.validateSinkDraft({ ...M.emptySinkDraft(), ...c.patch });
+    assert.deepEqual(Object.keys(errs).sort(), [...c.errs].sort());
+  });
+}
+
+const SINK_LABEL_CASES = [
+  { row: { sinkKind: 'msgraph_teams' }, want: 'Teams' },
+  { row: { sinkKind: 'email', channelName: 'Support', subscriptionCount: 1 }, want: 'Email · Support · 1 subscription' },
+  { row: { sinkKind: 'email', subscriptionCount: 0 }, want: 'Email · 0 subscriptions' },
+];
+for (const c of SINK_LABEL_CASES) {
+  test(`sinkKindLabel: ${c.want}`, () => {
+    assert.equal(M.sinkKindLabel(c.row), c.want);
+  });
+}
 
 /* -------------------------------------------------------------------------- */
 /* Agents: create / delete.                                                    */

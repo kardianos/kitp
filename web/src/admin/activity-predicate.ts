@@ -167,8 +167,25 @@ export function summarizeActivityPredicate(p: ActivityPredicate | null): string 
 function summarizeLeaf(p: ActivityPredicateLeaf): string {
   const op = activityOpLabel(p.op);
   if (p.values.length === 0) return `${op} (none)`;
-  return `${op} (${p.values.join(', ')})`;
+  return `${op} (${p.values.map(tokenLabel).join(', ')})`;
 }
+
+/** The reserved "the subscriber" actor value — the server resolves it to the
+ *  subscription owner's user id (on a broadcast sink it matches no actor). */
+export const ACTIVITY_ME_TOKEN = '@me';
+
+/** Display text for reserved filter values (anything else renders verbatim). */
+const TOKEN_LABELS: Readonly<Record<string, string>> = { [ACTIVITY_ME_TOKEN]: 'me' };
+
+function tokenLabel(v: string): string {
+  return TOKEN_LABELS[v] ?? v;
+}
+
+/** The actor-condition choices a personal (subscription) filter offers next to
+ *  the typed user ids — passed to the editor as `actorChoices`. */
+export const ACTIVITY_ME_CHOICES: ReadonlyArray<{ value: string; label: string }> = [
+  { value: ACTIVITY_ME_TOKEN, label: 'Me' },
+];
 
 /**
  * Append a leaf to (or create) the top-level AND group. Pure: returns a NEW
@@ -207,12 +224,53 @@ export function topLevelLeaves(p: ActivityPredicate | null): Array<{ leaf: Activ
   );
 }
 
-/** The closed set of activity kinds the server emits (mirrors the Svelte list). */
+/** The closed set of activity kinds the server emits (every `activity.kind`
+ *  written by the db/schema/functions handlers). */
 export const ACTIVITY_KIND_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'card_create', label: 'Card created' },
   { value: 'attr_update', label: 'Attribute updated' },
   { value: 'comment', label: 'Comment' },
+  { value: 'comment_edit', label: 'Comment edited' },
   { value: 'tag_apply', label: 'Tag applied' },
   { value: 'tag_remove', label: 'Tag removed' },
+  { value: 'attachment_create', label: 'Attachment added' },
+  { value: 'attachment_delete', label: 'Attachment removed' },
+  { value: 'card_move', label: 'Card moved' },
+  { value: 'task_move', label: 'Task moved to project' },
+  { value: 'card_set_phase', label: 'Phase changed' },
+  { value: 'card_merge', label: 'Cards merged' },
   { value: 'card_delete', label: 'Card deleted' },
+  { value: 'card_undelete', label: 'Card restored' },
 ];
+
+/** Plain-language operator labels for the filter editor (the terse
+ *  {@link activityOpLabel} stays the summary vocabulary). */
+export const ACTIVITY_OP_FRIENDLY: Readonly<Record<ActivityLeafOp, string>> = {
+  kind_in: 'Event is any of',
+  kind_not_in: 'Event is none of',
+  attr_in: 'Changed attribute is any of',
+  attr_not_in: 'Changed attribute is none of',
+  actor_in: 'Done by',
+  actor_not_in: 'Not done by',
+};
+
+/** True for the ops whose values are activity kinds (picked from
+ *  {@link ACTIVITY_KIND_OPTIONS} rather than typed). */
+export function isKindOp(op: ActivityLeafOp): boolean {
+  return op === 'kind_in' || op === 'kind_not_in';
+}
+
+/** True for the ops whose values are actor (user) ids. */
+export function isActorOp(op: ActivityLeafOp): boolean {
+  return op === 'actor_in' || op === 'actor_not_in';
+}
+
+/** A friendly one-line description of a leaf: kind values render as their
+ *  labels, reserved tokens as their text ("Event is any of Comment, Card
+ *  created", "Not done by me", "Done by me, 12"). */
+export function describeActivityLeaf(leaf: ActivityPredicateLeaf): string {
+  const values = isKindOp(leaf.op)
+    ? leaf.values.map((v) => ACTIVITY_KIND_OPTIONS.find((k) => k.value === v)?.label ?? v)
+    : leaf.values.map(tokenLabel);
+  return `${ACTIVITY_OP_FRIENDLY[leaf.op]} ${values.length === 0 ? '(none)' : values.join(', ')}`;
+}

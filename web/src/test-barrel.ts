@@ -76,6 +76,8 @@ export {
   isFlatAndOfLeaves,
   toWhereLeaves,
   fromWhereLeaves,
+  predicateFromJsonString,
+  predicateToJsonString,
   topLevelLeafForAttr,
   upsertTopLevelLeaf,
   removeTopLevelLeaf,
@@ -283,15 +285,43 @@ export {
   channelRowToDraft,
   validateChannelDraft,
   channelDraftToSet,
+  CHANNEL_STATUS_OPTIONS,
+  type NestedEditorConfig,
+  type CommChannelDraft,
+} from './admin/nested-editor.js';
+export {
   emptySinkDraft,
   sinkRowToDraft,
   validateSinkDraft,
   sinkDraftToSet,
-  CHANNEL_STATUS_OPTIONS,
-  type NestedEditorConfig,
-  type CommChannelDraft,
+  parseRollupMinutes,
+  ACTIVITY_SINK_FORM,
+  SINK_KIND_OPTIONS,
   type ActivitySinkDraft,
-} from './admin/nested-editor.js';
+} from './admin/activity-sink-form.js';
+export { sinkKindLabel } from './admin/specs.js';
+export { ActivityFilterEditor, registerActivityFilterEditor } from './admin/activity-filter-editor.js';
+export { fieldVisible, faultText } from './admin/record-form.js';
+export { loadRefOptions, refOptionLabel } from './filter/ref-options.js';
+export {
+  registerSubscriptionSpecs,
+  decodeSubscriptionRow,
+  decodeSubscribableSinkRow,
+  subscriptionStatusKey,
+  subscriptionStatusLabel,
+  rollupLabel,
+  lastSentLabel,
+  SUBSCRIPTION_SPEC,
+} from './notifications/subscription-specs.js';
+export {
+  emptySubscriptionDraft,
+  subscriptionRowToDraft,
+  validateSubscriptionDraft,
+  subscriptionDraftToSet,
+  SUBSCRIPTION_FORM,
+  MY_SUBSCRIPTIONS_SCREEN,
+  SUBSCRIPTION_FAULT_MESSAGES,
+} from './notifications/subscription-screen.js';
 export {
   workflowRowToDraft,
   workflowDraftToInput,
@@ -310,6 +340,12 @@ export {
   setConnective as activitySetConnective,
   topLevelLeaves as activityTopLevelLeaves,
   summarizeActivityPredicate,
+  describeActivityLeaf,
+  isKindOp,
+  isActorOp,
+  ACTIVITY_OP_FRIENDLY,
+  ACTIVITY_ME_TOKEN,
+  ACTIVITY_ME_CHOICES,
 } from './admin/activity-predicate.js';
 export {
   CONTACTS_SCREEN,
@@ -591,3 +627,9 @@ export {
   CREATED_PROJECT_ID,
   FAULT_CREATE_TITLE,
 } from './kanban/mock-data.js';
+
+// Rich-editor engine seam (tests inject a command-capable stub engine so the
+// formatting toolbar renders under jsdom) + the shared caption/field shell.
+export { setRichEditorEngine } from './editor/rich-editor.js';
+export { createTextareaEngine } from './editor/engine.js';
+export { captionedField } from './ui/captioned-field.js';

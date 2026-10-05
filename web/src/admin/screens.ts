@@ -43,6 +43,7 @@ import type { PeopleManagerConfig } from './people-manager.js';
 import type { NestedEditorConfig } from './nested-editor.js';
 import type { SchedulerJobsConfig } from './scheduler-jobs.js';
 import { COMM_CHANNEL_FORM } from './comm-channel-form.js';
+import { ACTIVITY_SINK_FORM } from './activity-sink-form.js';
 import { WORKFLOW_FORM } from './workflow-form.js';
 
 /** An admin screen is a MasterDetail or its own control (Enums / People /
@@ -687,18 +688,18 @@ export const ACTIVITY_SINKS_SCREEN: MasterDetailConfig = {
     skipWhenNull: ['projectId'],
     rowHeight: 56,
     search: { field: 'name', placeholder: 'Search sinks…' },
-    row: { title: 'name', subtitle: 'sink_kind', badge: 'channel_status' },
+    // Rows are the camelCase ActivitySinkRow; kindLabel is decoder-derived
+    // ("Teams" / "Email · <channel> · N subscriptions").
+    row: { title: 'name', subtitle: 'kindLabel', badge: 'channelStatus' },
   },
   detail: {
     titleField: 'name',
     empty: 'Pick a project, then select a sink. (Client secret is write-only.)',
-    // Scalar header summary; the nested config editor owns the full form INCLUDING
-    // the write-only msgraph_client_secret + the activity-filter predicate editor.
-    fields: [
-      { name: 'sink_kind', label: 'Sink kind', kind: 'readonly' },
-      { name: 'channel_status', label: 'Status', kind: 'readonly' },
-    ],
-    nested: { kind: 'activitySinkConfig' },
+    // The generic RecordForm (ACTIVITY_SINK_FORM) owns the whole editable sink
+    // — kind, Teams or email-channel config, rollup, status, the event filter
+    // and the card filter — plus + New and save + list refresh.
+    fields: [],
+    form: ACTIVITY_SINK_FORM,
   },
 };
 

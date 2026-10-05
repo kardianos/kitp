@@ -96,3 +96,34 @@ func TestParsePredicateInvalidJSON(t *testing.T) {
 		t.Fatal("ParsePredicate should reject malformed JSON")
 	}
 }
+
+// TestPredicateWithMe covers "@me" in actor leaves: a subscription's
+// subscriber id replaces it (so "not done by me" works), and without a
+// subscriber it stays literal and matches no actor.
+func TestPredicateWithMe(t *testing.T) {
+	type row = activitysink.ActivityRow
+	cases := []struct {
+		name string
+		spec string
+		me   int64
+		r    row
+		want bool
+	}{
+		{"actor_not_in @me drops my own events", `{"op":"actor_not_in","values":["@me"]}`, 7, row{ActorID: 7}, false},
+		{"actor_not_in @me keeps others", `{"op":"actor_not_in","values":["@me"]}`, 7, row{ActorID: 8}, true},
+		{"actor_in @me nested in and", `{"op":"and","items":[{"op":"kind_in","values":["comment"]},{"op":"actor_in","values":["@me"]}]}`, 7, row{Kind: "comment", ActorID: 7}, true},
+		{"no subscriber leaves @me literal", `{"op":"actor_in","values":["@me"]}`, 0, row{ActorID: 7}, false},
+		{"@me only resolves in actor leaves", `{"op":"kind_in","values":["@me"]}`, 7, row{Kind: "7"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, err := activitysink.ParsePredicate(c.spec)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := p.WithMe(c.me).Eval(c.r); got != c.want {
+				t.Errorf("Eval = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

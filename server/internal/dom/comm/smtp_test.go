@@ -394,7 +394,8 @@ func TestSMTPSenderMIMEHeaders(t *testing.T) {
 	// builder leaves it as-is (no duplicate suffix).
 	wantSubject := "Subject: [#" + threadID + "] Issue 1"
 	wantThreadHdr := "X-Kitp-Thread-Id: " + threadID
-	wantRef := "Ref: " + threadID
+	// The comm's task number sits directly above the Ref: trailer.
+	wantRef := fmt.Sprintf("Task: %d\r\nRef: %s", f.taskID, threadID)
 
 	for _, w := range []string{
 		"From: kitp@example.com",

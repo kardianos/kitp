@@ -5,7 +5,11 @@
 -- input.project_id, joined with activity_sink_secret (so
 -- has_client_secret reflects storage without exposing the encrypted
 -- bytes) and activity_sink_state (last_activity_id pointer +
--- last_pushed_at + last_pushed_count + last_error from the pump).
+-- last_pushed_at + last_pushed_count + last_error + pending_since from
+-- the pump), plus the email-sink fields: the comm channel it sends
+-- through (channel_ref → id + title), rollup_minutes, the card filter
+-- (stored in the shared `predicate` attribute) and the number of live
+-- activity_subscription cards under it.
 --
 -- Authz (admin) runs pre-tx in Go.
 --
@@ -74,7 +78,22 @@ BEGIN
                               WHERE av.card_id = c.id AND ad.name='channel_status'),'enabled') AS channel_status,
                    COALESCE((SELECT av.value #>> '{}' FROM attribute_value av
                               JOIN attribute_def ad ON ad.id = av.attribute_def_id
-                              WHERE av.card_id = c.id AND ad.name='channel_fault_reason'),'')  AS channel_fault_reason
+                              WHERE av.card_id = c.id AND ad.name='channel_fault_reason'),'')  AS channel_fault_reason,
+                   COALESCE((SELECT (av.value)::text::bigint FROM attribute_value av
+                              JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                              WHERE av.card_id = c.id AND ad.name='channel_ref'
+                                AND jsonb_typeof(av.value) = 'number'), 0)                    AS channel_id,
+                   COALESCE((SELECT (av.value)::text::numeric::int FROM attribute_value av
+                              JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                              WHERE av.card_id = c.id AND ad.name='rollup_minutes'
+                                AND jsonb_typeof(av.value) = 'number'), 0)                    AS rollup_minutes,
+                   COALESCE((SELECT av.value #>> '{}' FROM attribute_value av
+                              JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                              WHERE av.card_id = c.id AND ad.name='predicate'),'')             AS card_filter,
+                   (SELECT count(*) FROM card s
+                      JOIN card_type sct ON sct.id = s.card_type_id
+                     WHERE s.parent_card_id = c.id AND sct.name = 'activity_subscription'
+                       AND s.deleted_at IS NULL)                                               AS subscription_count
             FROM card c
             JOIN card_type ct ON ct.id = c.card_type_id
             WHERE ct.name = 'activity_sink'
@@ -94,6 +113,18 @@ BEGIN
                     'activity_filter',      sa.activity_filter,
                     'channel_status',       sa.channel_status,
                     'channel_fault_reason', sa.channel_fault_reason,
+                    'channel_id',           sa.channel_id::text,
+                    'channel_name',         COALESCE((SELECT av.value #>> '{}' FROM attribute_value av
+                                               JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                               WHERE av.card_id = sa.channel_id AND ad.name='title'), ''),
+                    'rollup_minutes',       sa.rollup_minutes,
+                    'card_filter',          sa.card_filter,
+                    'subscription_count',   sa.subscription_count,
+                    'pending_since',
+                        CASE WHEN st.pending_since IS NULL THEN ''
+                             ELSE to_char(st.pending_since AT TIME ZONE 'UTC',
+                                          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+                        END,
                     'has_client_secret',    (ss.client_secret IS NOT NULL),
                     'last_activity_id',     COALESCE(st.last_activity_id, 0)::text,
                     'last_pushed_at',

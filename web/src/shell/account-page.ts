@@ -1,13 +1,18 @@
 /**
- * AccountPage — a minimal read-only profile for the signed-in user (#21),
- * reached from the rail user-menu's "Account". Reads the identity leaf
- * (`auth.user`, landed by the boot /auth/me probe) and shows the display name,
- * roles, and admin/agent flags. A Logout button posts to the auth endpoint.
- * Read-only for now (no profile edits); zero-promise — logout is a one-way fetch.
+ * AccountPage — the signed-in user's profile (#21), reached from the rail
+ * user-menu's "Account". Reads the identity leaf (`auth.user`, landed by the
+ * boot /auth/me probe) and shows the display name, roles, and admin/agent
+ * flags. A Logout button posts to the auth endpoint.
+ *
+ * Below the profile, the NOTIFICATIONS section: the caller's personal email
+ * subscriptions (per project), managed by the config-only MY_SUBSCRIPTIONS_SCREEN
+ * MasterDetail (list + RecordForm detail). Zero-promise throughout.
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { AUTH_USER_PATH, type AuthUser } from '../auth/auth-state.js';
+import { masterDetailScreen } from '../admin/master-detail.js';
+import { MY_SUBSCRIPTIONS_SCREEN } from '../notifications/subscription-screen.js';
 import { logout } from './logout.js';
 
 export interface AccountPageConfig extends BaseControlConfig {
@@ -57,7 +62,28 @@ export class AccountPage extends Control<AccountPageConfig> {
     logoutBtn.textContent = 'Log out';
     this.listen(logoutBtn, 'click', () => logout());
 
-    this.el.append(h1, card, logoutBtn);
+    const notifications = this.buildNotifications();
+    this.el.append(h1, card, logoutBtn, notifications.section);
+    // Spawn once the host is in the page (the list's virtual window measures it).
+    this.spawn('MasterDetail', masterDetailScreen(MY_SUBSCRIPTIONS_SCREEN), notifications.host);
+  }
+
+  /** The Notifications section: heading + intro + the subscriptions-manager host. */
+  private buildNotifications(): { section: HTMLElement; host: HTMLElement } {
+    const section = document.createElement('section');
+    section.className = 'account-page__section';
+    section.dataset.accountNotifications = '';
+    const h2 = document.createElement('h2');
+    h2.className = 'account-page__subtitle';
+    h2.textContent = 'Notifications';
+    const intro = document.createElement('p');
+    intro.className = 'account-page__intro muted';
+    intro.textContent =
+      'Get email about activity in your projects. Each subscription picks which events and tasks to include and how often to send a roll-up.';
+    const host = document.createElement('div');
+    host.className = 'account-page__notifications';
+    section.append(h2, intro, host);
+    return { section, host };
   }
 
   private field(label: string, initial: string): { row: HTMLElement; value: HTMLElement } {

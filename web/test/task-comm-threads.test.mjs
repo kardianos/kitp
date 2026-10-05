@@ -169,3 +169,39 @@ test('CommThreads: the phase-filter chips narrow threads by comm_status phase', 
   assert.equal(rows.length, 1, 'only the active comm shown');
   assert.equal(rows[0].dataset.commRow, '145');
 });
+
+/** <label>s that would forward clicks to a composite: any label holding a
+ *  button, an editable area, or more than one labelable control. */
+function compositeLabels(root) {
+  return [...root.querySelectorAll('label')].filter(
+    (l) =>
+      l.querySelector('button, [contenteditable]') !== null ||
+      l.querySelectorAll('input, select, textarea, button, meter, output, progress').length > 1,
+  );
+}
+
+// Regression guard for the <label>-shell bug class (see ui/captioned-field.ts):
+// the start-comm form's Channel picker and Message composer are composites and
+// must sit in a role=group shell; the plain Subject input keeps its <label>.
+test('CommThreads: the start-comm form never wraps a composite in a <label>', async () => {
+  const { dispatcher, api } = bootApi();
+  const c = mount(api);
+  await settle(dispatcher);
+  c.el.querySelector('[data-comms-start]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await settle(dispatcher);
+
+  const form = c.el.querySelector('[data-comms-form]');
+  const rows = [...form.querySelectorAll('.task-comms__form-row')];
+  const byCaption = (text) => rows.find((r) => r.querySelector('.task-comms__field-label')?.textContent === text);
+  for (const [caption, tag] of [
+    ['Channel', 'DIV'],
+    ['Subject', 'LABEL'],
+    ['Message', 'DIV'],
+  ]) {
+    const row = byCaption(caption);
+    assert.ok(row, `${caption} row rendered`);
+    assert.equal(row.tagName, tag, `${caption} row is a ${tag}`);
+    if (tag === 'DIV') assert.equal(row.getAttribute('role'), 'group', `${caption} row is a named group`);
+  }
+  assert.deepEqual(compositeLabels(form), [], 'no <label> wraps a composite control');
+});

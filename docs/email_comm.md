@@ -24,7 +24,7 @@ Attachments → Attachments
 
 **Comm direction is implicit in the channel type.** Attaching an "email box" comm channel implies the task can receive and send mail through that account. A future "slack" or "webform" channel might be intake-only or have different required fields. The "direction" property doesn't need to be modeled explicitly — it falls out of the comm channel's card_type and its required attributes (an email channel requires a `to` field; a webform channel doesn't).
 
-**Comms are explicit.** Replies are only sent when an operator clicks "Reply" on the Comms screen. There is no auto-batched outbound update on status changes or comments. Internal comments stay internal; status changes don't automatically notify the original sender. (The previous draft of this doc described a 5-minute coalesced auto-send; that's removed.)
+**Comms are explicit.** Replies are only sent when an operator clicks "Reply" on the Comms screen. There is no auto-batched outbound update on status changes or comments. Internal comments stay internal; status changes don't automatically notify the original sender. (The previous draft of this doc described a 5-minute coalesced auto-send; that's removed.) Notifications to kitp *users* about task activity are a separate mechanism — opt-in email digests sent through a project mailbox — see `notifications.md`.
 
 **Threading.** Inbound replies are matched to an existing comm by short thread id, in three places:
 

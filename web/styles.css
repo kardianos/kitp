@@ -170,6 +170,8 @@ select optgroup {
    author-styled, CSS-gradient caret). Give the form selects the same
    treatment so they match — and stop flashing. */
 .record-form__select,
+.activity-filter__op,
+.activity-filter__conn,
 .nested-editor__config-select,
 .nested-editor__step-select {
   appearance: none;
@@ -741,7 +743,8 @@ select optgroup {
 /* Account profile page (#21). */
 .account-page {
   padding: var(--space-6);
-  max-width: 32rem;
+  max-width: 72rem;
+  overflow-y: auto;
 }
 .account-page__title {
   margin: 0 0 var(--space-4);
@@ -749,6 +752,7 @@ select optgroup {
   font-weight: var(--weight-bold);
 }
 .account-page__card {
+  max-width: 32rem;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -765,6 +769,26 @@ select optgroup {
 }
 .account-page__value {
   font-weight: var(--weight-medium);
+}
+/* Notifications: the caller's email subscriptions (a MasterDetail sized to a
+   fixed panel inside the scrolling page). */
+.account-page__section {
+  margin-top: var(--space-6);
+}
+.account-page__subtitle {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+}
+.account-page__intro {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+}
+.account-page__notifications {
+  height: 40rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }
 .shell__avatar {
   display: inline-flex;
@@ -4760,9 +4784,45 @@ select optgroup {
 .record-form__empty {
   font-size: var(--text-sm);
 }
+.record-form__caption {
+  font-size: var(--text-xs);
+}
+.record-form__check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+.record-form__check .record-form__label {
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: var(--text-sm);
+  color: var(--color-fg);
+}
+.record-form__editor {
+  display: flex;
+  flex-direction: column;
+}
+.record-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.record-form__delete {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.record-form__delete-question {
+  font-size: var(--text-sm);
+  color: var(--color-danger);
+}
 
-/* Activity-filter (predicate over single activity rows). */
-.nested-editor__activity-filter {
+/* Activity-filter editor (ActivityFilterEditor — the event-filter DSL shared by
+   the Activity Sinks form and the account page's notification subscriptions). */
+.activity-filter {
   display: flex;
   flex-direction: column;
   gap: var(--space-1x);
@@ -4770,12 +4830,12 @@ select optgroup {
   border: 1px dashed var(--color-hairline);
   border-radius: var(--radius-md);
 }
-.nested-editor__af-leaves {
+.activity-filter__leaves {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
 }
-.nested-editor__af-leaf {
+.activity-filter__leaf {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -4783,20 +4843,20 @@ select optgroup {
   border-radius: var(--radius-md);
   background: var(--color-surface-sunken);
 }
-.nested-editor__af-leaf-text {
+.activity-filter__leaf-text {
   flex: 1 1 auto;
   font-size: var(--text-sm);
   color: var(--color-fg-strong);
 }
-.nested-editor__af-add {
+.activity-filter__add {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-2);
 }
-.nested-editor__af-op,
-.nested-editor__af-conn,
-.nested-editor__af-values {
+.activity-filter__op,
+.activity-filter__conn,
+.activity-filter__text {
   font-size: var(--text-sm);
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--color-border);
@@ -4804,12 +4864,26 @@ select optgroup {
   background: var(--color-surface);
   color: var(--color-fg);
 }
-.nested-editor__af-values {
-  flex: 1 1 14rem;
+.activity-filter__conn {
+  align-self: flex-start;
 }
-.nested-editor__af-hint {
-  flex-basis: 100%;
-  font-size: var(--text-2xs);
+.activity-filter__values {
+  flex: 1 1 14rem;
+  display: flex;
+}
+.activity-filter__text {
+  flex: 1 1 auto;
+}
+.activity-filter__kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+}
+.activity-filter__kind {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
 }
 
 /* -------------------------------------------------------------------------- */

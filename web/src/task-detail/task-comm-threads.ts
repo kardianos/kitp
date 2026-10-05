@@ -32,6 +32,7 @@ import {
 } from './comm-specs.js';
 
 import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
+import { captionedField } from '../ui/captioned-field.js';
 export interface CommThreadsConfig extends BaseControlConfig {
   type: 'CommThreads';
   /** The focal task id (string from the route). */
@@ -510,7 +511,6 @@ export class CommThreads extends Control<CommThreadsConfig> {
     this.newChannelId = null;
     this.newRecipients = [];
 
-    const channelRow = this.field('Channel');
     const channelHost = document.createElement('div');
     const channelPicker = this.spawn(
       'RefPicker',
@@ -528,7 +528,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
       channelHost,
     ) as RefPicker;
     this.pickers.push(channelPicker);
-    channelRow.append(channelHost);
+    const channelRow = this.field('Channel', channelHost);
 
     // Recipients — the SAME shared editor the per-comm header uses, so the new
     // comm renders the compact "To [+ recipient] [chips]" row identically.
@@ -539,13 +539,12 @@ export class CommThreads extends Control<CommThreadsConfig> {
       },
     });
 
-    const subjectRow = this.field('Subject');
     const subject = document.createElement('input');
     subject.type = 'text';
     subject.className = 'task-comms__form-input';
     subject.dataset.commsSubject = '';
     subject.placeholder = 'Subject (defaults to task title)';
-    subjectRow.append(subject);
+    const subjectRow = this.field('Subject', subject);
 
     // Message — the shared compact composer rendered bare (no inline Send);
     // the form's "Start comm" button below drives its submit(), and Mod+Enter
@@ -553,7 +552,6 @@ export class CommThreads extends Control<CommThreadsConfig> {
     // read as a cramped single line; the initial message is optional
     // (allowEmpty) and we don't clear on submit since the whole form closes
     // on success (doCreate → toggleStartForm).
-    const msgRow = this.field('Message');
     const composer = this.buildComposer({
       placeholder: 'Message… (Mod+Enter to send)',
       ariaLabel: 'Message',
@@ -562,7 +560,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
       clearOnSubmit: false,
       onSubmit: (body) => this.doCreate(subject.value, body),
     });
-    msgRow.append(composer.el);
+    const msgRow = this.field('Message', composer.el);
 
     // Proper action row: primary "Start comm" + "Cancel", grouped and
     // right-aligned (matches the rest of the app's form footers).
@@ -584,14 +582,12 @@ export class CommThreads extends Control<CommThreadsConfig> {
     this.formHost.replaceChildren(channelRow, recipRow, subjectRow, msgRow, actions);
   }
 
-  private field(label: string): HTMLElement {
-    const row = document.createElement('label');
-    row.className = 'task-comms__form-row';
-    const span = document.createElement('span');
-    span.className = 'task-comms__field-label muted';
-    span.textContent = label;
-    row.append(span);
-    return row;
+  /** One captioned row of the start-comm form. The Channel picker and the
+   *  Message composer are composites, so they get a `<div role="group">`, not a
+   *  `<label>` (a label forwards every click to its first labelable
+   *  descendant — see ui/captioned-field.ts). */
+  private field(label: string, control: HTMLElement): HTMLElement {
+    return captionedField(label, control, { field: 'task-comms__form-row', caption: 'task-comms__field-label muted' });
   }
 
   /* ------------------------------- writes ------------------------------- */

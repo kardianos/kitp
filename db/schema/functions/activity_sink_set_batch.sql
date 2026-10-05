@@ -9,10 +9,29 @@
 -- then upsert the paired activity_sink_secret row using pgcrypto's
 -- pgp_sym_encrypt with the per-connection `app.comm_secret_key` GUC.
 --
+-- Two sink kinds:
+--   * 'msgraph_teams' — a BROADCAST sink: the sink itself is the delivery
+--     unit, posting digests into one Teams channel (MS Graph fields +
+--     secret, its own activity_filter / predicate card filter /
+--     rollup_minutes).
+--   * 'email' — a PERSONAL sink: it names a project comm_channel
+--     (channel_ref) whose SMTP login + From address carry mail, and
+--     delivers nothing itself. Each activity_subscription card under it
+--     is one person's delivery unit; the sink's activity_filter /
+--     predicate act as an admin ceiling ANDed into every subscription.
+--
+-- PATCH semantics: activity_filter / card_filter / rollup_minutes /
+-- channel_id are written when the KEY is present (so '' clears a
+-- filter) and left unchanged when absent. The MS Graph text fields keep
+-- their legacy "non-empty writes" rule.
+--
 -- Per-row pipeline:
 --   1. Validation: name + sink_kind + project_id required.
---      sink_kind must be 'msgraph_teams'. project_id must exist + be
---      a project. On update (id != 0) the sink card must exist, be of
+--      sink_kind must be 'msgraph_teams' or 'email'. project_id must
+--      exist + be a project. An email sink must end up with a live
+--      comm_channel under the same project; rollup_minutes must be an
+--      integer in [0, 1440]; card_filter must parse as JSON. An email
+--      sink with live subscriptions can't be switched to another kind. On update (id != 0) the sink card must exist, be of
 --      card_type='activity_sink', and live under the same project.
 --      Optional channel_status must be one of the three valid values.
 --      Optional activity_filter must parse as JSON.
@@ -20,7 +39,7 @@
 --      the supplied id.
 --   3. Set-based write of the field attributes — title + sink_kind are
 --      always written; optional fields are only written when present
---      (PATCH semantics matching the Go path). When channel_status is
+--      (PATCH semantics, see above). When channel_status is
 --      'enabled' we additionally clear channel_fault_reason.
 --   4. Upsert activity_sink_secret. NULL secret (key absent) preserves
 --      the existing value; non-NULL encrypts and replaces.
@@ -50,6 +69,9 @@ DECLARE
     _filter_def bigint;
     _status_def bigint;
     _fault_def bigint;
+    _channel_ref_def bigint;
+    _rollup_def bigint;
+    _predicate_def bigint;
     _idx int;
     _raw jsonb;
     _id bigint;
@@ -63,6 +85,15 @@ DECLARE
     _team_id text;
     _channel_id text;
     _activity_filter text;
+    _activity_filter_present boolean;
+    _card_filter text;
+    _card_filter_present boolean;
+    _rollup_present boolean;
+    _rollup int;
+    _comm_channel_present boolean;
+    _comm_channel_id bigint;
+    _existing_channel bigint;
+    _existing_sink_kind text;
     _status text;
     _parent_kind text;
     _existing_kind text;
@@ -85,9 +116,13 @@ BEGIN
     SELECT id INTO _filter_def    FROM attribute_def WHERE name = 'activity_filter';
     SELECT id INTO _status_def    FROM attribute_def WHERE name = 'channel_status';
     SELECT id INTO _fault_def     FROM attribute_def WHERE name = 'channel_fault_reason';
+    SELECT id INTO _channel_ref_def FROM attribute_def WHERE name = 'channel_ref';
+    SELECT id INTO _rollup_def    FROM attribute_def WHERE name = 'rollup_minutes';
+    SELECT id INTO _predicate_def FROM attribute_def WHERE name = 'predicate';
     IF _title_def IS NULL OR _sink_kind_def IS NULL OR _tenant_def IS NULL
        OR _client_id_def IS NULL OR _team_def IS NULL OR _channel_def IS NULL
-       OR _filter_def IS NULL OR _status_def IS NULL OR _fault_def IS NULL THEN
+       OR _filter_def IS NULL OR _status_def IS NULL OR _fault_def IS NULL
+       OR _channel_ref_def IS NULL OR _rollup_def IS NULL OR _predicate_def IS NULL THEN
         RAISE EXCEPTION 'activity_sink.set: one of the sink attribute_defs is missing'
             USING ERRCODE = 'P0001';
     END IF;
@@ -112,7 +147,21 @@ BEGIN
         _client_id := COALESCE(_raw->>'msgraph_client_id', '');
         _team_id := COALESCE(_raw->>'msgraph_team_id', '');
         _channel_id := COALESCE(_raw->>'msgraph_channel_id', '');
+        _activity_filter_present := (_raw ? 'activity_filter')
+                                    AND jsonb_typeof(_raw->'activity_filter') <> 'null';
         _activity_filter := COALESCE(_raw->>'activity_filter', '');
+        _card_filter_present := (_raw ? 'card_filter')
+                                AND jsonb_typeof(_raw->'card_filter') <> 'null';
+        _card_filter := COALESCE(_raw->>'card_filter', '');
+        _rollup_present := (_raw ? 'rollup_minutes')
+                           AND jsonb_typeof(_raw->'rollup_minutes') <> 'null';
+        _comm_channel_present := (_raw ? 'channel_id')
+                                 AND jsonb_typeof(_raw->'channel_id') <> 'null';
+        BEGIN
+            _comm_channel_id := COALESCE(NULLIF(_raw->>'channel_id', '')::bigint, 0);
+        EXCEPTION WHEN invalid_text_representation THEN
+            _comm_channel_id := -1;
+        END;
         _status := COALESCE(_raw->>'channel_status', '');
         -- omit-vs-clear distinction for the secret: key absent → preserve;
         -- key present (even empty) → write through (pgp_sym_encrypt of "").
@@ -135,10 +184,10 @@ BEGIN
                 'activity_sink.set: sink_kind is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
-        IF _sink_kind <> 'msgraph_teams' THEN
+        IF _sink_kind NOT IN ('msgraph_teams', 'email') THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
-                format('activity_sink.set: sink_kind %L is not supported (v1: %L only)',
-                    _sink_kind, 'msgraph_teams'),
+                format('activity_sink.set: sink_kind %L is not supported (%L or %L)',
+                    _sink_kind, 'msgraph_teams', 'email'),
                 NULL::jsonb;
             CONTINUE;
         END IF;
@@ -190,6 +239,84 @@ BEGIN
                     NULL::jsonb;
                 CONTINUE;
             END IF;
+        END IF;
+
+        -- Email sinks: the effective comm_channel (supplied, else the
+        -- stored one on update) must be a live comm_channel under this
+        -- project. Switching an email sink with live subscriptions to
+        -- another kind would orphan them, so refuse it.
+        _existing_channel := NULL;
+        _existing_sink_kind := NULL;
+        IF _id <> 0 THEN
+            SELECT (av.value)::text::bigint INTO _existing_channel
+              FROM attribute_value av
+              WHERE av.card_id = _id AND av.attribute_def_id = _channel_ref_def
+                AND jsonb_typeof(av.value) = 'number';
+            SELECT av.value #>> '{}' INTO _existing_sink_kind
+              FROM attribute_value av
+              WHERE av.card_id = _id AND av.attribute_def_id = _sink_kind_def;
+        END IF;
+        IF _comm_channel_present AND _comm_channel_id < 0 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'activity_sink.set: channel_id is not a valid id'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF _sink_kind = 'email' THEN
+            IF _comm_channel_present THEN
+                _existing_channel := NULLIF(_comm_channel_id, 0);
+            END IF;
+            IF _existing_channel IS NULL THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    'activity_sink.set: an email sink requires channel_id (a comm channel in this project)'::text,
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM card ch JOIN card_type ct ON ct.id = ch.card_type_id
+                WHERE ch.id = _existing_channel AND ct.name = 'comm_channel'
+                  AND ch.deleted_at IS NULL AND ch.parent_card_id = _project_id
+            ) THEN
+                RETURN QUERY SELECT _idx, false, 'channel_not_found'::text,
+                    format('activity_sink.set: comm channel %s is not a live comm channel in project %s',
+                        _existing_channel, _project_id),
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+        ELSIF _id <> 0 AND _existing_sink_kind = 'email' AND EXISTS (
+            SELECT 1 FROM card s JOIN card_type ct ON ct.id = s.card_type_id
+            WHERE s.parent_card_id = _id AND ct.name = 'activity_subscription'
+              AND s.deleted_at IS NULL
+        ) THEN
+            RETURN QUERY SELECT _idx, false, 'sink_has_subscriptions'::text,
+                format('activity_sink.set: sink %s still has subscriptions; it must stay an email sink', _id),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+
+        IF _rollup_present THEN
+            IF jsonb_typeof(_raw->'rollup_minutes') <> 'number'
+               OR (_raw->>'rollup_minutes')::numeric <> trunc((_raw->>'rollup_minutes')::numeric)
+               OR (_raw->>'rollup_minutes')::numeric < 0
+               OR (_raw->>'rollup_minutes')::numeric > 1440 THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    'activity_sink.set: rollup_minutes must be an integer between 0 and 1440'::text,
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+            _rollup := (_raw->>'rollup_minutes')::int;
+        END IF;
+
+        IF _card_filter <> '' AND btrim(_card_filter) <> '' THEN
+            DECLARE
+                _ignored jsonb;
+            BEGIN
+                _ignored := _card_filter::jsonb;
+            EXCEPTION WHEN invalid_text_representation OR datatype_mismatch THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    format('activity_sink.set: card_filter is not valid JSON: %s', SQLERRM),
+                    NULL::jsonb;
+                CONTINUE;
+            END;
         END IF;
 
         IF _status <> '' AND _status NOT IN ('enabled', 'disabled-admin', 'disabled-fault') THEN
@@ -249,7 +376,16 @@ BEGIN
                 WHERE _channel_id <> ''
                 UNION ALL
                 SELECT _filter_def,    to_jsonb(_activity_filter)
-                WHERE _activity_filter <> ''
+                WHERE _activity_filter_present
+                UNION ALL
+                SELECT _predicate_def, to_jsonb(_card_filter)
+                WHERE _card_filter_present
+                UNION ALL
+                SELECT _rollup_def,    to_jsonb(_rollup)
+                WHERE _rollup_present
+                UNION ALL
+                SELECT _channel_ref_def, to_jsonb(_comm_channel_id)
+                WHERE _comm_channel_present AND _comm_channel_id > 0
                 UNION ALL
                 SELECT _status_def,    to_jsonb(_status)
                 WHERE _status <> ''

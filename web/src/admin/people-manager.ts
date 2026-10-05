@@ -33,6 +33,7 @@ import { EditableField } from '../ui/editable-field.js';
 import { AUTH_USER_PATH, type AuthUser } from '../auth/auth-state.js';
 
 import { icon } from '../ui/icons.js';
+import { captionedField } from '../ui/captioned-field.js';
 /** A human-readable message for a merge fault — surfaces the server's
  *  'merge_login_conflict' (and other sub_error) text in the merge dialog. */
 function mergeFaultMessage(f: ApiFault): string {
@@ -599,14 +600,8 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
 
   /** Build one labelled field (label + control) for the modal forms. */
   private field(labelText: string, control: HTMLElement): HTMLElement {
-    const field = document.createElement('label');
-    field.className = 'pm-modal__field';
-    const span = document.createElement('span');
-    span.className = 'pm-modal__label';
-    span.textContent = labelText;
     control.classList.add('pm-modal__input');
-    field.append(span, control);
-    return field;
+    return captionedField(labelText, control, { field: 'pm-modal__field', caption: 'pm-modal__label' });
   }
 
   /* ------------------------------- create --------------------------------- */

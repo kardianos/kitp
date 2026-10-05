@@ -892,3 +892,82 @@ test('resolveParentForInsert: explicit > project-optional > scope > error', () =
   assert.equal(noScope.parentCardId, null);
   assert.match(noScope.error, /Pick a project/);
 });
+
+/* -------------------------------------------------------------------------- */
+/* Field shells: a composite editor must never sit inside a <label>.           */
+/* -------------------------------------------------------------------------- */
+
+/** A command-capable stub engine so the formatting toolbar renders under jsdom
+ *  (the default textarea engine has no toolbar). Records every exec(). */
+function commandEngine(calls) {
+  return (host, init) => {
+    const editable = document.createElement('div');
+    editable.setAttribute('contenteditable', 'true');
+    for (const [k, v] of Object.entries(init.editableAttrs ?? {})) editable.setAttribute(k, v);
+    host.append(editable);
+    return {
+      getMarkdown: () => '',
+      setMarkdown() {},
+      setDisabled() {},
+      focus() {},
+      isFocused: () => false,
+      destroy() {},
+      supportsCommands: () => true,
+      exec: (a) => calls.push(a),
+      isActive: () => false,
+      can: () => true,
+    };
+  };
+}
+
+// Regression: the Description field used to be a <label> wrapping the
+// RichEditor, whose first labelable descendant is the toolbar's Bold button —
+// so EVERY click in the field (the caption, the editable text, the padding)
+// was re-dispatched to Bold, toggling it, and Bold looked stuck "on".
+for (const [name, pick] of [
+  ['the Description caption', (field) => field.querySelector('.qe-overlay__label')],
+  ['the editable text area', (field) => field.querySelector('[data-qe-description]')],
+  ['the field wrapper itself', (field) => field],
+]) {
+  test(`a click on ${name} never runs a toolbar command`, () => {
+    const calls = [];
+    M.setRichEditorEngine(commandEngine(calls));
+    try {
+      const { api } = bootApi(quickEntryHarness().transport);
+      const { qe } = mountQuickEntry(api);
+      qe.open();
+      const editable = qe.el.querySelector('[data-qe-description]');
+      const field = editable.closest('.qe-overlay__field');
+      assert.ok(field, 'description sits in a field shell');
+      assert.equal(editable.closest('label'), null, 'the editor is not inside a <label>');
+
+      click(pick(field));
+      assert.deepEqual(calls, [], `clicking ${name} must not toggle formatting`);
+
+      // The toolbar itself still works (proves the stub toolbar is live).
+      click(field.querySelector('[data-action="bold"]'));
+      assert.deepEqual(calls, ['bold']);
+    } finally {
+      M.setRichEditorEngine(M.createTextareaEngine);
+    }
+  });
+}
+
+test('captionedField uses <label> only around a native control', () => {
+  for (const [tag, wantLabel] of [
+    ['input', true],
+    ['select', true],
+    ['textarea', true],
+    ['div', false],
+  ]) {
+    const control = document.createElement(tag);
+    const field = M.captionedField('Caption', control, { field: 'f', caption: 'c' });
+    assert.equal(field.tagName, wantLabel ? 'LABEL' : 'DIV', `${tag} → ${field.tagName}`);
+    assert.equal(field.lastChild, control, `${tag} is appended after the caption`);
+    if (!wantLabel) {
+      const cap = field.querySelector('.c');
+      assert.equal(field.getAttribute('role'), 'group');
+      assert.equal(field.getAttribute('aria-labelledby'), cap.id, 'group is named by its caption');
+    }
+  }
+});

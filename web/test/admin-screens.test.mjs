@@ -217,12 +217,14 @@ test('card-backed admin screens carry an editField update action; read-only ones
   assert.deepEqual(agents.detail.nested, { kind: 'agentTokens' }, 'agents mounts the token nested editor');
   // Comm Channels now mounts the generic RecordForm (detail.form) instead of a
   // bespoke nested editor: a field table + save/list-refresh owned by the
-  // control. Activity Sinks still uses its config nested editor (not migrated).
-  const commCh = M.adminScreenConfig('comm_channels');
-  assert.equal(commCh.detail.nested, undefined, 'comm_channels no longer uses a nested editor');
-  assert.equal(commCh.detail.form?.saveSpec, 'comm_channel.set', 'comm_channels mounts RecordForm saving via comm_channel.set');
-  assert.ok(Array.isArray(commCh.detail.form?.fields) && commCh.detail.form.fields.length > 0, 'comm_channels form has a field table');
-  assert.deepEqual(M.adminScreenConfig('activity_sinks').detail.nested, { kind: 'activitySinkConfig' });
+  // control. Activity Sinks migrated the same way (kind-dependent fields via
+  // showWhen, the event + card filters as RecordForm field kinds).
+  for (const [view, spec] of [['comm_channels', 'comm_channel.set'], ['activity_sinks', 'activity_sink.set']]) {
+    const cfg = M.adminScreenConfig(view);
+    assert.equal(cfg.detail.nested, undefined, `${view} no longer uses a nested editor`);
+    assert.equal(cfg.detail.form?.saveSpec, spec, `${view} mounts RecordForm saving via ${spec}`);
+    assert.ok(Array.isArray(cfg.detail.form?.fields) && cfg.detail.form.fields.length > 0, `${view} form has a field table`);
+  }
   // Roles is now a pure overview — the OIDC claim→role mapping editor moved to
   // its own Workspace screen (oidc_claims), a standalone roleMappings NestedEditor.
   assert.equal(M.adminScreenConfig('roles').detail.nested, undefined, 'roles no longer nests the mapping editor');

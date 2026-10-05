@@ -832,3 +832,100 @@ func TestIMAPRecipientSyncUnion(t *testing.T) {
 		t.Errorf("alice / bob person cards missing")
 	}
 }
+
+// TestIMAPPollerDropsNotificationReplies: a reply to a kitp notification
+// digest (In-Reply-To names a `<kitp-notify.…>` Message-ID) on a channel
+// WITH intake configured must not become an intake task — it's logged as
+// kind='notification_reply' and discarded.
+func TestIMAPPollerDropsNotificationReplies(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_imap_notify_reply")
+	channelID := seedChannelForIMAP(t, f, "kitp@example.com", f.statusID)
+
+	ctx := context.Background()
+	var before int
+	if err := f.sp.P.QueryRow(ctx, `SELECT count(*) FROM card`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	stub := &stubIMAPClient{
+		messages: []comm.InboundMessage{{
+			UID:       12,
+			From:      "sam@example.com",
+			To:        "kitp@example.com",
+			Subject:   "Re: [Alpha] 3 updates on 2 tasks",
+			Body:      "thanks!",
+			InReplyTo: "<kitp-notify.77.0a1b2c3d4e5f6071@example.com>",
+		}},
+	}
+	p := comm.NewIMAPPollerForTest(f.sp, channelID, 5*time.Second)
+	p.SetDialFunc(func(ctx context.Context, _ comm.IMAPConfig) (comm.InboundClient, error) {
+		return stub, nil
+	})
+	if err := p.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	var after int
+	if err := f.sp.P.QueryRow(ctx, `SELECT count(*) FROM card`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Errorf("card count grew from %d to %d on a notification reply", before, after)
+	}
+	var n int
+	if err := f.sp.P.QueryRow(ctx,
+		`SELECT count(*) FROM comm_log WHERE channel_id = $1 AND kind = 'notification_reply'`, channelID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("notification_reply comm_log rows = %d want 1", n)
+	}
+	if got := stub.marks(); len(got) != 1 || got[0] != 12 {
+		t.Errorf("MarkSeen=%v want [12]", got)
+	}
+}
+
+// TestIsNotificationReply covers the inbound marker detection.
+func TestIsNotificationReply(t *testing.T) {
+	cases := []struct {
+		name string
+		m    comm.InboundMessage
+		want bool
+	}{
+		{"in-reply-to notification id", comm.InboundMessage{InReplyTo: "<kitp-notify.5.ab12@example.com>"}, true},
+		{"references chain", comm.InboundMessage{References: "<a@x> <kitp-notify.5.ab12@example.com> <b@y>"}, true},
+		{"notification header", comm.InboundMessage{NotificationHdr: "5"}, true},
+		{"ordinary reply", comm.InboundMessage{InReplyTo: "<CAF123@mail.gmail.com>"}, false},
+		{"prefix outside angle brackets", comm.InboundMessage{InReplyTo: "kitp-notify.5.ab12@example.com"}, false},
+		{"nothing", comm.InboundMessage{}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := comm.IsNotificationReply(c.m); got != c.want {
+				t.Errorf("IsNotificationReply = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestParseInboundThreadingHeaders: the parser surfaces In-Reply-To,
+// References and X-Kitp-Notification for IsNotificationReply.
+func TestParseInboundThreadingHeaders(t *testing.T) {
+	raw := "From: sam@example.com\r\n" +
+		"To: kitp@example.com\r\n" +
+		"Subject: Re: digest\r\n" +
+		"In-Reply-To: <kitp-notify.5.ab12@example.com>\r\n" +
+		"References: <x@y> <kitp-notify.5.ab12@example.com>\r\n" +
+		"X-Kitp-Notification: 5\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"thanks\r\n"
+	m, err := comm.ParseInboundMessage(1, []byte(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m.InReplyTo != "<kitp-notify.5.ab12@example.com>" || m.References != "<x@y> <kitp-notify.5.ab12@example.com>" || m.NotificationHdr != "5" {
+		t.Errorf("headers: in-reply-to=%q references=%q notification=%q", m.InReplyTo, m.References, m.NotificationHdr)
+	}
+	if !comm.IsNotificationReply(m) {
+		t.Error("parsed reply not recognised as a notification reply")
+	}
+}

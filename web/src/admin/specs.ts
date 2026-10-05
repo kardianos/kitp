@@ -255,15 +255,31 @@ export interface SchedulerRunOutput {
 export interface ActivitySinkRow {
   id: string;
   name: string;
-  sink_kind: string;
-  msgraph_tenant_id?: string;
-  msgraph_team_id?: string;
-  msgraph_channel_id?: string;
-  channel_status: string;
-  channel_fault_reason?: string;
-  has_client_secret: boolean;
-  last_error?: string;
-  created_at?: string;
+  /** 'msgraph_teams' (broadcast) | 'email' (personal subscriptions). */
+  sinkKind: string;
+  msgraphTenantId?: string;
+  msgraphClientId?: string;
+  msgraphTeamId?: string;
+  msgraphChannelId?: string;
+  /** email: the comm_channel the mail is sent through ('0' when none). */
+  channelId?: string;
+  channelName?: string;
+  /** msgraph_teams: rollup window in minutes (0 = every tick). */
+  rollupMinutes?: number;
+  activityFilter?: string;
+  cardFilter?: string;
+  subscriptionCount?: number;
+  channelStatus: string;
+  channelFaultReason?: string;
+  hasClientSecret: boolean;
+  lastActivityId?: string;
+  lastPushedAt?: string;
+  lastPushedCount?: string;
+  lastError?: string;
+  pendingSince?: string;
+  createdAt?: string;
+  /** Client-derived list subtitle ("Teams" / "Email · <channel> · N subscriptions"). */
+  kindLabel: string;
 }
 
 export interface ActivitySinkListOutput {
@@ -580,8 +596,14 @@ export interface ActivitySinkSetInput {
   msgraphClientSecret?: string;
   msgraphTeamId?: string;
   msgraphChannelId?: string;
+  /** email: the comm_channel the notification mail is sent through. */
+  channelId?: bigint | string;
+  /** msgraph_teams: rollup window (0–1440 minutes). */
+  rollupMinutes?: number;
   /** The activity-filter predicate JSON string ('' → match every row). */
   activityFilter?: string;
+  /** The card-filter predicate-tree JSON string ('' → every card). */
+  cardFilter?: string;
   channelStatus?: string;
 }
 export interface ActivitySinkSetOutput {
@@ -814,27 +836,29 @@ function decodeSchedulerJob(j: Record<string, unknown>): SchedulerJobInfo {
   };
 }
 
+/** The list subtitle for a sink row: its kind, plus (email) the channel and
+ *  how many members subscribe. */
+export function sinkKindLabel(row: { sinkKind?: string; channelName?: string; subscriptionCount?: number }): string {
+  if (row.sinkKind === 'email') {
+    const parts = ['Email'];
+    if (row.channelName !== undefined && row.channelName !== '') parts.push(row.channelName);
+    const n = row.subscriptionCount ?? 0;
+    parts.push(`${n} subscription${n === 1 ? '' : 's'}`);
+    return parts.join(' · ');
+  }
+  return 'Teams';
+}
+
 function decodeActivitySinkRow(j: Record<string, unknown>): ActivitySinkRow {
-  const out: ActivitySinkRow = {
+  const row = decodeWire(j) as Omit<ActivitySinkRow, 'kindLabel'>;
+  return {
+    ...row,
     id: asStr(j['id']),
-    name: asStr(j['name']),
-    sink_kind: asStr(j['sink_kind']),
-    channel_status: asStr(j['channel_status']),
-    has_client_secret: asBool(j['has_client_secret']),
+    sinkKind: asStr(j['sink_kind']),
+    channelStatus: asStr(j['channel_status']),
+    hasClientSecret: asBool(j['has_client_secret']),
+    kindLabel: sinkKindLabel(row),
   };
-  const tenant = asStrOpt(j['msgraph_tenant_id']);
-  if (tenant !== undefined) out.msgraph_tenant_id = tenant;
-  const team = asStrOpt(j['msgraph_team_id']);
-  if (team !== undefined) out.msgraph_team_id = team;
-  const chan = asStrOpt(j['msgraph_channel_id']);
-  if (chan !== undefined) out.msgraph_channel_id = chan;
-  const fr = asStrOpt(j['channel_fault_reason']);
-  if (fr !== undefined) out.channel_fault_reason = fr;
-  const le = asStrOpt(j['last_error']);
-  if (le !== undefined) out.last_error = le;
-  const at = asStrOpt(j['created_at']);
-  if (at !== undefined) out.created_at = at;
-  return out;
 }
 
 function decodeCommLogRow(j: Record<string, unknown>): CommLogRow {
@@ -1415,23 +1439,9 @@ export function registerAdminSpecs(api: Api): void {
     api.define<ActivitySinkSetInput, ActivitySinkSetOutput>({
       endpoint: 'activity_sink',
       action: 'set',
-      encode: (i) => {
-        const m: Record<string, unknown> = {
-          project_id: i.projectId,
-          name: i.name,
-          sink_kind: i.sinkKind,
-        };
-        if (i.id !== undefined && String(i.id) !== '' && String(i.id) !== '0') m['id'] = i.id;
-        if (i.msgraphTenantId !== undefined) m['msgraph_tenant_id'] = i.msgraphTenantId;
-        if (i.msgraphClientId !== undefined) m['msgraph_client_id'] = i.msgraphClientId;
-        if (i.msgraphTeamId !== undefined) m['msgraph_team_id'] = i.msgraphTeamId;
-        if (i.msgraphChannelId !== undefined) m['msgraph_channel_id'] = i.msgraphChannelId;
-        if (i.activityFilter !== undefined) m['activity_filter'] = i.activityFilter;
-        if (i.channelStatus !== undefined && i.channelStatus !== '') m['channel_status'] = i.channelStatus;
-        // Write-only secret: send the key only when typed.
-        if (i.msgraphClientSecret !== undefined) m['msgraph_client_secret'] = i.msgraphClientSecret;
-        return m;
-      },
+      // Generic codec: camelCase → snake_case, undefined keys omitted (the
+      // write-only secret is only present when typed).
+      encode: (i) => encodeWire(i),
       decode: (raw): ActivitySinkSetOutput => ({ sinkId: asStr(asObj(raw)['sink_id']) }),
     });
   }

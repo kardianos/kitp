@@ -453,3 +453,29 @@ test('the AppShell wires projectImport → open() and projectImportDone → refr
   shell.intent('projectImportDone', { projectId: PROJECT_ID });
   assert.equal(tree.at(['import', 'refreshNonce']).peek(), 1, 'projectImportDone bumped the nonce');
 });
+
+// Regression guard for the <label>-shell bug class (see ui/captioned-field.ts):
+// the resolution Comboboxes are composites and must sit in role=group shells,
+// while the native CSV file input keeps its <label>.
+test('captioned fields: native inputs keep a <label>, composite pickers get a group', async () => {
+  const { transport } = importHarness();
+  const { dispatcher, api } = bootApi(transport);
+  const { wiz } = mountWizard(api);
+
+  const fileField = wiz.el.querySelector('[data-iw-file-input]').closest('.import-wizard__field');
+  assert.equal(fileField.tagName, 'LABEL', 'the CSV file input keeps its <label>');
+
+  await uploadCsvFile(wiz, dispatcher, 'Title,Tags\nWrite docs,urgent\n');
+  const resFields = [...wiz.el.querySelectorAll('[data-iw-res-field]')];
+  assert.ok(resFields.length > 0, 'resolution fields rendered');
+  for (const f of resFields) {
+    assert.equal(f.tagName, 'DIV', `${f.dataset.iwResField} resolution field is not a <label>`);
+    assert.equal(f.getAttribute('role'), 'group');
+  }
+  const composite = [...wiz.el.querySelectorAll('label')].filter(
+    (l) =>
+      l.querySelector('button, [contenteditable]') !== null ||
+      l.querySelectorAll('input, select, textarea, button').length > 1,
+  );
+  assert.deepEqual(composite, [], 'no <label> wraps a composite control');
+});

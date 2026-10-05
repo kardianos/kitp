@@ -228,7 +228,7 @@ type ReplyPostOutput struct {
 // CommLogListInput filters the per-project comm_log stream.
 type CommLogListInput struct {
 	ProjectID int64  `json:"project_id,string" mcp:"required,desc=project card id whose comm_log to read"`
-	Kind      string `json:"kind,omitempty" mcp:"desc=optional kind filter (poll / send_ok / send_bounce / send_fail / imap_auth_fail / parse_error / unmatched_thread / attachment_too_large)"`
+	Kind      string `json:"kind,omitempty" mcp:"desc=optional kind filter (poll / send_ok / send_bounce / send_fail / imap_auth_fail / parse_error / unmatched_thread / attachment_too_large / notification_reply / notify_ok / notify_bounce / notify_fail)"`
 	Since     string `json:"since,omitempty" mcp:"desc=ISO timestamp; rows older than this are excluded; empty defaults to 24h ago"`
 	Limit     int    `json:"limit,omitempty" mcp:"desc=max rows to return; default 200, max 1000"`
 }

@@ -68,6 +68,8 @@ import { registerEnumManager } from './admin/enum-manager.js';
 import { registerPeopleManager } from './admin/people-manager.js';
 import { registerSchedulerJobs } from './admin/scheduler-jobs.js';
 import { registerRecordForm } from './admin/record-form.js';
+import { registerActivityFilterEditor } from './admin/activity-filter-editor.js';
+import { registerSubscriptionSpecs } from './notifications/subscription-specs.js';
 import { registerAdminSpecs } from './admin/specs.js';
 import { adminScreenConfig, ownAgentsScreen, ADMIN_VIEWS, MANAGER_ADMIN_VIEWS, ADMIN_SECTION, type AdminView } from './admin/screens.js';
 import { registerPredicateFilter } from './filter/predicate-filter.js';
@@ -201,6 +203,8 @@ function boot(): void {
   // Admin (Users) specs. Contacts reuse the kanban card.select_with_attributes
   // + attribute.update specs, so only the non-card user.* reads are new.
   registerAdminSpecs(api);
+  // Personal notification subscriptions (account page) — every signed-in user.
+  registerSubscriptionSpecs(api);
   // The PredicateFilter sources its `{ cardType }` schema from
   // attribute_def.select — idempotent: skips if registerAdminSpecs already
   // defined it. Safe to call after registerAdminSpecs.
@@ -319,6 +323,7 @@ function boot(): void {
   // The generic config-driven record editor mounted in a MasterDetail detail
   // pane (Comm Channels today). Replaces per-screen bespoke config editors.
   registerRecordForm();
+  registerActivityFilterEditor();
   // The reusable anchored-UI primitives. Combobox (typeahead select) +
   // DatePicker compose the shared Popover helper (the one floating-ui impl).
   // Consumed by the upcoming ref-pickers, quick filters, and attribute editors;

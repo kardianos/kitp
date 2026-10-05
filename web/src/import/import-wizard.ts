@@ -63,6 +63,7 @@ import {
 import type { PostChunk } from '../task-detail/upload.js';
 
 import { icon } from '../ui/icons.js';
+import { captionedField } from '../ui/captioned-field.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                 */
 /* -------------------------------------------------------------------------- */
@@ -587,7 +588,6 @@ export class ImportWizard extends Control<ImportWizardConfig> {
       'Choose a CSV exported from a kitp project (or one you prepared yourself). ' +
       'The first row is treated as the column header.';
 
-    const field = labeledField('CSV file');
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.csv,text/csv';
@@ -598,7 +598,7 @@ export class ImportWizard extends Control<ImportWizardConfig> {
       this.file = picked;
       this.renderFooter();
     });
-    field.append(input);
+    const field = labeledField('CSV file', input);
 
     const chosen = document.createElement('div');
     chosen.className = 'import-wizard__chosen muted';
@@ -676,9 +676,6 @@ export class ImportWizard extends Control<ImportWizardConfig> {
       label: o.label,
     }));
     for (const cat of RESOLUTION_CATEGORIES) {
-      const field = labeledField(capitalise(cat));
-      field.classList.add('import-wizard__res-field');
-      field.dataset.iwResField = cat;
       const host = document.createElement('div');
       const picker = this.spawn(
         'Combobox',
@@ -694,7 +691,9 @@ export class ImportWizard extends Control<ImportWizardConfig> {
         host,
       ) as Combobox<ResolutionMode>;
       this.resPickers.set(cat, picker);
-      field.append(host);
+      const field = labeledField(capitalise(cat), host);
+      field.classList.add('import-wizard__res-field');
+      field.dataset.iwResField = cat;
       grid.append(field);
     }
     resWrap.append(grid);
@@ -923,14 +922,11 @@ export class ImportWizard extends Control<ImportWizardConfig> {
 /* Helpers.                                                                    */
 /* -------------------------------------------------------------------------- */
 
-function labeledField(label: string): HTMLElement {
-  const wrap = document.createElement('label');
-  wrap.className = 'import-wizard__field';
-  const span = document.createElement('span');
-  span.className = 'import-wizard__label';
-  span.textContent = label;
-  wrap.append(span);
-  return wrap;
+/** A captioned wizard field. The resolution Comboboxes are composites, so they
+ *  get a `<div role="group">`, not a `<label>` (see ui/captioned-field.ts); the
+ *  native file input keeps its `<label>`. */
+function labeledField(label: string, control: HTMLElement): HTMLElement {
+  return captionedField(label, control, { field: 'import-wizard__field', caption: 'import-wizard__label' });
 }
 
 function sectionLabel(text: string): HTMLElement {

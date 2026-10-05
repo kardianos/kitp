@@ -446,7 +446,7 @@ client_secret, bytea, , , , ,
 updated_at, timestamptz, , false, now(), ,
 
 
-## table activity_sink_state | doc="Per-sink high-water mark + last-error for the activity pump. Separated from the sink card's attributes so the pointer can advance every push without writing a fresh attr_update activity row on the sink itself (which would re-enter the activity stream and cause feedback). last_activity_id is the largest activity.id this sink has successfully delivered downstream; the pump scans WHERE id > last_activity_id."
+## table activity_sink_state | doc="Per-delivery-unit high-water mark + last-error + rollup clock for the activity pump. A delivery unit is either a broadcast activity_sink (msgraph_teams) or a personal activity_subscription under an email sink; sink_card_id holds that unit's card id. Separated from the card's attributes so the pointer can advance every push without writing a fresh attr_update activity row (which would re-enter the activity stream and cause feedback). last_activity_id is the largest activity.id this unit has consumed; the pump scans WHERE id > last_activity_id. pending_since is the created_at of the oldest matched-but-undelivered activity row: the unit holds delivery until pending_since + rollup_minutes, then sends everything matched so far as one digest and clears it."
 
 ### columns
 name, type, pk, nullable, default, references, on_delete
@@ -455,6 +455,7 @@ last_activity_id, bigint, , false, 0, ,
 last_pushed_at, timestamptz, , , , ,
 last_pushed_count, bigint, , false, 0, ,
 last_error, text, , , , ,
+pending_since, timestamptz, , , , ,
 updated_at, timestamptz, , false, now(), ,
 
 -- ---------------------------------------------------------------------
@@ -519,6 +520,10 @@ updated_at, timestamptz, , false, now(), ,
 ## function flow_step_set_batch | doc="flow_step.set — admin-only upsert of one flow_step row. Validates flow existence, from/to cards are value-cards of the flow's attribute_def target_card_type, and label uniqueness." | path="functions/flow_step_set_batch.sql"
 ## function flow_step_delete_batch | doc="flow_step.delete — admin-only delete of one flow_step row by id." | path="functions/flow_step_delete_batch.sql"
 ## function activity_sink_set_batch | doc="activity_sink.set — admin-only upsert of one activity_sink card + paired activity_sink_secret row (pgp_sym_encrypt of client_secret with the app.comm_secret_key GUC). Set-based attribute writes via the ordinality-join idiom." | path="functions/activity_sink_set_batch.sql"
+## function activity_subscription_set_batch | doc="activity_subscription.set — create / update the CALLER's own notification subscription card under an email activity_sink (title / activity_filter / predicate / rollup_minutes / channel_status). subscriber is always the caller's linked person card; on update the caller must be that subscriber (admins exempt). Only changed attributes write activity rows. A new subscription's activity_sink_state pointer starts at the current max(activity.id) so it never replays history." | path="functions/activity_subscription_set_batch.sql"
+## function activity_subscription_delete_batch | doc="activity_subscription.delete — soft-delete the caller's own subscription card (admins exempt) + card_delete activity row." | path="functions/activity_subscription_delete_batch.sql"
+## function activity_subscription_list_batch | doc="activity_subscription.list — the caller's own live subscriptions (optionally one project), joined with the parent sink / project / comm channel names and the delivery state row." | path="functions/activity_subscription_list_batch.sql"
+## function activity_subscription_sinks_batch | doc="activity_subscription.sinks — the email activity_sinks the caller can subscribe to: live sinks under projects visible to the caller (DI-6 visibility predicate)." | path="functions/activity_subscription_sinks_batch.sql"
 ## function person_create_batch | doc="person.create — admin-only insert of a global person card with title + person_kind + optional email; tier='user' also provisions a user_account row + user_account_person link." | path="functions/person_create_batch.sql"
 ## function person_grant_account_batch | doc="person.grant_account — admin-only promotion of an existing person card to a user: mint a user_account + user_account_person link (idempotent if already linked); email from the request override or the person's stored email." | path="functions/person_grant_account_batch.sql"
 ## function comm_channel_set_batch | doc="comm_channel.set — admin-only INSERT/UPDATE of a comm_channel card plus multi-attribute writes (title/channel_type/imap_*/smtp_*/from_address/intake_status/channel_status) and the paired comm_secret row (pgcrypto pgp_sym_encrypt with app.comm_secret_key GUC; omitted passwords preserved via COALESCE)." | path="functions/comm_channel_set_batch.sql"
