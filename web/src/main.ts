@@ -530,7 +530,7 @@ function boot(): void {
       type: 'QuickEntry',
       defaultCardType: 'task',
       projectScopePath: 'scope.projectId',
-      assigneeCardType: 'user',
+      assigneeCardType: 'person',
       tagCardType: 'tag',
     },
     // The CSV import wizard. The AppShell mounts it once + wires the

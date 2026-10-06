@@ -59,9 +59,9 @@ activity_subscription, true,    false,             $card_type.activity_sink, fal
 
 ## table attribute_def | doc="Built-in attribute definitions. Each pick-from-a-list attribute is a card_ref with target_card_type_id pointing at the card_type whose cards are the valid values." | on_conflict="name"
 ### rows
-name, value_type, is_built_in, target_card_type_id, enum_managed
+name, value_type, is_built_in, target_card_type_id, enum_managed, target_filter
 title,                 text,        true, null, false
-assignee,              card_ref,    true, $card_type.person, false
+assignee,              card_ref,    true, $card_type.person, false, `{"connective":"and","children":[{"attr":"person_kind","op":"!=","values":["contact"]},{"attr":"is_active","op":"!=","values":[false]}]}`
 milestone_ref,         card_ref,    true, $card_type.milestone, true
 component_ref,         card_ref,    true, $card_type.component, true
 status,                card_ref,    true, $card_type.status, true

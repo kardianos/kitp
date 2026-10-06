@@ -15,7 +15,9 @@
 --   6. Per-project scope: card_ref / card_ref[] initial attribute
 --      values must point at cards under the new card's enclosing
 --      project, or be global. Top-level inserts skip this (their
---      enclosing project doesn't exist yet).
+--      enclosing project doesn't exist yet). Each value must also pass
+--      the attribute_def's target_filter when it has one (e.g. assignee:
+--      no contact / disabled person) → 'ref_not_allowed'.
 --   7. INSERT card row, INSERT card_create activity, then for the
 --      title + each initial attribute INSERT attr_update activity +
 --      UPSERT attribute_value.
@@ -65,6 +67,8 @@ DECLARE
     _attr_def_id bigint;
     _attr_value_type text;
     _attr_target_type bigint;
+    _attr_target_filter jsonb;
+    _passing_ids bigint[];
     _attr_is_required boolean;
     _value_norm jsonb;
     _value_card_ids bigint[];
@@ -290,8 +294,8 @@ BEGIN
                 IF _attr_name = 'title' THEN
                     CONTINUE;
                 END IF;
-                SELECT ad.value_type, COALESCE(ad.target_card_type_id, 0)
-                  INTO _attr_value_type, _attr_target_type
+                SELECT ad.value_type, COALESCE(ad.target_card_type_id, 0), ad.target_filter
+                  INTO _attr_value_type, _attr_target_type, _attr_target_filter
                 FROM attribute_def ad
                 WHERE ad.name = _attr_name;
                 IF NOT FOUND OR _attr_value_type NOT IN ('card_ref', 'card_ref[]') THEN
@@ -376,6 +380,19 @@ BEGIN
                 END LOOP;
                 IF _rej_code IS NOT NULL THEN
                     EXIT;
+                END IF;
+                -- target_filter: every chosen card must pass it.
+                IF _attr_target_filter IS NOT NULL THEN
+                    _passing_ids := card_filter_ids(_attr_target_filter, _value_card_ids);
+                    SELECT x INTO _v
+                    FROM unnest(_value_card_ids) AS x
+                    WHERE x <> 0 AND NOT x = ANY(_passing_ids)
+                    LIMIT 1;
+                    IF FOUND THEN
+                        _rej_code := 'ref_not_allowed';
+                        _rej_msg := format('attribute %L: card %s can''t be chosen as a value', _attr_name, _v);
+                        EXIT;
+                    END IF;
                 END IF;
             END LOOP;
             IF _rej_code IS NOT NULL THEN

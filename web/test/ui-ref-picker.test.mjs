@@ -213,6 +213,33 @@ test('single: parentScopePath threads parentCardId into the search', async () =>
   rp.destroy();
 });
 
+test('single: attributeName threads into the search so the server applies its target filter', async () => {
+  const api = stubApi();
+  const rp = mountRefPicker({ cardType: 'person', attributeName: 'assignee' }, api);
+  rp.combo.openMenu();
+  await flushMicrotasks();
+  assert.deepEqual(
+    api.calls[0].data,
+    { cardTypeName: 'person', attributeName: 'assignee' },
+    'attributeName forwarded on the card.search input',
+  );
+  rp.destroy();
+});
+
+test('spec: attributeName encodes as attribute_name', async () => {
+  const t = recordingTransport((req) => ({
+    status: 200,
+    text: JSON.stringify({
+      subresponses: req.subrequests.map((s) => ({ id: s.id, ok: true, data: { rows: [] } })),
+    }),
+  }));
+  const api = new Api(new Dispatcher({ transport: t }));
+  registerCardSearchSpec(api);
+  api.callByName(CARD_SEARCH_SPEC, { cardTypeName: 'person', attributeName: 'assignee' }, () => {});
+  await api.dispatcher.flushNow();
+  assert.deepEqual(t.sent[0].subrequests[0].data, { card_type_name: 'person', attribute_name: 'assignee' });
+});
+
 /* -------------------------------- multi mode ------------------------------- */
 
 test('multi: adding picks emits bigint[] and renders chips', async () => {

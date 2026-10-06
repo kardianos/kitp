@@ -480,6 +480,7 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
           {
             type: 'RefPicker',
             cardType: attr.targetCardType ?? 'card',
+            attributeName: attr.name,
             value: typeof cur === 'bigint' ? cur : null,
             ...(typeof cur === 'bigint' ? { currentLabel: this.labelFor(cur) } : {}),
             ...(this.refScopePath(attr) ? { parentScopePath: this.refScopePath(attr) } : {}),
@@ -503,6 +504,7 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
           {
             type: 'RefPicker',
             cardType: attr.targetCardType ?? 'card',
+            attributeName: attr.name,
             multi: true,
             values: cur2,
             currentLabels: labels,

@@ -458,6 +458,7 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
         {
           type: 'RefPicker',
           cardType: attr.cardType ?? 'card',
+          attributeName: attr.name,
           multi: true,
           values: [],
           // Scope project-owned value-cards (milestone/component/status/tag) to
@@ -480,6 +481,7 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
         {
           type: 'RefPicker',
           cardType: attr.cardType ?? 'card',
+          attributeName: attr.name,
           value: null,
           ...(this.refScope(attr.cardType) ? { parentScopePath: 'scope.projectId' } : {}),
           placeholder: `Search ${attr.label.toLowerCase()}…`,

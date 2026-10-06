@@ -19,6 +19,12 @@
 --      (A1/A10). The target_card_type_id contract is also enforced —
 --      e.g. milestone_ref must point at a milestone card. Failures →
 --      'cross_project_ref'.
+--   4b. Target filter: when the attribute_def carries a target_filter
+--      (e.g. assignee: no contact / disabled person), every NEWLY chosen
+--      card must pass it (card_filter_ids). Ids already in the stored
+--      value are grandfathered, so re-saving a value — or editing a
+--      card_ref[] list that still holds one — never trips on a card
+--      chosen before the rule existed. Failure → 'ref_not_allowed'.
 --   5. Screen uniqueness: for slug / hotkey on screen cards, no other
 --      screen under the same project may hold the same value. slug
 --      additionally validates ^[a-z][a-z0-9-]*$. Failures →
@@ -62,6 +68,9 @@ DECLARE
     _is_required boolean;
     _value_type text;
     _target_card_type_id bigint;
+    _target_filter jsonb;
+    _new_card_ids bigint[];
+    _passing_ids bigint[];
     _value_card_ids bigint[];
     _target_project_id bigint;
     _v bigint;
@@ -121,8 +130,8 @@ BEGIN
 
         -- 1c. Edge existence + pick up value_type / is_required /
         --     target_card_type_id in one shot.
-        SELECT ad.id, e.is_required, ad.value_type, ad.target_card_type_id
-          INTO _attr_def_id, _is_required, _value_type, _target_card_type_id
+        SELECT ad.id, e.is_required, ad.value_type, ad.target_card_type_id, ad.target_filter
+          INTO _attr_def_id, _is_required, _value_type, _target_card_type_id, _target_filter
         FROM attribute_def ad
         JOIN edge e ON e.attribute_def_id = ad.id
         WHERE ad.name = _attr_name AND e.card_type_id = _card_type_id;
@@ -284,6 +293,31 @@ BEGIN
                     CONTINUE;
                 END IF;
             END;
+
+            -- 4b. Target filter on the newly chosen ids (see header).
+            IF _target_filter IS NOT NULL THEN
+                SELECT COALESCE(array_agg(x), ARRAY[]::bigint[]) INTO _new_card_ids
+                FROM unnest(_value_card_ids) AS x
+                WHERE x <> 0
+                  AND NOT EXISTS (
+                    SELECT 1 FROM attribute_value pav
+                    WHERE pav.card_id = _card_id
+                      AND pav.attribute_def_id = _attr_def_id
+                      AND pav.value @> to_jsonb(x));
+                IF cardinality(_new_card_ids) > 0 THEN
+                    _passing_ids := card_filter_ids(_target_filter, _new_card_ids);
+                    SELECT x INTO _v
+                    FROM unnest(_new_card_ids) AS x
+                    WHERE NOT x = ANY(_passing_ids)
+                    LIMIT 1;
+                    IF FOUND THEN
+                        RETURN QUERY SELECT _idx, false, 'ref_not_allowed'::text,
+                            format('attribute %L: card %s can''t be chosen as a value', _attr_name, _v),
+                            NULL::jsonb;
+                        CONTINUE;
+                    END IF;
+                END IF;
+            END IF;
         END IF;
 
         -- 5. Screen uniqueness (slug / hotkey).

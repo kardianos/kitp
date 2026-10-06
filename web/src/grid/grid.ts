@@ -1581,6 +1581,7 @@ export class Grid extends CardListCore<GridConfig> {
         {
           type: 'RefPicker',
           cardType: col.targetCardType ?? 'card',
+          attributeName: attr,
           value,
           ...(value !== null && map[value.toString()] ? { currentLabel: map[value.toString()] } : {}),
           'aria-label': col.label,

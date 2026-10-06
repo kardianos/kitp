@@ -45,6 +45,10 @@ export interface CardSearchInput {
   /** When true, drop candidates whose `status` value-card is terminal (keep
    *  only open triage/active work). No effect for types without a status. */
   excludeTerminal?: boolean;
+  /** The card_ref attribute being set (e.g. 'assignee'). The server applies
+   *  that attribute's target filter, so only cards it accepts as a new value
+   *  come back (assignee: no contacts / disabled people). */
+  attributeName?: string;
 }
 
 /** One search hit — the minimal shape a ref editor needs to render an option. */
@@ -107,6 +111,7 @@ export function registerCardSearchSpec(api: Api): void {
       if (i.parentCardId !== undefined) m['parent_card_id'] = i.parentCardId;
       if (i.limit !== undefined) m['limit'] = i.limit;
       if (i.excludeTerminal === true) m['exclude_terminal'] = true;
+      if (i.attributeName !== undefined && i.attributeName !== '') m['attribute_name'] = i.attributeName;
       return m;
     },
     decode: (raw): CardSearchOutput => ({

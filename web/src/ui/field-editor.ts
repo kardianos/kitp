@@ -115,6 +115,7 @@ export class FieldEditor extends Control<FieldEditorConfig> {
     const refCfg: Record<string, unknown> = {
       type: 'RefPicker',
       cardType: attr.targetCardType ?? 'card',
+      attributeName: attr.name,
       value: curId,
       'aria-label': attr.label,
       placeholder: `Search ${attr.label.toLowerCase()}…`,
@@ -147,6 +148,7 @@ export class FieldEditor extends Control<FieldEditorConfig> {
     const refCfg: Record<string, unknown> = {
       type: 'RefPicker',
       cardType: attr.targetCardType ?? 'card',
+      attributeName: attr.name,
       multi: true,
       values: ids,
       currentLabels: labels,

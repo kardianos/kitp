@@ -1538,6 +1538,9 @@ test('BulkActionBar: project-scoped ref pickers are scoped to the active project
   const personRef = findControls(bar, 'RefPicker').find((c) => c.config.cardType === 'person');
   assert.ok(personRef, 'assignee RefPicker mounted');
   assert.equal(personRef.config.parentScopePath, undefined, 'person picker is not project-scoped');
+  // The picker names the attribute it sets, so card.search applies assignee's
+  // target filter (no contacts / disabled people offered).
+  assert.equal(personRef.config.attributeName, 'assignee', 'person picker names its attribute');
 });
 
 test('BulkActionBar: move fires task.move over the selection', async () => {

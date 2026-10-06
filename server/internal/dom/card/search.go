@@ -14,6 +14,8 @@
 //   - ids — explicit id list. Used by callers that need to resolve a
 //     label for an already-set value (e.g. the trigger button label
 //     before the user opens the dropdown).
+//   - attribute_name — the card_ref attribute being set; applies that
+//     attribute_def's target_filter (the valid-new-value rule).
 //
 // Results are ordered by `created_at DESC` so the empty-query case
 // (the just-opened picker) shows recently-created cards first — that's
@@ -50,6 +52,12 @@ type SearchInput struct {
 	// types) is unaffected. An exact id lookup (a numeric `query`) bypasses
 	// this so a known id resolves regardless of phase.
 	ExcludeTerminal bool `json:"exclude_terminal,omitempty" mcp:"desc=if true, drop cards whose status value-card is terminal (keep only open work); bypassed when query is an exact card id"`
+	// AttributeName names the card_ref attribute the picker is setting.
+	// When its attribute_def carries a target_filter (e.g. assignee: no
+	// contact or disabled person), only cards passing it come back — the
+	// same rule attribute.update / card.insert enforce on write. Unlike
+	// the convenience filters, an exact id lookup does NOT bypass it.
+	AttributeName string `json:"attribute_name,omitempty" mcp:"desc=optional card_ref attribute being set (e.g. assignee); restricts results to cards that attribute accepts as a new value"`
 }
 
 // SearchHit is one result row.

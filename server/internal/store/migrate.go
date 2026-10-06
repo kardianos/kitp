@@ -522,6 +522,20 @@ BEGIN
   ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
 END $$;`,
 	},
+	{
+		// attribute_def.target_filter — the per-attribute "which cards may be
+		// chosen" predicate (card_filter_ids). Additive column + the assignee
+		// rule from seed.hcsv: no contact and no disabled person can be
+		// newly assigned. Idempotent — ADD COLUMN IF NOT EXISTS, and the
+		// UPDATE only fills a NULL filter (a fresh seed already set it).
+		id: "0010_attribute_target_filter",
+		sql: `
+ALTER TABLE attribute_def ADD COLUMN IF NOT EXISTS target_filter jsonb;
+
+UPDATE attribute_def
+   SET target_filter = '{"connective":"and","children":[{"attr":"person_kind","op":"!=","values":["contact"]},{"attr":"is_active","op":"!=","values":[false]}]}'::jsonb
+ WHERE name = 'assignee' AND target_filter IS NULL;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

@@ -351,6 +351,60 @@ func TestForwardMigration0005FlowStepStandalone(t *testing.T) {
 	}
 }
 
+// TestForwardMigration0010AttributeTargetFilter proves migration 0010 adds
+// attribute_def.target_filter to an already-initialised DB that predates it
+// and fills the assignee rule, which card.search / attribute.update /
+// card.insert read on every call — without the column they'd hard-fail.
+func TestForwardMigration0010AttributeTargetFilter(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0010")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	// The fresh seed carries the assignee rule; remember it so the migrated
+	// value can be compared against the seed's.
+	var seeded string
+	if err := pool.QueryRow(ctx,
+		`SELECT target_filter::text FROM attribute_def WHERE name = 'assignee'`).Scan(&seeded); err != nil {
+		t.Fatalf("read seeded filter: %v", err)
+	}
+
+	// Simulate a pre-0010 install: drop the column + 0010's ledger row.
+	for _, stmt := range []string{
+		`ALTER TABLE attribute_def DROP COLUMN target_filter`,
+		`DELETE FROM schema_version WHERE name = '0010_attribute_target_filter'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0010 (%s): %v", stmt, err)
+		}
+	}
+
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	var migrated *string
+	if err := pool.QueryRow(ctx,
+		`SELECT target_filter::text FROM attribute_def WHERE name = 'assignee'`).Scan(&migrated); err != nil {
+		t.Fatalf("read migrated filter: %v", err)
+	}
+	if migrated == nil || *migrated != seeded {
+		t.Errorf("assignee target_filter after 0010 = %v; want the seed's %s", migrated, seeded)
+	}
+	var others int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM attribute_def WHERE name <> 'assignee' AND target_filter IS NOT NULL`).Scan(&others); err != nil {
+		t.Fatalf("count other filters: %v", err)
+	}
+	if others != 0 {
+		t.Errorf("%d non-assignee attribute_defs got a target_filter; want 0", others)
+	}
+
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("third apply (idempotent): %v", err)
+	}
+}
+
 // TestForwardMigration0006DropCommsAttachedFilter proves migration 0006
 // deletes the orphaned task-only "Comms attached" filter card (predicate
 // `comms exists`) from an existing comms screen — the fresh seed no longer

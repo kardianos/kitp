@@ -79,6 +79,13 @@ export interface RefPickerConfig extends BaseControlConfig {
    * effect for target types without a `status` attribute.
    */
   excludeTerminal?: boolean;
+  /**
+   * The card_ref attribute this picker sets (e.g. 'assignee'). Forwarded to
+   * `card.search`, which then offers only the cards that attribute accepts as
+   * a new value (its server-side target filter). Omit for pickers that don't
+   * set an attribute (move-to-project, related-task links).
+   */
+  attributeName?: string;
   /** Known label for the current single value, shown before the menu opens. */
   currentLabel?: string;
   /** Known labels for current multi values, keyed by stringified id. */
@@ -373,6 +380,7 @@ export class RefPicker extends Control<RefPickerConfig> {
     const parent = this.peekParentScope();
     if (parent !== null) input['parentCardId'] = parent;
     if (this.config.excludeTerminal === true) input['excludeTerminal'] = true;
+    if (this.config.attributeName !== undefined) input['attributeName'] = this.config.attributeName;
 
     this.ctx.api.callByName(
       CARD_SEARCH_SPEC,

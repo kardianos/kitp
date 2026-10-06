@@ -9,13 +9,19 @@
 --      EXCEPTION-wrapped cast so non-numeric inputs leave it NULL.
 --   3. Decode optional ids[] (jsonb array of strings or numbers) into
 --      a bigint[]. NULL when empty/missing.
---   4. SELECT (id, title) hits filtered by card_type + visibility +
+--   4. Optional attribute_name: the card_ref attribute the picker sets.
+--      When that attribute_def carries a target_filter (e.g. assignee: no
+--      contact / disabled person), only cards passing it are candidates
+--      (card_filter_ids). Unknown name → 'validation'.
+--   5. SELECT (id, title) hits filtered by card_type + visibility +
 --      query (ILIKE on title OR exact id match via the numeric arm) +
---      optional ids[] + optional parent_card_id + optional exclude_terminal.
---      Ordered newest-first. An EXACT id lookup (numeric query = c.id)
---      bypasses the convenience filters (parent_card_id + exclude_terminal)
---      so a known id resolves from any project/phase; card_type + visibility
---      still apply.
+--      optional ids[] + optional parent_card_id + optional exclude_terminal
+--      + the attribute's target_filter. Ordered newest-first. An EXACT id
+--      lookup (numeric query = c.id) bypasses the convenience filters
+--      (parent_card_id + exclude_terminal) so a known id resolves from any
+--      project/phase; card_type + visibility + target_filter still apply
+--      (the target filter is a validity rule — attribute.update would
+--      reject the pick anyway).
 --
 -- Result JSON shape matches `card.SearchOutput`:
 --   {"rows": [{"id": "<bigint>", "title": "..."}]}
@@ -42,6 +48,9 @@ DECLARE
     _el jsonb;
     _el_val bigint;
     _exclude_terminal boolean;
+    _attribute_name text;
+    _target_filter jsonb;
+    _allowed bigint[];
 BEGIN
     FOR _idx, _raw IN
         SELECT (r.ord - 1)::int, r.value
@@ -70,6 +79,26 @@ BEGIN
         END;
 
         _exclude_terminal := COALESCE((_raw->>'exclude_terminal')::boolean, false);
+
+        -- Optional attribute_name → that attribute's target_filter narrows
+        -- the candidates. NULL _allowed = no narrowing.
+        _attribute_name := NULLIF(_raw->>'attribute_name', '');
+        _allowed := NULL;
+        IF _attribute_name IS NOT NULL THEN
+            SELECT ad.target_filter INTO _target_filter
+              FROM attribute_def ad WHERE ad.name = _attribute_name;
+            IF NOT FOUND THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    format('card.search: unknown attribute_name %L', _attribute_name), NULL::jsonb;
+                CONTINUE;
+            END IF;
+            IF _target_filter IS NOT NULL THEN
+                _allowed := card_filter_ids(_target_filter, ARRAY(
+                    SELECT c.id FROM card c
+                    JOIN card_type ct ON ct.id = c.card_type_id
+                    WHERE ct.name = _card_type_name AND c.deleted_at IS NULL));
+            END IF;
+        END IF;
 
         -- numeric_id: only set when the query parses cleanly as a
         -- positive bigint (matches Go's strconv.ParseInt + > 0 gate).
@@ -145,6 +174,9 @@ BEGIN
                         OR (_numeric_id IS NOT NULL AND c.id = _numeric_id)
                       )
                       AND (_ids IS NULL OR c.id = ANY(_ids))
+                      -- The attribute's target_filter (see step 4). Not
+                      -- bypassed by an exact id lookup: it's a validity rule.
+                      AND (_allowed IS NULL OR c.id = ANY(_allowed))
                       -- Project scope + the open-work filter below are CONVENIENCE
                       -- scoping for browsing/typeahead. An exact id lookup (the
                       -- query parsed to a positive bigint = c.id) BYPASSES both,

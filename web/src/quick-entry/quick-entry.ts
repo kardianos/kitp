@@ -109,7 +109,7 @@ export interface QuickEntryConfig extends BaseControlConfig {
    * leaf the ScreenHost seeds for the active screen.
    */
   phaseTogglesPath?: string;
-  /** The card_type the assignee RefPicker searches. Default 'user'. */
+  /** The card_type the assignee RefPicker searches. Default 'person'. */
   assigneeCardType?: string;
   /** The card_type the tags RefPicker searches. Default 'tag'. */
   tagCardType?: string;
@@ -238,7 +238,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
     return this.config.defaultCardType ?? 'task';
   }
   private get assigneeCardType(): string {
-    return this.config.assigneeCardType ?? 'user';
+    return this.config.assigneeCardType ?? 'person';
   }
   private get tagCardType(): string {
     return this.config.tagCardType ?? 'tag';
@@ -664,6 +664,7 @@ export class QuickEntry extends Control<QuickEntryConfig> {
       {
         type: 'RefPicker',
         cardType: this.assigneeCardType,
+        attributeName: 'assignee',
         value: this.assigneeId,
         placeholder: 'Select assignee…',
         'aria-label': 'Assignee',
