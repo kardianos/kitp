@@ -157,3 +157,49 @@ func TestTaskMoveBatch_SameProject(t *testing.T) {
 		t.Errorf("code=%q, want 'same_project'", rows[0].Code)
 	}
 }
+
+// TestTaskMoveBatch_FlowStatus — the destination status must be a state of
+// the destination project's flow, and the omitted-status auto-pick only
+// considers flow states: a stray triage status no step touches (sorted
+// ahead of the template's "New idea") would otherwise win and strand the
+// moved task.
+func TestTaskMoveBatch_FlowStatus(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_task_move_batch_flow_status")
+	src := insertOne(t, pool, map[string]any{"card_type_name": "project", "title": "Src"})
+	dest := insertOne(t, pool, map[string]any{"card_type_name": "project", "title": "Dest"})
+	stray := seedCardWithTitle(t, pool, "status", &dest, "Stray")
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		SELECT $1, id, '1'::jsonb FROM attribute_def WHERE name = 'sort_order'
+	`, stray); err != nil {
+		t.Fatalf("stray sort_order: %v", err)
+	}
+	task := insertOne(t, pool, map[string]any{
+		"card_type_name": "task", "parent_card_id": strconv.FormatInt(src, 10), "title": "T",
+	})
+	move := map[string]any{
+		"card_id":        strconv.FormatInt(task, 10),
+		"new_project_id": strconv.FormatInt(dest, 10),
+	}
+
+	move["new_status_id"] = strconv.FormatInt(stray, 10)
+	rows := callTaskMoveBatch(t, pool, auth.SystemUserID, []map[string]any{move})
+	if len(rows) != 1 || rows[0].OK || rows[0].Code != "bad_status" {
+		t.Fatalf("explicit stray status: want bad_status, got %+v", rows)
+	}
+
+	delete(move, "new_status_id")
+	rows = callTaskMoveBatch(t, pool, auth.SystemUserID, []map[string]any{move})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("auto-picked status: want ok, got %+v", rows)
+	}
+	var got struct {
+		ResolvedStatusID string `json:"resolved_status_id"`
+	}
+	if err := json.Unmarshal(rows[0].Result, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if want := strconv.FormatInt(store.TemplateStatusID(t, pool, dest, "New idea"), 10); got.ResolvedStatusID != want {
+		t.Errorf("resolved_status_id=%s, want %s (the flow's triage state, not the stray)", got.ResolvedStatusID, want)
+	}
+}

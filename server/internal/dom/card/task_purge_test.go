@@ -41,8 +41,7 @@ func seedPurgeScene(t *testing.T, schemaName string) purgeFixture {
 	}
 	f := purgeFixture{srv: srv, sp: sp}
 	f.projectID = insert("p", `{"card_type_name":"project","title":"P"}`)
-	f.statusID = insert("s", fmt.Sprintf(
-		`{"card_type_name":"status","parent_card_id":"%d","title":"Open"}`, f.projectID))
+	f.statusID = store.TemplateStatusID(t, srv.Pool.P, f.projectID, "Todo")
 	f.taskID = insert("t", fmt.Sprintf(`{
 		"card_type_name":"task","parent_card_id":"%d","title":"To purge",
 		"attributes":{"status":"%d","description":"body"}

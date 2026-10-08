@@ -270,3 +270,61 @@ func TestCardInsertBatch_ParentTaskSubtask(t *testing.T) {
 		t.Errorf("explicit parent_relationship=%q, want 'blocker'", got)
 	}
 }
+
+// TestCardInsertBatch_FlowStatus — a task's initial status must be a state
+// of its project's flow. A soft-deleted status, one no flow_step touches, or
+// a sibling flow's value card (the comm flow's "Open") would strand the
+// task: attribute.update finds no step off it and status is required, so
+// nothing could ever move it again. The rejection lists the valid states.
+func TestCardInsertBatch_FlowStatus(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_card_insert_batch_flow_status")
+	project := insertOne(t, pool, map[string]any{"card_type_name": "project", "title": "P"})
+	doing := store.TemplateStatusID(t, pool, project, "Doing")
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE card SET deleted_at = now() WHERE id = $1`, doing); err != nil {
+		t.Fatalf("soft-delete Doing: %v", err)
+	}
+	parked := seedCardWithTitle(t, pool, "status", &project, "Parked")
+
+	cases := []struct {
+		name     string
+		status   any // nil omits the attribute so the flow default applies
+		wantCode string
+	}{
+		{"flow state", strconv.FormatInt(store.TemplateStatusID(t, pool, project, "Todo"), 10), ""},
+		{"omitted takes flow default", nil, ""},
+		{"soft-deleted status", strconv.FormatInt(doing, 10), "flow_invalid_state"},
+		{"status no step touches", parked, "flow_invalid_state"},
+		{"comm flow value card", store.TemplateStatusID(t, pool, project, "Open"), "flow_invalid_state"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := map[string]any{
+				"card_type_name": "task",
+				"parent_card_id": strconv.FormatInt(project, 10),
+				"title":          tc.name,
+			}
+			if tc.status != nil {
+				in["attributes"] = map[string]any{"status": tc.status}
+			}
+			rows := callCardInsertBatch(t, pool, auth.SystemUserID, []map[string]any{in})
+			if len(rows) != 1 {
+				t.Fatalf("rows: got %d, want 1", len(rows))
+			}
+			r := rows[0]
+			if tc.wantCode == "" {
+				if !r.OK {
+					t.Fatalf("want ok; got code=%q msg=%q", r.Code, r.Message)
+				}
+				return
+			}
+			if r.OK || r.Code != tc.wantCode {
+				t.Fatalf("want %s; got ok=%v code=%q msg=%q", tc.wantCode, r.OK, r.Code, r.Message)
+			}
+			_, valid, found := strings.Cut(r.Message, "use one of:")
+			if !found || !strings.Contains(valid, "'Todo'") || strings.Contains(valid, "'Doing'") {
+				t.Errorf("message should list live flow states (Todo, not Doing): %q", r.Message)
+			}
+		})
+	}
+}

@@ -13,12 +13,16 @@
 --      distinct from current project.
 --   4. Resolve destination status when omitted: pick the lowest-
 --      sort-order status under the destination project, preferring
---      triage > active > anything; falls back through phases. If
---      the destination has no status cards → 'no_intake_status'.
+--      triage > active > anything; falls back through phases. When the
+--      destination has a status flow only its states (flow_state_ids)
+--      are candidates. If nothing qualifies → 'no_intake_status'.
 --   5. validateUnderProject for each of status / milestone / component
 --      / tags — every supplied id must be of the right card_type and
 --      parented to the destination project. Otherwise per-attribute
 --      code ('bad_status' / 'bad_milestone' / 'bad_component' / 'bad_tag').
+--      The status must also be a state of the destination's status flow
+--      when it has one ('bad_status'); a status no flow_step leaves would
+--      strand the moved tasks.
 --   6. Cascade subtree: in cascade mode, walk `parent_task`
 --      attribute recursively; in break mode the moved set is the
 --      task alone, and direct children get their parent_task
@@ -80,6 +84,7 @@ DECLARE
     _value_card_type_name text;
     _value_parent bigint;
     _value_card_exists boolean;
+    _dest_states bigint[];
 BEGIN
     -- Hoist common attribute_def ids (they're shared across every input).
     SELECT id INTO _status_def_id FROM attribute_def WHERE name = 'status';
@@ -205,7 +210,11 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 4. Resolve destination status if omitted.
+        -- 4. Resolve destination status if omitted. _dest_states is NULL
+        --    when the destination has no status flow (any status goes).
+        SELECT flow_state_ids(f.id) INTO _dest_states
+        FROM flow f
+        WHERE f.attribute_def_id = _status_def_id AND f.scope_card_id = _new_project_id;
         IF _new_status_id = 0 THEN
             SELECT c.id INTO _resolved_status
             FROM card c
@@ -213,6 +222,7 @@ BEGIN
             LEFT JOIN attribute_value av ON av.card_id = c.id
                 AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'sort_order')
             WHERE c.parent_card_id = _new_project_id AND c.deleted_at IS NULL
+              AND (_dest_states IS NULL OR c.id = ANY(_dest_states))
             ORDER BY
                 CASE c.phase WHEN 'triage' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
                 COALESCE((av.value)::text::numeric, 9223372036854775807),
@@ -251,6 +261,12 @@ BEGIN
         IF _value_parent <> _new_project_id THEN
             RETURN QUERY SELECT _idx, false, 'bad_status'::text,
                 format('status id %s does not belong to destination project', _resolved_status),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF _dest_states IS NOT NULL AND NOT _resolved_status = ANY(_dest_states) THEN
+            RETURN QUERY SELECT _idx, false, 'bad_status'::text,
+                format('status id %s is not a state of the destination project''s flow', _resolved_status),
                 NULL::jsonb;
             CONTINUE;
         END IF;

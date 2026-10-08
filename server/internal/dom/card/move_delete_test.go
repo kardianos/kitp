@@ -10,6 +10,7 @@ import (
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/activity"
 	"github.com/kitp/kitp/server/internal/dom/card"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // TestDeleteUndelete checks the soft-delete + activity log lifecycle.
@@ -24,7 +25,7 @@ func TestDeleteUndelete(t *testing.T) {
 	var pOut card.InsertOutput
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
-	sid := mkStatusUnder(t, srv, pOut.ID)
+	sid := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -114,7 +115,7 @@ func TestMoveValidatesParentType(t *testing.T) {
 	var pOut card.InsertOutput
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
-	sid := mkStatusUnder(t, srv, pOut.ID)
+	sid := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(

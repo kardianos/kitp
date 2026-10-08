@@ -98,18 +98,7 @@ func TestPGTracer_Coalesce100AttrUpdates(t *testing.T) {
 
 	// Status under the project so the 100 task inserts below can
 	// satisfy Gate 6's (task, status) required-edge check.
-	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
-	}})
-	if !resp.Subresponses[0].OK {
-		t.Fatalf("status: %+v", resp.Subresponses[0])
-	}
-	var sOut card.InsertOutput
-	{
-		buf, _ := json.Marshal(resp.Subresponses[0].Data)
-		_ = json.Unmarshal(buf, &sOut)
-	}
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	subs := make([]api.SubRequest, 100)
 	for i := range subs {
@@ -119,7 +108,7 @@ func TestPGTracer_Coalesce100AttrUpdates(t *testing.T) {
 			Action:   "insert",
 			Data: json.RawMessage(fmt.Sprintf(
 				`{"card_type_name":"task","parent_card_id":"%d","title":"task%d","attributes":{"status":"%d"}}`,
-				pOut.ID, i, sOut.ID)),
+				pOut.ID, i, statusID)),
 		}
 	}
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: subs})

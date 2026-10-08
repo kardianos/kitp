@@ -71,17 +71,11 @@ func TestApplyMutualExclusion(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
-	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
-	}})
-	var sOut card.InsertOutput
-	buf, _ = json.Marshal(resp.Subresponses[0].Data)
-	_ = json.Unmarshal(buf, &sOut)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
-				pOut.ID, sOut.ID))},
+				pOut.ID, statusID))},
 	}})
 	var taskOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -166,17 +160,11 @@ func TestApplyNonExclusive(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
-	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
-	}})
-	var sOut card.InsertOutput
-	buf, _ = json.Marshal(resp.Subresponses[0].Data)
-	_ = json.Unmarshal(buf, &sOut)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
-				pOut.ID, sOut.ID))},
+				pOut.ID, statusID))},
 	}})
 	var taskOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -228,17 +216,11 @@ func TestApplyCoalesces(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
-	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
-	}})
-	var sOut card.InsertOutput
-	buf, _ = json.Marshal(resp.Subresponses[0].Data)
-	_ = json.Unmarshal(buf, &sOut)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
-				pOut.ID, sOut.ID))},
+				pOut.ID, statusID))},
 	}})
 	var taskOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)

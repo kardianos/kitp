@@ -71,7 +71,7 @@ func seedTasks(t *testing.T, srv *api.Server, specs []map[string]any) (int64, []
 	// Gate 6: every task needs a status (required edge). Seed a single
 	// status card under the project and stamp it on every task that
 	// doesn't already have one in its spec.
-	taskStatusID := mkStatusUnder(t, srv, pOut.ID)
+	taskStatusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	ids := make([]int64, len(specs))
 	for i, s := range specs {
@@ -238,7 +238,7 @@ func TestTree_TagsMembership(t *testing.T) {
 	}
 
 	proj := insert(`{"card_type_name":"project","title":"P"}`)
-	status := mkStatusUnder(t, srv, proj)
+	status := store.TemplateStatusID(t, srv.Pool.P, proj, "Todo")
 	// tag cards require title + path (a slash-delimited label).
 	tagA := insert(fmt.Sprintf(`{"card_type_name":"tag","parent_card_id":"%d","title":"A","attributes":{"path":"a"}}`, proj))
 	tagB := insert(fmt.Sprintf(`{"card_type_name":"tag","parent_card_id":"%d","title":"B","attributes":{"path":"b"}}`, proj))
@@ -400,14 +400,14 @@ func TestTree_HasPhase(t *testing.T) {
 // op: a row qualifies when its `parent_task` ref points at a task whose
 // `status` ref points at a value-card with one of the listed phases.
 //
-// Setup builds two parent tasks (one with status='Open', one with
-// status='Done' — phase flipped to terminal via UPDATE) and two child
+// Setup builds two parent tasks (one with status='Todo', one with
+// status='Done' — the template's active / terminal statuses) and two child
 // tasks pointing at each parent, then runs the op for each phase set
 // and confirms the row sets. Caps with the "heads" expression the
 // op was introduced for: `parent_task not exists OR
 // parent_status_phase=[terminal]`.
 func TestTree_ParentStatusPhase(t *testing.T) {
-	srv, sp := setupAttr(t, "kitp_test_card_tree_parent_status_phase")
+	srv, _ := setupAttr(t, "kitp_test_card_tree_parent_status_phase")
 	ctx := auth.WithSystemUser(context.Background())
 
 	// Project + two status cards with distinct phases.
@@ -420,28 +420,10 @@ func TestTree_ParentStatusPhase(t *testing.T) {
 	}
 	projID := idsOf(t, resp.Subresponses[0])
 
-	openID := mkStatusUnder(t, srv, projID)
-	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "sd", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Done"}`,
-				projID))},
-	}})
-	if !resp.Subresponses[0].OK {
-		t.Fatalf("status Done insert: %+v", resp.Subresponses[0])
-	}
-	doneID := idsOf(t, resp.Subresponses[0])
-
-	// Status cards default to phase='triage'. Flip Open→active and
-	// Done→terminal directly so the parent_status_phase predicate has
-	// distinct buckets to gate on.
-	if _, err := sp.P.Exec(ctx.(context.Context),
-		`UPDATE card SET phase = 'active' WHERE id = $1`, openID); err != nil {
-		t.Fatalf("flip Open phase: %v", err)
-	}
-	if _, err := sp.P.Exec(ctx.(context.Context),
-		`UPDATE card SET phase = 'terminal' WHERE id = $1`, doneID); err != nil {
-		t.Fatalf("flip Done phase: %v", err)
-	}
+	// The template's Todo (active) and Done (terminal) give the
+	// parent_status_phase predicate distinct buckets to gate on.
+	openID := store.TemplateStatusID(t, srv.Pool.P, projID, "Todo")
+	doneID := store.TemplateStatusID(t, srv.Pool.P, projID, "Done")
 
 	// Four tasks: two roots (one Open, one Done) and two children
 	// pointing at each.

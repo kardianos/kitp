@@ -86,23 +86,12 @@ func setupAdmin(t *testing.T, schemaName string) *fixture {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
-	mkStatus := func(title string) int64 {
-		resp := srv.Dispatch(adminCtx, api.BatchRequest{Subrequests: []api.SubRequest{
-			{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-				fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":%q}`, pOut.ID, title))},
-		}})
-		if !resp.Subresponses[0].OK {
-			t.Fatalf("status %q: %+v", title, resp.Subresponses[0])
-		}
-		var sOut card.InsertOutput
-		buf, _ := json.Marshal(resp.Subresponses[0].Data)
-		_ = json.Unmarshal(buf, &sOut)
-		return sOut.ID
-	}
-	statusID := mkStatus("Todo")
-	commOpen := mkStatus("Open")
-	commInProgress := mkStatus("In progress")
-	commResolved := mkStatus("Resolved")
+	// The template's task + comm statuses: card.insert / attribute.update
+	// only accept a value that is a state of the project's flow.
+	statusID := store.TemplateStatusID(t, pool, pOut.ID, "Todo")
+	commOpen := store.TemplateStatusID(t, pool, pOut.ID, "Open")
+	commInProgress := store.TemplateStatusID(t, pool, pOut.ID, "In progress")
+	commResolved := store.TemplateStatusID(t, pool, pOut.ID, "Resolved")
 
 	// Resolve the comm_status attribute_def id and the comms attribute id.
 	var commStatusAttrID, commsAttrID int64

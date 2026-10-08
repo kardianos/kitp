@@ -79,16 +79,13 @@ func setupSink(t *testing.T, schemaName string) *sinkFixture {
 	dispatch(api.SubRequest{ID: "p", Endpoint: "card", Action: "insert",
 		Data: json.RawMessage(`{"card_type_name":"project","title":"Sink Test"}`)}, &pOut)
 
-	var sOut card.InsertOutput
-	dispatch(api.SubRequest{ID: "s", Endpoint: "card", Action: "insert",
-		Data: json.RawMessage(fmt.Sprintf(
-			`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))}, &sOut)
+	statusID := store.TemplateStatusID(t, pool, pOut.ID, "Todo")
 
 	var tOut card.InsertOutput
 	dispatch(api.SubRequest{ID: "t", Endpoint: "card", Action: "insert",
 		Data: json.RawMessage(fmt.Sprintf(
 			`{"card_type_name":"task","parent_card_id":"%d","title":"Issue 1","attributes":{"status":"%d"}}`,
-			pOut.ID, sOut.ID))}, &tOut)
+			pOut.ID, statusID))}, &tOut)
 
 	return &sinkFixture{
 		srv:       srv,
@@ -96,7 +93,7 @@ func setupSink(t *testing.T, schemaName string) *sinkFixture {
 		ctx:       adminCtx,
 		adminID:   uid,
 		projectID: pOut.ID,
-		statusID:  sOut.ID,
+		statusID:  statusID,
 		taskID:    tOut.ID,
 	}
 }

@@ -90,7 +90,7 @@ func seedTasksForTester(t *testing.T, srv *api.Server, userID int64, n int) []in
 	var pOut card.InsertOutput
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
-	statusID := mkStatusUnder(t, srv, pOut.ID)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	subs := make([]api.SubRequest, n)
 	for i := range subs {
@@ -206,7 +206,7 @@ func TestSelectWithAttributes_AssigneeTreeFilter(t *testing.T) {
 	_ = json.Unmarshal(buf, &pOut)
 	buf, _ = json.Marshal(resp.Subresponses[1].Data)
 	_ = json.Unmarshal(buf, &sOut)
-	statusID := mkStatusUnder(t, srv, pOut.ID)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	resp = srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "mine", Endpoint: "card", Action: "insert", Data: json.RawMessage(

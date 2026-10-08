@@ -72,20 +72,6 @@ func setupVisibility(t *testing.T, schemaName string) *visibilityFixture {
 		return out.ID
 	}
 
-	mkStatus := func(parent int64, title string) int64 {
-		resp := srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
-			{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-				fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":%q}`, parent, title))},
-		}})
-		if !resp.Subresponses[0].OK {
-			t.Fatalf("status %s: %+v", title, resp.Subresponses[0].Error)
-		}
-		var out card.InsertOutput
-		buf, _ := json.Marshal(resp.Subresponses[0].Data)
-		_ = json.Unmarshal(buf, &out)
-		return out.ID
-	}
-
 	mkTask := func(parent, status int64, title string) int64 {
 		resp := srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(fmt.Sprintf(
@@ -103,8 +89,8 @@ func setupVisibility(t *testing.T, schemaName string) *visibilityFixture {
 
 	pA := mkProject("Visibility A")
 	pB := mkProject("Visibility B")
-	sA := mkStatus(pA, "Todo A")
-	sB := mkStatus(pB, "Todo B")
+	sA := store.TemplateStatusID(t, srv.Pool.P, pA, "Todo")
+	sB := store.TemplateStatusID(t, srv.Pool.P, pB, "Todo")
 	tA := mkTask(pA, sA, "task-vis-a")
 	tB := mkTask(pB, sB, "task-vis-b")
 

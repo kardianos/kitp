@@ -50,23 +50,6 @@ func raw(t *testing.T, sr api.SubResponse, dst any) {
 	}
 }
 
-// mkStatusUnder inserts one status card under projectID and returns its
-// id. Helper for Gate 6's required-attribute check on card.insert: any
-// task created under projectID needs a same-project status to pass.
-func mkStatusUnder(t *testing.T, srv *api.Server, projectID int64) int64 {
-	t.Helper()
-	ctx := auth.WithSystemUser(context.Background())
-	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`,
-				projectID))},
-	}})
-	mustOK(t, resp.Subresponses[0])
-	var out card.InsertOutput
-	raw(t, resp.Subresponses[0], &out)
-	return out.ID
-}
-
 // TestLifecycleTitleUpdate covers the full Phase 6 story:
 //   - insert task with title=Foo (so card_create + attr_update for title appear)
 //   - update title=Bar
@@ -86,7 +69,7 @@ func TestLifecycleTitleUpdate(t *testing.T) {
 	mustOK(t, resp.Subresponses[0])
 	var pOut card.InsertOutput
 	raw(t, resp.Subresponses[0], &pOut)
-	statusID := mkStatusUnder(t, srv, pOut.ID)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -185,7 +168,7 @@ func TestCoalesceUpdate100(t *testing.T) {
 	mustOK(t, resp.Subresponses[0])
 	var pOut card.InsertOutput
 	raw(t, resp.Subresponses[0], &pOut)
-	statusID := mkStatusUnder(t, srv, pOut.ID)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	// Insert 100 tasks under the project, then 100 attribute updates.
 	subs := make([]api.SubRequest, 100)
@@ -268,7 +251,7 @@ func TestUpdate_RejectsInvalidCardRefValue(t *testing.T) {
 	mustOK(t, resp.Subresponses[0])
 	var pOut card.InsertOutput
 	raw(t, resp.Subresponses[0], &pOut)
-	statusID := mkStatusUnder(t, srv, pOut.ID)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -312,7 +295,7 @@ func TestUpdate_AcceptsValidCardRef(t *testing.T) {
 	var pOut card.InsertOutput
 	raw(t, resp.Subresponses[0], &pOut)
 
-	statusID := mkStatusUnder(t, srv, pOut.ID)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
@@ -371,15 +354,9 @@ func BenchmarkBatch100AttrUpdates(b *testing.B) {
 	var pOut card.InsertOutput
 	rawB(b, resp.Subresponses[0], &pOut)
 
-	// Status under the project so the bench's 100 task inserts can
-	// satisfy the (task, status) required-edge check.
-	statusResp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
-	}})
-	mustOKB(b, statusResp.Subresponses[0])
-	var sBenchOut card.InsertOutput
-	rawB(b, statusResp.Subresponses[0], &sBenchOut)
+	// A flow status under the project so the bench's 100 task inserts
+	// can satisfy the (task, status) required-edge check.
+	benchStatusID := store.TemplateStatusID(b, srv.Pool.P, pOut.ID, "Todo")
 
 	taskIDs := make([]int64, 100)
 	subs := make([]api.SubRequest, 100)
@@ -390,7 +367,7 @@ func BenchmarkBatch100AttrUpdates(b *testing.B) {
 			Action:   "insert",
 			Data: json.RawMessage(fmt.Sprintf(
 				`{"card_type_name":"task","parent_card_id":"%d","title":"task%d","attributes":{"status":"%d"}}`,
-				pOut.ID, i, sBenchOut.ID)),
+				pOut.ID, i, benchStatusID)),
 		}
 	}
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: subs})

@@ -119,9 +119,9 @@ func makeProjectFixture(t *testing.T, srv *api.Server) scopeFixture {
 
 	fx := scopeFixture{}
 	fx.projectA = mkProj("A")
-	// Status under each project — required for Gate 6's required-edge
-	// check on card.insert when the new card is a task.
-	fx.statusA = mkChild("status", "Todo-A", fx.projectA)
+	// A flow status under each project — required for Gate 6's
+	// required-edge check on card.insert when the new card is a task.
+	fx.statusA = store.TemplateStatusID(t, srv.Pool.P, fx.projectA, "Todo")
 	fx.taskA = mkChild("task", "task A", fx.projectA,
 		fmt.Sprintf(`{"status":"%d"}`, fx.statusA))
 	fx.mileA = mkChild("milestone", "M-A", fx.projectA)
@@ -129,7 +129,7 @@ func makeProjectFixture(t *testing.T, srv *api.Server) scopeFixture {
 	fx.tagA = mkTag(fx.projectA, "tag-a/path")
 
 	fx.projectB = mkProj("B")
-	fx.statusB = mkChild("status", "Todo-B", fx.projectB)
+	fx.statusB = store.TemplateStatusID(t, srv.Pool.P, fx.projectB, "Todo")
 	fx.taskB = mkChild("task", "task B", fx.projectB,
 		fmt.Sprintf(`{"status":"%d"}`, fx.statusB))
 	fx.mileB = mkChild("milestone", "M-B", fx.projectB)
@@ -300,7 +300,7 @@ func TestTaskStatusRequired_RejectsRemoval(t *testing.T) {
 	mustOK(t, resp.Subresponses[0])
 	var pOut card.InsertOutput
 	raw(t, resp.Subresponses[0], &pOut)
-	statusID := mkStatusUnder(t, srv, pOut.ID)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(

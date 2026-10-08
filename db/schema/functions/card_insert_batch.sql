@@ -17,7 +17,13 @@
 --      project, or be global. Top-level inserts skip this (their
 --      enclosing project doesn't exist yet). Each value must also pass
 --      the attribute_def's target_filter when it has one (e.g. assignee:
---      no contact / disabled person) → 'ref_not_allowed'.
+--      no contact / disabled person) → 'ref_not_allowed'. A value on a
+--      flow-bound card_ref (status, comm_status) must be one of that
+--      flow's states (flow_state_ids) → else 'flow_invalid_state', whose
+--      message lists the valid states. Without this a card could be born
+--      on a soft-deleted status or one no flow_step leaves, and then
+--      never move (attribute.update's gate finds no step off it) nor be
+--      cleared (the attribute is required).
 --   7. INSERT card row, INSERT card_create activity, then for the
 --      title + each initial attribute INSERT attr_update activity +
 --      UPSERT attribute_value.
@@ -69,6 +75,9 @@ DECLARE
     _attr_target_type bigint;
     _attr_target_filter jsonb;
     _passing_ids bigint[];
+    _flow_id bigint;
+    _flow_states bigint[];
+    _flow_state_list text;
     _attr_is_required boolean;
     _value_norm jsonb;
     _value_card_ids bigint[];
@@ -392,6 +401,37 @@ BEGIN
                         _rej_code := 'ref_not_allowed';
                         _rej_msg := format('attribute %L: card %s can''t be chosen as a value', _attr_name, _v);
                         EXIT;
+                    END IF;
+                END IF;
+                -- Flow states: a flow-bound card_ref (status, comm_status)
+                -- must start on one of its flow's states (see header).
+                IF _attr_value_type = 'card_ref' AND _enclosing_project IS NOT NULL THEN
+                    SELECT f.id INTO _flow_id
+                    FROM flow f
+                    JOIN attribute_def ad ON ad.id = f.attribute_def_id
+                    WHERE ad.name = _attr_name AND f.scope_card_id = _enclosing_project;
+                    IF FOUND THEN
+                        _flow_states := flow_state_ids(_flow_id);
+                        _v := _value_card_ids[1];
+                        IF NOT _v = ANY(_flow_states) THEN
+                            SELECT string_agg(format('%s %L', s.id, COALESCE(av_t.value #>> '{}', '')),
+                                       ', ' ORDER BY s.id)
+                              INTO _flow_state_list
+                            FROM unnest(_flow_states) AS s(id)
+                            LEFT JOIN attribute_def ad_t ON ad_t.name = 'title'
+                            LEFT JOIN attribute_value av_t
+                              ON av_t.card_id = s.id AND av_t.attribute_def_id = ad_t.id;
+                            _rej_code := 'flow_invalid_state';
+                            _rej_msg := format(
+                                'card.insert: %s %s (%L) is not a state of this project''s flow; use one of: %s',
+                                _attr_name, _v,
+                                COALESCE((SELECT av_t.value #>> '{}'
+                                          FROM attribute_value av_t
+                                          JOIN attribute_def ad_t ON ad_t.id = av_t.attribute_def_id
+                                          WHERE av_t.card_id = _v AND ad_t.name = 'title'), ''),
+                                COALESCE(_flow_state_list, '(none)'));
+                            EXIT;
+                        END IF;
                     END IF;
                 END IF;
             END LOOP;

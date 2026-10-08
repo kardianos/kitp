@@ -92,7 +92,7 @@ func seedRoutingFixture(t *testing.T, srv *api.Server, sp *store.Pool) (int64, i
 	var pOut card.InsertOutput
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
-	statusID := mkStatusUnder(t, srv, pOut.ID)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	tasks := make([]int64, 3)
 	for i := range tasks {

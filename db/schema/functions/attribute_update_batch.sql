@@ -30,13 +30,15 @@
 --      additionally validates ^[a-z][a-z0-9-]*$. Failures →
 --      'slug_invalid' / 'slug_in_use' / 'hotkey_in_use'.
 --   6. Flow gate (card_ref only): when a flow row binds
---      (attribute_def, enclosing project), require a flow_step from
---      prev→new. Missing step → 'flow_disallowed'. Step present but
---      step.requires_role_id not satisfied → 'flow_role_required'.
+--      (attribute_def, enclosing project), a change of value must land
+--      on one of the flow's states (flow_state_ids) → else
+--      'flow_invalid_state' (a soft-deleted status, one no step touches,
+--      a sibling flow's value card — a card parked there could never
+--      move again). It must also follow a flow_step from prev→new →
+--      else 'flow_disallowed'; step present but step.requires_role_id
+--      not satisfied → 'flow_role_required'. All three carry the V13
+--      Detail envelope {from, attempted_to, available[]} in `result`.
 --      Missing prev value on a flow-bound attribute → 'flow_invariant'.
---      NB: the legacy Go path attached a structured Detail JSON with
---      from / attempted_to / available[]. The unified contract drops
---      per-error Detail; the code + message survive.
 --   7. Activity row + attribute_value upsert. activity.id is the
 --      result's activity_id; the prior attribute_value.value (NULL on
 --      first set) becomes prev_value.
@@ -89,6 +91,8 @@ DECLARE
     _requires_role_id bigint;
     _role_name text;
     _role_ok boolean;
+    _flow_code text;
+    _flow_msg text;
     _activity_id bigint;
     _prev_value jsonb;
     _detail jsonb;
@@ -403,21 +407,54 @@ BEGIN
                         CONTINUE;
                     END IF;
                     _new_id := (_value_norm)::text::bigint;
+                    -- Re-writing the value the card already holds is no
+                    -- transition, so the gate lets it through untouched.
                     IF _new_id <> _prev_id THEN
-                        SELECT id, requires_role_id INTO _step_id, _requires_role_id
-                        FROM flow_step
-                        WHERE flow_id = _flow_id
-                          AND from_card_id = _prev_id
-                          AND to_card_id = _new_id
-                        LIMIT 1;
-                        IF NOT FOUND THEN
+                        _flow_code := NULL;
+                        IF NOT _new_id = ANY(flow_state_ids(_flow_id)) THEN
+                            _flow_code := 'flow_invalid_state';
+                        ELSE
+                            SELECT id, requires_role_id INTO _step_id, _requires_role_id
+                            FROM flow_step
+                            WHERE flow_id = _flow_id
+                              AND from_card_id = _prev_id
+                              AND to_card_id = _new_id
+                            LIMIT 1;
+                            IF NOT FOUND THEN
+                                _flow_code := 'flow_disallowed';
+                            ELSIF _requires_role_id IS NOT NULL THEN
+                                SELECT r.name,
+                                       (
+                                         EXISTS (
+                                           SELECT 1 FROM user_role ur
+                                           JOIN role sr ON sr.id = ur.role_id
+                                           WHERE ur.user_id = actor_id AND sr.name = 'system'
+                                             AND ur.scope_card_id IS NULL
+                                         )
+                                         OR EXISTS (
+                                           SELECT 1 FROM user_role ur
+                                           WHERE ur.user_id = actor_id AND ur.role_id = _requires_role_id
+                                             AND (ur.scope_card_id IS NULL
+                                                  OR ur.scope_card_id = _target_project_id)
+                                         )
+                                       )
+                                  INTO _role_name, _role_ok
+                                FROM role r WHERE r.id = _requires_role_id;
+                                IF NOT FOUND OR NOT _role_ok THEN
+                                    _flow_code := 'flow_role_required';
+                                END IF;
+                            END IF;
+                        END IF;
+                        IF _flow_code IS NOT NULL THEN
                             -- Build the V13 rejection envelope. `from` and
-                            -- `attempted_to` are the prev/new value cards;
-                            -- `available[]` enumerates every flow_step the
-                            -- card may currently fire (same shape Gate 4
-                            -- returns from flow_step.list_for_card). The
-                            -- per-actor `your_role_allows` bit lets the UI
-                            -- render "ask a manager" without re-querying.
+                            -- `attempted_to` are the prev/new value cards,
+                            -- labelled even when soft-deleted so the message
+                            -- can name a stale status; `available[]`
+                            -- enumerates every flow_step the card may
+                            -- currently fire (same shape Gate 4 returns from
+                            -- flow_step.list_for_card). The per-actor
+                            -- `your_role_allows` bit lets the UI render "ask
+                            -- a manager" without re-querying.
                             SELECT jsonb_build_object(
                                 'id', c.id::text,
                                 'label', COALESCE(av_t.value #>> '{}', ''),
@@ -427,7 +464,7 @@ BEGIN
                             LEFT JOIN attribute_def ad_t ON ad_t.name = 'title'
                             LEFT JOIN attribute_value av_t
                               ON av_t.card_id = c.id AND av_t.attribute_def_id = ad_t.id
-                            WHERE c.id = _prev_id AND c.deleted_at IS NULL;
+                            WHERE c.id = _prev_id;
                             IF NOT FOUND THEN
                                 _from := jsonb_build_object('id', _prev_id::text, 'label', '', 'phase', '');
                             END IF;
@@ -440,7 +477,7 @@ BEGIN
                             LEFT JOIN attribute_def ad_t ON ad_t.name = 'title'
                             LEFT JOIN attribute_value av_t
                               ON av_t.card_id = c.id AND av_t.attribute_def_id = ad_t.id
-                            WHERE c.id = _new_id AND c.deleted_at IS NULL;
+                            WHERE c.id = _new_id;
                             IF NOT FOUND THEN
                                 _attempted_to := jsonb_build_object('id', _new_id::text, 'label', '', 'phase', '');
                             END IF;
@@ -449,71 +486,22 @@ BEGIN
                                 'from', _from,
                                 'attempted_to', _attempted_to,
                                 'available', _available);
-                            RETURN QUERY SELECT _idx, false, 'flow_disallowed'::text,
-                                format('Cannot move %s from %L to %L.',
+                            IF _flow_code = 'flow_invalid_state' THEN
+                                _flow_msg := format('Cannot set %s to %L (%s): it is not a state of this project''s flow.',
+                                    _attr_name,
+                                    _attempted_to->>'label',
+                                    _new_id);
+                            ELSIF _flow_code = 'flow_disallowed' THEN
+                                _flow_msg := format('Cannot move %s from %L to %L.',
                                     _attr_name,
                                     _from->>'label',
-                                    _attempted_to->>'label'),
-                                _detail;
-                            CONTINUE;
-                        END IF;
-                        IF _requires_role_id IS NOT NULL THEN
-                            SELECT r.name,
-                                   (
-                                     EXISTS (
-                                       SELECT 1 FROM user_role ur
-                                       JOIN role sr ON sr.id = ur.role_id
-                                       WHERE ur.user_id = actor_id AND sr.name = 'system'
-                                         AND ur.scope_card_id IS NULL
-                                     )
-                                     OR EXISTS (
-                                       SELECT 1 FROM user_role ur
-                                       WHERE ur.user_id = actor_id AND ur.role_id = _requires_role_id
-                                         AND (ur.scope_card_id IS NULL
-                                              OR ur.scope_card_id = _target_project_id)
-                                     )
-                                   )
-                              INTO _role_name, _role_ok
-                            FROM role r WHERE r.id = _requires_role_id;
-                            IF NOT FOUND OR NOT _role_ok THEN
-                                -- Same V13 envelope shape as flow_disallowed.
-                                SELECT jsonb_build_object(
-                                    'id', c.id::text,
-                                    'label', COALESCE(av_t.value #>> '{}', ''),
-                                    'phase', c.phase)
-                                  INTO _from
-                                FROM card c
-                                LEFT JOIN attribute_def ad_t ON ad_t.name = 'title'
-                                LEFT JOIN attribute_value av_t
-                                  ON av_t.card_id = c.id AND av_t.attribute_def_id = ad_t.id
-                                WHERE c.id = _prev_id AND c.deleted_at IS NULL;
-                                IF NOT FOUND THEN
-                                    _from := jsonb_build_object('id', _prev_id::text, 'label', '', 'phase', '');
-                                END IF;
-                                SELECT jsonb_build_object(
-                                    'id', c.id::text,
-                                    'label', COALESCE(av_t.value #>> '{}', ''),
-                                    'phase', c.phase)
-                                  INTO _attempted_to
-                                FROM card c
-                                LEFT JOIN attribute_def ad_t ON ad_t.name = 'title'
-                                LEFT JOIN attribute_value av_t
-                                  ON av_t.card_id = c.id AND av_t.attribute_def_id = ad_t.id
-                                WHERE c.id = _new_id AND c.deleted_at IS NULL;
-                                IF NOT FOUND THEN
-                                    _attempted_to := jsonb_build_object('id', _new_id::text, 'label', '', 'phase', '');
-                                END IF;
-                                _available := build_flow_available_array(actor_id, _card_id, _target_project_id);
-                                _detail := jsonb_build_object(
-                                    'from', _from,
-                                    'attempted_to', _attempted_to,
-                                    'available', _available);
-                                RETURN QUERY SELECT _idx, false, 'flow_role_required'::text,
-                                    format('attribute.update: transition requires role %L; actor does not hold it',
-                                        COALESCE(_role_name, '?')),
-                                    _detail;
-                                CONTINUE;
+                                    _attempted_to->>'label');
+                            ELSE
+                                _flow_msg := format('attribute.update: transition requires role %L; actor does not hold it',
+                                    COALESCE(_role_name, '?'));
                             END IF;
+                            RETURN QUERY SELECT _idx, false, _flow_code, _flow_msg, _detail;
+                            CONTINUE;
                         END IF;
                     END IF;
                 END IF;

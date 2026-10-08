@@ -17,6 +17,7 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/card"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // seedTwoMilestoneTasks builds a project with two distinct milestones
@@ -45,8 +46,7 @@ func seedTwoMilestoneTasks(t *testing.T, srv *api.Server) twoMilestoneSeed {
 		return o.ID
 	}
 	pid := insert("p", `{"card_type_name":"project","title":"Filter Demo"}`)
-	sid := insert("s", fmt.Sprintf(
-		`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pid))
+	sid := store.TemplateStatusID(t, srv.Pool.P, pid, "Todo")
 	mOne := insert("m1", fmt.Sprintf(
 		`{"card_type_name":"milestone","parent_card_id":"%d","title":"Alpha"}`, pid))
 	mTwo := insert("m2", fmt.Sprintf(

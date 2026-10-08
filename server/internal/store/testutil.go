@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/schema/hcsv"
 )
 
@@ -115,6 +116,38 @@ func TestPoolBare(t *testing.T, schemaName string) *pgxpool.Pool {
 	}
 	registerCleanup(t, pool, dsn, schemaName)
 	return pool
+}
+
+// TemplateStatusID returns the status card titled title that projectID
+// inherited from the standard template when card.insert stamped it: the
+// task flow's New idea / Todo / Doing / Review / Done / Cancelled, or the
+// comm flow's Open / In progress / Resolved. Fixtures that create tasks
+// under a stamped project must start them on one of these — card.insert
+// only accepts a status that is a state of the project's flow, so an
+// ad-hoc status card is rejected with 'flow_invalid_state'.
+func TemplateStatusID(t testing.TB, pool *pgxpool.Pool, projectID int64, title string) int64 {
+	t.Helper()
+	b := named.New()
+	b.Set("project_id", projectID)
+	b.Set("title", title)
+	sql, args, err := b.Compile(`
+		SELECT c.id
+		FROM card c
+		JOIN card_type ct ON ct.id = c.card_type_id AND ct.name = 'status'
+		JOIN attribute_value av ON av.card_id = c.id
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'title'
+		WHERE c.parent_card_id = :project_id
+		  AND c.deleted_at IS NULL
+		  AND av.value = to_jsonb(:title::text)
+	`)
+	if err != nil {
+		t.Fatalf("template status: compile: %v", err)
+	}
+	var id int64
+	if err := pool.QueryRow(context.Background(), sql, args...).Scan(&id); err != nil {
+		t.Fatalf("template status %q under project %d: %v", title, projectID, err)
+	}
+	return id
 }
 
 func registerCleanup(t testing.TB, pool *pgxpool.Pool, dsn, schemaName string) {

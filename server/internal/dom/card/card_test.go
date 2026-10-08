@@ -34,11 +34,11 @@ func mustOK(t *testing.T, sr api.SubResponse) {
 	}
 }
 
-// mkStatusUnder inserts one status card under projectID and returns its
-// id. Helper for Gate 6's required-attribute check on card.insert: any
-// task created under projectID needs a same-project status to pass
-// validation. Caller picks the phase ('triage' / 'active' / 'terminal')
-// based on what the test is exercising; default callers pass 'active'.
+// mkStatusUnder inserts one fresh status card (default phase 'triage')
+// under projectID and returns its id. It is NOT part of the project's
+// flow, so card.insert rejects it as a task status — use
+// store.TemplateStatusID for that; this is for tests about the status
+// card itself.
 func mkStatusUnder(t *testing.T, srv *api.Server, projectID int64) int64 {
 	t.Helper()
 	ctx := auth.WithSystemUser(context.Background())
@@ -112,7 +112,7 @@ func TestCardLifecycle(t *testing.T) {
 		t.Fatalf("inserted project not in list: %+v (id=%d)", rows, projectID)
 	}
 
-	statusID := mkStatusUnder(t, srv, projectID)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, projectID, "Todo")
 	resp2 := srv.Dispatch(ctx, api.BatchRequest{
 		Subrequests: []api.SubRequest{
 			{ID: "ins", Endpoint: "card", Action: "insert", Data: rawf(
@@ -225,7 +225,7 @@ func TestTaskUnderTaskAllowed(t *testing.T) {
 			`{"card_type_name":"project","title":"P"}`)},
 	}})
 	pid := idsOf(t, resp.Subresponses[0])
-	sid := mkStatusUnder(t, srv, pid)
+	sid := store.TemplateStatusID(t, srv.Pool.P, pid, "Todo")
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: rawf(
@@ -262,7 +262,7 @@ func TestRequiredAttributeOnInsert(t *testing.T) {
 			`{"card_type_name":"project","title":"P"}`)},
 	}})
 	pid := idsOf(t, resp.Subresponses[0])
-	sid := mkStatusUnder(t, srv, pid)
+	sid := store.TemplateStatusID(t, srv.Pool.P, pid, "Todo")
 
 	// card.insert(project) graph-copies the template, which seeds a
 	// status flow with default_create_status_id pointing at the

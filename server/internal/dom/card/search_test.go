@@ -9,6 +9,7 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/card"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // TestSearch covers the typeahead read used by the value-picker UI:
@@ -29,7 +30,7 @@ func TestSearch(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
-	statusID := mkStatusUnder(t, srv, pOut.ID)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 	titles := []string{"Alpha task", "Beta task", "Gamma quest", "Delta task"}
 	taskIDs := make([]int64, 0, len(titles))
 	for i, title := range titles {
@@ -139,7 +140,7 @@ func TestSearch(t *testing.T) {
 		var p2 card.InsertOutput
 		b, _ := json.Marshal(resp.Subresponses[0].Data)
 		_ = json.Unmarshal(b, &p2)
-		s2 := mkStatusUnder(t, srv, p2.ID)
+		s2 := store.TemplateStatusID(t, srv.Pool.P, p2.ID, "Todo")
 		resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: "tx", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 				fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"Other Alpha","attributes":{"status":"%d"}}`,

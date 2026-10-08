@@ -311,13 +311,15 @@ func TestFlow_NoFlow(t *testing.T) {
 }
 
 // TestFlow_DisallowedTransition_StructuredEnvelope: with a flow row
-// and one step (Doing→Done) but no step for Doing→Triage, attempting
-// Doing→Triage rejects with code 'flow_disallowed' and a structured
-// Detail payload matching V13.
+// and steps Doing→Done + Triage→Doing but no step for Doing→Triage,
+// attempting Doing→Triage rejects with code 'flow_disallowed' and a
+// structured Detail payload matching V13. (Triage→Doing makes Triage a
+// state of the flow; otherwise the target trips 'flow_invalid_state'.)
 func TestFlow_DisallowedTransition_StructuredEnvelope(t *testing.T) {
 	srv, sp := setupFlow(t, "kitp_test_flow_disallowed")
 	f := makeFlowFixture(t, srv, sp)
 	f.addStep(t, f.doingID, f.doneID, "Complete", 0)
+	f.addStep(t, f.triageID, f.doingID, "Start", 0)
 
 	systemCtx := auth.WithSystemUser(context.Background())
 	sr := f.updateStatus(systemCtx, f.taskID, f.triageID)
@@ -649,6 +651,99 @@ func TestFlow_SameValueIsNoop(t *testing.T) {
 	sr := f.updateStatus(systemCtx, f.taskID, f.doingID)
 	if !sr.OK {
 		t.Fatalf("expected OK on no-op write; got %+v", sr.Error)
+	}
+}
+
+// TestFlow_InvalidState: attribute.update refuses to land a flow-bound
+// attribute on a value that isn't a state of the flow — the card could
+// then never leave it (no step out) nor clear it (status is required).
+// That holds even when a stale flow_step still points at a soft-deleted
+// status. The rejection names the attempted value and carries the V13
+// envelope so the caller still sees where the card CAN go.
+func TestFlow_InvalidState(t *testing.T) {
+	cases := []struct {
+		name          string
+		schema        string
+		target        func(t *testing.T, f *flowFixture) int64
+		wantLabel     string
+		wantAvailable int
+	}{
+		{
+			name:   "soft-deleted status behind a live step",
+			schema: "kitp_test_flow_invalid_deleted",
+			target: func(t *testing.T, f *flowFixture) int64 {
+				if _, err := f.sp.P.Exec(context.Background(),
+					`UPDATE card SET deleted_at = now() WHERE id = $1`, f.doneID); err != nil {
+					t.Fatalf("soft-delete Done: %v", err)
+				}
+				return f.doneID
+			},
+			wantLabel:     "Done",
+			wantAvailable: 0, // steps into deleted cards aren't offered
+		},
+		{
+			name:   "status no flow_step touches",
+			schema: "kitp_test_flow_invalid_orphan",
+			target: func(t *testing.T, f *flowFixture) int64 {
+				var id int64
+				if err := f.sp.P.QueryRow(context.Background(), `
+					INSERT INTO card (card_type_id, parent_card_id, phase) VALUES ($1, $2, 'active') RETURNING id
+				`, f.statusCTID, f.projectID).Scan(&id); err != nil {
+					t.Fatalf("orphan status: %v", err)
+				}
+				if _, err := f.sp.P.Exec(context.Background(), `
+					INSERT INTO attribute_value (card_id, attribute_def_id, value) VALUES ($1, $2, to_jsonb('Parked'::text))
+				`, id, f.titleAttrID); err != nil {
+					t.Fatalf("orphan status title: %v", err)
+				}
+				return id
+			},
+			wantLabel:     "Parked",
+			wantAvailable: 1, // Doing→Done
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, sp := setupFlow(t, tc.schema)
+			f := makeFlowFixture(t, srv, sp)
+			f.addStep(t, f.doingID, f.doneID, "Complete", 0)
+			target := tc.target(t, f)
+
+			sr := f.updateStatus(auth.WithSystemUser(context.Background()), f.taskID, target)
+			if sr.OK || sr.Error == nil || sr.Error.Code != "flow_invalid_state" {
+				t.Fatalf("expected flow_invalid_state; got ok=%v %+v", sr.OK, sr.Error)
+			}
+			buf, err := json.Marshal(sr.Error)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var env struct {
+				Message string `json:"message"`
+				Detail  struct {
+					AttemptedTo struct {
+						Label string `json:"label"`
+					} `json:"attempted_to"`
+					Available []json.RawMessage `json:"available"`
+				} `json:"detail"`
+			}
+			if err := json.Unmarshal(buf, &env); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if env.Detail.AttemptedTo.Label != tc.wantLabel {
+				t.Errorf("attempted_to.label = %q, want %q", env.Detail.AttemptedTo.Label, tc.wantLabel)
+			}
+			if len(env.Detail.Available) != tc.wantAvailable {
+				t.Errorf("available: got %d, want %d", len(env.Detail.Available), tc.wantAvailable)
+			}
+
+			// The card stays on Doing.
+			if got := mustQueryInt(t, sp, context.Background(), `
+				SELECT (value)::text::bigint FROM attribute_value
+				WHERE card_id = $1 AND attribute_def_id = $2
+			`, f.taskID, f.statusAttrID); got != f.doingID {
+				t.Errorf("status = %d, want %d (Doing, unchanged)", got, f.doingID)
+			}
+		})
 	}
 }
 

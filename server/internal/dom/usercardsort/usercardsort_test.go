@@ -77,14 +77,7 @@ func makeCards(t *testing.T, srv *api.Server, n int) []int64 {
 
 	// Status under the project so the n tasks below can satisfy
 	// Gate 6's (task, status) required-edge check.
-	resp = srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
-	}})
-	mustOK(t, resp.Subresponses[0])
-	var sOut card.InsertOutput
-	buf, _ = json.Marshal(resp.Subresponses[0].Data)
-	_ = json.Unmarshal(buf, &sOut)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	subs := make([]api.SubRequest, n)
 	for i := range subs {
@@ -93,7 +86,7 @@ func makeCards(t *testing.T, srv *api.Server, n int) []int64 {
 			Endpoint: "card", Action: "insert",
 			Data: json.RawMessage(fmt.Sprintf(
 				`{"card_type_name":"task","parent_card_id":"%d","title":"task%d","attributes":{"status":"%d"}}`,
-				pOut.ID, i, sOut.ID)),
+				pOut.ID, i, statusID)),
 		}
 	}
 	resp = srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: subs})

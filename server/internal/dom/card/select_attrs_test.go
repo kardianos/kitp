@@ -137,7 +137,7 @@ func TestSelectWithAttributes_Predicate(t *testing.T) {
 		statusIDs[name] = sOut.ID
 	}
 
-	taskStatusID := mkStatusUnder(t, srv, pOut.ID)
+	taskStatusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 	for i, status := range []string{"open", "closed", "open"} {
 		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: fmt.Sprintf("t%d", i), Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -242,7 +242,7 @@ func TestSelectWithAttributes_AndPredicate(t *testing.T) {
 		_ = json.Unmarshal(b, &sOut)
 		statusIDs[name] = sOut.ID
 	}
-	taskStatusID := mkStatusUnder(t, srv, pOut.ID)
+	taskStatusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 	for i, s := range specs {
 		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: fmt.Sprintf("t%d", i), Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -309,7 +309,7 @@ func TestSelectWithAttributes_Order_Limit(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
-	sid := mkStatusUnder(t, srv, pOut.ID)
+	sid := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 	for _, t1 := range []string{"alpha", "gamma", "beta"} {
 		resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 			{ID: t1, Endpoint: "card", Action: "insert", Data: json.RawMessage(
@@ -359,7 +359,7 @@ func TestSelectWithAttributes_OrderBySortOrder(t *testing.T) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
-	sid := mkStatusUnder(t, srv, pOut.ID)
+	sid := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 	// Three tasks. We'll insert in id order then assign sort_order so the
 	// resulting ASC ordering reverses the insertion order.
 	taskIDs := make([]int64, 3)
@@ -423,18 +423,9 @@ func BenchmarkGrid1000Cards(b *testing.B) {
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
-	// Status under the project so the bench tasks can satisfy the
-	// (task, status) required-edge check.
-	statusResp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
-	}})
-	if !statusResp.Subresponses[0].OK {
-		b.Fatalf("status: %+v", statusResp.Subresponses[0])
-	}
-	var sBenchOut card.InsertOutput
-	statusBuf, _ := json.Marshal(statusResp.Subresponses[0].Data)
-	_ = json.Unmarshal(statusBuf, &sBenchOut)
+	// A flow status under the project so the bench tasks can satisfy
+	// the (task, status) required-edge check.
+	benchStatusID := store.TemplateStatusID(b, srv.Pool.P, pOut.ID, "Todo")
 
 	// 1000 tasks × 5 attributes set on insert (title + status + assignee
 	// + description + sort_order). Phase 6 emits one card_create activity
@@ -452,7 +443,7 @@ func BenchmarkGrid1000Cards(b *testing.B) {
 		data := fmt.Sprintf(
 			`{"card_type_name":"task","parent_card_id":"%d","title":"t%d","attributes":{`+
 				`"assignee":%d,"description":%q,"sort_order":%d,"status":"%d"}}`,
-			pOut.ID, i, int64(2+(i%5)), fmt.Sprintf("desc%d", i), i*100, sBenchOut.ID)
+			pOut.ID, i, int64(2+(i%5)), fmt.Sprintf("desc%d", i), i*100, benchStatusID)
 		subs[i] = api.SubRequest{ID: fmt.Sprintf("t%d", i), Endpoint: "card", Action: "insert",
 			Data: json.RawMessage(data)}
 	}
@@ -525,7 +516,7 @@ func TestSelectWithAttributes_Bench(t *testing.T) {
 	var sOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &sOut)
-	tStatus := mkStatusUnder(t, srv, pOut.ID)
+	tStatus := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	// Insert 1000 tasks with 6 attributes each (title + status + assignee
 	// + description + sort_order + milestone_ref).

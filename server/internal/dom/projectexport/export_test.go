@@ -90,7 +90,7 @@ func seedSimpleProject(t *testing.T, srv *api.Server) simpleSeed {
 	pid := insert("p", `{"card_type_name":"project","title":"Demo Project"}`)
 	mid := insert("m", fmt.Sprintf(`{"card_type_name":"milestone","parent_card_id":"%d","title":"M1"}`, pid))
 	cid := insert("c", fmt.Sprintf(`{"card_type_name":"component","parent_card_id":"%d","title":"Frontend"}`, pid))
-	sid := insert("s", fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pid))
+	sid := store.TemplateStatusID(t, srv.Pool.P, pid, "Todo")
 	tagID := insert("tg", fmt.Sprintf(
 		`{"card_type_name":"tag","parent_card_id":"%d","title":"priority/high","attributes":{"path":"priority/high"}}`, pid))
 

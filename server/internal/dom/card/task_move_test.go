@@ -9,6 +9,7 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/card"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // ---- fixtures ----
@@ -49,12 +50,9 @@ func seedMoveScene(t *testing.T, schema string) moveFixture {
 	f := moveFixture{srv: srv}
 	f.srcProjectID = insert("ps", `{"card_type_name":"project","title":"Source"}`)
 	f.destProjectID = insert("pd", `{"card_type_name":"project","title":"Destination"}`)
-	f.srcStatusID = insert("sss", fmt.Sprintf(
-		`{"card_type_name":"status","parent_card_id":"%d","title":"SrcOpen"}`, f.srcProjectID))
-	f.destStatusOpen = insert("dso", fmt.Sprintf(
-		`{"card_type_name":"status","parent_card_id":"%d","title":"DestOpen"}`, f.destProjectID))
-	f.destStatusDone = insert("dsd", fmt.Sprintf(
-		`{"card_type_name":"status","parent_card_id":"%d","title":"DestDone"}`, f.destProjectID))
+	f.srcStatusID = store.TemplateStatusID(t, srv.Pool.P, f.srcProjectID, "Todo")
+	f.destStatusOpen = store.TemplateStatusID(t, srv.Pool.P, f.destProjectID, "Todo")
+	f.destStatusDone = store.TemplateStatusID(t, srv.Pool.P, f.destProjectID, "Done")
 	f.destMilestoneID = insert("dm", fmt.Sprintf(
 		`{"card_type_name":"milestone","parent_card_id":"%d","title":"DestMilestone"}`, f.destProjectID))
 	f.destComponentID = insert("dc", fmt.Sprintf(
@@ -219,8 +217,7 @@ func TestTaskMove_HappyPath(t *testing.T) {
 // triage-phase status. After Phase 2 of UNIFIED_HANDLER_PLAN.md the
 // destination project is graph-copied from the standard template
 // (is_template=true), which seeds a "New idea" triage status with
-// sort_order=5. That wins over the test's DestOpen/DestDone (no
-// sort_order assigned, so they tie-break on id and lose). We assert
+// sort_order=5 — the flow's only triage state, so it wins. We assert
 // only that the resolution lands on SOME triage status under the
 // destination project.
 func TestTaskMove_DefaultIntakeStatus(t *testing.T) {

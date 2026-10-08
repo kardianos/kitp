@@ -54,21 +54,12 @@ func TestUpdateWithCommentProcess(t *testing.T) {
 
 	// Status under the project so task inserts can satisfy Gate 6's
 	// (task, status) required-edge check.
-	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
-	}})
-	if !resp.Subresponses[0].OK {
-		t.Fatalf("status: %+v", resp.Subresponses[0])
-	}
-	var sOut card.InsertOutput
-	buf, _ = json.Marshal(resp.Subresponses[0].Data)
-	_ = json.Unmarshal(buf, &sOut)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
-				pOut.ID, sOut.ID))},
+				pOut.ID, statusID))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -140,17 +131,11 @@ func TestProcessRollback(t *testing.T) {
 	_ = json.Unmarshal(buf, &pOut)
 
 	// Pre-create a task so we have a valid card_id for the attribute.update steps.
-	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
-	}})
-	var sOut card.InsertOutput
-	buf, _ = json.Marshal(resp.Subresponses[0].Data)
-	_ = json.Unmarshal(buf, &sOut)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
-				pOut.ID, sOut.ID))},
+				pOut.ID, statusID))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)
@@ -200,17 +185,11 @@ func TestAuthDeny(t *testing.T) {
 	var pOut card.InsertOutput
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
-	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
-	}})
-	var sOut card.InsertOutput
-	buf, _ = json.Marshal(resp.Subresponses[0].Data)
-	_ = json.Unmarshal(buf, &sOut)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"T","attributes":{"status":"%d"}}`,
-				pOut.ID, sOut.ID))},
+				pOut.ID, statusID))},
 	}})
 	var tOut card.InsertOutput
 	buf, _ = json.Marshal(resp.Subresponses[0].Data)

@@ -87,16 +87,10 @@ func newProjectAndTask(t *testing.T, sp *store.Pool, title string) (int64, int64
 	}
 	buf, _ := json.Marshal(resp.Data)
 	_ = json.Unmarshal(buf, &pOut)
-	resp = apiInsert(t, sp, ctx, fmt.Sprintf(
-		`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))
-	var sOut struct {
-		ID int64 `json:"id,string"`
-	}
-	buf, _ = json.Marshal(resp.Data)
-	_ = json.Unmarshal(buf, &sOut)
+	statusID := store.TemplateStatusID(t, sp.P, pOut.ID, "Todo")
 	resp = apiInsert(t, sp, ctx, fmt.Sprintf(
 		`{"card_type_name":"task","parent_card_id":"%d","title":"%s-task","attributes":{"status":"%d"}}`,
-		pOut.ID, title, sOut.ID))
+		pOut.ID, title, statusID))
 	var tOut struct {
 		ID int64 `json:"id,string"`
 	}

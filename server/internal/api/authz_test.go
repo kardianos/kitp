@@ -98,21 +98,12 @@ func makeProjectAndTask(t *testing.T, srv *api.Server, title string) (projectID 
 	buf, _ := json.Marshal(resp.Subresponses[0].Data)
 	_ = json.Unmarshal(buf, &pOut)
 
-	resp = srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "s", Endpoint: "card", Action: "insert", Data: json.RawMessage(
-			fmt.Sprintf(`{"card_type_name":"status","parent_card_id":"%d","title":"Todo"}`, pOut.ID))},
-	}})
-	if !resp.Subresponses[0].OK {
-		t.Fatalf("status insert: %+v", resp.Subresponses[0])
-	}
-	var sOut card.InsertOutput
-	buf, _ = json.Marshal(resp.Subresponses[0].Data)
-	_ = json.Unmarshal(buf, &sOut)
+	statusID := store.TemplateStatusID(t, srv.Pool.P, pOut.ID, "Todo")
 
 	resp = srv.Dispatch(sysCtx, api.BatchRequest{Subrequests: []api.SubRequest{
 		{ID: "t", Endpoint: "card", Action: "insert", Data: json.RawMessage(
 			fmt.Sprintf(`{"card_type_name":"task","parent_card_id":"%d","title":"task1","attributes":{"status":"%d"}}`,
-				pOut.ID, sOut.ID))},
+				pOut.ID, statusID))},
 	}})
 	if !resp.Subresponses[0].OK {
 		t.Fatalf("task insert: %+v", resp.Subresponses[0])
