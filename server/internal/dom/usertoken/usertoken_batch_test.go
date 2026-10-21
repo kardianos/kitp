@@ -5,6 +5,7 @@ package usertoken_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -245,5 +246,76 @@ func TestUserTokenRevokeBatch_PerRowValidation(t *testing.T) {
 	}
 	if rows[0].Code != "validation" {
 		t.Errorf("code=%q", rows[0].Code)
+	}
+}
+
+// TestUserTokenCreateBatch_Scope — scope '' (default) or 'links' is
+// stored and echoed (create + list); any other value is rejected.
+func TestUserTokenCreateBatch_Scope(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_user_token_create_scope")
+	parent := auth.SystemUserID
+	agent := seedAgentBare(t, pool, "agent-scope", parent)
+	uid := strconv.FormatInt(agent, 10)
+
+	cases := []struct {
+		label     string
+		scope     any // nil = key absent
+		wantCode  string
+		wantScope string
+	}{
+		{"absent is full access", nil, "", ""},
+		{"empty is full access", "", "", ""},
+		{"links only", "links", "", "links"},
+		{"unknown scope", "admin", "validation", ""},
+	}
+	for i, c := range cases {
+		t.Run(c.label, func(t *testing.T) {
+			label := fmt.Sprintf("tok-%d", i)
+			in := map[string]any{"user_id": uid, "label": label}
+			if c.scope != nil {
+				in["scope"] = c.scope
+			}
+			rows := callBatch(t, pool, "user_token_create_batch", parent, []map[string]any{in})
+			if c.wantCode != "" {
+				if rows[0].OK || rows[0].Code != c.wantCode {
+					t.Fatalf("want %s; got %+v", c.wantCode, rows[0])
+				}
+				return
+			}
+			var got struct {
+				Scope string `json:"scope"`
+			}
+			if !rows[0].OK {
+				t.Fatalf("want ok; got %+v", rows[0])
+			}
+			if err := json.Unmarshal(rows[0].Result, &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got.Scope != c.wantScope {
+				t.Errorf("create echoed scope %q, want %q", got.Scope, c.wantScope)
+			}
+			var listed struct {
+				Rows []struct {
+					Label string `json:"label"`
+					Scope string `json:"scope"`
+				} `json:"rows"`
+			}
+			lrows := callBatch(t, pool, "user_token_list_batch", parent, []map[string]any{{"user_id": uid}})
+			if err := json.Unmarshal(lrows[0].Result, &listed); err != nil {
+				t.Fatalf("unmarshal list: %v", err)
+			}
+			found := false
+			for _, r := range listed.Rows {
+				if r.Label == label {
+					found = true
+					if r.Scope != c.wantScope {
+						t.Errorf("list scope %q, want %q", r.Scope, c.wantScope)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("token %s not listed", label)
+			}
+		})
 	}
 }

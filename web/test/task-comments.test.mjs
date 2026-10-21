@@ -299,6 +299,32 @@ test('TaskComments: comments derive from the stream and render markdown (sanitiz
   assert.match(body.textContent, /First comment body\./);
 });
 
+test('TaskComments: the composer sits ABOVE the comment history', async () => {
+  const { transport } = commentsMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { tc } = mountComments(api);
+  await settle(dispatcher);
+
+  const composer = tc.el.querySelector('[data-comments-composer]');
+  const firstComment = tc.el.querySelector('[data-comment-row]');
+  assert.ok(composer && firstComment);
+  const FOLLOWING = globalThis.window.Node.DOCUMENT_POSITION_FOLLOWING;
+  assert.ok(composer.compareDocumentPosition(firstComment) & FOLLOWING, 'history follows the composer');
+});
+
+test('TaskComments: each comment shows its local date + time (relative age in the tooltip)', async () => {
+  const { transport } = commentsMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { tc } = mountComments(api);
+  await settle(dispatcher);
+
+  const time = tc.el.querySelector('[data-comment-row="100"] [data-comment-time]');
+  assert.equal(time.tagName, 'TIME');
+  assert.equal(time.textContent, M.formatLocalDateTime(ts(1)));
+  assert.match(time.textContent, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  assert.match(time.title, / ago$/);
+});
+
 test('TaskComments: a comment_edit row overrides the body + flags (edited)', async () => {
   const { transport } = commentsMockTransport();
   const { dispatcher, api } = bootApi(transport);

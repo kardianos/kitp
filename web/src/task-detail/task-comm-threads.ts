@@ -29,7 +29,9 @@ import {
   REPLY_POST_SPEC,
   type CommRow,
   type CommListForTaskOutput,
+  type ReplyRow,
 } from './comm-specs.js';
+import { localTimeEl } from '../util/datetime.js';
 
 import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 import { captionedField } from '../ui/captioned-field.js';
@@ -377,11 +379,33 @@ export class CommThreads extends Control<CommThreadsConfig> {
         li.dataset.replyRow = r.id.toString();
         // Direction drives the bubble tint: 'in' for received mail, 'out' for
         // anything we sent/queued (pending / sent / bounced / failed).
-        li.dataset.direction = r.deliveryStatus === 'received' ? 'in' : 'out';
+        const direction = r.deliveryStatus === 'received' ? 'in' : 'out';
+        li.dataset.direction = direction;
+        // "Who · when · status": the sender (with their address), the local
+        // date + time, then the delivery status.
         const meta = document.createElement('div');
         meta.className = 'task-comms__reply-meta muted';
-        const fromTxt = r.from.length > 0 ? r.from : '—';
-        meta.textContent = `${fromTxt} · ${r.deliveryStatus}`;
+        const sender = replySender(r, direction);
+        const who = document.createElement('span');
+        who.className = 'task-comms__reply-from';
+        who.dataset.replyFrom = '';
+        who.textContent = sender.name;
+        meta.append(who);
+        if (sender.detail !== '') {
+          const addr = document.createElement('span');
+          addr.className = 'task-comms__reply-addr';
+          addr.dataset.replyAddr = '';
+          addr.textContent = sender.detail;
+          meta.append(' ', addr);
+        }
+        const time = localTimeEl(r.createdAt, 'task-comms__reply-time');
+        time.dataset.replyTime = '';
+        const status = document.createElement('span');
+        status.dataset.replyStatus = '';
+        status.textContent = r.deliveryStatus;
+        // Whitespace between the parts keeps the copied / spoken text
+        // readable; the flex layout ignores whitespace-only runs.
+        meta.append(' ', metaSep(), ' ', time, ' ', metaSep(), ' ', status);
         const body = document.createElement('div');
         body.className = 'task-comms__reply-body';
         body.textContent = r.bodyText;
@@ -687,6 +711,30 @@ function parseId(raw: string | undefined): bigint | null {
   } catch {
     return null;
   }
+}
+
+/** The sender line of one message: `name` is who it's from (the kitp author,
+ *  the matched person, the header display name, or the bare address), and
+ *  `detail` the address beside it — "via support@…" for outbound mail (the
+ *  channel mailbox it went out through), "<carol@…>" for received mail —
+ *  or '' when it would only repeat the name. */
+export function replySender(
+  r: Pick<ReplyRow, 'from' | 'fromName' | 'fromAddress'>,
+  direction: 'in' | 'out',
+): { name: string; detail: string } {
+  const name = r.fromName || r.fromAddress || r.from || '—';
+  const addr = r.fromAddress;
+  if (addr === '' || addr.toLowerCase() === name.toLowerCase()) return { name, detail: '' };
+  return { name, detail: direction === 'out' ? `via ${addr}` : `<${addr}>` };
+}
+
+/** A muted middot separator for a meta line. */
+function metaSep(): HTMLElement {
+  const sep = document.createElement('span');
+  sep.className = 'task-comms__meta-sep';
+  sep.setAttribute('aria-hidden', 'true');
+  sep.textContent = '·';
+  return sep;
 }
 
 function personName(card: CardWithAttrs): string {

@@ -163,6 +163,94 @@ func TestCommListForTaskBatch_Happy(t *testing.T) {
 	}
 }
 
+// TestCommListForTaskBatch_Sender — each reply resolves WHO it's from:
+// the kitp author for outbound mail (not the channel's from_address), the
+// matching person card for an inbound sender, else the From: header's
+// display name, else nothing (UI falls back to the address).
+func TestCommListForTaskBatch_Sender(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_comm_list_for_task_batch_sender")
+	ctx := context.Background()
+	project := seedCardWithParent(t, pool, "project", nil)
+	task := seedCardWithParent(t, pool, "task", &project)
+	commID := seedCardWithParent(t, pool, "comm", &task)
+	writeAttrJSON(t, pool, commID, "thread_id", "snd1234567")
+
+	var authorID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO user_account (display_name) VALUES ('Dana Author') RETURNING id`).Scan(&authorID); err != nil {
+		t.Fatalf("author: %v", err)
+	}
+	person := seedCardWithParent(t, pool, "person", nil)
+	writeAttrJSON(t, pool, person, "title", "Carol Customer")
+	writeAttrJSON(t, pool, person, "email", "Carol@Example.com")
+
+	type want struct{ name, addr, author string }
+	rows := []struct {
+		label  string
+		from   string
+		author int64 // 0 = inbound (no reply_author)
+		want   want
+	}{
+		{"outbound shows the kitp author", "Support <support@acme.test>", authorID,
+			want{"Dana Author", "support@acme.test", strconv.FormatInt(authorID, 10)}},
+		{"inbound matched to a person by email", `"C. C." <carol@example.com>`, 0,
+			want{"Carol Customer", "carol@example.com", "0"}},
+		{"inbound bare address matched", "CAROL@example.com", 0,
+			want{"Carol Customer", "carol@example.com", "0"}},
+		{"inbound unknown uses header name", `"Erin Elsewhere" <erin@else.test>`, 0,
+			want{"Erin Elsewhere", "erin@else.test", "0"}},
+		{"inbound unknown bare address", "frank@else.test", 0,
+			want{"frank@else.test", "frank@else.test", "0"}},
+		{"no envelope", "", 0, want{"", "", "0"}},
+	}
+	var replyIDs []int64
+	for _, r := range rows {
+		id := seedCardWithParent(t, pool, "reply_body", nil)
+		writeAttrJSON(t, pool, id, "reply_from", r.from)
+		writeAttrJSON(t, pool, id, "reply_body_text", r.label)
+		if r.author != 0 {
+			writeAttrJSON(t, pool, id, "reply_author", r.author)
+			writeAttrJSON(t, pool, id, "delivery_status", "sent")
+		} else {
+			writeAttrJSON(t, pool, id, "delivery_status", "received")
+		}
+		replyIDs = append(replyIDs, id)
+	}
+	writeAttrJSON(t, pool, commID, "replies", replyIDs)
+
+	res := callCommListForTaskBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"task_id": strconv.FormatInt(task, 10)},
+	})
+	if len(res) != 1 || !res[0].OK {
+		t.Fatalf("want one ok row, got %+v", res)
+	}
+	var out struct {
+		Rows []struct {
+			Replies []struct {
+				BodyText    string `json:"body_text"`
+				FromName    string `json:"from_name"`
+				FromAddress string `json:"from_address"`
+				AuthorID    string `json:"author_id"`
+			} `json:"replies"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(res[0].Result, &out); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, res[0].Result)
+	}
+	if len(out.Rows) != 1 || len(out.Rows[0].Replies) != len(rows) {
+		t.Fatalf("got %s", res[0].Result)
+	}
+	for i, r := range rows {
+		got := out.Rows[0].Replies[i]
+		if got.BodyText != r.label {
+			t.Fatalf("reply %d out of order: %q", i, got.BodyText)
+		}
+		if g := (want{got.FromName, got.FromAddress, got.AuthorID}); g != r.want {
+			t.Errorf("%s: got %+v want %+v", r.label, g, r.want)
+		}
+	}
+}
+
 // TestCommListForTaskBatch_Empty — task with no comms returns rows=[].
 func TestCommListForTaskBatch_Empty(t *testing.T) {
 	pool := store.TestPool(t, "kitp_test_comm_list_for_task_batch_empty")

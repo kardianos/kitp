@@ -4,7 +4,8 @@
 -- Per-row pipeline:
 --   1. Validation: user_id and label are required. expires_at, when
 --      present, must parse as an ISO-8601 / RFC3339 timestamp; an
---      invalid string surfaces 'validation'.
+--      invalid string surfaces 'validation'. scope, when present, must
+--      be '' (unrestricted) or 'links' (forge link hook only).
 --   2. Mint the secret value: 32 random bytes (pgcrypto's
 --      gen_random_bytes) base64url-encoded (rtrim '=' padding, then
 --      '+' -> '-', '/' -> '_'). Shape matches Go-side
@@ -20,7 +21,7 @@
 -- Authz (parent_user_id or global admin) runs pre-tx in Go.
 --
 -- Result JSON shape matches `usertoken.CreateOutput`:
---   {"token": "<opaque>", "label": "<echo>"}
+--   {"token": "<opaque>", "label": "<echo>", "scope": "<echo>"}
 CREATE OR REPLACE FUNCTION user_token_create_batch(
     actor_id bigint,
     inputs jsonb
@@ -38,6 +39,7 @@ DECLARE
     _label text;
     _expires_raw text;
     _expires_at timestamptz;
+    _scope text;
     _token text;
 BEGIN
     FOR _idx, _raw IN
@@ -51,6 +53,10 @@ BEGIN
         END;
         _label := _raw->>'label';
         _expires_raw := _raw->>'expires_at';
+        -- scope: '' = unrestricted (MCP + every bearer route); 'links' =
+        -- only the forge link hook. The closed set mirrors the Go
+        -- auth.TokenScope* constants the api.Router enforces per route.
+        _scope := COALESCE(_raw->>'scope', '');
 
         IF _user_id IS NULL OR _user_id = 0 THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
@@ -60,6 +66,12 @@ BEGIN
         IF _label IS NULL OR _label = '' THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 'user_token.create: label is required'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF _scope NOT IN ('', 'links') THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('user_token.create: scope must be empty (full access) or links, got %L', _scope),
+                NULL::jsonb;
             CONTINUE;
         END IF;
 
@@ -82,13 +94,14 @@ BEGIN
             rtrim(encode(gen_random_bytes(32), 'base64'), '='),
             '+/', '-_');
 
-        INSERT INTO user_token (id, user_id, label, expires_at)
-        VALUES (_token, _user_id, _label, _expires_at);
+        INSERT INTO user_token (id, user_id, label, expires_at, scope)
+        VALUES (_token, _user_id, _label, _expires_at, _scope);
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(
                 'token', _token,
-                'label', _label
+                'label', _label,
+                'scope', _scope
             );
     END LOOP;
 END;

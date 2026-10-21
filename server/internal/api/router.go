@@ -14,7 +14,15 @@
 //
 //   - Bearer(pattern, h)   bearer token required. Same shape as Authed
 //                          but resolved via the token Manager rather
-//                          than the session cookie. Used by MCP.
+//                          than the session cookie. Used by MCP. Only
+//                          unrestricted (full-scope) tokens pass.
+//
+//   - BearerScoped(pattern, scope, h)
+//                          bearer token that is unrestricted OR limited
+//                          to `scope` (e.g. a forge's links-only token
+//                          on POST /api/v1/links). A scoped token is
+//                          refused (403) on every route not registered
+//                          for its scope.
 //
 // The top-level mux mounts `apiRouter.Mux()` at "/api/" and the SPA at
 // "/". Domain packages register through the router; they do not see
@@ -147,20 +155,39 @@ func (rt *Router) Authed(pattern string, h AuthedHandler) {
 	if rt.session == nil {
 		panic("api.Router: Authed registered but RouterConfig.SessionResolver is nil")
 	}
-	rt.mux.Handle(pattern, rt.wrap(rt.session, "session", h))
+	rt.mux.Handle(pattern, rt.wrap(rt.session, "session", auth.TokenScopeFull, h))
 	rt.routes = append(rt.routes, RouteSpec{Tier: "authed", Pattern: pattern})
 }
 
 // Bearer registers a token-authenticated handler. Same auth-then-run
 // contract as Authed, but resolves via the bearer resolver (token
-// Manager). Panics when BearerResolver is unset, for the same
+// Manager). Only unrestricted tokens pass; a scoped token gets 403.
+// Panics when BearerResolver is unset, for the same
 // startup-trip-rather-than-runtime-401 reason.
 func (rt *Router) Bearer(pattern string, h BearerHandler) {
+	rt.bearerRoute(pattern, auth.TokenScopeFull, h)
+}
+
+// BearerScoped registers a token-authenticated handler that ALSO admits
+// tokens limited to `scope` — the narrow credential an integration
+// holds (a forge's links-only token). Unrestricted tokens pass too.
+func (rt *Router) BearerScoped(pattern, scope string, h BearerHandler) {
+	if scope == auth.TokenScopeFull {
+		panic("api.Router: BearerScoped needs a non-empty scope; use Bearer")
+	}
+	rt.bearerRoute(pattern, scope, h)
+}
+
+func (rt *Router) bearerRoute(pattern, scope string, h BearerHandler) {
 	if rt.bearer == nil {
 		panic("api.Router: Bearer registered but RouterConfig.BearerResolver is nil")
 	}
-	rt.mux.Handle(pattern, rt.wrap(rt.bearer, "bearer", h))
-	rt.routes = append(rt.routes, RouteSpec{Tier: "bearer", Pattern: pattern})
+	rt.mux.Handle(pattern, rt.wrap(rt.bearer, "bearer", scope, h))
+	tier := "bearer"
+	if scope != auth.TokenScopeFull {
+		tier = "bearer:" + scope
+	}
+	rt.routes = append(rt.routes, RouteSpec{Tier: tier, Pattern: pattern})
 }
 
 // Routes returns every route registered on this Router, in
@@ -175,7 +202,9 @@ func (rt *Router) Routes() []RouteSpec {
 	return out
 }
 
-func (rt *Router) wrap(resolve Resolver, kind string, h AuthedHandler) http.HandlerFunc {
+// wrap resolves the credential, then admits the request when the
+// resolved token is unrestricted or carries exactly routeScope.
+func (rt *Router) wrap(resolve Resolver, kind, routeScope string, h AuthedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, err := resolve(r)
 		if err != nil {
@@ -189,6 +218,13 @@ func (rt *Router) wrap(resolve Resolver, kind string, h AuthedHandler) http.Hand
 		}
 		if user == nil {
 			rt.unauthorized(w, r, kind)
+			return
+		}
+		if user.TokenScope != auth.TokenScopeFull && user.TokenScope != routeScope {
+			rt.logger.InfoContext(r.Context(), "auth rejected",
+				"kind", kind, "path", r.URL.Path, "err", "token scope "+user.TokenScope+" not valid here")
+			rt.writeErr(w, r, &HTTPError{Status: http.StatusForbidden, Code: "token_scope",
+				Message: "this token is limited to " + user.TokenScope + " and cannot be used here"})
 			return
 		}
 		ctx := auth.WithUser(r.Context(), user)

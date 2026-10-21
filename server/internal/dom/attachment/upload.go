@@ -202,7 +202,7 @@ func handleSignedUpload(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		return err
 	}
 	var f file.CreateOutput
-	if err := dispatchOne(ctx, cfg.Dispatcher, "file", "create", file.CreateInput{
+	if err := cfg.Dispatcher.DispatchOne(ctx, "file", "create", file.CreateInput{
 		Filename: g.Filename,
 		MimeType: g.MimeType,
 		Chunks:   chunks,
@@ -210,7 +210,7 @@ func handleSignedUpload(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		return err
 	}
 	var att CreateOutput
-	if err := dispatchOne(ctx, cfg.Dispatcher, "attachment", "create", CreateInput{
+	if err := cfg.Dispatcher.DispatchOne(ctx, "attachment", "create", CreateInput{
 		CardID: g.CardID,
 		FileID: f.ID,
 	}, &att); err != nil {
@@ -268,36 +268,4 @@ func storeUploadBody(ctx context.Context, w http.ResponseWriter, r *http.Request
 		return nil, api.BadRequest("empty_body", "upload body is empty")
 	}
 	return chunks, nil
-}
-
-// dispatchOne runs a single sub-request through the dispatcher (role,
-// scope, timeout, tx — everything a batch call gets) and decodes its
-// output into out. A handler rejection comes back as *reg.HandlerError,
-// which the router renders with the dispatcher's own code + message.
-func dispatchOne(ctx context.Context, srv *api.Server, endpoint, action string, in, out any) error {
-	data, err := json.Marshal(in)
-	if err != nil {
-		return api.Internal(fmt.Errorf("%s.%s: marshal input: %w", endpoint, action, err))
-	}
-	resp := srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "0", Endpoint: endpoint, Action: action, Data: data},
-	}})
-	if len(resp.Subresponses) != 1 {
-		return api.Internal(fmt.Errorf("%s.%s: got %d subresponses", endpoint, action, len(resp.Subresponses)))
-	}
-	sr := resp.Subresponses[0]
-	if !sr.OK {
-		if sr.Error == nil {
-			return api.Internal(fmt.Errorf("%s.%s: failed without an error envelope", endpoint, action))
-		}
-		return &reg.HandlerError{Code: sr.Error.Code, Message: sr.Error.Message}
-	}
-	raw, err := json.Marshal(sr.Data)
-	if err != nil {
-		return api.Internal(fmt.Errorf("%s.%s: marshal output: %w", endpoint, action, err))
-	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return api.Internal(fmt.Errorf("%s.%s: decode output: %w", endpoint, action, err))
-	}
-	return nil
 }

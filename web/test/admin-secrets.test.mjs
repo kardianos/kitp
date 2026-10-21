@@ -624,6 +624,27 @@ test('Agents: + New fires agent.create with the display name', async () => {
   const creates = writesFor(transport, 'agent.create');
   assert.equal(creates.length, 1);
   assert.equal(creates[0].data.display_name, 'research-agent');
+  // The admin screen defaults the owner to the workspace (System) — the
+  // agents admins set up are usually integrations that must outlive them.
+  assert.equal(creates[0].data.owner, 'system');
+});
+
+test('Agents: + New can make a personal agent instead', async () => {
+  const transport = adminTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountView(api, 'agents');
+  await settle(dispatcher);
+
+  ctrl.el.querySelector('[data-md-new]').dispatchEvent({ type: 'click' });
+  const dialog = ctrl.el.querySelector('[data-md-create]');
+  dialog.querySelector('[data-md-form-field="display_name"]').value = 'my-helper';
+  dialog.querySelector('[data-md-form-field="owner"]').value = 'self';
+  dialog.querySelector('[data-md-create-submit]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+
+  const creates = writesFor(transport, 'agent.create');
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].data.owner, 'self');
 });
 
 test('Agents: Delete fires agent.delete for the selected agent', async () => {

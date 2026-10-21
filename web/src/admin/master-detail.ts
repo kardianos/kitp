@@ -79,6 +79,12 @@ export interface MasterDetailFormField {
   required?: boolean;
   placeholder?: string;
   /**
+   * The value the editor starts with — and returns to whenever the form
+   * resets (dialog open, after an add). A required select otherwise starts
+   * unselected and makes the user pick every time.
+   */
+  defaultValue?: string;
+  /**
    * Route this field into the payload's `attributes` object (under `name`)
    * instead of a top-level payload key — so a card.insert create can set extra
    * card attributes (e.g. a screen's `layout` / `slug`) via
@@ -1534,7 +1540,7 @@ export class MasterDetail extends Control<MasterDetailConfig> {
       // Reset the form fields after a fire (selection-driven reload repaints).
       for (const f of add.fields) {
         const el = inputs.get(f.name);
-        if (el) (el as { value?: string }).value = '';
+        if (el) (el as { value?: string }).value = f.defaultValue ?? '';
       }
     });
     form.append(btn);
@@ -1589,7 +1595,7 @@ export class MasterDetail extends Control<MasterDetailConfig> {
       open: () => {
         for (const f of create.fields) {
           const el = inputs.get(f.name);
-          if (el) (el as { value?: string }).value = '';
+          if (el) (el as { value?: string }).value = f.defaultValue ?? '';
         }
         root.style.display = '';
         const first = inputs.get(create.fields[0]?.name ?? '');
@@ -1652,9 +1658,10 @@ export class MasterDetail extends Control<MasterDetailConfig> {
       sel.className = `${cls}__input`;
       sel.dataset.mdFormField = f.name;
       // Repaint the option set from the field's options. Preserves the current
-      // selection across repaints (no-op if it's gone).
+      // selection across repaints (no-op if it's gone); an unset select takes
+      // the field's default.
       const repaint = (): void => {
-        const prev = (sel as { value?: string }).value ?? '';
+        const prev = ((sel as { value?: string }).value ?? '') || (f.defaultValue ?? '');
         sel.replaceChildren();
         if (f.required !== true) {
           const blank = document.createElement('option');
@@ -1691,6 +1698,7 @@ export class MasterDetail extends Control<MasterDetailConfig> {
       input.className = `${cls}__input`;
       input.dataset.mdFormField = f.name;
       if (f.placeholder) (input as HTMLInputElement).placeholder = f.placeholder;
+      if (f.defaultValue !== undefined) (input as HTMLInputElement).value = f.defaultValue;
       el = input;
     }
     wrap.append(el);

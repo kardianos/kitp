@@ -60,6 +60,7 @@ import {
   type IdMap,
 } from './activity-text.js';
 
+import { localTimeEl, formatLocalDateTime } from '../util/datetime.js';
 import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                  */
@@ -179,17 +180,19 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     head.textContent = 'COMMENTS';
     section.append(head);
 
-    const body = document.createElement('div');
-    body.className = 'task-comments__list';
-    body.dataset.commentsBody = '';
-    this.commentsBody = body;
-    section.append(body);
-
+    // The composer sits ABOVE the history (newest-first), so a new comment
+    // lands directly under the box it was typed into.
     const composer = document.createElement('div');
     composer.className = 'task-comments__composer';
     composer.dataset.commentsComposer = '';
     this.composerHost = composer;
     section.append(composer);
+
+    const body = document.createElement('div');
+    body.className = 'task-comments__list';
+    body.dataset.commentsBody = '';
+    this.commentsBody = body;
+    section.append(body);
 
     this.el.append(section);
 
@@ -454,7 +457,8 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     actor.textContent = this.actorLabel(c.actorId);
     meta.append(actor);
 
-    // Condensed meta: "author · 2h ago (edited)" — a middot separator, time +
+    // Condensed meta: "author · 2026-10-21 14:03 (edited)" — a middot
+    // separator, the local date + time (relative age in the tooltip) and the
     // edited flag muted. The `c<id>` debug tag is dropped (it wasn't in the
     // design and just added noise to the line).
     const sep = document.createElement('span');
@@ -463,10 +467,8 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     sep.textContent = '·';
     meta.append(sep);
 
-    const time = document.createElement('span');
-    time.className = 'task-comments__time muted';
+    const time = localTimeEl(c.createdAt, 'task-comments__time muted');
     time.dataset.commentTime = '';
-    time.textContent = formatRelativeTime(c.createdAt);
     meta.append(time);
 
     if (c.edited) {
@@ -771,6 +773,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     const time = document.createElement('span');
     time.className = 'task-activity__time muted';
     time.textContent = formatRelativeTime(row.createdAt);
+    time.title = formatLocalDateTime(row.createdAt);
     el.append(time);
 
     return el;

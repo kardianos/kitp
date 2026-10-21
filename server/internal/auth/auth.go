@@ -28,7 +28,24 @@ const (
 type UserCtx struct {
 	ID          int64
 	DisplayName string
+	// TokenScope is the scope of the bearer token that authenticated
+	// the request: TokenScopeFull for sessions and unrestricted tokens.
+	// The api.Router admits a scoped token only on routes registered
+	// for that scope (Router.BearerScoped).
+	TokenScope string
 }
+
+// Bearer-token scopes (user_token.scope). The closed set is restated in
+// db/schema/functions/user_token_create_batch.sql, which rejects any
+// other value at mint time.
+const (
+	// TokenScopeFull is an unrestricted token: MCP and every bearer route.
+	TokenScopeFull = ""
+	// TokenScopeLinks limits a token to the forge link hook
+	// (POST /api/v1/links) — a code forge's credential that can link
+	// changes to tasks and nothing else.
+	TokenScopeLinks = "links"
+)
 
 type ctxKey struct{}
 

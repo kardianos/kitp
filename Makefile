@@ -28,7 +28,7 @@ GIT_SHA := $(shell git -C $(REPO_ROOT) rev-parse --short HEAD 2>/dev/null)
 
 .PHONY: up down db-up db-reset db-reset-clean schema-gen \
         test test-bench run demo lint web web-dev \
-        container container-build
+        container container-build gerrit-plugin
 
 up: db-up
 	@echo "kitp dev stack up; run 'make run' to start kitpd"
@@ -111,6 +111,20 @@ web-dev:
 		--bundle --format=esm --target=es2022 --sourcemap --outdir=dist \
 		--external:/assets/* \
 		--servedir=. --serve=127.0.0.1:$(WEB_PORT)
+
+# ---------- Gerrit plugin ----------------------------------------------------
+
+# Build the kitp Gerrit plugin (integrations/gerrit) → integrations/gerrit/target/
+# kitp.jar, via a throwaway Maven/JDK 21 container so no local toolchain is
+# needed. Runs as the calling user; ~/.m2 caches the plugin API between builds.
+# GERRIT_API picks the plugin API to compile against — match the server's
+# version (`curl https://<gerrit>/config/server/version`).
+GERRIT_API ?= 3.14.4
+gerrit-plugin:
+	docker run --rm -u "$$(id -u):$$(id -g)" \
+		-v $(REPO_ROOT)/integrations/gerrit:/src -v $(HOME)/.m2:/var/maven/.m2 \
+		-e MAVEN_CONFIG=/var/maven/.m2 -w /src maven:3.9-eclipse-temurin-21 \
+		mvn -B -Duser.home=/var/maven -Dgerrit.api.version=$(GERRIT_API) package
 
 # ---------- container image (GHCR) ------------------------------------------
 

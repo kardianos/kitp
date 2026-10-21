@@ -1,13 +1,16 @@
 -- activity.poll handler: a CHEAP "is there newer activity?" check for the
 -- task-detail background poll. Given a task_id + since_activity_id it returns
 -- the latest activity id and the count of newer rows across the task AND its
--- comm child cards. Replies/threads write activity on the comm cards (children
--- of the task), comments + new-thread attr_updates write on the task itself —
--- so spanning task + comm children lets ONE `since` cursor catch all three.
+-- comm + link child cards. Replies/threads write activity on the comm cards
+-- (children of the task), a forge moving a linked change (e.g. Gerrit marking
+-- a CL merged) writes on the link card, and comments + new-thread attr_updates
+-- write on the task itself — so spanning task + those children lets ONE
+-- `since` cursor catch all of them.
 --
 -- Visibility (B7): gated ONCE on the task (the actor must be able to see it).
--- The comm children share the task's project, so task visibility implies theirs
--- — cheaper than the per-row walk activity.select does, and correct here.
+-- The comm / link children share the task's project, so task visibility
+-- implies theirs — cheaper than the per-row walk activity.select does, and
+-- correct here.
 --
 -- Result JSON shape matches `activity.PollOutput`.
 CREATE OR REPLACE FUNCTION activity_poll_batch(
@@ -94,7 +97,7 @@ BEGIN
                 SELECT c.id
                 FROM card c
                 JOIN card_type ct ON ct.id = c.card_type_id
-                WHERE c.parent_card_id = _task_id AND ct.name = 'comm'
+                WHERE c.parent_card_id = _task_id AND ct.name IN ('comm', 'link')
               );
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,

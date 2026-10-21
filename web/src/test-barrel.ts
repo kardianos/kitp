@@ -489,7 +489,26 @@ export {
   type CommentUpdateOutput,
 } from './task-detail/comment-specs.js';
 export { registerCommThreadSpecs } from './task-detail/comm-specs.js';
-export { CommThreads, registerCommThreads } from './task-detail/task-comm-threads.js';
+export { CommThreads, registerCommThreads, replySender } from './task-detail/task-comm-threads.js';
+export {
+  registerLinkSpecs,
+  LINK_LIST_SPEC,
+  LINK_SET_SPEC,
+  LINK_DELETE_SPEC,
+  LINK_KINDS,
+  LINK_STATES,
+  LINK_KIND_PATTERNS,
+  linkKindInfo,
+  linkStateInfo,
+  linkIcon,
+  displayUrl,
+  isLinkableUrl,
+  guessLinkKind,
+  decodeLinkRow,
+  type LinkRow,
+} from './task-detail/link-specs.js';
+export { TaskLinks, registerTaskLinks, type TaskLinksConfig } from './task-detail/task-links.js';
+export { formatLocalDateTime, formatUtcOffset, localTimeEl } from './util/datetime.js';
 export { loadView, saveView } from './filter/view-persistence.js';
 export { trapFocus, captureFocus } from './util/focus-trap.js';
 export {

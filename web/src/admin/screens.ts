@@ -553,6 +553,14 @@ export const OIDC_CLAIMS_SCREEN: NestedEditorConfig = {
 /* Agents = user.select { is_agent: true } (NON-CARD source, read-only).       */
 /* -------------------------------------------------------------------------- */
 
+/** Who owns a new agent (agent.create `owner`). On the admin screen the
+ *  workspace owner comes first: the agents an admin sets up are usually
+ *  integrations (a code forge) that must outlive whoever created them. */
+const AGENT_OWNER_OPTIONS = [
+  { value: 'system', label: 'Workspace — survives staff changes (integrations, forges)' },
+  { value: 'self', label: 'Me — a personal agent' },
+];
+
 /**
  * Agents are user_account rows with is_agent=true owned by a parent user. There
  * is no dedicated agent-list handler; the lighter `user.select` read carries the
@@ -592,8 +600,9 @@ export const AGENTS_SCREEN: MasterDetailConfig = {
     buttonLabel: '+ New',
     fields: [
       { name: 'display_name', label: 'Display name', kind: 'text', required: true, placeholder: 'e.g. research-agent' },
+      { name: 'owner', label: 'Owner', kind: 'select', required: true, options: AGENT_OWNER_OPTIONS, defaultValue: 'system' },
     ],
-    input: { displayName: { payload: 'display_name' } },
+    input: { displayName: { payload: 'display_name' }, owner: { payload: 'owner' } },
     optimisticRaw: (p) => ({
       display_name: typeof p['display_name'] === 'string' ? p['display_name'] : '',
       is_agent: true,
@@ -633,6 +642,16 @@ export function ownAgentsScreen(myId: bigint): MasterDetailConfig {
       input: { isAgent: { lit: true }, parentUserId: { lit: myId } },
       row: { title: 'display_name' },
     },
+    // Always the signed-in user's own: no owner choice here.
+    ...(AGENTS_SCREEN.create !== undefined
+      ? {
+          create: {
+            ...AGENTS_SCREEN.create,
+            fields: AGENTS_SCREEN.create.fields.filter((f) => f.name !== 'owner'),
+            input: { displayName: { payload: 'display_name' } },
+          },
+        }
+      : {}),
   });
 }
 

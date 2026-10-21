@@ -146,7 +146,7 @@ function taskMockTransport() {
     }
     // Route-id-only section reads (pre-mounted alongside the task) — empty is
     // fine for the shell tests; their own behaviour is covered elsewhere.
-    if (key === 'comm.list_for_task' || key === 'attachment.list' || key === 'flow_step.list_for_card') {
+    if (key === 'comm.list_for_task' || key === 'attachment.list' || key === 'flow_step.list_for_card' || key === 'link.list') {
       return { id: sr.id, ok: true, data: { rows: [] } };
     }
     return { id: sr.id, ok: false, error: { code: 'unknown', message: `mock has no ${key}` } };
@@ -748,7 +748,7 @@ test('TASK OPEN: route-id-only sections coalesce into the task batch (no second 
   // Register the section CONTROLS (so they mount for real, not NotFound) + their
   // SPECS (so their reads enqueue + reach the mock). Control.register is a global
   // singleton that may already be set by another test file, so guard it.
-  for (const reg of [M.registerCommThreads, M.registerTransitionBar, M.registerAttachmentsSection]) {
+  for (const reg of [M.registerCommThreads, M.registerTransitionBar, M.registerAttachmentsSection, M.registerTaskLinks]) {
     try {
       reg();
     } catch {
@@ -758,7 +758,8 @@ test('TASK OPEN: route-id-only sections coalesce into the task batch (no second 
   M.registerCommThreadSpecs(api);
   M.registerTransitionSpecs(api);
   M.registerAttachmentSpecs(api);
-  mountTaskDetail(api);
+  M.registerLinkSpecs(api);
+  const { td } = mountTaskDetail(api);
   await settle(dispatcher);
 
   assert.ok(batches.length >= 1, 'at least one batch sent');
@@ -770,4 +771,13 @@ test('TASK OPEN: route-id-only sections coalesce into the task batch (no second 
   assert.ok(first.includes('comm.list_for_task'), 'comms read coalesced into batch 1');
   assert.ok(first.includes('attachment.list'), 'attachments read coalesced into batch 1');
   assert.ok(first.includes('flow_step.list_for_card'), 'transition read coalesced into batch 1');
+  assert.ok(first.includes('link.list'), 'links read coalesced into batch 1');
+
+  // LINKS sits in the main column between the attachment previews and COMMS.
+  const regions = [...td.el.querySelectorAll('[data-region="detail.main"] > [data-region], [data-region="detail.main"] > [data-slot]')]
+    .map((el) => el.dataset.slot ?? el.dataset.region);
+  const at = (name) => regions.indexOf(name);
+  assert.ok(at('detail.attachmentsPreview') >= 0 && at('links') >= 0 && at('comms') >= 0, regions.join(','));
+  assert.ok(at('detail.attachmentsPreview') < at('links') && at('links') < at('comms'), regions.join(','));
+  assert.ok(td.el.querySelector('[data-slot="links"] [data-control="TaskLinks"]'), 'TaskLinks mounted');
 });

@@ -30,6 +30,7 @@ type CreateInput struct {
 	UserID    int64  `json:"user_id,string" mcp:"required,desc=user_account id the token authenticates as (typically an agent owned by the caller)"`
 	Label     string `json:"label" mcp:"required,desc=human-readable label, unique per user (max 200 chars)"`
 	ExpiresAt string `json:"expires_at,omitempty" mcp:"desc=optional RFC3339 timestamp at which the token stops working"`
+	Scope     string `json:"scope,omitempty" mcp:"desc=what the token may do: omit / '' for full access (MCP and every bearer route), or 'links' for ONLY the forge link hook POST /api/v1/links (the credential a code forge such as Gerrit holds)"`
 }
 
 // CreateOutput carries the secret bearer value — surfaced ONCE. The
@@ -39,6 +40,7 @@ type CreateInput struct {
 type CreateOutput struct {
 	Token string `json:"token" mcp:"desc=opaque bearer value; shown ONCE, store immediately, cannot be recovered later"`
 	Label string `json:"label" mcp:"desc=label echoed back for UI convenience"`
+	Scope string `json:"scope" mcp:"desc=scope echoed back: '' (full access) or 'links'"`
 }
 
 // ListInput selects every token bound to UserID.
@@ -49,6 +51,7 @@ type ListInput struct {
 // ListRow is one row of the listing — never includes the bearer value.
 type ListRow struct {
 	Label      string  `json:"label" mcp:"desc=human-readable label"`
+	Scope      string  `json:"scope" mcp:"desc='' (full access) or 'links' (forge link hook only)"`
 	CreatedAt  string  `json:"created_at" mcp:"desc=RFC3339 timestamp"`
 	LastUsedAt string  `json:"last_used_at" mcp:"desc=RFC3339 timestamp; same value as created_at when never used"`
 	ExpiresAt  *string `json:"expires_at,omitempty" mcp:"desc=RFC3339 timestamp; null when no hard expiry"`
@@ -79,7 +82,7 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "user_token",
 		Action:       "create",
-		Doc:          "Mint an opaque bearer token bound to user_id. The plaintext value is returned ONCE in the response — store it immediately. Authz: caller is the target's parent_user_id, or a global admin.",
+		Doc:          "Mint an opaque bearer token bound to user_id. The plaintext value is returned ONCE in the response — store it immediately. scope 'links' mints a narrow token that works ONLY on the forge link hook (POST /api/v1/links), for a code forge; omit it for a full-access (MCP) token. Authz: caller is the target's parent_user_id, or a global admin.",
 		InputType:    reflect.TypeFor[CreateInput](),
 		OutputType:   reflect.TypeFor[CreateOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},

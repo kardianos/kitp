@@ -7,12 +7,13 @@
 --   2. Card exists + is a task (allow soft-deleted — purge is permanent).
 --   3. flow_step reference guard → 'value_referenced_by_flow'.
 --   4. Live sub-tasks via `parent_task` → 'has_live_subtasks'.
---   5. Live non-comm children parented to the task → 'has_live_children'.
---   6. Resolve child comm card ids; resolve reply_body card ids
+--   5. Live children parented to the task other than the ones it owns
+--      (comm threads + links) → 'has_live_children'.
+--   6. Resolve child comm + link card ids; resolve reply_body card ids
 --      referenced from each comm's `replies` array attribute.
 --   7. Hard delete: reply_body cards (attribute_value / activity / card),
---      then comm cards likewise, then the task's attachments + its own
---      attribute_value / activity / card row.
+--      then comm + link cards likewise, then the task's attachments + its
+--      own attribute_value / activity / card row.
 --
 -- Result JSON shape matches `card.TaskPurgeOutput`:
 --   {
@@ -41,6 +42,7 @@ DECLARE
     _subtask_count int;
     _noncomm_count int;
     _comm_ids bigint[];
+    _link_ids bigint[];
     _reply_ids bigint[];
     _purged_ids bigint[];
 BEGIN
@@ -120,13 +122,14 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 5. Live non-comm children.
+        -- 5. Live children the task doesn't own (comm threads and links
+        --    are the task's own and go with it).
         SELECT count(*) INTO _noncomm_count
         FROM card c
         JOIN card_type ct ON ct.id = c.card_type_id
         WHERE c.parent_card_id = _card_id
           AND c.deleted_at IS NULL
-          AND ct.name <> 'comm';
+          AND ct.name NOT IN ('comm', 'link');
         IF _noncomm_count > 0 THEN
             RETURN QUERY SELECT _idx, false, 'has_live_children'::text,
                 format('task.purge: card %s has %s live non-comm child card(s); detach or delete them first',
@@ -135,11 +138,17 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 6. Resolve child comm + reply_body ids.
+        -- 6. Resolve child comm + link + reply_body ids. Soft-deleted
+        --    children are included: they still reference the task row.
         SELECT COALESCE(array_agg(c.id ORDER BY c.id), ARRAY[]::bigint[])
           INTO _comm_ids
         FROM card c
         JOIN card_type ct ON ct.id = c.card_type_id AND ct.name = 'comm'
+        WHERE c.parent_card_id = _card_id;
+        SELECT COALESCE(array_agg(c.id ORDER BY c.id), ARRAY[]::bigint[])
+          INTO _link_ids
+        FROM card c
+        JOIN card_type ct ON ct.id = c.card_type_id AND ct.name = 'link'
         WHERE c.parent_card_id = _card_id;
 
         IF array_length(_comm_ids, 1) IS NOT NULL THEN
@@ -175,6 +184,13 @@ BEGIN
             DELETE FROM activity WHERE card_id = ANY(_comm_ids);
             DELETE FROM card WHERE id = ANY(_comm_ids);
             _purged_ids := _purged_ids || _comm_ids;
+        END IF;
+
+        IF array_length(_link_ids, 1) IS NOT NULL THEN
+            DELETE FROM attribute_value WHERE card_id = ANY(_link_ids);
+            DELETE FROM activity WHERE card_id = ANY(_link_ids);
+            DELETE FROM card WHERE id = ANY(_link_ids);
+            _purged_ids := _purged_ids || _link_ids;
         END IF;
 
         DELETE FROM attachment WHERE card_id = _card_id;

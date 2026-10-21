@@ -94,6 +94,8 @@ import { registerTaskComments } from './task-detail/task-comments.js';
 import { registerCommentSpecs } from './task-detail/comment-specs.js';
 import { registerCommThreads } from './task-detail/task-comm-threads.js';
 import { registerCommThreadSpecs } from './task-detail/comm-specs.js';
+import { registerLinkSpecs } from './task-detail/link-specs.js';
+import { registerTaskLinks } from './task-detail/task-links.js';
 import { registerAttachmentSpecs } from './task-detail/attachment-specs.js';
 import { registerAttachmentsSection } from './task-detail/attachments-section.js';
 import { registerTagsEditor } from './task-detail/tags-editor.js';
@@ -236,6 +238,9 @@ function boot(): void {
   // comm.create / comm.set_recipients / reply.post. Idempotent-by-presence;
   // registered before the TaskDetail mounts its CommThreads control.
   registerCommThreadSpecs(api);
+  // The LINKS section on task detail: link.list / link.set / link.delete
+  // (code changes / issues / URLs; link.set is idempotent on (task, url)).
+  registerLinkSpecs(api);
   // Server-driven contextual help (help.get_topic / help.get_screen) the `?`
   // overlay renders above the keybinding cheatsheet. Idempotent-by-presence.
   registerHelpSpecs(api);
@@ -379,6 +384,9 @@ function boot(): void {
   // recipients editor + reply composer. Reuses card.search (RefPicker) + the
   // comm-thread specs registered above.
   registerCommThreads();
+  // The LINKS control the TaskDetail spawns into its `links` slot: the task's
+  // linked code changes / issues with their forge-reported state + add / remove.
+  registerTaskLinks();
   // The #36 trio the TaskDetail spawns into its right-rail slots:
   //   - AttachmentsSection (`attachments`): drag-drop upload (SHA-256 chunk →
   //     cas.missing_chunks → raw POST /cas/chunk → file.create + attachment.create)

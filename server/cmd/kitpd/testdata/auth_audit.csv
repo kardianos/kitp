@@ -7,7 +7,7 @@ dispatcher,,,activity_subscription.delete,admin;commenter;manager;viewer;worker,
 dispatcher,,,activity_subscription.list,$authenticated,"List YOUR notification subscriptions (optionally one project) with their sink, project, comm channel and delivery state (last sent, last error, running rollup window)."
 dispatcher,,,activity_subscription.set,admin;commenter;manager;viewer;worker,"Create (id=0, under an email sink) or update one of YOUR notification subscriptions: name, event filter, card filter ('@me' = you), rollup_minutes and enabled. You are always the subscriber; the digest is mailed to your person card's email through the sink's comm channel, grouped by task."
 dispatcher,,,activity_subscription.sinks,$authenticated,"List the email activity sinks you can subscribe under — one per project mailbox an admin has opened for notifications, in projects you can see."
-dispatcher,,,agent.create,$authenticated,"Create an agent owned by the calling user. Inserts a user_account row (is_agent=true, parent_user_id=actor). Agents are NOT assignable through the assignee picker; the parent routes tasks to them via user_card_agent.set. Rejects when the actor is itself an agent."
+dispatcher,,,agent.create,$authenticated,"Create an agent owned by the calling user (owner 'self', the default) or, for global admins, a workspace agent owned by the System account (owner 'system') — an integration identity that survives staff turnover. Inserts a user_account row (is_agent=true). Agents are NOT assignable through the assignee picker; the parent routes tasks to them via user_card_agent.set. Rejects when the actor is itself an agent."
 dispatcher,,,agent.delete,$authenticated,"Delete an agent owned by the calling user (or by any admin). Cascades sessions, tokens, and user_card_agent rows. Rejects when the actor is itself an agent."
 dispatcher,,,attachment.create,admin;manager;worker,Link an existing file (created via file.create) to a card. Inserts the attachment row + an attachment_create activity in one tx.
 dispatcher,,,attachment.delete,admin;manager;worker,Soft-delete an attachment. The file + chunks linger until the CAS reaper sweeps them.
@@ -53,6 +53,9 @@ dispatcher,,,flow_step.list_for_card,$authenticated,"Read-side affordance API: r
 dispatcher,,,flow_step.set,admin,"Admin-only: upsert one flow_step row. id=0 inserts; id>0 updates by id. Without id, the (flow_id, from_card_id, to_card_id, label) unique key rejects duplicates."
 dispatcher,,,help.get_screen,$authenticated,Compose per-screen help: layout primer + plain-English description of the default filter.
 dispatcher,,,help.get_topic,$authenticated,"Return the authored markdown for a named help topic (admin.screens, layout.kanban, ...)."
+dispatcher,,,link.delete,admin;manager;worker,Remove a link from its task (id from link.list). Requires edit rights on the task. Not sticky: linking the same URL again adds it back.
+dispatcher,,,link.list,$authenticated,"List the links on a task (oldest first): url, title, kind / state slugs, when it was added and last changed, and who added it."
+dispatcher,,,link.set,admin;manager;worker,"Link a URL — a code change (Gerrit CL, pull request), an issue, any page — to a task, or update an existing link. Idempotent: the URL is the link's identity on the task, so linking it again PATCHes the same link (title / kind / state) instead of adding a duplicate, and re-sending unchanged values writes nothing. kind / state are short slugs (e.g. kind 'gerrit', state 'open' | 'reviewed' | 'approved' | 'merged' | 'abandoned'). Requires edit rights on the task."
 dispatcher,,,person.create,admin,"Create a new person card with the given title, optional email, and tier ('contact' | 'assignee' | 'user'). When tier='user' a user_account row is also created (oidc_sub NULL — attached on first sign-in) and linked via user_account_person. Admin-only."
 dispatcher,,,person.grant_account,admin,"Grant a login (user_account) to an EXISTING person card — promote an assignee/contact to a user. Idempotent: if the person already has an account, returns it. Email required (request override or the person's stored email). Admin-only."
 dispatcher,,,person.merge,admin,"Merge duplicate person cards into one survivor: repoint every assignee / originator / comm_recipients reference to the survivor, move a sole login (user_account) to the survivor, backfill the survivor's blank email from a loser, and soft-delete the losers. Rejects with 'merge_login_conflict' when more than one of the people has a login (resolve duplicate user accounts first — merging logins/sessions/tokens is out of scope). Admin-only."
@@ -79,7 +82,7 @@ dispatcher,,,user_card_sort.set,admin;manager;worker,Upsert the calling user's p
 dispatcher,,,user_role.list,$authenticated,List role grants held by one user. Anyone authenticated may query themselves; the parent of an agent may query that agent; admins may query anyone.
 dispatcher,,,user_role.revoke,$authenticated,Revoke a role from a user (with matching scope). Admin-only EXCEPT when the target is an agent — then the agent's parent_user_id may also revoke.
 dispatcher,,,user_role.set,$authenticated,"Grant a role to a user, optionally scoped to a project. Admin-only EXCEPT when the target is an agent — then the agent's parent_user_id may also grant any non-admin role they hold themselves. Coalesces N inputs into one upsert statement."
-dispatcher,,,user_token.create,$authenticated,"Mint an opaque bearer token bound to user_id. The plaintext value is returned ONCE in the response — store it immediately. Authz: caller is the target's parent_user_id, or a global admin."
+dispatcher,,,user_token.create,$authenticated,"Mint an opaque bearer token bound to user_id. The plaintext value is returned ONCE in the response — store it immediately. scope 'links' mints a narrow token that works ONLY on the forge link hook (POST /api/v1/links), for a code forge; omit it for a full-access (MCP) token. Authz: caller is the target's parent_user_id, or a global admin."
 dispatcher,,,user_token.list,$authenticated,"List every token bound to user_id (label + timestamps; the secret value is never returned). Authz: caller is the target's parent_user_id, or a global admin."
 dispatcher,,,user_token.revoke,$authenticated,"Revoke one token by (user_id, label). Idempotent. Authz: caller is the target's parent_user_id, or a global admin."
 http_route,authed,GET /api/v1/attachment/{id}/download,,,
@@ -92,6 +95,7 @@ http_route,authed,POST /api/v1/auth/dev-impersonate,,,
 http_route,authed,POST /api/v1/batch,,,
 http_route,authed,POST /api/v1/cas/chunk,,,
 http_route,bearer,POST /api/v1/mcp,,,
+http_route,bearer:links,POST /api/v1/links,,,
 http_route,public,GET /api/v1/attachment/{id}/dl,,,
 http_route,public,GET /api/v1/auth/me,,,
 http_route,public,GET /api/v1/auth/oidc/callback,,,

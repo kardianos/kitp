@@ -49,7 +49,9 @@ import type {
   UserRoleAssignment,
   FlowRow,
   FlowListOutput,
+  TokenScope,
 } from './specs.js';
+import { TOKEN_SCOPE_OPTIONS } from './specs.js';
 
 import { icon } from '../ui/icons.js';
 import { captionedField } from '../ui/captioned-field.js';
@@ -1901,10 +1903,21 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       frag.append(this.buildMintReveal(mint));
     }
 
-    // Mint form: a label + Mint button.
+    // Mint form: what the token may do + a label + Mint button. A code
+    // forge gets a links-only token; MCP clients need full access.
     const mintForm = document.createElement('div');
     mintForm.className = 'nested-editor__token-mint';
     mintForm.dataset.neTokenMint = '';
+    const scopeSelect = document.createElement('select');
+    scopeSelect.className = 'nested-editor__token-scope';
+    scopeSelect.dataset.neTokenScope = '';
+    scopeSelect.setAttribute('aria-label', 'Token access');
+    for (const o of TOKEN_SCOPE_OPTIONS) {
+      const opt = document.createElement('option');
+      opt.value = o.value;
+      opt.textContent = o.label;
+      scopeSelect.append(opt);
+    }
     const labelInput = document.createElement('input');
     labelInput.type = 'text';
     labelInput.className = 'nested-editor__token-label';
@@ -1918,10 +1931,11 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     this.listen(mintBtn, 'click', () => {
       const label = labelInput.value.trim();
       if (label === '') return;
-      this.mintToken(agent.id, label);
+      const scope = TOKEN_SCOPE_OPTIONS.find((o) => o.value === scopeSelect.value)?.value ?? '';
+      this.mintToken(agent.id, label, scope);
       labelInput.value = '';
     });
-    mintForm.append(labelInput, mintBtn);
+    mintForm.append(scopeSelect, labelInput, mintBtn);
     frag.append(mintForm);
 
     // The token list (labels + timestamps only — secret never returned here).
@@ -1990,6 +2004,11 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     label.className = 'nested-editor__token-row-label';
     label.textContent = t.label;
     row.append(label);
+    const access = document.createElement('span');
+    access.className = 'nested-editor__token-row-scope';
+    access.dataset.neTokenRowScope = t.scope;
+    access.textContent = TOKEN_SCOPE_OPTIONS.find((o) => o.value === t.scope)?.label ?? t.scope;
+    row.append(access);
     const created = document.createElement('span');
     created.className = 'nested-editor__token-row-time muted';
     created.textContent = t.created_at;
@@ -2011,11 +2030,11 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     return row;
   }
 
-  private mintToken(agentId: string, label: string): void {
+  private mintToken(agentId: string, label: string, scope: TokenScope): void {
     this.clearFault();
     this.ctx.api.callByName(
       'user_token.create',
-      { userId: agentId, label },
+      { userId: agentId, label, scope },
       (out) => {
         if (!this.isAlive()) return;
         const o = (out ?? {}) as { token?: unknown; label?: unknown };

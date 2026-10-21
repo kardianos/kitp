@@ -11,7 +11,8 @@ Vendored icons: mail, moon, sun, info, circle-help, pencil, ellipsis,
 x, chevron-left, chevron-right, chevron-down, chevron-up, arrow-up,
 arrow-down, grip-vertical, calendar, search, check, plus, refresh-cw,
 circle-user, list-filter, sliders-horizontal, paintbrush, list-tree,
-corner-down-right, ban, link.
+corner-down-right, ban, link, external-link, git-pull-request,
+git-merge, git-pull-request-closed.
 
 To add an icon: fetch `https://unpkg.com/lucide-static@<ver>/icons/<name>.svg`,
 strip the comment banner and `<svg>` wrapper, collapse whitespace, add

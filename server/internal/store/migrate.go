@@ -536,6 +536,67 @@ UPDATE attribute_def
    SET target_filter = '{"connective":"and","children":[{"attr":"person_kind","op":"!=","values":["contact"]},{"attr":"is_active","op":"!=","values":[false]}]}'::jsonb
  WHERE name = 'assignee' AND target_filter IS NULL;`,
 	},
+	{
+		// Task links (code changes / issues / any URL hung off a task; written
+		// by link.set from the UI, MCP, or a forge such as Gerrit). The
+		// seed.hcsv rows reach fresh installs only, so add them here too:
+		//   1. the link card_type (parent: task),
+		//   2. the link_url / link_kind / link_state attribute_defs,
+		//   3. the four link edges (title / link_url required),
+		//   4. admin card.* on link (link.set / link.delete themselves gate on
+		//      card.update of the parent task, so no new process or grant).
+		// Idempotent — ON CONFLICT DO NOTHING makes it a no-op on a fresh DB
+		// whose seed already carries every row.
+		id: "0011_task_links",
+		sql: `
+DO $$
+DECLARE
+  _task_ct bigint := (SELECT id FROM card_type WHERE name = 'task');
+  _link_ct bigint;
+BEGIN
+  IF _task_ct IS NULL THEN
+    RETURN;
+  END IF;
+
+  INSERT INTO card_type (name, parent_card_type_id, allow_self_parent, is_built_in, uses_phase)
+  VALUES ('link', _task_ct, false, true, false)
+  ON CONFLICT (name) DO NOTHING;
+  SELECT id INTO _link_ct FROM card_type WHERE name = 'link';
+
+  INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+  VALUES ('link_url', 'text', NULL, true, false),
+         ('link_kind', 'text', NULL, true, false),
+         ('link_state', 'text', NULL, true, false)
+  ON CONFLICT (name) DO NOTHING;
+
+  INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+  SELECT _link_ct, ad.id, e.req, e.ord
+  FROM (VALUES
+    ('title',      true,  0),
+    ('link_url',   true,  1),
+    ('link_kind',  false, 2),
+    ('link_state', false, 3)
+  ) AS e(attr, req, ord)
+  JOIN attribute_def ad ON ad.name = e.attr
+  ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;
+
+  INSERT INTO role_grant (role_id, card_type_id, process_id)
+  SELECT r.id, _link_ct, p.id
+  FROM role r
+  CROSS JOIN process p
+  WHERE r.name = 'admin'
+    AND p.name IN ('card.create', 'card.update', 'card.delete', 'comment.post', 'user_card_sort.set')
+  ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
+END $$;`,
+	},
+	{
+		// user_token.scope — '' (unrestricted) or 'links' (forge link hook
+		// only). Additive column: the declarative CREATE TABLE can't add it
+		// to an existing user_token, and the token lookup reads it on every
+		// bearer request. Existing tokens default to '' (unchanged power).
+		id:  "0012_user_token_scope",
+		sql: `ALTER TABLE user_token ADD COLUMN IF NOT EXISTS scope text NOT NULL DEFAULT ''`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

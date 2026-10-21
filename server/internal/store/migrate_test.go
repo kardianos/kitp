@@ -39,13 +39,14 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		{`SELECT count(*) FROM user_role`, 3}, // admin + manager + worker on user 1
 		{`SELECT count(*) FROM role`, 5},      // viewer, commenter, worker, manager, admin (no wildcard 'system')
 		// 14 built-in card_types + the predicate_snippet card_type
-		// introduced for named filters + activity_subscription = 16.
-		{`SELECT count(*) FROM card_type`, 16},
-		// +subscriber, +rollup_minutes (personal notifications).
-		{`SELECT count(*) FROM attribute_def`, 66},
+		// introduced for named filters + activity_subscription + link = 17.
+		{`SELECT count(*) FROM card_type`, 17},
+		// +subscriber, +rollup_minutes (personal notifications),
+		// +link_url / link_kind / link_state (task links).
+		{`SELECT count(*) FROM attribute_def`, 69},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
-		// +7 on activity_subscription.
-		{`SELECT count(*) FROM edge`, 104},
+		// +7 on activity_subscription, +4 on link.
+		{`SELECT count(*) FROM edge`, 108},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -405,6 +406,107 @@ func TestForwardMigration0010AttributeTargetFilter(t *testing.T) {
 	}
 }
 
+// TestForwardMigration0011TaskLinks proves migration 0011 brings an
+// already-seeded DB that predates task links up to the fresh-seed shape: the
+// link card_type, its three attribute_defs, four edges and the admin grants.
+// Without it link.set raises on the missing card_type on every existing
+// install (and the forge hook 500s).
+func TestForwardMigration0011TaskLinks(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0011")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	counts := []string{
+		`SELECT count(*) FROM card_type`,
+		`SELECT count(*) FROM attribute_def`,
+		`SELECT count(*) FROM edge`,
+		`SELECT count(*) FROM role_grant`,
+	}
+	readCounts := func() []int64 {
+		out := make([]int64, len(counts))
+		for i, q := range counts {
+			if err := pool.QueryRow(ctx, q).Scan(&out[i]); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		return out
+	}
+	fresh := readCounts()
+
+	// Simulate a pre-0011 install: drop every row 0011 adds, plus its ledger
+	// row (baseline stays, so the seed remains gated off).
+	for _, stmt := range []string{
+		`DELETE FROM role_grant WHERE card_type_id = (SELECT id FROM card_type WHERE name='link')`,
+		`DELETE FROM edge WHERE card_type_id = (SELECT id FROM card_type WHERE name='link')`,
+		`DELETE FROM attribute_def WHERE name IN ('link_url','link_kind','link_state')`,
+		`DELETE FROM card_type WHERE name = 'link'`,
+		`DELETE FROM schema_version WHERE name = '0011_task_links'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0011 (%s): %v", stmt, err)
+		}
+	}
+
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	got := readCounts()
+	for i, q := range counts {
+		if got[i] != fresh[i] {
+			t.Errorf("%s after 0011 = %d, want fresh-seed %d", q, got[i], fresh[i])
+		}
+	}
+	var parent string
+	if err := pool.QueryRow(ctx, `
+		SELECT p.name FROM card_type ct JOIN card_type p ON p.id = ct.parent_card_type_id
+		WHERE ct.name = 'link'`).Scan(&parent); err != nil {
+		t.Fatalf("link parent probe: %v", err)
+	}
+	if parent != "task" {
+		t.Errorf("link parent card_type = %q, want task", parent)
+	}
+
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("third apply (idempotent): %v", err)
+	}
+}
+
+// TestForwardMigration0012UserTokenScope proves migration 0012 adds
+// user_token.scope to an already-initialised DB that predates it, with
+// existing tokens defaulting to '' (full access, unchanged behaviour).
+// Without it every bearer request fails: the token lookup reads scope.
+func TestForwardMigration0012UserTokenScope(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0012")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE user_token DROP COLUMN scope`,
+		`INSERT INTO user_token (id, user_id, label) VALUES ('pre-0012-token', 1, 'old')`,
+		`DELETE FROM schema_version WHERE name = '0012_user_token_scope'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0012 (%s): %v", stmt, err)
+		}
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	var scope string
+	if err := pool.QueryRow(ctx, `SELECT scope FROM user_token WHERE id = 'pre-0012-token'`).Scan(&scope); err != nil {
+		t.Fatalf("read scope: %v", err)
+	}
+	if scope != "" {
+		t.Errorf("existing token scope = %q, want '' (full access)", scope)
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("third apply (idempotent): %v", err)
+	}
+}
+
 // TestForwardMigration0006DropCommsAttachedFilter proves migration 0006
 // deletes the orphaned task-only "Comms attached" filter card (predicate
 // `comms exists`) from an existing comms screen — the fresh seed no longer
@@ -601,9 +703,9 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		// + 1 status + 2 tasks + 1 screen + 1 filter) = 29.
 		{`SELECT count(*) FROM card`, 29},
 		{`SELECT count(*) FROM role`, 5},
-		{`SELECT count(*) FROM card_type`, 16},
-		{`SELECT count(*) FROM attribute_def`, 66},
-		{`SELECT count(*) FROM edge`, 104},
+		{`SELECT count(*) FROM card_type`, 17},
+		{`SELECT count(*) FROM attribute_def`, 69},
+		{`SELECT count(*) FROM edge`, 108},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -626,6 +728,7 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		"component": true, "tag": true, "status": true,
 		"comment_body": true, "person": true, "screen": true, "filter": true,
 		"comm_channel": true, "comm": true, "reply_body": true,
+		"link": true,
 	}
 	rows, err := pool.Query(ctx, `SELECT name FROM card_type ORDER BY id`)
 	if err != nil {
@@ -663,7 +766,7 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		query string
 		want  int64
 	}{
-		{`SELECT count(*) FROM card_type`, 16},
+		{`SELECT count(*) FROM card_type`, 17},
 		// 20 seed cards + 9 test_demo cards = 29 (see TestApplySchemaWithTestDemo).
 		{`SELECT count(*) FROM card`, 29},
 		{`SELECT count(*) FROM user_account`, 2},

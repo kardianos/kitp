@@ -651,6 +651,40 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 	return out
 }
 
+// DispatchOne runs a single sub-request through the dispatcher (role,
+// scope, timeout, tx — everything a batch call gets) and decodes its
+// output into out. A handler rejection comes back as *reg.HandlerError,
+// which the router renders with the dispatcher's own code + message.
+// Used by HTTP routes that re-dispatch a handler as an already-resolved
+// actor (the signed attachment upload, the forge link hook).
+func (s *Server) DispatchOne(ctx context.Context, endpoint, action string, in, out any) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return Internal(fmt.Errorf("%s.%s: marshal input: %w", endpoint, action, err))
+	}
+	resp := s.Dispatch(ctx, BatchRequest{Subrequests: []SubRequest{
+		{ID: "0", Endpoint: endpoint, Action: action, Data: data},
+	}})
+	if len(resp.Subresponses) != 1 {
+		return Internal(fmt.Errorf("%s.%s: got %d subresponses", endpoint, action, len(resp.Subresponses)))
+	}
+	sr := resp.Subresponses[0]
+	if !sr.OK {
+		if sr.Error == nil {
+			return Internal(fmt.Errorf("%s.%s: failed without an error envelope", endpoint, action))
+		}
+		return &reg.HandlerError{Code: sr.Error.Code, Message: sr.Error.Message}
+	}
+	raw, err := json.Marshal(sr.Data)
+	if err != nil {
+		return Internal(fmt.Errorf("%s.%s: marshal output: %w", endpoint, action, err))
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return Internal(fmt.Errorf("%s.%s: decode output: %w", endpoint, action, err))
+	}
+	return nil
+}
+
 // dedupReadSubrequests finds repeated read sub-requests within one batch and
 // maps every repeat (by outer index) to the first occurrence ("leader").
 // Eligibility is deliberately conservative: the (endpoint, action) must resolve

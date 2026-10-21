@@ -8,8 +8,9 @@
  *
  *   - comm.list_for_task  in : { task_id }
  *       out: { rows: [{ id, title, thread_id, channel_id, comm_status,
- *                        recipients[], replies: [{ id, to, from, subject,
- *                        body_text, delivery_status, created_at }] }] }
+ *                        recipients[], replies: [{ id, to, from, from_name,
+ *                        from_address, author_id, subject, body_text,
+ *                        delivery_status, created_at }] }] }
  *   - comm.create         in : { task_id, channel_id, subject?, initial_message?,
  *                                recipient_person_ids? }
  *       out: { comm_id, thread_id }
@@ -41,7 +42,16 @@ export interface CommUnseenCountOutput {
 export interface ReplyRow {
   id: bigint;
   to: string;
+  /** Raw From: envelope (outbound: the channel's from_address). */
   from: string;
+  /** Who the message is from: the kitp author for messages written here, else
+   *  the person whose email matches the sender, else the header's display
+   *  name; '' when unknown. */
+  fromName: string;
+  /** Bare sender address from the envelope ('' when none). */
+  fromAddress: string;
+  /** user_account that wrote it in kitp; 0n for received mail. */
+  authorId: bigint;
   subject: string;
   bodyText: string;
   deliveryStatus: string;
@@ -136,6 +146,9 @@ function decodeReply(j: Record<string, unknown>): ReplyRow {
     id: asId(j['id']),
     to: asStr(j['to']),
     from: asStr(j['from']),
+    fromName: asStr(j['from_name']),
+    fromAddress: asStr(j['from_address']),
+    authorId: asId(j['author_id']),
     subject: asStr(j['subject']),
     bodyText: asStr(j['body_text']),
     deliveryStatus: asStr(j['delivery_status']),

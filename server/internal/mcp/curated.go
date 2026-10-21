@@ -48,6 +48,11 @@ var curatedTools = map[string]bool{
 	// Tags.
 	"tag__apply":  true,
 	"tag__remove": true,
+	// Task links (code changes / issues / URLs). link__set is an
+	// idempotent upsert keyed on (task, url).
+	"link__set":    true,
+	"link__list":   true,
+	"link__delete": true,
 	// Flow transition reads (what a card may currently fire).
 	"flow__list":               true,
 	"flow_step__list":          true,

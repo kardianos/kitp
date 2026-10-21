@@ -4,3 +4,4 @@
 /.vscode/
 *.log
 docs/screenshots
+/integrations/gerrit/target/

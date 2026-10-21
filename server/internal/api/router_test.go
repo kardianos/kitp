@@ -300,3 +300,71 @@ func TestRouter_NilReturn_DoesNotWriteAgain(t *testing.T) {
 		t.Errorf("body: got %q", rec.Body.String())
 	}
 }
+
+// TestRouter_TokenScope: a scoped token (e.g. a forge's links-only
+// token) passes only routes registered for its scope; full-access
+// tokens pass every bearer route; Bearer routes (MCP) refuse scoped
+// tokens; BearerScoped panics without a scope.
+func TestRouter_TokenScope(t *testing.T) {
+	rows := []struct {
+		label  string
+		route  string // "bearer" | "links"
+		scope  string
+		status int
+		code   string
+	}{
+		{"full token on bearer route", "bearer", auth.TokenScopeFull, http.StatusNoContent, ""},
+		{"full token on links route", "links", auth.TokenScopeFull, http.StatusNoContent, ""},
+		{"links token on links route", "links", auth.TokenScopeLinks, http.StatusNoContent, ""},
+		{"links token on bearer route", "bearer", auth.TokenScopeLinks, http.StatusForbidden, "token_scope"},
+		{"unknown scope on links route", "links", "admin", http.StatusForbidden, "token_scope"},
+	}
+	for _, r := range rows {
+		t.Run(r.label, func(t *testing.T) {
+			u := fakeUser(7, "forge")
+			u.TokenScope = r.scope
+			rt := newRouter(nil, resolverReturning(u, nil))
+			ok := func(_ context.Context, w http.ResponseWriter, _ *http.Request, _ *auth.UserCtx) error {
+				w.WriteHeader(http.StatusNoContent)
+				return nil
+			}
+			rt.Bearer("POST /api/v1/bearer", ok)
+			rt.BearerScoped("POST /api/v1/links", auth.TokenScopeLinks, ok)
+
+			path := "/api/v1/bearer"
+			if r.route == "links" {
+				path = "/api/v1/links"
+			}
+			rec := doRequest(t, rt, "POST", path)
+			if rec.Code != r.status {
+				t.Fatalf("status %d, want %d (body %s)", rec.Code, r.status, rec.Body.String())
+			}
+			if r.code != "" {
+				if code, _ := decodeErr(t, rec.Body.String()); code != r.code {
+					t.Errorf("code %q, want %q", code, r.code)
+				}
+			}
+		})
+	}
+
+	t.Run("route tiers name the scope", func(t *testing.T) {
+		rt := newRouter(nil, resolverReturning(fakeUser(1, "x"), nil))
+		noop := func(context.Context, http.ResponseWriter, *http.Request, *auth.UserCtx) error { return nil }
+		rt.Bearer("POST /a", noop)
+		rt.BearerScoped("POST /b", auth.TokenScopeLinks, noop)
+		got := rt.Routes()
+		if got[0].Tier != "bearer" || got[1].Tier != "bearer:links" {
+			t.Errorf("tiers = %q, %q", got[0].Tier, got[1].Tier)
+		}
+	})
+
+	t.Run("BearerScoped requires a scope", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Error("BearerScoped with an empty scope did not panic")
+			}
+		}()
+		rt := newRouter(nil, resolverReturning(fakeUser(1, "x"), nil))
+		rt.BearerScoped("POST /c", auth.TokenScopeFull, func(context.Context, http.ResponseWriter, *http.Request, *auth.UserCtx) error { return nil })
+	})
+}

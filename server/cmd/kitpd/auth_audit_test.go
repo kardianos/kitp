@@ -39,6 +39,7 @@ import (
 	"github.com/kitp/kitp/server/internal/auth/session"
 	"github.com/kitp/kitp/server/internal/cas"
 	"github.com/kitp/kitp/server/internal/dom/attachment"
+	domlink "github.com/kitp/kitp/server/internal/dom/link"
 	"github.com/kitp/kitp/server/internal/dom/projectexport"
 	"github.com/kitp/kitp/server/internal/mcp"
 	"github.com/kitp/kitp/server/internal/reg"
@@ -79,6 +80,7 @@ func TestAuthAudit(t *testing.T) {
 	mcp.Mount(rt, mcp.HTTPConfig{})
 	cas.Mount(rt, cas.HTTPConfig{})
 	attachment.Mount(rt, attachment.Config{})
+	domlink.Mount(rt, domlink.HTTPConfig{})
 	projectexport.Mount(rt, projectexport.Config{})
 	srv := api.NewServer(nil)
 	srv.MountBatch(rt)

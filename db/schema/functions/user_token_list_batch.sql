@@ -48,6 +48,7 @@ BEGIN
             SELECT jsonb_agg(
                 jsonb_build_object(
                     'label', ut.label,
+                    'scope', ut.scope,
                     'created_at',
                         to_char(ut.created_at AT TIME ZONE 'UTC',
                                 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),

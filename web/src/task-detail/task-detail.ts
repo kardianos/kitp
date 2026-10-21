@@ -66,6 +66,7 @@ import { GRID_SPEC } from '../grid/specs.js';
 import type { TransitionBar } from './transition-bar.js';
 import type { TaskComments } from './task-comments.js';
 import type { CommThreads } from './task-comm-threads.js';
+import type { TaskLinks } from './task-links.js';
 import {
   ACTIVITY_POLL_SPEC,
   type ActivityPollInput,
@@ -208,6 +209,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   /** Host + control for the COMMS (email-thread) section. */
   private commsHost!: HTMLElement;
   private commThreads: CommThreads | null = null;
+  /** Host + control for the LINKS section (code changes / issues / URLs). */
+  private linksHost!: HTMLElement;
+  private taskLinks: TaskLinks | null = null;
 
   /** Read-only status badge in the nav row (next to #id). Phase-toned. */
   private statusBadgeEl!: HTMLElement;
@@ -362,14 +366,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     statusBadge.style.display = 'none';
     this.statusBadgeEl = statusBadge;
 
-    // "Refresh" — re-fetch the comm threads + comments/activity feed to pick up
-    // messages that arrived since load (no polling/long-poll; user-initiated).
+    // "Refresh" — re-fetch the links, comm threads + comments/activity feed to
+    // pick up what arrived since load (a forge moving a CL, a reply, …).
     const refresh = document.createElement('button');
     refresh.type = 'button';
     refresh.className = 'task-detail__refresh task-detail__refresh--synced';
     refresh.dataset.taskRefresh = '';
-    refresh.title = 'Check for new comms & comments';
-    refresh.setAttribute('aria-label', 'Refresh comms and comments');
+    refresh.title = 'Check for new links, comms & comments';
+    refresh.setAttribute('aria-label', 'Refresh links, comms and comments');
     refresh.append(icon('refresh-cw', 14), document.createTextNode(' Refresh'));
     this.listen(refresh, 'click', () => this.refreshFeeds());
     this.refreshBtn = refresh;
@@ -515,6 +519,13 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.attachmentsPreviewHost = previewHost;
     main.append(previewHost);
 
+    // LINKS — code changes / issues / URLs tied to the task, between the
+    // attachment previews and COMMS. A code forge (integrations/gerrit) keeps
+    // its own links current through the same link.set.
+    const linksSlot = this.makeSlot('links', 'Links');
+    this.linksHost = linksSlot;
+    main.append(linksSlot);
+
     // #35 comments + activity slots. We hold the two host elements so the
     // showLoaded() path can spawn the TaskComments control into the comments
     // slot and hand it the activity slot to paint into.
@@ -584,6 +595,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.mountTransitionBar();
     this.mountComments();
     this.mountComms();
+    this.mountLinks();
     this.mountAttachments();
 
     // Kick off the loads. Zero-promise: the onOk callbacks repaint when each
@@ -818,6 +830,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.mountTransitionBar();
     this.mountComments();
     this.mountComms();
+    this.mountLinks();
     this.mountAttachments();
     this.mountTags();
     this.mountRelated();
@@ -874,11 +887,12 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * edit; the TaskDetail also tells it to {@link TaskComments.reload} after a
    * status transition / attribute edit so those rows appear.
    */
-  /** Re-fetch the comm threads + the comments/activity feed — the header
-   *  "Refresh" button. Both child controls own their own reload() (re-query +
-   *  repaint); null-safe before the task has loaded. Also re-seeds the poll
-   *  baseline so the "new content" indicator clears back to synced. */
+  /** Re-fetch the links, comm threads + the comments/activity feed — the
+   *  header "Refresh" button. Each child control owns its own reload()
+   *  (re-query + repaint); null-safe before the task has loaded. Also re-seeds
+   *  the poll baseline so the "new content" indicator clears back to synced. */
   private refreshFeeds(): void {
+    this.taskLinks?.reload();
     this.commThreads?.reload();
     this.taskComments?.reload();
     // The user has now pulled the latest — re-seed the baseline to the current
@@ -969,8 +983,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       document.createTextNode(fresh ? ` ${this.pollNewCount} new` : ' Refresh'),
     );
     btn.title = fresh
-      ? `${this.pollNewCount} new comm${this.pollNewCount === 1 ? '' : 's'} / comment${this.pollNewCount === 1 ? '' : 's'} — click to load`
-      : 'Up to date · click to check for new comms & comments';
+      ? `${this.pollNewCount} new update${this.pollNewCount === 1 ? '' : 's'} (comms / comments / links) — click to load`
+      : 'Up to date · click to check for new links, comms & comments';
   }
 
   /** Spawn the COMMS (email-thread) control into the `comms` slot. Idempotent. */
@@ -990,6 +1004,24 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       },
       this.commsHost,
     ) as CommThreads;
+  }
+
+  /** Spawn the LINKS control into the `links` slot. Idempotent. */
+  private mountLinks(): void {
+    if (this.taskId === null) return;
+    if (this.taskLinks !== null) return;
+    this.linksHost.replaceChildren();
+    this.linksHost.classList.add('task-detail__slot--filled');
+    this.taskLinks = this.spawn(
+      'TaskLinks',
+      {
+        type: 'TaskLinks',
+        taskId: this.taskId.toString(),
+        // Our own add / remove shouldn't trip the "new content" badge.
+        onLocalWrite: () => this.noteOwnActivity(),
+      },
+      this.linksHost,
+    ) as TaskLinks;
   }
 
   private mountComments(): void {

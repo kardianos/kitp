@@ -42,6 +42,9 @@ type Config struct {
 type User struct {
 	ID          int64
 	DisplayName string
+	// Scope is user_token.scope: auth.TokenScopeFull ("") or a route
+	// scope such as auth.TokenScopeLinks.
+	Scope string
 }
 
 // ErrNotFound is returned when the token names no row.
@@ -119,16 +122,17 @@ func (m *Manager) Lookup(ctx context.Context, tok string) (*User, error) {
 	var (
 		userID      int64
 		displayName string
+		scope       string
 		revokedAt   *time.Time
 		expiresAt   *time.Time
 	)
 	row := m.pool.QueryRow(ctx, `
-		SELECT t.user_id, ua.display_name, t.revoked_at, t.expires_at
+		SELECT t.user_id, ua.display_name, t.scope, t.revoked_at, t.expires_at
 		FROM user_token t
 		JOIN user_account ua ON ua.id = t.user_id
 		WHERE t.id = $1
 	`, tok)
-	if err := row.Scan(&userID, &displayName, &revokedAt, &expiresAt); err != nil {
+	if err := row.Scan(&userID, &displayName, &scope, &revokedAt, &expiresAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -144,7 +148,7 @@ func (m *Manager) Lookup(ctx context.Context, tok string) (*User, error) {
 	m.mu.Lock()
 	m.pendingUse[tok] = now
 	m.mu.Unlock()
-	return &User{ID: userID, DisplayName: displayName}, nil
+	return &User{ID: userID, DisplayName: displayName, Scope: scope}, nil
 }
 
 // Revoke marks a token as revoked. Idempotent.

@@ -614,7 +614,12 @@ export interface ActivitySinkSetOutput {
 
 export interface AgentCreateInput {
   displayName: string;
+  /** 'self' (default) = the caller's personal agent; 'system' = a workspace
+   *  agent owned by the System account (admins only) — an integration
+   *  identity that survives staff turnover. */
+  owner?: AgentOwner;
 }
+export type AgentOwner = 'self' | 'system';
 export interface AgentCreateOutput {
   userId: string;
 }
@@ -628,8 +633,20 @@ export interface AgentDeleteOutput {
 
 /* ---- user_token.list / create / revoke (Agent tokens) -------------------- */
 
+/** What a token may do: '' = full access (MCP + every bearer route);
+ *  'links' = only the forge link hook (POST /api/v1/links). */
+export type TokenScope = '' | 'links';
+
+/** The token access choices, in mint-form order. Labels double as the
+ *  per-row access badge. */
+export const TOKEN_SCOPE_OPTIONS: ReadonlyArray<{ value: TokenScope; label: string }> = [
+  { value: '', label: 'Full access (MCP)' },
+  { value: 'links', label: 'Links only (forge hook)' },
+];
+
 export interface UserTokenRow {
   label: string;
+  scope: TokenScope;
   created_at: string;
   last_used_at: string;
   expires_at?: string;
@@ -645,11 +662,13 @@ export interface UserTokenCreateInput {
   userId: bigint | string;
   label: string;
   expiresAt?: string;
+  scope?: TokenScope;
 }
 export interface UserTokenCreateOutput {
   /** The opaque secret — surfaced ONCE on this call; the server can't recover it. */
   token: string;
   label: string;
+  scope: TokenScope;
 }
 export interface UserTokenRevokeInput {
   userId: bigint | string;
@@ -884,9 +903,14 @@ function decodeCardTypeRow(j: Record<string, unknown>): CardTypeRow {
   return out;
 }
 
+function asTokenScope(v: unknown): TokenScope {
+  return v === 'links' ? 'links' : '';
+}
+
 function decodeUserTokenRow(j: Record<string, unknown>): UserTokenRow {
   const out: UserTokenRow = {
     label: asStr(j['label']),
+    scope: asTokenScope(j['scope']),
     created_at: asStr(j['created_at']),
     last_used_at: asStr(j['last_used_at']),
   };
@@ -1452,7 +1476,11 @@ export function registerAdminSpecs(api: Api): void {
     api.define<AgentCreateInput, AgentCreateOutput>({
       endpoint: 'agent',
       action: 'create',
-      encode: (i) => ({ display_name: i.displayName }),
+      encode: (i) => {
+        const m: Record<string, unknown> = { display_name: i.displayName };
+        if (i.owner !== undefined) m['owner'] = i.owner;
+        return m;
+      },
       decode: (raw): AgentCreateOutput => ({ userId: asStr(asObj(raw)['user_id']) }),
     });
   }
@@ -1489,11 +1517,12 @@ export function registerAdminSpecs(api: Api): void {
       encode: (i) => {
         const m: Record<string, unknown> = { user_id: i.userId, label: i.label };
         if (i.expiresAt !== undefined && i.expiresAt !== '') m['expires_at'] = i.expiresAt;
+        if (i.scope !== undefined && i.scope !== '') m['scope'] = i.scope;
         return m;
       },
       decode: (raw): UserTokenCreateOutput => {
         const j = asObj(raw);
-        return { token: asStr(j['token']), label: asStr(j['label']) };
+        return { token: asStr(j['token']), label: asStr(j['label']), scope: asTokenScope(j['scope']) };
       },
     });
   }

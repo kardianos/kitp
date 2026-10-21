@@ -27,6 +27,24 @@ const COMMS = [
   { id: '200', title: 'Inquiry B', thread_id: 'bbb', channel_id: '144', comm_status: '56' },
 ];
 
+// Messages on Inquiry A: one received, one written here (outbound).
+const REPLIES = {
+  '145': [
+    {
+      id: '801', to: 'support@acme.test', from: '"C. C." <carol@example.com>',
+      from_name: 'Carol Customer', from_address: 'carol@example.com', author_id: '0',
+      subject: '[#aaa] Inquiry A', body_text: 'Is it fixed?', delivery_status: 'received',
+      created_at: '2026-10-21T08:15:00.000Z',
+    },
+    {
+      id: '802', to: 'carol@example.com', from: 'support@acme.test',
+      from_name: 'Dana Author', from_address: 'support@acme.test', author_id: '10',
+      subject: '[#aaa] Inquiry A', body_text: 'Yes.', delivery_status: 'sent',
+      created_at: '2026-10-21T09:00:00.000Z',
+    },
+  ],
+};
+
 before(async () => {
   installUiDom();
   const outdir = await buildTestBundles();
@@ -55,7 +73,7 @@ function respond(sr) {
           channel_id: c.channel_id,
           comm_status: c.comm_status,
           recipients: [],
-          replies: [],
+          replies: REPLIES[c.id] ?? [],
         })),
       },
     };
@@ -204,4 +222,46 @@ test('CommThreads: the start-comm form never wraps a composite in a <label>', as
     if (tag === 'DIV') assert.equal(row.getAttribute('role'), 'group', `${caption} row is a named group`);
   }
   assert.deepEqual(compositeLabels(form), [], 'no <label> wraps a composite control');
+});
+
+const SENDER_CASES = [
+  { label: 'received, matched person', dir: 'in', r: { from: '"C" <carol@x.test>', fromName: 'Carol', fromAddress: 'carol@x.test' }, want: { name: 'Carol', detail: '<carol@x.test>' } },
+  { label: 'sent by a kitp author', dir: 'out', r: { from: 'support@acme.test', fromName: 'Dana', fromAddress: 'support@acme.test' }, want: { name: 'Dana', detail: 'via support@acme.test' } },
+  { label: 'bare address only', dir: 'in', r: { from: 'frank@x.test', fromName: 'frank@x.test', fromAddress: 'frank@x.test' }, want: { name: 'frank@x.test', detail: '' } },
+  { label: 'name equals address case-insensitively', dir: 'in', r: { from: 'F@x.test', fromName: 'F@X.TEST', fromAddress: 'f@x.test' }, want: { name: 'F@X.TEST', detail: '' } },
+  { label: 'no name falls back to address', dir: 'in', r: { from: 'odd', fromName: '', fromAddress: 'g@x.test' }, want: { name: 'g@x.test', detail: '' } },
+  { label: 'unparsed envelope only', dir: 'in', r: { from: 'Mailer Daemon', fromName: '', fromAddress: '' }, want: { name: 'Mailer Daemon', detail: '' } },
+  { label: 'nothing known', dir: 'out', r: { from: '', fromName: '', fromAddress: '' }, want: { name: '—', detail: '' } },
+];
+for (const c of SENDER_CASES) {
+  test(`replySender: ${c.label}`, () => {
+    assert.deepEqual(M.replySender(c.r, c.dir), c.want);
+  });
+}
+
+test('CommThreads: each message shows who it is from, its local date + time, and status', async () => {
+  const { dispatcher, api } = bootApi();
+  const c = mount(api);
+  await settle(dispatcher);
+
+  const inbound = c.el.querySelector('[data-reply-row="801"]');
+  assert.equal(inbound.dataset.direction, 'in');
+  assert.equal(inbound.querySelector('[data-reply-from]').textContent, 'Carol Customer');
+  assert.equal(inbound.querySelector('[data-reply-addr]').textContent, '<carol@example.com>');
+  const time = inbound.querySelector('[data-reply-time]');
+  assert.equal(time.tagName, 'TIME');
+  assert.equal(time.textContent, M.formatLocalDateTime('2026-10-21T08:15:00.000Z'));
+  assert.equal(
+    inbound.querySelector('.task-comms__reply-meta').textContent,
+    `Carol Customer <carol@example.com> · ${M.formatLocalDateTime('2026-10-21T08:15:00.000Z')} · received`,
+  );
+
+  const outbound = c.el.querySelector('[data-reply-row="802"]');
+  assert.equal(outbound.dataset.direction, 'out');
+  assert.equal(outbound.querySelector('[data-reply-from]').textContent, 'Dana Author');
+  assert.equal(outbound.querySelector('[data-reply-addr]').textContent, 'via support@acme.test');
+  assert.equal(
+    outbound.querySelector('.task-comms__reply-meta').textContent,
+    `Dana Author via support@acme.test · ${M.formatLocalDateTime('2026-10-21T09:00:00.000Z')} · sent`,
+  );
 });

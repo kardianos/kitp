@@ -9,7 +9,11 @@
 //   - agent.create: actor must NOT be an agent. The new agent's
 //     parent_user_id is set to the actor's id — every user can create
 //     agents under themselves. (The wider escalation guard sits in
-//     user_role.set: admin is never grantable to agents.)
+//     user_role.set: admin is never grantable to agents.) A global
+//     admin may instead create a WORKSPACE agent (owner "system"),
+//     parented to the System account: an integration identity (a code
+//     forge) that no person owns, so it survives staff turnover —
+//     deleting the admin who made it doesn't cascade to it.
 //   - agent.delete: actor must NOT be an agent. Actor must be the
 //     target's parent_user_id OR a global admin. user_account ON DELETE
 //     CASCADE wipes session, user_token, user_card_agent, and
@@ -33,6 +37,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -40,7 +45,14 @@ import (
 // CreateInput is one row of agent.create.
 type CreateInput struct {
 	DisplayName string `json:"display_name" mcp:"required,desc=display name shown in the UI and on activity rows"`
+	Owner       string `json:"owner,omitempty" mcp:"desc=who owns the agent: omit / 'self' for the caller, or 'system' (global admins only) for a workspace agent owned by the System account — an integration identity such as a code forge that survives staff turnover"`
 }
+
+// Agent owners (CreateInput.Owner).
+const (
+	OwnerSelf   = "self"
+	OwnerSystem = "system"
+)
 
 // CreateOutput identifies the freshly-minted agent. Agents have no
 // person card and never appear in the assignee picker; the parent
@@ -66,7 +78,7 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "agent",
 		Action:       "create",
-		Doc:          "Create an agent owned by the calling user. Inserts a user_account row (is_agent=true, parent_user_id=actor). Agents are NOT assignable through the assignee picker; the parent routes tasks to them via user_card_agent.set. Rejects when the actor is itself an agent.",
+		Doc:          "Create an agent owned by the calling user (owner 'self', the default) or, for global admins, a workspace agent owned by the System account (owner 'system') — an integration identity that survives staff turnover. Inserts a user_account row (is_agent=true). Agents are NOT assignable through the assignee picker; the parent routes tasks to them via user_card_agent.set. Rejects when the actor is itself an agent.",
 		InputType:    reflect.TypeFor[CreateInput](),
 		OutputType:   reflect.TypeFor[CreateOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
@@ -89,13 +101,28 @@ func Register(p *store.Pool) {
 var authzPool any
 
 // authzCreate: actor must not be an agent. No admin requirement —
-// any signed-in user can spawn agents under themselves.
-func authzCreate(ctx context.Context, _ any) error {
+// any signed-in user can spawn agents under themselves — except for a
+// workspace (System-owned) agent, which only a global admin may create.
+func authzCreate(ctx context.Context, in any) error {
 	pool, _ := authzPool.(*store.Pool)
 	if pool == nil {
 		return nil // tests
 	}
-	return rejectAgentActor(ctx, pool, auth.ActorOrSystem(ctx))
+	actor := auth.ActorOrSystem(ctx)
+	if err := rejectAgentActor(ctx, pool, actor); err != nil {
+		return err
+	}
+	if row, ok := in.(CreateInput); ok && row.Owner == OwnerSystem {
+		admin, err := isGlobalAdmin(ctx, pool, actor)
+		if err != nil {
+			return fmt.Errorf("agent.create: %w", err)
+		}
+		if !admin {
+			return &reg.HandlerError{Code: "forbidden",
+				Message: "agent.create: only a global admin can create a workspace (system-owned) agent"}
+		}
+	}
+	return nil
 }
 
 // authzDelete: actor must not be an agent AND must be either the
@@ -134,19 +161,36 @@ func authzDelete(ctx context.Context, in any) error {
 		return nil
 	}
 	// Fall back to global admin check.
-	var n int
-	row2 := pool.P.QueryRow(ctx, `
-		SELECT count(*) FROM user_role ur JOIN role r ON r.id = ur.role_id
-		WHERE ur.user_id = $1 AND r.name = 'admin' AND ur.scope_card_id IS NULL
-	`, actor)
-	if err := row2.Scan(&n); err != nil {
-		return fmt.Errorf("agent.delete: admin check: %w", err)
+	admin, err := isGlobalAdmin(ctx, pool, actor)
+	if err != nil {
+		return fmt.Errorf("agent.delete: %w", err)
 	}
-	if n == 0 {
+	if !admin {
 		return &reg.HandlerError{Code: "forbidden",
 			Message: fmt.Sprintf("agent.delete: actor %d is not the parent of agent %d nor a global admin", actor, row.UserID)}
 	}
 	return nil
+}
+
+// isGlobalAdmin reports whether the actor holds the admin role with no
+// project scope.
+func isGlobalAdmin(ctx context.Context, pool *store.Pool, actor int64) (bool, error) {
+	b := named.New()
+	b.Set("actor", actor)
+	sql, args, err := b.Compile(`
+		SELECT EXISTS (
+			SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
+			WHERE ur.user_id = :actor AND r.name = 'admin' AND ur.scope_card_id IS NULL
+		)
+	`)
+	if err != nil {
+		return false, fmt.Errorf("admin check: compile: %w", err)
+	}
+	var admin bool
+	if err := pool.P.QueryRow(ctx, sql, args...).Scan(&admin); err != nil {
+		return false, fmt.Errorf("admin check: %w", err)
+	}
+	return admin, nil
 }
 
 // rejectAgentActor returns a non-nil error when the actor itself is an

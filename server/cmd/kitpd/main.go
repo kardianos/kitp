@@ -95,6 +95,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/file"
 	"github.com/kitp/kitp/server/internal/dom/flow"
 	"github.com/kitp/kitp/server/internal/dom/help"
+	domlink "github.com/kitp/kitp/server/internal/dom/link"
 	"github.com/kitp/kitp/server/internal/dom/proc"
 	"github.com/kitp/kitp/server/internal/dom/process"
 	"github.com/kitp/kitp/server/internal/dom/projectexport"
@@ -180,6 +181,7 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 	file.Register(pool)
 	flow.Register(pool)
 	help.Register()
+	domlink.Register(pool)
 	projectstamp.Register(pool)
 	tag.Register(pool)
 	process.Register(pool)
@@ -452,6 +454,11 @@ func runHTTP() error {
 		Dispatcher:     srv,
 		MaxUploadBytes: maxAttachBytes,
 	})
+	// Forge link hook (Bearer): a code forge (integrations/gerrit) links
+	// one change URL to the tasks it mentions — POST /api/v1/links —
+	// re-dispatching link.set as the token's actor, so role + scope checks
+	// match a browser caller and repeats stay idempotent.
+	domlink.Mount(apiRouter, domlink.HTTPConfig{Dispatcher: srv})
 	// Project export (phases 3 + 4 of PROJECT_PORTABILITY_PLAN.md) —
 	// streams text/csv, .xlsx, or application/zip via dedicated HTTP
 	// routes. Per-resource authz (caller must hold card.update on
@@ -821,6 +828,11 @@ func runMCP() error {
 		if err != nil {
 			return fmt.Errorf("KITP_TOKEN: %w", err)
 		}
+		// A scoped token (e.g. a forge's links-only token) is valid only
+		// on its own HTTP route, never as a general MCP credential.
+		if resolved.Scope != auth.TokenScopeFull {
+			return fmt.Errorf("KITP_TOKEN: token is limited to %q and cannot drive MCP", resolved.Scope)
+		}
 		actor = &auth.UserCtx{ID: resolved.ID, DisplayName: resolved.DisplayName}
 		log.Printf("MCP authenticated as user_account.id=%d (%q) via KITP_TOKEN", actor.ID, actor.DisplayName)
 	}
@@ -881,7 +893,7 @@ func newBearerResolver(mgr *token.Manager) api.Resolver {
 		if err != nil {
 			return nil, err
 		}
-		return &auth.UserCtx{ID: u.ID, DisplayName: u.DisplayName}, nil
+		return &auth.UserCtx{ID: u.ID, DisplayName: u.DisplayName, TokenScope: u.Scope}, nil
 	}
 }
 

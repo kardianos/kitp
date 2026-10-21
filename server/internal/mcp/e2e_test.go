@@ -101,7 +101,7 @@ func TestMCPSubprocess_Initialize_ToolsList_ToolsCall(t *testing.T) {
 			Error any `json:"error"`
 		}
 		if err := json.Unmarshal(resp, &got); err != nil {
-			t.Fatalf("initialize decode: %v: %s", err, resp)
+			t.Fatalf("initialize decode: %v: %s (stderr: %s)", err, resp, stderr.String())
 		}
 		if got.Error != nil {
 			t.Fatalf("initialize error: %v", got.Error)

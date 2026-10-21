@@ -38,7 +38,11 @@ export type IconName =
   | 'funnel'
   | 'corner-down-right'
   | 'ban'
-  | 'link';
+  | 'link'
+  | 'external-link'
+  | 'git-pull-request'
+  | 'git-merge'
+  | 'git-pull-request-closed';
 
 const ICON_MARKUP: Record<IconName, string> = {
   mail: '<path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7" /><rect x="2" y="4" width="20" height="16" rx="2" />',
@@ -86,6 +90,13 @@ const ICON_MARKUP: Record<IconName, string> = {
   ban: '<circle cx="12" cy="12" r="10" /><path d="M4.929 4.929 19.07 19.071" />',
   link:
     '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />',
+  'external-link':
+    '<path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />',
+  'git-pull-request':
+    '<circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M13 6h3a2 2 0 0 1 2 2v7" /><line x1="6" x2="6" y1="9" y2="21" />',
+  'git-merge': '<circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M6 21V9a9 9 0 0 0 9 9" />',
+  'git-pull-request-closed':
+    '<circle cx="6" cy="6" r="3" /><path d="M6 9v12" /><path d="m21 3-6 6" /><path d="m21 9-6-6" /><path d="M18 11.5V15" /><circle cx="18" cy="18" r="3" />',
 };
 
 const SVG_NS = 'http://www.w3.org/2000/svg';

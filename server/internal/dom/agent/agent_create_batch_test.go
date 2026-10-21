@@ -153,3 +153,76 @@ func TestAgentCreateBatch_PerRowValidation(t *testing.T) {
 		t.Errorf("row 1: message=%q", rows[1].Message)
 	}
 }
+
+// TestAgentCreateBatch_Owner — owner picks the parent: the caller by
+// default, the System account for a workspace agent (global admins
+// only), anything else is a validation error.
+func TestAgentCreateBatch_Owner(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_agent_create_batch_owner")
+	ctx := context.Background()
+	mkUser := func(name, role string) int64 {
+		var id int64
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO user_account (display_name) VALUES ($1) RETURNING id`, name).Scan(&id); err != nil {
+			t.Fatalf("user %s: %v", name, err)
+		}
+		if role != "" {
+			if _, err := pool.Exec(ctx,
+				`INSERT INTO user_role (user_id, role_id) SELECT $1, id FROM role WHERE name = $2`, id, role); err != nil {
+				t.Fatalf("grant %s: %v", name, err)
+			}
+		}
+		return id
+	}
+	admin := mkUser("an admin", "admin")
+	worker := mkUser("a worker", "worker")
+
+	cases := []struct {
+		label      string
+		actor      int64
+		owner      any // nil = key absent
+		wantCode   string
+		wantParent int64
+	}{
+		{"default is the caller", worker, nil, "", worker},
+		{"explicit self", worker, "self", "", worker},
+		{"admin creates a workspace agent", admin, "system", "", auth.SystemUserID},
+		{"worker cannot create a workspace agent", worker, "system", "forbidden", 0},
+		{"unknown owner", admin, "team", "validation", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.label, func(t *testing.T) {
+			in := map[string]any{"display_name": "agent " + c.label}
+			if c.owner != nil {
+				in["owner"] = c.owner
+			}
+			rows := callAgentCreateBatch(t, pool, c.actor, []map[string]any{in})
+			if len(rows) != 1 {
+				t.Fatalf("rows: %d", len(rows))
+			}
+			if c.wantCode != "" {
+				if rows[0].OK || rows[0].Code != c.wantCode {
+					t.Fatalf("want %s; got %+v", c.wantCode, rows[0])
+				}
+				return
+			}
+			if !rows[0].OK {
+				t.Fatalf("want ok; got %+v", rows[0])
+			}
+			var got struct {
+				UserID string `json:"user_id"`
+			}
+			if err := json.Unmarshal(rows[0].Result, &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			var parent int64
+			if err := pool.QueryRow(ctx,
+				`SELECT parent_user_id FROM user_account WHERE id = $1::bigint`, got.UserID).Scan(&parent); err != nil {
+				t.Fatalf("lookup: %v", err)
+			}
+			if parent != c.wantParent {
+				t.Errorf("parent_user_id = %d, want %d", parent, c.wantParent)
+			}
+		})
+	}
+}

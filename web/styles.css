@@ -4894,6 +4894,15 @@ select optgroup {
   align-items: center;
   gap: var(--space-2);
 }
+.nested-editor__token-scope {
+  flex: 0 0 auto;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
 .nested-editor__token-label {
   flex: 1 1 14rem;
   font-size: var(--text-sm);
@@ -4948,6 +4957,19 @@ select optgroup {
   font-size: var(--text-sm);
   color: var(--color-fg-strong);
   min-width: 6rem;
+}
+/* What the token may do: full access (MCP) or links only (forge hook). */
+.nested-editor__token-row-scope {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  padding: var(--space-h) var(--space-1x);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+}
+.nested-editor__token-row-scope[data-ne-token-row-scope="links"] {
+  background: var(--color-success-soft);
+  color: var(--color-success);
 }
 .nested-editor__token-row-time {
   font-size: var(--text-2xs);
@@ -6424,6 +6446,11 @@ select optgroup {
 .task-comments__composer-foot {
   justify-content: space-between;
 }
+/* The composer sits directly under the COMMENTS heading, above the history;
+   the section's flex gap already spaces it, so drop the shared top margin. */
+.task-comments__composer {
+  margin-top: 0;
+}
 .task-comments__composer-hint {
   font-size: var(--text-2xs);
 }
@@ -6791,6 +6818,193 @@ select optgroup {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Task-detail LINKS (TaskLinks) — code changes / issues / URLs on the task.   */
+/* One hairline-ruled list; each row: source icon · title (new tab) + meta ·   */
+/* state badge (tone from link-specs LINK_STATES) · remove.                    */
+/* -------------------------------------------------------------------------- */
+.task-links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.task-links__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.task-links__add {
+  flex: 0 0 auto;
+  min-height: 1.9rem;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+}
+.task-links__note {
+  margin: 0;
+  font-size: var(--text-xs);
+}
+.task-links__note:empty {
+  display: none;
+}
+.task-links__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.task-links__empty {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+}
+.task-links__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-hairline);
+}
+.task-links__item:first-child {
+  border-top: 0;
+}
+.task-links__icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--color-muted);
+}
+.task-links__item[data-state="merged"] .task-links__icon {
+  color: var(--color-success);
+}
+.task-links__main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-h);
+}
+.task-links__title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-fg-strong);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+a.task-links__title:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+.task-links__meta {
+  font-size: var(--text-2xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-links__url {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.task-links__time {
+  font-variant-numeric: tabular-nums;
+}
+.task-links__state {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  padding: var(--space-h) var(--space-1x);
+  border-radius: var(--radius-sm);
+  background: var(--color-fill-hover);
+  color: var(--color-muted);
+}
+.task-links__state[data-tone="progress"] {
+  background: var(--phase-active-soft);
+  color: var(--phase-active);
+}
+.task-links__state[data-tone="success"] {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+.task-links__state[data-tone="muted"] {
+  background: var(--phase-triage-soft);
+  color: var(--phase-triage);
+}
+.task-links__remove {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+.task-links__remove:hover {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+/* ---- add form ---- */
+.task-links__form:not(:empty) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-sunken);
+}
+.task-links__fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.task-links__input {
+  flex: 1 1 14rem;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--text-sm);
+  min-height: 2.25rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+.task-links__input::placeholder {
+  color: var(--color-muted);
+}
+.task-links__input:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 4px var(--color-focus-halo);
+}
+.task-links__error {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+}
+.task-links__error:empty {
+  display: none;
+}
+.task-links__form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.task-links__btn {
+  min-height: 1.9rem;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Task-detail COMMS (email threads) — start form + per-comm cards + replies.  */
 /* The section shipped unstyled; this gives the subject + message the most      */
 /* attention (prominent subject, line-break-preserving message bodies).         */
@@ -7036,9 +7250,19 @@ textarea.task-comms__form-input {
 }
 .task-comms__reply-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-1x);
   font-size: var(--text-2xs);
+}
+/* WHO a message is from reads first and strongest; the address beside it and
+   the local date + time stay muted. */
+.task-comms__reply-from {
+  font-weight: var(--weight-semibold);
+  color: var(--color-fg);
+}
+.task-comms__reply-time {
+  font-variant-numeric: tabular-nums;
 }
 /* The MESSAGE body — preserve email line breaks + wrap long tokens/URLs. */
 .task-comms__reply-body {

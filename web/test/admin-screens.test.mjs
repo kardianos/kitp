@@ -490,3 +490,83 @@ test('Agents nested editor: lists, assigns, and revokes an agent\'s roles', asyn
     'revoked role removed after reload',
   );
 });
+
+/* -------------------------------------------------------------------------- */
+/* Agents: workspace (System-owned) agents + links-only tokens for forges.     */
+/* -------------------------------------------------------------------------- */
+
+test('Agents create form: admins choose the owner (workspace first); My Agents has no choice', () => {
+  const admin = M.adminScreenConfig('agents');
+  const owner = admin.create.fields.find((f) => f.name === 'owner');
+  assert.ok(owner, 'owner field on the admin Agents create form');
+  assert.deepEqual(owner.options.map((o) => o.value), ['system', 'self'], 'workspace owner first');
+  assert.deepEqual(admin.create.input.owner, { payload: 'owner' }, 'owner flows into agent.create');
+
+  const mine = M.ownAgentsScreen(42n);
+  assert.equal(mine.create.fields.find((f) => f.name === 'owner'), undefined, 'My Agents: always mine');
+  assert.equal(mine.create.input.owner, undefined, 'My Agents sends no owner');
+});
+
+const TOKEN_SCOPE_CASES = [
+  { label: 'full access (default)', pick: '', wantScope: undefined },
+  { label: 'links only', pick: 'links', wantScope: 'links' },
+];
+for (const c of TOKEN_SCOPE_CASES) {
+  test(`Agents nested editor: minting a ${c.label} token`, async () => {
+    const sent = [];
+    let tokens = [];
+    const transport = {
+      async send(body) {
+        const req = JSON.parse(body);
+        const subresponses = req.subrequests.map((sr) => {
+          const key = `${sr.endpoint}.${sr.action}`;
+          const data = sr.data ?? {};
+          sent.push({ key, data });
+          switch (key) {
+            case 'user.select':
+              return { id: sr.id, ok: true, data: { rows: [{ id: '3001', display_name: 'Gerrit', parent_user_id: '1', is_agent: true }] } };
+            case 'user_role.list':
+            case 'role.list':
+              return { id: sr.id, ok: true, data: { rows: [] } };
+            case 'user_token.list':
+              return { id: sr.id, ok: true, data: { rows: tokens } };
+            case 'user_token.create':
+              tokens = [{ label: data.label, scope: data.scope ?? '', created_at: '2026-10-21T00:00:00Z', last_used_at: '2026-10-21T00:00:00Z' }];
+              return { id: sr.id, ok: true, data: { token: 'secret-value', label: data.label, scope: data.scope ?? '' } };
+            default:
+              return { id: sr.id, ok: false, error: { code: 'unknown', message: key } };
+          }
+        });
+        return { status: 200, text: JSON.stringify({ subresponses }) };
+      },
+    };
+    const dispatcher = new M.Dispatcher({ transport });
+    const api = new M.Api(dispatcher);
+    M.registerKanbanSpecs(api);
+    M.registerAdminSpecs(api);
+    const tree = new M.TreeNode({}, []);
+    const scope = { get projectId() { return null; } };
+    const ctrl = M.Control.New('MasterDetail', M.adminScreenConfig('agents'), { api, tree, scope });
+    ctrl.mount(new FakeElement('div'));
+    await settle(dispatcher);
+    tree.at(['admin', 'agents', 'selectedId']).set('3001');
+    await settle(dispatcher);
+
+    const select = ctrl.el.querySelectorAll('[data-ne-token-scope]')[0];
+    assert.ok(select, 'access select present');
+    assert.deepEqual(select.children.map((o) => o.value), ['', 'links'], 'full access first, then links only');
+    select.value = c.pick;
+    const label = ctrl.el.querySelectorAll('[data-ne-token-label]')[0];
+    label.value = 'gerrit';
+    const mint = ctrl.el.querySelectorAll('[data-ne-token-mint-btn]')[0];
+    mint.dispatchEvent({ type: 'click', target: mint });
+    await settle(dispatcher);
+
+    const create = sent.filter((s) => s.key === 'user_token.create').pop();
+    assert.ok(create, 'user_token.create fired');
+    assert.equal(create.data.scope, c.wantScope, 'scope on the wire');
+    const row = ctrl.el.querySelectorAll('[data-ne-token-row-scope]')[0];
+    assert.ok(row, 'token row shows its access');
+    assert.equal(row.dataset.neTokenRowScope, c.pick);
+  });
+}

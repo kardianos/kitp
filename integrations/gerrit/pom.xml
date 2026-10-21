@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  kitp Gerrit plugin — links Gerrit changes to kitp tasks.
+
+  Standalone Maven build against the published Gerrit plugin API (no Gerrit
+  source tree needed):  mvn package  →  target/kitp.jar
+  Drop the jar into $site_path/plugins/. See README.md.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>kitp</groupId>
+  <artifactId>kitp-gerrit</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+  <name>kitp Gerrit plugin</name>
+  <description>Links Gerrit changes to the kitp tasks their commit messages mention, and keeps each link's state (open / reviewed / approved / merged / abandoned) current.</description>
+
+  <properties>
+    <!-- The plugin API this jar is compiled against; Gerrit-ApiVersion in the
+         manifest. Gerrit 3.14 runs on Java 21. -->
+    <gerrit.api.version>3.14.4</gerrit.api.version>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.google.gerrit</groupId>
+      <artifactId>gerrit-plugin-api</artifactId>
+      <version>${gerrit.api.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.11.4</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>kitp</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.5.2</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.2</version>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Gerrit-PluginName>kitp</Gerrit-PluginName>
+              <Gerrit-Module>kitp.gerrit.Module</Gerrit-Module>
+              <Gerrit-ApiType>plugin</Gerrit-ApiType>
+              <Gerrit-ApiVersion>${gerrit.api.version}</Gerrit-ApiVersion>
+              <Implementation-Title>kitp task links</Implementation-Title>
+              <Implementation-Version>${project.version}</Implementation-Version>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

@@ -20,10 +20,20 @@
 --      "recipients": ["<bigint>", ...],
 --      "replies": [{
 --         "id": "<bigint>", "to": "...", "from": "...",
+--         "from_name": "...", "from_address": "...",
+--         "author_id": "<bigint>",
 --         "subject": "...", "body_text": "...",
 --         "delivery_status": "...", "created_at": "RFC3339"
 --      }]
 --   }]}
+--
+-- Who a message is FROM: `from` is the raw From: envelope (for outbound
+-- mail that's the channel's from_address, not the person who wrote it).
+-- `from_name` resolves the human: the kitp author (reply_author -> the
+-- user_account's display_name) for messages written here; otherwise the
+-- person card whose email matches the envelope address (inbound senders
+-- are materialised as contact persons), falling back to the display-name
+-- part of the From: header. `from_address` is the bare envelope address.
 CREATE OR REPLACE FUNCTION comm_list_for_task_batch(
     actor_id bigint,
     inputs jsonb
@@ -140,12 +150,30 @@ BEGIN
                                                    JOIN attribute_def ad ON ad.id = av.attribute_def_id
                                                    WHERE av.card_id = rb.id AND ad.name = 'reply_to'
                                                ), ''),
-                                               'from',            COALESCE((
-                                                   SELECT av.value #>> '{}'
-                                                   FROM attribute_value av
-                                                   JOIN attribute_def ad ON ad.id = av.attribute_def_id
-                                                   WHERE av.card_id = rb.id AND ad.name = 'reply_from'
-                                               ), ''),
+                                               'from',            snd.hdr,
+                                               'from_name',       COALESCE(
+                                                   NULLIF(snd.author_name, ''),
+                                                   (
+                                                       SELECT tv.value #>> '{}'
+                                                       FROM attribute_value ev
+                                                       JOIN attribute_def ead ON ead.id = ev.attribute_def_id
+                                                                             AND ead.name = 'email'
+                                                       JOIN card pc ON pc.id = ev.card_id AND pc.deleted_at IS NULL
+                                                       JOIN card_type pct ON pct.id = pc.card_type_id
+                                                                          AND pct.name = 'person'
+                                                       JOIN attribute_value tv ON tv.card_id = pc.id
+                                                       JOIN attribute_def tad ON tad.id = tv.attribute_def_id
+                                                                             AND tad.name = 'title'
+                                                       WHERE snd.author_id IS NULL
+                                                         AND snd.addr <> ''
+                                                         AND lower(ev.value #>> '{}') = snd.addr
+                                                       ORDER BY pc.id
+                                                       LIMIT 1
+                                                   ),
+                                                   NULLIF(snd.disp, ''),
+                                                   ''),
+                                               'from_address',    snd.addr,
+                                               'author_id',       COALESCE(snd.author_id, 0)::text,
                                                'subject',         COALESCE((
                                                    SELECT av.value #>> '{}'
                                                    FROM attribute_value av
@@ -183,6 +211,36 @@ BEGIN
                                             THEN (e.v #>> '{}')::bigint
                                         ELSE NULL
                                     END
+                                    -- Sender: the raw From: envelope, its
+                                    -- bare address + display-name parts,
+                                    -- and the kitp author (if written here).
+                                    LEFT JOIN LATERAL (
+                                        SELECT h.hdr,
+                                               lower(btrim(COALESCE(
+                                                   substring(h.hdr FROM '<([^<>]+)>'),
+                                                   CASE WHEN h.hdr ~ '^[^[:space:]<>]+@[^[:space:]<>]+$'
+                                                        THEN h.hdr END,
+                                                   ''))) AS addr,
+                                               btrim(regexp_replace(h.hdr, '<[^<>]*>', ''), ' "') AS disp,
+                                               au.author_id,
+                                               COALESCE(ua.display_name, '') AS author_name
+                                        FROM (
+                                            SELECT btrim(COALESCE((
+                                                SELECT av.value #>> '{}'
+                                                FROM attribute_value av
+                                                JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                                WHERE av.card_id = rb.id AND ad.name = 'reply_from'
+                                            ), '')) AS hdr
+                                        ) h
+                                        LEFT JOIN LATERAL (
+                                            SELECT (av.value)::text::bigint AS author_id
+                                            FROM attribute_value av
+                                            JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                            WHERE av.card_id = rb.id AND ad.name = 'reply_author'
+                                              AND jsonb_typeof(av.value) = 'number'
+                                        ) au ON true
+                                        LEFT JOIN user_account ua ON ua.id = au.author_id
+                                    ) snd ON true
                                     WHERE rb.deleted_at IS NULL
                                 ) hydrated
                             ), '[]'::jsonb)

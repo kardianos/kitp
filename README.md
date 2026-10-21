@@ -24,6 +24,11 @@ runtime deps).
 - Email comm channels: inbound IMAP polling creates tasks, outbound SMTP
   replies thread by subject tag, all driven by background jobs.
 - Content-addressed attachment store (chunked upload, dedup, reaper).
+- Task links: code changes, issues, and URLs on a task, added by hand, over
+  MCP, or by a code forge through `POST /api/v1/links` (idempotent per task +
+  URL). A Gerrit plugin (`integrations/gerrit`) links each change to the
+  tasks its commit message names and keeps the link state in step with the
+  review. See `docs/links.md`.
 - Background job scheduler with an admin screen (list + run-now).
 - MCP server for agent access over stdio.
 
