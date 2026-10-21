@@ -31,6 +31,7 @@
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { splitPath } from '../core/data.js';
+import type { Path } from '../core/tree.js';
 import { Popover } from '../ui/popover.js';
 import {
   type Predicate,
@@ -493,7 +494,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
 
   /* ---------------------------- saved filters ---------------------------- */
 
-  private snippetsSegs(): string[] {
+  private snippetsSegs(): Path {
     return splitPath(this.config.snippetsPath ?? 'screen.snippets');
   }
 

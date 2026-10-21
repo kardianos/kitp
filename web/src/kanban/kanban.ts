@@ -77,7 +77,6 @@ import {
   topLevelPhases,
 } from '../filter/predicate.js';
 
-import { icon } from '../ui/icons.js';
 import { type StatusGlyph } from '../ui/status-icon.js';
 import { isPriorityPath, priorityIcon, priorityPlaceholder } from '../ui/priority-icon.js';
 /**
