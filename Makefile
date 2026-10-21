@@ -124,7 +124,7 @@ gerrit-plugin:
 	docker run --rm -u "$$(id -u):$$(id -g)" \
 		-v $(REPO_ROOT)/integrations/gerrit:/src -v $(HOME)/.m2:/var/maven/.m2 \
 		-e MAVEN_CONFIG=/var/maven/.m2 -w /src maven:3.9-eclipse-temurin-21 \
-		mvn -B -Duser.home=/var/maven -Dgerrit.api.version=$(GERRIT_API) package
+		mvn -B -Duser.home=/var/maven -Dgerrit.api.version=$(GERRIT_API) clean package
 
 # ---------- container image (GHCR) ------------------------------------------
 
