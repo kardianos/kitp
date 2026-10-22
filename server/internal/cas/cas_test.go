@@ -221,7 +221,9 @@ func TestReaperOrphans(t *testing.T) {
 		Storage:     storage,
 		GracePeriod: time.Hour,
 	}
-	r.SweepOnce(ctx)
+	if err := r.RunOnce(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
 
 	// keep stays.
 	ok, err := storage.Has(ctx, keepAddr)
@@ -270,7 +272,9 @@ func TestReaperGracePeriod(t *testing.T) {
 		Storage:     storage,
 		GracePeriod: time.Hour,
 	}
-	r.SweepOnce(ctx)
+	if err := r.RunOnce(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
 
 	ok, err := storage.Has(ctx, addr)
 	if err != nil {
@@ -278,5 +282,143 @@ func TestReaperGracePeriod(t *testing.T) {
 	}
 	if !ok {
 		t.Fatalf("reaper deleted fresh blob inside the grace period")
+	}
+}
+
+// TestReaperReleasesDeadReferences covers the rows that used to fail
+// their delete on every pass. A file whose attachments are all
+// soft-deleted is reaped along with those dead attachment rows (and its
+// bytes, in the same pass). A file still used by a table the reaper
+// isn't configured for (import_job) is kept, as is one a writer holds
+// mid-insert, which the next pass reaps once the lock is gone.
+func TestReaperReleasesDeadReferences(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_cas_reaper_dead")
+	ctx := context.Background()
+	storage := cas.New(cas.NewPgBackend(pool))
+	mustExec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	var cardID, userID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'project' RETURNING id`,
+	).Scan(&cardID); err != nil {
+		t.Fatalf("card insert: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO user_account (display_name) VALUES ('test') RETURNING id`,
+	).Scan(&userID); err != nil {
+		t.Fatalf("user insert: %v", err)
+	}
+	// seedFile stores name's bytes as a one-chunk file.
+	seedFile := func(name string) (int64, string) {
+		t.Helper()
+		addr, err := storage.Put(ctx, "text/plain", []byte(name))
+		if err != nil {
+			t.Fatalf("put %s: %v", name, err)
+		}
+		var id int64
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO file (filename, size_bytes, created_by) VALUES ($1, $2, $3)
+			RETURNING id
+		`, name, len(name), userID).Scan(&id); err != nil {
+			t.Fatalf("file insert %s: %v", name, err)
+		}
+		mustExec(`INSERT INTO file_chunk (file_id, seq, cas_address, chunk_size) VALUES ($1, 0, $2, $3)`,
+			id, addr, len(name))
+		return id, addr
+	}
+	fileGone := func(id int64) bool {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM file WHERE id = $1`, id).Scan(&n); err != nil {
+			t.Fatalf("count file: %v", err)
+		}
+		return n == 0
+	}
+	blobGone := func(addr string) bool {
+		t.Helper()
+		ok, err := storage.Has(ctx, addr)
+		if err != nil {
+			t.Fatalf("has: %v", err)
+		}
+		return !ok
+	}
+
+	deleted, deletedAddr := seedFile("deleted.xlsx")
+	thumb, thumbAddr := seedFile("deleted-thumb.png")
+	shared, sharedAddr := seedFile("shared.txt")
+	imported, importedAddr := seedFile("import.csv")
+	held, heldAddr := seedFile("held.txt")
+	mustExec(`INSERT INTO attachment (card_id, file_id, thumb_file_id, deleted_at) VALUES ($1, $2, $3, now())`,
+		cardID, deleted, thumb)
+	mustExec(`INSERT INTO attachment (card_id, file_id) VALUES ($1, $2)`, cardID, shared)
+	mustExec(`INSERT INTO attachment (card_id, file_id, deleted_at) VALUES ($1, $2, now())`, cardID, shared)
+	mustExec(`INSERT INTO import_job (project_id, file_id, created_by) VALUES ($1, $2, $3)`,
+		cardID, imported, userID)
+	mustExec(`UPDATE file SET created_at = now() - interval '2 hours'`)
+	mustExec(`UPDATE cas_blob SET created_at = now() - interval '2 hours'`)
+
+	// The lock an attachment insert's foreign-key check takes on the file
+	// it references, held until that insert commits.
+	writer, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := writer.Exec(ctx, `SELECT FROM file WHERE id = $1 FOR KEY SHARE`, held); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+
+	r := &cas.Reaper{Pool: pool, Storage: storage, GracePeriod: time.Hour}
+	if err := r.RunOnce(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	for name, id := range map[string]int64{"deleted": deleted, "thumb": thumb} {
+		if !fileGone(id) {
+			t.Errorf("%s file kept; only a soft-deleted attachment uses it", name)
+		}
+	}
+	for name, addr := range map[string]string{"deleted": deletedAddr, "thumb": thumbAddr} {
+		if !blobGone(addr) {
+			t.Errorf("%s bytes kept after their file was reaped", name)
+		}
+	}
+	for name, id := range map[string]int64{"shared": shared, "imported": imported, "held": held} {
+		if fileGone(id) {
+			t.Errorf("%s file reaped while in use", name)
+		}
+	}
+	for name, addr := range map[string]string{"shared": sharedAddr, "imported": importedAddr, "held": heldAddr} {
+		if blobGone(addr) {
+			t.Errorf("%s bytes reaped while in use", name)
+		}
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM attachment WHERE file_id = $1`, shared).Scan(&n); err != nil {
+		t.Fatalf("count attachments: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("shared file has %d attachments, want the live one and the soft-deleted one", n)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM attachment WHERE file_id = $1`, deleted).Scan(&n); err != nil {
+		t.Fatalf("count attachments: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("soft-deleted attachment of a reaped file kept")
+	}
+
+	if err := writer.Rollback(ctx); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if err := r.RunOnce(ctx); err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if !fileGone(held) || !blobGone(heldAddr) {
+		t.Errorf("held file not reaped once its writer let go")
+	}
+	if fileGone(imported) {
+		t.Errorf("import_job file reaped on the second pass")
 	}
 }
