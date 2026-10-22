@@ -38,7 +38,7 @@ import { Control, type BaseControlConfig } from '../core/control.js';
 import { setMarkdown } from '../util/markdown-control.js';
 import { RichEditor } from '../editor/rich-editor.js';
 import { AUTH_USER_PATH, peekCurrentUserId, type AuthUser } from '../auth/auth-state.js';
-import { ADMIN_SPEC, type UserListOutput, type AttributeDefListOutput } from '../admin/specs.js';
+import { ADMIN_SPEC, userLabel, type UserListOutput, type AttributeDefListOutput } from '../admin/specs.js';
 import { schemaForCardType, type AttrSchema } from '../filter/attribute-schema.js';
 import { attrNameToTargetType, loadActivityLabels } from './activity-labels.js';
 import {
@@ -272,7 +272,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
       (out) => {
         const rows = (out as UserListOutput).rows ?? [];
         const map: IdMap = {};
-        for (const u of rows) map[String(u.id)] = u.display_name;
+        for (const u of rows) map[String(u.id)] = userLabel(u);
         this.userNames = map;
         if (this.isAlive()) this.paintFeed();
       },
@@ -454,7 +454,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
 
     const actor = document.createElement('span');
     actor.className = 'task-comments__actor';
-    actor.textContent = this.actorLabel(c.actorId);
+    actor.textContent = c.actorName ?? this.actorLabel(c.actorId);
     meta.append(actor);
 
     // Condensed meta: "author · 2026-10-21 14:03 (edited)" — a middot

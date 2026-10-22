@@ -179,7 +179,7 @@ type ReplyRow struct {
 	ID             int64  `json:"id,string" mcp:"desc=reply_body card id"`
 	To             string `json:"to" mcp:"desc=To: envelope"`
 	From           string `json:"from" mcp:"desc=From: envelope (for outbound mail, the channel's from_address)"`
-	FromName       string `json:"from_name" mcp:"desc=who the message is from: the kitp author for messages written here, else the person whose email matches the sender, else the From: header's display name; empty when unknown"`
+	FromName       string `json:"from_name" mcp:"desc=who the message is from: the kitp author for messages written here (an agent is named with its owner), else the person whose email matches the sender, else the From: header's display name; empty when unknown"`
 	FromAddress    string `json:"from_address" mcp:"desc=bare sender email address from the From: envelope"`
 	AuthorID       int64  `json:"author_id,string" mcp:"desc=user_account that wrote the message in kitp; 0 for received mail"`
 	Subject        string `json:"subject" mcp:"desc=subject line"`

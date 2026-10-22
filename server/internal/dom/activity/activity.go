@@ -16,33 +16,78 @@ import (
 // CardID is optional: when zero/null the handler returns activity across
 // every card the actor can see (cross-card mode). When non-zero, only
 // rows for that card are returned. BeforeActivityID is exclusive: the
-// page contains rows with id < cursor.
+// page contains rows with id < cursor. ActorIDs / Kinds / CardTypes / Q
+// narrow the rows (AND-joined; an empty list is no filter); Facets asks
+// for per-actor / kind / card-type counts over the window without them.
 type SelectInput struct {
-	CardID           int64  `json:"card_id,string,omitempty" mcp:"desc=card whose activity is being read; omit for cross-card mode"`
-	ProjectID        int64  `json:"project_id,string,omitempty" mcp:"desc=project scope; when set, only activity for cards within that project (the project or a descendant) is returned"`
-	Limit            *int   `json:"limit,omitempty" mcp:"desc=optional row cap; defaults to 200"`
-	BeforeActivityID *int64 `json:"before_activity_id,string,omitempty" mcp:"desc=cursor; only return activity rows with id < this"`
-	FromDate         string `json:"from_date,omitempty" mcp:"desc=inclusive lower bound on created_at, ISO date YYYY-MM-DD"`
-	ToDate           string `json:"to_date,omitempty" mcp:"desc=inclusive upper bound on created_at, ISO date YYYY-MM-DD"`
+	CardID           int64    `json:"card_id,string,omitempty" mcp:"desc=card whose activity is being read; omit for cross-card mode"`
+	ProjectID        int64    `json:"project_id,string,omitempty" mcp:"desc=project scope; when set, only activity for cards within that project (the project or a descendant) is returned"`
+	Limit            *int     `json:"limit,omitempty" mcp:"desc=optional row cap; defaults to 200"`
+	BeforeActivityID *int64   `json:"before_activity_id,string,omitempty" mcp:"desc=cursor; only return activity rows with id < this"`
+	FromDate         string   `json:"from_date,omitempty" mcp:"desc=inclusive lower bound on created_at, ISO date YYYY-MM-DD"`
+	ToDate           string   `json:"to_date,omitempty" mcp:"desc=inclusive upper bound on created_at, ISO date YYYY-MM-DD"`
+	ActorIDs         []string `json:"actor_ids,omitempty" mcp:"desc=only rows by these user ids"`
+	Kinds            []string `json:"kinds,omitempty" mcp:"desc=only rows of these kinds (card_create, attr_update, comment, tag_apply, attachment_create, ...)"`
+	CardTypes        []string `json:"card_types,omitempty" mcp:"desc=only rows on cards of these card types (task, link, comm, reply_body, ...)"`
+	Q                string   `json:"q,omitempty" mcp:"desc=text search over the owning card's title or #id, the card's own title, and comment bodies"`
+	Facets           bool     `json:"facets,omitempty" mcp:"desc=also return per-actor / kind / card-type counts for the window (ignoring actor_ids / kinds / card_types / q / the cursor)"`
 }
 
-// Row is one denormalized activity row. CardID is set so cross-card
-// callers can route per-row links back to a card.
+// Row is one denormalized activity row, carrying the names and titles a
+// client needs to render it. CardID is set so cross-card callers can
+// route per-row links back to a card.
 type Row struct {
 	ID            int64           `json:"id,string" mcp:"desc=activity row id"`
 	CardID        int64           `json:"card_id,string" mcp:"desc=card the activity belongs to"`
+	CardType      string          `json:"card_type" mcp:"desc=card type of card_id"`
+	CardTitle     string          `json:"card_title" mcp:"desc=title of card_id (a reply's subject); empty when it has none"`
+	NavCardID     int64           `json:"nav_card_id,string" mcp:"desc=card to open for this row: the owning task for a comm / link / reply, else card_id"`
+	NavCardType   string          `json:"nav_card_type" mcp:"desc=card type of nav_card_id"`
+	NavTitle      string          `json:"nav_title" mcp:"desc=title of nav_card_id"`
 	Kind          string          `json:"kind" mcp:"desc=activity kind (card_create, attr_update, comment, ...)"`
 	AttributeName *string         `json:"attribute_name,omitempty" mcp:"desc=attribute name when kind is attr_update"`
+	ValueType     *string         `json:"value_type,omitempty" mcp:"desc=the attribute's value type (text, card_ref, card_ref[], ...)"`
 	ValueOld      json.RawMessage `json:"value_old,omitempty" mcp:"desc=previous JSON value of the attribute, if any"`
 	ValueNew      json.RawMessage `json:"value_new,omitempty" mcp:"desc=new JSON value of the attribute, if any"`
+	Refs          json.RawMessage `json:"refs,omitempty" mcp:"desc=object of card id to title for every card a card_ref value or move target names"`
 	CommentBody   *string         `json:"comment_body,omitempty" mcp:"desc=resolved comment body when kind is comment"`
 	ActorID       int64           `json:"actor_id,string" mcp:"desc=user id that made the change"`
+	ActorName     string          `json:"actor_name" mcp:"desc=who made the change; an agent is named with its owner, e.g. 'claude (for Daniel)'"`
 	CreatedAt     time.Time       `json:"created_at" mcp:"desc=activity timestamp"`
 }
 
 // SelectOutput is the per-input reply.
 type SelectOutput struct {
-	Rows []Row `json:"rows" mcp:"desc=matching activity rows in chronological order"`
+	Rows   []Row   `json:"rows" mcp:"desc=matching activity rows in chronological order"`
+	Facets *Facets `json:"facets,omitempty" mcp:"desc=counts over the window when facets was requested"`
+}
+
+// Facets counts the window's rows (project / card / dates / visibility,
+// before the actor / kind / card-type / text filters and the cursor).
+type Facets struct {
+	Total     int             `json:"total" mcp:"desc=rows in the window"`
+	Actors    []ActorFacet    `json:"actors" mcp:"desc=rows per actor, most first"`
+	Kinds     []KindFacet     `json:"kinds" mcp:"desc=rows per kind, most first"`
+	CardTypes []CardTypeFacet `json:"card_types" mcp:"desc=rows per card type, most first"`
+}
+
+// ActorFacet is one actor's row count.
+type ActorFacet struct {
+	ID    int64  `json:"id,string" mcp:"desc=user id"`
+	Name  string `json:"name" mcp:"desc=user label (agents name their owner)"`
+	Count int    `json:"count" mcp:"desc=rows by this user"`
+}
+
+// KindFacet is one kind's row count.
+type KindFacet struct {
+	Kind  string `json:"kind" mcp:"desc=activity kind"`
+	Count int    `json:"count" mcp:"desc=rows of this kind"`
+}
+
+// CardTypeFacet is one card type's row count.
+type CardTypeFacet struct {
+	CardType string `json:"card_type" mcp:"desc=card type name"`
+	Count    int    `json:"count" mcp:"desc=rows on cards of this type"`
 }
 
 // PollInput is the cheap "is there newer activity?" probe for the task-detail
@@ -64,10 +109,11 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "activity",
 		Action:       "select",
-		Doc:          "Read paged activity for one card in chronological order; comments include their body inline.",
+		Doc:          "Read paged activity for one card (chronological) or a project (newest first), with actor names, card titles and card_ref labels resolved; comments include their body inline. Filter by actor / kind / card type / text; ask for facets to get counts per option.",
 		InputType:    reflect.TypeFor[SelectInput](),
 		OutputType:   reflect.TypeFor[SelectOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
+		IsRead:       true,
 		// Unified handler — body lives in
 		// db/schema/functions/activity_select_batch.sql.
 		SQLFunc: "activity_select_batch",

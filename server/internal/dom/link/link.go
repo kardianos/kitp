@@ -70,7 +70,7 @@ type Row struct {
 	CreatedAt   string `json:"created_at" mcp:"desc=RFC3339 time the link was added"`
 	UpdatedAt   string `json:"updated_at" mcp:"desc=RFC3339 time of the link's last change (title / kind / state)"`
 	CreatedByID int64  `json:"created_by_id,string" mcp:"desc=user_account that added the link (a person, or a forge's agent account)"`
-	CreatedBy   string `json:"created_by" mcp:"desc=display name of that account"`
+	CreatedBy   string `json:"created_by" mcp:"desc=name of that account (a personal agent is named with its owner)"`
 }
 
 // ListOutput wraps the rows in a stable envelope.

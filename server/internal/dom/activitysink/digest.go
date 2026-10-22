@@ -631,7 +631,7 @@ func (p *Pumper) loadActorNames(ctx context.Context, ids []int64) (map[int64]str
 	b := named.New()
 	b.Set("ids", ids)
 	sql, args, err := b.Compile(`
-		SELECT id, COALESCE(display_name, '') FROM user_account
+		SELECT id, COALESCE(user_label(id), '') FROM user_account
 		WHERE id = ANY(CAST(:ids AS bigint[]))
 	`)
 	if err != nil {

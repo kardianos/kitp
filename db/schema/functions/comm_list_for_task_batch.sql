@@ -30,7 +30,8 @@
 -- Who a message is FROM: `from` is the raw From: envelope (for outbound
 -- mail that's the channel's from_address, not the person who wrote it).
 -- `from_name` resolves the human: the kitp author (reply_author -> the
--- user_account's display_name) for messages written here; otherwise the
+-- user_account's user_label, so an agent names its owner) for messages
+-- written here; otherwise the
 -- person card whose email matches the envelope address (inbound senders
 -- are materialised as contact persons), falling back to the display-name
 -- part of the From: header. `from_address` is the bare envelope address.
@@ -223,7 +224,7 @@ BEGIN
                                                    ''))) AS addr,
                                                btrim(regexp_replace(h.hdr, '<[^<>]*>', ''), ' "') AS disp,
                                                au.author_id,
-                                               COALESCE(ua.display_name, '') AS author_name
+                                               COALESCE(user_label(ua.id), '') AS author_name
                                         FROM (
                                             SELECT btrim(COALESCE((
                                                 SELECT av.value #>> '{}'

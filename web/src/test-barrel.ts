@@ -233,7 +233,8 @@ export {
 } from './shell/config-specs.js';
 export { publishTaskNav, taskNavListUrl, taskNavNeighbor } from './shell/task-nav.js';
 export { attrNameToTargetType, collectRefIdsByType, loadActivityLabels } from './task-detail/activity-labels.js';
-export { Activity, registerActivity, activityRowsToCsv, isoDaysAgo, ACTIVITY_DEFAULT_LOOKBACK_DAYS, groupActivity, summarizeGroup } from './activity/activity.js';
+export { Activity, registerActivity, activityRowsToCsv, isoDaysAgo, initials, ACTIVITY_DEFAULT_LOOKBACK_DAYS } from './activity/activity.js';
+export { buildFeed, buildLines, cardTypeLabel, kindsForGroups, KIND_GROUPS, dayLabel, localDayKey, clip as clipActivityText } from './activity/activity-model.js';
 export { ProjectList, registerProjectList } from './projects/project-list.js';
 
 // Project detail (the `project` layout body): the ProjectLayout control + its
@@ -275,7 +276,7 @@ export {
   fieldText,
   readPath,
 } from './admin/master-detail.js';
-export { registerAdminSpecs, ADMIN_SPEC } from './admin/specs.js';
+export { registerAdminSpecs, ADMIN_SPEC, userLabel } from './admin/specs.js';
 export {
   NestedEditor,
   registerNestedEditor,

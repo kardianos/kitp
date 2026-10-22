@@ -108,6 +108,30 @@ export interface UserListOutput {
   rows: UserRow[];
 }
 
+/** The System account (user_account id 1). A workspace agent is parented to
+ *  it and belongs to no one. */
+const SYSTEM_USER_ID = '1';
+
+/**
+ * How a user is named where the UI says who did something: the display name,
+ * plus the owner for a personal agent ("claude (for Daniel)"). Mirrors the
+ * server's `user_label` SQL function; prefer a server-labelled name (e.g. an
+ * activity row's `actorName`) when there is one, since user.select only lists
+ * the caller's own agents.
+ */
+export function userLabel(u: Pick<UserRow, 'display_name' | 'is_agent' | 'parent_user_id' | 'parent_user_name'>): string {
+  if (
+    u.is_agent &&
+    u.parent_user_id !== undefined &&
+    u.parent_user_id !== SYSTEM_USER_ID &&
+    u.parent_user_name !== undefined &&
+    u.parent_user_name !== ''
+  ) {
+    return `${u.display_name} (for ${u.parent_user_name})`;
+  }
+  return u.display_name;
+}
+
 /* ---- attribute_def.select (Attributes screen) ---------------------------- */
 
 export interface AttributeDefBoundCardType {

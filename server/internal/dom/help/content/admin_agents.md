@@ -4,7 +4,7 @@ An **agent** is a user account that belongs to another user. Agents are how the 
 
 Every agent has:
 
-- A **display name** that shows up wherever activity rows surface (so an automated comment is clearly attributable).
+- A **display name** that shows up wherever activity rows surface (so an automated comment is clearly attributable), followed by its owner — "claude (for Dana)" — on activity, comments, links and email signatures, since several people can run an agent with the same name. A workspace agent (owned by System, such as a code forge) shows its name alone.
 - A **parent user** — the human who owns the agent and is responsible for what it does. You can only see / manage your own agents on this page.
 - Zero or more **API tokens**. The token bytes are shown **once** at mint time; revoking is one click but rotation requires a new token.
 - Zero or more **role grants** (granted via `/admin/users`, not here).

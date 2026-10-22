@@ -32,8 +32,11 @@ export function humaniseAttribute(name: string): string {
   return n.replace(/_/g, ' ');
 }
 
-function resolveActor(actorId: bigint, userNames?: IdMap): string {
-  const k = actorId.toString();
+/** Who did [row]: the server's label (an agent names its owner), else the
+ *  caller's user map, else `user#<id>`. */
+export function resolveActor(row: Pick<ActivityRow, 'actorId' | 'actorName'>, userNames?: IdMap): string {
+  if (row.actorName !== undefined && row.actorName !== '') return row.actorName;
+  const k = row.actorId.toString();
   return userNames?.[k] ?? `user#${k}`;
 }
 
@@ -48,14 +51,27 @@ function isEmptyValue(v: unknown): boolean {
   return false;
 }
 
-function formatAttrValue(
+export function formatAttrValue(
   attrName: string | undefined,
   v: unknown,
   userNames?: IdMap,
   cardTitles?: IdMap,
   tagPaths?: IdMap,
+  refs?: IdMap,
 ): string {
   if (v === null || v === undefined) return '—';
+  // Server-resolved titles for the cards this row's values name win: they're
+  // exact for this row, where the maps below are best-effort lookups.
+  if (refs !== undefined) {
+    if (Array.isArray(v)) {
+      if (v.length === 0) return '—';
+      const ks = v.map(idKey);
+      if (ks.every((k) => k !== null && refs[k] !== undefined)) return ks.map((k) => refs[k as string]).join(', ');
+    } else {
+      const k = idKey(v);
+      if (k !== null && refs[k] !== undefined) return refs[k];
+    }
+  }
   // Per-attribute special cases for ref shapes the kernel treats differently
   // from "look up the bigint in cardTitles":
   //   - assignee   → person-name map (separate from value-card titles)
@@ -119,13 +135,14 @@ export function tagDiff(
 ): { added: string[]; removed: string[] } {
   const oldIds = idSet(row.valueOld);
   const newIds = idSet(row.valueNew);
+  const name = (k: string): string => row.refs?.[k] ?? tagPaths?.[k] ?? `#${k}`;
   const added: string[] = [];
   const removed: string[] = [];
   for (const k of newIds) {
-    if (!oldIds.has(k)) added.push(tagPaths?.[k] ?? `#${k}`);
+    if (!oldIds.has(k)) added.push(name(k));
   }
   for (const k of oldIds) {
-    if (!newIds.has(k)) removed.push(tagPaths?.[k] ?? `#${k}`);
+    if (!newIds.has(k)) removed.push(name(k));
   }
   return { added, removed };
 }
@@ -150,7 +167,7 @@ export function formatActivityText(
   cardTitles?: IdMap,
   tagPaths?: IdMap,
 ): string {
-  const actor = resolveActor(row.actorId, userNames);
+  const actor = resolveActor(row, userNames);
   switch (row.kind) {
     case 'card_create':
       return `${actor} created the card.`;
@@ -189,9 +206,9 @@ export function formatActivityText(
       const oldEmpty = isEmptyValue(row.valueOld);
       const newEmpty = isEmptyValue(row.valueNew);
       if (oldEmpty && newEmpty) return `${actor} changed ${label}.`;
-      const newS = formatAttrValue(name, row.valueNew, userNames, cardTitles, tagPaths);
+      const newS = formatAttrValue(name, row.valueNew, userNames, cardTitles, tagPaths, row.refs);
       if (oldEmpty) return `${actor} set ${label} to ${newS}`;
-      const oldS = formatAttrValue(name, row.valueOld, userNames, cardTitles, tagPaths);
+      const oldS = formatAttrValue(name, row.valueOld, userNames, cardTitles, tagPaths, row.refs);
       if (newEmpty) return `${actor} cleared ${label} (was ${oldS})`;
       return `${actor} changed ${label} from ${oldS} to ${newS}`;
     }
@@ -219,6 +236,8 @@ export interface CommentEntry {
   /** The current body — the latest comment_edit's new_body wins over the original. */
   body: string;
   actorId: bigint;
+  /** Server-labelled author (an agent names its owner), when known. */
+  actorName?: string;
   createdAt: string;
   edited: boolean;
 }
@@ -252,7 +271,9 @@ export function deriveComments(orderedNewestFirst: readonly ActivityRow[]): Comm
     const key = a.id.toString();
     const edited = editedBodies.has(key);
     const body = edited ? (editedBodies.get(key) ?? '') : (a.commentBody ?? '');
-    out.push({ id: a.id, body, actorId: a.actorId, createdAt: a.createdAt, edited });
+    const entry: CommentEntry = { id: a.id, body, actorId: a.actorId, createdAt: a.createdAt, edited };
+    if (a.actorName !== undefined) entry.actorName = a.actorName;
+    out.push(entry);
   }
   return out;
 }

@@ -79,7 +79,7 @@ BEGIN
                         'updated_at',    to_char(COALESCE(act.updated_at, l.created_at) AT TIME ZONE 'UTC',
                                                  'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
                         'created_by_id', COALESCE(act.creator_id, 0)::text,
-                        'created_by',    COALESCE(ua.display_name, '')
+                        'created_by',    COALESCE(user_label(ua.id), '')
                     ) ORDER BY l.id
                 )
                 FROM card l

@@ -204,7 +204,7 @@ type pendingReply struct {
 	signature     string
 	signatureMode string // channel's signature_mode: '' | none | comm_name | user_name
 	channelName   string // comm_channel title (for comm_name mode)
-	authorName    string // reply author's user_account.display_name (for user_name mode)
+	authorName    string // reply author's user_label — an agent names its owner (for user_name mode)
 	// taskID is the comm's parent task card id; toIsUser is true when the To
 	// address matches a person linked to a login (user_account_person). Both
 	// gate the "/task/<id>" deep link appended to the body (see processOne).
@@ -372,7 +372,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='from_address'), '')    AS from_address,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='title'), '')           AS channel_name,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='signature_mode'), '')  AS signature_mode,
-			COALESCE((SELECT ua.display_name
+			COALESCE((SELECT user_label(ua.id)
 			          FROM attribute_value av
 			          JOIN attribute_def ad ON ad.id = av.attribute_def_id
 			          JOIN user_account ua ON ua.id = (av.value)::text::bigint

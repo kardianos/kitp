@@ -8,9 +8,13 @@
  * match the Go handlers' input/output shapes verbatim:
  *
  *   - activity.select  (db/schema/functions/activity_select_batch.sql)
- *       in : { card_id, limit?, before_activity_id? }   (snake_case; ids→string)
- *       out: { rows: [{ id, card_id, kind, attribute_name?, value_old?,
- *                       value_new?, comment_body?, actor_id, created_at }] }
+ *       in : { card_id | project_id, limit?, before_activity_id?, from_date?,
+ *              to_date?, actor_ids?, kinds?, card_types?, q?, facets? }
+ *       out: { rows: [{ id, card_id, card_type, card_title, nav_card_id,
+ *                       nav_card_type, nav_title, kind, attribute_name?,
+ *                       value_type?, value_old?, value_new?, refs?,
+ *                       comment_body?, actor_id, actor_name, created_at }],
+ *              facets?: { total, actors, kinds, card_types } }
  *            — card-mode rows come ASCENDING (chronological) from the server;
  *              we sort newest-first in the feed. comment rows hydrate
  *              `comment_body`; comment_edit rows carry `value_new.activity_id`
@@ -72,6 +76,17 @@ export interface ActivitySelectInput {
   fromDate?: string;
   /** Inclusive upper bound on created_at, ISO date `YYYY-MM-DD`. */
   toDate?: string;
+  /** Only rows by these users. */
+  actorIds?: readonly bigint[];
+  /** Only rows of these kinds (`comment`, `attr_update`, …). */
+  kinds?: readonly string[];
+  /** Only rows on cards of these card types (`task`, `link`, `comm`, …). */
+  cardTypes?: readonly string[];
+  /** Text search: the owning card's title or `#id`, the card's own title, or a
+   *  comment body. */
+  q?: string;
+  /** Also return {@link ActivityFacets} for the window. */
+  facets?: boolean;
 }
 
 /** One activity row in the web model (decoded from the wire). */
@@ -84,19 +99,41 @@ export interface ActivityRow {
   navCardId?: bigint;
   /** Title of navCardId — the headline for the grouped activity feed. */
   navTitle?: string;
+  /** Card type of navCardId (`task` for anything under a task). */
+  navCardType?: string;
+  /** Card type + title of cardId (a reply's subject stands in for a title). */
+  cardType?: string;
+  cardTitle?: string;
   kind: string;
   attributeName?: string;
+  /** The attribute's value type (`text`, `card_ref`, `card_ref[]`, …). */
+  valueType?: string;
   valueOld?: unknown;
   valueNew?: unknown;
+  /** Card id → title for every card the row's values (or a move target) name. */
+  refs?: Record<string, string>;
   /** Hydrated comment body when kind === 'comment'. */
   commentBody?: string;
   actorId: bigint;
+  /** Who did it, server-labelled — an agent names its owner ("claude (for
+   *  Daniel)"). */
+  actorName?: string;
   /** ISO-8601 UTC timestamp string. */
   createdAt: string;
 }
 
+/** Row counts over the window, before the actor / kind / card-type / text
+ *  filters — the options a filter UI offers. */
+export interface ActivityFacets {
+  total: number;
+  actors: Array<{ id: bigint; name: string; count: number }>;
+  kinds: Array<{ kind: string; count: number }>;
+  cardTypes: Array<{ cardType: string; count: number }>;
+}
+
 export interface ActivitySelectOutput {
   rows: ActivityRow[];
+  facets?: ActivityFacets;
 }
 
 export interface CommentInsertInput {
@@ -152,11 +189,44 @@ function decodeActivityRow(j: Record<string, unknown>): ActivityRow {
   };
   if (j['nav_card_id'] !== undefined && j['nav_card_id'] !== null) out.navCardId = asId(j['nav_card_id']);
   if (typeof j['nav_title'] === 'string') out.navTitle = j['nav_title'];
+  if (typeof j['nav_card_type'] === 'string') out.navCardType = j['nav_card_type'];
+  if (typeof j['card_type'] === 'string') out.cardType = j['card_type'];
+  if (typeof j['card_title'] === 'string') out.cardTitle = j['card_title'];
+  if (typeof j['value_type'] === 'string') out.valueType = j['value_type'];
+  if (typeof j['actor_name'] === 'string' && j['actor_name'] !== '') out.actorName = j['actor_name'];
+  const refs = j['refs'];
+  if (refs !== null && typeof refs === 'object' && !Array.isArray(refs)) {
+    const m: Record<string, string> = {};
+    for (const [k, v] of Object.entries(refs as Record<string, unknown>)) m[k] = asStr(v);
+    out.refs = m;
+  }
   if (typeof j['attribute_name'] === 'string') out.attributeName = j['attribute_name'];
   if (j['value_old'] !== undefined && j['value_old'] !== null) out.valueOld = j['value_old'];
   if (j['value_new'] !== undefined && j['value_new'] !== null) out.valueNew = j['value_new'];
   if (typeof j['comment_body'] === 'string') out.commentBody = j['comment_body'];
   return out;
+}
+
+function asCount(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+function decodeFacets(j: Record<string, unknown>): ActivityFacets {
+  return {
+    total: asCount(j['total']),
+    actors: asArray(j['actors']).map((a) => {
+      const o = asObj(a);
+      return { id: asId(o['id']), name: asStr(o['name']), count: asCount(o['count']) };
+    }),
+    kinds: asArray(j['kinds']).map((k) => {
+      const o = asObj(k);
+      return { kind: asStr(o['kind']), count: asCount(o['count']) };
+    }),
+    cardTypes: asArray(j['card_types']).map((c) => {
+      const o = asObj(c);
+      return { cardType: asStr(o['card_type']), count: asCount(o['count']) };
+    }),
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -182,11 +252,21 @@ export function registerCommentSpecs(api: Api): void {
         if (i.beforeActivityId !== undefined) m['before_activity_id'] = i.beforeActivityId;
         if (i.fromDate !== undefined && i.fromDate !== '') m['from_date'] = i.fromDate;
         if (i.toDate !== undefined && i.toDate !== '') m['to_date'] = i.toDate;
+        if (i.actorIds !== undefined && i.actorIds.length > 0) m['actor_ids'] = i.actorIds.map(String);
+        if (i.kinds !== undefined && i.kinds.length > 0) m['kinds'] = [...i.kinds];
+        if (i.cardTypes !== undefined && i.cardTypes.length > 0) m['card_types'] = [...i.cardTypes];
+        if (i.q !== undefined && i.q.trim() !== '') m['q'] = i.q.trim();
+        if (i.facets === true) m['facets'] = true;
         return m;
       },
-      decode: (raw): ActivitySelectOutput => ({
-        rows: asArray(asObj(raw)['rows']).map((r) => decodeActivityRow(asObj(r))),
-      }),
+      decode: (raw): ActivitySelectOutput => {
+        const o = asObj(raw);
+        const out: ActivitySelectOutput = {
+          rows: asArray(o['rows']).map((r) => decodeActivityRow(asObj(r))),
+        };
+        if (o['facets'] !== null && typeof o['facets'] === 'object') out.facets = decodeFacets(asObj(o['facets']));
+        return out;
+      },
     });
   }
 
