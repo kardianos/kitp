@@ -249,6 +249,39 @@ test('AttachmentsSection: clicking a preview tile opens the gallery', async () =
   assert.ok(document.querySelector('[data-attachments-gallery]'), 'gallery overlay opened from the tile');
 });
 
+test('AttachmentsSection: a markdown attachment previews as an MD tile + renders in the gallery', async () => {
+  const h = attachmentsHarness({
+    rows: [
+      attachmentWire(4, 'README.md', 'text/markdown', 64, 'markdown'),
+      attachmentWire(3, 'notes.txt', 'text/plain', 100, 'other'),
+    ],
+  });
+  h.fetchBlob = (url, onDone) => {
+    h.fetched.push(url);
+    onDone(new globalThis.Blob(['# Release notes\n\nShipped **links**.'], { type: 'text/markdown' }));
+  };
+  const { dispatcher, api } = bootApi(h.transport);
+  const previewHost = document.createElement('section');
+  document.body.appendChild(previewHost);
+  const c = mount(api, h, previewHost);
+  await settle(dispatcher);
+
+  const tiles = [...previewHost.querySelectorAll('[data-attachment-tile]')];
+  assert.deepEqual(tiles.map((t) => t.dataset.attachmentTile), ['4'], 'the markdown file gets a tile');
+  const glyph = tiles[0].querySelector('.attachments-strip__glyph');
+  assert.equal(glyph.textContent, 'MD');
+  const thumb = c.el.querySelector('[data-attachment-thumb="4"]');
+  assert.equal(thumb.disabled, false, 'the list row is viewable too');
+
+  tiles[0].click();
+  await settle(dispatcher);
+  assert.ok(h.fetched.some((u) => u.includes('/attachment/4/view')), 'view fetched');
+  const doc = document.querySelector('[data-attachments-gallery] [data-gallery-doc]');
+  assert.ok(doc, 'markdown rendered into the gallery');
+  assert.equal(doc.querySelector('h1')?.textContent, 'Release notes');
+  assert.equal(doc.querySelector('strong')?.textContent, 'links');
+});
+
 test('AttachmentsSection: delete fires attachment.delete and drops the row optimistically', async () => {
   const h = attachmentsHarness({
     rows: [attachmentWire(1, 'photo.png', 'image/png', 4096, 'image', '500')],

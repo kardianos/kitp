@@ -18,7 +18,7 @@
 -- Result JSON shape matches `attachment.CreateOutput`:
 --   {"id":"<bigint>", "card_id":"<bigint>", "file_id":"<bigint>",
 --    "filename":"...", "mime_type":"...", "size_bytes": <int>,
---    "thumb_file_id":"0", "kind":"image|pdf|other"}
+--    "thumb_file_id":"0", "kind":"image|pdf|markdown|other"}
 -- The thumb_file_id is always "0" at this stage; PostRun overwrites
 -- it on the Go side when a thumb is generated. bigint ids are cast to
 -- text because the Go struct uses `json:",string"` for 64-bit ids.
@@ -110,17 +110,9 @@ BEGIN
         )
         SELECT id INTO _new_id FROM ins_attach;
 
-        -- Classify mime → kind (image | pdf | other). Lowercase + trim
-        -- to match KindFromMime's behaviour for the Go-side read path.
-        _kind := CASE lower(btrim(_mime))
-            WHEN 'image/png' THEN 'image'
-            WHEN 'image/jpeg' THEN 'image'
-            WHEN 'image/jpg' THEN 'image'
-            WHEN 'image/gif' THEN 'image'
-            WHEN 'image/webp' THEN 'image'
-            WHEN 'application/pdf' THEN 'pdf'
-            ELSE 'other'
-        END;
+        -- Classify → kind (image | pdf | markdown | other), the same
+        -- bucket attachment.list reports for the row.
+        _kind := attachment_kind(_mime, _filename);
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(

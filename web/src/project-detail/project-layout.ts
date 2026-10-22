@@ -47,7 +47,7 @@ import { Control, type BaseControlConfig } from '../core/control.js';
 import type { HotkeyBinding } from '../core/hotkeys.js';
 import type { ApiFault } from '../core/dispatch.js';
 import { setMarkdown } from '../util/markdown-control.js';
-import { navigate, taskUrl, screenUrl } from '../shell/router.js';
+import { navigate, plainClick, taskUrl, screenUrl } from '../shell/router.js';
 import { SPEC, type SelectWithAttributesOutput } from '../kanban/specs.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { projectTitle, projectDescription } from '../projects/project-helpers.js';
@@ -428,11 +428,9 @@ export class ProjectLayout extends Control<ProjectLayoutConfig> {
       if (id !== null) {
         const href = screenUrl(id, slug);
         tab.href = href;
-        // Intercept to use the History-API router (one-way navigate, no reload).
-        this.listen(tab, 'click', (ev) => {
-          ev.preventDefault();
-          navigate(href);
-        });
+        // Intercept a plain click to use the History-API router (one-way
+        // navigate, no reload); ⌘/Ctrl-click opens the tab in a new window.
+        this.listen(tab, 'click', plainClick(() => navigate(href)));
       }
       this.navEl.append(tab);
     }

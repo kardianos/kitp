@@ -31,6 +31,24 @@ Because links are cards:
 - `task.purge` removes a task's links with it, and `task.move` carries them
   along.
 
+## Filtering tasks by their links
+
+A task filter reaches its links through the `link.<attr>` leaf path:
+`{"attr":"link.link_state","op":"=","values":["merged"]}` matches tasks that
+have a live link in state `merged`. Any op works on the path, applied to the
+task's link cards (`link.link_kind in [gerrit, github]`,
+`link.link_url exists`). The match is existential: `link.link_state !=
+merged` is "has a link that isn't merged"; put the leaf in a NOT group for
+"has no merged link". The path is generic, `<child_type>.<attr>` over any
+card type that parents under the filtered one.
+
+In the web client, every task filter editor (a screen's Advanced filter, the
+admin filter and activity-sink editors) lists **Link title**, **Link url**,
+**Link kind** and **Link state** after the task's own fields; state and kind
+pick from the known values. "Open tasks with a merged change" is `Status has
+phase Triage, Active` plus `Link state is Merged`; save it as a named view to
+keep it.
+
 ## Idempotency
 
 `link.set` is an upsert keyed on **(task, url)**:

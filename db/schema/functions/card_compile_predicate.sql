@@ -23,6 +23,9 @@
 --     Ops covered (matches where.go): eq / != / in / not in /
 --     exists / not exists / contains / before_today / within_days /
 --     has_phase / not terminal / parent_status_phase / snippet.
+--   - Child path: {"attr":"<child_type>.<attr>", ...} — any leaf above,
+--     applied to the card's live child cards of that type ("has a link
+--     whose link_state = merged").
 --   - Flat v1 leaf shape: {"attr":"<name>","op":"=", "value":<json>}
 --     (used by the legacy `where[]` field). Translated identically to
 --     the v2 `values:[v]` shape.
@@ -156,6 +159,30 @@ BEGIN
     IF _attr = '' AND _op = '=' AND NOT (node ? 'value')
        AND jsonb_array_length(COALESCE(node->'values', '[]'::jsonb)) = 0 THEN
         RETURN jsonb_build_object('sql', 'TRUE', 'params', params);
+    END IF;
+    -- Child path `<child_type>.<attr>` (e.g. `link.link_state`): the card
+    -- matches when one of its live child cards of that type matches the
+    -- leaf on <attr> ("has a merged link"). Existential, so `!=` is "has a
+    -- link that isn't merged"; a NOT group gives "has no merged link". The
+    -- inner leaf compiles unchanged: the subquery re-binds `c` to the child
+    -- row, so its `c.id` references resolve to the child while the outer
+    -- `c.id` left of IN stays the filtered card. Mirrors compileChildPath
+    -- in where.go.
+    IF _attr ~ '^[A-Za-z0-9_]+\.[A-Za-z0-9_]+$' THEN
+        IF split_part(_attr, '.', 2) = 'last_activity_at' THEN
+            -- Read off the outer query's `la` lateral, which a child
+            -- subquery can't re-bind.
+            RAISE EXCEPTION 'card_compile_predicate: attribute path %: last_activity_at is not supported on a child card', _attr;
+        END IF;
+        SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(split_part(_attr, '.', 1))) AS r(p, i);
+        _result := card_compile_predicate(
+            jsonb_set(node, '{attr}', to_jsonb(split_part(_attr, '.', 2))), params, visited);
+        params := _result->'params';
+        _sql := format(
+            'c.id IN (SELECT c.parent_card_id FROM card c JOIN card_type child_ct ON child_ct.id = c.card_type_id ' ||
+            'WHERE child_ct.name = ($1->>%s) AND c.deleted_at IS NULL AND c.parent_card_id IS NOT NULL AND (%s))',
+            _attr_idx::text, _result->>'sql');
+        RETURN jsonb_build_object('sql', _sql, 'params', params);
     END IF;
     IF _attr = '' OR _attr !~ '^[A-Za-z0-9_]+$' THEN
         RAISE EXCEPTION 'card_compile_predicate: bad attribute name %', _attr;

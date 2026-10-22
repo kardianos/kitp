@@ -47,10 +47,11 @@ const (
 	thumbMime = "image/jpeg"
 )
 
-// Kind classifies an attachment for client display. Images get a real
-// thumbnail; PDFs render with the browser's native viewer in the modal
-// (and a placeholder in the strip); everything else just shows up in
-// the attachments list, no preview row entry.
+// Kind classifies an attachment by mime type. Go-side it only gates
+// thumbnail generation (canThumb): images get a real thumbnail. The
+// display bucket the client previews by (image / pdf / markdown /
+// other) comes from the SQL attachment_kind, which also looks at the
+// filename so a .md file uploaded without a mime type still previews.
 type Kind string
 
 const (

@@ -100,8 +100,10 @@ export {
   normalizeValueType,
   attrSchemaFromDef,
   schemaForCardType,
+  childFieldsForCardType,
   resolveSchema,
   findAttr,
+  opsForAttr,
 } from './filter/attribute-schema.js';
 export {
   PredicateFilter,
@@ -206,6 +208,7 @@ export {
   screenUrl,
   taskUrl,
   adminUrl,
+  plainClick,
   ROUTER_PATH,
   _resetRouterForTest,
   type RouteMatch,

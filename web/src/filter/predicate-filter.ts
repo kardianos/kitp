@@ -52,6 +52,7 @@ import {
   type SchemaSource,
   resolveSchema,
   findAttr,
+  opsForAttr,
 } from './attribute-schema.js';
 import {
   type Op,
@@ -63,7 +64,6 @@ import {
   isPhase,
   opArity,
   opLabel,
-  opsForValueType,
   fromWire,
   toWire,
   ME_REF_TOKEN,
@@ -514,7 +514,7 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
     if (first === undefined) {
       return { id: this.newId(), kind: 'leaf', attr: '', op: 'eq', values: [] };
     }
-    const op = opsForValueType(first.valueType)[0] ?? 'eq';
+    const op = opsForAttr(first)[0] ?? 'eq';
     return { id: this.newId(), kind: 'leaf', attr: first.name, op, values: [] };
   }
 
@@ -543,7 +543,7 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
     const attr = findAttr(schema, name);
     // Reset op + values: the new attribute may not support the previous op,
     // and stale values from another attribute are confusing.
-    leaf.op = (attr ? opsForValueType(attr.valueType)[0] : 'eq') ?? 'eq';
+    leaf.op = (attr ? opsForAttr(attr)[0] : 'eq') ?? 'eq';
     leaf.values = [];
     this.mutate();
   }
@@ -713,7 +713,7 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
     opSel.className = 'predfilter__select predfilter__op';
     opSel.setAttribute('aria-label', 'Operator');
     opSel.dataset.predOp = '';
-    const ops = attr ? opsForValueType(attr.valueType) : (['eq', 'ne'] as Op[]);
+    const ops = attr ? opsForAttr(attr) : (['eq', 'ne'] as Op[]);
     for (const o of ops) {
       const opt = document.createElement('option');
       opt.value = o;
@@ -750,6 +750,8 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
    *   - withinDays: numeric day-count input (overrides the date type).
    *   - hasPhase / parentStatusPhase: triage/active/terminal checkboxes.
    *   - card_ref / card_ref[]: single/multi <select> from the options map.
+   *   - text with known `choices` (link state / kind), for the value ops:
+   *     single/multi <select> over the choices.
    *   - bool: checkbox. number/date/text: typed <input>.
    */
   private fillValueEditor(
@@ -783,6 +785,10 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
 
     const valueType = attr?.valueType ?? 'text';
 
+    if (attr?.choices !== undefined && leaf.op !== 'contains') {
+      host.append(this.choicePicker(leaf, attr, attr.choices, arity === 'multi'));
+      return;
+    }
     if (valueType === 'card_ref' || valueType === 'card_ref[]') {
       const multi = arity === 'multi';
       host.append(this.refPicker(leaf, attr, options, multi));
@@ -891,12 +897,57 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
     options: OptionsMap,
     multi: boolean,
   ): HTMLElement {
-    const sel = document.createElement('select');
-    sel.className = 'predfilter__select predfilter__ref';
-    sel.setAttribute('aria-label', attr?.label ?? leaf.attr);
-    sel.dataset.predRef = '';
-    if (multi) sel.multiple = true;
     const list = attr?.targetCardType ? (options[attr.targetCardType] ?? []) : [];
+    const sel = this.valueSelect(leaf, attr?.label ?? leaf.attr, list, multi, (selected) => {
+      // Person refs (assignee / originator) offer a dynamic "Me" that resolves
+      // to the current viewer server-side (the `@me` token; see ME_REF_TOKEN).
+      // It leads the list so "assignee == me" / "originator == me" is one click.
+      if (attr?.targetCardType !== 'person') return [];
+      const me = document.createElement('option');
+      me.value = ME_REF_TOKEN;
+      me.textContent = 'Me';
+      me.dataset.predRefMe = '';
+      if (selected.has(ME_REF_TOKEN)) me.selected = true;
+      return [me];
+    });
+    sel.className = 'predfilter__select predfilter__ref';
+    sel.dataset.predRef = '';
+    return sel;
+  }
+
+  /** A text attr's known values (link state / kind). A stored value outside
+   *  the list (an open slug the client doesn't know) is kept as an option so
+   *  editing the leaf doesn't silently drop it. */
+  private choicePicker(
+    leaf: EditLeaf,
+    attr: AttrSchema,
+    choices: ReadonlyArray<RefOption>,
+    multi: boolean,
+  ): HTMLElement {
+    const known = new Set(choices.map((c) => c.value));
+    const unknown = leaf.values
+      .map((v) => String(v))
+      .filter((v) => v !== '' && !known.has(v))
+      .map((v) => ({ value: v, label: v }));
+    const sel = this.valueSelect(leaf, attr.label, [...choices, ...unknown], multi);
+    sel.dataset.predChoice = '';
+    return sel;
+  }
+
+  /** A single/multi <select> over [list] that writes the picked values to the
+   *  leaf. A single select leads with a blank that clears the value; [lead]
+   *  builds any options that go ahead of the list. */
+  private valueSelect(
+    leaf: EditLeaf,
+    label: string,
+    list: ReadonlyArray<RefOption>,
+    multi: boolean,
+    lead?: (selected: ReadonlySet<string>) => HTMLOptionElement[],
+  ): HTMLSelectElement {
+    const sel = document.createElement('select');
+    sel.className = 'predfilter__select';
+    sel.setAttribute('aria-label', label);
+    if (multi) sel.multiple = true;
 
     // For single-select, a leading blank lets the user clear the value.
     if (!multi) {
@@ -906,17 +957,7 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
       sel.append(blank);
     }
     const selectedStrs = new Set(leaf.values.map((v) => String(v)));
-    // Person refs (assignee / originator) offer a dynamic "Me" that resolves to
-    // the current viewer server-side (the `@me` token; see ME_REF_TOKEN). It
-    // leads the list so "assignee == me" / "originator == me" is one click.
-    if (attr?.targetCardType === 'person') {
-      const me = document.createElement('option');
-      me.value = ME_REF_TOKEN;
-      me.textContent = 'Me';
-      me.dataset.predRefMe = '';
-      if (selectedStrs.has(ME_REF_TOKEN)) me.selected = true;
-      sel.append(me);
-    }
+    for (const o of lead?.(selectedStrs) ?? []) sel.append(o);
     for (const o of list) {
       const opt = document.createElement('option');
       opt.value = o.value;

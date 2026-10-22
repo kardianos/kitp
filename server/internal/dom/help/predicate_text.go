@@ -192,8 +192,13 @@ func renderLeaf(n node) string {
 // friendlyAttr converts a snake_case attribute name into a slightly
 // nicer reading form. Underscores become spaces; a small set of known
 // suffixes ("_ref", "_id") get trimmed since they are implementation
-// details users do not need to see in prose.
+// details users do not need to see in prose. A child path reads as
+// "a <child> <attr>" with the attr's own child prefix dropped:
+// `link.link_state` → "a link state".
 func friendlyAttr(name string) string {
+	if child, attr, ok := strings.Cut(name, "."); ok {
+		return "a " + friendlyAttr(child) + " " + friendlyAttr(strings.TrimPrefix(attr, child+"_"))
+	}
 	s := name
 	s = strings.TrimSuffix(s, "_ref")
 	s = strings.TrimSuffix(s, "_id")

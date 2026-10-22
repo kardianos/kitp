@@ -154,6 +154,58 @@ test('set-attr to a card_ref switches op list; set-op to in; set value via ref p
   });
 });
 
+test('a text attr with known choices edits through a picker; set ops go multi', () => {
+  const { ctx } = literalCtx();
+  const choices = [
+    { value: 'open', label: 'Open' },
+    { value: 'merged', label: 'Merged' },
+  ];
+  const schema = [{ name: 'link.link_state', label: 'Link state', valueType: 'text', choices }];
+  const c = mount({ type: 'PredicateFilter', valuePath: 'screen.filter', schema }, ctx);
+  c.el.querySelector('[data-pred-add-leaf]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+
+  // Default op `is` → a single picker: a blank, then the choices.
+  const pick = c.el.querySelector('[data-pred-choice]');
+  assert.ok(pick, 'choice picker rendered');
+  assert.ok(!pick.multiple, 'is => single-select');
+  assert.deepEqual(pick.children.map((o) => o.value), ['', 'open', 'merged']);
+  setSelect(pick, 'merged');
+  assert.deepEqual(c.currentWire(), {
+    connective: 'and',
+    children: [{ attr: 'link.link_state', op: '=', values: ['merged'] }],
+  });
+
+  // `is any of` → a multi picker.
+  setSelect(c.el.querySelector('[data-pred-op]'), 'in');
+  const multi = c.el.querySelector('[data-pred-choice]');
+  assert.equal(multi.multiple, true, 'in => multi-select');
+  multi.children[0].selected = true;
+  multi.children[1].selected = true;
+  multi.dispatchEvent({ type: 'change' });
+  M.flushSync?.();
+  assert.deepEqual(c.currentWire(), {
+    connective: 'and',
+    children: [{ attr: 'link.link_state', op: 'in', values: ['open', 'merged'] }],
+  });
+});
+
+test('a stored value outside the known choices stays selectable', () => {
+  const { ctx, tree } = literalCtx();
+  const schema = [
+    { name: 'link.link_state', label: 'Link state', valueType: 'text', choices: [{ value: 'merged', label: 'Merged' }] },
+  ];
+  tree.at(['screen', 'filter']).set({
+    kind: 'group',
+    connective: 'and',
+    children: [{ kind: 'leaf', attr: 'link.link_state', op: 'eq', values: ['verified'] }],
+  });
+  const c = mount({ type: 'PredicateFilter', valuePath: 'screen.filter', schema }, ctx);
+  const pick = c.el.querySelector('[data-pred-choice]');
+  assert.deepEqual(pick.children.map((o) => o.value), ['', 'merged', 'verified']);
+  assert.equal(pick.children[2].selected, true, 'the unknown slug is the selected option');
+});
+
 test('person card_ref offers a dynamic "Me" option; picking it lands the @me token', () => {
   const { ctx, tree } = literalCtx();
   // A person ref (assignee) + a non-person ref (milestone) in one schema.

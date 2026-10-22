@@ -165,6 +165,10 @@ func compileNode(n CardWhereTreeNode, c *compileCtx) (string, error) {
 //	exists     → EXISTS (... attribute_value row ...)
 //	not exists → NOT EXISTS (... attribute_value row ...)
 //
+// An attr of the form `<child_type>.<attr>` (e.g. `link.link_state`)
+// applies the leaf to the card's live child cards of that type; see
+// compileChildPath.
+//
 // The EXISTS / NOT EXISTS wrapping mirrors translatePredicate's v1
 // behaviour: an attribute predicate is rooted in attribute_value rather
 // than card so the same name can appear in many cards with their own
@@ -196,6 +200,9 @@ func classGuard(attr string, snap *schema.Snapshot) string {
 }
 
 func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
+	if childType, attr, ok := strings.Cut(n.Attr, "."); ok {
+		return compileChildPath(childType, attr, n, c)
+	}
 	addArg := c.addArg
 	snap := c.snap
 	if !validIdent(n.Attr) {
@@ -498,6 +505,44 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported op %q", n.Op)
 	}
+}
+
+// compileChildPath compiles a `<child_type>.<attr>` leaf: the card
+// matches when one of its live child cards of that type matches the leaf
+// on <attr>. `link.link_state = merged` reads "has a merged link". The
+// match is existential, so `link.link_state != merged` is "has a link
+// that isn't merged"; wrap the leaf in a NOT group for "has no merged
+// link".
+//
+// The inner leaf compiles unchanged against the child: the subquery
+// re-binds `c` to the child row, so every op's `c.id` reference
+// resolves to the child, while the outer `c.id` on the left of IN stays
+// the card being filtered. Mirrors the child-path branch in
+// card_compile_predicate.sql.
+func compileChildPath(childType, attr string, n CardWhereTreeNode, c *compileCtx) (string, error) {
+	if !validIdent(childType) || !validIdent(attr) {
+		return "", fmt.Errorf("bad attribute path %q", n.Attr)
+	}
+	if attr == "last_activity_at" {
+		// The SQL compiler reads last_activity_at off the outer query's
+		// lateral join, which a child subquery can't re-bind.
+		return "", fmt.Errorf("attribute path %q: last_activity_at is not supported on a child card", n.Attr)
+	}
+	inner := n
+	inner.Attr = attr
+	s, err := compileLeaf(inner, c)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", childType, err)
+	}
+	return fmt.Sprintf(`c.id IN (
+		SELECT c.parent_card_id
+		FROM card c
+		JOIN card_type child_ct ON child_ct.id = c.card_type_id
+		WHERE child_ct.name = %s
+		  AND c.deleted_at IS NULL
+		  AND c.parent_card_id IS NOT NULL
+		  AND (%s)
+	)`, c.addArg(childType), s), nil
 }
 
 // containsNeedle pulls the single string value from a contains leaf.

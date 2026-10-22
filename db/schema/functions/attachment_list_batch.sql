@@ -11,10 +11,9 @@
 --   - thumb_file_id is emitted as a string (the Go OutputType tags it
 --     `,string`); a NULL DB value collapses to "0" to match the
 --     pre-migration Go COALESCE.
---   - The 'kind' display bucket is derived inline from mime_type
---     (image/* → image, application/pdf → pdf, anything else → other).
---     KindFromMime in Go applies the same rule. Keeping it in SQL
---     avoids a per-row callback into Go.
+--   - The 'kind' display bucket comes from attachment_kind (image /
+--     pdf / markdown / other, from mime_type + filename). Keeping it in
+--     SQL avoids a per-row callback into Go.
 --   - No visibility filter: the attachment's owning card is treated as
 --     the canonical visibility unit by the pre-tx authz pass (the
 --     attachment.list handler is RoleAuthenticated; callers are
@@ -59,11 +58,7 @@ BEGIN
                         'created_at',    to_char(a.created_at AT TIME ZONE 'UTC',
                                                  'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
                         'thumb_file_id', COALESCE(a.thumb_file_id, 0)::text,
-                        'kind',          CASE
-                                             WHEN f.mime_type LIKE 'image/%' THEN 'image'
-                                             WHEN f.mime_type = 'application/pdf' THEN 'pdf'
-                                             ELSE 'other'
-                                         END
+                        'kind',          attachment_kind(f.mime_type, f.filename)
                     ) ORDER BY a.id DESC
                 )
                 FROM attachment a

@@ -324,6 +324,22 @@ export function navigate(path: string, opts?: { replace?: boolean }): void {
 }
 
 /**
+ * A click handler for an in-app `<a href>` (a menu / rail / tab link): a plain
+ * left-click runs [onClick] in place, typically a {@link navigate}, instead of
+ * loading the page. A ⌘/Ctrl/Shift/Alt-click is left to the browser, which
+ * opens the href in a new tab or window; middle-click and the context menu
+ * never fire `click`, so they open the href natively too.
+ */
+export function plainClick(onClick: () => void): (ev: Event) => void {
+  return (ev) => {
+    const e = ev as MouseEvent;
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    ev.preventDefault();
+    onClick();
+  };
+}
+
+/**
  * Land a parsed route into the tree (the single write the outlet watches),
  * AFTER applying the route's guard. A guard that rejects (e.g. a non-admin
  * hitting `/admin/*`) redirects: we rewrite history to the guard's target and

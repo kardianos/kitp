@@ -90,8 +90,9 @@ export interface AttachmentCreateInput {
   fileId: bigint;
 }
 
-/** The display bucket the server derives from mime_type. */
-export type AttachmentKind = 'image' | 'pdf' | 'other';
+/** The display bucket the server derives from mime_type + filename
+ *  (attachment_kind): markdown also matches a .md / .markdown name. */
+export type AttachmentKind = 'image' | 'pdf' | 'markdown' | 'other';
 
 /** One attachment row in the web model (decoded from the wire). */
 export interface AttachmentRow {
@@ -172,7 +173,7 @@ function asNum(v: unknown): number {
   return 0;
 }
 function asKind(v: unknown): AttachmentKind {
-  return v === 'image' || v === 'pdf' ? v : 'other';
+  return v === 'image' || v === 'pdf' || v === 'markdown' ? v : 'other';
 }
 
 function decodeAttachmentRow(j: Record<string, unknown>): AttachmentRow {

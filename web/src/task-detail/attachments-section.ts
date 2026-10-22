@@ -18,9 +18,10 @@
  *   - Soft-delete via `attachment.delete { id }` (optimistic remove + rollback).
  *   - Image rows show a server thumbnail (`/attachment/:id/thumb`, fetched as a
  *     blob → object URL, revoked on rebuild / destroy).
- *   - Clicking an image / pdf row opens a full-screen GALLERY overlay: the
- *     inline `/view` bytes, ←/→ to page between viewable rows, Esc to close;
- *     every object URL is revoked on close.
+ *   - Clicking an image / pdf / markdown row opens a full-screen GALLERY
+ *     overlay: the inline `/view` bytes (markdown rendered through the shared
+ *     Markdown sink), ←/→ to page between viewable rows, Esc to close; every
+ *     object URL is revoked on close.
  *
  * Cascade-safe + declarative: every load / mutation routes through
  * `api.callByName(..., onOk, { alive, onErr })` or the upload service's callback
@@ -36,9 +37,11 @@ import {
   ATTACHMENT_DELETE_SPEC,
   ATTACHMENT_LIST_SPEC,
   type AttachmentDeleteOutput,
+  type AttachmentKind,
   type AttachmentListOutput,
   type AttachmentRow,
 } from './attachment-specs.js';
+import { setMarkdown } from '../util/markdown-control.js';
 import {
   downloadUrl,
   thumbUrl,
@@ -72,8 +75,8 @@ export interface AttachmentsSectionConfig extends BaseControlConfig {
   /** Called after every successful upload / delete so the parent can refresh. */
   onChanged?: () => void;
   /**
-   * Optional MAIN-column host the section paints a preview STRIP into (image +
-   * PDF tiles → the same gallery), like the Svelte AttachmentsPreviewStrip. The
+   * Optional MAIN-column host the section paints a preview STRIP into (image /
+   * PDF / markdown tiles → the same gallery), like the Svelte AttachmentsPreviewStrip. The
    * section owns the data + thumb cache + gallery, so the strip stays in sync
    * with the right-rail list for free; it's hidden when nothing is previewable.
    */
@@ -107,7 +110,7 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
   private readonly postChunk?: PostChunk;
   private readonly fetchBlob: (url: string, onDone: (b: Blob) => void, onError: (e: Error) => void) => void;
   private readonly onChanged?: () => void;
-  /** MAIN-column host for the preview strip (image + PDF tiles), or undefined. */
+  /** MAIN-column host for the preview strip (image / PDF / markdown tiles), or undefined. */
   private readonly previewHost?: HTMLElement;
 
   /** The loaded attachment rows (newest-first). */
@@ -428,9 +431,9 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
     li.dataset.attachmentRow = row.id.toString();
     li.dataset.attachmentKind = row.kind;
 
-    // Thumbnail (image) or a kind glyph. Image thumbs + viewable (image/pdf)
+    // Thumbnail (image) or a kind glyph. Viewable (image / pdf / markdown)
     // rows open the gallery on click.
-    const viewable = row.kind === 'image' || row.kind === 'pdf';
+    const viewable = isViewable(row);
     const thumb = document.createElement('button');
     thumb.type = 'button';
     thumb.className = 'attachments__thumb';
@@ -450,7 +453,7 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
     } else {
       const glyph = document.createElement('span');
       glyph.className = 'attachments__thumb-glyph';
-      glyph.textContent = row.kind === 'pdf' ? '📄' : row.kind === 'image' ? '🖼' : '📎';
+      glyph.textContent = ROW_GLYPH[row.kind];
       thumb.append(glyph);
     }
     li.append(thumb);
@@ -532,7 +535,7 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
   /* ---------------------------- preview strip --------------------------- */
 
   /**
-   * Paint the MAIN-column preview strip (image + PDF tiles) into `previewHost`,
+   * Paint the MAIN-column preview strip (image / PDF / markdown tiles) into `previewHost`,
    * if one was provided. Reuses the section's rows + thumb cache + gallery, so
    * it tracks the right-rail list automatically. Hidden when nothing previewable.
    */
@@ -551,7 +554,7 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
     host.append(strip);
   }
 
-  /** One preview tile: a thumbnail box (image thumb / PDF or fallback glyph) +
+  /** One preview tile: a thumbnail box (image thumb / PDF, MD or fallback glyph) +
    *  a truncated filename; clicking opens the shared gallery at that item. */
   private renderTile(row: AttachmentRow): HTMLElement {
     const tile = document.createElement('button');
@@ -574,8 +577,8 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
       const glyph = document.createElement('span');
       glyph.className = 'attachments-strip__glyph';
       glyph.dataset.kind = row.kind;
-      // PDFs (and images whose server thumb failed) get a kind glyph.
-      glyph.textContent = row.kind === 'pdf' ? 'PDF' : '🖼';
+      // PDFs, markdown (and images whose server thumb failed) get a kind glyph.
+      glyph.textContent = TILE_GLYPH[row.kind];
       box.append(glyph);
     }
     tile.append(box);
@@ -619,9 +622,9 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
 
   /* ------------------------------- gallery ------------------------------ */
 
-  /** The rows that can be shown in the gallery (image + pdf), in list order. */
+  /** The rows that can be shown in the gallery (image / pdf / markdown), in list order. */
   private viewableRows(): AttachmentRow[] {
-    return this.rows.filter((r) => r.kind === 'image' || r.kind === 'pdf');
+    return this.rows.filter(isViewable);
   }
 
   private openGallery(row: AttachmentRow): void {
@@ -745,6 +748,24 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
         if (cur === null || !this.isAlive()) return;
         const stillShowing = this.viewableRows()[cur.index];
         if (stillShowing === undefined || stillShowing.id !== showingId) return;
+        if (row.kind === 'markdown') {
+          readBlobText(
+            blob,
+            (text) => {
+              if (this.gallery !== cur || this.viewableRows()[cur.index]?.id !== showingId) return;
+              loading.remove();
+              const doc = document.createElement('div');
+              doc.className = 'attachments__gallery-doc';
+              doc.dataset.galleryDoc = '';
+              setMarkdown(doc, text);
+              cur.viewerHost.append(doc);
+            },
+            () => {
+              if (this.gallery === cur) loading.textContent = 'Failed to load.';
+            },
+          );
+          return;
+        }
         const objUrl = URL.createObjectURL(blob);
         cur.objUrl = objUrl;
         loading.remove();
@@ -781,6 +802,32 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
 /* -------------------------------------------------------------------------- */
 /* Helpers.                                                                     */
 /* -------------------------------------------------------------------------- */
+
+/** Whether the gallery can show [row]. */
+function isViewable(row: AttachmentRow): boolean {
+  return row.kind !== 'other';
+}
+
+/** The right-rail list's glyph for a row without a thumbnail. */
+const ROW_GLYPH: Readonly<Record<AttachmentKind, string>> = {
+  image: '🖼',
+  pdf: '📄',
+  markdown: '📝',
+  other: '📎',
+};
+
+/** The preview strip's glyph for a tile without a thumbnail. */
+const TILE_GLYPH: Readonly<Record<AttachmentKind, string>> = {
+  image: '🖼',
+  pdf: 'PDF',
+  markdown: 'MD',
+  other: '📎',
+};
+
+/** Decode a blob as UTF-8 text. Callback surface, like the blob fetcher. */
+function readBlobText(blob: Blob, onDone: (text: string) => void, onError: () => void): void {
+  blob.text().then(onDone, () => onError());
+}
 
 /** Parse a config id string to a positive bigint, or null when malformed. */
 function parseId(raw: string | undefined): bigint | null {

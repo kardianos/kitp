@@ -309,6 +309,12 @@ Default filters for card reads (card.select_with_attributes, card.search):
   does not apply this default itself — callers that omit a phase
   predicate get every phase back.
 
+- A leaf attr of the form "<child_type>.<attr>" matches a card by its
+  live child cards: { attr: "link.link_state", op: "=",
+  values: ["merged"] } is "has a merged link". Pair it with the
+  active-phase predicate above for "open tasks whose code change
+  merged".
+
 - routed_to_me=true returns cards routed to the calling agent via
   user_card_agent. Pair it with the active-only predicate above for
   the standard "my open work" view.

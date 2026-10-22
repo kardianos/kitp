@@ -68,7 +68,7 @@ type Row struct {
 	SizeBytes   int64  `json:"size_bytes" mcp:"desc=total size across all chunks"`
 	CreatedAt   string `json:"created_at" mcp:"desc=ISO8601 timestamp of the attachment row"`
 	ThumbFileID int64  `json:"thumb_file_id,string" mcp:"desc=thumbnail file id (0 when no thumb)"`
-	Kind        string `json:"kind" mcp:"desc=display bucket: image|pdf|other"`
+	Kind        string `json:"kind" mcp:"desc=display bucket: image|pdf|markdown|other"`
 }
 
 // ListOutput wraps the rows.

@@ -25,7 +25,8 @@
  */
 
 import type { AttributeDefRow } from '../admin/specs.js';
-import { type ValueType } from './predicate.js';
+import { LINK_KINDS, LINK_STATES } from '../task-detail/link-specs.js';
+import { type Op, type ValueType, opsForValueType } from './predicate.js';
 
 /* -------------------------------------------------------------------------- */
 /* AttrSchema                                                                 */
@@ -49,6 +50,13 @@ export interface AttrSchema {
    * Undefined for scalar value types.
    */
   targetCardType?: string;
+  /**
+   * Known values for a text attribute whose values are open slugs (a link's
+   * state / kind). The editor offers them in a picker, with the set ops
+   * (`in` / `not in`) beside `is` / `is not`. A stored value outside the list
+   * still shows and round-trips.
+   */
+  choices?: ReadonlyArray<{ value: string; label: string }>;
 }
 
 /**
@@ -93,9 +101,16 @@ export function normalizeValueType(rawType: string): ValueType | string {
   return rawType;
 }
 
+/** Known values per text attribute name — see {@link AttrSchema.choices}. */
+export const ATTR_CHOICES: Readonly<Record<string, ReadonlyArray<{ value: string; label: string }>>> = {
+  link_state: Object.entries(LINK_STATES).map(([value, info]) => ({ value, label: info.label })),
+  link_kind: Object.entries(LINK_KINDS).map(([value, info]) => ({ value, label: info.label })),
+};
+
 /**
  * Build one {@link AttrSchema} from a raw `attribute_def` row. The
- * `target_card_type_name` is carried onto `targetCardType` for ref types.
+ * `target_card_type_name` is carried onto `targetCardType` for ref types; a
+ * text attr's known values ({@link ATTR_CHOICES}) onto `choices`.
  */
 export function attrSchemaFromDef(def: AttributeDefRow): AttrSchema {
   const valueType = normalizeValueType(def.value_type);
@@ -104,6 +119,8 @@ export function attrSchemaFromDef(def: AttributeDefRow): AttrSchema {
     label: friendlyLabel(def.name),
     valueType,
   };
+  const choices = ATTR_CHOICES[def.name];
+  if (valueType === 'text' && choices !== undefined) out.choices = choices;
   if (
     (valueType === 'card_ref' || valueType === 'card_ref[]') &&
     def.target_card_type_name !== undefined &&
@@ -151,6 +168,39 @@ export const TOP_LEVEL_TIMESTAMP_FIELDS: readonly AttrSchema[] = [
 ];
 
 /**
+ * Child card types a card_type's FILTER reaches through the `<child>.<attr>`
+ * leaf path, which the server compiles to "has a live <child> card whose
+ * <attr> …" (e.g. `link.link_state = merged`: "has a merged link").
+ */
+export const CHILD_FILTER_TYPES: Readonly<Record<string, readonly string[]>> = {
+  task: ['link'],
+};
+
+/**
+ * The `<child>.<attr>` filter fields for [cardTypeName]: every attribute bound
+ * to each of its {@link CHILD_FILTER_TYPES}, labelled by the child ("Link
+ * state" for `link.link_state`; the attr's own `<child>_` prefix is dropped).
+ */
+export function childFieldsForCardType(
+  defs: readonly AttributeDefRow[],
+  cardTypeName: string,
+): AttrSchema[] {
+  const out: AttrSchema[] = [];
+  for (const child of CHILD_FILTER_TYPES[cardTypeName] ?? []) {
+    const prefix = `${child}_`;
+    for (const a of schemaForCardType(defs, child)) {
+      const own = a.name.startsWith(prefix) ? a.name.slice(prefix.length) : a.name;
+      out.push({
+        ...a,
+        name: `${child}.${a.name}`,
+        label: `${friendlyLabel(child)} ${friendlyLabel(own).toLowerCase()}`,
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * Resolve a {@link SchemaSource} to a concrete {@link AttrSchema}[] given the
  * loaded `attribute_def` rows. A literal list passes through; a `{ cardType }`
  * source is built via {@link schemaForCardType}. The editor calls this once the
@@ -163,10 +213,24 @@ export function resolveSchema(
   defs: readonly AttributeDefRow[],
 ): AttrSchema[] {
   if (Array.isArray(source)) return source;
-  // A {cardType} filter schema = the card_type's attributes PLUS the every-card
-  // top-level timestamps (last_activity_at / created_at), so a view can filter
-  // e.g. "last activity within 15 days" / "closed within 15 days".
-  return [...schemaForCardType(defs, source.cardType), ...TOP_LEVEL_TIMESTAMP_FIELDS];
+  // A {cardType} filter schema = the card_type's attributes, its child cards'
+  // attributes (`link.link_state`, …) PLUS the every-card top-level timestamps
+  // (last_activity_at / created_at), so a view can filter e.g. "has a merged
+  // link" / "last activity within 15 days" / "closed within 15 days".
+  return [
+    ...schemaForCardType(defs, source.cardType),
+    ...childFieldsForCardType(defs, source.cardType),
+    ...TOP_LEVEL_TIMESTAMP_FIELDS,
+  ];
+}
+
+/** The ops a text attr with known {@link AttrSchema.choices} offers. */
+const CHOICE_OPS: readonly Op[] = ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'];
+
+/** The operators the editor offers for [a]: its value_type's set, or the
+ *  picker-friendly set when the attr carries known `choices`. */
+export function opsForAttr(a: AttrSchema): readonly Op[] {
+  return a.choices !== undefined ? CHOICE_OPS : opsForValueType(a.valueType);
 }
 
 /** Look up one schema entry by attribute name. */

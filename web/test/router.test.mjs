@@ -876,3 +876,39 @@ test('AppShell brand: reflects config.workspaceTitle reactively', () => {
   M.flushSync?.();
   assert.equal(shell.el.querySelector('[data-brand]').textContent, 'Acme HQ');
 });
+
+test('rail + user-menu entries are real links: a plain click navigates in place, a modified click is left to the browser', () => {
+  setPath('/project/42');
+  const { shell } = mountShell({ adminLinks: [{ label: 'Users…', key: 'users' }] });
+  M.flushSync?.();
+
+  const rail = shell.el.querySelector('[data-region="shell.rail"]');
+  const links = rail.querySelectorAll('.shell__link');
+  const byText = (t) => links.find((l) => l.textContent.startsWith(t));
+  assert.equal(byText('Projects').tagName, 'A');
+  assert.equal(byText('Projects').getAttribute('href'), '/projects');
+  assert.equal(byText('Activity').getAttribute('href'), '/activity');
+  assert.equal(byText('Grid').getAttribute('href'), '/project/42/screen/grid', 'screen link href under the scope');
+  assert.equal(rail.querySelector('[data-admin-key="users"]').getAttribute('href'), '/admin/users');
+  assert.equal(rail.querySelector('[data-user-menu-account]').getAttribute('href'), '/account');
+  assert.equal(rail.querySelector('[data-user-menu-agents]').getAttribute('href'), '/agents');
+
+  // Ctrl-click: no in-place navigation and no preventDefault, so the browser
+  // opens the href in a new tab / window.
+  let prevented = false;
+  byText('Activity').dispatchEvent({ type: 'click', ctrlKey: true, preventDefault: () => (prevented = true) });
+  M.flushSync?.();
+  assert.equal(location.pathname, '/project/42', 'modified click stays put');
+  assert.equal(prevented, false, 'modified click left to the browser');
+
+  // Plain click: in-place SPA navigation, default (page load) suppressed.
+  byText('Activity').dispatchEvent({ type: 'click', preventDefault: () => (prevented = true) });
+  M.flushSync?.();
+  assert.equal(location.pathname, '/activity', 'plain click navigates in place');
+  assert.equal(prevented, true, 'plain click suppresses the page load');
+
+  prevented = false;
+  rail.querySelector('[data-user-menu-account]').dispatchEvent({ type: 'click', metaKey: true, preventDefault: () => (prevented = true) });
+  assert.equal(location.pathname, '/activity', '⌘-click on a menu item stays put');
+  assert.equal(prevented, false);
+});

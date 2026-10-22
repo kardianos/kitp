@@ -50,7 +50,9 @@ import {
   ROUTER_PATH,
   navigate,
   matchRoute,
+  activityUrl,
   adminUrl,
+  plainClick,
   screenUrl,
   type RouteMatch,
 } from './router.js';
@@ -434,8 +436,8 @@ export class AppShell extends Control<AppShellConfig> {
     rail.dataset.region = 'shell.rail';
 
     // Global links.
-    rail.append(railLink('Projects', 'g p', () => this.intent('goProjects')));
-    rail.append(railLink('Activity', 'g a', () => this.intent('goActivity')));
+    rail.append(railLink('Projects', 'g p', '/projects', () => this.intent('goProjects')));
+    rail.append(railLink('Activity', 'g a', activityUrl(), () => this.intent('goActivity')));
 
     // DEFAULT PROJECT scope section. Links are PURELY DATA-DRIVEN off the
     // active project's `screen` cards — no hardcoded Inbox/Grid/Kanban slugs
@@ -539,27 +541,29 @@ export class AppShell extends Control<AppShellConfig> {
       menu.style.display = open ? '' : 'none';
       chip.setAttribute('aria-expanded', open ? 'true' : 'false');
     };
-    const accountBtn = document.createElement('button');
-    accountBtn.type = 'button';
-    accountBtn.className = 'shell__user-menu-item';
+    // Account / My Agents are real links (⌘/Ctrl-click opens a new tab).
+    const menuLink = (label: string, href: string): HTMLAnchorElement => {
+      const a = document.createElement('a');
+      a.className = 'shell__user-menu-item';
+      a.setAttribute('href', href);
+      a.textContent = label;
+      this.listen(
+        a,
+        'click',
+        plainClick(() => {
+          setMenuOpen(false);
+          navigate(href);
+        }),
+      );
+      return a;
+    };
+    const accountBtn = menuLink('Account', '/account');
     accountBtn.dataset.userMenuAccount = '';
-    accountBtn.textContent = 'Account';
-    this.listen(accountBtn, 'click', () => {
-      setMenuOpen(false);
-      navigate('/account');
-    });
     // "My Agents" — every signed-in user manages their own agents (the screen +
     // server scope them to the owner). Distinct from the admin-only, all-users
     // Agents screen under the ADMIN rail section.
-    const agentsBtn = document.createElement('button');
-    agentsBtn.type = 'button';
-    agentsBtn.className = 'shell__user-menu-item';
+    const agentsBtn = menuLink('My Agents', '/agents');
     agentsBtn.dataset.userMenuAgents = '';
-    agentsBtn.textContent = 'My Agents';
-    this.listen(agentsBtn, 'click', () => {
-      setMenuOpen(false);
-      navigate('/agents');
-    });
     const logoutBtn = document.createElement('button');
     logoutBtn.type = 'button';
     logoutBtn.className = 'shell__user-menu-item';
@@ -773,13 +777,14 @@ export class AppShell extends Control<AppShellConfig> {
    * `data-admin-section` / `data-admin-toggle` key ('workspace' | 'project').
    */
   /** Rebuild the DEFAULT-PROJECT rail links from a resolved screen list. Each
-   *  link navigates to `/project/:id/screen/:slug` (live scope at click time). */
+   *  link navigates to `/project/:id/screen/:slug` (live scope at click time);
+   *  its href is the same URL for the scope at render time. */
   private renderScopeLinks(links: ReadonlyArray<ScopeLink>): void {
     const host = this.scopeLinksHost;
     if (host === null) return;
     host.replaceChildren();
     for (const l of links) {
-      const link = railLink(l.label, l.chord, () => this.goScreenSlug(l.slug));
+      const link = railLink(l.label, l.chord, this.screenSlugUrl(l.slug), () => this.goScreenSlug(l.slug));
       link.dataset.slug = l.slug;
       host.append(link);
     }
@@ -787,8 +792,13 @@ export class AppShell extends Control<AppShellConfig> {
 
   /** Navigate to a screen slug under the live project scope (rail link click). */
   private goScreenSlug(slug: string): void {
+    navigate(this.screenSlugUrl(slug));
+  }
+
+  /** A screen slug's URL under the live project scope. */
+  private screenSlugUrl(slug: string): string {
     const id = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>();
-    navigate(id == null ? '/projects' : screenUrl(id, slug));
+    return id == null ? '/projects' : screenUrl(id, slug);
   }
 
   /**
@@ -962,6 +972,11 @@ export class AppShell extends Control<AppShellConfig> {
       // Also refire when the admin Screens screen bumps this nonce (a screen was
       // renamed / added / removed), so the nav reflects the edit without a reload.
       this.ctx.tree.at(['shell', 'navRefresh']).get();
+      // Point the links already in the rail at the new scope now (DOM-only
+      // write); the project's own screen list replaces them when it lands.
+      for (const a of this.scopeLinksHost?.querySelectorAll<HTMLElement>('[data-slug]') ?? []) {
+        a.setAttribute('href', this.screenSlugUrl(a.dataset.slug ?? ''));
+      }
       if (pid === null) return;
       this.ctx.api.callByName(
         'card.select_with_attributes',
@@ -1034,7 +1049,7 @@ export class AppShell extends Control<AppShellConfig> {
 
     const gates: Array<{ el: HTMLElement; minRole: 'admin' | 'manager' }> = [];
     for (const l of links) {
-      const link = railLink(l.label, '', () => navigate(adminUrl(l.key)));
+      const link = railLink(l.label, '', adminUrl(l.key), () => navigate(adminUrl(l.key)));
       link.dataset.adminKey = l.key;
       list.append(link);
       gates.push({ el: link, minRole: l.minRole ?? 'admin' });
@@ -1233,9 +1248,11 @@ function iconButton(name: IconName | { text: string }, title: string): HTMLButto
   return b;
 }
 
-function railLink(label: string, chord: string, onClick: () => void): HTMLElement {
-  const a = document.createElement('button');
-  a.type = 'button';
+/** A rail menu entry: a real `<a href>` so ⌘/Ctrl-click opens it in a new
+ *  tab; a plain click runs [onClick] in place (see {@link plainClick}). */
+function railLink(label: string, chord: string, href: string, onClick: () => void): HTMLElement {
+  const a = document.createElement('a');
+  a.setAttribute('href', href);
   a.className = 'shell__link';
   const text = document.createElement('span');
   text.textContent = label;
@@ -1247,7 +1264,7 @@ function railLink(label: string, chord: string, onClick: () => void): HTMLElemen
     hint.textContent = chord;
     a.append(hint);
   }
-  a.addEventListener('click', onClick);
+  a.addEventListener('click', plainClick(onClick));
   return a;
 }
 

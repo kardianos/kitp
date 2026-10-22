@@ -506,6 +506,50 @@ test('schemaForCardType filters to bound defs + carries targetCardType for refs'
   assert.equal(tags.targetCardType, 'tag');
 });
 
+test('a task filter reaches its links through link.<attr> fields with known values', () => {
+  const { resolveSchema, childFieldsForCardType, opsForAttr } = M;
+  const bound = (name, cardType, ordering) => ({
+    id: name,
+    name,
+    value_type: 'text',
+    is_built_in: true,
+    bound_to: [{ card_type_id: '1', card_type_name: cardType, ordering }],
+  });
+  const defs = [
+    { ...bound('title', 'task', 0), bound_to: [
+      { card_type_id: '5', card_type_name: 'task', ordering: 0 },
+      { card_type_id: '7', card_type_name: 'link', ordering: 0 },
+    ] },
+    bound('link_url', 'link', 1),
+    bound('link_kind', 'link', 2),
+    bound('link_state', 'link', 3),
+  ];
+  const fields = childFieldsForCardType(defs, 'task');
+  assert.deepEqual(
+    fields.map((f) => [f.name, f.label]),
+    [
+      ['link.title', 'Link title'],
+      ['link.link_url', 'Link url'],
+      ['link.link_kind', 'Link kind'],
+      ['link.link_state', 'Link state'],
+    ],
+  );
+  assert.deepEqual(childFieldsForCardType(defs, 'project'), [], 'no child fields for other types');
+
+  const schema = resolveSchema({ cardType: 'task' }, defs);
+  assert.deepEqual(
+    schema.map((s) => s.name),
+    ['title', 'link.title', 'link.link_url', 'link.link_kind', 'link.link_state', 'last_activity_at', 'created_at'],
+    'own attrs, then child fields, then the top-level timestamps',
+  );
+  const state = schema.find((s) => s.name === 'link.link_state');
+  assert.ok(state.choices.some((c) => c.value === 'merged' && c.label === 'Merged'), 'states offered');
+  assert.deepEqual([...opsForAttr(state)], ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists']);
+  const url = schema.find((s) => s.name === 'link.link_url');
+  assert.equal(url.choices, undefined, 'a free-text attr has no choices');
+  assert.ok(opsForAttr(url).includes('contains'), 'free text keeps the text op set');
+});
+
 test('resolveSchema passes a literal list through unchanged', () => {
   const { resolveSchema } = M;
   const lit = [{ name: 'a', label: 'A', valueType: 'text' }];

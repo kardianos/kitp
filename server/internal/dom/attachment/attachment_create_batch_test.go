@@ -172,17 +172,22 @@ func TestAttachmentCreateBatch_MultiRow(t *testing.T) {
 	cardA, fA := seedCardAndFile(t, pool, "task", "a.png", "image/png", 100)
 	cardB, fB := seedCardAndFile(t, pool, "task", "b.pdf", "application/pdf", 200)
 	cardC, fC := seedCardAndFile(t, pool, "task", "c.bin", "application/octet-stream", 300)
+	// Markdown by extension (no usable mime) and by mime type.
+	cardD, fD := seedCardAndFile(t, pool, "task", "README.MD", "application/octet-stream", 400)
+	cardE, fE := seedCardAndFile(t, pool, "task", "notes", "text/markdown", 500)
 
 	inputs := []map[string]any{
 		{"card_id": strconv.FormatInt(cardA, 10), "file_id": strconv.FormatInt(fA, 10)},
 		{"card_id": strconv.FormatInt(cardB, 10), "file_id": strconv.FormatInt(fB, 10)},
 		{"card_id": strconv.FormatInt(cardC, 10), "file_id": strconv.FormatInt(fC, 10)},
+		{"card_id": strconv.FormatInt(cardD, 10), "file_id": strconv.FormatInt(fD, 10)},
+		{"card_id": strconv.FormatInt(cardE, 10), "file_id": strconv.FormatInt(fE, 10)},
 	}
 	rows := callAttachmentCreateBatch(t, pool, auth.SystemUserID, inputs)
-	if len(rows) != 3 {
-		t.Fatalf("rows: got %d, want 3", len(rows))
+	if len(rows) != len(inputs) {
+		t.Fatalf("rows: got %d, want %d", len(rows), len(inputs))
 	}
-	wantKinds := []string{"image", "pdf", "other"}
+	wantKinds := []string{"image", "pdf", "other", "markdown", "markdown"}
 	for i, r := range rows {
 		if r.Idx != i {
 			t.Errorf("row %d: idx=%d, want %d", i, r.Idx, i)
