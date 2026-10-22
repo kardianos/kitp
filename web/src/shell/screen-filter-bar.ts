@@ -970,7 +970,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
   /* --------------------------- preset application --------------------------- */
 
   /**
-   * Apply a saved preset (or clear back to no-filter when id is null). Reads the
+   * Apply a saved preset (or "No view" when id is null). Reads the
    * filter card from the landed list, writes its predicate to `screen.predicate`
    * + its group to `screen.group`, re-seeds the Advanced editor, and caches the
    * active id at `<statePath>.activeFilterId` (so back-nav restores it). A
@@ -984,7 +984,11 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     this.ctx.tree.at([...statePath, 'activeFilterId']).set(id);
 
     if (id === null) {
-      this.applyPredicate(null);
+      // "No view": an empty filter that keeps the phase scope (this session's
+      // choice, else the screen's base), so dropping a view doesn't suddenly
+      // show closed work.
+      const phases = this.phaseSessionNode(statePath).peek<Phase[] | undefined>() ?? this.basePhases();
+      this.applyPredicate(withTopLevelPhases(null, phases, this.phaseAttr()));
       this.setGroup(this.defaultGroup);
       this.ctx.tree.at(['screen', 'sort']).set(null);
       return;

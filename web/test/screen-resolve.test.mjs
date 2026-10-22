@@ -587,6 +587,50 @@ test('ScreenFilterBar: named filters load into the preset selector; picking one 
   assert.equal(tree.at(['screen', 'group']).peek(), 'status', "'Mine' applied its group_by_attr → screen.group");
 });
 
+test('ScreenFilterBar: the pinned "No view" option drops the selected view and keeps the base phase', async () => {
+  const transport = screenMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const { host, statePath } = mountHost(api, tree);
+  await settle(dispatcher);
+  tree.at(['screen', 'phaseToggles']).set([
+    { label: 'Active', phase: 'active', defaultOn: true },
+    { label: 'Closed', phase: 'terminal', defaultOn: false },
+  ]);
+  M.flushSync?.();
+
+  const selector = findControl(host, 'FilterPresetSelector');
+  selector.config.onPick(FILTER_OPEN_ID);
+  M.flushSync?.();
+  await settle(dispatcher);
+  assert.equal(tree.at([...statePath, 'activeFilterId']).peek(), FILTER_OPEN_ID, 'view selected');
+
+  // The menu leads with "No view", then the saved views.
+  // (Build the list without opening the popover: the dom-shim has no <body>.)
+  const combo = findControl(selector, 'Combobox');
+  combo.recomputeFiltered();
+  combo.renderList();
+  const options = combo.listEl.querySelectorAll('[data-cb-option]');
+  assert.deepEqual(
+    options.map((o) => o.textContent),
+    ['No view', 'Open work', 'Mine'],
+    '"No view" is pinned first',
+  );
+
+  // Picking it drops the view: no active id, an empty filter apart from the
+  // screen's base phase scope, and the trigger reads "No view".
+  options[0].dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  await settle(dispatcher);
+  assert.equal(tree.at([...statePath, 'activeFilterId']).peek(), null, 'no view selected');
+  assert.deepEqual(
+    tree.at(['screen', 'predicate']).peek(),
+    { kind: 'leaf', attr: 'status', op: 'hasPhase', values: ['active'] },
+    'only the base phase scope remains',
+  );
+  assert.equal(combo.labelEl.textContent, 'No view', 'trigger shows "No view"');
+});
+
 /* -------------------------------------------------------------------------- */
 /* Save creates a filter card (optimistic).                                    */
 /* -------------------------------------------------------------------------- */

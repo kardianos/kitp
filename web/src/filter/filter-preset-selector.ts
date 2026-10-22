@@ -1,8 +1,9 @@
 /**
  * FilterPresetSelector — the saved-view picker the ScreenFilterBar mounts in
  * its row 1. A {@link Combobox} listing the screen's saved `filter` cards by
- * title; picking one fires {@link FilterPresetSelectorConfig.onPick} with the
- * chosen filter card id (or null for "Default"). Plus a small action strip the
+ * title, under a pinned "No view" option; picking fires
+ * {@link FilterPresetSelectorConfig.onPick} with the chosen filter card id (null
+ * for "No view", which drops the saved view). Plus a small action strip the
  * bar wires: Save (current predicate as a new filter card), Set default, and —
  * when cheap — Rename / Delete.
  *
@@ -32,7 +33,7 @@ export interface FilterPresetSelectorConfig extends BaseControlConfig {
   filtersPath: string;
   /** Tree path holding the active filter id (bigint|null). Read reactively. */
   activeIdPath: string;
-  /** Fired when the user picks a preset (null = the "Default" placeholder). */
+  /** Fired when the user picks a preset (null = "No view"). */
   onPick?: (id: bigint | null) => void;
   /** Fired when the user clicks "Save current as new view…". */
   onSave?: () => void;
@@ -49,6 +50,10 @@ declare module '../core/control.js' {
     FilterPresetSelector: FilterPresetSelectorConfig;
   }
 }
+
+/** The pinned "no saved view" option's value and label. */
+const NO_VIEW = '';
+const NO_VIEW_LABEL = 'No view';
 
 export class FilterPresetSelector extends Control<FilterPresetSelectorConfig> {
   private combo: Combobox<string> | null = null;
@@ -75,7 +80,10 @@ export class FilterPresetSelector extends Control<FilterPresetSelectorConfig> {
       'Combobox',
       {
         type: 'Combobox',
-        placeholder: 'Default',
+        placeholder: NO_VIEW_LABEL,
+        // Always first, so a selected view can be dropped even when it's the
+        // only one (the list otherwise only switches between views).
+        pinnedOptions: [{ value: NO_VIEW, label: NO_VIEW_LABEL }],
         'aria-label': 'Saved filter preset',
         onChange: (v: string | null) => this.onPick(v),
       },
@@ -98,7 +106,7 @@ export class FilterPresetSelector extends Control<FilterPresetSelectorConfig> {
       // Rebuild the combo's static options + selected value (setOptions does not
       // fire onChange — purely programmatic sync).
       this.combo?.setOptions(options);
-      this.combo?.setValue(activeId === null ? null : activeId.toString());
+      this.combo?.setValue(activeId === null ? NO_VIEW : activeId.toString());
       // The active-only actions disable when nothing is selected.
       const enabled = activeId !== null;
       this.combo?.setFooterActions([
