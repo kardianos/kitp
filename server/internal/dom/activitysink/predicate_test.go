@@ -97,11 +97,13 @@ func TestParsePredicateInvalidJSON(t *testing.T) {
 	}
 }
 
-// TestPredicateWithMe covers "@me" in actor leaves: a subscription's
-// subscriber id replaces it (so "not done by me" works), and without a
-// subscriber it stays literal and matches no actor.
-func TestPredicateWithMe(t *testing.T) {
+// TestPredicateWithSubscriber covers "@me" / "@my_agents" in actor
+// leaves: a subscription's subscriber id and their agents' ids replace
+// them (so "not done by me or my agents" works), and without a
+// subscriber they stay literal and match no actor.
+func TestPredicateWithSubscriber(t *testing.T) {
 	type row = activitysink.ActivityRow
+	agents := []int64{70, 71}
 	cases := []struct {
 		name string
 		spec string
@@ -109,6 +111,10 @@ func TestPredicateWithMe(t *testing.T) {
 		r    row
 		want bool
 	}{
+		{"actor_not_in @my_agents drops my agent's events", `{"op":"actor_not_in","values":["@me","@my_agents"]}`, 7, row{ActorID: 71}, false},
+		{"actor_not_in @my_agents keeps mine when only agents are listed", `{"op":"actor_not_in","values":["@my_agents"]}`, 7, row{ActorID: 7}, true},
+		{"actor_in @my_agents", `{"op":"actor_in","values":["@my_agents"]}`, 7, row{ActorID: 70}, true},
+		{"no subscriber leaves @my_agents literal", `{"op":"actor_in","values":["@my_agents"]}`, 0, row{ActorID: 70}, false},
 		{"actor_not_in @me drops my own events", `{"op":"actor_not_in","values":["@me"]}`, 7, row{ActorID: 7}, false},
 		{"actor_not_in @me keeps others", `{"op":"actor_not_in","values":["@me"]}`, 7, row{ActorID: 8}, true},
 		{"actor_in @me nested in and", `{"op":"and","items":[{"op":"kind_in","values":["comment"]},{"op":"actor_in","values":["@me"]}]}`, 7, row{Kind: "comment", ActorID: 7}, true},
@@ -121,7 +127,7 @@ func TestPredicateWithMe(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			if got := p.WithMe(c.me).Eval(c.r); got != c.want {
+			if got := p.WithSubscriber(c.me, agents).Eval(c.r); got != c.want {
 				t.Errorf("Eval = %v, want %v", got, c.want)
 			}
 		})

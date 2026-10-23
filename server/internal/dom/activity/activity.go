@@ -16,9 +16,10 @@ import (
 // CardID is optional: when zero/null the handler returns activity across
 // every card the actor can see (cross-card mode). When non-zero, only
 // rows for that card are returned. BeforeActivityID is exclusive: the
-// page contains rows with id < cursor. ActorIDs / Kinds / CardTypes / Q
-// narrow the rows (AND-joined; an empty list is no filter); Facets asks
-// for per-actor / kind / card-type counts over the window without them.
+// page contains rows with id < cursor. ActorIDs / ExcludeActorIDs / Kinds /
+// CardTypes / Q narrow the rows (AND-joined; an empty list is no filter);
+// Facets asks for per-actor / kind / card-type counts over the window
+// without them.
 type SelectInput struct {
 	CardID           int64    `json:"card_id,string,omitempty" mcp:"desc=card whose activity is being read; omit for cross-card mode"`
 	ProjectID        int64    `json:"project_id,string,omitempty" mcp:"desc=project scope; when set, only activity for cards within that project (the project or a descendant) is returned"`
@@ -27,10 +28,11 @@ type SelectInput struct {
 	FromDate         string   `json:"from_date,omitempty" mcp:"desc=inclusive lower bound on created_at, ISO date YYYY-MM-DD"`
 	ToDate           string   `json:"to_date,omitempty" mcp:"desc=inclusive upper bound on created_at, ISO date YYYY-MM-DD"`
 	ActorIDs         []string `json:"actor_ids,omitempty" mcp:"desc=only rows by these user ids"`
+	ExcludeActorIDs  []string `json:"exclude_actor_ids,omitempty" mcp:"desc=leave out rows by these user ids (e.g. your own changes)"`
 	Kinds            []string `json:"kinds,omitempty" mcp:"desc=only rows of these kinds (card_create, attr_update, comment, tag_apply, attachment_create, ...)"`
 	CardTypes        []string `json:"card_types,omitempty" mcp:"desc=only rows on cards of these card types (task, link, comm, reply_body, ...)"`
 	Q                string   `json:"q,omitempty" mcp:"desc=text search over the owning card's title or #id, the card's own title, and comment bodies"`
-	Facets           bool     `json:"facets,omitempty" mcp:"desc=also return per-actor / kind / card-type counts for the window (ignoring actor_ids / kinds / card_types / q / the cursor)"`
+	Facets           bool     `json:"facets,omitempty" mcp:"desc=also return per-actor / kind / card-type counts for the window (ignoring actor_ids / exclude_actor_ids / kinds / card_types / q / the cursor)"`
 }
 
 // Row is one denormalized activity row, carrying the names and titles a
@@ -90,6 +92,24 @@ type CardTypeFacet struct {
 	Count    int    `json:"count" mcp:"desc=rows on cards of this type"`
 }
 
+// ActorsInput asks for the accounts that can make changes in a project.
+type ActorsInput struct {
+	ProjectID int64    `json:"project_id,string" mcp:"required,desc=project whose accounts to list"`
+	IDs       []string `json:"ids,omitempty" mcp:"desc=user ids to name as well, e.g. the ones a saved filter already holds"`
+}
+
+// Actor is one account, named the way activity rows name it.
+type Actor struct {
+	ID      int64  `json:"id,string" mcp:"desc=user id"`
+	Name    string `json:"name" mcp:"desc=display name; an agent is named with its owner, e.g. 'claude (for Daniel)'"`
+	IsAgent bool   `json:"is_agent" mcp:"desc=true for an agent account"`
+}
+
+// ActorsOutput lists the accounts, people first, then agents, each by name.
+type ActorsOutput struct {
+	Rows []Actor `json:"rows" mcp:"desc=the accounts"`
+}
+
 // PollInput is the cheap "is there newer activity?" probe for the task-detail
 // background poll: a task id + the latest activity id the client already has.
 type PollInput struct {
@@ -117,6 +137,18 @@ func Register(p *store.Pool) {
 		// Unified handler — body lives in
 		// db/schema/functions/activity_select_batch.sql.
 		SQLFunc: "activity_select_batch",
+	})
+	reg.Register(reg.Handler{
+		Endpoint:     "activity",
+		Action:       "actors",
+		Doc:          "List the accounts that can make changes in a project (role holders and the agents they own), named the way activity rows name them — for picking whose changes an activity filter includes or excludes. Pass ids to name accounts a saved filter already holds.",
+		InputType:    reflect.TypeFor[ActorsInput](),
+		OutputType:   reflect.TypeFor[ActorsOutput](),
+		AllowedRoles: []string{reg.RoleAuthenticated},
+		IsRead:       true,
+		// Unified handler — body lives in
+		// db/schema/functions/activity_actors_batch.sql.
+		SQLFunc: "activity_actors_batch",
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "activity",

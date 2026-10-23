@@ -14,6 +14,9 @@ import { installDomShim } from './dom-shim.mjs';
 let M;
 let FakeElement;
 
+/** The stored "skip changes I or my agents make" filter. */
+const SKIP_OWN = '{"op":"actor_not_in","values":["@me","@my_agents"]}';
+
 before(async () => {
   ({ FakeElement } = installDomShim());
   const outdir = await buildTestBundles();
@@ -112,7 +115,12 @@ for (const c of VALIDATE_CASES) {
 
 test('subscriptionDraftToSet: a create carries the sink + enabled, never an id', () => {
   const out = M.subscriptionDraftToSet({ ...M.emptySubscriptionDraft(), sinkId: '91', projectId: '31', name: ' Mine ', rollupMinutes: '15' });
-  assert.deepEqual(out, { name: 'Mine', activityFilter: '', cardFilter: '', rollupMinutes: 15, sinkId: '91', enabled: true });
+  assert.deepEqual(out, { name: 'Mine', activityFilter: SKIP_OWN, cardFilter: '', rollupMinutes: 15, sinkId: '91', enabled: true });
+});
+
+test('a new subscription starts by skipping your own and your agents\' changes', () => {
+  assert.equal(M.emptySubscriptionDraft().activityFilter, SKIP_OWN);
+  assert.equal(M.activityPredicateToString(M.SKIP_OWN_CHANGES), SKIP_OWN);
 });
 
 const ENABLED_CASES = [
@@ -137,15 +145,45 @@ for (const c of ENABLED_CASES) {
 /* Pure: event-filter descriptions ("me" for the @me actor token).             */
 /* -------------------------------------------------------------------------- */
 
+const NAMES = { 3: 'Daniel', 40: 'Gerrit' };
 const DESCRIBE_CASES = [
   { leaf: { kind: 'leaf', op: 'actor_not_in', values: ['@me'] }, want: 'Not done by me' },
-  { leaf: { kind: 'leaf', op: 'actor_in', values: ['@me', '12'] }, want: 'Done by me, 12' },
+  { leaf: { kind: 'leaf', op: 'actor_not_in', values: ['@me', '@my_agents'] }, want: 'Not done by me, my agents' },
+  { leaf: { kind: 'leaf', op: 'actor_in', values: ['@me', '12'] }, want: 'Done by me, user 12' },
+  { leaf: { kind: 'leaf', op: 'actor_not_in', values: ['40', '12'] }, want: 'Not done by Gerrit, user 12' },
   { leaf: { kind: 'leaf', op: 'kind_in', values: ['comment', 'card_create'] }, want: 'Event is any of Comment, Card created' },
   { leaf: { kind: 'leaf', op: 'attr_not_in', values: ['sort_order'] }, want: 'Changed attribute is none of sort_order' },
 ];
 for (const c of DESCRIBE_CASES) {
-  test(`describeActivityLeaf: ${c.want}`, () => assert.equal(M.describeActivityLeaf(c.leaf), c.want));
+  test(`describeActivityLeaf: ${c.want}`, () => assert.equal(M.describeActivityLeaf(c.leaf, (id) => NAMES[id]), c.want));
 }
+
+test('actorIdsIn: the numeric ids of every actor condition, nested too; tokens and other ops skipped', () => {
+  const p = M.activityPredicateFromString(JSON.stringify({
+    op: 'or',
+    items: [
+      { op: 'actor_in', values: ['12', '@me'] },
+      { op: 'and', items: [{ op: 'actor_not_in', values: ['40', '12'] }, { op: 'kind_in', values: ['7'] }] },
+    ],
+  }));
+  assert.deepEqual(M.actorIdsIn(p), ['12', '40']);
+  assert.deepEqual(M.actorIdsIn(null), []);
+});
+
+test('top-level leaf helpers match a condition by op + value set', () => {
+  const skip = M.SKIP_OWN_CHANGES;
+  const reordered = { kind: 'leaf', op: 'actor_not_in', values: ['@my_agents', '@me'] };
+  assert.equal(M.activitySameLeaf(skip, reordered), true, 'value order does not matter');
+  assert.equal(M.activitySameLeaf(skip, { ...reordered, op: 'actor_in' }), false);
+  assert.equal(M.activitySameLeaf(skip, { ...skip, values: ['@me'] }), false);
+  const kinds = { kind: 'leaf', op: 'kind_in', values: ['comment'] };
+  const p = M.activityAppendLeaf(M.activityAppendLeaf(null, kinds), reordered);
+  assert.equal(M.activityHasTopLevelLeaf(p, skip), true);
+  const left = M.activityWithoutTopLevelLeaf(p, skip);
+  assert.equal(M.activityHasTopLevelLeaf(left, skip), false);
+  assert.deepEqual(M.activityTopLevelLeaves(left).map((e) => e.leaf.op), ['kind_in']);
+  assert.equal(M.activityWithoutTopLevelLeaf(skip, reordered), null, 'a lone condition leaves nothing');
+});
 
 test('summarizeActivityPredicate renders the @me token as "me"', () => {
   const p = M.activityPredicateFromString('{"op":"actor_not_in","values":["@me"]}');
@@ -239,6 +277,9 @@ function subscriptionTransport({ setError } = {}) {
           case 'card.select_with_attributes':
             sent.writes.push({ key, data }); // recorded so the test can see the project-scoped loads
             return { id: sr.id, ok: true, data: { rows: [] } };
+          case 'activity.actors':
+            sent.writes.push({ key, data });
+            return { id: sr.id, ok: true, data: { rows: ACTORS } };
           case 'activity_subscription.set': {
             sent.writes.push({ key, data });
             if (setError) return { id: sr.id, ok: false, error: setError };
@@ -263,13 +304,22 @@ function subscriptionTransport({ setError } = {}) {
   return transport;
 }
 
-function boot(transport) {
+const ACTORS = [
+  { id: '3', name: 'Daniel', is_agent: false },
+  { id: '12', name: 'claude (for Daniel)', is_agent: true },
+  { id: '40', name: 'Gerrit', is_agent: true },
+];
+
+function boot(transport, { activitySpecs = false } = {}) {
   const dispatcher = new M.Dispatcher({ transport });
   const api = new M.Api(dispatcher);
   M.registerKanbanSpecs(api);
   M.registerAdminSpecs(api);
   M.registerFilterSpecs(api);
   M.registerSubscriptionSpecs(api);
+  // activity.actors (names for the actor conditions) — without it the editor
+  // falls back to typed user ids.
+  if (activitySpecs) M.registerCommentSpecs(api);
   return { dispatcher, api };
 }
 
@@ -347,7 +397,7 @@ test('subscriptions: + Add → pick "Project — Sink" → save creates for that
   const sets = writes(transport, 'activity_subscription.set');
   assert.equal(sets.length, 1);
   assert.deepEqual(sets[0].data, {
-    name: 'Ops digest', activity_filter: '', card_filter: '', rollup_minutes: 60, sink_id: '95', enabled: true,
+    name: 'Ops digest', activity_filter: SKIP_OWN, card_filter: '', rollup_minutes: 60, sink_id: '95', enabled: true,
   });
   assert.ok(transport.sent.lists > listsBefore, 'list re-fetched after the write');
   assert.equal(rowsOf(ctrl.el).length, 3, 'the new subscription shows up');
@@ -404,6 +454,49 @@ test('subscriptions: actor conditions offer "Me" and save it as @me', async () =
   await settle(dispatcher);
   const sets = writes(transport, 'activity_subscription.set');
   assert.deepEqual(JSON.parse(sets[0].data.activity_filter), { op: 'and', items: [{ op: 'actor_not_in', values: ['@me'] }] });
+});
+
+test('subscriptions: actor conditions pick the project\'s accounts by name; the shortcut skips your own changes', async () => {
+  const transport = subscriptionTransport();
+  const { dispatcher, api } = boot(transport, { activitySpecs: true });
+  const { ctrl } = mountScreen(api);
+  await settle(dispatcher);
+  await select(ctrl, dispatcher, 0); // "Assigned to me": project 31, no event filter
+  await settle(dispatcher); // the accounts land
+
+  const loads = writes(transport, 'activity.actors');
+  assert.equal(String(loads.at(-1)?.data.project_id), '31', "accounts load for the subscription's project");
+  assert.equal(ctrl.el.querySelector('[data-af-shortcut]').checked, false, 'no filter → the shortcut is off');
+
+  const op = ctrl.el.querySelector('[data-af-op]');
+  op.value = 'actor_not_in';
+  op.dispatchEvent({ type: 'change' });
+  assert.deepEqual(
+    ctrl.el.querySelectorAll('[data-af-choice]').map((b) => b.dataset.afChoice),
+    ['@me', '@my_agents', '3', '12', '40'],
+    'Me, My agents, then the accounts',
+  );
+  assert.equal(ctrl.el.querySelector('[data-af-values]'), null, 'no typed ids once the accounts are known');
+  ctrl.el.querySelector('[data-af-choice="40"]').checked = true;
+  ctrl.el.querySelector('[data-af-add-btn]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  assert.match(ctrl.el.querySelector('[data-af-leaf]').textContent, /Not done by Gerrit/, 'the condition reads by name');
+
+  const shortcut = ctrl.el.querySelector('[data-af-shortcut]');
+  shortcut.checked = true;
+  shortcut.dispatchEvent({ type: 'change' });
+  M.flushSync?.();
+  assert.equal(ctrl.el.querySelector('[data-af-shortcut]').checked, true);
+  ctrl.el.querySelector('[data-record-form-save]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  const sets = writes(transport, 'activity_subscription.set');
+  assert.deepEqual(JSON.parse(sets[0].data.activity_filter), {
+    op: 'and',
+    items: [
+      { op: 'actor_not_in', values: ['40'] },
+      { op: 'actor_not_in', values: ['@me', '@my_agents'] },
+    ],
+  });
 });
 
 test('subscriptions: delete asks inline first, then deletes + reloads + clears the selection', async () => {

@@ -9,7 +9,8 @@
  *
  *   - activity.select  (db/schema/functions/activity_select_batch.sql)
  *       in : { card_id | project_id, limit?, before_activity_id?, from_date?,
- *              to_date?, actor_ids?, kinds?, card_types?, q?, facets? }
+ *              to_date?, actor_ids?, exclude_actor_ids?, kinds?, card_types?,
+ *              q?, facets? }
  *       out: { rows: [{ id, card_id, card_type, card_title, nav_card_id,
  *                       nav_card_type, nav_title, kind, attribute_name?,
  *                       value_type?, value_old?, value_new?, refs?,
@@ -40,6 +41,7 @@ import type { Api } from '../core/api.js';
 /* -------------------------------------------------------------------------- */
 
 export const ACTIVITY_SELECT_SPEC = 'activity.select';
+export const ACTIVITY_ACTORS_SPEC = 'activity.actors';
 export const ACTIVITY_POLL_SPEC = 'activity.poll';
 export const COMMENT_INSERT_SPEC = 'comment.insert';
 export const COMMENT_UPDATE_SPEC = 'comment.update';
@@ -78,6 +80,8 @@ export interface ActivitySelectInput {
   toDate?: string;
   /** Only rows by these users. */
   actorIds?: readonly bigint[];
+  /** Leave out rows by these users (e.g. the viewer's own changes). */
+  excludeActorIds?: readonly bigint[];
   /** Only rows of these kinds (`comment`, `attr_update`, …). */
   kinds?: readonly string[];
   /** Only rows on cards of these card types (`task`, `link`, `comm`, …). */
@@ -87,6 +91,26 @@ export interface ActivitySelectInput {
   q?: string;
   /** Also return {@link ActivityFacets} for the window. */
   facets?: boolean;
+}
+
+/** activity.actors input: the project, plus user ids (decimal) to name even
+ *  when they hold no role there (the ones a saved filter already picks). */
+export interface ActivityActorsInput {
+  projectId: bigint;
+  ids?: readonly string[];
+}
+
+/** One account that can make changes in the project, named the way activity
+ *  rows name it ("claude (for Daniel)"). */
+export interface ActivityActor {
+  id: bigint;
+  name: string;
+  isAgent: boolean;
+}
+
+/** activity.actors output: people first, then agents, each by name. */
+export interface ActivityActorsOutput {
+  rows: ActivityActor[];
 }
 
 /** One activity row in the web model (decoded from the wire). */
@@ -253,6 +277,9 @@ export function registerCommentSpecs(api: Api): void {
         if (i.fromDate !== undefined && i.fromDate !== '') m['from_date'] = i.fromDate;
         if (i.toDate !== undefined && i.toDate !== '') m['to_date'] = i.toDate;
         if (i.actorIds !== undefined && i.actorIds.length > 0) m['actor_ids'] = i.actorIds.map(String);
+        if (i.excludeActorIds !== undefined && i.excludeActorIds.length > 0) {
+          m['exclude_actor_ids'] = i.excludeActorIds.map(String);
+        }
         if (i.kinds !== undefined && i.kinds.length > 0) m['kinds'] = [...i.kinds];
         if (i.cardTypes !== undefined && i.cardTypes.length > 0) m['card_types'] = [...i.cardTypes];
         if (i.q !== undefined && i.q.trim() !== '') m['q'] = i.q.trim();
@@ -267,6 +294,24 @@ export function registerCommentSpecs(api: Api): void {
         if (o['facets'] !== null && typeof o['facets'] === 'object') out.facets = decodeFacets(asObj(o['facets']));
         return out;
       },
+    });
+  }
+
+  if (!api.registry.has({ endpoint: 'activity', action: 'actors' })) {
+    api.define<ActivityActorsInput, ActivityActorsOutput>({
+      endpoint: 'activity',
+      action: 'actors',
+      encode: (i) => {
+        const m: Record<string, unknown> = { project_id: i.projectId };
+        if (i.ids !== undefined && i.ids.length > 0) m['ids'] = [...i.ids];
+        return m;
+      },
+      decode: (raw): ActivityActorsOutput => ({
+        rows: asArray(asObj(raw)['rows']).map((r) => {
+          const o = asObj(r);
+          return { id: asId(o['id']), name: String(o['name'] ?? ''), isAgent: o['is_agent'] === true };
+        }),
+      }),
     });
   }
 

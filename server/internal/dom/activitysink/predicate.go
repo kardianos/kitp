@@ -28,7 +28,8 @@ import (
 //                       non-attr rows are accepted by this op so it only
 //                       filters within the attr_update slice).
 //   - Op "actor_in" / "actor_not_in" — leaf; Values are decimal user ids,
-//                       or "@me" (the subscriber, see WithMe).
+//                       "@me" (the subscriber) or "@my_agents" (the agents
+//                       the subscriber owns), see WithSubscriber.
 //
 // A predicate with Op == "" matches every row. Unknown ops fail closed
 // (return false) so a typo doesn't silently flood the channel.
@@ -118,29 +119,38 @@ func (p Predicate) Eval(row ActivityRow) bool {
 	return false
 }
 
-// WithMe returns a copy of the predicate with every "@me" value in an
-// actor_in / actor_not_in leaf replaced by userID — so a personal
-// subscription can say "not done by me". Without a subscriber
-// (userID == 0, a broadcast sink) "@me" stays literal and matches no
-// actor.
-func (p Predicate) WithMe(userID int64) Predicate {
+// myAgentsToken stands for every agent the subscriber owns, so "not
+// done by me" can also leave out what their agents did for them.
+const myAgentsToken = "@my_agents"
+
+// WithSubscriber returns a copy of the predicate with the subscriber
+// tokens in actor_in / actor_not_in leaves resolved: "@me" becomes userID
+// and "@my_agents" becomes agentIDs (none → the token just drops out) —
+// so a personal subscription can say "not done by me or my agents".
+// Without a subscriber (userID == 0, a broadcast sink) both stay literal
+// and match no actor.
+func (p Predicate) WithSubscriber(userID int64, agentIDs []int64) Predicate {
 	if userID == 0 {
 		return p
 	}
 	out := Predicate{Op: p.Op}
-	if len(p.Values) > 0 {
-		out.Values = make([]string, len(p.Values))
-		for i, v := range p.Values {
-			if v == meToken && (p.Op == "actor_in" || p.Op == "actor_not_in") {
-				v = strconv.FormatInt(userID, 10)
+	actorLeaf := p.Op == "actor_in" || p.Op == "actor_not_in"
+	for _, v := range p.Values {
+		switch {
+		case actorLeaf && v == meToken:
+			out.Values = append(out.Values, strconv.FormatInt(userID, 10))
+		case actorLeaf && v == myAgentsToken:
+			for _, id := range agentIDs {
+				out.Values = append(out.Values, strconv.FormatInt(id, 10))
 			}
-			out.Values[i] = v
+		default:
+			out.Values = append(out.Values, v)
 		}
 	}
 	if len(p.Items) > 0 {
 		out.Items = make([]Predicate, len(p.Items))
 		for i, c := range p.Items {
-			out.Items[i] = c.WithMe(userID)
+			out.Items[i] = c.WithSubscriber(userID, agentIDs)
 		}
 	}
 	return out

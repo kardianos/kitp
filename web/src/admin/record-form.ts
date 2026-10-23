@@ -88,8 +88,9 @@ export interface RecordFormField {
   max?: number;
   /** 'cardFilter': the card_type the predicate filters. Default 'task'. */
   cardType?: string;
-  /** 'cardFilter': draft key holding the project id the ref-picker options
-   *  (statuses, tags, …) load for. Default: the form's project scope. */
+  /** 'cardFilter' / 'activityFilter': draft key holding the project id the
+   *  editor's options load for (a card filter's statuses, tags, …; an event
+   *  filter's accounts). Default: the form's project scope. */
   projectField?: string;
   /** 'activityFilter' / 'cardFilter': extra config merged into the spawned
    *  editor control's config (e.g. `{ actorChoices }` for the event filter). */
@@ -435,11 +436,13 @@ export class RecordForm extends Control<RecordFormConfig> {
       host.className = 'record-form__editor';
       host.dataset.recordFormField = f.name;
       wrap.append(host);
+      const projectId = f.projectField !== undefined ? asText(draft[f.projectField]) : this.projectId();
       pendingSpawns.push(() => {
         this.fieldChildren.push(
           this.spawn('ActivityFilterEditor', {
             type: 'ActivityFilterEditor',
             valuePath: this.fieldPath(f.name).join('.'),
+            ...(projectId !== '' ? { projectId } : {}),
             ...(f.placeholder !== undefined ? { emptyLabel: f.placeholder } : {}),
             ...(f.editor ?? {}),
           }, host),

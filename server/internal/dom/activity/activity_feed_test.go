@@ -194,6 +194,8 @@ func TestSelectFeed(t *testing.T) {
 		want  []string
 	}{
 		{"actor", map[string]any{"actor_ids": []string{fmt.Sprint(claude)}}, []string{"attr_update:status"}},
+		{"exclude actors", map[string]any{"exclude_actor_ids": []string{fmt.Sprint(gerrit), fmt.Sprint(auth.SystemUserID)}},
+			[]string{"attr_update:status"}},
 		{"kind", map[string]any{"kinds": []string{"comment"}}, []string{"comment"}},
 		{"card type + kind", map[string]any{"card_types": []string{"link"}, "kinds": []string{"attr_update"}},
 			nil},
@@ -234,10 +236,12 @@ func TestSelectFeed(t *testing.T) {
 		t.Errorf("q #id matched nothing")
 	}
 
-	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
-		{ID: "bad", Endpoint: "activity", Action: "select", Data: json.RawMessage(`{"actor_ids":["x"]}`)},
-	}})
-	if resp.Subresponses[0].OK {
-		t.Errorf("a non-numeric actor id was accepted")
+	for _, bad := range []string{`{"actor_ids":["x"]}`, `{"exclude_actor_ids":["x"]}`} {
+		resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "bad", Endpoint: "activity", Action: "select", Data: json.RawMessage(bad)},
+		}})
+		if resp.Subresponses[0].OK {
+			t.Errorf("%s: a non-numeric actor id was accepted", bad)
+		}
 	}
 }

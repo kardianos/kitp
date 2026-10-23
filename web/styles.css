@@ -4870,6 +4870,8 @@ select optgroup {
 .activity-filter__values {
   flex: 1 1 14rem;
   display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 .activity-filter__text {
   flex: 1 1 auto;
@@ -4884,6 +4886,31 @@ select optgroup {
   align-items: center;
   gap: var(--space-1);
   font-size: var(--text-sm);
+}
+/* "Done by" / "Not done by": the project's accounts, one per line, in a box
+   that scrolls (with a search heading it once the list is long). */
+.activity-filter__actors {
+  --menu-pad: var(--space-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-h);
+  max-height: 14rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.activity-filter__actors .kf-menu-filter {
+  margin: 0 calc(-1 * var(--space-2));
+}
+.activity-filter__shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1x);
+  font-size: var(--text-sm);
+  color: var(--color-fg-strong);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -6849,6 +6876,34 @@ select optgroup {
   border-radius: var(--radius-md);
   background: var(--color-surface);
   box-shadow: var(--shadow-md, 0 4px 16px rgb(0 0 0 / 0.18));
+}
+/* People: "Only these" / "All but these" — whether the picks are shown or
+   left out. */
+.activity-menu__mode {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+.activity-menu__mode-btn {
+  flex: 1 1 0;
+  font: inherit;
+  font-size: var(--text-xs);
+  padding: var(--space-h) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.activity-menu__mode-btn:hover {
+  color: var(--color-fg);
+}
+.activity-menu__mode-btn--on {
+  color: var(--color-fg);
+  background: var(--color-surface-raised);
 }
 .activity-menu__option {
   display: flex;

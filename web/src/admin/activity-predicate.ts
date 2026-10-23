@@ -174,18 +174,74 @@ function summarizeLeaf(p: ActivityPredicateLeaf): string {
  *  subscription owner's user id (on a broadcast sink it matches no actor). */
 export const ACTIVITY_ME_TOKEN = '@me';
 
+/** The reserved "the subscriber's agents" actor value — every agent account
+ *  the subscription owner runs (so "not done by me" can cover what their
+ *  agents did for them). Matches no actor on a broadcast sink. */
+export const ACTIVITY_MY_AGENTS_TOKEN = '@my_agents';
+
 /** Display text for reserved filter values (anything else renders verbatim). */
-const TOKEN_LABELS: Readonly<Record<string, string>> = { [ACTIVITY_ME_TOKEN]: 'me' };
+const TOKEN_LABELS: Readonly<Record<string, string>> = {
+  [ACTIVITY_ME_TOKEN]: 'me',
+  [ACTIVITY_MY_AGENTS_TOKEN]: 'my agents',
+};
 
 function tokenLabel(v: string): string {
   return TOKEN_LABELS[v] ?? v;
 }
 
-/** The actor-condition choices a personal (subscription) filter offers next to
- *  the typed user ids — passed to the editor as `actorChoices`. */
+/** The actor-condition choices a personal (subscription) filter offers ahead
+ *  of the project's accounts — passed to the editor as `actorChoices`. */
 export const ACTIVITY_ME_CHOICES: ReadonlyArray<{ value: string; label: string }> = [
   { value: ACTIVITY_ME_TOKEN, label: 'Me' },
+  { value: ACTIVITY_MY_AGENTS_TOKEN, label: 'My agents' },
 ];
+
+/** "Every change except my own": the condition a personal subscription's
+ *  shortcut toggles (and a new subscription starts with). */
+export const SKIP_OWN_CHANGES: ActivityPredicateLeaf = {
+  kind: 'leaf',
+  op: 'actor_not_in',
+  values: [ACTIVITY_ME_TOKEN, ACTIVITY_MY_AGENTS_TOKEN],
+};
+
+/** The numeric user ids the predicate's actor conditions name (tokens like
+ *  `@me` excluded), deduplicated, in first-seen order. */
+export function actorIdsIn(p: ActivityPredicate | null): string[] {
+  const out: string[] = [];
+  const walk = (n: ActivityPredicate): void => {
+    if (n.kind === 'composite') {
+      n.items.forEach(walk);
+      return;
+    }
+    if (!isActorOp(n.op)) return;
+    for (const v of n.values) if (/^\d+$/.test(v) && !out.includes(v)) out.push(v);
+  };
+  if (p !== null) walk(p);
+  return out;
+}
+
+/** True when two leaves are the same condition: same op, same set of values
+ *  (order-insensitive). */
+export function sameLeaf(a: ActivityPredicateLeaf, b: ActivityPredicateLeaf): boolean {
+  if (a.op !== b.op) return false;
+  const as = new Set(a.values);
+  const bs = new Set(b.values);
+  return as.size === bs.size && [...as].every((v) => bs.has(v));
+}
+
+/** True when [leaf] is one of the predicate's top-level conditions. */
+export function hasTopLevelLeaf(p: ActivityPredicate | null, leaf: ActivityPredicateLeaf): boolean {
+  return topLevelLeaves(p).some((e) => e.leaf !== null && sameLeaf(e.leaf, leaf));
+}
+
+/** Drop every top-level condition equal to [leaf]. Pure; `null` when nothing
+ *  is left. */
+export function withoutTopLevelLeaf(p: ActivityPredicate | null, leaf: ActivityPredicateLeaf): ActivityPredicate | null {
+  if (p === null) return null;
+  if (p.kind === 'leaf') return sameLeaf(p, leaf) ? null : p;
+  const items = p.items.filter((it) => !(it.kind === 'leaf' && sameLeaf(it, leaf)));
+  return items.length === 0 ? null : { kind: 'composite', op: p.op, items };
+}
 
 /**
  * Append a leaf to (or create) the top-level AND group. Pure: returns a NEW
@@ -266,11 +322,17 @@ export function isActorOp(op: ActivityLeafOp): boolean {
 }
 
 /** A friendly one-line description of a leaf: kind values render as their
- *  labels, reserved tokens as their text ("Event is any of Comment, Card
- *  created", "Not done by me", "Done by me, 12"). */
-export function describeActivityLeaf(leaf: ActivityPredicateLeaf): string {
+ *  labels, reserved tokens as their text, and actor ids as the names
+ *  [actorName] knows ("Event is any of Comment, Card created", "Not done by
+ *  me, my agents", "Done by Gerrit"); an unknown id shows as "user 12". */
+export function describeActivityLeaf(
+  leaf: ActivityPredicateLeaf,
+  actorName: (id: string) => string | undefined = () => undefined,
+): string {
   const values = isKindOp(leaf.op)
     ? leaf.values.map((v) => ACTIVITY_KIND_OPTIONS.find((k) => k.value === v)?.label ?? v)
-    : leaf.values.map(tokenLabel);
+    : isActorOp(leaf.op)
+      ? leaf.values.map((v) => TOKEN_LABELS[v] ?? actorName(v) ?? (/^\d+$/.test(v) ? `user ${v}` : v))
+      : leaf.values.map(tokenLabel);
   return `${ACTIVITY_OP_FRIENDLY[leaf.op]} ${values.length === 0 ? '(none)' : values.join(', ')}`;
 }

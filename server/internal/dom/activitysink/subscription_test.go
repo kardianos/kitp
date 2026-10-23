@@ -355,6 +355,55 @@ func TestSubscriptionPumpDeliversDigest(t *testing.T) {
 	}
 }
 
+// TestSubscriptionSkipsOwnAndAgentChanges: "not done by @me, @my_agents"
+// leaves out what the subscriber and the agents they own did, and keeps
+// everyone else's changes.
+func TestSubscriptionSkipsOwnAndAgentChanges(t *testing.T) {
+	f := setupSubscriptions(t, "kitp_test_sub_skip_own")
+	subID := f.subscribe(t, f.member,
+		`"name":"Others only","activity_filter":"{\"op\":\"actor_not_in\",\"values\":[\"@me\",\"@my_agents\"]}"`)
+
+	ctx := context.Background()
+	var agentID int64
+	if err := f.sp.P.QueryRow(ctx, `
+		INSERT INTO user_account (display_name, is_agent, parent_user_id) VALUES ('claude', true, $1) RETURNING id
+	`, f.member.userID).Scan(&agentID); err != nil {
+		t.Fatalf("agent: %v", err)
+	}
+	if _, err := f.sp.P.Exec(ctx, `
+		INSERT INTO user_role (user_id, role_id, scope_card_id) SELECT $1, id, $2 FROM role WHERE name = 'worker'
+	`, agentID, f.projectID); err != nil {
+		t.Fatalf("agent role: %v", err)
+	}
+	agentCtx := auth.WithUser(ctx, &auth.UserCtx{ID: agentID, DisplayName: "claude"})
+
+	task := f.newTask(t, "Shared task", 0)
+	f.comment(t, task, "from the admin")
+	for _, c := range []struct {
+		ctx  context.Context
+		body string
+	}{{f.member.ctx, "my own note"}, {agentCtx, "my agent's note"}} {
+		mustOK(t, f.call(c.ctx, "comment", "insert", fmt.Sprintf(`{"card_id":"%d","body":%q}`, task, c.body)), nil)
+	}
+
+	mail := &sentMail{}
+	if err := f.pumper(subID, mail).RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if len(mail.msgs) != 1 {
+		t.Fatalf("sent %d mails, want 1", len(mail.msgs))
+	}
+	body := decodedBody(t, mail.msgs[0].msg)
+	if !strings.Contains(body, "from the admin") {
+		t.Errorf("someone else's comment missing:\n%s", body)
+	}
+	for _, own := range []string{"my own note", "my agent's note"} {
+		if strings.Contains(body, own) {
+			t.Errorf("digest includes %q, which the filter leaves out:\n%s", own, body)
+		}
+	}
+}
+
 func TestSubscriptionRollupHoldsThenDelivers(t *testing.T) {
 	f := setupSubscriptions(t, "kitp_test_sub_pump_rollup")
 	subID := f.subscribe(t, f.member, `"name":"Digest","rollup_minutes":10`)

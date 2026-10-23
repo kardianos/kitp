@@ -340,6 +340,8 @@ type unitConfig struct {
 	subscriberPersonID int64
 	subscriberUserID   int64
 	subscriberEmail    string
+	// The agents the subscriber owns ("@my_agents" in an event filter).
+	subscriberAgentIDs []int64
 	// Teams sinks.
 	msgraph MSGraphConfig
 }
@@ -376,7 +378,7 @@ func (c unitConfig) eventFilters() (eventFilterSet, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, p.WithMe(c.subscriberUserID))
+		out = append(out, p.WithSubscriber(c.subscriberUserID, c.subscriberAgentIDs))
 	}
 	return out, nil
 }
@@ -500,6 +502,28 @@ func (p *Pumper) loadSubscriber(ctx context.Context, c *unitConfig) error {
 	if err := p.pool.P.QueryRow(ctx, sql, args...).Scan(&c.subscriberUserID, &c.subscriberEmail); err != nil {
 		return fmt.Errorf("loadSubscriber: %w", err)
 	}
+	if c.subscriberUserID == 0 {
+		return nil
+	}
+	ab := named.New()
+	ab.Set("user_id", c.subscriberUserID)
+	asql, aargs, err := ab.Compile(`
+		SELECT id FROM user_account
+		WHERE parent_user_id = :user_id AND is_agent
+		ORDER BY id
+	`)
+	if err != nil {
+		return fmt.Errorf("loadSubscriber: agents: compile: %w", err)
+	}
+	rows, err := p.pool.P.Query(ctx, asql, aargs...)
+	if err != nil {
+		return fmt.Errorf("loadSubscriber: agents: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return fmt.Errorf("loadSubscriber: agents: %w", err)
+	}
+	c.subscriberAgentIDs = ids
 	return nil
 }
 

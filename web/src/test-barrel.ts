@@ -350,6 +350,12 @@ export {
   ACTIVITY_OP_FRIENDLY,
   ACTIVITY_ME_TOKEN,
   ACTIVITY_ME_CHOICES,
+  ACTIVITY_MY_AGENTS_TOKEN,
+  SKIP_OWN_CHANGES,
+  actorIdsIn,
+  sameLeaf as activitySameLeaf,
+  hasTopLevelLeaf as activityHasTopLevelLeaf,
+  withoutTopLevelLeaf as activityWithoutTopLevelLeaf,
 } from './admin/activity-predicate.js';
 export {
   CONTACTS_SCREEN,

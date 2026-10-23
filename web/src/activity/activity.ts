@@ -184,6 +184,13 @@ interface FilterMenu {
   paint(options: readonly MenuOption[]): void;
 }
 
+/** An include / exclude switch on a filter dropdown: whether the picks are the
+ *  only ones shown or the ones left out. */
+interface MenuMode {
+  exclude(): boolean;
+  setExclude(on: boolean): void;
+}
+
 export interface ActivityConfig extends BaseControlConfig {
   type: 'Activity';
   /** Dotted tree path holding the active project id. Default 'scope.projectId'. */
@@ -219,6 +226,9 @@ export class Activity extends Control<ActivityConfig> {
   private fromDate: string;
   private toDate = '';
   private readonly actorIds = new Set<string>();
+  /** People menu mode: the picked people are left out rather than the only
+   *  ones shown ("everyone except me"). */
+  private actorExclude = false;
   private readonly kindGroups = new Set<string>();
   private readonly cardTypes = new Set<string>();
   private query = '';
@@ -348,7 +358,13 @@ export class Activity extends Control<ActivityConfig> {
     dash.textContent = '–';
     dates.append(from, dash, to);
 
-    this.peopleMenu = this.filterMenu('people', 'People', this.actorIds);
+    this.peopleMenu = this.filterMenu('people', 'People', this.actorIds, {
+      exclude: () => this.actorExclude,
+      setExclude: (on) => {
+        this.actorExclude = on;
+        if (this.actorIds.size > 0) this.reload();
+      },
+    });
     this.kindMenu = this.filterMenu('kinds', 'Changes', this.kindGroups);
     this.typeMenu = this.filterMenu('types', 'Items', this.cardTypes);
 
@@ -415,7 +431,7 @@ export class Activity extends Control<ActivityConfig> {
    * reloads. The trigger reads the label, plus the pick when there's one
    * ("People: Daniel") or the count ("People · 2").
    */
-  private filterMenu(key: string, label: string, selected: Set<string>): FilterMenu {
+  private filterMenu(key: string, label: string, selected: Set<string>, mode?: MenuMode): FilterMenu {
     const wrap = document.createElement('div');
     wrap.className = 'activity-menu';
     wrap.dataset.activityMenu = key;
@@ -439,15 +455,58 @@ export class Activity extends Control<ActivityConfig> {
     let labels = new Map<string, string>();
     const paintTrigger = (): void => {
       trigger.classList.toggle('activity-menu__trigger--active', selected.size > 0);
+      const not = mode?.exclude() === true ? 'not ' : '';
       if (selected.size === 0) trigger.textContent = label;
       else if (selected.size === 1) {
         const v = [...selected][0] ?? '';
-        trigger.textContent = `${label}: ${labels.get(v) ?? v}`;
-      } else trigger.textContent = `${label} · ${selected.size}`;
+        trigger.textContent = `${label}: ${not}${labels.get(v) ?? v}`;
+      } else trigger.textContent = `${label} · ${not}${selected.size}`;
     };
+    // The include / exclude switch heads the list (under the search field).
+    let modeRow: HTMLElement | null = null;
+    let paintMode = (): void => {};
+    if (mode !== undefined) {
+      const row = document.createElement('div');
+      row.className = 'activity-menu__mode';
+      row.setAttribute('role', 'group');
+      row.setAttribute('aria-label', `${label}: show or hide the picks`);
+      const buttons = (
+        [
+          [false, 'Only these'],
+          [true, 'All but these'],
+        ] as const
+      ).map(([exclude, text]) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'activity-menu__mode-btn';
+        b.dataset.activityMode = exclude ? 'exclude' : 'include';
+        b.textContent = text;
+        this.listen(b, 'click', () => {
+          if (mode.exclude() === exclude) return;
+          mode.setExclude(exclude);
+          paintMode();
+          paintTrigger();
+        });
+        return { b, exclude };
+      });
+      paintMode = (): void => {
+        for (const { b, exclude } of buttons) {
+          const on = mode.exclude() === exclude;
+          b.classList.toggle('activity-menu__mode-btn--on', on);
+          b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        }
+      };
+      row.append(...buttons.map((x) => x.b));
+      paintMode();
+      modeRow = row;
+    }
     const paint = (options: readonly MenuOption[]): void => {
       labels = new Map(options.map((o) => [o.value, o.label]));
       panel.replaceChildren(filter.el);
+      if (modeRow !== null && options.length > 0) {
+        paintMode();
+        panel.append(modeRow);
+      }
       if (options.length === 0) {
         const empty = document.createElement('span');
         empty.className = 'activity-menu__empty muted';
@@ -516,10 +575,13 @@ export class Activity extends Control<ActivityConfig> {
       return opts;
     };
     this.peopleMenu.paint(
-      keep(
-        (f?.actors ?? []).map((a) => ({ value: a.id.toString(), label: a.name, count: a.count })),
-        this.actorIds,
-        (v) => `user#${v}`,
+      withMeFirst(
+        keep(
+          (f?.actors ?? []).map((a) => ({ value: a.id.toString(), label: a.name, count: a.count })),
+          this.actorIds,
+          (v) => `user#${v}`,
+        ),
+        this.ctx.tree.at(['auth', 'user']).peek<{ userId: bigint | null }>()?.userId ?? null,
       ),
     );
     const kindCounts = new Map((f?.kinds ?? []).map((k) => [k.kind, k.count]));
@@ -540,6 +602,7 @@ export class Activity extends Control<ActivityConfig> {
   }
 
   private filtered(): boolean {
+    // (An exclude-mode People menu with no picks filters nothing.)
     return this.actorIds.size > 0 || this.kindGroups.size > 0 || this.cardTypes.size > 0 || this.query !== '';
   }
 
@@ -551,6 +614,7 @@ export class Activity extends Control<ActivityConfig> {
   /** Reset every filter and the window to the default. */
   private clearFilters(): void {
     this.actorIds.clear();
+    this.actorExclude = false;
     this.kindGroups.clear();
     this.cardTypes.clear();
     this.query = '';
@@ -567,7 +631,11 @@ export class Activity extends Control<ActivityConfig> {
     const input: ActivitySelectInput = { projectId: pid, limit };
     if (this.fromDate !== '') input.fromDate = this.fromDate;
     if (this.toDate !== '') input.toDate = this.toDate;
-    if (this.actorIds.size > 0) input.actorIds = [...this.actorIds].map((id) => BigInt(id));
+    if (this.actorIds.size > 0) {
+      const ids = [...this.actorIds].map((id) => BigInt(id));
+      if (this.actorExclude) input.excludeActorIds = ids;
+      else input.actorIds = ids;
+    }
     if (this.kindGroups.size > 0) input.kinds = kindsForGroups(this.kindGroups);
     if (this.cardTypes.size > 0) input.cardTypes = [...this.cardTypes];
     if (this.query !== '') input.q = this.query;
@@ -860,4 +928,18 @@ export class Activity extends Control<ActivityConfig> {
 
 export function registerActivity(): void {
   Control.register('Activity', Activity);
+}
+
+/**
+ * The People options with the viewer first, labelled "Me (name)" — so "All but
+ * these" + Me is "everyone except me" in two clicks. The viewer is listed even
+ * with no changes in the window (count 0). Without a known viewer, unchanged.
+ */
+function withMeFirst(options: MenuOption[], me: bigint | null): MenuOption[] {
+  if (me === null) return options;
+  const id = me.toString();
+  const mine = options.find((o) => o.value === id);
+  const rest = options.filter((o) => o.value !== id);
+  const label = mine === undefined || mine.label.startsWith('user#') ? 'Me' : `Me (${mine.label})`;
+  return [{ value: id, label, count: mine?.count ?? 0 }, ...rest];
 }

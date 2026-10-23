@@ -123,7 +123,7 @@ type SubscriptionSetInput struct {
 	ID             int64   `json:"id,string,omitempty" mcp:"desc=existing activity_subscription id to update; omit / 0 to create"`
 	SinkID         int64   `json:"sink_id,string,omitempty" mcp:"desc=email activity_sink to subscribe under; required on create (see activity_subscription.sinks)"`
 	Name           *string `json:"name,omitempty" mcp:"desc=subscription display name; required on create"`
-	ActivityFilter *string `json:"activity_filter,omitempty" mcp:"desc=JSON event predicate (dom/activitysink/predicate.go); '' = every event"`
+	ActivityFilter *string `json:"activity_filter,omitempty" mcp:"desc=JSON event predicate (dom/activitysink/predicate.go); '' = every event. To skip your own changes and your agents': {\"op\":\"actor_not_in\",\"values\":[\"@me\",\"@my_agents\"]}"`
 	CardFilter     *string `json:"card_filter,omitempty" mcp:"desc=JSON card predicate tree (screen filter shape; '@me' = you) the activity's task must match; '' = every card"`
 	RollupMinutes  *int    `json:"rollup_minutes,omitempty" mcp:"desc=minutes (0-1440) to collect matches before mailing one digest; 0 = next pump tick"`
 	Enabled        *bool   `json:"enabled,omitempty" mcp:"desc=false pauses the subscription; true resumes it (and clears a fault)"`

@@ -5,7 +5,7 @@
 --   1. Decode card_id (optional — omit/0 for cross-card mode),
 --      project_id, from_date / to_date, limit (default 200, capped at
 --      999), before_activity_id (exclusive cursor), and the feed filters
---      actor_ids[] / kinds[] / card_types[] / q.
+--      actor_ids[] / exclude_actor_ids[] / kinds[] / card_types[] / q.
 --   2. `scoped` = the activity rows in the card / project / date window
 --      that the caller may see (per-row visibility filter B7 — gates
 --      every row including cross-card mode, which is where the original
@@ -45,6 +45,7 @@ DECLARE
     _limit int;
     _sort_asc boolean;
     _actor_ids bigint[];
+    _exclude_actor_ids bigint[];
     _kinds text[];
     _card_types text[];
     _q text;
@@ -102,9 +103,15 @@ BEGIN
                     CASE jsonb_typeof(_raw->'actor_ids') WHEN 'array' THEN _raw->'actor_ids' ELSE '[]'::jsonb END
                 ) AS e
             );
+            _exclude_actor_ids := ARRAY(
+                SELECT e::bigint
+                FROM jsonb_array_elements_text(
+                    CASE jsonb_typeof(_raw->'exclude_actor_ids') WHEN 'array' THEN _raw->'exclude_actor_ids' ELSE '[]'::jsonb END
+                ) AS e
+            );
         EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
-                'activity.select: actor_ids must be user ids'::text, NULL::jsonb;
+                'activity.select: actor_ids and exclude_actor_ids must be user ids'::text, NULL::jsonb;
             CONTINUE;
         END;
         _kinds := ARRAY(
@@ -174,6 +181,7 @@ BEGIN
             SELECT s.*
             FROM scoped s
             WHERE (cardinality(_actor_ids) = 0 OR s.actor_id = ANY(_actor_ids))
+              AND NOT (s.actor_id = ANY(_exclude_actor_ids))
               AND (cardinality(_kinds) = 0 OR s.kind = ANY(_kinds))
               AND (cardinality(_card_types) = 0 OR s.card_type = ANY(_card_types))
               AND (_before_id IS NULL OR s.id < _before_id)

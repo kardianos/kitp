@@ -86,10 +86,11 @@ async function settle(dispatcher) {
   M.flushSync?.();
 }
 
-function mountActivity(api, config = {}) {
+function mountActivity(api, config = {}, seed = () => {}) {
   inputs = [];
   const tree = new M.TreeNode({}, []);
   tree.at(['scope', 'projectId']).set(PROJECT);
+  seed(tree);
   M.installRouter(tree); // so title clicks land a route
   const ctrl = M.Control.New('Activity', { type: 'Activity', ...config }, { api, tree });
   ctrl.mount(new FakeElement('div'));
@@ -180,6 +181,41 @@ test('Activity: People / Changes / Items filters go to the server; facets are no
   assert.equal(last().actor_ids, undefined, 'Clear drops every filter');
   assert.equal(last().kinds, undefined);
   assert.equal(last().card_types, undefined);
+});
+
+test('Activity: People can leave the picks out ("everyone but me"); the viewer is listed first as Me', async () => {
+  const { dispatcher, api } = bootApi(activityTransport());
+  const { ctrl } = mountActivity(api, {}, (tree) => tree.at(['auth', 'user']).set({ userId: 5n }));
+  await settle(dispatcher);
+
+  const people = q(ctrl, '[data-activity-menu="people"]');
+  const options = () => people.querySelectorAll('[data-activity-option]');
+  assert.deepEqual(options().map((o) => o.dataset.activityOption), ['5', '4'], 'the viewer first');
+  assert.ok(people.querySelector('.activity-menu__label').textContent === 'Me (Bob)');
+
+  const before = inputs.length;
+  people.querySelector('[data-activity-mode="exclude"]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  assert.equal(inputs.length, before, 'switching with nothing picked reloads nothing');
+
+  options()[0].checked = true;
+  options()[0].dispatchEvent({ type: 'change' });
+  await settle(dispatcher);
+  assert.deepEqual(last().exclude_actor_ids, ['5']);
+  assert.equal(last().actor_ids, undefined);
+  assert.equal(people.querySelector('.activity-menu__trigger').textContent, 'People: not Me (Bob)');
+
+  people.querySelector('[data-activity-mode="include"]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  assert.deepEqual(last().actor_ids, ['5'], 'back to only the picks');
+  assert.equal(last().exclude_actor_ids, undefined);
+
+  people.querySelector('[data-activity-mode="exclude"]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  q(ctrl, '[data-activity-clear]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  assert.equal(last().exclude_actor_ids, undefined, 'Clear drops the exclusion');
+  assert.equal(people.querySelector('[data-activity-mode="include"]').getAttribute('aria-pressed'), 'true', 'and resets the switch');
 });
 
 test('Activity: search is debounced and sent as q', async () => {

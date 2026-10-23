@@ -14,7 +14,7 @@
 import type { MasterDetailConfig } from '../admin/master-detail.js';
 import type { RecordFormScreenConfig } from '../admin/record-form.js';
 import { MAX_ROLLUP_MINUTES, parseRollupMinutes } from '../admin/activity-sink-form.js';
-import { ACTIVITY_ME_CHOICES } from '../admin/activity-predicate.js';
+import { ACTIVITY_ME_CHOICES, SKIP_OWN_CHANGES, activityPredicateToString } from '../admin/activity-predicate.js';
 import type { SubscriptionRow, SubscriptionSetInput } from './subscription-specs.js';
 
 const NEW = ['0'] as const;
@@ -39,11 +39,13 @@ export interface SubscriptionDraft {
   cardFilter: string;
 }
 
+/** A new subscription starts with "Skip changes I or my agents make" ticked:
+ *  you rarely want mail about what you just did. */
 export function emptySubscriptionDraft(): SubscriptionDraft {
   return {
     id: '0', sinkId: '', projectId: '', scopeLabel: '', name: '',
     rollupMinutes: '0', enabled: true, enabledInitial: true,
-    activityFilter: '', cardFilter: '',
+    activityFilter: activityPredicateToString(SKIP_OWN_CHANGES), cardFilter: '',
   };
 }
 
@@ -158,9 +160,15 @@ export const SUBSCRIPTION_FORM: RecordFormScreenConfig = {
       label: 'Events',
       kind: 'activityFilter',
       placeholder: 'No filter — every event.',
-      // Personal filters can say "done / not done by me" (server resolves @me
-      // to the subscriber); broadcast sinks have no "me", so they omit this.
-      editor: { actorChoices: ACTIVITY_ME_CHOICES },
+      // Accounts by name come from the sink's project. Personal filters can
+      // also say "done / not done by me / my agents" (the server resolves the
+      // tokens to the subscriber); broadcast sinks have no "me", so they omit
+      // these.
+      projectField: 'projectId',
+      editor: {
+        actorChoices: ACTIVITY_ME_CHOICES,
+        shortcuts: [{ label: 'Skip changes I or my agents make', leaf: SKIP_OWN_CHANGES }],
+      },
     },
     {
       name: 'cardFilter',
