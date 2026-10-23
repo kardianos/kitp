@@ -30,7 +30,7 @@ export {
 // Pure helpers + specs.
 export * from './kanban/kanban-helpers.js';
 export { SPEC } from './kanban/specs.js';
-export { registerKanbanSpecs } from './kanban/specs.js';
+export { registerKanbanSpecs, decodeCardWithAttrs } from './kanban/specs.js';
 export * from './projects/project-helpers.js';
 export { PROJECT_SPEC, registerProjectSpecs } from './projects/specs.js';
 
@@ -101,6 +101,8 @@ export {
   attrSchemaFromDef,
   schemaForCardType,
   childFieldsForCardType,
+  DERIVED_FILTER_FIELDS,
+  isTopLevelField,
   resolveSchema,
   findAttr,
   opsForAttr,
@@ -149,12 +151,19 @@ export {
   readSortBy,
   readPredicate,
   readPhaseToggles,
-  readPanels,
-  SCREEN_PANELS,
+  readExtraColumns,
+  parseStringList,
   type ScreenPresetSet,
   type PhaseToggle,
 } from './filter/screen-resolve.js';
-export { approvalBadge } from './ui/approval-badge.js';
+export { approvalBadge, approvalAsked } from './ui/approval-badge.js';
+export {
+  DERIVED_COLUMNS,
+  derivedColumn,
+  derivedColumnsFor,
+  derivedParts,
+  columnsNeedApprovals,
+} from './cardlist/derived-columns.js';
 export { decodeFlowRow } from './admin/specs.js';
 export {
   TAG_PREFIX_OPTION,
@@ -525,11 +534,8 @@ export { TaskApprovals, registerTaskApprovals, type TaskApprovalsConfig } from '
 export {
   registerApprovalSpecs,
   decodeApprovalList,
-  decodeApprovalQueue,
-  APPROVAL_QUEUE_SPEC,
 } from './task-detail/approval-specs.js';
-export { buildApprovalEdges, actionChoices, edgeLabel } from './task-detail/approval-model.js';
-export { ApprovalQueue, registerApprovalQueue, APPROVALS_WAITING_PATH } from './inbox/approval-queue.js';
+export { buildApprovalEdges, actionChoices, edgeLabel, stepText, voteWords } from './task-detail/approval-model.js';
 export { formatLocalDateTime, formatUtcOffset, localTimeEl } from './util/datetime.js';
 export { loadView, saveView } from './filter/view-persistence.js';
 export { trapFocus, captureFocus } from './util/focus-trap.js';

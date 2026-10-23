@@ -102,7 +102,7 @@ func TestGroupRows(t *testing.T) {
 			want: []string{"#10 Fix the login redirect loop that happens when the session… |  | " +
 				"Approval “Approve: Doing → Done”: Created  — Alex Kim, " +
 				"Approval “Approve: Doing → Done”: Approvers: — → Sam Lee  — Alex Kim, " +
-				"Approved: Approve (Doing → Done)  — Sam Lee"},
+				"Voted approve: Doing → Done (Approve)  — Sam Lee"},
 		},
 	}
 	for _, c := range cases {

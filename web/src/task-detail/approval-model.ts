@@ -189,7 +189,20 @@ export function actionChoices(list: ApprovalListOutput): ApprovalAction[] {
   return [...here, ...rest];
 }
 
-/** "Approve: Review → Done". */
+/** "Review → Done (Approve)" (see {@link stepText}). */
 export function edgeLabel(action: string, from: StatusRef, to: StatusRef): string {
-  return `${action}: ${from.label} → ${to.label}`;
+  return stepText(action, from.label, to.label);
+}
+
+/** A status step as people read it, "Review → Done (Approve)": the step
+ *  first and the flow's action name after it, so a vote on the step never
+ *  reads as the status change itself. */
+export function stepText(action: string, from: string, to: string): string {
+  return action === '' ? `${from} → ${to}` : `${from} → ${to} (${action})`;
+}
+
+/** How a vote reads: "Voted approve" / "Voted reject" — a vote, not the
+ *  workflow's own Approve step. */
+export function voteWords(decision: 'approve' | 'reject'): string {
+  return decision === 'approve' ? 'Voted approve' : 'Voted reject';
 }

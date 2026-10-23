@@ -23,6 +23,11 @@
 --     Ops covered (matches where.go): eq / != / in / not in /
 --     exists / not exists / contains / before_today / within_days /
 --     has_phase / not terminal / parent_status_phase / snippet.
+--   - Task approval properties (derived, not attributes; see
+--     approval_open): approval_state (= / != / in / not in over
+--     open | approved | rejected | none), approval_waiting_on (in / not in
+--     over person ids — "vote needed from") and approval_asked_at
+--     (within_last_days).
 --   - Child path: {"attr":"<child_type>.<attr>", ...} — any leaf above,
 --     applied to the card's live child cards of that type ("has a link
 --     whose link_state = merged").
@@ -232,6 +237,68 @@ BEGIN
                 'params', params);
         END IF;
         RAISE EXCEPTION 'card_compile_predicate: id supports only equality or in, got %', _op;
+    END IF;
+
+    -- Task approval properties, derived from the task's open approval
+    -- requests (approval_open) rather than stored as attributes. Mirrors
+    -- compileApprovalLeaf in where.go.
+    IF _attr IN ('approval_state', 'approval_waiting_on') THEN
+        IF NOT (node ? 'values') AND node ? 'value' THEN
+            _values := jsonb_build_array(node->'value');
+        ELSE
+            _values := COALESCE(node->'values', '[]'::jsonb);
+        END IF;
+        _placeholders := ARRAY[]::text[];
+        IF _attr = 'approval_state' THEN
+            -- open / approved / rejected / none (approval_state).
+            FOR _v IN SELECT value FROM jsonb_array_elements(_values)
+            LOOP
+                IF jsonb_typeof(_v) <> 'string'
+                   OR (_v #>> '{}') NOT IN ('open', 'approved', 'rejected', 'none') THEN
+                    RAISE EXCEPTION 'card_compile_predicate: approval_state value must be open, approved, rejected or none';
+                END IF;
+                SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v) AS r(p, i);
+                _placeholders := array_append(_placeholders, format('($1->>%s)', _val_idx::text));
+            END LOOP;
+            IF array_length(_placeholders, 1) IS NULL THEN
+                RAISE EXCEPTION 'card_compile_predicate: approval_state needs a value';
+            END IF;
+            IF _op IN ('=', 'eq', 'in') THEN
+                _sql := format('approval_state(c.id) = ANY(ARRAY[%s]::text[])',
+                    array_to_string(_placeholders, ', '));
+            ELSIF _op IN ('!=', 'ne', 'not in') THEN
+                _sql := format('approval_state(c.id) <> ALL(ARRAY[%s]::text[])',
+                    array_to_string(_placeholders, ', '));
+            ELSE
+                RAISE EXCEPTION 'card_compile_predicate: approval_state supports =, !=, in and not in, got %', _op;
+            END IF;
+        ELSE
+            -- People (person card ids). A value that isn't an id — "@me"
+            -- left unresolved because the viewer has no person — names no
+            -- one, so `in` matches nothing.
+            FOR _v IN SELECT value FROM jsonb_array_elements(_values)
+            LOOP
+                IF jsonb_typeof(_v) = 'number'
+                   OR (jsonb_typeof(_v) = 'string' AND (_v #>> '{}') ~ '^[0-9]+$') THEN
+                    SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v) AS r(p, i);
+                    _placeholders := array_append(_placeholders,
+                        format('($1->>%s)::bigint', _val_idx::text));
+                END IF;
+            END LOOP;
+            _sql := format('approval_waiting_on(c.id, ARRAY[%s]::bigint[])',
+                array_to_string(_placeholders, ', '));
+            IF _op IN ('=', 'eq', 'in') THEN
+                NULL;
+            ELSIF _op IN ('!=', 'ne', 'not in') THEN
+                _sql := 'NOT ' || _sql;
+            ELSE
+                RAISE EXCEPTION 'card_compile_predicate: approval_waiting_on supports in and not in, got %', _op;
+            END IF;
+        END IF;
+        RETURN jsonb_build_object('sql', _sql, 'params', params);
+    END IF;
+    IF _attr = 'approval_asked_at' AND _op <> 'within_last_days' THEN
+        RAISE EXCEPTION 'card_compile_predicate: approval_asked_at supports only within_last_days, got %', _op;
     END IF;
 
     -- Resolve attr value_type for canonicalization. Missing attribute_def
@@ -467,6 +534,10 @@ BEGIN
         ELSIF _attr = 'created_at' THEN
             _sql := format(
                 'c.created_at >= now() - (($1->>%s)::int) * interval ''1 day''',
+                _val_idx::text);
+        ELSIF _attr = 'approval_asked_at' THEN
+            _sql := format(
+                'approval_asked_at(c.id) >= now() - (($1->>%s)::int) * interval ''1 day''',
                 _val_idx::text);
         ELSE
             SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(_attr)) AS r(p, i);

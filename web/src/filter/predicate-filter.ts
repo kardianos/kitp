@@ -360,6 +360,7 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
       attrSel.dataset.predSortField = '';
       attrSel.setAttribute('aria-label', 'Sort field');
       for (const a of schema) {
+        if (a.sortable === false) continue;
         const opt = document.createElement('option');
         opt.value = a.name;
         opt.textContent = a.label;

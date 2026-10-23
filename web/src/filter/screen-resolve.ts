@@ -173,31 +173,6 @@ export function readLayout(card: CardWithAttrs): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
-/**
- * Read a screen card's `panels` attribute: a JSON array of panel names that
- * the screen shows between its filter bar and its body (e.g.
- * `["approval_queue"]` on the Inbox). Unknown / malformed → [].
- */
-export function readPanels(card: CardWithAttrs): string[] {
-  const v = card.attributes['panels'];
-  if (typeof v !== 'string' || v.trim() === '') return [];
-  try {
-    const parsed: unknown = JSON.parse(v);
-    return Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === 'string' && p !== '') : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * The control each screen panel name mounts (config one level up from the
- * host, which stays generic). A name with no entry is skipped, so a screen
- * card can't mount an arbitrary control.
- */
-export const SCREEN_PANELS: Readonly<Record<string, string>> = {
-  approval_queue: 'ApprovalQueue',
-};
-
 /** Read a card's `title` attribute, falling back to `#id`. */
 export function readTitle(card: CardWithAttrs): string {
   const v = card.attributes['title'];
@@ -263,7 +238,11 @@ export function readSortBy(filter: CardWithAttrs): Array<{ attr: string; dir: 'a
  * callers can fold without guarding. Ports the Svelte `screen_preset` readers.
  */
 function readStringList(card: CardWithAttrs, name: string): string[] {
-  const raw = card.attributes[name];
+  return parseStringList(card.attributes[name]);
+}
+
+/** Parse one JSON string-array attribute value (see {@link readStringList}). */
+export function parseStringList(raw: unknown): string[] {
   if (typeof raw !== 'string' || raw.trim() === '') return [];
   let parsed: unknown;
   try {
@@ -282,9 +261,10 @@ function readStringList(card: CardWithAttrs, name: string): string[] {
 }
 
 /**
- * Read a screen card's `extra_columns` — additional attribute / virtual-field
- * names to surface as Grid columns (e.g. `["due_date"]`). Each entry is an
- * attribute_def name the Grid renders by its value_type.
+ * Read a screen card's `extra_columns` — additional columns to surface (e.g.
+ * `["due_date", "approvals"]`). An attribute_def name is a Grid column
+ * rendered by its value_type; a derived column name (cardlist/derived-columns,
+ * e.g. a task's `approvals`) shows in the Grid and on list rows / Kanban cards.
  */
 export function readExtraColumns(screen: CardWithAttrs): string[] {
   return readStringList(screen, 'extra_columns');

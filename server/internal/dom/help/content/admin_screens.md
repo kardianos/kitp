@@ -14,7 +14,7 @@ This page is also where **filters** are edited — the right pane lists every fi
 | `hotkey`         | Single-key shortcut to jump to the screen.                             |
 | `flow_ref`       | Optional flow that supplies the status transitions on this screen.     |
 | `default_filter` | Which child filter card loads on first visit.                          |
-| `panels`         | Extra panels above the list, as a JSON list: `["approval_queue"]` shows *Waiting on you* (the Inbox has it). |
+| `extra_columns`  | Columns beyond the built-in ones, edited under **Columns**. See below. |
 
 ## Creating a screen
 
@@ -22,6 +22,16 @@ This page is also where **filters** are edited — the right pane lists every fi
 2. In the **center** pane, type a title into the "+ Add screen" combobox and confirm.
 3. Set the layout from the dropdown — this decides which renderer mounts when the screen is opened.
 4. Optional: give the screen a slug, a one-character hotkey, and bind a flow if the layout shows transitions.
+
+## Columns
+
+The **Columns** checklist sets what a screen shows beyond its built-in columns:
+
+- **Approvals** — how a task's open approval requests stand (votes in, any reject, and *your vote* when one waits on the viewer). It shows in every layout: a Grid column, and a chip on list rows and Kanban cards. The Inbox has it.
+- **Approval asked** — when a task's oldest open approval request was made.
+- Other attributes of the screen's card type (dates, text, numbers) — Grid columns.
+
+Each viewer can still hide and reorder Grid columns with the Grid's **Columns** button.
 
 ## Sort order
 
@@ -62,6 +72,16 @@ Predicates are trees, not text. The editor presents each leaf as `<attribute> <o
 | `has_phase`    | Card's phase is one of `triage`, `active`, `terminal`. |
 
 A bare leaf (e.g. `status = doing`) is valid; you do not need to wrap a single condition in a group.
+
+Task filters can also use a task's approvals, which come from its open approval requests rather than an attribute:
+
+| Field              | Meaning                                                                 |
+| ------------------ | ----------------------------------------------------------------------- |
+| `Vote needed from` | A request asks this person (or **Me**, the viewer) and they haven't voted on its step yet. |
+| `Approval votes`   | Votes missing, has a reject vote, all approved, or no open request.     |
+| `Approval asked`   | The oldest open request was made within the last N days.               |
+
+*Approval votes* and *Approval asked* can also be a filter's **Sort by**. A view such as the Inbox's *Waiting on my vote* (`Vote needed from` **Me**, sorted by *Approval asked*) is all an approvals screen needs: create a screen, add that filter, make it the default, and tick **Approvals** under Columns.
 
 ## Making a filter the default
 

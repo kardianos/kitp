@@ -27,6 +27,7 @@
 import { ATTR_CHOICES } from '../filter/attribute-schema.js';
 import type { ActivityRow } from '../task-detail/comment-specs.js';
 import { formatAttrValue, humaniseAttribute, resolveActor, tagDiff, voteOf, type IdMap } from '../task-detail/activity-text.js';
+import { voteWords } from '../task-detail/approval-model.js';
 
 /* -------------------------------------------------------------------------- */
 /* Vocabulary (data, not branches).                                           */
@@ -472,7 +473,7 @@ export function buildLines(navId: bigint, rowsNewestFirst: readonly ActivityRow[
         // A vote reads like a comment: the verdict and the status change it's
         // about, with its reason as the text (an edit of that folds in below).
         const vote = voteOf(row);
-        const line = newLine(row, 'comment', `${vote.decision === 'approve' ? 'Approved' : 'Rejected'} · ${vote.label}`, actor);
+        const line = newLine(row, 'comment', `${voteWords(vote.decision)} · ${vote.label}`, actor);
         if (row.commentBody !== undefined && row.commentBody !== '') line.body = clip(row.commentBody);
         comments.set(row.id.toString(), line);
         continue;

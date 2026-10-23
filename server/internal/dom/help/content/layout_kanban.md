@@ -8,3 +8,4 @@ The kanban layout shows cards as tiles arranged into columns by one attribute an
 - The filter's `column_attr` chooses the column axis; `lane_attr` chooses the row axis. Without `lane_attr` you get a single row of columns.
 - Drag a card between columns to apply the transition. If the move is not a legal flow step, the drop is rejected and the card snaps back.
 - Quick-entry at the foot of each column adds a card directly into that column's value.
+- When the screen's Columns include **Approvals**, a card shows how its open approval votes stand next to its #id. Votes never move a card; dragging does.

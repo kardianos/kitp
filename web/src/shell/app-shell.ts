@@ -57,9 +57,7 @@ import {
   type RouteMatch,
 } from './router.js';
 import { WORKSPACE_TITLE_PATH, COMMS_BELL_URL_PATH, DEFAULT_WORKSPACE_TITLE } from './config-specs.js';
-import { readPanels, readSlug, readTitle } from '../filter/screen-resolve.js';
-import { APPROVALS_WAITING_PATH } from '../inbox/approval-queue.js';
-import { APPROVAL_QUEUE_SPEC, type ApprovalQueueOutput } from '../task-detail/approval-specs.js';
+import { readSlug, readTitle } from '../filter/screen-resolve.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import {
   COMM_UNSEEN_COUNT_SPEC,
@@ -85,9 +83,6 @@ interface ScopeLink {
   label: string;
   chord: string;
   hotkey?: string;
-  /** The screen's panels (its `panels` attribute); a screen showing the
-   *  approval queue carries the "waiting on you" count on its rail link. */
-  panels?: string[];
 }
 
 export interface AppShellConfig extends BaseControlConfig {
@@ -220,7 +215,6 @@ export class AppShell extends Control<AppShellConfig> {
   private commPollTimer: ReturnType<typeof setInterval> | null = null;
   private commPollStarted = false;
   private static readonly COMM_POLL_MS = 45_000;
-  private static readonly APPROVALS_POLL_MS = 60_000;
 
   /** Expose the scope so the boot wiring can hand it to descendants' ctx. */
   scopeObject(): { projectId: bigint | null } {
@@ -463,7 +457,6 @@ export class AppShell extends Control<AppShellConfig> {
     this.renderScopeLinks(fallbackLinks.map((l) => ({ slug: l.slug, label: l.label, chord: l.chord })));
     this.loadScopeLinks();
     this.startCommPoll();
-    this.startApprovalsPoll();
 
     // ADMIN: split into WORKSPACE (global) + PROJECT (active-project-scoped)
     // sub-sections. Each link NAVIGATES to its `/admin/:key` route via the
@@ -793,61 +786,8 @@ export class AppShell extends Control<AppShellConfig> {
     for (const l of links) {
       const link = railLink(l.label, l.chord, this.screenSlugUrl(l.slug), () => this.goScreenSlug(l.slug));
       link.dataset.slug = l.slug;
-      if (l.panels?.includes('approval_queue') === true) {
-        const badge = document.createElement('span');
-        badge.className = 'shell__rail-badge';
-        badge.dataset.approvalsBadge = '';
-        link.append(badge);
-      }
       host.append(link);
     }
-    this.paintApprovalsBadge();
-  }
-
-  /** The "waiting on you" count on the rail link(s) of screens showing the
-   *  approval queue, from `approvals.waiting`. */
-  private paintApprovalsBadge(): void {
-    const n = this.ctx.tree.at([...APPROVALS_WAITING_PATH]).peek<number>() ?? 0;
-    const host = this.scopeLinksHost;
-    if (host === null) return;
-    for (const b of host.querySelectorAll<HTMLElement>('[data-approvals-badge]')) {
-      b.textContent = n > 99 ? '99+' : String(n);
-      b.style.display = n > 0 ? '' : 'none';
-      b.title = `${n} approval${n === 1 ? '' : 's'} waiting on you`;
-    }
-  }
-
-  /**
-   * Poll approval.queue for the rail badge (the band refreshes it too after
-   * a vote). Starts once the viewer is known; inert when the spec isn't
-   * registered (test harnesses).
-   */
-  private startApprovalsPoll(): void {
-    const api = this.ctx.api;
-    if (!api?.registry?.has({ endpoint: 'approval', action: 'queue' })) return;
-    this.effect(() => {
-      this.ctx.tree.at([...APPROVALS_WAITING_PATH]).get(); // subscribe
-      this.paintApprovalsBadge();
-    }, 'shell.approvalsBadge');
-    const poll = (): void => {
-      this.ctx.api.callByName(
-        APPROVAL_QUEUE_SPEC,
-        {},
-        (out) => {
-          if (!this.isAlive()) return;
-          this.ctx.tree.at([...APPROVALS_WAITING_PATH]).set(((out as ApprovalQueueOutput).rows ?? []).length);
-        },
-        { alive: () => this.isAlive() },
-      );
-    };
-    poll();
-    const timer = setInterval(() => {
-      if (typeof document !== 'undefined' && document.hidden) return;
-      if (this.isAlive()) poll();
-    }, AppShell.APPROVALS_POLL_MS);
-    // Don't let the poll keep a process alive (lets node --test exit).
-    (timer as unknown as { unref?: () => void }).unref?.();
-    this.onDestroy(() => clearInterval(timer));
   }
 
   /** Navigate to a screen slug under the live project scope (rail link click). */
@@ -1067,7 +1007,7 @@ export class AppShell extends Control<AppShellConfig> {
               const hk = r.attributes['hotkey'];
               const hotkey = typeof hk === 'string' ? hk : '';
               const chord = hotkey !== '' ? `g ${hotkey}` : '';
-              return { slug, label: readTitle(r), chord, hotkey, panels: readPanels(r) };
+              return { slug, label: readTitle(r), chord, hotkey };
             })
             .filter((l): l is ScopeLink => l !== null);
           this.renderScopeLinks(links);

@@ -33,8 +33,9 @@
  */
 
 import type { RefAxis } from '../filter/vocabulary.js';
-import { friendlyLabel, type AttrSchema } from '../filter/attribute-schema.js';
+import { friendlyLabel, isTopLevelField, type AttrSchema } from '../filter/attribute-schema.js';
 import { lookupNameForCardType } from '../filter/group-axis.js';
+import { derivedColumn } from '../cardlist/derived-columns.js';
 
 /* -------------------------------------------------------------------------- */
 /* SortState.                                                                  */
@@ -124,10 +125,14 @@ export interface FilterSortEntry {
  * Map a filter card's persisted sort list to the {@link SortState}s the grid
  * hands to {@link buildOrderClauses}. Attribute names go through as
  * `attributes.<name>` because that's the field path the server's
- * `card.select_with_attributes` expects for attribute-valued ordering.
+ * `card.select_with_attributes` expects for attribute-valued ordering; a
+ * top-level field (created_at, a task's approval_asked_at, …) by its name.
  */
 export function sortStatesFromFilter(predicates: readonly FilterSortEntry[]): SortState[] {
-  return predicates.map((p) => ({ field: `attributes.${p.attr}`, direction: p.dir }));
+  return predicates.map((p) => ({
+    field: isTopLevelField(p.attr) ? p.attr : `attributes.${p.attr}`,
+    direction: p.dir,
+  }));
 }
 
 /**
@@ -160,6 +165,7 @@ export type ColumnKind =
   | 'tag_prefix' // sub-column: every tag whose path starts `<prefix>/` (suffix only)
   | 'date' // a date-typed attribute
   | 'attr' // a scalar text/number attribute (rendered as its string value)
+  | 'derived' // a server-computed task column (cardlist/derived-columns), e.g. approvals
   | 'created'
   | 'last_activity';
 
@@ -210,6 +216,8 @@ export interface ColumnDef {
  *     matching applied tag.
  *   - `extraColumns` (e.g. `["due_date"]`) → extra attribute columns, typed
  *     `date` vs `attr` from the schema; ones already shown as a ref are skipped.
+ *     A derived column name (`approvals`, see cardlist/derived-columns) is a
+ *     `derived` column sorted by its server field.
  *
  * Empty inputs yield the minimal base (ID · Title · Created · Last activity).
  */
@@ -248,6 +256,12 @@ export function buildGridColumns(
   const shown = new Set(cols.map((c) => c.attrName).filter((n): n is string => n !== null));
   for (const name of extraColumns) {
     if (shown.has(name)) continue;
+    const derived = derivedColumn(name);
+    if (derived !== undefined) {
+      cols.push({ kind: 'derived', key: name, label: derived.label, field: derived.sortField, attrName: null });
+      shown.add(name);
+      continue;
+    }
     const sch = schema.find((a) => a.name === name);
     cols.push({
       kind: sch?.valueType === 'date' ? 'date' : 'attr',

@@ -36,15 +36,14 @@ import type { HotkeyBinding } from '../core/hotkeys.js';
 import { focusScreenSearch } from './screen-filter-bar.js';
 import { navigate, screenUrl } from './router.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
+import { columnsNeedApprovals } from '../cardlist/derived-columns.js';
 import {
   loadScreenAndFilters,
   layoutRequiresGroup,
   defaultGroupForLayout,
   viewActionsForLayout,
   readLayout,
-  readPanels,
   readSlug,
-  SCREEN_PANELS,
   readGroupByAttr,
   readExtraColumns,
   readTagPrefixColumns,
@@ -134,10 +133,6 @@ export class ScreenHost extends Control<ScreenHostConfig> {
   private barHost: HTMLElement | null = null;
   private barControl: Control | null = null;
   private barLayout: string | null = null;
-  /** The screen's panels (its `panels` attribute, e.g. the Inbox's approval
-   *  queue) between the filter bar and the body, keyed by panel name. */
-  private panelsHost: HTMLElement | null = null;
-  private readonly panels = new Map<string, Control>();
   /** The card_type the resolved screen's body lists, derived from its flow
    *  (see ScreenPresetSet.cardType). The filter bar scopes its editor / chips /
    *  axes to this so non-applicable attributes are hidden. Undefined until the
@@ -208,13 +203,6 @@ export class ScreenHost extends Control<ScreenHostConfig> {
       this.el.append(barHost);
       this.barHost = barHost;
     }
-
-    // Panels region: the resolved screen card's `panels` mount here.
-    const panelsHost = document.createElement('div');
-    panelsHost.className = 'screen-host__panels';
-    panelsHost.dataset.screenPanels = '';
-    this.el.append(panelsHost);
-    this.panelsHost = panelsHost;
 
     // Body region.
     const bodyHost = document.createElement('div');
@@ -300,12 +288,15 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     node.child('filters').set(set.filters);
     node.child('defaultFilterId').set(set.defaultFilter ? set.defaultFilter.id : null);
 
-    // Land the active screen's Grid COLUMN config (extra_columns / tag_prefix_
-    // columns) at the global `screen.*` leaves the Grid reads (like screen.group).
-    // Reset to [] when there's no screen card so a config-less screen clears them.
-    this.ctx.tree
-      .at(['screen', 'extraColumns'])
-      .set(set.screen !== null ? readExtraColumns(set.screen) : []);
+    // Land the active screen's COLUMN config (extra_columns / tag_prefix_
+    // columns) at the global `screen.*` leaves the bodies read (like
+    // screen.group): the Grid shows every extra column, list rows and Kanban
+    // cards the derived ones (cardlist/derived-columns). screen.withApprovals
+    // tells their row queries to fetch what an approvals column shows. Reset
+    // when there's no screen card so a config-less screen clears them.
+    const extraColumns = set.screen !== null ? readExtraColumns(set.screen) : [];
+    this.ctx.tree.at(['screen', 'extraColumns']).set(extraColumns);
+    this.ctx.tree.at(['screen', 'withApprovals']).set(columnsNeedApprovals(extraColumns));
     this.ctx.tree
       .at(['screen', 'tagPrefixColumns'])
       .set(set.screen !== null ? readTagPrefixColumns(set.screen) : []);
@@ -366,32 +357,12 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     if (layout !== null && layout !== this.currentLayout) {
       this.dispatchBody(layout);
     }
-    this.syncPanels(readPanels(set.screen));
 
     // Carry the screen's group_by_attr default into the GROUP picker leaf when
     // the default filter sets one (the bar's default-on-first-visit reads it).
     if (set.defaultFilter !== null) {
       const groupBy = readGroupByAttr(set.defaultFilter);
       if (groupBy !== null) node.child('defaultGroupBy').set(groupBy);
-    }
-  }
-
-  /** Mount the screen's panels (known names only, via SCREEN_PANELS) and drop
-   *  any it no longer lists. */
-  private syncPanels(names: readonly string[]): void {
-    const host = this.panelsHost;
-    if (host === null) return;
-    const want = names.filter((n) => SCREEN_PANELS[n] !== undefined);
-    for (const [name, ctl] of this.panels) {
-      if (!want.includes(name)) {
-        this.destroyChild(ctl);
-        this.panels.delete(name);
-      }
-    }
-    for (const name of want) {
-      if (this.panels.has(name)) continue;
-      const type = SCREEN_PANELS[name] as string;
-      this.panels.set(name, this.spawn(type, { type } as ChildConfig, host));
     }
   }
 

@@ -208,12 +208,15 @@ func groupRows(rows []scannedRow, cards map[int64]cardInfo, actors map[int64]str
 		case "card_set_phase":
 			ln.Label = "Phase: " + displayValue("text", r.ValueOld, cards) + " → " + displayValue("text", r.ValueNew, cards)
 		case "approval_decision":
-			verdict := "Rejected"
+			// A vote on a status step, worded as a vote so it never reads as
+			// the status change itself.
+			verdict := "Voted reject"
 			if jsonString(r.ValueNew, "decision") == "approve" {
-				verdict = "Approved"
+				verdict = "Voted approve"
 			}
-			ln.Label = fmt.Sprintf("%s: %s (%s → %s)", verdict, jsonString(r.ValueNew, "action"),
-				cards[jsonField(r.ValueNew, "from_id")].title, cards[jsonField(r.ValueNew, "to_id")].title)
+			ln.Label = fmt.Sprintf("%s: %s → %s (%s)", verdict,
+				cards[jsonField(r.ValueNew, "from_id")].title, cards[jsonField(r.ValueNew, "to_id")].title,
+				jsonString(r.ValueNew, "action"))
 			ln.Body = clip(strings.TrimSpace(comments[jsonField(r.ValueNew, "comment_body_id")]), commentMaxRunes)
 		default:
 			ln.Label = humanize(r.Kind)

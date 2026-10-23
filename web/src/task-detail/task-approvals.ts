@@ -1,17 +1,19 @@
 /**
- * TaskApprovals — the APPROVALS section on the task-detail screen: who has
- * been asked to approve which status change, and every vote.
+ * TaskApprovals — the APPROVAL VOTES section on the task-detail screen: who
+ * has been asked to vote on which status step, and every vote.
  *
  * Approvals are a record, not a gate: nothing here blocks or moves the
- * task. A vote belongs to an EDGE — the task moving from one status to
- * another ("Approve: Review → Done") — and a request asks named people to
- * vote on one. Each edge renders as a card (see approval-model.ts for the
+ * task, and the wording says so ("Vote approve", never the workflow's own
+ * "Approve"). A vote belongs to an EDGE — the task moving from one status
+ * to another ("Review → Done (Approve)") — and a request asks named people
+ * to vote on one. The section is also where a vote is cast: lists only
+ * show how votes stand. Each edge renders as a card (see approval-model.ts for the
  * grouping rules): its requests with the people asked and their votes, the
  * votes of anyone else (agents named with their owner), the viewer's own
  * vote buttons, and the edge's full history. A request is settled once the
  * task reaches its target; it stays here, marked reached.
  *
- * Writes: "+ Ask for approval" (approval.set: edge, people, note), "Vote…"
+ * Writes: "+ Ask for a vote" (approval.set: edge, people, note), "Vote…"
  * on any edge (approval.decide, with an optional reason that also shows in
  * the comments), per-request "Change who's asked" / "Remove". The people
  * offered are the project's accounts with a person card (activity.actors),
@@ -104,20 +106,20 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     const heading = document.createElement('h2');
     heading.className = 'task-detail__section-label muted';
     heading.dataset.approvalsHeading = '';
-    heading.textContent = 'APPROVALS';
+    heading.textContent = 'APPROVAL VOTES';
     this.headingEl = heading;
     const ask = document.createElement('button');
     ask.type = 'button';
     ask.className = 'btn task-approvals__head-btn';
     ask.dataset.approvalsAsk = '';
-    ask.textContent = '+ Ask for approval';
+    ask.textContent = '+ Ask for a vote';
     this.listen(ask, 'click', () => this.openForm(this.form?.kind === 'ask' ? null : { kind: 'ask' }));
     const vote = document.createElement('button');
     vote.type = 'button';
     vote.className = 'btn task-approvals__head-btn';
     vote.dataset.approvalsVote = '';
     vote.textContent = 'Vote…';
-    vote.title = 'Approve or reject a status change nobody asked you about';
+    vote.title = "Vote on a status step nobody asked you about. A vote doesn't change the status.";
     this.listen(vote, 'click', () => this.openForm(this.form?.kind === 'vote' ? null : { kind: 'vote' }));
     head.append(heading, ask, vote);
 
@@ -195,13 +197,13 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
   private paint(): void {
     const edges = buildApprovalEdges(this.approvals, this.viewer());
     const open = edges.reduce((n, e) => n + e.requests.filter((r) => r.open).length, 0);
-    this.headingEl.textContent = open > 0 ? `APPROVALS (${open} open)` : 'APPROVALS';
+    this.headingEl.textContent = open > 0 ? `APPROVAL VOTES (${open} open)` : 'APPROVAL VOTES';
     this.listEl.replaceChildren();
     if (edges.length === 0) {
       const empty = document.createElement('p');
       empty.className = 'task-approvals__empty muted';
       empty.dataset.approvalsEmpty = '';
-      empty.textContent = this.loaded ? 'No approvals asked for or given.' : 'Loading…';
+      empty.textContent = this.loaded ? 'No votes asked for or given.' : 'Loading…';
       this.listEl.append(empty);
     }
     for (const e of edges) this.listEl.append(this.renderEdge(e));
@@ -226,7 +228,7 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     state.dataset.approvalState = '';
     if (openReq !== undefined) {
       state.dataset.tone = openReq.rejected > 0 ? 'danger' : openReq.approved === openReq.asked.length ? 'success' : 'accent';
-      state.textContent = `${openReq.approved} of ${openReq.asked.length} approved${openReq.rejected > 0 ? ` · ${openReq.rejected} rejected` : ''}`;
+      state.textContent = `${openReq.approved} of ${openReq.asked.length} voted approve${openReq.rejected > 0 ? ` · ${openReq.rejected} voted reject` : ''}`;
     } else if (e.requests.length > 0) {
       state.dataset.tone = 'neutral';
       state.textContent = `Reached ${e.to.label}`;
@@ -331,10 +333,10 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     if (e.mine !== null) {
       const said = document.createElement('span');
       said.className = 'muted';
-      said.textContent = e.mine.decision === 'approve' ? 'You approved.' : 'You rejected.';
+      said.textContent = e.mine.decision === 'approve' ? 'You voted approve.' : 'You voted reject.';
       row.append(said);
       const flip: Verdict = e.mine.decision === 'approve' ? 'reject' : 'approve';
-      row.append(this.voteButton(flip === 'approve' ? 'Approve instead' : 'Reject instead', flip, target, row, false));
+      row.append(this.voteButton(flip === 'approve' ? 'Vote approve instead' : 'Vote reject instead', flip, target, row, false));
       return row;
     }
     if (e.waitingOnMe) {
@@ -344,9 +346,10 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
       row.append(ask);
     }
     row.append(
-      this.voteButton('Approve', 'approve', target, row, e.waitingOnMe),
-      this.voteButton('Reject', 'reject', target, row, false),
+      this.voteButton('Vote approve', 'approve', target, row, e.waitingOnMe),
+      this.voteButton('Vote reject', 'reject', target, row, false),
       this.reasonToggle(row),
+      voteHint(),
     );
     return row;
   }
@@ -376,13 +379,16 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     decision: Verdict,
     target: Pick<ApprovalDecideInput, 'approvalId' | 'fromStatusId' | 'toStatusId'>,
     row: HTMLElement,
-    primary: boolean,
+    asked: boolean,
   ): HTMLButtonElement {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = `btn task-approvals__vote${primary ? ' btn-primary' : ''}`;
+    // Outlined, never the primary style: these record a vote, they don't
+    // move the task like the status bar's buttons do.
+    b.className = 'btn task-approvals__vote';
+    if (asked) b.dataset.asked = '';
     b.dataset.approvalVote = decision;
-    b.textContent = label;
+    b.append(icon('vote', 14), ` ${label}`);
     this.listen(b, 'click', () => {
       // Votes straight away; a reason opened with "Add a reason" goes along.
       const reason = row.querySelector('textarea') as HTMLTextAreaElement | null;
@@ -429,7 +435,7 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     const sel = document.createElement('select');
     sel.className = 'task-approvals__select';
     sel.dataset.approvalAction = '';
-    sel.setAttribute('aria-label', 'Status change');
+    sel.setAttribute('aria-label', 'Status step');
     for (const a of actionChoices(this.approvals)) {
       const opt = document.createElement('option');
       opt.value = edgeKey(a.from.id, a.to.id);
@@ -483,7 +489,7 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     wrap.className = 'task-approvals__panel';
     wrap.dataset.approvalAskForm = '';
     if (this.approvals.actions.length === 0) {
-      wrap.append(note('This task has no status changes to approve.'));
+      wrap.append(note('This task has no status steps to vote on.'));
       wrap.append(this.cancelButton());
       return wrap;
     }
@@ -518,7 +524,7 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
         ...(msg.value.trim() !== '' ? { note: msg.value.trim() } : {}),
       });
     });
-    wrap.append(field('Status change', action), field('Ask', people.el), field('Note', msg), error, actionsRow(this.cancelButton(), submit));
+    wrap.append(field('Status step', action), field('Ask', people.el), field('Note', msg), error, actionsRow(this.cancelButton(), submit));
     return wrap;
   }
 
@@ -527,7 +533,7 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     wrap.className = 'task-approvals__panel';
     wrap.dataset.approvalVoteForm = '';
     if (this.approvals.actions.length === 0) {
-      wrap.append(note('This task has no status changes to vote on.'));
+      wrap.append(note('This task has no status steps to vote on.'));
       wrap.append(this.cancelButton());
       return wrap;
     }
@@ -544,17 +550,22 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     };
     const approve = document.createElement('button');
     approve.type = 'button';
-    approve.className = 'btn btn-primary';
+    approve.className = 'btn task-approvals__vote';
     approve.dataset.approvalFormVote = 'approve';
-    approve.textContent = 'Approve';
+    approve.append(icon('vote', 14), ' Vote approve');
     this.listen(approve, 'click', () => send('approve'));
     const reject = document.createElement('button');
     reject.type = 'button';
-    reject.className = 'btn';
+    reject.className = 'btn task-approvals__vote';
     reject.dataset.approvalFormVote = 'reject';
-    reject.textContent = 'Reject';
+    reject.append(icon('vote', 14), ' Vote reject');
     this.listen(reject, 'click', () => send('reject'));
-    wrap.append(field('Status change', action), field('Reason', reason), actionsRow(this.cancelButton(), reject, approve));
+    wrap.append(
+      field('Status step', action),
+      field('Reason', reason),
+      actionsRow(this.cancelButton(), reject, approve),
+      voteHint(),
+    );
     return wrap;
   }
 
@@ -631,7 +642,7 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
 
 /* -------------------------------------------------------------------------- */
 
-/** A name with its vote: ✓ approved, ✕ rejected, … waiting. */
+/** A name with its vote: ✓ voted approve, ✕ voted reject, … waiting. */
 function voteChip(name: string, vote: ApprovalVote | null): HTMLElement {
   const chip = document.createElement('span');
   chip.className = 'task-approvals__chip';
@@ -641,7 +652,7 @@ function voteChip(name: string, vote: ApprovalVote | null): HTMLElement {
   const text = document.createElement('span');
   text.textContent = name;
   chip.append(text);
-  const words = verdict === 'approve' ? 'approved' : verdict === 'reject' ? 'rejected' : 'not voted yet';
+  const words = verdict === 'approve' ? 'voted approve' : verdict === 'reject' ? 'voted reject' : 'has not voted yet';
   chip.title = vote?.stale === true ? `${name} ${words} before the task moved on` : `${name} ${words}`;
   if (vote?.stale === true) chip.classList.add('task-approvals__chip--stale');
   return chip;
@@ -675,6 +686,15 @@ function renderHistory(votes: readonly ApprovalVote[]): HTMLElement {
     ul.append(li);
   }
   return ul;
+}
+
+/** The reminder beside the vote buttons that a vote moves nothing. */
+function voteHint(): HTMLElement {
+  const p = document.createElement('span');
+  p.className = 'task-approvals__hint muted';
+  p.dataset.approvalHint = '';
+  p.textContent = "A vote is a record. It doesn't change the status.";
+  return p;
 }
 
 function field(label: string, control: HTMLElement): HTMLElement {

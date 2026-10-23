@@ -12,6 +12,7 @@
  */
 
 import type { ActivityRow } from './comment-specs.js';
+import { stepText } from './approval-model.js';
 
 /** Lookup map keyed by id.toString() (bigint can't be a plain object key). */
 export type IdMap = Record<string, string>;
@@ -222,7 +223,7 @@ export function formatActivityText(
     }
     case 'approval_decision': {
       const vote = voteOf(row);
-      return `${actor} ${vote.decision === 'approve' ? 'approved' : 'rejected'} ${vote.label}`;
+      return `${actor} voted to ${vote.decision} ${vote.label}`;
     }
     default:
       return `${actor}: ${row.kind}`;
@@ -245,7 +246,7 @@ export interface CommentEntry {
   createdAt: string;
   edited: boolean;
   /** Set when the entry is an approval vote (kind='approval_decision'): the
-   *  verdict and the status change it's about ("Approve: Review → Done").
+   *  verdict and the status step it's about ("Review → Done (Approve)").
    *  Its body is the optional reason. */
   vote?: { decision: 'approve' | 'reject'; label: string };
 }
@@ -301,7 +302,7 @@ export function voteOf(a: ActivityRow): { decision: 'approve' | 'reject'; label:
   const action = typeof vn.action === 'string' ? vn.action : '';
   return {
     decision: vn.decision === 'approve' ? 'approve' : 'reject',
-    label: `${action}: ${name(vn.from_id)} → ${name(vn.to_id)}`,
+    label: stepText(action, name(vn.from_id), name(vn.to_id)),
   };
 }
 

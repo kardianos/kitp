@@ -2,8 +2,8 @@
 -- (p_approvers, a card_ref[] value), how many have approved / rejected the
 -- edge p_from → p_to, by each person's LATEST vote on that edge in its
 -- current round (approval_round_start). Votes belong to the edge, not the
--- request, so a vote cast before anyone asked still counts. Shared by
--- approval.queue and approval_summary.
+-- request, so a vote cast before anyone asked still counts. Used by
+-- approval_summary.
 CREATE OR REPLACE FUNCTION approval_tally(p_task_id bigint, p_from bigint, p_to bigint, p_approvers jsonb)
 RETURNS TABLE (asked int, approved int, rejected int) LANGUAGE sql STABLE AS $$
     WITH asked AS (

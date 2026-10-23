@@ -83,7 +83,8 @@ export interface SelectWithAttributesInput {
    * The Inbox's routed-to-me toggle sets this true.
    */
   routedToMe?: boolean;
-  /** Add each row's approval badge summary (`approvals`). */
+  /** Add each row's open approval requests (`approvals`) — screens showing
+   *  an approvals column (see cardlist/derived-columns). */
   withApprovals?: boolean;
 }
 export interface SelectWithAttributesOutput {
@@ -144,7 +145,8 @@ function asNumOpt(v: unknown): number | undefined {
   return undefined;
 }
 
-function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
+/** Decode one card.select_with_attributes row. */
+export function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
   const phaseRaw = j['phase'];
   const phase: CardWithAttrs['phase'] =
     phaseRaw === 'triage' || phaseRaw === 'terminal' || phaseRaw === 'active'
@@ -163,12 +165,20 @@ function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
   // appears when the request set with_personal_sort:true; NULL → undefined.
   const personalSort = asNumOpt(j['personal_sort_order']);
   if (personalSort !== undefined) out.personal_sort_order = personalSort;
-  // The approval badge summary rides at the top level when with_approvals
-  // asked for it and the card has an open request.
+  // The task's approvals ride at the top level when with_approvals asked for
+  // them and the card has an open request.
   const ap = j['approvals'];
   if (ap !== null && typeof ap === 'object') {
     const a = ap as Record<string, unknown>;
-    out.approvals = { asked: Number(a['asked'] ?? 0), approved: Number(a['approved'] ?? 0), rejected: Number(a['rejected'] ?? 0) };
+    const state = a['state'];
+    out.approvals = {
+      state: state === 'approved' || state === 'rejected' ? state : 'open',
+      asked: Number(a['asked'] ?? 0),
+      approved: Number(a['approved'] ?? 0),
+      rejected: Number(a['rejected'] ?? 0),
+      askedAt: typeof a['asked_at'] === 'string' ? a['asked_at'] : '',
+      waitingOnMe: a['waiting_on_me'] === true,
+    };
   }
   // Row-level audit timestamps the wire carries at the top level (the Grid's
   // Created / Last-activity columns read these — previously dropped).

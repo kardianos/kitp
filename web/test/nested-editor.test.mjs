@@ -862,3 +862,39 @@ test('Screens: choosing a base phase rewrites toggle_groups with that phase defa
   assert.deepEqual(on, ['active'], 'only the chosen phase is default-on');
 });
 
+
+/* -------------------------------------------------------------------------- */
+/* Screens: Columns (extra_columns) — derived approvals columns + attributes.  */
+/* -------------------------------------------------------------------------- */
+
+test('Screens: the Columns checklist offers the task approvals columns and writes extra_columns', async () => {
+  const transport = nestedTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const { ctrl } = mountMD(api, M.adminScreenConfig('screens'));
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+
+  const boxes = ctrl.el.querySelectorAll('[data-ne-screen-column]');
+  // The task screen's derived columns; its only task attribute (status) is a
+  // ref, which the Grid shows on its own, so it isn't offered.
+  assert.deepEqual(boxes.map((b) => b.dataset.neScreenColumn), ['approvals', 'approval_asked_at']);
+  assert.ok(boxes.every((b) => !b.checked), 'nothing requested yet');
+
+  const approvals = ctrl.el.querySelector('[data-ne-screen-column="approvals"]');
+  approvals.checked = true;
+  approvals.dispatchEvent({ type: 'change' });
+  await settle(dispatcher);
+  const u = writesFor(transport, 'attribute.update').filter((w) => w.data.attribute_name === 'extra_columns');
+  assert.equal(u.length, 1, 'one extra_columns update fired');
+  assert.equal(String(u[0].data.card_id), '60', 'on the selected screen');
+  assert.deepEqual(JSON.parse(u[0].data.value), ['approvals']);
+});
+
+test('Screens: a comm screen offers no approvals columns', async () => {
+  const { dispatcher, api } = bootApi(nestedTransport({ commScreen: true }));
+  const { ctrl } = mountMD(api, M.adminScreenConfig('screens'));
+  await settle(dispatcher);
+  await selectFirstRow(ctrl, dispatcher);
+  const names = ctrl.el.querySelectorAll('[data-ne-screen-column]').map((b) => b.dataset.neScreenColumn);
+  assert.ok(!names.includes('approvals'), `no approvals column on a comm screen (got ${names})`);
+});

@@ -211,10 +211,13 @@ BEGIN
             _personal_sort_join := '';
         END IF;
 
-        -- Approval badge column (list screens): the row's open approval
-        -- requests summed (approval_summary), NULL when it has none.
+        -- Approvals column: the row's open approval requests summed
+        -- (approval_summary, with waiting_on_me for the caller's person),
+        -- NULL when it has none.
         IF _with_approvals THEN
-            _approvals_select := 'approval_summary(c.id) AS approvals';
+            _params := _params || jsonb_build_array(_me_person_id);
+            _approvals_select := format('approval_summary(c.id, ($1->>%s)::bigint) AS approvals',
+                (jsonb_array_length(_params) - 1)::text);
         ELSE
             _approvals_select := 'NULL::jsonb AS approvals';
         END IF;
@@ -247,6 +250,14 @@ BEGIN
                 ELSIF _order_field = 'last_activity_at' THEN
                     _order_parts := array_append(_order_parts,
                         'la.last_activity_at ' || _order_dir_uc || ' NULLS LAST');
+                ELSIF _order_field = 'approval_state' THEN
+                    -- Votes missing first, then rejected, approved, none.
+                    _order_parts := array_append(_order_parts,
+                        'CASE approval_state(c.id) WHEN ''open'' THEN 0 WHEN ''rejected'' THEN 1 ' ||
+                        'WHEN ''approved'' THEN 2 ELSE 3 END ' || _order_dir_uc);
+                ELSIF _order_field = 'approval_asked_at' THEN
+                    _order_parts := array_append(_order_parts,
+                        'approval_asked_at(c.id) ' || _order_dir_uc || ' NULLS LAST');
                 ELSIF _order_field = 'personal_sort_order' THEN
                     IF NOT _with_personal_sort THEN
                         RAISE EXCEPTION 'select_with_attributes: order by personal_sort_order requires with_personal_sort=true';

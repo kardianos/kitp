@@ -57,6 +57,11 @@ export interface AttrSchema {
    * still shows and round-trips.
    */
   choices?: ReadonlyArray<{ value: string; label: string }>;
+  /** The operators this field takes, when narrower than its value type's set
+   *  (the derived task fields below). */
+  ops?: readonly Op[];
+  /** False for a field the Sort-by picker must not offer. */
+  sortable?: boolean;
 }
 
 /**
@@ -168,6 +173,53 @@ export const TOP_LEVEL_TIMESTAMP_FIELDS: readonly AttrSchema[] = [
 ];
 
 /**
+ * Derived fields a card_type's FILTER offers: values the server computes from
+ * the card's related cards rather than stores as attributes, filtered and
+ * sorted by name like the top-level timestamps. A task's approvals (from its
+ * open approval requests, see approval_open.sql):
+ *   - approval_state       how its requests stand — votes missing / a reject
+ *                          vote / all approved / none open
+ *   - approval_waiting_on  "Vote needed from": a request asks them and they
+ *                          haven't voted ("Me" = the viewer)
+ *   - approval_asked_at    when the oldest open request was made
+ */
+export const DERIVED_FILTER_FIELDS: Readonly<Record<string, readonly AttrSchema[]>> = {
+  task: [
+    {
+      name: 'approval_state',
+      label: 'Approval votes',
+      valueType: 'text',
+      choices: [
+        { value: 'open', label: 'Votes missing' },
+        { value: 'rejected', label: 'Has a reject vote' },
+        { value: 'approved', label: 'All approved' },
+        { value: 'none', label: 'No open request' },
+      ],
+      ops: ['eq', 'ne', 'in', 'notIn'],
+    },
+    {
+      name: 'approval_waiting_on',
+      label: 'Vote needed from',
+      valueType: 'card_ref[]',
+      targetCardType: 'person',
+      ops: ['in', 'notIn'],
+      sortable: false,
+    },
+    { name: 'approval_asked_at', label: 'Approval asked', valueType: 'timestamp' },
+  ],
+};
+
+/** Whether [name] is a top-level field (a card timestamp or a derived field)
+ *  rather than an attribute — what `card.select_with_attributes` orders by
+ *  name instead of `attributes.<name>`. */
+export function isTopLevelField(name: string): boolean {
+  return (
+    TOP_LEVEL_TIMESTAMP_FIELDS.some((a) => a.name === name) ||
+    Object.values(DERIVED_FILTER_FIELDS).some((fields) => fields.some((a) => a.name === name))
+  );
+}
+
+/**
  * Child card types a card_type's FILTER reaches through the `<child>.<attr>`
  * leaf path, which the server compiles to "has a live <child> card whose
  * <attr> …" (e.g. `link.link_state = merged`: "has a merged link").
@@ -214,12 +266,14 @@ export function resolveSchema(
 ): AttrSchema[] {
   if (Array.isArray(source)) return source;
   // A {cardType} filter schema = the card_type's attributes, its child cards'
-  // attributes (`link.link_state`, …) PLUS the every-card top-level timestamps
-  // (last_activity_at / created_at), so a view can filter e.g. "has a merged
-  // link" / "last activity within 15 days" / "closed within 15 days".
+  // attributes (`link.link_state`, …), its derived fields (a task's approvals)
+  // PLUS the every-card top-level timestamps (last_activity_at / created_at),
+  // so a view can filter e.g. "has a merged link" / "vote needed from me" /
+  // "last activity within 15 days" / "closed within 15 days".
   return [
     ...schemaForCardType(defs, source.cardType),
     ...childFieldsForCardType(defs, source.cardType),
+    ...(DERIVED_FILTER_FIELDS[source.cardType] ?? []),
     ...TOP_LEVEL_TIMESTAMP_FIELDS,
   ];
 }
@@ -227,9 +281,10 @@ export function resolveSchema(
 /** The ops a text attr with known {@link AttrSchema.choices} offers. */
 const CHOICE_OPS: readonly Op[] = ['eq', 'ne', 'in', 'notIn', 'exists', 'notExists'];
 
-/** The operators the editor offers for [a]: its value_type's set, or the
- *  picker-friendly set when the attr carries known `choices`. */
+/** The operators the editor offers for [a]: its own `ops`, else its
+ *  value_type's set, or the picker-friendly set when it carries `choices`. */
 export function opsForAttr(a: AttrSchema): readonly Op[] {
+  if (a.ops !== undefined) return a.ops;
   return a.choices !== undefined ? CHOICE_OPS : opsForValueType(a.valueType);
 }
 

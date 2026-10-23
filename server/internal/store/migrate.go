@@ -599,16 +599,17 @@ END $$;`,
 	},
 	{
 		// Task approval requests (documentation, not a gate: a request names
-		// people to approve or reject one of the task's status actions;
-		// decisions are approval_decision activity rows on the task). The
+		// people to vote approve or reject on one of the task's status
+		// steps; votes are approval_decision activity rows on the task). The
 		// seed.hcsv rows reach fresh installs only, so add them here too:
 		//   1. the approval card_type (parent: task),
 		//   2. its attribute_defs (approvers carries assignee's target_filter:
 		//      no contacts, no inactive people) and edges,
 		//   3. admin card.* on approval (approval.set / .remove / .decide gate
 		//      on the parent task, so no new process or grant),
-		//   4. the screen `panels` attribute + edge, and the "Waiting on you"
-		//      approval queue on every existing Inbox screen.
+		//   4. on every live Inbox screen: the Approvals column (extra_columns
+		//      gains "approvals") and a "Waiting on my vote" view (a filter
+		//      card, not the screen's default).
 		// Idempotent — ON CONFLICT / NOT EXISTS make it a no-op on a fresh DB
 		// whose seed already carries every row.
 		id: "0013_task_approvals",
@@ -617,12 +618,22 @@ DO $$
 DECLARE
   _task_ct bigint := (SELECT id FROM card_type WHERE name = 'task');
   _screen_ct bigint := (SELECT id FROM card_type WHERE name = 'screen');
+  _filter_ct bigint := (SELECT id FROM card_type WHERE name = 'filter');
   _status_ct bigint := (SELECT id FROM card_type WHERE name = 'status');
   _person_ct bigint := (SELECT id FROM card_type WHERE name = 'person');
+  _title_def bigint := (SELECT id FROM attribute_def WHERE name = 'title');
+  _slug_def bigint := (SELECT id FROM attribute_def WHERE name = 'slug');
+  _predicate_def bigint := (SELECT id FROM attribute_def WHERE name = 'predicate');
+  _sort_def bigint := (SELECT id FROM attribute_def WHERE name = 'sort');
+  _extra_def bigint := (SELECT id FROM attribute_def WHERE name = 'extra_columns');
   _approval_ct bigint;
-  _panels_def bigint;
+  _inbox record;
+  _cols jsonb;
+  _view bigint;
 BEGIN
-  IF _task_ct IS NULL OR _screen_ct IS NULL OR _status_ct IS NULL OR _person_ct IS NULL THEN
+  IF _task_ct IS NULL OR _screen_ct IS NULL OR _filter_ct IS NULL OR _status_ct IS NULL
+     OR _person_ct IS NULL OR _title_def IS NULL OR _slug_def IS NULL
+     OR _predicate_def IS NULL OR _sort_def IS NULL OR _extra_def IS NULL THEN
     RETURN;
   END IF;
 
@@ -637,21 +648,19 @@ BEGIN
          ('approval_action', 'text',       NULL,       true, false, NULL),
          ('approvers',       'card_ref[]', _person_ct, true, false,
           '{"connective":"and","children":[{"attr":"person_kind","op":"!=","values":["contact"]},{"attr":"is_active","op":"!=","values":[false]}]}'::jsonb),
-         ('approval_note',   'text',       NULL,       true, false, NULL),
-         ('panels',          'text',       NULL,       true, false, NULL)
+         ('approval_note',   'text',       NULL,       true, false, NULL)
   ON CONFLICT (name) DO NOTHING;
 
   INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
-  SELECT ct, ad.id, e.req, e.ord
+  SELECT _approval_ct, ad.id, e.req, e.ord
   FROM (VALUES
-    (_approval_ct, 'title',           true,  0),
-    (_approval_ct, 'approval_from',   true,  1),
-    (_approval_ct, 'approval_to',     true,  2),
-    (_approval_ct, 'approval_action', true,  3),
-    (_approval_ct, 'approvers',       true,  4),
-    (_approval_ct, 'approval_note',   false, 5),
-    (_screen_ct,   'panels',          false, 13)
-  ) AS e(ct, attr, req, ord)
+    ('title',           true,  0),
+    ('approval_from',   true,  1),
+    ('approval_to',     true,  2),
+    ('approval_action', true,  3),
+    ('approvers',       true,  4),
+    ('approval_note',   false, 5)
+  ) AS e(attr, req, ord)
   JOIN attribute_def ad ON ad.name = e.attr
   ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;
 
@@ -663,19 +672,53 @@ BEGIN
     AND p.name IN ('card.create', 'card.update', 'card.delete', 'comment.post', 'user_card_sort.set')
   ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
 
-  SELECT id INTO _panels_def FROM attribute_def WHERE name = 'panels';
-  INSERT INTO attribute_value (card_id, attribute_def_id, value)
-  SELECT c.id, _panels_def, to_jsonb('["approval_queue"]'::text)
-  FROM card c
-  JOIN attribute_value slug ON slug.card_id = c.id
-   AND slug.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'slug')
-  WHERE c.card_type_id = _screen_ct
-    AND c.deleted_at IS NULL
-    AND slug.value = to_jsonb('inbox'::text)
-    AND NOT EXISTS (
-      SELECT 1 FROM attribute_value pv
-      WHERE pv.card_id = c.id AND pv.attribute_def_id = _panels_def
-    );
+  FOR _inbox IN
+    SELECT c.id, ec.value AS extra
+    FROM card c
+    JOIN attribute_value slug ON slug.card_id = c.id AND slug.attribute_def_id = _slug_def
+    LEFT JOIN attribute_value ec ON ec.card_id = c.id AND ec.attribute_def_id = _extra_def
+    WHERE c.card_type_id = _screen_ct
+      AND c.deleted_at IS NULL
+      AND slug.value = to_jsonb('inbox'::text)
+  LOOP
+    -- The Approvals column: extra_columns is a JSON list stored as text. A
+    -- value that isn't a JSON list is left alone.
+    IF _inbox.extra IS NULL THEN
+      INSERT INTO attribute_value (card_id, attribute_def_id, value)
+      VALUES (_inbox.id, _extra_def, to_jsonb('["approvals"]'::text));
+    ELSE
+      BEGIN
+        _cols := (_inbox.extra #>> '{}')::jsonb;
+      EXCEPTION WHEN invalid_text_representation THEN
+        _cols := NULL;
+      END;
+      IF jsonb_typeof(_cols) = 'array' AND NOT _cols ? 'approvals' THEN
+        UPDATE attribute_value
+        SET value = to_jsonb((_cols || '["approvals"]'::jsonb)::text)
+        WHERE card_id = _inbox.id AND attribute_def_id = _extra_def;
+      END IF;
+    END IF;
+
+    -- The "Waiting on my vote" view, unless the screen already has one.
+    IF NOT EXISTS (
+      SELECT 1
+      FROM card f
+      JOIN attribute_value ft ON ft.card_id = f.id AND ft.attribute_def_id = _title_def
+      WHERE f.parent_card_id = _inbox.id
+        AND f.card_type_id = _filter_ct
+        AND f.deleted_at IS NULL
+        AND ft.value = to_jsonb('Waiting on my vote'::text)
+    ) THEN
+      INSERT INTO card (card_type_id, parent_card_id)
+      VALUES (_filter_ct, _inbox.id)
+      RETURNING id INTO _view;
+      INSERT INTO attribute_value (card_id, attribute_def_id, value)
+      VALUES (_view, _title_def, to_jsonb('Waiting on my vote'::text)),
+             (_view, _predicate_def,
+              to_jsonb('{"attr":"approval_waiting_on","op":"in","values":["@me"]}'::text)),
+             (_view, _sort_def, to_jsonb('[{"attr":"approval_asked_at","dir":"asc"}]'::text));
+    END IF;
+  END LOOP;
 END $$;`,
 	},
 }

@@ -42,7 +42,8 @@ export type IconName =
   | 'external-link'
   | 'git-pull-request'
   | 'git-merge'
-  | 'git-pull-request-closed';
+  | 'git-pull-request-closed'
+  | 'vote';
 
 const ICON_MARKUP: Record<IconName, string> = {
   mail: '<path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7" /><rect x="2" y="4" width="20" height="16" rx="2" />',
@@ -97,6 +98,7 @@ const ICON_MARKUP: Record<IconName, string> = {
   'git-merge': '<circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M6 21V9a9 9 0 0 0 9 9" />',
   'git-pull-request-closed':
     '<circle cx="6" cy="6" r="3" /><path d="M6 9v12" /><path d="m21 3-6 6" /><path d="m21 9-6-6" /><path d="M18 11.5V15" /><circle cx="18" cy="18" r="3" />',
+  vote: '<path d="m9 12 2 2 4-4" /><path d="M5 7c0-1.1.9-2 2-2h10a2 2 0 0 1 2 2v12H5V7Z" /><path d="M22 19H2" />',
 };
 
 const SVG_NS = 'http://www.w3.org/2000/svg';

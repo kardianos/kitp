@@ -32,10 +32,11 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// 1 System person + 1 template project + 6 template statuses +
 		// 3 template comm statuses (Gate 2 of email_comm_spec) +
 		// 6 template screens + 1 Comms screen + 3 more seeded in later
-		// gates = 21. (The "Comms attached" filter card was dropped — it
-		// is meaningless on the comm-listing comms screen; see migration
+		// gates + the Inbox's "Waiting on my vote" view (task approvals)
+		// = 22. (The "Comms attached" filter card was dropped — it is
+		// meaningless on the comm-listing comms screen; see migration
 		// 0006_drop_comms_attached_filter.)
-		{`SELECT count(*) FROM card`, 21},
+		{`SELECT count(*) FROM card`, 22},
 		{`SELECT count(*) FROM user_role`, 3}, // admin + manager + worker on user 1
 		{`SELECT count(*) FROM role`, 5},      // viewer, commenter, worker, manager, admin (no wildcard 'system')
 		// 14 built-in card_types + the predicate_snippet card_type
@@ -45,12 +46,11 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// +subscriber, +rollup_minutes (personal notifications),
 		// +link_url / link_kind / link_state (task links),
 		// +approval_from / approval_to / approval_action / approvers /
-		// approval_note (task approvals) + screen panels.
-		{`SELECT count(*) FROM attribute_def`, 75},
+		// approval_note (task approvals).
+		{`SELECT count(*) FROM attribute_def`, 74},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
-		// +7 on activity_subscription, +4 on link, +6 on approval,
-		// +1 (panels) on screen.
-		{`SELECT count(*) FROM edge`, 115},
+		// +7 on activity_subscription, +4 on link, +6 on approval.
+		{`SELECT count(*) FROM edge`, 114},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -479,10 +479,10 @@ func TestForwardMigration0011TaskLinks(t *testing.T) {
 
 // TestForwardMigration0013TaskApprovals proves migration 0013 brings an
 // already-seeded DB that predates task approvals up to the fresh-seed shape:
-// the approval card_type, its attribute_defs / edges / admin grants, the
-// screen `panels` attribute, and the approval queue on every Inbox screen.
+// the approval card_type, its attribute_defs / edges / admin grants, and on
+// every Inbox screen the Approvals column plus a "Waiting on my vote" view.
 // Without it approval.set raises on the missing card_type and existing
-// Inboxes never show "Waiting on you".
+// Inboxes never show approvals.
 func TestForwardMigration0013TaskApprovals(t *testing.T) {
 	pool := store.TestPoolBare(t, "kitp_test_migration_0013")
 	ctx := context.Background()
@@ -490,13 +490,23 @@ func TestForwardMigration0013TaskApprovals(t *testing.T) {
 		t.Fatalf("initial apply: %v", err)
 	}
 
+	const inboxes = `
+		SELECT c.id FROM card c
+		JOIN attribute_value s ON s.card_id = c.id
+		 AND s.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'slug')
+		WHERE s.value = to_jsonb('inbox'::text) AND c.deleted_at IS NULL`
 	counts := []string{
 		`SELECT count(*) FROM card_type`,
 		`SELECT count(*) FROM attribute_def`,
 		`SELECT count(*) FROM edge`,
 		`SELECT count(*) FROM role_grant`,
+		`SELECT count(*) FROM card`,
 		`SELECT count(*) FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
-		 WHERE ad.name = 'panels' AND av.value = to_jsonb('["approval_queue"]'::text)`,
+		 WHERE ad.name = 'extra_columns' AND av.value = to_jsonb('["approvals"]'::text)
+		   AND av.card_id IN (` + inboxes + `)`,
+		`SELECT count(*) FROM card f JOIN attribute_value ft ON ft.card_id = f.id
+		 JOIN attribute_def ad ON ad.id = ft.attribute_def_id AND ad.name = 'title'
+		 WHERE ft.value = to_jsonb('Waiting on my vote'::text) AND f.parent_card_id IN (` + inboxes + `)`,
 	}
 	readCounts := func() []int64 {
 		out := make([]int64, len(counts))
@@ -508,8 +518,8 @@ func TestForwardMigration0013TaskApprovals(t *testing.T) {
 		return out
 	}
 	fresh := readCounts()
-	if fresh[4] == 0 {
-		t.Fatalf("the seeded Inbox screen carries no approval queue panel")
+	if fresh[5] == 0 || fresh[6] == 0 {
+		t.Fatalf("the seeded Inbox lacks the Approvals column or the view: %v", fresh)
 	}
 
 	// Simulate a pre-0013 install: drop every row 0013 adds, plus its ledger
@@ -517,11 +527,14 @@ func TestForwardMigration0013TaskApprovals(t *testing.T) {
 	for _, stmt := range []string{
 		`DELETE FROM role_grant WHERE card_type_id = (SELECT id FROM card_type WHERE name='approval')`,
 		`DELETE FROM edge WHERE card_type_id = (SELECT id FROM card_type WHERE name='approval')`,
-		`DELETE FROM edge WHERE attribute_def_id = (SELECT id FROM attribute_def WHERE name='panels')`,
-		`DELETE FROM attribute_value WHERE attribute_def_id = (SELECT id FROM attribute_def WHERE name='panels')`,
-		`DELETE FROM activity WHERE attribute_def_id IN (SELECT id FROM attribute_def WHERE name IN ('approval_from','approval_to','approval_action','approvers','approval_note','panels'))`,
-		`DELETE FROM attribute_def WHERE name IN ('approval_from','approval_to','approval_action','approvers','approval_note','panels')`,
+		`DELETE FROM activity WHERE attribute_def_id IN (SELECT id FROM attribute_def WHERE name IN ('approval_from','approval_to','approval_action','approvers','approval_note'))`,
+		`DELETE FROM attribute_def WHERE name IN ('approval_from','approval_to','approval_action','approvers','approval_note')`,
 		`DELETE FROM card_type WHERE name = 'approval'`,
+		`DELETE FROM attribute_value WHERE attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'extra_columns')
+		   AND card_id IN (` + inboxes + `)`,
+		`DELETE FROM attribute_value WHERE card_id IN (SELECT f.id FROM card f WHERE f.parent_card_id IN (` + inboxes + `))`,
+		`DELETE FROM activity WHERE card_id IN (SELECT f.id FROM card f WHERE f.parent_card_id IN (` + inboxes + `))`,
+		`DELETE FROM card WHERE parent_card_id IN (` + inboxes + `)`,
 		`DELETE FROM schema_version WHERE name = '0013_task_approvals'`,
 	} {
 		if _, err := pool.Exec(ctx, stmt); err != nil {
@@ -548,8 +561,32 @@ func TestForwardMigration0013TaskApprovals(t *testing.T) {
 		t.Errorf("approval parent card_type = %q, want task", parent)
 	}
 
+	// An Inbox that already lists other columns keeps them and gains
+	// approvals; a re-run adds no second view.
+	if _, err := pool.Exec(ctx, `
+		UPDATE attribute_value SET value = to_jsonb('["due_date"]'::text)
+		WHERE attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'extra_columns')
+		  AND card_id IN (`+inboxes+`)`); err != nil {
+		t.Fatalf("set inbox columns: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_version WHERE name = '0013_task_approvals'`); err != nil {
+		t.Fatalf("drop 0013 ledger row: %v", err)
+	}
 	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
-		t.Fatalf("third apply (idempotent): %v", err)
+		t.Fatalf("third apply: %v", err)
+	}
+	var cols string
+	if err := pool.QueryRow(ctx, `
+		SELECT av.value #>> '{}' FROM attribute_value av
+		WHERE av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'extra_columns')
+		  AND av.card_id IN (`+inboxes+`) LIMIT 1`).Scan(&cols); err != nil {
+		t.Fatalf("read inbox columns: %v", err)
+	}
+	if cols != `["due_date", "approvals"]` {
+		t.Errorf("inbox extra_columns = %s, want due_date kept and approvals added", cols)
+	}
+	if again := readCounts(); again[6] != fresh[6] {
+		t.Errorf("views after a re-run = %d, want %d", again[6], fresh[6])
 	}
 }
 
@@ -775,17 +812,18 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{`SELECT count(*) FROM user_account_person`, 2},
 		// System: admin+manager+worker. frank: admin.
 		{`SELECT count(*) FROM user_role`, 4},
-		// 20 seed cards (template project + 6 statuses + 3 comm statuses
+		// 21 seed cards (template project + 6 statuses + 3 comm statuses
 		// from Gate 2 of email_comm_spec + 6 screens + 1 Comms screen
-		// + 3 more seeded in later gates; the "Comms attached" filter was
-		// dropped — see migration 0006_drop_comms_attached_filter)
+		// + 3 more seeded in later gates + the Inbox's "Waiting on my
+		// vote" view; the "Comms attached" filter was dropped — see
+		// migration 0006_drop_comms_attached_filter)
 		// + 9 test_demo cards (2 persons + 1 project + 1 milestone
-		// + 1 status + 2 tasks + 1 screen + 1 filter) = 29.
-		{`SELECT count(*) FROM card`, 29},
+		// + 1 status + 2 tasks + 1 screen + 1 filter) = 30.
+		{`SELECT count(*) FROM card`, 30},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 18},
-		{`SELECT count(*) FROM attribute_def`, 75},
-		{`SELECT count(*) FROM edge`, 115},
+		{`SELECT count(*) FROM attribute_def`, 74},
+		{`SELECT count(*) FROM edge`, 114},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -847,8 +885,8 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		want  int64
 	}{
 		{`SELECT count(*) FROM card_type`, 18},
-		// 20 seed cards + 9 test_demo cards = 29 (see TestApplySchemaWithTestDemo).
-		{`SELECT count(*) FROM card`, 29},
+		// 21 seed cards + 9 test_demo cards = 30 (see TestApplySchemaWithTestDemo).
+		{`SELECT count(*) FROM card`, 30},
 		{`SELECT count(*) FROM user_account`, 2},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM flow`, 2},

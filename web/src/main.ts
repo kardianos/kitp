@@ -98,7 +98,6 @@ import { registerLinkSpecs } from './task-detail/link-specs.js';
 import { registerTaskLinks } from './task-detail/task-links.js';
 import { registerApprovalSpecs } from './task-detail/approval-specs.js';
 import { registerTaskApprovals } from './task-detail/task-approvals.js';
-import { registerApprovalQueue } from './inbox/approval-queue.js';
 import { registerAttachmentSpecs } from './task-detail/attachment-specs.js';
 import { registerAttachmentsSection } from './task-detail/attachments-section.js';
 import { registerTagsEditor } from './task-detail/tags-editor.js';
@@ -392,7 +391,6 @@ function boot(): void {
   // linked code changes / issues with their forge-reported state + add / remove.
   registerTaskLinks();
   registerTaskApprovals();
-  registerApprovalQueue();
   // The #36 trio the TaskDetail spawns into its right-rail slots:
   //   - AttachmentsSection (`attachments`): drag-drop upload (SHA-256 chunk →
   //     cas.missing_chunks → raw POST /cas/chunk → file.create + attachment.create)

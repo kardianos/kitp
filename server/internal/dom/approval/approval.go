@@ -9,9 +9,14 @@
 // body), so removing a request keeps its decisions. A vote belongs to the
 // EDGE — the task moving from one specific status to another — and a
 // request only asks people to vote on one. An edge's votes run in rounds:
-// once the task reaches the edge's target they are settled, leaving list
-// badges and the queue but staying on the task. See
+// once the task reaches the edge's target they are settled, leaving the
+// task's approval properties but staying on the task. See
 // db/schema/functions/approval_*_batch.sql.
+//
+// What's waiting on whom is a property of the task, not an endpoint:
+// card.select_with_attributes filters on approval_waiting_on ("vote needed
+// from"), approval_state and approval_asked_at, sorts on the last two, and
+// adds each row's approvals on with_approvals (approval_summary.sql).
 //
 // Endpoints:
 //   - approval.set    — ask (create) or change who is asked / the note.
@@ -20,7 +25,6 @@
 //     MCP) can vote too: they're shown with their owner, and their vote
 //     never stands in for a person who was asked.
 //   - approval.list   — a task's requests, decisions and actions.
-//   - approval.queue  — "Waiting on you": open requests naming the caller.
 //
 // Authz: set / remove gate on card.update of the parent task (like
 // link.set), decide on comment.post of the task; the reads apply the
@@ -153,35 +157,6 @@ type ListOutput struct {
 	Decisions []Decision `json:"decisions" mcp:"desc=every decision on the task, newest first"`
 }
 
-// QueueInput optionally narrows the queue to one project.
-type QueueInput struct {
-	ProjectID int64 `json:"project_id,string,omitempty" mcp:"desc=only requests in this project; omit for every project you can see"`
-}
-
-// QueueRow is one open request waiting on the caller.
-type QueueRow struct {
-	ApprovalID   int64      `json:"approval_id,string" mcp:"desc=approval request id"`
-	TaskID       int64      `json:"task_id,string" mcp:"desc=task asked about"`
-	TaskTitle    string     `json:"task_title" mcp:"desc=its title"`
-	ProjectID    int64      `json:"project_id,string" mcp:"desc=its project"`
-	ProjectTitle string     `json:"project_title" mcp:"desc=project name"`
-	Status       *StatusRef `json:"status,omitempty" mcp:"desc=the task's current status"`
-	From         StatusRef  `json:"from" mcp:"desc=status the action starts from"`
-	To           StatusRef  `json:"to" mcp:"desc=status it leads to"`
-	Action       string     `json:"action" mcp:"desc=the action's name"`
-	Note         string     `json:"note" mcp:"desc=message from whoever asked"`
-	RequestedBy  string     `json:"requested_by" mcp:"desc=who asked"`
-	RequestedAt  time.Time  `json:"requested_at" mcp:"desc=when"`
-	Asked        int        `json:"asked" mcp:"desc=people asked"`
-	Approved     int        `json:"approved" mcp:"desc=of them, approved so far"`
-	Rejected     int        `json:"rejected" mcp:"desc=of them, rejected so far"`
-}
-
-// QueueOutput wraps the rows.
-type QueueOutput struct {
-	Rows []QueueRow `json:"rows" mcp:"desc=open requests waiting on you, oldest first"`
-}
-
 // Register installs the approval.* dispatcher endpoints.
 func Register(_ *store.Pool) {
 	writers := []string{"worker", "manager", "admin"}
@@ -250,7 +225,7 @@ func Register(_ *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "approval",
 		Action:       "list",
-		Doc:          "A task's approvals: its current status, its status-flow actions, the live requests (who is asked, by whom, when, and when settled) and every decision (newest first, with reason and whether the task has since moved on).",
+		Doc:          "A task's approvals: its current status, its status-flow actions, the live requests (who is asked, by whom, when, and when settled) and every decision (newest first, with reason and whether the task has since moved on). To find the tasks waiting on someone's vote, use card.select_with_attributes with the tree leaf {attr: approval_waiting_on, op: in, values: ['@me' or person ids]} (and with_approvals for each row's tally).",
 		InputType:    reflect.TypeFor[ListInput](),
 		OutputType:   reflect.TypeFor[ListOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
@@ -258,18 +233,6 @@ func Register(_ *store.Pool) {
 		// Unified handler — body lives in
 		// db/schema/functions/approval_list_batch.sql.
 		SQLFunc: "approval_list_batch",
-	})
-	reg.Register(reg.Handler{
-		Endpoint:     "approval",
-		Action:       "queue",
-		Doc:          "What's waiting on you: open approval requests that name you and you haven't decided, oldest first, with the task's status, the action asked about, who asked and the tally so far.",
-		InputType:    reflect.TypeFor[QueueInput](),
-		OutputType:   reflect.TypeFor[QueueOutput](),
-		AllowedRoles: []string{reg.RoleAuthenticated},
-		IsRead:       true,
-		// Unified handler — body lives in
-		// db/schema/functions/approval_queue_batch.sql.
-		SQLFunc: "approval_queue_batch",
 	})
 }
 

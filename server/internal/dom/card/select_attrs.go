@@ -44,8 +44,10 @@ type Predicate struct {
 // OrderClause sorts by an attribute or a built-in column.
 type OrderClause struct {
 	// Field can be "attributes.<name>", "created_at",
-	// "last_activity_at", or "personal_sort_order".
-	Field     string `json:"field" mcp:"required,desc=field name to sort by; one of created_at, last_activity_at, personal_sort_order, or attributes.<name>"`
+	// "last_activity_at", "personal_sort_order", or a task's approval
+	// properties "approval_state" (votes missing first, then rejected,
+	// approved, none) and "approval_asked_at" (oldest open request).
+	Field     string `json:"field" mcp:"required,desc=field name to sort by; one of created_at, last_activity_at, personal_sort_order, approval_state (open requests missing votes first, then rejected, approved, none), approval_asked_at (when the oldest open approval request was made), or attributes.<name>"`
 	Direction string `json:"direction,omitempty" mcp:"enum=ASC|DESC,desc=sort direction"`
 }
 
@@ -67,16 +69,21 @@ type SelectWithAttributesInput struct {
 	IncludeDeleted   bool            `json:"include_deleted,omitempty" mcp:"desc=if true, include soft-deleted rows"`
 	WithPersonalSort bool            `json:"with_personal_sort,omitempty" mcp:"desc=when true, LEFT JOIN user_card_sort for the calling actor and expose personal_sort_order on each row; lets clients (e.g. Inbox) sort by the user's own ordering without a separate handler"`
 	RoutedToMe       bool            `json:"routed_to_me,omitempty" mcp:"desc=agent-perspective inbox filter: when true the result is restricted to cards whose user_card_agent row routes them to the calling agent (agent_user_id=actor AND user_id=actor.parent_user_id). Returns no rows when the caller is not an agent."`
-	WithApprovals    bool            `json:"with_approvals,omitempty" mcp:"desc=when true, add each row's approval badge: its open approval requests summed as {asked, approved, rejected}; omitted on rows with none"`
+	WithApprovals    bool            `json:"with_approvals,omitempty" mcp:"desc=when true, add each row's approvals: its open approval requests summed as {state, asked, approved, rejected, asked_at, waiting_on_me}; omitted on rows with none"`
 }
 
-// ApprovalSummary is a row's approval badge: over the task's open approval
-// requests (not yet settled by reaching the action's target), how many
-// people were asked and how many of them approved / rejected.
+// ApprovalSummary is a row's Approvals column (approval_summary): over the
+// task's open approval requests (not yet settled by reaching the step's
+// target, on a task that isn't closed), how they stand, how many people
+// were asked and how many of them voted approve / reject, when the oldest
+// was asked, and whether one waits on the caller's vote.
 type ApprovalSummary struct {
-	Asked    int `json:"asked" mcp:"desc=people asked, summed over the open requests"`
-	Approved int `json:"approved" mcp:"desc=of them, whose latest decision approves"`
-	Rejected int `json:"rejected" mcp:"desc=of them, whose latest decision rejects"`
+	State       string    `json:"state" mcp:"enum=open|approved|rejected,desc=rejected when anyone asked voted reject, approved when everyone asked voted approve, else open"`
+	Asked       int       `json:"asked" mcp:"desc=people asked, summed over the open requests"`
+	Approved    int       `json:"approved" mcp:"desc=of them, whose latest vote approves"`
+	Rejected    int       `json:"rejected" mcp:"desc=of them, whose latest vote rejects"`
+	AskedAt     time.Time `json:"asked_at" mcp:"desc=when the oldest open request was made"`
+	WaitingOnMe bool      `json:"waiting_on_me" mcp:"desc=an open request asks the caller's person and they haven't voted on its step yet"`
 }
 
 // CardWithAttrs is one row of the LATERAL read.
@@ -100,7 +107,7 @@ type CardWithAttrs struct {
 	PersonalSort   *float64   `json:"personal_sort_order,omitempty" mcp:"desc=caller's user_card_sort.sort_order when with_personal_sort=true; null when the user hasn't reordered this card"`
 	// Approvals is set only when with_approvals asked for it and the card
 	// has an open approval request.
-	Approvals *ApprovalSummary `json:"approvals,omitempty" mcp:"desc=approval badge when with_approvals=true and the card has open approval requests"`
+	Approvals *ApprovalSummary `json:"approvals,omitempty" mcp:"desc=the task's approvals when with_approvals=true and it has open approval requests"`
 }
 
 // SelectWithAttributesOutput is per-input.

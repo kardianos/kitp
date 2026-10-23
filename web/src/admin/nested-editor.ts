@@ -54,6 +54,9 @@ import type {
 import { TOKEN_SCOPE_OPTIONS } from './specs.js';
 
 import { icon } from '../ui/icons.js';
+import { schemaForCardType } from '../filter/attribute-schema.js';
+import { parseStringList } from '../filter/screen-resolve.js';
+import { derivedColumnsFor } from '../cardlist/derived-columns.js';
 import { captionedField } from '../ui/captioned-field.js';
 /* -------------------------------------------------------------------------- */
 /* Config.                                                                     */
@@ -436,6 +439,7 @@ export class NestedEditor extends Control<NestedEditorConfig> {
         this.ctx.tree.at(this.p('filters')).get();
         this.ctx.tree.at(this.p('editingId')).get();
         this.ctx.tree.at(this.p('flows')).get(); // workflow (#27) options
+        this.ctx.tree.at(this.p('attrDefs')).get(); // Columns options
         break;
       case 'agentTokens':
         this.ctx.tree.at(this.p('tokens')).get();
@@ -546,6 +550,16 @@ export class NestedEditor extends Control<NestedEditorConfig> {
       (out) => {
         if (!this.isAlive()) return;
         this.ctx.tree.at(this.p('flows')).set((out as FlowListOutput).rows ?? []);
+      },
+      { alive: () => this.isAlive() },
+    );
+    // Columns options: the attributes bound to the screen's card_type.
+    this.ctx.api.callByName(
+      'attribute_def.select',
+      {},
+      (out) => {
+        if (!this.isAlive()) return;
+        this.ctx.tree.at(this.p('attrDefs')).set((out as { rows: AttributeDefRow[] }).rows ?? []);
       },
       { alive: () => this.isAlive() },
     );
@@ -1384,8 +1398,10 @@ export class NestedEditor extends Control<NestedEditorConfig> {
   private renderScreenFilters(screen: MasterDetailItem): void {
     const frag = document.createDocumentFragment();
 
-    // Workflow (flow_ref) + base phase (toggle_groups) editors (#27).
+    // Workflow (flow_ref) + base phase (toggle_groups) editors (#27), then the
+    // screen's extra columns.
     frag.append(this.buildScreenWorkflowPhase(screen));
+    frag.append(this.buildScreenColumns(screen));
 
     const heading = document.createElement('div');
     heading.className = 'nested-editor__heading';
@@ -1495,6 +1511,75 @@ export class NestedEditor extends Control<NestedEditorConfig> {
     wrap.append(phaseRow);
 
     return wrap;
+  }
+
+  /**
+   * The screen's extra columns (`extra_columns`): a checklist of what its
+   * card_type can show beyond the built-in columns — its derived columns (a
+   * task's Approvals; cardlist/derived-columns) and its scalar attributes.
+   * Derived columns show in every layout (a Grid column, a chip on list rows
+   * and Kanban cards); attribute columns are Grid columns. Ticking appends,
+   * unticking removes; the stored order is otherwise kept. A stored name this
+   * card_type doesn't offer still lists, so it can be unticked.
+   */
+  private buildScreenColumns(screen: MasterDetailItem): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'nested-editor__screen-config';
+    wrap.dataset.neScreenColumns = '';
+    const heading = document.createElement('h3');
+    heading.className = 'nested-editor__title';
+    heading.textContent = 'Columns';
+    const hint = document.createElement('p');
+    hint.className = 'muted nested-editor__hint';
+    hint.textContent = 'Approval columns also show on list rows and Kanban cards; attribute columns show in the Grid.';
+    wrap.append(heading, hint);
+
+    const cardType = this.screenCardType(screen);
+    const current = parseStringList(fieldText(screen.raw, 'attributes.extra_columns'));
+    const defs = (this.ctx.tree.at(this.p('attrDefs')).peek<AttributeDefRow[]>() ?? []) as AttributeDefRow[];
+    const options: Array<{ name: string; label: string }> = [
+      ...derivedColumnsFor(cardType).map(([name, c]) => ({ name, label: c.label })),
+      ...schemaForCardType(defs, cardType)
+        .filter((a) => a.name !== 'title' && a.valueType !== 'card_ref' && a.valueType !== 'card_ref[]')
+        .map((a) => ({ name: a.name, label: a.label })),
+    ];
+    for (const name of current) {
+      if (!options.some((o) => o.name === name)) options.push({ name, label: name });
+    }
+
+    const list = document.createElement('div');
+    list.className = 'nested-editor__columns';
+    for (const o of options) {
+      const row = document.createElement('label');
+      row.className = 'nested-editor__column';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.neScreenColumn = o.name;
+      cb.checked = current.includes(o.name);
+      this.listen(cb, 'change', () => {
+        const rest = current.filter((n) => n !== o.name);
+        this.setScreenColumns(screen.id, cb.checked ? [...rest, o.name] : rest);
+      });
+      const text = document.createElement('span');
+      text.textContent = o.label;
+      row.append(cb, text);
+      list.append(row);
+    }
+    wrap.append(list);
+    return wrap;
+  }
+
+  /** Write the screen's extra_columns ('' when none). */
+  private setScreenColumns(screenId: string, columns: readonly string[]): void {
+    this.clearFault();
+    const next = columns.length === 0 ? '' : JSON.stringify(columns);
+    this.patchScreenAttr(screenId, 'extra_columns', next);
+    this.ctx.api.callByName(
+      'attribute.update',
+      { cardId: screenId, attributeName: 'extra_columns', value: next },
+      () => { if (this.isAlive()) this.reload(); },
+      { alive: () => this.isAlive(), onErr: (f) => this.showFault('attribute.update', f) },
+    );
   }
 
   /** Set the screen's workflow override (flow_ref). '' → 0 = use project default. */

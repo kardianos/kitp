@@ -5,8 +5,10 @@
  * vote belongs to an EDGE — the task moving from one specific status to
  * another ("Approve: Review → Done") — and a request asks named people to
  * vote on one. An edge's votes run in rounds: once the task reaches the
- * edge's target they're settled (off list badges and the queue, kept on the
- * task).
+ * edge's target they're settled (off the task's Approvals column, kept on
+ * the task). What waits on whom is a task property read through
+ * card.select_with_attributes (with_approvals + the approval_* filters), not
+ * an approval.* endpoint.
  *
  * Wire shapes (snake_case; ids ship as JSON strings and revive to bigint):
  *
@@ -25,11 +27,6 @@
  *   - approval.decide in : { task_id, approval_id? | from_status_id +
  *                            to_status_id, decision, reason? }
  *       out: { decision_id, changed }
- *   - approval.queue  in : { project_id? }
- *       out: { rows: [{ approval_id, task_id, task_title, project_id,
- *                       project_title, status?, from, to, action, note,
- *                       requested_by, requested_at, asked, approved,
- *                       rejected }] }
  */
 
 import type { Api } from '../core/api.js';
@@ -38,7 +35,6 @@ export const APPROVAL_LIST_SPEC = 'approval.list';
 export const APPROVAL_SET_SPEC = 'approval.set';
 export const APPROVAL_REMOVE_SPEC = 'approval.remove';
 export const APPROVAL_DECIDE_SPEC = 'approval.decide';
-export const APPROVAL_QUEUE_SPEC = 'approval.queue';
 
 /* ------------------------------- web model -------------------------------- */
 
@@ -135,30 +131,6 @@ export interface ApprovalDecideOutput {
   changed: boolean;
 }
 
-export interface ApprovalQueueInput {
-  projectId?: bigint;
-}
-export interface ApprovalQueueRow {
-  approvalId: bigint;
-  taskId: bigint;
-  taskTitle: string;
-  projectId: bigint;
-  projectTitle: string;
-  status: StatusRef | null;
-  from: StatusRef;
-  to: StatusRef;
-  action: string;
-  note: string;
-  requestedBy: string;
-  requestedAt: string;
-  asked: number;
-  approved: number;
-  rejected: number;
-}
-export interface ApprovalQueueOutput {
-  rows: ApprovalQueueRow[];
-}
-
 /* ------------------------------ decode helpers ---------------------------- */
 
 function asObj(v: unknown): Record<string, unknown> {
@@ -178,9 +150,6 @@ function asStr(v: unknown): string {
   if (typeof v === 'bigint') return v.toString();
   if (v === null || v === undefined) return '';
   return String(v);
-}
-function asNum(v: unknown): number {
-  return typeof v === 'number' ? v : Number(v ?? 0) || 0;
 }
 
 export function decodeStatusRef(v: unknown): StatusRef {
@@ -238,36 +207,11 @@ export function decodeApprovalList(raw: unknown): ApprovalListOutput {
   };
 }
 
-export function decodeApprovalQueue(raw: unknown): ApprovalQueueOutput {
-  return {
-    rows: asArray(asObj(raw)['rows']).map((r) => {
-      const j = asObj(r);
-      return {
-        approvalId: asId(j['approval_id']),
-        taskId: asId(j['task_id']),
-        taskTitle: asStr(j['task_title']),
-        projectId: asId(j['project_id']),
-        projectTitle: asStr(j['project_title']),
-        status: decodeStatusOrNull(j['status']),
-        from: decodeStatusRef(j['from']),
-        to: decodeStatusRef(j['to']),
-        action: asStr(j['action']),
-        note: asStr(j['note']),
-        requestedBy: asStr(j['requested_by']),
-        requestedAt: asStr(j['requested_at']),
-        asked: asNum(j['asked']),
-        approved: asNum(j['approved']),
-        rejected: asNum(j['rejected']),
-      };
-    }),
-  };
-}
-
 /* ------------------------------- registration ----------------------------- */
 
 /**
  * Register the approval specs against `api`. Call once at boot, before the
- * TaskDetail / Inbox mount their approval controls. Idempotent-by-presence
+ * TaskDetail mounts its approval control. Idempotent-by-presence
  * (`api.define` throws on a duplicate key, so each define is guarded).
  */
 export function registerApprovalSpecs(api: Api): void {
@@ -322,14 +266,6 @@ export function registerApprovalSpecs(api: Api): void {
         const j = asObj(raw);
         return { decisionId: asId(j['decision_id']), changed: j['changed'] === true };
       },
-    });
-  }
-  if (!api.registry.has({ endpoint: 'approval', action: 'queue' })) {
-    api.define<ApprovalQueueInput, ApprovalQueueOutput>({
-      endpoint: 'approval',
-      action: 'queue',
-      encode: (i) => (i.projectId !== undefined ? { project_id: i.projectId } : {}),
-      decode: decodeApprovalQueue,
     });
   }
 }

@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -54,7 +55,7 @@ type CardWhereTreeNode struct {
 	Children   []CardWhereTreeNode `json:"children,omitempty" mcp:"desc=child predicates when this node is a group"`
 
 	// Leaf fields.
-	Attr   string            `json:"attr,omitempty" mcp:"desc=attribute name (leaf shape)"`
+	Attr   string            `json:"attr,omitempty" mcp:"desc=attribute name (leaf shape); also a task's approval properties: approval_state (=, !=, in, not in over open|approved|rejected|none), approval_waiting_on (in, not in over person card ids, '@me' = you: an open approval request asks them and they haven't voted) and approval_asked_at (within_last_days)"`
 	Op     string            `json:"op,omitempty" mcp:"desc=comparison operator (leaf shape)"`
 	Values []json.RawMessage `json:"values,omitempty" mcp:"desc=values for the leaf operator"`
 }
@@ -209,6 +210,14 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 		return "", fmt.Errorf("bad attribute name %q", n.Attr)
 	}
 	op := strings.ToLower(n.Op)
+	switch n.Attr {
+	case "approval_state", "approval_waiting_on":
+		return compileApprovalLeaf(n.Attr, op, n.Values, c)
+	case "approval_asked_at":
+		if op != "within_last_days" {
+			return "", fmt.Errorf("approval_asked_at supports only within_last_days, got %q", n.Op)
+		}
+	}
 	switch op {
 	case "snippet":
 		return compileSnippet(n, c)
@@ -271,6 +280,8 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 				addArg(days)), nil
 		case "created_at":
 			return fmt.Sprintf(`c.created_at >= now() - %s * interval '1 day'`, addArg(days)), nil
+		case "approval_asked_at":
+			return fmt.Sprintf(`approval_asked_at(c.id) >= now() - %s * interval '1 day'`, addArg(days)), nil
 		default:
 			return fmt.Sprintf(`EXISTS (
 				SELECT 1
@@ -519,6 +530,72 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 // resolves to the child, while the outer `c.id` on the left of IN stays
 // the card being filtered. Mirrors the child-path branch in
 // card_compile_predicate.sql.
+// approvalStates are the values approval_state takes.
+var approvalStates = []string{"open", "approved", "rejected", "none"}
+
+// compileApprovalLeaf compiles a leaf on a task's approval properties,
+// which are derived from its open approval requests (approval_open)
+// rather than stored as attributes: approval_state (= / != / in / not in
+// over approvalStates) and approval_waiting_on (in / not in over person
+// card ids: "vote needed from"). Mirrors the approval block in
+// card_compile_predicate.sql.
+func compileApprovalLeaf(attr, op string, vs []json.RawMessage, c *compileCtx) (string, error) {
+	var negate bool
+	switch op {
+	case "=", "eq", "in":
+	case "!=", "ne", "not in":
+		negate = true
+	default:
+		return "", fmt.Errorf("%s supports =, !=, in and not in, got %q", attr, op)
+	}
+	var ph []string
+	if attr == "approval_state" {
+		for _, raw := range vs {
+			var s string
+			if err := json.Unmarshal(raw, &s); err != nil || !slices.Contains(approvalStates, s) {
+				return "", errors.New("approval_state value must be open, approved, rejected or none")
+			}
+			ph = append(ph, c.addArg(s)+"::text")
+		}
+		if len(ph) == 0 {
+			return "", errors.New("approval_state needs a value")
+		}
+		cmp := "= ANY"
+		if negate {
+			cmp = "<> ALL"
+		}
+		return fmt.Sprintf("approval_state(c.id) %s(ARRAY[%s]::text[])", cmp, strings.Join(ph, ", ")), nil
+	}
+	// People. A value that isn't an id ("@me" left unresolved because the
+	// viewer has no person) names no one, so `in` matches nothing.
+	for _, raw := range vs {
+		if id, ok := cardIDValue(raw); ok {
+			ph = append(ph, c.addArg(id)+"::bigint")
+		}
+	}
+	sql := fmt.Sprintf("approval_waiting_on(c.id, ARRAY[%s]::bigint[])", strings.Join(ph, ", "))
+	if negate {
+		sql = "NOT " + sql
+	}
+	return sql, nil
+}
+
+// cardIDValue reads a card id from a filter value: a JSON number or a
+// string of digits.
+func cardIDValue(raw json.RawMessage) (int64, bool) {
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		id, err := n.Int64()
+		return id, err == nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(s, 10, 64)
+	return id, err == nil
+}
+
 func compileChildPath(childType, attr string, n CardWhereTreeNode, c *compileCtx) (string, error) {
 	if !validIdent(childType) || !validIdent(attr) {
 		return "", fmt.Errorf("bad attribute path %q", n.Attr)

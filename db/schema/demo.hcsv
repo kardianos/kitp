@@ -238,13 +238,18 @@ $card_type.task, parent,         "Audit-log review (related)", @s_review,$user_a
 
 ## table card | under=proj_default | doc="Inbox screen. flow_ref binds the screen to the project's task flow so the TransitionBar in the task-detail header surfaces labelled transitions (Accept / Start / Send to review / Approve / Cancel / Reopen). Without flow_ref the bar renders empty."
 ### rows
-card_type_id, parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,       alias, toggle_groups, panels
-$card_type.screen, parent, "Inbox",  list,   inbox, i,      1,          @flow_default,  sc_inbox, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`, `["approval_queue"]`
+card_type_id, parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,       alias, toggle_groups, extra_columns
+$card_type.screen, parent, "Inbox",  list,   inbox, i,      1,          @flow_default,  sc_inbox, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`, `["approvals"]`
 
 ## table card | under=sc_inbox
 ### rows
 card_type_id, parent_card_id, title,           predicate
 $card_type.filter, parent, "Default Inbox", `{"attr":"status","op":"not terminal"}`
+
+## table card | under=sc_inbox | doc="Inbox view 'Waiting on my vote' (see the template's): tasks waiting on your approval vote, oldest request first."
+### rows
+card_type_id, parent_card_id, title,                predicate,                                                     sort
+$card_type.filter, parent, "Waiting on my vote", `{"attr":"approval_waiting_on","op":"in","values":["@me"]}`, `[{"attr":"approval_asked_at","dir":"asc"}]`
 
 
 ## table card | under=proj_default | doc="Grid screen. tag_prefix_columns defines which tag namespaces (e.g. 'priority/') break out into their own grid column; extra_columns lists attribute_def names to surface as additional columns (between Tags and Created). Both are configurable via the screen filter bar's Columns control."
@@ -419,13 +424,18 @@ $card_type.task, parent,         "Closed: prototype review",  @mob_s_cancel,  $u
 
 ## table card | under=proj_mobile | doc="Mobile App Inbox screen. No hotkey set — Default Project already claims the single-letter screen keys (i / g / k); Mobile App reaches its screens via the project picker + click. Symmetry across the two projects rather than chord collisions."
 ### rows
-card_type_id, parent_card_id, title,   layout, slug,  sort_order, flow_ref,   alias, toggle_groups, panels
-$card_type.screen, parent, "Inbox",  list,   inbox, 1,          @mob_flow,  mob_sc_inbox, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`, `["approval_queue"]`
+card_type_id, parent_card_id, title,   layout, slug,  sort_order, flow_ref,   alias, toggle_groups, extra_columns
+$card_type.screen, parent, "Inbox",  list,   inbox, 1,          @mob_flow,  mob_sc_inbox, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`, `["approvals"]`
 
 ## table card | under=mob_sc_inbox
 ### rows
 card_type_id, parent_card_id, title,           predicate
 $card_type.filter, parent, "Default Inbox", `{"attr":"status","op":"not terminal"}`
+
+## table card | under=mob_sc_inbox | doc="Inbox view 'Waiting on my vote' (see the template's): tasks waiting on your approval vote, oldest request first."
+### rows
+card_type_id, parent_card_id, title,                predicate,                                                     sort
+$card_type.filter, parent, "Waiting on my vote", `{"attr":"approval_waiting_on","op":"in","values":["@me"]}`, `[{"attr":"approval_asked_at","dir":"asc"}]`
 
 
 ## table card | under=proj_mobile | doc="Mobile App Grid screen. No tag_prefix_columns — Default Project's grid already exercises that affordance, and the parser's backtick-cell cross-product treats a multi-element JSON array oddly under the alias path; safer to omit. extra_columns surfaces the due_date attribute as a Grid column."

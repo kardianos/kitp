@@ -7,15 +7,17 @@
  *     asked with their current-round vote, others' votes (agents included,
  *     never answering for a person), a settled request keeping the votes it
  *     settled with, the viewer's vote and "waiting on me", edge order;
- *   - the APPROVALS section: edges render with chips and a tally; voting
- *     sends approval.decide on the open request (with a reason when added);
- *     asking sends approval.set with the edge and the picked people from
- *     activity.actors;
- *   - "Waiting on you": rows say status → action → next status, a vote sends
- *     approval.decide and the band empties + hides, the waiting count lands
- *     in the tree;
- *   - votes in the comment stream and the Activity page; the row badge; the
- *     screen `panels` reader.
+ *   - the APPROVAL VOTES section: edges render with chips and a tally, all
+ *     worded as votes ("Vote approve", never the workflow's "Approve");
+ *     voting sends approval.decide on the open request (with a reason when
+ *     added); asking sends approval.set with the edge and the picked people
+ *     from activity.actors;
+ *   - votes in the comment stream and the Activity page;
+ *   - the task's approvals as row data: the wire decode, the Approvals badge
+ *     and "asked" chip, the derived-column table a screen's extra_columns
+ *     names them from (Grid column, list / Kanban chips, with_approvals), the
+ *     filter fields (approval_state / approval_waiting_on / approval_asked_at)
+ *     and how a saved sort on them reaches the server.
  */
 
 import { test, before, beforeEach } from 'node:test';
@@ -31,7 +33,6 @@ before(async () => {
   const outdir = await buildTestBundles();
   M = await import(`${outdir}/app.js`);
   M.registerTaskApprovals();
-  M.registerApprovalQueue();
 });
 
 beforeEach(() => {
@@ -114,16 +115,17 @@ test('buildApprovalEdges: asked people, others, settled requests, the viewer', (
 test('actionChoices put the current status first', () => {
   const list = M.decodeApprovalList(listWire());
   assert.deepEqual(M.actionChoices(list).map((a) => a.label), ['Approve', 'Accept']);
-  assert.equal(M.edgeLabel('Approve', list.actions[1].from, list.actions[1].to), 'Approve: Review → Done');
+  assert.equal(M.edgeLabel('Approve', list.actions[1].from, list.actions[1].to), 'Review → Done (Approve)');
+  assert.equal(M.stepText('', 'Review', 'Done'), 'Review → Done');
+  assert.equal(M.voteWords('reject'), 'Voted reject');
 });
 
 /* -------------------------------------------------------------------------- */
-/* The section and the queue against a mock server.                           */
+/* The section against a mock server.                                         */
 /* -------------------------------------------------------------------------- */
 
-function mockServer({ list = listWire(), queue = [] } = {}) {
+function mockServer({ list = listWire() } = {}) {
   const sent = [];
-  let queueRows = [...queue];
   function respond(sr) {
     const k = `${sr.endpoint}.${sr.action}`;
     const data = sr.data ?? {};
@@ -131,10 +133,7 @@ function mockServer({ list = listWire(), queue = [] } = {}) {
     switch (k) {
       case 'approval.list':
         return { id: sr.id, ok: true, data: list };
-      case 'approval.queue':
-        return { id: sr.id, ok: true, data: { rows: queueRows } };
       case 'approval.decide':
-        queueRows = queueRows.filter((r) => r.approval_id !== String(data.approval_id));
         return { id: sr.id, ok: true, data: { decision_id: '9000', changed: true } };
       case 'approval.set':
         return { id: sr.id, ok: true, data: { approval_id: '702', created: true, changed: true } };
@@ -194,15 +193,24 @@ test('TaskApprovals: edges render; a vote answers the open request', async () =>
 
   const edge = c.el.querySelector('[data-approval-edge="14>15"]');
   assert.ok(edge, 'the Approve edge renders');
-  assert.match(edge.textContent, /Approve: Review → Done/);
-  assert.equal(edge.querySelector('[data-approval-state]').textContent, '1 of 2 approved');
+  assert.match(edge.textContent, /Review → Done \(Approve\)/);
+  assert.equal(edge.querySelector('[data-approval-state]').textContent, '1 of 2 voted approve');
   assert.deepEqual(
     [...edge.querySelectorAll('[data-approval-asked]')].map((ch) => [ch.textContent, ch.dataset.vote]),
     [['Dana', 'approve'], ['Lee', 'waiting']],
   );
   assert.match(edge.querySelector('[data-approval-others]').textContent, /claude \(for Dana\).*Pat/);
   assert.ok(edge.classList.contains('task-approvals__edge--waiting'), 'highlighted: waiting on the viewer');
-  assert.match(c.el.querySelector('[data-approvals-heading]').textContent, /1 open/);
+  assert.equal(c.el.querySelector('[data-approvals-heading]').textContent, 'APPROVAL VOTES (1 open)');
+
+  // Worded and styled as a vote: "Vote approve", outlined (never the primary,
+  // status-moving style), accented because Lee is asked, with the reminder.
+  const approve = edge.querySelector('[data-approval-vote="approve"]');
+  assert.equal(approve.textContent.trim(), 'Vote approve');
+  assert.equal(approve.classList.contains('btn-primary'), false);
+  assert.equal(approve.dataset.asked, '');
+  assert.equal(edge.querySelector('[data-approval-vote="reject"]').textContent.trim(), 'Vote reject');
+  assert.equal(edge.querySelector('[data-approval-hint]').textContent, "A vote is a record. It doesn't change the status.");
 
   // Add a reason, then approve: approval.decide on request 701.
   edge.querySelector('[data-approval-add-reason]').click();
@@ -246,40 +254,8 @@ test('TaskApprovals: asking sends the edge and the picked people', async () => {
   assert.equal(c.el.querySelector('[data-approval-ask-form]'), null, 'the form closes after asking');
 });
 
-function queueRow(id, over = {}) {
-  return {
-    approval_id: String(id), task_id: '54', task_title: 'Ship the copy', project_id: '31', project_title: 'Apollo',
-    status: S.review, from: S.review, to: S.done, action: 'Approve', note: 'Please check',
-    requested_by: 'System', requested_at: '2026-10-22T09:00:00Z', asked: 2, approved: 1, rejected: 0, ...over,
-  };
-}
-
-test('ApprovalQueue: says what is asked; a vote empties and hides it', async () => {
-  const srv = mockServer({ queue: [queueRow(701)] });
-  const { dispatcher, api } = bootApi(srv.transport);
-  const tree = new M.TreeNode({}, []);
-  tree.at(['scope', 'projectId']).set(31n);
-  const c = M.Control.New('ApprovalQueue', { type: 'ApprovalQueue' }, { api, tree });
-  c.mount(document.createElement('div'));
-  document.body.appendChild(c.el);
-  await settle(dispatcher);
-
-  assert.notEqual(c.el.style.display, 'none');
-  const row = c.el.querySelector('[data-approval-queue-row="701"]');
-  assert.match(row.querySelector('[data-approval-queue-asked]').textContent, /Review→Approve→Done/);
-  assert.match(row.textContent, /#54 Ship the copy/);
-  assert.match(row.textContent, /1 of 2 approved/);
-  assert.equal(tree.at([...M.APPROVALS_WAITING_PATH]).peek(), 1);
-
-  row.querySelector('[data-approval-queue-vote="approve"]').click();
-  await settle(dispatcher);
-  assert.deepEqual(srv.writes('approval.decide'), [{ task_id: '54', decision: 'approve', approval_id: '701' }]);
-  assert.equal(c.el.style.display, 'none', 'nothing waiting: hidden');
-  assert.equal(tree.at([...M.APPROVALS_WAITING_PATH]).peek(), 0);
-});
-
 /* -------------------------------------------------------------------------- */
-/* Votes elsewhere: comments, the Activity page, row badges, screen panels.    */
+/* Votes elsewhere: comments, the Activity page.                              */
 /* -------------------------------------------------------------------------- */
 
 function decisionRow(over = {}) {
@@ -293,29 +269,88 @@ function decisionRow(over = {}) {
 
 test('a vote is a comment entry: verdict, edge, reason; agents named with their owner', () => {
   const [c] = M.deriveComments([decisionRow()]);
-  assert.deepEqual(c.vote, { decision: 'approve', label: 'Approve: Review → Done' });
+  assert.deepEqual(c.vote, { decision: 'approve', label: 'Review → Done (Approve)' });
   assert.equal(c.body, 'Tests pass');
   assert.equal(c.actorName, 'claude (for Dana)');
 });
 
 test('a vote reads like a comment on the Activity page', () => {
   const lines = M.buildLines(TASK, [decisionRow({ valueNew: { decision: 'reject', from_id: '14', to_id: '15', action: 'Approve' } })]);
-  assert.equal(lines[0].label, 'Rejected · Approve: Review → Done');
+  assert.equal(lines[0].label, 'Voted reject · Review → Done (Approve)');
   assert.equal(lines[0].body, 'Tests pass');
 });
 
-test('approvalBadge: tone and tally', () => {
-  assert.equal(M.approvalBadge(undefined), null);
-  const pending = M.approvalBadge({ asked: 2, approved: 1, rejected: 0 });
-  assert.equal(pending.dataset.approvalBadge, 'pending');
-  assert.equal(pending.textContent, '1/2');
-  assert.equal(M.approvalBadge({ asked: 2, approved: 2, rejected: 0 }).dataset.approvalBadge, 'success');
-  assert.equal(M.approvalBadge({ asked: 2, approved: 1, rejected: 1 }).dataset.approvalBadge, 'danger');
+/* -------------------------------------------------------------------------- */
+/* The task's approvals as row data: badge, derived columns, filters, sorts.   */
+/* -------------------------------------------------------------------------- */
+
+function summary(over = {}) {
+  return { state: 'open', asked: 2, approved: 1, rejected: 0, askedAt: '2026-10-22T09:00:00Z', waitingOnMe: false, ...over };
+}
+
+test('the approvals on a card row decode from the wire', () => {
+  const row = M.decodeCardWithAttrs({
+    id: '54', card_type_id: '5', card_type_name: 'task', attributes: {},
+    approvals: { state: 'rejected', asked: 2, approved: 1, rejected: 1, asked_at: '2026-10-22T09:00:00Z', waiting_on_me: true },
+  });
+  assert.deepEqual(row.approvals, summary({ state: 'rejected', rejected: 1, waitingOnMe: true }));
+  assert.equal(M.decodeCardWithAttrs({ id: '55', attributes: {} }).approvals, undefined);
 });
 
-test('readPanels: a screen card lists its panels', () => {
-  assert.deepEqual(M.readPanels({ attributes: { panels: '["approval_queue"]' } }), ['approval_queue']);
-  assert.deepEqual(M.readPanels({ attributes: { panels: 'not json' } }), []);
-  assert.deepEqual(M.readPanels({ attributes: {} }), []);
-  assert.equal(M.SCREEN_PANELS.approval_queue, 'ApprovalQueue');
+test('approvalBadge: tone by state, tally, and "your vote"', () => {
+  assert.equal(M.approvalBadge(undefined), null);
+  const pending = M.approvalBadge(summary());
+  assert.equal(pending.dataset.approvalBadge, 'pending');
+  assert.equal(pending.textContent, '1/2');
+  assert.match(pending.title, /1 of 2 voted approve.*Votes don't change the status/);
+  assert.equal(M.approvalBadge(summary({ state: 'approved', approved: 2 })).dataset.approvalBadge, 'success');
+  assert.equal(M.approvalBadge(summary({ state: 'rejected', rejected: 1 })).dataset.approvalBadge, 'danger');
+  const mine = M.approvalBadge(summary({ waitingOnMe: true }));
+  assert.equal(mine.textContent, '1/2your vote');
+  assert.equal(mine.dataset.approvalMine, '');
+  assert.match(M.approvalAsked(summary()).textContent, /^asked /);
+  assert.equal(M.approvalAsked(undefined), null);
+});
+
+test('derived columns: named in extra_columns, rendered from the table', () => {
+  assert.deepEqual(M.derivedColumnsFor('task').map(([n]) => n), ['approvals', 'approval_asked_at']);
+  assert.deepEqual(M.derivedColumnsFor('comm'), []);
+  assert.equal(M.derivedColumn('due_date'), undefined, 'an attribute is not derived');
+  assert.equal(M.derivedColumn('toString'), undefined, 'no prototype keys');
+  assert.equal(M.columnsNeedApprovals(['due_date']), false);
+  assert.equal(M.columnsNeedApprovals(['due_date', 'approvals']), true);
+
+  const row = { id: 54n, attributes: {}, approvals: summary({ waitingOnMe: true }) };
+  const parts = M.derivedParts(['due_date', 'approvals', 'approval_asked_at'], row);
+  assert.deepEqual(parts.map((p) => p.className), ['approval-badge', 'approval-asked muted'], 'attribute columns stay Grid-only');
+  assert.deepEqual(M.derivedParts(['approvals'], { id: 55n, attributes: {} }), [], 'no open request: nothing');
+
+  // The Grid: a derived column sorts by its server field.
+  const cols = M.buildGridColumns([], [], ['approvals', 'approval_asked_at'], []);
+  assert.deepEqual(
+    cols.filter((c) => c.kind === 'derived').map((c) => [c.key, c.label, c.field]),
+    [['approvals', 'Approvals', 'approval_state'], ['approval_asked_at', 'Approval asked', 'approval_asked_at']],
+  );
+  assert.deepEqual(M.readExtraColumns({ attributes: { extra_columns: '["approvals"]' } }), ['approvals']);
+  assert.deepEqual(M.parseStringList('nope'), []);
+});
+
+test('approval filter fields: ops, sortability, and the wire sort field', () => {
+  const [state, waiting, asked] = M.DERIVED_FILTER_FIELDS.task;
+  assert.deepEqual([state.name, waiting.name, asked.name], ['approval_state', 'approval_waiting_on', 'approval_asked_at']);
+  assert.deepEqual([...M.opsForAttr(state)], ['eq', 'ne', 'in', 'notIn']);
+  assert.deepEqual(state.choices.map((c) => c.value), ['open', 'rejected', 'approved', 'none']);
+  assert.deepEqual([...M.opsForAttr(waiting)], ['in', 'notIn']);
+  assert.equal(waiting.targetCardType, 'person', 'the person picker, with Me');
+  assert.equal(waiting.sortable, false);
+  assert.deepEqual([...M.opsForAttr(asked)], ['withinLastDays']);
+
+  for (const name of ['approval_state', 'approval_asked_at', 'created_at', 'last_activity_at']) {
+    assert.equal(M.isTopLevelField(name), true, name);
+  }
+  assert.equal(M.isTopLevelField('due_date'), false);
+  assert.deepEqual(
+    M.sortStatesFromFilter([{ attr: 'approval_asked_at', dir: 'asc' }, { attr: 'due_date', dir: 'desc' }]),
+    [{ field: 'approval_asked_at', direction: 'asc' }, { field: 'attributes.due_date', direction: 'desc' }],
+  );
 });

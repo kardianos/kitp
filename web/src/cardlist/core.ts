@@ -94,8 +94,9 @@ export function buildCardListQueries(p: string): QueryBinding[] {
         projectId: { from: 'scope.projectId' },
         withPersonalSort: { from: `${p}.withPersonalSort` },
         routedToMe: { from: `${p}.routedToMe` },
-        // Approval badges on task rows (one index probe per row without any).
-        withApprovals: { lit: true },
+        // A screen showing an approvals column (derived-columns) asks for the
+        // rows' open approval requests.
+        withApprovals: { from: 'screen.withApprovals' },
         order: { from: `${p}.order` },
         where: { from: `${p}.where` },
         tree: { from: `${p}.tree` },
@@ -345,6 +346,7 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
       this.ctx.tree.at(['screen', 'predicate']).get();
       this.ctx.tree.at(['screen', 'search']).get();
       this.ctx.tree.at(['screen', 'searchFields']).get();
+      this.ctx.tree.at(['screen', 'withApprovals']).get();
       if (this.config.viewToggles === true) {
         this.ctx.tree.at(['inbox', 'mineOnly']).get();
         this.ctx.tree.at(['inbox', 'routedToMe']).get();

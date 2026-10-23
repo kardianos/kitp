@@ -8,3 +8,4 @@ The grid layout is a dense, sortable table. Every visible attribute is a column;
 - Click a column header to sort ascending; click again to flip to descending.
 - Inline-edit by clicking a cell; changes save on blur.
 - Quick-entry at the bottom adds a new task without leaving the grid.
+- Columns beyond the built-in ones come from the screen's Columns setting (Screens admin): extra attributes such as a due date, and a task's **Approvals** (how its open approval votes stand, sorted with votes missing first) and **Approval asked** (when the oldest open request was made, oldest first). The **Columns** button hides and reorders them for you.

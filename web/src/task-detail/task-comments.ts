@@ -62,6 +62,7 @@ import {
 
 import { localTimeEl, formatLocalDateTime } from '../util/datetime.js';
 import { icon } from '../ui/icons.js';
+import { voteWords } from './approval-model.js';
 /* -------------------------------------------------------------------------- */
 /* Config + declaration-merged registry type.                                  */
 /* -------------------------------------------------------------------------- */
@@ -488,13 +489,14 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     }
 
     if (c.vote !== undefined) {
-      // An approval vote: its verdict and the status change it's about.
+      // An approval vote: its verdict and the status step it's about — a
+      // vote, never the status change itself.
       const badge = document.createElement('span');
       badge.className = 'task-comments__vote';
       badge.dataset.commentVote = c.vote.decision;
       badge.append(icon(c.vote.decision === 'approve' ? 'check' : 'x', 12));
       const what = document.createElement('span');
-      what.textContent = `${c.vote.decision === 'approve' ? 'Approved' : 'Rejected'} · ${c.vote.label}`;
+      what.textContent = `${voteWords(c.vote.decision)} · ${c.vote.label}`;
       badge.append(what);
       meta.append(badge);
     }

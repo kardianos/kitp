@@ -1,7 +1,9 @@
 // approval_test.go: approval requests and votes end to end through the
-// dispatcher — asking, voting (asked or not, agents refused), the tally,
-// the queue, the list badge, rounds settled by reaching the edge's target,
-// removal keeping votes, and the audit rows.
+// dispatcher — asking, voting (asked or not, agents too), the tally, the
+// task's approval properties (the Approvals column, the "vote needed from"
+// / state / asked filters and sorts, in both predicate compilers), rounds
+// settled by reaching the step's target, removal keeping votes, and the
+// audit rows.
 package approval_test
 
 import (
@@ -9,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
@@ -19,7 +22,9 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/dom/cardtype"
 	"github.com/kitp/kitp/server/internal/dom/comment"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
+	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
@@ -168,11 +173,38 @@ func (f fixture) list(t *testing.T, ctx context.Context) approval.ListOutput {
 	return o
 }
 
-func (f fixture) queue(t *testing.T, p person) []approval.QueueRow {
+// tasks reads the project's tasks with their approvals through
+// card.select_with_attributes as ctx, narrowed by a predicate tree and
+// ordered by order (both JSON; "" for none).
+func (f fixture) tasks(t *testing.T, ctx context.Context, tree, order string) []card.CardWithAttrs {
 	t.Helper()
-	var o approval.QueueOutput
-	decode(t, call(f, p.ctx, "approval", "queue", `{}`), &o)
+	extra := ""
+	if tree != "" {
+		extra += `,"tree":` + tree
+	}
+	if order != "" {
+		extra += `,"order":` + order
+	}
+	var o card.SelectWithAttributesOutput
+	decode(t, call(f, ctx, "card", "select_with_attributes", fmt.Sprintf(
+		`{"parent_card_id":"%d","card_type_name":"task","with_approvals":true%s}`, f.project, extra)), &o)
 	return o.Rows
+}
+
+// waiting is the "Vote needed from: Me" filter as p: the tasks an open
+// request asks p to vote on that p hasn't.
+func (f fixture) waiting(t *testing.T, p person) []card.CardWithAttrs {
+	t.Helper()
+	return f.tasks(t, p.ctx, `{"connective":"and","children":[{"attr":"approval_waiting_on","op":"in","values":["@me"]}]}`, "")
+}
+
+// ids lists rows' card ids in order.
+func ids(rows []card.CardWithAttrs) []int64 {
+	out := make([]int64, len(rows))
+	for i, r := range rows {
+		out[i] = r.ID
+	}
+	return out
 }
 
 func (f fixture) decide(t *testing.T, ctx context.Context, body string) approval.DecideOutput {
@@ -182,19 +214,25 @@ func (f fixture) decide(t *testing.T, ctx context.Context, body string) approval
 	return o
 }
 
-// badge reads the task's list badge through card.select_with_attributes.
-func (f fixture) badge(t *testing.T) *card.ApprovalSummary {
+// badge reads the task's Approvals column through card.select_with_attributes
+// as ctx.
+func (f fixture) badge(t *testing.T, ctx context.Context) *card.ApprovalSummary {
 	t.Helper()
-	var o card.SelectWithAttributesOutput
-	decode(t, call(f, sysCtx(), "card", "select_with_attributes", fmt.Sprintf(
-		`{"parent_card_id":"%d","card_type_name":"task","with_approvals":true}`, f.project)), &o)
-	for _, r := range o.Rows {
+	for _, r := range f.tasks(t, ctx, "", "") {
 		if r.ID == f.task {
 			return r.Approvals
 		}
 	}
 	t.Fatalf("task %d not in the select", f.task)
 	return nil
+}
+
+// counts is a summary's state and tally, or "none".
+func counts(b *card.ApprovalSummary) string {
+	if b == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%s %d/%d/%d", b.State, b.Asked, b.Approved, b.Rejected)
 }
 
 func TestApprovalRequestVoteSettle(t *testing.T) {
@@ -247,21 +285,26 @@ func TestApprovalRequestVoteSettle(t *testing.T) {
 		t.Errorf("actions lack Review → Approve → Done: %+v", l.Actions)
 	}
 
-	// The queue: both asked, nobody has voted.
-	q := f.queue(t, f.dana)
-	if len(q) != 1 || q[0].ApprovalID != set.ApprovalID || q[0].Action != "Approve" || q[0].Status.Label != "Review" ||
-		q[0].To.Label != "Done" || q[0].TaskTitle != "Ship it" || q[0].ProjectTitle != "Apollo" || q[0].Asked != 2 || q[0].Approved != 0 {
-		t.Fatalf("dana's queue = %+v", q)
+	// Waiting on both, nobody has voted; Pat isn't asked.
+	if w := f.waiting(t, f.dana); !slices.Equal(ids(w), []int64{f.task}) {
+		t.Fatalf("waiting on dana = %v, want the task", ids(w))
 	}
-	if b := f.badge(t); b == nil || *b != (card.ApprovalSummary{Asked: 2}) {
-		t.Errorf("badge = %+v, want 2 asked, none decided", b)
+	if w := f.waiting(t, f.pat); len(w) != 0 {
+		t.Errorf("waiting on pat (not asked) = %v", ids(w))
+	}
+	b := f.badge(t, f.dana.ctx)
+	if counts(b) != "open 2/0/0" || !b.WaitingOnMe || b.AskedAt.IsZero() {
+		t.Errorf("approvals for dana = %+v, want open, 2 asked, none voted, waiting on her", b)
+	}
+	if b := f.badge(t, f.pat.ctx); b == nil || b.WaitingOnMe {
+		t.Errorf("approvals for pat = %+v, want not waiting on him", b)
 	}
 
 	// Voting. Dana's agent votes too, named with her, but it doesn't answer
-	// the request for her. A repeat is a no-op; voting leaves the queue.
+	// the request for her. A repeat is a no-op; voting takes it off her list.
 	f.decide(t, f.agentCtx, fmt.Sprintf(`"approval_id":"%d","decision":"approve","reason":"Tests pass"`, set.ApprovalID))
-	if q := f.queue(t, f.dana); len(q) != 1 || q[0].Approved != 0 {
-		t.Errorf("after the agent's vote dana's queue = %+v, want hers still waiting, none approved", q)
+	if w := f.waiting(t, f.dana); len(w) != 1 || counts(w[0].Approvals) != "open 2/0/0" {
+		t.Errorf("after the agent's vote, waiting on dana = %v, want hers still needed, none approved", ids(w))
 	}
 	if d := f.list(t, sysCtx()).Decisions[0]; d.By != "claude (for Dana)" || d.PersonID != "" || d.Reason != "Tests pass" {
 		t.Errorf("agent vote = %+v, want it named with its owner and no person", d)
@@ -273,23 +316,29 @@ func TestApprovalRequestVoteSettle(t *testing.T) {
 	if again := f.decide(t, f.dana.ctx, fmt.Sprintf(`"approval_id":"%d","decision":"approve"`, set.ApprovalID)); again.Changed || again.DecisionID != first.DecisionID {
 		t.Errorf("repeat vote = %+v, want the vote in force unchanged", again)
 	}
-	if len(f.queue(t, f.dana)) != 0 {
-		t.Errorf("dana still has it queued after voting")
+	if w := f.waiting(t, f.dana); len(w) != 0 {
+		t.Errorf("still waiting on dana after her vote: %v", ids(w))
 	}
-	if q := f.queue(t, f.lee); len(q) != 1 || q[0].Approved != 1 {
-		t.Errorf("lee's queue = %+v, want it with 1 approved", q)
+	if b := f.badge(t, f.dana.ctx); b == nil || b.WaitingOnMe {
+		t.Errorf("approvals for dana after her vote = %+v, want not waiting on her", b)
+	}
+	if w := f.waiting(t, f.lee); len(w) != 1 || counts(w[0].Approvals) != "open 2/1/0" {
+		t.Errorf("waiting on lee = %v, want the task with 1 approved", ids(w))
 	}
 
 	// Lee rejects, then approves: the later vote wins. Pat, unasked, votes on
 	// the edge directly; he isn't counted in the tally.
 	f.decide(t, f.lee.ctx, fmt.Sprintf(`"approval_id":"%d","decision":"reject","reason":"Typo in the heading"`, set.ApprovalID))
-	if b := f.badge(t); b == nil || *b != (card.ApprovalSummary{Asked: 2, Approved: 1, Rejected: 1}) {
-		t.Errorf("badge after reject = %+v", b)
+	if b := f.badge(t, sysCtx()); counts(b) != "rejected 2/1/1" {
+		t.Errorf("approvals after reject = %s", counts(b))
+	}
+	if w := f.waiting(t, f.lee); len(w) != 0 {
+		t.Errorf("a reject still leaves it waiting on lee: %v", ids(w))
 	}
 	f.decide(t, f.lee.ctx, fmt.Sprintf(`"approval_id":"%d","decision":"approve"`, set.ApprovalID))
 	f.decide(t, f.pat.ctx, fmt.Sprintf(`"from_status_id":"%d","to_status_id":"%d","decision":"approve"`, review, done))
-	if b := f.badge(t); b == nil || *b != (card.ApprovalSummary{Asked: 2, Approved: 2}) {
-		t.Errorf("badge after approvals = %+v", b)
+	if b := f.badge(t, sysCtx()); counts(b) != "approved 2/2/0" {
+		t.Errorf("approvals after both approve = %s", counts(b))
 	}
 	l = f.list(t, sysCtx())
 	if len(l.Decisions) != 5 {
@@ -303,11 +352,11 @@ func TestApprovalRequestVoteSettle(t *testing.T) {
 		t.Errorf("pat's vote = %+v", d)
 	}
 
-	// Reaching Done settles the round: off the badge and every queue, kept on
-	// the task with the request marked reached.
+	// Reaching Done settles the round: off the Approvals column, kept on the
+	// task with the request marked reached.
 	f.move(t, "Done")
-	if b := f.badge(t); b != nil {
-		t.Errorf("badge after Done = %+v, want none", b)
+	if b := f.badge(t, sysCtx()); b != nil {
+		t.Errorf("approvals after Done = %+v, want none", b)
 	}
 	l = f.list(t, sysCtx())
 	if l.Requests[0].ReachedAt == nil {
@@ -329,11 +378,14 @@ func TestApprovalRequestVoteSettle(t *testing.T) {
 	decode(t, call(f, sysCtx(), "approval", "set", fmt.Sprintf(
 		`{"task_id":"%d","from_status_id":"%d","to_status_id":"%d","approver_ids":["%d","%d"]}`,
 		f.task, review, done, f.dana.personID, f.lee.personID)), &again)
-	if b := f.badge(t); b == nil || *b != (card.ApprovalSummary{Asked: 2, Approved: 1}) {
-		t.Errorf("badge in the new round = %+v, want only Dana's new vote", b)
+	if b := f.badge(t, sysCtx()); counts(b) != "open 2/1/0" {
+		t.Errorf("approvals in the new round = %s, want only Dana's new vote", counts(b))
 	}
-	if q := f.queue(t, f.lee); len(q) != 1 || q[0].ApprovalID != again.ApprovalID {
-		t.Errorf("lee's queue in the new round = %+v", q)
+	if w := f.waiting(t, f.lee); !slices.Equal(ids(w), []int64{f.task}) {
+		t.Errorf("waiting on lee in the new round = %v", ids(w))
+	}
+	if w := f.waiting(t, f.dana); len(w) != 0 {
+		t.Errorf("waiting on dana in the new round = %v, want none (she voted)", ids(w))
 	}
 	l = f.list(t, sysCtx())
 	if l.Decisions[0].Settled || !l.Decisions[1].Settled {
@@ -375,11 +427,14 @@ func TestApprovalStaleAndRemove(t *testing.T) {
 	}
 
 	// Moved somewhere other than the edge's target: the vote is stale but
-	// its round isn't settled.
+	// its round isn't settled. A closed task has no open request.
 	f.move(t, "Cancelled")
 	l := f.list(t, sysCtx())
 	if d := l.Decisions[0]; !d.Stale || d.Settled {
 		t.Errorf("vote after cancelling = %+v, want stale, not settled", d)
+	}
+	if b := f.badge(t, sysCtx()); b != nil {
+		t.Errorf("approvals on a cancelled task = %s, want none", counts(b))
 	}
 
 	// Changing who is asked is audited; the action can't change.
@@ -412,12 +467,168 @@ func TestApprovalStaleAndRemove(t *testing.T) {
 	if len(l.Requests) != 0 || len(l.Decisions) != 1 {
 		t.Errorf("after remove: requests=%d decisions=%d, want 0 and 1", len(l.Requests), len(l.Decisions))
 	}
-	if len(f.queue(t, f.lee)) != 0 {
-		t.Errorf("a removed request is still queued")
+	f.move(t, "Todo")
+	if w := f.waiting(t, f.lee); len(w) != 0 {
+		t.Errorf("a removed request still waits on lee: %v", ids(w))
 	}
 
 	// Someone without access to the project sees none of it.
 	if sr := call(f, f.sam.ctx, "approval", "list", fmt.Sprintf(`{"task_id":"%d"}`, f.task)); sr.OK {
 		t.Errorf("a caller who can't see the project read its approvals")
+	}
+}
+
+// goMatch runs tree through the Go predicate compiler (card.CompileTree,
+// what the activity-sink pump and project export use) over the project's
+// tasks and returns the matched ids, sorted.
+func (f fixture) goMatch(t *testing.T, tree string) []int64 {
+	t.Helper()
+	var g card.CardWhereGroup
+	if err := json.Unmarshal([]byte(tree), &g); err != nil {
+		t.Fatalf("tree %s: %v", tree, err)
+	}
+	ctx := sysCtx()
+	tx, err := f.sp.P.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	snap, err := schema.Load(ctx, tx)
+	if err != nil {
+		t.Fatalf("schema load: %v", err)
+	}
+	b := named.New()
+	b.Set("project_id", f.project)
+	clause, err := card.CompileTree(ctx, tx, g, b.Bind, snap)
+	if err != nil {
+		t.Fatalf("CompileTree %s: %v", tree, err)
+	}
+	sql, args, err := b.Compile(`
+		SELECT c.id FROM card c JOIN card_type ct ON ct.id = c.card_type_id
+		WHERE ct.name = 'task' AND c.parent_card_id = :project_id AND c.deleted_at IS NULL
+		  AND (` + clause + `)
+		ORDER BY c.id`)
+	if err != nil {
+		t.Fatalf("compile named: %v", err)
+	}
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		t.Fatalf("Go-compiled query %s: %v", tree, err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	return out
+}
+
+// TestApprovalFiltersAndSorts covers the task's approval properties as
+// filters and sorts: approval_state, approval_waiting_on ("vote needed
+// from") and approval_asked_at, compiled the same by card_compile_predicate
+// (card.select_with_attributes) and card.CompileTree.
+func TestApprovalFiltersAndSorts(t *testing.T) {
+	f := setup(t, "kitp_test_approval_filters")
+	f.move(t, "Doing")
+	f.move(t, "Review")
+	newTask := func(title, status string) int64 {
+		return insertCard(t, f, fmt.Sprintf(
+			`{"card_type_name":"task","parent_card_id":"%d","title":"%s","attributes":{"status":"%d"}}`,
+			f.project, title, f.statuses[status]))
+	}
+	ask := func(task int64, from, to string, people ...person) {
+		var ppl []string
+		for _, p := range people {
+			ppl = append(ppl, fmt.Sprintf(`"%d"`, p.personID))
+		}
+		decode(t, call(f, sysCtx(), "approval", "set", fmt.Sprintf(
+			`{"task_id":"%d","from_status_id":"%d","to_status_id":"%d","approver_ids":[%s]}`,
+			task, f.statuses[from], f.statuses[to], strings.Join(ppl, ","))), &approval.SetOutput{})
+	}
+	vote := func(p person, task int64, from, to, decision string) {
+		decode(t, call(f, p.ctx, "approval", "decide", fmt.Sprintf(
+			`{"task_id":"%d","from_status_id":"%d","to_status_id":"%d","decision":"%s"}`,
+			task, f.statuses[from], f.statuses[to], decision)), &approval.DecideOutput{})
+	}
+
+	// a: Dana asked and approved. b: Dana and Lee asked, Lee rejected.
+	// c: nothing asked. d: Pat asked, no votes yet.
+	a := f.task
+	b := newTask("Bravo", "Doing")
+	c := newTask("Charlie", "Todo")
+	d := newTask("Delta", "Todo")
+	ask(a, "Review", "Done", f.dana)
+	ask(b, "Doing", "Done", f.dana, f.lee)
+	ask(d, "Todo", "Done", f.pat)
+	vote(f.dana, a, "Review", "Done", "approve")
+	vote(f.lee, b, "Doing", "Done", "reject")
+
+	leaf := func(attr, op, values string) string {
+		return fmt.Sprintf(`{"connective":"and","children":[{"attr":"%s","op":"%s","values":%s}]}`, attr, op, values)
+	}
+	sorted := func(v []int64) []int64 {
+		out := slices.Clone(v)
+		slices.Sort(out)
+		return out
+	}
+	cases := []struct {
+		name string
+		tree string
+		want []int64
+	}{
+		{"state open", leaf("approval_state", "=", `["open"]`), []int64{d}},
+		{"state approved or rejected", leaf("approval_state", "in", `["approved","rejected"]`), []int64{a, b}},
+		{"state not none", leaf("approval_state", "!=", `["none"]`), []int64{a, b, d}},
+		{"state none", leaf("approval_state", "in", `["none"]`), []int64{c}},
+		{"state not open or none", leaf("approval_state", "not in", `["open","none"]`), []int64{a, b}},
+		{"vote needed from dana", leaf("approval_waiting_on", "in", fmt.Sprintf(`["%d"]`, f.dana.personID)), []int64{b}},
+		{"vote needed from lee or pat", leaf("approval_waiting_on", "in", fmt.Sprintf(`[%d,"%d"]`, f.lee.personID, f.pat.personID)), []int64{d}},
+		{"vote not needed from dana", leaf("approval_waiting_on", "not in", fmt.Sprintf(`["%d"]`, f.dana.personID)), []int64{a, c, d}},
+		{"vote needed from no one named", leaf("approval_waiting_on", "in", `["@me"]`), nil},
+		{"asked in the last day", leaf("approval_asked_at", "within_last_days", `[1]`), []int64{a, b, d}},
+	}
+	for _, tc := range cases {
+		got := sorted(ids(f.tasks(t, sysCtx(), tc.tree, "")))
+		want := sorted(tc.want)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: select = %v, want %v", tc.name, got, want)
+		}
+		if g := f.goMatch(t, tc.tree); !slices.Equal(g, want) {
+			t.Errorf("%s: Go compiler = %v, want %v", tc.name, g, want)
+		}
+	}
+
+	// "@me" resolves to the viewer's person.
+	if w := f.waiting(t, f.dana); !slices.Equal(ids(w), []int64{b}) {
+		t.Errorf("waiting on dana (@me) = %v, want b", ids(w))
+	}
+
+	// Sorts: votes missing first, then rejected, approved, none; and by the
+	// oldest open request (none last).
+	if got := ids(f.tasks(t, sysCtx(), "", `[{"field":"approval_state","direction":"ASC"},{"field":"created_at","direction":"ASC"}]`)); !slices.Equal(got, []int64{d, b, a, c}) {
+		t.Errorf("by approval state = %v, want d, b, a, c", got)
+	}
+	if got := ids(f.tasks(t, sysCtx(), "", `[{"field":"approval_asked_at","direction":"ASC"}]`)); !slices.Equal(got, []int64{a, b, d, c}) {
+		t.Errorf("by approval asked = %v, want a, b, d, c", got)
+	}
+
+	// A value or op the property doesn't take is refused.
+	for _, tree := range []string{
+		leaf("approval_state", "=", `["maybe"]`),
+		leaf("approval_state", "exists", `[]`),
+		leaf("approval_waiting_on", "contains", `["x"]`),
+		leaf("approval_asked_at", "=", `["2026-01-01"]`),
+	} {
+		if sr := call(f, sysCtx(), "card", "select_with_attributes", fmt.Sprintf(
+			`{"parent_card_id":"%d","card_type_name":"task","tree":%s}`, f.project, tree)); sr.OK {
+			t.Errorf("select accepted %s", tree)
+		}
 	}
 }

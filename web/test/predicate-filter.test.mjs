@@ -460,9 +460,13 @@ test('{ cardType } schema sources attributes from attribute_def.select', async (
   M.flushSync?.();
   const attrSel = c.el.querySelector('[data-pred-attr]');
   const names = attrSel.children.map((o) => o.value);
-  // The card_type's attrs, plus the synthetic every-card timestamps the
-  // predicate can filter on (last_activity_at / created_at).
-  assert.deepEqual(names, ['title', 'milestone_ref', 'last_activity_at', 'created_at'], 'sourced attrs + top-level timestamps');
+  // The card_type's attrs, a task's derived approval fields, plus the
+  // synthetic every-card timestamps (last_activity_at / created_at).
+  assert.deepEqual(
+    names,
+    ['title', 'milestone_ref', 'approval_state', 'approval_waiting_on', 'approval_asked_at', 'last_activity_at', 'created_at'],
+    'sourced attrs + derived fields + top-level timestamps',
+  );
 });
 
 /* -------------------------------------------------------------------------- */

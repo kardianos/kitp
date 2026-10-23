@@ -539,8 +539,19 @@ test('a task filter reaches its links through link.<attr> fields with known valu
   const schema = resolveSchema({ cardType: 'task' }, defs);
   assert.deepEqual(
     schema.map((s) => s.name),
-    ['title', 'link.title', 'link.link_url', 'link.link_kind', 'link.link_state', 'last_activity_at', 'created_at'],
-    'own attrs, then child fields, then the top-level timestamps',
+    [
+      'title',
+      'link.title',
+      'link.link_url',
+      'link.link_kind',
+      'link.link_state',
+      'approval_state',
+      'approval_waiting_on',
+      'approval_asked_at',
+      'last_activity_at',
+      'created_at',
+    ],
+    'own attrs, then child fields, derived fields, then the top-level timestamps',
   );
   const state = schema.find((s) => s.name === 'link.link_state');
   assert.ok(state.choices.some((c) => c.value === 'merged' && c.label === 'Merged'), 'states offered');

@@ -136,7 +136,6 @@ approval_to,           card_ref,    true, $card_type.status, false
 approval_action,       text,        true, null, false
 approvers,             card_ref[],  true, $card_type.person, false, `{"connective":"and","children":[{"attr":"person_kind","op":"!=","values":["contact"]},{"attr":"is_active","op":"!=","values":[false]}]}`
 approval_note,         text,        true, null, false
-panels,                text,        true, null, false
 
 
 ## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"
@@ -191,7 +190,6 @@ $card_type.screen,    $attribute_def.tag_prefix_columns,    false, 9
 $card_type.screen,    $attribute_def.extra_columns,         false, 10
 $card_type.screen,    $attribute_def.sort_order,            false, 11
 $card_type.screen,    $attribute_def.is_active,             false, 12
-$card_type.screen,    $attribute_def.panels,                false, 13
 $card_type.filter,    $attribute_def.title,             true,  0
 $card_type.filter,    $attribute_def.predicate,         false, 1
 $card_type.filter,    $attribute_def.sort,              false, 2
@@ -425,10 +423,15 @@ flow_id,         from_card_id,     to_card_id,        label,           sort_orde
 -- points at the template's status flow; default_create_status overrides
 -- the flow's default for Inbox ("Todo") and Ideas ("New idea").
 
-## table card | under=tpl_project | doc="Inbox screen. Active tasks assigned to the actor; default-create-status overrides the flow default ('New idea') to 'Todo' since the Inbox is about starting work, not filing ideas. panels adds the 'Waiting on you' approval queue above the list." | on_conflict="id"
+## table card | under=tpl_project | alias=tpl_sc_inbox | doc="Inbox screen. Active tasks assigned to the actor; default-create-status overrides the flow default ('New idea') to 'Todo' since the Inbox is about starting work, not filing ideas. extra_columns shows each row's Approvals (the task's open approval requests: votes in, and whether yours is needed)." | on_conflict="id"
 ### rows
-id, card_type_id,     parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,           default_create_status, toggle_groups, panels
-17, $card_type.screen, parent,         "Inbox", list,   inbox, i,      1,          @tpl_flow_status,  @tpl_s_todo,           `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]},{"name":"scope","operator":"and","mode":"multi","items":[{"name":"mine_only","label":"Mine","predicate":{"attr":"assignee","op":"=","values":["__actor__"]},"default_on":true}]}]`, `["approval_queue"]`
+id, card_type_id,     parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,           default_create_status, toggle_groups, extra_columns
+17, $card_type.screen, parent,         "Inbox", list,   inbox, i,      1,          @tpl_flow_status,  @tpl_s_todo,           `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]},{"name":"scope","operator":"and","mode":"multi","items":[{"name":"mine_only","label":"Mine","predicate":{"attr":"assignee","op":"=","values":["__actor__"]},"default_on":true}]}]`, `["approvals"]`
+
+## table card | under=tpl_sc_inbox | doc="Inbox view 'Waiting on my vote': tasks with an open approval request asking you that you haven't voted on, oldest request first. A view to pick, not the Inbox default (the vote itself happens on the task)." | on_conflict="id"
+### rows
+id, card_type_id,      parent_card_id, title,                predicate,                                                     sort
+27, $card_type.filter, parent,         "Waiting on my vote", `{"attr":"approval_waiting_on","op":"in","values":["@me"]}`, `[{"attr":"approval_asked_at","dir":"asc"}]`
 
 
 ## table card | under=tpl_project | doc="Grid screen. Phase items are independent checkboxes so the user can flip triage / terminal on alongside the active default. extra_columns seeds 'due_date' as an additional Grid column out of the box; admins can add more attribute names via the Screens admin." | on_conflict="id"

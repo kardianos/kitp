@@ -48,7 +48,7 @@
  *   - grouping (group_by_attr walk) + bulk selection + infinite scroll.
  */
 
-import { approvalBadge } from '../ui/approval-badge.js';
+import { derivedColumn } from '../cardlist/derived-columns.js';
 import { Control } from '../core/control.js';
 import type { QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
@@ -247,8 +247,9 @@ export class Grid extends CardListCore<GridConfig> {
         order: { from: 'grid.order' },
         where: { from: 'grid.where' },
         tree: { from: 'grid.tree' },
-        // Approval badges in the title cell.
-        withApprovals: { lit: true },
+        // A screen showing an approvals column (derived-columns) asks for the
+        // rows' open approval requests.
+        withApprovals: { from: 'screen.withApprovals' },
       },
       // Stay idle until a project scope resolves — no cross-project flash on
       // the initial (scope=null) fire. The { signal } trigger refires once a
@@ -523,6 +524,7 @@ export class Grid extends CardListCore<GridConfig> {
     // where leaves (never back into a watched dep) — one-way loads, cascade-safe.
     this.effect(() => {
       this.ctx.tree.at(['scope', 'projectId']).get(); // subscribe
+      this.ctx.tree.at(['screen', 'withApprovals']).get(); // an approvals column needs the rows' approvals
       this.bumpQuery();
     }, 'grid.scopeWatch');
 
@@ -756,6 +758,8 @@ export class Grid extends CardListCore<GridConfig> {
       }
       case 'date':
         return '7rem';
+      case 'derived':
+        return '9rem';
       case 'created':
       case 'last_activity':
         return '7.5rem';
@@ -1505,14 +1509,12 @@ export class Grid extends CardListCore<GridConfig> {
         // related) before its title so the parent/child link reads at a glance.
         const rel = relationIcon(row);
         if (rel !== null) cell.append(rel);
-        // The text in its own span so a long title ellipsizes and the
-        // approval badge after it stays whole.
+        // The text in its own span so a long title ellipsizes next to the
+        // relation symbol.
         const text = document.createElement('span');
         text.className = 'grid__title-text';
         text.textContent = strAttr(row, 'title') ?? '(untitled)';
         cell.append(text);
-        const approvals = approvalBadge(row.approvals);
-        if (approvals !== null) cell.append(approvals);
         break;
       }
       case 'ref':
@@ -1555,6 +1557,13 @@ export class Grid extends CardListCore<GridConfig> {
         const v = row.attributes[col.attrName ?? ''];
         if (v === null || v === undefined || v === '') dash(cell);
         else cell.textContent = typeof v === 'bigint' ? v.toString() : String(v);
+        break;
+      }
+      case 'derived': {
+        // A server-computed column (approvals): its renderer from the table.
+        const el = derivedColumn(col.key)?.render(row) ?? null;
+        if (el === null) dash(cell);
+        else cell.append(el);
         break;
       }
       case 'created':

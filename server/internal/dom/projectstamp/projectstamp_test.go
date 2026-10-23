@@ -720,15 +720,16 @@ func TestStampFromInstallSeedTemplate(t *testing.T) {
 	// Descendant counts under the new project. Nine status cards
 	// (6 task statuses + 3 comm statuses from Gate 2 of
 	// email_comm_spec), seven screens (6 original + the Comms screen
-	// from Gate 7 of email_comm_spec), no filter cards (the
-	// template-only "Comms attached" filter was dropped — see migration
+	// from Gate 7 of email_comm_spec), one filter card (the Inbox's
+	// "Waiting on my vote" view, from task approvals; the template-only
+	// "Comms attached" filter was dropped — see migration
 	// 0006_drop_comms_attached_filter); no milestones / components /
 	// tags in the install-seed template.
 	type want struct {
 		typ string
 		n   int
 	}
-	for _, w := range []want{{"status", 9}, {"screen", 7}, {"milestone", 0}, {"filter", 0}} {
+	for _, w := range []want{{"status", 9}, {"screen", 7}, {"milestone", 0}, {"filter", 1}} {
 		var got int
 		if err := f.sp.P.QueryRow(f.ctx, `
 			WITH RECURSIVE walk AS (
