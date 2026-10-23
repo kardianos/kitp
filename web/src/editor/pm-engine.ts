@@ -440,6 +440,19 @@ export const createProseMirrorEngine: EngineFactory = (host, init, hooks) => {
     focus: () => (rawArea !== null ? rawArea.focus() : view.focus()),
     isFocused: () =>
       rawArea !== null ? document.activeElement === rawArea : view.hasFocus(),
+    isEmpty: () => {
+      if (rawArea !== null) return rawArea.value.trim() === '';
+      // Stops at the first visible content: non-blank text, or a leaf such as
+      // an image or rule (a hard break alone is still blank).
+      let empty = true;
+      view.state.doc.descendants((node: ProseNode) => {
+        if (!empty) return false;
+        if (node.isText) empty = !/\S/.test(node.text ?? '');
+        else if (node.isLeaf && node.type !== nodes.hard_break) empty = false;
+        return empty;
+      });
+      return empty;
+    },
     destroy: () => {
       rawCleanup?.();
       rawArea?.remove();

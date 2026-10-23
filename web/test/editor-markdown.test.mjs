@@ -222,7 +222,7 @@ test('a normal bullet list is unaffected (checked stays null)', () => {
 /* host that listens (a description reads its value once, on commit).          */
 /* -------------------------------------------------------------------------- */
 
-test('the engine reports a change without serializing; RichEditor serializes only for onInput', () => {
+test('a change is reported without a payload; the host reads the markdown when it needs it', () => {
   const host = document.createElement('div');
   document.body.append(host);
   const changes = [];
@@ -236,12 +236,28 @@ test('the engine reports a change without serializing; RichEditor serializes onl
   engine.destroy();
 
   rich.setRichEditorEngine(rich.createProseMirrorEngine);
-  const got = [];
-  const listening = new rich.RichEditor({ value: 'first', onInput: (md) => got.push(md) });
-  document.body.append(listening.el);
-  listening.el.querySelector('[data-action="hr"]').click();
-  assert.equal(got.length, 1);
-  assert.equal(got[0], '---\n\nfirst', 'a listening host gets the markdown (rule inserted at the caret)');
-  assert.equal(got[0], listening.getValue());
-  listening.destroy();
+  let changed = 0;
+  const ed = new rich.RichEditor({ value: 'first', onChange: () => changed++ });
+  document.body.append(ed.el);
+  ed.el.querySelector('[data-action="hr"]').click();
+  assert.equal(changed, 1);
+  assert.equal(ed.getValue(), '---\n\nfirst', 'rule inserted at the caret');
+  ed.destroy();
 });
+
+const BLANK_CASES = [
+  ['', true],
+  ['   \n\n  ', true],
+  ['hello', false],
+  ['---', false, 'a rule is content'],
+  ['![logo](https://example.com/a.png)', false, 'an image is content'],
+  ['\n\n\n\nlate text', false],
+];
+for (const [md, want, why] of BLANK_CASES) {
+  test(`isEmpty(${JSON.stringify(md)}) = ${want}${why ? ` (${why})` : ''}`, () => {
+    rich.setRichEditorEngine(rich.createProseMirrorEngine);
+    const ed = new rich.RichEditor({ value: md });
+    assert.equal(ed.isEmpty(), want);
+    ed.destroy();
+  });
+}

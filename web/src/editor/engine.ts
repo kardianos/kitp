@@ -92,6 +92,9 @@ export interface EditorEngine {
   focus(): void;
   /** True when the editable element currently holds focus (guards setMarkdown). */
   isFocused(): boolean;
+  /** True when there's nothing but whitespace — cheap (no serialize), for a
+   *  host that enables a Save / Post button as the user types. */
+  isEmpty(): boolean;
   /** Tear down listeners / view and remove the editable DOM. */
   destroy(): void;
   /** True when this engine implements the {@link EditorAction} command surface
@@ -162,6 +165,7 @@ export const createTextareaEngine: EngineFactory = (host, init, hooks) => {
     },
     focus: () => ta.focus(),
     isFocused: () => document.activeElement === ta,
+    isEmpty: () => ta.value.trim() === '',
     destroy: () => {
       ta.removeEventListener('input', onInput);
       ta.removeEventListener('keydown', onKeydown as EventListener);

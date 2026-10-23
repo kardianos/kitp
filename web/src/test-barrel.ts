@@ -521,6 +521,7 @@ export { TaskLinks, registerTaskLinks, type TaskLinksConfig } from './task-detai
 export { formatLocalDateTime, formatUtcOffset, localTimeEl } from './util/datetime.js';
 export { loadView, saveView } from './filter/view-persistence.js';
 export { trapFocus, captureFocus } from './util/focus-trap.js';
+export { fitTextarea } from './util/autosize.js';
 export {
   formatActivityText,
   humaniseAttribute,

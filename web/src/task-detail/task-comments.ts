@@ -129,11 +129,15 @@ export class TaskComments extends Control<TaskCommentsConfig> {
   /** False once a page returns fewer than `limit` rows (no older page exists). */
   private hasMore = true;
 
-  /** Comment composer draft (preserved across re-paints). */
+  /** The text the composer is (re)built with. While it's open the editor holds
+   *  the live text (read on post); this is set when the composer is cleared or
+   *  a failed post is restored. */
   private composerDraft = '';
   /** True while a comment.insert is in flight (disables the composer). */
   private posting = false;
-  /** Per-comment edit state, keyed by comment activity-id-as-string. */
+  /** Per-comment edit state, keyed by comment activity-id-as-string. `draft`
+   *  seeds the editor; the open editor holds the live text, copied back here
+   *  before a repaint rebuilds it (see paintComments). */
   private readonly edits = new Map<string, { draft: string; busy: boolean }>();
 
   /* DOM regions held so loads / posts repaint without a full re-render. */
@@ -413,7 +417,12 @@ export class TaskComments extends Control<TaskCommentsConfig> {
 
   private paintComments(): void {
     // Tear down editors from the previous paint before the list is rebuilt;
-    // renderEditor re-creates them (seeded from the preserved per-comment draft).
+    // renderEditor re-creates them, seeded from each draft — so first copy the
+    // typed text back into the drafts (the editors aren't read per keystroke).
+    for (const [key, ed] of this.editEditors) {
+      const cur = this.edits.get(key);
+      if (cur !== undefined) cur.draft = ed.getValue();
+    }
     for (const ed of this.editEditors.values()) ed.destroy();
     this.editEditors.clear();
     this.commentsBody.replaceChildren();
@@ -516,15 +525,16 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     const wrap = document.createElement('div');
     wrap.className = 'task-comments__edit';
 
+    let saveBtn: HTMLButtonElement | null = null;
     const editor = new RichEditor({
       value: state.draft,
       ariaLabel: 'Edit comment',
       disabled: state.busy,
       editableClassName: 'task-comments__edit-input',
       editableAttrs: { 'data-comment-edit-input': '' },
-      onInput: (md) => {
-        const cur = this.edits.get(c.id.toString());
-        if (cur !== undefined) cur.draft = md;
+      // Only the Save button follows typing; the text is read on save.
+      onChange: () => {
+        if (saveBtn !== null) saveBtn.disabled = state.busy || editor.isEmpty();
       },
       onCommit: () => this.commitEdit(c),
       onCancel: () => this.cancelEdit(c.id),
@@ -544,6 +554,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     this.listen(cancel, 'click', () => this.cancelEdit(c.id));
 
     const save = document.createElement('button');
+    saveBtn = save;
     save.type = 'button';
     save.className = 'btn btn-primary task-comments__btn';
     save.dataset.commentEditSave = '';
@@ -578,8 +589,9 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     const key = c.id.toString();
     const state = this.edits.get(key);
     if (state === undefined || state.busy) return;
-    const next = state.draft.trim();
+    const next = (this.editEditors.get(key)?.getValue() ?? state.draft).trim();
     if (next === '') return;
+    state.draft = next;
     state.busy = true;
     this.paintComments();
 
@@ -620,11 +632,10 @@ export class TaskComments extends Control<TaskCommentsConfig> {
       disabled: this.posting,
       editableClassName: 'task-comments__composer-input',
       editableAttrs: { 'data-comment-input': '' },
-      onInput: (md) => {
-        this.composerDraft = md;
-        // Toggle the Comment button's disabled state without a full repaint.
+      // Toggle the Comment button without a repaint; the text is read on post.
+      onChange: () => {
         const btn = this.composerHost.querySelector<HTMLButtonElement>('[data-comment-submit]');
-        if (btn !== null) btn.disabled = this.posting || this.composerDraft.trim() === '';
+        if (btn !== null) btn.disabled = this.posting || editor.isEmpty();
       },
       onCommit: () => this.postComment(),
     });
@@ -661,7 +672,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
    */
   private postComment(): void {
     if (this.cardId === null || this.posting) return;
-    const body = this.composerDraft.trim();
+    const body = (this.composerEditor?.getValue() ?? this.composerDraft).trim();
     if (body === '') return;
     this.posting = true;
 

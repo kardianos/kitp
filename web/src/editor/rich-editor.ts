@@ -2,7 +2,7 @@
  * RichEditor — the encapsulated, drop-in WYSIWYG/markdown editor.
  *
  * A lightweight HELPER (not a Control), in the mould of `ui/editable-field.ts`:
- * construct it, mount its `.el`, and it fires `onInput` / `onCommit` / `onCancel`.
+ * construct it, mount its `.el`, and it fires `onChange` / `onCommit` / `onCancel`.
  * The host owns persistence (PURE: markdown in, markdown out — the same contract
  * as `FieldEditor`). The host MUST call `destroy()` when it tears the editor down
  * (engines such as ProseMirror hold a view that needs explicit teardown); the
@@ -37,11 +37,12 @@ export interface RichEditorOptions {
   /** Attributes stamped on the editable element (preserves selectors / focus). */
   editableAttrs?: Record<string, string>;
   /**
-   * Fired on every change with the current markdown (host tracks draft /
-   * toggles buttons). Costs a full serialize per keystroke, so set it only when
-   * the host needs the live value; otherwise read {@link RichEditor.getValue}.
+   * Fired on every change, with no payload: building the markdown is
+   * O(document), so a host reads {@link RichEditor.getValue} when it needs the
+   * text (on save, before a repaint) and {@link RichEditor.isEmpty} to enable a
+   * button as the user types.
    */
-  onInput?: (markdown: string) => void;
+  onChange?: () => void;
   /** Mod/Ctrl+Enter. Host persists. */
   onCommit?: (markdown: string) => void;
   /** Escape. */
@@ -93,13 +94,10 @@ export class RichEditor {
         editableAttrs: opts.editableAttrs,
       },
       {
-        // Serialize only for a host that listens — building the markdown is
-        // O(document), and a description host reads it once, on commit. No
-        // toolbar refresh here: the engine reports every transaction through
-        // onSelectionChange too, so refreshing here would run it twice a key.
-        onChange: () => {
-          if (this.opts.onInput !== undefined) this.opts.onInput(this.engine.getMarkdown());
-        },
+        // No toolbar refresh here: the engine reports every transaction
+        // through onSelectionChange too, so refreshing here would run it twice
+        // a key.
+        onChange: () => this.opts.onChange?.(),
         onCommit: (md) => this.opts.onCommit?.(md),
         onCancel: () => this.opts.onCancel?.(),
         onBlur: () => this.opts.onBlur?.(),
@@ -116,9 +114,15 @@ export class RichEditor {
     }
   }
 
-  /** Current content as markdown. */
+  /** Current content as markdown (a full serialize: call it when needed, not
+   *  per keystroke). */
   getValue(): string {
     return this.engine.getMarkdown();
+  }
+
+  /** True when the content is blank; cheap enough to call on every change. */
+  isEmpty(): boolean {
+    return this.engine.isEmpty();
   }
 
   /**
