@@ -4,8 +4,10 @@
 --
 -- Per-row pipeline:
 --   1. Validation: activity_id and body are required.
---   2. Lookup: the target activity must exist and have kind='comment';
---      resolve its linked comment_body_id and the original author.
+--   2. Lookup: the target activity must exist and be a comment — or an
+--      approval_decision carrying a reason, whose wording is edited the
+--      same way (the decision itself never changes; a new one supersedes
+--      it); resolve its linked comment_body_id and the original author.
 --   3. Authorization: the actor must be the original comment author.
 --      Admin escape is intentionally NOT implemented — matches the
 --      strict actor == origActor check in the prior Go runUpdate.
@@ -67,10 +69,16 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
-        IF _kind <> 'comment' THEN
+        IF _kind NOT IN ('comment', 'approval_decision') THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 format('comment.update: activity %s is kind=%L, not ''comment''',
                        _activity_id, _kind),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF _body_id IS NULL THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('comment.update: activity %s has no text to edit', _activity_id),
                 NULL::jsonb;
             CONTINUE;
         END IF;

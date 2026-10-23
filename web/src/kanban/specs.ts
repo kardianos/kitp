@@ -83,6 +83,8 @@ export interface SelectWithAttributesInput {
    * The Inbox's routed-to-me toggle sets this true.
    */
   routedToMe?: boolean;
+  /** Add each row's approval badge summary (`approvals`). */
+  withApprovals?: boolean;
 }
 export interface SelectWithAttributesOutput {
   rows: CardWithAttrs[];
@@ -161,6 +163,13 @@ function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
   // appears when the request set with_personal_sort:true; NULL → undefined.
   const personalSort = asNumOpt(j['personal_sort_order']);
   if (personalSort !== undefined) out.personal_sort_order = personalSort;
+  // The approval badge summary rides at the top level when with_approvals
+  // asked for it and the card has an open request.
+  const ap = j['approvals'];
+  if (ap !== null && typeof ap === 'object') {
+    const a = ap as Record<string, unknown>;
+    out.approvals = { asked: Number(a['asked'] ?? 0), approved: Number(a['approved'] ?? 0), rejected: Number(a['rejected'] ?? 0) };
+  }
   // Row-level audit timestamps the wire carries at the top level (the Grid's
   // Created / Last-activity columns read these — previously dropped).
   if (typeof j['created_at'] === 'string') out.created_at = j['created_at'];
@@ -215,6 +224,7 @@ export function registerKanbanSpecs(api: Api): void {
       // same wire shape as before.
       if (i.withPersonalSort === true) m['with_personal_sort'] = true;
       if (i.routedToMe === true) m['routed_to_me'] = true;
+      if (i.withApprovals === true) m['with_approvals'] = true;
       return m;
     },
     decode: (raw): SelectWithAttributesOutput => ({

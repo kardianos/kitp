@@ -33,6 +33,8 @@ The filter is a tree of AND / OR groups around `kind_in` / `attr_in` / `actor_in
 
 The **Done by** / **Not done by** conditions list the project's accounts by name: everyone holding a role on the project and the agents they own, so you can, for example, leave out a code-review bot's changes. A personal notification subscription also offers **Me** and **My agents**, resolved to the subscriber when the digest is built. *Not done by Me, My agents* sends you every change except your own and the ones your agents made for you. A broadcast sink has no subscriber, so those two don't apply there.
 
+**Approval asked of** matches a change that asks someone to approve: an approval request naming them, when it's made or when they're added to it. A personal subscription offers it as the unticked **Only approvals asked of me** shortcut, for a subscription that mails you just those. **Approval vote** is an event type of its own, for following the votes themselves.
+
 An empty filter (no JSON, or an empty top-level AND group) pushes every row downstream. An unknown op fails closed server-side so a typo cannot silently flood a channel.
 
 ## Status and faults

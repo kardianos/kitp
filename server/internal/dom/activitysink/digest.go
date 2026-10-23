@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -83,7 +84,7 @@ func (p *Pumper) buildDigest(ctx context.Context, cfg unitConfig, rows []scanned
 		for _, id := range rowRefIDs(r) {
 			cardIDs[id] = true
 		}
-		if r.Kind == "comment" {
+		if r.Kind == "comment" || r.Kind == "approval_decision" {
 			if id := jsonField(r.ValueNew, "comment_body_id"); id != 0 {
 				commentIDs[id] = true
 			}
@@ -150,6 +151,9 @@ func groupRows(rows []scannedRow, cards map[int64]cardInfo, actors map[int64]str
 			prefix += ": "
 		}
 
+		if isAttrKind(r.Kind) && digestHiddenAttrs[r.AttributeName] {
+			continue
+		}
 		if isAttrKind(r.Kind) {
 			k := attrKey{r.CardID, r.AttributeName}
 			newVal := displayValue(r.ValueType, r.ValueNew, cards)
@@ -203,6 +207,14 @@ func groupRows(rows []scannedRow, cards map[int64]cardInfo, actors map[int64]str
 			ln.Label = "Merged duplicates"
 		case "card_set_phase":
 			ln.Label = "Phase: " + displayValue("text", r.ValueOld, cards) + " → " + displayValue("text", r.ValueNew, cards)
+		case "approval_decision":
+			verdict := "Rejected"
+			if jsonString(r.ValueNew, "decision") == "approve" {
+				verdict = "Approved"
+			}
+			ln.Label = fmt.Sprintf("%s: %s (%s → %s)", verdict, jsonString(r.ValueNew, "action"),
+				cards[jsonField(r.ValueNew, "from_id")].title, cards[jsonField(r.ValueNew, "to_id")].title)
+			ln.Body = clip(strings.TrimSpace(comments[jsonField(r.ValueNew, "comment_body_id")]), commentMaxRunes)
 		default:
 			ln.Label = humanize(r.Kind)
 		}
@@ -447,6 +459,40 @@ func rowRefIDs(r scannedRow) []int64 {
 		}
 	case "task_move":
 		if id := jsonField(r.ValueNew, "new_project_id"); id != 0 {
+			out = append(out, id)
+		}
+	case "approval_decision":
+		for _, k := range []string{"from_id", "to_id"} {
+			if id := jsonField(r.ValueNew, k); id != 0 {
+				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
+
+// digestHiddenAttrs are attributes a digest doesn't list as changes: an
+// approval request's fixed edge and action, which its title (the line's
+// prefix) already names.
+var digestHiddenAttrs = map[string]bool{
+	"approval_from":   true,
+	"approval_to":     true,
+	"approval_action": true,
+}
+
+// addedRefs is the card ids in a card_ref[] value's new list that its old
+// list lacks (who an `approvers` change added).
+func addedRefs(oldRaw, newRaw []byte) []int64 {
+	var before, after []int64
+	if v, ok := decodeJSON(oldRaw); ok {
+		before = refIDsOf(v)
+	}
+	if v, ok := decodeJSON(newRaw); ok {
+		after = refIDsOf(v)
+	}
+	var out []int64
+	for _, id := range after {
+		if !slices.Contains(before, id) {
 			out = append(out, id)
 		}
 	}

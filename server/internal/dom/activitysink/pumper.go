@@ -378,7 +378,11 @@ func (c unitConfig) eventFilters() (eventFilterSet, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, p.WithSubscriber(c.subscriberUserID, c.subscriberAgentIDs))
+		out = append(out, p.WithSubscriber(Subscriber{
+			UserID:   c.subscriberUserID,
+			AgentIDs: c.subscriberAgentIDs,
+			PersonID: c.subscriberPersonID,
+		}))
 	}
 	return out, nil
 }
@@ -689,6 +693,9 @@ func (p *Pumper) loadActivityBatch(ctx context.Context, pointer int64) ([]scanne
 		if err := rows.Scan(&r.ID, &r.CardID, &r.Kind, &r.AttributeName, &r.ValueType,
 			&r.ActorID, &r.CreatedAt, &r.ValueOld, &r.ValueNew, &r.SubjectID); err != nil {
 			return nil, err
+		}
+		if r.AttributeName == "approvers" {
+			r.AddedApprovers = addedRefs(r.ValueOld, r.ValueNew)
 		}
 		out = append(out, r)
 	}

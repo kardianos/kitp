@@ -220,6 +220,10 @@ export function formatActivityText(
       const fn = readFilename(row.valueOld);
       return fn !== '' ? `${actor} removed ${fn}` : `${actor} removed an attachment.`;
     }
+    case 'approval_decision': {
+      const vote = voteOf(row);
+      return `${actor} ${vote.decision === 'approve' ? 'approved' : 'rejected'} ${vote.label}`;
+    }
     default:
       return `${actor}: ${row.kind}`;
   }
@@ -240,13 +244,20 @@ export interface CommentEntry {
   actorName?: string;
   createdAt: string;
   edited: boolean;
+  /** Set when the entry is an approval vote (kind='approval_decision'): the
+   *  verdict and the status change it's about ("Approve: Review → Done").
+   *  Its body is the optional reason. */
+  vote?: { decision: 'approve' | 'reject'; label: string };
 }
 
 /**
  * Derive the comment list from a NEWEST-FIRST activity stream. A comment is a
  * `kind='comment'` row carrying its body inline (`commentBody`); a later
  * `kind='comment_edit'` row whose `value_new.activity_id` points back at it
- * overrides the body and flags it edited. Returns newest-first (input order).
+ * overrides the body and flags it edited. An approval vote
+ * (`kind='approval_decision'`) is an entry too, carrying its verdict and edge
+ * label, with its reason as the body (edited the same way). Returns
+ * newest-first (input order).
  *
  * Mirrors the Svelte screen's `comments` derived computation.
  */
@@ -267,15 +278,31 @@ export function deriveComments(orderedNewestFirst: readonly ActivityRow[]): Comm
   }
   const out: CommentEntry[] = [];
   for (const a of orderedNewestFirst) {
-    if (a.kind !== 'comment') continue;
+    if (a.kind !== 'comment' && a.kind !== 'approval_decision') continue;
     const key = a.id.toString();
     const edited = editedBodies.has(key);
     const body = edited ? (editedBodies.get(key) ?? '') : (a.commentBody ?? '');
     const entry: CommentEntry = { id: a.id, body, actorId: a.actorId, createdAt: a.createdAt, edited };
     if (a.actorName !== undefined) entry.actorName = a.actorName;
+    if (a.kind === 'approval_decision') entry.vote = voteOf(a);
     out.push(entry);
   }
   return out;
+}
+
+/** An approval_decision row's verdict and edge label, statuses named from
+ *  the row's refs. */
+export function voteOf(a: ActivityRow): { decision: 'approve' | 'reject'; label: string } {
+  const vn = (a.valueNew ?? {}) as { decision?: unknown; action?: unknown; from_id?: unknown; to_id?: unknown };
+  const name = (id: unknown): string => {
+    const k = typeof id === 'bigint' ? id.toString() : String(id ?? '');
+    return a.refs?.[k] ?? `#${k}`;
+  };
+  const action = typeof vn.action === 'string' ? vn.action : '';
+  return {
+    decision: vn.decision === 'approve' ? 'approve' : 'reject',
+    label: `${action}: ${name(vn.from_id)} → ${name(vn.to_id)}`,
+  };
 }
 
 /**

@@ -12,8 +12,10 @@
 --      what its owner sees). Otherwise not_found, as for a hidden card.
 --   3. Accounts: every holder of a role that reaches the project, the
 --      agents those holders own (an agent acts under its owner's grants),
---      and ids. Each {id, name (user_label), is_agent}; people first, then
---      agents, each by name.
+--      and ids. Each {id, name (user_label), is_agent, person_id (their
+--      linked person card, for conditions on people such as "approval
+--      asked of"; absent for an agent)}; people first, then agents, each
+--      by name.
 --
 -- Result JSON shape matches `activity.ActorsOutput`.
 CREATE OR REPLACE FUNCTION activity_actors_batch(
@@ -96,7 +98,11 @@ BEGIN
                            jsonb_build_object(
                                'id', u.id::text,
                                'name', user_label(u.id),
-                               'is_agent', u.is_agent)
+                               'is_agent', u.is_agent,
+                               'person_id', (
+                                   SELECT uap.person_card_id::text FROM user_account_person uap
+                                   WHERE uap.user_account_id = u.id
+                                   ORDER BY uap.person_card_id LIMIT 1))
                            ORDER BY u.is_agent, lower(user_label(u.id)), u.id)
                 FROM accounts a
                 JOIN user_account u ON u.id = a.id

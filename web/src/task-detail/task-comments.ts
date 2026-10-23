@@ -487,9 +487,23 @@ export class TaskComments extends Control<TaskCommentsConfig> {
       meta.append(edited);
     }
 
+    if (c.vote !== undefined) {
+      // An approval vote: its verdict and the status change it's about.
+      const badge = document.createElement('span');
+      badge.className = 'task-comments__vote';
+      badge.dataset.commentVote = c.vote.decision;
+      badge.append(icon(c.vote.decision === 'approve' ? 'check' : 'x', 12));
+      const what = document.createElement('span');
+      what.textContent = `${c.vote.decision === 'approve' ? 'Approved' : 'Rejected'} · ${c.vote.label}`;
+      badge.append(what);
+      meta.append(badge);
+    }
+
     const editState = this.edits.get(c.id.toString());
     const me = this.currentUserId();
-    const canEdit = me !== null && me === c.actorId.toString();
+    // A vote's reason is editable like a comment; a vote without one has
+    // nothing to edit (the verdict changes only by voting again).
+    const canEdit = me !== null && me === c.actorId.toString() && (c.vote === undefined || c.body !== '');
     if (canEdit && editState === undefined) {
       const editBtn = document.createElement('button');
       editBtn.type = 'button';
@@ -506,7 +520,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
 
     if (editState !== undefined) {
       li.append(this.renderEditor(c, editState));
-    } else {
+    } else if (c.body !== '' || c.vote === undefined) {
       const bodyEl = document.createElement('div');
       bodyEl.className = 'task-comments__body';
       bodyEl.dataset.commentBody = '';
@@ -514,6 +528,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
       setMarkdown(bodyEl, c.body);
       li.append(bodyEl);
     }
+    if (c.vote !== undefined) li.classList.add('task-comments__item--vote');
 
     return li;
   }

@@ -14,6 +14,7 @@ This page is also where **filters** are edited — the right pane lists every fi
 | `hotkey`         | Single-key shortcut to jump to the screen.                             |
 | `flow_ref`       | Optional flow that supplies the status transitions on this screen.     |
 | `default_filter` | Which child filter card loads on first visit.                          |
+| `panels`         | Extra panels above the list, as a JSON list: `["approval_queue"]` shows *Waiting on you* (the Inbox has it). |
 
 ## Creating a screen
 

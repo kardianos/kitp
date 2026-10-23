@@ -115,6 +115,11 @@ func TestPredicateWithSubscriber(t *testing.T) {
 		{"actor_not_in @my_agents keeps mine when only agents are listed", `{"op":"actor_not_in","values":["@my_agents"]}`, 7, row{ActorID: 7}, true},
 		{"actor_in @my_agents", `{"op":"actor_in","values":["@my_agents"]}`, 7, row{ActorID: 70}, true},
 		{"no subscriber leaves @my_agents literal", `{"op":"actor_in","values":["@my_agents"]}`, 0, row{ActorID: 70}, false},
+		{"approval_asks_in @me: asked", `{"op":"approval_asks_in","values":["@me"]}`, 7, row{Kind: "attr_update", AttributeName: "approvers", AddedApprovers: []int64{900}}, true},
+		{"approval_asks_in @me: someone else asked", `{"op":"approval_asks_in","values":["@me"]}`, 7, row{Kind: "attr_update", AttributeName: "approvers", AddedApprovers: []int64{901}}, false},
+		{"approval_asks_in a person id", `{"op":"approval_asks_in","values":["901"]}`, 7, row{AddedApprovers: []int64{900, 901}}, true},
+		{"approval_asks_in ignores other rows", `{"op":"approval_asks_in","values":["@me"]}`, 7, row{Kind: "comment"}, false},
+		{"approval_asks_in @me without a subscriber matches nothing", `{"op":"approval_asks_in","values":["@me"]}`, 0, row{AddedApprovers: []int64{900}}, false},
 		{"actor_not_in @me drops my own events", `{"op":"actor_not_in","values":["@me"]}`, 7, row{ActorID: 7}, false},
 		{"actor_not_in @me keeps others", `{"op":"actor_not_in","values":["@me"]}`, 7, row{ActorID: 8}, true},
 		{"actor_in @me nested in and", `{"op":"and","items":[{"op":"kind_in","values":["comment"]},{"op":"actor_in","values":["@me"]}]}`, 7, row{Kind: "comment", ActorID: 7}, true},
@@ -127,7 +132,7 @@ func TestPredicateWithSubscriber(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			if got := p.WithSubscriber(c.me, agents).Eval(c.r); got != c.want {
+			if got := p.WithSubscriber(activitysink.Subscriber{UserID: c.me, AgentIDs: agents, PersonID: 900}).Eval(c.r); got != c.want {
 				t.Errorf("Eval = %v, want %v", got, c.want)
 			}
 		})

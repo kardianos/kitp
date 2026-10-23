@@ -14,7 +14,12 @@
 import type { MasterDetailConfig } from '../admin/master-detail.js';
 import type { RecordFormScreenConfig } from '../admin/record-form.js';
 import { MAX_ROLLUP_MINUTES, parseRollupMinutes } from '../admin/activity-sink-form.js';
-import { ACTIVITY_ME_CHOICES, SKIP_OWN_CHANGES, activityPredicateToString } from '../admin/activity-predicate.js';
+import {
+  ACTIVITY_ME_CHOICES,
+  APPROVALS_ASKED_OF_ME,
+  SKIP_OWN_CHANGES,
+  activityPredicateToString,
+} from '../admin/activity-predicate.js';
 import type { SubscriptionRow, SubscriptionSetInput } from './subscription-specs.js';
 
 const NEW = ['0'] as const;
@@ -167,7 +172,10 @@ export const SUBSCRIPTION_FORM: RecordFormScreenConfig = {
       projectField: 'projectId',
       editor: {
         actorChoices: ACTIVITY_ME_CHOICES,
-        shortcuts: [{ label: 'Skip changes I or my agents make', leaf: SKIP_OWN_CHANGES }],
+        shortcuts: [
+          { label: 'Skip changes I or my agents make', leaf: SKIP_OWN_CHANGES },
+          { label: 'Only approvals asked of me', leaf: APPROVALS_ASKED_OF_ME },
+        ],
       },
     },
     {

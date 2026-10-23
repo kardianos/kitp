@@ -20,6 +20,8 @@ var digestCards = map[int64]cardInfo{
 	31: {typeName: "status", title: "Doing"},
 	32: {typeName: "status", title: "Done"},
 	40: {typeName: "screen", title: "Inbox"},
+	50: {typeName: "approval", title: "Approve: Doing → Done"},
+	60: {typeName: "person", title: "Sam Lee"},
 }
 
 var digestActors = map[int64]string{1: "System", 7: "Alex Kim", 8: "Sam Lee"}
@@ -85,6 +87,22 @@ func TestGroupRows(t *testing.T) {
 				row(3, 11, 11, 1, "card_delete", "", "", "", ""),
 			},
 			want: []string{"#11 Write onboarding docs |  | Milestone: — → Todo  — Alex Kim, Attached “spec.pdf”  — Alex Kim, Deleted  — System"},
+		},
+		{
+			name: "an approval request lists who is asked, not its fixed edge; a vote names its edge and reason",
+			rows: []scannedRow{
+				row(1, 50, 10, 7, "card_create", "", "", "", ""),
+				row(2, 50, 10, 7, "attr_update", "approval_from", "card_ref", "", "31"),
+				row(3, 50, 10, 7, "attr_update", "approval_to", "card_ref", "", "32"),
+				row(4, 50, 10, 7, "attr_update", "approval_action", "text", "", `"Approve"`),
+				row(5, 50, 10, 7, "attr_update", "approvers", "card_ref[]", "", `[60]`),
+				row(6, 10, 10, 8, "approval_decision", "", "", "",
+					`{"decision":"approve","from_id":"31","to_id":"32","action":"Approve","comment_body_id":500}`),
+			},
+			want: []string{"#10 Fix the login redirect loop that happens when the session… |  | " +
+				"Approval “Approve: Doing → Done”: Created  — Alex Kim, " +
+				"Approval “Approve: Doing → Done”: Approvers: — → Sam Lee  — Alex Kim, " +
+				"Approved: Approve (Doing → Done)  — Sam Lee"},
 		},
 	}
 	for _, c := range cases {

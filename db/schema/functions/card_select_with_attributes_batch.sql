@@ -10,7 +10,8 @@
 --
 -- Per-row pipeline:
 --   1. Decode filters (parent_card_id, card_type_name, where[], tree,
---      include_deleted, with_personal_sort, routed_to_me, order, limit,
+--      include_deleted, with_personal_sort, routed_to_me, with_approvals,
+--      order, limit,
 --      offset).
 --   2. Compile the predicate tree (v2 `tree` takes precedence over the
 --      v1 `where[]` flat list) via card_compile_predicate; accumulate
@@ -41,6 +42,8 @@ DECLARE
     _include_deleted boolean;
     _with_personal_sort boolean;
     _routed_to_me boolean;
+    _with_approvals boolean;
+    _approvals_select text;
     _tree jsonb;
     _where jsonb;
     _limit_v int;
@@ -92,6 +95,7 @@ BEGIN
         _include_deleted := COALESCE((_raw->>'include_deleted')::boolean, false);
         _with_personal_sort := COALESCE((_raw->>'with_personal_sort')::boolean, false);
         _routed_to_me := COALESCE((_raw->>'routed_to_me')::boolean, false);
+        _with_approvals := COALESCE((_raw->>'with_approvals')::boolean, false);
         _tree := _raw->'tree';
         _where := _raw->'where';
         BEGIN
@@ -205,6 +209,14 @@ BEGIN
         ELSE
             _personal_sort_select := 'NULL::float8 AS personal_sort_order';
             _personal_sort_join := '';
+        END IF;
+
+        -- Approval badge column (list screens): the row's open approval
+        -- requests summed (approval_summary), NULL when it has none.
+        IF _with_approvals THEN
+            _approvals_select := 'approval_summary(c.id) AS approvals';
+        ELSE
+            _approvals_select := 'NULL::jsonb AS approvals';
         END IF;
 
         -- Routed-to-me agent-perspective filter.
@@ -372,12 +384,14 @@ BEGIN
             '  ''created_at'', to_jsonb(sub.created_at), ' ||
             '  ''last_activity_at'', CASE WHEN sub.last_activity_at IS NULL THEN NULL ELSE to_jsonb(sub.last_activity_at) END, ' ||
             '  ''deleted_at'', CASE WHEN sub.deleted_at IS NULL THEN NULL ELSE to_jsonb(sub.deleted_at) END, ' ||
-            '  ''personal_sort_order'', CASE WHEN sub.personal_sort_order IS NULL THEN NULL ELSE to_jsonb(sub.personal_sort_order) END ' ||
+            '  ''personal_sort_order'', CASE WHEN sub.personal_sort_order IS NULL THEN NULL ELSE to_jsonb(sub.personal_sort_order) END, ' ||
+            '  ''approvals'', sub.approvals ' ||
             ') ORDER BY sub.rn), ''[]''::jsonb) ' ||
             'FROM (SELECT c.id, c.card_type_id, ct.name AS card_type_name, ct.uses_phase, c.parent_card_id, c.phase, ' ||
             '  c.deleted_at, COALESCE(attrs.values, ''{}''::jsonb) AS attrs, c.created_at, ' ||
             '  la.last_activity_at, ' ||
             '  ' || _personal_sort_select || ', ' ||
+            '  ' || _approvals_select || ', ' ||
             '  row_number() OVER (ORDER BY ' || _order_clause_inner || ') AS rn ' ||
             'FROM card c JOIN card_type ct ON ct.id = c.card_type_id ' ||
             _personal_sort_join || ' ' ||

@@ -243,7 +243,8 @@ BEGIN
                         LEFT JOIN LATERAL (
                             -- Titles for the cards the row's values name: a
                             -- card_ref / card_ref[] value (old and new), a
-                            -- card_move's new parent, a task_move's projects.
+                            -- card_move's new parent, a task_move's projects,
+                            -- an approval vote's edge (from / to statuses).
                             -- They're values of a card the caller can see,
                             -- labelled the way the card's own attributes are.
                             SELECT jsonb_object_agg(r.id::text, card_label(r.id)) AS m
@@ -265,6 +266,11 @@ BEGIN
                                     SELECT p.value_new ->> k
                                     FROM unnest(ARRAY['old_project_id', 'new_project_id']) AS k
                                     WHERE p.kind = 'task_move'
+                                      AND jsonb_typeof(p.value_new) = 'object'
+                                    UNION ALL
+                                    SELECT p.value_new ->> k
+                                    FROM unnest(ARRAY['from_id', 'to_id']) AS k
+                                    WHERE p.kind = 'approval_decision'
                                       AND jsonb_typeof(p.value_new) = 'object'
                                 ) t
                                 WHERE x ~ '^[0-9]{1,18}$'

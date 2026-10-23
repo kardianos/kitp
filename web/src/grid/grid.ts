@@ -48,6 +48,7 @@
  *   - grouping (group_by_attr walk) + bulk selection + infinite scroll.
  */
 
+import { approvalBadge } from '../ui/approval-badge.js';
 import { Control } from '../core/control.js';
 import type { QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
@@ -246,6 +247,8 @@ export class Grid extends CardListCore<GridConfig> {
         order: { from: 'grid.order' },
         where: { from: 'grid.where' },
         tree: { from: 'grid.tree' },
+        // Approval badges in the title cell.
+        withApprovals: { lit: true },
       },
       // Stay idle until a project scope resolves — no cross-project flash on
       // the initial (scope=null) fire. The { signal } trigger refires once a
@@ -1502,7 +1505,14 @@ export class Grid extends CardListCore<GridConfig> {
         // related) before its title so the parent/child link reads at a glance.
         const rel = relationIcon(row);
         if (rel !== null) cell.append(rel);
-        cell.append(document.createTextNode(strAttr(row, 'title') ?? '(untitled)'));
+        // The text in its own span so a long title ellipsizes and the
+        // approval badge after it stays whole.
+        const text = document.createElement('span');
+        text.className = 'grid__title-text';
+        text.textContent = strAttr(row, 'title') ?? '(untitled)';
+        cell.append(text);
+        const approvals = approvalBadge(row.approvals);
+        if (approvals !== null) cell.append(approvals);
         break;
       }
       case 'ref':

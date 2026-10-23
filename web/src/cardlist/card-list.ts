@@ -10,6 +10,7 @@
  * `data-presentation` for the one-line vs two-line arrangement.
  */
 
+import { approvalBadge } from '../ui/approval-badge.js';
 import { Control } from '../core/control.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { asAttrId } from '../kanban/kanban-helpers.js';
@@ -154,7 +155,11 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
     flag.dataset.role = 'flag';
     flag.style.display = 'none';
     subject.append(flag);
-    line1.append(idEl, relation, subject);
+    // Approval badge slot — filled per-card (hidden without an open request).
+    const approvals = document.createElement('span');
+    approvals.className = 'card-list__approvals';
+    approvals.dataset.role = 'approvals';
+    line1.append(idEl, relation, subject, approvals);
     const line2 = document.createElement('div');
     line2.className = 'card-list__line2';
     line2.dataset.role = 'cols';
@@ -243,6 +248,12 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
     const subject = el.querySelector('[data-role="subject"]') as HTMLElement;
     const flag = el.querySelector('[data-role="flag"]') as HTMLElement;
     setSubjectText(subject, flag, titleOf(card));
+    const approvalsEl = el.querySelector('[data-role="approvals"]') as HTMLElement | null;
+    if (approvalsEl !== null) {
+      const badge = approvalBadge(card.approvals);
+      approvalsEl.replaceChildren(...(badge !== null ? [badge] : []));
+      approvalsEl.style.display = badge !== null ? '' : 'none';
+    }
     const flagged = this.config.flagAttr !== undefined && card.attributes[this.config.flagAttr] === false;
     if (flagged) {
       flag.textContent = this.config.flagLabel ?? 'Flag';

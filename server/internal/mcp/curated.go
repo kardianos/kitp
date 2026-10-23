@@ -53,6 +53,13 @@ var curatedTools = map[string]bool{
 	"link__set":    true,
 	"link__list":   true,
 	"link__delete": true,
+	// Approval requests and votes on a task's status edges (a record, not
+	// a gate). Agents can ask, and vote — their vote is shown with their
+	// owner and never answers a request for a person.
+	"approval__set":    true,
+	"approval__list":   true,
+	"approval__decide": true,
+	"approval__remove": true,
 	// Flow transition reads (what a card may currently fire).
 	"flow__list":               true,
 	"flow_step__list":          true,

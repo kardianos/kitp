@@ -67,6 +67,16 @@ type SelectWithAttributesInput struct {
 	IncludeDeleted   bool            `json:"include_deleted,omitempty" mcp:"desc=if true, include soft-deleted rows"`
 	WithPersonalSort bool            `json:"with_personal_sort,omitempty" mcp:"desc=when true, LEFT JOIN user_card_sort for the calling actor and expose personal_sort_order on each row; lets clients (e.g. Inbox) sort by the user's own ordering without a separate handler"`
 	RoutedToMe       bool            `json:"routed_to_me,omitempty" mcp:"desc=agent-perspective inbox filter: when true the result is restricted to cards whose user_card_agent row routes them to the calling agent (agent_user_id=actor AND user_id=actor.parent_user_id). Returns no rows when the caller is not an agent."`
+	WithApprovals    bool            `json:"with_approvals,omitempty" mcp:"desc=when true, add each row's approval badge: its open approval requests summed as {asked, approved, rejected}; omitted on rows with none"`
+}
+
+// ApprovalSummary is a row's approval badge: over the task's open approval
+// requests (not yet settled by reaching the action's target), how many
+// people were asked and how many of them approved / rejected.
+type ApprovalSummary struct {
+	Asked    int `json:"asked" mcp:"desc=people asked, summed over the open requests"`
+	Approved int `json:"approved" mcp:"desc=of them, whose latest decision approves"`
+	Rejected int `json:"rejected" mcp:"desc=of them, whose latest decision rejects"`
 }
 
 // CardWithAttrs is one row of the LATERAL read.
@@ -88,6 +98,9 @@ type CardWithAttrs struct {
 	LastActivityAt *time.Time `json:"last_activity_at,omitempty" mcp:"desc=most recent activity timestamp for this card (MAX(activity.created_at)); null when the card has no activity yet"`
 	DeletedAt      *time.Time `json:"deleted_at,omitempty" mcp:"desc=non-null when the card has been soft-deleted"`
 	PersonalSort   *float64   `json:"personal_sort_order,omitempty" mcp:"desc=caller's user_card_sort.sort_order when with_personal_sort=true; null when the user hasn't reordered this card"`
+	// Approvals is set only when with_approvals asked for it and the card
+	// has an open approval request.
+	Approvals *ApprovalSummary `json:"approvals,omitempty" mcp:"desc=approval badge when with_approvals=true and the card has open approval requests"`
 }
 
 // SelectWithAttributesOutput is per-input.

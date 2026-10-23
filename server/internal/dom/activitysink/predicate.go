@@ -30,6 +30,11 @@ import (
 //   - Op "actor_in" / "actor_not_in" — leaf; Values are decimal user ids,
 //                       "@me" (the subscriber) or "@my_agents" (the agents
 //                       the subscriber owns), see WithSubscriber.
+//   - Op "approval_asks_in" — leaf; Values are person card ids or "@me"
+//                       (the subscriber's person): match a change that asks
+//                       one of them to approve — an approval request's
+//                       approvers gaining them, which includes being asked
+//                       when the request is created.
 //
 // A predicate with Op == "" matches every row. Unknown ops fail closed
 // (return false) so a typo doesn't silently flood the channel.
@@ -47,6 +52,16 @@ type ActivityRow struct {
 	Kind          string
 	AttributeName string // empty when row is not an attr_update
 	ActorID       int64
+	// AddedApprovers are the person ids an `approvers` change added (new
+	// minus old) — who the row asks to approve. Empty for any other row.
+	AddedApprovers []int64
+}
+
+// Subscriber is who a personal subscription's tokens resolve to.
+type Subscriber struct {
+	UserID   int64   // "@me" in actor leaves
+	AgentIDs []int64 // "@my_agents"
+	PersonID int64   // "@me" in approval_asks_in leaves
 }
 
 // ParsePredicate decodes a predicate from its stored JSON form. An empty
@@ -115,6 +130,13 @@ func (p Predicate) Eval(row ActivityRow) bool {
 		return inInt64String(row.ActorID, p.Values)
 	case "actor_not_in":
 		return !inInt64String(row.ActorID, p.Values)
+	case "approval_asks_in":
+		for _, id := range row.AddedApprovers {
+			if inInt64String(id, p.Values) {
+				return true
+			}
+		}
+		return false
 	}
 	return false
 }
@@ -124,13 +146,14 @@ func (p Predicate) Eval(row ActivityRow) bool {
 const myAgentsToken = "@my_agents"
 
 // WithSubscriber returns a copy of the predicate with the subscriber
-// tokens in actor_in / actor_not_in leaves resolved: "@me" becomes userID
-// and "@my_agents" becomes agentIDs (none → the token just drops out) —
-// so a personal subscription can say "not done by me or my agents".
-// Without a subscriber (userID == 0, a broadcast sink) both stay literal
-// and match no actor.
-func (p Predicate) WithSubscriber(userID int64, agentIDs []int64) Predicate {
-	if userID == 0 {
+// tokens resolved: in actor_in / actor_not_in leaves "@me" becomes the
+// subscriber's user id and "@my_agents" their agents' ids (none → the
+// token just drops out) — so a personal subscription can say "not done by
+// me or my agents"; in approval_asks_in leaves "@me" becomes their person
+// id ("approvals asked of me"). Without a subscriber (UserID == 0, a
+// broadcast sink) the tokens stay literal and match nothing.
+func (p Predicate) WithSubscriber(s Subscriber) Predicate {
+	if s.UserID == 0 {
 		return p
 	}
 	out := Predicate{Op: p.Op}
@@ -138,11 +161,13 @@ func (p Predicate) WithSubscriber(userID int64, agentIDs []int64) Predicate {
 	for _, v := range p.Values {
 		switch {
 		case actorLeaf && v == meToken:
-			out.Values = append(out.Values, strconv.FormatInt(userID, 10))
+			out.Values = append(out.Values, strconv.FormatInt(s.UserID, 10))
 		case actorLeaf && v == myAgentsToken:
-			for _, id := range agentIDs {
+			for _, id := range s.AgentIDs {
 				out.Values = append(out.Values, strconv.FormatInt(id, 10))
 			}
+		case p.Op == "approval_asks_in" && v == meToken && s.PersonID != 0:
+			out.Values = append(out.Values, strconv.FormatInt(s.PersonID, 10))
 		default:
 			out.Values = append(out.Values, v)
 		}
@@ -150,7 +175,7 @@ func (p Predicate) WithSubscriber(userID int64, agentIDs []int64) Predicate {
 	if len(p.Items) > 0 {
 		out.Items = make([]Predicate, len(p.Items))
 		for i, c := range p.Items {
-			out.Items[i] = c.WithSubscriber(userID, agentIDs)
+			out.Items[i] = c.WithSubscriber(s)
 		}
 	}
 	return out

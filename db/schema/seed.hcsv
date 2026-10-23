@@ -36,7 +36,7 @@ kitp.manager, $role.manager
 kitp.worker,  $role.worker
 
 
-## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel / activity_sink are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task. link cards (a code change / issue / any URL linked to a task — written by link.set from the UI, MCP, or a code forge such as Gerrit) parent under task. activity_subscription cards (a user's personal notification subscription) parent under an activity_sink. uses_phase=true marks card_types whose instances are flow-bound value-cards — the `phase` column on those rows is consulted by the predicate compiler (has_phase op) and the TransitionBar UI. Tasks / projects / etc. carry the column but never read it." | on_conflict="name"
+## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel / activity_sink are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task. link cards (a code change / issue / any URL linked to a task — written by link.set from the UI, MCP, or a code forge such as Gerrit) parent under task. approval cards (a request that named people approve or reject one of the task's status actions — documentation, never a gate; written by approval.set) parent under task. activity_subscription cards (a user's personal notification subscription) parent under an activity_sink. uses_phase=true marks card_types whose instances are flow-bound value-cards — the `phase` column on those rows is consulted by the predicate compiler (has_phase op) and the TransitionBar UI. Tasks / projects / etc. carry the column but never read it." | on_conflict="name"
 ### rows
 name,              is_built_in, allow_self_parent, parent_card_type_id,    uses_phase
 project,           true,        false,             null,                   false
@@ -56,6 +56,7 @@ activity_sink,     true,        false,             $card_type.project,     false
 predicate_snippet, true,        false,             $card_type.project,     false
 activity_subscription, true,    false,             $card_type.activity_sink, false
 link,              true,        false,             $card_type.task,        false
+approval,          true,        false,             $card_type.task,        false
 
 
 ## table attribute_def | doc="Built-in attribute definitions. Each pick-from-a-list attribute is a card_ref with target_card_type_id pointing at the card_type whose cards are the valid values." | on_conflict="name"
@@ -130,6 +131,12 @@ rollup_minutes,        number,      true, null, false
 link_url,              text,        true, null, false
 link_kind,             text,        true, null, false
 link_state,            text,        true, null, false
+approval_from,         card_ref,    true, $card_type.status, false
+approval_to,           card_ref,    true, $card_type.status, false
+approval_action,       text,        true, null, false
+approvers,             card_ref[],  true, $card_type.person, false, `{"connective":"and","children":[{"attr":"person_kind","op":"!=","values":["contact"]},{"attr":"is_active","op":"!=","values":[false]}]}`
+approval_note,         text,        true, null, false
+panels,                text,        true, null, false
 
 
 ## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"
@@ -184,6 +191,7 @@ $card_type.screen,    $attribute_def.tag_prefix_columns,    false, 9
 $card_type.screen,    $attribute_def.extra_columns,         false, 10
 $card_type.screen,    $attribute_def.sort_order,            false, 11
 $card_type.screen,    $attribute_def.is_active,             false, 12
+$card_type.screen,    $attribute_def.panels,                false, 13
 $card_type.filter,    $attribute_def.title,             true,  0
 $card_type.filter,    $attribute_def.predicate,         false, 1
 $card_type.filter,    $attribute_def.sort,              false, 2
@@ -243,6 +251,12 @@ $card_type.link,         $attribute_def.title,             true,  0
 $card_type.link,         $attribute_def.link_url,          true,  1
 $card_type.link,         $attribute_def.link_kind,         false, 2
 $card_type.link,         $attribute_def.link_state,        false, 3
+$card_type.approval,     $attribute_def.title,             true,  0
+$card_type.approval,     $attribute_def.approval_from,     true,  1
+$card_type.approval,     $attribute_def.approval_to,       true,  2
+$card_type.approval,     $attribute_def.approval_action,   true,  3
+$card_type.approval,     $attribute_def.approvers,         true,  4
+$card_type.approval,     $attribute_def.approval_note,     false, 5
 
 
 ## table process | doc="Built-in processes (workflows)." | on_conflict="name"
@@ -309,10 +323,10 @@ $role.manager, `[$card_type.milestone, $card_type.component, $card_type.tag]`, `
 $role.manager, $card_type.task, $process."card.delete"
 
 
-## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references). The three comm card_types (comm_channel, comm, reply_body) are admin-only configuration surface; managers get a lighter cut on comm via the manager grant. link cards are written through link.set / link.delete, which gate on card.update of the PARENT TASK (like attachments), so only admins get the generic card.* surface on them." | on_conflict="role_id, card_type_id, process_id"
+## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references). The three comm card_types (comm_channel, comm, reply_body) are admin-only configuration surface; managers get a lighter cut on comm via the manager grant. link cards are written through link.set / link.delete, which gate on card.update of the PARENT TASK (like attachments), so only admins get the generic card.* surface on them. approval cards likewise: approval.set / approval.remove gate on card.update of the parent task and approval.decide on its comment.post, so nobody but an admin can edit a request (or forge a decision) through the generic card.* processes." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
-$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status, $card_type.comm_channel, $card_type.comm, $card_type.reply_body, $card_type.activity_sink, $card_type.predicate_snippet, $card_type.activity_subscription, $card_type.link]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
+$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status, $card_type.comm_channel, $card_type.comm, $card_type.reply_body, $card_type.activity_sink, $card_type.predicate_snippet, $card_type.activity_subscription, $card_type.link, $card_type.approval]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
 
 
 ## table role_grant | doc="Personal notification subscriptions: every project tier (viewer / commenter / worker / manager / admin) may create, edit and delete its OWN activity_subscription cards through the dedicated activity_subscription.set / .delete processes. The handler SQL enforces subscriber = the caller's person card (admins exempt, so they can clean up). The generic card.* processes on activity_subscription stay admin-only (admin grant above), so nobody can edit someone else's subscription through attribute.update." | on_conflict="role_id, card_type_id, process_id"
@@ -411,10 +425,10 @@ flow_id,         from_card_id,     to_card_id,        label,           sort_orde
 -- points at the template's status flow; default_create_status overrides
 -- the flow's default for Inbox ("Todo") and Ideas ("New idea").
 
-## table card | under=tpl_project | doc="Inbox screen. Active tasks assigned to the actor; default-create-status overrides the flow default ('New idea') to 'Todo' since the Inbox is about starting work, not filing ideas." | on_conflict="id"
+## table card | under=tpl_project | doc="Inbox screen. Active tasks assigned to the actor; default-create-status overrides the flow default ('New idea') to 'Todo' since the Inbox is about starting work, not filing ideas. panels adds the 'Waiting on you' approval queue above the list." | on_conflict="id"
 ### rows
-id, card_type_id,     parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,           default_create_status, toggle_groups
-17, $card_type.screen, parent,         "Inbox", list,   inbox, i,      1,          @tpl_flow_status,  @tpl_s_todo,           `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]},{"name":"scope","operator":"and","mode":"multi","items":[{"name":"mine_only","label":"Mine","predicate":{"attr":"assignee","op":"=","values":["__actor__"]},"default_on":true}]}]`
+id, card_type_id,     parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,           default_create_status, toggle_groups, panels
+17, $card_type.screen, parent,         "Inbox", list,   inbox, i,      1,          @tpl_flow_status,  @tpl_s_todo,           `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]},{"name":"scope","operator":"and","mode":"multi","items":[{"name":"mine_only","label":"Mine","predicate":{"attr":"assignee","op":"=","values":["__actor__"]},"default_on":true}]}]`, `["approval_queue"]`
 
 
 ## table card | under=tpl_project | doc="Grid screen. Phase items are independent checkboxes so the user can flip triage / terminal on alongside the active default. extra_columns seeds 'due_date' as an additional Grid column out of the box; admins can add more attribute names via the Screens admin." | on_conflict="id"

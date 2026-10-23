@@ -28,6 +28,7 @@ export const ACTIVITY_LEAF_OPS = [
   'attr_not_in',
   'actor_in',
   'actor_not_in',
+  'approval_asks_in',
 ] as const;
 export type ActivityLeafOp = (typeof ACTIVITY_LEAF_OPS)[number];
 
@@ -56,7 +57,8 @@ function isLeafOp(op: unknown): op is ActivityLeafOp {
     op === 'attr_in' ||
     op === 'attr_not_in' ||
     op === 'actor_in' ||
-    op === 'actor_not_in'
+    op === 'actor_not_in' ||
+    op === 'approval_asks_in'
   );
 }
 
@@ -145,6 +147,8 @@ export function activityOpLabel(op: ActivityLeafOp | ActivityCompositeOp): strin
       return 'actor in';
     case 'actor_not_in':
       return 'actor not in';
+    case 'approval_asks_in':
+      return 'asks for approval from';
   }
 }
 
@@ -220,6 +224,15 @@ export function actorIdsIn(p: ActivityPredicate | null): string[] {
   return out;
 }
 
+/** "Only approvals asked of me": the subscription shortcut that narrows a
+ *  personal subscription to the approval requests naming its subscriber.
+ *  Never on by default. */
+export const APPROVALS_ASKED_OF_ME: ActivityPredicateLeaf = {
+  kind: 'leaf',
+  op: 'approval_asks_in',
+  values: [ACTIVITY_ME_TOKEN],
+};
+
 /** True when two leaves are the same condition: same op, same set of values
  *  (order-insensitive). */
 export function sameLeaf(a: ActivityPredicateLeaf, b: ActivityPredicateLeaf): boolean {
@@ -287,6 +300,7 @@ export const ACTIVITY_KIND_OPTIONS: ReadonlyArray<{ value: string; label: string
   { value: 'attr_update', label: 'Attribute updated' },
   { value: 'comment', label: 'Comment' },
   { value: 'comment_edit', label: 'Comment edited' },
+  { value: 'approval_decision', label: 'Approval vote' },
   { value: 'tag_apply', label: 'Tag applied' },
   { value: 'tag_remove', label: 'Tag removed' },
   { value: 'attachment_create', label: 'Attachment added' },
@@ -308,6 +322,7 @@ export const ACTIVITY_OP_FRIENDLY: Readonly<Record<ActivityLeafOp, string>> = {
   attr_not_in: 'Changed attribute is none of',
   actor_in: 'Done by',
   actor_not_in: 'Not done by',
+  approval_asks_in: 'Approval asked of',
 };
 
 /** True for the ops whose values are activity kinds (picked from
@@ -321,6 +336,12 @@ export function isActorOp(op: ActivityLeafOp): boolean {
   return op === 'actor_in' || op === 'actor_not_in';
 }
 
+/** True for the ops whose values are people (person card ids, or `@me`):
+ *  "approval asked of" — a change that asks one of them to approve. */
+export function isPersonOp(op: ActivityLeafOp): boolean {
+  return op === 'approval_asks_in';
+}
+
 /** A friendly one-line description of a leaf: kind values render as their
  *  labels, reserved tokens as their text, and actor ids as the names
  *  [actorName] knows ("Event is any of Comment, Card created", "Not done by
@@ -328,11 +349,14 @@ export function isActorOp(op: ActivityLeafOp): boolean {
 export function describeActivityLeaf(
   leaf: ActivityPredicateLeaf,
   actorName: (id: string) => string | undefined = () => undefined,
+  personName: (id: string) => string | undefined = () => undefined,
 ): string {
   const values = isKindOp(leaf.op)
     ? leaf.values.map((v) => ACTIVITY_KIND_OPTIONS.find((k) => k.value === v)?.label ?? v)
     : isActorOp(leaf.op)
       ? leaf.values.map((v) => TOKEN_LABELS[v] ?? actorName(v) ?? (/^\d+$/.test(v) ? `user ${v}` : v))
-      : leaf.values.map(tokenLabel);
+      : isPersonOp(leaf.op)
+        ? leaf.values.map((v) => TOKEN_LABELS[v] ?? personName(v) ?? (/^\d+$/.test(v) ? `person ${v}` : v))
+        : leaf.values.map(tokenLabel);
   return `${ACTIVITY_OP_FRIENDLY[leaf.op]} ${values.length === 0 ? '(none)' : values.join(', ')}`;
 }

@@ -64,6 +64,14 @@ func TestActors(t *testing.T) {
 	claude := user("claude", true, bob) // bob's agent, no roles of its own
 	dave := user("Dave", false, 0)      // no roles at all
 
+	var bobPerson int64
+	if err := pool.QueryRow(ctx, `INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'person' RETURNING id`).Scan(&bobPerson); err != nil {
+		t.Fatalf("person: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_account_person (user_account_id, person_card_id) VALUES ($1, $2)`, bob, bobPerson); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+
 	call := func(as int64, input string) api.SubResponse {
 		t.Helper()
 		uctx := auth.WithUser(ctx, &auth.UserCtx{ID: as, DisplayName: "caller"})
@@ -106,8 +114,11 @@ func TestActors(t *testing.T) {
 	if a := byName["claude (for Bob)"]; a.ID != claude || !a.IsAgent {
 		t.Errorf("agent row = %+v, want id %d is_agent", a, claude)
 	}
-	if a := byName["Alice"]; a.ID != alice || a.IsAgent {
-		t.Errorf("person row = %+v", a)
+	if a := byName["Alice"]; a.ID != alice || a.IsAgent || a.PersonID != nil {
+		t.Errorf("person row = %+v (Alice has no person card)", a)
+	}
+	if a := byName["Bob"]; a.PersonID == nil || *a.PersonID != bobPerson {
+		t.Errorf("Bob's person_id = %v, want %d", a.PersonID, bobPerson)
 	}
 	if i, j := slices.Index(got, "Bob"), slices.Index(got, "claude (for Bob)"); i < 0 || j < i {
 		t.Errorf("order %v: people come before agents", got)

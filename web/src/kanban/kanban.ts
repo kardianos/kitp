@@ -47,6 +47,7 @@
  *   - keyboard hjkl card nav.
  */
 
+import { approvalBadge } from '../ui/approval-badge.js';
 import { Control, type BaseControlConfig, type ControlContext } from '../core/control.js';
 import type { ActionBinding, QueryBinding } from '../core/data.js';
 import type { ApiFault } from '../core/dispatch.js';
@@ -270,6 +271,8 @@ export class Kanban extends Control<KanbanConfig> {
         // list screens (CardListCore) which already scope tasks by projectId.
         projectId: { from: 'scope.projectId' },
         order: { lit: [{ field: 'attributes.sort_order', direction: 'ASC' }] },
+        // Approval badges on cards.
+        withApprovals: { lit: true },
         // Search + Advanced predicate, resolved at fire time (see applyFilter).
         where: { from: 'kanban.where' },
         tree: { from: 'kanban.tree' },
@@ -1143,6 +1146,8 @@ export class Kanban extends Control<KanbanConfig> {
     idEl.className = 'card__id';
     idEl.textContent = `#${card.id.toString()}`;
     idRow.append(idEl);
+    const approvals = approvalBadge(card.approvals);
+    if (approvals !== null) idRow.append(approvals);
     const link = childByRole(el, 'rowlink');
     if (link) setRowLinkHref(link as HTMLAnchorElement, card.id);
 

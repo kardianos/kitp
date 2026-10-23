@@ -149,9 +149,12 @@ export {
   readSortBy,
   readPredicate,
   readPhaseToggles,
+  readPanels,
+  SCREEN_PANELS,
   type ScreenPresetSet,
   type PhaseToggle,
 } from './filter/screen-resolve.js';
+export { approvalBadge } from './ui/approval-badge.js';
 export { decodeFlowRow } from './admin/specs.js';
 export {
   TAG_PREFIX_OPTION,
@@ -518,6 +521,15 @@ export {
   type LinkRow,
 } from './task-detail/link-specs.js';
 export { TaskLinks, registerTaskLinks, type TaskLinksConfig } from './task-detail/task-links.js';
+export { TaskApprovals, registerTaskApprovals, type TaskApprovalsConfig } from './task-detail/task-approvals.js';
+export {
+  registerApprovalSpecs,
+  decodeApprovalList,
+  decodeApprovalQueue,
+  APPROVAL_QUEUE_SPEC,
+} from './task-detail/approval-specs.js';
+export { buildApprovalEdges, actionChoices, edgeLabel } from './task-detail/approval-model.js';
+export { ApprovalQueue, registerApprovalQueue, APPROVALS_WAITING_PATH } from './inbox/approval-queue.js';
 export { formatLocalDateTime, formatUtcOffset, localTimeEl } from './util/datetime.js';
 export { loadView, saveView } from './filter/view-persistence.js';
 export { trapFocus, captureFocus } from './util/focus-trap.js';

@@ -67,6 +67,7 @@ import type { TransitionBar } from './transition-bar.js';
 import type { TaskComments } from './task-comments.js';
 import type { CommThreads } from './task-comm-threads.js';
 import type { TaskLinks } from './task-links.js';
+import type { TaskApprovals } from './task-approvals.js';
 import {
   ACTIVITY_POLL_SPEC,
   type ActivityPollInput,
@@ -211,7 +212,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private commThreads: CommThreads | null = null;
   /** Host + control for the LINKS section (code changes / issues / URLs). */
   private linksHost!: HTMLElement;
+  private approvalsHost!: HTMLElement;
   private taskLinks: TaskLinks | null = null;
+  private taskApprovals: TaskApprovals | null = null;
 
   /** Read-only status badge in the nav row (next to #id). Phase-toned. */
   private statusBadgeEl!: HTMLElement;
@@ -519,6 +522,12 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.attachmentsPreviewHost = previewHost;
     main.append(previewHost);
 
+    // APPROVALS — who is asked to approve which status change, and the votes:
+    // a record of sign-off, kept on the task in its own section.
+    const approvalsSlot = this.makeSlot('approvals', 'Approvals');
+    this.approvalsHost = approvalsSlot;
+    main.append(approvalsSlot);
+
     // LINKS — code changes / issues / URLs tied to the task, between the
     // attachment previews and COMMS. A code forge (integrations/gerrit) keeps
     // its own links current through the same link.set.
@@ -596,6 +605,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.mountComments();
     this.mountComms();
     this.mountLinks();
+    this.mountApprovals();
     this.mountAttachments();
 
     // Kick off the loads. Zero-promise: the onOk callbacks repaint when each
@@ -831,6 +841,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.mountComments();
     this.mountComms();
     this.mountLinks();
+    this.mountApprovals();
     this.mountAttachments();
     this.mountTags();
     this.mountRelated();
@@ -867,8 +878,10 @@ export class TaskDetail extends Control<TaskDetailConfig> {
           if (this.isAlive()) {
             this.resolveRefLabels();
             // The transition wrote an attr_update + status row to the stream —
-            // refresh the #35 feed so it reflects the move.
+            // refresh the #35 feed so it reflects the move. A move can also
+            // settle an approval request or leave votes stale.
             this.taskComments?.reload();
+            this.taskApprovals?.reload();
             this.noteOwnActivity();
           }
         },
@@ -893,6 +906,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    *  the poll baseline so the "new content" indicator clears back to synced. */
   private refreshFeeds(): void {
     this.taskLinks?.reload();
+    this.taskApprovals?.reload();
     this.commThreads?.reload();
     this.taskComments?.reload();
     // The user has now pulled the latest — re-seed the baseline to the current
@@ -1004,6 +1018,29 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       },
       this.commsHost,
     ) as CommThreads;
+  }
+
+  /** Spawn the APPROVALS control into the `approvals` slot. Idempotent. */
+  private mountApprovals(): void {
+    if (this.taskId === null) return;
+    if (this.taskApprovals !== null) return;
+    this.approvalsHost.replaceChildren();
+    this.approvalsHost.classList.add('task-detail__slot--filled');
+    this.taskApprovals = this.spawn(
+      'TaskApprovals',
+      {
+        type: 'TaskApprovals',
+        taskId: this.taskId.toString(),
+        projectScopePath: 'scope.projectId',
+        // A vote with a reason also shows in the comments; our own writes
+        // shouldn't trip the "new content" badge.
+        onLocalWrite: () => {
+          this.taskComments?.reload();
+          this.noteOwnActivity();
+        },
+      },
+      this.approvalsHost,
+    ) as TaskApprovals;
   }
 
   /** Spawn the LINKS control into the `links` slot. Idempotent. */
@@ -1802,7 +1839,10 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         this.resolveRefLabels();
         // A status change moves the card through its flow — refresh the
         // TransitionBar so the two stay in sync.
-        if (name === 'status') this.transitionBar?.reload();
+        if (name === 'status') {
+          this.transitionBar?.reload();
+          this.taskApprovals?.reload();
+        }
         // Every attribute edit appends an attr_update row to the stream —
         // refresh the #35 activity feed.
         this.taskComments?.reload();

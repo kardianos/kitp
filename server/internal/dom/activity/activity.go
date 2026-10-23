@@ -103,6 +103,9 @@ type Actor struct {
 	ID      int64  `json:"id,string" mcp:"desc=user id"`
 	Name    string `json:"name" mcp:"desc=display name; an agent is named with its owner, e.g. 'claude (for Daniel)'"`
 	IsAgent bool   `json:"is_agent" mcp:"desc=true for an agent account"`
+	// PersonID is the account's linked person card, for conditions on
+	// people (an approval request asks people); nil for an agent.
+	PersonID *int64 `json:"person_id,string,omitempty" mcp:"desc=the account's person card id; absent for an agent"`
 }
 
 // ActorsOutput lists the accounts, people first, then agents, each by name.

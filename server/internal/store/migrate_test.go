@@ -39,14 +39,18 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		{`SELECT count(*) FROM user_role`, 3}, // admin + manager + worker on user 1
 		{`SELECT count(*) FROM role`, 5},      // viewer, commenter, worker, manager, admin (no wildcard 'system')
 		// 14 built-in card_types + the predicate_snippet card_type
-		// introduced for named filters + activity_subscription + link = 17.
-		{`SELECT count(*) FROM card_type`, 17},
+		// introduced for named filters + activity_subscription + link +
+		// approval = 18.
+		{`SELECT count(*) FROM card_type`, 18},
 		// +subscriber, +rollup_minutes (personal notifications),
-		// +link_url / link_kind / link_state (task links).
-		{`SELECT count(*) FROM attribute_def`, 69},
+		// +link_url / link_kind / link_state (task links),
+		// +approval_from / approval_to / approval_action / approvers /
+		// approval_note (task approvals) + screen panels.
+		{`SELECT count(*) FROM attribute_def`, 75},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
-		// +7 on activity_subscription, +4 on link.
-		{`SELECT count(*) FROM edge`, 108},
+		// +7 on activity_subscription, +4 on link, +6 on approval,
+		// +1 (panels) on screen.
+		{`SELECT count(*) FROM edge`, 115},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -473,6 +477,82 @@ func TestForwardMigration0011TaskLinks(t *testing.T) {
 	}
 }
 
+// TestForwardMigration0013TaskApprovals proves migration 0013 brings an
+// already-seeded DB that predates task approvals up to the fresh-seed shape:
+// the approval card_type, its attribute_defs / edges / admin grants, the
+// screen `panels` attribute, and the approval queue on every Inbox screen.
+// Without it approval.set raises on the missing card_type and existing
+// Inboxes never show "Waiting on you".
+func TestForwardMigration0013TaskApprovals(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0013")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	counts := []string{
+		`SELECT count(*) FROM card_type`,
+		`SELECT count(*) FROM attribute_def`,
+		`SELECT count(*) FROM edge`,
+		`SELECT count(*) FROM role_grant`,
+		`SELECT count(*) FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		 WHERE ad.name = 'panels' AND av.value = to_jsonb('["approval_queue"]'::text)`,
+	}
+	readCounts := func() []int64 {
+		out := make([]int64, len(counts))
+		for i, q := range counts {
+			if err := pool.QueryRow(ctx, q).Scan(&out[i]); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		return out
+	}
+	fresh := readCounts()
+	if fresh[4] == 0 {
+		t.Fatalf("the seeded Inbox screen carries no approval queue panel")
+	}
+
+	// Simulate a pre-0013 install: drop every row 0013 adds, plus its ledger
+	// row (baseline stays, so the seed remains gated off).
+	for _, stmt := range []string{
+		`DELETE FROM role_grant WHERE card_type_id = (SELECT id FROM card_type WHERE name='approval')`,
+		`DELETE FROM edge WHERE card_type_id = (SELECT id FROM card_type WHERE name='approval')`,
+		`DELETE FROM edge WHERE attribute_def_id = (SELECT id FROM attribute_def WHERE name='panels')`,
+		`DELETE FROM attribute_value WHERE attribute_def_id = (SELECT id FROM attribute_def WHERE name='panels')`,
+		`DELETE FROM activity WHERE attribute_def_id IN (SELECT id FROM attribute_def WHERE name IN ('approval_from','approval_to','approval_action','approvers','approval_note','panels'))`,
+		`DELETE FROM attribute_def WHERE name IN ('approval_from','approval_to','approval_action','approvers','approval_note','panels')`,
+		`DELETE FROM card_type WHERE name = 'approval'`,
+		`DELETE FROM schema_version WHERE name = '0013_task_approvals'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0013 (%s): %v", stmt, err)
+		}
+	}
+
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	got := readCounts()
+	for i, q := range counts {
+		if got[i] != fresh[i] {
+			t.Errorf("%s after 0013 = %d, want fresh-seed %d", q, got[i], fresh[i])
+		}
+	}
+	var parent string
+	if err := pool.QueryRow(ctx, `
+		SELECT p.name FROM card_type ct JOIN card_type p ON p.id = ct.parent_card_type_id
+		WHERE ct.name = 'approval'`).Scan(&parent); err != nil {
+		t.Fatalf("approval parent probe: %v", err)
+	}
+	if parent != "task" {
+		t.Errorf("approval parent card_type = %q, want task", parent)
+	}
+
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("third apply (idempotent): %v", err)
+	}
+}
+
 // TestForwardMigration0012UserTokenScope proves migration 0012 adds
 // user_token.scope to an already-initialised DB that predates it, with
 // existing tokens defaulting to '' (full access, unchanged behaviour).
@@ -703,9 +783,9 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		// + 1 status + 2 tasks + 1 screen + 1 filter) = 29.
 		{`SELECT count(*) FROM card`, 29},
 		{`SELECT count(*) FROM role`, 5},
-		{`SELECT count(*) FROM card_type`, 17},
-		{`SELECT count(*) FROM attribute_def`, 69},
-		{`SELECT count(*) FROM edge`, 108},
+		{`SELECT count(*) FROM card_type`, 18},
+		{`SELECT count(*) FROM attribute_def`, 75},
+		{`SELECT count(*) FROM edge`, 115},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -766,7 +846,7 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		query string
 		want  int64
 	}{
-		{`SELECT count(*) FROM card_type`, 17},
+		{`SELECT count(*) FROM card_type`, 18},
 		// 20 seed cards + 9 test_demo cards = 29 (see TestApplySchemaWithTestDemo).
 		{`SELECT count(*) FROM card`, 29},
 		{`SELECT count(*) FROM user_account`, 2},

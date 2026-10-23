@@ -44,6 +44,9 @@ export interface CardWithAttrs {
    * the list and to rewrite it on a drag/keyboard reorder.
    */
   personal_sort_order?: number;
+  /** Open approval requests summed — {asked, approved, rejected} — present
+   *  only when the request set `with_approvals` and the card has one open. */
+  approvals?: { asked: number; approved: number; rejected: number };
   /** Row-level audit timestamps (ISO-8601), top-level wire fields — the server
    *  sets them from `card.created_at` / `card.last_activity_at`. The Grid's
    *  Created / Last-activity columns read these. */

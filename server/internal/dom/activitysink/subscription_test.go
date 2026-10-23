@@ -12,9 +12,11 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/activitysink"
+	"github.com/kitp/kitp/server/internal/dom/approval"
 	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/dom/comm"
 	"github.com/kitp/kitp/server/internal/dom/comment"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // subFixture layers an email sink + comm channel + a member (with a
@@ -38,6 +40,7 @@ func setupSubscriptions(t *testing.T, schemaName string) *subFixture {
 	f := setupSink(t, schemaName)
 	comm.Register(f.sp)
 	comment.Register(f.sp)
+	approval.Register(f.sp)
 
 	var ch comm.ChannelSetOutput
 	dispatch(t, f, api.SubRequest{ID: "ch", Endpoint: "comm_channel", Action: "set", Data: json.RawMessage(fmt.Sprintf(
@@ -401,6 +404,42 @@ func TestSubscriptionSkipsOwnAndAgentChanges(t *testing.T) {
 		if strings.Contains(body, own) {
 			t.Errorf("digest includes %q, which the filter leaves out:\n%s", own, body)
 		}
+	}
+}
+
+// TestSubscriptionApprovalsAskedOfMe: "approval_asks_in @me" delivers the
+// request that asks the subscriber — and nothing else: not a request
+// asking someone else, not the task's other activity.
+func TestSubscriptionApprovalsAskedOfMe(t *testing.T) {
+	f := setupSubscriptions(t, "kitp_test_sub_approvals")
+	robin := f.newMember(t, "Robin Ray", "robin@example.com", "worker")
+	subID := f.subscribe(t, f.member,
+		`"name":"Approvals for me","activity_filter":"{\"op\":\"approval_asks_in\",\"values\":[\"@me\"]}"`)
+
+	task := f.newTask(t, "Ship the copy", 0)
+	doing := store.TemplateStatusID(t, f.sp.P, f.projectID, "Doing")
+	ask := func(personID int64) {
+		dispatch(t, f.sinkFixture, api.SubRequest{ID: "a", Endpoint: "approval", Action: "set", Data: json.RawMessage(fmt.Sprintf(
+			`{"task_id":"%d","from_status_id":"%d","to_status_id":"%d","approver_ids":["%d"]}`,
+			task, f.statusID, doing, personID))}, nil)
+	}
+	ask(robin.personID)
+	f.comment(t, task, "unrelated chatter")
+	ask(f.member.personID)
+
+	mail := &sentMail{}
+	if err := f.pumper(subID, mail).RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if len(mail.msgs) != 1 {
+		t.Fatalf("sent %d mails, want 1", len(mail.msgs))
+	}
+	body := strings.ReplaceAll(decodedBody(t, mail.msgs[0].msg), "\r\n", "\n")
+	if !strings.Contains(body, "Approval \u201cStart: Todo \u2192 Doing\u201d: Approvers:") || !strings.Contains(body, "Sam Lee") {
+		t.Errorf("the request asking the subscriber is missing:\n%s", body)
+	}
+	if strings.Contains(body, "Robin") || strings.Contains(body, "unrelated chatter") {
+		t.Errorf("the digest carries rows that don't ask the subscriber:\n%s", body)
 	}
 }
 

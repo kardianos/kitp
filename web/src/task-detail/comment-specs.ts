@@ -106,6 +106,8 @@ export interface ActivityActor {
   id: bigint;
   name: string;
   isAgent: boolean;
+  /** The account's person card (what an approval request asks); null for an agent. */
+  personId: bigint | null;
 }
 
 /** activity.actors output: people first, then agents, each by name. */
@@ -309,7 +311,12 @@ export function registerCommentSpecs(api: Api): void {
       decode: (raw): ActivityActorsOutput => ({
         rows: asArray(asObj(raw)['rows']).map((r) => {
           const o = asObj(r);
-          return { id: asId(o['id']), name: String(o['name'] ?? ''), isAgent: o['is_agent'] === true };
+          return {
+            id: asId(o['id']),
+            name: String(o['name'] ?? ''),
+            isAgent: o['is_agent'] === true,
+            personId: o['person_id'] === undefined || o['person_id'] === null ? null : asId(o['person_id']),
+          };
         }),
       }),
     });

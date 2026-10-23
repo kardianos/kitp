@@ -26,7 +26,7 @@
 
 import { ATTR_CHOICES } from '../filter/attribute-schema.js';
 import type { ActivityRow } from '../task-detail/comment-specs.js';
-import { formatAttrValue, humaniseAttribute, resolveActor, tagDiff, type IdMap } from '../task-detail/activity-text.js';
+import { formatAttrValue, humaniseAttribute, resolveActor, tagDiff, voteOf, type IdMap } from '../task-detail/activity-text.js';
 
 /* -------------------------------------------------------------------------- */
 /* Vocabulary (data, not branches).                                           */
@@ -68,6 +68,10 @@ const HIDDEN_ATTRS: ReadonlySet<string> = new Set([
   'acked',
   'reply_author',
   'sort_order',
+  // An approval request's fixed edge: its title already names it.
+  'approval_from',
+  'approval_to',
+  'approval_action',
 ]);
 
 /** Attributes that name the card itself: already the group's heading or the
@@ -80,6 +84,7 @@ export const KIND_GROUPS: ReadonlyArray<{ key: string; label: string; kinds: rea
   { key: 'changed', label: 'Field changes', kinds: ['attr_update', 'card_set_phase'] },
   { key: 'tags', label: 'Tags', kinds: ['tag_apply', 'tag_remove'] },
   { key: 'comments', label: 'Comments', kinds: ['comment', 'comment_edit'] },
+  { key: 'approvals', label: 'Approval votes', kinds: ['approval_decision'] },
   { key: 'attachments', label: 'Attachments', kinds: ['attachment_create', 'attachment_delete'] },
   { key: 'moved', label: 'Moves & merges', kinds: ['card_move', 'task_move', 'card_merge'] },
   { key: 'deleted', label: 'Deleted & restored', kinds: ['card_delete', 'card_undelete'] },
@@ -463,13 +468,22 @@ export function buildLines(navId: bigint, rowsNewestFirst: readonly ActivityRow[
         comments.set(row.id.toString(), line);
         continue;
       }
+      case 'approval_decision': {
+        // A vote reads like a comment: the verdict and the status change it's
+        // about, with its reason as the text (an edit of that folds in below).
+        const vote = voteOf(row);
+        const line = newLine(row, 'comment', `${vote.decision === 'approve' ? 'Approved' : 'Rejected'} · ${vote.label}`, actor);
+        if (row.commentBody !== undefined && row.commentBody !== '') line.body = clip(row.commentBody);
+        comments.set(row.id.toString(), line);
+        continue;
+      }
       case 'comment_edit': {
         // An edit of a comment in this group: the comment already shows the
         // current text, so it just says it was edited.
         const body = readString(row.valueNew, 'new_body');
         const original = comments.get(readId(row.valueNew, 'activity_id'));
         if (original !== undefined) {
-          original.label = 'Commented (edited)';
+          original.label = original.label === 'Commented' ? 'Commented (edited)' : `${original.label} (edited)`;
           if (body !== '') original.body = clip(body);
           original.at = row.createdAt;
           addActor(original, actor);

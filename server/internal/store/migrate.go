@@ -597,6 +597,87 @@ END $$;`,
 		id:  "0012_user_token_scope",
 		sql: `ALTER TABLE user_token ADD COLUMN IF NOT EXISTS scope text NOT NULL DEFAULT ''`,
 	},
+	{
+		// Task approval requests (documentation, not a gate: a request names
+		// people to approve or reject one of the task's status actions;
+		// decisions are approval_decision activity rows on the task). The
+		// seed.hcsv rows reach fresh installs only, so add them here too:
+		//   1. the approval card_type (parent: task),
+		//   2. its attribute_defs (approvers carries assignee's target_filter:
+		//      no contacts, no inactive people) and edges,
+		//   3. admin card.* on approval (approval.set / .remove / .decide gate
+		//      on the parent task, so no new process or grant),
+		//   4. the screen `panels` attribute + edge, and the "Waiting on you"
+		//      approval queue on every existing Inbox screen.
+		// Idempotent — ON CONFLICT / NOT EXISTS make it a no-op on a fresh DB
+		// whose seed already carries every row.
+		id: "0013_task_approvals",
+		sql: `
+DO $$
+DECLARE
+  _task_ct bigint := (SELECT id FROM card_type WHERE name = 'task');
+  _screen_ct bigint := (SELECT id FROM card_type WHERE name = 'screen');
+  _status_ct bigint := (SELECT id FROM card_type WHERE name = 'status');
+  _person_ct bigint := (SELECT id FROM card_type WHERE name = 'person');
+  _approval_ct bigint;
+  _panels_def bigint;
+BEGIN
+  IF _task_ct IS NULL OR _screen_ct IS NULL OR _status_ct IS NULL OR _person_ct IS NULL THEN
+    RETURN;
+  END IF;
+
+  INSERT INTO card_type (name, parent_card_type_id, allow_self_parent, is_built_in, uses_phase)
+  VALUES ('approval', _task_ct, false, true, false)
+  ON CONFLICT (name) DO NOTHING;
+  SELECT id INTO _approval_ct FROM card_type WHERE name = 'approval';
+
+  INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed, target_filter)
+  VALUES ('approval_from',   'card_ref',   _status_ct, true, false, NULL),
+         ('approval_to',     'card_ref',   _status_ct, true, false, NULL),
+         ('approval_action', 'text',       NULL,       true, false, NULL),
+         ('approvers',       'card_ref[]', _person_ct, true, false,
+          '{"connective":"and","children":[{"attr":"person_kind","op":"!=","values":["contact"]},{"attr":"is_active","op":"!=","values":[false]}]}'::jsonb),
+         ('approval_note',   'text',       NULL,       true, false, NULL),
+         ('panels',          'text',       NULL,       true, false, NULL)
+  ON CONFLICT (name) DO NOTHING;
+
+  INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+  SELECT ct, ad.id, e.req, e.ord
+  FROM (VALUES
+    (_approval_ct, 'title',           true,  0),
+    (_approval_ct, 'approval_from',   true,  1),
+    (_approval_ct, 'approval_to',     true,  2),
+    (_approval_ct, 'approval_action', true,  3),
+    (_approval_ct, 'approvers',       true,  4),
+    (_approval_ct, 'approval_note',   false, 5),
+    (_screen_ct,   'panels',          false, 13)
+  ) AS e(ct, attr, req, ord)
+  JOIN attribute_def ad ON ad.name = e.attr
+  ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;
+
+  INSERT INTO role_grant (role_id, card_type_id, process_id)
+  SELECT r.id, _approval_ct, p.id
+  FROM role r
+  CROSS JOIN process p
+  WHERE r.name = 'admin'
+    AND p.name IN ('card.create', 'card.update', 'card.delete', 'comment.post', 'user_card_sort.set')
+  ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
+
+  SELECT id INTO _panels_def FROM attribute_def WHERE name = 'panels';
+  INSERT INTO attribute_value (card_id, attribute_def_id, value)
+  SELECT c.id, _panels_def, to_jsonb('["approval_queue"]'::text)
+  FROM card c
+  JOIN attribute_value slug ON slug.card_id = c.id
+   AND slug.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'slug')
+  WHERE c.card_type_id = _screen_ct
+    AND c.deleted_at IS NULL
+    AND slug.value = to_jsonb('inbox'::text)
+    AND NOT EXISTS (
+      SELECT 1 FROM attribute_value pv
+      WHERE pv.card_id = c.id AND pv.attribute_def_id = _panels_def
+    );
+END $$;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

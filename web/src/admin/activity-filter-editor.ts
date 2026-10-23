@@ -45,6 +45,8 @@ import {
   describeActivityLeaf,
   isKindOp,
   isActorOp,
+  isPersonOp,
+  ACTIVITY_ME_TOKEN,
 } from './activity-predicate.js';
 
 export interface ActivityFilterEditorConfig extends BaseControlConfig {
@@ -78,12 +80,16 @@ const VALUE_PLACEHOLDER: Readonly<Record<ActivityLeafOp, string>> = {
   attr_not_in: 'attribute names, comma-separated (e.g. sort_order)',
   actor_in: 'user ids, comma-separated',
   actor_not_in: 'user ids, comma-separated',
+  approval_asks_in: 'person ids, comma-separated',
 };
 
 export class ActivityFilterEditor extends Control<ActivityFilterEditorConfig> {
   /** The project's accounts once activity.actors lands (null before, or with
    *  no project): the actor ops' options and the names saved ids show as. */
   private accounts: Array<{ value: string; label: string }> | null = null;
+  /** The same accounts' people (by person card id) — what "approval asked
+   *  of" names; agents have none. Null until the load lands. */
+  private people: Array<{ value: string; label: string }> | null = null;
   /** The search over the add row's account list (rebuilt with the row). */
   private actorFilter: MenuFilter | null = null;
 
@@ -118,6 +124,9 @@ export class ActivityFilterEditor extends Control<ActivityFilterEditorConfig> {
       (out) => {
         const rows = ((out ?? {}) as ActivityActorsOutput).rows ?? [];
         this.accounts = rows.map((r) => ({ value: r.id.toString(), label: r.name }));
+        this.people = rows
+          .filter((r) => !r.isAgent && r.personId !== null)
+          .map((r) => ({ value: (r.personId as bigint).toString(), label: r.name }));
         this.renderFrom(this.current());
       },
       { alive: () => this.isAlive() },
@@ -126,6 +135,10 @@ export class ActivityFilterEditor extends Control<ActivityFilterEditorConfig> {
 
   private accountName(id: string): string | undefined {
     return this.accounts?.find((a) => a.value === id)?.label;
+  }
+
+  private personName(id: string): string | undefined {
+    return this.people?.find((p) => p.value === id)?.label;
   }
 
   private current(): string {
@@ -200,7 +213,9 @@ export class ActivityFilterEditor extends Control<ActivityFilterEditorConfig> {
       const txt = document.createElement('span');
       txt.className = 'activity-filter__leaf-text';
       txt.textContent =
-        entry.leaf !== null ? describeActivityLeaf(entry.leaf, (id) => this.accountName(id)) : entry.summary;
+        entry.leaf !== null
+          ? describeActivityLeaf(entry.leaf, (id) => this.accountName(id), (id) => this.personName(id))
+          : entry.summary;
       const rm = document.createElement('button');
       rm.type = 'button';
       rm.className = 'btn btn-danger activity-filter__remove';
@@ -243,15 +258,19 @@ export class ActivityFilterEditor extends Control<ActivityFilterEditorConfig> {
       this.actorFilter?.destroy();
       this.actorFilter = null;
       // Checkbox choices: the kind list for kind ops; for actor ops the host's
-      // actorChoices then the project's accounts (a scrolling, searchable
-      // list). A typed comma list for the attribute ops, and for actor ops
-      // when no accounts are known.
-      const actors = isActorOp(op);
+      // actorChoices then the project's accounts, and for "approval asked
+      // of" its "Me" then the project's people (both a scrolling, searchable
+      // list). A typed comma list for the attribute ops, and for actor /
+      // people ops when no accounts are known.
+      const people = isPersonOp(op);
+      const actors = isActorOp(op) || people;
       const choices = isKindOp(op)
         ? ACTIVITY_KIND_OPTIONS
-        : actors
-          ? [...(this.config.actorChoices ?? []), ...(this.accounts ?? [])]
-          : [];
+        : people
+          ? [...(this.config.actorChoices ?? []).filter((c) => c.value === ACTIVITY_ME_TOKEN), ...(this.people ?? [])]
+          : actors
+            ? [...(this.config.actorChoices ?? []), ...(this.accounts ?? [])]
+            : [];
       const boxes: Array<{ value: string; box: HTMLInputElement }> = [];
       const parts: HTMLElement[] = [];
       if (choices.length > 0) {

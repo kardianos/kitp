@@ -238,8 +238,8 @@ $card_type.task, parent,         "Audit-log review (related)", @s_review,$user_a
 
 ## table card | under=proj_default | doc="Inbox screen. flow_ref binds the screen to the project's task flow so the TransitionBar in the task-detail header surfaces labelled transitions (Accept / Start / Send to review / Approve / Cancel / Reopen). Without flow_ref the bar renders empty."
 ### rows
-card_type_id, parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,       alias, toggle_groups
-$card_type.screen, parent, "Inbox",  list,   inbox, i,      1,          @flow_default,  sc_inbox, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+card_type_id, parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,       alias, toggle_groups, panels
+$card_type.screen, parent, "Inbox",  list,   inbox, i,      1,          @flow_default,  sc_inbox, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`, `["approval_queue"]`
 
 ## table card | under=sc_inbox
 ### rows
@@ -419,8 +419,8 @@ $card_type.task, parent,         "Closed: prototype review",  @mob_s_cancel,  $u
 
 ## table card | under=proj_mobile | doc="Mobile App Inbox screen. No hotkey set — Default Project already claims the single-letter screen keys (i / g / k); Mobile App reaches its screens via the project picker + click. Symmetry across the two projects rather than chord collisions."
 ### rows
-card_type_id, parent_card_id, title,   layout, slug,  sort_order, flow_ref,   alias, toggle_groups
-$card_type.screen, parent, "Inbox",  list,   inbox, 1,          @mob_flow,  mob_sc_inbox, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+card_type_id, parent_card_id, title,   layout, slug,  sort_order, flow_ref,   alias, toggle_groups, panels
+$card_type.screen, parent, "Inbox",  list,   inbox, 1,          @mob_flow,  mob_sc_inbox, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`, `["approval_queue"]`
 
 ## table card | under=mob_sc_inbox
 ### rows

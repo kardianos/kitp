@@ -82,6 +82,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/activity"
 	"github.com/kitp/kitp/server/internal/dom/activitysink"
 	"github.com/kitp/kitp/server/internal/dom/agent"
+	domapproval "github.com/kitp/kitp/server/internal/dom/approval"
 	"github.com/kitp/kitp/server/internal/dom/attachment"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/attributedef"
@@ -182,6 +183,7 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 	flow.Register(pool)
 	help.Register()
 	domlink.Register(pool)
+	domapproval.Register(pool)
 	projectstamp.Register(pool)
 	tag.Register(pool)
 	process.Register(pool)

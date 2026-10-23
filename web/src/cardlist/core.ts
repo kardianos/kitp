@@ -94,6 +94,8 @@ export function buildCardListQueries(p: string): QueryBinding[] {
         projectId: { from: 'scope.projectId' },
         withPersonalSort: { from: `${p}.withPersonalSort` },
         routedToMe: { from: `${p}.routedToMe` },
+        // Approval badges on task rows (one index probe per row without any).
+        withApprovals: { lit: true },
         order: { from: `${p}.order` },
         where: { from: `${p}.where` },
         tree: { from: `${p}.tree` },
