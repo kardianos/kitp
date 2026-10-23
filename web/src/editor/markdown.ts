@@ -17,10 +17,10 @@
 import {
   MarkdownParser,
   MarkdownSerializer,
+  MarkdownSerializerState,
   MarkdownIt,
   defaultMarkdownParser,
   defaultMarkdownSerializer,
-  type MarkdownSerializerState,
   type MarkdownItToken,
   type ProseNode,
 } from '../../vendor/prosemirror.js';
@@ -88,6 +88,15 @@ export const parser = new MarkdownParser(editorSchema, md, {
 });
 
 /* --------------------------- serializer -------------------------- */
+
+// prosemirror-markdown's atBlank() is `/(^|\n)$/.test(this.out)`: a regex run
+// across the WHOLE output so far, called for every block written, which makes
+// serializing quadratic in document size. Same answer (empty, or ends in a
+// newline) from the tail alone — about twice as fast on a 5–20 KB document.
+// Kept here, not in the vendored bundle, so a bundle rebuild doesn't drop it.
+MarkdownSerializerState.prototype.atBlank = function atBlank(this: MarkdownSerializerState): boolean {
+  return this.out === '' || this.out.endsWith('\n');
+};
 
 /** Escape characters that would break a markdown table cell. */
 function escCell(s: string): string {

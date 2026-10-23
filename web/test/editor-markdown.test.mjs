@@ -21,7 +21,7 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const outdir = join(here, '.build', `editor-p${process.pid}`);
 
-let parseMarkdown, serializeMarkdown, renderMarkdownToFragment;
+let parseMarkdown, serializeMarkdown, renderMarkdownToFragment, rich;
 
 before(async () => {
   const { window } = new JSDOM('<!doctype html><html><body></body></html>');
@@ -39,6 +39,7 @@ before(async () => {
     entryPoints: {
       markdown: join(here, '..', 'src', 'editor', 'markdown.ts'),
       render: join(here, '..', 'src', 'editor', 'render.ts'),
+      rich: join(here, '..', 'src', 'editor', 'editor-test-barrel.ts'),
     },
     outdir,
     bundle: true,
@@ -50,6 +51,7 @@ before(async () => {
 
   ({ parseMarkdown, serializeMarkdown } = await import(`${outdir}/markdown.js`));
   ({ renderMarkdownToFragment } = await import(`${outdir}/render.js`));
+  rich = await import(`${outdir}/rich.js`);
 });
 
 /** serialize(parse(x)) — the canonical markdown form. */
@@ -213,4 +215,33 @@ test('a normal bullet list is unaffected (checked stays null)', () => {
   const doc = parseMarkdown('* plain one\n* plain two');
   const list = doc.toJSON().content.find((n) => n.type === 'bullet_list');
   assert.ok(list.content.every((it) => it.attrs.checked === null), 'no task markers');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Change notification — serializing is O(document), so it runs only for a     */
+/* host that listens (a description reads its value once, on commit).          */
+/* -------------------------------------------------------------------------- */
+
+test('the engine reports a change without serializing; RichEditor serializes only for onInput', () => {
+  const host = document.createElement('div');
+  document.body.append(host);
+  const changes = [];
+  const engine = rich.createProseMirrorEngine(host, { value: 'first' }, {
+    onChange: (...args) => changes.push(args),
+    onCommit: () => {},
+    onCancel: () => {},
+  });
+  engine.exec('hr');
+  assert.deepEqual(changes, [[]], 'one change, no markdown payload');
+  engine.destroy();
+
+  rich.setRichEditorEngine(rich.createProseMirrorEngine);
+  const got = [];
+  const listening = new rich.RichEditor({ value: 'first', onInput: (md) => got.push(md) });
+  document.body.append(listening.el);
+  listening.el.querySelector('[data-action="hr"]').click();
+  assert.equal(got.length, 1);
+  assert.equal(got[0], '---\n\nfirst', 'a listening host gets the markdown (rule inserted at the caret)');
+  assert.equal(got[0], listening.getValue());
+  listening.destroy();
 });

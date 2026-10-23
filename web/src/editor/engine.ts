@@ -67,8 +67,12 @@ export type EditorAction =
 /** The things an engine reports outward. The owning RichEditor forwards these
  *  to its caller's optional callbacks. */
 export interface EngineHooks {
-  /** Content changed; carries the current markdown. */
-  onInput: (markdown: string) => void;
+  /**
+   * Content changed. Carries no markdown: serializing is O(document) and runs
+   * on every keystroke, so the owner pulls `getMarkdown()` only when its host
+   * actually listens (most hosts read the value once, on commit).
+   */
+  onChange: () => void;
   /** Commit gesture (Mod/Ctrl+Enter); carries the current markdown. */
   onCommit: (markdown: string) => void;
   /** Cancel gesture (Escape). */
@@ -128,7 +132,7 @@ export const createTextareaEngine: EngineFactory = (host, init, hooks) => {
 
   const onInput = (): void => {
     fitTextarea(ta);
-    hooks.onInput(ta.value);
+    hooks.onChange();
   };
   const onKeydown = (e: KeyboardEvent): void => {
     if (e.key === 'Escape') {

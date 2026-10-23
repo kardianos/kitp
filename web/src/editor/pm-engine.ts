@@ -342,7 +342,7 @@ export const createProseMirrorEngine: EngineFactory = (host, init, hooks) => {
     dispatchTransaction(tr) {
       const next = view.state.apply(tr);
       view.updateState(next);
-      if (tr.docChanged) hooks.onInput(serializeMarkdown(next.doc));
+      if (tr.docChanged) hooks.onChange();
       // A selection move (no doc change) still needs to refresh the toolbar's
       // active/enabled state, so notify on every transaction.
       hooks.onSelectionChange?.();
@@ -380,7 +380,7 @@ export const createProseMirrorEngine: EngineFactory = (host, init, hooks) => {
     for (const [k, v] of Object.entries(init.editableAttrs ?? {})) ta.setAttribute(k, v);
     const onRawInput = (): void => {
       fitTextarea(ta);
-      hooks.onInput(ta.value);
+      hooks.onChange();
     };
     const onRawKeydown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
@@ -419,7 +419,7 @@ export const createProseMirrorEngine: EngineFactory = (host, init, hooks) => {
     // Re-parse the edited source back into the document.
     view.updateState(buildState(md, hooks, init));
     // The doc may have changed; let the host re-read it.
-    hooks.onInput(serializeMarkdown(view.state.doc));
+    hooks.onChange();
   }
 
   return {

@@ -80,7 +80,13 @@ export interface MarkdownSerializerState {
   renderContent(parent: ProseNode): void;
   esc(str: string): string;
   text(text: string, escape?: boolean): void;
+  /** The markdown written so far. */
+  out: string;
+  /** True when `out` is empty or ends in a newline. */
+  atBlank(): boolean;
 }
+/** The state class itself (its prototype is patched in src/editor/markdown.ts). */
+export const MarkdownSerializerState: { prototype: MarkdownSerializerState };
 
 export type MarkdownNodeSerializer = (
   state: MarkdownSerializerState,

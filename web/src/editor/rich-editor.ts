@@ -36,7 +36,11 @@ export interface RichEditorOptions {
   editableClassName?: string;
   /** Attributes stamped on the editable element (preserves selectors / focus). */
   editableAttrs?: Record<string, string>;
-  /** Fired on every change with the current markdown (host tracks draft / toggles buttons). */
+  /**
+   * Fired on every change with the current markdown (host tracks draft /
+   * toggles buttons). Costs a full serialize per keystroke, so set it only when
+   * the host needs the live value; otherwise read {@link RichEditor.getValue}.
+   */
   onInput?: (markdown: string) => void;
   /** Mod/Ctrl+Enter. Host persists. */
   onCommit?: (markdown: string) => void;
@@ -89,9 +93,12 @@ export class RichEditor {
         editableAttrs: opts.editableAttrs,
       },
       {
-        onInput: (md) => {
-          this.opts.onInput?.(md);
-          this.toolbar?.refresh();
+        // Serialize only for a host that listens — building the markdown is
+        // O(document), and a description host reads it once, on commit. No
+        // toolbar refresh here: the engine reports every transaction through
+        // onSelectionChange too, so refreshing here would run it twice a key.
+        onChange: () => {
+          if (this.opts.onInput !== undefined) this.opts.onInput(this.engine.getMarkdown());
         },
         onCommit: (md) => this.opts.onCommit?.(md),
         onCancel: () => this.opts.onCancel?.(),
