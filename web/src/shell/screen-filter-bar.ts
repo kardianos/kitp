@@ -68,6 +68,8 @@ import { schemaForCardType } from '../filter/attribute-schema.js';
 import { loadView, saveView } from '../filter/view-persistence.js';
 import { groupAxisForAttr, type GroupAttr } from '../filter/group-axis.js';
 import { icon, type IconName } from '../ui/icons.js';
+import { fitBelowAnchor } from '../ui/popover.js';
+import { MenuFilter } from '../ui/menu-filter.js';
 import { exclusiveRoots, tagPrefixOptionValue, tagRootLabel } from '../filter/tag-prefix.js';
 import type { AttributeDefRow } from '../admin/specs.js';
 
@@ -166,6 +168,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
    *  these lists mirror them with the same look as the "+ Filter" menu. */
   private groupListHost: HTMLElement | null = null;
   private laneListHost: HTMLElement | null = null;
+  private displayFilter: MenuFilter | null = null;
   /** True once the persisted view has been restored — gates the persist effect
    *  so it never writes the transient pre-restore seed over a saved view. */
   private viewRestored = false;
@@ -303,13 +306,18 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     displayMenu.className = 'filterbar__display-menu';
     displayMenu.dataset.filterDisplayMenu = '';
     displayMenu.style.display = 'none';
+    // A search field over both option lists once they're long (many exclusive
+    // tag roots); the menu itself scrolls within the viewport.
+    const displayFilter = new MenuFilter(displayMenu);
+    this.displayFilter = displayFilter;
+    this.onDestroy(() => displayFilter.destroy());
     // Keep the native selects in the DOM (value/change/restore plumbing) but
     // hidden; render visible menu-styled option lists that mirror + drive them
     // so the Display menu matches the "+ Filter" menu's look.
     groupWrap.style.display = 'none';
     const groupListHost = document.createElement('div');
     this.groupListHost = groupListHost;
-    displayMenu.append(groupWrap, groupListHost);
+    displayMenu.append(displayFilter.el, groupWrap, groupListHost);
     if (laneWrap !== null) {
       laneWrap.style.display = 'none';
       const laneListHost = document.createElement('div');
@@ -319,9 +327,14 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     displayWrap.append(displayMenu);
 
     const setDisplayOpen = (open: boolean): void => {
-      if (open) this.renderDisplayLists(); // fresh from the selects' current state
+      if (open) {
+        displayFilter.reset();
+        this.renderDisplayLists(); // fresh from the selects' current state
+        fitBelowAnchor(displayMenu, displayBtn);
+      }
       displayMenu.style.display = open ? '' : 'none';
       displayBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) displayFilter.focus();
     };
     this.listen(displayBtn, 'click', (e) => {
       e.stopPropagation();
@@ -838,6 +851,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
   private renderDisplayLists(): void {
     this.renderAxisList(this.groupListHost, this.groupEl, 'Group by', 'square-stack');
     this.renderAxisList(this.laneListHost, this.laneEl, 'Lanes');
+    this.displayFilter?.apply();
   }
 
   /** One labelled radio list mirroring a native <select>; a pick sets the
@@ -850,9 +864,14 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     iconName?: IconName,
   ): void {
     if (host === null || sel === null) return;
+    // A pick repaints the list; keep keyboard focus on the picked row.
+    const active = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null);
+    const focusedValue = active !== null && host.contains(active) ? active.dataset?.axisValue : undefined;
+    let refocus: HTMLButtonElement | null = null;
     host.replaceChildren();
     const header = document.createElement('div');
     header.className = 'filterbar__display-section';
+    header.dataset.menuSection = '';
     if (iconName !== undefined) header.append(icon(iconName, 14));
     const titleText = document.createElement('span');
     titleText.textContent = title;
@@ -863,9 +882,11 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     for (const opt of Array.from(sel.options)) {
       const checked = opt.value === sel.value;
       const li = document.createElement('li');
+      li.dataset.menuItem = opt.textContent ?? opt.value;
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'filterbar__chip-option';
+      btn.dataset.axisValue = opt.value;
       btn.setAttribute('role', 'menuitemradio');
       btn.setAttribute('aria-checked', checked ? 'true' : 'false');
       if (checked) btn.classList.add('filterbar__chip-option--checked');
@@ -887,8 +908,10 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       });
       li.append(btn);
       list.append(li);
+      if (opt.value === focusedValue) refocus = btn;
     }
     host.append(header, list);
+    refocus?.focus({ preventScroll: true });
   }
 
   /** (Re)spawn QuickChips with chip defs derived from the axes (one chip per
@@ -956,7 +979,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
             }
             this.ctx.tree.at(['screen', 'tagRootById']).set(rootById);
             const roots = exclusiveRoots(rows.map((r) => ({ rootExclusiveAt: rootById[r.id.toString()] ?? '' })));
-            if (roots.join(' ') !== this.tagRoots.join(' ')) {
+            if (roots.join('\0') !== this.tagRoots.join('\0')) {
               this.tagRoots = roots;
               this.applyGroupOptions();
             }
@@ -1112,6 +1135,7 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     row.append(wrap);
 
     const setOpen = (open: boolean): void => {
+      if (open) fitBelowAnchor(panel, trigger);
       panel.style.display = open ? '' : 'none';
       trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
     };

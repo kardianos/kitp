@@ -53,7 +53,6 @@ export class GridColumns extends Control<GridColumnsConfig> {
 
     const pop = new Popover(btn, {
       placement: 'bottom-end',
-      clampHeight: true,
       onClose: () => btn.setAttribute('aria-expanded', 'false'),
     });
     pop.element.classList.add('grid__columns-panel');

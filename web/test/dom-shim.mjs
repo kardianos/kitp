@@ -186,6 +186,11 @@ class FakeElement {
   get firstChild() {
     return this.children[0] ?? null;
   }
+  // Node.contains: true for the node itself or any descendant.
+  contains(n) {
+    for (let cur = n; cur; cur = cur.parentNode) if (cur === this) return true;
+    return false;
+  }
   addEventListener(t, h) {
     if (!this.listeners.has(t)) this.listeners.set(t, []);
     this.listeners.get(t).push(h);

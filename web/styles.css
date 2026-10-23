@@ -1019,6 +1019,7 @@ select optgroup {
   display: inline-flex;
 }
 .filterbar__display-menu {
+  --menu-pad: var(--space-1);
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
@@ -1028,6 +1029,9 @@ select optgroup {
   gap: var(--space-1);
   padding: var(--space-1);
   min-width: 13rem;
+  /* max-height is fitted to the viewport on open (fitBelowAnchor). */
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--color-surface-raised);
   color: var(--color-fg);
   border: 1px solid var(--color-border);
@@ -1155,6 +1159,7 @@ select optgroup {
   left: 0;
   z-index: var(--z-popover, 50);
   min-width: 9rem;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -1852,8 +1857,12 @@ select optgroup {
 }
 .grid__col-filter-panel {
   min-width: 12rem;
-  padding: var(--space-1) 0;
   font-size: var(--text-sm);
+}
+.grid__col-filter-list {
+  margin: 0;
+  padding: var(--space-1) 0;
+  list-style: none;
 }
 .grid__col-filter-option {
   display: block;
@@ -5400,6 +5409,30 @@ select optgroup {
   box-shadow: var(--shadow-lg);
   overflow: hidden;
 }
+/* A height-clamped panel (the Popover default) scrolls rather than clipping
+   a list that's taller than the space it was given. */
+.kf-popover--scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* ---- MenuFilter: the "contains" search heading a long dropdown list ----
+   It sticks to the top of the menu's scroll container while the rows scroll
+   under it. A container with top padding sets --menu-pad so the field covers
+   that strip too. */
+.kf-menu-filter {
+  position: sticky;
+  top: calc(-1 * var(--menu-pad, 0px));
+  z-index: 1;
+  padding: var(--space-1x);
+  background: inherit;
+  border-bottom: 1px solid var(--color-border);
+}
+.kf-menu-filter__empty {
+  padding: var(--space-2) var(--space-1) var(--space-h);
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
 
 /* ---- Combobox ---- */
 .kf-combobox {
@@ -5463,7 +5496,8 @@ select optgroup {
   padding: var(--space-1x);
   border-bottom: 1px solid var(--color-border);
 }
-.kf-combobox__search-input {
+.kf-combobox__search-input,
+.kf-menu-filter__input {
   width: 100%;
   font: inherit;
   font-size: var(--text-sm);
@@ -5473,10 +5507,12 @@ select optgroup {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
 }
-.kf-combobox__search-input::placeholder {
+.kf-combobox__search-input::placeholder,
+.kf-menu-filter__input::placeholder {
   color: var(--color-muted);
 }
-.kf-combobox__search-input:focus-visible {
+.kf-combobox__search-input:focus-visible,
+.kf-menu-filter__input:focus-visible {
   outline: none;
   border-color: var(--color-accent);
   box-shadow: 0 0 0 3px var(--color-focus-halo);
@@ -6791,13 +6827,15 @@ select optgroup {
   border-color: var(--color-accent-ring);
 }
 .activity-menu__panel {
+  --menu-pad: var(--space-2);
   position: absolute;
   top: calc(100% + var(--space-1));
   left: 0;
   z-index: var(--z-popover, 50);
   min-width: 13rem;
-  max-height: 20rem;
+  /* max-height is fitted to the viewport on open (fitBelowAnchor). */
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: var(--space-h);

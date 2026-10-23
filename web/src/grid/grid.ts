@@ -67,6 +67,7 @@ import {
   removeTopLevelLeaf,
 } from '../filter/predicate.js';
 import { Popover } from '../ui/popover.js';
+import { MenuFilter } from '../ui/menu-filter.js';
 import { rowLink, setRowLinkHref } from '../shell/popout.js';
 import {
   buildGridColumns,
@@ -184,9 +185,10 @@ export class Grid extends CardListCore<GridConfig> {
   private selectAllCell: HTMLElement | null = null;
   /** Per-column header sort handles, keyed by col.key (sortable columns only). */
   private headerCells = new Map<string, { cell: HTMLElement; arrow: HTMLElement; field: string }>();
-  /** Per-column filter funnels (ref columns) + the popovers, rebuilt with the header. */
+  /** Per-column filter funnels (ref columns) + their popovers and option
+   *  searches (each torn down with destroy()), rebuilt with the header. */
   private headerFilters: Array<{ funnel: HTMLElement; attr: string }> = [];
-  private headerPopovers: Popover[] = [];
+  private headerPopovers: Array<{ destroy(): void }> = [];
   /** The body element — the virtualList viewport (CardListCore owns the handle as
    *  `this.vlist` and the rendered item model as `this.items`). */
   private bodyEl: HTMLElement | null = null;
@@ -1052,29 +1054,35 @@ export class Grid extends CardListCore<GridConfig> {
     const pop = new Popover(funnel, {
       placement: 'bottom-start',
       width: 'anchor',
-      clampHeight: true,
       onClose: () => funnel.setAttribute('aria-expanded', 'false'),
     });
     pop.element.classList.add('grid__col-filter-panel');
-    this.headerPopovers.push(pop);
+    const filter = new MenuFilter(pop.element);
+    this.headerPopovers.push(pop, filter);
     this.listen(funnel, 'click', (e) => {
       e.stopPropagation();
       if (pop.isOpen) {
         pop.close();
         return;
       }
-      this.renderColumnFilterMenu(col, pop.element);
+      filter.reset();
+      this.renderColumnFilterMenu(col, pop.element, filter);
       funnel.setAttribute('aria-expanded', 'true');
       pop.open();
+      filter.focus();
     });
   }
 
   /** (Re)render a column filter menu: option checkboxes reflecting the live leaf. */
-  private renderColumnFilterMenu(col: ColumnDef, panel: HTMLElement): void {
+  private renderColumnFilterMenu(col: ColumnDef, panel: HTMLElement, filter: MenuFilter): void {
     const attr = col.attrName ?? '';
     const target = col.targetCardType ?? '';
     const options = (this.ctx.tree.at(['screen', 'predicateOptions']).peek<Record<string, Array<{ value: string; label: string }>>>() ?? {})[target] ?? [];
     const selected = new Set(this.columnFilterValues(attr));
+    // A pick repaints the rows; keep keyboard focus on the row that was picked.
+    const active = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null);
+    const focusedValue = active !== null && panel.contains(active) ? active.dataset?.gridColFilterOption : undefined;
+    let refocus: HTMLButtonElement | null = null;
     const list = document.createElement('ul');
     list.className = 'grid__col-filter-list';
     list.setAttribute('role', 'listbox');
@@ -1086,6 +1094,7 @@ export class Grid extends CardListCore<GridConfig> {
     } else {
       for (const opt of options) {
         const li = document.createElement('li');
+        li.dataset.menuItem = opt.label;
         const item = document.createElement('button');
         item.type = 'button';
         item.className = 'grid__col-filter-option';
@@ -1096,13 +1105,16 @@ export class Grid extends CardListCore<GridConfig> {
         item.textContent = `${checked ? '✓ ' : ''}${opt.label}`;
         this.listen(item, 'click', () => {
           this.toggleColumnFilter(attr, opt.value);
-          this.renderColumnFilterMenu(col, panel); // repaint checks in place
+          this.renderColumnFilterMenu(col, panel, filter); // repaint checks in place
         });
         li.append(item);
         list.append(li);
+        if (opt.value === focusedValue) refocus = item;
       }
     }
-    panel.replaceChildren(list);
+    panel.replaceChildren(filter.el, list);
+    filter.apply();
+    refocus?.focus({ preventScroll: true });
   }
 
   /** The selected values for a column's `attr in/eq` leaf in screen.predicate. */

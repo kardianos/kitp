@@ -35,6 +35,8 @@ import {
 import { formatActivityText, resolveActor, sortActivityDesc, type IdMap } from '../task-detail/activity-text.js';
 import type { ActivityLabelMaps } from '../task-detail/activity-labels.js';
 import { formatLocalDateTime } from '../util/datetime.js';
+import { fitBelowAnchor } from '../ui/popover.js';
+import { MenuFilter } from '../ui/menu-filter.js';
 import {
   KIND_GROUPS,
   buildFeed,
@@ -221,6 +223,8 @@ export class Activity extends Control<ActivityConfig> {
   private readonly cardTypes = new Set<string>();
   private query = '';
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Each filter dropdown's option search, keyed by its wrapper. */
+  private readonly menuFilters = new Map<HTMLElement, MenuFilter>();
 
   private statsEl!: HTMLElement;
   private rangeEl!: HTMLSelectElement;
@@ -425,6 +429,11 @@ export class Activity extends Control<ActivityConfig> {
     panel.className = 'activity-menu__panel';
     panel.style.display = 'none';
     wrap.append(trigger, panel);
+    // A long list (people over a busy range) gets a search field; it heads the
+    // panel and the rows repaint beneath it.
+    const filter = new MenuFilter(panel, { placeholder: `Filter ${label.toLowerCase()}…` });
+    this.menuFilters.set(wrap, filter);
+    this.onDestroy(() => filter.destroy());
     this.listen(trigger, 'click', () => this.setMenuOpen(wrap, panel.style.display === 'none'));
 
     let labels = new Map<string, string>();
@@ -438,7 +447,7 @@ export class Activity extends Control<ActivityConfig> {
     };
     const paint = (options: readonly MenuOption[]): void => {
       labels = new Map(options.map((o) => [o.value, o.label]));
-      panel.replaceChildren();
+      panel.replaceChildren(filter.el);
       if (options.length === 0) {
         const empty = document.createElement('span');
         empty.className = 'activity-menu__empty muted';
@@ -448,6 +457,7 @@ export class Activity extends Control<ActivityConfig> {
       for (const o of options) {
         const row = document.createElement('label');
         row.className = 'activity-menu__option';
+        row.dataset.menuItem = o.label;
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.dataset.activityOption = o.value;
@@ -468,6 +478,7 @@ export class Activity extends Control<ActivityConfig> {
         row.append(cb, text, count);
         panel.append(row);
       }
+      filter.apply();
       paintTrigger();
     };
     paint([]);
@@ -484,8 +495,15 @@ export class Activity extends Control<ActivityConfig> {
         if (m !== wrap) this.setMenuOpen(m as HTMLElement, false);
       }
     }
+    const filter = this.menuFilters.get(wrap);
+    if (open) {
+      filter?.reset();
+      filter?.apply();
+      if (trigger !== null) fitBelowAnchor(panel, trigger as HTMLElement);
+    }
     panel.style.display = open ? '' : 'none';
     trigger?.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) filter?.focus();
   }
 
   /** Repaint the dropdowns from the facets (plus any picked value they lack). */

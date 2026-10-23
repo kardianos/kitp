@@ -13,7 +13,8 @@
  * element and positions it against an anchor. The caller owns the anchor
  * (usually a trigger button) and the panel's content; the helper owns:
  *
- *   - floating-ui positioning (offset + flip + shift, optional size) and the
+ *   - floating-ui positioning (offset + flip + shift, plus a size clamp so a
+ *     long panel scrolls instead of leaving the viewport) and the
  *     autoUpdate subscription while open;
  *   - the reveal-after-first-position trick (the panel starts at opacity 0 /
  *     pointer-events none so the user never sees the (0,0) flash before the
@@ -55,10 +56,10 @@ export interface PopoverOptions {
    */
   width?: 'auto' | 'anchor' | string;
   /**
-   * When true, the panel's max-height is clamped to the available space below
-   * (down to a 140px floor) via floating-ui's size middleware — used by the
-   * Combobox listbox so a long option list scrolls instead of overflowing the
-   * viewport.
+   * Clamp the panel's max-height to the space on its side of the anchor (down
+   * to a 140px floor) via floating-ui's size middleware, and let the panel
+   * scroll — so a long option list never runs off the screen. Default true;
+   * pass false only for a panel that must keep its natural height.
    */
   clampHeight?: boolean;
   /** Fired after the panel is shown and first positioned. */
@@ -92,6 +93,7 @@ export class Popover {
   ) {
     const panel = document.createElement('div');
     panel.className = 'kf-popover';
+    if (opts.clampHeight !== false) panel.classList.add('kf-popover--scroll');
     // Start invisible + inert so the brief pre-position frame at (0,0) never
     // flashes. computePosition flips these on once it resolves a real point.
     panel.style.position = 'absolute';
@@ -201,7 +203,7 @@ export class Popover {
     const offsetPx = this.opts.offsetPx ?? 4;
 
     const middleware = [offset(offsetPx), flip(), shift({ padding: 8 })];
-    if (this.opts.clampHeight) {
+    if (this.opts.clampHeight !== false) {
       middleware.push(
         size({
           padding: 8,
@@ -256,4 +258,17 @@ export class Popover {
       this.close(true);
     }
   }
+}
+
+/**
+ * The inline-menu counterpart of {@link PopoverOptions.clampHeight}, for a
+ * dropdown that is absolutely positioned under its trigger rather than
+ * floated (it must stay in its host's DOM): cap [panel]'s height at the space
+ * left below [anchor], down to a 160px floor. Call it each time the menu
+ * opens; the panel's CSS supplies `overflow-y: auto`.
+ */
+export function fitBelowAnchor(panel: HTMLElement, anchor: HTMLElement): void {
+  if (typeof window === 'undefined' || typeof anchor.getBoundingClientRect !== 'function') return;
+  const below = window.innerHeight - anchor.getBoundingClientRect().bottom - 12;
+  panel.style.maxHeight = `${Math.max(160, Math.floor(below))}px`;
 }

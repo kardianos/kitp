@@ -33,6 +33,7 @@ import { Control, type BaseControlConfig } from '../core/control.js';
 import { splitPath } from '../core/data.js';
 import type { Path } from '../core/tree.js';
 import { Popover } from '../ui/popover.js';
+import { MenuFilter } from '../ui/menu-filter.js';
 import {
   type Predicate,
   type PredicateLeaf,
@@ -131,6 +132,8 @@ interface ChipView {
   clearEl: HTMLButtonElement;
   popover: Popover;
   listEl: HTMLUListElement;
+  /** The inline search over a long value list (tags, people). */
+  filter: MenuFilter;
   /** Reflects the current selection (stringified values) for this chip's attr. */
   selected: string[];
 }
@@ -144,6 +147,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
   /** The "+ Filter" add-menu (reveals hidden chips + saved filters on demand). */
   private addPopover: Popover | null = null;
   private addListEl: HTMLUListElement | null = null;
+  private addFilter: MenuFilter | null = null;
   private addWrap: HTMLElement | null = null;
   /** Active saved-filter (snippet) chips, keyed by snippet id-string. */
   private snippetChips = new Map<string, HTMLElement>();
@@ -246,7 +250,6 @@ export class QuickChips extends Control<QuickChipsConfig> {
     const popover = new Popover(trigger, {
       placement: 'bottom-start',
       width: 'anchor',
-      clampHeight: true,
       onClose: () => {
         trigger.setAttribute('aria-expanded', 'false');
         // Fold the chip back off the bar if it closed with no value (added via
@@ -262,7 +265,8 @@ export class QuickChips extends Control<QuickChipsConfig> {
     list.className = 'filterbar__chip-list';
     list.setAttribute('role', 'listbox');
     list.setAttribute('aria-multiselectable', 'true');
-    panel.append(list);
+    const filter = new MenuFilter(list, { placeholder: `Filter ${def.label.toLowerCase()}…` });
+    panel.append(filter.el, list);
 
     const chip: ChipView = {
       def,
@@ -272,6 +276,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
       clearEl,
       popover,
       listEl: list,
+      filter,
       selected: [],
     };
 
@@ -291,7 +296,10 @@ export class QuickChips extends Control<QuickChipsConfig> {
       }
     });
 
-    this.onDestroy(() => popover.destroy());
+    this.onDestroy(() => {
+      filter.destroy();
+      popover.destroy();
+    });
     return chip;
   }
 
@@ -300,9 +308,11 @@ export class QuickChips extends Control<QuickChipsConfig> {
   private openChip(chip: ChipView): void {
     chip.wrap.style.display = ''; // ensure visible (e.g. just added via "+ Filter")
     // Rebuild the menu from the LIVE selection + options on every open.
+    chip.filter.reset();
     this.renderMenu(chip, this.peekPredicate(), this.readOptionsPeek());
     chip.trigger.setAttribute('aria-expanded', 'true');
     chip.popover.open();
+    chip.filter.focus();
   }
 
   private readOptionsPeek(): OptionsMap {
@@ -337,6 +347,11 @@ export class QuickChips extends Control<QuickChipsConfig> {
   private renderMenu(chip: ChipView, predicate: Predicate | null, options: OptionsMap): void {
     const selected = new Set(selectedValues(predicate, chip.def.attr));
     const opts = options[chip.def.optionKey] ?? [];
+    // A pick repaints the rows; keep keyboard focus on the row that was picked.
+    const active = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null);
+    const focusedValue =
+      active !== null && chip.listEl.contains(active) ? active.dataset?.quickChipOption : undefined;
+    let refocus: HTMLButtonElement | null = null;
     chip.listEl.replaceChildren();
 
     if (opts.length === 0) {
@@ -344,11 +359,13 @@ export class QuickChips extends Control<QuickChipsConfig> {
       li.className = 'filterbar__chip-empty muted';
       li.textContent = 'No options';
       chip.listEl.append(li);
+      chip.filter.apply();
       return;
     }
 
     for (const opt of opts) {
       const li = document.createElement('li');
+      li.dataset.menuItem = opt.label;
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'filterbar__chip-option';
@@ -371,8 +388,13 @@ export class QuickChips extends Control<QuickChipsConfig> {
       this.listen(btn, 'click', () => this.toggleValue(chip, opt.value));
       li.append(btn);
       chip.listEl.append(li);
+      if (opt.value === focusedValue) refocus = btn;
     }
 
+    chip.filter.apply();
+    // Only once the list is whole: focusing mid-rebuild forces a layout of the
+    // half-built list, which clamps the menu's scroll back toward the top.
+    refocus?.focus({ preventScroll: true });
     chip.popover.reposition();
   }
 
@@ -417,7 +439,6 @@ export class QuickChips extends Control<QuickChipsConfig> {
 
     const popover = new Popover(trigger, {
       placement: 'bottom-start',
-      clampHeight: true,
       onClose: () => trigger.setAttribute('aria-expanded', 'false'),
     });
     this.addPopover = popover;
@@ -426,20 +447,27 @@ export class QuickChips extends Control<QuickChipsConfig> {
     const list = document.createElement('ul');
     list.className = 'filterbar__chip-list';
     list.setAttribute('role', 'menu');
-    panel.append(list);
+    const filter = new MenuFilter(list);
+    panel.append(filter.el, list);
     this.addListEl = list;
+    this.addFilter = filter;
 
     this.listen(trigger, 'click', () => {
       if (popover.isOpen) {
         popover.close();
         trigger.setAttribute('aria-expanded', 'false');
       } else {
+        filter.reset();
         this.renderAddMenu();
         trigger.setAttribute('aria-expanded', 'true');
         popover.open();
+        filter.focus();
       }
     });
-    this.onDestroy(() => popover.destroy());
+    this.onDestroy(() => {
+      filter.destroy();
+      popover.destroy();
+    });
   }
 
   /** Populate the "+ Filter" menu: the attribute chips not on the bar, then a
@@ -458,6 +486,7 @@ export class QuickChips extends Control<QuickChipsConfig> {
     if (savedAvail.length > 0) {
       const header = document.createElement('li');
       header.className = 'filterbar__chip-menu-header muted';
+      header.dataset.menuSection = '';
       header.textContent = 'Presets';
       list.append(header);
       for (const s of savedAvail) {
@@ -470,12 +499,14 @@ export class QuickChips extends Control<QuickChipsConfig> {
       li.textContent = 'All filters added';
       list.append(li);
     }
+    this.addFilter?.apply();
     this.addPopover?.reposition();
   }
 
   /** A "+ Filter" menu row that closes the menu and runs [onPick]. */
   private addMenuItem(label: string, onPick: () => void): HTMLLIElement {
     const li = document.createElement('li');
+    li.dataset.menuItem = label;
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'filterbar__chip-option';

@@ -28,6 +28,7 @@
 
 import { Control, type BaseControlConfig, type ControlContext } from '../core/control.js';
 import { Popover } from './popover.js';
+import { labelMatches } from './menu-filter.js';
 
 import { icon } from './icons.js';
 export interface ComboboxOption<V = unknown> {
@@ -185,7 +186,6 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
     this.popover = new Popover(trigger, {
       placement: 'bottom-start',
       width: 'anchor',
-      clampHeight: true,
       onClose: () => this.afterSelfClose(),
     });
     this.buildPanel(this.popover.element);
@@ -347,14 +347,12 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
   }
 
   private recomputeFiltered(): void {
-    const q = this.query.trim().toLowerCase();
+    const q = this.query;
     // Async: the loader is the single source of truth for the body — no client
-    // narrowing. Static: substring-filter locally.
+    // narrowing. Static: filter locally with the shared menu rule.
     const body = this.isAsync
       ? this.asyncOptions
-      : q === ''
-        ? this.staticOptions
-        : this.staticOptions.filter((o) => o.label.toLowerCase().includes(q));
+      : this.staticOptions.filter((o) => labelMatches(o.label, q));
     this.filtered = this.withPinned(body, q);
   }
 
@@ -365,9 +363,7 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
    */
   private withPinned(body: ComboboxOption<V>[], q: string): ComboboxOption<V>[] {
     if (this.pinnedOptions.length === 0) return body;
-    const pinned = q === ''
-      ? this.pinnedOptions
-      : this.pinnedOptions.filter((o) => o.label.toLowerCase().includes(q));
+    const pinned = this.pinnedOptions.filter((o) => labelMatches(o.label, q));
     if (pinned.length === 0) return body;
     const pinnedValues = new Set(pinned.map((o) => o.value));
     return [...pinned, ...body.filter((o) => !pinnedValues.has(o.value))];
@@ -399,7 +395,7 @@ export class Combobox<V = unknown> extends Control<ComboboxConfig<V>> {
     // beneath. `filtered` is set to the pinned-only list so keyboard nav +
     // Enter stay consistent with what's painted.
     if (state === 'loading') {
-      this.filtered = this.withPinned([], this.query.trim().toLowerCase());
+      this.filtered = this.withPinned([], this.query);
       this.filtered.forEach((opt, i) => this.appendOption(opt, i));
       const li = document.createElement('li');
       li.className = 'kf-combobox__empty';

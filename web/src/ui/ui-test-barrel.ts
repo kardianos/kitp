@@ -7,8 +7,9 @@
 
 export { Control } from '../core/control.js';
 export type { ControlContext } from '../core/control.js';
-export { Popover } from './popover.js';
+export { Popover, fitBelowAnchor } from './popover.js';
 export type { PopoverOptions, Placement } from './popover.js';
+export { MenuFilter, labelMatches, MENU_FILTER_MIN_ITEMS } from './menu-filter.js';
 export {
   Combobox,
   registerCombobox,
