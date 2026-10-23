@@ -2953,6 +2953,11 @@ select optgroup {
     transform: none;
   }
 }
+/* Scrims are a flat tint — deliberately no `backdrop-filter: blur()`. A blur
+   on a full-screen element is redone over its whole area whenever anything
+   above it repaints, so every keystroke and caret blink in a dialog re-blurred
+   the viewport (15× the compositor work per keystroke in the quick-entry
+   dialog, worst without GPU compositing). */
 .modal-backdrop {
   animation: modal-scrim-enter var(--duration-base) var(--ease-standard);
   position: fixed;
@@ -2962,8 +2967,6 @@ select optgroup {
   justify-content: center;
   padding-top: 12vh;
   background: var(--color-scrim);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
   z-index: var(--z-modal);
 }
 .modal__panel {
@@ -3022,8 +3025,6 @@ select optgroup {
   justify-content: center;
   padding-top: 12vh;
   background: var(--color-scrim);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
   z-index: var(--z-modal);
 }
 .qe-dialog__panel {
@@ -3155,8 +3156,6 @@ select optgroup {
   padding: 0;
   cursor: default;
   background: var(--color-scrim);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
 }
 .qe-overlay__panel {
   position: relative;
@@ -3571,8 +3570,6 @@ select optgroup {
   padding: 0;
   cursor: default;
   background: var(--color-scrim);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
 }
 .import-wizard__panel {
   position: relative;
@@ -3873,8 +3870,6 @@ select optgroup {
   padding: 0;
   cursor: default;
   background: var(--color-scrim);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
 }
 .help-overlay__panel {
   position: relative;
@@ -3985,12 +3980,6 @@ select optgroup {
 }
 .help-overlay__empty {
   font-size: var(--text-base);
-}
-@media (prefers-reduced-motion: reduce) {
-  .help-overlay__backdrop {
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
 }
 
 /* ==========================================================================
@@ -5976,9 +5965,26 @@ select optgroup {
   color: var(--color-success);
 }
 .task-detail__refresh--new {
+  position: relative;
+  isolation: isolate;
   color: var(--color-warning);
   border-color: var(--color-warning);
   font-weight: var(--weight-semibold);
+}
+/* The blink is a tint layer fading in and out. It animates OPACITY so it runs
+   on the compositor: animating `background` repainted the button on the main
+   thread every frame for as long as the indicator showed (~13% of a core on
+   an idle page). z-index -1 inside the isolated button keeps the tint under
+   the label. */
+.task-detail__refresh--new::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--color-warning) 18%, transparent);
+  opacity: 0;
+  pointer-events: none;
   animation: task-refresh-blink 1.1s var(--ease-standard) infinite;
 }
 .task-detail__refresh--new:hover {
@@ -5987,17 +5993,16 @@ select optgroup {
 @keyframes task-refresh-blink {
   0%,
   100% {
-    background: transparent;
+    opacity: 0;
   }
   50% {
-    background: var(--color-success-soft);
-    background: color-mix(in srgb, var(--color-warning) 18%, transparent);
+    opacity: 1;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .task-detail__refresh--new {
+  .task-detail__refresh--new::before {
     animation: none;
-    background: color-mix(in srgb, var(--color-warning) 14%, transparent);
+    opacity: 0.78;
   }
 }
 /* Prev/next task nav bubble in the right rail (above attributes): a rail-bar
@@ -8617,8 +8622,6 @@ textarea.task-comms__form-input {
   position: absolute;
   inset: 0;
   background: var(--color-scrim);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
 }
 .project-props__sheet {
   position: absolute;
@@ -9426,8 +9429,6 @@ textarea.task-comms__form-input {
   position: fixed;
   inset: 0;
   background: var(--color-scrim);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
 }
 .pm-modal__panel {
   position: relative;
