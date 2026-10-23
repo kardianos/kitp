@@ -476,11 +476,13 @@ func rowRefIDs(r scannedRow) []int64 {
 
 // digestHiddenAttrs are attributes a digest doesn't list as changes: an
 // approval request's fixed edge and action, which its title (the line's
-// prefix) already names.
+// prefix) already names, and the link to the email thread it started
+// (the thread's own rows tell that).
 var digestHiddenAttrs = map[string]bool{
 	"approval_from":   true,
 	"approval_to":     true,
 	"approval_action": true,
+	"approval_comm":   true,
 }
 
 // addedRefs is the card ids in a card_ref[] value's new list that its old

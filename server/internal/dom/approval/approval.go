@@ -20,6 +20,8 @@
 //
 // Endpoints:
 //   - approval.set    — ask (create) or change who is asked / the note.
+//     When asking, it can also email them: a comm thread on the task,
+//     linked from the request (approval_comm), separate from then on.
 //   - approval.remove — withdraw a request.
 //   - approval.decide — vote approve or reject, asked or not. Agents (via
 //     MCP) can vote too: they're shown with their owner, and their vote
@@ -49,13 +51,22 @@ import (
 // SetInput is the wire payload for approval.set. Without ID it creates a
 // request (task, from → to, approvers required); with ID it PATCHes the
 // approvers and / or note. Note is a pointer so omit and clear differ.
+// Email (create only) also starts an email thread to the people asked.
 type SetInput struct {
-	ID           int64    `json:"id,string,omitempty" mcp:"desc=approval request id to change; omit to create a request"`
-	TaskID       int64    `json:"task_id,string" mcp:"required,desc=task the request is on"`
-	FromStatusID int64    `json:"from_status_id,string,omitempty" mcp:"desc=status the action starts from (create only), e.g. the Review status card id"`
-	ToStatusID   int64    `json:"to_status_id,string,omitempty" mcp:"desc=status the action leads to (create only); from → to must be a step of the task's status flow"`
-	ApproverIDs  []string `json:"approver_ids,omitempty" mcp:"desc=person card ids to ask (each a person with a login who can see the project); on update, replaces the list"`
-	Note         *string  `json:"note,omitempty" mcp:"desc=optional message to the people asked; '' clears; omit to leave unchanged"`
+	ID           int64     `json:"id,string,omitempty" mcp:"desc=approval request id to change; omit to create a request"`
+	TaskID       int64     `json:"task_id,string" mcp:"required,desc=task the request is on"`
+	FromStatusID int64     `json:"from_status_id,string,omitempty" mcp:"desc=status the action starts from (create only), e.g. the Review status card id"`
+	ToStatusID   int64     `json:"to_status_id,string,omitempty" mcp:"desc=status the action leads to (create only); from → to must be a step of the task's status flow"`
+	ApproverIDs  []string  `json:"approver_ids,omitempty" mcp:"desc=person card ids to ask (each a person with a login who can see the project); on update, replaces the list"`
+	Note         *string   `json:"note,omitempty" mcp:"desc=optional message to the people asked; '' clears; omit to leave unchanged"`
+	Email        *SetEmail `json:"email,omitempty" mcp:"desc=create only: also email the people asked, starting a comm thread on the task with the note as its message (note then required); they still vote on the task, not by replying"`
+}
+
+// SetEmail asks approval.set to email the people asked: a comm thread on
+// the task's channel, linked from the request.
+type SetEmail struct {
+	ChannelID int64  `json:"channel_id,string" mcp:"required,desc=comm_channel card id in the task's project to send through"`
+	Subject   string `json:"subject,omitempty" mcp:"desc=email subject; default 'Vote requested: <task> — <from> → <to> (<action>)'"`
 }
 
 // SetOutput surfaces the request id and what the call did.
@@ -63,6 +74,7 @@ type SetOutput struct {
 	ApprovalID int64 `json:"approval_id,string" mcp:"desc=id of the created or updated approval request"`
 	Created    bool  `json:"created" mcp:"desc=true when this call created the request"`
 	Changed    bool  `json:"changed" mcp:"desc=true when anything was written"`
+	CommID     int64 `json:"comm_id,string,omitempty" mcp:"desc=the email thread started, when email was given"`
 }
 
 // RemoveInput names one request to withdraw.
@@ -120,16 +132,24 @@ type Approver struct {
 
 // Request is one live approval request.
 type Request struct {
-	ID            int64      `json:"id,string" mcp:"desc=approval request id"`
-	From          StatusRef  `json:"from" mcp:"desc=status the action starts from"`
-	To            StatusRef  `json:"to" mcp:"desc=status it leads to"`
-	Action        string     `json:"action" mcp:"desc=the action's name when asked"`
-	Note          string     `json:"note" mcp:"desc=message to the people asked"`
-	RequestedByID int64      `json:"requested_by_id,string" mcp:"desc=user who asked"`
-	RequestedBy   string     `json:"requested_by" mcp:"desc=who asked (an agent is named with its owner)"`
-	RequestedAt   time.Time  `json:"requested_at" mcp:"desc=when it was asked"`
-	ReachedAt     *time.Time `json:"reached_at,omitempty" mcp:"desc=when the task got to the edge's target after the request (settled); absent while open"`
-	Approvers     []Approver `json:"approvers" mcp:"desc=the people asked"`
+	ID            int64        `json:"id,string" mcp:"desc=approval request id"`
+	From          StatusRef    `json:"from" mcp:"desc=status the action starts from"`
+	To            StatusRef    `json:"to" mcp:"desc=status it leads to"`
+	Action        string       `json:"action" mcp:"desc=the action's name when asked"`
+	Note          string       `json:"note" mcp:"desc=message to the people asked"`
+	RequestedByID int64        `json:"requested_by_id,string" mcp:"desc=user who asked"`
+	RequestedBy   string       `json:"requested_by" mcp:"desc=who asked (an agent is named with its owner)"`
+	RequestedAt   time.Time    `json:"requested_at" mcp:"desc=when it was asked"`
+	ReachedAt     *time.Time   `json:"reached_at,omitempty" mcp:"desc=when the task got to the edge's target after the request (settled); absent while open"`
+	Approvers     []Approver   `json:"approvers" mcp:"desc=the people asked"`
+	Comm          *RequestComm `json:"comm,omitempty" mcp:"desc=the email thread the request started; absent when none"`
+}
+
+// RequestComm is the email thread a request started (a comm on the task).
+type RequestComm struct {
+	ID       int64  `json:"id,string" mcp:"desc=comm card id"`
+	Subject  string `json:"subject" mcp:"desc=the thread's subject"`
+	Messages int    `json:"messages" mcp:"desc=messages in the thread, sent and received"`
 }
 
 // Decision is one recorded approve / reject.
@@ -176,7 +196,7 @@ func Register(_ *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "approval",
 		Action:       "set",
-		Doc:          "Ask people to approve or reject one of a task's status actions (from_status_id → to_status_id, a step of its flow, e.g. Review → Done), or change who is asked / the note (with id). Approvals are a record, not a gate: nothing blocks or moves the task. Each person asked must have a login and see the project. Requires edit rights on the task.",
+		Doc:          "Ask people to approve or reject one of a task's status actions (from_status_id → to_status_id, a step of its flow, e.g. Review → Done), or change who is asked / the note (with id). Approvals are a record, not a gate: nothing blocks or moves the task. Each person asked must have a login and see the project. When asking, email: {channel_id} also emails them: a comm thread on the task with the note as its message (note required), linked from the request; they still vote on the task. Requires edit rights on the task (and comm create rights to email).",
 		InputType:    reflect.TypeFor[SetInput](),
 		OutputType:   reflect.TypeFor[SetOutput](),
 		AllowedRoles: writers,

@@ -10,8 +10,10 @@
  *   - the APPROVAL VOTES section: edges render with chips and a tally, all
  *     worded as votes ("Vote approve", never the workflow's "Approve");
  *     voting sends approval.decide on the open request (with a reason when
- *     added); asking sends approval.set with the edge and the picked people
- *     from activity.actors;
+ *     added); asking sends approval.set with the edge and the people picked
+ *     in the comms' RefPicker (fed from activity.actors), and with a channel
+ *     picked also emails them (the note then required, the hint naming who
+ *     has no address); a request's email thread links to Comms;
  *   - votes in the comment stream and the Activity page;
  *   - the task's approvals as row data: the wire decode, the Approvals badge
  *     and "asked" chip, the derived-column table a screen's extra_columns
@@ -32,6 +34,7 @@ before(async () => {
   installUiDom();
   const outdir = await buildTestBundles();
   M = await import(`${outdir}/app.js`);
+  M.registerRefPicker();
   M.registerTaskApprovals();
 });
 
@@ -141,12 +144,14 @@ function mockServer({ list = listWire() } = {}) {
         return {
           id: sr.id, ok: true, data: {
             rows: [
-              { id: '5', name: 'Dana', is_agent: false, person_id: '30' },
-              { id: '6', name: 'Lee', is_agent: false, person_id: '31' },
+              { id: '5', name: 'Dana', is_agent: false, person_id: '30', has_email: true },
+              { id: '6', name: 'Lee', is_agent: false, person_id: '31', has_email: false },
               { id: '7', name: 'claude (for Dana)', is_agent: true },
             ],
           },
         };
+      case 'card.search':
+        return { id: sr.id, ok: true, data: { rows: data.card_type_name === 'comm_channel' ? [{ id: '90', title: 'Support' }] : [] } };
       default:
         return { id: sr.id, ok: false, error: { code: 'unknown', message: k } };
     }
@@ -165,7 +170,13 @@ function bootApi(transport) {
   const api = new M.Api(dispatcher);
   M.registerApprovalSpecs(api);
   M.registerCommentSpecs(api);
+  M.registerCardSearchSpec(api);
   return { dispatcher, api };
+}
+
+/** The open combobox menu's option labels. */
+function menuOptions() {
+  return [...document.querySelectorAll('[data-cb-option]')];
 }
 
 async function settle(dispatcher) {
@@ -175,11 +186,11 @@ async function settle(dispatcher) {
   await flushMicrotasks();
 }
 
-function mountSection(api, viewer) {
+function mountSection(api, viewer, extra = {}) {
   const tree = new M.TreeNode({}, []);
   tree.at(['scope', 'projectId']).set(31n);
   tree.at(['auth', 'user']).set(viewer);
-  const c = M.Control.New('TaskApprovals', { type: 'TaskApprovals', taskId: TASK.toString() }, { api, tree });
+  const c = M.Control.New('TaskApprovals', { type: 'TaskApprovals', taskId: TASK.toString(), ...extra }, { api, tree });
   c.mount(document.createElement('div'));
   document.body.appendChild(c.el);
   return c;
@@ -232,11 +243,15 @@ test('TaskApprovals: asking sends the edge and the picked people', async () => {
   await settle(dispatcher);
   const form = c.el.querySelector('[data-approval-ask-form]');
   assert.ok(form, 'the ask form opens once the people load');
-  assert.deepEqual(
-    [...form.querySelectorAll('[data-approval-person]')].map((b) => b.dataset.approvalPerson),
-    ['30', '31'],
-    'people only — no agent',
-  );
+  // The comms' recipient picker: "+ person", then the project's people.
+  const people = form.querySelector('[data-approval-people-picker] [data-control="RefPicker"]');
+  assert.ok(people, 'people are picked with the RefPicker');
+  const add = people.querySelector('[data-rp-add]');
+  assert.equal(add.textContent, '+ person');
+  add.click();
+  assert.deepEqual(menuOptions().map((o) => o.textContent), ['Dana', 'Lee'], 'people only — no agent');
+  assert.equal(srv.sent.filter((x) => x.k === 'card.search' && x.data.card_type_name === 'person').length, 0,
+    'the people come from activity.actors, not a person search');
   const sel = form.querySelector('[data-approval-action]');
   assert.equal(sel.value, '14>15', 'defaults to an action from the current status');
   form.querySelector('[data-approval-ask-submit]').click();
@@ -244,7 +259,8 @@ test('TaskApprovals: asking sends the edge and the picked people', async () => {
   assert.equal(srv.writes('approval.set').length, 0, 'nobody picked: nothing sent');
   assert.match(form.textContent, /Pick at least one person/);
 
-  form.querySelector('[data-approval-person="30"]').checked = true;
+  menuOptions()[0].click(); // Dana
+  assert.deepEqual([...people.querySelectorAll('[data-rp-chip]')].map((ch) => ch.dataset.rpChip), ['30']);
   form.querySelector('[data-approval-note]').value = 'Ship it?';
   form.querySelector('[data-approval-ask-submit]').click();
   await settle(dispatcher);
@@ -252,6 +268,72 @@ test('TaskApprovals: asking sends the edge and the picked people', async () => {
     { task_id: '54', from_status_id: '14', to_status_id: '15', approver_ids: ['30'], note: 'Ship it?' },
   ]);
   assert.equal(c.el.querySelector('[data-approval-ask-form]'), null, 'the form closes after asking');
+});
+
+test('TaskApprovals: asking with email needs the message and names who has no address', async () => {
+  const srv = mockServer();
+  const { dispatcher, api } = bootApi(srv.transport);
+  const c = mountSection(api, { userId: 999n, personCardId: 31n });
+  await settle(dispatcher);
+  c.el.querySelector('[data-approvals-ask]').click();
+  await settle(dispatcher);
+  const form = c.el.querySelector('[data-approval-ask-form]');
+  const hint = form.querySelector('[data-approval-email-hint]');
+  const email = form.querySelector('[data-approval-email]');
+  assert.equal(email.querySelector('[data-cb-trigger]').textContent.trim(), "Don't email", 'no email by default');
+  assert.equal(hint.hidden, true);
+  assert.match(form.textContent, /Note/);
+
+  const people = form.querySelector('[data-approval-people-picker] [data-control="RefPicker"]');
+  people.querySelector('[data-rp-add]').click();
+  menuOptions()[0].click(); // Dana (has an address)
+  people.querySelector('[data-rp-add]').click();
+  menuOptions()[1].click(); // Lee (none)
+
+  // Pick the Support channel (card.search over the project's comm_channels).
+  email.querySelector('[data-cb-trigger]').click();
+  await settle(dispatcher);
+  assert.deepEqual(menuOptions().map((o) => o.textContent), ["Don't email", 'Support']);
+  menuOptions()[1].click();
+  assert.equal(hint.hidden, false);
+  assert.match(hint.textContent, /They still vote here, on the task/);
+  assert.match(hint.textContent, /not emailed: Lee\./);
+  assert.equal(form.querySelector('[data-approval-note]').parentElement.querySelector('.task-approvals__label').textContent, 'Message');
+
+  form.querySelector('[data-approval-ask-submit]').click();
+  await settle(dispatcher);
+  assert.equal(srv.writes('approval.set').length, 0, 'no message: nothing sent');
+  assert.match(form.textContent, /Write the message to email/);
+
+  form.querySelector('[data-approval-note]').value = 'Can you vote on this?';
+  form.querySelector('[data-approval-ask-submit]').click();
+  await settle(dispatcher);
+  assert.deepEqual(srv.writes('approval.set'), [{
+    task_id: '54', from_status_id: '14', to_status_id: '15', approver_ids: ['30', '31'],
+    note: 'Can you vote on this?', email: { channel_id: '90' },
+  }]);
+});
+
+test("TaskApprovals: a request's email thread links to Comms; reveal finds a request", async () => {
+  const wire = listWire();
+  wire.requests[1].comm = { id: '880', subject: 'Vote requested: Ship it', messages: 2 };
+  const srv = mockServer({ list: wire });
+  const { dispatcher, api } = bootApi(srv.transport);
+  const opened = [];
+  const c = mountSection(api, { userId: 999n, personCardId: 31n }, { onOpenComm: (id) => opened.push(id) });
+  await settle(dispatcher);
+
+  const link = c.el.querySelector('[data-approval-comm="880"]');
+  assert.ok(link, 'the request shows its thread');
+  assert.equal(link.textContent.trim(), 'Emailed: Vote requested: Ship it · 2 messages');
+  assert.equal(c.el.querySelector('[data-approval-request="700"] [data-approval-comm]'), null, 'no thread, no link');
+  link.click();
+  assert.deepEqual(opened, [880n]);
+
+  const box = c.el.querySelector('[data-approval-request="701"]');
+  box.scrollIntoView = () => {};
+  c.reveal(701n);
+  assert.ok(box.classList.contains('task-approvals__request--flash'));
 });
 
 /* -------------------------------------------------------------------------- */

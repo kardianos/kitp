@@ -8,7 +8,8 @@
  *
  *   - comm.list_for_task  in : { task_id }
  *       out: { rows: [{ id, title, thread_id, channel_id, comm_status,
- *                        recipients[], replies: [{ id, to, from, from_name,
+ *                        recipients[], approval?: { id, action, from, to },
+ *                        replies: [{ id, to, from, from_name,
  *                        from_address, author_id, subject, body_text,
  *                        delivery_status, created_at }] }] }
  *   - comm.create         in : { task_id, channel_id, subject?, initial_message?,
@@ -69,6 +70,16 @@ export interface CommRow {
   /** Per-thread "handled" flag. false ⇒ a received message awaits an ACK.
    *  Defaults true (no inbound yet ⇒ nothing to handle). */
   acked: boolean;
+  /** The vote request that started this thread (asked with email), or null. */
+  approval: CommApproval | null;
+}
+
+/** The vote request a thread was started for: its status step. */
+export interface CommApproval {
+  id: bigint;
+  action: string;
+  from: string;
+  to: string;
 }
 
 export interface CommListForTaskInput {
@@ -168,7 +179,14 @@ function decodeComm(j: Record<string, unknown>): CommRow {
     // Default true when absent (older server) — only an explicit false marks
     // the thread as needing an ACK.
     acked: j['acked'] !== false,
+    approval: decodeCommApproval(j['approval']),
   };
+}
+
+function decodeCommApproval(v: unknown): CommApproval | null {
+  if (!v || typeof v !== 'object') return null;
+  const j = asObj(v);
+  return { id: asId(j['id']), action: asStr(j['action']), from: asStr(j['from']), to: asStr(j['to']) };
 }
 
 /* ------------------------------- registration ----------------------------- */

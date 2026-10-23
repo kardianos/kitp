@@ -15,18 +15,27 @@
  *
  * Writes: "+ Ask for a vote" (approval.set: edge, people, note), "Vote…"
  * on any edge (approval.decide, with an optional reason that also shows in
- * the comments), per-request "Change who's asked" / "Remove". The people
- * offered are the project's accounts with a person card (activity.actors),
- * the same set the server accepts. Every write reloads approval.list.
+ * the comments), per-request "Change who's asked" / "Remove". People are
+ * picked with the same RefPicker the comms' recipients use, fed the
+ * project's accounts with a person card (activity.actors) — the set the
+ * server accepts — instead of every person. Every write reloads
+ * approval.list.
+ *
+ * Asking can also email the people asked: pick a channel and the note
+ * becomes the (required) message of a new comm thread on the task. The two
+ * stay separate — the request links to its thread ("Emailed: …", which the
+ * detail scrolls to via {@link TaskApprovalsConfig.onOpenComm}), and voting
+ * still happens only here.
  *
  * Mounted by TaskDetail into its `approvals` slot; the detail calls
- * {@link reload} on its header Refresh. Zero-promise: every read/write goes
- * through `api.callByName(..., { alive })`.
+ * {@link reload} on its header Refresh and {@link reveal} when a comm thread
+ * links back to a request. Zero-promise: every read/write goes through
+ * `api.callByName(..., { alive })`.
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { icon } from '../ui/icons.js';
-import { MenuFilter } from '../ui/menu-filter.js';
+import type { RefPicker } from '../ui/ref-picker.js';
 import { localTimeEl } from '../util/datetime.js';
 import { ACTIVITY_ACTORS_SPEC, type ActivityActorsOutput } from './comment-specs.js';
 import {
@@ -56,8 +65,12 @@ export interface TaskApprovalsConfig extends BaseControlConfig {
   /** Tree path of the task's project id (scopes the people offered). Default 'scope.projectId'. */
   projectScopePath?: string;
   /** Called after a successful LOCAL write so the parent can advance its
-   *  background-poll baseline and refresh the comment stream. */
+   *  background-poll baseline and refresh the comment stream (and the comms,
+   *  when an ask started an email thread). */
   onLocalWrite?: () => void;
+  /** Show the email thread a request started (the detail scrolls its Comms
+   *  section to it). */
+  onOpenComm?: (commId: bigint) => void;
 }
 
 declare module '../core/control.js' {
@@ -69,7 +82,11 @@ declare module '../core/control.js' {
 interface PersonOption {
   personId: bigint;
   name: string;
+  hasEmail: boolean;
 }
+
+/** The email picker's "no channel" choice, pinned atop the project's channels. */
+const NO_EMAIL = 0n;
 
 const EMPTY: ApprovalListOutput = { status: null, actions: [], requests: [], decisions: [] };
 
@@ -84,7 +101,8 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
   private readonly expanded = new Set<string>();
   /** Which form is open: the ask form, the vote form, or a request's people editor. */
   private form: { kind: 'ask' } | { kind: 'vote'; edge?: string } | { kind: 'people'; requestId: bigint } | null = null;
-  private filters: MenuFilter[] = [];
+  /** The open form's RefPickers, disposed when it repaints. */
+  private pickers: RefPicker[] = [];
 
   private headingEl!: HTMLElement;
   private formHost!: HTMLElement;
@@ -134,7 +152,6 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     this.listEl = list;
 
     this.el.append(head, formHost, list);
-    this.onDestroy(() => this.dropFilters());
     this.paint();
     this.load();
   }
@@ -144,6 +161,17 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
   /** Public refresh hook (the detail's header Refresh). */
   reload(): void {
     this.load();
+  }
+
+  /** Scroll to request [id] and flash it (a comm thread's "Vote request"
+   *  link). */
+  reveal(id: bigint): void {
+    const box = this.listEl.querySelector<HTMLElement>(`[data-approval-request="${id.toString()}"]`);
+    if (box === null) return;
+    box.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    box.classList.remove('task-approvals__request--flash');
+    void box.offsetWidth; // restart the flash animation
+    box.classList.add('task-approvals__request--flash');
   }
 
   private load(): void {
@@ -180,7 +208,7 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
         if (!this.isAlive()) return;
         this.people = ((out as ActivityActorsOutput).rows ?? [])
           .filter((r) => !r.isAgent && r.personId !== null)
-          .map((r) => ({ personId: r.personId as bigint, name: r.name }));
+          .map((r) => ({ personId: r.personId as bigint, name: r.name, hasEmail: r.hasEmail }));
         then();
       },
       { alive: () => this.isAlive() },
@@ -289,6 +317,18 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
       note.className = 'task-approvals__note';
       note.textContent = r.request.note;
       box.append(note);
+    }
+    const comm = r.request.comm;
+    if (comm !== null) {
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'task-approvals__link task-approvals__comm';
+      link.dataset.approvalComm = comm.id.toString();
+      link.title = 'Show the email thread in Comms';
+      const count = comm.messages === 1 ? '1 message' : `${comm.messages} messages`;
+      link.append(icon('mail', 14), ` Emailed: ${comm.subject || '(no subject)'} · ${count}`);
+      this.listen(link, 'click', () => this.config.onOpenComm?.(comm.id));
+      box.append(link);
     }
 
     const asked = document.createElement('div');
@@ -408,13 +448,13 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     this.paintForm();
   }
 
-  private dropFilters(): void {
-    for (const f of this.filters) f.destroy();
-    this.filters = [];
+  private disposePickers(): void {
+    for (const p of this.pickers) this.destroyChild(p);
+    this.pickers = [];
   }
 
   private paintForm(): void {
-    this.dropFilters();
+    this.disposePickers();
     this.formHost.replaceChildren();
     const form = this.form;
     if (form === null) return;
@@ -426,7 +466,7 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
         this.form = null;
         return;
       }
-      this.formHost.append(this.peopleForm(req.id, req.approvers.map((a) => a.personId), edgeLabel(req.action, req.from, req.to)));
+      this.formHost.append(this.peopleForm(req.id, req.approvers, edgeLabel(req.action, req.from, req.to)));
     }
   }
 
@@ -450,38 +490,67 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     return this.approvals.actions.find((a) => edgeKey(a.from.id, a.to.id) === key);
   }
 
-  /** A checkbox list of the project's people, searchable once long. */
-  private peopleList(checked: readonly bigint[]): { el: HTMLElement; picked: () => bigint[] } {
-    const list = document.createElement('div');
-    list.className = 'task-approvals__people';
-    list.dataset.approvalPeopleList = '';
-    const filter = new MenuFilter(list, { placeholder: 'Filter people…' });
-    this.filters.push(filter);
-    list.append(filter.el);
-    const boxes: Array<{ id: bigint; box: HTMLInputElement }> = [];
+  /** The people picker — the comms' recipient RefPicker ("+ person" and
+   *  chips), its options the project's accounts that can vote. [current]
+   *  carries names so someone asked earlier keeps theirs; [onChange] sees
+   *  each new pick list. */
+  private peoplePicker(
+    current: ReadonlyArray<{ personId: bigint; name: string }>,
+    onChange: (ids: bigint[]) => void = () => {},
+  ): { el: HTMLElement; picked: () => bigint[] } {
+    const host = document.createElement('div');
+    host.className = 'task-approvals__people';
+    host.dataset.approvalPeoplePicker = '';
     const people = this.people ?? [];
     if (people.length === 0) {
-      const none = document.createElement('p');
-      none.className = 'muted';
-      none.textContent = 'Nobody else on this project has a login to vote with.';
-      list.append(none);
+      host.append(note('Nobody else on this project has a login to vote with.'));
+      return { el: host, picked: () => [] };
     }
-    for (const p of people) {
-      const label = document.createElement('label');
-      label.className = 'task-approvals__person';
-      label.dataset.menuItem = p.name;
-      const box = document.createElement('input');
-      box.type = 'checkbox';
-      box.dataset.approvalPerson = p.personId.toString();
-      box.checked = checked.includes(p.personId);
-      const name = document.createElement('span');
-      name.textContent = p.name;
-      label.append(box, name);
-      list.append(label);
-      boxes.push({ id: p.personId, box });
-    }
-    filter.apply();
-    return { el: list, picked: () => boxes.filter((b) => b.box.checked).map((b) => b.id) };
+    const labels: Record<string, string> = {};
+    for (const p of [...current, ...people]) labels[p.personId.toString()] = p.name;
+    const picker = this.spawn(
+      'RefPicker',
+      {
+        type: 'RefPicker',
+        cardType: 'person',
+        multi: true,
+        collapsedAdd: true,
+        addLabel: 'person',
+        values: current.map((p) => p.personId),
+        currentLabels: labels,
+        options: people.map((p) => ({ value: p.personId, label: p.name })),
+        'aria-label': 'People asked',
+        placeholder: 'Add a person…',
+        onChangeMulti: (values: bigint[]) => onChange(values),
+      },
+      host,
+    ) as RefPicker;
+    this.pickers.push(picker);
+    return { el: host, picked: () => picker.getValues() };
+  }
+
+  /** The ask form's email choice: a channel of the project, or "Don't
+   *  email" (pinned first, the default). */
+  private emailPicker(onChange: (channelId: bigint | null) => void): HTMLElement {
+    const host = document.createElement('div');
+    host.className = 'task-approvals__email';
+    host.dataset.approvalEmail = '';
+    const picker = this.spawn(
+      'RefPicker',
+      {
+        type: 'RefPicker',
+        cardType: 'comm_channel',
+        value: NO_EMAIL,
+        pinnedOptions: [{ value: NO_EMAIL, label: "Don't email" }],
+        parentScopePath: this.config.projectScopePath ?? 'scope.projectId',
+        'aria-label': 'Email them through',
+        placeholder: "Don't email",
+        onChange: (v: bigint | null) => onChange(v === null || v === NO_EMAIL ? null : v),
+      },
+      host,
+    ) as RefPicker;
+    this.pickers.push(picker);
+    return host;
   }
 
   private askForm(): HTMLElement {
@@ -494,12 +563,36 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
       return wrap;
     }
     const action = this.actionSelect();
-    const people = this.peopleList([]);
+    let channel: bigint | null = null;
     const msg = document.createElement('textarea');
     msg.className = 'task-approvals__reason';
     msg.dataset.approvalNote = '';
     msg.rows = 2;
-    msg.placeholder = 'Note to the people asked (optional)';
+    const msgField = field('Note', msg);
+    const emailHint = document.createElement('p');
+    emailHint.className = 'task-approvals__email-hint muted';
+    emailHint.dataset.approvalEmailHint = '';
+    const people = this.peoplePicker([], () => paintEmail());
+    // With a channel the note is the email's message, so it's required, and
+    // the hint says who it can't reach and that voting stays on the task.
+    const paintEmail = (): void => {
+      const caption = msgField.querySelector('.task-approvals__label');
+      if (caption !== null) caption.textContent = channel === null ? 'Note' : 'Message';
+      msg.placeholder = channel === null ? 'Note to the people asked (optional)' : 'Message emailed to the people asked';
+      emailHint.hidden = channel === null;
+      if (channel === null) return;
+      const noEmail = (this.people ?? [])
+        .filter((p) => !p.hasEmail && people.picked().includes(p.personId))
+        .map((p) => p.name);
+      emailHint.textContent =
+        'Starts a thread in Comms; replies land there. They still vote here, on the task.' +
+        (noEmail.length > 0 ? ` No email address, so not emailed: ${noEmail.join(', ')}.` : '');
+    };
+    const email = this.emailPicker((v) => {
+      channel = v;
+      paintEmail();
+    });
+    paintEmail();
     const error = document.createElement('p');
     error.className = 'task-approvals__error';
     error.setAttribute('role', 'alert');
@@ -516,15 +609,30 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
         error.textContent = 'Pick at least one person.';
         return;
       }
+      const text = msg.value.trim();
+      if (channel !== null && text === '') {
+        error.textContent = 'Write the message to email.';
+        msg.focus();
+        return;
+      }
       this.write(APPROVAL_SET_SPEC, {
         taskId: this.taskId,
         fromStatusId: a.from.id,
         toStatusId: a.to.id,
         approverIds: ids,
-        ...(msg.value.trim() !== '' ? { note: msg.value.trim() } : {}),
+        ...(text !== '' ? { note: text } : {}),
+        ...(channel !== null ? { email: { channelId: channel } } : {}),
       });
     });
-    wrap.append(field('Status step', action), field('Ask', people.el), field('Note', msg), error, actionsRow(this.cancelButton(), submit));
+    wrap.append(
+      field('Status step', action),
+      field('Ask', people.el),
+      field('Email', email),
+      msgField,
+      emailHint,
+      error,
+      actionsRow(this.cancelButton(), submit),
+    );
     return wrap;
   }
 
@@ -569,11 +677,11 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     return wrap;
   }
 
-  private peopleForm(requestId: bigint, current: readonly bigint[], title: string): HTMLElement {
+  private peopleForm(requestId: bigint, current: ReadonlyArray<{ personId: bigint; name: string }>, title: string): HTMLElement {
     const wrap = document.createElement('div');
     wrap.className = 'task-approvals__panel';
     wrap.dataset.approvalPeopleForm = requestId.toString();
-    const people = this.peopleList(current);
+    const people = this.peoplePicker(current);
     const error = document.createElement('p');
     error.className = 'task-approvals__error';
     error.setAttribute('role', 'alert');

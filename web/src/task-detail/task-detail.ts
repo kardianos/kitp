@@ -1015,6 +1015,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         projectScopePath: 'scope.projectId',
         // Our own reply / new thread shouldn't trip the "new content" badge.
         onLocalWrite: () => this.noteOwnActivity(),
+        onOpenApproval: (id: bigint) => this.taskApprovals?.reveal(id),
       },
       this.commsHost,
     ) as CommThreads;
@@ -1032,12 +1033,15 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         type: 'TaskApprovals',
         taskId: this.taskId.toString(),
         projectScopePath: 'scope.projectId',
-        // A vote with a reason also shows in the comments; our own writes
-        // shouldn't trip the "new content" badge.
+        // A vote with a reason also shows in the comments, and an emailed
+        // ask starts a comm thread; our own writes shouldn't trip the "new
+        // content" badge.
         onLocalWrite: () => {
           this.taskComments?.reload();
+          this.commThreads?.reload();
           this.noteOwnActivity();
         },
+        onOpenComm: (id: bigint) => this.commThreads?.reveal(id),
       },
       this.approvalsHost,
     ) as TaskApprovals;

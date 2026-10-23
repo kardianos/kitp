@@ -11,13 +11,18 @@
 --      channel_ref / comm_status, plus hydrated replies and
 --      recipients (both extracted from their stored card_ref[]
 --      attribute_value lists; legacy string-form ids are tolerated
---      and canonicalised to numbers).
+--      and canonicalised to numbers). `approval` is the vote request
+--      that started the thread (an approval card on the same task whose
+--      approval_comm names it), so the thread can say which vote it
+--      asks about; null for any other thread.
 --
 -- Result JSON shape matches `comm.CommListForTaskOutput`:
 --   {"rows": [{
 --      "id": "<bigint>", "title": "...", "thread_id": "...",
 --      "channel_id": "<bigint>", "comm_status": "<bigint>",
 --      "recipients": ["<bigint>", ...],
+--      "approval": {"id": "<bigint>", "action": "...", "from": "...",
+--                   "to": "..."} | null,
 --      "replies": [{
 --         "id": "<bigint>", "to": "...", "from": "...",
 --         "from_name": "...", "from_address": "...",
@@ -106,6 +111,23 @@ BEGIN
                                 WHERE av.card_id = c.id AND ad.name = 'acked'
                                   AND jsonb_typeof(av.value) = 'boolean'
                             ), true),
+                            'approval', (
+                                SELECT jsonb_build_object(
+                                    'id', ap.id::text,
+                                    'action', COALESCE(fl.action, ''),
+                                    'from', COALESCE(card_label(fl.from_id), ''),
+                                    'to', COALESCE(card_label(fl.to_id), ''))
+                                FROM card ap
+                                JOIN attribute_value av ON av.card_id = ap.id
+                                JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                                     AND ad.name = 'approval_comm'
+                                CROSS JOIN LATERAL approval_fields(ap.id) fl
+                                WHERE ap.parent_card_id = c.parent_card_id
+                                  AND ap.deleted_at IS NULL
+                                  AND av.value = to_jsonb(c.id)
+                                ORDER BY ap.id
+                                LIMIT 1
+                            ),
                             'recipients',  (
                                 -- Decode comm_recipients card_ref[] —
                                 -- tolerate stored ints + numeric strings,

@@ -36,7 +36,7 @@ kitp.manager, $role.manager
 kitp.worker,  $role.worker
 
 
-## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel / activity_sink are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task. link cards (a code change / issue / any URL linked to a task — written by link.set from the UI, MCP, or a code forge such as Gerrit) parent under task. approval cards (a request that named people approve or reject one of the task's status actions — documentation, never a gate; written by approval.set) parent under task. activity_subscription cards (a user's personal notification subscription) parent under an activity_sink. uses_phase=true marks card_types whose instances are flow-bound value-cards — the `phase` column on those rows is consulted by the predicate compiler (has_phase op) and the TransitionBar UI. Tasks / projects / etc. carry the column but never read it." | on_conflict="name"
+## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel / activity_sink are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task. link cards (a code change / issue / any URL linked to a task — written by link.set from the UI, MCP, or a code forge such as Gerrit) parent under task. approval cards (a request that named people approve or reject one of the task's status actions — documentation, never a gate; written by approval.set, which can also start an email thread (a comm, linked by approval_comm) to the people asked) parent under task. activity_subscription cards (a user's personal notification subscription) parent under an activity_sink. uses_phase=true marks card_types whose instances are flow-bound value-cards — the `phase` column on those rows is consulted by the predicate compiler (has_phase op) and the TransitionBar UI. Tasks / projects / etc. carry the column but never read it." | on_conflict="name"
 ### rows
 name,              is_built_in, allow_self_parent, parent_card_type_id,    uses_phase
 project,           true,        false,             null,                   false
@@ -136,6 +136,7 @@ approval_to,           card_ref,    true, $card_type.status, false
 approval_action,       text,        true, null, false
 approvers,             card_ref[],  true, $card_type.person, false, `{"connective":"and","children":[{"attr":"person_kind","op":"!=","values":["contact"]},{"attr":"is_active","op":"!=","values":[false]}]}`
 approval_note,         text,        true, null, false
+approval_comm,         card_ref,    true, $card_type.comm, false
 
 
 ## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"
@@ -255,6 +256,7 @@ $card_type.approval,     $attribute_def.approval_to,       true,  2
 $card_type.approval,     $attribute_def.approval_action,   true,  3
 $card_type.approval,     $attribute_def.approvers,         true,  4
 $card_type.approval,     $attribute_def.approval_note,     false, 5
+$card_type.approval,     $attribute_def.approval_comm,     false, 6
 
 
 ## table process | doc="Built-in processes (workflows)." | on_conflict="name"

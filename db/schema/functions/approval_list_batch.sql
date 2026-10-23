@@ -4,9 +4,11 @@
 --   actions   — every step of the task's status flow ({from, to, label}),
 --               the choices for a new request or an unasked decision
 --   requests  — the live approval cards: the edge, the note, who asked and
---               when (the card's card_create row), the people asked, and
+--               when (the card's card_create row), the people asked,
 --               reached_at — when the task got to the edge's target after
---               the request (settling it); NULL while open
+--               the request (settling it); NULL while open — and comm, the
+--               email thread the request started ({id, subject, messages};
+--               NULL when it didn't or the thread is gone)
 --   decisions — every approval_decision (vote) on the task, newest first:
 --               who, approve / reject, the edge, the task's status at the
 --               time, the reason, `settled` — cast before the task last
@@ -108,7 +110,20 @@ BEGIN
                                               'name', COALESCE(card_label((e #>> '{}')::bigint), ''))
                                           ORDER BY ord)
                                    FROM jsonb_array_elements(fl.approvers) WITH ORDINALITY AS x(e, ord)
-                               ), '[]'::jsonb))
+                               ), '[]'::jsonb),
+                               'comm', (
+                                   SELECT jsonb_build_object(
+                                              'id', cm.id::text,
+                                              'subject', COALESCE(card_label(cm.id), ''),
+                                              'messages', COALESCE((
+                                                  SELECT CASE WHEN jsonb_typeof(rv.value) = 'array'
+                                                              THEN jsonb_array_length(rv.value) END
+                                                  FROM attribute_value rv
+                                                  JOIN attribute_def rd ON rd.id = rv.attribute_def_id
+                                                  WHERE rv.card_id = cm.id AND rd.name = 'replies'
+                                              ), 0))
+                                   FROM card cm
+                                   WHERE cm.id = fl.comm_id AND cm.deleted_at IS NULL))
                            ORDER BY ap.created_at, ap.id)
                     FROM card ap
                     CROSS JOIN LATERAL approval_fields(ap.id) fl

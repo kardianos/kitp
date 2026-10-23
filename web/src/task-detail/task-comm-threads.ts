@@ -7,8 +7,14 @@
  * "+ Start comm" form creates a new comm on a chosen channel
  * (`comm.create`, channel = RefPicker over `comm_channel`).
  *
+ * A thread started by a vote request (approval.set with email) names that
+ * vote in its header; the link asks the detail to show the request
+ * ({@link CommThreadsConfig.onOpenApproval}). The thread is otherwise an
+ * ordinary comm — the vote is cast on the task, not by replying.
+ *
  * Mounted by TaskDetail into its `comms` slot (parallel to TaskComments). The
- * detail calls {@link CommThreads.reload} after a relevant activity bump.
+ * detail calls {@link CommThreads.reload} after a relevant activity bump and
+ * {@link CommThreads.reveal} when a vote request links to its thread.
  *
  * Zero-promise: every read/write goes through `api.callByName(..., { alive })`;
  * the list repaints from the onOk callbacks. Recipient / channel pickers are
@@ -35,6 +41,8 @@ import { localTimeEl } from '../util/datetime.js';
 
 import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 import { captionedField } from '../ui/captioned-field.js';
+import { icon } from '../ui/icons.js';
+import { stepText } from './approval-model.js';
 export interface CommThreadsConfig extends BaseControlConfig {
   type: 'CommThreads';
   /** The focal task id (string from the route). */
@@ -45,6 +53,9 @@ export interface CommThreadsConfig extends BaseControlConfig {
    *  recipient change) so the parent can advance its background-poll baseline —
    *  our own activity shouldn't trip the "new content" indicator. */
   onLocalWrite?: () => void;
+  /** Show the vote request a thread was started for (the detail scrolls its
+   *  Approvals section to it). */
+  onOpenApproval?: (approvalId: bigint) => void;
 }
 
 declare module '../core/control.js' {
@@ -139,6 +150,24 @@ export class CommThreads extends Control<CommThreadsConfig> {
   /** Public refresh hook (the detail calls this after an activity bump). */
   reload(): void {
     this.loadComms();
+  }
+
+  /** Scroll to thread [commId] and flash it (a vote request's "Emailed"
+   *  link), clearing a phase filter that hides it. */
+  reveal(commId: bigint): void {
+    const find = (): HTMLElement | null =>
+      this.listEl.querySelector<HTMLElement>(`[data-comm-row="${commId.toString()}"]`);
+    if (find() === null && this.phaseFilter !== '') {
+      this.phaseFilter = '';
+      this.paintFilter();
+      this.paintList();
+    }
+    const card = find();
+    if (card === null) return;
+    card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    card.classList.remove('task-comms__comm--flash');
+    void card.offsetWidth; // restart the flash animation
+    card.classList.add('task-comms__comm--flash');
   }
 
   private loadComms(): void {
@@ -337,6 +366,20 @@ export class CommThreads extends Control<CommThreadsConfig> {
 
     top.append(subj, thread, badge, ack, barHost);
     card.append(top);
+
+    // A thread a vote request started says which vote; the vote itself is
+    // cast on the task, so the link goes to the request.
+    const vote = comm.approval;
+    if (vote !== null) {
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'task-comms__vote';
+      link.dataset.commApproval = vote.id.toString();
+      link.title = 'Show the vote request under Approval votes';
+      link.append(icon('vote', 14), ` Vote request: ${stepText(vote.action, vote.from, vote.to)}`);
+      this.listen(link, 'click', () => this.config.onOpenApproval?.(vote.id));
+      card.append(link);
+    }
     const bar = this.spawn(
       'TransitionBar',
       {

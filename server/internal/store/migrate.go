@@ -721,6 +721,35 @@ BEGIN
   END LOOP;
 END $$;`,
 	},
+	{
+		// approval_comm — the email thread (a comm card on the same task)
+		// that approval.set started when the asker chose to email the
+		// people asked. A link only: the thread and the request live on
+		// separately. The seed.hcsv rows reach fresh installs only, so add
+		// the attribute_def and its edge here too. Idempotent — ON CONFLICT
+		// DO NOTHING makes it a no-op on a fresh DB whose seed has them.
+		id: "0014_approval_comm",
+		sql: `
+DO $$
+DECLARE
+  _approval_ct bigint := (SELECT id FROM card_type WHERE name = 'approval');
+  _comm_ct bigint := (SELECT id FROM card_type WHERE name = 'comm');
+BEGIN
+  IF _approval_ct IS NULL OR _comm_ct IS NULL THEN
+    RETURN;
+  END IF;
+
+  INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+  VALUES ('approval_comm', 'card_ref', _comm_ct, true, false)
+  ON CONFLICT (name) DO NOTHING;
+
+  INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+  SELECT _approval_ct, ad.id, false, 6
+  FROM attribute_def ad
+  WHERE ad.name = 'approval_comm'
+  ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;
+END $$;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

@@ -10,6 +10,8 @@
 --   approval_action — the action's label when asked ("Approve")
 --   approvers       — the people asked (card_ref[] → person)
 --   approval_note   — an optional message to them
+--   approval_comm   — the email thread asking them, when the asker chose
+--                     to email (see below)
 -- The decisions themselves are approval_decision activity rows on the task
 -- (approval.decide), so removing a request never erases one.
 --
@@ -22,11 +24,25 @@
 -- would leave the request hanging. Only attributes that change write
 -- activity rows (with value_old), which is the request's audit trail.
 --
+-- Email (create only): `email: {channel_id, subject?}` also starts an email
+-- thread to the people asked — an ordinary comm card on the task, made by
+-- comm_create_batch in this same transaction, with the note as its first
+-- message (so the note is required) and the request linked to it through
+-- approval_comm. The two are separate from then on: replies land on the
+-- comm like any other, removing the request leaves the thread, and the
+-- vote itself is still only cast on the task. The subject defaults to
+-- "Vote requested: <task> — <from> → <to> (<action>)". Everyone asked is a
+-- recipient of the thread, but people without an email address get no
+-- mail; if nobody asked has one, the call fails with no_email. Starting the thread needs the caller's own
+-- comm card.create grant in the project (user_has_grant), since it skips
+-- comm.create's gate.
+--
 -- Authz: the dispatcher gates on card.update of the task (like link.set),
 -- so anyone who can edit the task can ask for approval.
 --
 -- Result JSON shape matches `approval.SetOutput`:
---   {"approval_id": "<bigint>", "created": bool, "changed": bool}
+--   {"approval_id": "<bigint>", "created": bool, "changed": bool,
+--    "comm_id": "<bigint>" (only when an email thread was started)}
 CREATE OR REPLACE FUNCTION approval_set_batch(
     actor_id bigint,
     inputs jsonb
@@ -45,6 +61,7 @@ DECLARE
     _action_def bigint;
     _approvers_def bigint;
     _note_def bigint;
+    _comm_def bigint;
     _idx int;
     _raw jsonb;
     _id bigint;
@@ -60,6 +77,11 @@ DECLARE
     _note_present boolean;
     _created boolean;
     _writes int;
+    _email jsonb;
+    _channel_id bigint;
+    _subject text;
+    _comm record;
+    _comm_id bigint;
 BEGIN
     SELECT id INTO _approval_ct FROM card_type WHERE name = 'approval';
     SELECT id INTO _title_def     FROM attribute_def WHERE name = 'title';
@@ -68,8 +90,10 @@ BEGIN
     SELECT id INTO _action_def    FROM attribute_def WHERE name = 'approval_action';
     SELECT id INTO _approvers_def FROM attribute_def WHERE name = 'approvers';
     SELECT id INTO _note_def      FROM attribute_def WHERE name = 'approval_note';
+    SELECT id INTO _comm_def      FROM attribute_def WHERE name = 'approval_comm';
     IF _approval_ct IS NULL OR _title_def IS NULL OR _from_def IS NULL OR _to_def IS NULL
-       OR _action_def IS NULL OR _approvers_def IS NULL OR _note_def IS NULL THEN
+       OR _action_def IS NULL OR _approvers_def IS NULL OR _note_def IS NULL
+       OR _comm_def IS NULL THEN
         RAISE EXCEPTION 'approval.set: the approval card_type or one of its attribute_defs is missing'
             USING ERRCODE = 'P0001';
     END IF;
@@ -79,6 +103,8 @@ BEGIN
         FROM jsonb_array_elements(inputs) WITH ORDINALITY AS r(value, ord)
     LOOP
         -- 1. Decode + shape validation.
+        _comm_id := NULL;
+        _email := CASE jsonb_typeof(_raw->'email') WHEN 'object' THEN _raw->'email' END;
         BEGIN
             _id      := COALESCE(NULLIF(_raw->>'id', '')::bigint, 0);
             _task_id := COALESCE(NULLIF(_raw->>'task_id', '')::bigint, 0);
@@ -93,6 +119,7 @@ BEGIN
                 ) AS e
                 ORDER BY 1
             );
+            _channel_id := COALESCE(NULLIF(_email->>'channel_id', '')::bigint, 0);
         EXCEPTION WHEN invalid_text_representation OR numeric_value_out_of_range THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 'approval.set: ids must be card ids'::text, NULL::jsonb;
@@ -101,6 +128,7 @@ BEGIN
         _approvers_present := COALESCE(jsonb_typeof(_raw->'approver_ids') = 'array', false);
         _note_present := (_raw ? 'note') AND jsonb_typeof(_raw->'note') <> 'null';
         _note := btrim(COALESCE(_raw->>'note', ''));
+        _subject := btrim(COALESCE(_email->>'subject', ''));
         IF _task_id = 0 THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 'approval.set: task_id is required'::text, NULL::jsonb;
@@ -120,6 +148,30 @@ BEGIN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 'approval.set: ask at most 20 people'::text, NULL::jsonb;
             CONTINUE;
+        END IF;
+        IF _email IS NOT NULL THEN
+            IF _id <> 0 THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    'approval.set: email goes out with a new request only; write to its thread to follow up'::text,
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+            IF _channel_id = 0 THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    'approval.set: email.channel_id is required'::text, NULL::jsonb;
+                CONTINUE;
+            END IF;
+            IF _note = '' THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    'approval.set: a note is required when emailing; it is the message sent'::text,
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+            IF length(_subject) > 300 THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    'approval.set: email.subject must be at most 300 characters'::text, NULL::jsonb;
+                CONTINUE;
+            END IF;
         END IF;
 
         -- 2. The task must be a live task; an update's request must hang off it.
@@ -194,7 +246,47 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 4. Create the card (its card_create row records who asked, and when).
+        -- 4. The email thread, when asked for: after every check above, so a
+        --    request that fails never sends mail.
+        IF _email IS NOT NULL THEN
+            IF NOT user_has_grant(approval_set_batch.actor_id, 'comm', 'card.create', _project_id) THEN
+                RETURN QUERY SELECT _idx, false, 'unauthorized'::text,
+                    'approval.set: you can''t start comms in this project, so the request can''t be emailed'::text,
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1
+                FROM unnest(_approvers) AS p
+                JOIN attribute_value av ON av.card_id = p
+                JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'email'
+                WHERE btrim(COALESCE(av.value #>> '{}', '')) <> ''
+            ) THEN
+                RETURN QUERY SELECT _idx, false, 'no_email'::text,
+                    'approval.set: nobody asked has an email address, so there is no one to email'::text,
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+            IF _subject = '' THEN
+                _subject := format('Vote requested: %s — %s → %s (%s)',
+                    card_label(_task_id), card_label(_from_id), card_label(_to_id), _label);
+            END IF;
+            SELECT r.ok, r.code, r.message, r.result INTO _comm
+            FROM comm_create_batch(approval_set_batch.actor_id, jsonb_build_array(jsonb_build_object(
+                'task_id', _task_id::text,
+                'channel_id', _channel_id::text,
+                'subject', _subject,
+                'initial_message', _note,
+                'recipient_person_ids', to_jsonb(_approvers)
+            ))) AS r;
+            IF NOT _comm.ok THEN
+                RETURN QUERY SELECT _idx, false, _comm.code, _comm.message, NULL::jsonb;
+                CONTINUE;
+            END IF;
+            _comm_id := (_comm.result->>'comm_id')::bigint;
+        END IF;
+
+        -- 5. Create the card (its card_create row records who asked, and when).
         _created := _id = 0;
         IF _created THEN
             INSERT INTO card (card_type_id, parent_card_id)
@@ -204,7 +296,7 @@ BEGIN
             VALUES (_id, 'card_create', approval_set_batch.actor_id);
         END IF;
 
-        -- 5. Set-based write of the CHANGED attributes only (value_old
+        -- 6. Set-based write of the CHANGED attributes only (value_old
         --    carried so the activity stream renders "old → new").
         WITH want(ord, attr_def_id, value) AS (
             SELECT row_number() OVER () AS ord, attr_def_id, value
@@ -222,6 +314,8 @@ BEGIN
                 SELECT _approvers_def, to_jsonb(_approvers) WHERE _approvers_present
                 UNION ALL
                 SELECT _note_def, to_jsonb(_note) WHERE _note_present
+                UNION ALL
+                SELECT _comm_def, to_jsonb(_comm_id) WHERE _comm_id IS NOT NULL
             ) AS w
         ),
         changed AS (
@@ -257,7 +351,8 @@ BEGIN
                 'approval_id', _id::text,
                 'created', _created,
                 'changed', _created OR _writes > 0
-            );
+            ) || CASE WHEN _comm_id IS NULL THEN '{}'::jsonb
+                      ELSE jsonb_build_object('comm_id', _comm_id::text) END;
     END LOOP;
 END;
 $$;

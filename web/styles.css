@@ -7605,28 +7605,18 @@ a.task-links__title:hover {
   background: var(--color-surface);
   color: var(--color-fg);
 }
-/* The people to ask: one per line in a box that scrolls, searchable once long. */
-.task-approvals__people {
-  --menu-pad: var(--space-1);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-h);
-  max-height: 14rem;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
+/* With a channel picked: who the email can't reach, and that voting stays
+   on the task. */
+.task-approvals__panel .task-approvals__email-hint {
+  font-size: var(--text-xs);
 }
-.task-approvals__people .kf-menu-filter {
-  margin: 0 calc(-1 * var(--space-2));
-}
-.task-approvals__person {
+/* A request's email thread: opens it in Comms. */
+.task-approvals__comm {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1x);
-  font-size: var(--text-sm);
+  align-self: flex-start;
+  text-align: left;
 }
 .task-approvals__error {
   margin: 0;
@@ -7862,6 +7852,47 @@ textarea.task-comms__form-input {
   gap: var(--space-2);
 }
 
+/* A thread a vote request started: names the vote, links to the request. */
+.task-comms__vote {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1x);
+  align-self: flex-start;
+  padding: var(--space-h) var(--space-2);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-sunken);
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--color-accent);
+  cursor: pointer;
+}
+.task-comms__vote:hover {
+  text-decoration: underline;
+}
+/* A vote request and its email thread link to each other; the one jumped to
+   flashes a ring so the eye lands on it. */
+.task-approvals__request--flash,
+.task-comms__comm--flash {
+  border-radius: var(--radius-md);
+  animation: linked-flash 1.6s var(--ease-standard);
+}
+@keyframes linked-flash {
+  0%,
+  40% {
+    box-shadow: 0 0 0 2px var(--color-accent);
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-approvals__request--flash,
+  .task-comms__comm--flash {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--color-accent);
+  }
+}
 /* ---- comm list + cards ---- */
 .task-comms__list {
   display: flex;

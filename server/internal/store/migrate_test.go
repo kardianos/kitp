@@ -46,11 +46,12 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// +subscriber, +rollup_minutes (personal notifications),
 		// +link_url / link_kind / link_state (task links),
 		// +approval_from / approval_to / approval_action / approvers /
-		// approval_note (task approvals).
-		{`SELECT count(*) FROM attribute_def`, 74},
+		// approval_note (task approvals), +approval_comm (a request's
+		// email thread).
+		{`SELECT count(*) FROM attribute_def`, 75},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
-		// +7 on activity_subscription, +4 on link, +6 on approval.
-		{`SELECT count(*) FROM edge`, 114},
+		// +7 on activity_subscription, +4 on link, +7 on approval.
+		{`SELECT count(*) FROM edge`, 115},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -477,6 +478,66 @@ func TestForwardMigration0011TaskLinks(t *testing.T) {
 	}
 }
 
+// TestForwardMigration0014ApprovalComm proves migration 0014 adds the
+// approval_comm attribute_def (a request's email thread) and its edge on
+// approval to an already-seeded DB that predates it. Without it approval.set
+// raises when asked to email the people asked.
+func TestForwardMigration0014ApprovalComm(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0014")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	counts := []string{
+		`SELECT count(*) FROM attribute_def`,
+		`SELECT count(*) FROM edge`,
+		`SELECT count(*) FROM edge e JOIN attribute_def ad ON ad.id = e.attribute_def_id
+		 JOIN card_type ct ON ct.id = e.card_type_id
+		 WHERE ad.name = 'approval_comm' AND ct.name = 'approval' AND e.ordering = 6 AND NOT e.is_required`,
+	}
+	readCounts := func() []int64 {
+		out := make([]int64, len(counts))
+		for i, q := range counts {
+			if err := pool.QueryRow(ctx, q).Scan(&out[i]); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		return out
+	}
+	fresh := readCounts()
+	if fresh[2] != 1 {
+		t.Fatalf("fresh seed lacks the approval_comm edge: %v", fresh)
+	}
+
+	for _, stmt := range []string{
+		`DELETE FROM edge WHERE attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'approval_comm')`,
+		`DELETE FROM attribute_def WHERE name = 'approval_comm'`,
+		`DELETE FROM schema_version WHERE name = '0014_approval_comm'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0014 (%s): %v", stmt, err)
+		}
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	got := readCounts()
+	for i, q := range counts {
+		if got[i] != fresh[i] {
+			t.Errorf("%s after 0014 = %d, want fresh-seed %d", q, got[i], fresh[i])
+		}
+	}
+	var target string
+	if err := pool.QueryRow(ctx, `
+		SELECT ct.name FROM attribute_def ad JOIN card_type ct ON ct.id = ad.target_card_type_id
+		WHERE ad.name = 'approval_comm' AND ad.value_type = 'card_ref'`).Scan(&target); err != nil {
+		t.Fatalf("approval_comm probe: %v", err)
+	}
+	if target != "comm" {
+		t.Errorf("approval_comm targets %q, want comm", target)
+	}
+}
+
 // TestForwardMigration0013TaskApprovals proves migration 0013 brings an
 // already-seeded DB that predates task approvals up to the fresh-seed shape:
 // the approval card_type, its attribute_defs / edges / admin grants, and on
@@ -523,12 +584,13 @@ func TestForwardMigration0013TaskApprovals(t *testing.T) {
 	}
 
 	// Simulate a pre-0013 install: drop every row 0013 adds, plus its ledger
-	// row (baseline stays, so the seed remains gated off).
+	// row (baseline stays, so the seed remains gated off). Such an install
+	// predates 0014 too, so drop what 0014 adds and its ledger row as well.
 	for _, stmt := range []string{
 		`DELETE FROM role_grant WHERE card_type_id = (SELECT id FROM card_type WHERE name='approval')`,
 		`DELETE FROM edge WHERE card_type_id = (SELECT id FROM card_type WHERE name='approval')`,
 		`DELETE FROM activity WHERE attribute_def_id IN (SELECT id FROM attribute_def WHERE name IN ('approval_from','approval_to','approval_action','approvers','approval_note'))`,
-		`DELETE FROM attribute_def WHERE name IN ('approval_from','approval_to','approval_action','approvers','approval_note')`,
+		`DELETE FROM attribute_def WHERE name IN ('approval_from','approval_to','approval_action','approvers','approval_note','approval_comm')`,
 		`DELETE FROM card_type WHERE name = 'approval'`,
 		`DELETE FROM attribute_value WHERE attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'extra_columns')
 		   AND card_id IN (` + inboxes + `)`,
@@ -536,6 +598,7 @@ func TestForwardMigration0013TaskApprovals(t *testing.T) {
 		`DELETE FROM activity WHERE card_id IN (SELECT f.id FROM card f WHERE f.parent_card_id IN (` + inboxes + `))`,
 		`DELETE FROM card WHERE parent_card_id IN (` + inboxes + `)`,
 		`DELETE FROM schema_version WHERE name = '0013_task_approvals'`,
+		`DELETE FROM schema_version WHERE name = '0014_approval_comm'`,
 	} {
 		if _, err := pool.Exec(ctx, stmt); err != nil {
 			t.Fatalf("simulate pre-0013 (%s): %v", stmt, err)
@@ -822,8 +885,8 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{`SELECT count(*) FROM card`, 30},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 18},
-		{`SELECT count(*) FROM attribute_def`, 74},
-		{`SELECT count(*) FROM edge`, 114},
+		{`SELECT count(*) FROM attribute_def`, 75},
+		{`SELECT count(*) FROM edge`, 115},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.

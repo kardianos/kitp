@@ -16,13 +16,17 @@
  *       out: { status?, actions: [{ from, to, label }],
  *              requests: [{ id, from, to, action, note, requested_by_id,
  *                           requested_by, requested_at, reached_at?,
- *                           approvers: [{ person_id, name }] }],
+ *                           approvers: [{ person_id, name }],
+ *                           comm?: { id, subject, messages } }],
  *              decisions: [{ id, by_id, by, person_id, decision, from_id,
  *                            to_id, action, status?, reason, at, settled,
  *                            stale }] }          — decisions newest first
  *   - approval.set    in : { id?, task_id, from_status_id?, to_status_id?,
- *                            approver_ids?, note? }
- *       out: { approval_id, created, changed }
+ *                            approver_ids?, note?,
+ *                            email?: { channel_id, subject? } }  — email: create
+ *                            only; also starts an email thread to the people
+ *                            asked, the note as its message
+ *       out: { approval_id, created, changed, comm_id? }
  *   - approval.remove in : { id }   out: { removed }
  *   - approval.decide in : { task_id, approval_id? | from_status_id +
  *                            to_status_id, decision, reason? }
@@ -63,6 +67,16 @@ export interface ApprovalRequest {
   /** When the task reached the edge's target after this request ('' while open). */
   reachedAt: string;
   approvers: Array<{ personId: bigint; name: string }>;
+  /** The email thread the request started (a comm on the task), or null. */
+  comm: RequestComm | null;
+}
+
+/** An email thread a vote request started. */
+export interface RequestComm {
+  id: bigint;
+  subject: string;
+  /** Messages in the thread, sent and received. */
+  messages: number;
 }
 
 export type Verdict = 'approve' | 'reject';
@@ -104,11 +118,16 @@ export interface ApprovalSetInput {
   toStatusId?: bigint;
   approverIds?: readonly bigint[];
   note?: string;
+  /** Create only: also email the people asked through this channel, the note
+   *  as the message (then required). */
+  email?: { channelId: bigint; subject?: string };
 }
 export interface ApprovalSetOutput {
   approvalId: bigint;
   created: boolean;
   changed: boolean;
+  /** The email thread started; 0n when none. */
+  commId: bigint;
 }
 
 export interface ApprovalRemoveInput {
@@ -159,6 +178,12 @@ export function decodeStatusRef(v: unknown): StatusRef {
 function decodeStatusOrNull(v: unknown): StatusRef | null {
   return v && typeof v === 'object' ? decodeStatusRef(v) : null;
 }
+function decodeRequestComm(v: unknown): RequestComm | null {
+  if (!v || typeof v !== 'object') return null;
+  const j = asObj(v);
+  const n = j['messages'];
+  return { id: asId(j['id']), subject: asStr(j['subject']), messages: typeof n === 'number' ? n : 0 };
+}
 
 export function decodeApprovalList(raw: unknown): ApprovalListOutput {
   const o = asObj(raw);
@@ -184,6 +209,7 @@ export function decodeApprovalList(raw: unknown): ApprovalListOutput {
           const p = asObj(a);
           return { personId: asId(p['person_id']), name: asStr(p['name']) };
         }),
+        comm: decodeRequestComm(j['comm']),
       };
     }),
     decisions: asArray(o['decisions']).map((d) => {
@@ -234,11 +260,22 @@ export function registerApprovalSpecs(api: Api): void {
         if (i.toStatusId !== undefined) m['to_status_id'] = i.toStatusId;
         if (i.approverIds !== undefined) m['approver_ids'] = i.approverIds.map(String);
         if (i.note !== undefined) m['note'] = i.note;
+        if (i.email !== undefined) {
+          m['email'] = {
+            channel_id: i.email.channelId,
+            ...(i.email.subject !== undefined && i.email.subject !== '' ? { subject: i.email.subject } : {}),
+          };
+        }
         return m;
       },
       decode: (raw): ApprovalSetOutput => {
         const j = asObj(raw);
-        return { approvalId: asId(j['approval_id']), created: j['created'] === true, changed: j['changed'] === true };
+        return {
+          approvalId: asId(j['approval_id']),
+          created: j['created'] === true,
+          changed: j['changed'] === true,
+          commId: asId(j['comm_id']),
+        };
       },
     });
   }

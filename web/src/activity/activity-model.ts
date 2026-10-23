@@ -69,10 +69,12 @@ const HIDDEN_ATTRS: ReadonlySet<string> = new Set([
   'acked',
   'reply_author',
   'sort_order',
-  // An approval request's fixed edge: its title already names it.
+  // An approval request's fixed edge: its title already names it. And the
+  // link to the email thread it started: the thread's own rows tell that.
   'approval_from',
   'approval_to',
   'approval_action',
+  'approval_comm',
 ]);
 
 /** Attributes that name the card itself: already the group's heading or the

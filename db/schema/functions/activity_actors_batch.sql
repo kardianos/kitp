@@ -14,8 +14,9 @@
 --      agents those holders own (an agent acts under its owner's grants),
 --      and ids. Each {id, name (user_label), is_agent, person_id (their
 --      linked person card, for conditions on people such as "approval
---      asked of"; absent for an agent)}; people first, then agents, each
---      by name.
+--      asked of"; absent for an agent), has_email (that person card has an
+--      email address: whether asking them for a vote can email them)};
+--      people first, then agents, each by name.
 --
 -- Result JSON shape matches `activity.ActorsOutput`.
 CREATE OR REPLACE FUNCTION activity_actors_batch(
@@ -99,13 +100,20 @@ BEGIN
                                'id', u.id::text,
                                'name', user_label(u.id),
                                'is_agent', u.is_agent,
-                               'person_id', (
-                                   SELECT uap.person_card_id::text FROM user_account_person uap
-                                   WHERE uap.user_account_id = u.id
-                                   ORDER BY uap.person_card_id LIMIT 1))
+                               'person_id', pc.person_id::text,
+                               'has_email', EXISTS (
+                                   SELECT 1 FROM attribute_value ev
+                                   JOIN attribute_def ed ON ed.id = ev.attribute_def_id AND ed.name = 'email'
+                                   WHERE ev.card_id = pc.person_id
+                                     AND btrim(COALESCE(ev.value #>> '{}', '')) <> ''))
                            ORDER BY u.is_agent, lower(user_label(u.id)), u.id)
                 FROM accounts a
                 JOIN user_account u ON u.id = a.id
+                LEFT JOIN LATERAL (
+                    SELECT uap.person_card_id AS person_id FROM user_account_person uap
+                    WHERE uap.user_account_id = u.id
+                    ORDER BY uap.person_card_id LIMIT 1
+                ) pc ON true
             ), '[]'::jsonb));
     END LOOP;
 END;

@@ -21,6 +21,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/dom/cardtype"
+	"github.com/kitp/kitp/server/internal/dom/comm"
 	"github.com/kitp/kitp/server/internal/dom/comment"
 	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
@@ -56,6 +57,7 @@ func setup(t *testing.T, schemaName string) fixture {
 	attribute.Register(sp)
 	activity.Register(sp)
 	comment.Register(sp)
+	comm.Register(sp)
 	approval.Register(sp)
 	f := fixture{srv: api.NewServer(sp), sp: sp, statuses: map[string]int64{}}
 
@@ -630,5 +632,112 @@ func TestApprovalFiltersAndSorts(t *testing.T) {
 			`{"parent_card_id":"%d","card_type_name":"task","tree":%s}`, f.project, tree)); sr.OK {
 			t.Errorf("select accepted %s", tree)
 		}
+	}
+}
+
+// TestApprovalEmail covers asking with email: the request also starts an
+// email thread (a comm) to the people asked with the note as its message,
+// each links to the other, the checks run before anything is written, and
+// the two live on separately once made.
+func TestApprovalEmail(t *testing.T) {
+	f := setup(t, "kitp_test_approval_email")
+	f.move(t, "Doing")
+	f.move(t, "Review")
+	review, done := f.statuses["Review"], f.statuses["Done"]
+	ctx := context.Background()
+	if _, err := f.sp.P.Exec(ctx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		SELECT $1, id, to_jsonb('dana@example.com'::text) FROM attribute_def WHERE name = 'email'`, f.dana.personID); err != nil {
+		t.Fatalf("dana email: %v", err)
+	}
+	channelIn := func(project int64) int64 {
+		var id int64
+		if err := f.sp.P.QueryRow(ctx, `
+			INSERT INTO card (card_type_id, parent_card_id)
+			SELECT id, $1 FROM card_type WHERE name = 'comm_channel' RETURNING id`, project).Scan(&id); err != nil {
+			t.Fatalf("channel: %v", err)
+		}
+		return id
+	}
+	channel := channelIn(f.project)
+	ask := func(ctx context.Context, approvers, extra string) api.SubResponse {
+		return call(f, ctx, "approval", "set", fmt.Sprintf(
+			`{"task_id":"%d","from_status_id":"%d","to_status_id":"%d","approver_ids":[%s]%s}`,
+			f.task, review, done, approvers, extra))
+	}
+	both := fmt.Sprintf(`"%d","%d"`, f.dana.personID, f.lee.personID)
+	email := fmt.Sprintf(`,"email":{"channel_id":"%d"}`, channel)
+	threads := func() []comm.CommRow {
+		var o comm.CommListForTaskOutput
+		decode(t, call(f, sysCtx(), "comm", "list_for_task", fmt.Sprintf(`{"task_id":"%d"}`, f.task)), &o)
+		return o.Rows
+	}
+
+	// Checks first; none of them leaves a request or a thread behind.
+	wantCode(t, ask(f.dana.ctx, both, email), "validation") // no note: it's the message
+	wantCode(t, ask(f.dana.ctx, fmt.Sprintf(`"%d"`, f.lee.personID), `,"note":"Please look"`+email), "no_email")
+	wantCode(t, ask(f.dana.ctx, both, fmt.Sprintf(`,"note":"Please look","email":{"channel_id":"%d"}`, channelIn(insertCard(t, f, `{"card_type_name":"project","title":"Other"}`)))), "project_mismatch")
+	if l := f.list(t, f.dana.ctx); len(l.Requests) != 0 {
+		t.Fatalf("a failed ask left requests: %+v", l.Requests)
+	}
+	if rows := threads(); len(rows) != 0 {
+		t.Fatalf("a failed ask left threads: %+v", rows)
+	}
+
+	var set approval.SetOutput
+	decode(t, ask(f.dana.ctx, both, `,"note":"Please look"`+email), &set)
+	if !set.Created || set.CommID == 0 {
+		t.Fatalf("set = %+v, want a request and a thread", set)
+	}
+
+	req := f.list(t, f.dana.ctx).Requests[0]
+	if req.Comm == nil || req.Comm.ID != set.CommID || req.Comm.Messages != 1 ||
+		req.Comm.Subject != "Vote requested: Ship it — Review → Done (Approve)" || req.Note != "Please look" {
+		t.Errorf("request = %+v comm %+v", req, req.Comm)
+	}
+	rows := threads()
+	if len(rows) != 1 {
+		t.Fatalf("threads = %+v", rows)
+	}
+	th := rows[0]
+	if th.ID != set.CommID || th.ChannelID != channel || th.Title != req.Comm.Subject {
+		t.Errorf("thread = %+v", th)
+	}
+	if a := th.Approval; a == nil || a.ID != set.ApprovalID || a.Action != "Approve" || a.From != "Review" || a.To != "Done" {
+		t.Errorf("thread's vote = %+v", th.Approval)
+	}
+	// Everyone asked is a recipient; only those with an address are mailed.
+	if !slices.Equal([]int64(th.Recipients), []int64{f.dana.personID, f.lee.personID}) {
+		t.Errorf("recipients = %v", th.Recipients)
+	}
+	if len(th.Replies) != 1 || th.Replies[0].BodyText != "Please look" ||
+		th.Replies[0].DeliveryStatus != "pending" || th.Replies[0].To != "dana@example.com" {
+		t.Errorf("first message = %+v", th.Replies)
+	}
+
+	// Email goes with a new request only.
+	wantCode(t, call(f, f.dana.ctx, "approval", "set", fmt.Sprintf(
+		`{"id":"%d","task_id":"%d","note":"Again"%s}`, set.ApprovalID, f.task, email)), "validation")
+
+	// Removing the request leaves the thread, no longer tied to a vote.
+	decode(t, call(f, f.dana.ctx, "approval", "remove", fmt.Sprintf(`{"id":"%d"}`, set.ApprovalID)), &approval.RemoveOutput{})
+	if rows := threads(); len(rows) != 1 || rows[0].Approval != nil {
+		t.Errorf("threads after remove = %+v", rows)
+	}
+
+	// Emailing needs comm create rights of its own: someone who can edit
+	// the task but not start comms can still ask, just not email.
+	if _, err := f.sp.P.Exec(ctx, `
+		DELETE FROM role_grant
+		WHERE role_id = (SELECT id FROM role WHERE name = 'worker')
+		  AND card_type_id = (SELECT id FROM card_type WHERE name = 'comm')
+		  AND process_id = (SELECT id FROM process WHERE name = 'card.create')`); err != nil {
+		t.Fatalf("drop grant: %v", err)
+	}
+	wantCode(t, ask(f.dana.ctx, both, `,"note":"Please look"`+email), "unauthorized")
+	var plain approval.SetOutput
+	decode(t, ask(f.dana.ctx, both, `,"note":"Please look"`), &plain)
+	if !plain.Created || plain.CommID != 0 {
+		t.Errorf("an ask without email = %+v, want a request and no thread", plain)
 	}
 }

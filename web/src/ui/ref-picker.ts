@@ -29,6 +29,11 @@
  * parent-card id; when set + non-null it scopes `card.search` to that parent's
  * direct children. Peeked at fire time (not subscribed) so it reflects the
  * latest scope without re-rendering the control.
+ *
+ * `options` (optional) swaps the source: a fixed list the host already holds
+ * (e.g. the project's accounts that can vote) instead of `card.search`, filtered
+ * by the typed query. Everything else — chips, collapsed add, labels — is the
+ * same control.
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
@@ -86,6 +91,13 @@ export interface RefPickerConfig extends BaseControlConfig {
    * set an attribute (move-to-project, related-task links).
    */
   attributeName?: string;
+  /**
+   * A fixed list to pick from instead of `card.search`, filtered by the typed
+   * query (the Combobox's static mode). Its labels also name the chips. For
+   * sources `card.search` can't express, e.g. the accounts that can vote on a
+   * task, where comm recipients search every person.
+   */
+  options?: RefPinnedOption[];
   /** Known label for the current single value, shown before the menu opens. */
   currentLabel?: string;
   /** Known labels for current multi values, keyed by stringified id. */
@@ -159,8 +171,9 @@ export class RefPicker extends Control<RefPickerConfig> {
         if (typeof v === 'string') this.labels.set(k, v);
       }
     }
-    // Seed labels for pinned quick-picks so the trigger resolves after a pick.
-    for (const opt of this.config.pinnedOptions ?? []) {
+    // Seed labels for pinned quick-picks and a fixed option list so the
+    // trigger and chips resolve after a pick.
+    for (const opt of [...(this.config.pinnedOptions ?? []), ...(this.config.options ?? [])]) {
       this.labels.set(String(opt.value), opt.label);
     }
   }
@@ -336,7 +349,8 @@ export class RefPicker extends Control<RefPickerConfig> {
   /* ----------------------------- shared bits ----------------------------- */
 
   /**
-   * Build a Combobox wired to fire `card.search` from its `loadOptions` sink.
+   * Build a Combobox wired to fire `card.search` from its `loadOptions` sink
+   * (or, given `options`, to filter that list).
    * `onPick` receives the chosen bigint (or null on clear) AFTER the Combobox
    * has closed its menu.
    */
@@ -358,9 +372,14 @@ export class RefPicker extends Control<RefPickerConfig> {
       // Collapsed-add: re-hide the search field once the menu closes (by a pick,
       // Esc, Tab, or outside-click) so it doesn't linger after use.
       ...(this.collapsedAdd ? { onClose: (): void => this.recollapse() } : {}),
-      loadOptions: (query: string, deliver: (opts: ComboboxOption<bigint>[]) => void): void => {
-        this.runSearch(query, deliver);
-      },
+      // A fixed list filters locally (static mode); otherwise card.search.
+      ...(this.config.options !== undefined
+        ? { options: this.config.options }
+        : {
+            loadOptions: (query: string, deliver: (opts: ComboboxOption<bigint>[]) => void): void => {
+              this.runSearch(query, deliver);
+            },
+          }),
       onChange: (v: bigint | null): void => onPick(v),
     };
     return new Combobox<bigint>('Combobox', cfg, this.ctx);

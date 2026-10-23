@@ -106,6 +106,9 @@ type Actor struct {
 	// PersonID is the account's linked person card, for conditions on
 	// people (an approval request asks people); nil for an agent.
 	PersonID *int64 `json:"person_id,string,omitempty" mcp:"desc=the account's person card id; absent for an agent"`
+	// HasEmail says whether that person card has an email address, so
+	// asking them for a vote by email can reach them.
+	HasEmail bool `json:"has_email" mcp:"desc=true when the account's person card has an email address"`
 }
 
 // ActorsOutput lists the accounts, people first, then agents, each by name.

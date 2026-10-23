@@ -172,6 +172,17 @@ type CommRow struct {
 	// on decode and the client defaults it true, disagreeing with the comms list
 	// (which reads the attribute_value directly).
 	Acked bool `json:"acked" mcp:"desc=true when the thread has been acknowledged/handled; false when a received message awaits an ACK"`
+	// Approval is the vote request that started the thread (approval.set
+	// with email), nil for any other thread.
+	Approval *CommApproval `json:"approval,omitempty" mcp:"desc=the approval request that started this thread, when one did; vote on the task, not by replying"`
+}
+
+// CommApproval names the vote request a thread was started for.
+type CommApproval struct {
+	ID     int64  `json:"id,string" mcp:"desc=approval request id"`
+	Action string `json:"action" mcp:"desc=the status action's name, e.g. 'Approve'"`
+	From   string `json:"from" mcp:"desc=status the step starts from"`
+	To     string `json:"to" mcp:"desc=status the step leads to"`
 }
 
 // ReplyRow is one reply_body card materialised for the comms screen.

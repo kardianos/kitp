@@ -5,7 +5,9 @@
  *   - a per-section phase-filter chip row narrows the threads by comm_status
  *     phase, independently of the task's status (C4);
  *   - each comm mounts a TransitionBar bound to comm_status so the thread can be
- *     advanced / closed (C6) — its host + the comm-flow steps render.
+ *     advanced / closed (C6) — its host + the comm-flow steps render;
+ *   - a thread a vote request started names the vote and links to it, and
+ *     reveal() finds a thread even when the phase filter hides it.
  */
 
 import { test, before, beforeEach } from 'node:test';
@@ -24,7 +26,10 @@ const STATUSES = [
 
 const COMMS = [
   { id: '145', title: 'Inquiry A', thread_id: 'aaa', channel_id: '144', comm_status: '54' },
-  { id: '200', title: 'Inquiry B', thread_id: 'bbb', channel_id: '144', comm_status: '56' },
+  {
+    id: '200', title: 'Inquiry B', thread_id: 'bbb', channel_id: '144', comm_status: '56',
+    approval: { id: '701', action: 'Approve', from: 'Review', to: 'Done' },
+  },
 ];
 
 // Messages on Inquiry A: one received, one written here (outbound).
@@ -74,6 +79,7 @@ function respond(sr) {
           comm_status: c.comm_status,
           recipients: [],
           replies: REPLIES[c.id] ?? [],
+          ...(c.approval ? { approval: c.approval } : {}),
         })),
       },
     };
@@ -127,10 +133,10 @@ async function settle(dispatcher) {
   await flushMicrotasks();
 }
 
-function mount(api) {
+function mount(api, extra = {}) {
   const tree = new M.TreeNode({}, []);
   const ctx = { api, tree };
-  const c = M.Control.New('CommThreads', { type: 'CommThreads', taskId: TASK.toString() }, ctx);
+  const c = M.Control.New('CommThreads', { type: 'CommThreads', taskId: TASK.toString(), ...extra }, ctx);
   c.mount(document.createElement('div'));
   document.body.appendChild(c.el);
   return c;
@@ -264,4 +270,38 @@ test('CommThreads: each message shows who it is from, its local date + time, and
     outbound.querySelector('.task-comms__reply-meta').textContent,
     `Dana Author via support@acme.test · ${M.formatLocalDateTime('2026-10-21T09:00:00.000Z')} · sent`,
   );
+});
+
+test('CommThreads: a thread a vote request started links to the vote; reveal clears a hiding filter', async () => {
+  const { dispatcher, api } = bootApi();
+  const opened = [];
+  const c = mount(api, { onOpenApproval: (id) => opened.push(id) });
+  await settle(dispatcher);
+
+  assert.equal(c.el.querySelector('[data-comm-row="145"] [data-comm-approval]'), null, 'an ordinary thread names no vote');
+  const link = c.el.querySelector('[data-comm-row="200"] [data-comm-approval="701"]');
+  assert.ok(link, 'the vote request thread names its vote');
+  assert.equal(link.textContent.trim(), 'Vote request: Review → Done (Approve)');
+  link.click();
+  assert.deepEqual(opened, [701n]);
+
+  // Filter to Active: the Resolved thread is hidden, and reveal brings it back.
+  c.el.querySelector('[data-phase-chip="active"]').click();
+  assert.equal(c.el.querySelector('[data-comm-row="200"]'), null);
+  const scrolled = [];
+  const proto = globalThis.HTMLElement.prototype;
+  const had = Object.getOwnPropertyDescriptor(proto, 'scrollIntoView');
+  proto.scrollIntoView = function () {
+    scrolled.push(this.dataset.commRow);
+  };
+  try {
+    c.reveal(200n);
+  } finally {
+    if (had) Object.defineProperty(proto, 'scrollIntoView', had);
+    else delete proto.scrollIntoView;
+  }
+  const row = c.el.querySelector('[data-comm-row="200"]');
+  assert.ok(row, 'revealed past the filter');
+  assert.ok(row.classList.contains('task-comms__comm--flash'));
+  assert.deepEqual(scrolled, ['200']);
 });
