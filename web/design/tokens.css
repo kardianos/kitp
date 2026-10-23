@@ -232,6 +232,8 @@
   --z-dropdown: 30;      /* combobox / menu popovers, kebab menus     */
   --z-overlay-scrim: 40; /* click-catcher behind a menu/dialog        */
   --z-modal: 50;         /* dialogs, slide-overs, floating popovers   */
+  --z-popover: 55;       /* anchored panels on <body> (Popover): above
+                            the dialog whose picker opened them        */
   --z-toast: 60;         /* toast stack — above everything            */
   --z-help: 70;          /* keyboard-help overlay — absorbs all input */
 

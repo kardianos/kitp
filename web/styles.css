@@ -5437,8 +5437,10 @@ select optgroup {
 
 .kf-popover {
   /* position/left/top/opacity/pointer-events are set inline by the Popover
-     helper; this owns only the surface look. */
-  z-index: var(--z-dropdown);
+     helper; this owns only the surface look. The panel lives on <body>, so
+     it stacks above dialogs: a picker inside one (Move to project, a Modal)
+     opens its list in front of it. */
+  z-index: var(--z-popover);
   background: var(--color-surface-raised);
   color: var(--color-fg);
   border: 1px solid var(--color-border);

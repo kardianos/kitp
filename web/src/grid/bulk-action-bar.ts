@@ -11,7 +11,8 @@
  *
  * Three bulk operations, all DECLARATIVE actions (no promises in the surface):
  *
- *   - Assign attribute → `attribute.update`, ONE per selected card, fired in a
+ *   - Assign attribute (a card_ref field — status, milestone, … — or a date
+ *     field such as due_date) → `attribute.update`, ONE per selected card, fired in a
  *     single synchronous burst so the dispatcher's microtask flush coalesces
  *     them into ONE /api/v1/batch POST. Optimistic per row (the action's tree
  *     patch rewrites that card's attribute in `grid.tasks` immediately;
@@ -43,6 +44,7 @@ import { isAdmin, hasRole } from '../auth/auth-state.js';
 import type { RefPicker } from '../ui/ref-picker.js';
 import type { Combobox } from '../ui/combobox.js';
 import type { RefAxis } from '../filter/vocabulary.js';
+import type { AttrSchema } from '../filter/attribute-schema.js';
 
 import { icon } from '../ui/icons.js';
 /* -------------------------------------------------------------------------- */
@@ -75,10 +77,10 @@ declare module '../core/control.js' {
  * are deliberately ABSENT — mass-overwriting free text is a footgun (mirrors
  * the Svelte BulkActionBar's SCALAR_TEXT_BLOCKLIST).
  */
-interface AssignAttr {
+export interface AssignAttr {
   name: string;
   label: string;
-  kind: 'ref' | 'ref_multi' | 'scalar';
+  kind: 'ref' | 'ref_multi' | 'scalar' | 'date';
   cardType?: string;
   /** Fixed scalar choices (priority); when set, the value editor is a Combobox. */
   choices?: { value: string; label: string }[];
@@ -86,19 +88,28 @@ interface AssignAttr {
 
 /**
  * Bulk-assignable attributes are DATA-DRIVEN from the same schema the
- * ScreenFilterBar resolves (`screen.refAxes` — the card_type's card_ref
- * attrs). Each axis maps to a ref / ref_multi value editor (RefPicker, which
- * loads its options via `card.search`). The previous hardcoded list (incl. a
+ * ScreenFilterBar resolves: `screen.refAxes` (the card_type's card_ref attrs —
+ * status, milestone, component, …) map to a ref / ref_multi value editor
+ * (RefPicker, which loads its options via `card.search`), and the date
+ * attributes in `screen.attrSchema` (due_date, …) to a DatePicker. Free text
+ * stays out (see {@link AssignAttr}). The previous hardcoded list (incl. a
  * `priority` tag-prefix synthetic) is gone; tag-prefix bulk-assign would come
  * from the screen's `tag_prefix_columns` config, not an attribute_def.
  */
-function assignAttrFromAxis(a: RefAxis): AssignAttr {
-  return {
-    name: a.attr,
-    label: a.label,
-    kind: a.multi ? 'ref_multi' : 'ref',
-    cardType: a.targetCardType,
-  };
+export function bulkAssignAttrs(axes: readonly RefAxis[], schema: readonly AttrSchema[]): AssignAttr[] {
+  return [
+    ...axes.map(
+      (a): AssignAttr => ({
+        name: a.attr,
+        label: a.label,
+        kind: a.multi ? 'ref_multi' : 'ref',
+        cardType: a.targetCardType,
+      }),
+    ),
+    ...schema
+      .filter((a) => a.valueType === 'date')
+      .map((a): AssignAttr => ({ name: a.name, label: a.label, kind: 'date' })),
+  ];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -270,11 +281,13 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
     ) as Combobox<string>;
     assign.append(attrHost);
 
-    // Data-drive the assignable fields from the shared schema axes the
-    // ScreenFilterBar publishes — same source as the quick chips / group picker.
+    // Data-drive the assignable fields from the shared schema the
+    // ScreenFilterBar publishes — the same axes as the quick chips / group
+    // picker, plus the card_type's date attributes.
     this.effect(() => {
       const axes = (this.ctx.tree.at(['screen', 'refAxes']).get<RefAxis[]>() ?? []) as RefAxis[];
-      this.assignAttrs = axes.map(assignAttrFromAxis);
+      const schema = (this.ctx.tree.at(['screen', 'attrSchema']).get<AttrSchema[]>() ?? []) as AttrSchema[];
+      this.assignAttrs = bulkAssignAttrs(axes, schema);
       this.attrPicker?.setOptions(this.assignAttrs.map((a) => ({ value: a.name, label: a.label })));
     }, 'bulkBar.assignAttrs');
 
@@ -437,7 +450,22 @@ export class BulkActionBar extends Control<BulkActionBarConfig> {
       return;
     }
 
-    if (attr.kind === 'scalar' && attr.choices) {
+    if (attr.kind === 'date') {
+      this.valueChild = this.spawn(
+        'DatePicker',
+        {
+          type: 'DatePicker',
+          value: null,
+          placeholder: `${attr.label}…`,
+          'aria-label': `${attr.label} value`,
+          onChange: (v: string | null) => {
+            this.assignValue = v;
+            this.refreshAssignEnabled();
+          },
+        },
+        this.valueHost,
+      );
+    } else if (attr.kind === 'scalar' && attr.choices) {
       this.valueChild = this.spawn(
         'Combobox',
         {

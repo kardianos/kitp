@@ -43,6 +43,7 @@ before(async () => {
   // RefPicker + Combobox back the BulkActionBar's value editors.
   M.registerCombobox();
   M.registerRefPicker();
+  M.registerDatePicker();
   M.registerBulkActionBar();
   M.registerGrid();
   // The "Columns" chooser now lives on the filter bar (viewActions seam).
@@ -1403,6 +1404,49 @@ test('BulkActionBar: assign fires attribute.update once per selected card, batch
   assert.ok(
     assignBatch.lastIndexOf('attribute.update') < assignBatch.indexOf('card.select_with_attributes'),
     're-query select is ordered AFTER the writes within the batch',
+  );
+});
+
+test('BulkActionBar: milestone and due date are bulk-settable; a date sets every selected task', async () => {
+  const { transport, sent } = gridMockTransport();
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const grid = mountGrid(api, tree);
+  await settle(dispatcher);
+
+  // The field list: every card_ref axis (milestone among them) plus the date
+  // attributes of the screen's schema (due_date) — no free text.
+  const attrs = M.bulkAssignAttrs(
+    tree.at(['screen', 'refAxes']).peek(),
+    [
+      { name: 'title', label: 'Title', valueType: 'text' },
+      { name: 'due_date', label: 'Due date', valueType: 'date' },
+    ],
+  );
+  assert.ok(attrs.some((a) => a.name === 'milestone_ref' && a.kind === 'ref' && a.cardType === 'milestone'), 'milestone offered');
+  assert.deepEqual(attrs.filter((a) => a.kind === 'date').map((a) => a.name), ['due_date']);
+  assert.ok(!attrs.some((a) => a.name === 'title'), 'free text stays out');
+
+  const boxes = rowSelectBoxes(grid);
+  boxes[0].dispatchEvent({ type: 'click', target: boxes[0] });
+  boxes[1].dispatchEvent({ type: 'click', target: boxes[1] });
+
+  const bar = bulkBar(grid);
+  const attrCombo = findControls(bar, 'Combobox').find((c) => c.config.placeholder === 'Field…');
+  attrCombo.config.onChange('due_date'); // → a DatePicker value editor
+  const picker = findControls(bar, 'DatePicker')[0];
+  assert.ok(picker, 'a DatePicker value editor mounted for the date field');
+  picker.config.onChange('2026-11-20');
+
+  const applyBtn = grid.el.querySelectorAll('[data-bulk-assign]')[0];
+  assert.equal(applyBtn.disabled, false, 'Apply enabled once a date is picked');
+  applyBtn.dispatchEvent({ type: 'click', target: applyBtn });
+  await settle(dispatcher);
+
+  const updates = sent.writes.filter((w) => w.kind === 'attribute.update');
+  assert.deepEqual(
+    updates.map((u) => [String(u.data.card_id), u.data.attribute_name, u.data.value]).sort(),
+    [['201', 'due_date', '2026-11-20'], ['202', 'due_date', '2026-11-20']],
   );
 });
 

@@ -45,7 +45,7 @@ export {
   type TaskPurgeInput,
   type TaskPurgeOutput,
 } from './grid/specs.js';
-export { BulkActionBar, registerBulkActionBar, type BulkActionBarConfig } from './grid/bulk-action-bar.js';
+export { BulkActionBar, registerBulkActionBar, bulkAssignAttrs, type BulkActionBarConfig } from './grid/bulk-action-bar.js';
 
 // Filter: the predicate model + op-catalog, the attribute-schema model, the
 // PredicateFilter control + its spec registrar. (CardWherePredicate is already
