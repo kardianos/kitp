@@ -31,7 +31,8 @@
 --       the recipients. INSERT a reply_body card the reply.post way —
 --       delivery_status='pending' (SMTP picks it up), reply_from/reply_to
 --       snapshots + reply_author — then append its id to comm.replies.
---       Requires recipients (guarded up front).
+--       Requires recipients (guarded up front). The sender then joins
+--       comm_recipients (comm_author_join).
 --
 -- Result JSON shape matches `comm.CommCreateOutput`:
 --   {"comm_id": "<bigint>", "thread_id": "<10-char alphanumeric>"}
@@ -496,6 +497,10 @@ BEGIN
             ON CONFLICT (card_id, attribute_def_id) DO UPDATE
                 SET value = EXCLUDED.value,
                     last_activity_id = EXCLUDED.last_activity_id;
+
+            -- The sender joins the thread, after the To: snapshot above so
+            -- they are not sent their own message.
+            PERFORM comm_author_join(_comm_id, comm_create_batch.actor_id);
         END IF;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,

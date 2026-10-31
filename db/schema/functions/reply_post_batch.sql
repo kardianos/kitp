@@ -29,6 +29,8 @@
 --   8. Optional attachment linking: validate every supplied
 --      attachment_id belongs to the comm's parent task, then bulk
 --      insert into reply_body_attachment.
+--   9. The author joins comm_recipients, so the next reply by someone
+--      else reaches them.
 --
 -- Result JSON shape matches `comm.ReplyPostOutput`:
 --   {"reply_id": "<bigint>"}
@@ -342,6 +344,10 @@ BEGIN
             SELECT _reply_id, x FROM unnest(_att_ids) AS x
             ON CONFLICT DO NOTHING;
         END IF;
+
+        -- 9. The author joins the thread, after the To: snapshot in step 3
+        --    so they are not sent their own message.
+        PERFORM comm_author_join(_comm_id, reply_post_batch.actor_id);
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(
