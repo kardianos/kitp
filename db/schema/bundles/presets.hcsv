@@ -1,0 +1,8 @@
+# presets | doc="Project presets the new-project dialog offers. Each names the feature bundles (the other files in this directory) a new project starts with, applied in order. Features can still be added later from the project's properties."
+
+## table preset
+### rows
+key,           title,                features,                         sort, doc
+issue_tracker, "Issue tracker",      `["tracker"]`,                    10,   "Tasks moved through a status flow, with inbox, grid, kanban, approvals and due-date filters."
+customer_care, "Customer care",      `["tracker", "conversations"]`,   20,   "Everything in the issue tracker, plus email conversations with customers and a helpdesk lifecycle."
+content,       "Content management", `["tracker", "publishing"]`,      30,   "Everything in the issue tracker, plus pages you review and publish to portals."

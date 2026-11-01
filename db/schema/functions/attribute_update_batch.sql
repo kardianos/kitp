@@ -529,6 +529,11 @@ BEGIN
             SET value = EXCLUDED.value,
                 last_activity_id = EXCLUDED.last_activity_id;
 
+        -- 7b. Publishing hook: a page entering a status publishes /
+        --     withdraws it; an edited portal is rebuilt. A no-op lookup
+        --     for every other write (see publication_after_write).
+        PERFORM publication_after_write(_card_id, _attr_name, actor_id);
+
         -- Build the result. prev_value is omitted (NULL key) when there
         -- was no prior row; UpdateOutput uses omitempty for that field.
         IF _prev_value IS NULL THEN

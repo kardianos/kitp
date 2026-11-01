@@ -529,6 +529,16 @@ BEGIN
               AND ct.name = 'project'
               AND c.deleted_at IS NULL
               AND c.id <> _new_card_id
+              -- A feature bundle's hidden source project is a template
+              -- too (is_template keeps it out of project lists), but it
+              -- is never the standard template: bundles are applied by
+              -- bundle.apply / project.compose, not auto-stamped.
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM attribute_value bv
+                  JOIN attribute_def bd ON bd.id = bv.attribute_def_id
+                  WHERE bv.card_id = c.id AND bd.name = 'bundle_key'
+              )
             ORDER BY av.card_id
             LIMIT 1;
             IF FOUND AND _template_id IS NOT NULL THEN
@@ -580,6 +590,13 @@ BEGIN
                     END IF;
                 END IF;
             END;
+        END IF;
+
+        -- 12. Publishing hook: a page created straight into a status that
+        --     publishes (an import, an API caller) goes live like one that
+        --     moved there. Draft-by-default pages touch nothing.
+        IF _card_type_name = 'page' THEN
+            PERFORM publication_sync(_new_card_id, actor_id);
         END IF;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,

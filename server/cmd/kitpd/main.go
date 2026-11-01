@@ -86,6 +86,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/attachment"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/attributedef"
+	dombundle "github.com/kitp/kitp/server/internal/dom/bundle"
 	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/dom/cardtype"
 	domcas "github.com/kitp/kitp/server/internal/dom/cas"
@@ -97,6 +98,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/flow"
 	"github.com/kitp/kitp/server/internal/dom/help"
 	domlink "github.com/kitp/kitp/server/internal/dom/link"
+	domportal "github.com/kitp/kitp/server/internal/dom/portal"
 	"github.com/kitp/kitp/server/internal/dom/proc"
 	"github.com/kitp/kitp/server/internal/dom/process"
 	"github.com/kitp/kitp/server/internal/dom/projectexport"
@@ -185,6 +187,8 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 	domlink.Register(pool)
 	domapproval.Register(pool)
 	projectstamp.Register(pool)
+	dombundle.Register(pool)
+	domportal.Register(pool)
 	tag.Register(pool)
 	process.Register(pool)
 	proc.Register(pool)
@@ -461,6 +465,12 @@ func runHTTP() error {
 	// re-dispatching link.set as the token's actor, so role + scope checks
 	// match a browser caller and repeats stay idempotent.
 	domlink.Mount(apiRouter, domlink.HTTPConfig{Dispatcher: srv})
+	// Portals: the signed-in preview route lives on the app's router; the
+	// public, host-routed listener is a separate http.Server below
+	// (KITP_PORTAL_ADDR) so a published site shares nothing with the app.
+	portalSrv := &domportal.Server{Pool: pgPool, Storage: storage, Logger: logger}
+	portalSrv.Mount(apiRouter)
+	portalBuilder := &domportal.Builder{Pool: pgPool, Storage: storage, Logger: logger}
 	// Project export (phases 3 + 4 of PROJECT_PORTABILITY_PLAN.md) —
 	// streams text/csv, .xlsx, or application/zip via dedicated HTTP
 	// routes. Per-resource authz (caller must hold card.update on
@@ -642,6 +652,15 @@ func runHTTP() error {
 			},
 		},
 		{
+			Name:        "portal.build",
+			Description: "Render every portal whose published pages or settings changed into a static build and switch it live.",
+			OnStartup:   true,
+			Interval:    time.Duration(envInt("KITP_PORTAL_BUILD_TICK_SEC", 5)) * time.Second,
+			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
+				return portalBuilder.RunOnce(ctx)
+			},
+		},
+		{
 			Name:        "activitysink.pump",
 			Description: "Deliver matching activity to each enabled sink and personal notification subscription: Teams channel posts and rolled-up email digests.",
 			OnStartup:   true,
@@ -737,12 +756,40 @@ func runHTTP() error {
 		}
 	}()
 
+	// Public portal listener: published sites, routed by Host header. Its
+	// own server and handler — no /api, no session, no app CSP — so a
+	// public site is domain-separated from the app by construction. Off
+	// unless KITP_PORTAL_ADDR is set (portals still preview in the app).
+	var portalHTTP *http.Server
+	if portalAddr := os.Getenv("KITP_PORTAL_ADDR"); portalAddr != "" {
+		var ph http.Handler = portalSrv.PublicHandler()
+		if requestLog {
+			ph = obs.LoggingMiddleware(logger, ph)
+		}
+		portalHTTP = &http.Server{
+			Addr:              portalAddr,
+			Handler:           obs.RequestIDMiddleware(ph),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			log.Printf("portal listener on %s", portalAddr)
+			if err := portalHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatalf("portal listen: %v", err)
+			}
+		}()
+	}
+
 	<-stop
 	log.Printf("shutting down")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
+	}
+	if portalHTTP != nil {
+		if err := portalHTTP.Shutdown(shutdownCtx); err != nil {
+			log.Printf("portal shutdown: %v", err)
+		}
 	}
 	// Job scheduler: cancel the root ctx so every job goroutine sees
 	// parent.Done() and exits — including the comm/activity-sink sweep

@@ -115,6 +115,10 @@ BEGIN
         VALUES (_card_id, 'card_delete', actor_id)
         RETURNING id INTO _activity_id;
 
+        -- 5. A deleted page leaves every portal (an indexed no-op for
+        --    anything that was never published).
+        PERFORM publication_withdraw(_card_id);
+
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(
                 'ok', true,

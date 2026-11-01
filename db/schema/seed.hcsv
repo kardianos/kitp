@@ -36,7 +36,7 @@ kitp.manager, $role.manager
 kitp.worker,  $role.worker
 
 
-## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel / activity_sink are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task. link cards (a code change / issue / any URL linked to a task — written by link.set from the UI, MCP, or a code forge such as Gerrit) parent under task. approval cards (a request that named people approve or reject one of the task's status actions — documentation, never a gate; written by approval.set, which can also start an email thread (a comm, linked by approval_comm) to the people asked) parent under task. activity_subscription cards (a user's personal notification subscription) parent under an activity_sink. uses_phase=true marks card_types whose instances are flow-bound value-cards — the `phase` column on those rows is consulted by the predicate compiler (has_phase op) and the TransitionBar UI. Tasks / projects / etc. carry the column but never read it." | on_conflict="name"
+## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel / activity_sink are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task. link cards (a code change / issue / any URL linked to a task — written by link.set from the UI, MCP, or a code forge such as Gerrit) parent under task. approval cards (a request that named people approve or reject one of the task's status actions — documentation, never a gate; written by approval.set, which can also start an email thread (a comm, linked by approval_comm) to the people asked) parent under task. activity_subscription cards (a user's personal notification subscription) parent under an activity_sink. page cards (publishable content: title + markdown description + slug + sort_order, moved through a publish_status flow) parent under a project or another page, so a page's children are its section. portal cards (a published site: a root page, an optional public host, and the statuses whose publishes_to names it) are global, like person — one portal can serve a page tree to QA and another the same tree to PROD. uses_phase=true marks card_types whose instances are flow-bound value-cards — the `phase` column on those rows is consulted by the predicate compiler (has_phase op) and the TransitionBar UI. Tasks / projects / etc. carry the column but never read it." | on_conflict="name"
 ### rows
 name,              is_built_in, allow_self_parent, parent_card_type_id,    uses_phase
 project,           true,        false,             null,                   false
@@ -57,6 +57,8 @@ predicate_snippet, true,        false,             $card_type.project,     false
 activity_subscription, true,    false,             $card_type.activity_sink, false
 link,              true,        false,             $card_type.task,        false
 approval,          true,        false,             $card_type.task,        false
+page,              true,        true,              $card_type.project,     false
+portal,            true,        false,             null,                   false
 
 
 ## table attribute_def | doc="Built-in attribute definitions. Each pick-from-a-list attribute is a card_ref with target_card_type_id pointing at the card_type whose cards are the valid values." | on_conflict="name"
@@ -137,6 +139,12 @@ approval_action,       text,        true, null, false
 approvers,             card_ref[],  true, $card_type.person, false, `{"connective":"and","children":[{"attr":"person_kind","op":"!=","values":["contact"]},{"attr":"is_active","op":"!=","values":[false]}]}`
 approval_note,         text,        true, null, false
 approval_comm,         card_ref,    true, $card_type.comm, false
+bundle_key,            text,        true, null, false
+publish_status,        card_ref,    true, $card_type.status, false
+publishes_to,          card_ref[],  true, $card_type.portal, false
+portal_host,           text,        true, null, false
+portal_root,           card_ref,    true, $card_type.page, false
+portal_public,         bool,        true, null, false
 
 
 ## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"
@@ -257,6 +265,17 @@ $card_type.approval,     $attribute_def.approval_action,   true,  3
 $card_type.approval,     $attribute_def.approvers,         true,  4
 $card_type.approval,     $attribute_def.approval_note,     false, 5
 $card_type.approval,     $attribute_def.approval_comm,     false, 6
+$card_type.project,      $attribute_def.bundle_key,        false, 7
+$card_type.status,       $attribute_def.publishes_to,      false, 2
+$card_type.page,         $attribute_def.title,             true,  0
+$card_type.page,         $attribute_def.publish_status,    true,  1
+$card_type.page,         $attribute_def.slug,              false, 2
+$card_type.page,         $attribute_def.sort_order,        false, 3
+$card_type.page,         $attribute_def.description,       false, 4
+$card_type.portal,       $attribute_def.title,             true,  0
+$card_type.portal,       $attribute_def.portal_root,       false, 1
+$card_type.portal,       $attribute_def.portal_host,       false, 2
+$card_type.portal,       $attribute_def.portal_public,     false, 3
 
 
 ## table process | doc="Built-in processes (workflows)." | on_conflict="name"
@@ -307,26 +326,28 @@ role_id, card_type_id, process_id
 $role.commenter, $card_type.task, $process."comment.post"
 
 
-## table role_grant | doc="worker / manager: SHARED surface — task create + update + comment + sort, comm create + update + comment + sort (so workers can set a comm channel on a task and reply via reply.post which gates on (comm, card.update)), person create + update (so adding a teammate / contact doesn't require admin), and CRUD on the structural cards a worker legitimately authors (project / screen / filter / status / predicate_snippet). The MANAGER-ONLY grant below adds CRUD on the enum_managed VALUE cards (milestone / component / tag) — the 'Values' admin screen — so a plain worker can ASSIGN existing values to a task (card.update on the task) but cannot create / rename / delete the value cards themselves. comm_channel / reply_body / activity_sink stay admin-only configuration surface." | on_conflict="role_id, card_type_id, process_id"
+## table role_grant | doc="worker / manager: SHARED surface — task create + update + comment + sort, comm create + update + comment + sort (so workers can set a comm channel on a task and reply via reply.post which gates on (comm, card.update)), person create + update (so adding a teammate / contact doesn't require admin), page create + update + comment + sort (authors write and move publishable pages; a status whose publishes_to names a portal publishes them), and CRUD on the structural cards a worker legitimately authors (project / screen / filter / status / predicate_snippet). The MANAGER-ONLY grant below adds CRUD on the enum_managed VALUE cards (milestone / component / tag) — the 'Values' admin screen — so a plain worker can ASSIGN existing values to a task (card.update on the task) but cannot create / rename / delete the value cards themselves. comm_channel / reply_body / activity_sink stay admin-only configuration surface." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
 `[$role.worker, $role.manager]`, $card_type.task,              `[$process."card.create", $process."card.update", $process."comment.post", $process."user_card_sort.set"]`
 `[$role.worker, $role.manager]`, $card_type.comm,              `[$process."card.create", $process."card.update", $process."comment.post", $process."user_card_sort.set"]`
+`[$role.worker, $role.manager]`, $card_type.page,              `[$process."card.create", $process."card.update", $process."comment.post", $process."user_card_sort.set"]`
 `[$role.worker, $role.manager]`, $card_type.person,            `[$process."card.create", $process."card.update"]`
 `[$role.worker, $role.manager]`, `[$card_type.project, $card_type.screen, $card_type.filter, $card_type.status, $card_type.predicate_snippet]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
 
 
-## table role_grant | doc="manager-only: CRUD on the enum_managed VALUE cards (milestone / component / tag) — the 'Values' admin screen. Workers are deliberately excluded (they assign existing values to tasks but don't curate the value set); admins get this via the admin grant below. ALSO grants card.delete on task so a manager (not a plain worker) can hard-delete / 'Delete forever' a task via task.purge — which gates on (task, card.delete)." | on_conflict="role_id, card_type_id, process_id"
+## table role_grant | doc="manager-only: CRUD on the enum_managed VALUE cards (milestone / component / tag) — the 'Values' admin screen. Workers are deliberately excluded (they assign existing values to tasks but don't curate the value set); admins get this via the admin grant below. ALSO grants card.delete on page (a worker unpublishes by moving a page to a terminal status; deleting it is a manager's call) and ALSO grants card.delete on task so a manager (not a plain worker) can hard-delete / 'Delete forever' a task via task.purge — which gates on (task, card.delete)." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
 $role.manager, `[$card_type.milestone, $card_type.component, $card_type.tag]`, `[$process."card.create", $process."card.update", $process."card.delete"]`
 $role.manager, $card_type.task, $process."card.delete"
+$role.manager, $card_type.page, $process."card.delete"
 
 
-## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references). The three comm card_types (comm_channel, comm, reply_body) are admin-only configuration surface; managers get a lighter cut on comm via the manager grant. link cards are written through link.set / link.delete, which gate on card.update of the PARENT TASK (like attachments), so only admins get the generic card.* surface on them. approval cards likewise: approval.set / approval.remove gate on card.update of the parent task and approval.decide on its comment.post, so nobody but an admin can edit a request (or forge a decision) through the generic card.* processes." | on_conflict="role_id, card_type_id, process_id"
+## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references). The three comm card_types (comm_channel, comm, reply_body) are admin-only configuration surface; managers get a lighter cut on comm via the manager grant. link cards are written through link.set / link.delete, which gate on card.update of the PARENT TASK (like attachments), so only admins get the generic card.* surface on them. portal cards are admin-only configuration (a portal decides what reaches a public host). approval cards likewise: approval.set / approval.remove gate on card.update of the parent task and approval.decide on its comment.post, so nobody but an admin can edit a request (or forge a decision) through the generic card.* processes." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
-$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status, $card_type.comm_channel, $card_type.comm, $card_type.reply_body, $card_type.activity_sink, $card_type.predicate_snippet, $card_type.activity_subscription, $card_type.link, $card_type.approval]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
+$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status, $card_type.comm_channel, $card_type.comm, $card_type.reply_body, $card_type.activity_sink, $card_type.predicate_snippet, $card_type.activity_subscription, $card_type.link, $card_type.approval, $card_type.page, $card_type.portal]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
 
 
 ## table role_grant | doc="Personal notification subscriptions: every project tier (viewer / commenter / worker / manager / admin) may create, edit and delete its OWN activity_subscription cards through the dedicated activity_subscription.set / .delete processes. The handler SQL enforces subscriber = the caller's person card (admins exempt, so they can clean up). The generic card.* processes on activity_subscription stay admin-only (admin grant above), so nobody can edit someone else's subscription through attribute.update." | on_conflict="role_id, card_type_id, process_id"

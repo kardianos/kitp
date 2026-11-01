@@ -1,0 +1,45 @@
+# bundle | key=conversations | title="Conversations" | sort=20 | doc="Email conversations with customers on their tasks: a helpdesk lifecycle (Open → Waiting on customer → Resolved, plus Spam) and a Comms screen listing every thread. Connect a mailbox (Admin → Comm channels) to start receiving mail."
+
+-- Feature bundle: customer conversations (see tracker.hcsv for how bundle
+-- files are materialised and applied). Binds the comm_status attribute, so
+-- it can't be added to a project that already has its own comm flow (the
+-- install seed's Standard Project Template carries one) — bundle.apply
+-- reports that as a conflict rather than half-applying.
+
+## table card | alias=bundle_src
+### rows
+card_type_id, title, is_template, bundle_key
+$card_type.project, "Bundle: Conversations", true, conversations
+
+-- Conversation status value-cards. Same `status` card_type as task statuses;
+-- they answer the comm_status attribute.
+## table card | under=bundle_src
+### rows
+card_type_id,      parent_card_id, phase,    title,                 sort_order, alias
+$card_type.status, parent,         active,   "Open",                10,         cv_open
+$card_type.status, parent,         active,   "Waiting on customer", 20,         cv_waiting
+$card_type.status, parent,         terminal, "Resolved",            30,         cv_resolved
+$card_type.status, parent,         terminal, "Spam",                40,         cv_spam
+
+## table flow
+### rows
+name,            attribute_def_id,           scope_card_id, default_create_status_id, alias
+"Conversations", $attribute_def.comm_status, @bundle_src,   @cv_open,                 cv_flow
+
+## table flow_step
+### rows
+flow_id,  from_card_id, to_card_id,   label,               sort_order, standalone
+@cv_flow, @cv_open,     @cv_waiting,  "Wait for customer", 1,          true
+@cv_flow, @cv_open,     @cv_resolved, "Resolve",           2,          true
+@cv_flow, @cv_open,     @cv_spam,     "Spam",              3,          false
+@cv_flow, @cv_waiting,  @cv_open,     "Customer replied",  1,          true
+@cv_flow, @cv_waiting,  @cv_resolved, "Resolve",           2,          true
+@cv_flow, @cv_resolved, @cv_open,     "Reopen",            1,          true
+@cv_flow, @cv_spam,     @cv_open,     "Not spam",          1,          true
+
+-- The Comms screen: every conversation in the project, filtered by phase
+-- independently of task status.
+## table card | under=bundle_src
+### rows
+card_type_id,      parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref, default_create_status, toggle_groups
+$card_type.screen, parent,         "Comms", comms,  comms, c,      7,          @cv_flow, @cv_open,              `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"active","label":"Open","predicate":{"attr":"comm_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Resolved","predicate":{"attr":"comm_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`

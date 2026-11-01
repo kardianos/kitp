@@ -100,6 +100,10 @@ type Parts struct {
 	DDL  string // CREATE … IF NOT EXISTS; safe to re-apply every startup.
 	Seed string // built-in install rows; apply once, on first init.
 	Demo string // opt-in fixture data (empty unless opts.Demo).
+	// Bundles is the feature bundle + preset catalog (bundle.go). Each
+	// bundle's source project is re-materialised whenever its checksum
+	// changes; presets are upserted every boot.
+	Bundles Catalog
 }
 
 // GenerateParts renders the schema as its component sections. GenerateAll
@@ -124,7 +128,11 @@ func GenerateParts(opts GenerateOptions) (Parts, error) {
 	if err != nil {
 		return Parts{}, err
 	}
-	p := Parts{DDL: GenerateSQL(schema), Seed: seedSQL}
+	cat, err := LoadCatalog("", schema, seedAttrTypes)
+	if err != nil {
+		return Parts{}, err
+	}
+	p := Parts{DDL: GenerateSQL(schema), Seed: seedSQL, Bundles: cat}
 	if opts.Demo {
 		path := demoPath
 		if opts.DemoPath != "" {
@@ -225,10 +233,10 @@ func BuildSeed(doc *Document, schema *Schema, opts SeedOptions) (string, error) 
 	}
 	root := doc.Root
 	switch root.Kind {
-	case "seed", "demo":
-		// ok
+	case "seed", "demo", "bundle":
+		// ok — a feature bundle (bundle.go) renders like demo data.
 	default:
-		return "", fmt.Errorf("hcsv: root section must be `# seed` or `# demo`, got %q at line %d", root.Kind, root.Line)
+		return "", fmt.Errorf("hcsv: root section must be `# seed`, `# demo` or `# bundle`, got %q at line %d", root.Kind, root.Line)
 	}
 	attrTypes := collectAttributeValueTypes(root)
 	for name, vt := range opts.KnownAttrTypes {

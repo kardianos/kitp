@@ -8,6 +8,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/xuri/excelize/v2 v2.10.1
+	github.com/yuin/goldmark v1.8.7
 	golang.org/x/image v0.39.0
 	golang.org/x/net v0.50.0
 	golang.org/x/text v0.36.0

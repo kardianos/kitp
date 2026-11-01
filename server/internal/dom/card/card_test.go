@@ -132,7 +132,7 @@ func TestCardLifecycle(t *testing.T) {
 // TestEdgeViolationRejected: creating a task under a tag must fail with a
 // structured error, and the rest of the batch must show as aborted.
 func TestEdgeViolationRejected(t *testing.T) {
-	srv, _ := setup(t, "kitp_test_card_edge")
+	srv, sp := setup(t, "kitp_test_card_edge")
 	ctx := auth.WithSystemUser(context.Background())
 
 	// Project to host a tag.
@@ -174,7 +174,9 @@ func TestEdgeViolationRejected(t *testing.T) {
 	// And nothing should have been written: re-listing projects shows just
 	// the one we made plus the seeded projects from the install seed +
 	// demo loader ('Standard Project Template' is_template=true from
-	// the install seed, and the demo's 'Default Project' + 'Mobile App').
+	// the install seed, and the demo's 'Default Project' + 'Mobile App')
+	// plus the feature bundles' hidden source projects (is_template=true,
+	// one per db/schema/bundles feature; clients filter templates out).
 	resp = srv.Dispatch(ctx, api.BatchRequest{
 		Subrequests: []api.SubRequest{
 			{ID: "list", Endpoint: "card", Action: "select", Data: json.RawMessage(
@@ -182,8 +184,12 @@ func TestEdgeViolationRejected(t *testing.T) {
 		},
 	})
 	rows := rowsOf(t, resp.Subresponses[0])
-	if len(rows) != 4 {
-		t.Errorf("project rollback: got %d projects, want 4 (our P + Default Project + Mobile App + Standard Project Template)", len(rows))
+	var bundles int
+	if err := sp.P.QueryRow(ctx, `SELECT count(*) FROM bundle WHERE source_project_id IS NOT NULL`).Scan(&bundles); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 4+bundles {
+		t.Errorf("project rollback: got %d projects, want %d (our P + Default Project + Mobile App + Standard Project Template + %d bundle sources)", len(rows), 4+bundles, bundles)
 	}
 }
 

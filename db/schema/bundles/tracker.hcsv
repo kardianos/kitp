@@ -1,0 +1,101 @@
+# bundle | key=tracker | title="Task tracking" | sort=10 | doc="Tasks moved through a status flow (New idea → Todo → Doing → Review → Done), with Inbox, Grid, Kanban, Incoming and Recently Closed screens, approvals, and the Overdue / Due soon / Heads filters."
+
+-- Feature bundle: the task tracker. A bundle file reads like demo.hcsv:
+-- cards use auto ids and resolve parents by title under the bundle's
+-- source project (alias bundle_src). store.ApplySchema materialises the
+-- file into that hidden source project whenever its checksum changes;
+-- bundle.apply / project.compose merge-copy the source into a project
+-- (copy_project_template_merge), recording each copied card's origin so a
+-- re-apply adds only what's missing.
+--
+-- Mirrors the task half of the install seed's Standard Project Template
+-- (which also carries the comm flow; here that is the separate
+-- `conversations` bundle).
+
+## table card | alias=bundle_src
+### rows
+card_type_id, title, is_template, bundle_key
+$card_type.project, "Bundle: Task tracking", true, tracker
+
+-- Task status value-cards: one triage row (the flow default), three active, two terminal.
+## table card | under=bundle_src
+### rows
+card_type_id,     parent_card_id, phase,    title,       sort_order, alias
+$card_type.status, parent,         triage,   "New idea",  5,          tr_s_idea
+$card_type.status, parent,         active,   "Todo",      10,         tr_s_todo
+$card_type.status, parent,         active,   "Doing",     20,         tr_s_doing
+$card_type.status, parent,         active,   "Review",    30,         tr_s_review
+$card_type.status, parent,         terminal, "Done",      40,         tr_s_done
+$card_type.status, parent,         terminal, "Cancelled", 50,         tr_s_cancel
+
+-- The task flow and its twelve transitions.
+## table flow
+### rows
+name,             attribute_def_id,        scope_card_id, default_create_status_id, alias
+"Standard task",  $attribute_def.status,   @bundle_src,  @tr_s_idea,              tr_flow_status
+
+## table flow_step
+### rows
+flow_id,           from_card_id,  to_card_id,     label,             sort_order, standalone
+@tr_flow_status,  @tr_s_idea,   @tr_s_todo,    "Accept",          1,          true
+@tr_flow_status,  @tr_s_idea,   @tr_s_cancel,  "Reject",          2,          true
+@tr_flow_status,  @tr_s_todo,   @tr_s_doing,   "Start",           1,          false
+@tr_flow_status,  @tr_s_doing,  @tr_s_review,  "Send to review",  1,          false
+@tr_flow_status,  @tr_s_review, @tr_s_done,    "Approve",         1,          true
+@tr_flow_status,  @tr_s_doing,  @tr_s_done,    "Done",            2,          true
+@tr_flow_status,  @tr_s_todo,   @tr_s_done,    "Done",            3,          true
+@tr_flow_status,  @tr_s_todo,   @tr_s_cancel,  "Cancel",          4,          false
+@tr_flow_status,  @tr_s_doing,  @tr_s_cancel,  "Cancel",          5,          false
+@tr_flow_status,  @tr_s_review, @tr_s_cancel,  "Cancel",          6,          false
+@tr_flow_status,  @tr_s_done,   @tr_s_todo,    "Reopen",          1,          true
+@tr_flow_status,  @tr_s_cancel, @tr_s_todo,    "Reopen",          2,          true
+
+-- Screens: Inbox (+ its "Waiting on my vote" view), Grid, Kanban, Project, Incoming, Recently Closed.
+## table card | under=bundle_src | alias=tr_sc_inbox
+### rows
+card_type_id,     parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref,           default_create_status, toggle_groups, extra_columns
+$card_type.screen, parent,         "Inbox", list,   inbox, i,      1,          @tr_flow_status,  @tr_s_todo,           `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]},{"name":"scope","operator":"and","mode":"multi","items":[{"name":"mine_only","label":"Mine","predicate":{"attr":"assignee","op":"=","values":["__actor__"]},"default_on":true}]}]`, `["approvals"]`
+
+## table card | under=tr_sc_inbox
+### rows
+card_type_id,      parent_card_id, title,                predicate,                                                     sort
+$card_type.filter, parent,         "Waiting on my vote", `{"attr":"approval_waiting_on","op":"in","values":["@me"]}`, `[{"attr":"approval_asked_at","dir":"asc"}]`
+
+
+## table card | under=bundle_src
+### rows
+card_type_id,     parent_card_id, title,  layout, slug, hotkey, sort_order, flow_ref,          extra_columns,   toggle_groups
+$card_type.screen, parent,         "Grid", grid,   grid, g,      2,          @tr_flow_status, `["due_date"]`,  `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+
+
+## table card | under=bundle_src
+### rows
+card_type_id,     parent_card_id, title,    layout, slug,   hotkey, sort_order, flow_ref,          column_attr, toggle_groups
+$card_type.screen, parent,         "Kanban", kanban, kanban, k,      3,          @tr_flow_status, status,      `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+
+
+## table card | under=bundle_src
+### rows
+card_type_id,     parent_card_id, title,     layout, slug,    sort_order, flow_ref,          toggle_groups
+$card_type.screen, parent,         "Project", project,project, 4,          @tr_flow_status, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+
+
+## table card | under=bundle_src
+### rows
+card_type_id,     parent_card_id, title,      layout, slug,     hotkey, sort_order, flow_ref,          default_create_status, toggle_groups
+$card_type.screen, parent,         "Incoming", list,   incoming, n,      5,          @tr_flow_status, @tr_s_idea,           `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":true},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":false},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+
+
+## table card | under=bundle_src
+### rows
+card_type_id,     parent_card_id, title,             layout, slug,            sort_order, flow_ref,          toggle_groups
+$card_type.screen, parent,         "Recently Closed", list,   recently-closed, 6,          @tr_flow_status, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Triage","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":false},{"name":"active","label":"Active","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":false},{"name":"terminal","label":"Closed","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":true}]}]`
+
+
+-- Named filters every project gets: Overdue, Due within 3 days, Heads.
+## table card | under=bundle_src
+### rows
+card_type_id,                 parent_card_id, title,                  predicate
+$card_type.predicate_snippet, parent,         "Overdue",              `{"connective":"and","children":[{"attr":"status","op":"has_phase","values":["triage","active"]},{"attr":"due_date","op":"before_today"}]}`
+$card_type.predicate_snippet, parent,         "Due within 3 days",    `{"connective":"and","children":[{"attr":"status","op":"has_phase","values":["triage","active"]},{"attr":"due_date","op":"within_days","values":[3]}]}`
+$card_type.predicate_snippet, parent,         "Heads",                `{"connective":"or","children":[{"attr":"parent_task","op":"not exists"},{"attr":"parent_task","op":"has_phase","values":["terminal"]}]}`

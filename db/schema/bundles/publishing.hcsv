@@ -1,0 +1,92 @@
+# bundle | key=publishing | title="Publishing" | sort=30 | doc="Pages you write, review and publish to portals: a page status flow (Draft → In review → Published → Archived), a Pages screen, and a starter Home page. In Admin → Values, choose which portals each status publishes to — e.g. In review → QA, Published → QA and PROD."
+
+-- Feature bundle: publishable pages (see tracker.hcsv for how bundle files
+-- are materialised and applied).
+--
+-- Pages are `page` cards under the project; a page's child pages are its
+-- section, so the card tree IS the site tree. A page moves through the
+-- publish_status flow below. When it ENTERS a status whose publishes_to
+-- names a portal, the page is snapshotted onto that portal
+-- (publication_on_status); entering a terminal status withdraws it from
+-- every portal. Leaving a status unpublishes nothing, so editing a live
+-- page leaves each portal on its pinned revision until "Publish changes"
+-- (or a trip back through review) re-enters a publishing status.
+--
+-- The bundle can't know an install's portals, so its statuses publish
+-- nowhere until an admin links them.
+
+## table card | alias=bundle_src
+### rows
+card_type_id, title, is_template, bundle_key
+$card_type.project, "Bundle: Publishing", true, publishing
+
+## table card | under=bundle_src
+### rows
+card_type_id,      parent_card_id, phase,    title,       sort_order, alias
+$card_type.status, parent,         triage,   "Draft",     10,         pb_draft
+$card_type.status, parent,         active,   "In review", 20,         pb_review
+$card_type.status, parent,         active,   "Published", 30,         pb_published
+$card_type.status, parent,         terminal, "Archived",  40,         pb_archived
+
+## table flow
+### rows
+name,         attribute_def_id,              scope_card_id, default_create_status_id, alias
+"Publishing", $attribute_def.publish_status, @bundle_src,   @pb_draft,                pb_flow
+
+-- "Publish changes" is a Published → Published step: re-entering the status
+-- re-snapshots the page, so an edit to a live page goes out without a trip
+-- through review.
+## table flow_step
+### rows
+flow_id,  from_card_id,  to_card_id,    label,             sort_order, standalone
+@pb_flow, @pb_draft,     @pb_review,    "Send to review",  1,          true
+@pb_flow, @pb_draft,     @pb_published, "Publish",         2,          false
+@pb_flow, @pb_draft,     @pb_archived,  "Archive",         3,          false
+@pb_flow, @pb_review,    @pb_published, "Publish",         1,          true
+@pb_flow, @pb_review,    @pb_draft,     "Back to draft",   2,          false
+@pb_flow, @pb_review,    @pb_archived,  "Archive",         3,          false
+@pb_flow, @pb_published, @pb_published, "Publish changes", 1,          true
+@pb_flow, @pb_published, @pb_review,    "Send to review",  2,          false
+@pb_flow, @pb_published, @pb_draft,     "Unpublish edits", 3,          false
+@pb_flow, @pb_published, @pb_archived,  "Archive",         4,          false
+@pb_flow, @pb_archived,  @pb_draft,     "Restore",         1,          true
+
+-- The Pages screen lists the project's page tree; Draft and In review /
+-- Published are on by default, Archived is a toggle away.
+## table card | under=bundle_src
+### rows
+card_type_id,      parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref, default_create_status, toggle_groups
+$card_type.screen, parent,         "Pages", pages,  pages, w,      8,          @pb_flow, @pb_draft,             `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Draft","predicate":{"attr":"publish_status","op":"has_phase","values":["triage"]},"default_on":true},{"name":"active","label":"Live","predicate":{"attr":"publish_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Archived","predicate":{"attr":"publish_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
+
+-- A starter site: a Home page (the root a portal points at) with one child.
+-- Its body shows the placeholders the builder expands: {{< children >}}
+-- lists the page's child pages, {{< toc >}} the page's headings,
+-- {{< nav >}} the whole site tree, and {{< ref "slug/path" >}} links to
+-- another page by path.
+## table card | under=bundle_src | alias=pb_home
+### rows
+card_type_id,    parent_card_id, title,  slug, sort_order, publish_status, description
+$card_type.page, parent,         "Home", ,     0,          @pb_draft,      `Welcome. This is the root page of the site: a portal points at it, and every page under it is published beneath it.
+
+## In this site
+
+{{< children >}}
+
+See [Getting started]({{< ref "getting-started" >}}) for how pages, statuses and portals fit together.`
+
+## table card | under=pb_home
+### rows
+card_type_id,    parent_card_id, title,             slug,              sort_order, publish_status, description
+$card_type.page, parent,         "Getting started", "getting-started", 10,         @pb_draft,      `{{< toc >}}
+
+## Write
+
+Each page is a card. Its child pages are its section, so the card tree is the site tree. A page's slug is its path segment.
+
+## Review and publish
+
+Move a page through its statuses. A status can publish to one or more portals: send a page to review and it appears on QA; publish it and it appears on QA and PROD.
+
+## Live edits
+
+Editing a published page doesn't change what a portal shows. Use **Publish changes** to send the edit out, or send the page back to review.`

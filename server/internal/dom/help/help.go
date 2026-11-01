@@ -45,11 +45,13 @@ var topicFiles = map[string]string{
 	"admin.comm_channels":  "content/admin_comm_channels.md",
 	"admin.comm_log":       "content/admin_comm_log.md",
 	"admin.activity_sinks": "content/admin_activity_sinks.md",
+	"admin.portals":        "content/admin_portals.md",
 	"task_detail":          "content/task_detail.md",
 	"layout.list":          "content/layout_list.md",
 	"layout.grid":          "content/layout_grid.md",
 	"layout.kanban":        "content/layout_kanban.md",
 	"layout.pair":          "content/layout_pair.md",
+	"layout.pages":         "content/layout_pages.md",
 }
 
 // GetTopicInput is the wire shape for help.get_topic.

@@ -36,6 +36,10 @@ const schemaAdvisoryLock int64 = 0x6b697470 // "kitp"
 //     lands on existing installs on the next boot. They are NOT for structural
 //     schema (tables/columns/indexes/functions), which stays declarative and
 //     reapplies via the idempotent DDL.
+//   - Feature bundles (db/schema/bundles/*.hcsv) are re-materialised into
+//     their hidden source projects whenever a bundle file's rendered SQL
+//     changes, and presets are upserted — see applyBundles. Bundle content is
+//     code-owned like DDL, so it needs no forward migration.
 //   - Demo fixtures (opts.Demo) carry their own DO-block guard and are applied
 //     after the seed gate.
 //
@@ -137,6 +141,14 @@ func ApplySchema(ctx context.Context, pool *pgxpool.Pool, opts hcsv.GenerateOpti
 		); err != nil {
 			return fmt.Errorf("record migration %s: %w", m.id, err)
 		}
+	}
+
+	// Bundle tier: (re)materialise each feature bundle's hidden source project
+	// whose file changed, and upsert the presets (see applyBundles). After the
+	// migrations, so the card_types / attribute_defs a bundle references exist
+	// on an upgraded install; before the demo, which may apply bundles.
+	if err := applyBundles(ctx, tx, parts.Bundles); err != nil {
+		return fmt.Errorf("apply bundles: %w", err)
 	}
 
 	// Demo fixtures self-guard (skipped once a real project exists); apply when
@@ -748,6 +760,100 @@ BEGIN
   FROM attribute_def ad
   WHERE ad.name = 'approval_comm'
   ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;
+END $$;`,
+	},
+	{
+		// Feature bundles + publishing. The seed.hcsv rows reach fresh
+		// installs only, so add them here too:
+		//   1. the page card_type (parent: project, self-parenting so a
+		//      page's children are its section) and the global portal
+		//      card_type,
+		//   2. bundle_key (marks a bundle's hidden source project),
+		//      publish_status (a page's flow-bound status), publishes_to (the
+		//      portals a status publishes to), portal_host / portal_root /
+		//      portal_public, and their edges (pages reuse title,
+		//      description, slug and sort_order),
+		//   3. grants: worker / manager write pages, a manager deletes them,
+		//      admins get card.* on page and portal.
+		// The bundle / publication / portal tables are declarative DDL, and
+		// the bundles themselves are materialised by ApplySchema's bundle
+		// tier — neither needs a migration. Idempotent — ON CONFLICT DO
+		// NOTHING makes it a no-op on a fresh DB whose seed has every row.
+		id: "0015_bundles_portals",
+		sql: `
+DO $$
+DECLARE
+  _project_ct bigint := (SELECT id FROM card_type WHERE name = 'project');
+  _status_ct bigint := (SELECT id FROM card_type WHERE name = 'status');
+  _page_ct bigint;
+  _portal_ct bigint;
+BEGIN
+  IF _project_ct IS NULL OR _status_ct IS NULL THEN
+    RETURN;
+  END IF;
+
+  INSERT INTO card_type (name, parent_card_type_id, allow_self_parent, is_built_in, uses_phase)
+  VALUES ('page', _project_ct, true, true, false),
+         ('portal', NULL, false, true, false)
+  ON CONFLICT (name) DO NOTHING;
+  _page_ct := (SELECT id FROM card_type WHERE name = 'page');
+  _portal_ct := (SELECT id FROM card_type WHERE name = 'portal');
+
+  INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+  VALUES ('bundle_key',     'text',       NULL,       true, false),
+         ('publish_status', 'card_ref',   _status_ct, true, false),
+         ('publishes_to',   'card_ref[]', _portal_ct, true, false),
+         ('portal_host',    'text',       NULL,       true, false),
+         ('portal_root',    'card_ref',   _page_ct,   true, false),
+         ('portal_public',  'bool',       NULL,       true, false)
+  ON CONFLICT (name) DO NOTHING;
+
+  INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+  SELECT ct.id, ad.id, v.req, v.ord
+  FROM (VALUES
+    ('project', 'bundle_key',     false, 7),
+    ('status',  'publishes_to',   false, 2),
+    ('page',    'title',          true,  0),
+    ('page',    'publish_status', true,  1),
+    ('page',    'slug',           false, 2),
+    ('page',    'sort_order',     false, 3),
+    ('page',    'description',    false, 4),
+    ('portal',  'title',          true,  0),
+    ('portal',  'portal_root',    false, 1),
+    ('portal',  'portal_host',    false, 2),
+    ('portal',  'portal_public',  false, 3)
+  ) AS v(ct, attr, req, ord)
+  JOIN card_type ct ON ct.name = v.ct
+  JOIN attribute_def ad ON ad.name = v.attr
+  ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;
+
+  INSERT INTO role_grant (role_id, card_type_id, process_id)
+  SELECT r.id, ct.id, p.id
+  FROM (VALUES
+    ('worker',  'page',   'card.create'),
+    ('worker',  'page',   'card.update'),
+    ('worker',  'page',   'comment.post'),
+    ('worker',  'page',   'user_card_sort.set'),
+    ('manager', 'page',   'card.create'),
+    ('manager', 'page',   'card.update'),
+    ('manager', 'page',   'comment.post'),
+    ('manager', 'page',   'user_card_sort.set'),
+    ('manager', 'page',   'card.delete'),
+    ('admin',   'page',   'card.create'),
+    ('admin',   'page',   'card.update'),
+    ('admin',   'page',   'card.delete'),
+    ('admin',   'page',   'comment.post'),
+    ('admin',   'page',   'user_card_sort.set'),
+    ('admin',   'portal', 'card.create'),
+    ('admin',   'portal', 'card.update'),
+    ('admin',   'portal', 'card.delete'),
+    ('admin',   'portal', 'comment.post'),
+    ('admin',   'portal', 'user_card_sort.set')
+  ) AS v(role, ct, proc)
+  JOIN role r ON r.name = v.role
+  JOIN card_type ct ON ct.name = v.ct
+  JOIN process p ON p.name = v.proc
+  ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
 END $$;`,
 	},
 }

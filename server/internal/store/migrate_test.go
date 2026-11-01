@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -36,29 +37,44 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// = 22. (The "Comms attached" filter card was dropped — it is
 		// meaningless on the comm-listing comms screen; see migration
 		// 0006_drop_comms_attached_filter.)
-		{`SELECT count(*) FROM card`, 22},
+		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 22},
+		// Feature bundle sources (db/schema/bundles/, materialised by the
+		// bundle tier): tracker 17 (project + 6 statuses + 6 screens + the
+		// Inbox view + 3 snippets) + conversations 6 (project + 4 statuses
+		// + Comms screen) + publishing 8 (project + 4 statuses + Pages
+		// screen + Home and Getting started pages) = 31.
+		{bundleOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 31},
 		{`SELECT count(*) FROM user_role`, 3}, // admin + manager + worker on user 1
 		{`SELECT count(*) FROM role`, 5},      // viewer, commenter, worker, manager, admin (no wildcard 'system')
 		// 14 built-in card_types + the predicate_snippet card_type
 		// introduced for named filters + activity_subscription + link +
-		// approval = 18.
-		{`SELECT count(*) FROM card_type`, 18},
+		// approval + page + portal = 20.
+		{`SELECT count(*) FROM card_type`, 20},
 		// +subscriber, +rollup_minutes (personal notifications),
 		// +link_url / link_kind / link_state (task links),
 		// +approval_from / approval_to / approval_action / approvers /
 		// approval_note (task approvals), +approval_comm (a request's
-		// email thread).
-		{`SELECT count(*) FROM attribute_def`, 75},
+		// email thread), +bundle_key / publish_status / publishes_to /
+		// portal_host / portal_root / portal_public (bundles + publishing).
+		{`SELECT count(*) FROM attribute_def`, 81},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
-		// +7 on activity_subscription, +4 on link, +7 on approval.
-		{`SELECT count(*) FROM edge`, 115},
+		// +7 on activity_subscription, +4 on link, +7 on approval,
+		// +bundle_key on project, +publishes_to on status, +5 on page,
+		// +4 on portal.
+		{`SELECT count(*) FROM edge`, 126},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
-		{`SELECT count(*) FROM flow`, 2},
-		{`SELECT count(*) FROM flow_step`, 15},
+		{seedOnly(`SELECT count(*) FROM flow f WHERE %s`, "f.scope_card_id"), 2},
+		{seedOnly(`SELECT count(*) FROM flow_step fs JOIN flow f ON f.id = fs.flow_id WHERE %s`, "f.scope_card_id"), 15},
+		// Bundle flows: tracker's task flow (12 steps), conversations'
+		// comm flow (7), publishing's page flow (11).
+		{bundleOnly(`SELECT count(*) FROM flow f WHERE %s`, "f.scope_card_id"), 3},
+		{bundleOnly(`SELECT count(*) FROM flow_step fs JOIN flow f ON f.id = fs.flow_id WHERE %s`, "f.scope_card_id"), 30},
+		{`SELECT count(*) FROM bundle WHERE kind = 'feature'`, 3},
+		{`SELECT count(*) FROM bundle WHERE kind = 'preset'`, 3},
 	}
 	for _, c := range cases {
 		var got int64
@@ -882,16 +898,16 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		// migration 0006_drop_comms_attached_filter)
 		// + 9 test_demo cards (2 persons + 1 project + 1 milestone
 		// + 1 status + 2 tasks + 1 screen + 1 filter) = 30.
-		{`SELECT count(*) FROM card`, 30},
+		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM role`, 5},
-		{`SELECT count(*) FROM card_type`, 18},
-		{`SELECT count(*) FROM attribute_def`, 75},
-		{`SELECT count(*) FROM edge`, 115},
+		{`SELECT count(*) FROM card_type`, 20},
+		{`SELECT count(*) FROM attribute_def`, 81},
+		{`SELECT count(*) FROM edge`, 126},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
-		{`SELECT count(*) FROM flow`, 2},
-		{`SELECT count(*) FROM flow_step`, 15},
+		{seedOnly(`SELECT count(*) FROM flow f WHERE %s`, "f.scope_card_id"), 2},
+		{seedOnly(`SELECT count(*) FROM flow_step fs JOIN flow f ON f.id = fs.flow_id WHERE %s`, "f.scope_card_id"), 15},
 	}
 	for _, c := range cases {
 		var got int64
@@ -947,13 +963,13 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		query string
 		want  int64
 	}{
-		{`SELECT count(*) FROM card_type`, 18},
+		{`SELECT count(*) FROM card_type`, 20},
 		// 21 seed cards + 9 test_demo cards = 30 (see TestApplySchemaWithTestDemo).
-		{`SELECT count(*) FROM card`, 30},
+		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM user_account`, 2},
 		{`SELECT count(*) FROM role`, 5},
-		{`SELECT count(*) FROM flow`, 2},
-		{`SELECT count(*) FROM flow_step`, 15},
+		{seedOnly(`SELECT count(*) FROM flow f WHERE %s`, "f.scope_card_id"), 2},
+		{seedOnly(`SELECT count(*) FROM flow_step fs JOIN flow f ON f.id = fs.flow_id WHERE %s`, "f.scope_card_id"), 15},
 	}
 	for _, c := range cases {
 		var got int64
@@ -977,14 +993,14 @@ func TestApplySchemaGateSkipsReseed(t *testing.T) {
 	if err := store.ApplySchema(ctx, pool, opts); err != nil {
 		t.Fatalf("first apply: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM flow_step WHERE label='Accept'`); err != nil {
+	if _, err := pool.Exec(ctx, seedOnly(`DELETE FROM flow_step fs USING flow f WHERE f.id = fs.flow_id AND fs.label='Accept' AND %s`, "f.scope_card_id")); err != nil {
 		t.Fatalf("delete seed row: %v", err)
 	}
 	if err := store.ApplySchema(ctx, pool, opts); err != nil {
 		t.Fatalf("second apply: %v", err)
 	}
 	var steps, baselines int64
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM flow_step`).Scan(&steps); err != nil {
+	if err := pool.QueryRow(ctx, seedOnly(`SELECT count(*) FROM flow_step fs JOIN flow f ON f.id = fs.flow_id WHERE %s`, "f.scope_card_id")).Scan(&steps); err != nil {
 		t.Fatal(err)
 	}
 	if steps != 14 {
@@ -1041,7 +1057,7 @@ func TestApplySchemaAdoptsPreLedgerDB(t *testing.T) {
 	if baselines != 1 {
 		t.Errorf("baseline rows after adoption: got %d, want 1", baselines)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM flow_step`).Scan(&steps); err != nil {
+	if err := pool.QueryRow(ctx, seedOnly(`SELECT count(*) FROM flow_step fs JOIN flow f ON f.id = fs.flow_id WHERE %s`, "f.scope_card_id")).Scan(&steps); err != nil {
 		t.Fatal(err)
 	}
 	if steps != 15 {
@@ -1141,4 +1157,21 @@ func TestForwardMigration0008ValueTypeId(t *testing.T) {
 	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
 		t.Fatalf("third apply (idempotent): %v", err)
 	}
+}
+
+// inBundleSource is a SQL predicate: the card expr lies under a feature
+// bundle's hidden source project.
+func inBundleSource(cardExpr string) string {
+	return "COALESCE(card_enclosing_project(" + cardExpr + "), 0) IN (SELECT source_project_id FROM bundle WHERE source_project_id IS NOT NULL)"
+}
+
+// seedOnly / bundleOnly split a count between the install seed and the
+// bundle tier's source projects, so a bundle edit doesn't move the seed's
+// stable counts (and vice versa).
+func seedOnly(query, cardExpr string) string {
+	return fmt.Sprintf(query, "NOT "+inBundleSource(cardExpr))
+}
+
+func bundleOnly(query, cardExpr string) string {
+	return fmt.Sprintf(query, inBundleSource(cardExpr))
 }

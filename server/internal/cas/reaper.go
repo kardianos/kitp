@@ -77,11 +77,12 @@ func DefaultFileConsumers() []ConsumerColumn {
 }
 
 // DefaultChunkConsumers returns the consumer-column list for cas_blob
-// references. file_chunk is the only consumer today; future per-chunk-
-// uploads-without-a-file could add more.
+// references: file_chunk (attachment bytes) and portal_build_file (the
+// files of a portal build — kept until the builder prunes the build).
 func DefaultChunkConsumers() []ConsumerColumn {
 	return []ConsumerColumn{
 		{Table: "file_chunk", Column: "cas_address"},
+		{Table: "portal_build_file", Column: "cas_address"},
 	}
 }
 

@@ -29,6 +29,13 @@ runtime deps).
   URL). A Gerrit plugin (`integrations/gerrit`) links each change to the
   tasks its commit message names and keeps the link state in step with the
   review. See `docs/links.md`.
+- Feature bundles and presets: start a project as an issue tracker,
+  customer care or content project, and add features to it later
+  (`db/schema/bundles/`).
+- Portals: pages moved through a publish flow and published as static
+  sites — a status names the portals (e.g. QA, PROD) a page goes to.
+  Served by host name on a separate listener, previewed in the app. See
+  `docs/BUNDLES_AND_PORTALS.md`.
 - Background job scheduler with an admin screen (list + run-now).
 - MCP server for agent access over stdio.
 
@@ -115,6 +122,15 @@ client, or set it for a confidential client (recommended — see
 | KITP_SESSION_ABSOLUTE_DAYS | 45 | Hard cap from login; re-auth required after this regardless of activity. Also the cookie Max-Age. |
 | KITP_SESSION_TOUCH_SECONDS | 180 | How often buffered last-seen touches flush to the DB. |
 | KITP_INSECURE_COOKIE | 0 | 1 drops the Secure flag so the cookie works over plain http in dev. |
+
+### Portals (published sites)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| KITP_PORTAL_ADDR | (unset) | Listen address of the public portal listener (e.g. `:18081`). It serves only portals marked public, chosen by the request's `Host` (the portal's host name), and mounts no `/api` and no session. Unset = no public listener; portals still preview in the app. |
+| KITP_PORTAL_BUILD_TICK_SEC | 5 | How often the portal.build job renders portals whose published pages or settings changed. |
+
+See `docs/BUNDLES_AND_PORTALS.md`.
 
 ### Email comm channels
 
