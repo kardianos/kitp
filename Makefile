@@ -25,10 +25,20 @@ DEMO ?= -demo
 IMAGE ?= ghcr.io/kardianos/kitp
 # Short commit the image is tagged with (:sha-<commit>), alongside :latest.
 GIT_SHA := $(shell git -C $(REPO_ROOT) rev-parse --short HEAD 2>/dev/null)
+# Tag series. master builds the release series (:latest + :sha-<commit>).
+# Any other branch builds its own series (:<branch>-latest +
+# :<branch>-sha-<commit>), so a branch image can never move :latest or land
+# among the release sha- tags a deploy pins. Override with SERIES=<name>
+# (SERIES= on master is the release series; any value is a prefix).
+GIT_BRANCH := $(shell git -C $(REPO_ROOT) rev-parse --abbrev-ref HEAD 2>/dev/null)
+SERIES ?= $(if $(filter master,$(GIT_BRANCH)),,$(subst /,-,$(GIT_BRANCH)))
+TAG_PREFIX := $(if $(SERIES),$(SERIES)-,)
+TAG_LATEST := $(IMAGE):$(TAG_PREFIX)latest
+TAG_SHA := $(IMAGE):$(TAG_PREFIX)sha-$(GIT_SHA)
 
 .PHONY: up down db-up db-reset db-reset-clean schema-gen \
         test test-bench run demo lint web web-dev \
-        container container-build gerrit-plugin
+        container container-build container-tags gerrit-plugin
 
 up: db-up
 	@echo "kitp dev stack up; run 'make run' to start kitpd"
@@ -129,23 +139,31 @@ gerrit-plugin:
 # ---------- container image (GHCR) ------------------------------------------
 
 # Build the self-contained image (esbuild web bundle + static Go binary baked
-# with db/schema; see Dockerfile) tagged :latest AND :sha-<commit>. No push —
-# safe on a dirty tree; handy for a local smoke run:
-#   make container-build && docker run --rm -p 8080:8080 -e ... $(IMAGE):latest
+# with db/schema; see Dockerfile) tagged with the branch's series (see SERIES
+# above): :latest AND :sha-<commit> on master, :<branch>-latest AND
+# :<branch>-sha-<commit> elsewhere. No push — safe on a dirty tree; handy for
+# a local smoke run:
+#   make container-build && docker run --rm -p 8080:8080 -e ... $(TAG_LATEST)
 container-build:
-	docker build -t $(IMAGE):latest -t $(IMAGE):sha-$(GIT_SHA) $(REPO_ROOT)
+	docker build -t $(TAG_LATEST) -t $(TAG_SHA) $(REPO_ROOT)
 
-# Build, tag (:latest + :sha-<commit>), and push BOTH tags to the registry.
-# Refuses a dirty working tree so :sha-$(GIT_SHA) actually contains what ships
-# (commit/stash first, or override with `ALLOW_DIRTY=1 make container`).
-# Requires a prior `docker login` to the registry host (ghcr.io by default).
+# Build, tag (the series' latest + sha tags), and push BOTH tags to the
+# registry. Refuses a dirty working tree so the sha tag actually contains
+# what ships (commit/stash first, or override with `ALLOW_DIRTY=1 make
+# container`). Requires a prior `docker login` to the registry host (ghcr.io
+# by default).
 container:
 	@if [ -z "$(ALLOW_DIRTY)" ] && [ -n "$$(git -C $(REPO_ROOT) status --porcelain)" ]; then \
-		echo "make container: working tree is dirty — :sha-$(GIT_SHA) would not match the pushed image."; \
+		echo "make container: working tree is dirty — $(TAG_SHA) would not match the pushed image."; \
 		echo "  commit/stash first, or: ALLOW_DIRTY=1 make container   (or 'make container-build' to build without pushing)"; \
 		exit 1; \
 	fi
-	docker build -t $(IMAGE):latest -t $(IMAGE):sha-$(GIT_SHA) $(REPO_ROOT)
-	docker push $(IMAGE):sha-$(GIT_SHA)
-	docker push $(IMAGE):latest
-	@echo "pushed $(IMAGE):sha-$(GIT_SHA) and $(IMAGE):latest"
+	docker build -t $(TAG_LATEST) -t $(TAG_SHA) $(REPO_ROOT)
+	docker push $(TAG_SHA)
+	docker push $(TAG_LATEST)
+	@echo "pushed $(TAG_SHA) and $(TAG_LATEST)"
+
+# Print the tags `make container` would push from this checkout.
+container-tags:
+	@echo $(TAG_SHA)
+	@echo $(TAG_LATEST)
