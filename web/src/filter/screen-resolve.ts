@@ -105,6 +105,8 @@ export function viewActionsForLayout(layout: string): Array<{ type: string }> {
       return [{ type: 'NewTaskButton' }, { type: 'InboxViewToggles' }];
     case 'grid':
       return [{ type: 'NewTaskButton' }, { type: 'GridColumns' }];
+    case 'pages':
+      return [{ type: 'NewPageButton' }];
     default:
       return [];
   }
@@ -151,6 +153,22 @@ export function bodyConfigForLayout(layout: string): Record<string, unknown> {
         flagLabel: 'Needs ACK',
         openTarget: 'parent',
         order: [{ field: 'created_at', direction: 'DESC' }],
+      };
+    case 'pages':
+      // Publishable pages (card_type `page`, flow-derived from the screen's
+      // publish_status flow): the publish_status badge + title + a chip naming
+      // the parent page (a page's children are its section), in site order.
+      // A row opens the PAGE detail route, not the task one.
+      return {
+        presentation: 'compact',
+        parentChipCardType: 'page',
+        parentChipKnownOnly: true,
+        openRoute: 'page',
+        order: [
+          { field: 'attributes.sort_order', direction: 'ASC' },
+          { field: 'created_at', direction: 'ASC' },
+        ],
+        columns: [{ attr: 'slug', kind: 'text' }],
       };
     default:
       return {};

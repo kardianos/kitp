@@ -57,7 +57,16 @@ import { SPEC as KANBAN_SPEC } from '../kanban/specs.js';
 import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
 import { navigate, projectUrl } from '../shell/router.js';
 import { PROJECT_SPEC } from './specs.js';
-import { clampIndex, projectDescription, projectTitle, TEMPLATE_INCLUSION_LEAF } from './project-helpers.js';
+import {
+  BUNDLE_SOURCE_EXCLUSION_LEAF,
+  clampIndex,
+  composeChoice,
+  PRESET_CHOICE_PREFIX,
+  projectDescription,
+  projectTitle,
+  TEMPLATE_INCLUSION_LEAF,
+} from './project-helpers.js';
+import { BUNDLE_SPEC, type BundleListOutput } from '../bundles/specs.js';
 
 import { icon } from '../ui/icons.js';
 import { captionedField } from '../ui/captioned-field.js';
@@ -81,6 +90,9 @@ export interface ProjectListConfig extends BaseControlConfig {
   /** Tree path the "show templates" toggle lives at.
    *  Default 'projects.showTemplates'. */
   showTemplatesPath?: string;
+  /** Tree path the bundle catalog (presets + features, from bundle.list)
+   *  lives at. Default 'projects.bundles'. */
+  bundlesPath?: string;
 }
 
 declare module '../core/control.js' {
@@ -127,6 +139,9 @@ export class ProjectList extends Control<ProjectListConfig> {
   private get showTemplatesPath(): string[] {
     return (this.config.showTemplatesPath ?? 'projects.showTemplates').split('.');
   }
+  private get bundlesPath(): string[] {
+    return (this.config.bundlesPath ?? 'projects.bundles').split('.');
+  }
 
   /**
    * The rows to show: the real projects at `projectsPath` (template-free, from
@@ -168,10 +183,26 @@ export class ProjectList extends Control<ProjectListConfig> {
       when: 'mount',
       input: {
         cardTypeName: { lit: 'project' },
-        where: { lit: [TEMPLATE_INCLUSION_LEAF] },
+        // A feature bundle's hidden source project is a template too
+        // (is_template keeps it out of project lists); it's applied through
+        // presets / features, never copied as a template.
+        where: { lit: [TEMPLATE_INCLUSION_LEAF, BUNDLE_SOURCE_EXCLUSION_LEAF] },
       },
       result: { method: 'landTemplates' },
       onError: 'self',
+    },
+    /**
+     * The bundle catalog (bundle.list, no project): the presets the dialog's
+     * "Start from" offers and the extra features a preset can take. An older
+     * server without bundles just leaves the presets out.
+     */
+    {
+      name: 'bundles',
+      spec: BUNDLE_SPEC.list,
+      when: 'mount',
+      input: {},
+      result: { method: 'landBundles' },
+      onError: { method: 'bundlesUnavailable' },
     },
   ];
 
@@ -291,6 +322,25 @@ export class ProjectList extends Control<ProjectListConfig> {
       result: { method: 'landTemplateCreated' },
       onError: 'top',
     },
+    // Create a REAL project from a PRESET (project.compose): the preset's
+    // feature bundles (plus any extra features ticked) are copied in, in order,
+    // instead of one template. Lands like a stamp (new_project_id).
+    {
+      intent: 'composeProject',
+      spec: BUNDLE_SPEC.compose,
+      input: {
+        name: { payload: 'title' },
+        description: { payload: 'description' },
+        preset: { payload: 'preset' },
+        features: { payload: 'features' },
+      },
+      optimistic: {
+        path: 'shell.projects',
+        patch: (current, payload): ProjectOption[] => appendPending(current, payload, false),
+      },
+      result: { method: 'landStamped' },
+      onError: 'top',
+    },
     // Soft-delete a real project (card.delete). The optimistic patch drops the
     // row from `shell.projects`; on fault the tree transaction auto-restores it.
     {
@@ -338,6 +388,13 @@ export class ProjectList extends Control<ProjectListConfig> {
     this.handler('landTemplateCreated', (out) =>
       this.promoteTemp(this.templatesPath, ((out ?? {}) as { id?: bigint }).id),
     );
+    this.handler('landBundles', (out) => {
+      const o = (out ?? {}) as Partial<BundleListOutput>;
+      this.ctx.tree.at(this.bundlesPath).set({ presets: o.presets ?? [], features: o.features ?? [] });
+    });
+    this.handler('bundlesUnavailable', () => {
+      this.ctx.tree.at(this.bundlesPath).set({ presets: [], features: [] });
+    });
     this.handler('landTemplateStamped', (out) =>
       this.promoteTemp(this.templatesPath, ((out ?? {}) as { newProjectId?: bigint }).newProjectId),
     );
@@ -854,33 +911,111 @@ export class ProjectList extends Control<ProjectListConfig> {
     copyLabel.className = 'qe-dialog__field';
     const copySpan = document.createElement('span');
     copySpan.className = 'qe-dialog__label';
-    copySpan.textContent = 'Copy from template';
+    copySpan.textContent = 'Start from';
     const copySel = document.createElement('select');
     copySel.className = 'qe-dialog__input';
     copySel.dataset.qeTemplate = '';
     copyLabel.append(copySpan, copySel);
 
-    tmplRegion.append(isTmplLabel, copyLabel);
+    // A chosen preset's description + the extra features it can take (the
+    // catalog's features the preset doesn't already include).
+    const presetDoc = document.createElement('div');
+    presetDoc.className = 'qe-dialog__preset-doc muted';
+    presetDoc.dataset.qePresetDoc = '';
+    presetDoc.style.display = 'none';
+    const featuresBox = document.createElement('div');
+    featuresBox.className = 'qe-dialog__features';
+    featuresBox.dataset.qeFeatures = '';
+    featuresBox.style.display = 'none';
 
-    // (Re)build the template <select>: a context-sensitive first option
-    // (real → "Standard (default)"; template → "(blank)") then one option per
-    // loaded template. Preserves the current selection when still valid.
+    tmplRegion.append(isTmplLabel, copyLabel, presetDoc, featuresBox);
+
+    const catalog = (): BundleListOutput =>
+      (this.ctx.tree.at(this.bundlesPath).peek<BundleListOutput>() ?? { presets: [], features: [] }) as BundleListOutput;
+
+    // (Re)build the "Start from" <select>: a context-sensitive first option
+    // (real → "Standard (default)"; template → "(blank)"), then — for a real
+    // project — the presets, then the loaded templates. Preserves the current
+    // selection when still valid.
     const rebuildTemplateOptions = (): void => {
       const tmpls = (this.ctx.tree.at(this.templatesPath).peek<ProjectOption[]>() ?? []) as ProjectOption[];
       const cur = copySel.value;
       const first = document.createElement('option');
       first.value = '';
       first.textContent = isTmpl.checked ? '(blank — no copy)' : 'Standard template (default)';
-      const opts: HTMLOptionElement[] = [first];
-      for (const t of tmpls) {
-        const o = document.createElement('option');
-        o.value = t.id;
-        o.textContent = t.label;
-        opts.push(o);
+      const opts: HTMLElement[] = [first];
+      const presets = isTmpl.checked ? [] : catalog().presets;
+      if (presets.length > 0) {
+        const group = document.createElement('optgroup');
+        group.label = 'Presets';
+        for (const p of presets) {
+          const o = document.createElement('option');
+          o.value = PRESET_CHOICE_PREFIX + p.key;
+          o.textContent = p.title;
+          group.append(o);
+        }
+        opts.push(group);
+      }
+      if (tmpls.length > 0) {
+        const group = document.createElement('optgroup');
+        group.label = 'Templates';
+        for (const t of tmpls) {
+          const o = document.createElement('option');
+          o.value = t.id;
+          o.textContent = t.label;
+          group.append(o);
+        }
+        opts.push(group);
       }
       copySel.replaceChildren(...opts);
-      copySel.value = cur;
+      const stillValid =
+        cur === '' ||
+        tmpls.some((t) => t.id === cur) ||
+        presets.some((p) => PRESET_CHOICE_PREFIX + p.key === cur);
+      copySel.value = stillValid ? cur : '';
+      rebuildFeatures();
     };
+
+    // The preset's doc + one checkbox per feature it doesn't include.
+    const rebuildFeatures = (): void => {
+      const choice = composeChoice(copySel.value);
+      const preset = choice === null ? undefined : catalog().presets.find((p) => p.key === choice);
+      if (preset === undefined) {
+        presetDoc.style.display = 'none';
+        featuresBox.style.display = 'none';
+        featuresBox.replaceChildren();
+        return;
+      }
+      presetDoc.textContent = preset.doc;
+      presetDoc.style.display = preset.doc ? '' : 'none';
+      const extras = catalog().features.filter((f) => !preset.features.includes(f.key));
+      const rows: HTMLElement[] = [];
+      if (extras.length > 0) {
+        const cap = document.createElement('div');
+        cap.className = 'qe-dialog__label';
+        cap.textContent = 'Also add';
+        rows.push(cap);
+      }
+      for (const f of extras) {
+        const lab = document.createElement('label');
+        lab.className = 'qe-dialog__checkbox';
+        lab.title = f.doc;
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = f.key;
+        cb.dataset.qeFeature = f.key;
+        const span = document.createElement('span');
+        span.textContent = f.title;
+        lab.append(cb, span);
+        rows.push(lab);
+      }
+      featuresBox.replaceChildren(...rows);
+      featuresBox.style.display = rows.length > 0 ? '' : 'none';
+    };
+    const chosenFeatures = (): string[] =>
+      Array.from(featuresBox.querySelectorAll<HTMLInputElement>('[data-qe-feature]'))
+        .filter((el) => el.checked)
+        .map((el) => el.value);
 
     const hint = document.createElement('div');
     hint.className = 'qe-dialog__hint muted';
@@ -921,9 +1056,11 @@ export class ProjectList extends Control<ProjectListConfig> {
     // checkbox label. Reads the templates leaf reactively; one-way (DOM only).
     this.effect(() => {
       this.ctx.tree.at(this.templatesPath).get();
+      this.ctx.tree.at(this.bundlesPath).get();
       rebuildTemplateOptions();
     }, 'projects.dialogTemplates');
     this.listen(isTmpl, 'change', () => rebuildTemplateOptions());
+    this.listen(copySel, 'change', () => rebuildFeatures());
 
     /* --- mode state --- */
     let mode: 'create' | 'edit' = 'create';
@@ -990,6 +1127,7 @@ export class ProjectList extends Control<ProjectListConfig> {
         isTmpl.checked = false;
         rebuildTemplateOptions();
         copySel.value = '';
+        rebuildFeatures();
         showDesc(false);
         applyMode();
         root.style.display = '';
@@ -1029,13 +1167,14 @@ export class ProjectList extends Control<ProjectListConfig> {
         focusEl(titleInput);
         return;
       }
-      this.fireCreate(title, descEditor.getValue().trim(), isTmpl.checked, copySel.value);
+      this.fireCreate(title, descEditor.getValue().trim(), isTmpl.checked, copySel.value, chosenFeatures());
       if (keepOpen) {
         titleInput.value = '';
         descEditor.setValue('', true);
         isTmpl.checked = false;
         rebuildTemplateOptions();
         copySel.value = '';
+        rebuildFeatures();
         showDesc(false);
         focusEl(titleInput);
       } else {
@@ -1126,10 +1265,25 @@ export class ProjectList extends Control<ProjectListConfig> {
     description: string,
     asTemplate: boolean,
     templateId: string,
+    extraFeatures: string[] = [],
   ): void {
     const optimisticId = nextOptimisticId();
     this.pendingOptimisticId = optimisticId;
     const hasTemplate = /^-?\d+$/.test(templateId) && BigInt(templateId) > 0n;
+    const preset = composeChoice(templateId);
+
+    // A PRESET → project.compose (real projects only; the select offers no
+    // presets while "Create as template" is ticked).
+    if (preset !== null && !asTemplate) {
+      this.intent('composeProject', {
+        title,
+        description,
+        optimisticId,
+        preset,
+        features: extraFeatures,
+      });
+      return;
+    }
 
     if (asTemplate) {
       // Creating a TEMPLATE: copy a chosen template, or a blank one.

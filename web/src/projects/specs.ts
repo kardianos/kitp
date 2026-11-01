@@ -20,6 +20,7 @@
  */
 
 import type { Api } from '../core/api.js';
+import { registerBundleSpecs } from '../bundles/specs.js';
 
 /* -------------------------------------------------------------------------- */
 /* Spec key (addressed by the declarative binding tables).                     */
@@ -103,6 +104,11 @@ function asId(v: unknown): bigint {
  * duplicate key, matching the kanban specs' contract).
  */
 export function registerProjectSpecs(api: Api): void {
+  // The new-project dialog's presets (bundle.list / project.compose) and the
+  // properties panel's features ride the bundle specs; register them here so
+  // every host of the project surfaces has them.
+  registerBundleSpecs(api);
+
   api.define<CardInsertInput, CardInsertOutput>({
     endpoint: 'card',
     action: 'insert',

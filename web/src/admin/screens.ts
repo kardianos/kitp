@@ -43,6 +43,7 @@ import type { PeopleManagerConfig } from './people-manager.js';
 import type { NestedEditorConfig } from './nested-editor.js';
 import type { SchedulerJobsConfig } from './scheduler-jobs.js';
 import { COMM_CHANNEL_FORM } from './comm-channel-form.js';
+import { PORTAL_FORM } from './portal-form.js';
 import { ACTIVITY_SINK_FORM } from './activity-sink-form.js';
 import { WORKFLOW_FORM } from './workflow-form.js';
 
@@ -240,6 +241,8 @@ const SCREEN_LAYOUT_OPTIONS = [
   { value: 'kanban', label: 'Kanban' },
   { value: 'grid', label: 'Grid' },
   { value: 'list', label: 'List' },
+  // Publishable pages (the publishing bundle's Pages screen).
+  { value: 'pages', label: 'Pages' },
   { value: 'calendar', label: 'Calendar' },
   { value: 'timeline', label: 'Timeline' },
   { value: 'detail', label: 'Detail' },
@@ -693,6 +696,39 @@ export const COMM_CHANNELS_SCREEN: MasterDetailConfig = {
 };
 
 /* -------------------------------------------------------------------------- */
+/* Portals = portal.list (global portal cards; published sites).               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Portals are GLOBAL (one portal can publish a page tree from any project), so
+ * the list fires on mount with no project scope. The generic RecordForm
+ * (PORTAL_FORM) owns the whole detail: title, root page, public host, the
+ * public flag, the statuses that publish here and the build state, plus
+ * Rebuild / Preview and save + list refresh.
+ */
+export const PORTALS_SCREEN: MasterDetailConfig = {
+  type: 'MasterDetail',
+  title: 'Portals',
+  scopeKey: 'admin.portals',
+  list: {
+    spec: 'portal.list',
+    rowHeight: 56,
+    search: { field: 'title', placeholder: 'Search portals…' },
+    row: {
+      title: 'title',
+      subtitle: 'rootTitle',
+      badge: { field: 'public', labels: { true: 'Public', false: 'Preview only' } },
+    },
+  },
+  detail: {
+    titleField: 'title',
+    empty: 'Select a portal, or add one. A portal publishes a page tree as a site.',
+    fields: [],
+    form: PORTAL_FORM,
+  },
+};
+
+/* -------------------------------------------------------------------------- */
 /* Activity Sinks = activity_sink.list (NON-CARD, project-scoped, RO).         */
 /* -------------------------------------------------------------------------- */
 
@@ -788,6 +824,7 @@ export type AdminView =
   | 'comm_channels'
   | 'activity_sinks'
   | 'comm_log'
+  | 'portals'
   | 'jobs';
 
 /** The data-driven "Enums" screen — NOT a MasterDetail (one screen spans many
@@ -831,6 +868,7 @@ const ADMIN_SCREENS: Record<AdminView, AdminScreenConfig> = {
   comm_channels: COMM_CHANNELS_SCREEN,
   activity_sinks: ACTIVITY_SINKS_SCREEN,
   comm_log: COMM_LOG_SCREEN,
+  portals: PORTALS_SCREEN,
   jobs: JOBS_SCREEN,
 };
 
@@ -870,6 +908,8 @@ export const ADMIN_SECTION: Record<AdminView, AdminSection> = {
   comm_channels: 'project',
   activity_sinks: 'project',
   comm_log: 'project',
+  // Global: a portal publishes a page tree from any project.
+  portals: 'workspace',
   // Workspace-wide: the jobs are global process state, not project-scoped.
   jobs: 'workspace',
 };

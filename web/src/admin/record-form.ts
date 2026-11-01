@@ -107,6 +107,21 @@ export interface RecordFormDelete {
   confirmText?: string;
 }
 
+/**
+ * An extra action on an existing record, rendered beside Save: either a
+ * dispatcher call (`spec` + `toInput`, then the list reloads so status the
+ * call changed shows) or a link opened in a new tab (`href`). Data, not
+ * per-screen code — e.g. a portal's Rebuild and Preview.
+ */
+export interface RecordFormAction {
+  label: string;
+  /** Fire this spec with `toInput(draft)`; the list reloads on success. */
+  spec?: string;
+  toInput?: (draft: Record<string, unknown>) => Record<string, unknown>;
+  /** Open this URL in a new tab instead; null hides the action. */
+  href?: (draft: Record<string, unknown>) => string | null;
+}
+
 /** The screen-facing config (parentScope + scopeKey are injected by MasterDetail). */
 export interface RecordFormScreenConfig {
   title?: string;
@@ -137,6 +152,8 @@ export interface RecordFormScreenConfig {
   saveButtonLabel?: string;
   /** Optional inline-confirmed delete for an existing record. */
   delete?: RecordFormDelete;
+  /** Extra actions on an existing record (beside Save). */
+  recordActions?: RecordFormAction[];
   /** Friendly inline text per server fault code (save / delete). */
   faultMessages?: Record<string, string>;
 }
@@ -377,6 +394,12 @@ export class RecordForm extends Control<RecordFormConfig> {
     save.textContent = this.config.saveButtonLabel ?? 'Save';
     this.listen(save, 'click', () => this.save(err));
     actions.append(save);
+    if (!this.creatingNew) {
+      for (const a of this.config.recordActions ?? []) {
+        const el = this.buildAction(a, draft, err);
+        if (el !== null) actions.append(el);
+      }
+    }
     if (this.config.delete && !this.creatingNew) actions.append(this.buildDelete(this.config.delete, err));
     form.append(actions);
 
@@ -637,6 +660,52 @@ export class RecordForm extends Control<RecordFormConfig> {
         },
       },
     );
+  }
+
+  /** One configured extra action: a spec call (then a list reload) or a link. */
+  private buildAction(a: RecordFormAction, draft: Record<string, unknown>, err: HTMLElement): HTMLElement | null {
+    if (a.href !== undefined) {
+      const url = a.href(draft);
+      if (url === null) return null;
+      const link = document.createElement('a');
+      link.className = 'btn record-form__action';
+      link.dataset.recordFormAction = a.label;
+      link.href = url;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = a.label;
+      return link;
+    }
+    if (a.spec === undefined) return null;
+    const spec = a.spec;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn record-form__action';
+    btn.dataset.recordFormAction = a.label;
+    btn.textContent = a.label;
+    this.listen(btn, 'click', () => {
+      btn.disabled = true;
+      err.style.display = 'none';
+      this.ctx.api.callByName(
+        spec,
+        a.toInput !== undefined ? a.toInput(draft) : {},
+        () => {
+          if (!this.isAlive()) return;
+          btn.disabled = false;
+          this.resetAfterWrite();
+          this.reloadList();
+        },
+        {
+          alive: () => this.isAlive(),
+          onErr: (f) => {
+            btn.disabled = false;
+            this.showError(err, faultText(f, this.config.faultMessages));
+            this.setFault(f);
+          },
+        },
+      );
+    });
+    return btn;
   }
 
   /** The Delete button + its inline (non-browser-dialog) confirm. */

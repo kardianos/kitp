@@ -105,6 +105,7 @@ const LAYOUT_TO_CONTROL: Record<string, string> = {
   grid: 'Grid',
   project: 'Project',
   comms: 'CardListBody',
+  pages: 'CardListBody',
 };
 
 /** Layouts that support the swim-lane (2nd) axis. Only the Kanban splits its

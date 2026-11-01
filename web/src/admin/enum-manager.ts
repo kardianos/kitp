@@ -16,7 +16,9 @@
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { ADMIN_SPEC, type AttributeDefListOutput, type CardTypeListOutput } from './specs.js';
 import { SPEC, type SelectWithAttributesOutput } from '../kanban/specs.js';
-import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
+import { asAttrId, type CardWithAttrs } from '../kanban/kanban-helpers.js';
+import { CARD_SEARCH_SPEC } from '../ui/specs.js';
+import type { RefPickerConfig } from '../ui/ref-picker.js';
 import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
 
 import { icon } from '../ui/icons.js';
@@ -35,6 +37,17 @@ declare module '../core/control.js' {
 }
 
 /** One managed enum: a flagged attribute + the card_type whose cards are its values. */
+/** A card_ref attribute bound to a managed value-card type. */
+interface RefAttr {
+  name: string;
+  /** The card_type its values point at. */
+  target: string;
+  multi: boolean;
+}
+
+/** Ref targets that aren't project-scoped (searched install-wide). */
+const GLOBAL_REF_TARGETS = new Set(['person', 'portal']);
+
 interface ManagedEnum {
   /** Section heading (the target card_type, capitalised). */
   label: string;
@@ -113,6 +126,18 @@ export class EnumManager extends Control<EnumManagerConfig> {
   private draggingGroup: string | null = null;
   /** One gliding placeholder per enum section; recreated each paint. */
   private placeholders: DropPlaceholder[] = [];
+  /** Per managed card_type, its card_ref / card_ref[] attributes (from the
+   *  schema) — each gets a picker on every value row, e.g. a status's
+   *  `publishes_to` (the portals a page entering it is published to). */
+  private refAttrsByType: Record<string, RefAttr[]> = {};
+  /** The pickers spawned by the current paint, disposed on the next. */
+  private refPickers: Control[] = [];
+  /** Picker spawns queued while the current paint builds its rows. */
+  private pendingRefSpawns: Array<() => void> = [];
+  /** card_ref labels (stringified id → title) for the pickers' chips, and the
+   *  ids already asked for (so a label miss loads once, not every paint). */
+  private refLabels: Record<string, string> = {};
+  private refLabelsAsked = new Set<string>();
 
   constructor(...args: ConstructorParameters<typeof Control<EnumManagerConfig>>) {
     super(...args);
@@ -201,6 +226,25 @@ export class EnumManager extends Control<EnumManagerConfig> {
         }
         this.requiredTextAttrs = required;
         this.textAttrsByType = textAttrs;
+
+        // Each managed type's card_ref attributes get a per-value picker —
+        // schema-driven, so a status's publishes_to (→ portal) shows up
+        // without naming it here.
+        const refAttrs: Record<string, RefAttr[]> = {};
+        for (const r of rows) {
+          if (r.value_type !== 'card_ref' && r.value_type !== 'card_ref[]') continue;
+          const target = r.target_card_type_name;
+          if (target === undefined || target === '') continue;
+          for (const b of r.bound_to) {
+            if (!managed.has(b.card_type_name)) continue;
+            (refAttrs[b.card_type_name] ??= []).push({
+              name: r.name,
+              target,
+              multi: r.value_type === 'card_ref[]',
+            });
+          }
+        }
+        this.refAttrsByType = refAttrs;
 
         this.reloadAll();
       },
@@ -363,6 +407,8 @@ export class EnumManager extends Control<EnumManagerConfig> {
     // replaced); recreated per section below.
     for (const p of this.placeholders) p.destroy();
     this.placeholders = [];
+    for (const c of this.refPickers) this.destroyChild(c);
+    this.refPickers = [];
     host.replaceChildren();
 
     if (this.projectId() === null) {
@@ -374,7 +420,11 @@ export class EnumManager extends Control<EnumManagerConfig> {
       return;
     }
 
+    this.pendingRefSpawns = [];
     for (const e of this.enums) host.append(this.renderEnum(e));
+    const spawns = this.pendingRefSpawns;
+    this.pendingRefSpawns = [];
+    for (const spawn of spawns) spawn();
 
     // After an add, return focus to that input so the next value can be typed
     // immediately (the add path clears the draft + repaints, dropping focus).
@@ -711,7 +761,7 @@ export class EnumManager extends Control<EnumManagerConfig> {
         if (phaseSel.value === cur) return;
         this.setValuePhase(e, card, phaseSel.value);
       });
-      row.append(reorder, input, phaseSel, remove);
+      row.append(reorder, input, phaseSel, ...this.renderRefPickers(e, card), remove);
     } else if (this.hasColorAttr(e.cardType)) {
       // Color-bearing value types (tag): a small palette picker per value.
       // Writes the `color` text attribute; the chip readers (grid pill, tag
@@ -722,11 +772,94 @@ export class EnumManager extends Control<EnumManagerConfig> {
       this.listen(colorSel, 'change', () => {
         this.setValueColor(card, colorSel.value);
       });
-      row.append(reorder, input, colorSel, remove);
+      row.append(reorder, input, colorSel, ...this.renderRefPickers(e, card), remove);
     } else {
-      row.append(reorder, input, remove);
+      row.append(reorder, input, ...this.renderRefPickers(e, card), remove);
     }
     return row;
+  }
+
+  /**
+   * One picker per card_ref attribute of the value's type (refAttrsByType),
+   * e.g. a status's "Publishes to" portals. Each change writes the attribute
+   * through attribute.update (optimistic on the loaded card). Hosts are
+   * returned for the row; the pickers spawn into them and are disposed on the
+   * next paint.
+   */
+  private renderRefPickers(e: ManagedEnum, card: CardWithAttrs): HTMLElement[] {
+    const attrs = this.refAttrsByType[e.cardType] ?? [];
+    return attrs.map((a) => {
+      const host = document.createElement('span');
+      host.className = 'enum-manager__ref';
+      host.dataset.enumRef = a.name;
+      host.title = humanise(a.name);
+      const raw = card.attributes[a.name];
+      const ids = (Array.isArray(raw) ? raw : raw === null || raw === undefined ? [] : [raw])
+        .map((v) => asAttrId(v))
+        .filter((v): v is bigint => v !== null);
+      this.ensureRefLabels(a.target, ids);
+      const labels: Record<string, string> = {};
+      for (const id of ids) {
+        const l = this.refLabels[id.toString()];
+        if (l !== undefined) labels[id.toString()] = l;
+      }
+      const write = (value: unknown): void => {
+        card.attributes[a.name] = value; // optimistic
+        this.ctx.api.callByName(
+          SPEC.attributeUpdate,
+          { cardId: card.id, attributeName: a.name, value },
+          () => {},
+          { alive: () => this.isAlive() },
+        );
+      };
+      const cfg: RefPickerConfig = {
+        type: 'RefPicker',
+        cardType: a.target,
+        attributeName: a.name,
+        multi: a.multi,
+        'aria-label': `${humanise(a.name)} for ${this.titleOf(card)}`,
+      };
+      if (a.multi) {
+        cfg.values = ids;
+        cfg.currentLabels = labels;
+        cfg.collapsedAdd = true;
+        cfg.addLabel = humanise(a.name).toLowerCase();
+        cfg.onChangeMulti = (v: bigint[]) => write(v);
+      } else {
+        cfg.value = ids[0] ?? null;
+        const l = ids[0] === undefined ? undefined : labels[ids[0].toString()];
+        if (l !== undefined) cfg.currentLabel = l;
+        cfg.onChange = (v: bigint | null) => write(v);
+      }
+      if (!GLOBAL_REF_TARGETS.has(a.target)) cfg.parentScopePath = this.scopePath.join('.');
+      // Spawned by paint() once the rows are in the list.
+      this.pendingRefSpawns.push(() => {
+        this.refPickers.push(this.spawn('RefPicker', cfg, host));
+      });
+      return host;
+    });
+  }
+
+  /** Load the titles of ref ids the chips don't have a label for yet, then
+   *  repaint (each id is asked for once). */
+  private ensureRefLabels(target: string, ids: bigint[]): void {
+    const missing = ids.filter((id) => {
+      const k = id.toString();
+      return this.refLabels[k] === undefined && !this.refLabelsAsked.has(k);
+    });
+    if (missing.length === 0) return;
+    for (const id of missing) this.refLabelsAsked.add(id.toString());
+    this.ctx.api.callByName(
+      CARD_SEARCH_SPEC,
+      { cardTypeName: target, ids: missing },
+      (out) => {
+        if (!this.isAlive()) return;
+        const rows = ((out ?? {}) as { rows?: Array<{ id: bigint; title: string }> }).rows ?? [];
+        for (const r of rows) this.refLabels[String(r.id)] = r.title;
+        if (rows.length > 0) this.paint();
+      },
+      { alive: () => this.isAlive() },
+    );
   }
 
   /** Toggle single-select for a group: set (or clear) `root_exclusive_at = root`
@@ -908,4 +1041,10 @@ function numAttr(card: CardWithAttrs, name: string): number | null {
 
 export function registerEnumManager(): void {
   Control.register('EnumManager', EnumManager);
+}
+
+/** 'publishes_to' → 'Publishes to'. */
+function humanise(name: string): string {
+  const t = name.replace(/_/g, ' ');
+  return t.length === 0 ? t : t[0]!.toUpperCase() + t.slice(1);
 }

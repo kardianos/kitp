@@ -9223,6 +9223,53 @@ textarea.task-comms__form-input {
   gap: var(--space-2);
 }
 
+/* FEATURES — one row per feature bundle (enabled / Add / can't-add). */
+.project-props__features {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.project-props__features-empty {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+}
+.project-props__feature {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-hairline);
+}
+.project-props__feature:last-child {
+  border-bottom: none;
+}
+.project-props__feature-text {
+  flex: 1;
+  min-width: 0;
+}
+.project-props__feature-title {
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+}
+.project-props__feature-doc {
+  font-size: var(--text-xs);
+}
+.project-props__feature--conflict .project-props__feature-title {
+  color: var(--color-muted);
+}
+.project-props__feature-on {
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Export menu (#42) — the project-export dropdown.                            */
 /*                                                                            */
@@ -10219,4 +10266,116 @@ textarea.task-comms__form-input {
    the subject; keep the parent chip readable as the secondary line. */
 .card-list[data-presentation="compact"] .card-list__subject {
   font-weight: var(--weight-medium, 500);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Bundles + portals                                                           */
+/* -------------------------------------------------------------------------- */
+
+/* New-project dialog: a chosen preset's description + its "Also add" extras. */
+.qe-dialog__preset-doc {
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+.qe-dialog__features {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+/* Page detail: PUBLISHED ON (where the page is live; + Child page). */
+.page-pubs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.page-pubs__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.page-pubs__child {
+  min-height: 1.9rem;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+}
+.page-pubs__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.page-pubs__empty {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+.page-pubs__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-hairline);
+}
+.page-pubs__item:first-child {
+  border-top: 0;
+}
+.page-pubs__top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.page-pubs__portal {
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+}
+.page-pubs__reach {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--text-2xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-pubs__state {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+}
+.page-pubs__state--current {
+  background: var(--color-success-soft, var(--color-accent-soft));
+  color: var(--color-success, var(--color-accent));
+}
+.page-pubs__state--stale {
+  border: 1px solid var(--color-warning, var(--color-border));
+  color: var(--color-warning, var(--color-muted));
+}
+.page-pubs__meta {
+  font-size: var(--text-2xs);
+}
+
+/* Values screen: a value's card_ref pickers (a status's "Publishes to"). */
+.enum-manager__ref {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 22rem;
+}
+
+/* RecordForm extra actions (a portal's Rebuild / Preview). */
+.record-form__action {
+  text-decoration: none;
 }

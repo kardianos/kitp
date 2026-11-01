@@ -77,6 +77,8 @@ import type { AttachmentsSection } from './attachments-section.js';
 import type { TagsEditor } from './tags-editor.js';
 import type { RelatedTasksPanel } from './related-tasks-panel.js';
 import type { PostChunk } from './upload.js';
+import { detailProfile, enclosingProjectId, type DetailProfile, type DetailSection } from './detail-profiles.js';
+import type { PagePublications } from '../pages/page-publications.js';
 import { icon } from '../ui/icons.js';
 
 import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
@@ -89,7 +91,8 @@ export interface TaskDetailConfig extends BaseControlConfig {
   type: 'TaskDetail';
   /** The route's `:id` param (string). Parsed to a bigint task id. */
   taskId?: string;
-  /** The task's card_type name (drives the attribute schema). Default 'task'. */
+  /** The card's card_type name (drives the attribute schema and, through
+   *  DETAIL_PROFILES, the noun / status attr / sections). Default 'task'. */
   cardTypeName?: string;
   /**
    * OPTIONAL override for the signed-in user's id (string), threaded down to the
@@ -163,6 +166,12 @@ const GLOBAL_REF_CARD_TYPES = new Set(['person']);
 export class TaskDetail extends Control<TaskDetailConfig> {
   private readonly taskId: bigint | null;
   private readonly cardTypeName: string;
+  /** Per-card-type configuration (detail-profiles.ts): noun, status attr,
+   *  which sections mount, panel skip/show tweaks. */
+  private readonly profile: DetailProfile;
+  /** The card's project (its parent, or — for a nested page — the first
+   *  ancestor that isn't a card of its own type). Set when the card loads. */
+  private projectId: bigint | undefined;
 
   /** The loaded focal task, or null (loading / not found).  Kept for the
    *  callsites that still need the raw card (parent_card_id, redirect-on-
@@ -215,6 +224,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private approvalsHost!: HTMLElement;
   private taskLinks: TaskLinks | null = null;
   private taskApprovals: TaskApprovals | null = null;
+  /** Host + control for a page's PUBLISHED ON section. */
+  private publicationsHost!: HTMLElement;
+  private pagePublications: PagePublications | null = null;
 
   /** Read-only status badge in the nav row (next to #id). Phase-toned. */
   private statusBadgeEl!: HTMLElement;
@@ -278,6 +290,18 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     super(...args);
     this.taskId = parseId(this.config.taskId);
     this.cardTypeName = this.config.cardTypeName ?? 'task';
+    this.profile = detailProfile(this.cardTypeName);
+  }
+
+  /** Whether this card type's profile mounts a section. */
+  private shows(section: DetailSection): boolean {
+    return this.profile.sections.includes(section);
+  }
+
+  /** The panel's attribute skip-list for this card type. */
+  private skipsAttr(name: string): boolean {
+    if (this.profile.showAttrs.includes(name)) return false;
+    return PANEL_SKIP_ATTRS.has(name) || this.profile.skipAttrs.includes(name);
   }
 
   protected override createRoot(): HTMLElement {
@@ -298,7 +322,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     const loading = document.createElement('div');
     loading.className = 'task-detail__loading muted';
     loading.dataset.taskDetailLoading = '';
-    loading.textContent = 'Loading task…';
+    loading.textContent = `Loading ${this.profile.noun.toLowerCase()}…`;
     loading.setAttribute('aria-live', 'polite');
     this.loadingEl = loading;
 
@@ -309,13 +333,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     {
       const title = document.createElement('div');
       title.className = 'task-detail__not-found-title';
-      title.textContent = 'Task not found';
+      const noun = this.profile.noun;
+      title.textContent = `${noun} not found`;
       const hint = document.createElement('div');
       hint.className = 'task-detail__not-found-hint muted';
       hint.textContent =
         this.taskId === null
-          ? 'No task id in the URL.'
-          : `No task with id #${this.taskId.toString()} exists or it was deleted.`;
+          ? `No ${noun.toLowerCase()} id in the URL.`
+          : `No ${noun.toLowerCase()} with id #${this.taskId.toString()} exists or it was deleted.`;
       notFound.append(title, hint);
     }
     this.notFoundEl = notFound;
@@ -588,7 +613,24 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.attachmentsHost = attachmentsSlot;
     this.tagsHost = tagsSlot;
     this.relatedHost = relatedSlot;
-    rail.append(attachmentsSlot, tagsSlot, relatedSlot);
+    // A page's PUBLISHED ON section (where it's live; + Child page).
+    const publicationsSlot = this.makeSlot('publications', 'Published on');
+    this.publicationsHost = publicationsSlot;
+    rail.append(publicationsSlot, attachmentsSlot, tagsSlot, relatedSlot);
+
+    // Sections this card type doesn't have (its detail profile) never show.
+    const slots: Array<[DetailSection, HTMLElement]> = [
+      ['approvals', approvalsSlot],
+      ['links', linksSlot],
+      ['comms', commsSlot],
+      ['comments', commentsSlot],
+      ['comments', activitySlot],
+      ['attachments', attachmentsSlot],
+      ['tags', tagsSlot],
+      ['related', relatedSlot],
+      ['publications', publicationsSlot],
+    ];
+    for (const [section, el] of slots) if (!this.shows(section)) el.style.display = 'none';
 
     grid.append(loading, notFound, main, rail);
     this.el.append(grid);
@@ -607,6 +649,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.mountLinks();
     this.mountApprovals();
     this.mountAttachments();
+    this.mountPublications();
 
     // Kick off the loads. Zero-promise: the onOk callbacks repaint when each
     // response lands, gated by isAlive() so a torn-down screen never delivers.
@@ -654,7 +697,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private paintStatusBadge(): void {
     const el = this.statusBadgeEl;
     if (el === undefined) return;
-    const sid = this.task === null ? null : asAttrId(this.task.attributes['status']);
+    const sid = this.task === null ? null : asAttrId(this.task.attributes[this.profile.statusAttr]);
     const info = sid === null ? undefined : this.statusInfo.get(sid.toString());
     if (info === undefined) {
       el.style.display = 'none';
@@ -673,7 +716,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       (out) => {
         const defs = (out as AttributeDefListOutput).rows ?? [];
         const full = schemaForCardType(defs, this.cardTypeName);
-        this.schema = full.filter((a) => !PANEL_SKIP_ATTRS.has(a.name));
+        this.schema = full.filter((a) => !this.skipsAttr(a.name));
         if (this.task !== null) this.renderPanel();
       },
       { alive: () => this.isAlive() },
@@ -703,9 +746,11 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         if (found === null) {
           // The id may be a comm card (e.g. a stale link) — comm cards have no
           // task route, so resolve to the owning task and redirect there.
-          this.redirectIfCommCard();
+          if (this.profile.commRedirect) this.redirectIfCommCard();
+          else this.showNotFound();
           return;
         }
+        this.projectId = enclosingProjectId(found, new Map(rows.map((r) => [r.id, r])));
         // Seed the panel store with every attribute's initial Value/Unset.
         // Every subsequent commit drives a Pending → Value/Error transition
         // through `panel.beginCommit / confirmCommit / rejectCommit`.
@@ -758,9 +803,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * deep-link to `/task/:id` where no project was previously in scope.
    */
   private publishProjectScope(): void {
-    const parent = this.task?.parent_card_id;
-    if (typeof parent === 'bigint' && parent > 0n) {
-      this.ctx.tree.at(['scope', 'projectId']).set(parent);
+    const project = this.projectId;
+    if (typeof project === 'bigint' && project > 0n) {
+      this.ctx.tree.at(['scope', 'projectId']).set(project);
     }
   }
 
@@ -843,6 +888,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.mountLinks();
     this.mountApprovals();
     this.mountAttachments();
+    this.mountPublications();
     this.mountTags();
     this.mountRelated();
     this.startPolling();
@@ -862,7 +908,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       {
         type: 'TransitionBar',
         cardId: this.taskId.toString(),
-        statusAttr: 'status',
+        statusAttr: this.profile.statusAttr,
         onChanged: (toCardId: bigint, attributeName: string) => {
           // Mirror the optimistic move into the loaded task AND seed the
           // panel store (Pending → Value on the next confirm, but the bar
@@ -882,6 +928,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
             // settle an approval request or leave votes stale.
             this.taskComments?.reload();
             this.taskApprovals?.reload();
+            // Entering a status can publish the page (or withdraw it).
+            this.pagePublications?.reload();
             this.noteOwnActivity();
           }
         },
@@ -905,6 +953,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    *  (re-query + repaint); null-safe before the task has loaded. Also re-seeds
    *  the poll baseline so the "new content" indicator clears back to synced. */
   private refreshFeeds(): void {
+    this.pagePublications?.reload();
     this.taskLinks?.reload();
     this.taskApprovals?.reload();
     this.commThreads?.reload();
@@ -1001,9 +1050,22 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       : 'Up to date · click to check for new links, comms & comments';
   }
 
+  /** Spawn a page's PUBLISHED ON control into the `publications` slot. Idempotent. */
+  private mountPublications(): void {
+    if (this.taskId === null || !this.shows('publications')) return;
+    if (this.pagePublications !== null) return;
+    this.publicationsHost.replaceChildren();
+    this.publicationsHost.classList.add('task-detail__slot--filled');
+    this.pagePublications = this.spawn(
+      'PagePublications',
+      { type: 'PagePublications', pageId: this.taskId.toString() },
+      this.publicationsHost,
+    ) as PagePublications;
+  }
+
   /** Spawn the COMMS (email-thread) control into the `comms` slot. Idempotent. */
   private mountComms(): void {
-    if (this.taskId === null) return;
+    if (this.taskId === null || !this.shows('comms')) return;
     if (this.commThreads !== null) return;
     this.commsHost.replaceChildren();
     this.commsHost.classList.add('task-detail__slot--filled');
@@ -1023,7 +1085,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 
   /** Spawn the APPROVALS control into the `approvals` slot. Idempotent. */
   private mountApprovals(): void {
-    if (this.taskId === null) return;
+    if (this.taskId === null || !this.shows('approvals')) return;
     if (this.taskApprovals !== null) return;
     this.approvalsHost.replaceChildren();
     this.approvalsHost.classList.add('task-detail__slot--filled');
@@ -1049,7 +1111,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 
   /** Spawn the LINKS control into the `links` slot. Idempotent. */
   private mountLinks(): void {
-    if (this.taskId === null) return;
+    if (this.taskId === null || !this.shows('links')) return;
     if (this.taskLinks !== null) return;
     this.linksHost.replaceChildren();
     this.linksHost.classList.add('task-detail__slot--filled');
@@ -1066,7 +1128,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   }
 
   private mountComments(): void {
-    if (this.taskId === null) return;
+    if (this.taskId === null || !this.shows('comments')) return;
     if (this.taskComments !== null) return;
     // Drop the empty-slot placeholder look + label now that both slots are
     // filled (the comments control mounts here; the feed paints the activity
@@ -1094,7 +1156,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * drive them with mocks; production leaves them unset (same-origin fetch).
    */
   private mountAttachments(): void {
-    if (this.taskId === null) return;
+    if (this.taskId === null || !this.shows('attachments')) return;
     if (this.attachmentsSection !== null) return;
     this.attachmentsHost.replaceChildren();
     this.attachmentsHost.classList.add('task-detail__slot--filled');
@@ -1125,7 +1187,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * ref labels), scoped to the task's parent project for the add-search.
    */
   private mountTags(): void {
-    if (this.task === null || this.taskId === null) return;
+    if (this.task === null || this.taskId === null || !this.shows('tags')) return;
     if (this.tagsEditor !== null) return;
     this.tagsHost.replaceChildren();
     this.tagsHost.classList.add('task-detail__slot--filled');
@@ -1168,7 +1230,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * `parent_relationship` attributes; the children list loads itself.
    */
   private mountRelated(): void {
-    if (this.task === null || this.taskId === null) return;
+    if (this.task === null || this.taskId === null || !this.shows('related')) return;
     if (this.relatedPanel !== null) return;
     this.relatedHost.replaceChildren();
     this.relatedHost.classList.add('task-detail__slot--filled');
@@ -1213,7 +1275,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * the attribute panel's `refScopePath`.
    */
   private projectScopePath(): string | undefined {
-    const parent = this.task?.parent_card_id;
+    const parent = this.projectId;
     if (typeof parent !== 'bigint') return undefined;
     const path = ['taskDetail', 'projectScope'];
     this.ctx.tree.at(path).set(parent);
@@ -1789,7 +1851,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private refScopePath(attr: AttrSchema): string | undefined {
     const target = attr.targetCardType;
     if (target === undefined || GLOBAL_REF_CARD_TYPES.has(target)) return undefined;
-    const parent = this.task?.parent_card_id;
+    const parent = this.projectId;
     if (typeof parent !== 'bigint') return undefined;
     const path = ['taskDetail', 'refScope'];
     this.ctx.tree.at(path).set(parent);
@@ -1843,10 +1905,12 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         this.resolveRefLabels();
         // A status change moves the card through its flow — refresh the
         // TransitionBar so the two stay in sync.
-        if (name === 'status') {
+        if (name === this.profile.statusAttr) {
           this.transitionBar?.reload();
           this.taskApprovals?.reload();
         }
+        // An edit can leave a published copy stale ("Unpublished edits").
+        this.pagePublications?.reload();
         // Every attribute edit appends an attr_update row to the stream —
         // refresh the #35 activity feed.
         this.taskComments?.reload();

@@ -48,6 +48,7 @@ export type RouteName =
   | 'project'
   | 'screen'
   | 'task'
+  | 'page'
   | 'activity'
   | 'account'
   | 'agents'
@@ -89,6 +90,9 @@ const ROUTES: readonly RoutePattern[] = [
   { pattern: '/project/:id', name: 'project', guard: 'requireAuth' },
   { pattern: '/project/:id/screen/:slug', name: 'screen', guard: 'requireAuth' },
   { pattern: '/task/:id', name: 'task', guard: 'requireAuth' },
+  // A publishable page (card_type `page`) — the same detail view as a task,
+  // configured for pages (publish_status flow, PUBLISHED ON section).
+  { pattern: '/page/:id', name: 'page', guard: 'requireAuth' },
   { pattern: '/activity', name: 'activity', guard: 'requireAuth' },
   { pattern: '/account', name: 'account', guard: 'requireAuth' },
   // Per-user "My Agents" — every signed-in user manages their OWN agents, so
@@ -121,6 +125,7 @@ export function activityUrl(): string {
 export function helpTopicForRoute(route: RouteMatch): string | null {
   switch (route.name) {
     case 'task':
+    case 'page': // the same detail view, configured for pages
       return 'task_detail';
     case 'admin': {
       const key = route.params['key'];
@@ -212,6 +217,28 @@ export function screenUrl(id: bigint | string, slug: string): string {
 /** `/task/:id` — a task-detail screen. */
 export function taskUrl(id: bigint | string): string {
   return `/task/${id.toString()}`;
+}
+
+/** `/page/:id` — a page-detail screen (a publishable page card). */
+export function pageUrl(id: bigint | string): string {
+  return `/page/${id.toString()}`;
+}
+
+/**
+ * The detail route a card opens in. A card list names it in config (one level
+ * up — e.g. the `pages` layout opens 'page'), never by branching on card_type
+ * inside the list.
+ */
+export type CardRoute = 'task' | 'page';
+
+const CARD_URL: Record<CardRoute, (id: bigint | string) => string> = {
+  task: taskUrl,
+  page: pageUrl,
+};
+
+/** The detail URL of a card for a given route (default 'task'). */
+export function cardUrl(id: bigint | string, route: CardRoute = 'task'): string {
+  return CARD_URL[route](id);
 }
 
 /** `/admin/:key` — an admin MasterDetail screen. */

@@ -31,7 +31,7 @@ import { asAttrId, type CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
 import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
-import { navigate, taskUrl } from '../shell/router.js';
+import { cardUrl, navigate, type CardRoute } from '../shell/router.js';
 import { publishTaskNav } from '../shell/task-nav.js';
 import { applySearchFilter, type Predicate, type WireNode } from '../filter/predicate.js';
 import { walkGrouped, GROUP_EMPTY_KEY, type GroupAttr, type GroupItem } from '../filter/group-axis.js';
@@ -58,11 +58,18 @@ export interface CardListCoreConfig extends BaseControlConfig {
   /** When set, rows show a parent-card chip; the parent card_type whose titles
    *  are loaded for the chip (e.g. 'task' for a comm). */
   parentChipCardType?: string;
+  /** Show the parent chip only when the parent IS a loaded
+   *  `parentChipCardType` card — e.g. a top-level page, whose parent is the
+   *  project rather than another page, gets no chip. */
+  parentChipKnownOnly?: boolean;
   /** A boolean attr rendered/filtered as a flag when FALSE (comm `acked`). */
   flagAttr?: string;
   flagLabel?: string;
   /** Row opens itself or its parent card. Default 'self'. */
   openTarget?: 'self' | 'parent';
+  /** The detail route a row opens in (`/task/:id`, `/page/:id`). Default
+   *  'task'. Set per layout (bodyConfigForLayout), not per card_type here. */
+  openRoute?: CardRoute;
   /** Honour `screen.groupAxis` — render group headers + bucket rows. */
   group?: boolean;
   /** Per-user personal sort: query `with_personal_sort`, Shift+j/k reorder. */
@@ -882,7 +889,7 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
     this.rememberCardId(card.id);
     publishTaskNav(this.ctx.tree, this.displayRows().map((c) => c.id));
     const targetId = this.openTargetId(card);
-    if (targetId !== undefined) navigate(taskUrl(targetId.toString()));
+    if (targetId !== undefined) navigate(cardUrl(targetId.toString(), this.config.openRoute));
   }
 
   /** The card a row OPENS — itself, or its parent when `openTarget: 'parent'`

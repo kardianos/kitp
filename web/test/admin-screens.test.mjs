@@ -75,6 +75,8 @@ function rowsFor(key, data) {
       return [{ id: '90', name: 'Teams feed', sink_kind: 'msgraph_teams', msgraph_tenant_id: 't-1', msgraph_team_id: 'team-1', msgraph_channel_id: 'chan-1', channel_status: 'enabled', has_client_secret: true, last_pushed_count: '12', created_at: '2026-01-03T00:00:00Z' }];
     case 'comm_log.list':
       return [{ id: '100', channel_id: '80', channel_name: 'Support inbox', kind: 'poll', detail: { fetched: 3 }, at: '2026-05-24T12:00:00Z' }];
+    case 'portal.list':
+      return [{ id: '120', title: 'Docs (PROD)', host: 'docs.example.com', public: true, root_page_id: '700', root_title: 'Home', root_project_id: PROJECT_ID, statuses: ['Docs › Published'], page_count: 4, built_at: '2026-06-01T00:00:00Z', active_build_id: '9', warnings: [], dirty: false, last_error: '' }];
     default:
       return null;
   }
@@ -102,6 +104,7 @@ function bootApi() {
   const api = new M.Api(dispatcher);
   M.registerKanbanSpecs(api); // card.select_with_attributes + attribute.update
   M.registerAdminSpecs(api); // every non-card admin spec
+  M.registerBundleSpecs(api); // portal.list (the Portals screen)
   return { dispatcher, api };
 }
 
@@ -159,6 +162,7 @@ const SCREEN_SCOPE = {
   comm_channels: ['admin', 'comm_channels', 'items'],
   activity_sinks: ['admin', 'activity_sinks', 'items'],
   comm_log: ['admin', 'comm_log', 'items'],
+  portals: ['admin', 'portals', 'items'],
 };
 
 for (const [view, itemsPath] of Object.entries(SCREEN_SCOPE)) {
@@ -360,7 +364,7 @@ test('ADMIN_SECTION classifies every admin view (Workspace global vs Project sco
   // Confirmed grouping: global-data screens are Workspace; the rest are Project
   // (always filtered to the active project).
   const inSection = (s) => M.ADMIN_VIEWS.filter((v) => M.ADMIN_SECTION[v] === s).sort();
-  assert.deepEqual(inSection('workspace'), ['agents', 'attributes', 'jobs', 'oidc_claims', 'people', 'roles']);
+  assert.deepEqual(inSection('workspace'), ['agents', 'attributes', 'jobs', 'oidc_claims', 'people', 'portals', 'roles']);
   assert.deepEqual(inSection('project'), ['activity_sinks', 'comm_channels', 'comm_log', 'enums', 'screens', 'workflows']);
 });
 

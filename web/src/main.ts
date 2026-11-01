@@ -104,6 +104,8 @@ import { registerTagsEditor } from './task-detail/tags-editor.js';
 import { registerRelatedTasksPanel } from './task-detail/related-tasks-panel.js';
 import { registerQuickEntry } from './quick-entry/quick-entry.js';
 import { registerNewTaskButton } from './quick-entry/new-task-button.js';
+import { registerNewPageButton } from './pages/new-page-button.js';
+import { registerPagePublications } from './pages/page-publications.js';
 import { registerImportWizard } from './import/import-wizard.js';
 import { registerImportSpecs } from './import/specs.js';
 import { registerExportMenu } from './export/export-menu.js';
@@ -123,6 +125,7 @@ const ADMIN_LINK_LABELS: Record<AdminView, string> = {
   comm_channels: 'Comm Channels',
   activity_sinks: 'Activity Sinks',
   comm_log: 'Comm Log',
+  portals: 'Portals',
   jobs: 'Background Jobs',
 };
 import { mockTransport } from './kanban/mock-data.js';
@@ -412,6 +415,10 @@ function boot(): void {
   // The visible "+ New" button on the Grid + List filter bars (raises the same
   // quickCreateOpen intent as the `n` hotkey, mounted via viewActionsForLayout).
   registerNewTaskButton();
+  // The `pages` layout's "+ New page" view action and a page detail's
+  // PUBLISHED ON section (bundles + portals).
+  registerNewPageButton();
+  registerPagePublications();
   // The #41 CSV import wizard. The AppShell mounts ONE instance and wires the
   // `projectImport` intent to open() (raised by the Project detail's Import hook
   // with `{ projectId }`); on a successful commit it raises `projectImportDone`,

@@ -141,6 +141,7 @@ export {
   layoutRequiresGroup,
   defaultGroupForLayout,
   viewActionsForLayout,
+  bodyConfigForLayout,
   KANBAN_DEFAULT_GROUP_ATTR,
   screenStatePath,
   readSlug,
@@ -219,6 +220,8 @@ export {
   projectUrl,
   screenUrl,
   taskUrl,
+  pageUrl,
+  cardUrl,
   adminUrl,
   plainClick,
   ROUTER_PATH,
@@ -381,6 +384,7 @@ export {
   COMM_CHANNELS_SCREEN,
   ACTIVITY_SINKS_SCREEN,
   COMM_LOG_SCREEN,
+  PORTALS_SCREEN,
   contactsScreen,
   usersScreen,
   adminScreenConfig,
@@ -433,6 +437,22 @@ export { registerCardSearchSpec, CARD_SEARCH_SPEC } from './ui/specs.js';
 
 // Task detail (#33): the /task/:id shell + attribute side panel.
 export { TaskDetail, registerTaskDetail, type TaskDetailConfig } from './task-detail/task-detail.js';
+// Bundles + portals: specs, the Portals admin form, the detail profiles, and
+// the page controls (pages layout "+ New page", PUBLISHED ON section).
+export {
+  BUNDLE_SPEC,
+  PORTAL_SPEC,
+  registerBundleSpecs,
+  previewUrl,
+  decodeFeature,
+  decodePreset,
+  decodePortalRow,
+  decodePublication,
+} from './bundles/specs.js';
+export { PORTAL_FORM, portalRowToDraft, portalDraftToInput, portalBuildSummary } from './admin/portal-form.js';
+export { DETAIL_PROFILES, detailProfile, enclosingProjectId } from './task-detail/detail-profiles.js';
+export { NewPageButton, registerNewPageButton, newPageInput } from './pages/new-page-button.js';
+export { PagePublications, registerPagePublications } from './pages/page-publications.js';
 export {
   PanelModel,
   isMeaningful,

@@ -24,7 +24,7 @@
  * fight a row/card drag-to-reorder grip or the kanban card's native DnD.
  */
 
-import { taskUrl } from './router.js';
+import { cardUrl, type CardRoute } from './router.js';
 
 export function rowLink(): HTMLAnchorElement {
   const a = document.createElement('a');
@@ -46,6 +46,6 @@ export function rowLink(): HTMLAnchorElement {
 /** Point a row link at a card. Re-set every fill — rows recycle. Uses
  *  setAttribute (not the `.href` property) so the href reflects to the attribute
  *  in the lightweight test DOM shim too. */
-export function setRowLinkHref(a: HTMLAnchorElement, id: bigint | string): void {
-  a.setAttribute('href', taskUrl(id));
+export function setRowLinkHref(a: HTMLAnchorElement, id: bigint | string, route: CardRoute = 'task'): void {
+  a.setAttribute('href', cardUrl(id, route));
 }

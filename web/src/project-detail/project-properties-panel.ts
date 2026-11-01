@@ -47,6 +47,8 @@ import type { DatePicker } from '../ui/datepicker.js';
 
 import { icon } from '../ui/icons.js';
 import { captionedField } from '../ui/captioned-field.js';
+import { BUNDLE_SPEC, type BundleFeature, type BundleListOutput } from '../bundles/specs.js';
+import { faultText } from '../admin/record-form.js';
 /* -------------------------------------------------------------------------- */
 /* Config.                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -57,6 +59,9 @@ export interface ProjectPropertiesPanelConfig extends BaseControlConfig {
   cardTypeName?: string;
   /** Notified with the (optimistically) updated project card after each commit. */
   onSaved?: (project: CardWithAttrs) => void;
+  /** Tree path bumped after a feature is added, so data-driven navigation
+   *  (the project's screen tabs / sidebar) reloads. Default 'shell.navRefresh'. */
+  navRefreshPath?: string;
 }
 
 declare module '../core/control.js' {
@@ -70,7 +75,9 @@ declare module '../core/control.js' {
  * description have dedicated fields above; tags / sort_order are never edited
  * here. Mirrors the Svelte panel's schema skip-list.
  */
-const PANEL_SKIP_ATTRS = new Set(['title', 'description', 'tags', 'sort_order']);
+// bundle_key marks a feature bundle's hidden source project — server-owned,
+// never something a person edits on a project.
+const PANEL_SKIP_ATTRS = new Set(['title', 'description', 'tags', 'sort_order', 'bundle_key']);
 
 /** A card_ref attribute whose target card_type is NOT project-scoped. */
 const GLOBAL_REF_CARD_TYPES = new Set(['person']);
@@ -95,6 +102,7 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
   private titleHost!: HTMLElement;
   private descHost!: HTMLElement;
   private panelBody!: HTMLElement;
+  private featuresBody!: HTMLElement;
 
   private titleInput: HTMLInputElement | null = null;
   private descEditor: RichEditor | null = null;
@@ -199,7 +207,19 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
     ioRow.append(exportBtn, importBtn);
     ioSection.append(ioLabel, ioRow);
 
-    body.append(loading, titleField, descField, attrsSection, ioSection);
+    /* --- Features (feature bundles: add what the project doesn't have) --- */
+    const featuresSection = document.createElement('section');
+    featuresSection.className = 'project-props__section';
+    const featuresLabel = document.createElement('div');
+    featuresLabel.className = 'project-props__section-label muted';
+    featuresLabel.textContent = 'FEATURES';
+    const featuresBody = document.createElement('div');
+    featuresBody.className = 'project-props__features';
+    featuresBody.dataset.projectPropsFeatures = '';
+    this.featuresBody = featuresBody;
+    featuresSection.append(featuresLabel, featuresBody);
+
+    body.append(loading, titleField, descField, attrsSection, featuresSection, ioSection);
     sheet.append(head, body);
     this.el.append(backdrop, sheet);
 
@@ -227,7 +247,9 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
     this.descHost.replaceChildren();
     this.disposeRowChildren();
     this.panelBody.replaceChildren();
+    this.featuresBody.replaceChildren();
     this.loadProject();
+    this.loadFeatures();
     if (this.schema.length === 0) this.loadSchema();
   }
 
@@ -654,6 +676,120 @@ export class ProjectPropertiesPanel extends Control<ProjectPropertiesPanelConfig
             errEl.style.display = '';
             errEl.textContent = 'Failed to save. Try again.';
           }
+        },
+      },
+    );
+  }
+
+  /* ------------------------------- features ------------------------------ */
+
+  /** Load the feature catalog with this project's enabled / conflict state. */
+  private loadFeatures(): void {
+    const id = this.projectId;
+    if (id === null) return;
+    this.ctx.api.callByName(
+      BUNDLE_SPEC.list,
+      { projectId: id },
+      (out) => {
+        if (this.projectId !== id) return;
+        this.renderFeatures((out as BundleListOutput).features ?? []);
+      },
+      {
+        alive: () => this.isAlive(),
+        // An older server has no bundles: say so instead of an empty section.
+        onErr: () => {
+          if (this.projectId !== id) return;
+          this.renderFeatures([]);
+        },
+      },
+    );
+  }
+
+  /**
+   * One row per feature bundle: enabled ones are marked; the rest offer Add,
+   * unless the project can't take them (it already drives one of the
+   * feature's flow attributes itself) — then the reason shows instead.
+   */
+  private renderFeatures(features: BundleFeature[]): void {
+    const host = this.featuresBody;
+    if (features.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'project-props__features-empty muted';
+      empty.textContent = 'No feature bundles are available.';
+      host.replaceChildren(empty);
+      return;
+    }
+    const rows = features.map((f) => {
+      const row = document.createElement('div');
+      row.className = 'project-props__feature';
+      row.dataset.feature = f.key;
+      const text = document.createElement('div');
+      text.className = 'project-props__feature-text';
+      const name = document.createElement('div');
+      name.className = 'project-props__feature-title';
+      name.textContent = f.title;
+      const doc = document.createElement('div');
+      doc.className = 'project-props__feature-doc muted';
+      doc.textContent = f.conflict !== '' && !f.enabled ? f.conflict : f.doc;
+      text.append(name, doc);
+      const err = document.createElement('div');
+      err.className = 'project-props__row-error';
+      err.dataset.featureError = '';
+      err.style.display = 'none';
+      text.append(err);
+      row.append(text);
+      if (f.enabled) {
+        const on = document.createElement('span');
+        on.className = 'badge badge--success project-props__feature-on';
+        on.dataset.featureEnabled = '';
+        on.textContent = 'On';
+        row.append(on);
+        return row;
+      }
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'btn project-props__feature-add';
+      add.dataset.featureAdd = f.key;
+      add.textContent = 'Add';
+      if (f.conflict !== '') {
+        add.disabled = true;
+        add.title = f.conflict;
+        row.classList.add('project-props__feature--conflict');
+      } else {
+        this.listen(add, 'click', () => this.addFeature(f.key, add, err));
+      }
+      row.append(add);
+      return row;
+    });
+    host.replaceChildren(...rows);
+  }
+
+  /** bundle.apply one feature, then reload the catalog and let the host (and
+   *  the data-driven nav) pick up the new screens. */
+  private addFeature(key: string, btn: HTMLButtonElement, errEl: HTMLElement): void {
+    const id = this.projectId;
+    if (id === null) return;
+    btn.disabled = true;
+    btn.textContent = 'Adding…';
+    errEl.style.display = 'none';
+    this.ctx.api.callByName(
+      BUNDLE_SPEC.apply,
+      { projectId: id, keys: [key] },
+      () => {
+        if (!this.isAlive()) return;
+        const nav = this.ctx.tree.at((this.config.navRefreshPath ?? 'shell.navRefresh').split('.'));
+        nav.set((nav.peek<number>() ?? 0) + 1);
+        if (this.project !== null) this.config.onSaved?.(this.project);
+        this.loadFeatures();
+      },
+      {
+        alive: () => this.isAlive(),
+        onErr: (fault) => {
+          if (!this.isAlive()) return;
+          btn.disabled = false;
+          btn.textContent = 'Add';
+          errEl.textContent = faultText(fault);
+          errEl.style.display = '';
         },
       },
     );

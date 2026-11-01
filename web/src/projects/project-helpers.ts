@@ -62,6 +62,29 @@ export const TEMPLATE_INCLUSION_LEAF: CardWherePredicate = {
   value: true,
 };
 
+/**
+ * Excludes a feature bundle's hidden SOURCE project from template lists. A
+ * bundle source is flagged is_template (so it never shows as a project) and
+ * bundle_key; it is applied through presets / features, never copied as a
+ * template, so the "Start from" templates leave it out.
+ */
+export const BUNDLE_SOURCE_EXCLUSION_LEAF: CardWherePredicate = {
+  attr: 'bundle_key',
+  op: 'not exists',
+};
+
+/** "Start from" option values for presets carry this prefix (templates are
+ *  bare project ids). */
+export const PRESET_CHOICE_PREFIX = 'preset:';
+
+/** The preset key a "Start from" value names, or null for a template / the
+ *  default. */
+export function composeChoice(value: string): string | null {
+  if (!value.startsWith(PRESET_CHOICE_PREFIX)) return null;
+  const key = value.slice(PRESET_CHOICE_PREFIX.length);
+  return key.length > 0 ? key : null;
+}
+
 /** Read a project card's `title` attribute (the real handler nests it under
  *  `attributes.title`), falling back to a `#id` when absent. */
 export function projectTitle(p: CardWithAttrs): string {

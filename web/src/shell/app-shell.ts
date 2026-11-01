@@ -1131,6 +1131,18 @@ export class AppShell extends Control<AppShellConfig> {
           outlet,
         );
       }
+      case 'page': {
+        // A publishable page: the same detail view, configured for pages by
+        // its card type (detail-profiles.ts — publish_status flow, PUBLISHED
+        // ON section, no task-only sections). Like a task it publishes its
+        // project into scope, so the project's screen nav stays visible.
+        this.setCrumb(`Page #${route.params['id'] ?? ''}`);
+        return this.spawn(
+          'TaskDetail',
+          { type: 'TaskDetail', taskId: route.params['id'], cardTypeName: 'page' } as ChildConfig,
+          outlet,
+        );
+      }
       case 'activity': {
         // The active-project activity feed. Reads `scope.projectId` (always
         // set), so scope is left intact — the rail nav stays on the project.
@@ -1218,6 +1230,8 @@ function outletKey(route: RouteMatch): string {
       return `screen:${route.params['id'] ?? ''}:${route.params['slug'] ?? ''}`;
     case 'task':
       return `task:${route.params['id'] ?? ''}`;
+    case 'page':
+      return `page:${route.params['id'] ?? ''}`;
     case 'activity':
       return 'activity';
     case 'admin':

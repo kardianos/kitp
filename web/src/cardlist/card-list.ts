@@ -226,7 +226,7 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
     const target = this.openTargetId(card);
     const link = el.querySelector('[data-role="rowlink"]') as HTMLAnchorElement | null;
     if (link) {
-      if (target !== undefined) setRowLinkHref(link, target);
+      if (target !== undefined) setRowLinkHref(link, target, this.config.openRoute);
       else link.removeAttribute('href');
     }
 
@@ -273,10 +273,14 @@ export class CardListBody extends CardListCore<CardListBodyConfig> {
       chip.textContent = text;
       cols.insertBefore(chip, parent);
     }
-    if (this.config.parentChipCardType !== undefined && card.parent_card_id !== undefined) {
-      const pid = card.parent_card_id.toString();
-      const t = this.parentTitles.get(pid);
-      parent.textContent = t !== undefined ? `#${pid} · ${t}` : `#${pid}`;
+    const pid = card.parent_card_id?.toString();
+    const pTitle = pid !== undefined ? this.parentTitles.get(pid) : undefined;
+    if (
+      this.config.parentChipCardType !== undefined &&
+      pid !== undefined &&
+      (pTitle !== undefined || this.config.parentChipKnownOnly !== true)
+    ) {
+      parent.textContent = pTitle !== undefined ? `#${pid} · ${pTitle}` : `#${pid}`;
       parent.style.display = '';
     } else parent.style.display = 'none';
 
