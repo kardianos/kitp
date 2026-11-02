@@ -19,7 +19,7 @@
  * committing — see task-detail.ts).
  */
 
-import { createTextareaEngine, type EditorEngine, type EngineFactory } from './engine.js';
+import { createTextareaEngine, type EditorEngine, type EditorSnippet, type EngineFactory, type LinkTarget } from './engine.js';
 import { createToolbar, type EditorToolbar } from './toolbar.js';
 
 export interface RichEditorOptions {
@@ -36,6 +36,13 @@ export interface RichEditorOptions {
   editableClassName?: string;
   /** Attributes stamped on the editable element (preserves selectors / focus). */
   editableAttrs?: Record<string, string>;
+  /** Targets the Link command offers besides a typed URL (the page detail
+   *  passes its project's pages). Read each time the link bar opens. */
+  linkTargets?: () => readonly LinkTarget[];
+  /** What the toolbar's Insert menu offers (the page detail passes its portal
+   *  placeholders and the page's pictures). A function is read each time the
+   *  menu opens. Absent / empty array → no Insert menu. */
+  snippets?: readonly EditorSnippet[] | (() => readonly EditorSnippet[]);
   /**
    * Fired on every change, with no payload: building the markdown is
    * O(document), so a host reads {@link RichEditor.getValue} when it needs the
@@ -92,6 +99,7 @@ export class RichEditor {
         minRows: opts.minRows,
         editableClassName: opts.editableClassName,
         editableAttrs: opts.editableAttrs,
+        linkTargets: opts.linkTargets,
       },
       {
         // No toolbar refresh here: the engine reports every transaction
@@ -108,7 +116,7 @@ export class RichEditor {
     // before the engine's editable). It only renders over a command-capable
     // engine, so the textarea fallback (and jsdom tests) stay toolbar-free.
     if (opts.toolbar !== false && this.engine.supportsCommands()) {
-      this.toolbar = createToolbar(this.engine);
+      this.toolbar = createToolbar(this.engine, opts.snippets ?? []);
       el.prepend(this.toolbar.el);
       el.classList.add('rich-editor--with-toolbar');
     }

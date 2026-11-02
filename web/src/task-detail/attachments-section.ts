@@ -235,6 +235,12 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
 
   /* -------------------------------- loads ------------------------------- */
 
+  /** The attached images (the page detail offers them in its editor's
+   *  Insert menu). */
+  imageRows(): readonly AttachmentRow[] {
+    return this.rows.filter((r) => r.kind === 'image' || r.mimeType.startsWith('image/'));
+  }
+
   /** Public refresh hook (parent can re-pull after an external change). */
   reload(): void {
     this.loadList();

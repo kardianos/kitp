@@ -8,9 +8,14 @@
  * editor's selection-change hook) repaints every button's pressed / disabled
  * state from `engine.isActive` / `engine.can`. `mousedown` is prevented so a
  * click never steals the selection out of the editor.
+ *
+ * Given snippets (the page detail passes its portal placeholders), the bar
+ * ends in an **Insert** menu: choosing one runs `engine.insertBlock(text)`.
+ * Without snippets there is no Insert button.
  */
 
-import type { EditorAction, EditorEngine } from './engine.js';
+import type { EditorAction, EditorEngine, EditorSnippet } from './engine.js';
+import { Popover } from '../ui/popover.js';
 
 interface ToolbarButton {
   action: EditorAction;
@@ -57,7 +62,10 @@ export interface EditorToolbar {
   destroy(): void;
 }
 
-export function createToolbar(engine: EditorEngine): EditorToolbar {
+export function createToolbar(
+  engine: EditorEngine,
+  snippets: readonly EditorSnippet[] | (() => readonly EditorSnippet[]) = [],
+): EditorToolbar {
   const el = document.createElement('div');
   el.className = 'rich-editor__toolbar';
   el.setAttribute('role', 'toolbar');
@@ -101,6 +109,13 @@ export function createToolbar(engine: EditorEngine): EditorToolbar {
     }
   });
 
+  if (typeof snippets === 'function' || snippets.length > 0) {
+    const sep = document.createElement('span');
+    sep.className = 'rich-editor__toolbar-sep';
+    sep.setAttribute('aria-hidden', 'true');
+    el.append(sep, insertMenu(engine, snippets, cleanups));
+  }
+
   function refresh(): void {
     for (const { btn, action } of buttons) {
       const active = engine.isActive(action);
@@ -119,4 +134,101 @@ export function createToolbar(engine: EditorEngine): EditorToolbar {
       el.remove();
     },
   };
+}
+
+/**
+ * The Insert button and its menu (a {@link Popover}; Escape or a click
+ * elsewhere closes it, and Escape doesn't reach the editor). Items keep the
+ * editor's focus and selection, like the other tools.
+ */
+function insertMenu(
+  engine: EditorEngine,
+  snippets: readonly EditorSnippet[] | (() => readonly EditorSnippet[]),
+  cleanups: Array<() => void>,
+): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'rich-editor__tool rich-editor__tool--menu';
+  btn.dataset.action = 'insert';
+  btn.title = 'Insert';
+  btn.setAttribute('aria-label', 'Insert');
+  btn.setAttribute('aria-haspopup', 'menu');
+  btn.setAttribute('aria-expanded', 'false');
+  btn.textContent = 'Insert ▾';
+  btn.tabIndex = -1;
+
+  const pop = new Popover(btn, {
+    placement: 'bottom-start',
+    onClose: () => btn.setAttribute('aria-expanded', 'false'),
+  });
+  const menu = pop.element;
+  menu.classList.add('rich-editor__insert-menu');
+  menu.setAttribute('role', 'menu');
+  menu.dataset.insertMenu = '';
+  const close = (): void => {
+    pop.close();
+    btn.setAttribute('aria-expanded', 'false');
+  };
+  /** (Re)build the items: a function's snippets are read each time the menu
+   *  opens (the page's pictures change as files are attached). */
+  const fill = (): void => {
+    menu.replaceChildren();
+    const list = typeof snippets === 'function' ? snippets() : snippets;
+    let group: string | undefined;
+    for (const s of list) {
+      if (s.group !== undefined && s.group !== group) {
+        group = s.group;
+        const head = document.createElement('div');
+        head.className = 'rich-editor__insert-group muted';
+        head.textContent = s.group;
+        menu.append(head);
+      }
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'rich-editor__insert-item';
+      item.setAttribute('role', 'menuitem');
+      item.dataset.insert = s.text;
+      const label = document.createElement('span');
+      label.className = 'rich-editor__insert-label';
+      label.textContent = s.label;
+      const hint = s.hint ?? s.text;
+      if (hint !== '') {
+        const code = document.createElement('code');
+        code.textContent = hint;
+        label.append(' ', code);
+      }
+      item.append(label);
+      if (s.description !== undefined && s.description !== '') {
+        const desc = document.createElement('span');
+        desc.className = 'muted rich-editor__insert-desc';
+        desc.textContent = s.description;
+        item.append(desc);
+      }
+      item.addEventListener('mousedown', (e) => e.preventDefault());
+      item.addEventListener('click', () => {
+        close();
+        engine.insertBlock(s.text);
+      });
+      menu.append(item);
+    }
+  };
+
+  const onMouseDown = (e: MouseEvent): void => e.preventDefault();
+  const onClick = (): void => {
+    if (pop.isOpen) {
+      close();
+      return;
+    }
+    fill();
+    pop.open();
+    btn.setAttribute('aria-expanded', 'true');
+  };
+  btn.addEventListener('mousedown', onMouseDown);
+  btn.addEventListener('click', onClick);
+  cleanups.push(() => {
+    btn.removeEventListener('mousedown', onMouseDown);
+    btn.removeEventListener('click', onClick);
+    pop.destroy();
+  });
+  return btn;
 }

@@ -37,11 +37,11 @@ beforeEach(() => {
 
 const PROJECT_ID = 31n;
 
-function pageTransport({ withPage = true } = {}) {
+function pageTransport({ withPage = true, body = '## Write' } = {}) {
   const sent = [];
   const pages = [
     { id: '70', card_type_id: '20', card_type_name: 'page', parent_card_id: String(PROJECT_ID), phase: 'triage', attributes: { title: 'Home', publish_status: '61', sort_order: 0 } },
-    { id: '71', card_type_id: '20', card_type_name: 'page', parent_card_id: '70', phase: 'triage', attributes: { title: 'Getting started', description: '## Write', slug: 'getting-started', publish_status: '61', sort_order: 10 } },
+    { id: '71', card_type_id: '20', card_type_name: 'page', parent_card_id: '70', phase: 'triage', attributes: { title: 'Getting started', description: body, slug: 'getting-started', publish_status: '61', sort_order: 10 } },
   ];
   const defRow = (name, valueType, target, ordering) => ({
     id: `def-${name}`,
@@ -186,4 +186,171 @@ test('page detail: a missing page says "Page not found" (no comm redirect)', asy
   assert.match(nf.textContent, /Page not found/);
   const commReads = t.of('card.select_with_attributes').filter((s) => s.data.card_type_name === 'comm');
   assert.equal(commReads.length, 0, 'no comm-card redirect probe for pages');
+});
+
+test('page detail: the prev/next bubble walks pages, labelled "Page", on /page/:id', async () => {
+  const t = pageTransport();
+  const { dispatcher, api } = bootApi(t.transport);
+  const tree = new M.TreeNode({}, []);
+  M.installRouter(tree); // navigate() lands the route into this tree's router leaf
+  // The Pages list published its rows on open.
+  M.publishTaskNav(tree, ['70', '71'], '/project/31/s/pages');
+  const td = M.Control.New('TaskDetail', { type: 'TaskDetail', taskId: '70', cardTypeName: 'page' }, { api, tree });
+  td.mount(document.createElement('div'));
+  document.body.appendChild(td.el);
+  await settle(dispatcher);
+
+  const nav = td.el.querySelector('[data-task-nav]');
+  assert.notEqual(nav.style.display, 'none', 'nav bubble shown for a two-page list');
+  assert.equal(nav.querySelector('.task-detail__row-label').textContent, 'Page');
+  const next = nav.querySelector('[data-task-nav-next]');
+  assert.equal(next.getAttribute('aria-label'), 'Next page');
+  next.click();
+  const route = tree.at([...M.ROUTER_PATH]).peek();
+  assert.equal(route.name, 'page', 'next stays on the page route');
+  assert.equal(route.params.id, '71');
+});
+
+test('page detail: no "…" menu (task.move / task.purge refuse pages), even for an admin', async () => {
+  const t = pageTransport();
+  const { dispatcher, api } = bootApi(t.transport);
+  const { td, tree } = mountPage(api);
+  tree.at([...M.AUTH_USER_PATH]).set({ userId: 5n, displayName: 'Admin', roles: ['admin'], isAdmin: true, isAgent: false, parentUserId: null });
+  await settle(dispatcher);
+  assert.equal(td.el.querySelector('[data-task-actions]').style.display, 'none');
+});
+
+test('page detail: Back with no saved list goes to the page’s project, not its parent page', async () => {
+  const t = pageTransport();
+  const { dispatcher, api } = bootApi(t.transport);
+  const tree = new M.TreeNode({}, []);
+  M.installRouter(tree);
+  const td = M.Control.New('TaskDetail', { type: 'TaskDetail', taskId: '71', cardTypeName: 'page' }, { api, tree });
+  td.mount(document.createElement('div'));
+  document.body.appendChild(td.el);
+  await settle(dispatcher);
+  td.el.querySelector('[data-task-back]').click();
+  const route = tree.at([...M.ROUTER_PATH]).peek();
+  assert.equal(route.params.id, String(PROJECT_ID), 'project 31, not parent page 70');
+});
+
+test('siblingLinkTargets: the project’s other pages by title path, as ref:<id>, never itself', () => {
+  const rows = [
+    { id: 70n, parent_card_id: 31n, attributes: { title: 'Home' } },
+    { id: 71n, parent_card_id: 70n, attributes: { title: 'Getting started' } },
+    { id: 72n, parent_card_id: 71n, attributes: { title: 'Install' } },
+    { id: 80n, parent_card_id: 32n, attributes: { title: 'Home' } }, // another project
+  ];
+  assert.deepEqual(M.siblingLinkTargets(71n, 31n, rows), [
+    { label: 'Home', href: 'ref:70', hint: 'ref:70' },
+    { label: 'Home › Getting started › Install', href: 'ref:72', hint: 'ref:72' },
+  ]);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  assert.equal(M.titlePath(rows[2], byId), 'Home › Getting started › Install');
+  assert.equal(M.titlePath({ id: 9n, attributes: {} }, byId), '#9', 'an untitled card shows its id');
+});
+
+/* -------------------------------------------------------------------------- */
+/* Placeholders: the Insert menu and the warnings under the body.              */
+/* -------------------------------------------------------------------------- */
+
+for (const [name, body, want] of [
+  ['known placeholders', 'Intro\n\n{{< children >}}\n\n{{<toc>}}\n\n{{< nav >}}', []],
+  ['no placeholders at all', 'Plain text with {braces}.', []],
+  ['a misspelt name', '{{< chidren >}}', ["{{< chidren >}} isn't a placeholder. Did you mean {{< children >}}?"]],
+  ['an unknown name, nothing close', '{{< sitemap >}}', ["{{< sitemap >}} isn't a placeholder. Use {{< children >}}, {{< nav >}} or {{< toc >}}."]],
+  ['short names need a near miss', '{{< foo >}}', ["{{< foo >}} isn't a placeholder. Use {{< children >}}, {{< nav >}} or {{< toc >}}."]],
+  ['one edit from toc', '{{< tok >}}', ["{{< tok >}} isn't a placeholder. Did you mean {{< toc >}}?"]],
+  ['the retired ref placeholder', 'See [faq]({{< ref "faq" >}}).', ['{{< ref "faq" >}} no longer works. Select the link text, choose Link and pick the page.']],
+  ['Hugo-style braces', '{{ children }}', ["{{ children }} isn't written like a placeholder. Write {{< children >}}."]],
+  ['missing >', '{{< nav }}', ["{{< nav }} isn't written like a placeholder. Write {{< nav >}}."]],
+  ['capitalised', '{{< Children >}}', ["{{< Children >}} isn't written like a placeholder. Write {{< children >}}."]],
+  ['template text that is no placeholder', 'Write {{ now }} or {{ .Title }} in Hugo.', []],
+  ['in a code span: text, as on the site', 'Write `{{< chidren >}}` here.', []],
+  ['in a code block', '```\n{{< chidren >}}\n```', []],
+  ['repeats listed once', '{{< chidren >}}\n\n{{< chidren >}}', ["{{< chidren >}} isn't a placeholder. Did you mean {{< children >}}?"]],
+  ['inside a list item', '* {{< tco >}}', ["{{< tco >}} isn't a placeholder. Use {{< children >}}, {{< nav >}} or {{< toc >}}."]],
+]) {
+  test(`placeholderIssues: ${name}`, () => {
+    assert.deepEqual(M.placeholderIssues(body, M.PAGE_PLACEHOLDERS), want);
+  });
+}
+
+test('placeholderIssues: a card type without placeholders checks nothing', () => {
+  assert.deepEqual(M.placeholderIssues('{{< chidren >}}', []), []);
+  assert.deepEqual(M.detailProfile('task').placeholders, []);
+  assert.deepEqual(M.detailProfile('page').placeholders.map((p) => p.name), ['children', 'nav', 'toc']);
+});
+
+test('page detail: placeholder problems show under the body, while reading and while editing', async (t) => {
+  const tr = pageTransport({ body: 'Intro\n\n{{< chidren >}}' });
+  const { dispatcher, api } = bootApi(tr.transport);
+  const { td } = mountPage(api);
+  await settle(dispatcher);
+
+  const warn = td.el.querySelector('[data-desc-warnings]');
+  assert.equal(warn.style.display, '', 'shown while reading');
+  assert.deepEqual([...warn.querySelectorAll('li')].map((li) => li.textContent),
+    ["{{< chidren >}} isn't a placeholder. Did you mean {{< children >}}?"]);
+
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  td.el.querySelector('[data-task-desc-edit]').click();
+  const input = td.el.querySelector('[data-task-desc-input]');
+  input.value = 'Intro\n\n{{< children >}}';
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert.equal(warn.style.display, '', 'unchanged until typing pauses');
+  t.mock.timers.tick(300);
+  assert.equal(warn.style.display, 'none', 'fixed → hidden');
+
+  input.value = '{{ toc }}';
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  t.mock.timers.tick(300);
+  assert.deepEqual([...warn.querySelectorAll('li')].map((li) => li.textContent),
+    ["{{ toc }} isn't written like a placeholder. Write {{< toc >}}."]);
+});
+
+test('page detail: a clean body shows no warning box', async () => {
+  const tr = pageTransport();
+  const { dispatcher, api } = bootApi(tr.transport);
+  const { td } = mountPage(api);
+  await settle(dispatcher);
+  assert.equal(td.el.querySelector('[data-desc-warnings]').style.display, 'none');
+});
+
+test('page detail: the description editor gets an Insert menu of placeholders', async () => {
+  // A command-capable stub engine so the toolbar renders under jsdom.
+  const inserted = [];
+  M.setRichEditorEngine((host, init) => {
+    const editable = document.createElement('div');
+    for (const [k, v] of Object.entries(init.editableAttrs ?? {})) editable.setAttribute(k, v);
+    host.append(editable);
+    return {
+      getMarkdown: () => init.value,
+      setMarkdown() {},
+      setDisabled() {},
+      focus() {},
+      isFocused: () => false,
+      isEmpty: () => false,
+      destroy() {},
+      supportsCommands: () => true,
+      exec() {},
+      isActive: () => false,
+      can: () => true,
+      insertBlock: (text) => inserted.push(text),
+    };
+  });
+  try {
+    const tr = pageTransport();
+    const { dispatcher, api } = bootApi(tr.transport);
+    const { td } = mountPage(api);
+    await settle(dispatcher);
+    td.el.querySelector('[data-task-desc-edit]').click();
+    td.el.querySelector('[data-action="insert"]').click();
+    const items = [...document.querySelectorAll('[data-insert-menu] [data-insert]')];
+    assert.deepEqual(items.map((i) => i.dataset.insert), ['{{< children >}}', '{{< nav >}}', '{{< toc >}}']);
+    items[2].click();
+    assert.deepEqual(inserted, ['{{< toc >}}']);
+  } finally {
+    M.setRichEditorEngine(M.createTextareaEngine);
+  }
 });

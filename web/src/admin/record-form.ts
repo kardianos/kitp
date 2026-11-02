@@ -40,6 +40,7 @@ import { loadRefOptions } from '../filter/ref-options.js';
 
 export type RecordFormFieldKind =
   | 'text'
+  | 'textarea'
   | 'secret'
   | 'number'
   | 'checkbox'
@@ -529,6 +530,21 @@ export class RecordForm extends Control<RecordFormConfig> {
       wrap.append(sel);
       this.appendHint(wrap, f);
       if (f.kind === 'selectFromQuery') this.ensureOptions(f);
+      return wrap;
+    }
+
+    if (f.kind === 'textarea') {
+      const area = document.createElement('textarea');
+      area.className = 'record-form__input record-form__textarea';
+      area.dataset.recordFormField = f.name;
+      area.rows = 3;
+      area.value = strValue;
+      if (f.placeholder) area.placeholder = f.placeholder;
+      this.listen(area, 'input', () => {
+        draft[f.name] = area.value;
+      });
+      wrap.append(area);
+      this.appendHint(wrap, f);
       return wrap;
     }
 

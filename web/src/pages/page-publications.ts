@@ -13,23 +13,20 @@
  * (the TransitionBar above), so the detail calls {@link reload} after a move
  * and after an edit (which can turn a copy stale).
  *
- * The section also carries "+ Child page": a page's children are its section
- * of the site, so new pages are added under it here.
+ * (A page's place in the site — its parent, child pages, "+ Child page" — is
+ * the PLACE IN SITE section, PageStructure.)
  *
  * Zero-promise: reads/writes go through `api.callByName(..., { alive })`.
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { localTimeEl } from '../util/datetime.js';
-import { navigate, pageUrl } from '../shell/router.js';
-import { PROJECT_SPEC, type CardInsertOutput } from '../projects/specs.js';
 import {
   PORTAL_SPEC,
   previewUrl,
   type PagePublication,
   type PagePublicationsOutput,
 } from '../bundles/specs.js';
-import { newPageInput } from './new-page-button.js';
 
 export interface PagePublicationsConfig extends BaseControlConfig {
   type: 'PagePublications';
@@ -65,14 +62,7 @@ export class PagePublications extends Control<PagePublicationsConfig> {
     const heading = document.createElement('h2');
     heading.className = 'task-detail__section-label muted';
     heading.textContent = 'PUBLISHED ON';
-    const child = document.createElement('button');
-    child.type = 'button';
-    child.className = 'btn page-pubs__child';
-    child.dataset.pageChild = '';
-    child.textContent = '+ Child page';
-    child.title = 'Add a page under this one';
-    this.listen(child, 'click', () => this.addChild(child));
-    head.append(heading, child);
+    head.append(heading);
 
     const list = document.createElement('ul');
     list.className = 'page-pubs__list';
@@ -159,26 +149,6 @@ export class PagePublications extends Control<PagePublicationsConfig> {
 
     li.append(top, meta);
     return li;
-  }
-
-  /** Create an "Untitled page" under this page and open it. */
-  private addChild(btn: HTMLButtonElement): void {
-    if (this.pageId === null) return;
-    btn.disabled = true;
-    this.ctx.api.callByName(
-      PROJECT_SPEC.cardInsert,
-      newPageInput(this.pageId, 'Untitled page'),
-      (out) => {
-        btn.disabled = false;
-        navigate(pageUrl((out as CardInsertOutput).id));
-      },
-      {
-        alive: () => this.isAlive(),
-        onErr: () => {
-          btn.disabled = false;
-        },
-      },
-    );
   }
 }
 

@@ -49,7 +49,7 @@ import { Control, type BaseControlConfig } from '../core/control.js';
 import { PanelModel } from './panel-model.js';
 import { setMarkdown } from '../util/markdown-control.js';
 import { RichEditor } from '../editor/rich-editor.js';
-import { navigate, taskUrl, projectUrl } from '../shell/router.js';
+import { navigate, taskUrl, projectUrl, cardUrl } from '../shell/router.js';
 import { taskNavNeighbor, taskNavListUrl } from '../shell/task-nav.js';
 import { SPEC, type SelectWithAttributesOutput, type AttributeUpdateOutput } from '../kanban/specs.js';
 import { asAttrId, type CardWithAttrs } from '../kanban/kanban-helpers.js';
@@ -77,9 +77,19 @@ import type { AttachmentsSection } from './attachments-section.js';
 import type { TagsEditor } from './tags-editor.js';
 import type { RelatedTasksPanel } from './related-tasks-panel.js';
 import type { PostChunk } from './upload.js';
-import { detailProfile, enclosingProjectId, type DetailProfile, type DetailSection } from './detail-profiles.js';
+import {
+  detailProfile,
+  enclosingProjectId,
+  siblingLinkTargets,
+  pictureSnippets,
+  type DetailMenuAction,
+  type DetailProfile,
+  type DetailSection,
+} from './detail-profiles.js';
 import type { PagePublications } from '../pages/page-publications.js';
+import type { PageStructure } from '../pages/page-structure.js';
 import { icon } from '../ui/icons.js';
+import { placeholderIssues, placeholderSnippets } from '../bundles/placeholders.js';
 
 import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
@@ -172,6 +182,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   /** The card's project (its parent, or — for a nested page — the first
    *  ancestor that isn't a card of its own type). Set when the card loads. */
   private projectId: bigint | undefined;
+  /** Every loaded card of this type (the detail load reads them all): the
+   *  description's Link bar picks siblings from them (profile.linkSiblings). */
+  private sameTypeRows: SelectWithAttributesOutput['rows'] = [];
 
   /** The loaded focal task, or null (loading / not found).  Kept for the
    *  callsites that still need the raw card (parent_card_id, redirect-on-
@@ -227,6 +240,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   /** Host + control for a page's PUBLISHED ON section. */
   private publicationsHost!: HTMLElement;
   private pagePublications: PagePublications | null = null;
+  private structureHost!: HTMLElement;
+  private pageStructure: PageStructure | null = null;
 
   /** Read-only status badge in the nav row (next to #id). Phase-toned. */
   private statusBadgeEl!: HTMLElement;
@@ -282,6 +297,10 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   /** The live editor while editing — held so the Save button can read its
    *  value (getValue) without a DOM query, and so it can be torn down. */
   private descEditor: RichEditor | null = null;
+  /** Under the description: what's wrong with its placeholders (pages). */
+  private descWarn!: HTMLElement;
+  /** Pending re-check of the placeholders while editing (debounced). */
+  private descWarnTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Per-row child editors (RefPicker / DatePicker) so we can dispose on rebuild. */
   private rowChildren: Control[] = [];
@@ -425,10 +444,11 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     header.append(navRow);
 
     // Reveal the "…" menu only for manager/admin (reactive — auth lands after
-    // the boot /auth/me probe, possibly after this render).
+    // the boot /auth/me probe, possibly after this render), and only when this
+    // card type has menu actions (its detail profile).
     this.effect(() => {
       const allowed = isAdmin(this.ctx.tree) || hasRole(this.ctx.tree, 'manager');
-      actions.style.display = allowed ? '' : 'none';
+      actions.style.display = allowed && this.profile.menuActions.length > 0 ? '' : 'none';
     }, 'taskDetail.actionsRole');
     // Re-scope the status badge glyph to the task flow once it lands.
     this.effect(() => {
@@ -522,7 +542,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     // The description editor holds engine state (a ProseMirror view, later) that
     // needs explicit teardown on control destroy.
     this.onDestroy(() => this.descEditor?.destroy());
-    descSection.append(descLabel, descHost);
+    const descWarn = document.createElement('div');
+    descWarn.className = 'task-detail__desc-warnings';
+    descWarn.dataset.descWarnings = '';
+    descWarn.setAttribute('role', 'status');
+    descWarn.style.display = 'none';
+    this.descWarn = descWarn;
+    this.onDestroy(() => this.clearDescWarnTimer());
+    descSection.append(descLabel, descHost, descWarn);
     main.append(descSection);
 
     // Read-only RELATED TASKS summary — the navigable parent link + child list
@@ -613,10 +640,13 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.attachmentsHost = attachmentsSlot;
     this.tagsHost = tagsSlot;
     this.relatedHost = relatedSlot;
-    // A page's PUBLISHED ON section (where it's live; + Child page).
+    // A page's PLACE IN SITE (parent, child pages, navigation) and PUBLISHED
+    // ON (where it's live) sections.
+    const structureSlot = this.makeSlot('structure', 'Place in site');
+    this.structureHost = structureSlot;
     const publicationsSlot = this.makeSlot('publications', 'Published on');
     this.publicationsHost = publicationsSlot;
-    rail.append(publicationsSlot, attachmentsSlot, tagsSlot, relatedSlot);
+    rail.append(structureSlot, publicationsSlot, attachmentsSlot, tagsSlot, relatedSlot);
 
     // Sections this card type doesn't have (its detail profile) never show.
     const slots: Array<[DetailSection, HTMLElement]> = [
@@ -628,6 +658,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       ['attachments', attachmentsSlot],
       ['tags', tagsSlot],
       ['related', relatedSlot],
+      ['structure', structureSlot],
       ['publications', publicationsSlot],
     ];
     for (const [section, el] of slots) if (!this.shows(section)) el.style.display = 'none';
@@ -649,6 +680,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.mountLinks();
     this.mountApprovals();
     this.mountAttachments();
+    this.mountStructure();
     this.mountPublications();
 
     // Kick off the loads. Zero-promise: the onOk callbacks repaint when each
@@ -751,6 +783,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
           return;
         }
         this.projectId = enclosingProjectId(found, new Map(rows.map((r) => [r.id, r])));
+        this.sameTypeRows = rows;
         // Seed the panel store with every attribute's initial Value/Unset.
         // Every subsequent commit drives a Pending → Value/Error transition
         // through `panel.beginCommit / confirmCommit / rejectCommit`.
@@ -888,6 +921,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.mountLinks();
     this.mountApprovals();
     this.mountAttachments();
+    this.mountStructure();
     this.mountPublications();
     this.mountTags();
     this.mountRelated();
@@ -1048,6 +1082,29 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     btn.title = fresh
       ? `${this.pollNewCount} new update${this.pollNewCount === 1 ? '' : 's'} (comms / comments / links) — click to load`
       : 'Up to date · click to check for new links, comms & comments';
+  }
+
+  /** Spawn a page's PLACE IN SITE control into the `structure` slot. Idempotent. */
+  private mountStructure(): void {
+    if (this.taskId === null || !this.shows('structure')) return;
+    if (this.pageStructure !== null) return;
+    this.structureHost.replaceChildren();
+    this.structureHost.classList.add('task-detail__slot--filled');
+    this.pageStructure = this.spawn(
+      'PageStructure',
+      {
+        type: 'PageStructure',
+        pageId: this.taskId.toString(),
+        // A move, reorder or navigation flag is an edit: a published copy
+        // goes stale, and the activity feed gains a row.
+        onChanged: () => {
+          this.pagePublications?.reload();
+          this.taskComments?.reload();
+          this.noteOwnActivity();
+        },
+      },
+      this.structureHost,
+    ) as PageStructure;
   }
 
   /** Spawn a page's PUBLISHED ON control into the `publications` slot. Idempotent. */
@@ -1373,6 +1430,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   }
 
   private renderDescription(): void {
+    this.clearDescWarnTimer();
     this.descEditor?.destroy();
     this.descEditor = null;
     this.descHost.replaceChildren();
@@ -1386,14 +1444,26 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     if (this.editingDescription) {
       this.descEditor = new RichEditor({
         value: this.descriptionText(),
-        ariaLabel: 'Task description',
+        ariaLabel: `${this.profile.noun} description`,
+        linkTargets: () =>
+          this.profile.linkSiblings && this.taskId !== null && this.projectId !== undefined
+            ? siblingLinkTargets(this.taskId, this.projectId, this.sameTypeRows)
+            : [],
+        // Read when the Insert menu opens: the page's pictures change as
+        // files are attached.
+        snippets: () => [
+          ...placeholderSnippets(this.profile.placeholders),
+          ...(this.profile.insertPictures ? pictureSnippets(this.attachmentsSection?.imageRows?.() ?? []) : []),
+        ],
         placeholder: 'Markdown supported · Mod+Enter or Save to commit',
         editableClassName: 'task-detail__desc-input',
         editableAttrs: { 'data-task-desc-input': '' },
+        onChange: () => this.queueDescWarnings(),
         onCommit: (md) => this.commitDescription(md),
         onCancel: () => this.cancelDescriptionEdit(),
       });
       this.descHost.append(this.descEditor.el);
+      this.paintDescWarnings(this.descriptionText());
       queueMicrotask(() => this.descEditor?.focus());
       return;
     }
@@ -1402,6 +1472,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     body.className = 'task-detail__desc-body';
     body.dataset.taskDescBody = '';
     const text = this.descriptionText();
+    this.paintDescWarnings(text);
     if (text.length > 0) {
       // The single sanctioned Markdown sink (createElement via DOMSerializer).
       setMarkdown(body, text);
@@ -1410,6 +1481,41 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       body.textContent = 'No description. Click ✎ to add one.';
     }
     this.descHost.append(body);
+  }
+
+  /**
+   * List the placeholder problems in `markdown` under the description (none,
+   * or a type without placeholders: hidden). Shown while reading and while
+   * editing, so a typo shows before the next portal build.
+   */
+  private paintDescWarnings(markdown: string): void {
+    const issues = placeholderIssues(markdown, this.profile.placeholders);
+    this.descWarn.replaceChildren();
+    this.descWarn.style.display = issues.length === 0 ? 'none' : '';
+    if (issues.length === 0) return;
+    const list = document.createElement('ul');
+    for (const msg of issues) {
+      const li = document.createElement('li');
+      li.textContent = msg;
+      list.append(li);
+    }
+    this.descWarn.append(list);
+  }
+
+  /** Re-check the draft's placeholders once typing pauses. */
+  private queueDescWarnings(): void {
+    if (this.profile.placeholders.length === 0) return;
+    this.clearDescWarnTimer();
+    this.descWarnTimer = setTimeout(() => {
+      this.descWarnTimer = null;
+      if (this.descEditor !== null) this.paintDescWarnings(this.descEditor.getValue());
+    }, 300);
+  }
+
+  private clearDescWarnTimer(): void {
+    if (this.descWarnTimer === null) return;
+    clearTimeout(this.descWarnTimer);
+    this.descWarnTimer = null;
   }
 
   private startDescriptionEdit(): void {
@@ -1432,15 +1538,16 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * (the #11 fix), so typing in a field stays literal.
    */
   override hotkeys(): readonly import('../core/hotkeys.js').HotkeyBinding[] {
+    const noun = this.profile.noun.toLowerCase();
     return [
       { binding: 'e t', label: 'Edit title', run: () => this.startTitleEdit() },
       { binding: 'e d', label: 'Edit description', run: () => this.startDescriptionEdit() },
       { binding: 'e c', label: 'Add comment', run: () => this.focusComposer() },
       { binding: 'e p', label: 'Set parent', run: () => this.focusSetParent() },
-      { binding: '[', label: 'Previous task', run: () => this.jumpTask(-1) },
-      { binding: ']', label: 'Next task', run: () => this.jumpTask(1) },
-      { binding: 'k', label: 'Previous task', run: () => this.jumpTask(-1) },
-      { binding: 'j', label: 'Next task', run: () => this.jumpTask(1) },
+      { binding: '[', label: `Previous ${noun}`, run: () => this.jumpTask(-1) },
+      { binding: ']', label: `Next ${noun}`, run: () => this.jumpTask(1) },
+      { binding: 'k', label: `Previous ${noun}`, run: () => this.jumpTask(-1) },
+      { binding: 'j', label: `Next ${noun}`, run: () => this.jumpTask(1) },
       // Back to the issue list the user came from. The engine suppresses bare
       // `q`/`Escape` while focus is in an input/textarea (so they cancel inline
       // edits / close pickers instead) — this only fires from the screen chrome.
@@ -1453,8 +1560,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * came from (the inbox / grid / kanban that published `nav.listUrl`), NOT a
    * history step. Walking task→task preserves that URL, so this lands on the
    * original list even after a chain of next/prev jumps. With no saved list (a
-   * cold deep-link to `/task/:id`) it falls back to the task's project board,
-   * or the all-projects list when the parent project isn't known.
+   * cold deep-link to `/task/:id`) it falls back to the card's project board
+   * (a page's parent may be another page, so this is its enclosing project),
+   * or the all-projects list when the project isn't known.
    */
   private goBack(): void {
     const listUrl = taskNavListUrl(this.ctx.tree);
@@ -1462,8 +1570,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       navigate(listUrl);
       return;
     }
-    const parent = this.task?.parent_card_id;
-    navigate(typeof parent === 'bigint' && parent > 0n ? projectUrl(parent) : '/projects');
+    const project = this.projectId;
+    navigate(typeof project === 'bigint' && project > 0n ? projectUrl(project) : '/projects');
   }
 
   /* --------------------------- actions menu (…) -------------------------- */
@@ -1481,7 +1589,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     panel.classList.add('task-detail__menu');
     panel.dataset.taskActionsMenu = '';
     panel.setAttribute('role', 'menu');
-    panel.setAttribute('aria-label', 'Task actions');
+    panel.setAttribute('aria-label', `${this.profile.noun} actions`);
+    const has = (a: DetailMenuAction): boolean => this.profile.menuActions.includes(a);
 
     // "Move to project…" — re-parent this task (and its sub-tree) under a
     // different project, clearing per-project classification so it's re-triaged
@@ -1498,7 +1607,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       this.actionsMenu = null;
       this.openMoveDialog();
     });
-    panel.append(move);
+    if (has('move')) panel.append(move);
 
     const del = document.createElement('button');
     del.type = 'button';
@@ -1511,7 +1620,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       this.actionsMenu = null;
       this.openPurgeConfirm();
     });
-    panel.append(del);
+    if (has('purge')) panel.append(del);
 
     this.actionsMenu = menu;
     menu.open();
@@ -1711,12 +1820,13 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     btn?.click();
   }
 
-  /** `[`/`]` (and `j`/`k`) — jump to the prev/next task in the source list the
-   *  user came from. No-op when there's no published list / no neighbor (#18). */
+  /** `[`/`]` (and `j`/`k`) — jump to the prev/next card in the source list the
+   *  user came from, on this card type's route (a page stays a page). No-op
+   *  when there's no published list / no neighbor (#18). */
   private jumpTask(dir: -1 | 1): void {
     if (this.taskId === null) return;
     const next = taskNavNeighbor(this.ctx.tree, this.taskId, dir);
-    if (next !== null) navigate(taskUrl(next));
+    if (next !== null) navigate(cardUrl(next, this.profile.route));
   }
 
   /**
@@ -1740,9 +1850,10 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     const row = document.createElement('div');
     row.className = 'task-detail__row task-detail__nav-row';
 
+    const noun = this.profile.noun;
     const label = document.createElement('span');
     label.className = 'task-detail__row-label muted';
-    label.textContent = 'Task';
+    label.textContent = noun;
 
     const value = document.createElement('span');
     value.className = 'task-detail__row-value task-detail__nav';
@@ -1752,8 +1863,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     prev.className = 'task-detail__nav-btn';
     prev.dataset.taskNavPrev = '';
     prev.append(icon('chevron-left', 14));
-    prev.title = 'Previous task ([)';
-    prev.setAttribute('aria-label', 'Previous task');
+    prev.title = `Previous ${noun.toLowerCase()} ([)`;
+    prev.setAttribute('aria-label', `Previous ${noun.toLowerCase()}`);
     prev.disabled = idx === 0;
     this.listen(prev, 'click', () => this.jumpTask(-1));
 
@@ -1767,8 +1878,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     next.className = 'task-detail__nav-btn';
     next.dataset.taskNavNext = '';
     next.append(icon('chevron-right', 14));
-    next.title = 'Next task (])';
-    next.setAttribute('aria-label', 'Next task');
+    next.title = `Next ${noun.toLowerCase()} (])`;
+    next.setAttribute('aria-label', `Next ${noun.toLowerCase()}`);
     next.disabled = idx === list.length - 1;
     this.listen(next, 'click', () => this.jumpTask(1));
 

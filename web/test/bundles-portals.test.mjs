@@ -113,8 +113,9 @@ test('previewUrl maps a build file path to the preview route', () => {
 });
 
 test('decoders read the wire rows (ids → bigint, missing fields defaulted)', () => {
-  const row = M.decodePortalRow({ id: '120', title: 'QA', public: false, root_page_id: '700', statuses: ['Docs › In review'], page_count: 3, dirty: true });
+  const row = M.decodePortalRow({ id: '120', title: 'QA', public: false, root_page_id: '700', root_label: 'Docs › Home', statuses: ['Docs › In review'], page_count: 3, dirty: true });
   assert.equal(row.id, 120n);
+  assert.equal(row.rootLabel, 'Docs › Home');
   assert.equal(row.rootPageId, 700n);
   assert.equal(row.public, false);
   assert.equal(row.dirty, true);
@@ -335,8 +336,9 @@ test('detail profiles: pages use publish_status, no task-only sections, editable
   const page = M.detailProfile('page');
   assert.equal(page.noun, 'Page');
   assert.equal(page.statusAttr, 'publish_status');
-  assert.deepEqual([...page.sections].sort(), ['attachments', 'comments', 'publications']);
+  assert.deepEqual([...page.sections].sort(), ['attachments', 'comments', 'publications', 'structure']);
   assert.ok(page.skipAttrs.includes('publish_status'));
+  assert.ok(page.skipAttrs.includes('nav_hidden') && page.skipAttrs.includes('nav_hide_children'), 'the nav flags live in PLACE IN SITE');
   assert.ok(page.showAttrs.includes('sort_order'));
   assert.equal(page.commRedirect, false);
   const task = M.detailProfile('task');
@@ -408,11 +410,7 @@ test('PagePublications lists portals with current / stale state and preview link
   assert.equal(qa.querySelector('[data-page-pub-state]').dataset.pagePubState, 'current');
   assert.match(qa.textContent, /Preview only/);
   assert.match(qa.querySelector('[data-page-pub-preview]').textContent, /building/);
-
-  // "+ Child page" creates a page under THIS page.
-  ctrl.el.querySelector('[data-page-child]').dispatchEvent({ type: 'click' });
-  await settle(dispatcher);
-  assert.deepEqual(t.of('card.insert')[0].data, { card_type_name: 'page', parent_card_id: '71', title: 'Untitled page' });
+  assert.equal(ctrl.el.querySelector('[data-page-child]'), null, '+ Child page moved to PLACE IN SITE');
 });
 
 test('PagePublications: an unpublished page says how to publish it', async () => {
@@ -444,7 +442,8 @@ function portalHandlers(state) {
       state.rows = state.rows.map((r) => (r.id === d.id ? { ...r, dirty: true } : r));
       return { queued: true };
     },
-    'card.select_with_attributes': () => ({ rows: [{ id: '700', card_type_id: '20', card_type_name: 'page', parent_card_id: '31', attributes: { title: 'Home' } }] }),
+    'portal.root_pages': () => ({ rows: [{ id: '700', label: 'Docs › Home', project_id: '31' }, { id: '701', label: 'Docs › Home › Guide', project_id: '31' }, { id: '800', label: 'Support › Home', project_id: '32' }] }),
+    'theme.list': () => ({ rows: [{ id: '130', title: 'Docs look', base: 'newspaper', base_name: 'Newspaper', nav: '', accent: '', footer: '', files: [], portals: [] }] }),
   };
 }
 
@@ -466,7 +465,7 @@ async function selectFirst(ctrl, dispatcher) {
 test('Portals admin: lists portals, shows build state, saves through portal.set', async () => {
   const state = {
     sets: [], rebuilds: [],
-    rows: [{ id: '120', title: 'Docs (PROD)', host: 'docs.example.com', public: true, root_page_id: '700', root_title: 'Home', root_project_id: '31', statuses: ['Docs › Published'], page_count: 4, built_at: '2026-06-01T00:00:00Z', active_build_id: '9', warnings: ['"Orphan" isn\'t reachable'], dirty: false, last_error: '' }],
+    rows: [{ id: '120', title: 'Docs (PROD)', host: 'docs.example.com', public: true, root_page_id: '700', root_title: 'Home', root_label: 'Docs › Home', root_project_id: '31', statuses: ['Docs › Published'], page_count: 4, built_at: '2026-06-01T00:00:00Z', active_build_id: '9', warnings: ['"Orphan" isn\'t reachable'], dirty: false, last_error: '' }],
   };
   const t = transportFor(portalHandlers(state));
   const { dispatcher, api } = bootApi(t.transport);
@@ -480,20 +479,34 @@ test('Portals admin: lists portals, shows build state, saves through portal.set'
   assert.equal(field('host').value, 'docs.example.com');
   assert.equal(field('public').checked, true);
   assert.equal(field('rootPageId').value, '700');
+  // Root-page options come from portal.root_pages, labelled with their
+  // project, so two projects' "Home" pages can't be confused.
+  const optionLabels = field('rootPageId').querySelectorAll('option').map((o) => o.textContent);
+  assert.deepEqual(optionLabels, ['Choose a page…', 'Docs › Home', 'Docs › Home › Guide', 'Support › Home']);
+  assert.match(ctrl.el.querySelector('[data-md-row]').textContent, /Docs › Home/, 'list subtitle names the root with its project');
   assert.match(field('statuses').textContent, /Docs › Published/);
   assert.match(field('build').textContent, /4 pages · built/);
   assert.match(field('warnings').textContent, /Orphan/);
   assert.equal(ctrl.el.querySelector('[data-record-form-field-wrap="lastError"]'), null, 'no last-error row when the build is fine');
+
+  // Themes come from theme.list; none picked = the built-in Side menu.
+  assert.deepEqual(field('themeId').querySelectorAll('option').map((o) => o.textContent), ['Side menu (built in)', 'Docs look']);
+  assert.equal(field('themeId').value, '');
+  assert.equal(field('internal').checked, false);
 
   // Edit + save → portal.set with every field (ids as strings on the wire).
   field('host').value = 'Docs.Example.org';
   field('host').dispatchEvent({ type: 'input' });
   field('public').checked = false;
   field('public').dispatchEvent({ type: 'change' });
+  field('internal').checked = true;
+  field('internal').dispatchEvent({ type: 'change' });
+  field('themeId').value = '130';
+  field('themeId').dispatchEvent({ type: 'change' });
   ctrl.el.querySelector('[data-record-form-save]').dispatchEvent({ type: 'click' });
   await settle(dispatcher);
   assert.equal(state.sets.length, 1);
-  assert.deepEqual(state.sets[0], { id: '120', title: 'Docs (PROD)', host: 'docs.example.org', public: false, root_page_id: '700' });
+  assert.deepEqual(state.sets[0], { id: '120', title: 'Docs (PROD)', host: 'docs.example.org', public: false, internal: true, root_page_id: '700', theme_id: '130' });
 });
 
 test('Portals admin: Rebuild queues a build and reloads; Preview links to the preview route', async () => {
@@ -541,7 +554,7 @@ test('Portals admin: + New portal creates without an id and requires a title', a
   await settle(dispatcher);
   assert.equal(state.sets.length, 1);
   assert.equal('id' in state.sets[0], false, 'create sends no id');
-  assert.deepEqual(state.sets[0], { title: 'Docs (PROD)', host: '', public: false, root_page_id: '0' });
+  assert.deepEqual(state.sets[0], { title: 'Docs (PROD)', host: '', public: false, internal: false, root_page_id: '0', theme_id: '0' });
   assert.equal(tree.at(['admin', 'portals', 'items']).peek().length, 1, 'new portal listed after save');
 });
 
@@ -551,7 +564,10 @@ test('portal form mappers round-trip a row', () => {
   assert.equal(draft.rootPageId, '', 'unset root → blank select');
   assert.match(draft.build, /Not built yet · rebuild pending/);
   const input = M.portalDraftToInput({ ...draft, rootPageId: '700' });
-  assert.deepEqual(input, { id: 120n, title: 'PROD', host: 'docs.example.com', public: true, rootPageId: 700n });
+  assert.deepEqual(input, { id: 120n, title: 'PROD', host: 'docs.example.com', public: true, internal: false, rootPageId: 700n, themeId: 0n });
+  const themed = M.portalDraftToInput(M.portalRowToDraft({ id: 120n, title: 'PROD', internal: true, themeId: 130n, rootPageId: 700n }));
+  assert.equal(themed.internal, true);
+  assert.equal(themed.themeId, 130n);
 });
 
 /* -------------------------------------------------------------------------- */

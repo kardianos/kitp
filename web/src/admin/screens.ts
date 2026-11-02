@@ -44,6 +44,7 @@ import type { NestedEditorConfig } from './nested-editor.js';
 import type { SchedulerJobsConfig } from './scheduler-jobs.js';
 import { COMM_CHANNEL_FORM } from './comm-channel-form.js';
 import { PORTAL_FORM } from './portal-form.js';
+import { THEME_FORM } from './theme-form.js';
 import { ACTIVITY_SINK_FORM } from './activity-sink-form.js';
 import { WORKFLOW_FORM } from './workflow-form.js';
 
@@ -716,7 +717,7 @@ export const PORTALS_SCREEN: MasterDetailConfig = {
     search: { field: 'title', placeholder: 'Search portals…' },
     row: {
       title: 'title',
-      subtitle: 'rootTitle',
+      subtitle: 'rootLabel',
       badge: { field: 'public', labels: { true: 'Public', false: 'Preview only' } },
     },
   },
@@ -725,6 +726,35 @@ export const PORTALS_SCREEN: MasterDetailConfig = {
     empty: 'Select a portal, or add one. A portal publishes a page tree as a site.',
     fields: [],
     form: PORTAL_FORM,
+  },
+};
+
+/* -------------------------------------------------------------------------- */
+/* Themes = theme.list (global theme cards: what a portal's site looks like).  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Themes are GLOBAL (QA and PROD can share one). The RecordForm (THEME_FORM)
+ * edits the name, base theme, navigation, accent and footer; the ThemeFiles
+ * panel below it lists the base's read-only files and the theme's own, and
+ * customizes, edits and uploads them.
+ */
+export const THEMES_SCREEN: MasterDetailConfig = {
+  type: 'MasterDetail',
+  title: 'Themes',
+  scopeKey: 'admin.themes',
+  list: {
+    spec: 'theme.list',
+    rowHeight: 56,
+    search: { field: 'title', placeholder: 'Search themes…' },
+    row: { title: 'title', subtitle: 'summary' },
+  },
+  detail: {
+    titleField: 'title',
+    empty: 'Select a theme, or add one. A theme starts from a built-in look (side menu, top menu, newspaper …) that you can change.',
+    fields: [],
+    form: THEME_FORM,
+    panel: { type: 'ThemeFiles' },
   },
 };
 
@@ -825,6 +855,7 @@ export type AdminView =
   | 'activity_sinks'
   | 'comm_log'
   | 'portals'
+  | 'themes'
   | 'jobs';
 
 /** The data-driven "Enums" screen — NOT a MasterDetail (one screen spans many
@@ -869,6 +900,7 @@ const ADMIN_SCREENS: Record<AdminView, AdminScreenConfig> = {
   activity_sinks: ACTIVITY_SINKS_SCREEN,
   comm_log: COMM_LOG_SCREEN,
   portals: PORTALS_SCREEN,
+  themes: THEMES_SCREEN,
   jobs: JOBS_SCREEN,
 };
 
@@ -910,6 +942,8 @@ export const ADMIN_SECTION: Record<AdminView, AdminSection> = {
   comm_log: 'project',
   // Global: a portal publishes a page tree from any project.
   portals: 'workspace',
+  // Global: portals share themes.
+  themes: 'workspace',
   // Workspace-wide: the jobs are global process state, not project-scoped.
   jobs: 'workspace',
 };

@@ -4,15 +4,17 @@
  * two record actions (Rebuild, Preview).
  *
  * A portal has a title, a root page (its Home — the page tree below it is the
- * site), an optional host name for the public listener, and a public flag
- * (off = preview only, e.g. QA). WHICH pages it shows is set on statuses
+ * site), an optional host name for the public listener, a public flag (off =
+ * preview only, e.g. QA), a theme (none = the built-in Side menu theme) and
+ * "Show in kitp" (the site listed in kitp's sidebar, shown in the content
+ * area). WHICH pages it shows is set on statuses
  * (publishes_to, in the Values screen); this form just lists them, plus the
  * active build's state (pages, built at, pending rebuild, warnings, last
  * error). Portals are global, so the form isn't bound to the active project.
  */
 
 import type { RecordFormScreenConfig } from './record-form.js';
-import { PORTAL_SPEC, previewUrl } from '../bundles/specs.js';
+import { PORTAL_SPEC, THEME_SPEC, previewUrl } from '../bundles/specs.js';
 import { formatLocalDateTime } from '../util/datetime.js';
 
 
@@ -47,6 +49,8 @@ export function portalRowToDraft(row: Record<string, unknown>): Record<string, u
     title: str(row['title']),
     host: str(row['host']),
     public: row['public'] === true,
+    internal: row['internal'] === true,
+    themeId: idOrEmpty(row['themeId']),
     rootPageId: idOrEmpty(row['rootPageId']),
     statuses:
       statuses.length > 0
@@ -65,7 +69,9 @@ export function portalDraftToInput(draft: Record<string, unknown>): Record<strin
     title: str(draft['title']).trim(),
     host: str(draft['host']).trim().toLowerCase(),
     public: draft['public'] === true,
+    internal: draft['internal'] === true,
     rootPageId: BigInt(idOrEmpty(draft['rootPageId']) || '0'),
+    themeId: BigInt(idOrEmpty(draft['themeId']) || '0'),
   };
   const id = idOrEmpty(draft['id']);
   if (id !== '') input['id'] = BigInt(id);
@@ -82,11 +88,13 @@ export const PORTAL_FORM: RecordFormScreenConfig = {
   saveButtonLabel: 'Save portal',
   rowToDraft: portalRowToDraft,
   draftToInput: (draft) => portalDraftToInput(draft),
-  emptyDraft: () => ({ id: '', title: '', host: '', public: false, rootPageId: '' }),
+  emptyDraft: () => ({ id: '', title: '', host: '', public: false, internal: false, rootPageId: '', themeId: '' }),
   validate: (draft): Record<string, string> =>
     str(draft['title']).trim() === '' ? { title: 'A portal needs a title.' } : {},
   faultMessages: {
     host_taken: 'Another portal already serves that host.',
+    root_in_template: 'That page belongs to a template. Choose a page in a live project.',
+    theme_not_found: 'That theme was deleted. Choose another.',
   },
   fields: [
     { name: 'title', label: 'Title', kind: 'text', placeholder: 'e.g. Docs (PROD)' },
@@ -95,11 +103,13 @@ export const PORTAL_FORM: RecordFormScreenConfig = {
       label: 'Root page',
       kind: 'selectFromQuery',
       hint: 'The site is this page and every page under it.',
+      // portal.root_pages labels each page with its project ('Docs › Home')
+      // and leaves out template projects, whose pages never publish.
       optionsFrom: {
-        spec: 'card.select_with_attributes',
-        input: { cardTypeName: { lit: 'page' } },
+        spec: PORTAL_SPEC.rootPages,
+        input: {},
         valueField: 'id',
-        labelField: 'attributes.title',
+        labelField: 'label',
         placeholderLabel: 'Choose a page…',
       },
     },
@@ -115,6 +125,25 @@ export const PORTAL_FORM: RecordFormScreenConfig = {
       label: 'Serve publicly',
       kind: 'checkbox',
       hint: 'Off keeps the portal preview-only (signed-in users), e.g. for QA.',
+    },
+    {
+      name: 'internal',
+      label: 'Show in kitp',
+      kind: 'checkbox',
+      hint: "List the site in kitp's sidebar and show it inside kitp, to people who can see its root page.",
+    },
+    {
+      name: 'themeId',
+      label: 'Theme',
+      kind: 'selectFromQuery',
+      hint: 'How the site looks. Make and change themes in Admin → Themes.',
+      optionsFrom: {
+        spec: THEME_SPEC.list,
+        input: {},
+        valueField: 'id',
+        labelField: 'title',
+        placeholderLabel: 'Side menu (built in)',
+      },
     },
     { name: 'statuses', label: 'Published by', kind: 'readonly' },
     { name: 'build', label: 'Build', kind: 'readonly' },

@@ -221,6 +221,7 @@ export {
   screenUrl,
   taskUrl,
   pageUrl,
+  siteRouteUrl,
   cardUrl,
   adminUrl,
   plainClick,
@@ -276,6 +277,8 @@ export { EnumManager, registerEnumManager } from './admin/enum-manager.js';
 export { PeopleManager, registerPeopleManager } from './admin/people-manager.js';
 export { SchedulerJobs, registerSchedulerJobs } from './admin/scheduler-jobs.js';
 export { RecordForm, registerRecordForm } from './admin/record-form.js';
+export { ThemeFiles, registerThemeFiles, themeFileRows, themePathForUpload, brandPath, bytesToBase64 } from './admin/theme-files.js';
+export { THEME_FORM, themeRowToDraft, themeDraftToInput, validateThemeDraft } from './admin/theme-form.js';
 export {
   MasterDetail,
   registerMasterDetail,
@@ -450,9 +453,12 @@ export {
   decodePublication,
 } from './bundles/specs.js';
 export { PORTAL_FORM, portalRowToDraft, portalDraftToInput, portalBuildSummary } from './admin/portal-form.js';
-export { DETAIL_PROFILES, detailProfile, enclosingProjectId } from './task-detail/detail-profiles.js';
+export { DETAIL_PROFILES, detailProfile, enclosingProjectId, siblingLinkTargets, titlePath, pictureSnippets } from './task-detail/detail-profiles.js';
+export { PAGE_PLACEHOLDERS, placeholderIssues, placeholderSnippets, placeholderText } from './bundles/placeholders.js';
 export { NewPageButton, registerNewPageButton, newPageInput } from './pages/new-page-button.js';
 export { PagePublications, registerPagePublications } from './pages/page-publications.js';
+export { SiteView, registerSiteView } from './pages/site-view.js';
+export { PageStructure, registerPageStructure, reorderWrites, siteOrder, subtreeIds, pageNode } from './pages/page-structure.js';
 export {
   PanelModel,
   isMeaningful,

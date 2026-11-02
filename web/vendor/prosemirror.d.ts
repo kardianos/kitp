@@ -49,6 +49,8 @@ export class Schema {
   spec: SchemaSpec;
   nodes: Record<string, NodeType>;
   marks: Record<string, MarkType>;
+  /** A text node with the given marks. */
+  text(text: string, marks?: readonly any[] | null): ProseNode;
 }
 
 export class DOMSerializer {

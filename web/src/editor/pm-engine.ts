@@ -39,13 +39,15 @@ import {
   tableEditing,
   columnResizing,
   goToNextCell,
+  TextSelection,
   type Command,
   type ProseNode,
 } from '../../vendor/prosemirror.js';
-import type { EditorAction, EngineFactory, EngineHooks, EngineInit } from './engine.js';
+import { insertBlockInSource, type EditorAction, type EngineFactory, type EngineHooks, type EngineInit, type LinkTarget } from './engine.js';
 import { editorSchema, nodes, marks } from './schema.js';
 import { parseMarkdown, serializeMarkdown } from './markdown.js';
 import { fitTextarea } from '../util/autosize.js';
+import { openLinkBar, type LinkBar } from './link-bar.js';
 
 /* ----------------------------- plugins --------------------------- */
 
@@ -253,7 +255,7 @@ function commandFor(action: EditorAction, state: any): Command | null {
     case 'hr': return insertHorizontalRule;
     case 'undo': return undo;
     case 'redo': return redo;
-    // `link` prompts for a URL (execLink); `raw` swaps the editing surface
+    // `link` opens the link bar (execLink); `raw` swaps the editing surface
     // (handled in exec). Neither maps to a plain document command.
     case 'link':
     case 'raw': return null;
@@ -293,8 +295,12 @@ function actionActive(action: EditorAction, state: any): boolean {
   }
 }
 
-/** Link: remove when one is active, else prompt for a URL over the selection. */
-function execLink(view: EditorView): void {
+/**
+ * Link: remove when one is active; else open the link bar over the selection
+ * (a typed URL, or one of `targets`). The selection is saved when the bar
+ * opens, since focus moves into the bar. One bar at a time.
+ */
+function execLink(view: EditorView, host: HTMLElement, targets: readonly LinkTarget[], bar: { current: LinkBar | null }): void {
   const state: any = view.state;
   if (markActive(state, marks.link)) {
     toggleMark(marks.link)(state, view.dispatch);
@@ -302,10 +308,56 @@ function execLink(view: EditorView): void {
     return;
   }
   if (state.selection.empty) return; // nothing to wrap → no-op
-  const url = typeof prompt === 'function' ? prompt('Link URL') : null;
-  if (url !== null && url.trim() !== '') {
-    toggleMark(marks.link, { href: url.trim() })(view.state, view.dispatch);
+  if (bar.current !== null) {
+    bar.current.focus();
+    return;
   }
+  const { from, to } = state.selection;
+  bar.current = openLinkBar({
+    host,
+    before: view.dom,
+    targets,
+    onApply: (href) => {
+      view.dispatch(view.state.tr.addMark(from, to, marks.link.create({ href })));
+    },
+    onClose: () => {
+      bar.current = null;
+      view.focus();
+    },
+  });
+}
+
+/**
+ * Insert `text` as a paragraph of its own after the top-level block holding
+ * the cursor, or in place of that block when it is an empty paragraph, and
+ * put the cursor at its end. Top level, not the innermost block: a
+ * placeholder such as `{{< children >}}` expands to a list, which mustn't
+ * land inside a list item or a quote.
+ */
+function insertBlockAt(view: EditorView, text: string): void {
+  const state: any = view.state;
+  const para = nodes.paragraph.create(null, editorSchema.text(text));
+  const { $from } = state.selection;
+  let tr: any;
+  let caret: number;
+  if ($from.depth >= 1) {
+    const top = $from.node(1);
+    const start = $from.before(1);
+    const end = $from.after(1);
+    if (top.type === nodes.paragraph && top.content.size === 0) {
+      tr = state.tr.replaceWith(start, end, para);
+      caret = start + 1 + text.length;
+    } else {
+      tr = state.tr.insert(end, para);
+      caret = end + 1 + text.length;
+    }
+  } else {
+    // A node selection at the top level (a rule, an image): insert after it.
+    const at = state.selection.to;
+    tr = state.tr.insert(at, para);
+    caret = at + 1 + text.length;
+  }
+  view.dispatch(tr.setSelection(TextSelection.create(tr.doc, caret)).scrollIntoView());
   view.focus();
 }
 
@@ -364,6 +416,8 @@ export const createProseMirrorEngine: EngineFactory = (host, init, hooks) => {
   // lost across a toggle — the host's getValue()/setValue() are mode-agnostic.
   let rawArea: HTMLTextAreaElement | null = null;
   let rawCleanup: (() => void) | null = null;
+  // The open link bar, if any (execLink).
+  const linkBar: { current: LinkBar | null } = { current: null };
   const isRaw = (): boolean => rawArea !== null;
 
   function enterRaw(): void {
@@ -454,6 +508,7 @@ export const createProseMirrorEngine: EngineFactory = (host, init, hooks) => {
       return empty;
     },
     destroy: () => {
+      linkBar.current?.close();
       rawCleanup?.();
       rawArea?.remove();
       view.dom.removeEventListener('blur', onBlur);
@@ -462,6 +517,7 @@ export const createProseMirrorEngine: EngineFactory = (host, init, hooks) => {
     supportsCommands: () => true,
     exec: (action) => {
       if (action === 'raw') {
+        linkBar.current?.close();
         if (isRaw()) exitRaw();
         else enterRaw();
         hooks.onSelectionChange?.();
@@ -473,7 +529,7 @@ export const createProseMirrorEngine: EngineFactory = (host, init, hooks) => {
       // Formatting commands are no-ops while editing raw source.
       if (isRaw()) return;
       if (action === 'link') {
-        execLink(view);
+        execLink(view, host, init.linkTargets?.() ?? [], linkBar);
         return;
       }
       const cmd = commandFor(action, view.state);
@@ -495,6 +551,18 @@ export const createProseMirrorEngine: EngineFactory = (host, init, hooks) => {
       }
       const cmd = commandFor(action, state);
       return cmd !== null && cmd(state);
+    },
+    insertBlock: (text) => {
+      if (rawArea === null) {
+        insertBlockAt(view, text);
+        return;
+      }
+      const next = insertBlockInSource(rawArea.value, rawArea.selectionStart, text);
+      rawArea.value = next.value;
+      rawArea.setSelectionRange(next.caret, next.caret);
+      fitTextarea(rawArea);
+      rawArea.focus();
+      hooks.onChange();
     },
   };
 };

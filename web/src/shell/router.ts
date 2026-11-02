@@ -49,6 +49,7 @@ export type RouteName =
   | 'screen'
   | 'task'
   | 'page'
+  | 'site'
   | 'activity'
   | 'account'
   | 'agents'
@@ -93,6 +94,8 @@ const ROUTES: readonly RoutePattern[] = [
   // A publishable page (card_type `page`) — the same detail view as a task,
   // configured for pages (publish_status flow, PUBLISHED ON section).
   { pattern: '/page/:id', name: 'page', guard: 'requireAuth' },
+  // A portal's site shown inside kitp ("Show in kitp"), in the content area.
+  { pattern: '/site/:id', name: 'site', guard: 'requireAuth' },
   { pattern: '/activity', name: 'activity', guard: 'requireAuth' },
   { pattern: '/account', name: 'account', guard: 'requireAuth' },
   // Per-user "My Agents" — every signed-in user manages their OWN agents, so
@@ -101,6 +104,11 @@ const ROUTES: readonly RoutePattern[] = [
   { pattern: '/agents', name: 'agents', guard: 'requireAuth' },
   { pattern: '/admin/:key', name: 'admin', guard: 'requireAdmin' },
 ];
+
+/** `/site/:id` — a portal's site shown inside kitp. */
+export function siteRouteUrl(portalId: bigint | string): string {
+  return `/site/${portalId.toString()}`;
+}
 
 /** `/activity` — the active-project activity feed. */
 export function activityUrl(): string {

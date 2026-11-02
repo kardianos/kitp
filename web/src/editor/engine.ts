@@ -35,6 +35,54 @@ export interface EngineInit {
   /** data-* (or any) attributes stamped on the EDITABLE element so existing
    *  selectors (`[data-comment-input]`, focus targets, tests) keep resolving. */
   editableAttrs?: Record<string, string>;
+  /** What the Link command offers to pick besides a typed URL (read when the
+   *  link bar opens). Absent / empty → a URL-only bar. */
+  linkTargets?: () => readonly LinkTarget[];
+}
+
+/**
+ * A block of text the toolbar's Insert menu offers (the page detail offers
+ * its portal placeholders, `{{< children >}}` and friends). Inserted as a
+ * paragraph of its own, never inside the current one.
+ */
+export interface EditorSnippet {
+  /** The menu item, e.g. 'Child pages'. */
+  label: string;
+  /** What's inserted, e.g. '{{< children >}}'. */
+  text: string;
+  /** One line under the label. */
+  description?: string;
+  /** A heading the menu groups snippets under ('Placeholders', 'Pictures'). */
+  group?: string;
+  /** The code shown beside the label; default `text`, '' shows none (a
+   *  picture's long markdown). */
+  hint?: string;
+}
+
+/**
+ * Insert `block` into markdown source `value` at `pos` as a paragraph of its
+ * own: after the line `pos` is on (a line is never split), with a blank line
+ * on each side. Returns the new source and the offset just past the block.
+ * The raw-source surfaces (the textarea engine and raw mode) share this.
+ */
+export function insertBlockInSource(value: string, pos: number, block: string): { value: string; caret: number } {
+  const nl = value.indexOf('\n', Math.min(Math.max(pos, 0), value.length));
+  const at = nl === -1 ? value.length : nl;
+  const before = value.slice(0, at).replace(/\s+$/, '');
+  const after = value.slice(at).replace(/^\s+/, '');
+  const head = before === '' ? '' : `${before}\n\n`;
+  const out = `${head}${block}${after === '' ? '\n' : `\n\n${after}`}`;
+  return { value: out, caret: head.length + block.length };
+}
+
+/** A pickable link destination in the editor's link bar. */
+export interface LinkTarget {
+  /** What the list shows, e.g. 'Home › Getting started'. */
+  label: string;
+  /** The link's href, e.g. 'ref:71'. */
+  href: string;
+  /** Secondary text beside the label (muted). */
+  hint?: string;
 }
 
 /**
@@ -106,6 +154,9 @@ export interface EditorEngine {
   isActive(action: EditorAction): boolean;
   /** Whether the command can apply right now (button enabled). */
   can(action: EditorAction): boolean;
+  /** Insert `text` as a paragraph of its own at the cursor's block (see
+   *  {@link EditorSnippet}); works in raw-source mode too. */
+  insertBlock(text: string): void;
 }
 
 export type EngineFactory = (
@@ -178,5 +229,12 @@ export const createTextareaEngine: EngineFactory = (host, init, hooks) => {
     exec: () => {},
     isActive: () => false,
     can: () => false,
+    insertBlock: (text) => {
+      const next = insertBlockInSource(ta.value, ta.selectionStart, text);
+      ta.value = next.value;
+      ta.setSelectionRange(next.caret, next.caret);
+      fitTextarea(ta);
+      hooks.onChange();
+    },
   };
 };

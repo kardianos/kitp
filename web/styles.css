@@ -4794,6 +4794,12 @@ select optgroup {
   background: var(--color-surface);
   color: var(--color-fg);
 }
+.record-form__textarea {
+  font-family: inherit;
+  line-height: 1.5;
+  min-height: 4.5em;
+  resize: vertical;
+}
 .record-form__error {
   font-size: var(--text-xs);
   color: var(--color-danger);
@@ -6279,6 +6285,19 @@ select optgroup {
   flex-direction: column;
   gap: var(--space-1);
 }
+/* Placeholder problems under a page body (placeholderIssues). */
+.task-detail__desc-warnings {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+  font-size: var(--text-sm);
+  color: var(--color-fg);
+}
+.task-detail__desc-warnings ul {
+  margin: 0;
+  padding-left: var(--space-4);
+}
 .task-detail__desc-body {
   /* Font-size is owned by .markdown (Claude-Desktop reading size); don't
      override it back down here. */
@@ -6614,6 +6633,117 @@ select optgroup {
 .rich-editor__tool:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* ---- Link bar (src/editor/link-bar.ts): the Link command's URL box + page
+   picker, a strip above the editing surface. */
+.rich-editor__link-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-1) 0;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+}
+.rich-editor__link-row {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+}
+.rich-editor__link-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: var(--text-sm);
+}
+.rich-editor__link-input:focus {
+  outline: none;
+  border-color: var(--color-accent-ring);
+}
+.rich-editor__link-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+.rich-editor__link-option {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-xs);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.rich-editor__link-option:hover,
+.rich-editor__link-option.is-active {
+  background: var(--color-fill-hover);
+}
+.rich-editor__link-hint {
+  font-size: var(--text-xs);
+}
+.rich-editor__link-more {
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
+}
+
+/* ---- Insert menu (src/editor/toolbar.ts): the toolbar's snippet picker
+   (page placeholders), a Popover under the Insert button. */
+.rich-editor__tool--menu {
+  padding: 0 var(--space-2);
+}
+.rich-editor__insert-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 16rem;
+  padding: var(--space-1);
+}
+.rich-editor__insert-group {
+  padding: var(--space-1) var(--space-2) 2px;
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+.rich-editor__insert-group:not(:first-child) {
+  margin-top: var(--space-1);
+  border-top: 1px solid var(--color-hairline);
+  padding-top: var(--space-2);
+}
+.rich-editor__insert-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.rich-editor__insert-item:hover,
+.rich-editor__insert-item:focus-visible {
+  background: var(--color-fill-hover);
+  outline: none;
+}
+.rich-editor__insert-label code {
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+}
+.rich-editor__insert-desc {
+  font-size: var(--text-xs);
 }
 
 /* ---- ProseMirror WYSIWYG editor (src/editor/pm-engine.ts) ----
@@ -10287,7 +10417,7 @@ textarea.task-comms__form-input {
   background: var(--color-surface);
 }
 
-/* Page detail: PUBLISHED ON (where the page is live; + Child page). */
+/* Page detail: PUBLISHED ON (where the page is live). */
 .page-pubs {
   display: flex;
   flex-direction: column;
@@ -10365,6 +10495,314 @@ textarea.task-comms__form-input {
 }
 .page-pubs__meta {
   font-size: var(--text-2xs);
+}
+
+/* Page detail: PLACE IN SITE (pages/page-structure.ts) — the trail, the
+   parent picker, child pages with ↑/↓, the navigation flags. */
+.page-structure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+.page-structure__trail {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+}
+.page-structure__trail li + li::before {
+  content: "›";
+  margin-right: var(--space-1);
+  color: var(--color-muted);
+}
+.page-structure__self {
+  font-weight: var(--weight-semibold);
+}
+.page-structure__parent {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.page-structure__label {
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+.page-structure__select {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+.page-structure__children-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.page-structure__list {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.page-structure__list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border-top: 1px solid var(--color-hairline);
+  font-size: var(--text-xs);
+}
+.page-structure__list li:first-child {
+  border-top: 0;
+}
+.page-structure__list a {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-structure__tag {
+  font-size: var(--text-2xs);
+}
+.page-structure__moves {
+  display: inline-flex;
+  gap: 2px;
+}
+.page-structure__moves .btn--xs {
+  min-width: 1.6rem;
+  padding: 0 var(--space-1);
+}
+.page-structure__none,
+.page-structure__hint,
+.page-structure__note {
+  margin: 0;
+  font-size: var(--text-2xs);
+  line-height: 1.45;
+}
+.page-structure__flags {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.page-structure__flag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+}
+.page-structure__error,
+.theme-files__error {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+  white-space: pre-wrap;
+}
+
+/* Themes screen: FILES (admin/theme-files.ts) — a theme's files over its
+   built-in base, the read-only viewer and the editor. */
+.masterdetail__panel {
+  padding: 0 var(--space-4) var(--space-4);
+}
+.theme-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-hairline);
+}
+.theme-files__heading {
+  margin: 0;
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+}
+.theme-files__intro,
+.theme-files__empty {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+.theme-files__brand {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.theme-files__brand-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+}
+.theme-files__brand-label {
+  min-width: 4.5rem;
+  font-weight: var(--weight-semibold);
+}
+.theme-files__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.theme-files__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-3);
+  border-top: 1px solid var(--color-hairline);
+  font-size: var(--text-xs);
+}
+.theme-files__row:first-child {
+  border-top: 0;
+}
+.theme-files__row.is-open {
+  background: var(--color-fill-hover);
+}
+.theme-files__path {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.theme-files__origin {
+  flex: 1 1 auto;
+  font-size: var(--text-2xs);
+}
+.theme-files__row--own .theme-files__origin,
+.theme-files__row--override .theme-files__origin {
+  color: var(--color-accent);
+}
+.theme-files__actions,
+.theme-files__open-actions,
+.theme-files__add {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+.theme-files__new-path {
+  width: 12rem;
+  font-size: var(--text-xs);
+}
+.theme-files__file {
+  position: relative;
+  overflow: hidden;
+}
+.theme-files__file-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.theme-files__open {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-sunken);
+}
+.theme-files__open-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+}
+.theme-files__badge {
+  font-size: var(--text-2xs);
+}
+.theme-files__editor {
+  width: 100%;
+  min-height: 12rem;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  tab-size: 2;
+  resize: vertical;
+}
+.theme-files__editor[readonly] {
+  background: var(--color-surface-sunken);
+}
+.theme-files__image {
+  max-width: 16rem;
+  max-height: 10rem;
+  object-fit: contain;
+  align-self: flex-start;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+/* A portal's site inside kitp (pages/site-view.ts): a header bar over a
+   frame that fills the content area. */
+.site-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.site-view__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+}
+.site-view__head:empty {
+  display: none;
+}
+.site-view__title {
+  margin: 0;
+  font-size: var(--text-md, var(--text-sm));
+  font-weight: var(--weight-semibold);
+}
+.site-view__meta {
+  flex: 1 1 auto;
+  font-size: var(--text-xs);
+}
+.site-view__open {
+  text-decoration: none;
+}
+.site-view__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+.site-view__frame {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+.site-view__message {
+  margin: var(--space-6) auto;
+  max-width: 32rem;
+  text-align: center;
+  font-size: var(--text-sm);
 }
 
 /* Values screen: a value's card_ref pickers (a status's "Publishes to"). */

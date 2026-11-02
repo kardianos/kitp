@@ -111,6 +111,9 @@ import { registerImportSpecs } from './import/specs.js';
 import { registerExportMenu } from './export/export-menu.js';
 import { registerActivity } from './activity/activity.js';
 import { registerAccountPage } from './shell/account-page.js';
+import { registerThemeFiles } from './admin/theme-files.js';
+import { registerPageStructure } from './pages/page-structure.js';
+import { registerSiteView } from './pages/site-view.js';
 
 /** Rail-link labels for each admin view key (the rail is derived from these). */
 const ADMIN_LINK_LABELS: Record<AdminView, string> = {
@@ -126,6 +129,7 @@ const ADMIN_LINK_LABELS: Record<AdminView, string> = {
   activity_sinks: 'Activity Sinks',
   comm_log: 'Comm Log',
   portals: 'Portals',
+  themes: 'Themes',
   jobs: 'Background Jobs',
 };
 import { mockTransport } from './kanban/mock-data.js';
@@ -334,6 +338,12 @@ function boot(): void {
   // The generic config-driven record editor mounted in a MasterDetail detail
   // pane (Comm Channels today). Replaces per-screen bespoke config editors.
   registerRecordForm();
+  // The Themes screen's FILES panel (a MasterDetail detail.panel).
+  registerThemeFiles();
+  // A page detail's PLACE IN SITE section.
+  registerPageStructure();
+  // A portal's site inside kitp (/site/:id).
+  registerSiteView();
   registerActivityFilterEditor();
   // The reusable anchored-UI primitives. Combobox (typeahead select) +
   // DatePicker compose the shared Popover helper (the one floating-ui impl).

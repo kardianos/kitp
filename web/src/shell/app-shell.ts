@@ -54,8 +54,10 @@ import {
   adminUrl,
   plainClick,
   screenUrl,
+  siteRouteUrl,
   type RouteMatch,
 } from './router.js';
+import { PORTAL_SPEC, type PortalListOutput } from '../bundles/specs.js';
 import { WORKSPACE_TITLE_PATH, COMMS_BELL_URL_PATH, DEFAULT_WORKSPACE_TITLE } from './config-specs.js';
 import { readSlug, readTitle } from '../filter/screen-resolve.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
@@ -195,6 +197,9 @@ export class AppShell extends Control<AppShellConfig> {
   /** The rail's DEFAULT-PROJECT links container, rebuilt from the active
    *  project's screen cards (data-driven nav — see loadScopeLinks). */
   private scopeLinksHost: HTMLElement | null = null;
+  /** The SITES rail section (portals with "Show in kitp" on). */
+  private sitesSection: HTMLElement | null = null;
+  private sitesHost: HTMLElement | null = null;
   /** Rail admin sub-sections (WORKSPACE / PROJECT): each section's chrome
    *  (heading + list) + its per-link role gates. A section shows iff ANY of its
    *  links is visible to the current identity. */
@@ -438,6 +443,20 @@ export class AppShell extends Control<AppShellConfig> {
     // Global links.
     rail.append(railLink('Projects', 'g p', '/projects', () => this.intent('goProjects')));
     rail.append(railLink('Activity', 'g a', activityUrl(), () => this.intent('goActivity')));
+
+    // SITES: portals shown inside kitp ("Show in kitp", Admin → Portals),
+    // that the user can see. Hidden when there are none.
+    const sitesSection = document.createElement('div');
+    sitesSection.className = 'shell__sites';
+    sitesSection.dataset.region = 'shell.sites';
+    sitesSection.style.display = 'none';
+    const sitesHost = document.createElement('div');
+    sitesHost.className = 'shell__sites-links';
+    sitesSection.append(sectionLabel('SITES'), sitesHost);
+    rail.append(sitesSection);
+    this.sitesSection = sitesSection;
+    this.sitesHost = sitesHost;
+    this.loadSites();
 
     // DEFAULT PROJECT scope section. Links are PURELY DATA-DRIVEN off the
     // active project's `screen` cards — no hardcoded Inbox/Grid/Kanban slugs
@@ -788,6 +807,35 @@ export class AppShell extends Control<AppShellConfig> {
       link.dataset.slug = l.slug;
       host.append(link);
     }
+  }
+
+  /**
+   * (Re)load the SITES rail links: portal.list (the portals the user can
+   * see) filtered to those shown in kitp. Called at boot, on a /site route,
+   * and on the Portals admin screen (where "Show in kitp" is switched).
+   */
+  private loadSites(): void {
+    const host = this.sitesHost;
+    const section = this.sitesSection;
+    if (host === null || section === null) return;
+    this.ctx.api.callByName(
+      PORTAL_SPEC.list,
+      {},
+      (out) => {
+        if (!this.isAlive()) return;
+        const sites = ((out as PortalListOutput).rows ?? []).filter((r) => r.internal);
+        host.replaceChildren(
+          ...sites.map((r) => {
+            const href = siteRouteUrl(r.id);
+            const link = railLink(r.title !== '' ? r.title : `Site #${r.id.toString()}`, '', href, () => navigate(href));
+            link.dataset.siteLink = r.id.toString();
+            return link;
+          }),
+        );
+        section.style.display = sites.length > 0 ? '' : 'none';
+      },
+      { alive: () => this.isAlive() },
+    );
   }
 
   /** Navigate to a screen slug under the live project scope (rail link click). */
@@ -1143,6 +1191,13 @@ export class AppShell extends Control<AppShellConfig> {
           outlet,
         );
       }
+      case 'site': {
+        // A portal's site inside kitp. Re-read the SITES links too: arriving
+        // here is a hint they may have changed.
+        this.setCrumb('Site');
+        this.loadSites();
+        return this.spawn('SiteView', { type: 'SiteView', portalId: route.params['id'] } as ChildConfig, outlet);
+      }
       case 'activity': {
         // The active-project activity feed. Reads `scope.projectId` (always
         // set), so scope is left intact — the rail nav stays on the project.
@@ -1177,6 +1232,8 @@ export class AppShell extends Control<AppShellConfig> {
         // No admin-screen knowledge lives in the shell. An unknown key resolves
         // to a NotFound placeholder (graceful degradation).
         const key = route.params['key'] ?? '';
+        // The Portals screen switches "Show in kitp": refresh SITES there.
+        if (key === 'portals') this.loadSites();
         const adminCfg = this.config.adminConfigFor?.(key) ?? { type: `UnknownAdmin:${key}` };
         this.setCrumb((adminCfg as { title?: string }).title ?? 'Admin');
         return this.spawn(adminCfg.type, adminCfg, outlet);
@@ -1232,6 +1289,8 @@ function outletKey(route: RouteMatch): string {
       return `task:${route.params['id'] ?? ''}`;
     case 'page':
       return `page:${route.params['id'] ?? ''}`;
+    case 'site':
+      return `site:${route.params['id'] ?? ''}`;
     case 'activity':
       return 'activity';
     case 'admin':

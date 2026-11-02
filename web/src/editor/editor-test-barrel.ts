@@ -6,3 +6,5 @@
 
 export { RichEditor, setRichEditorEngine } from './rich-editor.js';
 export { createProseMirrorEngine } from './pm-engine.js';
+export { filterLinkTargets } from './link-bar.js';
+export { insertBlockInSource } from './engine.js';

@@ -342,6 +342,14 @@ export interface MasterDetailConfig extends BaseControlConfig {
      */
     form?: RecordFormScreenConfig;
     /**
+     * Optional extra control rendered below the form / nested editor — a
+     * registered control type (e.g. 'ThemeFiles') spawned with
+     * `{ parentScope: <this screen's scopeKey> }`, which follows
+     * `.selectedId` / `.items` itself. The screen-specific panel lives in its
+     * own control; MasterDetail only mounts it.
+     */
+    panel?: { type: string };
+    /**
      * Detail-pane action buttons that raise a GLOBAL (bus) intent for the
      * selected item — e.g. the Projects screen's Import / Export, reusing the
      * AppShell's `projectImport` / `projectExport` intents. The emitted payload
@@ -884,6 +892,18 @@ export class MasterDetail extends Control<MasterDetailConfig> {
           scopeKey: cfg.detail.nested.scopeKey ?? `${cfg.scopeKey}.nested`,
         },
         nestedHost,
+      );
+    }
+
+    if (cfg.detail.panel) {
+      const panelHost = document.createElement('div');
+      panelHost.className = 'masterdetail__panel';
+      panelHost.dataset.mdPanel = '';
+      detailPane.append(panelHost);
+      this.spawn(
+        cfg.detail.panel.type,
+        { type: cfg.detail.panel.type, parentScope: cfg.scopeKey, scopeKey: `${cfg.scopeKey}.panel` },
+        panelHost,
       );
     }
 

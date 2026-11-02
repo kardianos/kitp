@@ -29,6 +29,7 @@ before(async () => {
   M.registerNestedEditor(); // the OIDC Claims admin view is a standalone NestedEditor
   M.registerSchedulerJobs(); // the Background Jobs admin view is its own control too
   M.registerRecordForm(); // Comm Channels mounts the generic RecordForm in its detail
+  M.registerThemeFiles(); // the Themes screen's FILES panel (detail.panel)
 });
 
 const PROJECT_ID = '31';
@@ -77,6 +78,10 @@ function rowsFor(key, data) {
       return [{ id: '100', channel_id: '80', channel_name: 'Support inbox', kind: 'poll', detail: { fetched: 3 }, at: '2026-05-24T12:00:00Z' }];
     case 'portal.list':
       return [{ id: '120', title: 'Docs (PROD)', host: 'docs.example.com', public: true, root_page_id: '700', root_title: 'Home', root_project_id: PROJECT_ID, statuses: ['Docs › Published'], page_count: 4, built_at: '2026-06-01T00:00:00Z', active_build_id: '9', warnings: [], dirty: false, last_error: '' }];
+    case 'theme.list':
+      return [{ id: '130', title: 'Docs look', base: 'newspaper', base_name: 'Newspaper', nav: '', accent: '#aa0000', footer: '', files: [], portals: ['Docs (PROD)'] }];
+    case 'theme.bases':
+      return [{ key: 'newspaper', name: 'Newspaper', description: 'Columns.', nav: 'section', paginate: 9, order: 'newest', files: [] }];
     default:
       return null;
   }
@@ -163,6 +168,7 @@ const SCREEN_SCOPE = {
   activity_sinks: ['admin', 'activity_sinks', 'items'],
   comm_log: ['admin', 'comm_log', 'items'],
   portals: ['admin', 'portals', 'items'],
+  themes: ['admin', 'themes', 'items'],
 };
 
 for (const [view, itemsPath] of Object.entries(SCREEN_SCOPE)) {
@@ -364,7 +370,7 @@ test('ADMIN_SECTION classifies every admin view (Workspace global vs Project sco
   // Confirmed grouping: global-data screens are Workspace; the rest are Project
   // (always filtered to the active project).
   const inSection = (s) => M.ADMIN_VIEWS.filter((v) => M.ADMIN_SECTION[v] === s).sort();
-  assert.deepEqual(inSection('workspace'), ['agents', 'attributes', 'jobs', 'oidc_claims', 'people', 'portals', 'roles']);
+  assert.deepEqual(inSection('workspace'), ['agents', 'attributes', 'jobs', 'oidc_claims', 'people', 'portals', 'roles', 'themes']);
   assert.deepEqual(inSection('project'), ['activity_sinks', 'comm_channels', 'comm_log', 'enums', 'screens', 'workflows']);
 });
 
