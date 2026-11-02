@@ -1,43 +1,105 @@
 # kitp
 
-A task tracker built on a single uniform domain model: every row is a
-CARD, every change is an ACTIVITY, every field is an ATTRIBUTE, links are
-EDGES, and access is governed by PROCESS + ROLE grants. The whole API is
-one batched endpoint; the same handler registry that serves HTTP also
-publishes an MCP tool surface. The backend is Go + Postgres; the web
-client is plain TypeScript bundled with esbuild (no framework, no npm
-runtime deps).
+Tasks, email conversations and published pages in one workspace, built on
+a single uniform domain model: every row is a CARD, every change is an
+ACTIVITY, every field is an ATTRIBUTE, links are EDGES, and access is
+governed by PROCESS + ROLE grants. The whole API is one batched endpoint;
+the same handler registry that serves HTTP also publishes an MCP tool
+surface. The backend is Go + Postgres; the web client is plain TypeScript
+bundled with esbuild (no framework, no npm runtime deps).
 
 ## Features
 
-- Cards with typed attributes; projects, tasks, milestones, components,
-  tags, comments, and people are all card types under one model.
-- Event-sourced activity log: every attribute change writes an activity
-  row, so history and per-task feeds come for free.
-- Flow / status kernel: card types can be flow-bound, with transitions
-  enforced server-side and a transition bar in the UI.
-- Screens, views, filters, and attribute schemas are themselves stored
-  as cards (data-driven, editable in the admin screens).
-- Predicate-tree filtering with per-row, per-project visibility checks.
-- Role-scoped authorization: viewer / worker / manager / admin grants,
-  optionally scoped to a project subtree.
-- Email comm channels: inbound IMAP polling creates tasks, outbound SMTP
-  replies thread by subject tag, all driven by background jobs.
-- Content-addressed attachment store (chunked upload, dedup, reaper).
+### Projects and areas
+
+- A project is made of **areas**: Tasks, Conversations, Approvals and
+  Content, plus Sites for the whole workspace. Each area can be switched
+  off (sidebar **PROJECT → Areas**; Sites under **WORKSPACE → Areas**).
+  Off hides everything in the area from everyone, admins included, and
+  stops it working (no mail fetched or sent, no pages published), without
+  deleting anything. Managers can switch an area off; only admins can
+  switch one on. See `docs/AREAS.md`.
+- A new project starts from a shortcut (**Issue tracker**, **Help desk**,
+  **Shared inbox**, **Content management**) or from areas you choose one by
+  one. Each area starts from a feature bundle (`db/schema/bundles/`), whose
+  statuses, screens and starter pages the project then owns and can change.
+  An area can be set up later from any of its starting points.
+
+### Tasks
+
+- Tasks move through a status flow, enforced server-side, with a transition
+  bar in the UI. A task tracking project starts with the Inbox, Grid,
+  Kanban, Incoming, Recently Closed and Project screens; a help desk one
+  with support-ticket statuses (New, Open, Waiting on customer, Solved,
+  Closed) and the Unassigned, My tickets, Board and All tickets screens.
+  A screen is a layout (list, grid, kanban, …) over a filter, editable
+  under PROJECT → Screens, and a view saves a screen's filter choices.
+- Approvals: ask named people to approve a task's status change. Votes are
+  recorded but never block the change, and an agent can vote on behalf of
+  its owner. "Waiting on me" is a task filter, and a request can be emailed
+  through a thread.
 - Task links: code changes, issues, and URLs on a task, added by hand, over
   MCP, or by a code forge through `POST /api/v1/links` (idempotent per task +
   URL). A Gerrit plugin (`integrations/gerrit`) links each change to the
   tasks its commit message names and keeps the link state in step with the
   review. See `docs/links.md`.
-- Feature bundles and presets: start a project as an issue tracker,
-  customer care or content project, and add features to it later
-  (`db/schema/bundles/`).
-- Portals: pages moved through a publish flow and published as static
-  sites — a status names the portals (e.g. QA, PROD) a page goes to.
-  Served by host name on a separate listener, previewed in the app. See
+- Project export (CSV, a zip with activity and attachments, or XLSX) and
+  CSV import.
+
+### Conversations (email)
+
+- Each project's mail accounts (PROJECT → Comm Channels) are polled over
+  IMAP and send through SMTP, on background jobs. kitp matches a reply to
+  its thread by the `X-Kitp-Thread-Id` header, the `[#<ref>]` subject tag
+  or the `Ref:` line at the end of the body.
+- **New mail** (unmatched mail sent to a mail account) can create a task
+  with its thread, create a thread on its own (a shared inbox), or be
+  ignored, in which case only replies come in.
+- A thread on its own has its own page, where it can be attached to a task
+  in the project, or made into a new task. A thread on a task can be
+  detached again. The Comms screen lists threads that aren't on a task
+  first. Conversations works without the Tasks area.
+- Replies can quote the last message or the whole conversation below the
+  signature ("On 2026-11-02 Mon, Name <addr> wrote:", dates in UTC). A
+  received reply shows its own text, with the history its mail program
+  quoted folded behind "Show quoted text".
+- Per-thread recipients and ACK ("Needs ACK" once a customer writes), and
+  a signature per account. See `docs/CONVERSATIONS.md`.
+- Activity sinks post a project's activity to a Microsoft Teams channel,
+  or mail people a digest of what they subscribed to.
+
+### Content and sites
+
+- Pages: a page tree per project with its own publish flow. Pages can be
+  moved under other pages, reordered and hidden from navigation. In the
+  editor, `ref:` links connect pages, a link picker searches the project's
+  pages, and portal placeholders insert content such as a page's children
+  (with a check for misspelt ones).
+- Portals publish pages as static sites. A status names the portals a page
+  goes to (e.g. QA, PROD); moving a page back to Draft takes it off, and
+  Archived takes it off every portal. Sites are served by host name on a
+  separate listener, previewed in the app, and optionally listed in kitp's
+  sidebar (SITES).
+- Themes: seven built-in looks (side menu, top menu, newspaper, book, help
+  center, blog, reference). A theme sets the navigation, accent colour and
+  footer, and can override any template, stylesheet, logo or favicon. See
   `docs/BUNDLES_AND_PORTALS.md`.
+
+### Platform
+
+- Cards with typed attributes; projects, tasks, threads, pages,
+  milestones, components, tags, comments, and people are all card types
+  under one model.
+- Event-sourced activity log: every attribute change writes an activity
+  row, so history and per-task feeds come for free.
+- Screens, views, filters, flows and attribute schemas are themselves
+  stored as cards (data-driven, editable in the admin screens).
+- Predicate-tree filtering with per-row, per-project visibility checks.
+- Role-scoped authorization: viewer / worker / manager / admin grants,
+  optionally scoped to a project subtree.
+- Content-addressed attachment store (chunked upload, dedup, reaper).
 - Background job scheduler with an admin screen (list + run-now).
-- MCP server for agent access over stdio.
+- MCP tool surface for agents, over HTTP (`/api/v1/mcp`) or stdio.
 
 ## Requirements
 
@@ -137,15 +199,17 @@ See `docs/BUNDLES_AND_PORTALS.md`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | KITP_COMM_SECRET_KEY | (dev default) | Symmetric key encrypting stored channel passwords. Required in production. |
-| KITP_COMM_HOST_ALLOWLIST | (unset) | Comma list of mail hosts the dialer may connect to. |
+| KITP_COMM_HOST_ALLOWLIST | (unset) | Comma list of host names / IPs exempt from the SSRF guard, which otherwise refuses mail hosts on loopback, private and link-local addresses (e.g. `127.0.0.1` for a local test mail server, or an internal relay). |
 | KITP_COMM_SMTP_TICK_SEC | 10 | Outbound SMTP send sweep interval. |
 | KITP_COMM_IMAP_TICK_SEC | 60 | Inbound IMAP poll interval. |
 | KITP_ACTIVITY_SINK_TICK_SEC | 30 | Activity-sink pump interval. |
 | KITP_COMM_LOG_RETENTION_DAYS | 30 | How long comm_log rows are kept. |
 | KITP_COMM_LOG_PRUNE_HOURS | 24 | How often the comm_log prune job runs. |
 | KITP_COMM_SMTP_DRY_RUN | 0 | 1 logs the would-be message instead of sending. |
-| KITP_COMM_IMAP_DRY_RUN | 0 | 1 polls without mutating mailbox state. |
+| KITP_COMM_IMAP_DRY_RUN | 0 | 1 logs each poll without connecting to the mail server. |
 | KITP_COMM_IMAP_INSECURE | 0 | 1 allows non-TLS IMAP (dev only). |
+| KITP_COMM_BODY_PRIORITY | plain,html | Order in which an incoming message's body parts become a new task's description: `plain`, `html`, or both comma-separated. |
+| KITP_COMM_SAVE_RAW_EMAIL | 0 | 1 attaches each incoming message, verbatim, as a `.eml` file (a debugging aid). |
 | KITP_PUBLIC_URL | (unset) | External base URL of the install (e.g. `https://kitp.example.com`; trailing slash optional). When set, outbound mail to a kitp user (a person with a login) carries a `<base>/task/<id>` deep link in the footer. Unset disables the link. |
 | KITP_ACTIVITY_SINK_DRY_RUN | 0 | 1 runs the activity sink without emitting. |
 
@@ -157,6 +221,7 @@ See `docs/BUNDLES_AND_PORTALS.md`.
 | ATTACHMENT_CHUNK_MAX_MB | 8 | Max upload chunk size. |
 | CAS_REAPER_INTERVAL_SEC | 3600 | How often unreferenced blobs are reaped. |
 | CAS_REAPER_GRACE_SEC | 3600 | Grace period before an unreferenced blob is eligible for reaping. |
+| KITP_LINK_SECRET | (per-process key) | HMAC secret signing attachment download / upload links. Set it when running more than one instance, or for links that survive a restart; unset, a random key is made at each start. |
 
 ### Observability
 
@@ -391,7 +456,14 @@ exchange **only when `OIDC_CLIENT_SECRET` is set**. So both modes work:
 
 Build/dev parameters are passed as make variables (defaults shown):
 DB_DSN, GO (/home/d/bin/go), LISTEN_ADDR (:18080), WEB_DIR (web/dist),
-WEB_PORT (8090), DEMO (-demo), IMAGE (ghcr.io/kardianos/kitp).
+WEB_PORT (8090), DEMO (-demo), IMAGE (ghcr.io/kardianos/kitp), SERIES
+(empty on master, else the branch name). Any of the environment
+variables above can be passed the same way, e.g.
+`make run KITP_PORTAL_ADDR=:18081`.
+
+Image tags come in series: on master, `:latest` and `:sha-<commit>`; on
+any other branch, `:<branch>-latest` and `:<branch>-sha-<commit>`, so a
+branch build never moves `:latest`. Override with `SERIES=<name>`.
 
     make up              # start Postgres
     make down            # stop the stack
@@ -403,11 +475,13 @@ WEB_PORT (8090), DEMO (-demo), IMAGE (ghcr.io/kardianos/kitp).
     make demo            # run kitpd (API + UI) with demo fixtures
     make run             # run kitpd (API + UI) without demo data
     make test            # go test ./... (server)
-    make lint            # go vet ./...
-    make container-build # build the image: IMAGE:latest + IMAGE:sha-<commit> (no push)
-    make container       # build, tag (:latest + :sha-<commit>), and push both
+    make lint            # go vet ./... + the recursive-CTE depth check
+    make container-build # build the image with the series' latest + sha tags (no push)
+    make container       # build, tag, and push both tags
                          #   (refuses a dirty tree; ALLOW_DIRTY=1 overrides;
                          #    needs `docker login` to the registry first)
+    make container-tags  # print the tags `make container` would push
+    make gerrit-plugin   # build integrations/gerrit/target/kitp.jar (in a container)
 
 ## Layout
 
@@ -416,15 +490,26 @@ WEB_PORT (8090), DEMO (-demo), IMAGE (ghcr.io/kardianos/kitp).
       cmd/schema-gen/ generates SQL from db/schema/*.hcsv
       internal/api/   batch endpoint, dispatcher, authz, CORS, CSP
       internal/reg/   handler registry + MCP tag schema
-      internal/dom/   domain handlers (card, activity, attribute, comm, ...)
+      internal/dom/   domain handlers (card, activity, attribute, comm, area,
+                      bundle, portal, ...)
+      internal/dom/portal/themes/  the built-in portal themes
       internal/auth/  AUTH_MODE off/oidc, session cookie, role mapping
-      internal/store/ pgx pool wrappers + schema apply
+      internal/store/ pgx pool wrappers + schema apply + forward migrations
       internal/job/   background job scheduler + worker pools
     web/            web client (plain TypeScript, esbuild)
       src/core/       control framework, data layer, wire codec
       src/...         one module per screen / feature
     db/schema/      *.hcsv: canonical DDL, seed, demo, and PL/pgSQL functions
+      bundles/        feature bundles, presets and the area catalog
+    integrations/gerrit/  Gerrit plugin that links changes to tasks
     docs/           design notes and plans
+
+Design notes worth reading first: `docs/AREAS.md` (areas and starting
+points), `docs/BUNDLES_AND_PORTALS.md` (bundles, pages, portals, themes),
+`docs/CONVERSATIONS.md` (email threads, help desk, quoting),
+`docs/links.md` (task links and the Gerrit plugin) and
+`docs/DESIGN_INVARIANTS.md` (visibility and write rules every handler
+follows).
 
 ## License
 
