@@ -16,7 +16,11 @@
  * detail calls {@link CommThreads.reload} after a relevant activity bump and
  * {@link CommThreads.reveal} when a vote request links to its thread. On a
  * thread's own page (a thread that isn't on a task, `/thread/:id`) it shows
- * that one thread ({@link CommThreadsConfig.commId}) with no "+ Start comm".
+ * that one thread ({@link CommThreadsConfig.commId}) as the page's
+ * CONVERSATION: the page's header already carries the subject, the status
+ * and its actions, so the section has only the thread's reference, its ACK,
+ * the recipients, the messages and the reply box. No "+ Start comm" and no
+ * phase filter.
  *
  * A received message shows its own text; the history its mail program quoted
  * below it folds behind "Show quoted text" (comm-quoted.ts — display only,
@@ -55,7 +59,8 @@ export interface CommThreadsConfig extends BaseControlConfig {
   type: 'CommThreads';
   /** The focal task id (string from the route). */
   taskId?: string;
-  /** Show just this thread (a thread's own page), instead of a task's. */
+  /** Show just this thread, as its own page's conversation (the page shows
+   *  its subject, status and actions), instead of a task's threads. */
   commId?: string;
   /** Dotted tree path holding the in-scope project id (channel search scope). */
   projectScopePath?: string;
@@ -139,7 +144,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
     filterRow.className = 'task-comms__phase-filter';
     filterRow.dataset.commsPhaseFilter = '';
     this.filterEl = filterRow;
-    this.el.append(filterRow);
+    if (this.commId === null) this.el.append(filterRow);
 
     const formHost = document.createElement('div');
     formHost.className = 'task-comms__form';
@@ -253,7 +258,9 @@ export class CommThreads extends Control<CommThreadsConfig> {
 
   private paintHeading(): void {
     const h = this.headEl.querySelector<HTMLElement>('[data-comms-heading]');
-    if (h) h.textContent = this.comms.length > 0 ? `COMMS (${this.comms.length})` : 'COMMS';
+    if (h === null) return;
+    if (this.commId !== null) h.textContent = 'CONVERSATION';
+    else h.textContent = this.comms.length > 0 ? `COMMS (${this.comms.length})` : 'COMMS';
   }
 
   /** Phase → chip label for the section filter (terminal reads "Resolved"). */
@@ -379,11 +386,16 @@ export class CommThreads extends Control<CommThreadsConfig> {
     paintAck(comm.acked);
     this.listen(ack, 'click', () => this.doSetAck(comm, paintAck));
 
-    top.append(subj, thread, badge, ack);
+    // On the thread's own page the header shows the subject and the status.
+    const single = this.commId !== null;
+    thread.title = 'The thread\'s reference: each email carries it, and replies are matched to the thread by it';
+    if (single) thread.textContent = `Ref ${comm.threadId}`;
+    if (single) top.append(thread, ack);
+    else top.append(subj, thread, badge, ack);
     // Detach — on a task, move the thread back into the project as a thread
     // on its own (comm.attach with task 0; docs/CONVERSATIONS.md). Its page
     // offers Attach to task… again.
-    if (this.commId === null) {
+    if (!single) {
       const detach = document.createElement('button');
       detach.type = 'button';
       detach.className = 'btn task-comms__detach';
@@ -393,7 +405,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
       this.listen(detach, 'click', () => this.doDetach(comm.id, detach));
       top.append(detach);
     }
-    top.append(barHost);
+    if (!single) top.append(barHost);
     card.append(top);
 
     // A thread a vote request started says which vote; the vote itself is
@@ -409,21 +421,23 @@ export class CommThreads extends Control<CommThreadsConfig> {
       this.listen(link, 'click', () => this.config.onOpenApproval?.(vote.id));
       card.append(link);
     }
-    const bar = this.spawn(
-      'TransitionBar',
-      {
-        type: 'TransitionBar',
-        cardId: comm.id.toString(),
-        statusAttr: 'comm_status',
-        onChanged: () => {
-          if (!this.isAlive()) return;
-          this.loadComms();
-          this.config.onLocalWrite?.();
+    if (!single) {
+      const bar = this.spawn(
+        'TransitionBar',
+        {
+          type: 'TransitionBar',
+          cardId: comm.id.toString(),
+          statusAttr: 'comm_status',
+          onChanged: () => {
+            if (!this.isAlive()) return;
+            this.loadComms();
+            this.config.onLocalWrite?.();
+          },
         },
-      },
-      barHost,
-    );
-    this.bars.push(bar);
+        barHost,
+      );
+      this.bars.push(bar);
+    }
 
     // Recipients — the shared compact "To [+ recipient] [chips]" editor.
     const labels: Record<string, string> = {};

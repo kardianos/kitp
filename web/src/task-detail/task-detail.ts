@@ -317,37 +317,52 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.profile = detailProfile(this.cardTypeName);
   }
 
-  /** Whether this card type's profile mounts a section. */
+  /** Whether this card shows a section: its profile has it, and the
+   *  section's area (SECTION_AREA) isn't off. */
   private shows(section: DetailSection): boolean {
-    return this.profile.sections.includes(section);
+    if (!this.profile.sections.includes(section)) return false;
+    const area = SECTION_AREA[section];
+    return area === undefined || !this.offAreas.has(area);
   }
 
   /** Every section slot, for hiding the ones of an area that is off. */
   private sectionSlots: Array<[DetailSection, HTMLElement]> = [];
 
+  /** The areas that are off for the card's project, and the workspace's.
+   *  Known before the first paint, so their sections never show or mount. */
+  private offAreas = new Set<string>();
+
   /**
-   * Hide the sections of areas that are off (SECTION_AREA): the project's
-   * areas from area.list, Sites from the shell's workspace areas. One read,
-   * once the card's project is known.
+   * Read which areas are off (docs/AREAS.md): the project's from area.list,
+   * Sites from the shell's workspace areas. Their sections are hidden and
+   * not mounted. Calls `done` when answered, or when the read fails (then
+   * every section shows; the server still hides what an off area holds).
    */
-  private applySectionAreas(): void {
-    if (this.projectId === undefined) return;
+  private loadSectionAreas(done: () => void): void {
     const projectId = this.projectId;
+    if (projectId === undefined) {
+      done();
+      return;
+    }
     this.ctx.api.callByName(
       AREA_SPEC.list,
       { projectId },
       (out) => {
-        if (!this.isAlive() || this.projectId !== projectId) return;
+        if (!this.isAlive()) return;
         const off = new Set(
           ((out as AreaListOutput).areas ?? []).filter((a) => a.state === 'off').map((a) => a.key),
         );
         for (const k of this.ctx.tree.at(['shell', 'workspaceAreasOff']).peek<string[]>() ?? []) off.add(k);
-        for (const [section, el] of this.sectionSlots) {
-          const area = SECTION_AREA[section];
-          if (area !== undefined && off.has(area)) el.style.display = 'none';
-        }
+        this.offAreas = off;
+        for (const [section, el] of this.sectionSlots) if (!this.shows(section)) el.style.display = 'none';
+        done();
       },
-      { alive: () => this.isAlive() },
+      {
+        alive: () => this.isAlive(),
+        onErr: () => {
+          if (this.isAlive()) done();
+        },
+      },
     );
   }
 
@@ -825,36 +840,48 @@ export class TaskDetail extends Control<TaskDetailConfig> {
           else this.showNotFound();
           return;
         }
-        const via = this.profile.parentRoute;
-        if (via !== undefined && found.parent_card_id !== undefined && !this.parentChecked) {
-          this.openOnParentIfItIs(found.parent_card_id, via.cardType, via.route);
-          return;
-        }
-        this.projectId = enclosingProjectId(found, new Map(rows.map((r) => [r.id, r])));
-        this.applySectionAreas();
-        this.sameTypeRows = rows;
-        // Seed the panel store with every attribute's initial Value/Unset.
-        // Every subsequent commit drives a Pending → Value/Error transition
-        // through `panel.beginCommit / confirmCommit / rejectCommit`.
-        this.panel.seedFromAttributes(found.attributes);
-        this.showLoaded();
-        this.resolveRefLabels();
-        this.publishProjectScope();
+        this.landTask(found, rows);
       },
       { alive: () => this.isAlive() },
     );
   }
 
-  /** Set once the parentRoute check has run, so the reload it triggers
-   *  doesn't check again. */
-  private parentChecked = false;
+  /**
+   * The card is loaded: show it once everything that would change its first
+   * paint is in, so it paints once, complete: which sections show (the
+   * project's areas), the labels of its card_ref values ("Help Desk", not
+   * "#160") and, for a profile with a parentRoute, whether it opens on its
+   * parent's page instead. The reads go out together, in one batch.
+   */
+  private landTask(found: CardWithAttrs, rows: CardWithAttrs[]): void {
+    this.projectId = enclosingProjectId(found, new Map(rows.map((r) => [r.id, r])));
+    this.sameTypeRows = rows;
+    // Seed the panel store with every attribute's initial Value/Unset.
+    // Every subsequent commit drives a Pending → Value/Error transition
+    // through `panel.beginCommit / confirmCommit / rejectCommit`.
+    this.panel.seedFromAttributes(found.attributes);
+    const via = this.profile.parentRoute;
+    const parentId = found.parent_card_id;
+    const checkParent = via !== undefined && parentId !== undefined;
+    const paint = afterAll(checkParent ? 3 : 2, () => {
+      if (!this.isAlive() || this.leaving) return;
+      this.publishProjectScope();
+      this.showLoaded();
+    });
+    if (checkParent) this.openOnParentIfItIs(parentId, via.cardType, via.route, paint);
+    this.loadSectionAreas(paint);
+    this.resolveRefLabels(paint);
+  }
+
+  /** Set when the card opens on its parent's page instead. */
+  private leaving = false;
 
   /**
    * The profile's parentRoute: a card whose parent is a `cardType` card opens
    * on the parent's page (a thread on a task opens on its task — only a
-   * thread on its own has a page). Otherwise load as usual. One read.
+   * thread on its own has a page). Otherwise `stay`. One read.
    */
-  private openOnParentIfItIs(parentId: bigint, cardType: string, route: CardRoute): void {
+  private openOnParentIfItIs(parentId: bigint, cardType: string, route: CardRoute, stay: () => void): void {
     this.ctx.api.callByName(
       CARD_SEARCH_SPEC,
       { cardTypeName: cardType, ids: [parentId] },
@@ -862,18 +889,16 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         if (!this.isAlive()) return;
         const rows = ((out ?? {}) as { rows?: Array<{ id: bigint }> }).rows ?? [];
         if (rows.some((r) => r.id === parentId)) {
+          this.leaving = true;
           navigate(cardUrl(parentId, route));
           return;
         }
-        this.parentChecked = true;
-        this.loadTask();
+        stay();
       },
       {
         alive: () => this.isAlive(),
         onErr: () => {
-          if (!this.isAlive()) return;
-          this.parentChecked = true;
-          this.loadTask();
+          if (this.isAlive()) stay();
         },
       },
     );
@@ -936,9 +961,12 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * via {@link asAttrId} so the fix applies uniformly to every card_ref attr
    * without per-name registration drift.
    */
-  private resolveRefLabels(): void {
+  private resolveRefLabels(done?: () => void): void {
     const task = this.task;
-    if (task === null) return;
+    if (task === null) {
+      done?.();
+      return;
+    }
     const byType = new Map<string, Set<bigint>>();
     for (const attr of this.schema) {
       if (attr.valueType !== 'card_ref' && attr.valueType !== 'card_ref[]') continue;
@@ -958,6 +986,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       if (Array.isArray(v)) v.forEach(collect);
       else collect(v);
     }
+    // `done` (optional) once every lookup has answered or failed.
+    const arrived = afterAll(byType.size, () => done?.());
     for (const [target, ids] of byType) {
       this.ctx.api.callByName(
         CARD_SEARCH_SPEC,
@@ -973,8 +1003,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
             this.refLabels.set(String(r.id), r.title);
             this.panel.setRefLabel(target, r.id, r.title);
           }
+          arrived();
         },
-        { alive: () => this.isAlive() },
+        {
+          alive: () => this.isAlive(),
+          onErr: () => {
+            if (this.isAlive()) arrived();
+          },
+        },
       );
     }
   }
@@ -2184,4 +2220,15 @@ function parseId(raw: string | undefined): bigint | null {
 
 export function registerTaskDetail(): void {
   Control.register('TaskDetail', TaskDetail);
+}
+
+/** A callback that runs `then` once it has been called `n` times; with
+ *  n = 0, `then` runs at once. Joins reads that go out together. */
+function afterAll(n: number, then: () => void): () => void {
+  let left = n;
+  if (left <= 0) then();
+  return () => {
+    left--;
+    if (left === 0) then();
+  };
 }
