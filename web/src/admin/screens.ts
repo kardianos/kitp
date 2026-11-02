@@ -859,6 +859,7 @@ export type AdminView =
   | 'portals'
   | 'themes'
   | 'areas'
+  | 'project_areas'
   | 'jobs';
 
 /** The data-driven "Enums" screen — NOT a MasterDetail (one screen spans many
@@ -878,10 +879,22 @@ export const PEOPLE_SCREEN: PeopleManagerConfig = {
 };
 
 /** The workspace "Areas" screen: the switches for workspace-wide areas
- *  (Sites). A project's own areas are switched in its properties. */
+ *  (Sites). A project's own are on PROJECT_AREAS_SCREEN. */
 export const AREAS_SCREEN: AreaSwitchesConfig = {
   type: 'AreaSwitches',
   scope: 'workspace',
+  title: 'Areas',
+};
+
+/** The PROJECT section's "Areas" screen: the active project's area
+ *  switches. It is reached from the sidebar rather than from one of the
+ *  project's own screens, so it stays reachable whatever the project started
+ *  from and whichever of its areas are off (an area's screens leave the
+ *  sidebar with it). */
+export const PROJECT_AREAS_SCREEN: AreaSwitchesConfig = {
+  type: 'AreaSwitches',
+  scope: 'project',
+  projectScopePath: 'scope.projectId',
   title: 'Areas',
 };
 
@@ -911,6 +924,8 @@ export const JOBS_SCREEN: SchedulerJobsConfig = {
 const ADMIN_SCREENS: Record<AdminView, AdminScreenConfig> = {
   people: PEOPLE_SCREEN,
   agents: AGENTS_SCREEN,
+  // First in the PROJECT section.
+  project_areas: PROJECT_AREAS_SCREEN,
   screens: SCREENS_SCREEN,
   attributes: ATTRIBUTES_SCREEN,
   enums: ENUMS_SCREEN,
@@ -930,14 +945,16 @@ const ADMIN_SCREENS: Record<AdminView, AdminScreenConfig> = {
 export const ADMIN_VIEWS = Object.keys(ADMIN_SCREENS) as AdminView[];
 
 /**
- * Admin views a (project-scoped) MANAGER may open — not just an admin. Today
- * only "Manage values" (enums): managers curate a project's milestone /
- * component / tag value-cards. Everything else stays admin-only. The backend
+ * Admin views a (project-scoped) MANAGER may open — not just an admin:
+ * "Manage values" (enums), where managers curate a project's milestone /
+ * component / tag value-cards, and the project's Areas, which managers can
+ * switch off (switching on stays admin-only, in area.set and in the
+ * screen's buttons). Everything else stays admin-only. The backend
  * enforces the real per-project manager scope on every write (card.insert /
  * attribute.update / card.delete are worker/manager/admin + project-anchored),
  * so this set only governs UI reachability (rail link + route guard).
  */
-export const MANAGER_ADMIN_VIEWS: ReadonlySet<AdminView> = new Set<AdminView>(['enums']);
+export const MANAGER_ADMIN_VIEWS: ReadonlySet<AdminView> = new Set<AdminView>(['enums', 'project_areas']);
 
 export type AdminSection = 'workspace' | 'project';
 
@@ -966,8 +983,10 @@ export const ADMIN_SECTION: Record<AdminView, AdminSection> = {
   portals: 'workspace',
   // Global: portals share themes.
   themes: 'workspace',
-  // The workspace's own areas (Sites); a project's are in its properties.
+  // The workspace's own areas (Sites).
   areas: 'workspace',
+  // The active project's areas.
+  project_areas: 'project',
   // Workspace-wide: the jobs are global process state, not project-scoped.
   jobs: 'workspace',
 };

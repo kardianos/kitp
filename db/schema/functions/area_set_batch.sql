@@ -10,7 +10,9 @@
 --   - Turning ON exposes what the area holds, so it is admin-only (an
 --     admin role that is global or scoped to the project). It turns on
 --     the areas it depends on as well, and adds a starting point to any
---     of them that never had one.
+--     of them the project doesn't have yet (area_present: a project with
+--     the area's own flow or items, e.g. one from a template or from
+--     before areas, gets none).
 --   - Turning OFF needs a manager or admin; a workspace area needs an
 --     admin. It is refused while an area that depends on this one is on
 --     ('area_needed').
@@ -120,9 +122,8 @@ BEGIN
             _turn := ARRAY(SELECT jsonb_array_elements_text(_area.depends_on)) || ARRAY[_key];
             FOREACH _k IN ARRAY _turn LOOP
                 SELECT * INTO _a FROM area WHERE key = _k;
-                -- A starting point, if the area never had one.
-                IF jsonb_array_length(_a.starts) > 0 AND _project <> 0 AND NOT EXISTS (
-                    SELECT 1 FROM card_origin o WHERE o.project_id = _project AND _a.starts ? o.bundle_key) THEN
+                -- A starting point, if the project doesn't have the area yet.
+                IF jsonb_array_length(_a.starts) > 0 AND _project <> 0 AND NOT area_present(_project, _k) THEN
                     _st := CASE WHEN _k = _key AND _start IS NOT NULL THEN _start ELSE _a.starts->>0 END;
                     _r := bundle_apply(_project, _st, area_set_batch.actor_id);
                     IF _r->>'status' NOT IN ('applied', 'updated') THEN

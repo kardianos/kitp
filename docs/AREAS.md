@@ -184,17 +184,32 @@ list with a parent label:
 Moves and reorders are edits like any other: they reach a site when the
 page is published again.
 
-## Migration from feature bundles
+## Upgrading an existing install
 
-- Every existing project gets an area row per area it has data or
-  configuration for (from `card_origin`, and from the item types it
-  holds), all **on**. Nothing changes for anyone until someone turns an
-  area off.
-- Configuration copied from a bundle gets its `area` from the bundle;
-  configuration a project made itself is inferred as above, and whatever
-  can't be inferred goes to General.
-- The Features section and the dialog's "Also add" become the Areas
-  section and list.
+No area rows are written: an upgraded install has no `project_area` or
+`workspace_area` rows, so nothing is off and nothing is hidden. Each
+area's state is worked out from what the project already has
+(`area_present`): a starting point it used, the area's items, or its own
+status flow for them. The last covers projects copied from a template or
+created before areas, which have their statuses and screens without a
+starting point, and sometimes without items yet.
+
+What a project from before areas shows (checked by upgrading a database
+made by master, with its demo data):
+
+| Area | Shows |
+| ---- | ----- |
+| Tasks | On (its task flow and screens came from its template) |
+| Conversations | On (its comm flow and Comms screen came from its template) |
+| Approvals | On once it holds an approval, else Not set up |
+| Content | Not set up (pages are new); Set up adds the publish flow, the Pages screen and a starter page |
+| Sites (workspace) | On |
+
+The sidebar groups the project's existing screens under their areas.
+Switching an area on never adds a starting point to an area the project
+already has, so an old project can switch Tasks off and on again, and set
+up Approvals (which switches Tasks on first), without a second status
+flow.
 
 ## As built
 
@@ -202,13 +217,14 @@ page is published again.
 | ----- | ----- |
 | Catalog | `db/schema/bundles/areas.hcsv` → `area` table (`store.applyAreas`) |
 | Switches | `project_area (project_id, area_key, state)`, `workspace_area (area_key, state)`; no row = on |
-| State | `area_state(project, key)`: the row, else `on` if the project holds the area's items or used one of its starting points, else `unused` |
+| State | `area_state(project, key)`: the row, else `on` if the project already has the area (`area_present`: it used one of its starting points, holds its items, or has its own status flow for them), else `unused` |
 | Rule | `card_in_off_area`, `area_write_blocked`, `workspace_area_off` |
 | Handlers | `area.list {project_id?}` (no project: the whole catalog, workspace areas with their state), `area.set {project_id?, key, on, start?}`; `project.compose` takes `areas_off` |
-| UI | project properties → AREAS; Admin → Areas (Sites); the sidebar groups screens by area; the new-project dialog's "Choose areas…" |
+| UI | the sidebar's PROJECT → Areas, for the active project (managers and admins; also in Edit properties → AREAS where a project has an overview screen); WORKSPACE → Areas (Sites); the sidebar groups screens by area; the new-project dialog's "Choose areas…" |
 
 Turning an area on turns on the areas it needs and adds a starting point
-to any that never had one (the one picked, else the area's default).
+to any the project doesn't have yet (the one picked, else the area's
+default).
 Turning one off is refused while an area that needs it is on
 (`area_needed`). Each switch writes an `area_set` activity row on the
 project and rebuilds the portals holding its pages.

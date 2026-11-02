@@ -5,11 +5,13 @@ A project is split into **areas**, and each can be switched on or off:
 | Area | Holds |
 | ---- | ----- |
 | Tasks | tasks, their screens (Inbox, Grid, Kanban …) and links |
-| Conversations | email threads on tasks and the mail accounts behind them |
+| Conversations | email threads, on tasks or on their own, and the mail accounts behind them |
 | Approvals | requests to approve a task's status change, and the votes |
 | Content | pages: the page tree, its status flow and the Pages screen |
 
-**Sites** — portals, themes, public hosts and sites shown in kitp — is switched for the whole workspace on this screen. A project's own areas are switched in its properties (the project's **⋯ → Properties**, section AREAS).
+A project's areas are switched on its **Areas** screen: the sidebar's **PROJECT → Areas**, for the project you're in. Projects with an overview screen show the same switches in **Edit properties**, section AREAS.
+
+**Sites** — portals, themes, public hosts and sites shown in kitp — is switched for the whole workspace, on **WORKSPACE → Areas**.
 
 ## Off means hidden
 
@@ -22,10 +24,10 @@ Nothing is deleted. Switching the area back on restores it as it was — items, 
 - **Off:** a manager or an admin of the project (Sites: an admin).
 - **On:** an admin only, because it reveals what the area holds.
 
-An area that others need can't be switched off while they're on: Conversations and Approvals need Tasks. Switching an area on also switches on what it needs.
+An area that others need can't be switched off while they're on: Approvals needs Tasks. Conversations doesn't, so a shared inbox can run with Tasks off. Switching an area on also switches on what it needs.
 
 ## Setting an area up
 
-An area a project never used shows **Not set up**. Setting it up copies in its starting point (statuses, screens, starter pages) — the project's own from then on, to change as you like. A new project picks its areas in the new-project dialog (**Start from → Choose areas…**; the shortcuts tick the usual combinations).
+An area a project doesn't have yet shows **Not set up**. A project copied from a template, or made before areas existed, already has the areas its statuses and screens belong to (usually Tasks and Conversations), so those show **On**. Setting an area up copies in its starting point (statuses, screens, starter pages) — the project's own from then on, to change as you like. A new project picks its areas in the new-project dialog (**Start from → Choose areas…**; the shortcuts tick the usual combinations).
 
 Every switch is recorded in the project's activity.

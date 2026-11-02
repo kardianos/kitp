@@ -372,7 +372,7 @@ test('ADMIN_SECTION classifies every admin view (Workspace global vs Project sco
   // (always filtered to the active project).
   const inSection = (s) => M.ADMIN_VIEWS.filter((v) => M.ADMIN_SECTION[v] === s).sort();
   assert.deepEqual(inSection('workspace'), ['agents', 'areas', 'attributes', 'jobs', 'oidc_claims', 'people', 'portals', 'roles', 'themes']);
-  assert.deepEqual(inSection('project'), ['activity_sinks', 'comm_channels', 'comm_log', 'enums', 'screens', 'workflows']);
+  assert.deepEqual(inSection('project'), ['activity_sinks', 'comm_channels', 'comm_log', 'enums', 'project_areas', 'screens', 'workflows']);
 });
 
 test('WORKSPACE rail order: Agents sits directly under People', () => {
@@ -387,11 +387,15 @@ test('WORKSPACE rail order: Agents sits directly under People', () => {
 test('every PROJECT admin screen scopes its list to the active project', () => {
   // A project-section screen must thread scope.projectId into its list query
   // (parentCardId/projectId/scopeCardId from scope), so it can't leak rows from
-  // other projects. EnumManager (Values) is its own control (project-scoped by
-  // construction), so it's exempt from this MasterDetail-shaped check.
+  // other projects. A screen that is its own control (Values, Areas) follows
+  // the active project through its projectScopePath instead.
   for (const v of M.ADMIN_VIEWS) {
-    if (M.ADMIN_SECTION[v] !== 'project' || v === 'enums') continue;
+    if (M.ADMIN_SECTION[v] !== 'project') continue;
     const cfg = M.adminScreenConfig(v);
+    if (cfg.type !== 'MasterDetail') {
+      assert.equal(cfg.projectScopePath, 'scope.projectId', `${v}: follows scope.projectId`);
+      continue;
+    }
     const listQ = cfg.queries.find((q) => q.name === 'list');
     assert.ok(listQ, `${v}: has a list query`);
     const input = listQ.input ?? {};

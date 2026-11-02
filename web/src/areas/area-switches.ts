@@ -1,7 +1,8 @@
 /**
  * AreaSwitches — the switches for a project's areas (Tasks, Conversations,
- * Approvals, Content), in the project's properties, or for the workspace's
- * (Sites), on the Areas admin screen. See docs/AREAS.md.
+ * Approvals, Content), on the project's Areas screen (the sidebar's PROJECT
+ * section, following the active project) and in its properties, or for the
+ * workspace's (Sites), on the workspace Areas screen. See docs/AREAS.md.
  *
  * One row per area: what it holds, what it needs, where it started from,
  * its state and the action that changes it.
@@ -29,6 +30,10 @@ export interface AreaSwitchesConfig extends BaseControlConfig {
   scope: 'project' | 'workspace';
   /** The project (scope 'project'), as a string id. */
   projectId?: string;
+  /** Instead of projectId: the dotted tree path of the active project id
+   *  (scope 'project'), followed as it changes. The PROJECT section's Areas
+   *  screen uses 'scope.projectId'. */
+  projectScopePath?: string;
   /** A heading above the rows (the admin screen); none in the properties
    *  panel, which labels its section itself. */
   title?: string;
@@ -72,6 +77,8 @@ export class AreaSwitches extends Control<AreaSwitchesConfig> {
   /** The starting point picked per area (Set up / Switch on). */
   private picked: Record<string, string> = {};
   private list!: HTMLElement;
+  /** Bumped per load, so a slow answer for a project left behind is dropped. */
+  private loadSeq = 0;
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('section');
@@ -98,22 +105,56 @@ export class AreaSwitches extends Control<AreaSwitchesConfig> {
     this.list.dataset.areaSwitches = this.config.scope;
     this.el.append(this.list);
     this.paint();
-    this.load();
+    const path = this.scopePath();
+    if (path === null) {
+      this.load();
+      return;
+    }
+    // Follow the active project: reload when it changes.
+    this.effect(() => {
+      this.ctx.tree.at(path).get();
+      this.areas = [];
+      this.loaded = false;
+      this.confirming = null;
+      this.errors = {};
+      this.paint();
+      this.load();
+    }, 'areaSwitches.scope');
+  }
+
+  /** The tree path of the active project, when this follows one. */
+  private scopePath(): string[] | null {
+    const p = this.config.projectScopePath;
+    return this.config.scope === 'project' && this.config.projectId === undefined && p !== undefined ? p.split('.') : null;
   }
 
   private projectId(): bigint | undefined {
+    if (this.config.scope !== 'project') return undefined;
+    const path = this.scopePath();
+    if (path !== null) {
+      const v = this.ctx.tree.at(path).peek<bigint | string | null>();
+      if (typeof v === 'bigint') return v;
+      return typeof v === 'string' && /^\d+$/.test(v) ? BigInt(v) : undefined;
+    }
     const raw = this.config.projectId;
-    return this.config.scope === 'project' && raw !== undefined && /^\d+$/.test(raw) ? BigInt(raw) : undefined;
+    return raw !== undefined && /^\d+$/.test(raw) ? BigInt(raw) : undefined;
   }
 
   private load(): void {
     const projectId = this.projectId();
-    if (this.config.scope === 'project' && projectId === undefined) return;
+    const seq = ++this.loadSeq;
+    if (this.config.scope === 'project' && projectId === undefined) {
+      if (this.scopePath() !== null) {
+        this.loaded = true;
+        this.paint();
+      }
+      return;
+    }
     this.ctx.api.callByName(
       AREA_SPEC.list,
       projectId !== undefined ? { projectId } : {},
       (out) => {
-        if (!this.isAlive()) return;
+        if (!this.isAlive() || seq !== this.loadSeq) return;
         this.areas = ((out as AreaListOutput).areas ?? []).filter((a) => a.scope === this.config.scope);
         this.loaded = true;
         this.busy = null;
@@ -122,6 +163,7 @@ export class AreaSwitches extends Control<AreaSwitchesConfig> {
       {
         alive: () => this.isAlive(),
         onErr: () => {
+          if (seq !== this.loadSeq) return;
           this.loaded = true;
           this.paint();
         },
@@ -133,7 +175,11 @@ export class AreaSwitches extends Control<AreaSwitchesConfig> {
     if (!this.loaded || this.areas.length === 0) {
       const p = document.createElement('p');
       p.className = 'muted area-switches__empty';
-      p.textContent = this.loaded ? 'No areas.' : 'Loading…';
+      p.textContent = !this.loaded
+        ? 'Loading…'
+        : this.config.scope === 'project' && this.projectId() === undefined
+          ? 'Pick a project to see its areas.'
+          : 'No areas.';
       this.list.replaceChildren(p);
       return;
     }

@@ -133,6 +133,7 @@ const ADMIN_LINK_LABELS: Record<AdminView, string> = {
   portals: 'Portals',
   themes: 'Themes',
   areas: 'Areas',
+  project_areas: 'Areas',
   jobs: 'Background Jobs',
 };
 import { mockTransport } from './kanban/mock-data.js';

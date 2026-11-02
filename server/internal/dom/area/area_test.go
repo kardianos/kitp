@@ -312,3 +312,91 @@ func TestSwitchOnAddsStartingPoint(t *testing.T) {
 	fails(t, call(f, sysCtx(), "area", "set", fmt.Sprintf(`{"project_id":"%d","key":"sites","on":false}`, plain)), "validation")
 	fails(t, call(f, sysCtx(), "project", "compose", `{"name":"Bad","features":["tracker"],"areas_off":["sites"]}`), "internal")
 }
+
+// TestProjectWithItsOwnFlows: a project set up without a starting point —
+// copied from a template, or created before areas existed — has the
+// statuses and screens of Tasks and Conversations but no card_origin, and
+// maybe no items yet. It has those areas: they read 'on', switching one
+// off and on again adds no starting point (which would duplicate its
+// flow), and an area that needs Tasks (Approvals) can be set up. An area
+// it lacks (Content) still starts from its starting point.
+func TestProjectWithItsOwnFlows(t *testing.T) {
+	f := setup(t, "kitp_test_area_own_flows")
+	ctx := context.Background()
+	var tpl int64
+	if err := f.sp.P.QueryRow(ctx, `
+		SELECT c.id FROM card c
+		JOIN card_type ct ON ct.id = c.card_type_id AND ct.name = 'project'
+		JOIN attribute_value av ON av.card_id = c.id
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'title'
+		WHERE av.value #>> '{}' = 'Standard Project Template' AND c.deleted_at IS NULL`).Scan(&tpl); err != nil {
+		t.Fatalf("template project: %v", err)
+	}
+	var origins, items int
+	if err := f.sp.P.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM card_origin WHERE project_id = $1),
+		       (SELECT count(*) FROM card c JOIN card_type ct ON ct.id = c.card_type_id
+		        WHERE c.parent_card_id = $1 AND ct.name IN ('task', 'comm_channel', 'page'))`, tpl).Scan(&origins, &items); err != nil {
+		t.Fatal(err)
+	}
+	if origins != 0 || items != 0 {
+		t.Fatalf("the template should have no starting point and no items: origins %d, items %d", origins, items)
+	}
+	flows := func(attr string) int {
+		t.Helper()
+		var n int
+		if err := f.sp.P.QueryRow(ctx, `
+			SELECT count(*) FROM flow f JOIN attribute_def ad ON ad.id = f.attribute_def_id
+			WHERE f.scope_card_id = $1 AND ad.name = $2`, tpl, attr).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	setOn := func(key string, on bool) area.SetOutput {
+		t.Helper()
+		var o area.SetOutput
+		decode(t, call(f, sysCtx(), "area", "set", fmt.Sprintf(`{"project_id":"%d","key":%q,"on":%v}`, tpl, key, on)), &o)
+		return o
+	}
+
+	st := states(t, f, sysCtx(), tpl)
+	for key, want := range map[string]string{"tasks": "on", "conversations": "on", "approvals": "unused", "content": "unused"} {
+		if st[key].State != want {
+			t.Errorf("%s: state %s, want %s", key, st[key].State, want)
+		}
+	}
+	if len(st["tasks"].Screens) == 0 || len(st["conversations"].Screens) == 0 {
+		t.Errorf("its own screens belong to their areas: tasks %v, conversations %v", st["tasks"].Screens, st["conversations"].Screens)
+	}
+	taskScreens := len(st["tasks"].Screens)
+
+	// Approvals turns Tasks on first; Tasks is there, so nothing is added.
+	if o := setOn("approvals", true); len(o.Applied) != 0 {
+		t.Errorf("setting up Approvals applied %v, want nothing", o.Applied)
+	}
+	// Off and on again: no starting point, no second flow.
+	setOn("approvals", false)
+	setOn("tasks", false)
+	if got := states(t, f, sysCtx(), tpl)["tasks"].State; got != "off" {
+		t.Fatalf("tasks after switching off: %s", got)
+	}
+	if o := setOn("tasks", true); len(o.Applied) != 0 {
+		t.Errorf("switching Tasks back on applied %v, want nothing", o.Applied)
+	}
+	if o := setOn("conversations", true); len(o.Applied) != 0 {
+		t.Errorf("switching Conversations on applied %v, want nothing", o.Applied)
+	}
+	if n := flows("status"); n != 1 {
+		t.Errorf("task flows: %d, want 1", n)
+	}
+	if n := flows("comm_status"); n != 1 {
+		t.Errorf("comm flows: %d, want 1", n)
+	}
+	if got := len(states(t, f, sysCtx(), tpl)["tasks"].Screens); got != taskScreens {
+		t.Errorf("task screens: %d, want %d (unchanged)", got, taskScreens)
+	}
+	// Content it doesn't have: setting it up adds its starting point.
+	if o := setOn("content", true); len(o.Applied) != 1 || o.Applied[0] != "publishing" {
+		t.Errorf("setting up Content applied %v, want [publishing]", o.Applied)
+	}
+}

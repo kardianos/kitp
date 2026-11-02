@@ -313,6 +313,44 @@ test('properties panel AREAS: the project\'s area switches, from area.list', asy
   assert.equal(t.of('bundle.list').length, 0, 'the old FEATURES list is gone');
 });
 
+test('PROJECT → Areas: the active project\'s switches, reachable whatever its screens, following the project', async () => {
+  const asked = [];
+  const area = (key, title, scope, state) => ({ key, title, doc: title, scope, sort: 10, state, depends_on: [], starts: [], added: [], screens: [], items: null });
+  const t = transportFor({
+    'area.list': (d) => {
+      asked.push(d.project_id);
+      return { areas: [area('tasks', 'Tasks', 'project', d.project_id === '31' ? 'on' : 'off'), area('sites', 'Sites', 'workspace', 'on')] };
+    },
+  });
+  const { dispatcher, api } = bootApi(t.transport);
+  const tree = new M.TreeNode({}, []);
+  tree.at(['scope', 'projectId']).set(null);
+  assert.equal(M.ADMIN_SECTION.project_areas, 'project', 'in the sidebar\'s PROJECT section');
+  assert.ok(M.MANAGER_ADMIN_VIEWS.has('project_areas'), 'managers can open it (they can switch off)');
+  const cfg = M.adminScreenConfig('project_areas');
+  assert.equal(cfg.type, 'AreaSwitches');
+  assert.equal(cfg.scope, 'project');
+  assert.equal(cfg.projectScopePath, 'scope.projectId');
+  const c = M.Control.New(cfg.type, cfg, { api, tree });
+  c.mount(new FakeElement('div'));
+  await settle(dispatcher);
+  const rows = () => c.el.querySelectorAll('[data-area]').map((r) => `${r.dataset.area}:${r.dataset.areaState}`);
+  assert.equal(asked.length, 0, 'no project yet: nothing asked');
+  assert.match(c.el.querySelector('.area-switches__empty').textContent, /Pick a project/);
+
+  tree.at(['scope', 'projectId']).set(31n);
+  M.flushSync?.();
+  await settle(dispatcher);
+  assert.deepEqual(asked, ['31']);
+  assert.deepEqual(rows(), ['tasks:on'], 'the project\'s areas only (Sites is the workspace\'s)');
+
+  tree.at(['scope', 'projectId']).set(45n);
+  M.flushSync?.();
+  await settle(dispatcher);
+  assert.deepEqual(asked, ['31', '45'], 'reloads for the new project');
+  assert.deepEqual(rows(), ['tasks:off']);
+});
+
 /* -------------------------------------------------------------------------- */
 /* Pages layout + page route + detail profiles.                                */
 /* -------------------------------------------------------------------------- */
