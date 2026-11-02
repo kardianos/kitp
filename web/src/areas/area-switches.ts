@@ -65,6 +65,10 @@ export function areaFacts(a: AreaRow, all: readonly AreaRow[]): string[] {
   const added = a.starts.filter((s) => a.added.includes(s.key)).map((s) => s.title);
   if (added.length > 0) facts.push(`Started from ${added.join(', ')}`);
   if (a.items !== null) facts.push(`${a.items} item${a.items === 1 ? '' : 's'}`);
+  if (a.switched !== undefined && a.switched.at !== '') {
+    const who = a.switched.by !== '' ? ` by ${a.switched.by}` : '';
+    facts.push(`Switched ${a.switched.state} ${a.switched.at.slice(0, 10)}${who}`);
+  }
   return facts;
 }
 

@@ -98,6 +98,21 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- 2d. Nesting cap (review A26): the card and everything under it
+        --     must stay within 14 levels, so every capped parent walk
+        --     (depth < 16) reaches the project.
+        IF (SELECT count(*) FROM card_ancestors(_new_parent))
+           + (WITH RECURSIVE sub(id, depth) AS (
+                  SELECT _card_id, 0
+                  UNION ALL
+                  SELECT c.id, sub.depth + 1 FROM card c JOIN sub ON c.parent_card_id = sub.id
+                  WHERE sub.depth < 16)
+              SELECT max(depth) FROM sub) >= 14 THEN
+            RETURN QUERY SELECT _idx, false, 'too_deep'::text,
+                'card.move: cards nest at most 14 deep'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 3. ParentAllowed.
         _ok := false;
         IF _child_allow_self AND _parent_type_id = _child_type_id THEN

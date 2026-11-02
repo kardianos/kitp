@@ -174,6 +174,15 @@ BEGIN
                     NULL::jsonb;
                 CONTINUE;
             END IF;
+            -- Nesting cap: every parent walk stops at depth 16 (CLAUDE.md),
+            -- so a card deeper than that would never reach its project and
+            -- would escape the project's roles and areas (review A26).
+            -- Real trees sit 3-4 deep; 14 leaves room.
+            IF (SELECT count(*) FROM card_ancestors(_parent_card_id)) >= 14 THEN
+                RETURN QUERY SELECT _idx, false, 'too_deep'::text,
+                    'card.insert: cards nest at most 14 deep'::text, NULL::jsonb;
+                CONTINUE;
+            END IF;
         END IF;
 
         -- 4. Phase validation.

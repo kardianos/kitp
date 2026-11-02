@@ -664,3 +664,10 @@ test('Values: status rows get a publishes_to portal picker that writes attribute
   assert.equal(ups[0].data.attribute_name, 'publishes_to');
   assert.deepEqual(ups[0].data.value.map(String), ['120']);
 });
+
+test('areaFacts: an area with a switch says when and who switched it (A22)', () => {
+  const base = { key: 'sites', title: 'Sites', doc: '', scope: 'workspace', sort: 50, state: 'off', dependsOn: [], starts: [], added: [], screens: [], items: null };
+  const facts = M.areaFacts({ ...base, switched: { state: 'off', at: '2026-11-02T20:14:41.84+00:00', by: 'Dana' } }, []);
+  assert.ok(facts.includes('Switched off 2026-11-02 by Dana'), facts.join(' · '));
+  assert.ok(!M.areaFacts(base, []).some((f) => f.startsWith('Switched')), 'no switch, no fact');
+});

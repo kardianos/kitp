@@ -93,6 +93,12 @@ type Handler struct {
 	// bug class spelled out in
 	// DI-5 in docs/DESIGN_INVARIANTS.md.
 	GlobalScope bool
+	// Area names the area (docs/AREAS.md) a handler's writes belong to
+	// when that isn't its CardTypeID's: approval.set / decide gate on the
+	// task but write Approvals. While Area is off in the target project
+	// the dispatcher refuses the write (area_off), as it does for an
+	// item type of an area that is off.
+	Area string
 	// Timeout caps the wall-clock time the dispatcher allows for one
 	// invocation of Run (the entire arrayPath batch — every input
 	// in the group). Zero means "use the dispatcher's default"

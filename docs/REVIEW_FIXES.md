@@ -46,12 +46,16 @@ Done (area 3): a task-mode account's new mail becomes a thread on its own while 
 
 ## 4. Areas
 
-- [ ] **A8** Approvals off neither hides nor blocks approvals (handlers gate on the task type; list / summary / state / waiting_on / activity unfiltered).
-- [ ] **A9** reply_body cards have no parent, so card_in_off_area never hides a hidden thread's messages.
-- [ ] **A14** card_in_off_area's fast path is install-wide: one off row makes every read pay a second walk.
+- [x] **A8** Approvals off neither hides nor blocks approvals (handlers gate on the task type; list / summary / state / waiting_on / activity unfiltered).
+- [x] **A9** reply_body cards have no parent, so card_in_off_area never hides a hidden thread's messages.
+- [x] **A14** card_in_off_area's fast path is install-wide: one off row makes every read pay a second walk.
 - [x] **A16** checkArea checks only the source: moving a card into an off area succeeds.
-- [ ] **A22** Switching Sites writes no activity row.
-- [ ] **A26** Pages deeper than 15 never reach the project in the depth-16 walk (escape Content-off).
+- [x] **A22** Switching Sites writes no activity row.
+- [x] **A26** Pages deeper than 15 never reach the project in the depth-16 walk (escape Content-off).
+
+- [x] **New (found measuring A14)** card_visible_to was ~1 ms per call (a plain-SQL function with subqueries is re-planned on every call on Postgres 16): now PL/pgSQL with one folded walk, ~0.2 ms (20k cards: 20 s → 4 s).
+
+Done (area 4): VisibilityClause and card_visible_to test the areas on their own parent walk (no second walk per row; nothing off is answered once per query), card_in_off_area and card_visible_to are PL/pgSQL with cached plans, a message (reply_body) walks on from its thread (a GIN index on array values serves that lookup and the SMTP queue's), and TestVisibilityAgrees holds the three to one rule. 20k cards, inline visibility: 1.9 s → 0.7 s with nothing off, 3.2 s → 0.75 s with an area off. Approvals: a handler names its Area for the dispatcher (approval.set / remove / decide refuse while Approvals is off), approval_open and approval.list skip it, and activity_hidden drops approval votes from feeds, sinks, the poll and exports. area.list reports each area's last switch (state, when, who) — the workspace's Sites has no card for an activity row, so that is its record — and the Areas screen shows it. Cards nest at most 14 deep (card.insert / card.move: too_deep).
 
 ## 5. Portals and sites
 

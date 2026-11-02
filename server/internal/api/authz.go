@@ -349,7 +349,12 @@ func (s *Server) checkArea(ctx context.Context, h reg.Handler, input any, lookup
 	b.Set("card_type", cardTypeID)
 	b.Set("card", cardID)
 	b.Set("project", tProj)
-	sql, args, err := b.Compile(`SELECT area_write_blocked(:card_type, :card, :project)`)
+	b.Set("area", h.Area)
+	// The card type's own area, and the handler's Area (approvals for the
+	// approval handlers, which gate on the task).
+	sql, args, err := b.Compile(`
+		SELECT area_write_blocked(:card_type, :card, :project)
+		    OR (:area <> '' AND :project <> 0 AND area_state(:project, :area) = 'off')`)
 	if err != nil {
 		return fmt.Errorf("authz: area check: compile: %w", err)
 	}

@@ -67,6 +67,18 @@ BEGIN
                     'scope', a.scope,
                     'sort', a.sort_order,
                     'state', area_state(_project, a.key),
+                    -- The last switch, when there is one: what, when, who
+                    -- (the workspace's Sites has no card to carry an
+                    -- activity row, so this is its record; review A22).
+                    'switched', CASE WHEN a.scope = 'workspace' THEN
+                        (SELECT jsonb_build_object('state', w.state, 'at', w.changed_at,
+                                                   'by', COALESCE(user_label(w.changed_by), ''))
+                         FROM workspace_area w WHERE w.area_key = a.key)
+                      ELSE
+                        (SELECT jsonb_build_object('state', pa.state, 'at', pa.changed_at,
+                                                   'by', COALESCE(user_label(pa.changed_by), ''))
+                         FROM project_area pa WHERE pa.project_id = _project AND pa.area_key = a.key)
+                    END,
                     'depends_on', a.depends_on,
                     'starts', COALESCE((
                         SELECT jsonb_agg(jsonb_build_object('key', s.key, 'title', COALESCE(b.title, s.key)) ORDER BY s.ord)

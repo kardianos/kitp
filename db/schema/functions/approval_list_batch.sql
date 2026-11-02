@@ -40,6 +40,7 @@ DECLARE
     _raw jsonb;
     _task_id bigint;
     _project_id bigint;
+    _off boolean;
 BEGIN
     SELECT id INTO _approval_ct FROM card_type WHERE name = 'approval';
     SELECT id INTO _status_def FROM attribute_def WHERE name = 'status';
@@ -61,11 +62,16 @@ BEGIN
         _project_id := card_enclosing_project(_task_id);
         IF _project_id IS NULL
            OR NOT EXISTS (SELECT 1 FROM card WHERE id = _task_id AND deleted_at IS NULL)
-           OR NOT user_sees_project(approval_list_batch.actor_id, _project_id) THEN
+           OR NOT user_sees_project(approval_list_batch.actor_id, _project_id)
+           OR NOT card_visible_to(approval_list_batch.actor_id, _task_id) THEN
             RETURN QUERY SELECT _idx, false, 'task_not_found'::text,
                 format('approval.list: task %s not found', _task_id), NULL::jsonb;
             CONTINUE;
         END IF;
+
+        -- Approvals switched off in the project: its requests and votes are
+        -- hidden like everything else in an area that is off (review A8).
+        _off := area_state(_project_id, 'approvals') = 'off';
 
         RETURN QUERY
         SELECT _idx, true, ''::text, ''::text,
@@ -135,6 +141,7 @@ BEGIN
                     WHERE ap.parent_card_id = _task_id
                       AND ap.card_type_id = _approval_ct
                       AND ap.deleted_at IS NULL
+                      AND NOT _off
                 ), '[]'::jsonb),
                 'decisions', COALESCE((
                     SELECT jsonb_agg(jsonb_build_object(
@@ -164,6 +171,7 @@ BEGIN
                     FROM activity d
                     LEFT JOIN comment_body cb ON cb.id = (d.value_new->>'comment_body_id')::bigint
                     WHERE d.card_id = _task_id AND d.kind = 'approval_decision'
+                      AND NOT _off
                 ), '[]'::jsonb)
             );
     END LOOP;

@@ -205,6 +205,8 @@ func Register(_ *store.Pool) {
 		ProcessName: "card.update",
 		CardTypeID:  taskCardType(setTask),
 		ScopeCardID: scope(setTask),
+		// Writes Approvals, whatever the task's area.
+		Area: "approvals",
 		// Unified handler — body lives in
 		// db/schema/functions/approval_set_batch.sql.
 		SQLFunc: "approval_set_batch",
@@ -224,6 +226,7 @@ func Register(_ *store.Pool) {
 		ScopeCardID: func(_ context.Context, _ reg.ValidationPool, in any) (int64, error) {
 			return in.(RemoveInput).ID, nil
 		},
+		Area: "approvals",
 		// Unified handler — body lives in
 		// db/schema/functions/approval_remove_batch.sql.
 		SQLFunc: "approval_remove_batch",
@@ -238,6 +241,7 @@ func Register(_ *store.Pool) {
 		ProcessName:  "comment.post",
 		CardTypeID:   taskCardType(decideTask),
 		ScopeCardID:  scope(decideTask),
+		Area:         "approvals",
 		// Unified handler — body lives in
 		// db/schema/functions/approval_decide_batch.sql.
 		SQLFunc: "approval_decide_batch",

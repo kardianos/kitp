@@ -331,6 +331,9 @@ export interface AreaRow {
   screens: string[];
   /** How many items it holds (admins only; null otherwise). */
   items: number | null;
+  /** The last switch, when the area has one: its state, when (ISO) and
+   *  who. */
+  switched?: { state: 'on' | 'off'; at: string; by: string };
 }
 export interface AreaListInput {
   projectId?: bigint;
@@ -458,6 +461,12 @@ export function decodeAreaRow(j: Record<string, unknown>): AreaRow {
     added: asStrings(j['added']),
     screens: asStrings(j['screens']),
     items: j['items'] === null || j['items'] === undefined ? null : asNum(j['items']),
+    ...(j['switched'] !== null && typeof j['switched'] === 'object'
+      ? (() => {
+          const w = asObj(j['switched']);
+          return { switched: { state: asStr(w['state']) === 'off' ? ('off' as const) : ('on' as const), at: asStr(w['at']), by: asStr(w['by']) } };
+        })()
+      : {}),
   };
 }
 

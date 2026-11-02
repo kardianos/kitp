@@ -46,6 +46,16 @@ type Area struct {
 	Added     []string `json:"added" mcp:"desc=starting points the project used"`
 	Screens   []string `json:"screens" mcp:"desc=ids of the project's screens that belong to the area"`
 	Items     *int64   `json:"items" mcp:"desc=how many items the area holds in the project; admins only, null otherwise"`
+	// Switched is the area's last switch, when it has one.
+	Switched *Switch `json:"switched,omitempty" mcp:"desc=the last switch of the area, when it has one: state, when and who"`
+}
+
+// Switch records an area's last switch: the workspace's Sites has no card
+// to carry an activity row, so this is its record (and a project's too).
+type Switch struct {
+	State string `json:"state" mcp:"desc=on or off"`
+	At    string `json:"at" mcp:"desc=when (RFC 3339)"`
+	By    string `json:"by" mcp:"desc=who switched it"`
 }
 
 // ListOutput wraps the areas.

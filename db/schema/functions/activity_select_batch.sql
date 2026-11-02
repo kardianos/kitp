@@ -158,7 +158,7 @@ BEGIN
               AND (_project_id IS NULL OR EXISTS (
                 SELECT 1 FROM card_ancestors(a.card_id) pj WHERE pj.id = _project_id
               ))
-              AND NOT card_in_off_area(a.card_id) AND EXISTS (
+              AND NOT activity_hidden(a.kind, a.card_id) AND EXISTS (
                 -- depth < 16 caps the parent walk (CLAUDE.md cap;
                 -- matches card_ancestors / scopeWalkDepth) so a
                 -- parent_card_id cycle can't pin the connection (A1).

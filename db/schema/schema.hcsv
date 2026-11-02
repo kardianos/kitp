@@ -196,6 +196,7 @@ attribute_value_trgm, , "(value::text) gin_trgm_ops", gin, "value_type_id >= 100
 attribute_value_def_value, "attribute_def_id, value", , , "value_type_id < 1000"
 attribute_value_def_card, "attribute_def_id, card_id", , ,
 attribute_value_def_ref, , "attribute_def_id, ((value)::text::bigint)", , "jsonb_typeof(value) = 'number'"
+attribute_value_refs, , "value jsonb_path_ops", gin, "jsonb_typeof(value) = 'array'"
 
 ## table process | doc="Logical workflow name (e.g. card.create). process_step rows declare the ordered handler chain."
 
@@ -674,6 +675,7 @@ idx_theme_file_cas, "cas_address"
 ## function portal_rebuild_batch | doc="portal.rebuild — queue a portal for the portal.build job." | path="functions/portal_rebuild_batch.sql"
 ## function area_present | doc="Areas: whether a project already has an area — it used one of the area's starting points, holds its items, or has its own status flow for them (a project from a template or from before areas)." | path="functions/area_present.sql" | arg_types="bigint, text"
 ## function area_state | doc="Areas: one area's state in a project ('on', 'off' or 'unused'; project 0 = the workspace): an explicit switch row wins, else 'on' when the project already has the area (area_present)." | path="functions/area_state.sql" | arg_types="bigint, text"
+## function activity_hidden | doc="Areas: whether an activity row is hidden — with its card (card_in_off_area), or as a record of another area than its card's while that area is off (an approval vote on a task, with Approvals off)." | path="functions/activity_hidden.sql" | arg_types="text, bigint"
 ## function area_list_batch | doc="area.list — the areas of a project (or the workspace areas) with their state, starting points, the project's screens of each, and (admins) how many items each holds." | path="functions/area_list_batch.sql"
 ## function area_set_batch | doc="area.set — switch an area on (admin; turns on what it needs, adding starting points) or off (manager/admin; refused while a dependent area is on); writes an activity row and rebuilds affected portals." | path="functions/area_set_batch.sql"
 ## function theme_mark_portals_dirty | doc="Flag every live portal using a theme for the portal.build job (a theme's settings or files changed)." | path="functions/theme_mark_portals_dirty.sql" | arg_types="bigint"

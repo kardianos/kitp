@@ -90,13 +90,14 @@ BEGIN
                COALESCE(count(*) FILTER (WHERE a.id > _since), 0)::int
           INTO _latest, _new_count
         FROM activity a
-        WHERE a.card_id = _task_id
-           OR a.card_id IN (
-                SELECT c.id
-                FROM card c
-                JOIN card_type ct ON ct.id = c.card_type_id
-                WHERE c.parent_card_id = _task_id AND ct.name IN ('comm', 'link')
-              );
+        WHERE (a.card_id = _task_id
+               OR a.card_id IN (
+                    SELECT c.id
+                    FROM card c
+                    JOIN card_type ct ON ct.id = c.card_type_id
+                    WHERE c.parent_card_id = _task_id AND ct.name IN ('comm', 'link')
+                  ))
+          AND NOT activity_hidden(a.kind, a.card_id);
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(

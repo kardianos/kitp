@@ -662,8 +662,10 @@ func (p *Pumper) loadActivityBatch(ctx context.Context, pointer int64) ([]scanne
 			FROM activity a
 			WHERE a.id > :pointer
 			  AND a.card_id IN (SELECT id FROM project_cards)
-			  -- Nothing from an area that is switched off leaves kitp.
-			  AND NOT card_in_off_area(a.card_id)
+			  -- Nothing from an area that is switched off leaves kitp —
+			  -- including an approval vote recorded on a task while
+			  -- Approvals is off (activity_hidden).
+			  AND NOT activity_hidden(a.kind, a.card_id)
 			ORDER BY a.id ASC
 			LIMIT :limit
 		)

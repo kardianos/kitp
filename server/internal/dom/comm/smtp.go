@@ -414,7 +414,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			AND status_av.value = to_jsonb('pending'::text)
 		-- locate the comm whose 'replies' attribute_value lists rb.id
 		JOIN attribute_value rep_av ON rep_av.attribute_def_id = (SELECT id FROM attribute_def WHERE name='replies')
-			AND rep_av.value @> to_jsonb(rb.id)
+			AND jsonb_typeof(rep_av.value) = 'array' AND rep_av.value @> to_jsonb(rb.id)
 		JOIN card cm ON cm.id = rep_av.card_id
 		JOIN card_type ct_cm ON ct_cm.id = cm.card_type_id AND ct_cm.name = 'comm'
 		-- channel_ref → comm_channel card

@@ -500,7 +500,7 @@ func loadActivityRows(ctx context.Context, pool *store.Pool, projectID int64, in
 		LEFT JOIN user_account u  ON u.id = a.actor_id
 		WHERE (c.id = :project_id OR c.parent_card_id = :project_id)
 		  AND (:include_deleted OR c.deleted_at IS NULL)
-		  AND NOT card_in_off_area(c.id)
+		  AND NOT activity_hidden(a.kind, a.card_id)
 		ORDER BY a.id
 	`)
 	if err != nil {

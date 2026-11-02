@@ -17,6 +17,9 @@ LANGUAGE sql STABLE AS $$
     CROSS JOIN LATERAL approval_fields(ap.id) fl
     WHERE ap.parent_card_id = p_task_id
       AND ap.deleted_at IS NULL
+      -- An approval card is in Approvals: switched off, the task has no
+      -- open requests (summary, state, waiting-on, asked-at; review A8).
+      AND NOT card_in_off_area(ap.id)
       AND COALESCE(approval_round_start(p_task_id, fl.to_id), '-infinity'::timestamptz) < ap.created_at
       AND NOT EXISTS (
           SELECT 1
