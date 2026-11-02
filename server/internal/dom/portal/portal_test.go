@@ -14,6 +14,7 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/cas"
+	"github.com/kitp/kitp/server/internal/dom/area"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/bundle"
 	"github.com/kitp/kitp/server/internal/dom/card"
@@ -46,6 +47,7 @@ func setup(t *testing.T, schemaName string) fixture {
 	bundle.Register(sp)
 	storage := cas.New(cas.NewPgBackend(pool))
 	portal.Register(portal.Config{Pool: sp, Storage: storage})
+	area.Register(sp)
 	f := fixture{
 		srv:     api.NewServer(sp),
 		sp:      sp,
@@ -713,5 +715,80 @@ func TestUnpublish(t *testing.T) {
 	move(t, f, f.guide, "Archived")
 	if got := on(f.guide); got != "" {
 		t.Errorf("archived guide still on %q", got)
+	}
+}
+
+// TestAreasAndSites: with Sites switched off nothing is served, listed,
+// built or changed; with a project's Content off its pages come off the
+// site (and come back, unrepublished, when it is on again).
+func TestAreasAndSites(t *testing.T) {
+	f := setup(t, "kitp_test_portal_areas")
+	prod := newPortal(t, f, fmt.Sprintf(`{"title":"Docs","root_page_id":"%d","host":"docs.example.test","public":true,"internal":true}`, f.home))
+	setAttr(t, f, f.status["Published"], "publishes_to", []string{fmt.Sprint(prod)})
+	move(t, f, f.home, "Published")
+	move(t, f, f.guide, "Published")
+	build(t, f)
+	pub := f.server.PublicHandler()
+	if code, _, _ := get(t, pub, "docs.example.test", "/getting-started/"); code != 200 {
+		t.Fatalf("published page: %d", code)
+	}
+
+	decode(t, call(f, sysCtx(), "area", "set", `{"key":"sites","on":false}`), &area.SetOutput{})
+	if code, _, _ := get(t, pub, "docs.example.test", "/"); code != http.StatusNotFound {
+		t.Errorf("Sites off, public site: %d, want 404", code)
+	}
+	rt := api.NewRouter(api.RouterConfig{
+		SessionResolver: func(*http.Request) (*auth.UserCtx, error) { return &auth.UserCtx{ID: 1}, nil },
+	})
+	f.server.Mount(rt)
+	for _, p := range []string{"preview", "site"} {
+		if code, _, _ := get(t, rt.Mux(), "app.example.test", fmt.Sprintf("/api/v1/portal/%d/%s/", prod, p)); code != http.StatusNotFound {
+			t.Errorf("Sites off, %s route: %d, want 404", p, code)
+		}
+	}
+	var list portal.ListOutput
+	decode(t, call(f, sysCtx(), "portal", "list", `{}`), &list)
+	if len(list.Rows) != 0 {
+		t.Errorf("Sites off, portal.list = %d rows", len(list.Rows))
+	}
+	if sr := call(f, sysCtx(), "portal", "set", fmt.Sprintf(`{"id":"%d","title":"X"}`, prod)); sr.OK || sr.Error.Code != "area_off" {
+		t.Errorf("Sites off, portal.set: %+v", sr.Error)
+	}
+	if sr := call(f, sysCtx(), "theme", "set", `{"title":"T","base":"blog"}`); sr.OK || sr.Error.Code != "area_off" {
+		t.Errorf("Sites off, theme.set: %+v", sr.Error)
+	}
+	setAttr(t, f, f.guide, "description", "edited while Sites is off")
+	move(t, f, f.guide, "Published") // marks the portal dirty
+	if err := f.builder.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var dirty bool
+	if err := f.sp.P.QueryRow(context.Background(),
+		`SELECT dirty_since IS NOT NULL FROM portal_state WHERE portal_id = $1`, prod).Scan(&dirty); err != nil {
+		t.Fatal(err)
+	}
+	if !dirty {
+		t.Error("the builder built while Sites is off")
+	}
+
+	decode(t, call(f, sysCtx(), "area", "set", `{"key":"sites","on":true}`), &area.SetOutput{})
+	build(t, f)
+	if code, body, _ := get(t, pub, "docs.example.test", "/getting-started/"); code != 200 || !strings.Contains(body, "edited while Sites is off") {
+		t.Errorf("Sites back on: %d", code)
+	}
+
+	// Content off: the project's pages leave the site; on: they're back.
+	decode(t, call(f, sysCtx(), "area", "set", fmt.Sprintf(`{"project_id":"%d","key":"content","on":false}`, f.project)), &area.SetOutput{})
+	build(t, f)
+	if code, _, _ := get(t, pub, "docs.example.test", "/getting-started/"); code != http.StatusNotFound {
+		t.Errorf("Content off, page: %d, want 404", code)
+	}
+	if n := pubCount(t, f, prod); n != 2 {
+		t.Errorf("Content off dropped the snapshots (%d left); they should stay for switching back on", n)
+	}
+	decode(t, call(f, sysCtx(), "area", "set", fmt.Sprintf(`{"project_id":"%d","key":"content","on":true}`, f.project)), &area.SetOutput{})
+	build(t, f)
+	if code, _, _ := get(t, pub, "docs.example.test", "/getting-started/"); code != 200 {
+		t.Errorf("Content back on, page: %d", code)
 	}
 }

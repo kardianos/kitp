@@ -37,12 +37,15 @@ import "fmt"
 // placeholder for the user id (caller adds the int64 to its args
 // slice).
 //
+// A card in an area that is switched off (card_in_off_area,
+// docs/AREAS.md) is hidden from everyone, global roles included.
+//
 // Closes DI-6 (docs/DESIGN_INVARIANTS.md).
 func VisibilityClause(cardIDExpr, userArg string) string {
-	return fmt.Sprintf(`EXISTS (
+	return fmt.Sprintf(`(NOT card_in_off_area(%[1]s) AND EXISTS (
 		WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (
 			SELECT id, parent_card_id, card_type_id, 0
-			FROM card WHERE id = %s
+			FROM card WHERE id = %[1]s
 			UNION ALL
 			SELECT p.id, p.parent_card_id, p.card_type_id, up.depth + 1
 			FROM card p JOIN up ON p.id = up.parent_card_id
@@ -53,7 +56,7 @@ func VisibilityClause(cardIDExpr, userArg string) string {
 		JOIN user_role ur
 		  ON ur.user_id = caller.id
 		  OR (caller.parent_user_id IS NOT NULL AND ur.user_id = caller.parent_user_id)
-		WHERE caller.id = %s
+		WHERE caller.id = %[2]s
 		  AND (
 		    ur.scope_card_id IS NULL
 		    OR ur.scope_card_id IN (
@@ -62,5 +65,5 @@ func VisibilityClause(cardIDExpr, userArg string) string {
 		      WHERE ct.name = 'project'
 		    )
 		  )
-	)`, cardIDExpr, userArg)
+	))`, cardIDExpr, userArg)
 }

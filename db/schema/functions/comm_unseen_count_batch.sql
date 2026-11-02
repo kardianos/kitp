@@ -56,6 +56,7 @@ BEGIN
             JOIN card cm ON cm.id = rep.card_id AND cm.deleted_at IS NULL   -- the comm
             JOIN card tk ON tk.id = cm.parent_card_id                        -- the task
             WHERE rb.deleted_at IS NULL
+              AND NOT card_in_off_area(cm.id)
               AND EXISTS (
                   SELECT 1
                   FROM user_account caller

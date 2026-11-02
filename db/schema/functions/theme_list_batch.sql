@@ -77,6 +77,7 @@ BEGIN
                       AND (pv.value = to_jsonb(t.id) OR pv.value = to_jsonb(t.id::text))
                 ) pu ON true
                 WHERE t.deleted_at IS NULL
+                  AND NOT workspace_area_off('sites')
             ), '[]'::jsonb));
     END LOOP;
 END;

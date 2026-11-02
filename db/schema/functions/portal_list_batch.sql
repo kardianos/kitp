@@ -120,6 +120,8 @@ BEGIN
                            OR pv.value @> jsonb_build_array(p.id))
                 ) st ON true
                 WHERE p.deleted_at IS NULL
+                  -- Sites switched off: there are no portals to list.
+                  AND NOT workspace_area_off('sites')
                   AND (_global OR (a.root IS NOT NULL AND card_visible_to(actor_id, a.root)))
             ), '[]'::jsonb));
     END LOOP;

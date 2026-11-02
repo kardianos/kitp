@@ -96,10 +96,14 @@ Rules:
 
 ### UI
 
-- New-project dialog: choose a preset (→ `project.compose`) or a template
-  (→ `project.stamp`, unchanged).
-- Project properties: a Features section listing enabled features and an
-  Add button for the others (→ `bundle.apply`).
+- New-project dialog: "Choose areas…" ticks the project's areas, with the
+  presets as shortcuts (→ `project.compose` with each ticked area's
+  starting point and `areas_off`), or a template (→ `project.stamp`,
+  unchanged). See [AREAS.md](AREAS.md).
+- Project properties: an AREAS section that switches areas on and off and
+  sets up the ones a project never used (→ `area.set`, which applies the
+  area's starting point through `bundle_apply`). `bundle.apply` stays as
+  the API for adding a bundle directly.
 
 ## Portals
 
@@ -367,6 +371,12 @@ picks one, and "Show in kitp" adds it to the sidebar.
   portal can't be pointed at a bundle's own starter Home page.
 
 ## Deferred
+
+- **Areas** ([AREAS.md](AREAS.md)): features become switchable areas
+  (Tasks, Conversations, Content, Approvals); an area that is off is
+  hidden completely, enforced by the visibility rule; bundles become each
+  area's starting points and presets its shortcuts; the Pages screen
+  becomes a movable tree.
 
 - **Customer portal** (sign-in for contacts, submit / follow tickets):
   needs a second identity kind and visibility rule; a separate design.

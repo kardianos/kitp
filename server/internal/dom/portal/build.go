@@ -43,6 +43,15 @@ type Builder struct {
 // retried next tick) without failing the job; only failing to enumerate
 // the dirty portals does.
 func (b *Builder) RunOnce(ctx context.Context) error {
+	// Sites switched off (docs/AREAS.md): build nothing; the portals stay
+	// dirty and build when Sites is back on.
+	var sitesOff bool
+	if err := b.Pool.QueryRow(ctx, `SELECT workspace_area_off('sites')`).Scan(&sitesOff); err != nil {
+		return fmt.Errorf("portal.build: areas: %w", err)
+	}
+	if sitesOff {
+		return nil
+	}
 	rows, err := b.Pool.Query(ctx, `
 		SELECT ps.portal_id, ps.dirty_since
 		FROM portal_state ps
@@ -312,6 +321,9 @@ func loadSite(ctx context.Context, pool *pgxpool.Pool, storage *cas.Storage, por
 		FROM publication p
 		JOIN card c ON c.id = p.card_id AND c.deleted_at IS NULL
 		WHERE p.portal_id = :portal
+		  -- A page of a project whose Content area is off isn't built; its
+		  -- snapshot stays, so switching Content back on restores it.
+		  AND NOT card_in_off_area(p.card_id)
 		ORDER BY p.card_id`)
 	if err != nil {
 		return Site{}, fmt.Errorf("compile publications: %w", err)

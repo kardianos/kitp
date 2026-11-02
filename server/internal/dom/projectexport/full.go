@@ -32,6 +32,7 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/card"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
@@ -201,14 +202,14 @@ type commentRow struct {
 }
 
 type activityRow struct {
-	ID             int64
-	CardID         int64
-	Kind           string
-	AttributeName  string
-	ValueOld       json.RawMessage
-	ValueNew       json.RawMessage
-	ActorEmail     string
-	CreatedAt      time.Time
+	ID            int64
+	CardID        int64
+	Kind          string
+	AttributeName string
+	ValueOld      json.RawMessage
+	ValueNew      json.RawMessage
+	ActorEmail    string
+	CreatedAt     time.Time
 }
 
 type attachmentRow struct {
@@ -484,7 +485,10 @@ func loadCommentRows(ctx context.Context, pool *store.Pool, taskIDs []int64) ([]
 // projectID. We include comment + attr_update + card_create + tag_apply
 // rows — every kind currently emitted by the runtime.
 func loadActivityRows(ctx context.Context, pool *store.Pool, projectID int64, includeDeleted bool) ([]activityRow, map[int64]string, error) {
-	rows, err := pool.P.Query(ctx, `
+	b := named.New()
+	b.Set("project_id", projectID)
+	b.Set("include_deleted", includeDeleted)
+	sql, args, err := b.Compile(`
 		SELECT a.id, a.card_id, a.kind,
 		       COALESCE(ad.name, '') AS attribute_name,
 		       a.value_old, a.value_new,
@@ -494,10 +498,15 @@ func loadActivityRows(ctx context.Context, pool *store.Pool, projectID int64, in
 		JOIN card c ON c.id = a.card_id
 		LEFT JOIN attribute_def ad ON ad.id = a.attribute_def_id
 		LEFT JOIN user_account u  ON u.id = a.actor_id
-		WHERE (c.id = $1 OR c.parent_card_id = $1)
-		  AND ($2 OR c.deleted_at IS NULL)
+		WHERE (c.id = :project_id OR c.parent_card_id = :project_id)
+		  AND (:include_deleted OR c.deleted_at IS NULL)
+		  AND NOT card_in_off_area(c.id)
 		ORDER BY a.id
-	`, projectID, includeDeleted)
+	`)
+	if err != nil {
+		return nil, nil, api.Internal(fmt.Errorf("load activity: compile: %w", err))
+	}
+	rows, err := pool.P.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, nil, api.Internal(fmt.Errorf("load activity: %w", err))
 	}

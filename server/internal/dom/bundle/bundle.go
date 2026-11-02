@@ -86,6 +86,7 @@ type ComposeInput struct {
 	Description string   `json:"description,omitempty" mcp:"desc=optional markdown description"`
 	Preset      string   `json:"preset,omitempty" mcp:"desc=preset key (bundle.list presets) whose features the project starts with"`
 	Features    []string `json:"features,omitempty" mcp:"desc=extra feature keys, added after the preset's"`
+	AreasOff    []string `json:"areas_off,omitempty" mcp:"desc=area keys (area.list) the project starts with switched off"`
 }
 
 // ComposeOutput is the new project.

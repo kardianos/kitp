@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -292,3 +293,66 @@ func (s *Server) authorizeLeaf(ctx context.Context, h reg.Handler, input any, gr
 // answers from a once-loaded in-memory snapshot of the (tiny,
 // schema-immutable) process table rather than a per-leaf point query
 // (A15c / BE-L3).
+
+// anyAreaOff reports whether any area is switched off anywhere (docs/AREAS.md).
+func anyAreaOff(ctx context.Context, pool *store.Pool) (bool, error) {
+	var off bool
+	err := pool.P.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM project_area WHERE state = 'off')
+		    OR EXISTS (SELECT 1 FROM workspace_area WHERE state = 'off')`).Scan(&off)
+	if err != nil {
+		return false, fmt.Errorf("authz: areas: %w", err)
+	}
+	return off, nil
+}
+
+// checkArea refuses a gated (handler, input) whose card type, target card
+// or project puts it in an area that is switched off: the area's items are
+// hidden from reads (card_in_off_area), so they can't be written either.
+func (s *Server) checkArea(ctx context.Context, h reg.Handler, input any, lookup map[int64]cardInfo, projectTypeID int64) error {
+	if h.ProcessName == "" || h.CardTypeID == nil {
+		return nil
+	}
+	cardTypeID, err := h.CardTypeID(ctx, s.Pool.P, input)
+	if err != nil {
+		return fmt.Errorf("authz: area check: resolve card_type for %s.%s: %w", h.Endpoint, h.Action, err)
+	}
+	if cardTypeID == 0 {
+		return nil
+	}
+	tProj, err := s.targetProjectForLeaf(ctx, h, input, lookup, projectTypeID)
+	if err != nil {
+		return fmt.Errorf("authz: area check: resolve project for %s.%s: %w", h.Endpoint, h.Action, err)
+	}
+	var cardID int64
+	if h.Endpoint == "card" && h.Action == "insert" {
+		parent, _, err := cardInsertParent(input)
+		if err != nil {
+			return err
+		}
+		if parent != nil {
+			cardID = *parent
+		}
+	} else if cardID, err = s.scopeCardID(ctx, h, input); err != nil {
+		return err
+	}
+	b := named.New()
+	b.Set("card_type", cardTypeID)
+	b.Set("card", cardID)
+	b.Set("project", tProj)
+	sql, args, err := b.Compile(`SELECT area_write_blocked(:card_type, :card, :project)`)
+	if err != nil {
+		return fmt.Errorf("authz: area check: compile: %w", err)
+	}
+	var blocked bool
+	if err := s.Pool.P.QueryRow(ctx, sql, args...).Scan(&blocked); err != nil {
+		return fmt.Errorf("authz: area check: %w", err)
+	}
+	if blocked {
+		return &reg.HandlerError{
+			Code:    "area_off",
+			Message: "That area is switched off in this project.",
+		}
+	}
+	return nil
+}

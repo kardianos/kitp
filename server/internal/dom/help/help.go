@@ -46,6 +46,7 @@ var topicFiles = map[string]string{
 	"admin.comm_log":       "content/admin_comm_log.md",
 	"admin.activity_sinks": "content/admin_activity_sinks.md",
 	"admin.portals":        "content/admin_portals.md",
+	"admin.areas":          "content/admin_areas.md",
 	"admin.themes":         "content/admin_themes.md",
 	"task_detail":          "content/task_detail.md",
 	"layout.list":          "content/layout_list.md",

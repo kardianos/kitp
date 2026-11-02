@@ -150,7 +150,12 @@ predicate is true when the caller — or, for an agent, their
 `parent_user_id` — holds a `user_role` that is globally scoped
 (`scope_card_id IS NULL`) or scoped to the project the card chains up to.
 A stranger with no `user_role` row sees nothing (strict default). For
-`card.search` the predicate goes *before* LIMIT.
+`card.search` the predicate goes *before* LIMIT. A card in an **area that
+is switched off** (`card_in_off_area`, docs/AREAS.md) is invisible to
+everyone, global roles included: the predicate ANDs `NOT
+card_in_off_area(card)`, in `VisibilityClause`, `card_visible_to` and
+every inline copy. (Added with areas: an area may hold data that must
+disappear entirely, such as health information.)
 
 **Why.** The handlers were `$authenticated` with no per-row check, so any
 authenticated user could read any card, its activity, inlined comments,

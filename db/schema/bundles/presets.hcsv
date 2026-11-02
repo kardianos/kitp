@@ -1,4 +1,4 @@
-# presets | doc="Project presets the new-project dialog offers. Each names the feature bundles (the other files in this directory) a new project starts with, applied in order. Features can still be added later from the project's properties."
+# presets | doc="Project presets the new-project dialog offers. Each names the feature bundles (the other files in this directory) a new project starts with, applied in order. Since areas (docs/AREAS.md) presets are the new-project dialog's shortcuts: each ticks the areas its features start. Areas are switched later in the project's properties."
 
 ## table preset
 ### rows

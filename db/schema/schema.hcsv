@@ -479,6 +479,45 @@ checksum, text, , false, '', ,
 updated_at, timestamptz, , false, now(), ,
 
 
+## table area | doc="Catalog of the switchable areas a project is split into (Tasks, Conversations, Approvals, Content, Sites), materialised from db/schema/bundles/areas.hcsv by store.ApplySchema on every boot. card_types are the item types whose data belongs to the area; depends_on the areas it needs; starts the feature bundles it can start from (first = default). Code-owned. See docs/AREAS.md."
+
+### meta
+name_column
+key
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+key, text, true, , , ,
+title, text, , false, , ,
+doc, text, , false, '', ,
+scope, text, , false, 'project', ,
+sort_order, int, , false, 0, ,
+card_types, jsonb, , false, '[]', ,
+depends_on, jsonb, , false, '[]', ,
+starts, jsonb, , false, '[]', ,
+
+
+## table project_area | doc="A project's switch for one area. No row = on (every project before areas, and any area a project never touched). state='off' hides the area completely: card_in_off_area makes its items invisible to every read (DI-6), writes to them are refused, and its automation pauses. Written by area.set and project.compose." | primary_key="project_id, area_key"
+
+### columns
+name, type, nullable, default, references, on_delete
+project_id, bigint, false, , card.id, cascade
+area_key, text, false, , ,
+state, text, false, 'on', ,
+changed_at, timestamptz, false, now(), ,
+changed_by, bigint, , , user_account.id, set null
+
+
+## table workspace_area | doc="The install-wide switch for a workspace-scoped area (Sites). No row = on. Written by area.set without a project."
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+area_key, text, true, false, , ,
+state, text, , false, 'on', ,
+changed_at, timestamptz, , false, now(), ,
+changed_by, bigint, , , , user_account.id, set null
+
+
 ## table card_origin | doc="Provenance: which feature bundle item a card was copied from. One row per card copied by copy_project_template_merge with an origin; item_key is the source card's path inside its bundle (card_type:title segments joined by '/'), stable across re-materialisations. Re-applying a bundle skips items whose (bundle_key, item_key) already exists in the target project, so enabling a feature twice is a no-op and a later bundle version can add only what's new." | primary_key="card_id"
 
 ### columns
@@ -586,7 +625,10 @@ idx_theme_file_cas, "cas_address"
 ## function attribute_value_set_type_id | doc="BEFORE INSERT trigger on attribute_value: sets value_type_id from the def's value_type via av_value_type_id. value_type is immutable per def and attribute_def_id never changes, so set-on-insert keeps the denormalized class correct with no re-sync. The body also declares the trigger; DROP TRIGGER IF EXISTS + CREATE TRIGGER re-apply it each boot." | path="functions/attribute_value_set_type_id.sql" | arg_types=""
 ## function card_ancestors | doc="Shared capped parent_card_id walk (A1 / BE-C1 / SEC-1). Returns the ancestor chain of a card (inclusive) with a 0-based depth column; the recursive arm carries WHERE depth < 16 so a parent cycle can't pin a connection. The single source of the depth cap (A15d)." | path="functions/card_ancestors.sql" | arg_types="bigint"
 ## function card_enclosing_project | doc="Resolve a card's enclosing project (first card_type='project' ancestor within the depth cap) via card_ancestors. Canonical card→project resolver (A10 / BE-M3); declared after card_ancestors because its SQL body references it at create time." | path="functions/card_enclosing_project.sql" | arg_types="bigint"
-## function card_visible_to | doc="Per-row read predicate (DI-6) for one card: true when the caller (or an agent's owner) holds a global user_role or one scoped to the card's enclosing project. Mirrors schema.VisibilityClause." | path="functions/card_visible_to.sql" | arg_types="bigint, bigint"
+## function card_in_off_area | doc="Areas: true when a card, or a card above it, has an item type of an area that is switched off (in the card's project, or workspace-wide). Such a card is hidden from every read and refused for writes. Fast path when nothing is off. See docs/AREAS.md." | path="functions/card_in_off_area.sql" | arg_types="bigint"
+## function area_write_blocked | doc="Areas: the dispatcher's write check — true when a write of a card type, on a card, in a project would touch an area that is off." | path="functions/area_write_blocked.sql" | arg_types="bigint, bigint, bigint"
+## function workspace_area_off | doc="Areas: true when a workspace-scoped area (Sites) is switched off." | path="functions/workspace_area_off.sql" | arg_types="text"
+## function card_visible_to | doc="Per-row read predicate (DI-6) for one card: true when the caller (or an agent's owner) holds a global user_role or one scoped to the card's enclosing project, and the card isn't in an area that is switched off. Mirrors schema.VisibilityClause." | path="functions/card_visible_to.sql" | arg_types="bigint, bigint"
 ## function card_ref_cross_project | doc="Check whether a card's stored card_ref / card_ref[] values would cross a project boundary for a given target enclosing project (A11 / BE-M5). Returns the first offending (attr, value_card, value_project) or no rows. Reuses card_enclosing_project; declared after it. Used by card.move to re-validate the cross-project ref invariant on re-parent." | path="functions/card_ref_cross_project.sql" | arg_types="bigint, bigint"
 ## function user_label | doc="How a user_account is named where the UI or a message says who did something: the display name, plus the owner for a personal agent ('claude (for Daniel)'); a workspace agent (owned by System) keeps its bare name. Shared by activity.select, comm.list_for_task, link.list, the SMTP signature and the activity-sink digests." | path="functions/user_label.sql" | arg_types="bigint"
 ## function card_label | doc="A card's display title: its title attribute, else its reply_subject (reply_body cards have no title). Used by activity.select." | path="functions/card_label.sql" | arg_types="bigint"
@@ -627,6 +669,9 @@ idx_theme_file_cas, "cas_address"
 ## function portal_list_batch | doc="portal.list — live portals with root page, host, the statuses that publish to them, and active-build state; global-role callers see all, others the portals whose root page they can see." | path="functions/portal_list_batch.sql"
 ## function portal_root_pages_batch | doc="portal.root_pages — the pages a portal may use as its root: live pages in live, non-template projects the caller can see (so feature-bundle source pages never appear), each labelled 'Project › Page › …'." | path="functions/portal_root_pages_batch.sql"
 ## function portal_rebuild_batch | doc="portal.rebuild — queue a portal for the portal.build job." | path="functions/portal_rebuild_batch.sql"
+## function area_state | doc="Areas: one area's state in a project ('on', 'off' or 'unused'; project 0 = the workspace): an explicit switch row wins, else 'on' when the project holds the area's items or used one of its starting points." | path="functions/area_state.sql" | arg_types="bigint, text"
+## function area_list_batch | doc="area.list — the areas of a project (or the workspace areas) with their state, starting points, the project's screens of each, and (admins) how many items each holds." | path="functions/area_list_batch.sql"
+## function area_set_batch | doc="area.set — switch an area on (admin; turns on what it needs, adding starting points) or off (manager/admin; refused while a dependent area is on); writes an activity row and rebuilds affected portals." | path="functions/area_set_batch.sql"
 ## function theme_mark_portals_dirty | doc="Flag every live portal using a theme for the portal.build job (a theme's settings or files changed)." | path="functions/theme_mark_portals_dirty.sql" | arg_types="bigint"
 ## function theme_set_batch | doc="theme.set — create or update a theme card (title, base theme, nav mode, accent colour, footer); changed attributes only; rebuilds the portals using it. The Go PreRun checks the base against the built-in themes." | path="functions/theme_set_batch.sql"
 ## function theme_list_batch | doc="theme.list — live theme cards with their settings, override files and the portals using them." | path="functions/theme_list_batch.sql"

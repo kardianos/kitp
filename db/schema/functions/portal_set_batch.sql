@@ -74,6 +74,11 @@ BEGIN
         SELECT (r.ord - 1)::int, r.value
         FROM jsonb_array_elements(inputs) WITH ORDINALITY AS r(value, ord)
     LOOP
+        IF workspace_area_off('sites') THEN
+            RETURN QUERY SELECT _idx, false, 'area_off'::text,
+                'portal.set: Sites is switched off for this workspace'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         BEGIN
             _id := COALESCE(NULLIF(_raw->>'id', '')::bigint, 0);
             _root := CASE WHEN _raw ? 'root_page_id'

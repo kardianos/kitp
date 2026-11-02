@@ -1,0 +1,10 @@
+# areas | doc="The areas a project's configuration and data are split into. Each area can be switched on and off: an area that is off is hidden completely — its items vanish from every read, writes to them are refused, and its automation pauses. scope=project areas are switched per project; scope=workspace ones for the whole install. card_types are the item types whose data belongs to the area (a card is hidden when it, or a card above it, has one of them). depends_on lists areas that must be on. starts are the feature bundles (the other files here) an area can start from, the first being the default."
+
+## table area
+### rows
+key,           title,           scope,     sort, card_types,                         depends_on,    starts,               doc
+tasks,         "Tasks",         project,   10,   `["task", "link"]`,                 `[]`,          `["tracker"]`,        "Tasks moved through a status flow: inbox, grid, kanban, views, and the links to code changes and issues."
+conversations, "Conversations", project,   20,   `["comm", "comm_channel"]`,         `["tasks"]`,   `["conversations"]`,  "Email threads on tasks: mail accounts, incoming mail, replies."
+approvals,     "Approvals",     project,   30,   `["approval"]`,                     `["tasks"]`,   `[]`,                 "Asking people to approve a task's status change, and their votes."
+content,       "Content",       project,   40,   `["page"]`,                         `[]`,          `["publishing"]`,     "Pages you write, review and publish: the page tree, its status flow and the Pages screen."
+sites,         "Sites",         workspace, 50,   `["portal", "theme"]`,              `[]`,          `[]`,                 "Published sites: portals, themes, public hosts and sites shown in kitp."

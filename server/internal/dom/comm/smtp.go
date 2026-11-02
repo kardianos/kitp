@@ -839,6 +839,9 @@ func ListChannelIDs(ctx context.Context, pool *store.Pool) ([]int64, error) {
 		FROM card c
 		JOIN card_type ct ON ct.id = c.card_type_id
 		WHERE ct.name = 'comm_channel' AND c.deleted_at IS NULL
+		  -- A channel in a project whose Conversations area is off gets no
+		  -- worker: intake and sending pause until it's switched on.
+		  AND NOT card_in_off_area(c.id)
 		ORDER BY c.id
 	`)
 	if err != nil {

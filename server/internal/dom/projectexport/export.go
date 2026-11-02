@@ -440,7 +440,8 @@ func loadTaskRows(ctx context.Context, pool *store.Pool, projectID int64, includ
 			WHERE av.card_id = c.id
 		) attrs ON TRUE
 		WHERE ct.name = 'task' AND c.parent_card_id = :project_id
-		  AND (:include_deleted OR c.deleted_at IS NULL)` + extraClause + `
+		  AND (:include_deleted OR c.deleted_at IS NULL)
+		  AND NOT card_in_off_area(c.id)` + extraClause + `
 		ORDER BY c.id
 	`)
 	if err != nil {

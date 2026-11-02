@@ -56,7 +56,7 @@ BEGIN
             WHERE caller.id = link_list_batch.actor_id
               AND (ur.scope_card_id IS NULL
                    OR ur.scope_card_id = card_enclosing_project(_task_id))
-        ) INTO _visible;
+        ) AND NOT card_in_off_area(_task_id) INTO _visible;
         IF NOT _visible THEN
             RETURN QUERY SELECT _idx, true, ''::text, ''::text,
                 jsonb_build_object('rows', '[]'::jsonb);

@@ -14,6 +14,7 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/cas"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
@@ -260,7 +261,10 @@ func requireAttachmentAccess(ctx context.Context, pool *store.Pool, userID, atta
 		projectID int64
 		allowed   bool
 	)
-	err := pool.P.QueryRow(ctx, `
+	b := named.New()
+	b.Set("attachment", attachmentID)
+	b.Set("user", userID)
+	sql, args, err := b.Compile(`
 		WITH attach AS (
 			SELECT
 				CASE
@@ -270,14 +274,17 @@ func requireAttachmentAccess(ctx context.Context, pool *store.Pool, userID, atta
 			FROM attachment a
 			JOIN card c ON c.id = a.card_id
 			JOIN card_type ct ON ct.id = c.card_type_id
-			WHERE a.id = $1 AND a.deleted_at IS NULL
+			WHERE a.id = :attachment AND a.deleted_at IS NULL
+			  -- An attachment of an area that is switched off doesn't
+			  -- exist as far as anyone can tell (docs/AREAS.md).
+			  AND NOT card_in_off_area(a.card_id)
 		)
 		SELECT
 			COALESCE((SELECT project_id FROM attach), 0),
 			EXISTS (
 				SELECT 1
 				FROM attach
-				JOIN user_role ur ON ur.user_id = $2
+				JOIN user_role ur ON ur.user_id = :user
 				JOIN role r        ON r.id  = ur.role_id
 				JOIN role_grant rg ON rg.role_id = r.id
 				JOIN card_type pct ON pct.id = rg.card_type_id AND pct.name = 'project'
@@ -285,7 +292,11 @@ func requireAttachmentAccess(ctx context.Context, pool *store.Pool, userID, atta
 				WHERE attach.project_id IS NOT NULL
 				  AND (ur.scope_card_id IS NULL OR ur.scope_card_id = attach.project_id)
 			)
-	`, attachmentID, userID).Scan(&projectID, &allowed)
+	`)
+	if err != nil {
+		return api.Internal(fmt.Errorf("authz: compile: %w", err))
+	}
+	err = pool.P.QueryRow(ctx, sql, args...).Scan(&projectID, &allowed)
 	if err != nil {
 		return api.Internal(fmt.Errorf("authz: %w", err))
 	}

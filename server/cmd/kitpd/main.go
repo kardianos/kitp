@@ -83,6 +83,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/activitysink"
 	"github.com/kitp/kitp/server/internal/dom/agent"
 	domapproval "github.com/kitp/kitp/server/internal/dom/approval"
+	domarea "github.com/kitp/kitp/server/internal/dom/area"
 	"github.com/kitp/kitp/server/internal/dom/attachment"
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/attributedef"
@@ -189,6 +190,7 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 	projectstamp.Register(pool)
 	dombundle.Register(pool)
 	domportal.Register(domportal.Config{Pool: pool, Storage: storage})
+	domarea.Register(pool)
 	tag.Register(pool)
 	process.Register(pool)
 	proc.Register(pool)

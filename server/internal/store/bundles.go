@@ -114,6 +114,64 @@ func applyBundles(ctx context.Context, tx pgx.Tx, cat hcsv.Catalog) error {
 			return fmt.Errorf("bundle %s: delete: %w", s.key, err)
 		}
 	}
+	return applyAreas(ctx, tx, cat.Areas)
+}
+
+// applyAreas upserts the area catalog (areas.hcsv) and drops areas no
+// longer shipped. Projects' switch rows (project_area) for a dropped area
+// stay, harmlessly: nothing maps an item type to it any more.
+func applyAreas(ctx context.Context, tx pgx.Tx, areas []hcsv.Area) error {
+	keys := make([]string, 0, len(areas))
+	for _, a := range areas {
+		keys = append(keys, a.Key)
+		lists := map[string][]string{"card_types": a.CardTypes, "depends_on": a.DependsOn, "starts": a.Starts}
+		enc := map[string]string{}
+		for k, v := range lists {
+			if v == nil {
+				v = []string{}
+			}
+			j, err := json.Marshal(v)
+			if err != nil {
+				return fmt.Errorf("area %s: encode %s: %w", a.Key, k, err)
+			}
+			enc[k] = string(j)
+		}
+		b := named.New()
+		b.Set("key", a.Key)
+		b.Set("title", a.Title)
+		b.Set("doc", a.Doc)
+		b.Set("scope", a.Scope)
+		b.Set("sort", a.Sort)
+		b.Set("card_types", enc["card_types"])
+		b.Set("depends_on", enc["depends_on"])
+		b.Set("starts", enc["starts"])
+		sql, args, err := b.Compile(`
+			INSERT INTO area (key, title, doc, scope, sort_order, card_types, depends_on, starts)
+			VALUES (:key, :title, :doc, :scope, :sort, :card_types::jsonb, :depends_on::jsonb, :starts::jsonb)
+			ON CONFLICT (key) DO UPDATE SET
+				title = EXCLUDED.title, doc = EXCLUDED.doc, scope = EXCLUDED.scope,
+				sort_order = EXCLUDED.sort_order, card_types = EXCLUDED.card_types,
+				depends_on = EXCLUDED.depends_on, starts = EXCLUDED.starts
+			WHERE (area.title, area.doc, area.scope, area.sort_order, area.card_types, area.depends_on, area.starts)
+			      IS DISTINCT FROM
+			      (EXCLUDED.title, EXCLUDED.doc, EXCLUDED.scope, EXCLUDED.sort_order,
+			       EXCLUDED.card_types, EXCLUDED.depends_on, EXCLUDED.starts)`)
+		if err != nil {
+			return fmt.Errorf("area %s: compile: %w", a.Key, err)
+		}
+		if _, err := tx.Exec(ctx, sql, args...); err != nil {
+			return fmt.Errorf("area %s: upsert: %w", a.Key, err)
+		}
+	}
+	b := named.New()
+	b.Set("keys", keys)
+	sql, args, err := b.Compile(`DELETE FROM area WHERE NOT (key = ANY(:keys::text[]))`)
+	if err != nil {
+		return fmt.Errorf("stale areas: compile: %w", err)
+	}
+	if _, err := tx.Exec(ctx, sql, args...); err != nil {
+		return fmt.Errorf("stale areas: delete: %w", err)
+	}
 	return nil
 }
 

@@ -4,7 +4,9 @@
 -- Input:
 --   {"name": "…", "description": "…"?,          -- title / description
 --    "preset": "<preset key>"?,                  -- its features, in order
---    "features": ["<feature key>", …]?}          -- added after the preset's
+--    "features": ["<feature key>", …]?,          -- added after the preset's
+--    "areas_off": ["<area key>", …]?}            -- areas switched off from
+--                                                    the start (docs/AREAS.md)
 -- At least one feature must result. Duplicates collapse (first wins).
 --
 -- Writes the project card + title (+ description) + is_template=false the
@@ -135,6 +137,21 @@ BEGIN
                 CASE WHEN _failed->>'status' = 'conflict' THEN 'bundle_conflict' ELSE 'bundle_unknown' END,
                 format('project.compose: %s', _failed->>'message'), NULL::jsonb;
             CONTINUE;
+        END IF;
+
+        -- The areas the dialog left unticked start off. A key that isn't a
+        -- project area fails the row (nothing is half-made: the batch
+        -- rolls back).
+        IF jsonb_typeof(_raw->'areas_off') = 'array' THEN
+            FOR _extra IN SELECT jsonb_array_elements_text(_raw->'areas_off')
+            LOOP
+                IF NOT EXISTS (SELECT 1 FROM area WHERE key = _extra AND scope = 'project') THEN
+                    RAISE EXCEPTION 'project.compose: % isn''t a project area', _extra USING ERRCODE = 'P0001';
+                END IF;
+                INSERT INTO project_area (project_id, area_key, state, changed_at, changed_by)
+                VALUES (_new_project_id, _extra, 'off', now(), actor_id)
+                ON CONFLICT (project_id, area_key) DO UPDATE SET state = 'off';
+            END LOOP;
         END IF;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,

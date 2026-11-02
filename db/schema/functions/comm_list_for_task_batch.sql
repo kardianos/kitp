@@ -273,7 +273,7 @@ BEGIN
                     WHERE ct.name = 'comm'
                       AND c.parent_card_id = _task_id
                       AND c.deleted_at IS NULL
-                      AND EXISTS (
+                      AND NOT card_in_off_area(c.id) AND EXISTS (
                         -- depth < 16 caps the parent walk (CLAUDE.md cap;
                         -- matches card_ancestors / scopeWalkDepth) so a
                         -- parent_card_id cycle can't pin the connection (A1).

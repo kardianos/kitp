@@ -131,6 +131,9 @@ BEGIN
             'WHERE caller.id = $2 AND (ur.scope_card_id IS NULL OR ur.scope_card_id IN (' ||
             'SELECT up.id FROM up JOIN card_type ct2 ON ct2.id = up.card_type_id WHERE ct2.name = ''project'')))'
         ));
+        -- Areas: a card in an area that is switched off is hidden from
+        -- everyone (docs/AREAS.md).
+        _clauses := array_append(_clauses, 'NOT card_in_off_area(c.id)');
 
         IF NOT _include_deleted THEN
             _clauses := array_append(_clauses, 'c.deleted_at IS NULL');

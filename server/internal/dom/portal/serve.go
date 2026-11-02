@@ -168,6 +168,7 @@ func (s *Server) publicBuild(ctx context.Context, host string) (int64, error) {
 		WHERE p.deleted_at IS NULL
 		  AND hv.value = to_jsonb(:host::text)
 		  AND pv.value = to_jsonb(true)
+		  AND NOT workspace_area_off('sites')
 		LIMIT 1`)
 	if err != nil {
 		return 0, fmt.Errorf("compile: %w", err)
@@ -214,6 +215,7 @@ func (s *Server) viewableBuild(ctx context.Context, portalID, userID int64, inte
 			WHERE av.card_id = p.id
 		) r ON true
 		WHERE p.id = :portal AND p.deleted_at IS NULL
+		  AND NOT workspace_area_off('sites')
 		  AND (NOT :internal_only OR EXISTS (
 		         SELECT 1 FROM attribute_value iv
 		         JOIN attribute_def id ON id.id = iv.attribute_def_id AND id.name = 'portal_internal'

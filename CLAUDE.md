@@ -114,7 +114,12 @@ attachments) must AND-join `schema.VisibilityClause(cardIDExpr,
 userSlot)` into its WHERE. See DI-6 in `docs/DESIGN_INVARIANTS.md`
 for the model. The predicate evaluates true when the caller (or, if
 they're an agent, their `parent_user_id`) holds a `user_role` that's
-either globally scoped or scoped to the card's project.
+either globally scoped or scoped to the card's project, and the card
+isn't in an area that is switched off (`card_in_off_area`,
+`docs/AREAS.md` — that hides it from everyone). A PL/pgSQL handler
+that inlines its own copy of the check, or reads cards for something
+that leaves kitp (mail, sinks, exports, portal builds), must AND
+`NOT card_in_off_area(<card>)` too.
 
 ## Per-row write authz
 

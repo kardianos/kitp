@@ -885,6 +885,15 @@ func (s *Server) runAuthzPass(ctx context.Context, prepped []prepared, slots []S
 		return err
 	}
 
+	// Areas: when any area is switched off, a gated write (or read) that
+	// touches one is refused. Checked once per batch so a batch pays
+	// nothing while every area is on.
+	areasOff, err := anyAreaOff(ctx, s.Pool)
+	if err != nil {
+		s.abortWithError(ctx, slots, prepped[0].OuterIdx, "validation", err)
+		return err
+	}
+
 	for _, p := range prepped {
 		if err := s.authorizeLeaf(ctx, p.Handler, p.Input, grants, lookup, projTypeID); err != nil {
 			// authorizeLeaf returns a *reg.HandlerError with a safe
@@ -892,6 +901,13 @@ func (s *Server) runAuthzPass(ctx context.Context, prepped []prepared, slots []S
 			// error on a lookup failure — errEnvelope keeps the former,
 			// redacts the latter (A5).
 			s.abortWithError(ctx, slots, p.OuterIdx, "unauthorized", err)
+			return err
+		}
+		if !areasOff {
+			continue
+		}
+		if err := s.checkArea(ctx, p.Handler, p.Input, lookup, projTypeID); err != nil {
+			s.abortWithError(ctx, slots, p.OuterIdx, "area_off", err)
 			return err
 		}
 	}

@@ -97,6 +97,7 @@ BEGIN
                 LEFT JOIN portal_build_file f
                   ON f.build_id = ps.active_build_id AND f.card_id = _page
                 WHERE pub.card_id = _page
+                  AND NOT workspace_area_off('sites')
             ), '[]'::jsonb));
     END LOOP;
 END;
