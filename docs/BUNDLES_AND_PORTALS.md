@@ -110,7 +110,7 @@ Rules:
 | `page` card | title, markdown `description` (the body), `slug`, `sort_order`, `publish_status`. Parent: a project or another page — the card tree is the site tree. |
 | `publish_status` flow | Draft (triage) → In review → Published (active) → Archived (terminal), from the publishing bundle. Includes a Published → Published "Publish changes" step. |
 | `publishes_to` on status | the portals a page is published to when it **enters** that status. |
-| `portal` card (global) | title, `portal_root` (the home page), `portal_host`, `portal_public`. |
+| `portal` card (global) | title, `portal_root` (the home page; a page in a live, non-template project), `portal_host`, `portal_public`. |
 | `publication` | what one portal shows for one page: a snapshot. |
 | `portal_state` / `portal_build` / `portal_build_file` | the active build pointer, each build, and its files (CAS blobs). |
 
@@ -120,14 +120,21 @@ Rules:
 for a page's `publish_status` it runs `publication_sync`:
 
 - entering a status whose `publishes_to` names portals **snapshots** the
-  page onto each (title, body, slug, order, parent, newest activity id);
+  page onto each (title, body, slug, order, parent, nav flags, newest
+  activity id);
+- entering a **triage** status (Draft: not live) also withdraws it from
+  every other portal — that is "Unpublish" / "Back to draft";
 - entering a **terminal** status withdraws it from every portal;
-- entering any other status changes nothing.
+- entering an **active** status (In review, Published) leaves the other
+  portals alone.
 
-So what a portal shows is **pinned**. Editing a live page doesn't change
-PROD; sending it back to review updates QA only; "Publish changes" or
-"Publish" updates both. `card.delete` withdraws a page; restoring it
-doesn't republish it.
+So what a portal shows is **pinned** while a page stays live. Editing a
+live page doesn't change PROD; sending it back to review updates QA only;
+"Publish changes" or "Publish" updates both; Unpublish takes it down.
+`card.delete` withdraws a page; restoring it doesn't republish it.
+(Migration 0017 applied the Draft rule to pages already in Draft, and
+renamed the flow's old "Unpublish edits" step, which had kept the live
+copy, to "Unpublish".)
 
 Example: `In review → [QA]`, `Published → [QA, PROD]`.
 
@@ -138,6 +145,8 @@ Example: `In review → [QA]`, `Published → [QA, PROD]`.
 | edit body | rev 1 | rev 1 |
 | Published → In review | rev 2 | rev 1 |
 | In review → Published | rev 2 | rev 2 |
+| Published → Draft (Unpublish) | — | — |
+| Draft → Published | rev 3 | rev 3 |
 | Published → Archived | — | — |
 
 ### Building
@@ -167,13 +176,50 @@ Placeholders, borrowed from Hugo shortcodes:
 | `{{< children >}}` | a list of the page's child pages |
 | `{{< nav >}}` | the whole site tree |
 | `{{< toc >}}` | the page's level-2/3 headings |
-| `{{< ref "a/b" >}}` / `{{< ref 42 >}}` | the relative URL of a page, by path or id |
-| `{{</* … */>}}` | the placeholder, literally |
 
-A `ref` to a page that isn't on this portal renders as `#` with a build
-warning, so QA can link to a page PROD doesn't have yet without a broken
-URL. Pages that aren't reachable from the root, and sibling slug
-collisions, are build warnings too (shown on the Portals screen).
+A placeholder inside a code span or code block is left as written; that
+is how a page shows one literally.
+
+The page detail's editor has an **Insert** menu of these (the page
+detail profile's `placeholders`; tasks have none), which adds one as a
+top-level paragraph so a list never lands inside a list item. Under the
+body, a box lists placeholder mistakes as you type (debounced) and while
+reading: an unknown name with a near-miss suggestion, braces written
+another way (`{{ children }}`, `{{< Children >}}`), and the retired
+`{{< ref >}}`. The check parses the body with the editor's markdown parser
+and skips code, as the build does. The list lives in
+`web/src/bundles/placeholders.ts` and mirrors `expandPlaceholders` in
+`render.go`.
+
+Links between pages use a `ref:` link target, resolved to a relative URL:
+
+| link | points at |
+|------|-----------|
+| `[Install](ref:guide/install)` | the page at that path |
+| `[Install](ref:42)` | page 42 |
+| `[Home](ref:)` | the root page |
+| `[Setup](ref:guide#setup)` | a heading on another page |
+
+Why not Hugo's `{{< ref "a/b" >}}` inside the link? A placeholder isn't a
+valid markdown link target (spaces, `<`), so the rich-text editor reads
+`[text]({{< ref … >}})` as plain text and, on the next save, escapes the
+brackets (`\[text\](…)`) and the link is lost. A `ref:` link is an
+ordinary link: the editor shows it as one and saves it unchanged. The
+renderer warns if it meets the old placeholder.
+
+In the page detail, the editor's **Link** button opens a link bar: paste
+a URL, or search the project's pages and pick one, which inserts
+`ref:<id>` (an id survives renames and moves; a path doesn't). The
+search matches every typed word against the page's path ("Home › Guide ›
+Install") and its number, and lists pages whose own title matches first.
+The list scrolls and renders at most 50 rows, with a count of the rest.
+
+A `ref:` link to a page that isn't on this portal renders as `#` with a
+build warning, so QA can link to a page PROD doesn't have yet without a
+broken URL. Pages that aren't reachable from the root, and sibling slug
+collisions, are build warnings too (shown on the Portals screen). A root
+that isn't published here is named in its warning (`"Home" in "Docs"`),
+followed by the published pages outside it.
 
 ### Serving
 
@@ -202,6 +248,87 @@ works across replicas without shared disk, and a CDN can sit in front of
 the public listener (the ETag is the content hash). Exporting a build to
 a bucket could be added as an optional target later.
 
+### Themes
+
+What a site looks like is a **theme** (`server/internal/dom/portal/theme.go`).
+The server compiles in seven base themes (`portal/themes/<key>/`, each
+`theme.json` + `page.html` + `site.css`): Side menu (the default), Top
+menu (CSS-only drop-downs), Newspaper (lead story + multi-column stories,
+paged, newest first; story text in CSS columns), Book (numbered contents,
+previous / next chapter), Help center (section cards, a section sidebar),
+Blog (posts newest first, paged) and Reference (three columns with "On
+this page").
+
+A `theme` card (global, admin-only, like a portal) names a base
+(`theme_base`) and sets `theme_nav`, `theme_accent` and `theme_footer`
+(markdown); a portal points at one with `portal_theme` (none = Side
+menu). Its own files are `theme_file` rows (path → one CAS blob), written
+by `theme.file_put` and listed / read by `theme.list` / `theme.file_get`;
+the base's files are read-only through `theme.bases` / `theme.base_file`.
+A theme's own file at a base file's path overrides it — that is the fork.
+
+- `*.html` files are one `html/template` set, `page.html` first and the
+  rest by path, so a file of `{{define}}` blocks overrides `{{block}}`s.
+  Templates are never published. The data every template gets is the
+  `view` struct in `render.go`, documented in `admin_themes.md` and at the
+  top of the Side menu `page.html`.
+- `theme.json` merges over the base's: `nav` (full / section /
+  collapsible), `paginate` (child pages per list page) and `order` (site /
+  newest).
+- Everything else is published under `_theme/`. `custom.css` is written
+  as `_theme/custom.css` = `:root { --accent }` + the theme's custom.css,
+  so every template links `{{.Theme}}site.css` then `{{.Theme}}custom.css`
+  unconditionally. `logo.*` / `favicon.*` set `.Site.Logo` / `.Site.Icon`.
+- `theme.file_put` (Go PreRun) checks the path (lower-case, no dot files,
+  an allowed extension — no scripts), caps a file at 5 MB, and for a
+  template or `theme.json` resolves the theme with it and renders a sample
+  site (sections, a hidden page, a paged list); a failure is refused as
+  `template_error` with file and line. `theme.file_delete` checks the same
+  without the file. A build whose theme no longer renders fails, so the
+  portal keeps its last good build and shows the error.
+- Any theme change marks every portal using it dirty
+  (`theme_mark_portals_dirty`).
+
+**Navigation.** The renderer builds `.Nav` per page: `full` keeps every
+branch, `section` keeps the top level plus the branch down to the current
+page (`HasChildren` still says a closed item has children), `collapsible`
+keeps everything and marks `Open` only along the current page (themes draw
+`<details>`). A page's `nav_hidden` drops it and its subtree from `.Nav`,
+`{{< nav >}}`, the theme's `.Children` lists and the reading order (it is
+still published and `{{< children >}}` still lists it); `nav_hide_children`
+keeps the page but not its children. Both flags are part of the
+publication snapshot.
+
+**Lists and paging.** `.Children` is a page's children (not hidden), with
+a plain-text summary (first paragraph) and first image, in the theme's
+order. With `paginate` N and more than N children, pages 2… are written
+to `<page>/page/<k>/index.html` (links climb from that depth) and `.Pager`
+links them; the body (`.Content`) is on page 1 only.
+
+**Pictures.** An image or link to an attachment
+(`/api/v1/attachment/<id>/view|download|thumb`, or `attachment:<id>`) that
+is attached to a page published on the portal is copied into the build at
+`_files/<id>/<name>` (≤ 25 MB) and rewritten; any other attachment is `#`
+with a warning, so a page can't publish another project's file. The page
+editor's Insert menu offers the page's attached pictures.
+
+Links to other sites get `target="_blank" rel="noopener noreferrer"`.
+
+### Show in kitp
+
+`portal_internal` lists a portal in kitp's sidebar (SITES, from
+`portal.list`) and shows it at `/site/<id>`: a header and an iframe of
+`/api/v1/portal/<id>/site/`. That route serves the active build to people
+who can see the root page (as the preview does) only when the switch is
+on, under `sandbox allow-same-origin allow-popups
+allow-popups-to-escape-sandbox` and `frame-ancestors 'self'`: no scripts,
+forms or top-level navigation, and external links open outside the
+sandbox. The page keeps kitp's origin on purpose — with an opaque origin
+every request it makes is cross-site, the SameSite=Lax session cookie
+stays behind, and its stylesheets and links get 401s. Without script,
+the origin gives the page nothing to act with. The preview uses the same
+sandbox (and `frame-ancestors 'none'`); the iframe repeats it. The kitp URL doesn't follow clicks inside the frame.
+
 ### Local try-out
 
 ```
@@ -209,8 +336,8 @@ make run KITP_PORTAL_ADDR=:18081      # or export it before make demo
 ```
 
 1. Create a project from the **Content management** preset.
-2. Admin → Portals: create `QA` (root: Home, not public) and `PROD`
-   (root: Home, host `prod.localhost`, public).
+2. Admin → Portals: create `QA` (root: *your project* › Home, not
+   public) and `PROD` (same root, host `prod.localhost`, public).
 3. Admin → Values → statuses: In review → publishes to QA; Published →
    QA and PROD.
 4. Move Home and Getting started through review and publish them.
@@ -219,19 +346,25 @@ make run KITP_PORTAL_ADDR=:18081      # or export it before make demo
    loopback).
 
 The Pages screen is `g w`; a page opens at `/page/<id>` with its status
-flow in the transition bar and a PUBLISHED ON section listing each portal
-it is on, whether that copy is current, and a preview link.
+flow in the transition bar, a PLACE IN SITE section (its trail, Under …
+to move it, child pages with ↑ / ↓, + Child page, Hide from navigation)
+and a PUBLISHED ON section listing each portal it is on, whether that
+copy is current, and a preview link. Themes are Admin → Themes; a portal
+picks one, and "Show in kitp" adds it to the sidebar.
 
 ## Known rough edges
 
 - The Values admin offers a *publishes to* picker on every status, task
   statuses included — the task and page flows share the `status` card
   type. Only page statuses act on it.
-- The Portals root-page picker labels pages by title only, so two
-  projects' "Home" pages look alike.
+- Inside kitp (the page's own view), a `ref:` link isn't resolved: it
+  only works on the built site.
 - Bundle source projects are visible to global-role users through the
   generic card reads (like templates); the client filters them out of
-  every project and template list (`bundle_key` not exists).
+  every project and template list (`bundle_key` not exists). The Portals
+  root-page picker uses `portal.root_pages`, which leaves out template
+  projects' pages, and `portal.set` refuses one (`root_in_template`), so a
+  portal can't be pointed at a bundle's own starter Home page.
 
 ## Deferred
 
@@ -240,9 +373,10 @@ it is on, whether that copy is current, and a preview link.
 - **Explicit menu cards** (a hand-ordered nav document at a root);
   today nav is the page tree ordered by `sort_order`.
 - **Slug history / redirects** when a page moves.
-- **Per-portal themes and layouts**; one built-in layout today.
-- **Images and attachments in published pages** (copy published
-  attachments into the build).
+- **Scripts in themes** (an "Allow scripts" theme switch); none today.
+- **Theme previews** before a portal uses the theme (today: point a QA
+  portal at it).
+- **Following clicks** inside a site shown in kitp in kitp's own URL.
 - **System-level mail accounts** routed to projects by address, and a
   setup wizard step for project members.
 - **Exporting builds** to a directory or bucket.

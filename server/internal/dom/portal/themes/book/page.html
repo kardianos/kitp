@@ -1,0 +1,47 @@
+{{- /* Book. The template data is listed at the top of the Side menu theme's page.html,
+       and in Help → Themes. Chapters are numbered by CSS counters on the nested lists. */ -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Page.IsHome}}{{.Site.Title}}{{else}}{{.Page.Title}} · {{.Site.Title}}{{end}}</title>
+{{if .Site.Icon}}<link rel="icon" href="{{.Site.Icon}}">{{end}}
+<link rel="stylesheet" href="{{.Theme}}site.css">
+<link rel="stylesheet" href="{{.Theme}}custom.css">
+</head>
+<body>
+<header class="top">
+  <a class="title" href="{{.Root.Href}}">{{if .Site.Logo}}<img src="{{.Site.Logo}}" alt="">{{end}}<span>{{.Site.Title}}</span></a>
+  {{- if and .Nav (not .Page.IsHome)}}
+  <details class="contents">
+    <summary>Contents</summary>
+    <div class="contents-panel">{{template "toc" .Nav}}</div>
+  </details>
+  {{- end}}
+</header>
+<main class="chapter">
+  {{- if .Crumbs}}
+  <p class="part">{{range $i, $c := .Crumbs}}{{if $i}} › {{end}}<a href="{{.Href}}">{{.Title}}</a>{{end}}</p>
+  {{- end}}
+  <h1>{{.Page.Title}}</h1>
+  <article class="prose">{{.Content}}</article>
+  {{- if and .Page.IsHome .Nav}}
+  <section class="toc-full" aria-label="Contents">
+    <h2>Contents</h2>
+    {{template "toc" .Nav}}
+  </section>
+  {{- end}}
+  {{- if or .Prev .Next}}
+  <nav class="turn" aria-label="Chapters">
+    {{- if .Prev}}<a class="prev" href="{{.Prev.Href}}"><small>← Previous</small><span>{{.Prev.Title}}</span></a>{{else}}<span></span>{{end}}
+    {{- if .Next}}<a class="next" href="{{.Next.Href}}"><small>Next →</small><span>{{.Next.Title}}</span></a>{{end}}
+  </nav>
+  {{- end}}
+</main>
+{{- if .Site.Footer}}
+<footer class="site-footer">{{.Site.Footer}}</footer>
+{{- end}}
+</body>
+</html>
+{{define "toc"}}{{if .}}<ol>{{range .}}<li><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Title}}</a>{{template "toc" .Children}}</li>{{end}}</ol>{{end}}{{end}}

@@ -1,0 +1,70 @@
+{{- /* Help center. The template data is listed at the top of the Side menu theme's page.html,
+       and in Help → Themes. The home page's cards are .Children (with summaries); each card's
+       article links come from the matching .Nav item. */ -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Page.IsHome}}{{.Site.Title}}{{else}}{{.Page.Title}} · {{.Site.Title}}{{end}}</title>
+{{if .Site.Icon}}<link rel="icon" href="{{.Site.Icon}}">{{end}}
+<link rel="stylesheet" href="{{.Theme}}site.css">
+<link rel="stylesheet" href="{{.Theme}}custom.css">
+</head>
+<body>
+{{- if .Page.IsHome}}
+<header class="hero">
+  <a class="brand" href="{{.Root.Href}}">{{if .Site.Logo}}<img src="{{.Site.Logo}}" alt="">{{end}}<span>{{.Site.Title}}</span></a>
+  <h1>{{.Page.Title}}</h1>
+  {{- if .Content}}<div class="prose hero-intro">{{.Content}}</div>{{end}}
+</header>
+<main class="home">
+  {{- if .Children}}
+  <ul class="topics">
+    {{- range $a := .Children}}
+    <li class="topic">
+      <h2><a href="{{.Href}}">{{.Title}}</a></h2>
+      {{- if .Summary}}<p>{{.Summary}}</p>{{end}}
+      {{- range $.Nav}}{{if eq .Href $a.Href}}{{if .Children}}
+      <ul>{{range $i, $c := .Children}}{{if lt $i 5}}<li><a href="{{.Href}}">{{.Title}}</a></li>{{end}}{{end}}</ul>
+      {{- end}}{{end}}{{end}}
+      <a class="all" href="{{.Href}}">{{if .HasChildren}}See all articles{{else}}Read{{end}} →</a>
+    </li>
+    {{- end}}
+  </ul>
+  {{- end}}
+</main>
+{{- else}}
+<header class="bar">
+  <a class="brand" href="{{.Root.Href}}">{{if .Site.Logo}}<img src="{{.Site.Logo}}" alt="">{{end}}<span>{{.Site.Title}}</span></a>
+</header>
+<div class="layout">
+  {{- with .Section}}
+  <aside class="section-nav" aria-label="{{.Title}}">
+    <a class="section-title{{if .Current}} current{{end}}" href="{{.Href}}">{{.Title}}</a>
+    {{- template "list" .Children}}
+  </aside>
+  {{- end}}
+  <main class="article">
+    {{- if .Crumbs}}
+    <ol class="crumbs">{{range .Crumbs}}<li><a href="{{.Href}}">{{.Title}}</a></li>{{end}}</ol>
+    {{- end}}
+    <h1>{{.Page.Title}}</h1>
+    <article class="prose">{{.Content}}</article>
+    {{- if .Children}}
+    <ul class="articles">
+      {{- range .Children}}
+      <li><a href="{{.Href}}"><strong>{{.Title}}</strong>{{if .Summary}}<span>{{.Summary}}</span>{{end}}</a></li>
+      {{- end}}
+    </ul>
+    {{- end}}
+    {{- if .Page.Published}}<p class="updated">Updated {{.Page.Published}}</p>{{end}}
+  </main>
+</div>
+{{- end}}
+{{- if .Site.Footer}}
+<footer class="site-footer">{{.Site.Footer}}</footer>
+{{- end}}
+</body>
+</html>
+{{define "list"}}{{if .}}<ul>{{range .}}<li><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Title}}</a>{{template "list" .Children}}</li>{{end}}</ul>{{end}}{{end}}

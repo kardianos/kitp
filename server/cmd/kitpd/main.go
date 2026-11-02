@@ -188,7 +188,7 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 	domapproval.Register(pool)
 	projectstamp.Register(pool)
 	dombundle.Register(pool)
-	domportal.Register(pool)
+	domportal.Register(domportal.Config{Pool: pool, Storage: storage})
 	tag.Register(pool)
 	process.Register(pool)
 	proc.Register(pool)

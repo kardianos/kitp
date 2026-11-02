@@ -21,16 +21,31 @@ import (
 	"github.com/kitp/kitp/server/internal/named"
 )
 
-// publicCSP locks a published page down to its own stylesheet and images:
-// the builder emits no script, so none may run, and nothing may frame it.
-const publicCSP = "default-src 'none'; style-src 'self'; img-src 'self' https: data:; " +
-	"base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+// siteCSP locks a published page down to its own stylesheets, fonts and
+// images: the builder emits no script and themes can't hold any, so none
+// may run.
+const siteCSP = "default-src 'none'; style-src 'self'; img-src 'self' https: data:; font-src 'self'; " +
+	"base-uri 'none'; form-action 'none'; "
 
-// previewCSP adds `sandbox` for the signed-in preview, which is served
-// from the APP's origin: the sandbox gives the page an opaque origin, so
-// even a page that somehow carried script could not read the session
-// cookie or call /api on the user's behalf.
-const previewCSP = "sandbox; " + publicCSP
+// publicCSP is the public listener's: nothing may frame the site.
+const publicCSP = siteCSP + "frame-ancestors 'none'"
+
+// appSandbox is the sandbox for a site served from the APP's origin (the
+// signed-in preview, Show in kitp): no scripts (no allow-scripts, and
+// siteCSP allows no script source), no forms, no plugins, no top-level
+// navigation. It keeps the app's origin (allow-same-origin) on purpose:
+// the routes are signed-in, and a page with an opaque origin makes every
+// request cross-site, so the SameSite=Lax session cookie stays behind and
+// the page's own stylesheets and links get 401s. Same-origin is harmless
+// without script — nothing on the page can read or use it. Links that
+// open a new tab (links to other sites do) open outside the sandbox.
+const appSandbox = "sandbox allow-same-origin allow-popups allow-popups-to-escape-sandbox; "
+
+// previewCSP is the signed-in preview: sandboxed, and nothing may frame it.
+const previewCSP = appSandbox + publicCSP
+
+// inAppCSP is "Show in kitp": sandboxed, and kitp itself may frame it.
+const inAppCSP = appSandbox + siteCSP + "frame-ancestors 'self'"
 
 // Server serves portal builds: the public, host-routed listener
 // (KITP_PORTAL_ADDR) and the signed-in preview route on the app.
@@ -78,9 +93,13 @@ func (s *Server) PublicHandler() http.Handler {
 	})
 }
 
-// Mount registers the preview route on the app's router:
+// Mount registers the preview and in-app routes on the app's router:
 //
 //	GET /api/v1/portal/{id}/preview/{path...}
+//	GET /api/v1/portal/{id}/site/{path...}
+//
+// The site route is "Show in kitp": the same build, for a portal whose
+// portal_internal is on, framed by kitp's content area.
 //
 // It serves the portal's active build to a signed-in user who can see the
 // portal's root page (any portal, public or not — this is how QA is
@@ -105,6 +124,26 @@ func (s *Server) Mount(rt *api.Router) {
 		}
 		prefix := "/api/v1/portal/" + strconv.FormatInt(id, 10) + "/preview/"
 		s.serve(w, r, build, r.PathValue("path"), prefix, previewCSP)
+		return nil
+	})
+	rt.Authed("GET /api/v1/portal/{id}/site", func(_ context.Context, w http.ResponseWriter, r *http.Request, _ *auth.UserCtx) error {
+		http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
+		return nil
+	})
+	rt.Authed("GET /api/v1/portal/{id}/site/{path...}", func(ctx context.Context, w http.ResponseWriter, r *http.Request, user *auth.UserCtx) error {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id <= 0 {
+			return api.NotFound("portal not found")
+		}
+		build, err := s.siteBuild(ctx, id, user.ID)
+		if err != nil {
+			return api.Internal(fmt.Errorf("portal site %d: %w", id, err))
+		}
+		if build == 0 {
+			return api.NotFound("portal not found, not shown in kitp, or not built yet")
+		}
+		prefix := "/api/v1/portal/" + strconv.FormatInt(id, 10) + "/site/"
+		s.serve(w, r, build, r.PathValue("path"), prefix, inAppCSP)
 		return nil
 	})
 }
@@ -146,9 +185,20 @@ func (s *Server) publicBuild(ctx context.Context, host string) (int64, error) {
 // previewBuild resolves a portal id to its active build for a user who may
 // preview it: a global-role user, or one who can see the root page.
 func (s *Server) previewBuild(ctx context.Context, portalID, userID int64) (int64, error) {
+	return s.viewableBuild(ctx, portalID, userID, false)
+}
+
+// siteBuild is previewBuild for "Show in kitp": the portal must also have
+// portal_internal on.
+func (s *Server) siteBuild(ctx context.Context, portalID, userID int64) (int64, error) {
+	return s.viewableBuild(ctx, portalID, userID, true)
+}
+
+func (s *Server) viewableBuild(ctx context.Context, portalID, userID int64, internalOnly bool) (int64, error) {
 	q := named.New()
 	q.Set("portal", portalID)
 	q.Set("user", userID)
+	q.Set("internal_only", internalOnly)
 	sql, args, err := q.Compile(`
 		SELECT COALESCE(ps.active_build_id, 0)
 		FROM card p
@@ -164,6 +214,10 @@ func (s *Server) previewBuild(ctx context.Context, portalID, userID int64) (int6
 			WHERE av.card_id = p.id
 		) r ON true
 		WHERE p.id = :portal AND p.deleted_at IS NULL
+		  AND (NOT :internal_only OR EXISTS (
+		         SELECT 1 FROM attribute_value iv
+		         JOIN attribute_def id ON id.id = iv.attribute_def_id AND id.name = 'portal_internal'
+		         WHERE iv.card_id = p.id AND iv.value = to_jsonb(true)))
 		  AND (card_visible_to(:user, COALESCE(r.root, 0))
 		       OR EXISTS (
 		         SELECT 1 FROM user_account caller
@@ -262,11 +316,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, build int64, rel,
 	}
 	etag := `"` + f.addr + `"`
 	h.Set("ETag", etag)
-	if strings.HasPrefix(f.mime, "text/html") {
-		// Revalidate pages every time: a publish flips the build, and the
-		// ETag (the content hash) makes an unchanged page a cheap 304.
+	if strings.HasPrefix(f.mime, "text/html") || strings.HasPrefix(want, "_theme/") {
+		// Revalidate pages and theme files every time: a publish flips the
+		// build, and a theme change puts different bytes at the same path
+		// (_theme/site.css is every theme's stylesheet), so a cached copy
+		// would pair the new pages with the old theme's CSS. The ETag (the
+		// content hash) makes an unchanged file a cheap 304.
 		h.Set("Cache-Control", "no-cache")
 	} else {
+		// _files/<attachment id>/… never changes for a given path.
 		h.Set("Cache-Control", "public, max-age=300")
 	}
 	if match := r.Header.Get("If-None-Match"); match != "" && match == etag {

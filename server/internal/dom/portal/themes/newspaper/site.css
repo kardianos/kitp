@@ -1,0 +1,77 @@
+/* Newspaper. Override variables or rules in the theme's custom.css; the
+   accent colour setting sets --accent. */
+:root {
+  --accent: #9b1c1c;
+  --paper: #fbf9f4;
+  --ink: #151515;
+  --muted: #5f5a52;
+  --rule: #d8d2c4;
+  --code-bg: #efebe2;
+  --serif: Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--serif);
+  color: var(--ink);
+  background: var(--paper);
+}
+* { box-sizing: border-box; }
+body { margin: 0; line-height: 1.55; }
+a { color: inherit; text-decoration: none; }
+a:hover { color: var(--accent); }
+
+.masthead { max-width: 1180px; margin: 0 auto; padding: 28px 24px 0; text-align: center; }
+.nameplate { display: inline-flex; align-items: center; gap: 14px; font-size: clamp(2.2rem, 6vw, 4rem); font-weight: 700; letter-spacing: -.02em; line-height: 1.05; }
+.nameplate img { height: 1em; width: auto; }
+.sections { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 22px; margin-top: 18px; padding: 8px 0; border-top: 3px double var(--ink); border-bottom: 1px solid var(--ink); font-family: var(--sans); font-size: .78rem; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
+.sections a[aria-current="page"], .sections a.in-path { color: var(--accent); }
+
+.paper { max-width: 1180px; margin: 0 auto; padding: 24px 24px 48px; }
+.section-title { font-size: 2.2rem; margin: 0 0 8px; border-bottom: 1px solid var(--rule); padding-bottom: 8px; }
+.intro { font-size: 1.12rem; color: var(--muted); max-width: 46rem; margin-bottom: 8px; }
+
+.stories { clear: both; column-width: 19rem; column-gap: 32px; column-rule: 1px solid var(--rule); margin-top: 16px; }
+.story { break-inside: avoid; margin: 0 0 26px; padding-bottom: 20px; border-bottom: 1px solid var(--rule); }
+.story img { width: 100%; height: auto; display: block; margin-bottom: 10px; }
+.story h2 { font-size: 1.35rem; line-height: 1.2; margin: 0 0 6px; }
+.story.lead { column-span: all; display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 28px; align-items: start; padding-bottom: 26px; border-bottom: 3px double var(--ink); }
+.story.lead > a:first-child { grid-row: span 4; }
+.story.lead h2 { font-size: clamp(1.8rem, 4vw, 2.8rem); }
+.story.lead .dek { font-size: 1.15rem; }
+.story.lead:not(:has(img)) { display: block; }
+.dateline { font-family: var(--sans); font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+.dek { margin: 0 0 8px; }
+.more { font-family: var(--sans); font-size: .8rem; font-weight: 600; color: var(--accent); }
+
+.pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--ink); font-family: var(--sans); font-size: .9rem; }
+.pager .pages a, .pager .pages strong { padding: 2px 6px; }
+.pager .pages strong { color: var(--accent); }
+
+.article { max-width: 1040px; margin: 0 auto; }
+.kicker { font-family: var(--sans); font-size: .78rem; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); margin: 8px 0; }
+.headline { font-size: clamp(2rem, 5vw, 3.2rem); line-height: 1.1; letter-spacing: -.015em; margin: 0 0 10px; }
+.prose { overflow-wrap: anywhere; font-size: 1.08rem; }
+.prose.columns { column-width: 22rem; column-gap: 40px; column-rule: 1px solid var(--rule); margin-top: 18px; }
+.prose.columns h2, .prose.columns h3, .prose.columns pre, .prose.columns table, .prose.columns img, .prose.columns .toc { column-span: all; }
+.article .prose > p:first-child::first-letter { float: left; font-size: 3.4em; line-height: .9; padding: 4px 8px 0 0; font-weight: 700; }
+.prose a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.prose img { max-width: 100%; height: auto; }
+.prose h2 { font-size: 1.5rem; margin: 1.4em 0 .4em; }
+.prose h3 { font-size: 1.2rem; margin: 1.2em 0 .3em; }
+.prose code { font-family: ui-monospace, Menlo, monospace; background: var(--code-bg); padding: 1px 4px; font-size: .88em; }
+.prose pre { background: var(--code-bg); padding: 12px 14px; overflow-x: auto; }
+.prose pre code { background: none; padding: 0; }
+.prose table { border-collapse: collapse; font-family: var(--sans); font-size: .9rem; }
+.prose th, .prose td { border-bottom: 1px solid var(--rule); padding: 6px 10px; text-align: left; }
+.prose blockquote { margin: 1em 0; padding: 0 0 0 16px; border-left: 3px solid var(--accent); font-size: 1.2rem; font-style: italic; }
+.prose hr { border: 0; border-top: 1px solid var(--rule); }
+.toc { font-family: var(--sans); font-size: .9rem; border: 1px solid var(--rule); padding: 8px 14px; }
+.toc ul { list-style: none; margin: 0; padding: 0; }
+.toc .toc-3 { padding-left: 14px; }
+.empty { color: var(--muted); font-style: italic; }
+.back { font-family: var(--sans); font-size: .9rem; margin-top: 28px; }
+.back a { color: var(--accent); }
+.colophon { border-top: 3px double var(--ink); max-width: 1180px; margin: 0 auto; padding: 16px 24px 40px; text-align: center; font-family: var(--sans); font-size: .82rem; color: var(--muted); }
+
+@media (max-width: 760px) {
+  .story.lead { display: block; }
+  .article .prose > p:first-child::first-letter { float: none; font-size: inherit; padding: 0; font-weight: inherit; }
+}

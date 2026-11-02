@@ -3,8 +3,10 @@
 --
 -- Input:  {}
 -- Result: {"rows": [{
---   "id", "title", "host", "public",
+--   "id", "title", "host", "public", "internal" (Show in kitp),
+--   "theme_id", "theme_title" ('' when the portal uses the default theme),
 --   "root_page_id", "root_title", "root_project_id",
+--   "root_label": "Project › Home" ('' when no root is set),
 --   "statuses":   ["Docs › In review", …]   statuses whose publishes_to names it
 --   "page_count", "built_at", "active_build_id", "warnings": [...],
 --   "dirty": bool (a rebuild is pending), "last_error"
@@ -47,8 +49,14 @@ BEGIN
                     'title', COALESCE(a.title, ''),
                     'host', COALESCE(a.host, ''),
                     'public', COALESCE(a.public, false),
+                    'internal', COALESCE(a.internal, false),
+                    'theme_id', COALESCE(a.theme, 0)::text,
+                    'theme_title', COALESCE(tt.value #>> '{}', ''),
                     'root_page_id', COALESCE(a.root, 0)::text,
                     'root_title', COALESCE(rt.value #>> '{}', ''),
+                    'root_label', CASE WHEN a.root IS NULL THEN ''
+                                       ELSE COALESCE(rpt.value #>> '{}', '?') || ' › '
+                                            || COALESCE(rt.value #>> '{}', '?') END,
                     'root_project_id', COALESCE(card_enclosing_project(a.root), 0)::text,
                     'statuses', COALESCE(st.names, '[]'::jsonb),
                     'page_count', COALESCE(b.page_count, 0),
@@ -67,6 +75,12 @@ BEGIN
                         max(av.value #>> '{}') FILTER (WHERE ad.name = 'title') AS title,
                         max(av.value #>> '{}') FILTER (WHERE ad.name = 'portal_host') AS host,
                         bool_or(av.value = to_jsonb(true)) FILTER (WHERE ad.name = 'portal_public') AS public,
+                        bool_or(av.value = to_jsonb(true)) FILTER (WHERE ad.name = 'portal_internal') AS internal,
+                        max(CASE WHEN ad.name = 'portal_theme' AND jsonb_typeof(av.value) = 'number'
+                                 THEN (av.value)::text::bigint
+                                 WHEN ad.name = 'portal_theme' AND jsonb_typeof(av.value) = 'string'
+                                      AND (av.value #>> '{}') ~ '^\d+$'
+                                 THEN (av.value #>> '{}')::bigint END) AS theme,
                         max(CASE WHEN ad.name = 'portal_root' AND jsonb_typeof(av.value) = 'number'
                                  THEN (av.value)::text::bigint
                                  WHEN ad.name = 'portal_root' AND jsonb_typeof(av.value) = 'string'
@@ -76,9 +90,16 @@ BEGIN
                     JOIN attribute_def ad ON ad.id = av.attribute_def_id
                     WHERE av.card_id = p.id
                 ) a ON true
+                LEFT JOIN card tc ON tc.id = a.theme AND tc.deleted_at IS NULL
+                LEFT JOIN attribute_value tt
+                  ON tt.card_id = tc.id
+                 AND tt.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'title')
                 LEFT JOIN attribute_value rt
                   ON rt.card_id = a.root
                  AND rt.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'title')
+                LEFT JOIN attribute_value rpt
+                  ON rpt.card_id = card_enclosing_project(a.root)
+                 AND rpt.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'title')
                 LEFT JOIN portal_state ps ON ps.portal_id = p.id
                 LEFT JOIN portal_build b ON b.id = ps.active_build_id
                 LEFT JOIN LATERAL (

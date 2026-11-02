@@ -1,0 +1,7 @@
+{
+  "name": "Top menu",
+  "description": "A menu bar across the top: each top-level page, with its child pages in a drop-down. Section pages list what's in them.",
+  "nav": "full",
+  "paginate": 0,
+  "order": "site"
+}

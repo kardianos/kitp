@@ -1,0 +1,58 @@
+{{- /* Blog. The template data is listed at the top of the Side menu theme's page.html,
+       and in Help → Themes. */ -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Page.IsHome}}{{.Site.Title}}{{else}}{{.Page.Title}} · {{.Site.Title}}{{end}}{{if .Pager}}{{if gt .Pager.Page 1}} · page {{.Pager.Page}}{{end}}{{end}}</title>
+{{if .Site.Icon}}<link rel="icon" href="{{.Site.Icon}}">{{end}}
+<link rel="stylesheet" href="{{.Theme}}site.css">
+<link rel="stylesheet" href="{{.Theme}}custom.css">
+</head>
+<body>
+<header class="masthead">
+  <a class="brand" href="{{.Root.Href}}">{{if .Site.Logo}}<img src="{{.Site.Logo}}" alt="">{{end}}<span>{{.Site.Title}}</span></a>
+  {{- if .Nav}}
+  <nav aria-label="Site">{{range .Nav}}<a href="{{.Href}}"{{if .Current}} aria-current="page"{{else if .InPath}} class="in-path"{{end}}>{{.Title}}</a>{{end}}</nav>
+  {{- end}}
+</header>
+<main class="column">
+  {{- $first := true}}{{if .Pager}}{{if gt .Pager.Page 1}}{{$first = false}}{{end}}{{end}}
+  {{- if .Children}}
+  {{- if $first}}
+  {{- if not .Page.IsHome}}<h1 class="list-title">{{.Page.Title}}</h1>{{end}}
+  {{- if .Content}}<div class="prose intro">{{.Content}}</div>{{end}}
+  {{- else}}
+  <p class="list-page">{{.Page.Title}} · page {{.Pager.Page}} of {{.Pager.Pages}}</p>
+  {{- end}}
+  <ol class="posts">
+    {{- range .Children}}
+    <li class="post">
+      {{- if .Published}}<time datetime="{{.PublishedISO}}">{{.Published}}</time>{{end}}
+      <h2><a href="{{.Href}}">{{.Title}}</a></h2>
+      {{- if .Summary}}<p>{{.Summary}}</p>{{end}}
+      <a class="read" href="{{.Href}}">{{if .HasChildren}}Browse{{else}}Read more{{end}} →</a>
+    </li>
+    {{- end}}
+  </ol>
+  {{- with .Pager}}
+  <nav class="pager" aria-label="Pages">
+    {{- if .Next}}<a href="{{.Next}}">← Older posts</a>{{else}}<span></span>{{end}}
+    {{- if .Prev}}<a href="{{.Prev}}">Newer posts →</a>{{end}}
+  </nav>
+  {{- end}}
+  {{- else}}
+  <article class="entry">
+    {{- if .Page.Published}}<time datetime="{{.Page.PublishedISO}}">{{.Page.Published}}</time>{{end}}
+    <h1>{{.Page.Title}}</h1>
+    <div class="prose">{{.Content}}</div>
+  </article>
+  {{- if .Parent}}<p class="back"><a href="{{.Parent.Href}}">← {{.Parent.Title}}</a></p>{{end}}
+  {{- end}}
+</main>
+{{- if .Site.Footer}}
+<footer class="site-footer">{{.Site.Footer}}</footer>
+{{- end}}
+</body>
+</html>

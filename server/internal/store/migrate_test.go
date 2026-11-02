@@ -48,20 +48,23 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		{`SELECT count(*) FROM role`, 5},      // viewer, commenter, worker, manager, admin (no wildcard 'system')
 		// 14 built-in card_types + the predicate_snippet card_type
 		// introduced for named filters + activity_subscription + link +
-		// approval + page + portal = 20.
-		{`SELECT count(*) FROM card_type`, 20},
+		// approval + page + portal + theme = 21.
+		{`SELECT count(*) FROM card_type`, 21},
 		// +subscriber, +rollup_minutes (personal notifications),
 		// +link_url / link_kind / link_state (task links),
 		// +approval_from / approval_to / approval_action / approvers /
 		// approval_note (task approvals), +approval_comm (a request's
 		// email thread), +bundle_key / publish_status / publishes_to /
-		// portal_host / portal_root / portal_public (bundles + publishing).
-		{`SELECT count(*) FROM attribute_def`, 81},
+		// portal_host / portal_root / portal_public (bundles + publishing),
+		// +portal_theme / portal_internal / nav_hidden / nav_hide_children /
+		// theme_base / theme_nav / theme_accent / theme_footer (themes).
+		{`SELECT count(*) FROM attribute_def`, 89},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
 		// +7 on activity_subscription, +4 on link, +7 on approval,
 		// +bundle_key on project, +publishes_to on status, +5 on page,
-		// +4 on portal.
-		{`SELECT count(*) FROM edge`, 126},
+		// +4 on portal, then +2 on page (nav flags), +2 on portal (theme,
+		// show in kitp) and +5 on theme.
+		{`SELECT count(*) FROM edge`, 135},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -900,9 +903,9 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		// + 1 status + 2 tasks + 1 screen + 1 filter) = 30.
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM role`, 5},
-		{`SELECT count(*) FROM card_type`, 20},
-		{`SELECT count(*) FROM attribute_def`, 81},
-		{`SELECT count(*) FROM edge`, 126},
+		{`SELECT count(*) FROM card_type`, 21},
+		{`SELECT count(*) FROM attribute_def`, 89},
+		{`SELECT count(*) FROM edge`, 135},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -963,7 +966,7 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		query string
 		want  int64
 	}{
-		{`SELECT count(*) FROM card_type`, 20},
+		{`SELECT count(*) FROM card_type`, 21},
 		// 21 seed cards + 9 test_demo cards = 30 (see TestApplySchemaWithTestDemo).
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM user_account`, 2},

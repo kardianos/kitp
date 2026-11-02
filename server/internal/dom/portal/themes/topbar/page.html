@@ -1,0 +1,60 @@
+{{- /* Top menu. The template data is listed at the top of the Side menu theme's page.html,
+       and in Help → Themes. The drop-downs are CSS only (:hover and :focus-within). */ -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Page.IsHome}}{{.Site.Title}}{{else}}{{.Page.Title}} · {{.Site.Title}}{{end}}</title>
+{{if .Site.Icon}}<link rel="icon" href="{{.Site.Icon}}">{{end}}
+<link rel="stylesheet" href="{{.Theme}}site.css">
+<link rel="stylesheet" href="{{.Theme}}custom.css">
+</head>
+<body>
+<header class="bar">
+  <div class="bar-inner">
+    <a class="brand" href="{{.Root.Href}}">{{if .Site.Logo}}<img src="{{.Site.Logo}}" alt="">{{end}}<span>{{.Site.Title}}</span></a>
+    <nav class="menu" aria-label="Site">
+      <ul>
+        {{- range .Nav}}
+        <li class="menu-item{{if .Children}} has-dropdown{{end}}">
+          <a href="{{.Href}}"{{if .Current}} aria-current="page"{{else if .InPath}} class="in-path"{{end}}>{{.Title}}{{if .Children}} <span class="caret" aria-hidden="true">▾</span>{{end}}</a>
+          {{- if .Children}}
+          <ul class="dropdown">
+            {{- range .Children}}
+            <li><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Title}}</a>
+              {{- if .Children}}<ul>{{range .Children}}<li><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Title}}</a></li>{{end}}</ul>{{end}}</li>
+            {{- end}}
+          </ul>
+          {{- end}}
+        </li>
+        {{- end}}
+      </ul>
+    </nav>
+  </div>
+</header>
+<main class="page">
+  {{- if .Crumbs}}
+  <ol class="crumbs">{{range .Crumbs}}<li><a href="{{.Href}}">{{.Title}}</a></li>{{end}}</ol>
+  {{- end}}
+  <h1>{{.Page.Title}}</h1>
+  <article class="prose">{{.Content}}</article>
+  {{- if .Children}}
+  <section class="in-section" aria-label="In this section">
+    <h2>In this section</h2>
+    <ul class="cards">
+      {{- range .Children}}
+      <li><a href="{{.Href}}"><strong>{{.Title}}</strong>{{if .Summary}}<span>{{.Summary}}</span>{{end}}</a></li>
+      {{- end}}
+    </ul>
+  </section>
+  {{- end}}
+  {{- if .Page.Published}}
+  <p class="page-date">Published {{.Page.Published}}</p>
+  {{- end}}
+</main>
+{{- if .Site.Footer}}
+<footer class="site-footer">{{.Site.Footer}}</footer>
+{{- end}}
+</body>
+</html>

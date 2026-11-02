@@ -7,10 +7,12 @@
 -- section, so the card tree IS the site tree. A page moves through the
 -- publish_status flow below. When it ENTERS a status whose publishes_to
 -- names a portal, the page is snapshotted onto that portal
--- (publication_on_status); entering a terminal status withdraws it from
--- every portal. Leaving a status unpublishes nothing, so editing a live
--- page leaves each portal on its pinned revision until "Publish changes"
--- (or a trip back through review) re-enters a publishing status.
+-- (publication_sync). Entering Draft (triage: not live) takes it off every
+-- other portal — "Unpublish"; entering Archived (terminal) takes it off
+-- all of them. Entering a live status (In review, Published) leaves the
+-- other portals alone, so editing a live page leaves each portal on its
+-- pinned revision until "Publish changes" (or a trip back through review)
+-- re-enters a publishing status.
 --
 -- The bundle can't know an install's portals, so its statuses publish
 -- nowhere until an admin links them.
@@ -47,7 +49,7 @@ flow_id,  from_card_id,  to_card_id,    label,             sort_order, standalon
 @pb_flow, @pb_review,    @pb_archived,  "Archive",         3,          false
 @pb_flow, @pb_published, @pb_published, "Publish changes", 1,          true
 @pb_flow, @pb_published, @pb_review,    "Send to review",  2,          false
-@pb_flow, @pb_published, @pb_draft,     "Unpublish edits", 3,          false
+@pb_flow, @pb_published, @pb_draft,     "Unpublish",       3,          false
 @pb_flow, @pb_published, @pb_archived,  "Archive",         4,          false
 @pb_flow, @pb_archived,  @pb_draft,     "Restore",         1,          true
 
@@ -59,10 +61,10 @@ card_type_id,      parent_card_id, title,   layout, slug,  hotkey, sort_order, f
 $card_type.screen, parent,         "Pages", pages,  pages, w,      8,          @pb_flow, @pb_draft,             `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"Draft","predicate":{"attr":"publish_status","op":"has_phase","values":["triage"]},"default_on":true},{"name":"active","label":"Live","predicate":{"attr":"publish_status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Archived","predicate":{"attr":"publish_status","op":"has_phase","values":["terminal"]},"default_on":false}]}]`
 
 -- A starter site: a Home page (the root a portal points at) with one child.
--- Its body shows the placeholders the builder expands: {{< children >}}
--- lists the page's child pages, {{< toc >}} the page's headings,
--- {{< nav >}} the whole site tree, and {{< ref "slug/path" >}} links to
--- another page by path.
+-- Their bodies show what the builder expands: {{< children >}} lists the
+-- page's child pages, {{< toc >}} the page's headings, {{< nav >}} the
+-- whole site tree, and a ref: link ([text](ref:slug/path)) points at
+-- another page. A placeholder in backticks is shown as written.
 ## table card | under=bundle_src | alias=pb_home
 ### rows
 card_type_id,    parent_card_id, title,  slug, sort_order, publish_status, description
@@ -72,7 +74,7 @@ $card_type.page, parent,         "Home", ,     0,          @pb_draft,      `Welc
 
 {{< children >}}
 
-See [Getting started]({{< ref "getting-started" >}}) for how pages, statuses and portals fit together.`
+See [Getting started](ref:getting-started) for how pages, statuses and portals fit together.`
 
 ## table card | under=pb_home
 ### rows
@@ -89,4 +91,14 @@ Move a page through its statuses. A status can publish to one or more portals: s
 
 ## Live edits
 
-Editing a published page doesn't change what a portal shows. Use **Publish changes** to send the edit out, or send the page back to review.`
+Editing a published page doesn't change what a portal shows. Use **Publish changes** to send the edit out, or send the page back to review.
+
+## Unpublish
+
+**Unpublish** (or **Back to draft**) takes the page off every portal: a draft isn't live anywhere. **Archive** does the same and hides it from the Pages screen.
+
+## Links and placeholders
+
+Link to another page by giving the link the target ``ref:`` plus the page's path or number: [this link](ref:) goes to the home page, and ``ref:getting-started`` points at this one.
+
+These placeholders are filled in when a site is built: ``{{< children >}}`` lists the page's child pages, ``{{< nav >}}`` the whole site, and ``{{< toc >}}`` the page's headings. In backticks, like here, they are shown as written.`

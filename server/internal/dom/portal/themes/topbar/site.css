@@ -1,0 +1,75 @@
+/* Top menu. Override variables or rules in the theme's custom.css; the
+   accent colour setting sets --accent. */
+:root {
+  --accent: #0f766e;
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, white);
+  --bar: #ffffff;
+  --bg: #ffffff;
+  --text: #17202a;
+  --muted: #5b6672;
+  --line: #e4e7eb;
+  --code-bg: #f3f5f7;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+* { box-sizing: border-box; }
+body { margin: 0; line-height: 1.65; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.bar { background: var(--bar); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10; }
+.bar-inner { max-width: 1120px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; gap: 28px; min-height: 60px; flex-wrap: wrap; }
+.brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.1rem; color: var(--text); }
+.brand img { height: 30px; width: auto; }
+.brand:hover { text-decoration: none; }
+
+.menu > ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.menu-item { position: relative; }
+.menu-item > a { display: block; padding: 18px 12px; color: var(--text); font-weight: 550; border-bottom: 2px solid transparent; }
+.menu-item > a:hover { text-decoration: none; color: var(--accent); }
+.menu-item > a[aria-current="page"], .menu-item > a.in-path { color: var(--accent); border-bottom-color: var(--accent); }
+.caret { font-size: .7em; color: var(--muted); }
+.dropdown { display: none; position: absolute; top: 100%; left: 0; min-width: 240px; list-style: none; margin: 0; padding: 8px; background: var(--bar); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 28px rgba(15, 23, 42, .12); }
+.has-dropdown:hover > .dropdown, .has-dropdown:focus-within > .dropdown { display: block; }
+.dropdown ul { list-style: none; margin: 0 0 4px; padding: 0 0 0 12px; }
+.dropdown a { display: block; padding: 6px 10px; border-radius: 6px; color: var(--text); font-size: .93rem; }
+.dropdown ul a { color: var(--muted); font-size: .88rem; padding: 3px 10px; }
+.dropdown a:hover, .dropdown a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); text-decoration: none; }
+
+.page { max-width: 860px; margin: 0 auto; padding: 32px 24px 48px; }
+.page h1 { margin: 0 0 16px; font-size: 2.1rem; line-height: 1.2; letter-spacing: -.01em; }
+.crumbs { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 0; margin: 0 0 8px; font-size: .85rem; color: var(--muted); }
+.crumbs li + li::before { content: "/"; margin-right: 6px; color: var(--line); }
+
+.prose { overflow-wrap: anywhere; }
+.prose img { max-width: 100%; height: auto; border-radius: 8px; }
+.prose h2 { margin-top: 1.8em; font-size: 1.4rem; }
+.prose h3 { margin-top: 1.4em; font-size: 1.12rem; }
+.prose code { background: var(--code-bg); border-radius: 6px; padding: 1px 5px; font-size: .9em; }
+.prose pre { background: var(--code-bg); border-radius: 10px; padding: 12px 14px; overflow-x: auto; }
+.prose pre code { background: none; padding: 0; }
+.prose table { margin: 1em 0; border-collapse: collapse; display: block; overflow-x: auto; }
+.prose th, .prose td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+.prose blockquote { margin: 0; padding: 4px 16px; border-left: 3px solid var(--accent); color: var(--muted); }
+.prose hr { border: 0; border-top: 1px solid var(--line); margin: 2em 0; }
+.toc { border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px; margin: 0 0 16px; font-size: .92rem; }
+.toc ul { list-style: none; margin: 0; padding: 0; }
+.toc .toc-3 { padding-left: 16px; }
+.empty { color: var(--muted); }
+
+.in-section { margin-top: 40px; }
+.in-section h2 { font-size: 1.05rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.cards { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.cards a { display: flex; flex-direction: column; gap: 4px; height: 100%; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; color: var(--text); }
+.cards a:hover { border-color: var(--accent); text-decoration: none; }
+.cards span { color: var(--muted); font-size: .9rem; }
+.page-date { margin-top: 32px; font-size: .82rem; color: var(--muted); }
+.site-footer { border-top: 1px solid var(--line); padding: 20px 24px; text-align: center; font-size: .85rem; color: var(--muted); }
+
+@media (max-width: 760px) {
+  .bar { position: static; }
+  .menu > ul { flex-direction: column; gap: 0; width: 100%; }
+  .menu-item > a { padding: 8px 0; border-bottom: 0; }
+  .dropdown { display: block; position: static; box-shadow: none; border: 0; padding: 0 0 6px 12px; min-width: 0; }
+}

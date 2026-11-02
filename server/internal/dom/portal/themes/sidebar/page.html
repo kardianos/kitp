@@ -1,0 +1,63 @@
+{{- /*
+  Side menu — kitp's default theme. Every theme's page.html gets the same data:
+
+    .Site.Title .Site.Logo .Site.Icon .Site.Footer       the site (Logo / Icon: URLs or "")
+    .Page.Title .Page.IsHome .Page.Kind .Page.Published  this page; Kind is page, notfound or empty
+    .Base .Theme                                          prefixes to the site root and to _theme/
+    .Root                                                 the home page: .Title .Href .Current
+    .Content                                              the page body, as HTML
+    .Crumbs .Parent                                       the pages above: .Title .Href
+    .Nav .Section                                         navigation: .Title .Href .Current .InPath
+                                                          .HasChildren .Open .Collapsible .Children
+    .Children .Pager                                      child pages: .Title .Href .Summary .Image
+                                                          .Published .HasChildren; the pager: .Page
+                                                          .Pages .Prev .Next .Links (.Number .Href .Current)
+    .Prev .Next                                           neighbours in reading order: .Title .Href
+    .Headings                                             the page's h2 and h3: .Level .ID .Text
+
+  Link the stylesheets with {{.Theme}}site.css and {{.Theme}}custom.css (the accent colour and
+  the theme's custom.css). Help → Themes in kitp describes it all.
+*/ -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Page.IsHome}}{{.Site.Title}}{{else}}{{.Page.Title}} · {{.Site.Title}}{{end}}</title>
+{{if .Site.Icon}}<link rel="icon" href="{{.Site.Icon}}">{{end}}
+<link rel="stylesheet" href="{{.Theme}}site.css">
+<link rel="stylesheet" href="{{.Theme}}custom.css">
+</head>
+<body>
+<header class="site-header">
+  <a class="site-title" href="{{.Root.Href}}">{{if .Site.Logo}}<img class="site-logo" src="{{.Site.Logo}}" alt="">{{end}}<span>{{.Site.Title}}</span></a>
+</header>
+<div class="site-body">
+  <nav class="site-nav" aria-label="Site">
+    <ul><li><a href="{{.Root.Href}}"{{if .Root.Current}} aria-current="page"{{end}}>{{.Root.Title}}</a></li></ul>
+    {{- template "navtree" .Nav}}
+  </nav>
+  <main class="page">
+    {{- if .Crumbs}}
+    <ol class="crumbs">{{range .Crumbs}}<li><a href="{{.Href}}">{{.Title}}</a></li>{{end}}</ol>
+    {{- end}}
+    <h1>{{.Page.Title}}</h1>
+    <article class="prose">{{.Content}}</article>
+    {{- if or .Prev .Next}}
+    <nav class="prev-next" aria-label="Pages">
+      {{- if .Prev}}<a class="prev" href="{{.Prev.Href}}"><small>Previous</small>{{.Prev.Title}}</a>{{else}}<span></span>{{end}}
+      {{- if .Next}}<a class="next" href="{{.Next.Href}}"><small>Next</small>{{.Next.Title}}</a>{{end}}
+    </nav>
+    {{- end}}
+    {{- if .Page.Published}}
+    <p class="page-date">Published {{.Page.Published}}</p>
+    {{- end}}
+  </main>
+</div>
+{{- if .Site.Footer}}
+<footer class="site-footer">{{.Site.Footer}}</footer>
+{{- end}}
+</body>
+</html>
+{{define "navtree"}}{{if .}}<ul>{{range .}}<li>{{if .Collapsible}}<details{{if .Open}} open{{end}}><summary>{{template "navlink" .}}</summary>{{template "navtree" .Children}}</details>{{else}}{{template "navlink" .}}{{template "navtree" .Children}}{{end}}</li>{{end}}</ul>{{end}}{{end}}
+{{- define "navlink"}}<a href="{{.Href}}"{{if .Current}} aria-current="page"{{else if .InPath}} class="in-path"{{end}}>{{.Title}}{{if and .HasChildren (not .Children)}} <span class="more" aria-hidden="true">›</span>{{end}}</a>{{end}}

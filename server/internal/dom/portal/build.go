@@ -1,10 +1,12 @@
 package portal
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/kitp/kitp/server/internal/cas"
 	"github.com/kitp/kitp/server/internal/named"
+	"github.com/kitp/kitp/server/internal/store"
 )
 
 // DefaultKeepBuilds is how many builds per portal survive pruning (the
@@ -93,7 +96,7 @@ func (b *Builder) logger() *slog.Logger {
 // it is unchanged, so a change that lands mid-build triggers another build.
 // Returns the new build id.
 func (b *Builder) Build(ctx context.Context, portalID int64, since time.Time) (int64, error) {
-	site, err := loadSite(ctx, b.Pool, portalID)
+	site, err := loadSite(ctx, b.Pool, b.Storage, portalID)
 	if err != nil {
 		return 0, err
 	}
@@ -101,16 +104,33 @@ func (b *Builder) Build(ctx context.Context, portalID int64, since time.Time) (i
 	if err != nil {
 		return 0, err
 	}
+	// The attachments page bodies show: read each file's chunks and store
+	// it as one blob (identical bytes collapse to one).
+	for _, a := range res.Attachments {
+		data, err := readAttachment(ctx, b.Pool, b.Storage, a.ID)
+		if err != nil {
+			return 0, fmt.Errorf("attachment %d: %w", a.ID, err)
+		}
+		res.Files = append(res.Files, File{Path: a.Path, MIME: a.MIME, Data: data})
+	}
 
 	// Blobs first, outside the transaction: a failed build leaves only
-	// unreferenced blobs, which the CAS reaper collects.
+	// unreferenced blobs, which the CAS reaper collects. A theme card's
+	// own files are blobs already.
 	addrs := make([]string, len(res.Files))
+	sizes := make([]int64, len(res.Files))
 	for i, f := range res.Files {
+		if f.Addr != "" {
+			addrs[i] = f.Addr
+			sizes[i] = f.Size
+			continue
+		}
 		addr, err := b.Storage.Put(ctx, f.MIME, f.Data)
 		if err != nil {
 			return 0, fmt.Errorf("store %s: %w", f.Path, err)
 		}
 		addrs[i] = addr
+		sizes[i] = int64(len(f.Data))
 	}
 
 	tx, err := b.Pool.Begin(ctx)
@@ -148,10 +168,9 @@ func (b *Builder) Build(ctx context.Context, portalID int64, since time.Time) (i
 	{
 		paths := make([]string, len(res.Files))
 		mimes := make([]string, len(res.Files))
-		sizes := make([]int64, len(res.Files))
 		cards := make([]int64, len(res.Files))
 		for i, f := range res.Files {
-			paths[i], mimes[i], sizes[i], cards[i] = f.Path, f.MIME, int64(len(f.Data)), f.CardID
+			paths[i], mimes[i], cards[i] = f.Path, f.MIME, f.CardID
 		}
 		q := named.New()
 		q.Set("build", buildID)
@@ -226,9 +245,11 @@ func (b *Builder) recordError(ctx context.Context, portalID int64, cause error) 
 	return nil
 }
 
-// loadSite reads a portal's title, root page and publications.
-func loadSite(ctx context.Context, pool *pgxpool.Pool, portalID int64) (Site, error) {
+// loadSite reads a portal's title, root page, theme, publications and the
+// attachments on the published pages.
+func loadSite(ctx context.Context, pool *pgxpool.Pool, storage *cas.Storage, portalID int64) (Site, error) {
 	var s Site
+	var themeID int64
 	{
 		q := named.New()
 		q.Set("portal", portalID)
@@ -238,6 +259,10 @@ func loadSite(ctx context.Context, pool *pgxpool.Pool, portalID int64) (Site, er
 			  COALESCE(max(CASE
 			    WHEN ad.name = 'portal_root' AND jsonb_typeof(av.value) = 'number' THEN (av.value)::text::bigint
 			    WHEN ad.name = 'portal_root' AND (av.value #>> '{}') ~ '^\d+$' THEN (av.value #>> '{}')::bigint
+			  END), 0),
+			  COALESCE(max(CASE
+			    WHEN ad.name = 'portal_theme' AND jsonb_typeof(av.value) = 'number' THEN (av.value)::text::bigint
+			    WHEN ad.name = 'portal_theme' AND (av.value #>> '{}') ~ '^\d+$' THEN (av.value #>> '{}')::bigint
 			  END), 0)
 			FROM attribute_value av
 			JOIN attribute_def ad ON ad.id = av.attribute_def_id
@@ -245,15 +270,45 @@ func loadSite(ctx context.Context, pool *pgxpool.Pool, portalID int64) (Site, er
 		if err != nil {
 			return Site{}, fmt.Errorf("compile portal: %w", err)
 		}
-		if err := pool.QueryRow(ctx, sql, args...).Scan(&s.Title, &s.RootID); err != nil {
+		if err := pool.QueryRow(ctx, sql, args...).Scan(&s.Title, &s.RootID, &themeID); err != nil {
 			return Site{}, fmt.Errorf("load portal %d: %w", portalID, err)
+		}
+	}
+	if s.RootID != 0 {
+		// The root's live title and project, published or not, so a build
+		// warning can say which page the portal is waiting on.
+		q := named.New()
+		q.Set("root", s.RootID)
+		sql, args, err := q.Compile(`
+			SELECT
+			  COALESCE((SELECT av.value #>> '{}' FROM attribute_value av
+			            JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'title'
+			            WHERE av.card_id = :root), ''),
+			  COALESCE((SELECT av.value #>> '{}' FROM attribute_value av
+			            JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'title'
+			            WHERE av.card_id = card_enclosing_project(:root)), '')`)
+		if err != nil {
+			return Site{}, fmt.Errorf("compile root: %w", err)
+		}
+		if err := pool.QueryRow(ctx, sql, args...).Scan(&s.RootTitle, &s.RootProject); err != nil {
+			return Site{}, fmt.Errorf("load root of portal %d: %w", portalID, err)
+		}
+	}
+	if themeID != 0 {
+		theme, note, err := loadTheme(ctx, pool, storage, themeID)
+		if err != nil {
+			return Site{}, fmt.Errorf("portal %d: %w", portalID, err)
+		}
+		s.Theme = theme
+		if note != "" {
+			s.Notes = append(s.Notes, note)
 		}
 	}
 	q := named.New()
 	q.Set("portal", portalID)
 	sql, args, err := q.Compile(`
 		SELECT p.card_id, COALESCE(p.parent_card_id, 0), p.title, p.slug, p.body,
-		       p.sort_order, p.published_at
+		       p.sort_order, p.published_at, p.nav_hidden, p.nav_hide_children
 		FROM publication p
 		JOIN card c ON c.id = p.card_id AND c.deleted_at IS NULL
 		WHERE p.portal_id = :portal
@@ -266,15 +321,182 @@ func loadSite(ctx context.Context, pool *pgxpool.Pool, portalID int64) (Site, er
 		return Site{}, fmt.Errorf("load publications: %w", err)
 	}
 	defer rows.Close()
+	var pageIDs []int64
 	for rows.Next() {
 		var p Page
-		if err := rows.Scan(&p.ID, &p.ParentID, &p.Title, &p.Slug, &p.Body, &p.Sort, &p.PublishedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.ParentID, &p.Title, &p.Slug, &p.Body, &p.Sort, &p.PublishedAt,
+			&p.NavHidden, &p.NavHideChildren); err != nil {
 			return Site{}, fmt.Errorf("scan publication: %w", err)
 		}
 		s.Pages = append(s.Pages, p)
+		pageIDs = append(pageIDs, p.ID)
 	}
 	if err := rows.Err(); err != nil {
 		return Site{}, fmt.Errorf("load publications: %w", err)
 	}
+	rows.Close()
+	files, err := loadSiteFiles(ctx, pool, pageIDs)
+	if err != nil {
+		return Site{}, err
+	}
+	s.Files = files
 	return s, nil
+}
+
+// loadSiteFiles lists the live attachments on the published pages.
+func loadSiteFiles(ctx context.Context, pool *pgxpool.Pool, pageIDs []int64) (map[int64]SiteFile, error) {
+	out := map[int64]SiteFile{}
+	if len(pageIDs) == 0 {
+		return out, nil
+	}
+	q := named.New()
+	q.Set("pages", pageIDs)
+	sql, args, err := q.Compile(`
+		SELECT a.id, a.card_id, f.filename, f.mime_type, f.size_bytes
+		FROM attachment a
+		JOIN file f ON f.id = a.file_id
+		WHERE a.card_id = ANY(:pages::bigint[]) AND a.deleted_at IS NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("compile attachments: %w", err)
+	}
+	rows, err := pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("load attachments: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var f SiteFile
+		if err := rows.Scan(&f.ID, &f.CardID, &f.Name, &f.MIME, &f.Size); err != nil {
+			return nil, fmt.Errorf("scan attachment: %w", err)
+		}
+		out[f.ID] = f
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("load attachments: %w", err)
+	}
+	return out, nil
+}
+
+// readAttachment reads an attachment's bytes (its file's chunks, in order).
+func readAttachment(ctx context.Context, pool *pgxpool.Pool, storage *cas.Storage, id int64) ([]byte, error) {
+	q := named.New()
+	q.Set("id", id)
+	sql, args, err := q.Compile(`
+		SELECT fc.cas_address
+		FROM attachment a
+		JOIN file_chunk fc ON fc.file_id = a.file_id
+		WHERE a.id = :id
+		ORDER BY fc.seq`)
+	if err != nil {
+		return nil, fmt.Errorf("compile chunks: %w", err)
+	}
+	rows, err := pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("load chunks: %w", err)
+	}
+	addrs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("load chunks: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := storage.GetAll(ctx, addrs, &buf); err != nil {
+		return nil, fmt.Errorf("read chunks: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// loadTheme resolves a theme card: its settings, its own files (reading
+// the ones the renderer needs: templates, theme.json, custom.css) and its
+// base. A deleted theme card, or an unknown base, falls back to the
+// default theme with a note for the build warnings; a theme whose
+// templates don't parse is an error (the portal keeps its last build).
+func loadTheme(ctx context.Context, q store.Querier, storage *cas.Storage, themeID int64) (*Theme, string, error) {
+	set, own, found, err := loadThemeCard(ctx, q, storage, themeID)
+	if err != nil {
+		return nil, "", err
+	}
+	if !found {
+		t, err := ResolveTheme(ThemeSettings{Base: DefaultThemeKey}, nil)
+		return t, "This portal's theme was deleted; the site uses the Side menu theme. Choose a theme in Admin → Portals.", err
+	}
+	t, err := ResolveTheme(set, own)
+	if err != nil {
+		if t != nil {
+			return t, err.Error() + ".", nil
+		}
+		return nil, "", fmt.Errorf("theme %d: %w", themeID, err)
+	}
+	return t, "", nil
+}
+
+// loadThemeCard reads a live theme card's settings and files; found is
+// false for a missing or deleted card. File bytes are read for the files
+// the renderer reads (see needsData).
+func loadThemeCard(ctx context.Context, q store.Querier, storage *cas.Storage, themeID int64) (ThemeSettings, []ThemeFile, bool, error) {
+	var set ThemeSettings
+	b := named.New()
+	b.Set("theme", themeID)
+	sql, args, err := b.Compile(`
+		SELECT
+		  COALESCE(max(av.value #>> '{}') FILTER (WHERE ad.name = 'theme_base'), ''),
+		  COALESCE(max(av.value #>> '{}') FILTER (WHERE ad.name = 'theme_nav'), ''),
+		  COALESCE(max(av.value #>> '{}') FILTER (WHERE ad.name = 'theme_accent'), ''),
+		  COALESCE(max(av.value #>> '{}') FILTER (WHERE ad.name = 'theme_footer'), '')
+		FROM card c
+		JOIN card_type ct ON ct.id = c.card_type_id AND ct.name = 'theme'
+		LEFT JOIN attribute_value av ON av.card_id = c.id
+		LEFT JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE c.id = :theme AND c.deleted_at IS NULL
+		GROUP BY c.id`)
+	if err != nil {
+		return set, nil, false, fmt.Errorf("compile theme: %w", err)
+	}
+	if err := q.QueryRow(ctx, sql, args...).Scan(&set.Base, &set.Nav, &set.Accent, &set.Footer); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return set, nil, false, nil
+		}
+		return set, nil, false, fmt.Errorf("load theme %d: %w", themeID, err)
+	}
+	b = named.New()
+	b.Set("theme", themeID)
+	sql, args, err = b.Compile(`
+		SELECT path, mime_type, cas_address, size_bytes
+		FROM theme_file WHERE theme_id = :theme ORDER BY path`)
+	if err != nil {
+		return set, nil, false, fmt.Errorf("compile theme files: %w", err)
+	}
+	rows, err := q.Query(ctx, sql, args...)
+	if err != nil {
+		return set, nil, false, fmt.Errorf("load theme files: %w", err)
+	}
+	var files []ThemeFile
+	for rows.Next() {
+		var f ThemeFile
+		if err := rows.Scan(&f.Path, &f.MIME, &f.Addr, &f.Size); err != nil {
+			rows.Close()
+			return set, nil, false, fmt.Errorf("scan theme file: %w", err)
+		}
+		files = append(files, f)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return set, nil, false, fmt.Errorf("load theme files: %w", err)
+	}
+	for i := range files {
+		if !needsData(files[i].Path) {
+			continue
+		}
+		var buf bytes.Buffer
+		if err := storage.GetAll(ctx, []string{files[i].Addr}, &buf); err != nil {
+			return set, nil, false, fmt.Errorf("read theme file %s: %w", files[i].Path, err)
+		}
+		files[i].Data = buf.Bytes()
+	}
+	return set, files, true, nil
+}
+
+// needsData reports whether the renderer reads a theme file's bytes (the
+// rest are published by CAS address).
+func needsData(p string) bool {
+	return p == "theme.json" || p == "custom.css" || strings.HasSuffix(p, ".html")
 }

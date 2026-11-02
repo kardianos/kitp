@@ -1,0 +1,7 @@
+{
+  "name": "Newspaper",
+  "description": "A masthead and a section bar. A page with child pages is a front page: a lead story across the top, then the rest in columns, newest first, nine to a page. A story's text flows in columns on wide screens.",
+  "nav": "section",
+  "paginate": 9,
+  "order": "newest"
+}

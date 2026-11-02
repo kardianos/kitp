@@ -1,0 +1,7 @@
+{
+  "name": "Book",
+  "description": "Read it front to back: one calm reading column, a numbered table of contents (in full on the home page, a drop-down everywhere else), and previous / next chapter links.",
+  "nav": "full",
+  "paginate": 0,
+  "order": "site"
+}

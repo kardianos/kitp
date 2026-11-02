@@ -1,0 +1,7 @@
+{
+  "name": "Side menu",
+  "description": "A documentation site: the page tree down the left, the page beside it, previous and next links at the foot.",
+  "nav": "full",
+  "paginate": 0,
+  "order": "site"
+}

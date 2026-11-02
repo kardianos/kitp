@@ -1,0 +1,62 @@
+/* Blog. Override variables or rules in the theme's custom.css; the accent
+   colour setting sets --accent. */
+:root {
+  --accent: #d6336c;
+  --bg: #ffffff;
+  --text: #222429;
+  --muted: #6b7079;
+  --line: #ececf0;
+  --code-bg: #f5f5f8;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+  font-family: var(--sans);
+  color: var(--text);
+  background: var(--bg);
+}
+* { box-sizing: border-box; }
+body { margin: 0; line-height: 1.7; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.masthead { max-width: 42rem; margin: 0 auto; padding: 36px 24px 12px; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; font-size: 1.35rem; font-weight: 800; letter-spacing: -.02em; color: var(--text); }
+.brand img { height: 32px; width: auto; }
+.brand:hover { text-decoration: none; }
+.masthead nav { display: flex; flex-wrap: wrap; gap: 18px; font-size: .95rem; }
+.masthead nav a { color: var(--muted); }
+.masthead nav a[aria-current="page"], .masthead nav a.in-path { color: var(--text); font-weight: 600; }
+
+.column { max-width: 42rem; margin: 0 auto; padding: 16px 24px 56px; }
+.list-title { font-size: 2rem; margin: 16px 0 8px; }
+.list-page { color: var(--muted); font-size: .9rem; }
+.intro { color: var(--muted); }
+.posts { list-style: none; margin: 8px 0 0; padding: 0; }
+.post { padding: 26px 0; border-bottom: 1px solid var(--line); }
+.post time, .entry time { font-size: .82rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.post h2 { font-size: 1.55rem; line-height: 1.25; margin: 4px 0 8px; letter-spacing: -.01em; }
+.post h2 a { color: var(--text); }
+.post p { margin: 0 0 8px; font-family: var(--serif); font-size: 1.08rem; color: #3b3e45; }
+.read { font-size: .9rem; font-weight: 600; }
+.pager { display: flex; justify-content: space-between; margin-top: 28px; font-weight: 600; }
+
+.entry { padding-top: 16px; }
+.entry h1 { font-size: clamp(2rem, 5vw, 2.6rem); line-height: 1.15; letter-spacing: -.02em; margin: 6px 0 24px; }
+.prose { font-family: var(--serif); font-size: 1.15rem; overflow-wrap: anywhere; }
+.prose img { max-width: 100%; height: auto; border-radius: 6px; }
+.prose h2, .prose h3 { font-family: var(--sans); letter-spacing: -.01em; }
+.prose h2 { font-size: 1.45rem; margin-top: 1.8em; }
+.prose h3 { font-size: 1.18rem; margin-top: 1.5em; }
+.prose a { text-decoration: underline; text-underline-offset: 3px; }
+.prose code { font-family: ui-monospace, Menlo, monospace; font-size: .82em; background: var(--code-bg); padding: 2px 5px; border-radius: 5px; }
+.prose pre { background: #1e1f26; color: #e9e9ef; padding: 16px 18px; border-radius: 10px; overflow-x: auto; font-size: .92rem; line-height: 1.55; }
+.prose pre code { background: none; padding: 0; color: inherit; }
+.prose table { margin: 1em 0; border-collapse: collapse; font-family: var(--sans); font-size: .95rem; display: block; overflow-x: auto; }
+.prose th, .prose td { border-bottom: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+.prose blockquote { margin: 1.4em 0; padding-left: 18px; border-left: 3px solid var(--accent); color: var(--muted); font-style: italic; }
+.prose hr { border: 0; border-top: 1px solid var(--line); margin: 2.4em 0; }
+.toc { font-family: var(--sans); font-size: .92rem; background: var(--code-bg); border-radius: 10px; padding: 10px 16px; }
+.toc ul { list-style: none; margin: 0; padding: 0; }
+.toc .toc-3 { padding-left: 14px; }
+.empty { color: var(--muted); }
+.back { margin-top: 40px; font-weight: 600; }
+.site-footer { max-width: 42rem; margin: 0 auto; padding: 24px 24px 48px; border-top: 1px solid var(--line); font-size: .88rem; color: var(--muted); }

@@ -505,6 +505,8 @@ title, text, false, '', ,
 slug, text, false, '', ,
 sort_order, double precision, false, 0, ,
 body, text, false, '', ,
+nav_hidden, boolean, false, false, ,
+nav_hide_children, boolean, false, false, ,
 revision_activity_id, bigint, , , ,
 published_at, timestamptz, false, now(), ,
 published_by, bigint, , , user_account.id, set null
@@ -554,6 +556,23 @@ card_id, bigint, , , ,
 ### indexes
 name, columns
 idx_portal_build_file_cas, "cas_address"
+
+
+## table theme_file | doc="A file a theme card adds or overrides on top of its built-in base theme: a template (*.html, parsed with the base's), a stylesheet, an image (logo.*, favicon.*), a font. path is relative to the theme ('page.html', 'custom.css', 'fonts/inter.woff2'); every non-template file is published under _theme/ in each build. The bytes are one CAS blob; the CAS reaper counts cas_address as a reference." | primary_key="theme_id, path"
+
+### columns
+name, type, nullable, default, references, on_delete
+theme_id, bigint, false, , card.id, cascade
+path, text, false, , ,
+cas_address, text, false, , ,
+mime_type, text, false, , ,
+size_bytes, bigint, false, 0, ,
+updated_at, timestamptz, false, now(), ,
+updated_by, bigint, , , user_account.id, set null
+
+### indexes
+name, columns
+idx_theme_file_cas, "cas_address"
 
 -- ---------------------------------------------------------------------
 -- Handler functions (unified handler model — docs/UNIFIED_HANDLER_PLAN.md).
@@ -606,7 +625,14 @@ idx_portal_build_file_cas, "cas_address"
 ## function publication_after_write | doc="attribute.update's publishing hook: a page's publish_status write → publication_sync; any portal attribute write → portal_mark_dirty." | path="functions/publication_after_write.sql" | arg_types="bigint, text, bigint"
 ## function portal_set_batch | doc="portal.set — create or update a portal card (title, root page, public host, public flag); host names unique among live portals; changed attributes only; marks the portal dirty." | path="functions/portal_set_batch.sql"
 ## function portal_list_batch | doc="portal.list — live portals with root page, host, the statuses that publish to them, and active-build state; global-role callers see all, others the portals whose root page they can see." | path="functions/portal_list_batch.sql"
+## function portal_root_pages_batch | doc="portal.root_pages — the pages a portal may use as its root: live pages in live, non-template projects the caller can see (so feature-bundle source pages never appear), each labelled 'Project › Page › …'." | path="functions/portal_root_pages_batch.sql"
 ## function portal_rebuild_batch | doc="portal.rebuild — queue a portal for the portal.build job." | path="functions/portal_rebuild_batch.sql"
+## function theme_mark_portals_dirty | doc="Flag every live portal using a theme for the portal.build job (a theme's settings or files changed)." | path="functions/theme_mark_portals_dirty.sql" | arg_types="bigint"
+## function theme_set_batch | doc="theme.set — create or update a theme card (title, base theme, nav mode, accent colour, footer); changed attributes only; rebuilds the portals using it. The Go PreRun checks the base against the built-in themes." | path="functions/theme_set_batch.sql"
+## function theme_list_batch | doc="theme.list — live theme cards with their settings, override files and the portals using them." | path="functions/theme_list_batch.sql"
+## function theme_file_put_batch | doc="theme.file_put — add or replace one of a theme's files (the Go PreRun stored the bytes in CAS and checked templates); rebuilds the portals using it." | path="functions/theme_file_put_batch.sql"
+## function theme_file_get_batch | doc="theme.file_get — one of a theme's files (CAS address and type; the Go PostRun reads the bytes)." | path="functions/theme_file_get_batch.sql"
+## function theme_file_delete_batch | doc="theme.file_delete — remove one of a theme's files, so the base theme's file (if any) applies again; rebuilds the portals using it." | path="functions/theme_file_delete_batch.sql"
 ## function page_publications_batch | doc="page.publications — the portals a page is published to, with snapshot time / author, whether the snapshot is current, and the page's path in each portal's active build." | path="functions/page_publications_batch.sql"
 ## function project_compose_batch | doc="project.compose — create a project from a preset and/or feature list (no template auto-stamp), applying each feature bundle in order; any conflict fails the row." | path="functions/project_compose_batch.sql"
 ## function card_insert_batch | doc="card.insert — validate (card_type / parent / required-edges / scope) and write card + activities + initial attribute values per input. Seeds built-in screens for projects." | path="functions/card_insert_batch.sql"

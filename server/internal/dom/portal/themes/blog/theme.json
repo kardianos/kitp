@@ -1,0 +1,7 @@
+{
+  "name": "Blog",
+  "description": "Posts, newest first: a page with child pages lists them with their dates and opening lines, five to a page. Top-level pages (About, Archive …) sit in the header.",
+  "nav": "section",
+  "paginate": 5,
+  "order": "newest"
+}

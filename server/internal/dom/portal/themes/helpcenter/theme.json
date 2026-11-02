@@ -1,0 +1,7 @@
+{
+  "name": "Help center",
+  "description": "A support site: a banner on the home page with each section as a card listing its first articles; inside a section, its articles down the side.",
+  "nav": "full",
+  "paginate": 0,
+  "order": "site"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "Reference",
+  "description": "Dense technical docs in three columns: collapsible navigation on the left, the page in the middle, its headings (\"On this page\") on the right.",
+  "nav": "collapsible",
+  "paginate": 0,
+  "order": "site"
+}

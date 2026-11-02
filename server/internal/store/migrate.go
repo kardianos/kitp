@@ -856,6 +856,119 @@ BEGIN
   ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
 END $$;`,
 	},
+	{
+		// Portal themes, navigation and in-kitp sites. The seed.hcsv rows
+		// reach fresh installs only, so add them here too:
+		//   1. the global theme card_type (a site's look: a built-in base
+		//      theme plus settings; its files live in theme_file),
+		//   2. portal_theme / portal_internal (a portal's theme and its
+		//      "Show in kitp" switch), nav_hidden / nav_hide_children (a
+		//      page left out of a site's navigation, or its children),
+		//      theme_base / theme_nav / theme_accent / theme_footer, and
+		//      their edges,
+		//   3. admin card.* on theme (like portal),
+		//   4. the publication snapshot's nav_hidden / nav_hide_children
+		//      columns (additive; CREATE TABLE IF NOT EXISTS can't add them).
+		// theme_file is declarative DDL. Idempotent — ON CONFLICT DO NOTHING
+		// and ADD COLUMN IF NOT EXISTS make it a no-op on a fresh DB.
+		id: "0016_portal_themes",
+		sql: `
+ALTER TABLE publication ADD COLUMN IF NOT EXISTS nav_hidden boolean NOT NULL DEFAULT false;
+ALTER TABLE publication ADD COLUMN IF NOT EXISTS nav_hide_children boolean NOT NULL DEFAULT false;
+DO $$
+DECLARE
+  _theme_ct bigint;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM card_type WHERE name = 'portal') THEN
+    RETURN;
+  END IF;
+
+  INSERT INTO card_type (name, parent_card_type_id, allow_self_parent, is_built_in, uses_phase)
+  VALUES ('theme', NULL, false, true, false)
+  ON CONFLICT (name) DO NOTHING;
+  _theme_ct := (SELECT id FROM card_type WHERE name = 'theme');
+
+  INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+  VALUES ('portal_theme',      'card_ref', _theme_ct, true, false),
+         ('portal_internal',   'bool',     NULL,      true, false),
+         ('nav_hidden',        'bool',     NULL,      true, false),
+         ('nav_hide_children', 'bool',     NULL,      true, false),
+         ('theme_base',        'text',     NULL,      true, false),
+         ('theme_nav',         'text',     NULL,      true, false),
+         ('theme_accent',      'text',     NULL,      true, false),
+         ('theme_footer',      'text',     NULL,      true, false)
+  ON CONFLICT (name) DO NOTHING;
+
+  INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+  SELECT ct.id, ad.id, v.req, v.ord
+  FROM (VALUES
+    ('page',   'nav_hidden',        false, 5),
+    ('page',   'nav_hide_children', false, 6),
+    ('portal', 'portal_theme',      false, 4),
+    ('portal', 'portal_internal',   false, 5),
+    ('theme',  'title',             true,  0),
+    ('theme',  'theme_base',        true,  1),
+    ('theme',  'theme_nav',         false, 2),
+    ('theme',  'theme_accent',      false, 3),
+    ('theme',  'theme_footer',      false, 4)
+  ) AS v(ct, attr, req, ord)
+  JOIN card_type ct ON ct.name = v.ct
+  JOIN attribute_def ad ON ad.name = v.attr
+  ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;
+
+  INSERT INTO role_grant (role_id, card_type_id, process_id)
+  SELECT r.id, _theme_ct, p.id
+  FROM role r
+  CROSS JOIN process p
+  WHERE r.name = 'admin'
+    AND p.name IN ('card.create', 'card.update', 'card.delete', 'comment.post', 'user_card_sort.set')
+  ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
+END $$;`,
+	},
+	{
+		// "Unpublish" means unpublish. A page that enters a Draft-phase
+		// (triage) status now leaves every portal that status doesn't
+		// publish to (publication_sync). Bring existing data in line:
+		//   1. the publishing flow's Published → Draft step was labelled
+		//      "Unpublish edits" (it used to keep the live copy); rename it
+		//      wherever a bundle copied it,
+		//   2. pages already sitting in a triage-phase status come off the
+		//      portals that status doesn't publish to (those portals rebuild).
+		// Idempotent — the rename finds nothing a second time, and a fresh
+		// DB has no publications.
+		id: "0017_draft_unpublishes",
+		sql: `
+UPDATE flow_step fs
+SET label = 'Unpublish'
+WHERE fs.label = 'Unpublish edits'
+  AND EXISTS (SELECT 1 FROM card s WHERE s.id = fs.to_card_id AND s.phase = 'triage');
+DO $$
+DECLARE
+  _r record;
+BEGIN
+  FOR _r IN
+    SELECT p.portal_id, p.card_id
+    FROM publication p
+    JOIN attribute_value sv ON sv.card_id = p.card_id
+    JOIN attribute_def sd ON sd.id = sv.attribute_def_id AND sd.name = 'publish_status'
+    JOIN card s ON s.id = CASE
+                            WHEN jsonb_typeof(sv.value) = 'number' THEN (sv.value)::text::bigint
+                            WHEN (sv.value #>> '{}') ~ '^\d+$' THEN (sv.value #>> '{}')::bigint
+                          END
+    WHERE s.phase = 'triage'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM attribute_value pv
+        JOIN attribute_def pd ON pd.id = pv.attribute_def_id AND pd.name = 'publishes_to'
+        WHERE pv.card_id = s.id
+          AND jsonb_typeof(pv.value) = 'array'
+          AND (pv.value @> jsonb_build_array(p.portal_id::text) OR pv.value @> jsonb_build_array(p.portal_id)))
+  LOOP
+    DELETE FROM publication WHERE portal_id = _r.portal_id AND card_id = _r.card_id;
+    PERFORM portal_mark_dirty(_r.portal_id);
+  END LOOP;
+END $$;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

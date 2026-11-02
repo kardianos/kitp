@@ -1,0 +1,50 @@
+{{- /* Reference. The template data is listed at the top of the Side menu theme's page.html,
+       and in Help → Themes. The left navigation follows the theme's navigation mode
+       (collapsible by default: <details>, open along the current page). */ -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Page.IsHome}}{{.Site.Title}}{{else}}{{.Page.Title}} · {{.Site.Title}}{{end}}</title>
+{{if .Site.Icon}}<link rel="icon" href="{{.Site.Icon}}">{{end}}
+<link rel="stylesheet" href="{{.Theme}}site.css">
+<link rel="stylesheet" href="{{.Theme}}custom.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="{{.Root.Href}}">{{if .Site.Logo}}<img src="{{.Site.Logo}}" alt="">{{end}}<span>{{.Site.Title}}</span></a>
+</header>
+<div class="grid{{if not .Headings}} no-toc{{end}}">
+  <nav class="side" aria-label="Site">
+    <ul><li><a href="{{.Root.Href}}"{{if .Root.Current}} aria-current="page"{{end}}>{{.Root.Title}}</a></li></ul>
+    {{- template "navtree" .Nav}}
+  </nav>
+  <main class="doc">
+    {{- if .Crumbs}}
+    <ol class="crumbs">{{range .Crumbs}}<li><a href="{{.Href}}">{{.Title}}</a></li>{{end}}</ol>
+    {{- end}}
+    <h1>{{.Page.Title}}</h1>
+    <article class="prose">{{.Content}}</article>
+    {{- if or .Prev .Next}}
+    <nav class="prev-next" aria-label="Pages">
+      {{- if .Prev}}<a href="{{.Prev.Href}}">‹ {{.Prev.Title}}</a>{{else}}<span></span>{{end}}
+      {{- if .Next}}<a href="{{.Next.Href}}">{{.Next.Title}} ›</a>{{end}}
+    </nav>
+    {{- end}}
+    {{- if .Page.Published}}<p class="stamp">Published {{.Page.Published}}</p>{{end}}
+  </main>
+  {{- if .Headings}}
+  <aside class="onpage" aria-label="On this page">
+    <p>On this page</p>
+    <ul>{{range .Headings}}<li class="h{{.Level}}"><a href="#{{.ID}}">{{.Text}}</a></li>{{end}}</ul>
+  </aside>
+  {{- end}}
+</div>
+{{- if .Site.Footer}}
+<footer class="site-footer">{{.Site.Footer}}</footer>
+{{- end}}
+</body>
+</html>
+{{define "navtree"}}{{if .}}<ul>{{range .}}<li>{{if .Collapsible}}<details{{if .Open}} open{{end}}><summary>{{template "navlink" .}}</summary>{{template "navtree" .Children}}</details>{{else}}{{template "navlink" .}}{{template "navtree" .Children}}{{end}}</li>{{end}}</ul>{{end}}{{end}}
+{{- define "navlink"}}<a href="{{.Href}}"{{if .Current}} aria-current="page"{{else if .InPath}} class="in-path"{{end}}>{{.Title}}</a>{{end}}
