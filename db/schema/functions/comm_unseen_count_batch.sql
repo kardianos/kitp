@@ -5,11 +5,11 @@
 --
 -- A received message is a reply_body card with delivery_status='received'
 -- (written by the IMAP ingest). Each is referenced by exactly one comm via the
--- comm's `replies` array; the comm's parent is the task, the task's parent is
--- the project. Visibility (B7) is therefore one hop: the caller (or, if an
--- agent, their parent_user) must hold a globally-scoped user_role OR one scoped
--- to that project (task.parent_card_id). Projects are the top scoping unit, so
--- no recursive walk is needed here.
+-- comm's `replies` array. The comm sits under a task, or directly in its
+-- project when it is a thread on its own (docs/CONVERSATIONS.md), so its
+-- project is card_enclosing_project(comm). Visibility (B7): the caller (or, if
+-- an agent, their parent_user) must hold a globally-scoped user_role OR one
+-- scoped to that project; the project is only resolved for scoped roles.
 --
 -- The cursor is the reply_body's card_create activity id (monotonic per new
 -- message). Clients seed their baseline with an initial since=0 call (which
@@ -54,7 +54,6 @@ BEGIN
             JOIN attribute_value rep ON rep.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'replies')
                 AND rep.value @> to_jsonb(rb.id)
             JOIN card cm ON cm.id = rep.card_id AND cm.deleted_at IS NULL   -- the comm
-            JOIN card tk ON tk.id = cm.parent_card_id                        -- the task
             WHERE rb.deleted_at IS NULL
               AND NOT card_in_off_area(cm.id)
               AND EXISTS (
@@ -64,7 +63,7 @@ BEGIN
                     ON ur.user_id = caller.id
                     OR (caller.parent_user_id IS NOT NULL AND ur.user_id = caller.parent_user_id)
                   WHERE caller.id = comm_unseen_count_batch.actor_id
-                    AND (ur.scope_card_id IS NULL OR ur.scope_card_id = tk.parent_card_id)
+                    AND (ur.scope_card_id IS NULL OR ur.scope_card_id = card_enclosing_project(cm.id))
               )
         )
         SELECT COALESCE(max(create_activity_id), 0),

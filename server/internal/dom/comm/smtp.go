@@ -114,7 +114,13 @@ func NewSMTPSenderForTest(pool *store.Pool, channelID int64, tick time.Duration)
 // reply_body card. Internal callers (processOne) use buildMIME
 // directly.
 func BuildMIMEForTest(from, to, subject, body, threadID string) []byte {
-	return buildMIME(from, to, subject, body, "", threadID, "", 0, nil)
+	return buildMIME(from, to, subject, body, "", threadID, "", "", 0, nil)
+}
+
+// BuildMIMEWithQuoteForTest is BuildMIMEForTest with a quote block (as
+// formatQuote renders it) and a task id, for the quoting tests.
+func BuildMIMEWithQuoteForTest(from, to, subject, body, signature, threadID, quote string, taskID int64) []byte {
+	return buildMIME(from, to, subject, body, signature, threadID, "", quote, taskID, nil)
 }
 
 // newSMTPSender builds the struct without starting the goroutine.
@@ -205,11 +211,14 @@ type pendingReply struct {
 	signatureMode string // channel's signature_mode: '' | none | comm_name | user_name
 	channelName   string // comm_channel title (for comm_name mode)
 	authorName    string // reply author's user_label — an agent names its owner (for user_name mode)
-	// taskID is the comm's parent task card id; toIsUser is true when the To
-	// address matches a person linked to a login (user_account_person). Both
-	// gate the "/task/<id>" deep link appended to the body (see processOne).
+	// taskID is the comm's parent task card id (0 for a thread on its own);
+	// toIsUser is true when the To address matches a person linked to a
+	// login (user_account_person). Both gate the "/task/<id>" deep link
+	// appended to the body (see processOne).
 	taskID   int64
 	toIsUser bool
+	// replyQuote is the channel's resolved reply_quote: off | last | all.
+	replyQuote string
 }
 
 // RunOnce executes one scan + send cycle synchronously. Exported so
@@ -282,7 +291,18 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 	if s.publicURL != "" && r.toIsUser && r.taskID > 0 {
 		taskURL = s.publicURL + "/task/" + strconv.FormatInt(r.taskID, 10)
 	}
-	msg := buildMIME(r.from, r.to, r.subject, r.body, r.signature, r.threadID, taskURL, r.taskID, atts)
+	quote := ""
+	if r.replyQuote != QuoteOff {
+		earlier, err := s.loadEarlier(ctx, r)
+		if err != nil {
+			// Quoting is a courtesy; a failed read sends the reply without it.
+			s.logger.LogAttrs(ctx, slog.LevelWarn, "smtp sender: load quoted messages",
+				slog.Int64("reply_id", r.replyID),
+				slog.String("err", err.Error()))
+		}
+		quote = formatQuote(earlier)
+	}
+	msg := buildMIME(r.from, r.to, r.subject, r.body, r.signature, r.threadID, taskURL, quote, r.taskID, atts)
 
 	var sendErr error
 	if s.dryRun {
@@ -350,7 +370,10 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = rb.id AND ad.name='reply_subject'), '')   AS reply_subject,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = rb.id AND ad.name='reply_body_text'), '') AS reply_body,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = cm.id AND ad.name='thread_id'), '')       AS thread_id,
-			COALESCE(cm.parent_card_id, 0)                                                                                                                              AS task_id,
+			-- task_id: the comm's task; 0 for a thread on its own (its parent
+			-- is the project), which gets no Task: line or deep link.
+			COALESCE((SELECT p.id FROM card p JOIN card_type pct ON pct.id = p.card_type_id
+			          WHERE p.id = cm.parent_card_id AND pct.name = 'task'), 0)                                                                                     AS task_id,
 			-- to_is_user: does the To address (reply_to) belong to a kitp USER,
 			-- i.e. a person card linked to a login via user_account_person?
 			-- Drives the "/task/<id>" deep link appended for users only.
@@ -372,6 +395,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='from_address'), '')    AS from_address,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='title'), '')           AS channel_name,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='signature_mode'), '')  AS signature_mode,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = ch.id AND ad.name='reply_quote'), '')     AS reply_quote,
 			COALESCE((SELECT user_label(ua.id)
 			          FROM attribute_value av
 			          JOIN attribute_def ad ON ad.id = av.attribute_def_id
@@ -422,7 +446,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			&r.threadID,
 			&r.taskID, &r.toIsUser,
 			&r.smtpHost, &r.smtpPort, &r.smtpUser, &r.fromAddress,
-			&r.channelName, &r.signatureMode, &r.authorName,
+			&r.channelName, &r.signatureMode, &r.replyQuote, &r.authorName,
 			&r.smtpPass,
 		); err != nil {
 			return nil, err
@@ -434,10 +458,76 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			r.from = r.fromAddress
 		}
 		r.signature = resolveSignature(r.signatureMode, r.channelName, r.authorName)
+		r.replyQuote = ResolveReplyQuote(r.replyQuote)
 		out = append(out, r)
 	}
 	if err := pgRows.Err(); err != nil {
 		return nil, err
+	}
+	return out, nil
+}
+
+// loadEarlier reads the messages of r's thread that came before it, newest
+// first — only the one before when the channel quotes the last message.
+// Failed and bounced messages never reached anyone and are skipped. An
+// outbound message's sender is the channel's from address, named with the
+// channel's title when the stored From is a bare address.
+func (s *SMTPSender) loadEarlier(ctx context.Context, r pendingReply) ([]quotedMessage, error) {
+	b := named.New()
+	b.Set("comm_id", r.commID)
+	b.Set("reply_id", r.replyID)
+	limit := 50
+	if r.replyQuote == QuoteLast {
+		limit = 1
+	}
+	b.Set("limit", limit)
+	q, args, err := b.Compile(`
+		SELECT rb.id,
+		       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = rb.id AND ad.name='reply_from'), ''),
+		       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = rb.id AND ad.name='reply_body_text'), ''),
+		       COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = rb.id AND ad.name='delivery_status'), ''),
+		       rb.created_at
+		FROM attribute_value rep
+		JOIN attribute_def rad ON rad.id = rep.attribute_def_id AND rad.name = 'replies'
+		CROSS JOIN LATERAL jsonb_array_elements(rep.value) AS e(v)
+		JOIN card rb ON rb.id = (e.v #>> '{}')::bigint AND rb.deleted_at IS NULL
+		WHERE rep.card_id = :comm_id
+		  AND jsonb_typeof(rep.value) = 'array'
+		  AND jsonb_typeof(e.v) IN ('number', 'string')
+		  AND (e.v #>> '{}') ~ '^\d+$'
+		  AND rb.id < :reply_id
+		  AND COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = rb.id AND ad.name='delivery_status'), '') NOT IN ('failed', 'bounced')
+		ORDER BY rb.id DESC
+		LIMIT :limit
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("loadEarlier: compile: %w", err)
+	}
+	rows, err := s.pool.P.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("loadEarlier: %w", err)
+	}
+	defer rows.Close()
+	var out []quotedMessage
+	for rows.Next() {
+		var id int64
+		var m quotedMessage
+		var status string
+		if err := rows.Scan(&id, &m.From, &m.Body, &status, &m.At); err != nil {
+			return nil, fmt.Errorf("loadEarlier: scan: %w", err)
+		}
+		if status != "received" {
+			if m.From == "" {
+				m.From = r.fromAddress
+			}
+			if m.From != "" && !strings.Contains(m.From, "<") && r.channelName != "" {
+				m.From = r.channelName + " <" + m.From + ">"
+			}
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("loadEarlier: rows: %w", err)
 	}
 	return out, nil
 }
@@ -517,13 +607,15 @@ func resolveSignature(mode, channelName, authorName string) string {
 // trailer 'Ref:' line are always added — Gate 6's inbound parser
 // looks for any of the three. When taskID > 0 a "Task: <id>" line sits
 // directly above the Ref: line, so every recipient (user or not, link
-// or not) can quote the task number back.
+// or not) can quote the task number back. A non-empty quote (the earlier
+// messages, formatQuote) goes below the signature and link, above the
+// trailer, which stays last where the inbound parser looks for it.
 //
 // We deliberately use \r\n line endings (SMTP convention; required by
 // the wire protocol) and emit a single Content-Type header for
 // plain-text UTF-8. Quoted-printable / multipart MIME is out of scope
 // for v1 (the spec calls out "plain text only").
-func buildMIME(from, to, subject, body, signature, threadID, taskURL string, taskID int64, atts []mimeAttachment) []byte {
+func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote string, taskID int64, atts []mimeAttachment) []byte {
 	suffix := "[#" + threadID + "]"
 	subjectFinal := subject
 	switch {
@@ -550,6 +642,10 @@ func buildMIME(from, to, subject, body, signature, threadID, taskURL string, tas
 	// configured public URL).
 	if link := strings.TrimSpace(taskURL); link != "" {
 		bodyNorm += "\r\n\r\n" + link
+	}
+	if q := strings.TrimRight(quote, "\r\n"); strings.TrimSpace(q) != "" {
+		q = strings.ReplaceAll(q, "\r\n", "\n")
+		bodyNorm += "\r\n\r\n" + strings.ReplaceAll(q, "\n", "\r\n")
 	}
 	trailer := "Ref: " + threadID + "\r\n"
 	if taskID > 0 {

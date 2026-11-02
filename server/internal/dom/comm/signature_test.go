@@ -36,7 +36,7 @@ func TestResolveSignature(t *testing.T) {
 func TestBuildMIMETaskURL(t *testing.T) {
 	link := "https://kitp.example.com/task/42"
 
-	withLink := string(buildMIME("k@example.com", "a@example.com", "Hi", "Body text", "Support", "abc123", link, 0, nil))
+	withLink := string(buildMIME("k@example.com", "a@example.com", "Hi", "Body text", "Support", "abc123", link, "", 0, nil))
 	if !strings.Contains(withLink, link) {
 		t.Fatalf("expected task link %q in body, got:\n%s", link, withLink)
 	}
@@ -48,7 +48,7 @@ func TestBuildMIMETaskURL(t *testing.T) {
 		t.Fatalf("ordering wrong: sig=%d link=%d ref=%d in:\n%s", sigIdx, linkIdx, refIdx, withLink)
 	}
 
-	noLink := string(buildMIME("k@example.com", "a@example.com", "Hi", "Body text", "Support", "abc123", "", 0, nil))
+	noLink := string(buildMIME("k@example.com", "a@example.com", "Hi", "Body text", "Support", "abc123", "", "", 0, nil))
 	if strings.Contains(noLink, "/task/") {
 		t.Fatalf("did not expect a task link when taskURL empty, got:\n%s", noLink)
 	}
@@ -71,7 +71,7 @@ func TestBuildMIMETaskLine(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			msg := string(buildMIME("k@example.com", "a@example.com", "Hi", "Body text", "Support", "abc123", c.taskURL, c.taskID, nil))
+			msg := string(buildMIME("k@example.com", "a@example.com", "Hi", "Body text", "Support", "abc123", c.taskURL, "", c.taskID, nil))
 			if c.want == "" {
 				if strings.Contains(msg, "Task: ") {
 					t.Fatalf("did not expect a Task: line, got:\n%s", msg)

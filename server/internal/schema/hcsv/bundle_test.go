@@ -38,14 +38,14 @@ func TestLoadCatalogShipped(t *testing.T) {
 			t.Errorf("bundle %s checksum %q", b.Key, b.Checksum)
 		}
 	}
-	if got, want := strings.Join(keys, ","), "tracker,conversations,publishing"; got != want {
+	if got, want := strings.Join(keys, ","), "tracker,helpdesk,conversations,publishing"; got != want {
 		t.Errorf("features = %s, want %s", got, want)
 	}
 	var presets []string
 	for _, p := range cat.Presets {
 		presets = append(presets, p.Key+"="+strings.Join(p.Features, "+"))
 	}
-	if got, want := strings.Join(presets, ","), "issue_tracker=tracker,customer_care=tracker+conversations,content=tracker+publishing"; got != want {
+	if got, want := strings.Join(presets, ","), "issue_tracker=tracker,help_desk=helpdesk+conversations,shared_inbox=conversations,content=tracker+publishing"; got != want {
 		t.Errorf("presets = %s, want %s", got, want)
 	}
 }

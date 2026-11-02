@@ -266,7 +266,7 @@ func TestApplyToStampedProject(t *testing.T) {
 		keys = append(keys, p.Key)
 	}
 	sort.Strings(keys)
-	if strings.Join(keys, ",") != "content,customer_care,issue_tracker" {
+	if strings.Join(keys, ",") != "content,help_desk,issue_tracker,shared_inbox" {
 		t.Errorf("presets = %v", keys)
 	}
 }
@@ -283,7 +283,10 @@ func TestComposeRejects(t *testing.T) {
 		{"nothing to compose", `{"name":"X"}`, "validation"},
 		{"unknown preset", `{"name":"X","preset":"nope"}`, "bundle_unknown"},
 		{"unknown feature", `{"name":"X","features":["tracker","nope"]}`, "bundle_unknown"},
-		{"two comm flows", `{"name":"X","preset":"customer_care","features":["conversations"]}`, ""},
+		{"two comm flows", `{"name":"X","preset":"help_desk","features":["conversations"]}`, ""},
+		// Task tracking and Help desk are two starting points of Tasks: both
+		// drive status, so a project can only start from one.
+		{"two task flows", `{"name":"X","features":["tracker","helpdesk"]}`, "bundle_conflict"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -292,7 +295,7 @@ func TestComposeRejects(t *testing.T) {
 				// A duplicate feature collapses rather than conflicting.
 				var o bundle.ComposeOutput
 				decode(t, sr, &o)
-				if got := strings.Join(o.Features, ","); got != "tracker,conversations" {
+				if got := strings.Join(o.Features, ","); got != "helpdesk,conversations" {
 					t.Fatalf("features = %s", got)
 				}
 				return

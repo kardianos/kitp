@@ -7,7 +7,8 @@ Two related pieces of work:
 1. **Feature bundles** — a project is composed from named features (task
    tracking, conversations, publishing) instead of copied from one
    template, and features can be added later. Presets name common
-   combinations ("Issue tracker", "Customer care", "Content management").
+   combinations ("Issue tracker", "Help desk", "Shared inbox", "Content
+   management").
 2. **Portals** — pages written in kitp, moved through a status flow, and
    published as static sites. A status names the portals a page goes to
    when it enters that status, so one status can feed QA and the next QA
@@ -41,8 +42,12 @@ order.
 | preset          | features                   |
 |-----------------|----------------------------|
 | `issue_tracker` | tracker                    |
-| `customer_care` | tracker, conversations     |
+| `help_desk`     | helpdesk, conversations    |
+| `shared_inbox`  | conversations              |
 | `content`       | tracker, publishing        |
+
+(`customer_care` — tracker + conversations — became `help_desk` and
+`shared_inbox`; see [CONVERSATIONS.md](CONVERSATIONS.md).)
 
 ### How bundles reach the database
 

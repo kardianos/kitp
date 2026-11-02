@@ -61,6 +61,8 @@ DECLARE
     _intake_status_id bigint;
     _status text;
     _signature_mode text;
+    _intake_mode text;
+    _reply_quote text;
     _imap_pwd_raw jsonb;
     _smtp_pwd_raw jsonb;
     _imap_pwd text;
@@ -106,6 +108,8 @@ BEGIN
         _from_address := COALESCE(_raw->>'from_address', '');
         _status       := COALESCE(_raw->>'channel_status', '');
         _signature_mode := COALESCE(_raw->>'signature_mode', '');
+        _intake_mode    := COALESCE(_raw->>'intake_mode', '');
+        _reply_quote    := COALESCE(_raw->>'reply_quote', '');
         BEGIN
             _intake_status_id := COALESCE(NULLIF(_raw->>'intake_status_id', '')::bigint, 0);
         EXCEPTION WHEN invalid_text_representation THEN
@@ -169,6 +173,20 @@ BEGIN
         IF _signature_mode <> '' AND _signature_mode NOT IN ('none', 'comm_name', 'user_name') THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 format('comm_channel.set: signature_mode %L is not one of ''none'' / ''comm_name'' / ''user_name''', _signature_mode),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+        -- What new (unmatched) mail does, and whether replies quote the
+        -- conversation (docs/CONVERSATIONS.md).
+        IF _intake_mode <> '' AND _intake_mode NOT IN ('task', 'thread', 'ignore') THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('comm_channel.set: intake_mode %L is not one of ''task'' / ''thread'' / ''ignore''', _intake_mode),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF _reply_quote <> '' AND _reply_quote NOT IN ('off', 'last', 'all') THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('comm_channel.set: reply_quote %L is not one of ''off'' / ''last'' / ''all''', _reply_quote),
                 NULL::jsonb;
             CONTINUE;
         END IF;
@@ -264,7 +282,9 @@ BEGIN
                 (10, 'intake_status',        to_jsonb(_intake_status_id),      _intake_status_id <> 0),
                 (11, 'channel_status',       to_jsonb(_status),                _status <> ''),
                 (12, 'channel_fault_reason', to_jsonb(''::text),               _status = 'enabled'),
-                (13, 'signature_mode',       to_jsonb(_signature_mode),        _signature_mode <> '')
+                (13, 'signature_mode',       to_jsonb(_signature_mode),        _signature_mode <> ''),
+                (14, 'intake_mode',          to_jsonb(_intake_mode),           _intake_mode <> ''),
+                (15, 'reply_quote',          to_jsonb(_reply_quote),           _reply_quote <> '')
             ) AS v(ord, attr_name, value, include)
             WHERE v.include
         ),

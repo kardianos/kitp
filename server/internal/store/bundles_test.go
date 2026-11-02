@@ -142,8 +142,8 @@ func TestForwardMigration0015BundlesPortals(t *testing.T) {
 		`SELECT count(*) FROM bundle WHERE kind = 'feature' AND source_project_id IS NOT NULL`).Scan(&features); err != nil {
 		t.Fatal(err)
 	}
-	if features != 3 {
-		t.Errorf("bundle tier materialised %d features after 0015, want 3", features)
+	if features != 4 {
+		t.Errorf("bundle tier materialised %d features after 0015, want 4", features)
 	}
 	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
 		t.Fatalf("third apply (idempotent): %v", err)

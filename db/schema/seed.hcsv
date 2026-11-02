@@ -105,6 +105,8 @@ intake_status,         card_ref,    true, $card_type.status, false
 channel_status,        text,        true, null, false
 channel_fault_reason,  text,        true, null, false
 signature_mode,        text,        true, null, false
+intake_mode,           text,        true, null, false
+reply_quote,           text,        true, null, false
 channel_ref,           card_ref,    true, $card_type.comm_channel, false
 thread_id,             text,        true, null, false
 replies,               card_ref[],  true, $card_type.reply_body, false
@@ -229,6 +231,8 @@ $card_type.comm_channel, $attribute_def.intake_status,     false, 9
 $card_type.comm_channel, $attribute_def.channel_status,    false, 10
 $card_type.comm_channel, $attribute_def.channel_fault_reason, false, 11
 $card_type.comm_channel, $attribute_def.signature_mode,   false, 12
+$card_type.comm_channel, $attribute_def.intake_mode,      false, 13
+$card_type.comm_channel, $attribute_def.reply_quote,      false, 14
 $card_type.comm,         $attribute_def.title,             true,  0
 $card_type.comm,         $attribute_def.channel_ref,       true,  1
 $card_type.comm,         $attribute_def.thread_id,         true,  2

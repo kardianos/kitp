@@ -3,7 +3,9 @@
 -- decodeCardRefArray into one PL/pgSQL body.
 --
 -- Per-row pipeline:
---   1. Validation: task_id is required.
+--   1. Validation: task_id is required, unless comm_id is given: then
+--      just that comm is listed, wherever it sits (a thread on its own
+--      is directly in its project; docs/CONVERSATIONS.md).
 --   2. List comm cards under the task — soft-deleted excluded, gated
 --      by the per-actor visibility predicate (B7) — that walks the
 --      parent_card_id chain up to the enclosing project. Each comm
@@ -53,13 +55,15 @@ CREATE OR REPLACE FUNCTION comm_list_for_task_batch(
 DECLARE
     _idx int;
     _task_id bigint;
+    _comm_id bigint;
 BEGIN
-    FOR _idx, _task_id IN
+    FOR _idx, _task_id, _comm_id IN
         SELECT (r.ord - 1)::int,
-               NULLIF(r.value->>'task_id', '')::bigint
+               NULLIF(r.value->>'task_id', '')::bigint,
+               COALESCE(NULLIF(r.value->>'comm_id', '')::bigint, 0)
         FROM jsonb_array_elements(inputs) WITH ORDINALITY AS r(value, ord)
     LOOP
-        IF _task_id IS NULL OR _task_id = 0 THEN
+        IF (_task_id IS NULL OR _task_id = 0) AND _comm_id = 0 THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 'comm.list_for_task: task_id is required'::text, NULL::jsonb;
             CONTINUE;
@@ -271,7 +275,8 @@ BEGIN
                     FROM card c
                     JOIN card_type ct ON ct.id = c.card_type_id
                     WHERE ct.name = 'comm'
-                      AND c.parent_card_id = _task_id
+                      AND (CASE WHEN _comm_id <> 0 THEN c.id = _comm_id
+                                ELSE c.parent_card_id = _task_id END)
                       AND c.deleted_at IS NULL
                       AND NOT card_in_off_area(c.id) AND EXISTS (
                         -- depth < 16 caps the parent walk (CLAUDE.md cap;

@@ -421,13 +421,14 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 		return nil
 	}
 
-	cfg, projectID, intakeStatusID, err := p.loadChannelConfig(ctx)
+	cfg, intake, err := p.loadChannelConfig(ctx)
 	if err != nil {
 		return fmt.Errorf("imap poller: load config: %w", err)
 	}
+	projectID := intake.projectID
 
 	// Config snapshot (no secrets). The common "no new tasks" cause shows
-	// up here: intake_status_id=0 means every non-reply message is dropped
+	// up here: intake_mode=ignore means every non-reply message is dropped
 	// (see processOne); has_password=false means dial will fail.
 	p.logger.LogAttrs(ctx, slog.LevelDebug, "imap channel config",
 		slog.Int64("channel_id", p.channelID),
@@ -436,7 +437,8 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 		slog.Bool("has_username", cfg.Username != ""),
 		slog.Bool("has_password", cfg.Password != ""),
 		slog.Int64("project_id", projectID),
-		slog.Int64("intake_status_id", intakeStatusID))
+		slog.Int64("intake_status_id", intake.statusID),
+		slog.String("intake_mode", intake.mode))
 
 	if p.dryRun {
 		p.logger.LogAttrs(ctx, slog.LevelInfo, "imap dry-run",
@@ -485,7 +487,7 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 	var ingested []uint32
 	var firstErr error
 	for _, m := range msgs {
-		if err := p.processOne(ctx, projectID, intakeStatusID, m); err != nil {
+		if err := p.processOne(ctx, intake, m); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -510,34 +512,71 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 	return firstErr
 }
 
+// Intake modes: what a new (unmatched) inbound message becomes. See
+// docs/CONVERSATIONS.md.
+const (
+	IntakeTask   = "task"   // a task and a thread on it
+	IntakeThread = "thread" // a thread on its own, in the project
+	IntakeIgnore = "ignore" // dropped: only replies to existing threads come in
+)
+
+// ResolveIntakeMode maps a channel's stored intake_mode to the mode in
+// effect. Unset (or unknown) keeps what channels did before the setting:
+// a task when the channel has an intake status, else ignore.
+func ResolveIntakeMode(stored string, intakeStatusID int64) string {
+	switch stored {
+	case IntakeTask, IntakeThread, IntakeIgnore:
+		return stored
+	}
+	if intakeStatusID != 0 {
+		return IntakeTask
+	}
+	return IntakeIgnore
+}
+
+// channelIntake is what the poller needs to file a message: the
+// channel's project, its intake status (0 = none) and resolved mode.
+type channelIntake struct {
+	projectID int64
+	statusID  int64
+	mode      string
+}
+
 // loadChannelConfig reads the channel's IMAP host/port/username +
-// decrypted imap_password + intake_status_id + enclosing project id.
-// One round-trip; returns IMAPConfig + project + intake or an error
-// shaped for the caller to log directly.
-func (p *IMAPPoller) loadChannelConfig(ctx context.Context) (IMAPConfig, int64, int64, error) {
+// decrypted imap_password + intake status / mode + enclosing project
+// id. One round-trip; returns an error shaped for the caller to log
+// directly.
+func (p *IMAPPoller) loadChannelConfig(ctx context.Context) (IMAPConfig, channelIntake, error) {
 	var cfg IMAPConfig
-	var projectID int64
-	var intakeID int64
-	row := p.pool.P.QueryRow(ctx, `
+	var in channelIntake
+	var storedMode string
+	b := named.New()
+	b.Set("channel_id", p.channelID)
+	q, args, err := b.Compile(`
 		SELECT
-			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = $1 AND ad.name='imap_host'), '')      AS imap_host,
-			COALESCE((SELECT (value)::text::int FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = $1 AND ad.name='imap_port' AND jsonb_typeof(value)='number'), 0) AS imap_port,
-			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = $1 AND ad.name='imap_username'), '')  AS imap_username,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = :channel_id AND ad.name='imap_host'), '')      AS imap_host,
+			COALESCE((SELECT (value)::text::int FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = :channel_id AND ad.name='imap_port' AND jsonb_typeof(value)='number'), 0) AS imap_port,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = :channel_id AND ad.name='imap_username'), '')  AS imap_username,
 			COALESCE(
 				(SELECT pgp_sym_decrypt(cs.imap_password, current_setting('app.comm_secret_key'))
-					FROM comm_secret cs WHERE cs.channel_card_id = $1 AND cs.imap_password IS NOT NULL),
+					FROM comm_secret cs WHERE cs.channel_card_id = :channel_id AND cs.imap_password IS NOT NULL),
 				''
 			) AS imap_password,
-			COALESCE((SELECT (value)::text::bigint FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = $1 AND ad.name='intake_status' AND jsonb_typeof(value)='number'), 0) AS intake_status_id,
-			COALESCE((SELECT parent_card_id FROM card WHERE id = $1), 0) AS project_id
-	`, p.channelID)
-	if err := row.Scan(&cfg.Host, &cfg.Port, &cfg.Username, &cfg.Password, &intakeID, &projectID); err != nil {
-		return cfg, 0, 0, err
+			COALESCE((SELECT (value)::text::bigint FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = :channel_id AND ad.name='intake_status' AND jsonb_typeof(value)='number'), 0) AS intake_status_id,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = :channel_id AND ad.name='intake_mode'), '')    AS intake_mode,
+			COALESCE((SELECT parent_card_id FROM card WHERE id = :channel_id), 0) AS project_id
+	`)
+	if err != nil {
+		return cfg, in, fmt.Errorf("compile: %w", err)
+	}
+	if err := p.pool.P.QueryRow(ctx, q, args...).Scan(&cfg.Host, &cfg.Port, &cfg.Username, &cfg.Password, &in.statusID, &storedMode, &in.projectID); err != nil {
+		return cfg, in, err
 	}
 	if cfg.Port == 0 {
 		cfg.Port = 993
 	}
-	return cfg, projectID, intakeID, nil
+	in.mode = ResolveIntakeMode(storedMode, in.statusID)
+	return cfg, in, nil
 }
 
 // recordAuthFail writes a comm_log kind=imap_auth_fail row capturing
@@ -573,10 +612,12 @@ func (p *IMAPPoller) recordPollOnly(ctx context.Context, projectID int64, count 
 }
 
 // processOne ingests one inbound message: thread-lookup, then either
-// append-to-existing-comm or create-new-comm-with-task. All state
-// mutations happen in one tx per message so a mid-stream failure
-// doesn't half-commit.
-func (p *IMAPPoller) processOne(ctx context.Context, projectID, intakeStatusID int64, m InboundMessage) error {
+// append-to-existing-comm or, by the channel's intake mode, a new task
+// and thread, a thread on its own, or a drop. All state mutations
+// happen in one tx per message so a mid-stream failure doesn't
+// half-commit.
+func (p *IMAPPoller) processOne(ctx context.Context, intake channelIntake, m InboundMessage) error {
+	projectID := intake.projectID
 	threadID, source := extractThreadID(m)
 
 	actorID := auth.ActorOrSystem(ctx)
@@ -629,21 +670,31 @@ func (p *IMAPPoller) processOne(ctx context.Context, projectID, intakeStatusID i
 		}); err != nil {
 			return fmt.Errorf("comm_log notification_reply: %w", err)
 		}
-	case intakeStatusID != 0:
+	case intake.mode == IntakeTask:
 		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap message → new task",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("project_id", projectID),
-			slog.Int64("intake_status_id", intakeStatusID),
+			slog.Int64("intake_status_id", intake.statusID),
 			slog.String("from", m.From),
 			slog.String("subject", m.Subject))
-		if err := p.createTaskAndComm(ctx, tx, snap, projectID, intakeStatusID, m, actorID); err != nil {
+		if err := p.createTaskAndComm(ctx, tx, snap, projectID, intake.statusID, m, actorID); err != nil {
+			return p.logParseError(ctx, projectID, m, err)
+		}
+	case intake.mode == IntakeThread:
+		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap message → new thread",
+			slog.Int64("channel_id", p.channelID),
+			slog.Int64("project_id", projectID),
+			slog.String("from", m.From),
+			slog.String("subject", m.Subject))
+		if _, err := p.createComm(ctx, tx, snap, projectID, m, actorID); err != nil {
 			return p.logParseError(ctx, projectID, m, err)
 		}
 	default:
-		// Discard: no thread match, no intake configured. This is the
-		// usual "inbound mail isn't becoming tasks" cause — surface it at
-		// WARN (not just the comm_log row below) so it's visible in logs.
-		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap message dropped: no thread match and channel has no intake_status configured",
+		// Discard: no thread match and the channel ignores new mail. This
+		// is the usual "inbound mail isn't becoming tasks" cause — surface
+		// it at WARN (not just the comm_log row below) so it's visible in
+		// logs.
+		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap message dropped: no thread match and the channel ignores new mail",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("project_id", projectID),
 			slog.String("from", m.From),
@@ -779,15 +830,13 @@ func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx store.Querier, 
 			return fmt.Errorf("appendReceivedReply: clear acked: %w", err)
 		}
 	}
-	// Resolve the comm's parent task once so attachment ingest can
-	// dedup against existing attachments on that task (round-trip
-	// recognition) without re-querying per attachment.
-	var parentTaskID int64
-	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(parent_card_id, 0)
-		FROM card WHERE id = $1
-	`, commID).Scan(&parentTaskID); err != nil {
-		return fmt.Errorf("appendReceivedReply: load parent task: %w", err)
+	// Resolve the attachments' host once so attachment ingest can dedup
+	// against what it already holds (round-trip recognition) without
+	// re-querying per attachment: the comm's task, or the comm itself
+	// when it is a thread on its own (docs/CONVERSATIONS.md).
+	parentTaskID, err := attachmentHost(ctx, tx, commID)
+	if err != nil {
+		return fmt.Errorf("appendReceivedReply: %w", err)
 	}
 	if parentTaskID != 0 && len(m.Attachments) > 0 {
 		if err := p.ingestInboundAttachments(ctx, tx, parentTaskID, replyID, m.Attachments, actorID); err != nil {
@@ -825,6 +874,29 @@ func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx store.Querier, 
 			slog.String("error", err.Error()))
 	}
 	return nil
+}
+
+// attachmentHost is the card a thread's attachments live on: its task,
+// or the thread (comm) itself when it sits directly in its project.
+// comm.attach moves a thread's own attachments onto the task it joins.
+func attachmentHost(ctx context.Context, tx store.Querier, commID int64) (int64, error) {
+	b := named.New()
+	b.Set("comm_id", commID)
+	q, args, err := b.Compile(`
+		SELECT CASE WHEN pct.name = 'task' THEN c.parent_card_id ELSE c.id END
+		FROM card c
+		LEFT JOIN card p ON p.id = c.parent_card_id
+		LEFT JOIN card_type pct ON pct.id = p.card_type_id
+		WHERE c.id = :comm_id
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("attachment host: compile: %w", err)
+	}
+	var host int64
+	if err := tx.QueryRow(ctx, q, args...).Scan(&host); err != nil {
+		return 0, fmt.Errorf("attachment host: %w", err)
+	}
+	return host, nil
 }
 
 // ingestInboundAttachments persists every inbound attachment as a
@@ -1091,34 +1163,31 @@ func loadChannelFromAddress(ctx context.Context, tx store.Querier, channelID int
 	return out, nil
 }
 
-// createTaskAndComm covers the intake path: no existing thread match,
-// channel has intake_status configured, so we mint a fresh task + comm
-// and treat the inbound message as the comm's first received reply.
+// createTaskAndComm covers the task intake path: no existing thread
+// match, the channel files new mail as tasks, so we mint a fresh task +
+// comm and treat the inbound message as the comm's first received
+// reply.
 //
-// The task gets title=subject, description=body, status=intake_status.
-// The comm gets a fresh thread_id, channel_ref pointing at this
-// channel, and the comm flow's default_create_status_id (or open).
+// The task gets title=subject, description=body, status=the channel's
+// intake status, or the project's task flow default when it has none.
+// The comm is createComm's, under the task.
 func (p *IMAPPoller) createTaskAndComm(ctx context.Context, tx store.Querier, snap *schema.Snapshot, projectID, intakeStatusID int64, m InboundMessage, actorID int64) error {
 	taskCTID, err := resolveCardType(snap, "task")
 	if err != nil {
 		return err
 	}
-	commCTID, err := resolveCardType(snap, "comm")
-	if err != nil {
-		return err
-	}
-	commStatusAttrID, err := resolveAttr(snap, "comm_status")
-	if err != nil {
-		return err
-	}
-
-	commStatusID, err := commFlowDefaultStatus(ctx, tx, projectID, commStatusAttrID)
-	if err != nil {
-		return err
-	}
-	if commStatusID == 0 {
-		return &reg.HandlerError{Code: "no_comm_flow",
-			Message: fmt.Sprintf("imap intake: project %d has no comm flow default", projectID)}
+	if intakeStatusID == 0 {
+		statusAttrID, err := resolveAttr(snap, "status")
+		if err != nil {
+			return err
+		}
+		if intakeStatusID, err = commFlowDefaultStatus(ctx, tx, projectID, statusAttrID); err != nil {
+			return err
+		}
+		if intakeStatusID == 0 {
+			return &reg.HandlerError{Code: "no_task_flow",
+				Message: fmt.Sprintf("imap intake: project %d has no task flow default and the channel has no intake status", projectID)}
+		}
 	}
 
 	// Insert the new task card under the project.
@@ -1160,21 +1229,66 @@ func (p *IMAPPoller) createTaskAndComm(ctx context.Context, tx store.Querier, sn
 		}
 	}
 
-	// Mint a unique thread_id for the new comm.
-	threadID, err := uniqueThreadID(ctx, tx)
+	commID, err := p.createComm(ctx, tx, snap, taskID, m, actorID)
 	if err != nil {
 		return err
 	}
 
-	// Insert the comm card under the new task.
+	// Append comm to task.comms.
+	if err := appendCardRefList(ctx, tx, taskID, "comms", commID, snap, actorID); err != nil {
+		return fmt.Errorf("append task.comms: %w", err)
+	}
+	return nil
+}
+
+// createComm files an unmatched inbound message as a new thread under
+// parentID — a task (createTaskAndComm) or the project itself (intake
+// mode 'thread': a thread on its own). The comm gets title=subject, a
+// fresh thread_id, channel_ref pointing at this channel and the comm
+// flow's default_create_status_id; the message becomes its first
+// received reply.
+func (p *IMAPPoller) createComm(ctx context.Context, tx store.Querier, snap *schema.Snapshot, parentID int64, m InboundMessage, actorID int64) (int64, error) {
+	commCTID, err := resolveCardType(snap, "comm")
+	if err != nil {
+		return 0, err
+	}
+	commStatusAttrID, err := resolveAttr(snap, "comm_status")
+	if err != nil {
+		return 0, err
+	}
+	var projectID int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(card_enclosing_project($1), 0)`, parentID).Scan(&projectID); err != nil {
+		return 0, fmt.Errorf("enclosing project: %w", err)
+	}
+	commStatusID, err := commFlowDefaultStatus(ctx, tx, projectID, commStatusAttrID)
+	if err != nil {
+		return 0, err
+	}
+	if commStatusID == 0 {
+		return 0, &reg.HandlerError{Code: "no_comm_flow",
+			Message: fmt.Sprintf("imap intake: project %d has no comm flow default", projectID)}
+	}
+
+	// Mint a unique thread_id for the new comm.
+	threadID, err := uniqueThreadID(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	subject := m.Subject
+	if subject == "" {
+		subject = "(no subject)"
+	}
+	jstr := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
+	jid := func(n int64) json.RawMessage { b, _ := json.Marshal(n); return b }
+
 	var commID int64
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO card (card_type_id, parent_card_id) VALUES ($1, $2) RETURNING id
-	`, commCTID, taskID).Scan(&commID); err != nil {
-		return fmt.Errorf("insert comm card: %w", err)
+	`, commCTID, parentID).Scan(&commID); err != nil {
+		return 0, fmt.Errorf("insert comm card: %w", err)
 	}
 	if err := writeCardCreateActivity(ctx, tx, commID, actorID); err != nil {
-		return err
+		return 0, err
 	}
 	titleAD := snap.AttrByName["title"]
 	channelRefAD := snap.AttrByName["channel_ref"]
@@ -1189,17 +1303,15 @@ func (p *IMAPPoller) createTaskAndComm(ctx context.Context, tx store.Querier, sn
 		{commStatusAttrID, jid(commStatusID)},
 	} {
 		if err := writeAttributeValue(ctx, tx, commID, w.id, w.val, actorID); err != nil {
-			return fmt.Errorf("comm attr: %w", err)
+			return 0, fmt.Errorf("comm attr: %w", err)
 		}
 	}
 
-	// Append comm to task.comms.
-	if err := appendCardRefList(ctx, tx, taskID, "comms", commID, snap, actorID); err != nil {
-		return fmt.Errorf("append task.comms: %w", err)
-	}
-
 	// First received reply, mirroring the channel-driven inbound capture.
-	return p.appendReceivedReply(ctx, tx, snap, commID, m, actorID)
+	if err := p.appendReceivedReply(ctx, tx, snap, commID, m, actorID); err != nil {
+		return 0, err
+	}
+	return commID, nil
 }
 
 // descriptionMarkdown builds the Markdown stored in a new task's description.

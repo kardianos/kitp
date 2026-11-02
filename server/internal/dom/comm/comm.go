@@ -34,6 +34,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
@@ -73,6 +74,16 @@ type ChannelSetInput struct {
 	// (the channel title) | 'user_name' (the reply author's display name).
 	// Empty leaves the stored value unchanged (absent = 'comm_name').
 	SignatureMode string `json:"signature_mode,omitempty" mcp:"desc=outbound reply signature; one of 'none' | 'comm_name' | 'user_name'; empty leaves the stored value unchanged"`
+	// IntakeMode decides what a new (unmatched) inbound message becomes:
+	// 'task' (a task and a thread), 'thread' (a thread on its own in the
+	// project) or 'ignore' (only replies to existing threads come in).
+	// Empty leaves the stored value unchanged; unset = 'task' when the
+	// channel has an intake status, else 'ignore'. See docs/CONVERSATIONS.md.
+	IntakeMode string `json:"intake_mode,omitempty" mcp:"desc=what new inbound mail becomes; one of 'task' | 'thread' | 'ignore'; empty leaves the stored value unchanged"`
+	// ReplyQuote decides whether outbound replies quote the conversation:
+	// 'off', 'last' (the message before) or 'all' (every earlier message).
+	// Empty leaves the stored value unchanged; unset = 'last'.
+	ReplyQuote string `json:"reply_quote,omitempty" mcp:"desc=quoting in outbound replies; one of 'off' | 'last' | 'all'; empty leaves the stored value unchanged"`
 }
 
 // ChannelSetOutput surfaces the channel card id so the caller can chain.
@@ -104,6 +115,8 @@ type ChannelRow struct {
 	IntakeStatusID  int64  `json:"intake_status_id,string,omitempty" mcp:"desc=intake status card id; 0/omitted = use project flow default"`
 	Status          string `json:"channel_status" mcp:"desc=tri-state status: 'enabled' | 'disabled-admin' | 'disabled-fault'"`
 	SignatureMode   string `json:"signature_mode" mcp:"desc=outbound reply signature: 'none' | 'comm_name' | 'user_name' (empty = unset, treated as 'comm_name')"`
+	IntakeMode      string `json:"intake_mode" mcp:"desc=what new inbound mail becomes: 'task' | 'thread' | 'ignore' (empty = unset: 'task' with an intake status, else 'ignore')"`
+	ReplyQuote      string `json:"reply_quote" mcp:"desc=quoting in outbound replies: 'off' | 'last' | 'all' (empty = unset, treated as 'last')"`
 	FaultReason     string `json:"channel_fault_reason,omitempty" mcp:"desc=free-form reason set by the runtime when status='disabled-fault'; empty otherwise"`
 	HasIMAPPassword bool   `json:"has_imap_password" mcp:"desc=true if a non-null encrypted IMAP password is stored"`
 	HasSMTPPassword bool   `json:"has_smtp_password" mcp:"desc=true if a non-null encrypted SMTP password is stored"`
@@ -152,9 +165,11 @@ type CommCreateOutput struct {
 
 // ---- comm.list_for_task ----
 
-// CommListForTaskInput identifies the task whose comms we want.
+// CommListForTaskInput identifies the task whose comms we want, or one
+// thread (a thread on its own has no task; its page loads it by id).
 type CommListForTaskInput struct {
-	TaskID int64 `json:"task_id,string" mcp:"required,desc=task card id whose comms to list"`
+	TaskID int64 `json:"task_id,string,omitempty" mcp:"desc=task card id whose comms to list; required unless comm_id is given"`
+	CommID int64 `json:"comm_id,string,omitempty" mcp:"desc=list just this comm (wherever it sits: under a task or directly in its project); overrides task_id"`
 }
 
 // CommRow is one comm card with its replies hydrated.
@@ -331,7 +346,7 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "comm",
 		Action:       "list_for_task",
-		Doc:          "Return every comm card under the task, hydrated with its replies (reply_body cards listed in the comm's replies attribute). Read-side affordance for the task detail screen; any authenticated user may call.",
+		Doc:          "Return every comm card under the task, hydrated with its replies (reply_body cards listed in the comm's replies attribute) — or, with comm_id, that one comm (a thread on its own sits directly in its project). Read-side affordance for the task detail and thread screens; any authenticated user may call.",
 		InputType:    reflect.TypeFor[CommListForTaskInput](),
 		OutputType:   reflect.TypeFor[CommListForTaskOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
@@ -390,32 +405,44 @@ func Register(p *store.Pool) {
 	registerPersonMerge(p)
 	registerCommSetRecipients(p)
 	registerCommSetAck(p)
+	registerCommAttach(p)
 }
 
 // cardTypeFromReplyPostInput walks comm → parent task and returns the
 // task's card_type so the dispatcher can scope-check against the
-// actor's task-level grant. Workers are granted `card.update` on
-// task only (not on comm directly — see db/schema/seed.hcsv); gating
-// on the parent task lets a project-scoped worker still author
-// replies on tasks they own without giving them blanket comm
-// access. Returns 0 (skip authz) on a missing comm — the handler's
-// validation surfaces the proper not-found error.
+// actor's task-level grant (commAuthzCardType).
 func cardTypeFromReplyPostInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
-	commID := raw.(ReplyPostInput).CommID
-	var parentCardTypeID int64
-	err := pool.QueryRow(ctx, `
-		SELECT parent.card_type_id
+	return commAuthzCardType(ctx, pool, raw.(ReplyPostInput).CommID)
+}
+
+// commAuthzCardType is the card type a comm write (reply.post,
+// comm.set_ack, comm.set_recipients) is authorized against: the comm's
+// task's, so a worker's task grant covers the task's threads; or, for a
+// thread on its own (directly in its project, docs/CONVERSATIONS.md),
+// the comm's own, which worker / manager hold card.update on
+// (db/schema/seed.hcsv). Returns 0 (skip authz) on a missing comm — the
+// handler's validation surfaces the proper not-found error.
+func commAuthzCardType(ctx context.Context, pool reg.ValidationPool, commID int64) (int64, error) {
+	b := named.New()
+	b.Set("comm_id", commID)
+	q, args, err := b.Compile(`
+		SELECT CASE WHEN pct.name = 'task' THEN p.card_type_id ELSE c.card_type_id END
 		FROM card c
-		JOIN card parent ON parent.id = c.parent_card_id
-		WHERE c.id = $1
-	`, commID).Scan(&parentCardTypeID)
+		LEFT JOIN card p ON p.id = c.parent_card_id
+		LEFT JOIN card_type pct ON pct.id = p.card_type_id
+		WHERE c.id = :comm_id
+	`)
 	if err != nil {
+		return 0, fmt.Errorf("comm authz card type: compile: %w", err)
+	}
+	var cardTypeID int64
+	if err := pool.QueryRow(ctx, q, args...).Scan(&cardTypeID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, nil
 		}
 		return 0, err
 	}
-	return parentCardTypeID, nil
+	return cardTypeID, nil
 }
 
 // scopeCardFromReplyPostInput returns the comm card id the per-row

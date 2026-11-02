@@ -969,6 +969,27 @@ BEGIN
   END LOOP;
 END $$;`,
 	},
+	{
+		// Mail account settings (docs/CONVERSATIONS.md): intake_mode — what
+		// new mail does (task | thread | ignore) — and reply_quote — whether
+		// replies quote the conversation (off | last | all). The seed.hcsv
+		// rows reach fresh installs only, so add the attribute_defs and
+		// their comm_channel edges here too. Existing accounts keep their
+		// behaviour: no intake_mode reads as before (task with an intake
+		// status, else ignore). Idempotent — ON CONFLICT DO NOTHING.
+		id: "0018_comm_channel_modes",
+		sql: `
+INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+VALUES ('intake_mode', 'text', NULL, true, false),
+       ('reply_quote', 'text', NULL, true, false)
+ON CONFLICT (name) DO NOTHING;
+INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+SELECT ct.id, ad.id, false, v.ord
+FROM (VALUES ('intake_mode', 13), ('reply_quote', 14)) AS v(attr, ord)
+JOIN card_type ct ON ct.name = 'comm_channel'
+JOIN attribute_def ad ON ad.name = v.attr
+ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

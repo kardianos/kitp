@@ -240,14 +240,15 @@ func TestOffHidesEverything(t *testing.T) {
 		t.Errorf("state after off = %q", got)
 	}
 
-	// Tasks can't go off while Conversations needs it… (Conversations is
-	// off now, so Tasks may; turn Conversations back on first.)
 	fails(t, set(f, f.manager, "conversations", true), "forbidden") // only an admin turns on
 	decode(t, set(f, sysCtx(), "conversations", true), &o)
 	if !visible(t, f, sysCtx(), "comm")[f.comm] {
 		t.Error("switching Conversations back on didn't restore the comm")
 	}
+	// Tasks can't go off while an area that needs it is on (Approvals).
+	decode(t, set(f, sysCtx(), "approvals", true), &o)
 	fails(t, set(f, f.manager, "tasks", false), "area_needed")
+	decode(t, set(f, f.manager, "approvals", false), &o)
 
 	// Content off hides pages and refuses edits to them.
 	decode(t, set(f, f.manager, "content", false), &o)
@@ -259,16 +260,21 @@ func TestOffHidesEverything(t *testing.T) {
 	fails(t, call(f, f.manager, "card", "insert",
 		fmt.Sprintf(`{"card_type_name":"page","parent_card_id":"%d","title":"New"}`, f.project)), "area_off")
 
-	// Turning on what needs an off area turns that on too.
-	decode(t, set(f, f.manager, "conversations", false), &o)
+	// Conversations doesn't need Tasks (a thread can stand on its own,
+	// docs/CONVERSATIONS.md): Tasks goes off while Conversations stays on.
 	decode(t, set(f, f.manager, "tasks", false), &o)
 	if visible(t, f, sysCtx(), "task")[f.task] {
 		t.Error("a task is visible with Tasks off")
 	}
-	decode(t, set(f, sysCtx(), "conversations", true), &o)
+	if st := states(t, f, sysCtx(), f.project); st["conversations"].State != "on" {
+		t.Errorf("Conversations is %s after Tasks went off, want on", st["conversations"].State)
+	}
+
+	// Turning on what needs an off area turns that on too.
+	decode(t, set(f, sysCtx(), "approvals", true), &o)
 	st := states(t, f, sysCtx(), f.project)
-	if st["tasks"].State != "on" || st["conversations"].State != "on" {
-		t.Errorf("switching on Conversations should switch on Tasks: %s / %s", st["tasks"].State, st["conversations"].State)
+	if st["tasks"].State != "on" || st["approvals"].State != "on" {
+		t.Errorf("switching on Approvals should switch on Tasks: %s / %s", st["tasks"].State, st["approvals"].State)
 	}
 
 	var acts int

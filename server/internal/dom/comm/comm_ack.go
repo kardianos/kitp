@@ -15,10 +15,7 @@ package comm
 
 import (
 	"context"
-	"errors"
 	"reflect"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
@@ -59,21 +56,7 @@ func registerCommSetAck(_ *store.Pool) {
 // task's card_type so the dispatcher scope-checks against the actor's
 // task-level grant (mirrors cardTypeFromCommSetRecipientsInput).
 func cardTypeFromCommSetAckInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
-	commID := raw.(CommSetAckInput).CommID
-	var parentCardTypeID int64
-	err := pool.QueryRow(ctx, `
-		SELECT parent.card_type_id
-		FROM card c
-		JOIN card parent ON parent.id = c.parent_card_id
-		WHERE c.id = $1
-	`, commID).Scan(&parentCardTypeID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	return parentCardTypeID, nil
+	return commAuthzCardType(ctx, pool, raw.(CommSetAckInput).CommID)
 }
 
 // scopeCardFromCommSetAckInput returns the comm card id the per-row scope

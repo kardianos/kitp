@@ -133,6 +133,18 @@ BEGIN
                                 JOIN attribute_def ad ON ad.id = av.attribute_def_id
                                 WHERE av.card_id = c.id AND ad.name='signature_mode'
                             ), ''),
+                            'intake_mode',          COALESCE((
+                                SELECT av.value #>> '{}'
+                                FROM attribute_value av
+                                JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                WHERE av.card_id = c.id AND ad.name='intake_mode'
+                            ), ''),
+                            'reply_quote',          COALESCE((
+                                SELECT av.value #>> '{}'
+                                FROM attribute_value av
+                                JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                WHERE av.card_id = c.id AND ad.name='reply_quote'
+                            ), ''),
                             'has_imap_password',    (cs.imap_password IS NOT NULL),
                             'has_smtp_password',    (cs.smtp_password IS NOT NULL),
                             'created_at',           to_char(c.created_at AT TIME ZONE 'UTC',

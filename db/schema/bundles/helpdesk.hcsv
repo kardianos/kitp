@@ -1,0 +1,57 @@
+# bundle | key=helpdesk | title="Help desk" | sort=15 | doc="Tasks as support tickets: New → Open → Waiting on customer → Solved → Closed, with Unassigned, My tickets, Board and All tickets screens. Pair it with Conversations so mail to a support address becomes tickets."
+-- Feature bundle: a help desk — the Tasks area's alternative starting point
+-- to Task tracking (see tracker.hcsv for how bundle files are materialised
+-- and applied). Binds the status attribute, so a project starts Tasks from
+-- one of the two. Tickets are tasks: comments, attachments, email threads
+-- (Conversations) and approvals all work on them. docs/CONVERSATIONS.md.
+
+## table card | alias=bundle_src
+### rows
+card_type_id, title, is_template, bundle_key
+$card_type.project, "Bundle: Help desk", true, helpdesk
+
+## table card | under=bundle_src
+### rows
+card_type_id,     parent_card_id, phase,    title,                 sort_order, alias
+$card_type.status, parent,         triage,   "New",                 5,          hd_new
+$card_type.status, parent,         active,   "Open",                10,         hd_open
+$card_type.status, parent,         active,   "Waiting on customer", 20,         hd_waiting
+$card_type.status, parent,         terminal, "Solved",              30,         hd_solved
+$card_type.status, parent,         terminal, "Closed",              40,         hd_closed
+
+## table flow
+### rows
+name,         attribute_def_id,      scope_card_id, default_create_status_id, alias
+"Help desk",  $attribute_def.status, @bundle_src,   @hd_new,                  hd_flow
+
+## table flow_step
+### rows
+flow_id,  from_card_id, to_card_id,  label,                sort_order, standalone
+@hd_flow, @hd_new,      @hd_open,    "Take",               1,          true
+@hd_flow, @hd_new,      @hd_closed,  "Close",              2,          false
+@hd_flow, @hd_open,     @hd_waiting, "Ask the customer",   1,          false
+@hd_flow, @hd_open,     @hd_solved,  "Solve",              2,          true
+@hd_flow, @hd_waiting,  @hd_open,    "Customer replied",   1,          true
+@hd_flow, @hd_waiting,  @hd_solved,  "Solve",              2,          false
+@hd_flow, @hd_solved,   @hd_open,    "Reopen",             1,          true
+@hd_flow, @hd_solved,   @hd_closed,  "Close",              2,          false
+@hd_flow, @hd_closed,   @hd_open,    "Reopen",             1,          true
+
+-- Screens: who's taking what (Unassigned), my queue (My tickets), the
+-- whole queue by status (Board) and everything, solved included (All
+-- tickets).
+## table card | under=bundle_src
+### rows
+card_type_id,     parent_card_id, title,        layout, slug,       hotkey, sort_order, flow_ref, default_create_status, toggle_groups
+$card_type.screen, parent,         "Unassigned", list,   unassigned, u,      1,          @hd_flow, @hd_new,               `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"New","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":true},{"name":"active","label":"Open","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Solved","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]},{"name":"scope","operator":"and","mode":"multi","items":[{"name":"unassigned","label":"Unassigned","predicate":{"attr":"assignee","op":"not exists"},"default_on":true}]}]`
+$card_type.screen, parent,         "My tickets", list,   mine,       m,      2,          @hd_flow, @hd_new,               `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"New","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":true},{"name":"active","label":"Open","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Solved","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":false}]},{"name":"scope","operator":"and","mode":"multi","items":[{"name":"mine_only","label":"Mine","predicate":{"attr":"assignee","op":"=","values":["__actor__"]},"default_on":true}]}]`
+
+## table card | under=bundle_src
+### rows
+card_type_id,     parent_card_id, title,   layout, slug,  hotkey, sort_order, flow_ref, column_attr, toggle_groups
+$card_type.screen, parent,         "Board", kanban, board, b,      3,          @hd_flow, status,      `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"New","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":true},{"name":"active","label":"Open","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Solved","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":true}]}]`
+
+## table card | under=bundle_src
+### rows
+card_type_id,     parent_card_id, title,         layout, slug,    hotkey, sort_order, flow_ref, extra_columns,  toggle_groups
+$card_type.screen, parent,         "All tickets", grid,   tickets, t,      4,          @hd_flow, `["due_date"]`, `[{"name":"phase_scope","operator":"or","mode":"multi","items":[{"name":"triage","label":"New","predicate":{"attr":"status","op":"has_phase","values":["triage"]},"default_on":true},{"name":"active","label":"Open","predicate":{"attr":"status","op":"has_phase","values":["active"]},"default_on":true},{"name":"terminal","label":"Solved","predicate":{"attr":"status","op":"has_phase","values":["terminal"]},"default_on":true}]}]`

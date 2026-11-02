@@ -4,8 +4,10 @@
 -- Per-row pipeline:
 --   1. Decode + cheap presence checks (comm_id + body required).
 --   2. Resolve the target comm: must exist, be a comm card, and
---      surface its channel_ref (for reply_from), parent_card_id (for
---      task title -> subject), and thread_id (subject prefix).
+--      surface its channel_ref (for reply_from), its host (the parent
+--      task, or the comm itself for a thread on its own — the title for
+--      the subject and the card attachments live on; docs/
+--      CONVERSATIONS.md), and thread_id (subject prefix).
 --   3. Recipients: join comm.comm_recipients -> person.email and
 --      assemble the comma-joined To: snapshot. Empty list rejects
 --      ('no_recipients') so the SMTP sender never queues a hopeless
@@ -27,7 +29,7 @@
 --      list, decode (tolerating string + numeric forms), append, and
 --      write back with one activity + upsert.
 --   8. Optional attachment linking: validate every supplied
---      attachment_id belongs to the comm's parent task, then bulk
+--      attachment_id belongs to the comm's host, then bulk
 --      insert into reply_body_attachment.
 --   9. The author joins comm_recipients, so the next reply by someone
 --      else reaches them.
@@ -54,7 +56,9 @@ DECLARE
     _att_ids bigint[];
     _ct_name text;
     _channel_ref bigint;
-    _parent_task_id bigint;
+    -- The comm's task, or the comm itself when it is a thread on its own:
+    -- where its title (subject) comes from and its attachments live.
+    _host_id bigint;
     _thread_id text;
     _recipients text[];
     _to_snapshot text;
@@ -130,13 +134,15 @@ BEGIN
                          JOIN attribute_def ad ON ad.id = av.attribute_def_id
                          WHERE av.card_id = c.id AND ad.name = 'channel_ref'
                            AND jsonb_typeof(av.value) = 'number'), 0),
-               COALESCE(c.parent_card_id, 0),
+               CASE WHEN pct.name = 'task' THEN c.parent_card_id ELSE c.id END,
                COALESCE((SELECT av.value #>> '{}'
                          FROM attribute_value av
                          JOIN attribute_def ad ON ad.id = av.attribute_def_id
                          WHERE av.card_id = c.id AND ad.name = 'thread_id'), '')
-          INTO _ct_name, _channel_ref, _parent_task_id, _thread_id
+          INTO _ct_name, _channel_ref, _host_id, _thread_id
         FROM card c JOIN card_type ct ON ct.id = c.card_type_id
+        LEFT JOIN card p ON p.id = c.parent_card_id
+        LEFT JOIN card_type pct ON pct.id = p.card_type_id
         WHERE c.id = _comm_id AND c.deleted_at IS NULL;
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'comm_not_found'::text,
@@ -189,12 +195,12 @@ BEGIN
         -- (Falls back to just the tag when the task has no title — defensive;
         -- the task card_type has title as a required edge.)
         _task_title := '';
-        IF _parent_task_id <> 0 THEN
+        IF _host_id <> 0 THEN
             SELECT COALESCE(av.value #>> '{}', '')
               INTO _task_title
             FROM attribute_value av
             JOIN attribute_def ad ON ad.id = av.attribute_def_id
-            WHERE av.card_id = _parent_task_id AND ad.name = 'title';
+            WHERE av.card_id = _host_id AND ad.name = 'title';
             IF _task_title IS NULL THEN
                 _task_title := '';
             END IF;
@@ -321,21 +327,14 @@ BEGIN
                 CONTINUE;
             END IF;
 
-            IF _parent_task_id = 0 THEN
-                RETURN QUERY SELECT _idx, false, 'validation'::text,
-                    'reply.post: comm has no parent task; cannot attach'::text,
-                    NULL::jsonb;
-                CONTINUE;
-            END IF;
-
             SELECT count(*) INTO _att_valid_count
             FROM attachment a
             WHERE a.id = ANY(_att_ids)
-              AND a.card_id = _parent_task_id
+              AND a.card_id = _host_id
               AND a.deleted_at IS NULL;
             IF _att_valid_count <> array_length(_att_ids, 1) THEN
                 RETURN QUERY SELECT _idx, false, 'attachment_not_on_task'::text,
-                    'reply.post: one or more attachment_ids do not belong to this comm''s parent task'::text,
+                    'reply.post: one or more attachment_ids do not belong to this comm''s task (or, for a thread on its own, the thread)'::text,
                     NULL::jsonb;
                 CONTINUE;
             END IF;

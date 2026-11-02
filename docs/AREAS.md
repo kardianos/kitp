@@ -41,7 +41,7 @@ it is turned on.
 | ---- | ------- |
 | **Area** (user-facing) | A switchable section of a project: Tasks, Conversations, Content, Approvals. Replaces "Features" in the UI. |
 | **Starting point** | One way to seed an area: Tasks from *Simple* or *Software*, Content from *Docs site* or *Blog*. Today's feature bundle files become starting points. |
-| **Shortcut** | A named set of areas and starting points for the new-project dialog (Issue tracker, Customer care, Content site). Today's presets. |
+| **Shortcut** | A named set of areas and starting points for the new-project dialog (Issue tracker, Help desk, Shared inbox, Content management). Today's presets. |
 
 In code, the bundle files, `card_origin` and `bundle_apply` keep their
 names: a bundle is a starting point's file. The catalog gains the area
@@ -55,7 +55,7 @@ derived rather than tagged by hand:
 | Area | Scope | Item types | Workflow | Screens | Other |
 | ---- | ----- | ---------- | -------- | ------- | ----- |
 | Tasks | project | task, link | `status` | Inbox, Grid, Kanban … | snippets, views |
-| Conversations | project | comm, comm_channel | `comm_status` | Incoming, Comms | mail accounts; needs Tasks |
+| Conversations | project | comm, comm_channel | `comm_status` | Incoming, Comms | mail accounts; threads can stand on their own ([CONVERSATIONS.md](CONVERSATIONS.md)) |
 | Approvals | project | approval | — | the Approvals column and views | needs Tasks |
 | Content | project | page | `publish_status` | Pages | the project's pages on portals |
 | Sites | workspace | portal, theme | — | Admin → Portals, Themes; SITES | public hosts, sites in kitp |
@@ -69,9 +69,10 @@ derived rather than tagged by hand:
   view the area of its screen. Anything that can't be inferred (a saved
   snippet, an activity sink) asks for an area when it is created, or
   belongs to **General**, which can't be turned off.
-- **Dependencies** are part of the area's definition: Conversations and
-  Approvals live on tasks. Turning one on turns Tasks on; turning Tasks
-  off is refused while a dependent area is on.
+- **Dependencies** are part of the area's definition: Approvals live on
+  tasks. Turning it on turns Tasks on; turning Tasks off is refused while
+  a dependent area is on. (Conversations needed Tasks until threads could
+  stand on their own; see [CONVERSATIONS.md](CONVERSATIONS.md).)
 
 Areas are code-owned like bundles: `db/schema/bundles/areas.hcsv` lists
 each area's key, title, scope, description, item types, dependencies and
@@ -146,11 +147,11 @@ Name  [ Acme docs                ]
 
 Areas
 [x] Tasks           start from (Simple ▾)
-[ ] Conversations   needs Tasks · email threads on tasks
+[ ] Conversations   email threads, on tasks or on their own
 [x] Content         start from (Docs site ▾) · pages published to portals
 [ ] Approvals       needs Tasks
 
-Shortcuts:  Issue tracker · Customer care · Content site
+Shortcuts:  Issue tracker · Help desk · Shared inbox · Content management
 ```
 
 A shortcut only ticks boxes and picks starting points.

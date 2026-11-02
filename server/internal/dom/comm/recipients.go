@@ -16,11 +16,8 @@ package comm
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"reflect"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
@@ -70,21 +67,7 @@ func registerCommSetRecipients(_ *store.Pool) {
 // `cardTypeFromReplyPostInput` (comm.go) for the seed-driven
 // rationale — workers hold `card.update` on task, not comm.
 func cardTypeFromCommSetRecipientsInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
-	commID := raw.(CommSetRecipientsInput).CommID
-	var parentCardTypeID int64
-	err := pool.QueryRow(ctx, `
-		SELECT parent.card_type_id
-		FROM card c
-		JOIN card parent ON parent.id = c.parent_card_id
-		WHERE c.id = $1
-	`, commID).Scan(&parentCardTypeID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	return parentCardTypeID, nil
+	return commAuthzCardType(ctx, pool, raw.(CommSetRecipientsInput).CommID)
 }
 
 // scopeCardFromCommID returns the comm card id the dispatcher's

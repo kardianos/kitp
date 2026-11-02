@@ -4,5 +4,6 @@
 ### rows
 key,           title,                features,                         sort, doc
 issue_tracker, "Issue tracker",      `["tracker"]`,                    10,   "Tasks moved through a status flow, with inbox, grid, kanban, approvals and due-date filters."
-customer_care, "Customer care",      `["tracker", "conversations"]`,   20,   "Everything in the issue tracker, plus email conversations with customers and a helpdesk lifecycle."
+help_desk,     "Help desk",          `["helpdesk", "conversations"]`,  20,   "Support tickets (New → Open → Waiting on customer → Solved) with email conversations: mail to a support address becomes tickets."
+shared_inbox,  "Shared inbox",       `["conversations"]`,              25,   "Email threads on their own, for a team to answer, attach to tasks later, or not."
 content,       "Content management", `["tracker", "publishing"]`,      30,   "Everything in the issue tracker, plus pages you review and publish to portals."

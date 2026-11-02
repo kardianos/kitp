@@ -3,8 +3,8 @@
 ## table area
 ### rows
 key,           title,           scope,     sort, card_types,                         depends_on,    starts,               doc
-tasks,         "Tasks",         project,   10,   `["task", "link"]`,                 `[]`,          `["tracker"]`,        "Tasks moved through a status flow: inbox, grid, kanban, views, and the links to code changes and issues."
-conversations, "Conversations", project,   20,   `["comm", "comm_channel"]`,         `["tasks"]`,   `["conversations"]`,  "Email threads on tasks: mail accounts, incoming mail, replies."
+tasks,         "Tasks",         project,   10,   `["task", "link"]`,                 `[]`,          `["tracker", "helpdesk"]`, "Tasks moved through a status flow: inbox, grid, kanban, views, and the links to code changes and issues. Start from Task tracking, or from Help desk for support tickets."
+conversations, "Conversations", project,   20,   `["comm", "comm_channel"]`,         `[]`,          `["conversations"]`,  "Email threads: mail accounts, incoming mail and replies. A thread can sit on a task or on its own, so Conversations works as a shared inbox without Tasks."
 approvals,     "Approvals",     project,   30,   `["approval"]`,                     `["tasks"]`,   `[]`,                 "Asking people to approve a task's status change, and their votes."
 content,       "Content",       project,   40,   `["page"]`,                         `[]`,          `["publishing"]`,     "Pages you write, review and publish: the page tree, its status flow and the Pages screen."
 sites,         "Sites",         workspace, 50,   `["portal", "theme"]`,              `[]`,          `[]`,                 "Published sites: portals, themes, public hosts and sites shown in kitp."

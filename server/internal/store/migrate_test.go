@@ -40,10 +40,11 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 22},
 		// Feature bundle sources (db/schema/bundles/, materialised by the
 		// bundle tier): tracker 17 (project + 6 statuses + 6 screens + the
-		// Inbox view + 3 snippets) + conversations 6 (project + 4 statuses
-		// + Comms screen) + publishing 8 (project + 4 statuses + Pages
-		// screen + Home and Getting started pages) = 31.
-		{bundleOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 31},
+		// Inbox view + 3 snippets) + helpdesk 10 (project + 5 statuses + 4
+		// screens) + conversations 6 (project + 4 statuses + Comms screen)
+		// + publishing 8 (project + 4 statuses + Pages screen + Home and
+		// Getting started pages) = 41.
+		{bundleOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 41},
 		{`SELECT count(*) FROM user_role`, 3}, // admin + manager + worker on user 1
 		{`SELECT count(*) FROM role`, 5},      // viewer, commenter, worker, manager, admin (no wildcard 'system')
 		// 14 built-in card_types + the predicate_snippet card_type
@@ -57,14 +58,16 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// email thread), +bundle_key / publish_status / publishes_to /
 		// portal_host / portal_root / portal_public (bundles + publishing),
 		// +portal_theme / portal_internal / nav_hidden / nav_hide_children /
-		// theme_base / theme_nav / theme_accent / theme_footer (themes).
-		{`SELECT count(*) FROM attribute_def`, 89},
+		// theme_base / theme_nav / theme_accent / theme_footer (themes),
+		// +intake_mode / reply_quote (mail account settings).
+		{`SELECT count(*) FROM attribute_def`, 91},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
 		// +7 on activity_subscription, +4 on link, +7 on approval,
 		// +bundle_key on project, +publishes_to on status, +5 on page,
 		// +4 on portal, then +2 on page (nav flags), +2 on portal (theme,
-		// show in kitp) and +5 on theme.
-		{`SELECT count(*) FROM edge`, 135},
+		// show in kitp) and +5 on theme, +2 on comm_channel (intake_mode,
+		// reply_quote).
+		{`SELECT count(*) FROM edge`, 137},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -72,12 +75,13 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		{seedOnly(`SELECT count(*) FROM flow f WHERE %s`, "f.scope_card_id"), 2},
 		{seedOnly(`SELECT count(*) FROM flow_step fs JOIN flow f ON f.id = fs.flow_id WHERE %s`, "f.scope_card_id"), 15},
-		// Bundle flows: tracker's task flow (12 steps), conversations'
-		// comm flow (7), publishing's page flow (11).
-		{bundleOnly(`SELECT count(*) FROM flow f WHERE %s`, "f.scope_card_id"), 3},
-		{bundleOnly(`SELECT count(*) FROM flow_step fs JOIN flow f ON f.id = fs.flow_id WHERE %s`, "f.scope_card_id"), 30},
-		{`SELECT count(*) FROM bundle WHERE kind = 'feature'`, 3},
-		{`SELECT count(*) FROM bundle WHERE kind = 'preset'`, 3},
+		// Bundle flows: tracker's task flow (12 steps), helpdesk's ticket
+		// flow (9), conversations' comm flow (7), publishing's page flow
+		// (11).
+		{bundleOnly(`SELECT count(*) FROM flow f WHERE %s`, "f.scope_card_id"), 4},
+		{bundleOnly(`SELECT count(*) FROM flow_step fs JOIN flow f ON f.id = fs.flow_id WHERE %s`, "f.scope_card_id"), 39},
+		{`SELECT count(*) FROM bundle WHERE kind = 'feature'`, 4},
+		{`SELECT count(*) FROM bundle WHERE kind = 'preset'`, 4},
 	}
 	for _, c := range cases {
 		var got int64
@@ -497,6 +501,59 @@ func TestForwardMigration0011TaskLinks(t *testing.T) {
 	}
 }
 
+// TestForwardMigration0018CommChannelModes proves migration 0018 brings an
+// already-seeded DB up to the fresh-seed shape for the mail account
+// settings: the intake_mode / reply_quote attribute_defs and their
+// comm_channel edges. Without it comm_channel.set raises on the missing
+// attribute_def in the field (docs/CONVERSATIONS.md).
+func TestForwardMigration0018CommChannelModes(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0018")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	counts := []string{
+		`SELECT count(*) FROM attribute_def`,
+		`SELECT count(*) FROM edge`,
+		`SELECT count(*) FROM edge e JOIN attribute_def ad ON ad.id = e.attribute_def_id
+		 JOIN card_type ct ON ct.id = e.card_type_id
+		 WHERE ct.name = 'comm_channel' AND NOT e.is_required
+		   AND ((ad.name = 'intake_mode' AND e.ordering = 13) OR (ad.name = 'reply_quote' AND e.ordering = 14))
+		   AND ad.value_type = 'text'`,
+	}
+	readCounts := func() []int64 {
+		out := make([]int64, len(counts))
+		for i, q := range counts {
+			if err := pool.QueryRow(ctx, q).Scan(&out[i]); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		return out
+	}
+	fresh := readCounts()
+	if fresh[2] != 2 {
+		t.Fatalf("fresh seed lacks the comm_channel mode edges: %v", fresh)
+	}
+	for _, stmt := range []string{
+		`DELETE FROM edge WHERE attribute_def_id IN (SELECT id FROM attribute_def WHERE name IN ('intake_mode', 'reply_quote'))`,
+		`DELETE FROM attribute_def WHERE name IN ('intake_mode', 'reply_quote')`,
+		`DELETE FROM schema_version WHERE name = '0018_comm_channel_modes'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0018 (%s): %v", stmt, err)
+		}
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	got := readCounts()
+	for i, q := range counts {
+		if got[i] != fresh[i] {
+			t.Errorf("%s after 0018 = %d, want fresh-seed %d", q, got[i], fresh[i])
+		}
+	}
+}
+
 // TestForwardMigration0014ApprovalComm proves migration 0014 adds the
 // approval_comm attribute_def (a request's email thread) and its edge on
 // approval to an already-seeded DB that predates it. Without it approval.set
@@ -904,8 +961,8 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 21},
-		{`SELECT count(*) FROM attribute_def`, 89},
-		{`SELECT count(*) FROM edge`, 135},
+		{`SELECT count(*) FROM attribute_def`, 91},
+		{`SELECT count(*) FROM edge`, 137},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
