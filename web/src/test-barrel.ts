@@ -221,6 +221,7 @@ export {
   screenUrl,
   taskUrl,
   pageUrl,
+  threadUrl,
   siteRouteUrl,
   cardUrl,
   adminUrl,
@@ -307,7 +308,10 @@ export {
   channelRowToDraft,
   validateChannelDraft,
   channelDraftToSet,
+  effectiveIntakeMode,
   CHANNEL_STATUS_OPTIONS,
+  INTAKE_MODE_OPTIONS,
+  REPLY_QUOTE_OPTIONS,
   type NestedEditorConfig,
   type CommChannelDraft,
 } from './admin/nested-editor.js';
@@ -540,7 +544,9 @@ export {
   type CommentUpdateOutput,
 } from './task-detail/comment-specs.js';
 export { registerCommThreadSpecs } from './task-detail/comm-specs.js';
-export { CommThreads, registerCommThreads, replySender } from './task-detail/task-comm-threads.js';
+export { CommThreads, registerCommThreads, replySender, replyBody } from './task-detail/task-comm-threads.js';
+export { splitQuoted } from './task-detail/comm-quoted.js';
+export { ThreadPlacement, registerThreadPlacement } from './task-detail/thread-placement.js';
 export {
   registerLinkSpecs,
   LINK_LIST_SPEC,

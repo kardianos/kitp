@@ -25,6 +25,8 @@ export const COMM_LIST_FOR_TASK_SPEC = 'comm.list_for_task';
 export const COMM_CREATE_SPEC = 'comm.create';
 export const COMM_SET_RECIPIENTS_SPEC = 'comm.set_recipients';
 export const COMM_SET_ACK_SPEC = 'comm.set_ack';
+/** Move a thread onto a task, or back into its project (docs/CONVERSATIONS.md). */
+export const COMM_ATTACH_SPEC = 'comm.attach';
 export const REPLY_POST_SPEC = 'reply.post';
 export const COMM_UNSEEN_COUNT_SPEC = 'comm.unseen_count';
 
@@ -82,7 +84,18 @@ export interface CommApproval {
   to: string;
 }
 
-export interface CommListForTaskInput {
+/** A task's threads, or (commId) one thread wherever it sits — a thread's
+ *  own page loads a thread that isn't on a task this way. */
+export type CommListForTaskInput = { taskId: bigint } | { commId: bigint };
+
+/** comm.attach — taskId 0n detaches the thread back into its project. */
+export interface CommAttachInput {
+  commId: bigint;
+  taskId: bigint;
+}
+export interface CommAttachOutput {
+  commId: bigint;
+  parentId: bigint;
   taskId: bigint;
 }
 export interface CommListForTaskOutput {
@@ -201,7 +214,7 @@ export function registerCommThreadSpecs(api: Api): void {
     api.define<CommListForTaskInput, CommListForTaskOutput>({
       endpoint: 'comm',
       action: 'list_for_task',
-      encode: (i) => ({ task_id: i.taskId }),
+      encode: (i) => ('commId' in i ? { comm_id: i.commId } : { task_id: i.taskId }),
       decode: (raw): CommListForTaskOutput => ({
         rows: asArray(asObj(raw)['rows']).map((r) => decodeComm(asObj(r))),
       }),
@@ -258,6 +271,17 @@ export function registerCommThreadSpecs(api: Api): void {
       action: 'set_ack',
       encode: (i) => ({ comm_id: i.commId, acked: i.acked }),
       decode: (raw): CommSetAckOutput => ({ acked: asObj(raw)['acked'] === true }),
+    });
+  }
+  if (!api.registry.has({ endpoint: 'comm', action: 'attach' })) {
+    api.define<CommAttachInput, CommAttachOutput>({
+      endpoint: 'comm',
+      action: 'attach',
+      encode: (i) => ({ comm_id: i.commId, task_id: i.taskId }),
+      decode: (raw): CommAttachOutput => {
+        const j = asObj(raw);
+        return { commId: asId(j['comm_id']), parentId: asId(j['parent_id']), taskId: asId(j['task_id']) };
+      },
     });
   }
   if (!api.registry.has({ endpoint: 'reply', action: 'post' })) {

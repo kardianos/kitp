@@ -17,6 +17,8 @@ import {
   validateChannelDraft,
   CHANNEL_STATUS_OPTIONS,
   SIGNATURE_MODE_OPTIONS,
+  INTAKE_MODE_OPTIONS,
+  REPLY_QUOTE_OPTIONS,
 } from './nested-editor.js';
 
 /** The status order shared with the template / demo Comms screens. */
@@ -48,9 +50,13 @@ export const COMM_CHANNEL_FORM: RecordFormScreenConfig = {
     { name: 'smtpPassword', label: 'SMTP password', kind: 'secret', configuredFlag: 'hasSmtpPassword' },
     { name: 'fromAddress', label: 'From address', kind: 'text' },
     { name: 'signatureMode', label: 'Reply signature', kind: 'select', options: [...SIGNATURE_MODE_OPTIONS] },
+    // docs/CONVERSATIONS.md: what new mail becomes, and whether replies
+    // carry the conversation below them.
+    { name: 'intakeMode', label: 'New mail', kind: 'select', options: [...INTAKE_MODE_OPTIONS] },
+    { name: 'replyQuote', label: 'Quoting in replies', kind: 'select', options: [...REPLY_QUOTE_OPTIONS] },
     {
       name: 'intakeStatusId',
-      label: 'Intake status',
+      label: 'New task status',
       kind: 'selectFromQuery',
       optionsFrom: {
         spec: 'card.select_with_attributes',

@@ -145,13 +145,16 @@ export function bodyConfigForLayout(layout: string): Record<string, unknown> {
       // A comm lists comm cards: phase-toned comm_status badge (flow-derived) +
       // subject + a chip linking its parent TASK; a received-but-unhandled
       // message shows a "Needs ACK" flag (acked=false) and the row opens the
-      // parent task (where the thread is replied to / advanced / closed).
+      // parent task (where the thread is replied to / advanced / closed). A
+      // thread that isn't on a task (docs/CONVERSATIONS.md) comes first,
+      // labelled "Not on a task", and opens on its own page.
       return {
         presentation: 'compact',
         parentChipCardType: 'task',
         flagAttr: 'acked',
         flagLabel: 'Needs ACK',
         openTarget: 'parent',
+        orphan: { label: 'Not on a task', route: 'thread' },
         order: [{ field: 'created_at', direction: 'DESC' }],
       };
     case 'pages':

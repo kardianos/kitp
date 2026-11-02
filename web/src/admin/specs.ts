@@ -226,6 +226,11 @@ export interface CommChannel {
   /** Outbound reply signature: 'none' | 'comm_name' | 'user_name' ('' = unset,
    *  treated as 'comm_name'). */
   signatureMode?: string;
+  /** What new mail becomes: 'task' | 'thread' | 'ignore' ('' = unset: a task
+   *  with an intake status, else ignored). */
+  intakeMode?: string;
+  /** Quoting in replies: 'off' | 'last' | 'all' ('' = unset, 'last'). */
+  replyQuote?: string;
   channelFaultReason?: string;
   hasImapPassword: boolean;
   hasSmtpPassword: boolean;
@@ -602,6 +607,10 @@ export interface CommChannelSetInput {
   channelStatus?: string;
   /** 'none' | 'comm_name' | 'user_name'; omit/'' leaves the stored value. */
   signatureMode?: string;
+  /** 'task' | 'thread' | 'ignore'; omit/'' leaves the stored value. */
+  intakeMode?: string;
+  /** 'off' | 'last' | 'all'; omit/'' leaves the stored value. */
+  replyQuote?: string;
 }
 export interface CommChannelSetOutput {
   channelId: string;

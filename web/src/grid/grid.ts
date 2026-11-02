@@ -1427,7 +1427,7 @@ export class Grid extends CardListCore<GridConfig> {
     const link = el.querySelector('.row-link') as HTMLAnchorElement | null;
     if (link) {
       const target = this.openTargetId(row);
-      if (target !== undefined) setRowLinkHref(link, target);
+      if (target !== undefined) setRowLinkHref(link, target, this.openRouteOf(row));
       else link.removeAttribute('href');
     }
   }

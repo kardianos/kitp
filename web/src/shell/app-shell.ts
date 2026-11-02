@@ -1289,6 +1289,16 @@ export class AppShell extends Control<AppShellConfig> {
           outlet,
         );
       }
+      case 'thread': {
+        // An email thread that isn't on a task (docs/CONVERSATIONS.md): the
+        // same detail view, configured for comm cards (detail-profiles.ts).
+        this.setCrumb(`Thread #${route.params['id'] ?? ''}`);
+        return this.spawn(
+          'TaskDetail',
+          { type: 'TaskDetail', taskId: route.params['id'], cardTypeName: 'comm' } as ChildConfig,
+          outlet,
+        );
+      }
       case 'site': {
         // A portal's site inside kitp. Re-read the SITES links too: arriving
         // here is a hint they may have changed.
@@ -1387,6 +1397,8 @@ function outletKey(route: RouteMatch): string {
       return `task:${route.params['id'] ?? ''}`;
     case 'page':
       return `page:${route.params['id'] ?? ''}`;
+    case 'thread':
+      return `thread:${route.params['id'] ?? ''}`;
     case 'site':
       return `site:${route.params['id'] ?? ''}`;
     case 'activity':

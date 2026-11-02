@@ -14,7 +14,13 @@
  *
  * Mounted by TaskDetail into its `comms` slot (parallel to TaskComments). The
  * detail calls {@link CommThreads.reload} after a relevant activity bump and
- * {@link CommThreads.reveal} when a vote request links to its thread.
+ * {@link CommThreads.reveal} when a vote request links to its thread. On a
+ * thread's own page (a thread that isn't on a task, `/thread/:id`) it shows
+ * that one thread ({@link CommThreadsConfig.commId}) with no "+ Start comm".
+ *
+ * A received message shows its own text; the history its mail program quoted
+ * below it folds behind "Show quoted text" (comm-quoted.ts — display only,
+ * the stored message is untouched).
  *
  * Zero-promise: every read/write goes through `api.callByName(..., { alive })`;
  * the list repaints from the onOk callbacks. Recipient / channel pickers are
@@ -32,6 +38,7 @@ import {
   COMM_CREATE_SPEC,
   COMM_SET_RECIPIENTS_SPEC,
   COMM_SET_ACK_SPEC,
+  COMM_ATTACH_SPEC,
   REPLY_POST_SPEC,
   type CommRow,
   type CommListForTaskOutput,
@@ -43,10 +50,13 @@ import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 import { captionedField } from '../ui/captioned-field.js';
 import { icon } from '../ui/icons.js';
 import { stepText } from './approval-model.js';
+import { splitQuoted } from './comm-quoted.js';
 export interface CommThreadsConfig extends BaseControlConfig {
   type: 'CommThreads';
   /** The focal task id (string from the route). */
   taskId?: string;
+  /** Show just this thread (a thread's own page), instead of a task's. */
+  commId?: string;
   /** Dotted tree path holding the in-scope project id (channel search scope). */
   projectScopePath?: string;
   /** Called after a successful LOCAL write (our own reply / new thread /
@@ -66,6 +76,7 @@ declare module '../core/control.js' {
 
 export class CommThreads extends Control<CommThreadsConfig> {
   private taskId: bigint | null = null;
+  private commId: bigint | null = null;
   private comms: CommRow[] = [];
   /** Flipped true once the first comm.list_for_task lands; gates "No comms
    *  attached." vs a "Loading…" placeholder so the section doesn't flash empty. */
@@ -101,20 +112,24 @@ export class CommThreads extends Control<CommThreadsConfig> {
 
   protected render(): void {
     this.taskId = parseId(this.config.taskId);
+    this.commId = parseId(this.config.commId);
 
     const head = document.createElement('div');
     head.className = 'task-comms__head';
     const heading = document.createElement('h2');
     heading.className = 'task-detail__section-label muted';
     heading.dataset.commsHeading = '';
-    heading.textContent = 'COMMS';
-    const startBtn = document.createElement('button');
-    startBtn.type = 'button';
-    startBtn.className = 'btn task-comms__start';
-    startBtn.dataset.commsStart = '';
-    startBtn.textContent = '+ Start comm';
-    this.listen(startBtn, 'click', () => this.toggleStartForm());
-    head.append(heading, startBtn);
+    heading.textContent = this.commId !== null ? 'CONVERSATION' : 'COMMS';
+    head.append(heading);
+    if (this.commId === null) {
+      const startBtn = document.createElement('button');
+      startBtn.type = 'button';
+      startBtn.className = 'btn task-comms__start';
+      startBtn.dataset.commsStart = '';
+      startBtn.textContent = '+ Start comm';
+      this.listen(startBtn, 'click', () => this.toggleStartForm());
+      head.append(startBtn);
+    }
     this.headEl = head;
     this.el.append(head);
 
@@ -171,10 +186,10 @@ export class CommThreads extends Control<CommThreadsConfig> {
   }
 
   private loadComms(): void {
-    if (this.taskId === null) return;
+    if (this.taskId === null && this.commId === null) return;
     this.ctx.api.callByName(
       COMM_LIST_FOR_TASK_SPEC,
-      { taskId: this.taskId },
+      this.commId !== null ? { commId: this.commId } : { taskId: this.taskId },
       (out) => {
         if (!this.isAlive()) return;
         this.comms = (out as CommListForTaskOutput).rows ?? [];
@@ -364,7 +379,21 @@ export class CommThreads extends Control<CommThreadsConfig> {
     paintAck(comm.acked);
     this.listen(ack, 'click', () => this.doSetAck(comm, paintAck));
 
-    top.append(subj, thread, badge, ack, barHost);
+    top.append(subj, thread, badge, ack);
+    // Detach — on a task, move the thread back into the project as a thread
+    // on its own (comm.attach with task 0; docs/CONVERSATIONS.md). Its page
+    // offers Attach to task… again.
+    if (this.commId === null) {
+      const detach = document.createElement('button');
+      detach.type = 'button';
+      detach.className = 'btn task-comms__detach';
+      detach.dataset.commDetach = '';
+      detach.textContent = 'Detach';
+      detach.title = 'Take this thread off the task; it stays in the project, not on a task';
+      this.listen(detach, 'click', () => this.doDetach(comm.id, detach));
+      top.append(detach);
+    }
+    top.append(barHost);
     card.append(top);
 
     // A thread a vote request started says which vote; the vote itself is
@@ -449,10 +478,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
         // Whitespace between the parts keeps the copied / spoken text
         // readable; the flex layout ignores whitespace-only runs.
         meta.append(' ', metaSep(), ' ', time, ' ', metaSep(), ' ', status);
-        const body = document.createElement('div');
-        body.className = 'task-comms__reply-body';
-        body.textContent = r.bodyText;
-        li.append(meta, body);
+        li.append(meta, ...replyBody(r.bodyText, direction, (el, ev, fn) => this.listen(el, ev, fn)));
         replies.append(li);
       }
     }
@@ -699,6 +725,25 @@ export class CommThreads extends Control<CommThreadsConfig> {
    *  re-fetch every comm and re-mount each comm's TransitionBar, which is the
    *  "multiple network trips" a single click was causing. Reverts the visual
    *  if the write fails. Mirrors doSetRecipients. */
+  private doDetach(commId: bigint, btn: HTMLButtonElement): void {
+    btn.disabled = true;
+    this.ctx.api.callByName(
+      COMM_ATTACH_SPEC,
+      { commId, taskId: 0n },
+      () => {
+        if (!this.isAlive()) return;
+        this.loadComms();
+        this.config.onLocalWrite?.();
+      },
+      {
+        alive: () => this.isAlive(),
+        onErr: () => {
+          btn.disabled = false;
+        },
+      },
+    );
+  }
+
   private doSetAck(comm: CommRow, paint: (acked: boolean) => void): void {
     const next = !comm.acked;
     comm.acked = next; // optimistic local truth + visual
@@ -794,4 +839,40 @@ function statusLabel(card: CardWithAttrs): string {
 
 export function registerCommThreads(): void {
   Control.register('CommThreads', CommThreads);
+}
+
+/**
+ * A message's body: its text, and for a received message whose mail program
+ * quoted the earlier ones, that history folded behind "Show quoted text"
+ * (splitQuoted — display only). Our own messages are stored without a quote
+ * (it is added when the mail is sent), so they show whole.
+ */
+export function replyBody(
+  text: string,
+  direction: 'in' | 'out',
+  listen: (el: HTMLElement, ev: string, fn: () => void) => void,
+): HTMLElement[] {
+  const body = document.createElement('div');
+  body.className = 'task-comms__reply-body';
+  const split = direction === 'in' ? splitQuoted(text) : { own: text, quoted: '' };
+  body.textContent = split.own;
+  if (split.quoted === '') return [body];
+  const quoted = document.createElement('div');
+  quoted.className = 'task-comms__reply-quoted';
+  quoted.dataset.replyQuoted = '';
+  quoted.textContent = split.quoted;
+  quoted.style.display = 'none';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'task-comms__quote-toggle';
+  toggle.dataset.replyQuoteToggle = '';
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.textContent = 'Show quoted text';
+  listen(toggle, 'click', () => {
+    const open = quoted.style.display === 'none';
+    quoted.style.display = open ? '' : 'none';
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    toggle.textContent = open ? 'Hide quoted text' : 'Show quoted text';
+  });
+  return [body, toggle, quoted];
 }

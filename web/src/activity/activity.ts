@@ -24,7 +24,12 @@
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
-import { navigate, plainClick, taskUrl } from '../shell/router.js';
+import { cardUrl, navigate, plainClick, type CardRoute } from '../shell/router.js';
+
+/** The page a feed group opens, by the type of the card it is on: a task, a
+ *  page, or an email thread that isn't on a task (its activity groups on the
+ *  thread itself). Anything else is shown, not linked. */
+const NAV_ROUTE: Readonly<Record<string, CardRoute>> = { '': 'task', task: 'task', page: 'page', comm: 'thread' };
 import {
   ACTIVITY_SELECT_SPEC,
   type ActivityFacets,
@@ -792,14 +797,15 @@ export class Activity extends Control<ActivityConfig> {
 
     const head = document.createElement('header');
     head.className = 'activity-group__head';
-    const isTask = g.navType === 'task' || g.navType === '';
-    const titleEl = isTask ? document.createElement('a') : document.createElement('span');
+    const route = NAV_ROUTE[g.navType];
+    const titleEl = route !== undefined ? document.createElement('a') : document.createElement('span');
     titleEl.className = 'activity-group__link';
-    if (isTask) {
-      const href = taskUrl(g.navId);
+    if (route !== undefined) {
+      const href = cardUrl(g.navId, route);
       (titleEl as HTMLAnchorElement).href = href;
       this.listen(titleEl, 'click', plainClick(() => navigate(href)));
-    } else {
+    }
+    if (route !== 'task') {
       const type = document.createElement('span');
       type.className = 'activity-group__type';
       type.textContent = cardTypeLabel(g.navType);

@@ -49,6 +49,7 @@ export type RouteName =
   | 'screen'
   | 'task'
   | 'page'
+  | 'thread'
   | 'site'
   | 'activity'
   | 'account'
@@ -94,6 +95,9 @@ const ROUTES: readonly RoutePattern[] = [
   // A publishable page (card_type `page`) — the same detail view as a task,
   // configured for pages (publish_status flow, PUBLISHED ON section).
   { pattern: '/page/:id', name: 'page', guard: 'requireAuth' },
+  // An email thread that isn't on a task (docs/CONVERSATIONS.md) — the same
+  // detail view, configured for comm cards. A thread on a task opens there.
+  { pattern: '/thread/:id', name: 'thread', guard: 'requireAuth' },
   // A portal's site shown inside kitp ("Show in kitp"), in the content area.
   { pattern: '/site/:id', name: 'site', guard: 'requireAuth' },
   { pattern: '/activity', name: 'activity', guard: 'requireAuth' },
@@ -134,6 +138,7 @@ export function helpTopicForRoute(route: RouteMatch): string | null {
   switch (route.name) {
     case 'task':
     case 'page': // the same detail view, configured for pages
+    case 'thread': // … and for threads on their own
       return 'task_detail';
     case 'admin': {
       const key = route.params['key'];
@@ -232,16 +237,22 @@ export function pageUrl(id: bigint | string): string {
   return `/page/${id.toString()}`;
 }
 
+/** `/thread/:id` — an email thread (comm card) that isn't on a task. */
+export function threadUrl(id: bigint | string): string {
+  return `/thread/${id.toString()}`;
+}
+
 /**
  * The detail route a card opens in. A card list names it in config (one level
  * up — e.g. the `pages` layout opens 'page'), never by branching on card_type
  * inside the list.
  */
-export type CardRoute = 'task' | 'page';
+export type CardRoute = 'task' | 'page' | 'thread';
 
 const CARD_URL: Record<CardRoute, (id: bigint | string) => string> = {
   task: taskUrl,
   page: pageUrl,
+  thread: threadUrl,
 };
 
 /** The detail URL of a card for a given route (default 'task'). */

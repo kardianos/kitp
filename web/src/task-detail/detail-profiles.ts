@@ -20,7 +20,11 @@
  *   - attribute-panel tweaks: extra attrs to hide (the status attr — it moves
  *     through the TransitionBar, never a free picker) and default-hidden attrs
  *     to show (a page's sort_order IS its site order, so it's editable);
- *   - whether an id that misses resolves a comm card to its parent task.
+ *   - whether an id that misses resolves a comm card to its parent task;
+ *   - which parent's page a card opens on instead of its own (a thread on a
+ *     task opens on the task; only a thread on its own has a page);
+ *   - whether the COMMS section lists the card's threads (a task) or shows
+ *     the card itself as the one thread (a thread's own page).
  *
  * Adding a detail-able card type is an entry here plus a route.
  */
@@ -34,6 +38,8 @@ import { viewUrl } from './upload.js';
 export type DetailMenuAction = 'move' | 'purge';
 
 export type DetailSection =
+  | 'description'
+  | 'placement'
   | 'comments'
   | 'comms'
   | 'links'
@@ -67,6 +73,12 @@ export interface DetailProfile {
   showAttrs: readonly string[];
   /** On a miss, try the id as a comm card and open its parent task. */
   commRedirect: boolean;
+  /** A card whose parent is of this type opens on the parent's page (a
+   *  thread on a task opens on its task). */
+  parentRoute?: { cardType: string; route: CardRoute };
+  /** The COMMS section shows this card as the one thread (a thread's own
+   *  page) instead of listing its threads. */
+  commsSelf?: boolean;
 }
 
 const TASK_PROFILE: DetailProfile = {
@@ -77,7 +89,7 @@ const TASK_PROFILE: DetailProfile = {
   placeholders: [],
   insertPictures: false,
   statusAttr: 'status',
-  sections: ['comments', 'comms', 'links', 'approvals', 'attachments', 'tags', 'related'],
+  sections: ['description', 'comments', 'comms', 'links', 'approvals', 'attachments', 'tags', 'related'],
   skipAttrs: [],
   showAttrs: [],
   commRedirect: true,
@@ -94,12 +106,32 @@ export const DETAIL_PROFILES: Readonly<Record<string, DetailProfile>> = {
     placeholders: PAGE_PLACEHOLDERS,
     insertPictures: true,
     statusAttr: 'publish_status',
-    sections: ['comments', 'attachments', 'structure', 'publications'],
+    sections: ['description', 'comments', 'attachments', 'structure', 'publications'],
     // publish_status moves through the TransitionBar; the navigation flags
     // live in PLACE IN SITE.
     skipAttrs: ['publish_status', 'nav_hidden', 'nav_hide_children'],
     showAttrs: ['sort_order'],
     commRedirect: false,
+  },
+  // An email thread that isn't on a task (docs/CONVERSATIONS.md): its
+  // comm_status flow, the conversation, comments and attachments, and the
+  // TASK section (Attach to task… / Make a task). No description: the
+  // messages are the content.
+  comm: {
+    noun: 'Thread',
+    route: 'thread',
+    menuActions: [],
+    linkSiblings: false,
+    placeholders: [],
+    insertPictures: false,
+    statusAttr: 'comm_status',
+    sections: ['placement', 'comms', 'comments', 'attachments'],
+    // The conversation section owns the recipients, messages and ACK.
+    skipAttrs: ['comm_status', 'thread_id', 'replies', 'comm_recipients', 'acked'],
+    showAttrs: [],
+    commRedirect: false,
+    parentRoute: { cardType: 'task', route: 'task' },
+    commsSelf: true,
   },
 };
 
@@ -110,6 +142,8 @@ export const DETAIL_PROFILES: Readonly<Record<string, DetailProfile>> = {
  */
 export const SECTION_AREA: Partial<Record<DetailSection, string>> = {
   comms: 'conversations',
+  // Attach to task / Make a task need Tasks.
+  placement: 'tasks',
   approvals: 'approvals',
   links: 'tasks',
   publications: 'sites',

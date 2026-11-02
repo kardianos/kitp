@@ -234,6 +234,11 @@ export interface CommChannelDraft {
   /** What to auto-append to outbound reply bodies: 'none' | 'comm_name' |
    *  'user_name'. */
   signatureMode: string;
+  /** What new (unmatched) mail becomes: 'task' | 'thread' | 'ignore'
+   *  (docs/CONVERSATIONS.md). */
+  intakeMode: string;
+  /** Quoting in outbound replies: 'off' | 'last' | 'all'. */
+  replyQuote: string;
 }
 
 export function emptyChannelDraft(): CommChannelDraft {
@@ -243,6 +248,10 @@ export function emptyChannelDraft(): CommChannelDraft {
     smtpHost: '', smtpPort: '', smtpUsername: '', smtpPassword: '',
     fromAddress: '', intakeStatusId: '', channelStatus: 'enabled',
     signatureMode: 'comm_name',
+    // A new mail account files new mail as tasks; an existing one without
+    // the setting keeps what it did (channelRowToDraft).
+    intakeMode: 'task',
+    replyQuote: 'last',
   };
 }
 
@@ -267,7 +276,18 @@ export function channelRowToDraft(row: CommChannel): CommChannelDraft {
     intakeStatusId: row.intakeStatusId ?? '',
     channelStatus: row.channelStatus === '' ? 'enabled' : row.channelStatus,
     signatureMode: !row.signatureMode ? 'comm_name' : row.signatureMode,
+    intakeMode: effectiveIntakeMode(row),
+    replyQuote: !row.replyQuote ? 'last' : row.replyQuote,
   };
+}
+
+/** A channel's New mail setting as in effect: unset keeps what accounts did
+ *  before the setting — a task when it has an intake status, else ignored
+ *  (the server's ResolveIntakeMode). */
+export function effectiveIntakeMode(row: Pick<CommChannel, 'intakeMode' | 'intakeStatusId'>): string {
+  if (row.intakeMode === 'task' || row.intakeMode === 'thread' || row.intakeMode === 'ignore') return row.intakeMode;
+  const status = row.intakeStatusId ?? '';
+  return status !== '' && status !== '0' ? 'task' : 'ignore';
 }
 
 /** A stored port (0 / undefined = unset) as the form's all-strings value. */
@@ -315,6 +335,8 @@ export function channelDraftToSet(d: CommChannelDraft, projectId: string): Recor
   if (d.fromAddress.trim() !== '') out['fromAddress'] = d.fromAddress.trim();
   if (d.channelStatus !== '') out['channelStatus'] = d.channelStatus;
   if (d.signatureMode !== '') out['signatureMode'] = d.signatureMode;
+  if (d.intakeMode !== '') out['intakeMode'] = d.intakeMode;
+  if (d.replyQuote !== '') out['replyQuote'] = d.replyQuote;
   return out;
 }
 
@@ -342,6 +364,21 @@ export const SIGNATURE_MODE_OPTIONS: ReadonlyArray<{ value: string; label: strin
   { value: 'none', label: 'Append nothing' },
   { value: 'comm_name', label: 'Append channel name' },
   { value: 'user_name', label: 'Append sender name' },
+];
+
+/** New mail (intake_mode) options: what an unmatched message becomes. A
+ *  reply to a thread always lands on its thread. */
+export const INTAKE_MODE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'task', label: 'Creates a task and a thread' },
+  { value: 'thread', label: 'Creates a thread only' },
+  { value: 'ignore', label: 'Is ignored (only replies come in)' },
+];
+
+/** Quoting in replies (reply_quote) options. */
+export const REPLY_QUOTE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'off', label: 'Off' },
+  { value: 'last', label: 'Last message' },
+  { value: 'all', label: 'Whole conversation' },
 ];
 
 /* -------------------------------------------------------------------------- */

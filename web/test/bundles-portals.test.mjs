@@ -342,7 +342,7 @@ test('detail profiles: pages use publish_status, no task-only sections, editable
   const page = M.detailProfile('page');
   assert.equal(page.noun, 'Page');
   assert.equal(page.statusAttr, 'publish_status');
-  assert.deepEqual([...page.sections].sort(), ['attachments', 'comments', 'publications', 'structure']);
+  assert.deepEqual([...page.sections].sort(), ['attachments', 'comments', 'description', 'publications', 'structure']);
   assert.ok(page.skipAttrs.includes('publish_status'));
   assert.ok(page.skipAttrs.includes('nav_hidden') && page.skipAttrs.includes('nav_hide_children'), 'the nav flags live in PLACE IN SITE');
   assert.ok(page.showAttrs.includes('sort_order'));

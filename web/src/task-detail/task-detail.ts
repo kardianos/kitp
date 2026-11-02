@@ -49,7 +49,7 @@ import { Control, type BaseControlConfig } from '../core/control.js';
 import { PanelModel } from './panel-model.js';
 import { setMarkdown } from '../util/markdown-control.js';
 import { RichEditor } from '../editor/rich-editor.js';
-import { navigate, taskUrl, projectUrl, cardUrl } from '../shell/router.js';
+import { navigate, taskUrl, projectUrl, cardUrl, type CardRoute } from '../shell/router.js';
 import { taskNavNeighbor, taskNavListUrl } from '../shell/task-nav.js';
 import { SPEC, type SelectWithAttributesOutput, type AttributeUpdateOutput } from '../kanban/specs.js';
 import { asAttrId, type CardWithAttrs } from '../kanban/kanban-helpers.js';
@@ -244,6 +244,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private pagePublications: PagePublications | null = null;
   private structureHost!: HTMLElement;
   private pageStructure: PageStructure | null = null;
+  /** A thread's TASK section (Attach to task… / Make a task). */
+  private placementHost!: HTMLElement;
+  private placementMounted = false;
 
   /** Read-only status badge in the nav row (next to #id). Phase-toned. */
   private statusBadgeEl!: HTMLElement;
@@ -650,6 +653,12 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     rail.append(navPanel);
     this.paintTaskNav();
 
+    // A thread's TASK section (thread-placement.ts): above the attributes,
+    // since attaching is what a thread on its own is waiting for.
+    const placementSlot = this.makeSlot('placement', 'Task');
+    this.placementHost = placementSlot;
+    rail.append(placementSlot);
+
     const panel = document.createElement('div');
     panel.className = 'task-detail__panel';
     panel.dataset.region = 'detail.rail.attributes';
@@ -681,6 +690,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
 
     // Sections this card type doesn't have (its detail profile) never show.
     const slots: Array<[DetailSection, HTMLElement]> = [
+      ['description', descSection],
+      ['placement', placementSlot],
       ['approvals', approvalsSlot],
       ['links', linksSlot],
       ['comms', commsSlot],
@@ -814,6 +825,11 @@ export class TaskDetail extends Control<TaskDetailConfig> {
           else this.showNotFound();
           return;
         }
+        const via = this.profile.parentRoute;
+        if (via !== undefined && found.parent_card_id !== undefined && !this.parentChecked) {
+          this.openOnParentIfItIs(found.parent_card_id, via.cardType, via.route);
+          return;
+        }
         this.projectId = enclosingProjectId(found, new Map(rows.map((r) => [r.id, r])));
         this.applySectionAreas();
         this.sameTypeRows = rows;
@@ -826,6 +842,40 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         this.publishProjectScope();
       },
       { alive: () => this.isAlive() },
+    );
+  }
+
+  /** Set once the parentRoute check has run, so the reload it triggers
+   *  doesn't check again. */
+  private parentChecked = false;
+
+  /**
+   * The profile's parentRoute: a card whose parent is a `cardType` card opens
+   * on the parent's page (a thread on a task opens on its task — only a
+   * thread on its own has a page). Otherwise load as usual. One read.
+   */
+  private openOnParentIfItIs(parentId: bigint, cardType: string, route: CardRoute): void {
+    this.ctx.api.callByName(
+      CARD_SEARCH_SPEC,
+      { cardTypeName: cardType, ids: [parentId] },
+      (out) => {
+        if (!this.isAlive()) return;
+        const rows = ((out ?? {}) as { rows?: Array<{ id: bigint }> }).rows ?? [];
+        if (rows.some((r) => r.id === parentId)) {
+          navigate(cardUrl(parentId, route));
+          return;
+        }
+        this.parentChecked = true;
+        this.loadTask();
+      },
+      {
+        alive: () => this.isAlive(),
+        onErr: () => {
+          if (!this.isAlive()) return;
+          this.parentChecked = true;
+          this.loadTask();
+        },
+      },
     );
   }
 
@@ -949,6 +999,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     this.renderPanel();
     this.paintStatusBadge();
     this.mountTransitionBar();
+    this.mountPlacement();
     this.mountComments();
     this.mountComms();
     this.mountLinks();
@@ -1163,7 +1214,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       'CommThreads',
       {
         type: 'CommThreads',
-        taskId: this.taskId.toString(),
+        // A thread's own page shows the thread; a task lists its threads.
+        ...(this.profile.commsSelf === true ? { commId: this.taskId.toString() } : { taskId: this.taskId.toString() }),
         projectScopePath: 'scope.projectId',
         // Our own reply / new thread shouldn't trip the "new content" badge.
         onLocalWrite: () => this.noteOwnActivity(),
@@ -1171,6 +1223,26 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       },
       this.commsHost,
     ) as CommThreads;
+  }
+
+  /** Spawn a thread's TASK section into the `placement` slot. Idempotent. */
+  private mountPlacement(): void {
+    if (this.taskId === null || this.task === null || this.projectId === undefined || !this.shows('placement')) return;
+    if (this.placementMounted) return;
+    this.placementMounted = true;
+    this.placementHost.replaceChildren();
+    this.placementHost.classList.add('task-detail__slot--filled');
+    const title = this.task.attributes['title'];
+    this.spawn(
+      'ThreadPlacement',
+      {
+        type: 'ThreadPlacement',
+        commId: this.taskId.toString(),
+        projectId: this.projectId.toString(),
+        title: typeof title === 'string' ? title : '',
+      },
+      this.placementHost,
+    );
   }
 
   /** Spawn the APPROVALS control into the `approvals` slot. Idempotent. */

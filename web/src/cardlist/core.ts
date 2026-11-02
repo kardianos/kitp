@@ -70,6 +70,11 @@ export interface CardListCoreConfig extends BaseControlConfig {
   /** The detail route a row opens in (`/task/:id`, `/page/:id`). Default
    *  'task'. Set per layout (bodyConfigForLayout), not per card_type here. */
   openRoute?: CardRoute;
+  /** Rows whose parent is the project itself rather than a
+   *  `parentChipCardType` card — on the comms screen, a thread that isn't on
+   *  a task (docs/CONVERSATIONS.md) — come first, show `label` in place of
+   *  the parent chip, and open themselves on `route`. */
+  orphan?: { label: string; route: CardRoute };
   /** Honour `screen.groupAxis` — render group headers + bucket rows. */
   group?: boolean;
   /** Per-user personal sort: query `with_personal_sort`, Shift+j/k reorder. */
@@ -615,7 +620,15 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
   protected orderRows(rows: CardWithAttrs[]): CardWithAttrs[] {
     if (this.group !== null) return sortGrouped(rows.slice(), this.group.attr, this.groupDir);
     const base = this.config.personalSort === true ? sortByPersonal(rows.slice()) : rows.slice();
-    return this.idFirst(base);
+    return this.idFirst(this.orphansFirst(base));
+  }
+
+  /** With config `orphan`, the rows not under a parent card come first, in
+   *  their order (a stable partition): threads waiting for a task. */
+  protected orphansFirst(rows: CardWithAttrs[]): CardWithAttrs[] {
+    if (this.config.orphan === undefined) return rows;
+    const first = rows.filter((r) => this.isOrphan(r));
+    return first.length === 0 ? rows : [...first, ...rows.filter((r) => !this.isOrphan(r))];
   }
 
   /** When the active search is a bare card id (NNNN), surface the exact-id row
@@ -889,14 +902,28 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
     this.rememberCardId(card.id);
     publishTaskNav(this.ctx.tree, this.displayRows().map((c) => c.id));
     const targetId = this.openTargetId(card);
-    if (targetId !== undefined) navigate(cardUrl(targetId.toString(), this.config.openRoute));
+    if (targetId !== undefined) navigate(cardUrl(targetId.toString(), this.openRouteOf(card)));
   }
 
   /** The card a row OPENS — itself, or its parent when `openTarget: 'parent'`
-   *  (the comms screen opens the underlying task, not the comm row). Shared by
-   *  the in-place open and the pop-out link so both always agree on a target. */
+   *  (the comms screen opens the underlying task, not the comm row; a thread
+   *  that isn't on a task opens itself — `orphan`). Shared by the in-place open
+   *  and the pop-out link so both always agree on a target. */
   protected openTargetId(card: CardWithAttrs): bigint | undefined {
+    if (this.isOrphan(card)) return card.id;
     return this.config.openTarget === 'parent' ? card.parent_card_id : card.id;
+  }
+
+  /** The detail route a row opens in (see {@link openTargetId}). */
+  protected openRouteOf(card: CardWithAttrs): CardRoute | undefined {
+    return this.isOrphan(card) ? this.config.orphan?.route : this.config.openRoute;
+  }
+
+  /** Whether the row sits directly in the scoped project (config `orphan`). */
+  protected isOrphan(card: CardWithAttrs): boolean {
+    if (this.config.orphan === undefined || card.parent_card_id === undefined) return false;
+    const project = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
+    return project !== null && card.parent_card_id === project;
   }
 
   /* ---- bulk selection mode (the Grid's checkbox multi-select) -------------- */

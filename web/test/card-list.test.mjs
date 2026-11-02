@@ -88,7 +88,7 @@ function hasNeedsAckLeaf(data) {
   return found;
 }
 
-function harness() {
+function harness(comms = COMMS) {
   function respond(sr) {
     const data = sr.data ?? {};
     if (`${sr.endpoint}.${sr.action}` !== 'card.select_with_attributes') {
@@ -108,7 +108,7 @@ function harness() {
     if (ct === 'comm') {
       const phases = phaseValues(data);
       const needsAck = hasNeedsAckLeaf(data);
-      const rows = COMMS.filter(
+      const rows = comms.filter(
         (c) => (phases.length === 0 || phases.includes(STATUS_PHASE[c.comm_status])) && (!needsAck || c.acked === false),
       ).map((c) => ({
         id: c.id,
@@ -145,7 +145,7 @@ async function settle(dispatcher) {
 }
 
 /** Mount the comms-configured CardListBody with the flow-derived leaves set. */
-function mount(api, predicate, extra) {
+function mount(api, predicate, extra, config = COMMS_CONFIG) {
   const tree = new M.TreeNode({}, []);
   tree.at(['scope', 'projectId']).set(PROJECT);
   tree.at(['screen', 'cardType']).set('comm'); // flow-derived (comm_status → comm)
@@ -161,7 +161,7 @@ function mount(api, predicate, extra) {
       return tree.at(['scope', 'projectId']).peek() ?? null;
     },
   };
-  const c = M.Control.New('CardListBody', COMMS_CONFIG, { api, tree, scope });
+  const c = M.Control.New('CardListBody', config, { api, tree, scope });
   c.mount(document.createElement('div'));
   document.body.appendChild(c.el);
   return { c, tree };
@@ -631,3 +631,21 @@ test('CardListBody/inbox: delegate change fires user_card_agent.set', async () =
   assert.equal(String(h.agentSets[0].card_id), '301');
   assert.equal(String(h.agentSets[0].agent_user_id), '90');
 });
+
+test('CardListBody/comms: a thread that is not on a task comes first, says so, and opens on its own page', async () => {
+  // 300 sits directly in the project (a thread on its own); 145 / 200 are on task 59.
+  const comms = [...COMMS, { id: '300', parent_card_id: String(PROJECT), comm_status: '54', title: 'Billing question', acked: false }];
+  const { dispatcher, api } = bootApi(harness(comms).transport);
+  const config = { ...COMMS_CONFIG, orphan: { label: 'Not on a task', route: 'thread' } };
+  const { c } = mount(api, null, undefined, config);
+  await settle(dispatcher);
+  const rows = filledRows(c);
+  assert.deepEqual(rows.map((r) => r.dataset.cardId), ['300', '145', '200'], 'unattached first, then server order');
+  const chip = rows[0].querySelector('.card-list__parent');
+  assert.equal(chip.textContent, 'Not on a task');
+  assert.ok(chip.classList.contains('card-list__parent--orphan'));
+  assert.equal(rows[0].querySelector('[data-role="rowlink"]').getAttribute('href'), '/thread/300');
+  assert.match(rows[1].querySelector('.card-list__parent').textContent, /#59/);
+  assert.equal(rows[1].querySelector('[data-role="rowlink"]').getAttribute('href'), '/task/59', 'a thread on a task opens the task');
+});
+

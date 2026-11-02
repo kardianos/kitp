@@ -93,6 +93,7 @@ import { registerTransitionSpecs } from './task-detail/specs.js';
 import { registerTaskComments } from './task-detail/task-comments.js';
 import { registerCommentSpecs } from './task-detail/comment-specs.js';
 import { registerCommThreads } from './task-detail/task-comm-threads.js';
+import { registerThreadPlacement } from './task-detail/thread-placement.js';
 import { registerCommThreadSpecs } from './task-detail/comm-specs.js';
 import { registerLinkSpecs } from './task-detail/link-specs.js';
 import { registerTaskLinks } from './task-detail/task-links.js';
@@ -404,6 +405,7 @@ function boot(): void {
   // recipients editor + reply composer. Reuses card.search (RefPicker) + the
   // comm-thread specs registered above.
   registerCommThreads();
+  registerThreadPlacement();
   // The LINKS control the TaskDetail spawns into its `links` slot: the task's
   // linked code changes / issues with their forge-reported state + add / remove.
   registerTaskLinks();
