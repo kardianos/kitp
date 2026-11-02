@@ -7,20 +7,22 @@ import "fmt"
 // WHERE clause of any read that exposes card rows (or rows that
 // reference a card, like `activity`).
 //
-// Semantics: a card is visible if the caller, OR their parent user
-// when the caller is an agent (`user_account.parent_user_id`), holds
-// at least one `user_role` row that is either
+// Semantics: a card is visible if the caller — or, when the caller is
+// an agent (`user_account.parent_user_id`), its owner — holds at least
+// one `user_role` row (user_role_visible) that is either
 //
 //   - globally scoped (`scope_card_id IS NULL`) — admins and the
 //     System User; or
 //   - scoped to the project the target card chains up to via
 //     `parent_card_id`.
 //
-// The agent → parent fall-through mirrors the rest of the codebase
+// The agent → owner fall-through mirrors the rest of the codebase
 // (`session/http.go`, `usercardagent`): agents act on behalf of
-// their owner, so they inherit the owner's visibility. Agents
-// without a parent (data model says this shouldn't happen) see
-// nothing.
+// their owner, so they see exactly what the owner sees — the owner's
+// rows, never the agent's own, so an agent can't be granted its way
+// past its owner (review B1). What an agent can DO is a separate,
+// narrower set (user_role_effective: roles it was granted that the
+// owner also holds).
 //
 // The CTE walks parent_card_id from the target card to its
 // `card_type='project'` ancestor; the recursive arm carries a
@@ -53,9 +55,7 @@ func VisibilityClause(cardIDExpr, userArg string) string {
 		)
 		SELECT 1
 		FROM user_account caller
-		JOIN user_role ur
-		  ON ur.user_id = caller.id
-		  OR (caller.parent_user_id IS NOT NULL AND ur.user_id = caller.parent_user_id)
+		CROSS JOIN LATERAL user_role_visible(caller.id) ur
 		WHERE caller.id = %[2]s
 		  AND (
 		    ur.scope_card_id IS NULL

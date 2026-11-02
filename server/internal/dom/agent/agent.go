@@ -37,7 +37,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
-	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -173,24 +172,9 @@ func authzDelete(ctx context.Context, in any) error {
 }
 
 // isGlobalAdmin reports whether the actor holds the admin role with no
-// project scope.
+// project scope (auth.IsGlobalAdmin).
 func isGlobalAdmin(ctx context.Context, pool *store.Pool, actor int64) (bool, error) {
-	b := named.New()
-	b.Set("actor", actor)
-	sql, args, err := b.Compile(`
-		SELECT EXISTS (
-			SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
-			WHERE ur.user_id = :actor AND r.name = 'admin' AND ur.scope_card_id IS NULL
-		)
-	`)
-	if err != nil {
-		return false, fmt.Errorf("admin check: compile: %w", err)
-	}
-	var admin bool
-	if err := pool.P.QueryRow(ctx, sql, args...).Scan(&admin); err != nil {
-		return false, fmt.Errorf("admin check: %w", err)
-	}
-	return admin, nil
+	return auth.IsGlobalAdmin(ctx, pool.P, actor)
 }
 
 // rejectAgentActor returns a non-nil error when the actor itself is an

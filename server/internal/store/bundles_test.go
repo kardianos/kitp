@@ -266,3 +266,90 @@ func TestForwardMigration0017DraftUnpublishes(t *testing.T) {
 		t.Errorf("the draft page is still published (%d) or its portal isn't queued for a rebuild (%v)", pubs, dirty)
 	}
 }
+
+// TestBundleSourceLookalikes (review A1, A2): rebuilding a bundle's source
+// must not touch a project that merely looks like one — titled like the
+// source, or carrying its bundle_key from before bundle_key was
+// server-owned. Migration 0019 strips that key; the rebuild purges only
+// the source the catalog records and attaches the bundle's rows to the
+// source it just created.
+func TestBundleSourceLookalikes(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_bundle_lookalikes")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	var title, key, oldSource int64
+	if err := pool.QueryRow(ctx, `SELECT source_project_id FROM bundle WHERE key = 'tracker'`).Scan(&oldSource); err != nil {
+		t.Fatal(err)
+	}
+	newProject := func(name string) int64 {
+		t.Helper()
+		var id int64
+		if err := pool.QueryRow(ctx, `
+			WITH c AS (INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'project' RETURNING id)
+			INSERT INTO attribute_value (card_id, attribute_def_id, value)
+			SELECT c.id, ad.id, to_jsonb($1::text) FROM c, attribute_def ad WHERE ad.name = 'title'
+			RETURNING card_id`, name).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	title = newProject("Bundle: Task tracking")
+	key = newProject("Mine")
+	for _, stmt := range []string{
+		// A bundle_key written by a handler before 0019, on a template.
+		fmt.Sprintf(`INSERT INTO attribute_value (card_id, attribute_def_id, value)
+			SELECT %d, id, to_jsonb('tracker'::text) FROM attribute_def WHERE name = 'bundle_key'`, key),
+		fmt.Sprintf(`INSERT INTO attribute_value (card_id, attribute_def_id, value)
+			SELECT %d, id, to_jsonb(true) FROM attribute_def WHERE name = 'is_template'`, key),
+		`DELETE FROM schema_version WHERE name = '0019_bundle_key_server_owned'`,
+		// Force a rebuild, as a changed bundle file would.
+		`UPDATE bundle SET checksum = 'changed' WHERE key = 'tracker'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	children := func(p int64) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM card WHERE parent_card_id = $1`, p).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, p := range []int64{title, key} {
+		var alive bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM card WHERE id = $1 AND deleted_at IS NULL)`, p).Scan(&alive); err != nil {
+			t.Fatal(err)
+		}
+		if !alive {
+			t.Errorf("project %d was purged by the bundle rebuild", p)
+		}
+		if n := children(p); n != 0 {
+			t.Errorf("project %d received %d of the bundle's cards", p, n)
+		}
+	}
+	var keyLeft int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
+		WHERE ad.name = 'bundle_key' AND av.card_id = $1`, key).Scan(&keyLeft); err != nil {
+		t.Fatal(err)
+	}
+	if keyLeft != 0 {
+		t.Error("migration 0019 left a bundle_key on a project that isn't a source")
+	}
+	var newSource int64
+	if err := pool.QueryRow(ctx, `SELECT source_project_id FROM bundle WHERE key = 'tracker'`).Scan(&newSource); err != nil {
+		t.Fatal(err)
+	}
+	if newSource == oldSource || newSource == title || newSource == key {
+		t.Errorf("source after the rebuild: %d (old %d, look-alikes %d, %d)", newSource, oldSource, title, key)
+	}
+	if n := children(newSource); n == 0 {
+		t.Error("the rebuilt source has none of the bundle's cards")
+	}
+}

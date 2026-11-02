@@ -324,16 +324,11 @@ func authzAdmin(ctx context.Context, _ any) error {
 		return nil
 	}
 	userID := auth.ActorOrSystem(ctx)
-	var n int
-	if err := authzPool.P.QueryRow(ctx, `
-		SELECT count(*)
-		FROM user_role ur
-		JOIN role r ON r.id = ur.role_id
-		WHERE ur.user_id = $1 AND r.name IN ('admin','system') AND ur.scope_card_id IS NULL
-	`, userID).Scan(&n); err != nil {
+	admin, err := auth.IsGlobalAdmin(ctx, authzPool.P, userID)
+	if err != nil {
 		return fmt.Errorf("activity_sink.authz: %w", err)
 	}
-	if n == 0 {
+	if !admin {
 		return fmt.Errorf("activity_sink: actor %d is not an admin", userID)
 	}
 	return nil

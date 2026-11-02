@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -100,7 +102,7 @@ func applyBundles(ctx context.Context, tx pgx.Tx, cat hcsv.Catalog) error {
 	}
 	for _, s := range gone {
 		if s.source != nil {
-			if err := purgeBundleSources(ctx, tx, s.key); err != nil {
+			if err := purgeSource(ctx, tx, *s.source); err != nil {
 				return fmt.Errorf("bundle %s: %w", s.key, err)
 			}
 		}
@@ -202,24 +204,19 @@ func materializeBundle(ctx context.Context, tx pgx.Tx, bun hcsv.Bundle) error {
 
 	src := haveSrc
 	if haveSum != bun.Checksum || haveSrc == nil {
-		// Purge every project carrying this bundle_key — the catalog's
-		// source and any leftover from an interrupted earlier boot — so
-		// the bundle SQL's title-based parent lookups can't resolve into a
-		// stale copy.
-		if err := purgeBundleSources(ctx, tx, bun.Key); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, bun.SQL); err != nil {
-			return fmt.Errorf("materialise: %w", err)
-		}
-		ids, err := bundleSourceIDs(ctx, tx, bun.Key)
+		newSrc, err := rebuildBundleSource(ctx, tx, bun, haveSrc)
 		if err != nil {
-			return err
+			if haveSrc == nil {
+				// Nothing to fall back on: a bundle that can't be built at
+				// all is a broken bundle file, which tests catch.
+				return err
+			}
+			// Keep the old source and checksum, so boot goes on and the
+			// next boot tries again (review A2).
+			log.Printf("warning: bundle %s: keeping its previous source project %d: %v", bun.Key, *haveSrc, err)
+			return nil
 		}
-		if len(ids) != 1 {
-			return fmt.Errorf("materialise: want 1 source project with bundle_key %q, found %d", bun.Key, len(ids))
-		}
-		src = &ids[0]
+		src = &newSrc
 	}
 
 	b := named.New()
@@ -278,22 +275,67 @@ func bundleSourceIDs(ctx context.Context, tx pgx.Tx, key string) ([]int64, error
 	return ids, nil
 }
 
-// purgeBundleSources hard-deletes every source project of one bundle.
-func purgeBundleSources(ctx context.Context, tx pgx.Tx, key string) error {
-	ids, err := bundleSourceIDs(ctx, tx, key)
+// rebuildBundleSource replaces a bundle's source project, inside a
+// savepoint so a failure leaves the boot transaction as it was: it purges
+// only the source the catalog records (old, if any) — never another
+// project, whatever attributes it carries — then runs the bundle's SQL
+// and returns the one project that SQL created with the bundle's key.
+func rebuildBundleSource(ctx context.Context, tx pgx.Tx, bun hcsv.Bundle, old *int64) (int64, error) {
+	before, err := bundleSourceIDs(ctx, tx, bun.Key)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	for _, id := range ids {
-		b := named.New()
-		b.Set("id", id)
-		sql, args, err := b.Compile(`SELECT bundle_source_purge(:id)`)
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("savepoint: %w", err)
+	}
+	id, err := func() (int64, error) {
+		if old != nil {
+			if err := purgeSource(ctx, sp, *old); err != nil {
+				return 0, err
+			}
+		}
+		if _, err := sp.Exec(ctx, bun.SQL); err != nil {
+			return 0, fmt.Errorf("materialise: %w", err)
+		}
+		after, err := bundleSourceIDs(ctx, sp, bun.Key)
 		if err != nil {
-			return fmt.Errorf("compile purge: %w", err)
+			return 0, err
 		}
-		if _, err := tx.Exec(ctx, sql, args...); err != nil {
-			return fmt.Errorf("purge source %d: %w", id, err)
+		var created []int64
+		for _, a := range after {
+			if !slices.Contains(before, a) {
+				created = append(created, a)
+			}
 		}
+		if len(created) != 1 {
+			return 0, fmt.Errorf("materialise: want 1 new source project with bundle_key %q, found %d", bun.Key, len(created))
+		}
+		return created[0], nil
+	}()
+	if err != nil {
+		if rbErr := sp.Rollback(ctx); rbErr != nil {
+			return 0, fmt.Errorf("%w (rollback to savepoint: %v)", err, rbErr)
+		}
+		return 0, err
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("release savepoint: %w", err)
+	}
+	return id, nil
+}
+
+// purgeSource hard-deletes one bundle source project (bundle_source_purge),
+// by the id the catalog records — never by attribute.
+func purgeSource(ctx context.Context, tx pgx.Tx, id int64) error {
+	b := named.New()
+	b.Set("id", id)
+	sql, args, err := b.Compile(`SELECT bundle_source_purge(:id)`)
+	if err != nil {
+		return fmt.Errorf("compile purge: %w", err)
+	}
+	if _, err := tx.Exec(ctx, sql, args...); err != nil {
+		return fmt.Errorf("purge source %d: %w", id, err)
 	}
 	return nil
 }

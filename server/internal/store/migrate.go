@@ -990,6 +990,21 @@ JOIN card_type ct ON ct.name = 'comm_channel'
 JOIN attribute_def ad ON ad.name = v.attr
 ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
 	},
+	{
+		// bundle_key is server-owned (review A2): only the bundle files set
+		// it, on the source projects the catalog records, and boot trusts
+		// it. attribute.update and card.insert now refuse it; this drops
+		// any bundle_key a handler wrote before that onto a project that
+		// isn't a recorded source, so nothing else looks like one. Runs
+		// before the bundle tier; on a fresh DB nothing carries it yet.
+		// Idempotent — a second run finds nothing.
+		id: "0019_bundle_key_server_owned",
+		sql: `
+DELETE FROM attribute_value av
+USING attribute_def ad
+WHERE ad.id = av.attribute_def_id AND ad.name = 'bundle_key'
+  AND NOT EXISTS (SELECT 1 FROM bundle b WHERE b.source_project_id = av.card_id);`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

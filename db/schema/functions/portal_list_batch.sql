@@ -32,9 +32,7 @@ BEGIN
     SELECT EXISTS (
         SELECT 1
         FROM user_account caller
-        JOIN user_role ur
-          ON ur.user_id = caller.id
-          OR (caller.parent_user_id IS NOT NULL AND ur.user_id = caller.parent_user_id)
+        CROSS JOIN LATERAL user_role_visible(caller.id) ur
         WHERE caller.id = portal_list_batch.actor_id AND ur.scope_card_id IS NULL
     ) INTO _global;
 

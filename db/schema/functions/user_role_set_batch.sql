@@ -6,13 +6,18 @@
 --   2. Resolve role_name -> role_id. Unknown role surfaces 'validation'
 --      (the legacy Go path would have failed the inner JOIN; we attribute
 --      it to the row instead).
---   3. Upsert against the right partial unique index:
+--   3. An agent (a user with a parent_user_id) can only be given a role
+--      its owner holds at that scope or workspace-wide ('forbidden'),
+--      whoever grants it (docs: admin_agents.md, "parent-grants-subset").
+--      user_role_effective applies the same rule when roles are used, so
+--      a row the owner later stops covering does nothing.
+--   4. Upsert against the right partial unique index:
 --        - scope_project_id IS NULL  -> uniq_user_role_global
 --        - scope_project_id NOT NULL -> uniq_user_role_scoped
 --      ON CONFLICT DO UPDATE SET user_id = EXCLUDED.user_id so the
 --      RETURNING row fires even on no-op idempotent re-grant.
 --
--- Authz (admin / parent-of-agent rule set) runs pre-tx in Go.
+-- Authz (who may grant: an admin, or an agent's owner) runs pre-tx in Go.
 --
 -- Result JSON shape matches `userrole.SetOutput`:
 --   {"ok": true, "user_role_id": "<bigint>"}
@@ -34,6 +39,7 @@ DECLARE
     _role_id bigint;
     _scope bigint;
     _user_role_id bigint;
+    _owner bigint;
 BEGIN
     FOR _idx, _raw IN
         SELECT (r.ord - 1)::int, r.value
@@ -66,6 +72,20 @@ BEGIN
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 format('user_role.set: role %L not found', _role_name),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+
+        SELECT parent_user_id INTO _owner FROM user_account WHERE id = _user_id;
+        IF _owner IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM user_role pr
+            WHERE pr.user_id = _owner AND pr.role_id = _role_id
+              AND (pr.scope_card_id IS NULL OR pr.scope_card_id = _scope)) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                CASE WHEN _scope IS NULL
+                     THEN format('user_role.set: an agent can only hold a role its owner holds; its owner has no workspace-wide %s role', _role_name)
+                     ELSE format('user_role.set: an agent can only hold a role its owner holds; its owner has no %s role on project %s', _role_name, _scope)
+                END,
                 NULL::jsonb;
             CONTINUE;
         END IF;

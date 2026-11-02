@@ -33,7 +33,7 @@ The **CSV export** button on the user detail header downloads a flat dump of eve
 
 Agents are users with `is_agent=true` and a `parent_user_id` pointing at a human owner. They're authored on **Admin · Agents**, not here, but their role grants flow through this same screen: an agent appears in the user list just like any other user, and you can grant scoped roles to it the same way.
 
-The parent-grants-subset rule is enforced on agent targets too — an agent can never hold a role its parent user does not hold at the same scope.
+The parent-grants-subset rule is enforced on agent targets too, whoever grants: an agent can only be given a role its owner holds at that scope (or workspace-wide), and it uses one only while the owner still does. An agent sees what its owner sees.
 
 ## Related admin pages
 

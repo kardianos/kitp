@@ -101,9 +101,7 @@ BEGIN
             bool_or(r.name IN ('admin', 'manager'))
           INTO _admin, _manager
         FROM user_account caller
-        JOIN user_role ur
-          ON ur.user_id = caller.id
-          OR (caller.parent_user_id IS NOT NULL AND ur.user_id = caller.parent_user_id)
+        CROSS JOIN LATERAL user_role_effective(caller.id) ur
         JOIN role r ON r.id = ur.role_id
         WHERE caller.id = area_set_batch.actor_id
           AND (ur.scope_card_id IS NULL OR (_project <> 0 AND ur.scope_card_id = _project));

@@ -9,7 +9,8 @@
 -- The shape mirrors the legacy SQL exactly so the existing
 -- TestFlowSetAndList integration test keeps passing without edits.
 --
--- Authz (RoleAuthenticated) runs pre-tx in Go.
+-- Authz (RoleAuthenticated) runs pre-tx in Go; each row is filtered to the
+-- projects the caller can see (card_visible_to).
 --
 -- Result JSON shape matches `flow.ListOutput`:
 --   {"rows": [{"id": "<bigint>", "name": "...", "doc": "...",
@@ -99,6 +100,9 @@ BEGIN
             JOIN attribute_def ad ON ad.id = f.attribute_def_id
             WHERE (_scope_card_id = 0 OR f.scope_card_id = _scope_card_id)
               AND (_attr_def_id  = 0 OR f.attribute_def_id = _attr_def_id)
+              -- DI-6: only the flows of projects the caller can see (a
+              -- flow row names its project's title).
+              AND card_visible_to(flow_list_batch.actor_id, f.scope_card_id)
         ), '[]'::jsonb))
         INTO _payload;
 

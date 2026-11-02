@@ -12,7 +12,7 @@ CREATE OR REPLACE FUNCTION user_has_grant(
 ) RETURNS boolean LANGUAGE sql STABLE AS $$
     SELECT EXISTS (
         SELECT 1
-        FROM user_role ur
+        FROM user_role_effective(p_user_id) ur
         JOIN role_grant rg ON rg.role_id = ur.role_id
         JOIN card_type ct  ON ct.id = rg.card_type_id AND ct.name = p_card_type
         JOIN process p     ON p.id = rg.process_id AND p.name = p_process

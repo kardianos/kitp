@@ -18,6 +18,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
@@ -40,14 +42,21 @@ type grantRow struct {
 // HTTP request (cached on the dispatcher's request context — see
 // withAuthzCache below).
 func loadActorGrants(ctx context.Context, pool *store.Pool, userID int64) ([]grantRow, error) {
-	rows, err := pool.P.Query(ctx, `
+	// user_role_effective: an agent's rows count only where its owner
+	// holds the same role (at that scope or workspace-wide).
+	b := named.New()
+	b.Set("user", userID)
+	sql, args, err := b.Compile(`
 		SELECT rg.card_type_id, p.name, ur.scope_card_id
-		FROM user_role ur
+		FROM user_role_effective(:user) ur
 		JOIN role r        ON r.id  = ur.role_id
 		JOIN role_grant rg ON rg.role_id = r.id
 		JOIN process p     ON p.id  = rg.process_id
-		WHERE ur.user_id = $1
-	`, userID)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("authz: load grants: compile: %w", err)
+	}
+	rows, err := pool.P.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("authz: load grants: %w", err)
 	}
@@ -352,6 +361,46 @@ func (s *Server) checkArea(ctx context.Context, h reg.Handler, input any, lookup
 		return &reg.HandlerError{
 			Code:    "area_off",
 			Message: "That area is switched off in this project.",
+		}
+	}
+	return nil
+}
+
+// bundleSourceProjects returns the feature bundles' source project ids
+// (bundle.source_project_id), for checkBundleSource. A handful of rows.
+func bundleSourceProjects(ctx context.Context, pool *store.Pool) (map[int64]bool, error) {
+	rows, err := pool.P.Query(ctx, `SELECT source_project_id FROM bundle WHERE source_project_id IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("authz: bundle sources: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return nil, fmt.Errorf("authz: bundle sources: %w", err)
+	}
+	out := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out, nil
+}
+
+// checkBundleSource refuses a gated write whose target project is a
+// feature bundle's source: those are rebuilt from db/schema/bundles at
+// boot and copied into projects, so a hand edit (setting is_template or
+// bundle_key, adding cards) would either be lost or poison every project
+// that applies the bundle next (review A2).
+func (s *Server) checkBundleSource(ctx context.Context, h reg.Handler, input any, lookup map[int64]cardInfo, projectTypeID int64, sources map[int64]bool) error {
+	if h.ProcessName == "" || h.CardTypeID == nil {
+		return nil
+	}
+	tProj, err := s.targetProjectForLeaf(ctx, h, input, lookup, projectTypeID)
+	if err != nil {
+		return fmt.Errorf("authz: bundle source check: resolve project for %s.%s: %w", h.Endpoint, h.Action, err)
+	}
+	if tProj != 0 && sources[tProj] {
+		return &reg.HandlerError{
+			Code:    "forbidden",
+			Message: fmt.Sprintf("%s.%s: project %d is a feature bundle's source; kitp maintains it", h.Endpoint, h.Action, tProj),
 		}
 	}
 	return nil

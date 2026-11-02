@@ -284,7 +284,7 @@ func requireAttachmentAccess(ctx context.Context, pool *store.Pool, userID, atta
 			EXISTS (
 				SELECT 1
 				FROM attach
-				JOIN user_role ur ON ur.user_id = :user
+				CROSS JOIN LATERAL user_role_effective(:user) ur
 				JOIN role r        ON r.id  = ur.role_id
 				JOIN role_grant rg ON rg.role_id = r.id
 				JOIN card_type pct ON pct.id = rg.card_type_id AND pct.name = 'project'

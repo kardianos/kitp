@@ -32,13 +32,13 @@ CREATE OR REPLACE FUNCTION build_flow_available_array(
                 'your_role_allows', (
                     fs.requires_role_id IS NULL
                     OR EXISTS (
-                        SELECT 1 FROM user_role ur
+                        SELECT 1 FROM user_role_effective(p_actor_id) ur
                         JOIN role sr ON sr.id = ur.role_id
                         WHERE ur.user_id = p_actor_id AND sr.name = 'system'
                           AND ur.scope_card_id IS NULL
                     )
                     OR EXISTS (
-                        SELECT 1 FROM user_role ur
+                        SELECT 1 FROM user_role_effective(p_actor_id) ur
                         WHERE ur.user_id = p_actor_id
                           AND ur.role_id = fs.requires_role_id
                           AND (ur.scope_card_id IS NULL OR ur.scope_card_id = p_project_id)

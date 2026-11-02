@@ -61,7 +61,7 @@ BEGIN
         _parent := agent_create_batch.actor_id;
         IF _owner = 'system' THEN
             IF NOT EXISTS (
-                SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
+                SELECT 1 FROM user_role_effective(agent_create_batch.actor_id) ur JOIN role r ON r.id = ur.role_id
                 WHERE ur.user_id = agent_create_batch.actor_id
                   AND r.name = 'admin' AND ur.scope_card_id IS NULL
             ) THEN

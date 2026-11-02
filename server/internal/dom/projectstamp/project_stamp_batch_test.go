@@ -78,6 +78,8 @@ func lookupInstallSeedTemplate(t *testing.T, pool *pgxpool.Pool) int64 {
 		JOIN attribute_value av ON av.card_id = c.id
 		JOIN attribute_def ad ON ad.id = av.attribute_def_id
 		WHERE ad.name = 'is_template' AND av.value = to_jsonb(TRUE)
+		  AND NOT EXISTS (SELECT 1 FROM bundle b WHERE b.source_project_id = c.id)
+		ORDER BY c.id
 		LIMIT 1
 	`).Scan(&id); err != nil {
 		t.Fatalf("seed template lookup (DB not seeded?): %v", err)
@@ -343,5 +345,46 @@ func TestProjectStampBatch_MultiRow(t *testing.T) {
 			t.Errorf("row %d: duplicate new_project_id %s", i, got.NewProjectID)
 		}
 		seen[got.NewProjectID] = true
+	}
+}
+
+// TestProjectStampBatch_SourceMustBeAVisibleTemplate (B7): project.stamp
+// is open to workers, so it copies only a template the actor can see —
+// not any project, and not a feature bundle's hidden source.
+func TestProjectStampBatch_SourceMustBeAVisibleTemplate(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_project_stamp_source")
+	ctx := context.Background()
+	stamp := func(actor, src int64) stampBatchRow {
+		t.Helper()
+		return callProjectStampBatch(t, pool, actor, []map[string]any{{
+			"template_project_id": strconv.FormatInt(src, 10), "name": "Copy",
+		}})[0]
+	}
+	var plain, source int64
+	if err := pool.QueryRow(ctx, `INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'project' RETURNING id`).Scan(&plain); err != nil {
+		t.Fatal(err)
+	}
+	if r := stamp(auth.SystemUserID, plain); r.OK || r.Code != "not_a_template" {
+		t.Errorf("copying a project that isn't a template: %+v", r)
+	}
+	if err := pool.QueryRow(ctx, `SELECT source_project_id FROM bundle WHERE kind = 'feature' AND source_project_id IS NOT NULL ORDER BY key LIMIT 1`).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if r := stamp(auth.SystemUserID, source); r.OK || r.Code != "not_a_template" {
+		t.Errorf("copying a bundle's source project: %+v", r)
+	}
+	var scoped int64
+	if err := pool.QueryRow(ctx, `INSERT INTO user_account (display_name) VALUES ('scoped') RETURNING id`).Scan(&scoped); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_role (user_id, role_id, scope_card_id) SELECT $1, id, $2 FROM role WHERE name = 'worker'`, scoped, plain); err != nil {
+		t.Fatal(err)
+	}
+	tpl := lookupInstallSeedTemplate(t, pool)
+	if r := stamp(scoped, tpl); r.OK || r.Code != "template_not_found" {
+		t.Errorf("a worker copied a template it can't see: %+v", r)
+	}
+	if r := stamp(auth.SystemUserID, tpl); !r.OK {
+		t.Errorf("copying the install template: %+v", r)
 	}
 }

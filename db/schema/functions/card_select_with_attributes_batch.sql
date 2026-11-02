@@ -126,8 +126,7 @@ BEGIN
             'SELECT p.id, p.parent_card_id, p.card_type_id, up.depth + 1 ' ||
             'FROM card p JOIN up ON p.id = up.parent_card_id WHERE up.depth < 16 ' ||
             ') SELECT 1 FROM user_account caller ' ||
-            'JOIN user_role ur ON ur.user_id = caller.id ' ||
-            '  OR (caller.parent_user_id IS NOT NULL AND ur.user_id = caller.parent_user_id) ' ||
+            'CROSS JOIN LATERAL user_role_visible(caller.id) ur ' ||
             'WHERE caller.id = $2 AND (ur.scope_card_id IS NULL OR ur.scope_card_id IN (' ||
             'SELECT up.id FROM up JOIN card_type ct2 ON ct2.id = up.card_type_id WHERE ct2.name = ''project'')))'
         ));

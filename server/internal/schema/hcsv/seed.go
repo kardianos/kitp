@@ -1218,8 +1218,19 @@ func (l *seedLoader) cardLookupByNameAttr(r *seedRow) string {
 	if r.parent != nil {
 		conds = append(conds, fmt.Sprintf("c.parent_card_id=%s", l.cardLookupByNameAttr(r.parent)))
 	}
+	// A feature bundle's source project (a row carrying bundle_key) is
+	// matched on that key too, not just its title: a project someone
+	// else gave the same title must never receive the bundle's rows
+	// (review A1). bundle_key is server-owned, set only by bundle files.
+	if bk, ok := r.cells["bundle_key"]; ok && (bk.kind == ckString || bk.kind == ckBare) {
+		conds = append(conds, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM attribute_value bav JOIN attribute_def bad ON bad.id=bav.attribute_def_id WHERE bav.card_id=c.id AND bad.name='bundle_key' AND bav.value=to_jsonb(%s::text))",
+			sqlString(bk.text)))
+	}
+	conds = append(conds, "c.deleted_at IS NULL")
+	// The newest match: the card this same SQL just inserted.
 	return fmt.Sprintf(
-		"(SELECT av.card_id FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id JOIN card c ON c.id=av.card_id WHERE %s LIMIT 1)",
+		"(SELECT av.card_id FROM attribute_value av JOIN attribute_def ad ON ad.id=av.attribute_def_id JOIN card c ON c.id=av.card_id WHERE %s ORDER BY c.id DESC LIMIT 1)",
 		strings.Join(conds, " AND "))
 }
 

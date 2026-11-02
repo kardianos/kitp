@@ -378,20 +378,28 @@ func loadProjectTitle(ctx context.Context, pool *store.Pool, projectID int64) (s
 // either global or scoped to this project. Mirrors the dispatcher's
 // authz contract — system / admin / manager pass; worker / viewer do not.
 func isAuthorized(ctx context.Context, pool *store.Pool, userID, projectID int64) (bool, error) {
-	var ok bool
-	err := pool.P.QueryRow(ctx, `
+	b := named.New()
+	b.Set("user", userID)
+	b.Set("project", projectID)
+	sql, args, err := b.Compile(`
 		SELECT EXISTS (
 			SELECT 1
-			FROM user_role ur
+			FROM user_role_effective(:user) ur
 			JOIN role r        ON r.id  = ur.role_id
 			JOIN role_grant rg ON rg.role_id = r.id
 			JOIN card_type ct  ON ct.id = rg.card_type_id AND ct.name = 'project'
 			JOIN process p     ON p.id  = rg.process_id   AND p.name = 'card.update'
-			WHERE ur.user_id = $1
-			  AND (ur.scope_card_id IS NULL OR ur.scope_card_id = $2)
+			WHERE ur.scope_card_id IS NULL OR ur.scope_card_id = :project
 		)
-	`, userID, projectID).Scan(&ok)
-	return ok, err
+	`)
+	if err != nil {
+		return false, fmt.Errorf("export authz: compile: %w", err)
+	}
+	var ok bool
+	if err := pool.P.QueryRow(ctx, sql, args...).Scan(&ok); err != nil {
+		return false, fmt.Errorf("export authz: %w", err)
+	}
+	return ok, nil
 }
 
 // loadTaskRows pulls every task under projectID, hydrated with the

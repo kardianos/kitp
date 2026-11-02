@@ -92,25 +92,6 @@ func LookupValidation(ctx context.Context, pool reg.ValidationPool, name string)
 	return &p, nil
 }
 
-// HasGrant returns true if the user has a role_grant on (card_type_id,
-// process_id). For phase 11, scope_card_id is ignored — every grant is
-// global.
-func HasGrant(ctx context.Context, pool reg.ValidationPool, userID int64, cardTypeID, processID int64) (bool, error) {
-	var n int
-	row := pool.QueryRow(ctx, `
-		SELECT count(*)
-		FROM user_role ur
-		JOIN role_grant rg ON rg.role_id = ur.role_id
-		WHERE ur.user_id = $1
-		  AND rg.card_type_id = $2
-		  AND rg.process_id = $3
-	`, userID, cardTypeID, processID)
-	if err := row.Scan(&n); err != nil {
-		return false, err
-	}
-	return n > 0, nil
-}
-
 // Register is a no-op stub. Process actions are resolved indirectly by
 // the dispatcher when an unknown (endpoint, action) matches a process row;
 // there is no per-process handler to register. The hook stays here for

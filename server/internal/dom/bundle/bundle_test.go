@@ -308,3 +308,57 @@ func TestComposeRejects(t *testing.T) {
 		t.Errorf("projects %d → %d, want exactly one (the valid compose)", before, after)
 	}
 }
+
+// TestApplyGuards (A11): bundle.apply sets an area up, so like switching
+// one on it is admin only; and it never writes into a bundle's own source
+// project.
+func TestApplyGuards(t *testing.T) {
+	f := setup(t, "kitp_test_bundle_apply_guards")
+	ctx := context.Background()
+	p := compose(t, f, `{"name":"Plain","features":["tracker"]}`).NewProjectID
+	var worker int64
+	if err := f.sp.P.QueryRow(ctx, `INSERT INTO user_account (display_name) VALUES ('w') RETURNING id`).Scan(&worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.sp.P.Exec(ctx, `INSERT INTO user_role (user_id, role_id, scope_card_id) SELECT $1, id, $2 FROM role WHERE name IN ('worker', 'manager')`, worker, p); err != nil {
+		t.Fatal(err)
+	}
+	resp := f.srv.Dispatch(auth.WithUser(ctx, &auth.UserCtx{ID: worker, DisplayName: "w"}), api.BatchRequest{Subrequests: []api.SubRequest{
+		{ID: "x", Endpoint: "bundle", Action: "apply", Data: json.RawMessage(fmt.Sprintf(`{"project_id":"%d","keys":["publishing"]}`, p))},
+	}})
+	wantCode(t, resp.Subresponses[0], "unauthorized")
+	// Into a bundle's source: the dispatcher refuses any write there, and
+	// bundle_apply refuses it too (its callers aren't all dispatched).
+	source := scalar[int64](t, f, `SELECT source_project_id FROM bundle WHERE key = 'tracker'`)
+	wantCode(t, call(f, "bundle", "apply", fmt.Sprintf(`{"project_id":"%d","keys":["publishing"]}`, source)), "forbidden")
+	got := scalar[string](t, f, `SELECT bundle_apply($1, 'publishing', 1)->>'status'`, source)
+	if got != "conflict" {
+		t.Errorf("bundle_apply into a source = %s, want conflict", got)
+	}
+}
+
+// TestReapplyKeepsDeletedFlowSteps (A21): re-applying a bundle maps its
+// statuses onto the project's and adds only what's missing; a flow step
+// the project deleted between statuses it already has stays deleted.
+func TestReapplyKeepsDeletedFlowSteps(t *testing.T) {
+	f := setup(t, "kitp_test_bundle_reapply_steps")
+	p := compose(t, f, `{"name":"Docs","features":["publishing"]}`).NewProjectID
+	steps := func() int64 {
+		t.Helper()
+		return scalar[int64](t, f, `SELECT count(*) FROM flow_step fs JOIN flow fl ON fl.id = fs.flow_id WHERE fl.scope_card_id = $1`, p)
+	}
+	before := steps()
+	if before == 0 {
+		t.Fatal("the publishing flow has no steps")
+	}
+	if _, err := f.sp.P.Exec(context.Background(), `
+		DELETE FROM flow_step WHERE id = (
+			SELECT fs.id FROM flow_step fs JOIN flow fl ON fl.id = fs.flow_id
+			WHERE fl.scope_card_id = $1 ORDER BY fs.id LIMIT 1)`, p); err != nil {
+		t.Fatal(err)
+	}
+	apply(t, f, p, "publishing")
+	if got := steps(); got != before-1 {
+		t.Errorf("flow steps after re-apply = %d, want %d (the deleted one stays deleted)", got, before-1)
+	}
+}

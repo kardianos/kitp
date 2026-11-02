@@ -53,7 +53,7 @@ BEGIN
             CONTINUE;
         END IF;
         SELECT EXISTS (
-            SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id AND r.name = 'admin'
+            SELECT 1 FROM user_role_effective(area_list_batch.actor_id) ur JOIN role r ON r.id = ur.role_id AND r.name = 'admin'
             WHERE ur.user_id = area_list_batch.actor_id
               AND (ur.scope_card_id IS NULL OR ur.scope_card_id = _project)
         ) INTO _admin;

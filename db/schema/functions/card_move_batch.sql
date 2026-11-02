@@ -71,9 +71,11 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 2b. New parent.
+        -- 2b. New parent — one the actor can see (an invisible one reads
+        --     as missing, so the reply doesn't confirm it exists).
         SELECT card_type_id INTO _parent_type_id
-        FROM card WHERE id = _new_parent;
+        FROM card WHERE id = _new_parent AND deleted_at IS NULL
+          AND card_visible_to(card_move_batch.actor_id, id);
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'parent_not_found'::text,
                 format('card.move: new_parent_card_id %s not found', _new_parent),
@@ -131,6 +133,27 @@ BEGIN
             RETURN QUERY SELECT _idx, false, 'cross_project_ref'::text,
                 format('card.move: attribute %L value card %s belongs to project %s but the move would place card %s in project %s',
                     _ref_attr, _ref_vid, _ref_vproj, _card_id, COALESCE(_new_project::text, '0')),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+
+        -- 3c. The destination (DI-5): the dispatcher authorized the move
+        --     against the card's current project. Into another project the
+        --     actor must also be allowed to update this card type there,
+        --     and the card's area must be on there (a card moved into an
+        --     area that is off would vanish).
+        IF _new_project IS DISTINCT FROM card_enclosing_project(_card_id) THEN
+            SELECT name INTO _child_type_name FROM card_type WHERE id = _child_type_id;
+            IF NOT user_has_grant(card_move_batch.actor_id, _child_type_name, 'card.update', COALESCE(_new_project, 0)) THEN
+                RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                    format('card.move: you can''t move a %s into project %s', _child_type_name, COALESCE(_new_project::text, '0')),
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+        END IF;
+        IF area_write_blocked(_child_type_id, _new_parent, COALESCE(_new_project, 0)) THEN
+            RETURN QUERY SELECT _idx, false, 'area_off'::text,
+                'card.move: the destination is in an area that is switched off'::text,
                 NULL::jsonb;
             CONTINUE;
         END IF;

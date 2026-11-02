@@ -98,10 +98,15 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 2. Verify template exists and is a project card.
+        -- 2. Verify template exists, is a project card the actor can see
+        --    (one it can't reads as missing), is marked as a template, and
+        --    isn't a feature bundle's hidden source project. project.stamp
+        --    is open to workers, so without these it would copy any
+        --    project's structure.
         SELECT card_type_id INTO _template_ct_id
         FROM card
-        WHERE id = _template_id AND deleted_at IS NULL;
+        WHERE id = _template_id AND deleted_at IS NULL
+          AND card_visible_to(project_stamp_batch.actor_id, id);
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'template_not_found'::text,
                 format('project.stamp: template project %s not found', _template_id),
@@ -111,6 +116,17 @@ BEGIN
         IF _template_ct_id <> _project_ct_id THEN
             RETURN QUERY SELECT _idx, false, 'template_not_project'::text,
                 format('project.stamp: card %s is not a project', _template_id),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM attribute_value av
+                       WHERE av.card_id = _template_id AND av.attribute_def_id = _is_template_def_id
+                         AND av.value = to_jsonb(true))
+           OR EXISTS (SELECT 1 FROM attribute_value av
+                      JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'bundle_key'
+                      WHERE av.card_id = _template_id) THEN
+            RETURN QUERY SELECT _idx, false, 'not_a_template'::text,
+                format('project.stamp: project %s is not a template', _template_id),
                 NULL::jsonb;
             CONTINUE;
         END IF;

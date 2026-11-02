@@ -11,9 +11,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kitp/kitp/server/internal/named"
 )
 
 // Mode chooses the authentication strategy.
@@ -117,63 +120,88 @@ type RolesPool interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// LoadUserRoles returns the role names assigned to userID via the
-// `user_role` table, joined to `role.name`. Returns an empty slice if
-// the user has no roles. The dispatcher calls this once per HTTP
-// request as part of the AllowedRoles gate.
+// LoadUserRoles returns the names of the roles userID can use, at any
+// scope (user_role_effective). Returns an empty slice if the user has
+// none. Used for the session's identity, the MCP tool surface and proc
+// discovery; the dispatcher's role gate uses LoadRoleScopes, which also
+// says where each role is held.
 //
-// Agent semantics: when userID points at an agent row (is_agent=true
-// with a non-null parent_user_id), the returned set is the
-// intersection of the agent's own grants and the parent's grants.
-// This caps the agent's effective privileges at whatever the parent
-// currently holds — granting `manager` to an agent has no runtime
-// effect until the parent also holds `manager`, and the agent loses
-// `manager` automatically the moment the parent does. Grant-time
-// checks alone don't survive subsequent parent-role revocations.
+// Agent semantics: an agent (a user with a parent_user_id) uses only the
+// rows its owner also holds, the same role at that scope or workspace-
+// wide. Granting `manager` to an agent does nothing until the owner holds
+// `manager` there, and the agent loses it the moment the owner does —
+// grant-time checks alone don't survive a later revocation.
 func LoadUserRoles(ctx context.Context, pool RolesPool, userID int64) ([]string, error) {
-	rows, err := pool.Query(ctx, `
-		WITH self AS (
-			SELECT id, is_agent, parent_user_id
-			FROM user_account WHERE id = $1
-		),
-		own AS (
-			SELECT r.name
-			FROM user_role ur
-			JOIN role r ON r.id = ur.role_id
-			WHERE ur.user_id = $1
-		),
-		parent_roles AS (
-			SELECT r.name
-			FROM self
-			JOIN user_role ur ON ur.user_id = self.parent_user_id
-			JOIN role r ON r.id = ur.role_id
-			WHERE self.is_agent AND self.parent_user_id IS NOT NULL
-		)
-		SELECT name FROM own
-		WHERE
-		    -- Non-agent target: return their grants verbatim.
-		    NOT EXISTS (SELECT 1 FROM self WHERE is_agent AND parent_user_id IS NOT NULL)
-		    -- Agent target: intersect literally with parent's current
-		    -- grants. No wildcard role anymore — every grant the parent
-		    -- holds must appear by name.
-		 OR name IN (SELECT name FROM parent_roles)
-	`, userID)
+	scopes, err := LoadRoleScopes(ctx, pool, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(scopes))
+	for name := range scopes {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// LoadRoleScopes maps each role userID can use (user_role_effective) to
+// whether it is held workspace-wide (true) or only scoped to projects
+// (false). The role gate needs the difference: an admin-only handler with
+// no project to check against takes a workspace admin.
+func LoadRoleScopes(ctx context.Context, pool RolesPool, userID int64) (map[string]bool, error) {
+	b := named.New()
+	b.Set("user", userID)
+	sql, args, err := b.Compile(`
+		SELECT r.name, bool_or(ur.scope_card_id IS NULL)
+		FROM user_role_effective(:user) ur
+		JOIN role r ON r.id = ur.role_id
+		GROUP BY r.name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("auth: load user roles: compile: %w", err)
+	}
+	rows, err := pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("auth: load user roles: %w", err)
 	}
 	defer rows.Close()
-	var out []string
+	out := map[string]bool{}
 	for rows.Next() {
 		var name string
-		if err := rows.Scan(&name); err != nil {
+		var global bool
+		if err := rows.Scan(&name, &global); err != nil {
 			return nil, err
 		}
-		out = append(out, name)
+		out[name] = global
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// RowQuerier is the surface IsGlobalAdmin needs: *pgxpool.Pool, pgx.Tx
+// and reg.ValidationPool all satisfy it.
+type RowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// IsGlobalAdmin reports whether userID holds the admin role
+// workspace-wide (user_is_global_admin; an agent only while its owner
+// does too). The one admin check behind the admin-only handlers; a
+// project-scoped admin is not a workspace admin.
+func IsGlobalAdmin(ctx context.Context, q RowQuerier, userID int64) (bool, error) {
+	b := named.New()
+	b.Set("user", userID)
+	sql, args, err := b.Compile(`SELECT user_is_global_admin(:user)`)
+	if err != nil {
+		return false, fmt.Errorf("auth: admin check: compile: %w", err)
+	}
+	var admin bool
+	if err := q.QueryRow(ctx, sql, args...).Scan(&admin); err != nil {
+		return false, fmt.Errorf("auth: admin check: %w", err)
+	}
+	return admin, nil
 }
 
 // ActorOrSystem returns the user id from ctx, falling back to the System

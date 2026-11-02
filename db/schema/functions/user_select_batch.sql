@@ -48,7 +48,7 @@ BEGIN
     -- Whether the caller holds the global (unscoped) admin role. Computed
     -- once; gates whether agent rows owned by OTHER users are visible.
     SELECT EXISTS (
-        SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
+        SELECT 1 FROM user_role_effective(actor_id) ur JOIN role r ON r.id = ur.role_id
         WHERE ur.user_id = actor_id AND r.name = 'admin' AND ur.scope_card_id IS NULL
     ) INTO _actor_is_admin;
 

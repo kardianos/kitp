@@ -223,9 +223,7 @@ func (s *Server) viewableBuild(ctx context.Context, portalID, userID int64, inte
 		  AND (card_visible_to(:user, COALESCE(r.root, 0))
 		       OR EXISTS (
 		         SELECT 1 FROM user_account caller
-		         JOIN user_role ur
-		           ON ur.user_id = caller.id
-		           OR (caller.parent_user_id IS NOT NULL AND ur.user_id = caller.parent_user_id)
+		         CROSS JOIN LATERAL user_role_visible(caller.id) ur
 		         WHERE caller.id = :user AND ur.scope_card_id IS NULL))`)
 	if err != nil {
 		return 0, fmt.Errorf("compile: %w", err)

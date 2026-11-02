@@ -34,9 +34,9 @@ Click **Revoke** on a token row. The token is invalidated immediately; any in-fl
 
 ## Granting roles to an agent
 
-Agents inherit nothing from their parent by default — a fresh agent has no roles. Use **Admin · Users**, find the agent in the user list (agents and humans share the same list), and assign roles there with the usual scope picker.
+An agent acts on its owner's behalf, so it **sees** exactly what its owner sees — never more. What it can **do** is narrower: a fresh agent has no roles, and acts only with the roles you grant it. Use **Admin · Users**, find the agent in the user list (agents and humans share the same list), and assign roles there with the usual scope picker.
 
-The **parent-grants-subset** rule is enforced server-side: an agent can never hold a role its parent user does not hold at the same scope. If you try to grant a role you yourself don't hold, the assignment is refused.
+The **parent-grants-subset** rule is enforced server-side, whoever does the granting: an agent can only be given a role its owner holds at that scope (or workspace-wide); anything else is refused. If the owner later loses the role, the agent stops using it at once.
 
 ## Deleting an agent
 

@@ -157,14 +157,11 @@ func authzParentOrAdmin(ctx context.Context, targetUserID int64) error {
 	if parentID != nil && *parentID == actor {
 		return nil
 	}
-	var n int
-	if err := pool.P.QueryRow(ctx, `
-		SELECT count(*) FROM user_role ur JOIN role r ON r.id = ur.role_id
-		WHERE ur.user_id = $1 AND r.name IN ('admin','system') AND ur.scope_card_id IS NULL
-	`, actor).Scan(&n); err != nil {
+	admin, err := auth.IsGlobalAdmin(ctx, pool.P, actor)
+	if err != nil {
 		return fmt.Errorf("user_token.authz: admin check: %w", err)
 	}
-	if n == 0 {
+	if !admin {
 		return &reg.HandlerError{Code: "forbidden",
 			Message: fmt.Sprintf("user_token: actor %d is neither parent of %d nor a global admin", actor, targetUserID)}
 	}

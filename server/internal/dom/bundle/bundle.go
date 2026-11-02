@@ -109,15 +109,17 @@ func Register(_ *store.Pool) {
 		SQLFunc:      "bundle_list_batch",
 	})
 	reg.Register(reg.Handler{
-		Endpoint:     "bundle",
-		Action:       "apply",
-		Doc:          "Add feature bundles to a project: their statuses + flow, screens, filters and starter content are copied in. Re-applying a feature adds only what's missing; a feature whose flow would replace one the project already has is refused. Requires edit rights on the project.",
-		InputType:    reflect.TypeFor[ApplyInput](),
-		OutputType:   reflect.TypeFor[ApplyOutput](),
-		AllowedRoles: writers,
-		// Adding a feature edits the project's configuration: gate on
-		// card.update of the project card, scoped to that project.
-		ProcessName: "card.update",
+		Endpoint:   "bundle",
+		Action:     "apply",
+		Doc:        "Add feature bundles to a project: their statuses + flow, screens, filters and starter content are copied in. Re-applying a feature adds only what's missing; a feature whose flow would replace one the project already has is refused. Admin only, like switching an area on (area.set), since it can set an area up.",
+		InputType:  reflect.TypeFor[ApplyInput](),
+		OutputType: reflect.TypeFor[ApplyOutput](),
+		// Admin only: adding a bundle sets its area up, which area.set
+		// keeps to admins (it reveals what the area holds). Gated on
+		// card.update of the project card, scoped to that project, so a
+		// project's own admin qualifies.
+		AllowedRoles: []string{"admin"},
+		ProcessName:  "card.update",
 		CardTypeID: func(ctx context.Context, pool reg.ValidationPool, in any) (int64, error) {
 			return schema.CardTypeIDByCardID(ctx, pool, in.(ApplyInput).ProjectID)
 		},

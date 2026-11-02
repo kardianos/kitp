@@ -205,3 +205,38 @@ func TestFlowListBatch_MultiInput(t *testing.T) {
 		t.Errorf("first input got %d, want 2: %+v", len(first.Rows), first.Rows)
 	}
 }
+
+// TestFlowListBatch_OnlyVisibleProjects (B16): a flow row names its
+// project, so flow.list returns only the flows of projects the caller can
+// see.
+func TestFlowListBatch_OnlyVisibleProjects(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_flow_list_visible")
+	ctx := context.Background()
+	var project, scoped int64
+	if err := pool.QueryRow(ctx, `INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'project' RETURNING id`).Scan(&project); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO user_account (display_name) VALUES ('scoped') RETURNING id`).Scan(&scoped); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_role (user_id, role_id, scope_card_id) SELECT $1, id, $2 FROM role WHERE name = 'worker'`, scoped, project); err != nil {
+		t.Fatal(err)
+	}
+	count := func(actor int64) int {
+		t.Helper()
+		rows := callFlowListBatch(t, pool, actor, []map[string]any{{}})
+		var out struct {
+			Rows []json.RawMessage `json:"rows"`
+		}
+		if err := json.Unmarshal(rows[0].Result, &out); err != nil {
+			t.Fatal(err)
+		}
+		return len(out.Rows)
+	}
+	if n := count(auth.SystemUserID); n == 0 {
+		t.Fatal("the System user sees no flows; the fixture needs some")
+	}
+	if n := count(scoped); n != 0 {
+		t.Errorf("a user scoped to a project with no flows sees %d flows of other projects", n)
+	}
+}

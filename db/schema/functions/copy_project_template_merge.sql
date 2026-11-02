@@ -95,6 +95,9 @@ DECLARE
     _flow_existing boolean;
     _copied int := 0;
     _existing int := 0;
+    _flow_is_new boolean;
+    _from_is_new boolean;
+    _to_is_new boolean;
 BEGIN
     -- Per-call temp tables. DROP-then-CREATE so multiple calls within
     -- one tx (e.g. a card.insert batch creating two projects) don't
@@ -265,19 +268,26 @@ BEGIN
 
     -- Phase C: copy flow_step rows under every remapped flow. from/to
     -- remap via _remap; requires_role_id stays (roles are install-global).
-    FOR _flow_src_id, _new_flow_id IN
-        SELECT src_flow_id, new_flow_id FROM _flow_remap
+    -- Into a flow the project already had (a re-apply), only a step that
+    -- touches a status this call added is copied: steps between statuses
+    -- the project already has are its own, so one it deleted stays deleted
+    -- (review A21), while a bundle's new status still brings its steps.
+    FOR _flow_src_id, _new_flow_id, _flow_is_new IN
+        SELECT src_flow_id, new_flow_id, is_new FROM _flow_remap
     LOOP
         FOR _step_from, _step_to, _step_label, _step_role_id, _step_sort_order, _step_standalone IN
             SELECT from_card_id, to_card_id, label, requires_role_id, sort_order, standalone
             FROM flow_step WHERE flow_id = _flow_src_id
         LOOP
-            SELECT new_id INTO _mapped_from FROM _remap WHERE src_id = _step_from;
+            SELECT new_id, is_new INTO _mapped_from, _from_is_new FROM _remap WHERE src_id = _step_from;
             IF NOT FOUND THEN
                 CONTINUE;
             END IF;
-            SELECT new_id INTO _mapped_to FROM _remap WHERE src_id = _step_to;
+            SELECT new_id, is_new INTO _mapped_to, _to_is_new FROM _remap WHERE src_id = _step_to;
             IF NOT FOUND THEN
+                CONTINUE;
+            END IF;
+            IF NOT _flow_is_new AND NOT _from_is_new AND NOT _to_is_new THEN
                 CONTINUE;
             END IF;
             INSERT INTO flow_step (flow_id, from_card_id, to_card_id, label, requires_role_id, sort_order, standalone)

@@ -312,3 +312,73 @@ func TestUnauthorizedHelperShape(t *testing.T) {
 		t.Errorf("Sprintf format failed: %q", he.Message)
 	}
 }
+
+// TestWorkspaceAdminOnly: an admin-only handler with no project for the
+// per-row pass to check (GlobalScope here) acts workspace-wide, so a role
+// held only on a project doesn't reach it — B3. An agent counts as a
+// workspace admin only while its owner is one (user_role_effective), even
+// with a stored workspace-wide admin row of its own — B1.
+func TestWorkspaceAdminOnly(t *testing.T) {
+	srv, sp := setupGate(t, "kitp_test_gate_workspace_admin")
+	registerGateProbe("gate", "ws_admin", []string{"admin"})
+	ctx := context.Background()
+	call := func(id int64) api.SubResponse {
+		t.Helper()
+		return srv.Dispatch(ctxAs(id, "u"), api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "a", Endpoint: "gate", Action: "ws_admin", Data: json.RawMessage(`{"n":1}`)},
+		}}).Subresponses[0]
+	}
+	var project int64
+	if err := sp.P.QueryRow(ctx, `INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'project' RETURNING id`).Scan(&project); err != nil {
+		t.Fatal(err)
+	}
+	user := func(name string, owner int64) int64 {
+		t.Helper()
+		var id int64
+		var parent any
+		if owner != 0 {
+			parent = owner
+		}
+		if err := sp.P.QueryRow(ctx, `INSERT INTO user_account (display_name, parent_user_id, is_agent) VALUES ($1, $2::bigint, $2::bigint IS NOT NULL) RETURNING id`, name, parent).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	grant := func(id int64, role string, scope any) {
+		t.Helper()
+		if _, err := sp.P.Exec(ctx, `INSERT INTO user_role (user_id, role_id, scope_card_id) SELECT $1, id, $3 FROM role WHERE name = $2`, id, role, scope); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	projectAdmin := user("project-admin", 0)
+	grant(projectAdmin, "admin", project)
+	if r := call(projectAdmin); r.OK || r.Error == nil || r.Error.Code != "unauthorized" {
+		t.Errorf("a project's admin reached a workspace admin handler: %+v", r)
+	} else if !strings.Contains(r.Error.Message, "workspace admin") {
+		t.Errorf("message %q doesn't say a workspace admin is needed", r.Error.Message)
+	}
+
+	wsAdmin := user("workspace-admin", 0)
+	grant(wsAdmin, "admin", nil)
+	if r := call(wsAdmin); !r.OK {
+		t.Errorf("a workspace admin was refused: %+v", r.Error)
+	}
+
+	// An agent of the project admin, with a stored workspace-wide admin
+	// row (as if granted before the owner rule): not a workspace admin.
+	agent := user("agent-of-project-admin", projectAdmin)
+	grant(agent, "admin", nil)
+	if r := call(agent); r.OK {
+		t.Error("an agent used a workspace admin role its owner doesn't hold")
+	}
+	// An agent of the workspace admin, granted admin: is one.
+	wsAgent := user("agent-of-workspace-admin", wsAdmin)
+	grant(wsAgent, "admin", nil)
+	if r := call(wsAgent); !r.OK {
+		t.Errorf("a workspace admin's agent with admin was refused: %+v", r.Error)
+	}
+	if ok, err := auth.IsGlobalAdmin(ctx, sp.P, agent); err != nil || ok {
+		t.Errorf("IsGlobalAdmin(agent of a project admin) = %v, %v; want false", ok, err)
+	}
+}

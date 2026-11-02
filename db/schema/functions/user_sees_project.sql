@@ -7,9 +7,7 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
     SELECT EXISTS (
         SELECT 1
         FROM user_account u
-        JOIN user_role ur
-          ON ur.user_id = u.id
-          OR (u.parent_user_id IS NOT NULL AND ur.user_id = u.parent_user_id)
+        CROSS JOIN LATERAL user_role_visible(u.id) ur
         WHERE u.id = p_user_id
           AND (ur.scope_card_id IS NULL
                OR ur.scope_card_id IN (SELECT a.id FROM card_ancestors(p_project_id) a))

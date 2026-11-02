@@ -123,6 +123,13 @@ BEGIN
                 'attribute.update: attribute_name is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
+        -- bundle_key marks a feature bundle's hidden source project; only
+        -- the bundle files set it (store.applyBundles), and boot trusts it.
+        IF _attr_name = 'bundle_key' THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'attribute.update: bundle_key is set by kitp, not by hand'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
 
         -- 1b. Card existence.
         SELECT card_type_id INTO _card_type_id FROM card WHERE id = _card_id;
@@ -426,13 +433,13 @@ BEGIN
                                 SELECT r.name,
                                        (
                                          EXISTS (
-                                           SELECT 1 FROM user_role ur
+                                           SELECT 1 FROM user_role_effective(actor_id) ur
                                            JOIN role sr ON sr.id = ur.role_id
                                            WHERE ur.user_id = actor_id AND sr.name = 'system'
                                              AND ur.scope_card_id IS NULL
                                          )
                                          OR EXISTS (
-                                           SELECT 1 FROM user_role ur
+                                           SELECT 1 FROM user_role_effective(actor_id) ur
                                            WHERE ur.user_id = actor_id AND ur.role_id = _requires_role_id
                                              AND (ur.scope_card_id IS NULL
                                                   OR ur.scope_card_id = _target_project_id)

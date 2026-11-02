@@ -894,6 +894,15 @@ func (s *Server) runAuthzPass(ctx context.Context, prepped []prepared, slots []S
 		return err
 	}
 
+	// Feature bundles' source projects are code-owned — store.applyBundles
+	// rebuilds them at boot and every project using a bundle copies from
+	// them — so no handler writes into one (review A2).
+	sources, err := bundleSourceProjects(ctx, s.Pool)
+	if err != nil {
+		s.abortWithError(ctx, slots, prepped[0].OuterIdx, "validation", err)
+		return err
+	}
+
 	for _, p := range prepped {
 		if err := s.authorizeLeaf(ctx, p.Handler, p.Input, grants, lookup, projTypeID); err != nil {
 			// authorizeLeaf returns a *reg.HandlerError with a safe
@@ -902,6 +911,12 @@ func (s *Server) runAuthzPass(ctx context.Context, prepped []prepared, slots []S
 			// redacts the latter (A5).
 			s.abortWithError(ctx, slots, p.OuterIdx, "unauthorized", err)
 			return err
+		}
+		if len(sources) > 0 && !p.Handler.IsRead {
+			if err := s.checkBundleSource(ctx, p.Handler, p.Input, lookup, projTypeID, sources); err != nil {
+				s.abortWithError(ctx, slots, p.OuterIdx, "forbidden", err)
+				return err
+			}
 		}
 		if !areasOff {
 			continue

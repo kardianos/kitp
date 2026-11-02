@@ -208,6 +208,12 @@ BEGIN
             IF _attr_name = 'title' THEN
                 CONTINUE;
             END IF;
+            -- bundle_key is server-owned: only the bundle files set it.
+            IF _attr_name = 'bundle_key' THEN
+                _rej_code := 'validation';
+                _rej_msg := 'card.insert: bundle_key is set by kitp, not by hand';
+                EXIT;
+            END IF;
             PERFORM 1
             FROM attribute_def ad
             JOIN edge e ON e.attribute_def_id = ad.id

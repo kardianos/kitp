@@ -14,6 +14,14 @@
 // (AUTH_MODE=off, System User) keeps reaching every endpoint without
 // having to list `"system"` in every handler.
 //
+// Roles are the caller's effective ones (auth.LoadRoleScopes: an agent
+// uses only what its owner holds). A role held only on some projects
+// passes the gate for handlers whose per-row pass then checks the target
+// project; an admin-only handler with no project to check against (no
+// CardTypeID + ProcessName, or GlobalScope) takes a workspace admin, so a
+// project's admin can't reach workspace-wide admin surfaces (people,
+// users, portals, themes, …).
+//
 // Permission failures here use the same `unauthorized` code as the
 // per-handler ownership checks in reg.Unauthorized so callers see one
 // canonical shape.
@@ -43,26 +51,18 @@ func (s *Server) runRoleGate(ctx context.Context, prepped []prepared, slots []Su
 	// a DB round-trip.
 	type rolesCache struct {
 		loaded bool
-		set    map[string]struct{}
+		set    map[string]bool // role name → held workspace-wide
 		err    error
 	}
 	cache := rolesCache{}
-	loadRoles := func() (map[string]struct{}, error) {
+	loadRoles := func() (map[string]bool, error) {
 		if cache.loaded {
 			return cache.set, cache.err
 		}
 		cache.loaded = true
 		userID := auth.ActorOrSystem(ctx)
-		names, err := auth.LoadUserRoles(ctx, s.Pool.P, userID)
-		if err != nil {
-			cache.err = err
-			return nil, err
-		}
-		cache.set = make(map[string]struct{}, len(names))
-		for _, n := range names {
-			cache.set[n] = struct{}{}
-		}
-		return cache.set, nil
+		cache.set, cache.err = auth.LoadRoleScopes(ctx, s.Pool.P, userID)
+		return cache.set, cache.err
 	}
 
 	for _, p := range prepped {
@@ -82,7 +82,7 @@ func (s *Server) runRoleGate(ctx context.Context, prepped []prepared, slots []Su
 func (s *Server) checkLeafRoles(
 	ctx context.Context,
 	h reg.Handler,
-	loadRoles func() (map[string]struct{}, error),
+	loadRoles func() (map[string]bool, error),
 ) error {
 	// 1. $public: skip everything (login + role).
 	for _, r := range h.AllowedRoles {
@@ -114,10 +114,18 @@ func (s *Server) checkLeafRoles(
 		// redacts it instead of shipping err.Error() (A5 / SEC-2).
 		return fmt.Errorf("role gate: load roles for %s.%s: %w", h.Endpoint, h.Action, err)
 	}
+	workspaceOnly := needsWorkspaceAdmin(h)
 	for _, r := range h.AllowedRoles {
-		if _, ok := have[r]; ok {
+		global, ok := have[r]
+		if ok && (global || !workspaceOnly) {
 			return nil
 		}
+	}
+	if workspaceOnly {
+		return reg.Unauthorized(
+			"user %d is not a workspace admin, which %s.%s needs",
+			user.ID, h.Endpoint, h.Action,
+		)
 	}
 	return reg.Unauthorized(
 		"user %d lacks any role in %v for %s.%s",
@@ -125,3 +133,17 @@ func (s *Server) checkLeafRoles(
 	)
 }
 
+// needsWorkspaceAdmin reports whether a handler is admin-only (every
+// AllowedRoles entry is admin or system) with no project for the per-row
+// pass to check: it has no CardTypeID + ProcessName, or is GlobalScope.
+// Such a handler acts workspace-wide, so a role held only on some
+// projects doesn't reach it.
+func needsWorkspaceAdmin(h reg.Handler) bool {
+	for _, r := range h.AllowedRoles {
+		if r != "admin" && r != "system" {
+			return false
+		}
+	}
+	anchored := h.CardTypeID != nil && h.ProcessName != "" && !h.GlobalScope
+	return !anchored
+}

@@ -39,6 +39,14 @@ BEGIN
             'message', format('no feature bundle %L', bundle_key));
     END IF;
 
+    -- Never into a feature bundle's own source project: it is code-owned,
+    -- rebuilt at boot, and copied into every project that uses the bundle.
+    IF EXISTS (SELECT 1 FROM bundle b WHERE b.source_project_id = bundle_apply.project_id) THEN
+        RETURN jsonb_build_object('key', bundle_key, 'status', 'conflict',
+            'copied', 0, 'existing', 0,
+            'message', format('project %s is a feature bundle''s source; bundles can''t be added to it', project_id));
+    END IF;
+
     PERFORM pg_advisory_xact_lock(
         hashtextextended('kitp.bundle:' || project_id::text || ':' || bundle_key, 0));
 

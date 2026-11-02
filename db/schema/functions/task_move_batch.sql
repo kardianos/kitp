@@ -196,6 +196,22 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
+        -- The destination too (DI-5): the dispatcher authorized the move
+        -- against the task's own project; the actor must also be allowed to
+        -- update tasks in the destination, and its Tasks area must be on (a
+        -- task moved into an area that is off would vanish).
+        IF NOT user_has_grant(task_move_batch.actor_id, 'task', 'card.update', _new_project_id) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                format('task.move: you can''t add tasks to project %s', _new_project_id),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF area_write_blocked(_moved_type_id, _new_project_id, _new_project_id) THEN
+            RETURN QUERY SELECT _idx, false, 'area_off'::text,
+                format('task.move: Tasks is switched off in project %s', _new_project_id),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
         -- Cycle guard (A1 / SEC-1): never re-parent a task under itself
         -- or under a card inside its own subtree. A well-formed project
         -- can't be a descendant of a task, but guarding here keeps the
