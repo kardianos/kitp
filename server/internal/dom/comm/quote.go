@@ -50,13 +50,21 @@ var (
 	quoteTrailer   = regexp.MustCompile(`^(Ref|Task):\s*\S+\s*$`)
 )
 
+// maxSplitBytes caps the text SplitQuoted looks at: a message larger
+// than this is shown (and quoted) whole. Ordinary mail is far smaller.
+const maxSplitBytes = 512 << 10
+
 // SplitQuoted splits a received message into its own text and the quoted
 // history its mail program added below it: an "On … wrote:" header, a
 // "-----Original Message-----" or Outlook "From: … Sent: …" block, a run
 // of ">" lines that lasts to the end, or kitp's own Task: / Ref: trailer.
 // It is a guess, so it only ever trims the tail, and never everything:
 // when nothing would be left of the message, it is returned whole.
+// Linear in the size of the message (review A5).
 func SplitQuoted(body string) (own, quoted string) {
+	if len(body) > maxSplitBytes {
+		return body, ""
+	}
 	text := strings.ReplaceAll(body, "\r\n", "\n")
 	lines := strings.Split(text, "\n")
 	cut := quoteCut(lines)
@@ -70,13 +78,30 @@ func SplitQuoted(body string) (own, quoted string) {
 	return own, strings.Trim(strings.Join(lines[cut:], "\n"), "\n")
 }
 
-// quoteCut is the index of the first line of the quoted tail, or -1.
+// quoteCut is the index of the first line of the quoted tail, or -1. The
+// two "to the end" rules are suffix properties, so one backward pass
+// records them for every line first; the forward scan then looks at most
+// four lines ahead.
 func quoteCut(lines []string) int {
+	n := len(lines)
+	// quotedFrom[i]: from line i on, every non-blank line is a ">" line
+	// or kitp's trailer. trailerFrom[i]: every non-blank line is a
+	// trailer line.
+	quotedFrom := make([]bool, n+1)
+	trailerFrom := make([]bool, n+1)
+	quotedFrom[n], trailerFrom[n] = true, true
+	for i := n - 1; i >= 0; i-- {
+		ln := lines[i]
+		blank := strings.TrimSpace(ln) == ""
+		trailer := quoteTrailer.MatchString(ln)
+		quotedFrom[i] = quotedFrom[i+1] && (blank || trailer || isQuoteLine(ln))
+		trailerFrom[i] = trailerFrom[i+1] && (blank || trailer)
+	}
 	for i, ln := range lines {
 		switch {
 		case quoteOnWrote.MatchString(ln):
 			return i
-		case quoteOnStart.MatchString(ln) && i+1 < len(lines) && quoteWroteEnd.MatchString(lines[i+1]) && !quoteOnStart.MatchString(lines[i+1]):
+		case quoteOnStart.MatchString(ln) && i+1 < n && quoteWroteEnd.MatchString(lines[i+1]) && !quoteOnStart.MatchString(lines[i+1]):
 			return i
 		case quoteOriginal.MatchString(ln):
 			return i
@@ -85,9 +110,9 @@ func quoteCut(lines []string) int {
 				return i - 1
 			}
 			return i
-		case isQuoteLine(ln) && quotedToEnd(lines, i):
+		case isQuoteLine(ln) && quotedFrom[i]:
 			return i
-		case quoteTrailer.MatchString(ln) && trailerToEnd(lines, i):
+		case quoteTrailer.MatchString(ln) && trailerFrom[i]:
 			return i
 		}
 	}
@@ -106,29 +131,6 @@ func outlookHeader(lines []string, i int) bool {
 }
 
 func isQuoteLine(ln string) bool { return strings.HasPrefix(strings.TrimLeft(ln, " \t"), ">") }
-
-// quotedToEnd: from i on, every non-blank line is a ">" line or kitp's
-// trailer — the reply was written above the quote (top-posted).
-func quotedToEnd(lines []string, i int) bool {
-	for _, ln := range lines[i:] {
-		if strings.TrimSpace(ln) == "" || isQuoteLine(ln) || quoteTrailer.MatchString(ln) {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-// trailerToEnd: from i on there is nothing but Task: / Ref: lines.
-func trailerToEnd(lines []string, i int) bool {
-	for _, ln := range lines[i:] {
-		if strings.TrimSpace(ln) == "" || quoteTrailer.MatchString(ln) {
-			continue
-		}
-		return false
-	}
-	return true
-}
 
 // quotedMessage is one earlier message of a thread, for quoting.
 type quotedMessage struct {

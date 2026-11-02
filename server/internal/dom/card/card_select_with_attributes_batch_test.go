@@ -501,3 +501,38 @@ func TestCardSelectWithAttrsBatch_WithinLastDays(t *testing.T) {
 		t.Errorf("old task (activity 30d ago) should NOT match within_last_days 15")
 	}
 }
+
+// TestCardSelectWithAttrsBatch_IDs (A12): ids returns just those cards —
+// a detail page loads its one card, not every card of the type — and
+// still applies the other filters and visibility.
+func TestCardSelectWithAttrsBatch_IDs(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_swa_ids")
+	_, t1 := seedProjectWithTask(t, pool, "A")
+	_, t2 := seedProjectWithTask(t, pool, "B")
+	_, _ = seedProjectWithTask(t, pool, "C")
+	ids := func(inputs map[string]any) []string {
+		t.Helper()
+		rows := callCardSelectWithAttrsBatch(t, pool, auth.SystemUserID, []map[string]any{inputs})
+		if !rows[0].OK {
+			t.Fatalf("select: %+v", rows[0])
+		}
+		var out []string
+		for _, r := range decodeSWA(t, rows[0].Result).Rows {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	s := func(n int64) string { return strconv.FormatInt(n, 10) }
+	if got := ids(map[string]any{"card_type_name": "task", "ids": []string{s(t1)}}); len(got) != 1 || got[0] != s(t1) {
+		t.Errorf("ids [t1] = %v", got)
+	}
+	if got := ids(map[string]any{"card_type_name": "task", "ids": []string{s(t1), s(t2)}}); len(got) != 2 {
+		t.Errorf("ids [t1, t2] = %v", got)
+	}
+	if got := ids(map[string]any{"card_type_name": "project", "ids": []string{s(t1)}}); len(got) != 0 {
+		t.Errorf("a task id with card_type_name project = %v, want none", got)
+	}
+	if got := ids(map[string]any{"card_type_name": "task", "ids": []string{"x"}}); len(got) != 0 {
+		t.Errorf("malformed ids = %v, want none", got)
+	}
+}

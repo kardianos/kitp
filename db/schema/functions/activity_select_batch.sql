@@ -38,6 +38,7 @@ DECLARE
     _idx int;
     _raw jsonb;
     _card_id bigint;
+    _thread_comments boolean;
     _project_id bigint;
     _before_id bigint;
     _from_date date;
@@ -125,6 +126,10 @@ BEGIN
             ) AS e
         );
         _q := NULLIF(btrim(COALESCE(_raw->>'q', '')), '');
+        -- with_thread_comments (with card_id): also the comments made on
+        -- the card's own email threads, so a thread's comments stay in
+        -- view once it is attached to a task (review A13).
+        _thread_comments := COALESCE((_raw->>'with_thread_comments')::boolean, false);
         _facets := COALESCE(_raw->'facets' = 'true'::jsonb, false);
 
         IF _card_id IS NULL OR _card_id = 0 THEN
@@ -140,7 +145,11 @@ BEGIN
             FROM activity a
             JOIN card c ON c.id = a.card_id
             JOIN card_type ct ON ct.id = c.card_type_id
-            WHERE (_card_id IS NULL OR a.card_id = _card_id)
+            WHERE (_card_id IS NULL OR a.card_id = _card_id
+                   OR (_thread_comments AND a.kind IN ('comment', 'comment_edit') AND a.card_id IN (
+                         SELECT th.id FROM card th
+                         JOIN card_type tht ON tht.id = th.card_type_id AND tht.name = 'comm'
+                         WHERE th.parent_card_id = _card_id AND th.deleted_at IS NULL)))
               -- Date window (inclusive by day) on created_at.
               AND (_from_date IS NULL OR a.created_at >= _from_date)
               AND (_to_date IS NULL OR a.created_at < (_to_date + 1))

@@ -423,6 +423,9 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 		JOIN card ch ON ch.id = (cref_av.value)::text::bigint
 		WHERE rb.deleted_at IS NULL
 		  AND cm.deleted_at IS NULL
+		  -- A thread in an area that is switched off waits: its queued
+		  -- replies send once the area is back on (review A3).
+		  AND NOT card_in_off_area(cm.id)
 		  AND ch.deleted_at IS NULL
 		  AND ch.id = :channel_id
 		ORDER BY rb.id
@@ -516,7 +519,10 @@ func (s *SMTPSender) loadEarlier(ctx context.Context, r pendingReply) ([]quotedM
 		if err := rows.Scan(&id, &m.From, &m.Body, &status, &m.At); err != nil {
 			return nil, fmt.Errorf("loadEarlier: scan: %w", err)
 		}
-		if status != "received" {
+		if status == "received" {
+			// Stored as it came before kitp decoded it at intake.
+			m.From = displayAddress(m.From)
+		} else {
 			if m.From == "" {
 				m.From = r.fromAddress
 			}

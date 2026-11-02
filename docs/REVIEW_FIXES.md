@@ -33,14 +33,16 @@ Done (area 2): bundle SQL lookups match the source on bundle_key, skip deleted c
 
 ## 3. Conversations and mail
 
-- [ ] **A3** Mail in areas that are off: task-mode intake with Tasks off creates hidden tasks; findCommByThreadID matches across projects and into hidden threads; SMTP loadPending sends queued replies on hidden threads (and quotes hidden history).
-- [ ] **A5** SplitQuoted is quadratic (Go and web): linear pass + input cap.
-- [ ] **A12** Thread page loads every comm card in the install to show one.
-- [ ] **A13** A thread's comments vanish from the UI after it is attached to a task.
-- [ ] **A15** comm.attach: area_off branch unreachable; no row locks (concurrent attaches); detach doesn't check the old task's grant.
-- [ ] **A23** Make a task: two requests (a failed attach leaves an empty task); offered when Tasks is unused.
-- [ ] **A24** Positional `$N` in new/modified imap.go queries; stale comments in recipients.go:68, comm_ack.go:10.
-- [ ] **A27** RFC 2047 sender names not decoded in quotes.
+- [x] **A3** Mail in areas that are off: task-mode intake with Tasks off creates hidden tasks; findCommByThreadID matches across projects and into hidden threads; SMTP loadPending sends queued replies on hidden threads (and quotes hidden history).
+- [x] **A5** SplitQuoted is quadratic (Go and web): linear pass + input cap.
+- [x] **A12** Thread page loads every comm card in the install to show one.
+- [x] **A13** A thread's comments vanish from the UI after it is attached to a task.
+- [x] **A15** comm.attach: area_off branch unreachable; no row locks (concurrent attaches); detach doesn't check the old task's grant.
+- [x] **A23** Make a task: two requests (a failed attach leaves an empty task); offered when Tasks is unused.
+- [x] **A24** Positional `$N` in new/modified imap.go queries; stale comments in recipients.go:68, comm_ack.go:10.
+- [x] **A27** RFC 2047 sender names not decoded in quotes.
+
+Done (area 3): a task-mode account's new mail becomes a thread on its own while Tasks is off; a reply's thread id matches only a visible thread in the account's own project, else it's new mail there; the SMTP sender holds replies on threads in an area that is off. SplitQuoted is linear (Go and web) with a 512 KB cap. card.select_with_attributes takes `ids`, and the detail loads its one card (pages still load their siblings). activity.select's `with_thread_comments` puts a task's thread comments (and their edits) on the task, labelled "on thread …". comm.attach checks the area before visibility, locks the thread and its tasks, needs the task grant to leave a task, and makes a task itself (`new_task_title`, one transaction); the TASK section shows only while Tasks is on. imap.go uses named parameters throughout; subjects and sender names are decoded (any charset x/text knows).
 
 ## 4. Areas
 

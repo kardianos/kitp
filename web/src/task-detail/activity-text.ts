@@ -249,6 +249,9 @@ export interface CommentEntry {
    *  verdict and the status step it's about ("Review → Done (Approve)").
    *  Its body is the optional reason. */
   vote?: { decision: 'approve' | 'reject'; label: string };
+  /** Set when the comment was made on one of the card's email threads (a
+   *  task page also lists those): the thread's subject. */
+  thread?: string;
 }
 
 /**
@@ -262,7 +265,7 @@ export interface CommentEntry {
  *
  * Mirrors the Svelte screen's `comments` derived computation.
  */
-export function deriveComments(orderedNewestFirst: readonly ActivityRow[]): CommentEntry[] {
+export function deriveComments(orderedNewestFirst: readonly ActivityRow[], focalCardId?: bigint): CommentEntry[] {
   // Latest comment_edit for a given comment id wins (we iterate newest-first,
   // so the first edit we see for an id is the most recent).
   const editedBodies = new Map<string, string>();
@@ -286,6 +289,11 @@ export function deriveComments(orderedNewestFirst: readonly ActivityRow[]): Comm
     const entry: CommentEntry = { id: a.id, body, actorId: a.actorId, createdAt: a.createdAt, edited };
     if (a.actorName !== undefined) entry.actorName = a.actorName;
     if (a.kind === 'approval_decision') entry.vote = voteOf(a);
+    // A comment on one of the focal card's threads (activity.select's
+    // with_thread_comments) says which thread.
+    if (focalCardId !== undefined && a.cardId !== focalCardId && a.cardType === 'comm') {
+      entry.thread = a.cardTitle !== undefined && a.cardTitle !== '' ? a.cardTitle : 'an email thread';
+    }
     out.push(entry);
   }
   return out;

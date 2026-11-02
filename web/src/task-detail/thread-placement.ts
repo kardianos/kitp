@@ -6,29 +6,27 @@
  *     `#id` finds any task); `comm.attach` moves the thread there, history
  *     intact.
  *   - Make a task — a task titled with the thread's subject, starting in the
- *     project's task flow's first status (card.insert's default), then
- *     attached.
+ *     project's task flow's first status (card.insert's default), with the
+ *     thread attached: one comm.attach (new_task_title), so a failure leaves
+ *     no empty task behind.
  *
  * Both end on the task's page, where the thread now lives. A thread on a task
  * is moved back with Detach in the task's COMMS section. The detail hides
  * this section while Tasks is switched off (SECTION_AREA 'placement').
  *
- * Zero promises: card.insert → comm.attach chain through
- * `api.callByName(..., { alive, onErr })`; a refusal shows inline.
+ * Zero promises: `api.callByName(..., { alive, onErr })`; a refusal shows
+ * inline.
  */
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { faultText } from '../admin/record-form.js';
 import { navigate, taskUrl } from '../shell/router.js';
-import { PROJECT_SPEC, type CardInsertOutput } from '../projects/specs.js';
-import { COMM_ATTACH_SPEC } from './comm-specs.js';
+import { COMM_ATTACH_SPEC, type CommAttachOutput } from './comm-specs.js';
 
 export interface ThreadPlacementConfig extends BaseControlConfig {
   type: 'ThreadPlacement';
   /** The thread (comm card) id. */
   commId: string;
-  /** The thread's project, where Make a task creates the task. */
-  projectId: string;
   /** The thread's subject: Make a task's title. */
   title: string;
   /** Dotted tree path of the project id the task picker searches under.
@@ -153,21 +151,19 @@ export class ThreadPlacement extends Control<ThreadPlacementConfig> {
     this.showError('');
     const title = this.config.title.trim() !== '' ? this.config.title.trim() : '(no subject)';
     this.ctx.api.callByName(
-      PROJECT_SPEC.cardInsert,
-      { cardTypeName: 'task', parentCardId: BigInt(this.config.projectId), title },
-      (out) => {
-        this.busy = false;
-        this.attach((out as CardInsertOutput).id);
-      },
+      COMM_ATTACH_SPEC,
+      { commId: BigInt(this.config.commId), taskId: 0n, newTaskTitle: title },
+      (out) => navigate(taskUrl((out as CommAttachOutput).taskId)),
       {
         alive: () => this.isAlive(),
         onErr: (f) => {
           this.setBusy(false);
-          this.showError(faultText(f).replace(/^card\.insert: /, ''));
+          this.showError(faultText(f).replace(/^comm\.attach: /, ''));
         },
       },
     );
   }
+
 }
 
 export function registerThreadPlacement(): void {

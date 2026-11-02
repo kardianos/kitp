@@ -6510,6 +6510,14 @@ select optgroup {
   font-style: italic;
   font-size: var(--text-2xs);
 }
+/* "on thread “…”": a comment made on one of the task's email threads. */
+.task-comments__thread {
+  font-size: var(--text-2xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 24ch;
+}
 .task-comments__time {
   margin-left: auto;
   font-size: var(--text-2xs);

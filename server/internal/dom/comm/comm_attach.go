@@ -17,6 +17,9 @@ import (
 type CommAttachInput struct {
 	CommID int64 `json:"comm_id,string" mcp:"required,desc=comm card id (the thread) to move"`
 	TaskID int64 `json:"task_id,string,omitempty" mcp:"desc=task card id to attach the thread to, in the same project; 0 or omitted detaches it back into its project as a thread on its own"`
+	// NewTaskTitle, with no TaskID: make a task with this title in the
+	// thread's project and attach the thread to it, in one transaction.
+	NewTaskTitle string `json:"new_task_title,omitempty" mcp:"desc=with no task_id: make a task with this title in the thread's project and attach the thread to it (Make a task)"`
 }
 
 // CommAttachOutput reports where the thread now sits.
@@ -30,7 +33,7 @@ func registerCommAttach(_ *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:   "comm",
 		Action:     "attach",
-		Doc:        "Move a thread (comm card) onto a task in the same project, or detach it back into its project as a thread on its own (task_id 0). Keeps both tasks' comms lists in step; a thread's own attachments move onto the task it joins. Refused while Tasks is switched off (area_off). Authz: card.update on comm (the dispatcher) plus card.update on task in the project (checked in SQL).",
+		Doc:        "Move a thread (comm card) onto a task in the same project, or detach it back into its project as a thread on its own (task_id 0); with new_task_title and no task_id, make a task with that title and attach the thread to it, in one go. Keeps both tasks' comms lists in step; a thread's own attachments move onto the task it joins. Refused while Tasks is switched off (area_off). Authz: card.update on comm (the dispatcher) plus card.update on task in the project, and card.create on task to make one (checked in SQL).",
 		InputType:  reflect.TypeFor[CommAttachInput](),
 		OutputType: reflect.TypeFor[CommAttachOutput](),
 		// The dispatcher gates the thread itself: (comm, card.update), which

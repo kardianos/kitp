@@ -72,6 +72,9 @@ export interface ActivitySelectInput {
   projectId?: bigint;
   /** Optional row cap; the server defaults to 200 and caps at 999. */
   limit?: number;
+  /** With cardId: also the comments made on the card's own email threads
+   *  (a task page shows its threads' comments). */
+  withThreadComments?: boolean;
   /** Cursor: only return rows with id < this (older page). */
   beforeActivityId?: bigint;
   /** Inclusive lower bound on created_at, ISO date `YYYY-MM-DD`. */
@@ -277,6 +280,7 @@ export function registerCommentSpecs(api: Api): void {
         if (i.cardId !== undefined) m['card_id'] = i.cardId;
         if (i.projectId !== undefined) m['project_id'] = i.projectId;
         if (i.limit !== undefined) m['limit'] = i.limit;
+        if (i.withThreadComments === true) m['with_thread_comments'] = true;
         if (i.beforeActivityId !== undefined) m['before_activity_id'] = i.beforeActivityId;
         if (i.fromDate !== undefined && i.fromDate !== '') m['from_date'] = i.fromDate;
         if (i.toDate !== undefined && i.toDate !== '') m['to_date'] = i.toDate;

@@ -83,6 +83,7 @@ import {
   siblingLinkTargets,
   pictureSnippets,
   SECTION_AREA,
+  SECTION_NEEDS_AREA_ON,
   type DetailMenuAction,
   type DetailProfile,
   type DetailSection,
@@ -322,7 +323,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private shows(section: DetailSection): boolean {
     if (!this.profile.sections.includes(section)) return false;
     const area = SECTION_AREA[section];
-    return area === undefined || !this.offAreas.has(area);
+    if (area === undefined) return true;
+    if (this.offAreas.has(area)) return false;
+    return !(SECTION_NEEDS_AREA_ON.has(section) && this.unusedAreas.has(area));
   }
 
   /** Every section slot, for hiding the ones of an area that is off. */
@@ -331,6 +334,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   /** The areas that are off for the card's project, and the workspace's.
    *  Known before the first paint, so their sections never show or mount. */
   private offAreas = new Set<string>();
+  /** The project's areas that were never set up ('unused'): sections in
+   *  SECTION_NEEDS_AREA_ON hide for them too. */
+  private unusedAreas = new Set<string>();
 
   /**
    * Read which areas are off (docs/AREAS.md): the project's from area.list,
@@ -354,6 +360,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         );
         for (const k of this.ctx.tree.at(['shell', 'workspaceAreasOff']).peek<string[]>() ?? []) off.add(k);
         this.offAreas = off;
+        this.unusedAreas = new Set(
+          ((out as AreaListOutput).areas ?? []).filter((a) => a.state === 'unused').map((a) => a.key),
+        );
         for (const [section, el] of this.sectionSlots) if (!this.shows(section)) el.style.display = 'none';
         done();
       },
@@ -814,11 +823,11 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   }
 
   /**
-   * Load the focal task by id. The shared `card.select_with_attributes` spec
-   * has no by-id input, so we load the card_type's cards and pick the matching
-   * id (parity with the Svelte screen's `pickTaskById`); the row set is small
-   * per project and this keeps us on the registered spec. Resolves label
-   * lookups for the panel's card_ref summaries once the task is known.
+   * Load the focal card by id (`card.select_with_attributes` with `ids`).
+   * A profile that links to its siblings (pages: the link picker, and the
+   * walk up through parent pages to the project) loads every card of its
+   * type instead. Resolves label lookups for the panel's card_ref
+   * summaries once the card is known.
    */
   private loadTask(): void {
     if (this.taskId === null) {
@@ -828,7 +837,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     }
     this.ctx.api.callByName(
       SPEC.selectWithAttributes,
-      { cardTypeName: this.cardTypeName },
+      this.profile.linkSiblings ? { cardTypeName: this.cardTypeName } : { cardTypeName: this.cardTypeName, ids: [this.taskId] },
       (out) => {
         const rows = (out as SelectWithAttributesOutput).rows ?? [];
         const found = rows.find((r) => r.id === this.taskId) ?? null;
@@ -916,7 +925,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     }
     this.ctx.api.callByName(
       SPEC.selectWithAttributes,
-      { cardTypeName: 'comm' },
+      { cardTypeName: 'comm', ids: [this.taskId] },
       (out) => {
         if (!this.isAlive()) return;
         const rows = (out as SelectWithAttributesOutput).rows ?? [];
@@ -1274,7 +1283,6 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       {
         type: 'ThreadPlacement',
         commId: this.taskId.toString(),
-        projectId: this.projectId.toString(),
         title: typeof title === 'string' ? title : '',
       },
       this.placementHost,
@@ -1339,6 +1347,9 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       cardId: this.taskId.toString(),
       cardTypeName: this.cardTypeName,
       activityHost: this.activityHost,
+      // A card that lists its email threads (a task) shows their comments
+      // too, so a thread's comments stay in view once it's attached.
+      withThreadComments: this.profile.sections.includes('comms') && this.profile.commsSelf !== true,
       // Our own comment insert/edit shouldn't trip the "new content" badge.
       onLocalWrite: () => this.noteOwnActivity(),
     };

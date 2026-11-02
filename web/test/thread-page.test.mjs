@@ -73,8 +73,9 @@ const DEFS = [
  * shows at that moment, so a test can check nothing flashed between round
  * trips.
  */
-function threadTransport({ parentId = '145', parentIsTask = false } = {}) {
+function threadTransport({ parentId = '145', parentIsTask = false, tasksState = 'off' } = {}) {
   const sent = [];
+  const sentData = [];
   const seen = [];
   let td = null;
   const comm = {
@@ -104,7 +105,7 @@ function threadTransport({ parentId = '145', parentIsTask = false } = {}) {
       }
       case 'area.list':
         return ok({ areas: [
-          { key: 'tasks', title: 'Tasks', doc: '', scope: 'project', sort: 10, state: 'off', depends_on: [], starts: [], added: [], screens: [], items: null },
+          { key: 'tasks', title: 'Tasks', doc: '', scope: 'project', sort: 10, state: tasksState, depends_on: [], starts: [], added: [], screens: [], items: null },
           { key: 'conversations', title: 'Conversations', doc: '', scope: 'project', sort: 20, state: 'on', depends_on: [], starts: [], added: [], screens: [], items: null },
         ] });
       case 'comm.list_for_task':
@@ -134,11 +135,14 @@ function threadTransport({ parentId = '145', parentIsTask = false } = {}) {
     async send(body) {
       snapshot();
       const req = JSON.parse(body);
-      for (const s of req.subrequests) sent.push(`${s.endpoint}.${s.action}${s.data?.card_type_name ? `:${s.data.card_type_name}` : ''}`);
+      for (const s of req.subrequests) {
+        sent.push(`${s.endpoint}.${s.action}${s.data?.card_type_name ? `:${s.data.card_type_name}` : ''}`);
+        sentData.push(s);
+      }
       return { status: 200, text: JSON.stringify({ subresponses: req.subrequests.map(respond) }) };
     },
   };
-  return { transport, sent, seen, setDetail: (c) => (td = c) };
+  return { transport, sent, sentData, seen, setDetail: (c) => (td = c) };
 }
 
 function boot(transport) {
@@ -189,7 +193,9 @@ test('thread page: paints once, complete — no section of an off area flashes, 
     assert.equal(s.raw160, false, 'no "#160" was ever on screen');
     assert.equal(s.placement, false, 'the TASK section was never on screen');
   }
-  assert.equal(t.sent.filter((k) => k === 'card.select_with_attributes:comm').length, 1, 'the comm cards are read once');
+  const commReads = t.sentData.filter((s) => s.endpoint === 'card' && s.action === 'select_with_attributes' && s.data?.card_type_name === 'comm');
+  assert.equal(commReads.length, 1, 'the comm card is read once');
+  assert.deepEqual(commReads[0].data.ids, ['161'], 'by id, not every comm in the install (A12)');
 });
 
 test('thread page: a thread on a task opens on the task without painting the thread', async () => {
@@ -226,4 +232,16 @@ test('thread page: the CONVERSATION section leaves the subject, status and its a
   assert.ok(row.querySelector('[data-comm-ack]'), 'the ACK stays');
   // The header still has the one status and its actions.
   assert.equal(td.el.querySelectorAll('[data-control="TransitionBar"]').length, 1, 'one set of status actions on the page');
+});
+
+test('thread page: the TASK section shows only while Tasks is on — not off, not never set up (A23)', async () => {
+  for (const [tasksState, shown] of [['on', true], ['unused', false], ['off', false]]) {
+    const t = threadTransport({ tasksState });
+    const { dispatcher, api } = boot(t.transport);
+    const td = mountThread(api);
+    await settle(dispatcher);
+    const placement = td.el.querySelector('[data-control="ThreadPlacement"]');
+    assert.equal(placement !== null, shown, `Tasks ${tasksState}: TASK section ${shown ? 'shown' : 'hidden'}`);
+    td.destroy?.();
+  }
 });

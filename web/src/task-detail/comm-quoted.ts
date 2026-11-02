@@ -30,10 +30,30 @@ export interface SplitReply {
   quoted: string;
 }
 
-/** The index of the first line of the quoted tail, or -1. */
+/** A message larger than this is shown whole (matches the server's
+ *  maxSplitBytes; measured in UTF-16 units, close enough for a guard). */
+export const MAX_SPLIT_CHARS = 512 * 1024;
+
+/**
+ * The index of the first line of the quoted tail, or -1. The two "to the
+ * end" rules are suffix properties, so one backward pass records them for
+ * every line first; the forward scan then looks at most four lines ahead
+ * (linear in the message; review A5).
+ */
 function quoteCut(lines: readonly string[]): number {
-  const toEnd = (i: number, ok: (ln: string) => boolean): boolean => lines.slice(i).every((ln) => blank(ln) || ok(ln));
-  for (let i = 0; i < lines.length; i++) {
+  const n = lines.length;
+  const quotedFrom = new Array<boolean>(n + 1);
+  const trailerFrom = new Array<boolean>(n + 1);
+  quotedFrom[n] = true;
+  trailerFrom[n] = true;
+  for (let i = n - 1; i >= 0; i--) {
+    const ln = lines[i]!;
+    const isBlank = blank(ln);
+    const trailer = TRAILER.test(ln);
+    quotedFrom[i] = quotedFrom[i + 1]! && (isBlank || trailer || isQuote(ln));
+    trailerFrom[i] = trailerFrom[i + 1]! && (isBlank || trailer);
+  }
+  for (let i = 0; i < n; i++) {
     const ln = lines[i]!;
     const next = lines[i + 1];
     if (ON_WROTE.test(ln)) return i;
@@ -42,14 +62,15 @@ function quoteCut(lines: readonly string[]): number {
     if (FROM_LINE.test(ln) && lines.slice(i + 1, i + 5).some((l) => SENT_LINE.test(l))) {
       return i > 0 && UNDERLINE.test(lines[i - 1]!) ? i - 1 : i;
     }
-    if (isQuote(ln) && toEnd(i, (l) => isQuote(l) || TRAILER.test(l))) return i;
-    if (TRAILER.test(ln) && toEnd(i, (l) => TRAILER.test(l))) return i;
+    if (isQuote(ln) && quotedFrom[i]) return i;
+    if (TRAILER.test(ln) && trailerFrom[i]) return i;
   }
   return -1;
 }
 
 /** Split a received message into its own text and the quoted tail. */
 export function splitQuoted(body: string): SplitReply {
+  if (body.length > MAX_SPLIT_CHARS) return { own: body, quoted: '' };
   const lines = body.replace(/\r\n/g, '\n').split('\n');
   const cut = quoteCut(lines);
   if (cut < 0) return { own: body, quoted: '' };

@@ -6,10 +6,10 @@
 // filter. An operator marks the thread handled (acked=true) — or re-opens
 // it (acked=false) — via this handler.
 //
-// Authz mirrors comm.set_recipients: worker / manager / admin, gated on the
-// parent task's card.update grant (workers hold card.update on task, not on
-// comm directly — see db/schema/seed.hcsv). The SQL body lives in
-// db/schema/functions/comm_set_ack_batch.sql.
+// Authz mirrors comm.set_recipients: worker / manager / admin, gated on
+// card.update of the card commAuthzCardType names — the thread's task for
+// a thread on a task, the comm itself for a thread on its own. The SQL
+// body lives in db/schema/functions/comm_set_ack_batch.sql.
 
 package comm
 

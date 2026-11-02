@@ -61,11 +61,9 @@ func registerCommSetRecipients(_ *store.Pool) {
 	})
 }
 
-// cardTypeFromCommSetRecipientsInput walks comm → parent task and
-// returns the parent task's card_type so the dispatcher can
-// scope-check against the actor's task-level grant. See
-// `cardTypeFromReplyPostInput` (comm.go) for the seed-driven
-// rationale — workers hold `card.update` on task, not comm.
+// cardTypeFromCommSetRecipientsInput names the card type the dispatcher
+// checks the actor's grant on (commAuthzCardType): the thread's task, for
+// a thread on a task; the comm itself, for a thread on its own.
 func cardTypeFromCommSetRecipientsInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	return commAuthzCardType(ctx, pool, raw.(CommSetRecipientsInput).CommID)
 }

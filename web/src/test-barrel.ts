@@ -545,7 +545,7 @@ export {
 } from './task-detail/comment-specs.js';
 export { registerCommThreadSpecs } from './task-detail/comm-specs.js';
 export { CommThreads, registerCommThreads, replySender, replyBody } from './task-detail/task-comm-threads.js';
-export { splitQuoted } from './task-detail/comm-quoted.js';
+export { splitQuoted, MAX_SPLIT_CHARS } from './task-detail/comm-quoted.js';
 export { ThreadPlacement, registerThreadPlacement } from './task-detail/thread-placement.js';
 export {
   registerLinkSpecs,

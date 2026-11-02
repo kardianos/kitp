@@ -583,26 +583,14 @@ func (p *IMAPPoller) loadChannelConfig(ctx context.Context) (IMAPConfig, channel
 // the error message. Best-effort: a failure to log doesn't surface
 // (we already returned the dial error to the caller).
 func (p *IMAPPoller) recordAuthFail(ctx context.Context, projectID int64, dialErr error) error {
-	detail := map[string]any{"error": dialErr.Error()}
-	d, _ := json.Marshal(detail)
-	_, err := p.pool.P.Exec(ctx, `
-		INSERT INTO comm_log (project_id, channel_id, kind, detail)
-		VALUES ($1, $2, 'imap_auth_fail', $3::jsonb)
-	`, projectID, p.channelID, d)
-	return err
+	return LogEvent(ctx, p.pool.P, projectID, p.channelID, "imap_auth_fail", map[string]any{"error": dialErr.Error()})
 }
 
 // recordPollOnly writes a comm_log kind=poll row with the number of
 // messages processed in this cycle. Always one row per RunOnce so
 // operators can see liveness on the channel.
 func (p *IMAPPoller) recordPollOnly(ctx context.Context, projectID int64, count int) error {
-	detail := map[string]any{"message_count": count}
-	d, _ := json.Marshal(detail)
-	_, err := p.pool.P.Exec(ctx, `
-		INSERT INTO comm_log (project_id, channel_id, kind, detail)
-		VALUES ($1, $2, 'poll', $3::jsonb)
-	`, projectID, p.channelID, d)
-	if err != nil {
+	if err := LogEvent(ctx, p.pool.P, projectID, p.channelID, "poll", map[string]any{"message_count": count}); err != nil {
 		return err
 	}
 	if p.pool != nil {
@@ -637,9 +625,24 @@ func (p *IMAPPoller) processOne(ctx context.Context, intake channelIntake, m Inb
 
 	var matchedCommID int64
 	if threadID != "" {
-		matchedCommID, err = p.findCommByThreadID(ctx, tx, threadID)
+		matchedCommID, err = p.findCommByThreadID(ctx, tx, threadID, projectID)
 		if err != nil {
 			return fmt.Errorf("thread lookup: %w", err)
+		}
+	}
+
+	// New mail on a task-mode account while the project's Tasks area is
+	// off would become a task nobody can see; file it as a thread on its
+	// own instead (Conversations is on, or the account wouldn't be
+	// polled), so it stays in view (review A3).
+	mode := intake.mode
+	if matchedCommID == 0 && mode == IntakeTask {
+		off, err := tasksOff(ctx, tx, projectID)
+		if err != nil {
+			return fmt.Errorf("tasks area: %w", err)
+		}
+		if off {
+			mode = IntakeThread
 		}
 	}
 
@@ -670,7 +673,7 @@ func (p *IMAPPoller) processOne(ctx context.Context, intake channelIntake, m Inb
 		}); err != nil {
 			return fmt.Errorf("comm_log notification_reply: %w", err)
 		}
-	case intake.mode == IntakeTask:
+	case mode == IntakeTask:
 		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap message → new task",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("project_id", projectID),
@@ -680,7 +683,7 @@ func (p *IMAPPoller) processOne(ctx context.Context, intake channelIntake, m Inb
 		if err := p.createTaskAndComm(ctx, tx, snap, projectID, intake.statusID, m, actorID); err != nil {
 			return p.logParseError(ctx, projectID, m, err)
 		}
-	case intake.mode == IntakeThread:
+	case mode == IntakeThread:
 		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap message → new thread",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("project_id", projectID),
@@ -706,11 +709,7 @@ func (p *IMAPPoller) processOne(ctx context.Context, intake channelIntake, m Inb
 			"subject":       m.Subject,
 			"thread_source": source,
 		}
-		d, _ := json.Marshal(detail)
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO comm_log (project_id, channel_id, kind, detail)
-			VALUES ($1, $2, 'unmatched_thread', $3::jsonb)
-		`, projectID, p.channelID, d); err != nil {
+		if err := LogEvent(ctx, tx, projectID, p.channelID, "unmatched_thread", detail); err != nil {
 			return fmt.Errorf("comm_log unmatched: %w", err)
 		}
 	}
@@ -737,40 +736,39 @@ func (p *IMAPPoller) logParseError(ctx context.Context, projectID int64, m Inbou
 		"subject":    m.Subject,
 		"error":      origErr.Error(),
 	}
-	d, err := json.Marshal(detail)
-	if err != nil {
-		slog.Default().LogAttrs(ctx, slog.LevelWarn, "imap parse_error log marshal",
-			slog.String("err", err.Error()))
-		return origErr
-	}
-	if _, err := p.pool.P.Exec(ctx, `
-		INSERT INTO comm_log (project_id, channel_id, kind, detail)
-		VALUES ($1, $2, 'parse_error', $3::jsonb)
-	`, projectID, p.channelID, d); err != nil {
+	if err := LogEvent(ctx, p.pool.P, projectID, p.channelID, "parse_error", detail); err != nil {
 		slog.Default().LogAttrs(ctx, slog.LevelWarn, "imap parse_error log insert",
 			slog.String("err", err.Error()))
 	}
 	return origErr
 }
 
-// findCommByThreadID returns the comm card id whose thread_id
-// attribute matches the supplied token, or 0 if none. We don't filter
-// by channel_ref — the spec calls out cross-channel matches as a
-// false-positive risk worth warning about, but functionally the
-// match is global within the install.
-func (p *IMAPPoller) findCommByThreadID(ctx context.Context, tx store.Querier, threadID string) (int64, error) {
-	var id int64
-	err := tx.QueryRow(ctx, `
+// findCommByThreadID returns the comm card id whose thread_id matches
+// the supplied token, or 0 if none — among the threads of this mail
+// account's project that anyone can see. A token from another project's
+// mail (thread ids are global, and a sender can copy one) or a thread in
+// an area that is switched off is no match: the message is then new mail
+// for this project, visible, rather than appended where it doesn't belong
+// or out of sight (review A3).
+func (p *IMAPPoller) findCommByThreadID(ctx context.Context, tx store.Querier, threadID string, projectID int64) (int64, error) {
+	row, err := namedRow(ctx, tx, `
 		SELECT av.card_id
 		FROM attribute_value av
 		JOIN attribute_def ad ON ad.id = av.attribute_def_id
 		JOIN card c ON c.id = av.card_id
 		WHERE ad.name = 'thread_id'
-		  AND av.value = to_jsonb($1::text)
+		  AND av.value = to_jsonb(:thread::text)
 		  AND c.deleted_at IS NULL
+		  AND card_enclosing_project(c.id) = :project
+		  AND NOT card_in_off_area(c.id)
+		ORDER BY c.id
 		LIMIT 1
-	`, threadID).Scan(&id)
+	`, map[string]any{"thread": threadID, "project": projectID})
 	if err != nil {
+		return 0, err
+	}
+	var id int64
+	if err := row.Scan(&id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, nil
 		}
@@ -790,9 +788,12 @@ func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx store.Querier, 
 		return err
 	}
 	var replyID int64
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO card (card_type_id) VALUES ($1) RETURNING id
-	`, replyCTID).Scan(&replyID); err != nil {
+	row, err := namedRow(ctx, tx, `INSERT INTO card (card_type_id) VALUES (:type) RETURNING id`,
+		map[string]any{"type": replyCTID})
+	if err != nil {
+		return err
+	}
+	if err := row.Scan(&replyID); err != nil {
 		return fmt.Errorf("insert reply_body card: %w", err)
 	}
 	if err := writeCardCreateActivity(ctx, tx, replyID, actorID); err != nil {
@@ -804,7 +805,7 @@ func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx store.Querier, 
 		val  json.RawMessage
 	}{
 		{"reply_to", jstr(m.To)},
-		{"reply_from", jstr(m.From)},
+		{"reply_from", jstr(displayAddress(m.From))},
 		{"reply_subject", jstr(m.Subject)},
 		{"reply_body_text", jstr(m.Body)},
 		{"delivery_status", jstr("received")},
@@ -1154,10 +1155,13 @@ func (p *IMAPPoller) syncCommRecipientsFromInbound(
 // from the participant list.
 func loadChannelFromAddress(ctx context.Context, tx store.Querier, channelID int64) (string, error) {
 	var out string
-	err := tx.QueryRow(ctx, `
-		SELECT COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = $1 AND ad.name='from_address'), '')
-	`, channelID).Scan(&out)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	row, err := namedRow(ctx, tx, `
+		SELECT COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = :channel AND ad.name='from_address'), '')
+	`, map[string]any{"channel": channelID})
+	if err != nil {
+		return "", err
+	}
+	if err := row.Scan(&out); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return "", err
 	}
 	return out, nil
@@ -1192,9 +1196,12 @@ func (p *IMAPPoller) createTaskAndComm(ctx context.Context, tx store.Querier, sn
 
 	// Insert the new task card under the project.
 	var taskID int64
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO card (card_type_id, parent_card_id) VALUES ($1, $2) RETURNING id
-	`, taskCTID, projectID).Scan(&taskID); err != nil {
+	row, err := namedRow(ctx, tx, `INSERT INTO card (card_type_id, parent_card_id) VALUES (:type, :parent) RETURNING id`,
+		map[string]any{"type": taskCTID, "parent": projectID})
+	if err != nil {
+		return err
+	}
+	if err := row.Scan(&taskID); err != nil {
 		return fmt.Errorf("insert task card: %w", err)
 	}
 	if err := writeCardCreateActivity(ctx, tx, taskID, actorID); err != nil {
@@ -1257,7 +1264,11 @@ func (p *IMAPPoller) createComm(ctx context.Context, tx store.Querier, snap *sch
 		return 0, err
 	}
 	var projectID int64
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(card_enclosing_project($1), 0)`, parentID).Scan(&projectID); err != nil {
+	prow, err := namedRow(ctx, tx, `SELECT COALESCE(card_enclosing_project(:parent), 0)`, map[string]any{"parent": parentID})
+	if err != nil {
+		return 0, err
+	}
+	if err := prow.Scan(&projectID); err != nil {
 		return 0, fmt.Errorf("enclosing project: %w", err)
 	}
 	commStatusID, err := commFlowDefaultStatus(ctx, tx, projectID, commStatusAttrID)
@@ -1282,9 +1293,12 @@ func (p *IMAPPoller) createComm(ctx context.Context, tx store.Querier, snap *sch
 	jid := func(n int64) json.RawMessage { b, _ := json.Marshal(n); return b }
 
 	var commID int64
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO card (card_type_id, parent_card_id) VALUES ($1, $2) RETURNING id
-	`, commCTID, parentID).Scan(&commID); err != nil {
+	crow, err := namedRow(ctx, tx, `INSERT INTO card (card_type_id, parent_card_id) VALUES (:type, :parent) RETURNING id`,
+		map[string]any{"type": commCTID, "parent": parentID})
+	if err != nil {
+		return 0, err
+	}
+	if err := crow.Scan(&commID); err != nil {
 		return 0, fmt.Errorf("insert comm card: %w", err)
 	}
 	if err := writeCardCreateActivity(ctx, tx, commID, actorID); err != nil {
@@ -1468,7 +1482,7 @@ func ParseInboundMessage(uid uint32, raw []byte) (InboundMessage, error) {
 	out.From = strings.TrimSpace(msg.Header.Get("From"))
 	out.To = strings.TrimSpace(msg.Header.Get("To"))
 	out.Cc = strings.TrimSpace(msg.Header.Get("Cc"))
-	out.Subject = strings.TrimSpace(msg.Header.Get("Subject"))
+	out.Subject = strings.TrimSpace(decodeHeaderText(msg.Header.Get("Subject")))
 	out.ThreadIDHdr = strings.TrimSpace(msg.Header.Get("X-Kitp-Thread-Id"))
 	out.InReplyTo = strings.TrimSpace(msg.Header.Get("In-Reply-To"))
 	out.References = strings.TrimSpace(msg.Header.Get("References"))
@@ -1834,4 +1848,34 @@ func (m *IMAPPool) RunOnce(ctx context.Context) error {
 	m.logger.LogAttrs(ctx, slog.LevelDebug, "imap poll sweep",
 		slog.Int("channels", len(ids)))
 	return m.wp.Sweep(ctx, ids)
+}
+
+// tasksOff reports whether a project's Tasks area is switched off, so a
+// task written there would be hidden (area_write_blocked for a task).
+func tasksOff(ctx context.Context, q store.Querier, projectID int64) (bool, error) {
+	row, err := namedRow(ctx, q, `
+		SELECT area_write_blocked((SELECT id FROM card_type WHERE name = 'task'), :project, :project)
+	`, map[string]any{"project": projectID})
+	if err != nil {
+		return false, err
+	}
+	var off bool
+	if err := row.Scan(&off); err != nil {
+		return false, err
+	}
+	return off, nil
+}
+
+// namedRow compiles a :name query (internal/named) and runs it with
+// QueryRow.
+func namedRow(ctx context.Context, q store.Querier, sql string, vals map[string]any) (pgx.Row, error) {
+	b := named.New()
+	for k, v := range vals {
+		b.Set(k, v)
+	}
+	compiled, args, err := b.Compile(sql)
+	if err != nil {
+		return nil, fmt.Errorf("compile: %w", err)
+	}
+	return q.QueryRow(ctx, compiled, args...), nil
 }

@@ -15,6 +15,8 @@ package card
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/kitp/kitp/server/internal/reg"
 )
 
 // Predicate is one element of where[]. v1 supports:
@@ -58,6 +60,7 @@ type OrderClause struct {
 // nesting). When Tree is non-nil it is used and Where is ignored;
 // otherwise Where is interpreted as a top-level AND (its v1 behaviour).
 type SelectWithAttributesInput struct {
+	IDs              reg.IDs         `json:"ids,omitempty" mcp:"desc=if set, return only these cards (a detail view loads its one card); combined with the other filters"`
 	ParentCardID     *int64          `json:"parent_card_id,string,omitempty" mcp:"desc=if set, return only cards with this parent_card_id"`
 	ProjectID        *int64          `json:"project_id,string,omitempty" mcp:"desc=if set, return only cards ENCLOSED BY this project (the project itself or any descendant) — scopes grandchild cards like filters (filter→screen→project) that parent_card_id can't reach"`
 	CardTypeName     *string         `json:"card_type_name,omitempty" mcp:"desc=if set, return only cards of this card_type"`

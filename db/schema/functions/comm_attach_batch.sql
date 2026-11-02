@@ -6,14 +6,21 @@
 -- the two shapes, keeping the task's `comms` card_ref[] in step.
 --
 -- Per-row pipeline:
---   1. Decode: comm_id required; task_id optional (0 / absent = detach).
+--   1. Decode: comm_id required; task_id optional (0 / absent = detach);
+--      new_task_title (with no task_id): make a task with that title in
+--      the thread's project and attach to it, in this one transaction
+--      ("Make a task").
 --   2. The comm must exist and be a comm card; its project is
---      card_enclosing_project(comm).
+--      card_enclosing_project(comm). The comm row is locked, and the tasks
+--      it moves between, so concurrent attaches can't lose a thread.
 --   3. Attach: the task must exist, be a task, sit in the same project
---      ('same_project'), not be hidden by an area that is off ('area_off' —
---      Tasks switched off), and the caller must hold card.update on task in
---      the project (the task's comms list changes; the dispatcher only
---      gated the comm itself).
+--      ('same_project'), not be in an area that is off ('area_off' — Tasks
+--      switched off; checked before visibility, which hides such a task),
+--      be visible to the caller, and the caller must hold card.update on
+--      task in the project (the task's comms list changes; the dispatcher
+--      only gated the comm itself). Leaving a task (detach, or a move to
+--      another task) needs that grant too: the old task's list changes.
+--      Making a task needs card.create on task there, and Tasks on.
 --   4. Already there → ok, no writes.
 --   5. Leave the old task: drop the comm from its `comms` list (attr_update
 --      activity on that task).
@@ -53,6 +60,8 @@ DECLARE
     _old_comms jsonb;
     _new_comms jsonb;
     _activity_id bigint;
+    _new_title text;
+    _ins record;
 BEGIN
     SELECT id INTO _comms_def FROM attribute_def WHERE name = 'comms';
     IF _comms_def IS NULL THEN
@@ -63,6 +72,7 @@ BEGIN
         SELECT (r.ord - 1)::int, r.value
         FROM jsonb_array_elements(inputs) WITH ORDINALITY AS r(value, ord)
     LOOP
+        _new_title := NULLIF(btrim(COALESCE(_raw->>'new_task_title', '')), '');
         BEGIN
             _comm_id := NULLIF(_raw->>'comm_id', '')::bigint;
             _task_id := COALESCE(NULLIF(_raw->>'task_id', '')::bigint, 0);
@@ -84,7 +94,8 @@ BEGIN
         JOIN card_type ct ON ct.id = c.card_type_id
         LEFT JOIN card p ON p.id = c.parent_card_id
         LEFT JOIN card_type pct ON pct.id = p.card_type_id
-        WHERE c.id = _comm_id AND c.deleted_at IS NULL;
+        WHERE c.id = _comm_id AND c.deleted_at IS NULL
+        FOR UPDATE OF c;
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'comm_not_found'::text,
                 format('comm.attach: comm %s not found', _comm_id), NULL::jsonb;
@@ -102,12 +113,57 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- Leaving a task changes that task's comms list.
+        IF _old_parent_type = 'task' AND _old_parent <> _task_id
+           AND NOT user_has_grant(comm_attach_batch.actor_id, 'task', 'card.update', _project_id) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                'comm.attach: you cannot change tasks in this project'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
+        -- 3a. Make a task: one with the title, in the thread's project,
+        --     created by card_insert_batch like any other (its defaults,
+        --     its activity), then attached below.
+        IF _task_id = 0 AND _new_title IS NOT NULL THEN
+            IF area_write_blocked((SELECT id FROM card_type WHERE name = 'task'), _project_id, _project_id) THEN
+                RETURN QUERY SELECT _idx, false, 'area_off'::text,
+                    'comm.attach: Tasks is switched off in this project'::text, NULL::jsonb;
+                CONTINUE;
+            END IF;
+            IF NOT user_has_grant(comm_attach_batch.actor_id, 'task', 'card.create', _project_id) THEN
+                RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                    'comm.attach: you cannot add tasks to this project'::text, NULL::jsonb;
+                CONTINUE;
+            END IF;
+            SELECT * INTO _ins FROM card_insert_batch(comm_attach_batch.actor_id,
+                jsonb_build_array(jsonb_build_object(
+                    'card_type_name', 'task', 'parent_card_id', _project_id::text, 'title', _new_title)));
+            IF NOT _ins.ok THEN
+                RETURN QUERY SELECT _idx, false, _ins.code, _ins.message, NULL::jsonb;
+                CONTINUE;
+            END IF;
+            _task_id := (_ins.result->>'id')::bigint;
+        END IF;
+
         -- 3. The target: the task, or the project (detach).
         IF _task_id <> 0 THEN
             SELECT ct.name INTO _task_type
             FROM card t JOIN card_type ct ON ct.id = t.card_type_id
             WHERE t.id = _task_id AND t.deleted_at IS NULL;
-            IF NOT FOUND OR NOT card_visible_to(comm_attach_batch.actor_id, _task_id) THEN
+            IF NOT FOUND THEN
+                RETURN QUERY SELECT _idx, false, 'task_not_found'::text,
+                    format('comm.attach: task %s not found', _task_id), NULL::jsonb;
+                CONTINUE;
+            END IF;
+            _task_project := card_enclosing_project(_task_id);
+            -- Before visibility, which hides a task in an area that is off:
+            -- say why, for a task in the thread's own project.
+            IF _task_project IS NOT DISTINCT FROM _project_id AND card_in_off_area(_task_id) THEN
+                RETURN QUERY SELECT _idx, false, 'area_off'::text,
+                    'comm.attach: Tasks is switched off in this project'::text, NULL::jsonb;
+                CONTINUE;
+            END IF;
+            IF NOT card_visible_to(comm_attach_batch.actor_id, _task_id) THEN
                 RETURN QUERY SELECT _idx, false, 'task_not_found'::text,
                     format('comm.attach: task %s not found', _task_id), NULL::jsonb;
                 CONTINUE;
@@ -117,15 +173,9 @@ BEGIN
                     format('comm.attach: card %s is %L, not a task', _task_id, _task_type), NULL::jsonb;
                 CONTINUE;
             END IF;
-            _task_project := card_enclosing_project(_task_id);
             IF _task_project IS DISTINCT FROM _project_id THEN
                 RETURN QUERY SELECT _idx, false, 'same_project'::text,
                     'comm.attach: the task is in another project'::text, NULL::jsonb;
-                CONTINUE;
-            END IF;
-            IF card_in_off_area(_task_id) THEN
-                RETURN QUERY SELECT _idx, false, 'area_off'::text,
-                    'comm.attach: Tasks is switched off in this project'::text, NULL::jsonb;
                 CONTINUE;
             END IF;
             IF NOT user_has_grant(comm_attach_batch.actor_id, 'task', 'card.update', _project_id) THEN
@@ -145,6 +195,12 @@ BEGIN
                                    'task_id', _task_id::text);
             CONTINUE;
         END IF;
+
+        -- Lock the tasks whose comms lists change, in id order.
+        PERFORM 1 FROM card
+        WHERE id IN (_old_parent, _task_id) AND id <> 0
+        ORDER BY id
+        FOR UPDATE;
 
         -- 5. Leave the old task's comms list.
         IF _old_parent_type = 'task' THEN

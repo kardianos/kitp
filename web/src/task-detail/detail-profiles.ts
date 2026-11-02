@@ -149,6 +149,13 @@ export const SECTION_AREA: Partial<Record<DetailSection, string>> = {
   publications: 'sites',
 };
 
+/**
+ * Sections shown only while their area is ON in the project — not when it
+ * was never set up ('unused'): Attach to task / Make a task need the
+ * project's task flow to put the task in.
+ */
+export const SECTION_NEEDS_AREA_ON: ReadonlySet<DetailSection> = new Set<DetailSection>(['placement']);
+
 /** The profile for a card type (a card type with none uses the task one). */
 export function detailProfile(cardTypeName: string): DetailProfile {
   return DETAIL_PROFILES[cardTypeName] ?? TASK_PROFILE;

@@ -101,3 +101,46 @@ func TestBuildMIMEQuote(t *testing.T) {
 		t.Errorf("a thread on its own got a Task: line:\n%s", noTask)
 	}
 }
+
+// TestSplitQuotedIsLinear (A5): a long run of quoted lines below a short
+// reply used to take seconds (every line rescanned to the end); it must
+// stay fast, and still trim.
+func TestSplitQuotedIsLinear(t *testing.T) {
+	body := "hi\n" + strings.Repeat("> a\n", 160<<10/4) // ~160 KB
+	start := time.Now()
+	own, quoted := SplitQuoted(body)
+	if d := time.Since(start); d > 500*time.Millisecond {
+		t.Errorf("SplitQuoted on %d bytes took %v", len(body), d)
+	}
+	if own != "hi" || quoted == "" {
+		t.Errorf("own = %q, quoted %d bytes", own, len(quoted))
+	}
+	huge := "hi\n" + strings.Repeat("> a\n", (maxSplitBytes/4)+10)
+	if own, quoted := SplitQuoted(huge); own != huge || quoted != "" {
+		t.Error("a message over the cap should be shown whole")
+	}
+}
+
+// TestHeaderDecoding (A27): encoded subjects and sender names are decoded
+// for people — the task / thread title, the thread view, quote headers.
+func TestHeaderDecoding(t *testing.T) {
+	raw := "From: =?UTF-8?B?QWTDoSBMb3ZlbGFjZQ==?= <ada@example.com>\r\n" +
+		"Subject: =?ISO-8859-1?Q?Caf=E9_question?=\r\n" +
+		"Content-Type: text/plain\r\n\r\nHello\r\n"
+	m, err := ParseInboundMessage(1, []byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Subject != "Café question" {
+		t.Errorf("subject = %q", m.Subject)
+	}
+	if got := displayAddress(m.From); got != "Adá Lovelace <ada@example.com>" {
+		t.Errorf("displayAddress = %q", got)
+	}
+	if got := displayAddress("plain@example.com"); got != "plain@example.com" {
+		t.Errorf("bare address = %q", got)
+	}
+	if got := displayAddress("Lovelace, Ada <ada@example.com>"); got != "Lovelace, Ada <ada@example.com>" {
+		t.Errorf("an unparsable header comes back as it is: %q", got)
+	}
+}

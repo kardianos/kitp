@@ -46,6 +46,9 @@ export const SPEC = {
 
 export interface SelectWithAttributesInput {
   cardTypeName: string;
+  /** Just these cards (still filtered by everything else): a detail view
+   *  loads its one card instead of every card of the type. */
+  ids?: bigint[];
   parentCardId?: bigint;
   /**
    * Enclosing-project scope: when set, only cards the project encloses (the
@@ -219,6 +222,7 @@ export function registerKanbanSpecs(api: Api): void {
     action: 'select_with_attributes',
     encode: (i) => {
       const m: Record<string, unknown> = { card_type_name: i.cardTypeName };
+      if (i.ids !== undefined && i.ids.length > 0) m['ids'] = i.ids.map((v) => v.toString());
       if (i.parentCardId !== undefined) m['parent_card_id'] = i.parentCardId;
       if (i.projectId !== undefined) m['project_id'] = i.projectId;
       // Forward the predicate leaves verbatim — same `where` field the Go

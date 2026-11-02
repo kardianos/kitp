@@ -38,6 +38,7 @@ DECLARE
     _raw jsonb;
     _parent_card_id bigint;
     _project_id bigint;
+    _ids jsonb;
     _card_type_name text;
     _include_deleted boolean;
     _with_personal_sort boolean;
@@ -91,6 +92,15 @@ BEGIN
         EXCEPTION WHEN invalid_text_representation THEN
             _project_id := NULL;
         END;
+        -- ids: just these cards (still filtered by everything else,
+        -- visibility included) — a detail page loads its one card.
+        _ids := CASE WHEN jsonb_typeof(_raw->'ids') = 'array' AND jsonb_array_length(_raw->'ids') > 0
+                     THEN (SELECT jsonb_agg(e) FROM jsonb_array_elements_text(_raw->'ids') AS e
+                           WHERE e ~ '^[0-9]+$')
+                END;
+        IF jsonb_typeof(_raw->'ids') = 'array' AND jsonb_array_length(_raw->'ids') > 0 AND _ids IS NULL THEN
+            _ids := '[]'::jsonb; -- every id malformed: match nothing
+        END IF;
         _card_type_name := NULLIF(_raw->>'card_type_name', '');
         _include_deleted := COALESCE((_raw->>'include_deleted')::boolean, false);
         _with_personal_sort := COALESCE((_raw->>'with_personal_sort')::boolean, false);
@@ -136,6 +146,13 @@ BEGIN
 
         IF NOT _include_deleted THEN
             _clauses := array_append(_clauses, 'c.deleted_at IS NULL');
+        END IF;
+
+        IF _ids IS NOT NULL THEN
+            _params := _params || jsonb_build_array(_ids);
+            _clauses := array_append(_clauses, format(
+                'c.id IN (SELECT (jsonb_array_elements_text($1->%s))::bigint)',
+                (jsonb_array_length(_params) - 1)::text));
         END IF;
 
         IF _parent_card_id IS NOT NULL THEN

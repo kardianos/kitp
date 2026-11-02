@@ -21,18 +21,21 @@ import (
 // Facets asks for per-actor / kind / card-type counts over the window
 // without them.
 type SelectInput struct {
-	CardID           int64    `json:"card_id,string,omitempty" mcp:"desc=card whose activity is being read; omit for cross-card mode"`
-	ProjectID        int64    `json:"project_id,string,omitempty" mcp:"desc=project scope; when set, only activity for cards within that project (the project or a descendant) is returned"`
-	Limit            *int     `json:"limit,omitempty" mcp:"desc=optional row cap; defaults to 200"`
-	BeforeActivityID *int64   `json:"before_activity_id,string,omitempty" mcp:"desc=cursor; only return activity rows with id < this"`
-	FromDate         string   `json:"from_date,omitempty" mcp:"desc=inclusive lower bound on created_at, ISO date YYYY-MM-DD"`
-	ToDate           string   `json:"to_date,omitempty" mcp:"desc=inclusive upper bound on created_at, ISO date YYYY-MM-DD"`
-	ActorIDs         []string `json:"actor_ids,omitempty" mcp:"desc=only rows by these user ids"`
-	ExcludeActorIDs  []string `json:"exclude_actor_ids,omitempty" mcp:"desc=leave out rows by these user ids (e.g. your own changes)"`
-	Kinds            []string `json:"kinds,omitempty" mcp:"desc=only rows of these kinds (card_create, attr_update, comment, tag_apply, attachment_create, ...)"`
-	CardTypes        []string `json:"card_types,omitempty" mcp:"desc=only rows on cards of these card types (task, link, comm, reply_body, ...)"`
-	Q                string   `json:"q,omitempty" mcp:"desc=text search over the owning card's title or #id, the card's own title, and comment bodies"`
-	Facets           bool     `json:"facets,omitempty" mcp:"desc=also return per-actor / kind / card-type counts for the window (ignoring actor_ids / exclude_actor_ids / kinds / card_types / q / the cursor)"`
+	CardID int64 `json:"card_id,string,omitempty" mcp:"desc=card whose activity is being read; omit for cross-card mode"`
+	// WithThreadComments (with CardID): also the comments made on the
+	// card's own email threads — a task page shows its threads' comments.
+	WithThreadComments bool     `json:"with_thread_comments,omitempty" mcp:"desc=with card_id: also return the comments made on the card's own email threads (comm cards under it)"`
+	ProjectID          int64    `json:"project_id,string,omitempty" mcp:"desc=project scope; when set, only activity for cards within that project (the project or a descendant) is returned"`
+	Limit              *int     `json:"limit,omitempty" mcp:"desc=optional row cap; defaults to 200"`
+	BeforeActivityID   *int64   `json:"before_activity_id,string,omitempty" mcp:"desc=cursor; only return activity rows with id < this"`
+	FromDate           string   `json:"from_date,omitempty" mcp:"desc=inclusive lower bound on created_at, ISO date YYYY-MM-DD"`
+	ToDate             string   `json:"to_date,omitempty" mcp:"desc=inclusive upper bound on created_at, ISO date YYYY-MM-DD"`
+	ActorIDs           []string `json:"actor_ids,omitempty" mcp:"desc=only rows by these user ids"`
+	ExcludeActorIDs    []string `json:"exclude_actor_ids,omitempty" mcp:"desc=leave out rows by these user ids (e.g. your own changes)"`
+	Kinds              []string `json:"kinds,omitempty" mcp:"desc=only rows of these kinds (card_create, attr_update, comment, tag_apply, attachment_create, ...)"`
+	CardTypes          []string `json:"card_types,omitempty" mcp:"desc=only rows on cards of these card types (task, link, comm, reply_body, ...)"`
+	Q                  string   `json:"q,omitempty" mcp:"desc=text search over the owning card's title or #id, the card's own title, and comment bodies"`
+	Facets             bool     `json:"facets,omitempty" mcp:"desc=also return per-actor / kind / card-type counts for the window (ignoring actor_ids / exclude_actor_ids / kinds / card_types / q / the cursor)"`
 }
 
 // Row is one denormalized activity row, carrying the names and titles a

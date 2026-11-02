@@ -147,7 +147,7 @@ test('a thread on its own has a route and the comm detail profile', () => {
 function placement(api, tree) {
   const c = M.Control.New(
     'ThreadPlacement',
-    { type: 'ThreadPlacement', commId: '300', projectId: '31', title: 'Printer on fire' },
+    { type: 'ThreadPlacement', commId: '300', title: 'Printer on fire' },
     { api, tree },
   );
   c.mount(new FakeElement('div'));
@@ -156,10 +156,9 @@ function placement(api, tree) {
 
 const btn = (c, key) => c.el.querySelector(`[data-thread-placement="${key}"]`);
 
-test('ThreadPlacement: Make a task creates the task in the project, attaches the thread, opens the task', async () => {
+test('ThreadPlacement: Make a task makes the task and attaches the thread in one request, then opens the task', async () => {
   const t = transportFor({
-    'card.insert': () => ({ id: '900' }),
-    'comm.attach': (d) => ({ comm_id: d.comm_id, parent_id: d.task_id, task_id: d.task_id }),
+    'comm.attach': (d) => ({ comm_id: d.comm_id, parent_id: '900', task_id: '900' }),
   });
   const { dispatcher, api } = bootApi(t.transport);
   const tree = new M.TreeNode({}, []);
@@ -168,8 +167,8 @@ test('ThreadPlacement: Make a task creates the task in the project, attaches the
   btn(c, 'make').dispatchEvent({ type: 'click' });
   await settle(dispatcher);
   await settle(dispatcher);
-  assert.deepEqual(t.of('card.insert')[0].data, { card_type_name: 'task', parent_card_id: '31', title: 'Printer on fire' });
-  assert.deepEqual(t.of('comm.attach')[0].data, { comm_id: '300', task_id: '900' });
+  assert.equal(t.of('card.insert').length, 0, 'no separate card.insert: a failed attach can\'t leave an empty task (A23)');
+  assert.deepEqual(t.of('comm.attach')[0].data, { comm_id: '300', task_id: '0', new_task_title: 'Printer on fire' });
   assert.equal(M.peekRoute(tree)?.path ?? M.currentRoute?.(tree)?.path, '/task/900');
 });
 
@@ -211,4 +210,15 @@ test('channel draft: New mail keeps what an account did before the setting; Quot
   assert.equal(set.replyQuote, 'off');
   assert.deepEqual(M.INTAKE_MODE_OPTIONS.map((o) => o.value), ['task', 'thread', 'ignore']);
   assert.deepEqual(M.REPLY_QUOTE_OPTIONS.map((o) => o.value), ['off', 'last', 'all']);
+});
+
+test('splitQuoted is linear: a long quoted run below a short reply stays fast and still trims (A5)', () => {
+  const body = 'hi\n' + '> a\n'.repeat(40000); // ~160 KB
+  const start = Date.now();
+  const got = M.splitQuoted(body);
+  assert.ok(Date.now() - start < 500, `took ${Date.now() - start} ms`);
+  assert.equal(got.own, 'hi');
+  assert.notEqual(got.quoted, '');
+  const huge = 'hi\n' + '> a\n'.repeat(M.MAX_SPLIT_CHARS / 4 + 10);
+  assert.deepEqual(M.splitQuoted(huge), { own: huge, quoted: '' }, 'over the cap: shown whole');
 });

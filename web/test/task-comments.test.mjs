@@ -554,3 +554,37 @@ test('formatActivityText: per-kind phrases with actor + ref labels', () => {
     'user#99 moved the card.',
   );
 });
+
+test('TaskComments: withThreadComments asks for the task\'s thread comments and labels them with their thread (A13)', async () => {
+  const sent = [];
+  const transport = {
+    async send(body) {
+      const req = JSON.parse(body);
+      const subresponses = req.subrequests.map((sr) => {
+        sent.push(sr);
+        if (sr.endpoint === 'activity' && sr.action === 'select') {
+          return { id: sr.id, ok: true, data: { rows: [
+            commentRow(100, '10', 'On the task', 1),
+            { ...commentRow(101, '10', 'On the thread', 2), card_id: '300', card_type: 'comm', card_title: 'Printer on fire' },
+          ] } };
+        }
+        if (sr.endpoint === 'user' && sr.action === 'select') return { id: sr.id, ok: true, data: { rows: [] } };
+        return { id: sr.id, ok: true, data: { rows: [] } };
+      });
+      return { status: 200, text: JSON.stringify({ subresponses }) };
+    },
+  };
+  const { dispatcher, api } = bootApi(transport);
+  const tree = new M.TreeNode({}, []);
+  const activityHost = document.createElement('div');
+  const tc = M.Control.New('TaskComments', { type: 'TaskComments', cardId: String(CARD_ID), activityHost, withThreadComments: true }, { api, tree });
+  tc.mount(document.createElement('div'));
+  document.body.appendChild(tc.el);
+  await settle(dispatcher);
+  const sel = sent.find((s) => s.endpoint === 'activity' && s.action === 'select');
+  assert.equal(sel.data.with_thread_comments, true);
+  const onThread = tc.el.querySelector('[data-comment-row="101"] [data-comment-thread]');
+  assert.ok(onThread, 'the thread comment is labelled');
+  assert.match(onThread.textContent, /Printer on fire/);
+  assert.equal(tc.el.querySelector('[data-comment-row="100"] [data-comment-thread]'), null, 'the task\'s own comment is not');
+});

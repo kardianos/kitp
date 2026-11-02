@@ -87,6 +87,9 @@ export interface TaskCommentsConfig extends BaseControlConfig {
    * server enforces author-only edits regardless). Tests inject this directly.
    */
   currentUserId?: string;
+  /** Also show the comments made on the card's own email threads (a task
+   *  page: a thread's comments stay in view once it's attached). */
+  withThreadComments?: boolean;
   /** Optional row cap per activity page. Default ACTIVITY_LIMIT (50). */
   limit?: number;
   /** Called after a successful LOCAL write (the user's own comment insert/edit)
@@ -346,10 +349,11 @@ export class TaskComments extends Control<TaskCommentsConfig> {
     }
     this.paintFeed();
 
-    const input: { cardId: bigint; limit: number; beforeActivityId?: bigint } = {
+    const input: { cardId: bigint; limit: number; beforeActivityId?: bigint; withThreadComments?: boolean } = {
       cardId: this.cardId,
       limit: this.limit,
     };
+    if (this.config.withThreadComments === true) input.withThreadComments = true;
     if (append) {
       const cursor = this.oldestId();
       if (cursor !== null) input.beforeActivityId = cursor;
@@ -413,7 +417,7 @@ export class TaskComments extends Control<TaskCommentsConfig> {
   /* ------------------------------ comments ------------------------------ */
 
   private comments(): CommentEntry[] {
-    return deriveComments(this.rows);
+    return deriveComments(this.rows, this.cardId ?? undefined);
   }
 
   private paintComments(): void {
@@ -486,6 +490,16 @@ export class TaskComments extends Control<TaskCommentsConfig> {
       edited.className = 'task-comments__edited muted';
       edited.textContent = '(edited)';
       meta.append(edited);
+    }
+
+    if (c.thread !== undefined) {
+      // Made on one of this task's email threads (it came with the thread
+      // when the thread was attached).
+      const on = document.createElement('span');
+      on.className = 'task-comments__thread muted';
+      on.dataset.commentThread = '';
+      on.textContent = `on thread “${c.thread}”`;
+      meta.append(on);
     }
 
     if (c.vote !== undefined) {

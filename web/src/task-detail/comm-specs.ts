@@ -91,7 +91,11 @@ export type CommListForTaskInput = { taskId: bigint } | { commId: bigint };
 /** comm.attach — taskId 0n detaches the thread back into its project. */
 export interface CommAttachInput {
   commId: bigint;
+  /** The task to attach to; 0n detaches back into the project. */
   taskId: bigint;
+  /** With taskId 0n: make a task with this title in the thread's project
+   *  and attach to it, in one transaction ("Make a task"). */
+  newTaskTitle?: string;
 }
 export interface CommAttachOutput {
   commId: bigint;
@@ -277,7 +281,11 @@ export function registerCommThreadSpecs(api: Api): void {
     api.define<CommAttachInput, CommAttachOutput>({
       endpoint: 'comm',
       action: 'attach',
-      encode: (i) => ({ comm_id: i.commId, task_id: i.taskId }),
+      encode: (i) => ({
+        comm_id: i.commId,
+        task_id: i.taskId,
+        ...(i.newTaskTitle !== undefined ? { new_task_title: i.newTaskTitle } : {}),
+      }),
       decode: (raw): CommAttachOutput => {
         const j = asObj(raw);
         return { commId: asId(j['comm_id']), parentId: asId(j['parent_id']), taskId: asId(j['task_id']) };
