@@ -103,6 +103,18 @@ export const DETAIL_PROFILES: Readonly<Record<string, DetailProfile>> = {
   },
 };
 
+/**
+ * The area each detail section belongs to (docs/AREAS.md): a section of an
+ * area that is off isn't shown (its items are hidden by the server anyway).
+ * Project areas are read from the card's project; Sites from the workspace.
+ */
+export const SECTION_AREA: Partial<Record<DetailSection, string>> = {
+  comms: 'conversations',
+  approvals: 'approvals',
+  links: 'tasks',
+  publications: 'sites',
+};
+
 /** The profile for a card type (a card type with none uses the task one). */
 export function detailProfile(cardTypeName: string): DetailProfile {
   return DETAIL_PROFILES[cardTypeName] ?? TASK_PROFILE;

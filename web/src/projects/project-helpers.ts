@@ -77,6 +77,74 @@ export const BUNDLE_SOURCE_EXCLUSION_LEAF: CardWherePredicate = {
  *  bare project ids). */
 export const PRESET_CHOICE_PREFIX = 'preset:';
 
+/** The "Start from" value that opens the new-project dialog's area list. */
+export const AREAS_CHOICE = 'areas:';
+
+/** The part of an area the new-project dialog reads. */
+export interface DialogArea {
+  key: string;
+  title: string;
+  doc?: string;
+  sort: number;
+  dependsOn: readonly string[];
+  starts: ReadonlyArray<{ key: string; title: string }>;
+}
+
+/**
+ * Tick (on) or untick an area in the dialog, keeping dependencies whole:
+ * ticking one also ticks what it needs; unticking one also unticks what
+ * needs it. Returns the new ticked set.
+ */
+export function toggleArea(ticked: ReadonlySet<string>, areas: readonly DialogArea[], key: string, on: boolean): Set<string> {
+  const out = new Set(ticked);
+  const visit = (k: string): void => {
+    if (on ? out.has(k) : !out.has(k)) return;
+    if (on) out.add(k);
+    else out.delete(k);
+    if (on) {
+      for (const d of areas.find((a) => a.key === k)?.dependsOn ?? []) visit(d);
+    } else {
+      for (const a of areas) if (a.dependsOn.includes(k)) visit(a.key);
+    }
+  };
+  visit(key);
+  return out;
+}
+
+/** The areas a preset (a list of feature bundles) amounts to: every area one
+ *  of its features starts, and what they need. */
+export function areasOfPreset(features: readonly string[], areas: readonly DialogArea[]): Set<string> {
+  let out = new Set<string>();
+  for (const a of areas) {
+    if (a.starts.some((s) => features.includes(s.key))) out = toggleArea(out, areas, a.key, true);
+  }
+  return out;
+}
+
+/**
+ * The project.compose input for the ticked areas: `features` are their
+ * starting points (the picked one, else the default) in area order, so an
+ * area comes after what it needs; `areasOff` are the areas left unticked.
+ */
+export function composeFromAreas(
+  ticked: ReadonlySet<string>,
+  areas: readonly DialogArea[],
+  picks: Readonly<Record<string, string>> = {},
+): { features: string[]; areasOff: string[] } {
+  const ordered = [...areas].sort((a, b) => a.sort - b.sort);
+  const features: string[] = [];
+  const areasOff: string[] = [];
+  for (const a of ordered) {
+    if (!ticked.has(a.key)) {
+      areasOff.push(a.key);
+      continue;
+    }
+    const start = picks[a.key] ?? a.starts[0]?.key;
+    if (start !== undefined && !features.includes(start)) features.push(start);
+  }
+  return { features, areasOff };
+}
+
 /** The preset key a "Start from" value names, or null for a template / the
  *  default. */
 export function composeChoice(value: string): string | null {

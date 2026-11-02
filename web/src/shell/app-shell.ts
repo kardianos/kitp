@@ -57,7 +57,7 @@ import {
   siteRouteUrl,
   type RouteMatch,
 } from './router.js';
-import { PORTAL_SPEC, type PortalListOutput } from '../bundles/specs.js';
+import { AREA_SPEC, PORTAL_SPEC, type AreaListOutput, type AreaRow, type PortalListOutput } from '../bundles/specs.js';
 import { WORKSPACE_TITLE_PATH, COMMS_BELL_URL_PATH, DEFAULT_WORKSPACE_TITLE } from './config-specs.js';
 import { readSlug, readTitle } from '../filter/screen-resolve.js';
 import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
@@ -81,6 +81,8 @@ export interface ProjectScopeOption {
 /** One DEFAULT-PROJECT rail link, derived from a `screen` card. `hotkey` (the
  *  card's single-char `hotkey` attr) wires the `g <hotkey>` navigation chord. */
 interface ScopeLink {
+  /** The screen card's id (matched against area.list's screens). */
+  id: string;
   slug: string;
   label: string;
   chord: string;
@@ -122,6 +124,8 @@ export interface AppShellConfig extends BaseControlConfig {
     key: string;
     minRole?: 'admin' | 'manager';
     section?: 'workspace' | 'project';
+    /** A workspace area (docs/AREAS.md): the link hides while it is off. */
+    area?: string;
   }>;
   /**
    * Resolve an admin route `:key` to a body control config (a MasterDetail
@@ -197,6 +201,14 @@ export class AppShell extends Control<AppShellConfig> {
   /** The rail's DEFAULT-PROJECT links container, rebuilt from the active
    *  project's screen cards (data-driven nav — see loadScopeLinks). */
   private scopeLinksHost: HTMLElement | null = null;
+  /** The TASKS heading above the scope links; with areas, the first
+   *  area's title (the rest get their own headings in the links host). */
+  private scopeHeadingEl: HTMLElement | null = null;
+  /** The active project's screen links and areas, rendered together once
+   *  both land (areas null = an older server: one flat list). */
+  private scopeLinkRows: ScopeLink[] | null = null;
+  private scopeAreas: AreaRow[] | null | undefined = undefined;
+  private scopeLoadSeq = 0;
   /** The SITES rail section (portals with "Show in kitp" on). */
   private sitesSection: HTMLElement | null = null;
   private sitesHost: HTMLElement | null = null;
@@ -205,7 +217,7 @@ export class AppShell extends Control<AppShellConfig> {
    *  links is visible to the current identity. */
   private adminSections: Array<{
     chrome: HTMLElement[];
-    gates: Array<{ el: HTMLElement; minRole: 'admin' | 'manager' }>;
+    gates: Array<{ el: HTMLElement; minRole: 'admin' | 'manager'; area?: string }>;
   }> = [];
 
   /** Notification bell: the button + its count badge, plus poll state. The
@@ -466,6 +478,7 @@ export class AppShell extends Control<AppShellConfig> {
     // `loadScopeLinks` to publish from the project's screen cards.
     const fallbackLinks = cfg.scopeLinks ?? [];
     const scopeHeading = sectionLabel('TASKS');
+    this.scopeHeadingEl = scopeHeading;
     const scopeLinksHost = document.createElement('div');
     scopeLinksHost.className = 'shell__scope-links';
     scopeLinksHost.dataset.region = 'shell.scopeLinks';
@@ -473,8 +486,9 @@ export class AppShell extends Control<AppShellConfig> {
     // The show/hide effect toggles the heading + the whole links host together.
     this.scopeSectionEls = [scopeHeading, scopeLinksHost];
     this.scopeLinksHost = scopeLinksHost;
-    this.renderScopeLinks(fallbackLinks.map((l) => ({ slug: l.slug, label: l.label, chord: l.chord })));
+    this.renderScopeLinks(fallbackLinks.map((l) => ({ id: '', slug: l.slug, label: l.label, chord: l.chord })), null);
     this.loadScopeLinks();
+    this.loadWorkspaceAreas();
     this.startCommPoll();
 
     // ADMIN: split into WORKSPACE (global) + PROJECT (active-project-scoped)
@@ -500,14 +514,20 @@ export class AppShell extends Control<AppShellConfig> {
     // is visible. One-way read of the identity leaf (the boot /auth/me probe
     // lands it), writes only DOM — cascade-safe.
     const authUserNode = this.ctx.tree.at([...AUTH_USER_PATH]);
+    const areasOffNode = this.ctx.tree.at(['shell', 'workspaceAreasOff']);
     this.effect(() => {
       const user = authUserNode.get<AuthUser | undefined>();
       const isAdmin = user?.isAdmin === true;
       const roles = user?.roles ?? [];
+      // A screen of a workspace area that is off (Portals, Themes with Sites
+      // off) leaves the rail for everyone.
+      const areasOff = areasOffNode.get<string[]>() ?? [];
       for (const section of this.adminSections) {
         let anyVisible = false;
-        for (const { el, minRole } of section.gates) {
-          const show = isAdmin || (minRole === 'manager' && roles.includes('manager'));
+        for (const { el, minRole, area } of section.gates) {
+          const show =
+            (area === undefined || !areasOff.includes(area)) &&
+            (isAdmin || (minRole === 'manager' && roles.includes('manager')));
           el.style.display = show ? '' : 'none';
           if (show) anyVisible = true;
         }
@@ -798,15 +818,75 @@ export class AppShell extends Control<AppShellConfig> {
   /** Rebuild the DEFAULT-PROJECT rail links from a resolved screen list. Each
    *  link navigates to `/project/:id/screen/:slug` (live scope at click time);
    *  its href is the same URL for the scope at render time. */
-  private renderScopeLinks(links: ReadonlyArray<ScopeLink>): void {
+  /**
+   * Render the scope links. With the project's areas (docs/AREAS.md), the
+   * links are grouped under their area's title — the first group under the
+   * section heading, the rest under headings of their own — and the screens
+   * of an area that is off are left out. A screen no area claims joins the
+   * first group. Without areas (null), one flat list under TASKS.
+   * Returns the links that are shown (their hotkeys are the live chords).
+   */
+  private renderScopeLinks(links: ReadonlyArray<ScopeLink>, areas: readonly AreaRow[] | null): ScopeLink[] {
     const host = this.scopeLinksHost;
-    if (host === null) return;
+    if (host === null) return [];
     host.replaceChildren();
-    for (const l of links) {
-      const link = railLink(l.label, l.chord, this.screenSlugUrl(l.slug), () => this.goScreenSlug(l.slug));
-      link.dataset.slug = l.slug;
-      host.append(link);
+    const link = (l: ScopeLink): HTMLElement => {
+      const a = railLink(l.label, l.chord, this.screenSlugUrl(l.slug), () => this.goScreenSlug(l.slug));
+      a.dataset.slug = l.slug;
+      return a;
+    };
+    if (areas === null) {
+      if (this.scopeHeadingEl !== null) this.scopeHeadingEl.textContent = 'TASKS';
+      for (const l of links) host.append(link(l));
+      return [...links];
     }
+    const groups = scopeLinkGroups(links, areas);
+    groups.forEach((g, i) => {
+      if (i === 0) {
+        if (this.scopeHeadingEl !== null) this.scopeHeadingEl.textContent = g.title.toUpperCase();
+      } else {
+        const h = sectionLabel(g.title.toUpperCase());
+        h.dataset.areaHeading = g.key;
+        host.append(h);
+      }
+      for (const l of g.links) host.append(link(l));
+    });
+    if (groups.length === 0 && this.scopeHeadingEl !== null) this.scopeHeadingEl.textContent = 'TASKS';
+    return groups.flatMap((g) => g.links);
+  }
+
+  /** Paint the scope links once the screens and the areas have both landed. */
+  private paintScopeLinks(): void {
+    if (this.scopeLinkRows === null || this.scopeAreas === undefined) return;
+    const shown = this.renderScopeLinks(this.scopeLinkRows, this.scopeAreas);
+    // Publish for AppShell.hotkeys() so each shown screen's `hotkey` wires
+    // up its `g <hotkey>` chord (a screen of an area that is off has none).
+    this.ctx.tree.at(['shell', 'screenLinks']).set(shown);
+  }
+
+  /**
+   * The workspace areas' state (docs/AREAS.md): `shell.workspaceAreasOff`
+   * lists the keys that are off, which hides the rail links of their admin
+   * screens (Portals, Themes) and the SITES section. Reloads with the
+   * navigation (an Areas switch bumps shell.navRefresh).
+   */
+  private loadWorkspaceAreas(): void {
+    this.effect(() => {
+      this.ctx.tree.at(['shell', 'navRefresh']).get();
+      this.ctx.api.callByName(
+        AREA_SPEC.list,
+        {},
+        (out) => {
+          if (!this.isAlive()) return;
+          const off = ((out as AreaListOutput).areas ?? [])
+            .filter((a) => a.scope === 'workspace' && a.state === 'off')
+            .map((a) => a.key);
+          this.ctx.tree.at(['shell', 'workspaceAreasOff']).set(off);
+          this.loadSites();
+        },
+        { alive: () => this.isAlive() },
+      );
+    }, 'shell.workspaceAreas');
   }
 
   /**
@@ -823,7 +903,8 @@ export class AppShell extends Control<AppShellConfig> {
       {},
       (out) => {
         if (!this.isAlive()) return;
-        const sites = ((out as PortalListOutput).rows ?? []).filter((r) => r.internal);
+        const sitesOff = (this.ctx.tree.at(['shell', 'workspaceAreasOff']).peek<string[]>() ?? []).includes('sites');
+        const sites = sitesOff ? [] : ((out as PortalListOutput).rows ?? []).filter((r) => r.internal);
         host.replaceChildren(
           ...sites.map((r) => {
             const href = siteRouteUrl(r.id);
@@ -1026,18 +1107,40 @@ export class AppShell extends Control<AppShellConfig> {
         a.setAttribute('href', this.screenSlugUrl(a.dataset.slug ?? ''));
       }
       if (pid === null) return;
+      const seq = ++this.scopeLoadSeq;
+      this.scopeLinkRows = null;
+      this.scopeAreas = undefined;
+      // The project's areas, in the same tick (one batch): which screens
+      // belong to which area, and which areas are off.
+      this.ctx.api.callByName(
+        AREA_SPEC.list,
+        { projectId: pid },
+        (out) => {
+          if (!this.isAlive() || seq !== this.scopeLoadSeq) return;
+          this.scopeAreas = (out as AreaListOutput).areas ?? [];
+          this.paintScopeLinks();
+        },
+        {
+          alive: () => this.isAlive(),
+          onErr: () => {
+            if (seq !== this.scopeLoadSeq) return;
+            this.scopeAreas = null;
+            this.paintScopeLinks();
+          },
+        },
+      );
       this.ctx.api.callByName(
         'card.select_with_attributes',
         { cardTypeName: 'screen', parentCardId: pid, order: [{ field: 'attributes.sort_order', direction: 'ASC' }] },
         (out) => {
-          if (!this.isAlive()) return;
+          if (!this.isAlive() || seq !== this.scopeLoadSeq) return;
           const rows = ((out ?? {}) as { rows?: CardWithAttrs[] }).rows ?? [];
           if (rows.length === 0) {
             // No screen cards for this project — render an empty rail (and
             // empty `screenLinks`) so a previous project's links don't linger
             // when switching to one that genuinely has none.
-            this.renderScopeLinks([]);
-            this.ctx.tree.at(['shell', 'screenLinks']).set([]);
+            this.scopeLinkRows = [];
+            this.paintScopeLinks();
             return;
           }
           // Sort by the `sort_order` attribute client-side (don't rely on the
@@ -1055,16 +1158,11 @@ export class AppShell extends Control<AppShellConfig> {
               const hk = r.attributes['hotkey'];
               const hotkey = typeof hk === 'string' ? hk : '';
               const chord = hotkey !== '' ? `g ${hotkey}` : '';
-              return { slug, label: readTitle(r), chord, hotkey };
+              return { id: r.id.toString(), slug, label: readTitle(r), chord, hotkey };
             })
             .filter((l): l is ScopeLink => l !== null);
-          this.renderScopeLinks(links);
-          // Publish for AppShell.hotkeys() so each screen's `hotkey` wires up
-          // its `g <hotkey>` navigation chord (data-driven, project-specific).
-          // An empty `links` array (no slugs at all) lands an empty rail —
-          // matches the rows-empty branch above so a previous project's links
-          // don't linger.
-          this.ctx.tree.at(['shell', 'screenLinks']).set(links);
+          this.scopeLinkRows = links;
+          this.paintScopeLinks();
         },
         { alive: () => this.isAlive() },
       );
@@ -1074,7 +1172,7 @@ export class AppShell extends Control<AppShellConfig> {
   private buildAdminSection(
     rail: HTMLElement,
     label: string,
-    links: ReadonlyArray<{ label: string; key: string; minRole?: 'admin' | 'manager' }>,
+    links: ReadonlyArray<{ label: string; key: string; minRole?: 'admin' | 'manager'; area?: string }>,
   ): void {
     const sectionKey = label.toLowerCase();
     const toggle = document.createElement('button');
@@ -1095,12 +1193,12 @@ export class AppShell extends Control<AppShellConfig> {
     list.dataset.adminSection = sectionKey;
     list.dataset.adminList = sectionKey;
 
-    const gates: Array<{ el: HTMLElement; minRole: 'admin' | 'manager' }> = [];
+    const gates: Array<{ el: HTMLElement; minRole: 'admin' | 'manager'; area?: string }> = [];
     for (const l of links) {
       const link = railLink(l.label, '', adminUrl(l.key), () => navigate(adminUrl(l.key)));
       link.dataset.adminKey = l.key;
       list.append(link);
-      gates.push({ el: link, minRole: l.minRole ?? 'admin' });
+      gates.push({ el: link, minRole: l.minRole ?? 'admin', area: l.area });
     }
 
     rail.append(toggle, list);
@@ -1453,4 +1551,34 @@ export { formatBinding };
 
 export function registerAppShell(): void {
   Control.register('AppShell', AppShell);
+}
+
+/**
+ * The scope links grouped by area (docs/AREAS.md): one group per area that
+ * isn't off and has screens, in area order, each with its screens in their
+ * own order; a screen no area claims joins the first group; the screens of
+ * an area that is off are dropped.
+ */
+export function scopeLinkGroups<L extends { id: string }>(
+  links: readonly L[],
+  areas: ReadonlyArray<Pick<AreaRow, 'key' | 'title' | 'state' | 'screens' | 'sort'>>,
+): Array<{ key: string; title: string; links: L[] }> {
+  const ordered = [...areas].sort((a, b) => a.sort - b.sort);
+  const areaOf = new Map<string, Pick<AreaRow, 'key' | 'state'>>();
+  for (const a of ordered) for (const id of a.screens) areaOf.set(id, a);
+  const groups = ordered
+    .filter((a) => a.state !== 'off')
+    .map((a) => ({ key: a.key, title: a.title, links: [] as L[] }));
+  const unclaimed: L[] = [];
+  for (const l of links) {
+    const a = areaOf.get(l.id);
+    if (a === undefined) unclaimed.push(l);
+    else if (a.state !== 'off') groups.find((g) => g.key === a.key)?.links.push(l);
+  }
+  const shown = groups.filter((g) => g.links.length > 0);
+  if (unclaimed.length > 0) {
+    if (shown.length === 0) return [{ key: '', title: 'Tasks', links: unclaimed }];
+    shown[0]!.links.push(...unclaimed);
+  }
+  return shown;
 }

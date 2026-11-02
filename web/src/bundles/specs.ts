@@ -69,6 +69,12 @@ export const PORTAL_SPEC = {
  *  project): { card_id, new_parent_card_id } → { ok, activity_id }. */
 export const CARD_MOVE_SPEC = 'card.move';
 
+/** Areas (docs/AREAS.md): a project's switchable sections. */
+export const AREA_SPEC = {
+  list: 'area.list',
+  set: 'area.set',
+} as const;
+
 export const THEME_SPEC = {
   bases: 'theme.bases',
   baseFile: 'theme.base_file',
@@ -128,6 +134,8 @@ export interface ProjectComposeInput {
   description?: string;
   preset?: string;
   features?: string[];
+  /** Areas the project starts with switched off. */
+  areasOff?: string[];
 }
 export interface ProjectComposeOutput {
   newProjectId: bigint;
@@ -302,6 +310,46 @@ export interface ThemeFilePutOutput {
   changed: boolean;
 }
 
+/** An area's state: on, off (hidden completely), or unused (nothing of it in
+ *  the project yet). */
+export type AreaState = 'on' | 'off' | 'unused';
+
+/** One area of a project, or of the workspace (Sites). */
+export interface AreaRow {
+  key: string;
+  title: string;
+  doc: string;
+  scope: 'project' | 'workspace';
+  sort: number;
+  state: AreaState;
+  dependsOn: string[];
+  /** Starting points (feature bundles), the default first. */
+  starts: Array<{ key: string; title: string }>;
+  /** Starting points the project used. */
+  added: string[];
+  /** Ids of the project's screens that belong to the area. */
+  screens: string[];
+  /** How many items it holds (admins only; null otherwise). */
+  items: number | null;
+}
+export interface AreaListInput {
+  projectId?: bigint;
+}
+export interface AreaListOutput {
+  areas: AreaRow[];
+}
+export interface AreaSetInput {
+  projectId?: bigint;
+  key: string;
+  on: boolean;
+  start?: string;
+}
+export interface AreaSetOutput {
+  key: string;
+  state: AreaState;
+  applied: string[];
+}
+
 /* -------------------------------- helpers --------------------------------- */
 
 /**
@@ -390,6 +438,26 @@ export function decodePortalRow(j: Record<string, unknown>): PortalRow {
     warnings: asStrings(j['warnings']),
     dirty: j['dirty'] === true,
     lastError: asStr(j['last_error']),
+  };
+}
+
+export function decodeAreaRow(j: Record<string, unknown>): AreaRow {
+  const state = asStr(j['state']);
+  return {
+    key: asStr(j['key']),
+    title: asStr(j['title']),
+    doc: asStr(j['doc']),
+    scope: asStr(j['scope']) === 'workspace' ? 'workspace' : 'project',
+    sort: asNum(j['sort']),
+    state: state === 'off' || state === 'unused' ? state : 'on',
+    dependsOn: asStrings(j['depends_on']),
+    starts: asArray(j['starts']).map((r) => {
+      const s = asObj(r);
+      return { key: asStr(s['key']), title: asStr(s['title']) };
+    }),
+    added: asStrings(j['added']),
+    screens: asStrings(j['screens']),
+    items: j['items'] === null || j['items'] === undefined ? null : asNum(j['items']),
   };
 }
 
@@ -502,6 +570,7 @@ export function registerBundleSpecs(api: Api): void {
       if (i.description !== undefined && i.description !== '') m['description'] = i.description;
       if (i.preset !== undefined && i.preset !== '') m['preset'] = i.preset;
       if (i.features !== undefined && i.features.length > 0) m['features'] = i.features;
+      if (i.areasOff !== undefined && i.areasOff.length > 0) m['areas_off'] = i.areasOff;
       return m;
     },
     (raw) => {
@@ -558,6 +627,27 @@ export function registerBundleSpecs(api: Api): void {
     (raw) => ({ rows: asArray(asObj(raw)['rows']).map((r) => decodePublication(asObj(r))) }),
   );
 
+  define<AreaListInput, AreaListOutput>(
+    'area',
+    'list',
+    (i) => (i.projectId !== undefined && i.projectId > 0n ? { project_id: i.projectId } : {}),
+    (raw) => ({ areas: asArray(asObj(raw)['areas']).map((r) => decodeAreaRow(asObj(r))) }),
+  );
+  define<AreaSetInput, AreaSetOutput>(
+    'area',
+    'set',
+    (i) => {
+      const m: Record<string, unknown> = { key: i.key, on: i.on };
+      if (i.projectId !== undefined && i.projectId > 0n) m['project_id'] = i.projectId;
+      if (i.start !== undefined && i.start !== '') m['start'] = i.start;
+      return m;
+    },
+    (raw) => {
+      const o = asObj(raw);
+      const st = asStr(o['state']);
+      return { key: asStr(o['key']), state: st === 'off' ? 'off' : 'on', applied: asStrings(o['applied']) };
+    },
+  );
   define<{ cardId: bigint; newParentCardId: bigint }, { ok: boolean }>(
     'card',
     'move',

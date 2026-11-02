@@ -45,6 +45,7 @@ import type { SchedulerJobsConfig } from './scheduler-jobs.js';
 import { COMM_CHANNEL_FORM } from './comm-channel-form.js';
 import { PORTAL_FORM } from './portal-form.js';
 import { THEME_FORM } from './theme-form.js';
+import type { AreaSwitchesConfig } from '../areas/area-switches.js';
 import { ACTIVITY_SINK_FORM } from './activity-sink-form.js';
 import { WORKFLOW_FORM } from './workflow-form.js';
 
@@ -55,7 +56,8 @@ type AdminScreenConfig =
   | EnumManagerConfig
   | PeopleManagerConfig
   | NestedEditorConfig
-  | SchedulerJobsConfig;
+  | SchedulerJobsConfig
+  | AreaSwitchesConfig;
 
 /* -------------------------------------------------------------------------- */
 /* Contacts = person cards (CARD source).                                      */
@@ -856,6 +858,7 @@ export type AdminView =
   | 'comm_log'
   | 'portals'
   | 'themes'
+  | 'areas'
   | 'jobs';
 
 /** The data-driven "Enums" screen — NOT a MasterDetail (one screen spans many
@@ -872,6 +875,24 @@ export const ENUMS_SCREEN: EnumManagerConfig = {
 export const PEOPLE_SCREEN: PeopleManagerConfig = {
   type: 'PeopleManager',
   title: 'People',
+};
+
+/** The workspace "Areas" screen: the switches for workspace-wide areas
+ *  (Sites). A project's own areas are switched in its properties. */
+export const AREAS_SCREEN: AreaSwitchesConfig = {
+  type: 'AreaSwitches',
+  scope: 'workspace',
+  title: 'Areas',
+};
+
+/**
+ * The area an admin screen belongs to (docs/AREAS.md): while that
+ * workspace area is off, its screens leave the rail (Portals and Themes go
+ * with Sites).
+ */
+export const ADMIN_VIEW_AREA: Partial<Record<AdminView, string>> = {
+  portals: 'sites',
+  themes: 'sites',
 };
 
 /** The workspace "Background Jobs" screen — lists the server's hard-coded
@@ -901,6 +922,7 @@ const ADMIN_SCREENS: Record<AdminView, AdminScreenConfig> = {
   comm_log: COMM_LOG_SCREEN,
   portals: PORTALS_SCREEN,
   themes: THEMES_SCREEN,
+  areas: AREAS_SCREEN,
   jobs: JOBS_SCREEN,
 };
 
@@ -944,6 +966,8 @@ export const ADMIN_SECTION: Record<AdminView, AdminSection> = {
   portals: 'workspace',
   // Global: portals share themes.
   themes: 'workspace',
+  // The workspace's own areas (Sites); a project's are in its properties.
+  areas: 'workspace',
   // Workspace-wide: the jobs are global process state, not project-scoped.
   jobs: 'workspace',
 };

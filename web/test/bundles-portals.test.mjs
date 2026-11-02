@@ -31,6 +31,7 @@ before(async () => {
   M.registerEnumManager();
   M.registerPagePublications();
   M.registerNewPageButton();
+  M.registerAreaSwitches();
   // A stub RefPicker that records its config: the Values screen spawns one per
   // card_ref attribute of a value row (a status's publishes_to).
   class StubPicker extends M.Control {
@@ -210,6 +211,54 @@ test('new-project dialog: a preset creates the project through project.compose w
   assert.ok(rows.some((r) => r.id === '601' && r.label === 'Docs'), 'new project row carries the server id');
 });
 
+const AREA_CATALOG = { areas: [
+  { key: 'tasks', title: 'Tasks', doc: 'Tasks moved through a flow.', scope: 'project', sort: 10, state: 'unused', depends_on: [], starts: [{ key: 'tracker', title: 'Task tracking' }], added: [], screens: [], items: null },
+  { key: 'conversations', title: 'Conversations', doc: 'Email threads.', scope: 'project', sort: 20, state: 'unused', depends_on: ['tasks'], starts: [{ key: 'conversations', title: 'Conversations' }], added: [], screens: [], items: null },
+  { key: 'approvals', title: 'Approvals', doc: 'Votes.', scope: 'project', sort: 30, state: 'unused', depends_on: ['tasks'], starts: [], added: [], screens: [], items: null },
+  { key: 'content', title: 'Content', doc: 'Pages.', scope: 'project', sort: 40, state: 'unused', depends_on: [], starts: [{ key: 'publishing', title: 'Publishing' }], added: [], screens: [], items: null },
+  { key: 'sites', title: 'Sites', doc: 'Portals.', scope: 'workspace', sort: 50, state: 'on', depends_on: [], starts: [], added: [], screens: [], items: null },
+] };
+
+test('new-project dialog: "Choose areas…" ticks areas (keeping dependencies) and composes from them', async () => {
+  const h = projectHandlers();
+  h['area.list'] = () => AREA_CATALOG;
+  const t = transportFor(h);
+  const { dispatcher, api } = bootApi(t.transport);
+  const { ctrl } = mountProjectList(api);
+  await settle(dispatcher);
+  ctrl.el.querySelector('[data-new-project]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  const sel = ctrl.el.querySelector('[data-qe-template]');
+  assert.deepEqual(sel.querySelectorAll('option').map((o) => o.value), ['', 'areas:', '10'], 'the presets became shortcuts inside "Choose areas…"');
+  sel.value = 'areas:';
+  sel.dispatchEvent({ type: 'change' });
+  const ticked = () => ctrl.el.querySelectorAll('[data-qe-area]').filter((c) => c.checked).map((c) => c.dataset.qeArea);
+  assert.deepEqual(ctrl.el.querySelectorAll('[data-qe-area]').map((c) => c.dataset.qeArea), ['tasks', 'conversations', 'approvals', 'content'], 'project areas only');
+  assert.deepEqual(ticked(), ['tasks'], 'Tasks starts ticked');
+
+  // A shortcut ticks what a preset amounts to.
+  ctrl.el.querySelector('[data-qe-shortcut="content"]').dispatchEvent({ type: 'click' });
+  assert.deepEqual(ticked(), ['tasks', 'content']);
+  // Ticking Approvals needs Tasks (already on); unticking Tasks unticks it.
+  const box = (k) => ctrl.el.querySelector(`[data-qe-area="${k}"]`);
+  box('approvals').checked = true;
+  box('approvals').dispatchEvent({ type: 'change' });
+  assert.deepEqual(ticked(), ['tasks', 'approvals', 'content']);
+  box('tasks').checked = false;
+  box('tasks').dispatchEvent({ type: 'change' });
+  assert.deepEqual(ticked(), ['content'], 'what needs Tasks goes with it');
+  box('conversations').checked = true;
+  box('conversations').dispatchEvent({ type: 'change' });
+  assert.deepEqual(ticked(), ['tasks', 'conversations', 'content'], 'Conversations brings Tasks back');
+
+  ctrl.el.querySelector('[data-qe-title]').value = 'Care';
+  ctrl.el.querySelector('[data-qe-add-close]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  const composes = t.of('project.compose');
+  assert.equal(composes.length, 1);
+  assert.deepEqual(composes[0].data, { name: 'Care', features: ['tracker', 'conversations', 'publishing'], areas_off: ['approvals'] });
+});
+
 test('new-project dialog: "Create as template" hides the presets', async () => {
   const t = transportFor(projectHandlers());
   const { dispatcher, api } = bootApi(t.transport);
@@ -237,60 +286,20 @@ test('new-project dialog: an older server without bundle.list keeps the template
 });
 
 /* -------------------------------------------------------------------------- */
-/* Project properties: FEATURES section.                                       */
+/* Project properties: AREAS section.                                          */
 /* -------------------------------------------------------------------------- */
 
-test('properties panel FEATURES: enabled marked, conflict disabled, Add applies + refreshes nav', async () => {
-  let applied = false;
+test('properties panel AREAS: the project\'s area switches, from area.list', async () => {
   const t = transportFor({
     'card.select_with_attributes': () => ({ rows: [{ id: '31', card_type_id: '1', card_type_name: 'project', attributes: { title: 'Legacy' } }] }),
     'attribute_def.select': () => ({ rows: [] }),
-    'bundle.list': (d) => {
-      assert.equal(d.project_id, '31', 'bundle.list is scoped to the project');
-      return {
-        presets: [],
-        features: [
-          { key: 'tracker', title: 'Task tracking', doc: 'Tasks.', sort: 10, enabled: false, conflict: 'This project already has its own status flow.' },
-          { key: 'conversations', title: 'Conversations', doc: 'Email.', sort: 20, enabled: true, conflict: '' },
-          { key: 'publishing', title: 'Publishing', doc: 'Pages.', sort: 30, enabled: applied, conflict: '' },
-        ],
-      };
+    'area.list': (d) => {
+      assert.equal(d.project_id, '31', 'area.list is scoped to the project');
+      return { areas: [
+        { key: 'tasks', title: 'Tasks', doc: 'Tasks.', scope: 'project', sort: 10, state: 'on', depends_on: [], starts: [{ key: 'tracker', title: 'Task tracking' }], added: ['tracker'], screens: [], items: null },
+        { key: 'content', title: 'Content', doc: 'Pages.', scope: 'project', sort: 40, state: 'unused', depends_on: [], starts: [{ key: 'publishing', title: 'Publishing' }], added: [], screens: [], items: null },
+      ] };
     },
-    'bundle.apply': (d) => {
-      applied = true;
-      return { results: [{ key: d.keys[0], status: 'applied', copied: 7, existing: 0, message: '' }] };
-    },
-  });
-  const { dispatcher, api } = bootApi(t.transport);
-  const tree = new M.TreeNode({}, []);
-  const saved = [];
-  const panel = M.Control.New('ProjectPropertiesPanel', { type: 'ProjectPropertiesPanel', onSaved: (p) => saved.push(p) }, { api, tree });
-  panel.mount(new FakeElement('div'));
-  panel.open(31n);
-  await settle(dispatcher);
-
-  const row = (key) => panel.el.querySelector(`[data-feature="${key}"]`);
-  assert.ok(row('conversations').querySelector('[data-feature-enabled]'), 'enabled feature is marked');
-  const trackerAdd = row('tracker').querySelector('[data-feature-add]');
-  assert.equal(trackerAdd.disabled, true, 'a conflicting feature cannot be added');
-  assert.match(row('tracker').textContent, /already has its own status flow/);
-
-  row('publishing').querySelector('[data-feature-add]').dispatchEvent({ type: 'click' });
-  await settle(dispatcher);
-  const applies = t.of('bundle.apply');
-  assert.equal(applies.length, 1);
-  assert.deepEqual(applies[0].data, { project_id: '31', keys: ['publishing'] });
-  assert.equal(tree.at(['shell', 'navRefresh']).peek(), 1, 'nav refresh nonce bumped so new screens appear');
-  assert.equal(saved.length, 1, 'host notified');
-  assert.ok(row('publishing').querySelector('[data-feature-enabled]'), 'the list reloaded: publishing is now on');
-});
-
-test('properties panel FEATURES: a failed apply shows the server message inline', async () => {
-  const t = transportFor({
-    'card.select_with_attributes': () => ({ rows: [{ id: '31', card_type_id: '1', card_type_name: 'project', attributes: { title: 'P' } }] }),
-    'attribute_def.select': () => ({ rows: [] }),
-    'bundle.list': () => ({ presets: [], features: [{ key: 'publishing', title: 'Publishing', doc: '', sort: 1, enabled: false, conflict: '' }] }),
-    'bundle.apply': () => ({ __error: { code: 'bundle_conflict', message: 'Publishing can’t be added: this project already has its own publish_status flow' } }),
   });
   const { dispatcher, api } = bootApi(t.transport);
   const tree = new M.TreeNode({}, []);
@@ -298,13 +307,10 @@ test('properties panel FEATURES: a failed apply shows the server message inline'
   panel.mount(new FakeElement('div'));
   panel.open(31n);
   await settle(dispatcher);
-  const add = panel.el.querySelector('[data-feature-add="publishing"]');
-  add.dispatchEvent({ type: 'click' });
-  await settle(dispatcher);
-  const err = panel.el.querySelector('[data-feature="publishing"]').querySelector('[data-feature-error]');
-  assert.equal(err.style.display, '');
-  assert.match(err.textContent, /already has its own publish_status flow/);
-  assert.equal(add.disabled, false, 'the button is usable again');
+  const section = panel.el.querySelector('[data-project-props-areas]');
+  assert.ok(section, 'an AREAS section');
+  assert.deepEqual(section.querySelectorAll('[data-area]').map((r) => `${r.dataset.area}:${r.dataset.areaState}`), ['tasks:on', 'content:unused']);
+  assert.equal(t.of('bundle.list').length, 0, 'the old FEATURES list is gone');
 });
 
 /* -------------------------------------------------------------------------- */

@@ -10805,6 +10805,130 @@ textarea.task-comms__form-input {
   font-size: var(--text-sm);
 }
 
+/* Areas (areas/area-switches.ts): one row per area with its state and switch;
+   in a project's properties (AREAS) and on the workspace Areas screen. */
+.area-switches {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.area-switches__title {
+  margin: var(--space-4) var(--space-4) 0;
+  font-size: var(--text-lg, 1.1rem);
+}
+.area-switches__intro {
+  margin: 0 var(--space-4);
+  font-size: var(--text-sm);
+}
+.area-switches__list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+[data-control="AreaSwitches"] > .area-switches__list:not(:first-child) {
+  margin: 0 var(--space-4) var(--space-4);
+}
+.area-switches__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-hairline);
+}
+.area-switches__row:first-child {
+  border-top: 0;
+}
+.area-switches__row--off .area-switches__name,
+.area-switches__row--unused .area-switches__name {
+  color: var(--color-muted);
+}
+.area-switches__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.area-switches__name {
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+}
+.area-switches__doc,
+.area-switches__facts {
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+.area-switches__error {
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+}
+.area-switches__side {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  flex: 0 0 auto;
+  max-width: 55%;
+}
+.area-switches__state {
+  font-size: var(--text-2xs);
+}
+.area-switches__state--on {
+  background: var(--color-success-soft, var(--color-accent-soft));
+  color: var(--color-success, var(--color-accent));
+}
+.area-switches__state--off {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+.area-switches__confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+}
+.area-switches__start {
+  font: inherit;
+  font-size: var(--text-xs);
+  padding: 2px var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+}
+
+/* New-project dialog: "Choose areas…" — shortcuts, then one row per area. */
+.qe-dialog__shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  padding-bottom: var(--space-1);
+  border-bottom: 1px solid var(--color-hairline);
+}
+.qe-dialog__area {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--space-2);
+}
+.qe-dialog__area-start {
+  font-size: var(--text-xs);
+  padding: 2px var(--space-1);
+}
+.qe-dialog__area-doc {
+  grid-column: 1 / -1;
+  padding-left: 1.6rem;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
 /* Values screen: a value's card_ref pickers (a status's "Publishes to"). */
 .enum-manager__ref {
   display: inline-flex;

@@ -82,6 +82,7 @@ import {
   enclosingProjectId,
   siblingLinkTargets,
   pictureSnippets,
+  SECTION_AREA,
   type DetailMenuAction,
   type DetailProfile,
   type DetailSection,
@@ -90,6 +91,7 @@ import type { PagePublications } from '../pages/page-publications.js';
 import type { PageStructure } from '../pages/page-structure.js';
 import { icon } from '../ui/icons.js';
 import { placeholderIssues, placeholderSnippets } from '../bundles/placeholders.js';
+import { AREA_SPEC, type AreaListOutput } from '../bundles/specs.js';
 
 import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
 import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
@@ -315,6 +317,35 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   /** Whether this card type's profile mounts a section. */
   private shows(section: DetailSection): boolean {
     return this.profile.sections.includes(section);
+  }
+
+  /** Every section slot, for hiding the ones of an area that is off. */
+  private sectionSlots: Array<[DetailSection, HTMLElement]> = [];
+
+  /**
+   * Hide the sections of areas that are off (SECTION_AREA): the project's
+   * areas from area.list, Sites from the shell's workspace areas. One read,
+   * once the card's project is known.
+   */
+  private applySectionAreas(): void {
+    if (this.projectId === undefined) return;
+    const projectId = this.projectId;
+    this.ctx.api.callByName(
+      AREA_SPEC.list,
+      { projectId },
+      (out) => {
+        if (!this.isAlive() || this.projectId !== projectId) return;
+        const off = new Set(
+          ((out as AreaListOutput).areas ?? []).filter((a) => a.state === 'off').map((a) => a.key),
+        );
+        for (const k of this.ctx.tree.at(['shell', 'workspaceAreasOff']).peek<string[]>() ?? []) off.add(k);
+        for (const [section, el] of this.sectionSlots) {
+          const area = SECTION_AREA[section];
+          if (area !== undefined && off.has(area)) el.style.display = 'none';
+        }
+      },
+      { alive: () => this.isAlive() },
+    );
   }
 
   /** The panel's attribute skip-list for this card type. */
@@ -662,6 +693,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
       ['publications', publicationsSlot],
     ];
     for (const [section, el] of slots) if (!this.shows(section)) el.style.display = 'none';
+    this.sectionSlots = slots;
 
     grid.append(loading, notFound, main, rail);
     this.el.append(grid);
@@ -783,6 +815,7 @@ export class TaskDetail extends Control<TaskDetailConfig> {
           return;
         }
         this.projectId = enclosingProjectId(found, new Map(rows.map((r) => [r.id, r])));
+        this.applySectionAreas();
         this.sameTypeRows = rows;
         // Seed the panel store with every attribute's initial Value/Unset.
         // Every subsequent commit drives a Pending → Value/Error transition

@@ -30,6 +30,7 @@ before(async () => {
   M.registerSchedulerJobs(); // the Background Jobs admin view is its own control too
   M.registerRecordForm(); // Comm Channels mounts the generic RecordForm in its detail
   M.registerThemeFiles(); // the Themes screen's FILES panel (detail.panel)
+  M.registerAreaSwitches(); // the workspace Areas screen
 });
 
 const PROJECT_ID = '31';
@@ -370,7 +371,7 @@ test('ADMIN_SECTION classifies every admin view (Workspace global vs Project sco
   // Confirmed grouping: global-data screens are Workspace; the rest are Project
   // (always filtered to the active project).
   const inSection = (s) => M.ADMIN_VIEWS.filter((v) => M.ADMIN_SECTION[v] === s).sort();
-  assert.deepEqual(inSection('workspace'), ['agents', 'attributes', 'jobs', 'oidc_claims', 'people', 'portals', 'roles', 'themes']);
+  assert.deepEqual(inSection('workspace'), ['agents', 'areas', 'attributes', 'jobs', 'oidc_claims', 'people', 'portals', 'roles', 'themes']);
   assert.deepEqual(inSection('project'), ['activity_sinks', 'comm_channels', 'comm_log', 'enums', 'screens', 'workflows']);
 });
 

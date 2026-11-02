@@ -453,11 +453,14 @@ export {
   decodePublication,
 } from './bundles/specs.js';
 export { PORTAL_FORM, portalRowToDraft, portalDraftToInput, portalBuildSummary } from './admin/portal-form.js';
-export { DETAIL_PROFILES, detailProfile, enclosingProjectId, siblingLinkTargets, titlePath, pictureSnippets } from './task-detail/detail-profiles.js';
+export { DETAIL_PROFILES, detailProfile, enclosingProjectId, siblingLinkTargets, titlePath, pictureSnippets, SECTION_AREA } from './task-detail/detail-profiles.js';
 export { PAGE_PLACEHOLDERS, placeholderIssues, placeholderSnippets, placeholderText } from './bundles/placeholders.js';
 export { NewPageButton, registerNewPageButton, newPageInput } from './pages/new-page-button.js';
 export { PagePublications, registerPagePublications } from './pages/page-publications.js';
 export { SiteView, registerSiteView } from './pages/site-view.js';
+export { AreaSwitches, registerAreaSwitches, areaFacts } from './areas/area-switches.js';
+export { scopeLinkGroups } from './shell/app-shell.js';
+export { toggleArea, areasOfPreset, composeFromAreas, AREAS_CHOICE } from './projects/project-helpers.js';
 export { PageStructure, registerPageStructure, reorderWrites, siteOrder, subtreeIds, pageNode } from './pages/page-structure.js';
 export {
   PanelModel,

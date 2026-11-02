@@ -30,6 +30,7 @@ before(async () => {
   M.registerThemeFiles();
   M.registerPageStructure();
   M.registerSiteView();
+  M.registerAreaSwitches();
 });
 
 beforeEach(() => {
@@ -428,4 +429,126 @@ test('pictureSnippets: a page’s attached images as Insert-menu entries', () =>
   }]);
   assert.equal(M.detailProfile('page').insertPictures, true);
   assert.equal(M.detailProfile('task').insertPictures, false);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Areas.                                                                      */
+/* -------------------------------------------------------------------------- */
+
+const DIALOG_AREAS = [
+  { key: 'tasks', title: 'Tasks', sort: 10, dependsOn: [], starts: [{ key: 'tracker', title: 'Task tracking' }] },
+  { key: 'conversations', title: 'Conversations', sort: 20, dependsOn: ['tasks'], starts: [{ key: 'conversations', title: 'Conversations' }] },
+  { key: 'approvals', title: 'Approvals', sort: 30, dependsOn: ['tasks'], starts: [] },
+  { key: 'content', title: 'Content', sort: 40, dependsOn: [], starts: [{ key: 'publishing', title: 'Docs site' }, { key: 'blogging', title: 'Blog' }] },
+];
+
+test('toggleArea keeps dependencies whole; areasOfPreset; composeFromAreas', () => {
+  const on = (keys, k) => [...M.toggleArea(new Set(keys), DIALOG_AREAS, k, true)].sort();
+  const off = (keys, k) => [...M.toggleArea(new Set(keys), DIALOG_AREAS, k, false)].sort();
+  assert.deepEqual(on([], 'conversations'), ['conversations', 'tasks']);
+  assert.deepEqual(off(['tasks', 'conversations', 'approvals', 'content'], 'tasks'), ['content']);
+  assert.deepEqual(off(['tasks', 'conversations'], 'conversations'), ['tasks']);
+  assert.deepEqual([...M.areasOfPreset(['tracker', 'conversations'], DIALOG_AREAS)].sort(), ['conversations', 'tasks']);
+  assert.deepEqual(M.composeFromAreas(new Set(['content', 'tasks']), DIALOG_AREAS, { content: 'blogging' }),
+    { features: ['tracker', 'blogging'], areasOff: ['conversations', 'approvals'] });
+  assert.deepEqual(M.composeFromAreas(new Set(['approvals']), DIALOG_AREAS), { features: [], areasOff: ['tasks', 'conversations', 'content'] });
+});
+
+test('scopeLinkGroups: screens under their areas, off areas dropped, strays join the first group', () => {
+  const links = [{ id: '1' }, { id: '2' }, { id: '3' }, { id: '4' }, { id: '9' }];
+  const areas = [
+    { key: 'content', title: 'Content', state: 'on', sort: 40, screens: ['4'] },
+    { key: 'tasks', title: 'Tasks', state: 'on', sort: 10, screens: ['1', '2'] },
+    { key: 'conversations', title: 'Conversations', state: 'off', sort: 20, screens: ['3'] },
+  ];
+  assert.deepEqual(M.scopeLinkGroups(links, areas).map((g) => [g.title, g.links.map((l) => l.id)]),
+    [['Tasks', ['1', '2', '9']], ['Content', ['4']]]);
+  assert.deepEqual(M.scopeLinkGroups([{ id: '9' }], []).map((g) => g.title), ['Tasks'], 'no areas: one group');
+});
+
+test('SECTION_AREA: detail sections follow their areas', () => {
+  assert.equal(M.SECTION_AREA.comms, 'conversations');
+  assert.equal(M.SECTION_AREA.approvals, 'approvals');
+  assert.equal(M.SECTION_AREA.publications, 'sites');
+});
+
+function areaRows(overrides = {}) {
+  return [
+    { key: 'tasks', title: 'Tasks', doc: 'Tasks.', scope: 'project', sort: 10, state: 'on', depends_on: [], starts: [{ key: 'tracker', title: 'Task tracking' }], added: ['tracker'], screens: [], items: 12 },
+    { key: 'conversations', title: 'Conversations', doc: 'Email.', scope: 'project', sort: 20, state: overrides.conversations ?? 'on', depends_on: ['tasks'], starts: [{ key: 'conversations', title: 'Conversations' }], added: ['conversations'], screens: [], items: 3 },
+    { key: 'content', title: 'Content', doc: 'Pages.', scope: 'project', sort: 40, state: 'unused', depends_on: [], starts: [{ key: 'publishing', title: 'Docs site' }, { key: 'blogging', title: 'Blog' }], added: [], screens: [], items: 0 },
+    { key: 'sites', title: 'Sites', doc: 'Portals.', scope: 'workspace', sort: 50, state: 'on', depends_on: [], starts: [], added: [], screens: [], items: null },
+  ];
+}
+
+async function mountAreas(roles, handlers, scope = 'project') {
+  const t = transportFor(handlers);
+  const { dispatcher, api } = bootApi(t.transport);
+  const tree = new M.TreeNode({}, []);
+  tree.at(['auth', 'user']).set({ id: 1n, isAdmin: roles.includes('admin'), roles, resolved: true });
+  const ctrl = M.Control.New('AreaSwitches', { type: 'AreaSwitches', scope, projectId: '31' }, { api, tree });
+  ctrl.mount(new FakeElement('div'));
+  await settle(dispatcher);
+  return { t, ctrl, tree, dispatcher };
+}
+
+test('AreaSwitches: an admin switches an area off (after confirming) and sets one up from a chosen start', async () => {
+  const state = { conversations: 'on' };
+  const sets = [];
+  const { ctrl, tree, dispatcher } = await mountAreas(['admin'], {
+    'area.list': () => ({ areas: areaRows(state) }),
+    'area.set': (d) => {
+      sets.push(d);
+      if (d.key === 'conversations') state.conversations = d.on ? 'on' : 'off';
+      return { key: d.key, state: d.on ? 'on' : 'off', applied: [] };
+    },
+  });
+  const row = (k) => ctrl.el.querySelector(`[data-area="${k}"]`);
+  assert.deepEqual(ctrl.el.querySelectorAll('[data-area]').map((r) => r.dataset.area), ['tasks', 'conversations', 'content'], 'project areas only');
+  assert.match(row('conversations').textContent, /Needs Tasks · Started from Conversations · 3 items/);
+
+  click(row('conversations').querySelector('[data-area-action="off"]'));
+  assert.match(row('conversations').querySelector('[data-area-confirm]').textContent, /Hide everything in Conversations from everyone/);
+  click(row('conversations').querySelector('[data-area-action="confirm-off"]'));
+  await settle(dispatcher);
+  assert.deepEqual(sets[0], { key: 'conversations', on: false, project_id: '31' });
+  assert.equal(row('conversations').dataset.areaState, 'off');
+  assert.equal(tree.at(['shell', 'navRefresh']).peek(), 1, 'the navigation reloads');
+
+  const start = row('content').querySelector('[data-area-start]');
+  start.value = 'blogging';
+  start.dispatchEvent({ type: 'change' });
+  click(row('content').querySelector('[data-area-action="on"]'));
+  await settle(dispatcher);
+  assert.deepEqual(sets[1], { key: 'content', on: true, project_id: '31', start: 'blogging' });
+});
+
+test('AreaSwitches: a refusal shows inline; managers switch off only; workers see no switches', async () => {
+  const { ctrl, dispatcher } = await mountAreas(['admin'], {
+    'area.list': () => ({ areas: areaRows() }),
+    'area.set': () => ({ __error: { code: 'area_needed', message: 'area.set: Conversations uses Tasks; switch Conversations off first' } }),
+  });
+  const tasks = ctrl.el.querySelector('[data-area="tasks"]');
+  click(tasks.querySelector('[data-area-action="off"]'));
+  click(ctrl.el.querySelector('[data-area="tasks"]').querySelector('[data-area-action="confirm-off"]'));
+  await settle(dispatcher);
+  assert.equal(ctrl.el.querySelector('[data-area="tasks"]').querySelector('[data-area-error]').textContent,
+    'Conversations uses Tasks; switch Conversations off first');
+
+  const mgr = await mountAreas(['manager'], { 'area.list': () => ({ areas: areaRows({ conversations: 'off' }) }) });
+  const r = (k) => mgr.ctrl.el.querySelector(`[data-area="${k}"]`);
+  assert.ok(r('tasks').querySelector('[data-area-action="off"]'), 'a manager can switch off');
+  assert.equal(r('conversations').querySelector('[data-area-action="on"]'), null, 'but not on');
+  assert.equal(r('content').querySelector('[data-area-action="on"]'), null, 'nor set up');
+
+  const wkr = await mountAreas(['worker'], { 'area.list': () => ({ areas: areaRows() }) });
+  assert.equal(wkr.ctrl.el.querySelectorAll('[data-area-action]').length, 0, 'a worker sees states only');
+});
+
+test('AreaSwitches (workspace): the Sites switch', async () => {
+  const { ctrl } = await mountAreas(['admin'], { 'area.list': (d) => {
+    assert.equal(d.project_id, undefined, 'no project for the workspace');
+    return { areas: areaRows() };
+  } }, 'workspace');
+  assert.deepEqual(ctrl.el.querySelectorAll('[data-area]').map((r) => r.dataset.area), ['sites']);
 });

@@ -61,12 +61,17 @@ import {
   BUNDLE_SOURCE_EXCLUSION_LEAF,
   clampIndex,
   composeChoice,
+  composeFromAreas,
+  areasOfPreset,
+  toggleArea,
+  AREAS_CHOICE,
   PRESET_CHOICE_PREFIX,
+  type DialogArea,
   projectDescription,
   projectTitle,
   TEMPLATE_INCLUSION_LEAF,
 } from './project-helpers.js';
-import { BUNDLE_SPEC, type BundleListOutput } from '../bundles/specs.js';
+import { AREA_SPEC, BUNDLE_SPEC, type AreaListOutput, type BundleListOutput } from '../bundles/specs.js';
 
 import { icon } from '../ui/icons.js';
 import { captionedField } from '../ui/captioned-field.js';
@@ -139,6 +144,11 @@ export class ProjectList extends Control<ProjectListConfig> {
   private get showTemplatesPath(): string[] {
     return (this.config.showTemplatesPath ?? 'projects.showTemplates').split('.');
   }
+  /** Where the area catalog (area.list, no project) lands: the project
+   *  areas the dialog's "Choose areas…" lists. */
+  private get areasPath(): string[] {
+    return ['projects', 'areas'];
+  }
   private get bundlesPath(): string[] {
     return (this.config.bundlesPath ?? 'projects.bundles').split('.');
   }
@@ -203,6 +213,19 @@ export class ProjectList extends Control<ProjectListConfig> {
       input: {},
       result: { method: 'landBundles' },
       onError: { method: 'bundlesUnavailable' },
+    },
+    /**
+     * The area catalog (area.list, no project; docs/AREAS.md): the dialog's
+     * "Choose areas…" lists the project areas. An older server without
+     * areas leaves the presets in "Start from" instead.
+     */
+    {
+      name: 'areas',
+      spec: AREA_SPEC.list,
+      when: 'mount',
+      input: {},
+      result: { method: 'landAreas' },
+      onError: { method: 'areasUnavailable' },
     },
   ];
 
@@ -333,6 +356,7 @@ export class ProjectList extends Control<ProjectListConfig> {
         description: { payload: 'description' },
         preset: { payload: 'preset' },
         features: { payload: 'features' },
+        areasOff: { payload: 'areasOff' },
       },
       optimistic: {
         path: 'shell.projects',
@@ -394,6 +418,13 @@ export class ProjectList extends Control<ProjectListConfig> {
     });
     this.handler('bundlesUnavailable', () => {
       this.ctx.tree.at(this.bundlesPath).set({ presets: [], features: [] });
+    });
+    this.handler('landAreas', (out) => {
+      const areas = ((out ?? {}) as Partial<AreaListOutput>).areas ?? [];
+      this.ctx.tree.at(this.areasPath).set(areas.filter((a) => a.scope === 'project'));
+    });
+    this.handler('areasUnavailable', () => {
+      this.ctx.tree.at(this.areasPath).set([]);
     });
     this.handler('landTemplateStamped', (out) =>
       this.promoteTemp(this.templatesPath, ((out ?? {}) as { newProjectId?: bigint }).newProjectId),
@@ -932,6 +963,11 @@ export class ProjectList extends Control<ProjectListConfig> {
 
     const catalog = (): BundleListOutput =>
       (this.ctx.tree.at(this.bundlesPath).peek<BundleListOutput>() ?? { presets: [], features: [] }) as BundleListOutput;
+    const areaCatalog = (): DialogArea[] =>
+      (this.ctx.tree.at(this.areasPath).peek<DialogArea[]>() ?? []) as DialogArea[];
+    // "Choose areas…": the ticked areas and the starting point picked per area.
+    let tickedAreas = new Set<string>(['tasks']);
+    const pickedStarts: Record<string, string> = {};
 
     // (Re)build the "Start from" <select>: a context-sensitive first option
     // (real → "Standard (default)"; template → "(blank)"), then — for a real
@@ -944,7 +980,17 @@ export class ProjectList extends Control<ProjectListConfig> {
       first.value = '';
       first.textContent = isTmpl.checked ? '(blank — no copy)' : 'Standard template (default)';
       const opts: HTMLElement[] = [first];
-      const presets = isTmpl.checked ? [] : catalog().presets;
+      // Areas (docs/AREAS.md): one "Choose areas…" choice, with the presets
+      // as shortcuts inside it. Without areas (an older server), the presets
+      // themselves.
+      const withAreas = !isTmpl.checked && areaCatalog().length > 0;
+      if (withAreas) {
+        const o = document.createElement('option');
+        o.value = AREAS_CHOICE;
+        o.textContent = 'Choose areas…';
+        opts.push(o);
+      }
+      const presets = isTmpl.checked || withAreas ? [] : catalog().presets;
       if (presets.length > 0) {
         const group = document.createElement('optgroup');
         group.label = 'Presets';
@@ -970,14 +1016,98 @@ export class ProjectList extends Control<ProjectListConfig> {
       copySel.replaceChildren(...opts);
       const stillValid =
         cur === '' ||
+        (cur === AREAS_CHOICE && withAreas) ||
         tmpls.some((t) => t.id === cur) ||
         presets.some((p) => PRESET_CHOICE_PREFIX + p.key === cur);
       copySel.value = stillValid ? cur : '';
       rebuildFeatures();
     };
 
+    // "Choose areas…": shortcuts (the presets, as the areas they amount to),
+    // then one checkbox per area, with a starting-point choice where an area
+    // has more than one. Ticking keeps dependencies whole (toggleArea).
+    const rebuildAreas = (): void => {
+      const areas = areaCatalog();
+      presetDoc.style.display = 'none';
+      const rows: HTMLElement[] = [];
+      const presets = catalog().presets;
+      if (presets.length > 0) {
+        const bar = document.createElement('div');
+        bar.className = 'qe-dialog__shortcuts';
+        const cap = document.createElement('span');
+        cap.className = 'qe-dialog__label';
+        cap.textContent = 'Shortcuts';
+        bar.append(cap);
+        for (const p of presets) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'btn btn--xs';
+          b.dataset.qeShortcut = p.key;
+          b.textContent = p.title;
+          b.title = p.doc;
+          this.listen(b, 'click', () => {
+            tickedAreas = areasOfPreset(p.features, areas);
+            rebuildAreas();
+          });
+          bar.append(b);
+        }
+        rows.push(bar);
+      }
+      const cap = document.createElement('div');
+      cap.className = 'qe-dialog__label';
+      cap.textContent = 'Areas';
+      rows.push(cap);
+      for (const a of areas) {
+        const row = document.createElement('div');
+        row.className = 'qe-dialog__area';
+        const lab = document.createElement('label');
+        lab.className = 'qe-dialog__checkbox';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = tickedAreas.has(a.key);
+        cb.dataset.qeArea = a.key;
+        this.listen(cb, 'change', () => {
+          tickedAreas = toggleArea(tickedAreas, areas, a.key, cb.checked);
+          rebuildAreas();
+        });
+        const span = document.createElement('span');
+        span.textContent = a.title;
+        lab.append(cb, span);
+        row.append(lab);
+        if (a.starts.length > 1 && cb.checked) {
+          const sel = document.createElement('select');
+          sel.className = 'qe-dialog__input qe-dialog__area-start';
+          sel.dataset.qeAreaStart = a.key;
+          sel.setAttribute('aria-label', `${a.title}: start from`);
+          for (const st of a.starts) {
+            const o = document.createElement('option');
+            o.value = st.key;
+            o.textContent = st.title;
+            sel.append(o);
+          }
+          sel.value = pickedStarts[a.key] ?? a.starts[0]!.key;
+          this.listen(sel, 'change', () => {
+            pickedStarts[a.key] = sel.value;
+          });
+          row.append(sel);
+        }
+        const doc = document.createElement('div');
+        doc.className = 'qe-dialog__area-doc muted';
+        const needs = a.dependsOn.map((k) => areas.find((x) => x.key === k)?.title ?? k);
+        doc.textContent = [a.doc ?? '', needs.length > 0 ? `Needs ${needs.join(' and ')}.` : ''].filter((x) => x !== '').join(' ');
+        row.append(doc);
+        rows.push(row);
+      }
+      featuresBox.replaceChildren(...rows);
+      featuresBox.style.display = '';
+    };
+
     // The preset's doc + one checkbox per feature it doesn't include.
     const rebuildFeatures = (): void => {
+      if (copySel.value === AREAS_CHOICE) {
+        rebuildAreas();
+        return;
+      }
       const choice = composeChoice(copySel.value);
       const preset = choice === null ? undefined : catalog().presets.find((p) => p.key === choice);
       if (preset === undefined) {
@@ -1057,6 +1187,7 @@ export class ProjectList extends Control<ProjectListConfig> {
     this.effect(() => {
       this.ctx.tree.at(this.templatesPath).get();
       this.ctx.tree.at(this.bundlesPath).get();
+      this.ctx.tree.at(this.areasPath).get();
       rebuildTemplateOptions();
     }, 'projects.dialogTemplates');
     this.listen(isTmpl, 'change', () => rebuildTemplateOptions());
@@ -1167,7 +1298,17 @@ export class ProjectList extends Control<ProjectListConfig> {
         focusEl(titleInput);
         return;
       }
-      this.fireCreate(title, descEditor.getValue().trim(), isTmpl.checked, copySel.value, chosenFeatures());
+      if (copySel.value === AREAS_CHOICE && !isTmpl.checked) {
+        const { features, areasOff } = composeFromAreas(tickedAreas, areaCatalog(), pickedStarts);
+        if (features.length === 0) {
+          hint.textContent = 'Choose at least one area to start the project with.';
+          hint.dataset.qeAreasHint = '';
+          return;
+        }
+        this.fireCompose(title, descEditor.getValue().trim(), features, areasOff);
+      } else {
+        this.fireCreate(title, descEditor.getValue().trim(), isTmpl.checked, copySel.value, chosenFeatures());
+      }
       if (keepOpen) {
         titleInput.value = '';
         descEditor.setValue('', true);
@@ -1260,6 +1401,14 @@ export class ProjectList extends Control<ProjectListConfig> {
    * card.insert fires. On fault the tree transaction auto-rolls-back. A
    * non-empty description rides as `attributes.description`.
    */
+  /** Create a real project from areas (project.compose with the ticked
+   *  areas' starting points, the rest switched off). */
+  private fireCompose(title: string, description: string, features: string[], areasOff: string[]): void {
+    const optimisticId = nextOptimisticId();
+    this.pendingOptimisticId = optimisticId;
+    this.intent('composeProject', { title, description, optimisticId, features, areasOff });
+  }
+
   private fireCreate(
     title: string,
     description: string,

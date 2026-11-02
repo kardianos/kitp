@@ -71,7 +71,7 @@ import { registerRecordForm } from './admin/record-form.js';
 import { registerActivityFilterEditor } from './admin/activity-filter-editor.js';
 import { registerSubscriptionSpecs } from './notifications/subscription-specs.js';
 import { registerAdminSpecs } from './admin/specs.js';
-import { adminScreenConfig, ownAgentsScreen, ADMIN_VIEWS, MANAGER_ADMIN_VIEWS, ADMIN_SECTION, type AdminView } from './admin/screens.js';
+import { adminScreenConfig, ownAgentsScreen, ADMIN_VIEWS, MANAGER_ADMIN_VIEWS, ADMIN_SECTION, ADMIN_VIEW_AREA, type AdminView } from './admin/screens.js';
 import { registerPredicateFilter } from './filter/predicate-filter.js';
 import { registerQuickChips } from './filter/quick-chips.js';
 import { registerFilterSpecs } from './filter/specs.js';
@@ -114,6 +114,7 @@ import { registerAccountPage } from './shell/account-page.js';
 import { registerThemeFiles } from './admin/theme-files.js';
 import { registerPageStructure } from './pages/page-structure.js';
 import { registerSiteView } from './pages/site-view.js';
+import { registerAreaSwitches } from './areas/area-switches.js';
 
 /** Rail-link labels for each admin view key (the rail is derived from these). */
 const ADMIN_LINK_LABELS: Record<AdminView, string> = {
@@ -130,6 +131,7 @@ const ADMIN_LINK_LABELS: Record<AdminView, string> = {
   comm_log: 'Comm Log',
   portals: 'Portals',
   themes: 'Themes',
+  areas: 'Areas',
   jobs: 'Background Jobs',
 };
 import { mockTransport } from './kanban/mock-data.js';
@@ -344,6 +346,8 @@ function boot(): void {
   registerPageStructure();
   // A portal's site inside kitp (/site/:id).
   registerSiteView();
+  // Area switches (project properties, the workspace Areas screen).
+  registerAreaSwitches();
   registerActivityFilterEditor();
   // The reusable anchored-UI primitives. Combobox (typeahead select) +
   // DatePicker compose the shared Popover helper (the one floating-ui impl).
@@ -515,6 +519,8 @@ function boot(): void {
       minRole: MANAGER_ADMIN_VIEWS.has(v) ? ('manager' as const) : ('admin' as const),
       // Rail section: 'workspace' (global) vs 'project' (active-project-scoped).
       section: ADMIN_SECTION[v],
+      // The workspace area the screen belongs to: hidden while it's off.
+      area: ADMIN_VIEW_AREA[v],
     })),
     // The resolver guards on the known view set so an unknown `/admin/:key`
     // returns null → the AppShell renders its NotFound placeholder (preserved).
