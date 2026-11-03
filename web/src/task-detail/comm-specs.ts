@@ -13,7 +13,7 @@
  *                        from_address, author_id, subject, body_text,
  *                        delivery_status, created_at,
  *                        attachments: [{ id, filename, mime_type, size_bytes,
- *                                        on_thread }],
+ *                                        kind, on_thread }],
  *                        attachments_left_off,
  *                        relay?: { id, to, delivery_status,
  *                                  attachments_left_off } }] }] }
@@ -29,6 +29,7 @@
  */
 
 import type { Api } from '../core/api.js';
+import type { AttachmentKind } from './attachment-specs.js';
 
 export const COMM_LIST_FOR_TASK_SPEC = 'comm.list_for_task';
 export const COMM_CREATE_SPEC = 'comm.create';
@@ -85,6 +86,8 @@ export interface MessageFile {
   filename: string;
   mimeType: string;
   sizeBytes: number;
+  /** What the viewer can show: image / pdf / markdown, or other. */
+  kind: AttachmentKind;
   onThread: boolean;
 }
 
@@ -236,6 +239,10 @@ function decodeReply(j: Record<string, unknown>): ReplyRow {
   };
 }
 
+function asKind(v: unknown): AttachmentKind {
+  return v === 'image' || v === 'pdf' || v === 'markdown' ? v : 'other';
+}
+
 function asCount(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
 }
@@ -246,6 +253,7 @@ function decodeMessageFile(j: Record<string, unknown>): MessageFile {
     filename: asStr(j['filename']),
     mimeType: asStr(j['mime_type']),
     sizeBytes: asCount(j['size_bytes']),
+    kind: asKind(j['kind']),
     onThread: j['on_thread'] === true,
   };
 }

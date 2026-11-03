@@ -6241,7 +6241,7 @@ select optgroup {
   background: var(--color-fill-hover);
 }
 .task-detail__menu-item--danger {
-  color: var(--color-danger, #c0392b);
+  color: var(--color-danger);
 }
 .task-detail__menu-item--danger:hover {
   background: var(--color-danger-soft, rgba(192, 57, 43, 0.1));
@@ -8156,6 +8156,95 @@ textarea.task-comms__form-input {
 .task-comms__file-add:disabled {
   opacity: 0.5;
   cursor: default;
+}
+.task-comms__file-name[type='button'] {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-accent);
+  cursor: pointer;
+  text-align: start;
+}
+.task-comms__file-name[type='button']:hover,
+.task-comms__file-act:hover {
+  text-decoration: underline;
+}
+.task-comms__file-act {
+  color: var(--color-accent);
+}
+/* The reply box's files: Attach files, the chosen files as chips, and the
+   picker of the thread's and the task's files. */
+.task-comms__compose-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1x);
+  font-size: var(--text-2xs);
+}
+.task-comms__compose-files-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1x);
+}
+.task-comms__compose-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.task-comms__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 var(--space-1x);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-sunken);
+}
+.task-comms__chip-x {
+  border: 0;
+  background: none;
+  padding: 0;
+  display: inline-flex;
+  cursor: pointer;
+  color: inherit;
+}
+.task-comms__over {
+  color: var(--color-danger);
+}
+.task-comms__file-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1x);
+  padding: var(--space-1x) var(--space-2);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+.task-comms__file-picker[hidden] {
+  display: none;
+}
+.task-comms__picker-hint {
+  margin: 0;
+}
+.task-comms__picker-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.task-comms__picker-group p {
+  margin: 0;
+}
+.task-comms__picker-row {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  cursor: pointer;
+}
+.task-comms__picker-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1x);
 }
 .task-comms__note {
   margin: var(--space-1x) 0 0;

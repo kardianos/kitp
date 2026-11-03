@@ -41,12 +41,11 @@ import {
   type AttachmentListOutput,
   type AttachmentRow,
 } from './attachment-specs.js';
-import { setMarkdown } from '../util/markdown-control.js';
+import { FileGallery, fetchBlobDefault, isViewableKind } from './file-gallery.js';
 import {
   downloadUrl,
   thumbUrl,
   uploadFile,
-  viewUrl,
   type PostChunk,
   type UploadPhase,
 } from './upload.js';
@@ -129,8 +128,9 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
    *  tile + the list row for the same attachment share ONE fetch / object URL. */
   private readonly thumbPending = new Map<string, HTMLImageElement[]>();
 
-  /** The open gallery overlay (or null). Owns its own object URL. */
-  private gallery: { root: HTMLElement; viewerHost: HTMLElement; index: number; objUrl: string | null } | null = null;
+  /** The full-screen viewer for the section's images / PDFs / markdown,
+   *  shared with the conversation's message files (file-gallery.ts). */
+  private readonly gallery: FileGallery;
 
   /* DOM regions held so loads / uploads repaint without a full re-render. */
   private dropzone!: HTMLElement;
@@ -143,7 +143,8 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
     super(...args);
     this.cardId = parseId(this.config.cardId);
     if (this.config.postChunk !== undefined) this.postChunk = this.config.postChunk;
-    this.fetchBlob = this.config.fetchBlob ?? defaultFetchBlob;
+    this.fetchBlob = this.config.fetchBlob ?? fetchBlobDefault;
+    this.gallery = new FileGallery({ files: () => this.rows, fetchBlob: this.fetchBlob, alive: () => this.isAlive() });
     this.onChanged = this.config.onChanged;
     this.previewHost = this.config.previewHost;
   }
@@ -549,7 +550,7 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
     const host = this.previewHost;
     if (host === undefined) return;
     host.replaceChildren();
-    const previewable = this.viewableRows();
+    const previewable = this.rows.filter(isViewable);
     host.style.display = previewable.length === 0 ? 'none' : '';
     if (previewable.length === 0) return;
 
@@ -628,180 +629,13 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
 
   /* ------------------------------- gallery ------------------------------ */
 
-  /** The rows that can be shown in the gallery (image / pdf / markdown), in list order. */
-  private viewableRows(): AttachmentRow[] {
-    return this.rows.filter(isViewable);
-  }
-
+  /** Open the shared viewer (file-gallery.ts) at [row]. */
   private openGallery(row: AttachmentRow): void {
-    const viewable = this.viewableRows();
-    const index = viewable.findIndex((r) => r.id === row.id);
-    if (index < 0) return;
-    this.closeGallery();
-
-    const root = document.createElement('div');
-    root.className = 'attachments__gallery';
-    root.dataset.attachmentsGallery = '';
-    root.setAttribute('role', 'dialog');
-    root.setAttribute('aria-modal', 'true');
-    root.tabIndex = -1;
-
-    const prev = document.createElement('button');
-    prev.type = 'button';
-    prev.className = 'attachments__gallery-nav attachments__gallery-prev';
-    prev.dataset.galleryPrev = '';
-    prev.setAttribute('aria-label', 'Previous');
-    prev.append(icon('chevron-left'));
-    this.listen(prev, 'click', (e) => {
-      e.stopPropagation();
-      this.galleryStep(-1);
-    });
-
-    const next = document.createElement('button');
-    next.type = 'button';
-    next.className = 'attachments__gallery-nav attachments__gallery-next';
-    next.dataset.galleryNext = '';
-    next.setAttribute('aria-label', 'Next');
-    next.append(icon('chevron-right'));
-    this.listen(next, 'click', (e) => {
-      e.stopPropagation();
-      this.galleryStep(1);
-    });
-
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.className = 'attachments__gallery-close';
-    close.dataset.galleryClose = '';
-    close.setAttribute('aria-label', 'Close');
-    close.append(icon('x'));
-    this.listen(close, 'click', (e) => {
-      e.stopPropagation();
-      this.closeGallery();
-    });
-
-    const viewerHost = document.createElement('div');
-    viewerHost.className = 'attachments__gallery-viewer';
-    viewerHost.dataset.galleryViewer = '';
-
-    root.append(close, prev, viewerHost, next);
-    // Click on the backdrop (not the viewer) closes.
-    this.listen(root, 'click', (e) => {
-      if (e.target === root) this.closeGallery();
-    });
-    this.listen(root, 'keydown', (e) => this.onGalleryKey(e as KeyboardEvent));
-
-    document.body.append(root);
-    this.gallery = { root, viewerHost, index, objUrl: null };
-    this.paintGallery();
-    queueMicrotask(() => root.focus());
-  }
-
-  private galleryStep(delta: number): void {
-    const g = this.gallery;
-    if (g === null) return;
-    const viewable = this.viewableRows();
-    if (viewable.length === 0) return;
-    g.index = (g.index + delta + viewable.length) % viewable.length;
-    this.paintGallery();
-  }
-
-  private onGalleryKey(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      this.closeGallery();
-    } else if (e.key === 'ArrowLeft') {
-      e.preventDefault();
-      this.galleryStep(-1);
-    } else if (e.key === 'ArrowRight') {
-      e.preventDefault();
-      this.galleryStep(1);
-    }
-  }
-
-  private paintGallery(): void {
-    const g = this.gallery;
-    if (g === null) return;
-    const viewable = this.viewableRows();
-    const row = viewable[g.index];
-    g.viewerHost.replaceChildren();
-    // Revoke any prior view object URL before fetching the next.
-    if (g.objUrl !== null) {
-      URL.revokeObjectURL(g.objUrl);
-      g.objUrl = null;
-    }
-    if (row === undefined) {
-      this.closeGallery();
-      return;
-    }
-
-    const caption = document.createElement('div');
-    caption.className = 'attachments__gallery-caption';
-    caption.dataset.galleryCaption = '';
-    caption.textContent = `${row.filename} (${g.index + 1}/${viewable.length})`;
-    g.viewerHost.append(caption);
-
-    const loading = document.createElement('div');
-    loading.className = 'attachments__gallery-loading muted';
-    loading.textContent = 'Loading…';
-    g.viewerHost.append(loading);
-
-    const showingId = row.id;
-    this.fetchBlob(
-      viewUrl(row.id),
-      (blob) => {
-        const cur = this.gallery;
-        // Drop a late delivery if the gallery closed or paged away.
-        if (cur === null || !this.isAlive()) return;
-        const stillShowing = this.viewableRows()[cur.index];
-        if (stillShowing === undefined || stillShowing.id !== showingId) return;
-        if (row.kind === 'markdown') {
-          readBlobText(
-            blob,
-            (text) => {
-              if (this.gallery !== cur || this.viewableRows()[cur.index]?.id !== showingId) return;
-              loading.remove();
-              const doc = document.createElement('div');
-              doc.className = 'attachments__gallery-doc';
-              doc.dataset.galleryDoc = '';
-              setMarkdown(doc, text);
-              cur.viewerHost.append(doc);
-            },
-            () => {
-              if (this.gallery === cur) loading.textContent = 'Failed to load.';
-            },
-          );
-          return;
-        }
-        const objUrl = URL.createObjectURL(blob);
-        cur.objUrl = objUrl;
-        loading.remove();
-        if (row.kind === 'pdf') {
-          const frame = document.createElement('iframe');
-          frame.className = 'attachments__gallery-frame';
-          frame.title = row.filename;
-          frame.src = objUrl;
-          cur.viewerHost.append(frame);
-        } else {
-          const img = document.createElement('img');
-          img.className = 'attachments__gallery-img';
-          img.alt = row.filename;
-          img.src = objUrl;
-          cur.viewerHost.append(img);
-        }
-      },
-      () => {
-        if (this.gallery === null) return;
-        loading.textContent = 'Failed to load.';
-      },
-    );
+    this.gallery.open(row.id);
   }
 
   private closeGallery(): void {
-    const g = this.gallery;
-    if (g === null) return;
-    if (g.objUrl !== null) URL.revokeObjectURL(g.objUrl);
-    g.root.remove();
-    this.gallery = null;
+    this.gallery.close();
   }
 }
 
@@ -811,7 +645,7 @@ export class AttachmentsSection extends Control<AttachmentsSectionConfig> {
 
 /** Whether the gallery can show [row]. */
 function isViewable(row: AttachmentRow): boolean {
-  return row.kind !== 'other';
+  return isViewableKind(row.kind);
 }
 
 /** The right-rail list's glyph for a row without a thumbnail. */
@@ -829,11 +663,6 @@ const TILE_GLYPH: Readonly<Record<AttachmentKind, string>> = {
   markdown: 'MD',
   other: '📎',
 };
-
-/** Decode a blob as UTF-8 text. Callback surface, like the blob fetcher. */
-function readBlobText(blob: Blob, onDone: (text: string) => void, onError: () => void): void {
-  blob.text().then(onDone, () => onError());
-}
 
 /** Parse a config id string to a positive bigint, or null when malformed. */
 function parseId(raw: string | undefined): bigint | null {
@@ -870,25 +699,6 @@ export function truncateFilename(name: string, max = 20): string {
 }
 
 /** The default same-origin blob fetcher (cookie auth). Callback surface. */
-function defaultFetchBlob(
-  url: string,
-  onDone: (b: Blob) => void,
-  onError: (e: Error) => void,
-): void {
-  void (async () => {
-    try {
-      const resp = await fetch(url, { method: 'GET' });
-      if (!resp.ok) {
-        onError(new Error(`HTTP ${resp.status}`));
-        return;
-      }
-      onDone(await resp.blob());
-    } catch (e) {
-      onError(e instanceof Error ? e : new Error(String(e)));
-    }
-  })();
-}
-
 export function registerAttachmentsSection(): void {
   Control.register('AttachmentsSection', AttachmentsSection);
 }

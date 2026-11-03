@@ -52,8 +52,10 @@ import {
   type MessageRelay,
   type ReplyRow,
 } from './comm-specs.js';
-import { downloadUrl } from './upload.js';
+import { downloadUrl, uploadFile, type PostChunk } from './upload.js';
 import { formatBytes } from './attachments-section.js';
+import { ATTACHMENT_LIST_SPEC, type AttachmentListOutput, type AttachmentRow } from './attachment-specs.js';
+import { FileGallery, fetchBlobDefault, isViewableKind, type FetchBlob, type GalleryFile } from './file-gallery.js';
 import { localTimeEl } from '../util/datetime.js';
 
 import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
@@ -80,6 +82,40 @@ export interface CommThreadsConfig extends BaseControlConfig {
   /** A file moved from a thread onto the task (Add to task): the task's
    *  Attachments should reload. */
   onFilesChanged?: () => void;
+  /** Tests: the raw chunk sink for a file uploaded from the reply box. */
+  postChunk?: PostChunk;
+  /** Tests: the blob fetcher the file viewer uses. */
+  fetchBlob?: FetchBlob;
+}
+
+/** The most a reply can carry, all files together — the SMTP sender's
+ *  MaxReplyAttachmentBytes (smtp.go); a reply over it would fail to send. */
+export const MAX_REPLY_FILE_BYTES = 20 * 1024 * 1024;
+
+/** A file chosen for a reply. */
+interface PickedFile {
+  id: bigint;
+  filename: string;
+  sizeBytes: number;
+}
+
+/** The reply box's files (CommThreads.replyFiles). */
+interface ReplyFilesBox {
+  el: HTMLElement;
+  /** The chosen files' attachment ids. */
+  ids(): bigint[];
+  /** Whether the chosen files fit in one reply. */
+  ok(): boolean;
+  clear(): void;
+}
+
+/** "3 files, 2.1 MB", and whether that is over what a reply can carry. */
+export function pickedSummary(sizes: readonly number[]): { text: string; over: boolean } {
+  if (sizes.length === 0) return { text: '', over: false };
+  const total = sizes.reduce((a, b) => a + b, 0);
+  const over = total > MAX_REPLY_FILE_BYTES;
+  const count = sizes.length === 1 ? '1 file' : `${sizes.length} files`;
+  return { text: `${count}, ${formatBytes(total)}${over ? ` — over the ${MAX_REPLY_FILE_BYTES / (1024 * 1024)} MB a reply can carry` : ''}`, over };
 }
 
 declare module '../core/control.js' {
@@ -106,6 +142,15 @@ export class CommThreads extends Control<CommThreadsConfig> {
   private pickers: RefPicker[] = [];
   /** Child TransitionBars (one per comm, bound to comm_status), disposed on repaint. */
   private bars: Control[] = [];
+  /** The full-screen viewer for message files (shared with the task's
+   *  Attachments, file-gallery.ts); galleryFiles is the thread it pages
+   *  through. */
+  private galleryFiles: GalleryFile[] = [];
+  private readonly gallery = new FileGallery({
+    files: () => this.galleryFiles,
+    fetchBlob: (url, done, fail) => (this.config.fetchBlob ?? fetchBlobDefault)(url, done, fail),
+    alive: () => this.isAlive(),
+  });
 
   private headEl!: HTMLElement;
   private filterEl!: HTMLElement;
@@ -115,6 +160,11 @@ export class CommThreads extends Control<CommThreadsConfig> {
   /** Start-form draft state. */
   private newChannelId: bigint | null = null;
   private newRecipients: bigint[] = [];
+
+  override destroy(): void {
+    this.gallery.close();
+    super.destroy();
+  }
 
   protected override createRoot(): HTMLElement {
     const el = document.createElement('section');
@@ -459,6 +509,19 @@ export class CommThreads extends Control<CommThreadsConfig> {
       }),
     );
 
+    // Every file on the thread's messages, once: what the viewer pages
+    // through from any one of them.
+    const threadFiles: GalleryFile[] = [];
+    const seenFiles = new Set<string>();
+    for (const r of comm.replies) {
+      for (const f of r.attachments) {
+        const key = f.id.toString();
+        if (seenFiles.has(key)) continue;
+        seenFiles.add(key);
+        threadFiles.push({ id: f.id, filename: f.filename, kind: f.kind });
+      }
+    }
+
     // Replies (the email envelopes), oldest first.
     const replies = document.createElement('ul');
     replies.className = 'task-comms__replies';
@@ -505,7 +568,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
         // The message's files (Add to task on a task's threads), the files
         // an account that drops them left off, and the copy sent on to the
         // rest of the thread (docs/MAIL_INTAKE_AND_CALENDARS.md).
-        if (r.attachments.length > 0) li.append(this.messageFiles(comm.id, r.attachments, !single));
+        if (r.attachments.length > 0) li.append(this.messageFiles(comm.id, r.attachments, !single, threadFiles));
         if (r.attachmentsLeftOff > 0) li.append(leftOffNote(r.attachmentsLeftOff));
         if (r.relay !== null) li.append(relayNote(r.relay));
         replies.append(li);
@@ -514,14 +577,22 @@ export class CommThreads extends Control<CommThreadsConfig> {
     card.append(replies);
 
     // Reply composer — the shared compact composer with its inline Send
-    // button (Mod+Enter to send).
+    // button (Mod+Enter to send), and the files the reply carries: the
+    // thread's, the task's, or one uploaded onto the thread.
+    const files = this.replyFiles(comm.id, single ? null : this.taskId);
     card.append(
       this.buildComposer({
         placeholder: 'Reply… (Mod+Enter to send)',
         ariaLabel: 'Reply',
         sendLabel: 'Send',
-        onSubmit: (body) => this.doReply(comm.id, body),
+        canSubmit: () => files.ok(),
+        onSubmit: (body) => {
+          const ids = files.ids();
+          files.clear();
+          this.doReply(comm.id, body, ids);
+        },
       }).el,
+      files.el,
     );
 
     return card;
@@ -544,6 +615,9 @@ export class CommThreads extends Control<CommThreadsConfig> {
     rows?: number;
     allowEmpty?: boolean;
     clearOnSubmit?: boolean;
+    /** False holds the submit (the text stays): e.g. the reply's files are
+     *  over what one reply can carry. */
+    canSubmit?: () => boolean;
     onSubmit: (body: string) => void;
   }): { el: HTMLElement; submit: () => void } {
     const composer = document.createElement('div');
@@ -558,6 +632,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
     const submit = (): void => {
       const body = ta.value.trim();
       if (body === '' && opts.allowEmpty !== true) return;
+      if (opts.canSubmit !== undefined && !opts.canSubmit()) return;
       if (opts.clearOnSubmit !== false) {
         ta.value = '';
         fitTextarea(ta);
@@ -730,10 +805,10 @@ export class CommThreads extends Control<CommThreadsConfig> {
     );
   }
 
-  private doReply(commId: bigint, body: string): void {
+  private doReply(commId: bigint, body: string, attachmentIds: bigint[] = []): void {
     this.ctx.api.callByName(
       REPLY_POST_SPEC,
-      { commId, body },
+      { commId, body, ...(attachmentIds.length > 0 ? { attachmentIds } : {}) },
       () => {
         if (!this.isAlive()) return;
         this.loadComms();
@@ -743,14 +818,11 @@ export class CommThreads extends Control<CommThreadsConfig> {
     );
   }
 
-  /** Toggle the per-thread ACK as a MANUAL, optimistic, in-place edit. One
-   *  network trip (the set_ack write); no list reload — reloading would
-   *  re-fetch every comm and re-mount each comm's TransitionBar, which is the
-   *  "multiple network trips" a single click was causing. Reverts the visual
-   *  if the write fails. Mirrors doSetRecipients. */
-  /** A message's files: each downloads; one that came by email and is still
-   *  the thread's has Add to task when the thread is on a task (onTask). */
-  private messageFiles(commId: bigint, files: readonly MessageFile[], onTask: boolean): HTMLElement {
+  /** A message's files: one the viewer can show (image / PDF / markdown)
+   *  opens in it — paging through the thread's files (threadFiles) — and
+   *  every one downloads; one that came by email and is still the thread's
+   *  has Add to task when the thread is on a task (onTask). */
+  private messageFiles(commId: bigint, files: readonly MessageFile[], onTask: boolean, threadFiles: GalleryFile[]): HTMLElement {
     const list = document.createElement('ul');
     list.className = 'task-comms__files';
     list.dataset.replyFiles = '';
@@ -758,15 +830,35 @@ export class CommThreads extends Control<CommThreadsConfig> {
       const li = document.createElement('li');
       li.className = 'task-comms__file';
       li.dataset.replyFile = f.id.toString();
-      const link = document.createElement('a');
-      link.className = 'task-comms__file-name';
-      link.href = downloadUrl(f.id);
-      link.download = f.filename;
-      link.textContent = f.filename;
+      const download = document.createElement('a');
+      download.href = downloadUrl(f.id);
+      download.download = f.filename;
+      if (isViewableKind(f.kind)) {
+        const view = document.createElement('button');
+        view.type = 'button';
+        view.className = 'task-comms__file-name';
+        view.dataset.replyFileView = f.id.toString();
+        view.title = `View ${f.filename}`;
+        view.textContent = f.filename;
+        this.listen(view, 'click', () => {
+          this.galleryFiles = threadFiles;
+          this.gallery.open(f.id);
+        });
+        download.className = 'task-comms__file-act';
+        download.dataset.replyFileDownload = '';
+        download.textContent = 'Download';
+        li.append(view);
+      } else {
+        download.className = 'task-comms__file-name';
+        download.title = `Download ${f.filename}`;
+        download.textContent = f.filename;
+        li.append(download);
+      }
       const size = document.createElement('span');
       size.className = 'muted';
       size.textContent = formatBytes(f.sizeBytes);
-      li.append(link, document.createTextNode(' '), size);
+      li.append(document.createTextNode(' '), size);
+      if (isViewableKind(f.kind)) li.append(document.createTextNode(' '), download);
       if (f.onThread && onTask) {
         const add = document.createElement('button');
         add.type = 'button';
@@ -786,6 +878,196 @@ export class CommThreads extends Control<CommThreadsConfig> {
       list.append(li);
     }
     return list;
+  }
+
+  /** The reply box's files. **Attach files** opens a picker: the thread's
+   *  files, the task's (taskId; null on a thread's own page), and an upload
+   *  from the computer, which lands on the thread. Chosen files show as
+   *  chips with their count and size; over what one reply can carry, the
+   *  reply is held. Files go with the reply as links — nothing is copied. */
+  private replyFiles(commId: bigint, taskId: bigint | null): ReplyFilesBox {
+    const picked = new Map<string, PickedFile>();
+    let threadRows: AttachmentRow[] | null = null;
+    let taskRows: AttachmentRow[] | null = taskId === null ? [] : null;
+    let status = '';
+
+    const box = document.createElement('div');
+    box.className = 'task-comms__compose-files';
+    box.dataset.replyFilesBox = '';
+    const bar = document.createElement('div');
+    bar.className = 'task-comms__compose-files-bar';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'task-comms__file-add';
+    toggle.dataset.replyAttach = '';
+    toggle.textContent = 'Attach files';
+    toggle.title = 'Send files with this reply: the thread’s, the task’s, or one from your computer';
+    const chips = document.createElement('span');
+    chips.className = 'task-comms__compose-chips';
+    chips.dataset.replyPicked = '';
+    const total = document.createElement('span');
+    total.className = 'muted';
+    total.dataset.replyPickedTotal = '';
+    bar.append(toggle, chips, total);
+    const panel = document.createElement('div');
+    panel.className = 'task-comms__file-picker';
+    panel.dataset.replyPicker = '';
+    panel.hidden = true;
+    box.append(bar, panel);
+
+    const upload = document.createElement('input');
+    upload.type = 'file';
+    upload.multiple = true;
+    upload.hidden = true;
+    upload.dataset.replyUpload = '';
+
+    const pick = (row: AttachmentRow, on: boolean): void => {
+      if (on) picked.set(row.id.toString(), { id: row.id, filename: row.filename, sizeBytes: row.sizeBytes });
+      else picked.delete(row.id.toString());
+      paintChips();
+    };
+
+    const paintChips = (): void => {
+      chips.replaceChildren();
+      for (const f of picked.values()) {
+        const chip = document.createElement('span');
+        chip.className = 'task-comms__chip';
+        chip.dataset.replyPickedFile = f.id.toString();
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'task-comms__chip-x';
+        x.dataset.replyUnpick = f.id.toString();
+        x.setAttribute('aria-label', `Don't send ${f.filename}`);
+        x.append(icon('x', 10));
+        this.listen(x, 'click', () => {
+          picked.delete(f.id.toString());
+          paintChips();
+          if (!panel.hidden) paintPanel();
+        });
+        chip.append(document.createTextNode(f.filename), x);
+        chips.append(chip);
+      }
+      const sum = pickedSummary([...picked.values()].map((f) => f.sizeBytes));
+      total.textContent = sum.text;
+      total.classList.toggle('task-comms__over', sum.over);
+    };
+
+    const group = (title: string, rows: AttachmentRow[] | null, empty: string): HTMLElement => {
+      const g = document.createElement('div');
+      g.className = 'task-comms__picker-group';
+      const h = document.createElement('div');
+      h.className = 'task-comms__field-label muted';
+      h.textContent = title;
+      g.append(h);
+      if (rows === null) {
+        g.append(textEl('p', 'muted', 'Loading…'));
+        return g;
+      }
+      if (rows.length === 0) {
+        g.append(textEl('p', 'muted', empty));
+        return g;
+      }
+      for (const row of rows) {
+        const label = document.createElement('label');
+        label.className = 'task-comms__picker-row';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.dataset.replyPick = row.id.toString();
+        cb.checked = picked.has(row.id.toString());
+        this.listen(cb, 'change', () => pick(row, cb.checked));
+        const size = document.createElement('span');
+        size.className = 'muted';
+        size.textContent = formatBytes(row.sizeBytes);
+        label.append(cb, document.createTextNode(` ${row.filename} `), size);
+        g.append(label);
+      }
+      return g;
+    };
+
+    const paintPanel = (): void => {
+      panel.replaceChildren();
+      panel.append(
+        textEl('p', 'task-comms__picker-hint muted', 'Pick files to send with this reply. They are linked to the message, not copied; an upload is added to this thread.'),
+        group('This thread’s files', threadRows, 'None yet.'),
+      );
+      if (taskId !== null) panel.append(group('The task’s files', taskRows, 'The task has no attachments.'));
+      const up = document.createElement('button');
+      up.type = 'button';
+      up.className = 'btn';
+      up.dataset.replyUploadOpen = '';
+      up.textContent = 'Upload from your computer…';
+      this.listen(up, 'click', () => upload.click());
+      const actions = document.createElement('div');
+      actions.className = 'task-comms__picker-actions';
+      actions.append(up, upload);
+      if (status !== '') actions.append(textEl('span', 'muted', status));
+      panel.append(actions);
+    };
+
+    const load = (cardId: bigint, done: (rows: AttachmentRow[]) => void): void => {
+      this.ctx.api.callByName(
+        ATTACHMENT_LIST_SPEC,
+        { cardId },
+        (out) => {
+          if (!this.isAlive()) return;
+          done((out as AttachmentListOutput).rows);
+          if (!panel.hidden) paintPanel();
+        },
+        {
+          alive: () => this.isAlive(),
+          onErr: () => {
+            done([]);
+            if (!panel.hidden) paintPanel();
+          },
+        },
+      );
+    };
+
+    this.listen(toggle, 'click', () => {
+      panel.hidden = !panel.hidden;
+      toggle.setAttribute('aria-expanded', panel.hidden ? 'false' : 'true');
+      if (panel.hidden) return;
+      // Fresh lists each time it opens: files come and go.
+      threadRows = null;
+      if (taskId !== null) taskRows = null;
+      paintPanel();
+      load(commId, (rows) => (threadRows = rows));
+      if (taskId !== null) load(taskId, (rows) => (taskRows = rows));
+    });
+
+    this.listen(upload, 'change', () => {
+      const chosen = Array.from(upload.files ?? []);
+      upload.value = '';
+      for (const file of chosen) {
+        status = `Uploading ${file.name}…`;
+        paintPanel();
+        uploadFile(this.ctx.api, commId, file, {
+          ...(this.config.postChunk !== undefined ? { postChunk: this.config.postChunk } : {}),
+          alive: () => this.isAlive(),
+          onDone: (row) => {
+            status = '';
+            threadRows = [...(threadRows ?? []), row];
+            pick(row, true);
+            paintPanel();
+          },
+          onError: () => {
+            status = `Couldn’t upload ${file.name}.`;
+            paintPanel();
+          },
+        });
+      }
+    });
+
+    return {
+      el: box,
+      ids: () => [...picked.values()].map((f) => f.id),
+      ok: () => !pickedSummary([...picked.values()].map((f) => f.sizeBytes)).over,
+      clear: () => {
+        picked.clear();
+        panel.hidden = true;
+        paintChips();
+      },
+    };
   }
 
   private doAddToTask(commId: bigint, attachmentId: bigint, btn: HTMLButtonElement): void {
@@ -827,6 +1109,11 @@ export class CommThreads extends Control<CommThreadsConfig> {
     );
   }
 
+  /** Toggle the per-thread ACK as a MANUAL, optimistic, in-place edit. One
+   *  network trip (the set_ack write); no list reload — reloading would
+   *  re-fetch every comm and re-mount each comm's TransitionBar, which is the
+   *  "multiple network trips" a single click was causing. Reverts the visual
+   *  if the write fails. Mirrors doSetRecipients. */
   private doSetAck(comm: CommRow, paint: (acked: boolean) => void): void {
     const next = !comm.acked;
     comm.acked = next; // optimistic local truth + visual
@@ -1000,4 +1287,11 @@ function relayNote(r: MessageRelay): HTMLElement {
   p.title = 'kitp emailed this message to the thread’s other people, because it reached only this address (Comm Channels → Emailed replies)';
   p.append(icon('corner-down-right', 12), document.createTextNode(` ${relayText(r)}`));
   return p;
+}
+
+function textEl(tag: string, cls: string, text: string): HTMLElement {
+  const e = document.createElement(tag);
+  e.className = cls;
+  e.textContent = text;
+  return e;
 }

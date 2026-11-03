@@ -86,8 +86,8 @@ func TestEmailFilesLiveOnTheThread(t *testing.T) {
 		t.Fatalf("messages = %d, want 2", len(row.Replies))
 	}
 	for i, r := range row.Replies {
-		if len(r.Attachments) != 1 || !r.Attachments[0].OnThread || r.Attachments[0].Filename != "invoice.pdf" {
-			t.Errorf("message %d files = %+v, want invoice.pdf on the thread", i, r.Attachments)
+		if len(r.Attachments) != 1 || !r.Attachments[0].OnThread || r.Attachments[0].Filename != "invoice.pdf" || r.Attachments[0].Kind != "pdf" {
+			t.Errorf("message %d files = %+v, want invoice.pdf (a pdf) on the thread", i, r.Attachments)
 		}
 	}
 	attID := row.Replies[0].Attachments[0].ID

@@ -241,6 +241,7 @@ type ReplyAttachment struct {
 	Filename  string `json:"filename" mcp:"desc=file name"`
 	MimeType  string `json:"mime_type" mcp:"desc=MIME type"`
 	SizeBytes int64  `json:"size_bytes" mcp:"desc=size in bytes"`
+	Kind      string `json:"kind" mcp:"desc=image | pdf | markdown | other — what the viewer can show"`
 	OnThread  bool   `json:"on_thread" mcp:"desc=true while the file belongs to the thread (not yet moved onto its task)"`
 }
 

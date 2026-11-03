@@ -567,7 +567,8 @@ export {
   type CommentUpdateOutput,
 } from './task-detail/comment-specs.js';
 export { registerCommThreadSpecs } from './task-detail/comm-specs.js';
-export { CommThreads, registerCommThreads, replySender, replyBody, relayText, leftOffText } from './task-detail/task-comm-threads.js';
+export { CommThreads, registerCommThreads, replySender, replyBody, relayText, leftOffText, pickedSummary, MAX_REPLY_FILE_BYTES } from './task-detail/task-comm-threads.js';
+export { FileGallery, isViewableKind } from './task-detail/file-gallery.js';
 export { splitQuoted, MAX_SPLIT_CHARS } from './task-detail/comm-quoted.js';
 export { ThreadPlacement, registerThreadPlacement } from './task-detail/thread-placement.js';
 export {

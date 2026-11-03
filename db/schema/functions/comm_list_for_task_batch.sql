@@ -33,6 +33,7 @@
 --         "delivery_status": "...", "created_at": "RFC3339",
 --         "attachments": [{"id": "<bigint>", "filename": "...",
 --                          "mime_type": "...", "size_bytes": n,
+--                          "kind": "image|pdf|markdown|other",
 --                          "on_thread": bool}],
 --         "attachments_left_off": n,
 --         "relay": {"id": "<bigint>", "to": "...", "delivery_status": "...",
@@ -242,6 +243,7 @@ BEGIN
                                                               'filename',   f.filename,
                                                               'mime_type',  f.mime_type,
                                                               'size_bytes', f.size_bytes,
+                                                              'kind',       attachment_kind(f.mime_type, f.filename),
                                                               'on_thread',  a.card_id = c.id)
                                                           ORDER BY a.id)
                                                    FROM reply_body_attachment rba

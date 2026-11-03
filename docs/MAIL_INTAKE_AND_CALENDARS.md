@@ -632,6 +632,29 @@ Ada ──reply──▶ support@ ──▶ filed on the thread
 | Web | `admin/comm-channel-form.ts`, `admin/nested-editor.ts` (draft + options); `task-detail/comm-specs.ts` (decode, `comm.attachment_to_task`); `task-detail/task-comm-threads.ts` (files, Add to task, `relayText`, `leftOffText`); `task-detail/task-detail.ts` (`onFilesChanged`); `mailin/comm-log.ts` (kinds) |
 | Tests | `comm/files_relay_test.go`; `attachment_test.go`, `conversations_test.go` (files stay on the thread); `store` 0025; `web/test/email-files-relay.test.mjs`, `mailin.test.mjs` |
 
+### Files in the conversation (third round)
+
+Asked for 2026-11-03 after the second round: see, pick and view the files
+replies carry.
+
+- Each message file: an image / PDF / markdown file opens in the viewer
+  the task's Attachments uses — now one shared helper,
+  `web/src/task-detail/file-gallery.ts` (`FileGallery`), which pages
+  through the thread's files; every file has **Download**; Add to task as
+  before. `comm.list_for_task` gives each file its `kind`
+  (`attachment_kind`).
+- The reply box: **Attach files** opens a picker of the thread's files and
+  the task's (`attachment.list` on each; a thread's own page lists only
+  its own), plus **Upload from your computer…**, which uploads onto the
+  thread (`uploadFile`, `attachment.create` gated on comm `card.update`)
+  and ticks the file. Chosen files show as chips with their count and
+  total; over `MAX_REPLY_FILE_BYTES` (20 MB, the sender's limit) the reply
+  is held with its text kept. Sent as `reply.post` `attachment_ids` —
+  links, never copies.
+- Tests: `web/test/email-files-relay.test.mjs` (viewer, picker, the limit,
+  a thread's own page, upload); `attachments-section.test.mjs` covers the
+  section on the shared viewer.
+
 ### Also done during the build
 
 - Ctrl+Enter (⌘+Enter on a Mac) sends from the approval boxes: in a vote's

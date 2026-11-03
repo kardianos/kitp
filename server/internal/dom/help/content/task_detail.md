@@ -22,7 +22,11 @@ The page is split into a main column and a right-hand attribute rail.
 
 ## Files that came by email
 
-A file on an emailed message stays with the **thread**, listed under the message — not in the task's Attachments. Click a file to download it; **Add to task** moves it into the task's Attachments (the message keeps showing it, now marked *on the task*). kitp stores a file once: the same file sent again is linked to the copy it already has.
+A file on an emailed message stays with the **thread**, listed under the message — not in the task's Attachments. Click an image, PDF or markdown file to view it (←/→ page through the thread's files, Esc closes); **Download** saves it, and any other file downloads when clicked. **Add to task** moves it into the task's Attachments (the message keeps showing it, now marked *on the task*). kitp stores a file once: the same file sent again is linked to the copy it already has.
+
+## Sending files with a reply
+
+**Attach files** under the reply box lists the thread's files and the task's; tick the ones to send, or **Upload from your computer…** (the file is added to the thread and ticked). The chosen files show beside the button with their total size; **×** takes one off. A reply carries at most 20 MB of files — over that, Send waits until you take some off. Files go with the reply as links, not copies, and show under the message once it is sent.
 
 Under a message you may also see:
 
