@@ -40,6 +40,7 @@ import (
 	"github.com/kitp/kitp/server/internal/cas"
 	"github.com/kitp/kitp/server/internal/dom/attachment"
 	domlink "github.com/kitp/kitp/server/internal/dom/link"
+	domportal "github.com/kitp/kitp/server/internal/dom/portal"
 	"github.com/kitp/kitp/server/internal/dom/projectexport"
 	"github.com/kitp/kitp/server/internal/mcp"
 	"github.com/kitp/kitp/server/internal/reg"
@@ -82,6 +83,9 @@ func TestAuthAudit(t *testing.T) {
 	attachment.Mount(rt, attachment.Config{})
 	domlink.Mount(rt, domlink.HTTPConfig{})
 	projectexport.Mount(rt, projectexport.Config{})
+	// The signed-in portal preview / in-app site routes. The public,
+	// host-routed listener is a separate http.Server with no auth tier.
+	(&domportal.Server{}).Mount(rt)
 	srv := api.NewServer(nil)
 	srv.MountBatch(rt)
 

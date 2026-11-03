@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/dom/comm"
 )
 
@@ -198,5 +199,60 @@ func TestTaskShowsItsThreadsComments(t *testing.T) {
 	}
 	if got := ids(false); got[comment] {
 		t.Error("without the flag the task's activity includes its thread's comment")
+	}
+}
+
+// TestCommAttachAcrossProjects (review test gap): a thread goes only onto
+// a task of its own project; someone outside the thread's project can't
+// move it; and a task in a project the caller can't see reads as missing.
+func TestCommAttachAcrossProjects(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_comm_attach_projects")
+	ch := seedChannelWith(t, f, `"intake_mode":"thread"`)
+	pollOnce(t, f, ch, inbound(1, "Where is my order", "It hasn't come"))
+	thread := commsUnder(t, f, f.projectID)[0]
+	ctx := context.Background()
+
+	var other, otherTask int64
+	if err := f.sp.P.QueryRow(ctx, `INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'project' RETURNING id`).Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.sp.P.QueryRow(ctx, `INSERT INTO card (card_type_id, parent_card_id) SELECT id, $1 FROM card_type WHERE name = 'task' RETURNING id`, other).Scan(&otherTask); err != nil {
+		t.Fatal(err)
+	}
+	worker := func(name string, project int64) context.Context {
+		var id int64
+		if err := f.sp.P.QueryRow(ctx, `INSERT INTO user_account (display_name) VALUES ($1) RETURNING id`, name).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.sp.P.Exec(ctx, `INSERT INTO user_role (user_id, role_id, scope_card_id) SELECT $1, id, $2 FROM role WHERE name = 'worker'`, id, project); err != nil {
+			t.Fatal(err)
+		}
+		return auth.WithUser(ctx, &auth.UserCtx{ID: id, DisplayName: name})
+	}
+	attach := func(as context.Context, task int64) string {
+		resp := f.srv.Dispatch(as, api.BatchRequest{Subrequests: []api.SubRequest{{ID: "a", Endpoint: "comm", Action: "attach",
+			Data: json.RawMessage(fmt.Sprintf(`{"comm_id":"%d","task_id":"%d"}`, thread, task))}}})
+		if r := resp.Subresponses[0]; !r.OK && r.Error != nil {
+			return r.Error.Code
+		}
+		return "ok"
+	}
+	for _, c := range []struct {
+		name string
+		as   context.Context
+		task int64
+		want string
+	}{
+		{"an admin, another project's task", f.ctx, otherTask, "same_project"},
+		// The dispatcher's grant check on the thread's project refuses first.
+		{"a member of another project only", worker("outsider", other), f.taskID, "unauthorized"},
+		{"a member, a task in a project they can't see", worker("member", f.projectID), otherTask, "task_not_found"},
+	} {
+		if got := attach(c.as, c.task); got != c.want {
+			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
+	}
+	if got := taskComms(t, f, otherTask); len(got) != 0 {
+		t.Errorf("the other project's task got comms %v", got)
 	}
 }

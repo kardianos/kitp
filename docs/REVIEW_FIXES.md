@@ -91,9 +91,17 @@ Done (area 5): CAS GetAll fetches one chunk per query and writes it after the co
 
 ## 8. Tests
 
-- [ ] auth_audit: mount the portal routes (preview / site) so they're in auth_audit.csv.
+- [x] auth_audit: mount the portal routes (preview / site) so they're in auth_audit.csv.
 - [~] Migration 0018 has a forward-migration test — it does (TestForwardMigration0018CommChannelModes); the review missed it.
-- [ ] The per-area gaps the review lists are covered by the tests added above.
+- [x] The per-area gaps the review lists are covered by tests:
+  - intake + SMTP with Tasks off — TestIntakeWithTasksOff, TestSMTPHoldsHiddenThreads
+  - Approvals off — TestApprovalsOff
+  - publishes_to across projects — TestPublishesToRules
+  - a build after Content off — TestAreasAndSites (builds, the page leaves the site), TestServingRechecksPages
+  - /site for a scoped user — TestSiteForScopedUsers
+  - comm.attach refused / same_project — TestCommAttachAcrossProjects, TestCommAttachMakeTaskAndAreas
+  - large SplitQuoted input — TestSplitQuotedIsLinear (Go) and the web comm-quoted test
+  - a project titled like a bundle source — TestBundleSourceLookalikes
 
 ## 9. Docs
 

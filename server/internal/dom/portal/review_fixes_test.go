@@ -175,3 +175,54 @@ func TestFileHeaders(t *testing.T) {
 		t.Errorf("preview file Cache-Control = %q, want private", hdr.Get("Cache-Control"))
 	}
 }
+
+// TestSiteForScopedUsers (review test gap): a site shown in kitp opens for
+// a member of its root page's project and not for a member of another
+// project; a site not shown in kitp opens for neither.
+func TestSiteForScopedUsers(t *testing.T) {
+	f := setup(t, "kitp_test_portal_site_scoped")
+	ctx := context.Background()
+	shown := newPortal(t, f, fmt.Sprintf(`{"title":"Handbook","root_page_id":"%d","internal":true}`, f.home))
+	hidden := newPortal(t, f, fmt.Sprintf(`{"title":"Docs","root_page_id":"%d"}`, f.home))
+	setAttr(t, f, f.status["Published"], "publishes_to", []string{fmt.Sprint(shown), fmt.Sprint(hidden)})
+	move(t, f, f.home, "Published")
+	move(t, f, f.guide, "Published")
+	build(t, f)
+
+	var other int64
+	if err := f.sp.P.QueryRow(ctx, `INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'project' RETURNING id`).Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	worker := func(name string, project int64) int64 {
+		var id int64
+		if err := f.sp.P.QueryRow(ctx, `INSERT INTO user_account (display_name) VALUES ($1) RETURNING id`, name).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.sp.P.Exec(ctx, `INSERT INTO user_role (user_id, role_id, scope_card_id) SELECT $1, id, $2 FROM role WHERE name = 'worker'`, id, project); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	member, outsider := worker("member", f.project), worker("outsider", other)
+
+	var user int64
+	rt := api.NewRouter(api.RouterConfig{
+		SessionResolver: func(*http.Request) (*auth.UserCtx, error) { return &auth.UserCtx{ID: user}, nil },
+	})
+	f.server.Mount(rt)
+	for _, c := range []struct {
+		name   string
+		user   int64
+		portal int64
+		want   int
+	}{
+		{"a member, a site shown in kitp", member, shown, http.StatusOK},
+		{"a member of another project", outsider, shown, http.StatusNotFound},
+		{"a member, a site not shown in kitp", member, hidden, http.StatusNotFound},
+	} {
+		user = c.user
+		if code, _, _ := get(t, rt.Mux(), "app.example.test", fmt.Sprintf("/api/v1/portal/%d/site/getting-started/", c.portal)); code != c.want {
+			t.Errorf("%s: %d, want %d", c.name, code, c.want)
+		}
+	}
+}
