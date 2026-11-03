@@ -6,7 +6,10 @@
 //   2. Looks up (user_id, key) in idempotency_response.
 //   3a. Hit + matching request_hash: return the stored response (200).
 //   3b. Hit + mismatched hash: return 422 (key reuse with different body).
-//   4.  Miss: pass through, capture the response, store it post-flight.
+//   4.  Miss: claim (user_id, key) in idempotency_claim — a second
+//       request with the key while the first runs gets 409
+//       idempotency_in_progress — then pass through, capture the
+//       response, store it post-flight, and drop the claim.
 //
 // A small background goroutine deletes rows older than 24h every 10
 // minutes. Cleanup failures log and continue; they never crash the
@@ -23,12 +26,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 )
 
 // IdempotencyStore is the persistence + middleware for idempotency-key
@@ -51,7 +56,12 @@ func (s *IdempotencyStore) Cleanup(ctx context.Context) error {
 	if s == nil || s.pool == nil {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `DELETE FROM idempotency_response WHERE created_at < now() - interval '24 hours'`)
+	if _, err := s.pool.Exec(ctx, `DELETE FROM idempotency_response WHERE created_at < now() - interval '24 hours'`); err != nil {
+		return err
+	}
+	// Claims left by a request whose process died (released ones are
+	// already gone).
+	_, err := s.pool.Exec(ctx, `DELETE FROM idempotency_claim WHERE claimed_at < now() - interval '24 hours'`)
 	return err
 }
 
@@ -108,44 +118,21 @@ func (s *IdempotencyStore) WrapAuthed(next api.AuthedHandler) api.AuthedHandler 
 		// see DI-1 in docs/DESIGN_INVARIANTS.md.
 		userID := u.ID
 
-		stored, gotHash, found, err := s.lookup(ctx, userID, key)
+		run, release, err := s.begin(ctx, w, userID, key, hash[:])
 		if err != nil {
-			// Fail CLOSED on lookup error (SEC-6 / A4): if we can't tell
-			// whether this key was already processed, running the mutation
+			// Fail CLOSED (SEC-6 / A4): if we can't tell whether this key
+			// was already processed (or claim it), running the mutation
 			// anyway risks a duplicate write the client believed was
 			// deduped. Return a 500 (router redacts the message) so the
 			// client retries against a healthy DB instead. Replaying a
-			// cached response on a *store* error stays best-effort below;
-			// only this lookup-error bypass is tightened.
-			s.logWarn(ctx, "idempotency.lookup", err)
-			return api.Internal(fmt.Errorf("idempotency lookup: %w", err))
+			// cached response on a *store* error stays best-effort below.
+			s.logWarn(ctx, "idempotency.begin", err)
+			return api.Internal(fmt.Errorf("idempotency: %w", err))
 		}
-		if found {
-			if !bytes.Equal(gotHash, hash[:]) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnprocessableEntity)
-				_ = json.NewEncoder(w).Encode(struct {
-					Error struct {
-						Code    string `json:"code"`
-						Message string `json:"message"`
-					} `json:"error"`
-				}{
-					Error: struct {
-						Code    string `json:"code"`
-						Message string `json:"message"`
-					}{
-						Code:    "idempotency_mismatch",
-						Message: "Idempotency-Key reused with a different request body",
-					},
-				})
-				return nil
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Idempotency-Replay", "true")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(stored)
-			return nil
+		if !run {
+			return nil // replayed, or refused; already written
 		}
+		defer release()
 
 		// Miss: re-attach body, run handler, capture, store on 200.
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -212,49 +199,27 @@ func (s *IdempotencyStore) Middleware(_ any, next http.Handler) http.Handler {
 		body, err := io.ReadAll(r.Body)
 		_ = r.Body.Close()
 		if err != nil {
-			http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+			http.Error(w, "failed to read request body", http.StatusBadRequest)
 			return
 		}
 		hash := sha256.Sum256(body)
 
 		userID := auth.ActorOrSystem(r.Context())
 
-		// Hit?
-		stored, gotHash, found, err := s.lookup(r.Context(), userID, key)
+		run, release, err := s.begin(r.Context(), w, userID, key, hash[:])
 		if err != nil {
-			// Fail CLOSED on lookup error (SEC-6 / A4): don't run the
-			// mutation when we can't confirm whether this key was already
-			// processed. 503 so the client retries against a healthy DB.
-			s.logWarn(r.Context(), "idempotency.lookup", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{
-					"code":    "idempotency_unavailable",
-					"message": "idempotency store unavailable; retry",
-				},
-			})
+			// Fail CLOSED on a lookup / claim error (SEC-6 / A4): don't
+			// run the mutation when we can't confirm whether this key was
+			// already processed. 503 so the client retries against a
+			// healthy DB.
+			s.logWarn(r.Context(), "idempotency.begin", err)
+			writeIdemError(w, http.StatusServiceUnavailable, "idempotency_unavailable", "idempotency store unavailable; retry")
 			return
 		}
-		if found {
-			if !bytes.Equal(gotHash, hash[:]) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnprocessableEntity)
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"error": map[string]any{
-						"code":    "idempotency_mismatch",
-						"message": "Idempotency-Key reused with a different request body",
-					},
-				})
-				return
-			}
-			// Replay.
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Idempotency-Replay", "true")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(stored)
+		if !run {
 			return
 		}
+		defer release()
 
 		// Miss: re-attach the body, capture the response, store it.
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -274,17 +239,149 @@ func (s *IdempotencyStore) Middleware(_ any, next http.Handler) http.Handler {
 	})
 }
 
+// claimStale is how long a claim holds before another request with the
+// same key may take it over: longer than any batch runs, so only a claim
+// whose request died with its process (no release) goes stale.
+const claimStale = 15 * time.Minute
+
+// begin decides what a keyed request does. It replays the stored answer
+// (or refuses a different body under the same key), refuses while another
+// request with the key is still running, or claims the key and reports
+// run=true; the caller then runs the request, stores a success, and calls
+// release.
+//
+// Check-then-store alone let two concurrent retries both miss the cache
+// and both run (review B11). The claim row (idempotency_claim) makes one
+// of them wait its turn: the other gets 409 idempotency_in_progress and
+// retries, by when the first has stored its answer. The lookup after the
+// claim covers a request that finished — stored, then released — between
+// the first lookup and the claim.
+func (s *IdempotencyStore) begin(ctx context.Context, w http.ResponseWriter, userID int64, key string, hash []byte) (run bool, release func(), err error) {
+	replayed, err := s.replay(ctx, w, userID, key, hash)
+	if err != nil || replayed {
+		return false, nil, err
+	}
+	claimed, err := s.claim(ctx, userID, key)
+	if err != nil {
+		return false, nil, fmt.Errorf("claim: %w", err)
+	}
+	release = func() {
+		// The request's ctx may be done (client gone, timeout); the claim
+		// must go regardless, or the key waits out claimStale.
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := s.release(rctx, userID, key); err != nil {
+			s.logWarn(rctx, "idempotency.release", err)
+		}
+	}
+	replayed, err = s.replay(ctx, w, userID, key, hash)
+	if err != nil || replayed {
+		if claimed {
+			release()
+		}
+		return false, nil, err
+	}
+	if !claimed {
+		writeIdemError(w, http.StatusConflict, "idempotency_in_progress",
+			"a request with this Idempotency-Key is still running; retry shortly")
+		return false, nil, nil
+	}
+	return true, release, nil
+}
+
+// replay writes the stored answer for (user, key) when there is one — or a
+// 422 when the key was used with a different body — and reports whether it
+// wrote anything.
+func (s *IdempotencyStore) replay(ctx context.Context, w http.ResponseWriter, userID int64, key string, hash []byte) (bool, error) {
+	stored, gotHash, found, err := s.lookup(ctx, userID, key)
+	if err != nil {
+		return false, fmt.Errorf("lookup: %w", err)
+	}
+	if !found {
+		return false, nil
+	}
+	if !bytes.Equal(gotHash, hash) {
+		writeIdemError(w, http.StatusUnprocessableEntity, "idempotency_mismatch",
+			"Idempotency-Key reused with a different request body")
+		return true, nil
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Idempotency-Replay", "true")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(stored); err != nil {
+		// The client went away mid-replay; the answer is still stored.
+		s.logWarn(ctx, "idempotency.replay_write", err)
+	}
+	return true, nil
+}
+
+// writeIdemError writes the standard error envelope.
+func writeIdemError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	type body struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.NewEncoder(w).Encode(struct {
+		Error body `json:"error"`
+	}{body{Code: code, Message: message}}); err != nil {
+		// Only a write to a client that went away can fail here.
+		slog.Default().Debug("idempotency: write error envelope", slog.String("err", err.Error()))
+	}
+}
+
+// claim takes (user, key) for this request: true when no other request
+// holds it, or its claim is older than claimStale.
+func (s *IdempotencyStore) claim(ctx context.Context, userID int64, key string) (bool, error) {
+	b := named.New()
+	b.Set("user", userID)
+	b.Set("key", key)
+	b.Set("stale", claimStale.Seconds())
+	sql, args, err := b.Compile(`
+		INSERT INTO idempotency_claim (user_id, key) VALUES (:user, :key)
+		ON CONFLICT (user_id, key) DO UPDATE SET claimed_at = now()
+		WHERE idempotency_claim.claimed_at < now() - make_interval(secs => :stale)
+		RETURNING true`)
+	if err != nil {
+		return false, err
+	}
+	var ok bool
+	err = s.pool.QueryRow(ctx, sql, args...).Scan(&ok)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // held by a live request
+	}
+	return ok, err
+}
+
+// release drops this request's claim.
+func (s *IdempotencyStore) release(ctx context.Context, userID int64, key string) error {
+	b := named.New()
+	b.Set("user", userID)
+	b.Set("key", key)
+	sql, args, err := b.Compile(`DELETE FROM idempotency_claim WHERE user_id = :user AND key = :key`)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, sql, args...)
+	return err
+}
+
 // lookup returns (response_jsonb, request_hash, found, err).
 func (s *IdempotencyStore) lookup(ctx context.Context, userID int64, key string) ([]byte, []byte, bool, error) {
-	row := s.pool.QueryRow(ctx, `
+	b := named.New()
+	b.Set("user", userID)
+	b.Set("key", key)
+	sql, args, err := b.Compile(`
 		SELECT response::text, request_hash
 		FROM idempotency_response
-		WHERE user_id = $1 AND key = $2
-	`, userID, key)
+		WHERE user_id = :user AND key = :key`)
+	if err != nil {
+		return nil, nil, false, err
+	}
 	var raw string
 	var hash []byte
-	err := row.Scan(&raw, &hash)
-	if err != nil {
+	if err := s.pool.QueryRow(ctx, sql, args...).Scan(&raw, &hash); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil, false, nil
 		}
@@ -295,11 +392,19 @@ func (s *IdempotencyStore) lookup(ctx context.Context, userID int64, key string)
 
 // store inserts the (user_id, key, request_hash, response) row.
 func (s *IdempotencyStore) store(ctx context.Context, userID int64, key string, hash, response []byte) error {
-	_, err := s.pool.Exec(ctx, `
+	b := named.New()
+	b.Set("user", userID)
+	b.Set("key", key)
+	b.Set("hash", hash)
+	b.Set("response", string(response))
+	sql, args, err := b.Compile(`
 		INSERT INTO idempotency_response (user_id, key, request_hash, response)
-		VALUES ($1, $2, $3, $4::jsonb)
-		ON CONFLICT (user_id, key) DO NOTHING
-	`, userID, key, hash, string(response))
+		VALUES (:user, :key, :hash, :response::jsonb)
+		ON CONFLICT (user_id, key) DO NOTHING`)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, sql, args...)
 	return err
 }
 

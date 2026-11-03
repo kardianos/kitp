@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kitp/kitp/server/internal/auth/session"
 	"github.com/kitp/kitp/server/internal/store"
@@ -96,6 +97,9 @@ type callbackFakeOP struct {
 	issuer string
 	aud    string
 	sub    string
+	// nonce, when set, goes in the id_token (a real OP echoes the one the
+	// authorize request carried).
+	nonce string
 }
 
 func newCallbackFakeOP(t *testing.T) *callbackFakeOP {
@@ -137,6 +141,9 @@ func newCallbackFakeOP(t *testing.T) *callbackFakeOP {
 			"nbf":  time.Now().Add(-time.Minute).Unix(),
 			"iat":  time.Now().Unix(),
 		}
+		if op.nonce != "" {
+			claims["nonce"] = op.nonce
+		}
 		tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 		tok.Header["kid"] = op.kid
 		signed, err := tok.SignedString(priv)
@@ -150,15 +157,22 @@ func newCallbackFakeOP(t *testing.T) *callbackFakeOP {
 	return op
 }
 
-// runStartCallback exercises handleStart (which writes the oidc_state row
-// carrying the validated redirect) then reads the stored redirect back and
-// runs handleCallback with the issued state. Returns the post-login
-// Location header and the redirect value persisted in the state row.
-func runStartCallback(t *testing.T, startRedirect string) (location, storedRedirect string) {
+// signIn is one started sign-in: the fake OP, the BFF config, the start
+// response, and the state / nonce it sent to the OP.
+type signIn struct {
+	op           *callbackFakeOP
+	cfg          BFFConfig
+	pool         *pgxpool.Pool
+	start        *httptest.ResponseRecorder
+	state, nonce string
+}
+
+// startSignIn runs handleStart (which writes the oidc_state row carrying
+// the validated redirect and sets the state cookie).
+func startSignIn(t *testing.T, schema, startRedirect string) *signIn {
 	t.Helper()
 	op := newCallbackFakeOP(t)
-	pool := store.TestPool(t, "kitp_test_oidc_cb")
-
+	pool := store.TestPool(t, schema)
 	v := NewValidator(&Config{
 		Issuer:      op.issuer,
 		Audience:    op.aud,
@@ -168,58 +182,98 @@ func runStartCallback(t *testing.T, startRedirect string) (location, storedRedir
 		RedirectURI: "http://localhost/api/v1/auth/oidc/callback",
 		Scopes:      "openid profile email",
 	}, pool)
-
-	sessMgr := session.New(pool, session.Config{})
 	cfg := BFFConfig{
 		Validator:      v,
 		Pool:           pool,
-		SessionManager: sessMgr,
+		SessionManager: session.New(pool, session.Config{}),
 		InsecureCookie: true,
 		StateTTL:       10 * time.Minute,
 	}
-
-	ctx := context.Background()
-
-	// --- start ---
 	startURL := "/api/v1/auth/oidc/start"
 	if startRedirect != "" {
 		startURL += "?redirect=" + url.QueryEscape(startRedirect)
 	}
-	startReq := httptest.NewRequest(http.MethodGet, startURL, nil)
-	startRec := httptest.NewRecorder()
-	handleStart(startRec, startReq, cfg)
-	if startRec.Code != http.StatusFound {
-		t.Fatalf("start status = %d, want 302", startRec.Code)
+	rec := httptest.NewRecorder()
+	handleStart(rec, httptest.NewRequest(http.MethodGet, startURL, nil), cfg)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("start status = %d, want 302", rec.Code)
 	}
-
-	// Pull the issued state out of the OP authorize redirect.
-	loc := startRec.Header().Get("Location")
+	loc := rec.Header().Get("Location")
 	u, err := url.Parse(loc)
 	if err != nil {
 		t.Fatalf("parse start Location: %v", err)
 	}
-	state := u.Query().Get("state")
-	if state == "" {
-		t.Fatalf("start emitted no state; Location=%q", loc)
+	si := &signIn{op: op, cfg: cfg, pool: pool, start: rec,
+		state: u.Query().Get("state"), nonce: u.Query().Get("nonce")}
+	if si.state == "" || si.nonce == "" {
+		t.Fatalf("start sent no state or nonce; Location=%q", loc)
 	}
+	op.nonce = si.nonce
+	return si
+}
 
+// callback runs handleCallback for this sign-in; withCookie says whether
+// the request carries the cookies start set (the same browser).
+func (si *signIn) callback(withCookie bool) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v1/auth/oidc/callback?code=fake-code&state="+url.QueryEscape(si.state), nil)
+	if withCookie {
+		for _, c := range si.start.Result().Cookies() {
+			req.AddCookie(c)
+		}
+	}
+	rec := httptest.NewRecorder()
+	handleCallback(rec, req, si.cfg)
+	return rec
+}
+
+// runStartCallback signs in end to end and returns the post-login
+// Location header and the redirect value persisted in the state row.
+func runStartCallback(t *testing.T, startRedirect string) (location, storedRedirect string) {
+	t.Helper()
+	si := startSignIn(t, "kitp_test_oidc_cb", startRedirect)
 	// Verify the redirect was stored on the state row (before the
 	// callback deletes it).
-	if err := pool.QueryRow(ctx,
-		`SELECT redirect FROM oidc_state WHERE state = $1`, state,
+	if err := si.pool.QueryRow(context.Background(),
+		`SELECT redirect FROM oidc_state WHERE state = $1`, si.state,
 	).Scan(&storedRedirect); err != nil {
 		t.Fatalf("read stored redirect: %v", err)
 	}
-
-	// --- callback ---
-	cbReq := httptest.NewRequest(http.MethodGet,
-		"/api/v1/auth/oidc/callback?code=fake-code&state="+url.QueryEscape(state), nil)
-	cbRec := httptest.NewRecorder()
-	handleCallback(cbRec, cbReq, cfg)
-	if cbRec.Code != http.StatusFound {
-		t.Fatalf("callback status = %d (body=%q), want 302", cbRec.Code, cbRec.Body.String())
+	rec := si.callback(true)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("callback status = %d (body=%q), want 302", rec.Code, rec.Body.String())
 	}
-	return cbRec.Header().Get("Location"), storedRedirect
+	return rec.Header().Get("Location"), storedRedirect
+}
+
+// TestCallbackNeedsTheStartingBrowser (review B8): a callback URL from a
+// sign-in this browser didn't start — an attacker's own, handed to a
+// victim to sign them in as the attacker — is refused, and doesn't use up
+// the real sign-in.
+func TestCallbackNeedsTheStartingBrowser(t *testing.T) {
+	si := startSignIn(t, "kitp_test_oidc_csrf", "/")
+	cookies := si.start.Result().Cookies()
+	if len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode || cookies[0].Path != "/api/v1/auth/oidc/callback" {
+		t.Fatalf("state cookie = %+v", cookies)
+	}
+	if rec := si.callback(false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("callback without the start cookie: %d, want 401", rec.Code)
+	}
+	if rec := si.callback(true); rec.Code != http.StatusFound {
+		t.Fatalf("the starting browser, after the refused attempt: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCallbackChecksNonce (review B8): an id_token that wasn't issued for
+// this sign-in (another nonce, or none) is refused.
+func TestCallbackChecksNonce(t *testing.T) {
+	for _, nonce := range []string{"someone-elses", ""} {
+		si := startSignIn(t, "kitp_test_oidc_nonce", "/")
+		si.op.nonce = nonce
+		if rec := si.callback(true); rec.Code != http.StatusUnauthorized {
+			t.Errorf("an id_token with nonce %q: %d, want 401", nonce, rec.Code)
+		}
+	}
 }
 
 func TestCallbackRedirectThreading(t *testing.T) {

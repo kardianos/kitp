@@ -22,7 +22,7 @@ parent_user_id, bigint, , , , , user_account.id, cascade
 is_agent, boolean, , , false, false, , 
 created_at, timestamptz, , , false, now(), , 
 
-## table session | doc="Server-side session for the BFF auth model. The opaque `id` is what the kitp_session cookie carries (never the OIDC token). `created_at` anchors the absolute re-auth cap; `last_seen_at` is the sliding idle window updated by Manager batched-touch flushes. `revoked_at` set on logout / admin revoke. `oidc_sub` records the OP subject for OIDC sessions so we can rotate when sub changes."
+## table session | doc="Server-side session for the BFF auth model. `id` is the SHA-256 hex of the opaque value the kitp_session cookie carries (auth.HashSecret; the cookie value itself is never stored, nor the OIDC token). `created_at` anchors the absolute re-auth cap; `last_seen_at` is the sliding idle window updated by Manager batched-touch flushes. `revoked_at` set on logout / admin revoke. `oidc_sub` records the OP subject for OIDC sessions so we can rotate when sub changes."
 
 ### columns
 name, type, pk, nullable, default, references, on_delete
@@ -38,13 +38,14 @@ name, columns
 session_user_id, "user_id"
 session_last_seen_at, "last_seen_at"
 
-## table oidc_state | doc="Short-lived PKCE staging for the server-managed OIDC redirect dance. /auth/oidc/start writes a row keyed by `state`; /auth/oidc/callback reads + deletes it. Rows past `expires_at` are reaped by a periodic sweep."
+## table oidc_state | doc="Short-lived PKCE staging for the server-managed OIDC redirect dance. /auth/oidc/start writes a row keyed by `state` (with the PKCE verifier and the nonce sent to the OP) and sets a cookie carrying the state; /auth/oidc/callback requires that cookie, reads + deletes the row, and checks the id_token's nonce. Rows past `expires_at` are reaped by a periodic sweep."
 
 ### columns
 name, type, pk, nullable, default
 state, text, true, , 
 verifier, text, , false, 
 redirect, text, , false, '/'
+nonce, text, , false, ''
 created_at, timestamptz, , false, now()
 expires_at, timestamptz, , false, 
 
@@ -52,7 +53,7 @@ expires_at, timestamptz, , false,
 name, columns
 oidc_state_expires_at, "expires_at"
 
-## table user_token | doc="Opaque bearer tokens that authenticate an MCP (or future remote) client AS a specific user_account row. Typical use: a human mints a token bound to one of their agent user_accounts, hands it to the MCP client out-of-band. The value is 32 random bytes base64url-encoded — same shape as session.id — and is looked up directly; nothing meaningful is embedded. last_used_at participates in the same batched-touch pattern as session.last_seen_at. ON DELETE CASCADE so revoking the agent user_account row revokes every token bound to it. label is required and unique per user so user_token.list / user_token.revoke can address rows without leaking the secret value back to the wire — list returns labels + timestamps, revoke takes (user_id, label). scope narrows what the token may do: '' = unrestricted (MCP + every bearer route); 'links' = only the forge link hook (POST /api/v1/links) — the credential a code forge holds. The api.Router enforces it per route." | unique="user_id, label"
+## table user_token | doc="Opaque bearer tokens that authenticate an MCP (or future remote) client AS a specific user_account row. Typical use: a human mints a token bound to one of their agent user_accounts, hands it to the MCP client out-of-band. The token is 32 random bytes base64url-encoded — same shape as the session cookie — with nothing meaningful embedded; `id` stores only its SHA-256 hex (auth.HashSecret), so the token is shown once at creation and can't be read back. last_used_at participates in the same batched-touch pattern as session.last_seen_at. ON DELETE CASCADE so revoking the agent user_account row revokes every token bound to it. label is required and unique per user so user_token.list / user_token.revoke can address rows without leaking the secret value back to the wire — list returns labels + timestamps, revoke takes (user_id, label). scope narrows what the token may do: '' = unrestricted (MCP + every bearer route); 'links' = only the forge link hook (POST /api/v1/links) — the credential a code forge holds. The api.Router enforces it per route." | unique="user_id, label"
 
 ### columns
 name, type, pk, nullable, default, references, on_delete
@@ -266,6 +267,14 @@ created_at, timestamptz, false, now()
 ### indexes
 name, columns
 idempotency_response_created_at, "created_at"
+
+## table idempotency_claim | doc="A keyed batch request in flight: claimed before it runs, dropped when it finishes, so a concurrent retry with the same Idempotency-Key waits (409 idempotency_in_progress) instead of running too. A claim older than 15 minutes (its process died) can be taken over; idempotency.cleanup purges leftovers." | primary_key="user_id, key"
+
+### columns
+name, type, nullable, default
+user_id, bigint, false, 
+key, text, false, 
+claimed_at, timestamptz, false, now()
 
 ## table user_card_sort | doc="Per-user inbox ordering. Separate axis from the shared attribute_value.sort_order on the kanban." | primary_key="user_id, card_id"
 

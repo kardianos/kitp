@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/auth/session"
+	"github.com/kitp/kitp/server/internal/auth/token"
 	"github.com/kitp/kitp/server/internal/schema/hcsv"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -760,6 +763,60 @@ func TestForwardMigration0012UserTokenScope(t *testing.T) {
 	}
 	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
 		t.Fatalf("third apply (idempotent): %v", err)
+	}
+}
+
+// TestForwardMigration0021HashesSecrets: sessions and tokens from before
+// review B10 held the raw secret; 0021 hashes them in place, so they keep
+// working, and leaves a hashed row alone.
+func TestForwardMigration0021HashesSecrets(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0021")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	const oldCookie = "c0Okie-c0Okie-c0Okie-c0Okie-c0Okie-c0Okie12"
+	const oldToken = "t0ken_t0ken_t0ken_t0ken_t0ken_t0ken_t0ken1"
+	already := auth.HashSecret("already hashed")
+	for _, stmt := range []string{
+		`INSERT INTO session (id, user_id) VALUES ('` + oldCookie + `', 1), ('` + already + `', 1)`,
+		`INSERT INTO user_token (id, user_id, label) VALUES ('` + oldToken + `', 1, 'old')`,
+		`DELETE FROM schema_version WHERE name = '0021_hash_session_token_ids'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0021 (%s): %v", stmt, err)
+		}
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	var ids []string
+	rows, err := pool.Query(ctx, `SELECT id FROM session UNION ALL SELECT id FROM user_token ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	want := map[string]bool{auth.HashSecret(oldCookie): true, auth.HashSecret(oldToken): true, already: true}
+	if len(ids) != 3 {
+		t.Fatalf("ids after 0021 = %v", ids)
+	}
+	for _, id := range ids {
+		if !want[id] {
+			t.Errorf("unexpected id %q after 0021 (raw left, or a hash hashed again)", id)
+		}
+	}
+	if _, err := session.New(pool, session.Config{}).Lookup(ctx, oldCookie); err != nil {
+		t.Errorf("a session from before 0021: %v", err)
+	}
+	if _, err := token.New(pool, token.Config{}).Lookup(ctx, oldToken); err != nil {
+		t.Errorf("a token from before 0021: %v", err)
 	}
 }
 

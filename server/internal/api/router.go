@@ -43,8 +43,10 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/reg"
@@ -206,6 +208,7 @@ func (rt *Router) Routes() []RouteSpec {
 // resolved token is unrestricted or carries exactly routeScope.
 func (rt *Router) wrap(resolve Resolver, kind, routeScope string, h AuthedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defer rt.recoverPanic(w, r)
 		user, err := resolve(r)
 		if err != nil {
 			// Credential present but rejected (bad cookie, expired
@@ -248,10 +251,29 @@ func (rt *Router) unauthorized(w http.ResponseWriter, r *http.Request, kind stri
 
 func (rt *Router) wrapPublic(h PublicHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defer rt.recoverPanic(w, r)
 		if err := h(r.Context(), w, r); err != nil {
 			rt.writeErr(w, r, err)
 		}
 	}
+}
+
+// recoverPanic (deferred by every route) turns a handler's panic into a
+// logged stack and a 500 with the usual envelope, rather than net/http's
+// bare dropped connection (review B9). A deferred rollback in the handler
+// has already run by then. http.ErrAbortHandler is net/http's own way to
+// abort a response, so it is passed on.
+func (rt *Router) recoverPanic(w http.ResponseWriter, r *http.Request) {
+	p := recover()
+	if p == nil {
+		return
+	}
+	if e, ok := p.(error); ok && errors.Is(e, http.ErrAbortHandler) {
+		panic(p)
+	}
+	rt.logger.ErrorContext(r.Context(), "http handler panic",
+		"path", r.URL.Path, "panic", fmt.Sprint(p), "stack", string(debug.Stack()))
+	writeJSON(w, http.StatusInternalServerError, jsonErr{Code: "internal", Message: "internal error"})
 }
 
 // jsonErr is the wire shape. Matches reg.HandlerError's serialised

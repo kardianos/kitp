@@ -1018,6 +1018,29 @@ WHERE ad.id = av.attribute_def_id AND ad.name = 'bundle_key'
 ALTER TABLE portal_state ADD COLUMN IF NOT EXISTS fail_count int NOT NULL DEFAULT 0;
 ALTER TABLE portal_state ADD COLUMN IF NOT EXISTS failed_at timestamptz;`,
 	},
+	{
+		// Review B10: session.id and user_token.id held the bearer secrets
+		// themselves, so anyone who could read those tables could sign in
+		// as their users. They now hold auth.HashSecret of the secret; this
+		// hashes the rows already there in place, so nobody is signed out
+		// and every token keeps working. A value that is already a hash
+		// (64 hex digits — the raw secrets are 43-character base64url) is
+		// left alone, so the statement is safe to run again.
+		id: "0021_hash_session_token_ids",
+		sql: `
+UPDATE session SET id = encode(sha256(convert_to(id, 'UTF8')), 'hex')
+WHERE id !~ '^[0-9a-f]{64}$';
+UPDATE user_token SET id = encode(sha256(convert_to(id, 'UTF8')), 'hex')
+WHERE id !~ '^[0-9a-f]{64}$';`,
+	},
+	{
+		// Review B8: the OIDC callback checks the id_token's nonce against
+		// the one its start sent. A sign-in already under way when this
+		// runs has '' and is let through on state alone (for the ten
+		// minutes such a row lives).
+		id:  "0022_oidc_state_nonce",
+		sql: `ALTER TABLE oidc_state ADD COLUMN IF NOT EXISTS nonce text NOT NULL DEFAULT '';`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

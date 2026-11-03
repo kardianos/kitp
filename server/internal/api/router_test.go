@@ -368,3 +368,30 @@ func TestRouter_TokenScope(t *testing.T) {
 		rt.BearerScoped("POST /c", auth.TokenScopeFull, func(context.Context, http.ResponseWriter, *http.Request, *auth.UserCtx) error { return nil })
 	})
 }
+
+// TestPanicIsA500 (review B9): a handler's panic is a logged 500 with the
+// usual envelope; net/http's own abort still aborts.
+func TestPanicIsA500(t *testing.T) {
+	rt := api.NewRouter(api.RouterConfig{
+		SessionResolver: func(*http.Request) (*auth.UserCtx, error) { return &auth.UserCtx{ID: 1}, nil },
+	})
+	rt.Authed("GET /boom", func(context.Context, http.ResponseWriter, *http.Request, *auth.UserCtx) error {
+		panic("boom")
+	})
+	rt.Public("GET /abort", func(context.Context, http.ResponseWriter, *http.Request) error {
+		panic(http.ErrAbortHandler)
+	})
+	rec := httptest.NewRecorder()
+	rt.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/boom", nil))
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), `"internal"`) {
+		t.Errorf("panic: %d %s, want a 500 envelope", rec.Code, rec.Body.String())
+	}
+	func() {
+		defer func() {
+			if p := recover(); p == nil {
+				t.Error("http.ErrAbortHandler was swallowed")
+			}
+		}()
+		rt.Mux().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/abort", nil))
+	}()
+}

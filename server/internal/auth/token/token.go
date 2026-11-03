@@ -2,8 +2,9 @@
 // `user_token` and used by MCP (and future remote-MCP) clients to
 // authenticate AS a specific user_account row.
 //
-// Same shape as session.id: 32 random bytes base64url-encoded. The
-// validator does one indexed PK lookup, checks revoke / expiry, and
+// Same shape as session.id: 32 random bytes base64url-encoded, stored
+// only as its hash (auth.HashSecret — user_token.id is the hash). The
+// validator hashes the presented value, does one indexed PK lookup, checks revoke / expiry, and
 // returns the resolved (user_id, display_name). Touches are batched
 // in process memory and flushed periodically — identical pattern to
 // session.Manager so the wire profile of an active agent collapses
@@ -22,6 +23,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 )
 
 // Default knobs; override via Config when constructing.
@@ -104,10 +108,18 @@ func (m *Manager) Create(ctx context.Context, userID int64, label string, expire
 	if err != nil {
 		return "", fmt.Errorf("token: generate id: %w", err)
 	}
-	if _, err := m.pool.Exec(ctx, `
+	b := named.New()
+	b.Set("id", auth.HashSecret(id))
+	b.Set("user", userID)
+	b.Set("label", label)
+	b.Set("expires", expiresAt)
+	sql, args, err := b.Compile(`
 		INSERT INTO user_token (id, user_id, label, expires_at)
-		VALUES ($1, $2, $3, $4)
-	`, id, userID, label, expiresAt); err != nil {
+		VALUES (:id, :user, :label, :expires)`)
+	if err != nil {
+		return "", fmt.Errorf("token: insert: compile: %w", err)
+	}
+	if _, err := m.pool.Exec(ctx, sql, args...); err != nil {
 		return "", fmt.Errorf("token: insert: %w", err)
 	}
 	return id, nil
@@ -126,12 +138,18 @@ func (m *Manager) Lookup(ctx context.Context, tok string) (*User, error) {
 		revokedAt   *time.Time
 		expiresAt   *time.Time
 	)
-	row := m.pool.QueryRow(ctx, `
+	key := auth.HashSecret(tok)
+	b := named.New()
+	b.Set("id", key)
+	sql, args, err := b.Compile(`
 		SELECT t.user_id, ua.display_name, t.scope, t.revoked_at, t.expires_at
 		FROM user_token t
 		JOIN user_account ua ON ua.id = t.user_id
-		WHERE t.id = $1
-	`, tok)
+		WHERE t.id = :id`)
+	if err != nil {
+		return nil, fmt.Errorf("token: lookup: compile: %w", err)
+	}
+	row := m.pool.QueryRow(ctx, sql, args...)
 	if err := row.Scan(&userID, &displayName, &scope, &revokedAt, &expiresAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -146,7 +164,7 @@ func (m *Manager) Lookup(ctx context.Context, tok string) (*User, error) {
 		return nil, ErrExpired
 	}
 	m.mu.Lock()
-	m.pendingUse[tok] = now
+	m.pendingUse[key] = now
 	m.mu.Unlock()
 	return &User{ID: userID, DisplayName: displayName, Scope: scope}, nil
 }
@@ -156,13 +174,18 @@ func (m *Manager) Revoke(ctx context.Context, tok string) error {
 	if tok == "" {
 		return nil
 	}
-	if _, err := m.pool.Exec(ctx, `
-		UPDATE user_token SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
-	`, tok); err != nil {
+	key := auth.HashSecret(tok)
+	b := named.New()
+	b.Set("id", key)
+	sql, args, err := b.Compile(`UPDATE user_token SET revoked_at = now() WHERE id = :id AND revoked_at IS NULL`)
+	if err != nil {
+		return fmt.Errorf("token: revoke: compile: %w", err)
+	}
+	if _, err := m.pool.Exec(ctx, sql, args...); err != nil {
 		return fmt.Errorf("token: revoke: %w", err)
 	}
 	m.mu.Lock()
-	delete(m.pendingUse, tok)
+	delete(m.pendingUse, key)
 	m.mu.Unlock()
 	return nil
 }
@@ -230,10 +253,14 @@ func (m *Manager) flush(ctx context.Context) error {
 	}
 	m.pendingUse = make(map[string]time.Time, len(ids))
 	m.mu.Unlock()
-	if _, err := m.pool.Exec(ctx, `
-		UPDATE user_token SET last_used_at = now()
-		WHERE id = ANY($1::text[])
-	`, ids); err != nil {
+	// ids are the stored hashes (Lookup keys the batch by them).
+	b := named.New()
+	b.Set("ids", ids)
+	sql, args, err := b.Compile(`UPDATE user_token SET last_used_at = now() WHERE id = ANY(:ids::text[])`)
+	if err != nil {
+		return fmt.Errorf("token: flush: compile: %w", err)
+	}
+	if _, err := m.pool.Exec(ctx, sql, args...); err != nil {
 		return fmt.Errorf("token: flush: %w", err)
 	}
 	return nil

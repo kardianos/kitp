@@ -1755,7 +1755,12 @@ func (r *realIMAPClient) FetchUnseen(ctx context.Context) ([]InboundMessage, err
 
 	ch := make(chan *imap.Message, 16)
 	done := make(chan error, 1)
-	go func() { done <- r.c.UidFetch(seqset, items, ch) }()
+	// The fetch runs on its own goroutine, where a panic would end the
+	// process rather than fail this poll; go-imap closes ch on the way out
+	// either way (review B9).
+	go func() {
+		done <- job.Protect(context.Background(), nil, "imap fetch", func() error { return r.c.UidFetch(seqset, items, ch) })
+	}()
 
 	var out []InboundMessage
 	for msg := range ch {

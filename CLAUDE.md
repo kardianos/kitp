@@ -230,6 +230,12 @@ teardown. Per-worker errors are logged + (IMAP) backed-off inside
 the worker's `Tick`/`TickOnce`; the sweep discards them so one bad
 row doesn't flip the job red — only a row-enumeration failure does.
 
+A panic in a tick, a manual trigger or a worker's run is recovered
+(`job.Protect`): it fails that run — a worker's panic is returned from
+the sweep, so the job shows red — with the stack in the log, instead of
+ending kitpd. Every HTTP route recovers the same way (a logged 500). A
+goroutine you start yourself must wrap its body in `job.Protect` too.
+
 Session and token managers carry an in-memory touch buffer.
 Register their `RunTouch` on the scheduler; AFTER `sched.Wait()`
 during shutdown, call `Flush(ctx)` on each so the final batch

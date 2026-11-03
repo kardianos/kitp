@@ -82,11 +82,11 @@ Done (area 5): CAS GetAll fetches one chunk per query and writes it after the co
 
 ## 7. Platform
 
-- [ ] **B8** OIDC login CSRF: state not bound to the browser; no nonce.
-- [ ] **B9** No recover() in the server, jobs or worker pools.
-- [ ] **B10** Session and token ids stored as the raw secrets.
-- [ ] **B11** Idempotency: check-then-store lets concurrent retries both run.
-- [ ] **B15a** attribute/scope.go:209 recursive CTE without `depth < 16`; the lint doesn't scan Go.
+- [x] **B8** OIDC login CSRF: state not bound to the browser; no nonce.
+- [x] **B9** No recover() in the server, jobs or worker pools.
+- [x] **B10** Session and token ids stored as the raw secrets.
+- [x] **B11** Idempotency: check-then-store lets concurrent retries both run.
+- [x] **B15a** attribute/scope.go:209 recursive CTE without `depth < 16`; the lint doesn't scan Go.
 - [x] **B15b** cas/chunk_http.go:67 compares err.Error() text.
 
 ## 8. Tests

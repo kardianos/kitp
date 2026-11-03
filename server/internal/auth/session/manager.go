@@ -2,7 +2,8 @@
 //
 // The session id is an opaque 256-bit random string the kitp_session
 // cookie carries; it never embeds a user id, a JWT, or any other
-// content. Validation is a single indexed DB lookup gated by a
+// content. The table stores only its hash (auth.HashSecret): the
+// Manager hashes the cookie value on every Lookup / Revoke. Validation is a single indexed DB lookup gated by a
 // configurable sliding window (idle TTL) and an absolute cap (idle
 // TTL governs "must be touched at least this recently"; absolute cap
 // governs "must have been issued at most this long ago"). Either gate
@@ -28,6 +29,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 )
 
 // Default knobs. Override via Config when constructing a Manager.
@@ -134,11 +138,17 @@ func (m *Manager) Create(ctx context.Context, userID int64, oidcSub string) (str
 	if err != nil {
 		return "", fmt.Errorf("session: generate id: %w", err)
 	}
-	_, err = m.pool.Exec(ctx, `
+	b := named.New()
+	b.Set("id", auth.HashSecret(id))
+	b.Set("user", userID)
+	b.Set("sub", oidcSub)
+	sql, args, err := b.Compile(`
 		INSERT INTO session (id, user_id, oidc_sub)
-		VALUES ($1, $2, NULLIF($3, ''))
-	`, id, userID, oidcSub)
+		VALUES (:id, :user, NULLIF(:sub, ''))`)
 	if err != nil {
+		return "", fmt.Errorf("session: insert: compile: %w", err)
+	}
+	if _, err := m.pool.Exec(ctx, sql, args...); err != nil {
 		return "", fmt.Errorf("session: insert: %w", err)
 	}
 	return id, nil
@@ -159,12 +169,18 @@ func (m *Manager) Lookup(ctx context.Context, id string) (*User, error) {
 		lastSeenAt  time.Time
 		revokedAt   *time.Time
 	)
-	row := m.pool.QueryRow(ctx, `
+	key := auth.HashSecret(id)
+	b := named.New()
+	b.Set("id", key)
+	sql, args, err := b.Compile(`
 		SELECT s.user_id, ua.display_name, s.created_at, s.last_seen_at, s.revoked_at
 		FROM session s
 		JOIN user_account ua ON ua.id = s.user_id
-		WHERE s.id = $1
-	`, id)
+		WHERE s.id = :id`)
+	if err != nil {
+		return nil, fmt.Errorf("session: lookup: compile: %w", err)
+	}
+	row := m.pool.QueryRow(ctx, sql, args...)
 	if err := row.Scan(&userID, &displayName, &createdAt, &lastSeenAt, &revokedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -186,7 +202,7 @@ func (m *Manager) Lookup(ctx context.Context, id string) (*User, error) {
 		return nil, ErrExpired
 	}
 	m.mu.Lock()
-	m.pendingTouch[id] = now
+	m.pendingTouch[key] = now
 	m.mu.Unlock()
 	return &User{ID: userID, DisplayName: displayName}, nil
 }
@@ -198,14 +214,18 @@ func (m *Manager) Revoke(ctx context.Context, id string) error {
 	if id == "" {
 		return nil
 	}
-	_, err := m.pool.Exec(ctx, `
-		UPDATE session SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
-	`, id)
+	key := auth.HashSecret(id)
+	b := named.New()
+	b.Set("id", key)
+	sql, args, err := b.Compile(`UPDATE session SET revoked_at = now() WHERE id = :id AND revoked_at IS NULL`)
 	if err != nil {
+		return fmt.Errorf("session: revoke: compile: %w", err)
+	}
+	if _, err := m.pool.Exec(ctx, sql, args...); err != nil {
 		return fmt.Errorf("session: revoke: %w", err)
 	}
 	m.mu.Lock()
-	delete(m.pendingTouch, id)
+	delete(m.pendingTouch, key)
 	m.mu.Unlock()
 	return nil
 }
@@ -220,10 +240,13 @@ func (m *Manager) RevokeAllForUser(ctx context.Context, userID int64) error {
 	if userID == 0 {
 		return nil
 	}
-	_, err := m.pool.Exec(ctx, `
-		UPDATE session SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL
-	`, userID)
+	b := named.New()
+	b.Set("user", userID)
+	sql, args, err := b.Compile(`UPDATE session SET revoked_at = now() WHERE user_id = :user AND revoked_at IS NULL`)
 	if err != nil {
+		return fmt.Errorf("session: revoke all for user: compile: %w", err)
+	}
+	if _, err := m.pool.Exec(ctx, sql, args...); err != nil {
 		return fmt.Errorf("session: revoke all for user: %w", err)
 	}
 	return nil
@@ -248,11 +271,14 @@ func (m *Manager) flush(ctx context.Context) error {
 	m.pendingTouch = make(map[string]time.Time, len(ids))
 	m.mu.Unlock()
 
-	_, err := m.pool.Exec(ctx, `
-		UPDATE session SET last_seen_at = now()
-		WHERE id = ANY($1::text[])
-	`, ids)
+	// ids are the stored hashes (Lookup keys the batch by them).
+	b := named.New()
+	b.Set("ids", ids)
+	sql, args, err := b.Compile(`UPDATE session SET last_seen_at = now() WHERE id = ANY(:ids::text[])`)
 	if err != nil {
+		return fmt.Errorf("session: flush: compile: %w", err)
+	}
+	if _, err := m.pool.Exec(ctx, sql, args...); err != nil {
 		return fmt.Errorf("session: flush: %w", err)
 	}
 	return nil

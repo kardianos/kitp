@@ -214,7 +214,7 @@ func TestMCPHTTP_RevokedTokenIs401(t *testing.T) {
 	// 2. Revoke via the same pool the fixture is using (NOT a fresh
 	//    TestPool call — that would DROP the schema and lose our row).
 	if _, err := f.pool.Exec(context.Background(),
-		`UPDATE user_token SET revoked_at = now() WHERE id = $1`, f.bearer,
+		`UPDATE user_token SET revoked_at = now() WHERE id = $1`, auth.HashSecret(f.bearer),
 	); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}

@@ -74,7 +74,10 @@ func (p *WorkerPool[K, W]) Sweep(ctx context.Context, keys []K) error {
 			errs = append(errs, ctx.Err())
 			break
 		}
-		if err := p.run(ctx, w); err != nil {
+		// A panicking worker fails its own run, not the sweep or the
+		// process; unlike a worker's ordinary errors (which it handles
+		// itself) a panic is a bug, so it is returned and shows on the job.
+		if err := Protect(ctx, nil, "worker", func() error { return p.run(ctx, w) }); err != nil {
 			errs = append(errs, err)
 		}
 	}

@@ -10,13 +10,13 @@
 --      gen_random_bytes) base64url-encoded (rtrim '=' padding, then
 --      '+' -> '-', '/' -> '_'). Shape matches Go-side
 --      base64.RawURLEncoding.EncodeToString.
---   3. INSERT into user_token. The (user_id, label) unique constraint
+--   3. INSERT into user_token, keyed by the secret's SHA-256 hex (only
+--      the hash is stored). The (user_id, label) unique constraint
 --      catches duplicate labels per user; a 23505 conflict propagates
 --      as the dispatcher's `conflict` code.
 --
 -- The secret value is surfaced in the result jsonb on this single call
--- only (the server cannot recover it later — same as the legacy Go
--- handler). list / revoke address rows by (user_id, label).
+-- only (the server keeps only its hash and cannot recover it). list / revoke address rows by (user_id, label).
 --
 -- Authz (parent_user_id or global admin) runs pre-tx in Go.
 --
@@ -94,8 +94,11 @@ BEGIN
             rtrim(encode(gen_random_bytes(32), 'base64'), '='),
             '+/', '-_');
 
+        -- Only the hash is stored (auth.HashSecret, review B10); the
+        -- token itself goes back to the caller once and is never kept.
         INSERT INTO user_token (id, user_id, label, expires_at, scope)
-        VALUES (_token, _user_id, _label, _expires_at, _scope);
+        VALUES (encode(sha256(convert_to(_token, 'UTF8')), 'hex'),
+                _user_id, _label, _expires_at, _scope);
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(

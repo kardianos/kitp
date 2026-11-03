@@ -8,7 +8,6 @@
 package attribute
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
@@ -56,15 +55,4 @@ func Register(_ *store.Pool) {
 // dispatcher can authorize the (card_type, process) pair.
 func cardTypeFromCardID(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	return schema.CardTypeIDByCardID(ctx, pool, raw.(UpdateInput).CardID)
-}
-
-// isJSONNull reports whether raw is a JSON null literal (or empty).
-// Still used by scope.go (ParseCardRefValue) and screen.go even though
-// validateUpdate/runUpdate are gone — keeps the helper close to its
-// remaining callers.
-func isJSONNull(b []byte) bool {
-	if len(b) == 0 {
-		return true
-	}
-	return bytes.Equal(bytes.TrimSpace(b), []byte("null"))
 }

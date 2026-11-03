@@ -312,7 +312,7 @@ func (s *Scheduler[Cfg]) Trigger(ctx context.Context, name string) (RunResult, e
 	defer cancel()
 
 	start := time.Now()
-	err := job.Run(runCtx, s.db, s.cfg)
+	err := Protect(runCtx, s.logger, "job "+job.Name, func() error { return job.Run(runCtx, s.db, s.cfg) })
 	dur := time.Since(start)
 	c.record(start, dur, err)
 	s.logOutcome(runCtx, job.Name, dur, effectiveTimeout(*job), err, "manual")
@@ -402,7 +402,7 @@ func (s *Scheduler[Cfg]) tick(parent context.Context, j Job[Cfg], timeout time.D
 	// goroutine), so this only ever contends with a Trigger.
 	c.runMu.Lock()
 	start := time.Now()
-	err := j.Run(ctx, s.db, s.cfg)
+	err := Protect(ctx, s.logger, "job "+j.Name, func() error { return j.Run(ctx, s.db, s.cfg) })
 	dur := time.Since(start)
 	c.runMu.Unlock()
 

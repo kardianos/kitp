@@ -15,14 +15,16 @@
 # card_ancestors() / card_enclosing_project() over hand-rolling a new
 # recursive walk.
 #
+# The same rule covers Go: every non-test .go file under server/ that
+# embeds a recursive card-tree walk in a SQL string is checked too (Go
+# `//` comments are stripped the same way as SQL `--` ones).
+#
 # Exit 0 when every recursive card-tree walk is capped; exit 1 (with a
 # per-file report) otherwise.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 FUNC_DIR="db/schema/functions"
-# Go-side SQL fragments that embed a recursive card-tree walk.
-GO_VISIBILITY="server/internal/schema/visibility.go"
 
 fail=0
 report() {
@@ -39,7 +41,10 @@ check_file() {
     # self-reference (parent_card_id / parent_task). Strip `--` line
     # comments first so a stale comment can't trip — or mask — the check.
     local stripped
-    stripped="$(sed 's/--.*$//' "$f")"
+    case "$f" in
+        *.go) stripped="$(sed -e 's#^[[:space:]]*//.*$##' -e 's/--.*$//' "$f")" ;;
+        *) stripped="$(sed 's/--.*$//' "$f")" ;;
+    esac
     if printf '%s' "$stripped" | grep -Eqi 'WITH[[:space:]]+RECURSIVE' \
         && printf '%s' "$stripped" | grep -Eq 'parent_card_id|parent_task'; then
         if ! printf '%s' "$stripped" | grep -Eq 'depth[[:space:]]*<[[:space:]]*16'; then
@@ -51,7 +56,11 @@ check_file() {
 for f in "$FUNC_DIR"/*.sql; do
     check_file "$f"
 done
-check_file "$GO_VISIBILITY"
+# Go-side SQL strings (tests excluded: they may build deliberately
+# uncapped fixtures).
+while IFS= read -r f; do
+    check_file "$f"
+done < <(find server -name '*.go' ! -name '*_test.go' -print | sort)
 
 if [ "$fail" -ne 0 ]; then
     echo

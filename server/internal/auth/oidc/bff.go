@@ -5,19 +5,26 @@
 //
 //   GET /api/v1/auth/oidc/start
 //       1. Validate the caller's `redirect` deep link (safeLocalRedirect).
-//       2. Generate a PKCE pair + opaque state.
-//       3. Stash (state -> verifier, redirect) in the oidc_state table
-//          with a 10-minute expiry.
+//       2. Generate a PKCE pair, an opaque state and a nonce.
+//       3. Stash (state -> verifier, redirect, nonce) in the oidc_state
+//          table with a 10-minute expiry, and set a cookie carrying the
+//          state on this browser.
 //       4. 302 to the OP's authorization endpoint with PKCE +
-//          state + scope.
+//          state + nonce + scope.
 //
 //   GET /api/v1/auth/oidc/callback
-//       1. Look up the verifier + redirect by state (delete the row on read).
-//       2. POST the code + verifier to the OP's token endpoint.
-//       3. Validate the returned id_token via Validator.Resolve
-//          (which also upserts the user + applies role mappings).
-//       4. Create a kitp session and set the cookie.
-//       5. 302 to the validated redirect (default '/').
+//       1. Require the state cookie this browser got at start: a
+//          callback URL from someone else's sign-in (login CSRF — signing
+//          the victim in as the attacker) has no matching cookie.
+//       2. Look up the verifier + redirect + nonce by state (delete the
+//          row on read).
+//       3. POST the code + verifier to the OP's token endpoint.
+//       4. Verify the returned id_token, require its nonce to be the one
+//          sent at start (no replayed or injected token), then
+//          Validator.Resolve it (which also upserts the user + applies
+//          role mappings).
+//       5. Create a kitp session and set the cookie.
+//       6. 302 to the validated redirect (default '/').
 //
 // On failure both endpoints render a minimal server-side HTML error page
 // (status 401) with a retry link. They deliberately do NOT bounce to the
@@ -30,6 +37,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -45,9 +53,33 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth/session"
+	"github.com/kitp/kitp/server/internal/named"
 )
+
+// stateCookiePath scopes the state cookie to the callback, the only
+// route that reads it: the path of OIDC_REDIRECT_URI as the browser sees
+// it (behind a proxy that adds a prefix, that path includes it).
+func stateCookiePath(cfg BFFConfig) string {
+	if u, err := url.Parse(cfg.Validator.cfg.RedirectURI); err == nil && strings.HasPrefix(u.Path, "/") {
+		return u.Path
+	}
+	return "/api/v1/auth/oidc/callback"
+}
+
+// stateCookieName names the cookie that binds one sign-in to the
+// browser that started it (review B8). Each sign-in gets its own name,
+// so two tabs signing in at once don't overwrite each other's cookie.
+// State is base64url, whose characters are all valid in a cookie name.
+func stateCookieName(state string) string {
+	if len(state) > 16 {
+		state = state[:16]
+	}
+	return "kitp_oidc_" + state
+}
 
 // BFFConfig wires the redirect handlers.
 type BFFConfig struct {
@@ -125,6 +157,12 @@ func handleStart(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 		redirectLogin(w, r, "could not start sign-in")
 		return
 	}
+	nonce, err := randomURLString(24)
+	if err != nil {
+		logRedirect(r, "oidc.start: rng_nonce", err)
+		redirectLogin(w, r, "could not start sign-in")
+		return
+	}
 	challenge := s256Challenge(verifier)
 
 	// Validate the caller-supplied deep link before it ever touches the
@@ -133,15 +171,34 @@ func handleStart(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 	// open-redirect can't be smuggled through the state row.
 	redirect := safeLocalRedirect(r.URL.Query().Get("redirect"))
 
-	_, err = cfg.Pool.Exec(r.Context(), `
-		INSERT INTO oidc_state (state, verifier, redirect, expires_at)
-		VALUES ($1, $2, $3, now() + $4 * INTERVAL '1 second')
-	`, state, verifier, redirect, int(cfg.StateTTL.Seconds()))
+	b := named.New()
+	b.Set("state", state)
+	b.Set("verifier", verifier)
+	b.Set("redirect", redirect)
+	b.Set("nonce", nonce)
+	b.Set("ttl", int(cfg.StateTTL.Seconds()))
+	sql, args, err := b.Compile(`
+		INSERT INTO oidc_state (state, verifier, redirect, nonce, expires_at)
+		VALUES (:state, :verifier, :redirect, :nonce, now() + :ttl * INTERVAL '1 second')`)
+	if err == nil {
+		_, err = cfg.Pool.Exec(r.Context(), sql, args...)
+	}
 	if err != nil {
 		logRedirect(r, "oidc.start: state_insert", err)
 		redirectLogin(w, r, "could not start sign-in")
 		return
 	}
+	// Lax: the callback is a top-level GET navigation from the OP's site,
+	// which Lax cookies ride; a cross-site subrequest or POST doesn't.
+	http.SetCookie(w, &http.Cookie{
+		Name:     stateCookieName(state),
+		Value:    state,
+		Path:     stateCookiePath(cfg),
+		MaxAge:   int(cfg.StateTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   !cfg.InsecureCookie,
+		SameSite: http.SameSiteLaxMode,
+	})
 
 	q := url.Values{}
 	q.Set("response_type", "code")
@@ -149,6 +206,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 	q.Set("redirect_uri", cfg.Validator.cfg.RedirectURI)
 	q.Set("scope", cfg.Validator.cfg.Scopes)
 	q.Set("state", state)
+	q.Set("nonce", nonce)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 	dest := authURL + "?" + q.Encode()
@@ -173,12 +231,31 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 		return
 	}
 
-	var verifier, redirect string
-	row := cfg.Pool.QueryRow(r.Context(), `
-		DELETE FROM oidc_state WHERE state = $1 AND expires_at > now()
-		RETURNING verifier, redirect
-	`, state)
-	if err := row.Scan(&verifier, &redirect); err != nil {
+	// The browser that started this sign-in holds a cookie with its state;
+	// one handed someone else's callback URL doesn't (review B8). The row
+	// stays, so the real browser can still finish.
+	c, err := r.Cookie(stateCookieName(state))
+	if err != nil || subtle.ConstantTimeCompare([]byte(c.Value), []byte(state)) != 1 {
+		redirectLogin(w, r, "this sign-in was started in another browser or tab; start again here")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: stateCookieName(state), Value: "", Path: stateCookiePath(cfg), MaxAge: -1,
+		HttpOnly: true, Secure: !cfg.InsecureCookie, SameSite: http.SameSiteLaxMode,
+	})
+
+	var verifier, redirect, nonce string
+	b := named.New()
+	b.Set("state", state)
+	sql, args, err := b.Compile(`
+		DELETE FROM oidc_state WHERE state = :state AND expires_at > now()
+		RETURNING verifier, redirect, nonce`)
+	if err != nil {
+		logRedirect(r, "oidc.callback: state_lookup", err)
+		redirectLogin(w, r, "could not complete sign-in")
+		return
+	}
+	if err := cfg.Pool.QueryRow(r.Context(), sql, args...).Scan(&verifier, &redirect, &nonce); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			redirectLogin(w, r, "state expired")
 			return
@@ -205,6 +282,24 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 		logRedirect(r, "oidc.callback: token_exchange", err)
 		redirectLogin(w, r, "could not complete sign-in")
 		return
+	}
+
+	// The id_token must answer this sign-in: its nonce is the one start
+	// sent. (A row from before migration 0022 has none; state alone then.)
+	if nonce != "" {
+		tok, err := cfg.Validator.parseAndVerify(r.Context(), idToken)
+		if err != nil {
+			logRedirect(r, "oidc.callback: token_validate", err)
+			redirectLogin(w, r, "could not complete sign-in")
+			return
+		}
+		claims, _ := tok.Claims.(jwt.MapClaims)
+		got, _ := claims["nonce"].(string)
+		if subtle.ConstantTimeCompare([]byte(got), []byte(nonce)) != 1 {
+			logRedirect(r, "oidc.callback: nonce", errors.New("id_token nonce doesn't match this sign-in"))
+			redirectLogin(w, r, "could not complete sign-in")
+			return
+		}
 	}
 
 	// Reuse Validator.Resolve to verify the id_token + upsert user.

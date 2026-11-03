@@ -98,16 +98,22 @@ func TestUserTokenCreateBatch_Happy(t *testing.T) {
 	if strings.ContainsAny(got.Token, "+/=") {
 		t.Errorf("token contains non-base64url chars: %q", got.Token)
 	}
-	// Verify row landed.
-	var n int
+	// Verify row landed, keyed by the token's hash (review B10): the
+	// token itself is nowhere in the table.
+	var n, raw int
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM user_token WHERE id = $1 AND user_id = $2 AND label = $3`,
-		got.Token, agent, "laptop",
-	).Scan(&n); err != nil {
+		`SELECT count(*) FILTER (WHERE id = $1 AND user_id = $3 AND label = $4),
+		        count(*) FILTER (WHERE id = $2)
+		 FROM user_token`,
+		auth.HashSecret(got.Token), got.Token, agent, "laptop",
+	).Scan(&n, &raw); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
 		t.Errorf("user_token row missing: count=%d", n)
+	}
+	if raw != 0 {
+		t.Error("the token itself is stored")
 	}
 }
 
