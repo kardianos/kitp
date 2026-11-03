@@ -64,7 +64,7 @@ import {
   type PhaseToggle,
 } from '../filter/screen-resolve.js';
 import { refAxesForCardType, type RefAxis, type CardTypeRow } from '../filter/vocabulary.js';
-import { schemaForCardType } from '../filter/attribute-schema.js';
+import { DERIVED_OPTION_SOURCES, derivedOptionTargets, schemaForCardType } from '../filter/attribute-schema.js';
 import { loadView, saveView } from '../filter/view-persistence.js';
 import { groupAxisForAttr, type GroupAttr } from '../filter/group-axis.js';
 import { icon, type IconName } from '../ui/icons.js';
@@ -747,6 +747,28 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     const axes = refAxesForCardType(defs, types, cardType);
     this.applyAxes(axes);
     this.loadAxisOptions(axes, types);
+    this.loadDerivedOptions(cardType);
+  }
+
+  /** Load the options of the card type's derived filter fields that come from
+   *  their own spec (DERIVED_OPTION_SOURCES: a watch list's are the viewer's
+   *  lists) into the same `screen.predicateOptions` map. */
+  private loadDerivedOptions(cardType: string): void {
+    for (const target of derivedOptionTargets(cardType)) {
+      const src = DERIVED_OPTION_SOURCES[target];
+      if (src === undefined) continue;
+      this.ctx.api.callByName(
+        src.spec,
+        src.input,
+        (out) => {
+          if (!this.isAlive()) return;
+          const node = this.ctx.tree.at(['screen', 'predicateOptions']);
+          const cur = (node.peek<Record<string, RefOption[]>>() ?? {}) as Record<string, RefOption[]>;
+          node.set({ ...cur, [target]: src.toOptions(out) });
+        },
+        { alive: () => this.isAlive() },
+      );
+    }
   }
 
   /**

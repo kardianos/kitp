@@ -56,7 +56,7 @@ type CardWhereTreeNode struct {
 	Children   []CardWhereTreeNode `json:"children,omitempty" mcp:"desc=child predicates when this node is a group"`
 
 	// Leaf fields.
-	Attr   string            `json:"attr,omitempty" mcp:"desc=attribute name (leaf shape); also a task's approval properties: approval_state (=, !=, in, not in over open|approved|rejected|none), approval_waiting_on (in, not in over person card ids, '@me' = you: an open approval request asks them and they haven't voted) and approval_asked_at (within_last_days)"`
+	Attr   string            `json:"attr,omitempty" mcp:"desc=attribute name (leaf shape); also a task's approval properties: approval_state (=, !=, in, not in over open|approved|rejected|none), approval_waiting_on (in, not in over person card ids, '@me' = you: an open approval request asks them and they haven't voted) and approval_asked_at (within_last_days); watch_list (in, not in over watch list ids, '@me' = any of your lists)"`
 	Op     string            `json:"op,omitempty" mcp:"desc=comparison operator (leaf shape)"`
 	Values []json.RawMessage `json:"values,omitempty" mcp:"desc=values for the leaf operator"`
 }
@@ -240,6 +240,8 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 	switch n.Attr {
 	case "approval_state", "approval_waiting_on":
 		return compileApprovalLeaf(n.Attr, op, n.Values, c)
+	case "watch_list":
+		return compileWatchLeaf(op, n.Values, c)
 	case "approval_asked_at":
 		if op != "within_last_days" {
 			return "", fmt.Errorf("approval_asked_at supports only within_last_days, got %q", n.Op)
@@ -604,6 +606,33 @@ func compileApprovalLeaf(attr, op string, vs []json.RawMessage, c *compileCtx) (
 		}
 	}
 	sql := fmt.Sprintf("approval_waiting_on(c.id, ARRAY[%s]::bigint[])", strings.Join(ph, ", "))
+	if negate {
+		sql = "NOT " + sql
+	}
+	return sql, nil
+}
+
+// compileWatchLeaf compiles "on a watch list" (docs/WATCH_LISTS.md): in /
+// not in over watch list ids, or a person id meaning any of that person's
+// lists — what "@me" resolves to for the viewer. A value that isn't an id
+// names nothing, so `in` matches nothing. Mirrors the watch_list block in
+// card_compile_predicate.sql.
+func compileWatchLeaf(op string, vs []json.RawMessage, c *compileCtx) (string, error) {
+	var negate bool
+	switch op {
+	case "=", "eq", "in":
+	case "!=", "ne", "not in":
+		negate = true
+	default:
+		return "", fmt.Errorf("watch_list supports in and not in, got %q", op)
+	}
+	var ph []string
+	for _, raw := range vs {
+		if id, ok := cardIDValue(raw); ok {
+			ph = append(ph, c.addArg(id)+"::bigint")
+		}
+	}
+	sql := fmt.Sprintf("watched_on(c.id, ARRAY[%s]::bigint[])", strings.Join(ph, ", "))
 	if negate {
 		sql = "NOT " + sql
 	}

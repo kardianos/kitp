@@ -903,10 +903,12 @@ export class PredicateFilter extends Control<PredicateFilterConfig> {
       // Person refs (assignee / originator) offer a dynamic "Me" that resolves
       // to the current viewer server-side (the `@me` token; see ME_REF_TOKEN).
       // It leads the list so "assignee == me" / "originator == me" is one click.
-      if (attr?.targetCardType !== 'person') return [];
+      // A field can name its own (a watch list's "Any of my lists").
+      const meLabel = attr?.meLabel ?? (attr?.targetCardType === 'person' ? 'Me' : undefined);
+      if (meLabel === undefined) return [];
       const me = document.createElement('option');
       me.value = ME_REF_TOKEN;
-      me.textContent = 'Me';
+      me.textContent = meLabel;
       me.dataset.predRefMe = '';
       if (selected.has(ME_REF_TOKEN)) me.selected = true;
       return [me];

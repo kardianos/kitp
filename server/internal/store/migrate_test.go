@@ -53,7 +53,7 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// 14 built-in card_types + the predicate_snippet card_type
 		// introduced for named filters + activity_subscription + link +
 		// approval + page + portal + theme + calendar = 22.
-		{`SELECT count(*) FROM card_type`, 22},
+		{`SELECT count(*) FROM card_type`, 23},
 		// +subscriber, +rollup_minutes (personal notifications),
 		// +link_url / link_kind / link_state (task links),
 		// +approval_from / approval_to / approval_action / approvers /
@@ -65,8 +65,8 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// +intake_mode / reply_quote (mail account settings),
 		// +past_days / future_days (calendar feeds), +relay_replies /
 		// email_attachments (mail account) and relay_of /
-		// attachments_left_off (message).
-		{`SELECT count(*) FROM attribute_def`, 97},
+		// attachments_left_off (message), +symbol (watch lists).
+		{`SELECT count(*) FROM attribute_def`, 98},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
 		// +7 on activity_subscription, +4 on link, +7 on approval,
 		// +bundle_key on project, +publishes_to on status, +5 on page,
@@ -74,8 +74,8 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// show in kitp) and +5 on theme, +2 on comm_channel (intake_mode,
 		// reply_quote), +5 on calendar, +2 on comm_channel (relay_replies,
 		// email_attachments) and +2 on reply_body (relay_of,
-		// attachments_left_off).
-		{`SELECT count(*) FROM edge`, 146},
+		// attachments_left_off), +4 on watch_list.
+		{`SELECT count(*) FROM edge`, 150},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -302,6 +302,10 @@ func TestForwardMigration0009ActivitySubscriptions(t *testing.T) {
 		`DELETE FROM edge WHERE card_type_id = (SELECT id FROM card_type WHERE name='calendar')
 		   AND attribute_def_id = (SELECT id FROM attribute_def WHERE name='subscriber')`,
 		`DELETE FROM schema_version WHERE name = '0024_calendars'`,
+		// So does watch_list (0026).
+		`DELETE FROM edge WHERE card_type_id = (SELECT id FROM card_type WHERE name='watch_list')
+		   AND attribute_def_id = (SELECT id FROM attribute_def WHERE name='subscriber')`,
+		`DELETE FROM schema_version WHERE name = '0026_watch_lists'`,
 		`DELETE FROM attribute_def WHERE name IN ('subscriber','rollup_minutes')`,
 		`DELETE FROM card_type WHERE name = 'activity_subscription'`,
 		`ALTER TABLE activity_sink_state DROP COLUMN pending_since`,
@@ -1027,9 +1031,9 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		// + 1 status + 2 tasks + 1 screen + 1 filter) = 30.
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM role`, 5},
-		{`SELECT count(*) FROM card_type`, 22},
-		{`SELECT count(*) FROM attribute_def`, 97},
-		{`SELECT count(*) FROM edge`, 146},
+		{`SELECT count(*) FROM card_type`, 23},
+		{`SELECT count(*) FROM attribute_def`, 98},
+		{`SELECT count(*) FROM edge`, 150},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -1090,7 +1094,7 @@ func TestApplySchemaIdempotent(t *testing.T) {
 		query string
 		want  int64
 	}{
-		{`SELECT count(*) FROM card_type`, 22},
+		{`SELECT count(*) FROM card_type`, 23},
 		// 21 seed cards + 9 test_demo cards = 30 (see TestApplySchemaWithTestDemo).
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM user_account`, 2},
@@ -1461,5 +1465,84 @@ func TestForwardMigration0025RelayAndEmailAttachments(t *testing.T) {
 	}
 	if edges != 4 {
 		t.Errorf("edges after 0025 = %d, want 4", edges)
+	}
+}
+
+// TestForwardMigration0026WatchLists: an install from before watch lists
+// gets the watch_list card_type, the symbol attribute_def, its edges and
+// the admin grants, to the fresh-seed shape.
+func TestForwardMigration0026WatchLists(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0026")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	counts := []string{
+		`SELECT count(*) FROM card_type`,
+		`SELECT count(*) FROM attribute_def`,
+		`SELECT count(*) FROM edge`,
+		`SELECT count(*) FROM role_grant`,
+	}
+	read := func() []int64 {
+		out := make([]int64, len(counts))
+		for i, q := range counts {
+			if err := pool.QueryRow(ctx, q).Scan(&out[i]); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		return out
+	}
+	fresh := read()
+	for _, stmt := range []string{
+		`DELETE FROM role_grant WHERE card_type_id = (SELECT id FROM card_type WHERE name='watch_list')`,
+		`DELETE FROM edge WHERE card_type_id = (SELECT id FROM card_type WHERE name='watch_list')`,
+		`DELETE FROM attribute_def WHERE name = 'symbol'`,
+		`DELETE FROM card_type WHERE name = 'watch_list'`,
+		`DELETE FROM schema_version WHERE name = '0026_watch_lists'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0026 (%s): %v", stmt, err)
+		}
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	if got := read(); fmt.Sprint(got) != fmt.Sprint(fresh) {
+		t.Errorf("after 0026: %v, want the fresh seed's %v", got, fresh)
+	}
+}
+
+// TestForwardMigration0027RoleRank: an install from before role ranks (the
+// column added by preDDL, every rank 0) gets the built-in ladder.
+func TestForwardMigration0027RoleRank(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0027")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	ladder := func() string {
+		var s string
+		if err := pool.QueryRow(ctx, `SELECT string_agg(name || '=' || rank, ',' ORDER BY rank, name) FROM role`).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	const want = "viewer=1,commenter=2,worker=3,manager=4,admin=5"
+	if got := ladder(); got != want {
+		t.Fatalf("fresh ranks = %s, want %s", got, want)
+	}
+	for _, stmt := range []string{
+		`UPDATE role SET rank = 0`,
+		`DELETE FROM schema_version WHERE name = '0027_role_rank'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0027 (%s): %v", stmt, err)
+		}
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	if got := ladder(); got != want {
+		t.Errorf("after 0027: %s, want %s", got, want)
 	}
 }

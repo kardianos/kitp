@@ -74,6 +74,7 @@ import {
   type ActivityPollOutput,
 } from './comment-specs.js';
 import type { AttachmentsSection } from './attachments-section.js';
+import type { WatchBar } from '../watch/watch-bar.js';
 import type { TagsEditor } from './tags-editor.js';
 import type { RelatedTasksPanel } from './related-tasks-panel.js';
 import type { PostChunk } from './upload.js';
@@ -286,6 +287,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
   private relatedSummaryHost!: HTMLElement;
   /** The mounted #36 controls (idempotent mount; refresh hooks). */
   private attachmentsSection: AttachmentsSection | null = null;
+  /** The corner's watch-list bookmarks (tasks and threads). */
+  private watchBar: WatchBar | null = null;
   private tagsEditor: TagsEditor | null = null;
   private relatedPanel: RelatedTasksPanel | null = null;
 
@@ -477,8 +480,8 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     refresh.type = 'button';
     refresh.className = 'task-detail__refresh task-detail__refresh--synced';
     refresh.dataset.taskRefresh = '';
-    refresh.title = 'Check for new links, comms & comments';
-    refresh.setAttribute('aria-label', 'Refresh links, comms and comments');
+    refresh.title = 'Check for new links, comms, attachments & comments';
+    refresh.setAttribute('aria-label', 'Refresh links, comms, attachments and comments');
     refresh.append(icon('refresh-cw', 14), document.createTextNode(' Refresh'));
     this.listen(refresh, 'click', () => this.refreshFeeds());
     this.refreshBtn = refresh;
@@ -497,7 +500,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
     actions.style.display = 'none';
     this.listen(actions, 'click', () => this.toggleActionsMenu(actions));
 
-    navRight.append(idLine, statusBadge, refresh, actions);
+    // The viewer's watch lists, to bookmark this card (docs/WATCH_LISTS.md):
+    // tasks and threads, by the detail profile.
+    const watchHost = document.createElement('div');
+    watchHost.className = 'task-detail__watch';
+    if (this.profile.watch === true && this.taskId !== null) {
+      this.watchBar = this.spawn('WatchBar', { type: 'WatchBar', cardId: this.taskId.toString() }, watchHost) as WatchBar;
+    }
+    navRight.append(watchHost, idLine, statusBadge, refresh, actions);
     navRow.append(back, navRight);
     header.append(navRow);
 
@@ -1111,12 +1121,14 @@ export class TaskDetail extends Control<TaskDetailConfig> {
    * edit; the TaskDetail also tells it to {@link TaskComments.reload} after a
    * status transition / attribute edit so those rows appear.
    */
-  /** Re-fetch the links, comm threads + the comments/activity feed — the
-   *  header "Refresh" button. Each child control owns its own reload()
+  /** Re-fetch the links, comm threads, attachments, watch lists + the
+   *  comments/activity feed — the header "Refresh" button. Each child control owns its own reload()
    *  (re-query + repaint); null-safe before the task has loaded. Also re-seeds
    *  the poll baseline so the "new content" indicator clears back to synced. */
   private refreshFeeds(): void {
     this.pagePublications?.reload();
+    this.attachmentsSection?.reload();
+    this.watchBar?.reload();
     this.taskLinks?.reload();
     this.taskApprovals?.reload();
     this.commThreads?.reload();

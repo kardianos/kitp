@@ -250,6 +250,26 @@ test('person card_ref offers a dynamic "Me" option; picking it lands the @me tok
   );
 });
 
+test('a field can name its own "Me": the watch list field leads its options with "Any of my lists"', () => {
+  const { ctx, tree } = literalCtx();
+  const schema = [M.DERIVED_FILTER_FIELDS.task.find((f) => f.name === 'watch_list')];
+  tree.at(['screen', 'filterOptions']).set({ watch_list: [{ value: '10', label: '★ Stars' }] });
+  const c = mount(
+    { type: 'PredicateFilter', valuePath: 'screen.filter', schema, optionsPath: 'screen.filterOptions' },
+    ctx,
+  );
+  c.el.querySelector('[data-pred-add-leaf]').dispatchEvent({ type: 'click' });
+  M.flushSync?.();
+  setSelect(c.el.querySelector('[data-pred-attr]'), 'watch_list');
+  setSelect(c.el.querySelector('[data-pred-op]'), 'in');
+  const ref = c.el.querySelector('[data-pred-ref]');
+  const me = ref.querySelector('[data-pred-ref-me]');
+  assert.ok(me, 'the watch list field leads with its own Me');
+  assert.equal(me.textContent, 'Any of my lists');
+  assert.equal(me.value, '@me');
+  assert.ok([...ref.children].some((o) => o.value === '10' && o.textContent === '★ Stars'), 'then my lists');
+});
+
 test('text leaf: typing a value lands a contains predicate', () => {
   const { ctx } = literalCtx();
   const c = mount(
@@ -464,7 +484,7 @@ test('{ cardType } schema sources attributes from attribute_def.select', async (
   // synthetic every-card timestamps (last_activity_at / created_at).
   assert.deepEqual(
     names,
-    ['title', 'milestone_ref', 'approval_state', 'approval_waiting_on', 'approval_asked_at', 'last_activity_at', 'created_at'],
+    ['title', 'milestone_ref', 'approval_state', 'approval_waiting_on', 'approval_asked_at', 'watch_list', 'last_activity_at', 'created_at'],
     'sourced attrs + derived fields + top-level timestamps',
   );
 });

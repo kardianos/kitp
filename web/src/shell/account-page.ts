@@ -14,6 +14,7 @@ import { AUTH_USER_PATH, type AuthUser } from '../auth/auth-state.js';
 import { masterDetailScreen } from '../admin/master-detail.js';
 import { MY_SUBSCRIPTIONS_SCREEN } from '../notifications/subscription-screen.js';
 import { logout } from './logout.js';
+import { navigate, plainClick } from './router.js';
 
 export interface AccountPageConfig extends BaseControlConfig {
   type: 'AccountPage';
@@ -64,10 +65,33 @@ export class AccountPage extends Control<AccountPageConfig> {
 
     const notifications = this.buildNotifications();
     const calendars = this.buildCalendars();
-    this.el.append(h1, card, logoutBtn, notifications.section, calendars.section);
+    this.el.append(h1, card, logoutBtn, notifications.section, this.buildWatchLists(), calendars.section);
     // Spawn once the host is in the page (the list's virtual window measures it).
     this.spawn('MasterDetail', masterDetailScreen(MY_SUBSCRIPTIONS_SCREEN), notifications.host);
     this.spawn('AccountCalendars', { type: 'AccountCalendars' }, calendars.host);
+  }
+
+  /** The Watch lists section: what they are, and the way to their screen
+   *  (docs/WATCH_LISTS.md). */
+  private buildWatchLists(): HTMLElement {
+    const section = document.createElement('section');
+    section.className = 'account-page__section';
+    section.dataset.accountWatchLists = '';
+    const h2 = document.createElement('h2');
+    h2.className = 'account-page__subtitle';
+    h2.textContent = 'Watch lists';
+    const intro = document.createElement('p');
+    intro.className = 'account-page__intro muted';
+    intro.textContent =
+      'Your own bookmark lists of tasks and threads — Stars to begin with. Click a list’s symbol in the corner of a task or thread to put it on the list; filter any screen on “On my watch list”.';
+    const link = document.createElement('a');
+    link.className = 'btn';
+    link.dataset.accountWatchLink = '';
+    link.href = '/watch-lists';
+    link.textContent = 'Open Watch lists';
+    this.listen(link, 'click', plainClick(() => navigate('/watch-lists')));
+    section.append(h2, intro, link);
+    return section;
   }
 
   /** The Calendars section: your due dates as calendar feeds

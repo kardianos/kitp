@@ -1149,6 +1149,56 @@ JOIN card_type ct ON ct.name = v.ct
 JOIN attribute_def ad ON ad.name = v.attr
 ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
 	},
+	{
+		// Watch lists (docs/WATCH_LISTS.md): an account's bookmark lists of
+		// tasks and threads. The watch_list card_type (global, owned through
+		// subscriber), its symbol attribute_def, its four edges and the
+		// admin card.* grant reach fresh installs through the seed; this adds
+		// them to existing ones. The watch_entry table is DDL. Each account's
+		// Stars list is made the first time it lists its watch lists.
+		// Idempotent — ON CONFLICT DO NOTHING throughout.
+		id: "0026_watch_lists",
+		sql: `
+DO $$
+DECLARE
+  _wl bigint;
+BEGIN
+  INSERT INTO card_type (name, parent_card_type_id, allow_self_parent, is_built_in, uses_phase)
+  VALUES ('watch_list', NULL, false, true, false)
+  ON CONFLICT (name) DO NOTHING;
+  SELECT id INTO _wl FROM card_type WHERE name = 'watch_list';
+
+  INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+  VALUES ('symbol', 'text', NULL, true, false)
+  ON CONFLICT (name) DO NOTHING;
+
+  INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+  SELECT _wl, ad.id, e.req, e.ord
+  FROM (VALUES ('title', true, 0), ('subscriber', true, 1), ('symbol', false, 2),
+               ('description', false, 3)) AS e(attr, req, ord)
+  JOIN attribute_def ad ON ad.name = e.attr
+  ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;
+
+  INSERT INTO role_grant (role_id, card_type_id, process_id)
+  SELECT r.id, _wl, p.id
+  FROM role r CROSS JOIN process p
+  WHERE r.name = 'admin'
+    AND p.name IN ('card.create', 'card.update', 'card.delete', 'comment.post', 'user_card_sort.set')
+  ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
+END $$;`,
+	},
+	{
+		// Role ranks (role_covers): the built-in roles' grants nest, viewer <
+		// commenter < worker < manager < admin, so an agent may use a role its
+		// owner holds or ranks above — an admin-only owner's agent can work as
+		// a worker. preDDL added the column (default 0); this sets the ranks
+		// of the built-in roles on an existing install. Idempotent.
+		id: "0027_role_rank",
+		sql: `
+UPDATE role r SET rank = v.rank
+FROM (VALUES ('viewer', 1), ('commenter', 2), ('worker', 3), ('manager', 4), ('admin', 5)) AS v(name, rank)
+WHERE r.name = v.name AND r.rank <> v.rank;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that
@@ -1157,8 +1207,11 @@ ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
 // IF EXISTS / IF NOT EXISTS so it's a no-op on both fresh and migrated DBs.
 // comm_log.route_id is the inbound route an event came through, indexed for
 // the Comm log's route filter (docs/MAIL_INTAKE_AND_CALENDARS.md).
+// role.rank orders the built-in roles for role_covers, which
+// user_role_effective (a SQL function, checked when it is created) reads.
 const preDDL = `ALTER TABLE IF EXISTS attribute_value ADD COLUMN IF NOT EXISTS value_type_id int;
-ALTER TABLE IF EXISTS comm_log ADD COLUMN IF NOT EXISTS route_id bigint;`
+ALTER TABLE IF EXISTS comm_log ADD COLUMN IF NOT EXISTS route_id bigint;
+ALTER TABLE IF EXISTS role ADD COLUMN IF NOT EXISTS rank int NOT NULL DEFAULT 0;`
 
 // ledgerDDL creates the schema-version ledger. Kept here (not in the generated
 // schema) because it must exist before the generated DDL/seed is gated on it.

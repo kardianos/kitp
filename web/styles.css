@@ -11310,3 +11310,285 @@ textarea.task-comms__form-input {
   text-decoration: underline;
   cursor: pointer;
 }
+
+/* ---------------------------------------------------------------------------
+   Watch lists (docs/WATCH_LISTS.md). The bookmarks in a task's or thread's
+   corner: one symbol per list; hovering or focusing one slides its name out.
+   Lit (full colour, a soft accent ring) when the card is on that list.
+   --------------------------------------------------------------------------- */
+.task-detail__watch {
+  display: inline-flex;
+  align-items: center;
+}
+.watch-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.watch-bar__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: none;
+  font: inherit;
+  font-size: var(--text-xs);
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.45;
+  filter: grayscale(1);
+  transition: opacity 120ms ease, filter 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+.watch-bar__item:hover,
+.watch-bar__item:focus-visible {
+  opacity: 1;
+  filter: none;
+  background: var(--color-surface-sunken);
+  border-color: var(--color-hairline);
+}
+.watch-bar__item--on {
+  opacity: 1;
+  filter: none;
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent-ring);
+}
+.watch-bar__symbol {
+  font-size: 15px;
+  line-height: 1;
+}
+/* The name slides out from behind the symbol. */
+.watch-bar__name {
+  display: inline-block;
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  transition: max-width 180ms ease, opacity 140ms ease, margin-left 180ms ease;
+}
+.watch-bar__item:hover .watch-bar__name,
+.watch-bar__item:focus-visible .watch-bar__name {
+  max-width: 12rem;
+  opacity: 1;
+  margin-left: 4px;
+}
+.watch-bar__manage {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 26px;
+  color: var(--color-muted);
+  text-decoration: none;
+  opacity: 0.6;
+}
+.watch-bar__manage:hover {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .watch-bar__item,
+  .watch-bar__name {
+    transition: none;
+  }
+}
+
+/* The Watch lists screen: lists on the left, the picked one on the right. */
+.watch-lists {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  padding: var(--space-4, 16px);
+  max-width: 72rem;
+}
+.watch-lists__title {
+  margin: 0;
+}
+.watch-lists__hint {
+  margin: var(--space-1x) 0 0;
+  max-width: 48rem;
+}
+.watch-lists__link {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-accent);
+  cursor: pointer;
+}
+.watch-lists__body {
+  display: grid;
+  grid-template-columns: minmax(12rem, 16rem) 1fr;
+  gap: var(--space-4, 16px);
+  align-items: start;
+}
+.watch-lists__lists {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}
+.watch-lists__list-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.watch-lists__list {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  width: 100%;
+  padding: var(--space-1x) var(--space-2, 8px);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.watch-lists__list:hover {
+  background: var(--color-surface-sunken);
+}
+.watch-lists__list[aria-current='true'] {
+  background: var(--color-accent-soft);
+  border-color: var(--color-hairline);
+}
+.watch-lists__symbol {
+  font-size: 16px;
+  width: 1.5em;
+  text-align: center;
+}
+.watch-lists__name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.watch-lists__add {
+  align-self: flex-start;
+}
+.watch-lists__detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  min-width: 0;
+}
+.watch-lists__form {
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  gap: var(--space-2, 8px) var(--space-3, 12px);
+  align-items: start;
+  padding: var(--space-3, 12px);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+}
+.watch-lists__field {
+  display: contents;
+}
+.watch-lists__label {
+  padding-top: 6px;
+}
+.watch-lists__caption {
+  grid-column: 2;
+  margin-top: -4px;
+  font-size: var(--text-2xs);
+}
+.watch-lists__symbol-input {
+  width: 5rem;
+  font-size: 18px;
+  text-align: center;
+}
+.watch-lists__error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--color-danger);
+}
+.watch-lists__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+}
+.watch-lists__items-title {
+  margin: 0;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.watch-lists__items {
+  position: relative;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+}
+.watch-lists__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: var(--space-1x) var(--space-2, 8px);
+  border-top: 1px solid var(--color-hairline);
+}
+.watch-lists__item:first-child {
+  border-top: 0;
+}
+.watch-lists__drag {
+  cursor: grab;
+  display: inline-flex;
+  opacity: 0.5;
+}
+.watch-lists__drag:hover {
+  opacity: 1;
+}
+.watch-lists__item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.watch-lists__kind,
+.watch-lists__project {
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+.watch-lists__status {
+  font-size: var(--text-2xs);
+  padding: 0 var(--space-1x);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-sunken);
+  white-space: nowrap;
+}
+.watch-lists__status[data-phase='terminal'] {
+  opacity: 0.6;
+}
+.watch-lists__step,
+.watch-lists__remove {
+  border: 0;
+  background: none;
+  padding: 2px;
+  font: inherit;
+  font-size: var(--text-2xs);
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.6;
+}
+.watch-lists__step:hover,
+.watch-lists__remove:hover {
+  opacity: 1;
+}
+.watch-lists__remove {
+  color: var(--color-accent);
+}
+@media (max-width: 720px) {
+  .watch-lists__body {
+    grid-template-columns: 1fr;
+  }
+}

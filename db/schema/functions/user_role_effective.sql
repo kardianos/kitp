@@ -1,12 +1,14 @@
 -- user_role_effective — the role rows a user can use (docs: admin_agents.md).
 --
 -- A person's are their own user_role rows. An agent's (a user with a
--- parent_user_id) are its own rows that its owner also holds: the same
--- role, at the same scope or workspace-wide. An agent starts with nothing,
--- is granted roles explicitly, and uses one only while its owner holds it
--- there, so it never sees or does more than its owner: not through a row
--- granted before user_role.set enforced that, nor after the owner loses
--- the role.
+-- parent_user_id) are its own rows that its owner covers: the same role or
+-- one ranked above it (role_covers: viewer < commenter < worker < manager <
+-- admin), at the same scope or workspace-wide. An agent starts with
+-- nothing, is granted roles explicitly, and uses one only while its owner
+-- covers it there, so it never sees or does more than its owner: not
+-- through a row granted before user_role.set enforced that, nor after the
+-- owner loses the role. An owner with admin alone covers an agent's worker
+-- role, since admin's grants contain worker's.
 --
 -- Every role check reads this — card visibility (VisibilityClause,
 -- card_visible_to, user_sees_project and the handlers' inline copies), the
@@ -24,6 +26,6 @@ LANGUAGE sql STABLE AS $$
       AND (u.parent_user_id IS NULL
            OR EXISTS (SELECT 1 FROM user_role pr
                       WHERE pr.user_id = u.parent_user_id
-                        AND pr.role_id = ur.role_id
+                        AND role_covers(pr.role_id, ur.role_id)
                         AND (pr.scope_card_id IS NULL OR pr.scope_card_id = ur.scope_card_id)))
 $$;

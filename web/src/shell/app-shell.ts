@@ -603,6 +603,9 @@ export class AppShell extends Control<AppShellConfig> {
     // Agents screen under the ADMIN rail section.
     const agentsBtn = menuLink('My Agents', '/agents');
     agentsBtn.dataset.userMenuAgents = '';
+    // Watch lists — the account's own bookmark lists (docs/WATCH_LISTS.md).
+    const watchBtn = menuLink('Watch lists', '/watch-lists');
+    watchBtn.dataset.userMenuWatch = '';
     const logoutBtn = document.createElement('button');
     logoutBtn.type = 'button';
     logoutBtn.className = 'shell__user-menu-item';
@@ -612,7 +615,7 @@ export class AppShell extends Control<AppShellConfig> {
       setMenuOpen(false);
       logout();
     });
-    menu.append(accountBtn, agentsBtn, logoutBtn);
+    menu.append(accountBtn, watchBtn, agentsBtn, logoutBtn);
 
     this.listen(chip, 'click', () => setMenuOpen(menu.style.display === 'none'));
     // Dismiss on outside-click / Esc (document-tier; cleaned up on destroy).
@@ -1316,6 +1319,11 @@ export class AppShell extends Control<AppShellConfig> {
         // The signed-in user's read-only profile (rail user-menu → Account).
         this.setCrumb('Account');
         return this.spawn('AccountPage', { type: 'AccountPage' } as ChildConfig, outlet);
+      }
+      case 'watch_lists': {
+        // The account's watch lists (rail user-menu → Watch lists).
+        this.setCrumb('Watch lists');
+        return this.spawn('WatchLists', { type: 'WatchLists' } as ChildConfig, outlet);
       }
       case 'agents': {
         // Per-user "My Agents" (rail user-menu → /agents): the owner-scoped

@@ -53,6 +53,7 @@ export type RouteName =
   | 'site'
   | 'activity'
   | 'account'
+  | 'watch_lists'
   | 'agents'
   | 'admin'
   | 'notfound';
@@ -102,6 +103,9 @@ const ROUTES: readonly RoutePattern[] = [
   { pattern: '/site/:id', name: 'site', guard: 'requireAuth' },
   { pattern: '/activity', name: 'activity', guard: 'requireAuth' },
   { pattern: '/account', name: 'account', guard: 'requireAuth' },
+  // The account's watch lists (docs/WATCH_LISTS.md): every signed-in user
+  // keeps their own.
+  { pattern: '/watch-lists', name: 'watch_lists', guard: 'requireAuth' },
   // Per-user "My Agents" — every signed-in user manages their OWN agents, so
   // requireAuth (NOT requireAdmin). The admin-wide Agents screen stays under
   // /admin/agents.
@@ -130,6 +134,7 @@ export function activityUrl(): string {
  *   - task                  → `task_detail`
  *   - admin/:key            → `admin.<key>`
  *   - account               → `account`
+ *   - watch-lists           → `watch_lists`
  *   - project/:id/screen/:slug → `layout.<layout>`
  *   - project/:id (default board) → `layout.kanban`
  * null when there's no authored topic (the all-projects landing / not-found),
@@ -148,6 +153,8 @@ export function helpTopicForRoute(route: RouteMatch): string | null {
     // Profile, notifications and calendars (help/content/account.md).
     case 'account':
       return 'account';
+    case 'watch_lists':
+      return 'watch_lists';
     // screen / project: the topic is `layout.<resolved layout>`, but the layout
     // is known only once the screen card resolves — the caller (main.ts) reads
     // the ScreenHost-published `screen.layout` leaf for these routes. Returning

@@ -79,6 +79,9 @@ export interface DetailProfile {
   /** The COMMS section shows this card as the one thread (a thread's own
    *  page) instead of listing its threads. */
   commsSelf?: boolean;
+  /** The header's corner shows the viewer's watch lists, to bookmark the
+   *  card on them (docs/WATCH_LISTS.md): tasks and threads. */
+  watch?: boolean;
 }
 
 const TASK_PROFILE: DetailProfile = {
@@ -93,6 +96,7 @@ const TASK_PROFILE: DetailProfile = {
   skipAttrs: [],
   showAttrs: [],
   commRedirect: true,
+  watch: true,
 };
 
 export const DETAIL_PROFILES: Readonly<Record<string, DetailProfile>> = {
@@ -132,6 +136,7 @@ export const DETAIL_PROFILES: Readonly<Record<string, DetailProfile>> = {
     commRedirect: false,
     parentRoute: { cardType: 'task', route: 'task' },
     commsSelf: true,
+    watch: true,
   },
 };
 

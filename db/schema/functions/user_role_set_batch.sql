@@ -7,8 +7,9 @@
 --      (the legacy Go path would have failed the inner JOIN; we attribute
 --      it to the row instead).
 --   3. An agent (a user with a parent_user_id) can only be given a role
---      its owner holds at that scope or workspace-wide ('forbidden'),
---      whoever grants it (docs: admin_agents.md, "parent-grants-subset").
+--      its owner covers at that scope or workspace-wide — the same role or
+--      one ranked above it (role_covers) — ('forbidden'), whoever grants
+--      it (docs: admin_agents.md, "parent-grants-subset").
 --      user_role_effective applies the same rule when roles are used, so
 --      a row the owner later stops covering does nothing.
 --   4. Upsert against the right partial unique index:
@@ -79,12 +80,12 @@ BEGIN
         SELECT parent_user_id INTO _owner FROM user_account WHERE id = _user_id;
         IF _owner IS NOT NULL AND NOT EXISTS (
             SELECT 1 FROM user_role pr
-            WHERE pr.user_id = _owner AND pr.role_id = _role_id
+            WHERE pr.user_id = _owner AND role_covers(pr.role_id, _role_id)
               AND (pr.scope_card_id IS NULL OR pr.scope_card_id = _scope)) THEN
             RETURN QUERY SELECT _idx, false, 'forbidden'::text,
                 CASE WHEN _scope IS NULL
-                     THEN format('user_role.set: an agent can only hold a role its owner holds; its owner has no workspace-wide %s role', _role_name)
-                     ELSE format('user_role.set: an agent can only hold a role its owner holds; its owner has no %s role on project %s', _role_name, _scope)
+                     THEN format('user_role.set: an agent can only hold a role its owner holds or ranks above; its owner has no workspace-wide %s role or higher', _role_name)
+                     ELSE format('user_role.set: an agent can only hold a role its owner holds or ranks above; its owner has no %s role or higher on project %s', _role_name, _scope)
                 END,
                 NULL::jsonb;
             CONTINUE;

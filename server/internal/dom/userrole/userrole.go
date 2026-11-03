@@ -69,7 +69,7 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "user_role",
 		Action:       "set",
-		Doc:          "Grant a role to a user, optionally scoped to a project. Admin-only EXCEPT when the target is an agent — then the agent's parent_user_id may also grant any non-admin role they hold themselves. Coalesces N inputs into one upsert statement.",
+		Doc:          "Grant a role to a user, optionally scoped to a project. Admin-only EXCEPT when the target is an agent — then the agent's parent_user_id may also grant it. Whoever grants, an agent only gets a role its owner holds or ranks above (viewer < commenter < worker < manager < admin), at that scope or workspace-wide. Coalesces N inputs into one upsert statement.",
 		InputType:    reflect.TypeFor[SetInput](),
 		OutputType:   reflect.TypeFor[SetOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
@@ -155,10 +155,11 @@ func authzAdmin(ctx context.Context) error {
 //     cannot escalate themselves or their siblings).
 //  2. If the target is an agent AND the actor is that agent's
 //     parent_user_id, the actor may grant. Whoever grants, an agent can
-//     only be given a role its owner holds at that scope or workspace-
-//     wide (user_role_set_batch refuses the rest), and it uses a role
-//     only while the owner still holds it there (user_role_effective,
-//     read by every role check).
+//     only be given a role its owner covers — holds, or ranks above
+//     (role_covers) — at that scope or workspace-wide
+//     (user_role_set_batch refuses the rest), and it uses a role only
+//     while the owner still covers it there (user_role_effective, read by
+//     every role check).
 //  3. Otherwise, fall back to `authzAdmin`.
 func authzSet(ctx context.Context, in any) error {
 	row, ok := in.(SetInput)

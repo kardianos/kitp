@@ -27,6 +27,7 @@
 import type { AttributeDefRow } from '../admin/specs.js';
 import { LINK_KINDS, LINK_STATES } from '../task-detail/link-specs.js';
 import { type Op, type ValueType, opsForValueType } from './predicate.js';
+import { watchListOptions } from '../watch/specs.js';
 
 /* -------------------------------------------------------------------------- */
 /* AttrSchema                                                                 */
@@ -62,6 +63,10 @@ export interface AttrSchema {
   ops?: readonly Op[];
   /** False for a field the Sort-by picker must not offer. */
   sortable?: boolean;
+  /** For a card_ref field: the label of the per-viewer `@me` option that
+   *  leads its picker ("Me" for a person; "Any of my lists" for a watch
+   *  list). Person fields get "Me" without saying so. */
+  meLabel?: string;
 }
 
 /**
@@ -183,7 +188,20 @@ export const TOP_LEVEL_TIMESTAMP_FIELDS: readonly AttrSchema[] = [
  *                          haven't voted ("Me" = the viewer)
  *   - approval_asked_at    when the oldest open request was made
  */
+/** "On my watch list" (docs/WATCH_LISTS.md): `@me` = any of the viewer's
+ *  lists, or particular lists of theirs. Tasks and threads. */
+const WATCH_LIST_FIELD: AttrSchema = {
+  name: 'watch_list',
+  label: 'On my watch list',
+  valueType: 'card_ref[]',
+  targetCardType: 'watch_list',
+  ops: ['in', 'notIn'],
+  sortable: false,
+  meLabel: 'Any of my lists',
+};
+
 export const DERIVED_FILTER_FIELDS: Readonly<Record<string, readonly AttrSchema[]>> = {
+  comm: [WATCH_LIST_FIELD],
   task: [
     {
       name: 'approval_state',
@@ -206,8 +224,32 @@ export const DERIVED_FILTER_FIELDS: Readonly<Record<string, readonly AttrSchema[
       sortable: false,
     },
     { name: 'approval_asked_at', label: 'Approval asked', valueType: 'timestamp' },
+    WATCH_LIST_FIELD,
   ],
 };
+
+/**
+ * Where a derived field's picker options come from, by its target card type,
+ * when they aren't "every card of that type" (what the filter bar loads for
+ * an attribute's target): a spec and how to turn its output into options.
+ * A watch list's are the viewer's own lists.
+ */
+export const DERIVED_OPTION_SOURCES: Readonly<
+  Record<string, { spec: string; input: Record<string, unknown>; toOptions: (out: unknown) => Array<{ value: string; label: string }> }>
+> = {
+  watch_list: { spec: 'watch_list.list', input: {}, toOptions: watchListOptions },
+};
+
+/** The derived fields of [cardTypeName] whose options load from
+ *  {@link DERIVED_OPTION_SOURCES}, by target card type. */
+export function derivedOptionTargets(cardTypeName: string): string[] {
+  const out: string[] = [];
+  for (const f of DERIVED_FILTER_FIELDS[cardTypeName] ?? []) {
+    const t = f.targetCardType;
+    if (t !== undefined && DERIVED_OPTION_SOURCES[t] !== undefined && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
 
 /** Whether [name] is a top-level field (a card timestamp or a derived field)
  *  rather than an attribute — what `card.select_with_attributes` orders by

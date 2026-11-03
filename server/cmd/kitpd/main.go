@@ -129,6 +129,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/usercardsort"
 	"github.com/kitp/kitp/server/internal/dom/userrole"
 	"github.com/kitp/kitp/server/internal/dom/usertoken"
+	"github.com/kitp/kitp/server/internal/dom/watch"
 	"github.com/kitp/kitp/server/internal/job"
 	"github.com/kitp/kitp/server/internal/mcp"
 	"github.com/kitp/kitp/server/internal/netx"
@@ -212,6 +213,7 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage, mailStatus *mailin
 	// Calendar feeds (calendar.*, calendar_url.*); the .ics route is
 	// mounted in runHTTP.
 	calendar.Register(pool)
+	watch.Register(pool)
 	domarea.Register(pool)
 	tag.Register(pool)
 	process.Register(pool)

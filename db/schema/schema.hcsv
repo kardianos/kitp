@@ -84,17 +84,18 @@ created_at, timestamptz, false, now(), ,
 name, columns
 user_card_agent_agent_user_id, "agent_user_id"
 
-## table role | doc="Application role. user_role assigns these to user_account rows; role_grant lists what (card_type, process) pairs each role may invoke."
+## table role | doc="Application role. user_role assigns these to user_account rows; role_grant lists what (card_type, process) pairs each role may invoke. rank orders the built-in roles, each of whose grants contains the ones below it: viewer 1 < commenter 2 < worker 3 < manager 4 < admin 5 (0 = unranked, covers only itself). An agent may use a role its owner holds or ranks above (role_covers)."
 
 ### meta
 name_column
 name
 
 ### columns
-name, type, pk, unique, nullable
-id, bigserial, true, , 
-name, text, , true, false
-doc, text, , , 
+name, type, pk, unique, nullable, default
+id, bigserial, true, , ,
+name, text, , true, false,
+doc, text, , , ,
+rank, int, , , false, 0
 
 ## table role_mapping | doc="OIDC group claim → role mapping."
 
@@ -275,6 +276,20 @@ name, type, nullable, default
 user_id, bigint, false, 
 key, text, false, 
 claimed_at, timestamptz, false, now()
+
+## table watch_entry | doc="What is on a watch list (docs/WATCH_LISTS.md): one row per task or thread on one of an account's watch_list cards, in the list's own order (sort_order, a fractional key the client computes between neighbours on a drag, as user_card_sort does; a new entry goes below the lowest, i.e. to the top). Bookmarks are the account's, not the card's history: no activity rows. The card_id index backs the watch_list filter leaf (watched_on)." | primary_key="watch_list_id, card_id"
+
+### columns
+name, type, nullable, default, references, on_delete
+watch_list_id, bigint, false, , card.id, cascade
+card_id, bigint, false, , card.id, cascade
+sort_order, double precision, false, 0, ,
+created_at, timestamptz, false, now(), ,
+
+### indexes
+name, columns
+watch_entry_card, "card_id"
+watch_entry_list_order, "watch_list_id, sort_order"
 
 ## table user_card_sort | doc="Per-user inbox ordering. Separate axis from the shared attribute_value.sort_order on the kanban." | primary_key="user_id, card_id"
 
@@ -683,7 +698,8 @@ idx_theme_file_cas, "cas_address"
 ## function attribute_value_set_type_id | doc="BEFORE INSERT trigger on attribute_value: sets value_type_id from the def's value_type via av_value_type_id. value_type is immutable per def and attribute_def_id never changes, so set-on-insert keeps the denormalized class correct with no re-sync. The body also declares the trigger; DROP TRIGGER IF EXISTS + CREATE TRIGGER re-apply it each boot." | path="functions/attribute_value_set_type_id.sql" | arg_types=""
 ## function card_ancestors | doc="Shared capped parent_card_id walk (A1 / BE-C1 / SEC-1). Returns the ancestor chain of a card (inclusive) with a 0-based depth column; the recursive arm carries WHERE depth < 16 so a parent cycle can't pin a connection. The single source of the depth cap (A15d)." | path="functions/card_ancestors.sql" | arg_types="bigint"
 ## function card_enclosing_project | doc="Resolve a card's enclosing project (first card_type='project' ancestor within the depth cap) via card_ancestors. Canonical card→project resolver (A10 / BE-M3); declared after card_ancestors because its SQL body references it at create time." | path="functions/card_enclosing_project.sql" | arg_types="bigint"
-## function user_role_effective | doc="The role rows a user can use: a person's own user_role rows; an agent's own rows that its owner also holds (the same role, at that scope or workspace-wide). Every role check reads it, so an agent never exceeds its owner. Declared before the SQL functions that call it." | path="functions/user_role_effective.sql" | arg_types="bigint"
+## function role_covers | doc="Whether holding one role covers another: the same role, or a built-in role ranked at or above it (viewer < commenter < worker < manager < admin; role.rank). Declared before user_role_effective, which calls it." | path="functions/role_covers.sql" | arg_types="bigint, bigint"
+## function user_role_effective | doc="The role rows a user can use: a person's own user_role rows; an agent's own rows that its owner covers (role_covers: the same role or a higher one, at that scope or workspace-wide). Every role check reads it, so an agent never exceeds its owner. Declared before the SQL functions that call it." | path="functions/user_role_effective.sql" | arg_types="bigint"
 ## function user_role_visible | doc="The role rows that decide what a user can see (DI-6): a person's own; an agent's owner's — an agent sees exactly what its owner sees. What a user can do reads user_role_effective." | path="functions/user_role_visible.sql" | arg_types="bigint"
 ## function user_is_global_admin | doc="Whether a user holds admin workspace-wide, by user_role_effective. The one admin check behind admin-only handlers and the role gate." | path="functions/user_is_global_admin.sql" | arg_types="bigint"
 ## function card_in_off_area | doc="Areas: true when a card, or a card above it, has an item type of an area that is switched off (in the card's project, or workspace-wide). Such a card is hidden from every read and refused for writes. Fast path when nothing is off. See docs/AREAS.md." | path="functions/card_in_off_area.sql" | arg_types="bigint"
@@ -800,6 +816,15 @@ idx_theme_file_cas, "cas_address"
 ## function comm_route_create_batch | doc="comm_route.create — admin: add a POST (raw / mailgun / postmark) or SMTP route to a mail account; returns the secret token once." | path="functions/comm_route_create_batch.sql"
 ## function comm_route_update_batch | doc="comm_route.update — admin: change a route's comment, filters or Mailgun signing key." | path="functions/comm_route_update_batch.sql"
 ## function comm_route_delete_batch | doc="comm_route.delete — admin: remove a route; its URL / address stops working at once." | path="functions/comm_route_delete_batch.sql"
+## function watch_owner | doc="The person card whose watch lists an account uses: its linked person, or an agent's owner's. NULL when none." | path="functions/watch_owner.sql" | arg_types="bigint"
+## function watch_list_owned_by | doc="Whether a live watch list belongs to the account (subscriber = watch_owner). No admin exception: lists are each account's own." | path="functions/watch_list_owned_by.sql" | arg_types="bigint, bigint"
+## function watched_on | doc="Whether a card is on any of the given watch lists, an id also naming a person = any of that person's lists. Backs the watch_list filter leaf." | path="functions/watched_on.sql" | arg_types="bigint, bigint[]"
+## function watch_list_list_batch | doc="watch_list.list — the caller's watch lists (title, symbol, description, count; with card_id whether that card is on each). The first call makes the account's Stars list." | path="functions/watch_list_list_batch.sql"
+## function watch_list_set_batch | doc="watch_list.set — create or update one of the caller's watch lists: title, symbol, description." | path="functions/watch_list_set_batch.sql"
+## function watch_list_delete_batch | doc="watch_list.delete — soft-delete one of the caller's watch lists and drop its entries." | path="functions/watch_list_delete_batch.sql"
+## function watch_set_batch | doc="watch.set — put a visible task or thread on one of the caller's watch lists (at the top) or take it off." | path="functions/watch_set_batch.sql"
+## function watch_items_batch | doc="watch.items — the tasks and threads on one of the caller's watch lists, in order, with title, project and status; only cards the caller can see." | path="functions/watch_items_batch.sql"
+## function watch_move_batch | doc="watch.move — set an item's sort_order on one of the caller's watch lists (a drag)." | path="functions/watch_move_batch.sql"
 ## function calendar_owned_by | doc="Whether a user may manage a calendar card: its subscriber is their person card, or they are a workspace admin. Used by calendar.* and calendar_url.*." | path="functions/calendar_owned_by.sql" | arg_types="bigint, bigint"
 ## function calendar_list_batch | doc="calendar.list — the caller's calendar feeds with filter, window and URLs (comment, token hint, last fetched / app / error)." | path="functions/calendar_list_batch.sql"
 ## function calendar_set_batch | doc="calendar.set — create or update one of the caller's calendar feeds: title, card filter ('@me' = the owner), past_days / future_days (0–3650; defaults 30 / 365)." | path="functions/calendar_set_batch.sql"

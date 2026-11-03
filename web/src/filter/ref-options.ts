@@ -17,6 +17,7 @@
 import type { ControlContext } from '../core/control.js';
 import type { AttributeDefRow } from '../admin/specs.js';
 import { refAxesForCardType, type CardTypeRow } from './vocabulary.js';
+import { DERIVED_OPTION_SOURCES, derivedOptionTargets } from './attribute-schema.js';
 
 export interface RefOption {
   value: string;
@@ -75,6 +76,23 @@ export function loadRefOptions(ctx: ControlContext, args: LoadRefOptionsArgs): v
       );
     }
   };
+
+  // Derived fields whose options come from their own spec (a watch list's
+  // are the viewer's lists; attribute-schema.ts DERIVED_OPTION_SOURCES).
+  for (const target of derivedOptionTargets(args.cardType)) {
+    const src = DERIVED_OPTION_SOURCES[target];
+    if (src === undefined) continue;
+    ctx.api.callByName(
+      src.spec,
+      src.input,
+      (out) => {
+        if (!args.alive()) return;
+        const cur = (node.peek<Record<string, RefOption[]>>() ?? {}) as Record<string, RefOption[]>;
+        node.set({ ...cur, [target]: src.toOptions(out) });
+      },
+      { alive: args.alive },
+    );
+  }
 
   ctx.api.callByName(
     'attribute_def.select',

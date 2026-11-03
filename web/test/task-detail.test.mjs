@@ -781,3 +781,34 @@ test('TASK OPEN: route-id-only sections coalesce into the task batch (no second 
   assert.ok(at('detail.attachmentsPreview') < at('links') && at('links') < at('comms'), regions.join(','));
   assert.ok(td.el.querySelector('[data-slot="links"] [data-control="TaskLinks"]'), 'TaskLinks mounted');
 });
+
+test('TaskDetail: Refresh re-reads the attachments and the watch-list bookmarks too', async () => {
+  const { transport, batches } = taskMockTransport();
+  // Watch lists answer with an empty set (the shell mock has none).
+  const send = transport.send.bind(transport);
+  transport.send = async (body) => {
+    const req = JSON.parse(body);
+    if (req.subrequests.every((s) => `${s.endpoint}.${s.action}` === 'watch_list.list')) {
+      batches.push(req.subrequests.map((s) => `${s.endpoint}.${s.action}`));
+      return { status: 200, text: JSON.stringify({ subresponses: req.subrequests.map((s) => ({ id: s.id, ok: true, data: { lists: [] } })) }) };
+    }
+    return send(body);
+  };
+  // AttachmentsSection is registered by the suite's setup; WatchBar isn't.
+  M.registerWatchBar();
+  const { dispatcher, api } = bootApi(transport);
+  M.registerAttachmentSpecs(api);
+  M.registerWatchSpecs(api);
+  const { td } = mountTaskDetail(api);
+  await settle(dispatcher);
+  await settle(dispatcher);
+  const count = (k) => batches.flat().filter((x) => x === k).length;
+  const lists0 = count('attachment.list');
+  const watch0 = count('watch_list.list');
+  assert.ok(watch0 >= 1, 'the corner bookmarks loaded');
+  td.el.querySelector('[data-task-refresh]').click();
+  await settle(dispatcher);
+  await settle(dispatcher);
+  assert.ok(count('attachment.list') > lists0, 'Refresh re-read the attachments');
+  assert.ok(count('watch_list.list') > watch0, 'Refresh re-read the watch lists');
+});

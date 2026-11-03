@@ -741,3 +741,7 @@ export { setRichEditorEngine } from './editor/rich-editor.js';
 export { createTextareaEngine } from './editor/engine.js';
 export { captionedField } from './ui/captioned-field.js';
 export { isSubmitShortcut, bindSubmitShortcut, submitShortcutHint } from './ui/submit-shortcut.js';
+export { WATCH_SPEC, registerWatchSpecs, sortOrderForSlot, watchItemHref, watchListOptions } from './watch/specs.js';
+export { WatchBar, registerWatchBar, WATCH_LISTS_PATH } from './watch/watch-bar.js';
+export { WatchLists, registerWatchLists, listFromSearch } from './watch/watch-lists.js';
+export { DERIVED_OPTION_SOURCES, derivedOptionTargets } from './filter/attribute-schema.js';

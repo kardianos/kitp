@@ -124,3 +124,83 @@ func TestAgentRolesStayWithinOwner(t *testing.T) {
 		t.Error("an agent kept a role after its owner lost it")
 	}
 }
+
+// TestAgentRolesFollowTheRoleLadder: an owner covers an agent's role when
+// it holds that role or one ranked above it (role_covers: viewer <
+// commenter < worker < manager < admin) — an admin-only owner's agent can be
+// given worker and act as one; a worker owner can't give manager; scope still
+// applies, and losing the higher role takes the agent's with it.
+func TestAgentRolesFollowTheRoleLadder(t *testing.T) {
+	srv, sp := setup(t, "kitp_test_userrole_agent_ladder")
+	ctx := context.Background()
+	var project int64
+	if err := sp.P.QueryRow(ctx, `INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'project' RETURNING id`).Scan(&project); err != nil {
+		t.Fatal(err)
+	}
+	owner := newUser(t, sp, "admin-only")
+	if _, err := sp.P.Exec(ctx, `INSERT INTO user_role (user_id, role_id) SELECT $1, id FROM role WHERE name = 'admin'`, owner); err != nil {
+		t.Fatal(err)
+	}
+	var agent int64
+	if err := sp.P.QueryRow(ctx, `INSERT INTO user_account (display_name, parent_user_id, is_agent) VALUES ('bot', $1, true) RETURNING id`, owner).Scan(&agent); err != nil {
+		t.Fatal(err)
+	}
+	ownerCtx := auth.WithUser(ctx, &auth.UserCtx{ID: owner, DisplayName: "admin-only"})
+	set := func(role string, scope int64) api.SubResponse {
+		t.Helper()
+		data := fmt.Sprintf(`{"user_id":"%d","role_name":%q}`, agent, role)
+		if scope != 0 {
+			data = fmt.Sprintf(`{"user_id":"%d","role_name":%q,"scope_project_id":"%d"}`, agent, role, scope)
+		}
+		return srv.Dispatch(ownerCtx, api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "s", Endpoint: "user_role", Action: "set", Data: json.RawMessage(data)},
+		}}).Subresponses[0]
+	}
+	for _, c := range []struct {
+		role  string
+		scope int64
+	}{{"worker", 0}, {"commenter", project}} {
+		if r := set(c.role, c.scope); !r.OK {
+			t.Fatalf("an admin owner gives its agent %s: %+v", c.role, r.Error)
+		}
+	}
+	roles, err := auth.LoadUserRoles(ctx, sp.P, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(roles) != "[commenter worker]" && fmt.Sprint(roles) != "[worker commenter]" {
+		t.Errorf("the agent's usable roles = %v, want worker and commenter", roles)
+	}
+
+	// A worker owner can't hand out manager; the ladder only goes down.
+	if _, err := sp.P.Exec(ctx, `DELETE FROM user_role WHERE user_id = $1`, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sp.P.Exec(ctx, `INSERT INTO user_role (user_id, role_id, scope_card_id) SELECT $1, id, $2 FROM role WHERE name = 'worker'`, owner, project); err != nil {
+		t.Fatal(err)
+	}
+	if r := set("manager", project); r.OK || r.Error == nil || r.Error.Code != "forbidden" {
+		t.Errorf("a worker owner gives manager: want forbidden, got %+v", r)
+	}
+	if roles, err := auth.LoadUserRoles(ctx, sp.P, agent); err != nil {
+		t.Fatal(err)
+	} else if fmt.Sprint(roles) != "[commenter]" {
+		// worker (workspace-wide) is no longer covered: the owner's worker is
+		// one project's; commenter on that project still is.
+		t.Errorf("after the owner drops to a project worker: %v, want [commenter]", roles)
+	}
+
+	// role_covers itself: same role, higher, lower.
+	for _, c := range []struct {
+		holder, wanted string
+		want           bool
+	}{{"admin", "worker", true}, {"worker", "worker", true}, {"worker", "manager", false}, {"manager", "viewer", true}, {"viewer", "commenter", false}} {
+		var got bool
+		if err := sp.P.QueryRow(ctx, `SELECT role_covers((SELECT id FROM role WHERE name = $1), (SELECT id FROM role WHERE name = $2))`, c.holder, c.wanted).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want {
+			t.Errorf("role_covers(%s, %s) = %v, want %v", c.holder, c.wanted, got, c.want)
+		}
+	}
+}

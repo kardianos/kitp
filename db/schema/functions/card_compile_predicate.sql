@@ -297,6 +297,38 @@ BEGIN
         END IF;
         RETURN jsonb_build_object('sql', _sql, 'params', params);
     END IF;
+    -- On a watch list (watched_on; docs/WATCH_LISTS.md): values are watch
+    -- list ids, or a person id meaning "any of that person's lists" — what
+    -- "@me" becomes for the viewer. A value that isn't an id ("@me" left
+    -- unresolved: the viewer has no person) names nothing. Mirrors
+    -- compileWatchLeaf in where.go.
+    IF _attr = 'watch_list' THEN
+        IF NOT (node ? 'values') AND node ? 'value' THEN
+            _values := jsonb_build_array(node->'value');
+        ELSE
+            _values := COALESCE(node->'values', '[]'::jsonb);
+        END IF;
+        _placeholders := ARRAY[]::text[];
+        FOR _v IN SELECT value FROM jsonb_array_elements(_values)
+        LOOP
+            IF jsonb_typeof(_v) = 'number'
+               OR (jsonb_typeof(_v) = 'string' AND (_v #>> '{}') ~ '^[0-9]+$') THEN
+                SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v) AS r(p, i);
+                _placeholders := array_append(_placeholders,
+                    format('($1->>%s)::bigint', _val_idx::text));
+            END IF;
+        END LOOP;
+        _sql := format('watched_on(c.id, ARRAY[%s]::bigint[])',
+            array_to_string(_placeholders, ', '));
+        IF _op IN ('=', 'eq', 'in') THEN
+            NULL;
+        ELSIF _op IN ('!=', 'ne', 'not in') THEN
+            _sql := 'NOT ' || _sql;
+        ELSE
+            RAISE EXCEPTION 'card_compile_predicate: watch_list supports in and not in, got %', _op;
+        END IF;
+        RETURN jsonb_build_object('sql', _sql, 'params', params);
+    END IF;
     IF _attr = 'approval_asked_at' AND _op <> 'within_last_days' THEN
         RAISE EXCEPTION 'card_compile_predicate: approval_asked_at supports only within_last_days, got %', _op;
     END IF;

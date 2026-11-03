@@ -118,6 +118,9 @@ import { registerCommRoutes } from './mailin/comm-routes.js';
 import { registerCommLogView } from './mailin/comm-log.js';
 import { registerMailIntake } from './mailin/mail-intake.js';
 import { registerAccountCalendars } from './mailin/calendars.js';
+import { registerWatchSpecs } from './watch/specs.js';
+import { registerWatchBar } from './watch/watch-bar.js';
+import { registerWatchLists } from './watch/watch-lists.js';
 import { registerPageStructure } from './pages/page-structure.js';
 import { registerSiteView } from './pages/site-view.js';
 import { registerAreaSwitches } from './areas/area-switches.js';
@@ -229,6 +232,7 @@ function boot(): void {
   // Mail intake routes, the Mail intake page and calendar feeds
   // (docs/MAIL_INTAKE_AND_CALENDARS.md). Idempotent-by-presence.
   registerMailinSpecs(api);
+  registerWatchSpecs(api);
   // The PredicateFilter sources its `{ cardType }` schema from
   // attribute_def.select — idempotent: skips if registerAdminSpecs already
   // defined it. Safe to call after registerAdminSpecs.
@@ -357,6 +361,8 @@ function boot(): void {
   registerCommLogView();
   registerMailIntake();
   registerAccountCalendars();
+  registerWatchBar();
+  registerWatchLists();
   // A page detail's PLACE IN SITE section.
   registerPageStructure();
   // A portal's site inside kitp (/site/:id).

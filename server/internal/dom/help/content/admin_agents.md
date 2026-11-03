@@ -36,7 +36,7 @@ Click **Revoke** on a token row. The token is invalidated immediately; any in-fl
 
 An agent acts on its owner's behalf, so it **sees** exactly what its owner sees — never more. What it can **do** is narrower: a fresh agent has no roles, and acts only with the roles you grant it. Use **Admin · Users**, find the agent in the user list (agents and humans share the same list), and assign roles there with the usual scope picker.
 
-The **parent-grants-subset** rule is enforced server-side, whoever does the granting: an agent can only be given a role its owner holds at that scope (or workspace-wide); anything else is refused. If the owner later loses the role, the agent stops using it at once.
+The **parent-grants-subset** rule is enforced server-side, whoever does the granting: an agent can only be given a role its owner holds **or ranks above**, at that scope (or workspace-wide); anything else is refused. The built-in roles form a ladder — viewer < commenter < worker < manager < admin — where each one can do everything the ones below it can, so an owner who is an admin (but not separately a worker) can still run an agent as a worker or a commenter. If the owner later loses the role, the agent stops using it at once.
 
 ## Deleting an agent
 

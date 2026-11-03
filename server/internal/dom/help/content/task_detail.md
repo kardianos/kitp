@@ -20,6 +20,10 @@ The page is split into a main column and a right-hand attribute rail.
 | **Activity**       | The full audit stream — one line per event, including `commented` and `edited a comment` rows that point at `c<id>`. |
 | **Right rail**     | Per-attribute side panel (status, assignee, milestone, tags, originator, due date, …). Click any row to open its picker. |
 
+## Watch lists
+
+Your watch lists' symbols sit in the top corner, beside the number — ★ for Stars. Point at one to see its name, click to put this task (or thread) on the list, click again to take it off; **⋯** opens Watch lists, where you make lists and order what's on them. See the Watch lists help.
+
 ## Files that came by email
 
 A file on an emailed message stays with the **thread**, listed under the message — not in the task's Attachments. Click an image, PDF or markdown file to view it (←/→ page through the thread's files, Esc closes); **Download** saves it, and any other file downloads when clicked. **Add to task** moves it into the task's Attachments (the message keeps showing it, now marked *on the task*). kitp stores a file once: the same file sent again is linked to the copy it already has.
