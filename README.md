@@ -44,12 +44,22 @@ bundled with esbuild (no framework, no npm runtime deps).
   tasks its commit message names and keeps the link state in step with the
   review. See `docs/links.md`.
 - Project export (CSV, a zip with activity and attachments, or XLSX) and
-  CSV import.
+  CSV import (dates as YYYY-MM-DD; every date kitp takes in is checked).
+- Calendar feeds (Account → Calendars): your tasks' due dates as an `.ics`
+  feed for Google Calendar, Outlook or Apple Calendar. Each calendar has
+  a filter and a window of days, and any number of secret URLs, each with
+  a comment, revocable one at a time.
 
 ### Conversations (email)
 
 - Each project's mail accounts (PROJECT → Comm Channels) are polled over
-  IMAP and send through SMTP, on background jobs. kitp matches a reply to
+  IMAP and send through SMTP, on background jobs. Mail can also be pushed
+  to an account: a provider POSTs it (Cloudflare Email Worker, Mailgun,
+  Postmark, SES via Lambda) or a mailbox forwards it to kitp's own SMTP
+  listener (e.g. an Exchange redirect). Each such route has its own secret
+  and optional filters (source networks, TLS, sender host, envelope and
+  header From lists, DKIM). A message arriving more than once is filed
+  once. See `docs/MAIL_INTAKE_AND_CALENDARS.md`. kitp matches a reply to
   its thread by the `X-Kitp-Thread-Id` header, the `[#<ref>]` subject tag
   or the `Ref:` line at the end of the body.
 - **New mail** (unmatched mail sent to a mail account) can create a task
@@ -205,12 +215,21 @@ See `docs/BUNDLES_AND_PORTALS.md`.
 | KITP_ACTIVITY_SINK_TICK_SEC | 30 | Activity-sink pump interval. |
 | KITP_COMM_LOG_RETENTION_DAYS | 30 | How long comm_log rows are kept. |
 | KITP_COMM_LOG_PRUNE_HOURS | 24 | How often the comm_log prune job runs. |
+| KITP_COMM_DEDUPE_DAYS | 14 | How long a message stays known (for dropping duplicate copies) after its last copy arrived. |
+| KITP_COMM_INBOUND_MAX_BYTES | 52428800 | Largest POST to a mail route (`/api/v1/comm/inbound/<token>`). |
+| KITP_TRUSTED_PROXIES | (private + loopback) | Private CIDRs whose `X-Forwarded-For` (POST routes) or PROXY protocol header (SMTP) is believed. A public range is refused at startup. |
+| KITP_SMTP_ADDR | (unset) | Receive-only SMTP listener address, e.g. `:2525` behind port 25. Off when unset. |
+| KITP_SMTP_DOMAIN | (unset) | Domain of route addresses (`<token>@<domain>`); required with `KITP_SMTP_ADDR`. Its MX record points at kitp. |
+| KITP_SMTP_HOSTNAME | the domain | SMTP greeting name. |
+| KITP_SMTP_TLS_CERT / KITP_SMTP_TLS_KEY | (unset) | PEM files for STARTTLS; re-read when they change. |
+| KITP_SMTP_MAX_BYTES | 41943040 | Largest message the listener takes. |
+| KITP_SMTP_ALLOW | (unset) | CIDRs allowed to connect to the listener at all. |
 | KITP_COMM_SMTP_DRY_RUN | 0 | 1 logs the would-be message instead of sending. |
 | KITP_COMM_IMAP_DRY_RUN | 0 | 1 logs each poll without connecting to the mail server. |
 | KITP_COMM_IMAP_INSECURE | 0 | 1 allows non-TLS IMAP (dev only). |
 | KITP_COMM_BODY_PRIORITY | plain,html | Order in which an incoming message's body parts become a new task's description: `plain`, `html`, or both comma-separated. |
 | KITP_COMM_SAVE_RAW_EMAIL | 0 | 1 attaches each incoming message, verbatim, as a `.eml` file (a debugging aid). |
-| KITP_PUBLIC_URL | (unset) | External base URL of the install (e.g. `https://kitp.example.com`; trailing slash optional). When set, outbound mail to a kitp user (a person with a login) carries a `<base>/task/<id>` deep link in the footer. Unset disables the link. |
+| KITP_PUBLIC_URL | (unset) | External base URL of the install (e.g. `https://kitp.example.com`; trailing slash optional). When set, outbound mail to a kitp user (a person with a login) carries a `<base>/task/<id>` deep link in the footer, and calendar feed events link there. Unset disables the mail link; calendar links then use the address the feed was fetched from. |
 | KITP_ACTIVITY_SINK_DRY_RUN | 0 | 1 runs the activity sink without emitting. |
 
 ### Attachments and content store

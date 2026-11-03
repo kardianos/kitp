@@ -49,6 +49,7 @@ import (
 	"runtime/debug"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/obs/logpath"
 	"github.com/kitp/kitp/server/internal/reg"
 )
 
@@ -215,7 +216,7 @@ func (rt *Router) wrap(resolve Resolver, kind, routeScope string, h AuthedHandle
 			// token). Log the cause for ops; the client gets a plain
 			// 401 either way.
 			rt.logger.InfoContext(r.Context(), "auth rejected",
-				"kind", kind, "path", r.URL.Path, "err", err)
+				"kind", kind, "path", logpath.Of(r.URL.Path), "err", err)
 			rt.unauthorized(w, r, kind)
 			return
 		}
@@ -225,7 +226,7 @@ func (rt *Router) wrap(resolve Resolver, kind, routeScope string, h AuthedHandle
 		}
 		if user.TokenScope != auth.TokenScopeFull && user.TokenScope != routeScope {
 			rt.logger.InfoContext(r.Context(), "auth rejected",
-				"kind", kind, "path", r.URL.Path, "err", "token scope "+user.TokenScope+" not valid here")
+				"kind", kind, "path", logpath.Of(r.URL.Path), "err", "token scope "+user.TokenScope+" not valid here")
 			rt.writeErr(w, r, &HTTPError{Status: http.StatusForbidden, Code: "token_scope",
 				Message: "this token is limited to " + user.TokenScope + " and cannot be used here"})
 			return
@@ -272,7 +273,7 @@ func (rt *Router) recoverPanic(w http.ResponseWriter, r *http.Request) {
 		panic(p)
 	}
 	rt.logger.ErrorContext(r.Context(), "http handler panic",
-		"path", r.URL.Path, "panic", fmt.Sprint(p), "stack", string(debug.Stack()))
+		"path", logpath.Of(r.URL.Path), "panic", fmt.Sprint(p), "stack", string(debug.Stack()))
 	writeJSON(w, http.StatusInternalServerError, jsonErr{Code: "internal", Message: "internal error"})
 }
 
@@ -296,7 +297,7 @@ func (rt *Router) writeErr(w http.ResponseWriter, r *http.Request, err error) {
 		if he.Err != nil {
 			// Wrapped cause is for ops only — never on the wire.
 			rt.logger.ErrorContext(r.Context(), "http handler error",
-				"path", r.URL.Path, "code", he.Code, "status", he.Status, "err", he.Err)
+				"path", logpath.Of(r.URL.Path), "code", he.Code, "status", he.Status, "err", he.Err)
 		}
 		writeJSON(w, he.Status, jsonErr{Code: he.Code, Message: he.Message})
 		return
@@ -307,7 +308,7 @@ func (rt *Router) writeErr(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	rt.logger.ErrorContext(r.Context(), "http handler error",
-		"path", r.URL.Path, "code", "internal", "status", 500, "err", err)
+		"path", logpath.Of(r.URL.Path), "code", "internal", "status", 500, "err", err)
 	writeJSON(w, http.StatusInternalServerError, jsonErr{Code: "internal", Message: "internal error"})
 }
 

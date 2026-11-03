@@ -31,6 +31,9 @@ before(async () => {
   M.registerRecordForm(); // Comm Channels mounts the generic RecordForm in its detail
   M.registerThemeFiles(); // the Themes screen's FILES panel (detail.panel)
   M.registerAreaSwitches(); // the workspace Areas screen
+  M.registerCommRoutes(); // Comm Channels' RECEIVING MAIL panel (detail.panel)
+  M.registerCommLogView(); // the Comm Log screen is its own control
+  M.registerMailIntake(); // the workspace Mail intake screen
 });
 
 const PROJECT_ID = '31';
@@ -111,6 +114,7 @@ function bootApi() {
   M.registerKanbanSpecs(api); // card.select_with_attributes + attribute.update
   M.registerAdminSpecs(api); // every non-card admin spec
   M.registerBundleSpecs(api); // portal.list (the Portals screen)
+  M.registerMailinSpecs(api); // comm_route.* + mail_intake.status
   return { dispatcher, api };
 }
 
@@ -167,7 +171,6 @@ const SCREEN_SCOPE = {
   agents: ['admin', 'agents', 'items'],
   comm_channels: ['admin', 'comm_channels', 'items'],
   activity_sinks: ['admin', 'activity_sinks', 'items'],
-  comm_log: ['admin', 'comm_log', 'items'],
   portals: ['admin', 'portals', 'items'],
   themes: ['admin', 'themes', 'items'],
 };
@@ -202,7 +205,7 @@ test('card-backed admin screens carry an editField update action; read-only ones
   }
   // No inline editField (the nested editors / create dialog are the write
   // surface): Attributes / Workflows / Roles / Agents / Comm* .
-  for (const view of ['attributes', 'workflows', 'roles', 'agents', 'comm_channels', 'activity_sinks', 'comm_log']) {
+  for (const view of ['attributes', 'workflows', 'roles', 'agents', 'comm_channels', 'activity_sinks']) {
     const cfg = M.adminScreenConfig(view);
     assert.ok(!cfg.actions.some((a) => a.intent === 'editField'), `${view} has no inline editField action`);
   }
@@ -248,7 +251,7 @@ test('card-backed admin screens carry an editField update action; read-only ones
     wf.actions.some((a) => a.intent === 'createItem' && a.spec === 'flow.set'),
     'workflows has a flow.set create action',
   );
-  for (const view of ['roles', 'comm_channels', 'activity_sinks', 'comm_log']) {
+  for (const view of ['roles', 'comm_channels', 'activity_sinks']) {
     const cfg = M.adminScreenConfig(view);
     assert.equal(cfg.actions.length, 0, `${view} is a read-only viewer (no MasterDetail action)`);
   }
@@ -371,7 +374,7 @@ test('ADMIN_SECTION classifies every admin view (Workspace global vs Project sco
   // Confirmed grouping: global-data screens are Workspace; the rest are Project
   // (always filtered to the active project).
   const inSection = (s) => M.ADMIN_VIEWS.filter((v) => M.ADMIN_SECTION[v] === s).sort();
-  assert.deepEqual(inSection('workspace'), ['agents', 'areas', 'attributes', 'jobs', 'oidc_claims', 'people', 'portals', 'roles', 'themes']);
+  assert.deepEqual(inSection('workspace'), ['agents', 'areas', 'attributes', 'jobs', 'mail_intake', 'oidc_claims', 'people', 'portals', 'roles', 'themes']);
   assert.deepEqual(inSection('project'), ['activity_sinks', 'comm_channels', 'comm_log', 'enums', 'project_areas', 'screens', 'workflows']);
 });
 

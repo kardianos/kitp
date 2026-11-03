@@ -113,6 +113,11 @@ import { registerExportMenu } from './export/export-menu.js';
 import { registerActivity } from './activity/activity.js';
 import { registerAccountPage } from './shell/account-page.js';
 import { registerThemeFiles } from './admin/theme-files.js';
+import { registerMailinSpecs } from './mailin/specs.js';
+import { registerCommRoutes } from './mailin/comm-routes.js';
+import { registerCommLogView } from './mailin/comm-log.js';
+import { registerMailIntake } from './mailin/mail-intake.js';
+import { registerAccountCalendars } from './mailin/calendars.js';
 import { registerPageStructure } from './pages/page-structure.js';
 import { registerSiteView } from './pages/site-view.js';
 import { registerAreaSwitches } from './areas/area-switches.js';
@@ -130,6 +135,7 @@ const ADMIN_LINK_LABELS: Record<AdminView, string> = {
   comm_channels: 'Comm Channels',
   activity_sinks: 'Activity Sinks',
   comm_log: 'Comm Log',
+  mail_intake: 'Mail intake',
   portals: 'Portals',
   themes: 'Themes',
   areas: 'Areas',
@@ -220,6 +226,9 @@ function boot(): void {
   registerAdminSpecs(api);
   // Personal notification subscriptions (account page) — every signed-in user.
   registerSubscriptionSpecs(api);
+  // Mail intake routes, the Mail intake page and calendar feeds
+  // (docs/MAIL_INTAKE_AND_CALENDARS.md). Idempotent-by-presence.
+  registerMailinSpecs(api);
   // The PredicateFilter sources its `{ cardType }` schema from
   // attribute_def.select — idempotent: skips if registerAdminSpecs already
   // defined it. Safe to call after registerAdminSpecs.
@@ -344,6 +353,10 @@ function boot(): void {
   registerRecordForm();
   // The Themes screen's FILES panel (a MasterDetail detail.panel).
   registerThemeFiles();
+  registerCommRoutes();
+  registerCommLogView();
+  registerMailIntake();
+  registerAccountCalendars();
   // A page detail's PLACE IN SITE section.
   registerPageStructure();
   // A portal's site inside kitp (/site/:id).

@@ -36,7 +36,7 @@ kitp.manager, $role.manager
 kitp.worker,  $role.worker
 
 
-## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel / activity_sink are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task. link cards (a code change / issue / any URL linked to a task — written by link.set from the UI, MCP, or a code forge such as Gerrit) parent under task. approval cards (a request that named people approve or reject one of the task's status actions — documentation, never a gate; written by approval.set, which can also start an email thread (a comm, linked by approval_comm) to the people asked) parent under task. activity_subscription cards (a user's personal notification subscription) parent under an activity_sink. page cards (publishable content: title + markdown description + slug + sort_order, moved through a publish_status flow) parent under a project or another page, so a page's children are its section. portal cards (a published site: a root page, an optional public host, a theme, and the statuses whose publishes_to names it) are global, like person — one portal can serve a page tree to QA and another the same tree to PROD. theme cards (a site's look: a built-in base theme plus settings and override files in theme_file) are global too, so QA and PROD can share one. uses_phase=true marks card_types whose instances are flow-bound value-cards — the `phase` column on those rows is consulted by the predicate compiler (has_phase op) and the TransitionBar UI. Tasks / projects / etc. carry the column but never read it." | on_conflict="name"
+## table card_type | doc="Built-in card types. project / task / milestone / component / tag / status / screen / filter / comm_channel / activity_sink are project-scoped (parent_card_type_id=project). person + comment_body + reply_body are global. filter cards parent under screen. comm cards parent under task. link cards (a code change / issue / any URL linked to a task — written by link.set from the UI, MCP, or a code forge such as Gerrit) parent under task. approval cards (a request that named people approve or reject one of the task's status actions — documentation, never a gate; written by approval.set, which can also start an email thread (a comm, linked by approval_comm) to the people asked) parent under task. activity_subscription cards (a user's personal notification subscription) parent under an activity_sink. page cards (publishable content: title + markdown description + slug + sort_order, moved through a publish_status flow) parent under a project or another page, so a page's children are its section. portal cards (a published site: a root page, an optional public host, a theme, and the statuses whose publishes_to names it) are global, like person — one portal can serve a page tree to QA and another the same tree to PROD. theme cards (a site's look: a built-in base theme plus settings and override files in theme_file) are global too, so QA and PROD can share one. calendar cards (a person's calendar feed: a card filter and a window of days, reached by secret .ics URLs in card_access) are global, like person — one calendar can span every project its owner sees. uses_phase=true marks card_types whose instances are flow-bound value-cards — the `phase` column on those rows is consulted by the predicate compiler (has_phase op) and the TransitionBar UI. Tasks / projects / etc. carry the column but never read it." | on_conflict="name"
 ### rows
 name,              is_built_in, allow_self_parent, parent_card_type_id,    uses_phase
 project,           true,        false,             null,                   false
@@ -60,6 +60,7 @@ approval,          true,        false,             $card_type.task,        false
 page,              true,        true,              $card_type.project,     false
 portal,            true,        false,             null,                   false
 theme,             true,        false,             null,                   false
+calendar,          true,        false,             null,                   false
 
 
 ## table attribute_def | doc="Built-in attribute definitions. Each pick-from-a-list attribute is a card_ref with target_card_type_id pointing at the card_type whose cards are the valid values." | on_conflict="name"
@@ -107,6 +108,8 @@ channel_fault_reason,  text,        true, null, false
 signature_mode,        text,        true, null, false
 intake_mode,           text,        true, null, false
 reply_quote,           text,        true, null, false
+relay_replies,         text,        true, null, false
+email_attachments,     text,        true, null, false
 channel_ref,           card_ref,    true, $card_type.comm_channel, false
 thread_id,             text,        true, null, false
 replies,               card_ref[],  true, $card_type.reply_body, false
@@ -117,6 +120,8 @@ reply_subject,         text,        true, null, false
 reply_body_text,       text,        true, null, false
 delivery_status,       text,        true, null, false
 reply_author,          number,      true, null, false
+relay_of,              number,      true, null, false
+attachments_left_off,  number,      true, null, false
 comm_recipients,       card_ref[],  true, $card_type.person, false
 acked,                 bool,        true, null, false
 person_kind,           text,        true, null, false
@@ -156,6 +161,8 @@ theme_base,            text,        true, null, false
 theme_nav,             text,        true, null, false
 theme_accent,          text,        true, null, false
 theme_footer,          text,        true, null, false
+past_days,             number,      true, null, false
+future_days,           number,      true, null, false
 
 
 ## table edge | doc="Built-in edges. ordering drives display order on the card detail panel." | on_conflict="card_type_id, attribute_def_id"
@@ -233,6 +240,8 @@ $card_type.comm_channel, $attribute_def.channel_fault_reason, false, 11
 $card_type.comm_channel, $attribute_def.signature_mode,   false, 12
 $card_type.comm_channel, $attribute_def.intake_mode,      false, 13
 $card_type.comm_channel, $attribute_def.reply_quote,      false, 14
+$card_type.comm_channel, $attribute_def.relay_replies,    false, 15
+$card_type.comm_channel, $attribute_def.email_attachments, false, 16
 $card_type.comm,         $attribute_def.title,             true,  0
 $card_type.comm,         $attribute_def.channel_ref,       true,  1
 $card_type.comm,         $attribute_def.thread_id,         true,  2
@@ -246,6 +255,8 @@ $card_type.reply_body,   $attribute_def.reply_subject,     false, 2
 $card_type.reply_body,   $attribute_def.reply_body_text,   true,  3
 $card_type.reply_body,   $attribute_def.delivery_status,   true,  4
 $card_type.reply_body,   $attribute_def.reply_author,      false, 5
+$card_type.reply_body,   $attribute_def.relay_of,          false, 6
+$card_type.reply_body,   $attribute_def.attachments_left_off, false, 7
 $card_type.activity_sink, $attribute_def.title,                true,  0
 $card_type.activity_sink, $attribute_def.sink_kind,            true,  1
 $card_type.activity_sink, $attribute_def.msgraph_tenant_id,    false, 2
@@ -298,6 +309,11 @@ $card_type.theme,        $attribute_def.theme_base,        true,  1
 $card_type.theme,        $attribute_def.theme_nav,         false, 2
 $card_type.theme,        $attribute_def.theme_accent,      false, 3
 $card_type.theme,        $attribute_def.theme_footer,      false, 4
+$card_type.calendar,     $attribute_def.title,             true,  0
+$card_type.calendar,     $attribute_def.subscriber,        true,  1
+$card_type.calendar,     $attribute_def.predicate,         false, 2
+$card_type.calendar,     $attribute_def.past_days,         false, 3
+$card_type.calendar,     $attribute_def.future_days,       false, 4
 
 
 ## table process | doc="Built-in processes (workflows)." | on_conflict="name"
@@ -366,10 +382,10 @@ $role.manager, $card_type.task, $process."card.delete"
 $role.manager, $card_type.page, $process."card.delete"
 
 
-## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references). The three comm card_types (comm_channel, comm, reply_body) are admin-only configuration surface; managers get a lighter cut on comm via the manager grant. link cards are written through link.set / link.delete, which gate on card.update of the PARENT TASK (like attachments), so only admins get the generic card.* surface on them. portal and theme cards are admin-only configuration (a portal decides what reaches a public host; a theme decides what every site using it looks like). approval cards likewise: approval.set / approval.remove gate on card.update of the parent task and approval.decide on its comment.post, so nobody but an admin can edit a request (or forge a decision) through the generic card.* processes." | on_conflict="role_id, card_type_id, process_id"
+## table role_grant | doc="admin grants: card.* + comment.post + user_card_sort.set across every built-in card_type. status is included so admins can manage value-cards for the flow kernel (V8: delete is gated against flow_step references). The three comm card_types (comm_channel, comm, reply_body) are admin-only configuration surface; managers get a lighter cut on comm via the manager grant. link cards are written through link.set / link.delete, which gate on card.update of the PARENT TASK (like attachments), so only admins get the generic card.* surface on them. portal and theme cards are admin-only configuration (a portal decides what reaches a public host; a theme decides what every site using it looks like). calendar cards are each person's own, written through calendar.set / .delete (which check the owner); only admins get card.* on them, to clean up. approval cards likewise: approval.set / approval.remove gate on card.update of the parent task and approval.decide on its comment.post, so nobody but an admin can edit a request (or forge a decision) through the generic card.* processes." | on_conflict="role_id, card_type_id, process_id"
 ### rows
 role_id, card_type_id, process_id
-$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status, $card_type.comm_channel, $card_type.comm, $card_type.reply_body, $card_type.activity_sink, $card_type.predicate_snippet, $card_type.activity_subscription, $card_type.link, $card_type.approval, $card_type.page, $card_type.portal, $card_type.theme]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
+$role.admin, `[$card_type.project, $card_type.task, $card_type.milestone, $card_type.component, $card_type.tag, $card_type.person, $card_type.screen, $card_type.filter, $card_type.status, $card_type.comm_channel, $card_type.comm, $card_type.reply_body, $card_type.activity_sink, $card_type.predicate_snippet, $card_type.activity_subscription, $card_type.link, $card_type.approval, $card_type.page, $card_type.portal, $card_type.theme, $card_type.calendar]`, `[$process."card.create", $process."card.update", $process."card.delete", $process."comment.post", $process."user_card_sort.set"]`
 
 
 ## table role_grant | doc="Personal notification subscriptions: every project tier (viewer / commenter / worker / manager / admin) may create, edit and delete its OWN activity_subscription cards through the dedicated activity_subscription.set / .delete processes. The handler SQL enforces subscriber = the caller's person card (admins exempt, so they can clean up). The generic card.* processes on activity_subscription stay admin-only (admin grant above), so nobody can edit someone else's subscription through attribute.update." | on_conflict="role_id, card_type_id, process_id"

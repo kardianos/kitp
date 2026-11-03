@@ -233,6 +233,34 @@ test('TaskApprovals: edges render; a vote answers the open request', async () =>
   ]);
 });
 
+test('TaskApprovals: Ctrl+Enter in a reason box votes approve; plain Enter does not', async () => {
+  const srv = mockServer();
+  const { dispatcher, api } = bootApi(srv.transport);
+  const c = mountSection(api, { userId: 999n, personCardId: 31n });
+  await settle(dispatcher);
+  const edge = c.el.querySelector('[data-approval-edge="14>15"]');
+  edge.querySelector('[data-approval-add-reason]').click();
+  const reason = edge.querySelector('[data-approval-mine] textarea');
+  assert.match(reason.placeholder, /(Ctrl|⌘)\+Enter to vote approve/, 'the box names the shortcut');
+  reason.value = 'Looks right';
+  const key = (init) => new globalThis.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init });
+  reason.dispatchEvent(key({}));
+  await settle(dispatcher);
+  assert.equal(srv.writes('approval.decide').length, 0, 'plain Enter is a new line');
+  reason.dispatchEvent(key({ ctrlKey: true }));
+  await settle(dispatcher);
+  assert.deepEqual(srv.writes('approval.decide'), [
+    { task_id: '54', decision: 'approve', approval_id: '701', reason: 'Looks right' },
+  ]);
+});
+
+test('the send shortcut is one shared rule', () => {
+  assert.equal(M.isSubmitShortcut({ key: 'Enter', ctrlKey: true }), true);
+  assert.equal(M.isSubmitShortcut({ key: 'Enter', metaKey: true }), true);
+  assert.equal(M.isSubmitShortcut({ key: 'Enter' }), false);
+  assert.equal(M.isSubmitShortcut({ key: 'Enter', ctrlKey: true, isComposing: true }), false, 'not mid-IME');
+});
+
 test('TaskApprovals: asking sends the edge and the picked people', async () => {
   const srv = mockServer();
   const { dispatcher, api } = bootApi(srv.transport);

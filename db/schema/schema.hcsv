@@ -432,13 +432,55 @@ smtp_password, bytea, , , , ,
 updated_at, timestamptz, , false, now(), ,
 
 
-## table comm_log | doc="Per-project ring buffer of channel-level events (poll cycles, send attempts, bounces, parse errors). Decoupled from cards because the volume is high and a parse error before identification has no card to attach to. Retention via a periodic prune gated by KITP_COMM_LOG_RETENTION_DAYS."
+## table comm_inbound_seen | doc="Message dedupe (docs/MAIL_INTAKE_AND_CALENDARS.md §4): one row per message filed in a project, whichever account or transport (imap / post / smtp) it came through. message_key is 'mid:' + the Message-ID without its angle brackets, or 'h:' + a SHA-256 of From, To, Date, Subject and body for mail with none. The filing transaction inserts the row first; a conflict means a duplicate (logged, not filed). card_id is the thread the first copy became. last_seen_at is bumped by every duplicate; rows are pruned KITP_COMM_DEDUPE_DAYS (default 14) after it." | primary_key="project_id, message_key"
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+project_id, bigint, , false, , card.id, cascade
+message_key, text, , false, , ,
+channel_id, bigint, , , , ,
+transport, text, , false, '', ,
+message_id, text, , false, '', ,
+card_id, bigint, , , , ,
+first_seen_at, timestamptz, , false, now(), ,
+last_seen_at, timestamptz, , false, now(), ,
+
+### indexes
+name, columns
+idx_comm_inbound_seen_last_seen, "last_seen_at"
+
+## table card_access | doc="Secret routes (docs/MAIL_INTAKE_AND_CALENDARS.md §5): a random token that reaches one card from outside kitp — a calendar feed URL (purpose calendar, card = the calendar), a POST intake URL (inbound_post, card = the comm_channel; provider raw / mailgun / postmark) or an SMTP intake address (inbound_smtp). token_hash is auth.HashSecret of the token (40 lowercase hex characters), which is shown once when the row is made; hint is its first 6 characters, to tell routes apart. comment is the user's label. policy holds a route's filters (sources, require_tls, sender_hosts, envelope_from, header_from, dkim); signing_key is Mailgun's webhook signing key, pgp_sym_encrypt'ed with app.comm_secret_key. last_used_at / last_client / last_error are shown on the page that lists the routes." | unique="token_hash"
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+id, bigserial, true, , , ,
+card_id, bigint, , false, , card.id, cascade
+purpose, text, , false, , ,
+token_hash, text, , false, , ,
+hint, text, , false, '', ,
+comment, text, , false, '', ,
+provider, text, , false, '', ,
+policy, jsonb, , false, '{}', ,
+signing_key, bytea, , , , ,
+created_by, bigint, , , , ,
+created_at, timestamptz, , false, now(), ,
+last_used_at, timestamptz, , , , ,
+last_client, text, , false, '', ,
+last_error, text, , false, '', ,
+last_error_at, timestamptz, , , , ,
+
+### indexes
+name, columns
+idx_card_access_card, "card_id, purpose"
+
+## table comm_log | doc="Per-project ring buffer of channel-level events (poll cycles, messages received / duplicate / refused, send attempts, bounces, parse errors). route_id names the inbound route (card_access row, no FK: the log outlives a deleted route) a POST / SMTP event came through, so the Comm log filters to one route. Decoupled from cards because the volume is high and a parse error before identification has no card to attach to. Retention via a periodic prune gated by KITP_COMM_LOG_RETENTION_DAYS."
 
 ### columns
 name, type, pk, nullable, default, references, on_delete
 id, bigserial, true, , , ,
 project_id, bigint, , false, , card.id,
 channel_id, bigint, , , , card.id,
+route_id, bigint, , , , ,
 kind, text, , false, , ,
 detail, jsonb, , , , ,
 at, timestamptz, , false, now(), ,
@@ -447,6 +489,8 @@ at, timestamptz, , false, now(), ,
 name, columns
 idx_comm_log_project_at, "project_id, at desc"
 idx_comm_log_project_kind_at, "project_id, kind, at desc"
+idx_comm_log_channel_at, "channel_id, at desc"
+idx_comm_log_route_at, "route_id, at desc"
 
 
 ## table activity_sink_secret | doc="Encrypted MS Graph (or future provider) client_secret for an activity_sink card. One row per sink; sink_card_id is the PK + FK with ON DELETE CASCADE so deleting the sink drops the secret. client_secret is a bytea cell written via pgcrypto's pgp_sym_encrypt (key from KITP_COMM_SECRET_KEY env var — same GUC the comm_secret table uses, kept singular to avoid a second secret-key surface)."
@@ -634,6 +678,8 @@ idx_theme_file_cas, "cas_address"
 -- ---------------------------------------------------------------------
 
 ## function av_value_type_id | doc="Map an attribute_def.value_type to its storage-class id, denormalized onto attribute_value.value_type_id. <1000 = structured (JSONB equality via the (attribute_def_id, value) btree); >=1000 = plain text (trigram only, kept out of the btree so a large markdown body can't overflow the 2704-byte btree tuple cap). Single source of the mapping for both the attribute_value_set_type_id trigger and the backfill migration." | path="functions/av_value_type_id.sql" | arg_types="text"
+## function iso_date_ok | doc="True when a text is a date in the one form kitp stores: exactly YYYY-MM-DD and a real day. Every date that enters kitp is checked with it (Go twin: internal/isodate); Postgres's own date input ('today', '03/11/2026') is never used to accept one. Declared before the handlers that call it." | path="functions/iso_date_ok.sql" | arg_types="text"
+## function iso_timestamp_ok | doc="True when a text is an RFC 3339 timestamp (date, T, hh:mm:ss, optional fraction, Z or ±hh:mm) naming a real instant. Inputs are checked with it before any ::timestamptz cast, which would also take 'now' or 'infinity'." | path="functions/iso_timestamp_ok.sql" | arg_types="text"
 ## function attribute_value_set_type_id | doc="BEFORE INSERT trigger on attribute_value: sets value_type_id from the def's value_type via av_value_type_id. value_type is immutable per def and attribute_def_id never changes, so set-on-insert keeps the denormalized class correct with no re-sync. The body also declares the trigger; DROP TRIGGER IF EXISTS + CREATE TRIGGER re-apply it each boot." | path="functions/attribute_value_set_type_id.sql" | arg_types=""
 ## function card_ancestors | doc="Shared capped parent_card_id walk (A1 / BE-C1 / SEC-1). Returns the ancestor chain of a card (inclusive) with a 0-based depth column; the recursive arm carries WHERE depth < 16 so a parent cycle can't pin a connection. The single source of the depth cap (A15d)." | path="functions/card_ancestors.sql" | arg_types="bigint"
 ## function card_enclosing_project | doc="Resolve a card's enclosing project (first card_type='project' ancestor within the depth cap) via card_ancestors. Canonical card→project resolver (A10 / BE-M3); declared after card_ancestors because its SQL body references it at create time." | path="functions/card_enclosing_project.sql" | arg_types="bigint"
@@ -730,7 +776,8 @@ idx_theme_file_cas, "cas_address"
 ## function file_create_batch | doc="file.create — validate filename + chunk list and INSERT file row + file_chunk[] per input. Filename normalisation (NFC + bidi/zero-width strip + trim) runs Go-side via CreateInput.UnmarshalJSON; the function handles only the cheap presence/extension gates + DB writes." | path="functions/file_create_batch.sql"
 ## function comm_author_join | doc="The author of a message sent from kitp (reply.post, comm.create's initial message) joins comm.comm_recipients: their person, or an agent's owner's person, when it has an email and is missing. Union only, like an inbound sender. Declared before its callers." | path="functions/comm_author_join.sql" | arg_types="bigint, bigint"
 ## function comm_set_recipients_batch | doc="comm.set_recipients — validate (comm exists, every person_id is a person card) + replace the comm_recipients attribute_value with the deduped, canonicalised list." | path="functions/comm_set_recipients_batch.sql"
-## function comm_attach_batch | doc="comm.attach — move a thread onto a task (same project, Tasks on, caller holds task card.update) or back into its project as a thread on its own (task_id 0), keeping the tasks' comms lists in step and moving a thread's own attachments onto the task it joins. See docs/CONVERSATIONS.md." | path="functions/comm_attach_batch.sql"
+## function comm_attach_batch | doc="comm.attach — move a thread onto a task (same project, Tasks on, caller holds task card.update) or back into its project as a thread on its own (task_id 0), keeping the tasks' comms lists in step. Files stay where they are: a thread keeps the files that came by email. See docs/CONVERSATIONS.md." | path="functions/comm_attach_batch.sql"
+## function comm_attachment_to_task_batch | doc="comm.attachment_to_task — Add to task: move a file that came by email (it lives on the thread) onto the thread's task, keeping the messages' links; when the task already holds the same bytes the messages link that file and the thread's copy goes, so nothing is stored twice. Caller holds task card.update; Tasks on. See docs/MAIL_INTAKE_AND_CALENDARS.md." | path="functions/comm_attachment_to_task_batch.sql"
 ## function comm_set_ack_batch | doc="comm.set_ack — validate (comm exists, card_type='comm') + set the per-thread `acked` bool attribute_value (with paired activity row). A received inbound reply clears acked (imap.go); this is the explicit operator acknowledgement that the thread is handled." | path="functions/comm_set_ack_batch.sql"
 ## function reply_post_batch | doc="reply.post — validate (comm exists, has recipients) + insert reply_body card with 5 attributes (set-based via ordinality join) + append to comm.replies + optional attachment linking." | path="functions/reply_post_batch.sql"
 ## function person_upsert_by_email_batch | doc="person.upsert_by_email — case-insensitive email match against existing person cards; on miss create a fresh global person card with title / email / person_kind." | path="functions/person_upsert_by_email_batch.sql"
@@ -748,6 +795,18 @@ idx_theme_file_cas, "cas_address"
 ## function link_list_batch | doc="link.list — the live links on one task (oldest first) with url / title / kind / state, created_at, updated_at (newest activity on the link) and the creating account's display name. Visibility gated once on the task; an invisible task lists empty." | path="functions/link_list_batch.sql"
 ## function person_create_batch | doc="person.create — admin-only insert of a global person card with title + person_kind + optional email; tier='user' also provisions a user_account row + user_account_person link." | path="functions/person_create_batch.sql"
 ## function person_grant_account_batch | doc="person.grant_account — admin-only promotion of an existing person card to a user: mint a user_account + user_account_person link (idempotent if already linked); email from the request override or the person's stored email." | path="functions/person_grant_account_batch.sql"
+## function card_access_mint | doc="Make one secret route (card_access row) on a card and return its token once: 20 random bytes as lowercase hex, stored only as its SHA-256. Shared by comm_route.create and calendar_url.create." | path="functions/card_access_mint.sql" | arg_types="bigint, text, text, text, jsonb, text, bigint"
+## function comm_route_list_batch | doc="comm_route.list — admin: a mail account's inbound routes (POST URLs, SMTP addresses) with comment, token hint, filters and last message / refusal." | path="functions/comm_route_list_batch.sql"
+## function comm_route_create_batch | doc="comm_route.create — admin: add a POST (raw / mailgun / postmark) or SMTP route to a mail account; returns the secret token once." | path="functions/comm_route_create_batch.sql"
+## function comm_route_update_batch | doc="comm_route.update — admin: change a route's comment, filters or Mailgun signing key." | path="functions/comm_route_update_batch.sql"
+## function comm_route_delete_batch | doc="comm_route.delete — admin: remove a route; its URL / address stops working at once." | path="functions/comm_route_delete_batch.sql"
+## function calendar_owned_by | doc="Whether a user may manage a calendar card: its subscriber is their person card, or they are a workspace admin. Used by calendar.* and calendar_url.*." | path="functions/calendar_owned_by.sql" | arg_types="bigint, bigint"
+## function calendar_list_batch | doc="calendar.list — the caller's calendar feeds with filter, window and URLs (comment, token hint, last fetched / app / error)." | path="functions/calendar_list_batch.sql"
+## function calendar_set_batch | doc="calendar.set — create or update one of the caller's calendar feeds: title, card filter ('@me' = the owner), past_days / future_days (0–3650; defaults 30 / 365)." | path="functions/calendar_set_batch.sql"
+## function calendar_delete_batch | doc="calendar.delete — soft-delete one of the caller's calendars and drop its URLs." | path="functions/calendar_delete_batch.sql"
+## function calendar_url_create_batch | doc="calendar_url.create — add a secret .ics URL (with a comment) to one of the caller's calendars; returns the token once." | path="functions/calendar_url_create_batch.sql"
+## function calendar_url_update_batch | doc="calendar_url.update — change a calendar URL's comment." | path="functions/calendar_url_update_batch.sql"
+## function calendar_url_delete_batch | doc="calendar_url.delete — revoke one calendar URL." | path="functions/calendar_url_delete_batch.sql"
 ## function comm_channel_set_batch | doc="comm_channel.set — admin-only INSERT/UPDATE of a comm_channel card plus multi-attribute writes (title/channel_type/imap_*/smtp_*/from_address/intake_status/channel_status) and the paired comm_secret row (pgcrypto pgp_sym_encrypt with app.comm_secret_key GUC; omitted passwords preserved via COALESCE)." | path="functions/comm_channel_set_batch.sql"
 ## function comm_create_batch | doc="comm.create — admin-only insert of a comm card under a task. Mints a unique 10-char alphanumeric thread_id, writes title/channel_ref/thread_id/comm_status via the ordinality-join idiom, optional comm_recipients + initial_message → reply_body, appends to task.comms." | path="functions/comm_create_batch.sql"
 ## function card_undelete_batch | path="functions/card_undelete_batch.sql"

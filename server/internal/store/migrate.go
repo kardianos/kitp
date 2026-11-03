@@ -1041,13 +1041,124 @@ WHERE id !~ '^[0-9a-f]{64}$';`,
 		id:  "0022_oidc_state_nonce",
 		sql: `ALTER TABLE oidc_state ADD COLUMN IF NOT EXISTS nonce text NOT NULL DEFAULT '';`,
 	},
+	{
+		// Dates are YYYY-MM-DD and nothing else (docs/MAIL_INTAKE_AND_CALENDARS.md
+		// §1): attribute.update and card.insert now refuse anything else, but
+		// nothing checked before, so the API or MCP could store any string in
+		// due_date — and Overdue / Due soon / calendar feeds compare the ISO
+		// text. A timestamp keeps its date part; anything else is cleared
+		// (stored as JSON null, as attribute.update removes a value). Each
+		// change writes an attr_update activity row by the System User, so
+		// the old value stays in the task's history. Idempotent — a second
+		// run finds only valid dates.
+		id: "0023_due_date_iso",
+		sql: `
+DO $$
+DECLARE
+  _def bigint := (SELECT id FROM attribute_def WHERE name = 'due_date');
+  _r   record;
+  _new jsonb;
+  _act bigint;
+BEGIN
+  IF _def IS NULL THEN
+    RETURN;
+  END IF;
+  FOR _r IN
+    SELECT av.card_id, av.value FROM attribute_value av
+    WHERE av.attribute_def_id = _def
+      AND jsonb_typeof(av.value) <> 'null'
+      AND NOT (jsonb_typeof(av.value) = 'string' AND iso_date_ok(av.value #>> '{}'))
+  LOOP
+    _new := 'null'::jsonb;
+    IF jsonb_typeof(_r.value) = 'string'
+       AND (_r.value #>> '{}') ~ '^\d{4}-\d{2}-\d{2}[Tt ]'
+       AND iso_date_ok(substr(_r.value #>> '{}', 1, 10)) THEN
+      _new := to_jsonb(substr(_r.value #>> '{}', 1, 10));
+    END IF;
+    INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
+    VALUES (_r.card_id, 'attr_update', _def, _r.value, _new, 1)
+    RETURNING id INTO _act;
+    UPDATE attribute_value SET value = _new, last_activity_id = _act
+    WHERE card_id = _r.card_id AND attribute_def_id = _def;
+  END LOOP;
+END $$;`,
+	},
+	{
+		// Calendar feeds (docs/MAIL_INTAKE_AND_CALENDARS.md §8). The seed rows
+		// reach fresh installs only, so add them here too: the global
+		// calendar card_type, the past_days / future_days attribute_defs,
+		// its five edges (title, subscriber = the owner, predicate = the
+		// card filter, the two windows) and admin card.* for clean-up (the
+		// owner writes through calendar.set / .delete, which check it).
+		// Idempotent — ON CONFLICT DO NOTHING throughout.
+		id: "0024_calendars",
+		sql: `
+DO $$
+DECLARE
+  _cal bigint;
+BEGIN
+  INSERT INTO card_type (name, parent_card_type_id, allow_self_parent, is_built_in, uses_phase)
+  VALUES ('calendar', NULL, false, true, false)
+  ON CONFLICT (name) DO NOTHING;
+  SELECT id INTO _cal FROM card_type WHERE name = 'calendar';
+
+  INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+  VALUES ('past_days', 'number', NULL, true, false),
+         ('future_days', 'number', NULL, true, false)
+  ON CONFLICT (name) DO NOTHING;
+
+  INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+  SELECT _cal, ad.id, e.req, e.ord
+  FROM (VALUES ('title', true, 0), ('subscriber', true, 1), ('predicate', false, 2),
+               ('past_days', false, 3), ('future_days', false, 4)) AS e(attr, req, ord)
+  JOIN attribute_def ad ON ad.name = e.attr
+  ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;
+
+  INSERT INTO role_grant (role_id, card_type_id, process_id)
+  SELECT r.id, _cal, p.id
+  FROM role r CROSS JOIN process p
+  WHERE r.name = 'admin'
+    AND p.name IN ('card.create', 'card.update', 'card.delete', 'comment.post', 'user_card_sort.set')
+  ON CONFLICT (role_id, card_type_id, process_id) DO NOTHING;
+END $$;`,
+	},
+	{
+		// Two mail account settings and two message fields
+		// (docs/MAIL_INTAKE_AND_CALENDARS.md, "Sending replies on" and
+		// "Attachments from email"): relay_replies (on | off) sends an
+		// emailed reply on to the rest of the thread; email_attachments
+		// (keep | drop) keeps or drops files on incoming mail. A message
+		// copy names its original in relay_of; attachments_left_off counts
+		// the files a "drop" account didn't keep. The seed rows reach fresh
+		// installs only. Existing accounts get no value, which reads as
+		// off / keep: nothing they do changes until an admin switches it.
+		// Idempotent — ON CONFLICT DO NOTHING.
+		id: "0025_relay_and_email_attachments",
+		sql: `
+INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+VALUES ('relay_replies', 'text', NULL, true, false),
+       ('email_attachments', 'text', NULL, true, false),
+       ('relay_of', 'number', NULL, true, false),
+       ('attachments_left_off', 'number', NULL, true, false)
+ON CONFLICT (name) DO NOTHING;
+INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+SELECT ct.id, ad.id, false, v.ord
+FROM (VALUES ('comm_channel', 'relay_replies', 15), ('comm_channel', 'email_attachments', 16),
+             ('reply_body', 'relay_of', 6), ('reply_body', 'attachments_left_off', 7)) AS v(ct, attr, ord)
+JOIN card_type ct ON ct.name = v.ct
+JOIN attribute_def ad ON ad.name = v.attr
+ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that
 // CREATE TABLE IF NOT EXISTS can't add to an already-initialised DB. Applied
 // before the generated DDL (see ApplySchema). Must stay idempotent and use
 // IF EXISTS / IF NOT EXISTS so it's a no-op on both fresh and migrated DBs.
-const preDDL = `ALTER TABLE IF EXISTS attribute_value ADD COLUMN IF NOT EXISTS value_type_id int;`
+// comm_log.route_id is the inbound route an event came through, indexed for
+// the Comm log's route filter (docs/MAIL_INTAKE_AND_CALENDARS.md).
+const preDDL = `ALTER TABLE IF EXISTS attribute_value ADD COLUMN IF NOT EXISTS value_type_id int;
+ALTER TABLE IF EXISTS comm_log ADD COLUMN IF NOT EXISTS route_id bigint;`
 
 // ledgerDDL creates the schema-version ledger. Kept here (not in the generated
 // schema) because it must exist before the generated DDL/seed is gated on it.

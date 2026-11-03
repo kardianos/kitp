@@ -28,6 +28,8 @@ DECLARE
     _kind text;
     _since text;
     _limit int;
+    _channel_id bigint;
+    _route_id bigint;
 BEGIN
     FOR _idx, _raw IN
         SELECT (r.ord - 1)::int, r.value
@@ -45,7 +47,24 @@ BEGIN
         END IF;
 
         _kind := COALESCE(_raw->>'kind', '');
+        -- Optional: one mail account, one inbound route (the "View log"
+        -- links on Comm Channels land filtered to these).
+        IF COALESCE(_raw->>'channel_id', '') !~ '^\d*$' OR COALESCE(_raw->>'route_id', '') !~ '^\d*$' THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comm_log.list: channel_id / route_id must be card ids'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        _channel_id := NULLIF(NULLIF(_raw->>'channel_id', ''), '0')::bigint;
+        _route_id := NULLIF(NULLIF(_raw->>'route_id', ''), '0')::bigint;
         _since := COALESCE(_raw->>'since', '');
+        -- RFC 3339 only (iso_timestamp_ok): a bare ::timestamptz would take
+        -- 'now' or 'infinity', and a malformed value failed the whole batch.
+        IF _since <> '' AND NOT iso_timestamp_ok(_since) THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('comm_log.list: since: not an RFC 3339 timestamp: %s', _since),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
         _limit := COALESCE(NULLIF(_raw->>'limit', '')::int, 200);
         IF _limit <= 0 THEN
             _limit := 200;
@@ -63,6 +82,7 @@ BEGIN
                            jsonb_build_object(
                                'id',           cl.id::text,
                                'channel_id',   COALESCE(cl.channel_id, 0)::text,
+                               'route_id',     COALESCE(cl.route_id, 0)::text,
                                'channel_name', COALESCE((
                                    SELECT av.value #>> '{}'
                                    FROM attribute_value av
@@ -77,6 +97,8 @@ BEGIN
                     FROM comm_log cl
                     WHERE cl.project_id = _project_id
                       AND (_kind = '' OR cl.kind = _kind)
+                      AND (_channel_id IS NULL OR cl.channel_id = _channel_id)
+                      AND (_route_id IS NULL OR cl.route_id = _route_id)
                       AND cl.at >= COALESCE(NULLIF(_since, '')::timestamptz,
                                             now() - interval '24 hours')
                     ORDER BY cl.at DESC, cl.id DESC

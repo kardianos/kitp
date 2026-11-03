@@ -77,14 +77,15 @@ BEGIN
 
         _expires_at := NULL;
         IF _expires_raw IS NOT NULL AND _expires_raw <> '' THEN
-            BEGIN
-                _expires_at := _expires_raw::timestamptz;
-            EXCEPTION WHEN OTHERS THEN
+            -- RFC 3339 only (iso_timestamp_ok): a bare ::timestamptz also
+            -- took 'infinity' and 'tomorrow'.
+            IF NOT iso_timestamp_ok(_expires_raw) THEN
                 RETURN QUERY SELECT _idx, false, 'validation'::text,
-                    format('user_token.create: bad expires_at: %s', _expires_raw),
+                    format('user_token.create: bad expires_at (RFC 3339): %s', _expires_raw),
                     NULL::jsonb;
                 CONTINUE;
-            END;
+            END IF;
+            _expires_at := _expires_raw::timestamptz;
         END IF;
 
         -- Mint 32 random bytes, base64url-encode (no padding,

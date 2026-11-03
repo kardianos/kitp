@@ -29,8 +29,9 @@
 --      list, decode (tolerating string + numeric forms), append, and
 --      write back with one activity + upsert.
 --   8. Optional attachment linking: validate every supplied
---      attachment_id belongs to the comm's host, then bulk
---      insert into reply_body_attachment.
+--      attachment_id belongs to the thread or its task (a thread keeps
+--      the files that came by email; the task has its own), then bulk
+--      insert into reply_body_attachment — a link, never a copy.
 --   9. The author joins comm_recipients, so the next reply by someone
 --      else reaches them.
 --
@@ -330,11 +331,11 @@ BEGIN
             SELECT count(*) INTO _att_valid_count
             FROM attachment a
             WHERE a.id = ANY(_att_ids)
-              AND a.card_id = _host_id
+              AND a.card_id IN (_comm_id, _host_id)
               AND a.deleted_at IS NULL;
             IF _att_valid_count <> array_length(_att_ids, 1) THEN
                 RETURN QUERY SELECT _idx, false, 'attachment_not_on_task'::text,
-                    'reply.post: one or more attachment_ids do not belong to this comm''s task (or, for a thread on its own, the thread)'::text,
+                    'reply.post: one or more attachment_ids are not on this thread or its task'::text,
                     NULL::jsonb;
                 CONTINUE;
             END IF;

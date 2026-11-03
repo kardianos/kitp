@@ -63,9 +63,26 @@ export class AccountPage extends Control<AccountPageConfig> {
     this.listen(logoutBtn, 'click', () => logout());
 
     const notifications = this.buildNotifications();
-    this.el.append(h1, card, logoutBtn, notifications.section);
+    const calendars = this.buildCalendars();
+    this.el.append(h1, card, logoutBtn, notifications.section, calendars.section);
     // Spawn once the host is in the page (the list's virtual window measures it).
     this.spawn('MasterDetail', masterDetailScreen(MY_SUBSCRIPTIONS_SCREEN), notifications.host);
+    this.spawn('AccountCalendars', { type: 'AccountCalendars' }, calendars.host);
+  }
+
+  /** The Calendars section: your due dates as calendar feeds
+   *  (docs/MAIL_INTAKE_AND_CALENDARS.md §8). The control carries its own
+   *  instructions. */
+  private buildCalendars(): { section: HTMLElement; host: HTMLElement } {
+    const section = document.createElement('section');
+    section.className = 'account-page__section';
+    section.dataset.accountCalendars = '';
+    const h2 = document.createElement('h2');
+    h2.className = 'account-page__subtitle';
+    h2.textContent = 'Calendars';
+    const host = document.createElement('div');
+    section.append(h2, host);
+    return { section, host };
   }
 
   /** The Notifications section: heading + intro + the subscriptions-manager host. */

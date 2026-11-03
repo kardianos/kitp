@@ -1,44 +1,46 @@
 # Comm log
 
-A read-only stream of comm-channel events for debugging and audit. Every message the runtime fetches from IMAP, hands off to SMTP, or refuses with an error lands here as a row in the ring buffer.
+What the active project's mail accounts received, sent, refused or couldn't read — newest first. It is the first place to look when mail isn't arriving, isn't going out, or lands somewhere unexpected.
 
-The log is project-scoped, but the title-bar **all** option fans out into one `comm_log.list` per project the admin can see and merges results into a single stream.
+## Filters
 
-## Header controls
+| Filter | What it does |
+| ------ | ------------ |
+| **Account** | One mail account, or all of them. |
+| **Route** | With an account picked: one of its inbound routes (a POST URL or SMTP address), or all. |
+| **Kind** | One kind of event (below), or any. |
+| **Since** | The last hour, 24 hours (the default), 7 days or 30 days. |
 
-| Control      | Behavior                                                                |
-| ------------ | ----------------------------------------------------------------------- |
-| **Project**  | Filter to one project, or `all` for the union across every visible project. |
-| **Kind**     | Chip row that toggles individual event kinds. "Any" clears the filter.  |
-| **Window**   | Time window — `1h`, `24h`, `7d`, or a custom range. Default is 24h, matching the server's fallback when no `since` is given. |
+The filters are part of the page address (`/admin/comm_log?channel=…&route=…&kind=…&window=…`), so a view can be bookmarked or sent to someone. **View log** on a route or account in Comm Channels opens the log already filtered to it.
 
-## Event kinds
+Each row reads as a sentence — who it was from, the subject, what it became or why it was refused. **Open thread** goes to the thread a message became; **Only this route** narrows to the route a row came through; **Details** shows the whole record.
 
-| Kind                | Meaning                                                                  |
-| ------------------- | ------------------------------------------------------------------------ |
-| `inbound_received`  | An IMAP message was fetched and parsed successfully.                     |
-| `inbound_routed`    | The parsed message was routed to a domain handler (new task / reply / refused). |
-| `inbound_refused`   | A message hit a refusal — unknown sender, missing required header, blocklist. |
-| `outbound_queued`   | A handler enqueued a message for SMTP.                                   |
-| `outbound_sent`     | SMTP accepted the message and the runtime moved the row to "sent".       |
-| `outbound_bounced`  | SMTP rejected the message or a bounce returned later.                    |
-| `channel_fault`     | The poller / sender flipped the channel into `disabled-fault`. `detail` carries the diagnostic. |
-| `channel_recovered` | A previously faulted channel reconnected cleanly.                        |
+## Kinds
 
-## Reading a row
+| Kind | Meaning |
+| ---- | ------- |
+| `received` | A message was filed. Its outcome: *a reply on its thread*, *a new task and thread*, *a new thread*, or *nothing* (the account's New mail is set to ignore). Details name the transport (IMAP, POST or SMTP) and, for POST / SMTP, the route. |
+| `duplicate` | A copy of a message already filed in this project — another copy of the same Message-ID, from any account or route. It isn't filed again; Open thread goes to where the first copy went. |
+| `inbound_refused` | A route's filter turned a message away. `check` says which (`sources`, `require_tls`, `sender_hosts`, `envelope_from`, `header_from`, `dkim`, `signature` for Mailgun, `raw_email` for Postmark, `size`, `body`) and `reason` why. |
+| `unmatched_thread` | New mail on an account whose New mail is *is ignored*: only replies to existing threads come in. |
+| `parse_error` | The message couldn't be read as mail. POST and SMTP log it and drop it (retrying can't help); IMAP marks it read and leaves it in the mailbox. |
+| `dkim_result` | DKIM in *record only* mode: which signatures checked out. Nothing is refused. |
+| `dkim_failed` | DKIM required, the signature didn't check out, and the route files it anyway (*on failure: file*). |
+| `notification_reply` | A reply to a notification digest; dropped, so answering a digest never files a task. |
+| `attachments_dropped` | A message filed without its files, because the account's **Attachments from email** is *not kept*. Details give how many and their names. |
+| `relay_queued` | A reply that reached only the account was sent on to the thread's other people (**Emailed replies**). `to` lists them; the copy's own `send_ok` / `send_fail` follows. |
+| `relay_skipped` | A reply that wasn't sent on. `reason`: `auto_submitted`, `precedence`, `auto_reply`, `mailing_list`, `report` (a delivery or read report), `bounce`, `notification_reply`, `own_address` (from the account itself) or `no_from_address` (the account has none to send from). |
+| `poll` | An IMAP poll and how many messages it fetched — the account is alive. |
+| `imap_auth_fail` | IMAP refused the sign-in. After a credential failure the account is set to *fault* until fixed. |
+| `send_ok` / `send_bounce` / `send_fail` | A reply kitp sent: accepted, refused by the receiving server (5xx), or failed (a connection or other error). A bounced or failed reply isn't sent again; it shows as such on its thread. |
+| `notify_ok` / `notify_bounce` / `notify_fail` | The same for notification digests. |
 
-Each row renders:
+## Troubleshooting
 
-- **Time** — UTC timestamp of the event.
-- **Kind chip** — colour-coded by family (inbound / outbound / control).
-- **Channel** — the channel name (or "system" when no channel was involved).
-- **Detail** — kind-specific structured content. Inbound rows show sender + subject; outbound rows show recipient + subject; fault rows show the error string. The renderer lives in `admin_comm_log_helpers.ts` so the formatting is unit-testable.
+- **Nothing at all for a POST or SMTP route:** the provider isn't reaching kitp. For POST, check the URL in the provider and that it gets 200 back. For SMTP, check the MX record and port 25 (Admin → Mail intake), and its *Recent refusals*: an unknown address, a client that spoke before the greeting or an untrusted PROXY header are refused before reaching any account, so they show there, not here.
+- **`inbound_refused`:** the route's filters are stricter than the sender. The reason says which value didn't match; loosen or fix the filter on the route.
+- **`duplicate` where you expected a new thread:** that Message-ID was already filed in this project (perhaps through another account). Dedupe remembers a message for 14 days after its last copy (`KITP_COMM_DEDUPE_DAYS`).
+- **`unmatched_thread`:** set the account's New mail to create a task or a thread.
+- **Someone on a thread didn't get a reply that was sent on:** look for `relay_queued` (who it went to) and the copy's `send_fail` / `send_bounce`. No row means nobody was left to send to — everyone was on the reply already, or the rest are kitp users, who aren't sent copies.
 
-## Retention
-
-The log is a per-project ring buffer (a fixed window of rows kept in `comm_log`; older rows are pruned by a background job). It's a debugging surface — long-term audit lives in the activity stream, not here.
-
-## Related admin pages
-
-- **Comm channels** — author and pause the channels whose events surface here.
-- **Activity sinks** — push the *system* activity stream outbound. Comm log is the inverse: incoming comm events landing on the inbound side.
+Rows are kept 30 days (`KITP_COMM_LOG_RETENTION_DAYS`).

@@ -236,6 +236,14 @@ the sweep, so the job shows red — with the stack in the log, instead of
 ending kitpd. Every HTTP route recovers the same way (a logged 500). A
 goroutine you start yourself must wrap its body in `job.Protect` too.
 
+Inbound mail from every transport (IMAP polling, POST from a provider,
+the SMTP listener) is filed by one step, `comm.Intake` / `filer.processOne`
+(`internal/dom/comm/intake.go`), which dedupes by Message-ID per project
+first. A new way in calls it rather than filing mail itself. Files on
+incoming mail are stored on the thread (the comm), never on its task, and
+never twice (matched by sha256); only `comm.attachment_to_task` moves one
+onto the task.
+
 Session and token managers carry an in-memory touch buffer.
 Register their `RunTouch` on the scheduler; AFTER `sched.Wait()`
 during shutdown, call `Flush(ctx)` on each so the final batch
@@ -254,6 +262,23 @@ an HTTP response, etc.) or explicitly ignored against a
 specific value via `errors.Is`. Don't write `_ = err` to silence
 the compiler; if an error is truly safe to drop, leave a comment
 explaining which condition is being ignored and why.
+
+## Dates on the way in
+
+Every date entering kitp is `YYYY-MM-DD` and a real day; every timestamp
+is RFC 3339. Check with `iso_date_ok` / `iso_timestamp_ok` in SQL (then
+cast) and `internal/isodate` in Go — never a bare `::date` /
+`::timestamptz`, which also takes `today`, `now`, `infinity` and
+locale-ordered dates. Stored dates are compared as ISO text (Overdue, Due
+soon, calendar feeds), so a looser value silently breaks them. See
+`docs/MAIL_INTAKE_AND_CALENDARS.md` §1.
+
+## Secrets in URL paths
+
+A route whose path carries a secret (calendar feeds, inbound mail) calls
+`logpath.Mark(prefix)` when it mounts, and every log line that prints a
+request path passes it through `logpath.Of` (`internal/obs/logpath`).
+`scripts/check-log-paths.sh` (in `make lint`) fails on one that doesn't.
 
 ## JSON encoding
 

@@ -92,6 +92,7 @@ demo:
 lint:
 	cd server && $(GO) vet ./...
 	./scripts/check-recursive-depth.sh
+	./scripts/check-log-paths.sh
 
 # ---------- web client (pure TS, esbuild only) ------------------------------
 

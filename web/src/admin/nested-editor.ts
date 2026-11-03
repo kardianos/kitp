@@ -239,6 +239,11 @@ export interface CommChannelDraft {
   intakeMode: string;
   /** Quoting in outbound replies: 'off' | 'last' | 'all'. */
   replyQuote: string;
+  /** Whether an emailed reply is sent on to the thread's other people:
+   *  'on' | 'off' (docs/MAIL_INTAKE_AND_CALENDARS.md). */
+  relayReplies: string;
+  /** Files on incoming mail: 'keep' | 'drop'. */
+  emailAttachments: string;
 }
 
 export function emptyChannelDraft(): CommChannelDraft {
@@ -252,6 +257,10 @@ export function emptyChannelDraft(): CommChannelDraft {
     // the setting keeps what it did (channelRowToDraft).
     intakeMode: 'task',
     replyQuote: 'last',
+    // A new account sends emailed replies on to the rest of the thread; an
+    // existing one without the setting doesn't (channelRowToDraft).
+    relayReplies: 'on',
+    emailAttachments: 'keep',
   };
 }
 
@@ -278,6 +287,9 @@ export function channelRowToDraft(row: CommChannel): CommChannelDraft {
     signatureMode: !row.signatureMode ? 'comm_name' : row.signatureMode,
     intakeMode: effectiveIntakeMode(row),
     replyQuote: !row.replyQuote ? 'last' : row.replyQuote,
+    // Unset reads as the server does: off, and keep.
+    relayReplies: row.relayReplies === 'on' ? 'on' : 'off',
+    emailAttachments: row.emailAttachments === 'drop' ? 'drop' : 'keep',
   };
 }
 
@@ -337,6 +349,8 @@ export function channelDraftToSet(d: CommChannelDraft, projectId: string): Recor
   if (d.signatureMode !== '') out['signatureMode'] = d.signatureMode;
   if (d.intakeMode !== '') out['intakeMode'] = d.intakeMode;
   if (d.replyQuote !== '') out['replyQuote'] = d.replyQuote;
+  if (d.relayReplies !== '') out['relayReplies'] = d.relayReplies;
+  if (d.emailAttachments !== '') out['emailAttachments'] = d.emailAttachments;
   return out;
 }
 
@@ -379,6 +393,19 @@ export const REPLY_QUOTE_OPTIONS: ReadonlyArray<{ value: string; label: string }
   { value: 'off', label: 'Off' },
   { value: 'last', label: 'Last message' },
   { value: 'all', label: 'Whole conversation' },
+];
+
+/** Emailed replies (relay_replies) options: whether a reply that reached
+ *  only this account is sent on to the thread's other people. */
+export const RELAY_REPLIES_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'on', label: 'Are sent on to the rest of the thread' },
+  { value: 'off', label: 'Are only filed in kitp' },
+];
+
+/** Attachments from email (email_attachments) options. */
+export const EMAIL_ATTACHMENTS_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'keep', label: 'Kept on the thread' },
+  { value: 'drop', label: 'Not kept (the message says how many were left off)' },
 ];
 
 /* -------------------------------------------------------------------------- */

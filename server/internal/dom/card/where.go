@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kitp/kitp/server/internal/isodate"
 	"slices"
 	"strconv"
 	"strings"
@@ -200,6 +201,32 @@ func classGuard(attr string, snap *schema.Snapshot) string {
 	}
 }
 
+// checkDateValues refuses a value that isn't a stored-form date
+// (YYYY-MM-DD, isodate) in an equality leaf on a date attribute: dates are
+// compared as ISO text, so anything else could never match and is a mistake.
+// Mirrors the same check in card_compile_predicate.sql. Relative ops
+// (before_today, within_days …) take a day count and aren't checked here.
+func checkDateValues(attr, op string, values []json.RawMessage, snap *schema.Snapshot) error {
+	switch op {
+	case "=", "eq", "!=", "ne", "in", "not in":
+	default:
+		return nil
+	}
+	if snap.ValueType(attr) != "date" {
+		return nil
+	}
+	for _, raw := range values {
+		if string(raw) == "null" {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil || !isodate.ValidDate(s) {
+			return fmt.Errorf("%s: %s is not a date (YYYY-MM-DD)", attr, raw)
+		}
+	}
+	return nil
+}
+
 func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 	if childType, attr, ok := strings.Cut(n.Attr, "."); ok {
 		return compileChildPath(childType, attr, n, c)
@@ -217,6 +244,9 @@ func compileLeaf(n CardWhereTreeNode, c *compileCtx) (string, error) {
 		if op != "within_last_days" {
 			return "", fmt.Errorf("approval_asked_at supports only within_last_days, got %q", n.Op)
 		}
+	}
+	if err := checkDateValues(n.Attr, op, n.Values, snap); err != nil {
+		return "", err
 	}
 	switch op {
 	case "snippet":

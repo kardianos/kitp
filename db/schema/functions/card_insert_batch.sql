@@ -310,6 +310,24 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- 7b. Dates are YYYY-MM-DD and a real day (iso_date_ok). Every date
+        --     entering kitp is checked; see docs/MAIL_INTAKE_AND_CALENDARS.md §1.
+        _rej_msg := NULL;
+        FOR _attr_name, _attr_value IN
+            SELECT a.key, a.value FROM jsonb_each(_attrs) a
+            JOIN attribute_def ad ON ad.name = a.key AND ad.value_type = 'date'
+            WHERE jsonb_typeof(a.value) <> 'null'
+        LOOP
+            IF jsonb_typeof(_attr_value) <> 'string' OR NOT iso_date_ok(_attr_value #>> '{}') THEN
+                _rej_msg := format('card.insert: %s: not a date (YYYY-MM-DD): %s', _attr_name, _attr_value::text);
+                EXIT;
+            END IF;
+        END LOOP;
+        IF _rej_msg IS NOT NULL THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text, _rej_msg, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 8. Per-project scope check for card_ref / card_ref[] initial
         --    values. Only runs when the new card has a parent (top-level
         --    cards have no enclosing project to clash with).

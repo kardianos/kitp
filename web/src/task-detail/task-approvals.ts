@@ -35,6 +35,7 @@
 
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { icon } from '../ui/icons.js';
+import { bindSubmitShortcut, submitShortcutHint } from '../ui/submit-shortcut.js';
 import type { RefPicker } from '../ui/ref-picker.js';
 import { localTimeEl } from '../util/datetime.js';
 import { ACTIVITY_ACTORS_SPEC, type ActivityActorsOutput } from './comment-specs.js';
@@ -407,7 +408,11 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
       reason.className = 'task-approvals__reason';
       reason.dataset.approvalReason = '';
       reason.rows = 2;
-      reason.placeholder = 'Why — shown with your vote in the comments';
+      reason.placeholder = `Why — shown with your vote in the comments${submitShortcutHint('vote approve')}`;
+      // The shared send shortcut votes approve, with the reason.
+      bindSubmitShortcut((el, t, fn) => this.listen(el, t, fn), reason, () => {
+        (row.querySelector('[data-approval-vote="approve"]') as HTMLButtonElement | null)?.click();
+      });
       row.append(reason);
       queueMicrotask(() => reason.focus());
     });
@@ -578,7 +583,8 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     const paintEmail = (): void => {
       const caption = msgField.querySelector('.task-approvals__label');
       if (caption !== null) caption.textContent = channel === null ? 'Note' : 'Message';
-      msg.placeholder = channel === null ? 'Note to the people asked (optional)' : 'Message emailed to the people asked';
+      msg.placeholder =
+        (channel === null ? 'Note to the people asked (optional)' : 'Message emailed to the people asked') + submitShortcutHint('ask');
       emailHint.hidden = channel === null;
       if (channel === null) return;
       const noEmail = (this.people ?? [])
@@ -601,6 +607,8 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     submit.className = 'btn btn-primary';
     submit.dataset.approvalAskSubmit = '';
     submit.textContent = 'Ask';
+    // The shared send shortcut in the note / message box asks.
+    bindSubmitShortcut((el, t, fn) => this.listen(el, t, fn), msg, () => submit.click());
     this.listen(submit, 'click', () => {
       const a = this.actionFor(action.value);
       const ids = people.picked();
@@ -650,12 +658,13 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
     reason.className = 'task-approvals__reason';
     reason.dataset.approvalReason = '';
     reason.rows = 2;
-    reason.placeholder = 'Reason (optional)';
+    reason.placeholder = `Reason (optional)${submitShortcutHint('vote approve')}`;
     const send = (decision: Verdict): void => {
       const a = this.actionFor(action.value);
       if (a === undefined || this.taskId === null) return;
       this.doDecide({ fromStatusId: a.from.id, toStatusId: a.to.id, decision, reason: reason.value });
     };
+    bindSubmitShortcut((el, t, fn) => this.listen(el, t, fn), reason, () => send('approve'));
     const approve = document.createElement('button');
     approve.type = 'button';
     approve.className = 'btn task-approvals__vote';

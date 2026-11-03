@@ -16,7 +16,7 @@ import (
 // where registerHandlers populates the full process-global registry.
 func TestCuratedToolsAreRegistered(t *testing.T) {
 	reg.Reset()
-	registerHandlers(nil, nil)
+	registerHandlers(nil, nil, nil)
 
 	for _, name := range mcp.CuratedToolNames() {
 		endpoint, action, ok := strings.Cut(name, "__")

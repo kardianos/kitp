@@ -76,8 +76,10 @@ Code that read "a comm's parent is its task" now asks whether the parent
 attachments must live) and the mail sender (the `Task:` line and deep
 link), the unread count (which finds the project through
 `card_enclosing_project`), the activity feed (a thread on its own groups
-under itself), inbound attachments (stored on the thread when it has no
-task; Attach moves them to the task), and the permission checks of reply,
+under itself), inbound attachments (always stored on the thread; Attach
+moves none — **Add to task** moves one file onto the task, see
+[MAIL_INTAKE_AND_CALENDARS.md](MAIL_INTAKE_AND_CALENDARS.md), "Second
+round"), and the permission checks of reply,
 ACK and recipient writes, which check the task grant for a thread on a
 task and the comm grant (worker / manager hold `card.update` on comm) for
 a thread on its own.
@@ -102,6 +104,23 @@ its New mail setting defaults to *creates a task and a thread* in the
 form. For a public knowledge base, add Content and Sites with the Help
 center theme.
 
+## Files from email, and replies sent on
+
+A file on incoming mail stays on the thread, under its message; **Add to
+task** moves it into the task's Attachments. A mail account can drop such
+files instead (**Attachments from email**), and can send an emailed reply
+that reached only the account on to the thread's other people (**Emailed
+replies**). See [MAIL_INTAKE_AND_CALENDARS.md](MAIL_INTAKE_AND_CALENDARS.md),
+"Second round".
+
+## Other ways in, dedupe
+
+Besides IMAP polling, a mail account can take mail POSTed by a provider
+(Cloudflare, Mailgun, Postmark, SES via Lambda) or sent to kitp's own SMTP
+listener, through secret routes with optional filters; every copy of a
+message is filed once per project. See
+[MAIL_INTAKE_AND_CALENDARS.md](MAIL_INTAKE_AND_CALENDARS.md).
+
 ## As built
 
 | Piece | Where |
@@ -110,7 +129,8 @@ center theme.
 | Intake | `imap.go` `processOne` → `createTaskAndComm` / `createComm` by `ResolveIntakeMode` |
 | Quoting | `quote.go` (`SplitQuoted`, `formatQuote`), `smtp.go` `loadEarlier` + `buildMIME` |
 | Trimming | `web/src/task-detail/comm-quoted.ts` (`splitQuoted`, the same rules), CommThreads *Show quoted text* |
-| Attach | `comm.attach {comm_id, task_id \| new_task_title}` (`comm_attach_batch.sql`): same project, Tasks on (`area_off`), task `card.update` (and `card.create` to make one); locks the thread and its tasks; `comm.list_for_task {comm_id}` loads one thread |
+| Attach | `comm.attach {comm_id, task_id \| new_task_title}` (`comm_attach_batch.sql`): same project, Tasks on (`area_off`), task `card.update` (and `card.create` to make one); locks the thread and its tasks; moves no files; `comm.list_for_task {comm_id}` loads one thread |
+| Files from email | on the thread; `comm.attachment_to_task` (Add to task) moves one onto the task — MAIL_INTAKE_AND_CALENDARS.md |
 | Thread page | `/thread/:id` → TaskDetail with the `comm` profile (detail-profiles.ts); ThreadPlacement (TASK section); Detach in a task's COMMS |
 | Comms screen | CardListBody `orphan: {label, route}` (screen-resolve.ts) |
 | Help desk | `db/schema/bundles/helpdesk.hcsv`; presets `help_desk`, `shared_inbox` |

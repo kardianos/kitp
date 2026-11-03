@@ -11,6 +11,7 @@
  */
 
 
+import { isSubmitShortcut } from './submit-shortcut.js';
 import { icon } from './icons.js';
 
 export interface EditableFieldOptions {
@@ -102,7 +103,7 @@ export class EditableField {
       if (ev.key === 'Escape') {
         ev.preventDefault();
         cancel();
-      } else if (ev.key === 'Enter' && (!this.opts.multiline || ev.metaKey || ev.ctrlKey)) {
+      } else if (ev.key === 'Enter' && (!this.opts.multiline || isSubmitShortcut(ev))) {
         ev.preventDefault();
         commit();
       }

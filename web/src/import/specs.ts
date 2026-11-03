@@ -64,6 +64,7 @@ export const TARGET_ATTRS: readonly string[] = [
   'tags',
   'description',
   'sort_order',
+  'due_date',
 ] as const;
 
 /** Sentinel value the mapping uses to drop a column. */

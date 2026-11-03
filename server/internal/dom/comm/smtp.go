@@ -219,6 +219,10 @@ type pendingReply struct {
 	toIsUser bool
 	// replyQuote is the channel's resolved reply_quote: off | last | all.
 	replyQuote string
+	// relayOf is the message this one is a copy of, when kitp is sending
+	// an emailed reply on to the rest of the thread (relay.go); 0 for a
+	// message written in kitp.
+	relayOf int64
 }
 
 // RunOnce executes one scan + send cycle synchronously. Exported so
@@ -292,7 +296,15 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 		taskURL = s.publicURL + "/task/" + strconv.FormatInt(r.taskID, 10)
 	}
 	quote := ""
-	if r.replyQuote != QuoteOff {
+	var extra []mimeHeader
+	if r.relayOf != 0 {
+		// A copy of someone's emailed reply: their words only — no
+		// signature, quote or deep link of ours — and marked as sent on
+		// automatically (RFC 3834), so an auto-reply to it isn't sent on.
+		r.signature = ""
+		taskURL = ""
+		extra = append(extra, mimeHeader{"Auto-Submitted", "auto-forwarded"})
+	} else if r.replyQuote != QuoteOff {
 		earlier, err := s.loadEarlier(ctx, r)
 		if err != nil {
 			// Quoting is a courtesy; a failed read sends the reply without it.
@@ -302,7 +314,13 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 		}
 		quote = formatQuote(earlier)
 	}
-	msg := buildMIME(r.from, r.to, r.subject, r.body, r.signature, r.threadID, taskURL, quote, r.taskID, atts)
+	msg := buildMIME(r.from, r.to, r.subject, r.body, r.signature, r.threadID, taskURL, quote, r.taskID, atts, extra...)
+	// The envelope sender is the bare address; the From header may name
+	// someone ("Ada via Support" <support@…>) for a copy.
+	envelopeFrom := r.from
+	if a, err := mail.ParseAddress(r.from); err == nil {
+		envelopeFrom = a.Address
+	}
 
 	var sendErr error
 	if s.dryRun {
@@ -312,7 +330,7 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 			slog.String("to", r.to),
 			slog.Int("message_bytes", len(msg)))
 	} else {
-		sendErr = s.transport(ctx, r.smtpHost, r.smtpPort, r.smtpUser, r.smtpPass, r.from, r.to, msg)
+		sendErr = s.transport(ctx, r.smtpHost, r.smtpPort, r.smtpUser, r.smtpPass, envelopeFrom, r.to, msg)
 	}
 
 	newStatus, logKind, detail := classifySendResult(sendErr, r.to)
@@ -402,6 +420,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			          JOIN user_account ua ON ua.id = (av.value)::text::bigint
 			          WHERE av.card_id = rb.id AND ad.name='reply_author'
 			            AND jsonb_typeof(av.value)='number'), '')                                                                                                                     AS author_name,
+			COALESCE((SELECT (value)::text::bigint FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = rb.id AND ad.name='relay_of' AND jsonb_typeof(value)='number'), 0) AS relay_of,
 			COALESCE(
 				(SELECT pgp_sym_decrypt(cs.smtp_password, current_setting('app.comm_secret_key'))
 					FROM comm_secret cs WHERE cs.channel_card_id = ch.id AND cs.smtp_password IS NOT NULL),
@@ -450,6 +469,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 			&r.taskID, &r.toIsUser,
 			&r.smtpHost, &r.smtpPort, &r.smtpUser, &r.fromAddress,
 			&r.channelName, &r.signatureMode, &r.replyQuote, &r.authorName,
+			&r.relayOf,
 			&r.smtpPass,
 		); err != nil {
 			return nil, err
@@ -472,7 +492,8 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 
 // loadEarlier reads the messages of r's thread that came before it, newest
 // first — only the one before when the channel quotes the last message.
-// Failed and bounced messages never reached anyone and are skipped. An
+// Failed and bounced messages never reached anyone and are skipped, and so
+// are copies kitp sent on (relay.go), which repeat an earlier message. An
 // outbound message's sender is the channel's from address, named with the
 // channel's title when the stored From is a bare address.
 func (s *SMTPSender) loadEarlier(ctx context.Context, r pendingReply) ([]quotedMessage, error) {
@@ -500,6 +521,8 @@ func (s *SMTPSender) loadEarlier(ctx context.Context, r pendingReply) ([]quotedM
 		  AND (e.v #>> '{}') ~ '^\d+$'
 		  AND rb.id < :reply_id
 		  AND COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = rb.id AND ad.name='delivery_status'), '') NOT IN ('failed', 'bounced')
+		  -- A copy kitp sent on repeats a message already quoted.
+		  AND NOT EXISTS (SELECT 1 FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = rb.id AND ad.name='relay_of')
 		ORDER BY rb.id DESC
 		LIMIT :limit
 	`)
@@ -621,7 +644,7 @@ func resolveSignature(mode, channelName, authorName string) string {
 // the wire protocol) and emit a single Content-Type header for
 // plain-text UTF-8. Quoted-printable / multipart MIME is out of scope
 // for v1 (the spec calls out "plain text only").
-func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote string, taskID int64, atts []mimeAttachment) []byte {
+func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote string, taskID int64, atts []mimeAttachment, extra ...mimeHeader) []byte {
 	suffix := "[#" + threadID + "]"
 	subjectFinal := subject
 	switch {
@@ -659,12 +682,17 @@ func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote stri
 	}
 	bodyWithRef := bodyNorm + "\r\n\r\n" + trailer
 
-	// Common headers.
+	// Common headers. A value never carries a line break: a subject or
+	// name taken from mail (a decoded =?…?= word can hold CR LF) would
+	// otherwise start a header of the sender's choosing.
 	var hdr strings.Builder
-	fmt.Fprintf(&hdr, "From: %s\r\n", from)
-	fmt.Fprintf(&hdr, "To: %s\r\n", to)
-	fmt.Fprintf(&hdr, "Subject: %s\r\n", subjectFinal)
-	fmt.Fprintf(&hdr, "X-Kitp-Thread-Id: %s\r\n", threadID)
+	fmt.Fprintf(&hdr, "From: %s\r\n", oneLine(from))
+	fmt.Fprintf(&hdr, "To: %s\r\n", oneLine(to))
+	fmt.Fprintf(&hdr, "Subject: %s\r\n", oneLine(subjectFinal))
+	fmt.Fprintf(&hdr, "X-Kitp-Thread-Id: %s\r\n", oneLine(threadID))
+	for _, h := range extra {
+		fmt.Fprintf(&hdr, "%s: %s\r\n", h.Key, oneLine(h.Value))
+	}
 	hdr.WriteString("MIME-Version: 1.0\r\n")
 
 	if len(atts) == 0 {
@@ -724,6 +752,20 @@ func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote stri
 	out = append(out, hdr.String()...)
 	out = append(out, body64.Bytes()...)
 	return out
+}
+
+// headerBreaks turns line breaks into spaces (oneLine).
+var headerBreaks = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ")
+
+// oneLine is a header value with its line breaks turned into spaces.
+func oneLine(v string) string { return headerBreaks.Replace(v) }
+
+// mimeHeader is one extra header line on an outgoing message (a relayed
+// copy's Auto-Submitted). Key and Value are kitp's own constants, never
+// taken from mail.
+type mimeHeader struct {
+	Key   string
+	Value string
 }
 
 // mimeAttachment is one attachment payload bound for an outgoing

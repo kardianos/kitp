@@ -129,6 +129,7 @@ export function activityUrl(): string {
  * `topicFiles` keys (see server/internal/dom/help):
  *   - task                  → `task_detail`
  *   - admin/:key            → `admin.<key>`
+ *   - account               → `account`
  *   - project/:id/screen/:slug → `layout.<layout>`
  *   - project/:id (default board) → `layout.kanban`
  * null when there's no authored topic (the all-projects landing / not-found),
@@ -144,6 +145,9 @@ export function helpTopicForRoute(route: RouteMatch): string | null {
       const key = route.params['key'];
       return key !== undefined && key !== '' ? `admin.${key}` : null;
     }
+    // Profile, notifications and calendars (help/content/account.md).
+    case 'account':
+      return 'account';
     // screen / project: the topic is `layout.<resolved layout>`, but the layout
     // is known only once the screen card resolves — the caller (main.ts) reads
     // the ScreenHost-published `screen.layout` leaf for these routes. Returning

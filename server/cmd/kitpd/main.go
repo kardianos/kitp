@@ -23,7 +23,20 @@
 //	KITP_COMM_IMAP_DRY_RUN    — when "1", IMAP pollers log instead of polling
 //	KITP_COMM_IMAP_INSECURE   — when "1", allow plaintext IMAP (no TLS); dev only
 //	KITP_COMM_LOG_RETENTION_DAYS — days to keep comm_log rows; default 30
+//	KITP_COMM_DEDUPE_DAYS        — days a message stays deduped after its last copy arrived; default 14
 //	KITP_COMM_LOG_PRUNE_HOURS — comm_log prune cadence in hours; default 24
+//	KITP_COMM_INBOUND_MAX_BYTES — POST mail intake body cap; default 50 MB
+//	KITP_TRUSTED_PROXIES      — private CIDRs whose X-Forwarded-For / PROXY
+//	                            header is believed; default any private or
+//	                            loopback peer (a public CIDR is refused)
+//	KITP_SMTP_ADDR            — receive-only SMTP listener address (e.g.
+//	                            ":2525"); off when unset
+//	KITP_SMTP_DOMAIN          — the domain of route addresses
+//	                            (<token>@domain); required with ADDR
+//	KITP_SMTP_HOSTNAME        — the SMTP greeting name; default the domain
+//	KITP_SMTP_TLS_CERT / _KEY — PEM files for STARTTLS (re-read on change)
+//	KITP_SMTP_MAX_BYTES       — message size cap; default 40 MB
+//	KITP_SMTP_ALLOW           — install-wide source CIDR allowlist
 //	KITP_PUBLIC_URL           — external base URL of the install (e.g.
 //	                            "https://kitp.example.com", no trailing
 //	                            slash needed). When set, outbound mail to a
@@ -88,6 +101,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/attribute"
 	"github.com/kitp/kitp/server/internal/dom/attributedef"
 	dombundle "github.com/kitp/kitp/server/internal/dom/bundle"
+	"github.com/kitp/kitp/server/internal/dom/calendar"
 	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/dom/cardtype"
 	domcas "github.com/kitp/kitp/server/internal/dom/cas"
@@ -99,6 +113,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/flow"
 	"github.com/kitp/kitp/server/internal/dom/help"
 	domlink "github.com/kitp/kitp/server/internal/dom/link"
+	"github.com/kitp/kitp/server/internal/dom/mailin"
 	domportal "github.com/kitp/kitp/server/internal/dom/portal"
 	"github.com/kitp/kitp/server/internal/dom/proc"
 	"github.com/kitp/kitp/server/internal/dom/process"
@@ -116,6 +131,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/usertoken"
 	"github.com/kitp/kitp/server/internal/job"
 	"github.com/kitp/kitp/server/internal/mcp"
+	"github.com/kitp/kitp/server/internal/netx"
 	"github.com/kitp/kitp/server/internal/obs"
 	"github.com/kitp/kitp/server/internal/schema/hcsv"
 	"github.com/kitp/kitp/server/internal/store"
@@ -169,7 +185,7 @@ func envInt(key string, fallback int) int {
 // `storage` may be nil for entrypoints that don't carry a CAS backend
 // (e.g. the MCP CLI subcommand). Handlers that need it (project.import
 // is the only one today) are skipped when nil.
-func registerHandlers(pool *store.Pool, storage *cas.Storage) {
+func registerHandlers(pool *store.Pool, storage *cas.Storage, mailStatus *mailin.Status) {
 	echo.Register()
 	cardtype.Register()
 	card.Register(pool)
@@ -190,6 +206,12 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage) {
 	projectstamp.Register(pool)
 	dombundle.Register(pool)
 	domportal.Register(domportal.Config{Pool: pool, Storage: storage})
+	// Mail intake routes (comm_route.*) and the Mail intake page
+	// (mail_intake.status); docs/MAIL_INTAKE_AND_CALENDARS.md.
+	mailin.Register(pool, mailStatus)
+	// Calendar feeds (calendar.*, calendar_url.*); the .ics route is
+	// mounted in runHTTP.
+	calendar.Register(pool)
 	domarea.Register(pool)
 	tag.Register(pool)
 	process.Register(pool)
@@ -350,7 +372,16 @@ func runHTTP() error {
 	commsBellURL := envOr("KITP_COMMS_BELL_URL", "")
 	storage := cas.New(cas.NewPgBackend(pgPool))
 
-	registerHandlers(pool, storage)
+	// Which proxies to believe about a client's address (X-Forwarded-For on
+	// the POST intake routes, a PROXY header on the SMTP listener): any
+	// private or loopback peer by default; KITP_TRUSTED_PROXIES narrows it
+	// to private CIDRs of your choosing. A public CIDR is refused.
+	trustedProxies, err := netx.ParseTrusted(os.Getenv("KITP_TRUSTED_PROXIES"))
+	if err != nil {
+		return err
+	}
+	mailStatus := mailin.NewStatus(trustedProxies)
+	registerHandlers(pool, storage, mailStatus)
 
 	srv := api.NewServer(pool)
 	srv.Logger = logger
@@ -475,6 +506,20 @@ func runHTTP() error {
 	// (KITP_PORTAL_ADDR) so a published site shares nothing with the app.
 	portalSrv := &domportal.Server{Pool: pgPool, Storage: storage, Logger: logger}
 	portalSrv.Mount(apiRouter)
+	// Mail intake by POST: providers (a Cloudflare Email Worker, Mailgun,
+	// Postmark, SES via Lambda, scripts) push the raw message to
+	// /api/v1/comm/inbound/<token>; the token is the credential and is kept
+	// out of logs. docs/MAIL_INTAKE_AND_CALENDARS.md §6.
+	// Calendar feeds: GET /api/v1/calendar/<token>.ics — a person's tasks
+	// due in a window, built on every fetch; the token stays out of logs.
+	calendar.Mount(apiRouter, calendar.FeedConfig{
+		Pool: pool, PublicURL: strings.TrimSpace(os.Getenv("KITP_PUBLIC_URL")), Logger: logger,
+	})
+	mailIntake := &comm.Intake{Pool: pool, Logger: logger}
+	mailin.MountPOST(apiRouter, mailin.POSTConfig{
+		Pool: pool, Intake: mailIntake, Trusted: trustedProxies, Status: mailStatus,
+		MaxBytes: int64(envInt("KITP_COMM_INBOUND_MAX_BYTES", mailin.DefaultPOSTMaxBytes)), Logger: logger,
+	})
 	portalBuilder := &domportal.Builder{Pool: pgPool, Storage: storage, Logger: logger}
 	// Project export (phases 3 + 4 of PROJECT_PORTABILITY_PLAN.md) —
 	// streams text/csv, .xlsx, or application/zip via dedicated HTTP
@@ -585,6 +630,7 @@ func runHTTP() error {
 	pruneHours := envInt("KITP_COMM_LOG_PRUNE_HOURS", 24)
 	pruneInterval := time.Duration(pruneHours) * time.Hour
 	pruner := comm.NewLogPruner(pool, time.Duration(retentionDays)*24*time.Hour)
+	pruner.SetDedupeRetention(time.Duration(envInt("KITP_COMM_DEDUPE_DAYS", 14)) * 24 * time.Hour)
 	pruner.SetLogger(logger)
 
 	// ----- background job scheduler -----
@@ -794,6 +840,33 @@ func runHTTP() error {
 		}()
 	}
 
+	// Receive-only SMTP listener (docs/MAIL_INTAKE_AND_CALENDARS.md §7): mail
+	// to <route token>@KITP_SMTP_DOMAIN is filed on the route's mail
+	// account; any other address is refused, so kitp never relays. Off
+	// unless KITP_SMTP_ADDR is set. Put port 25 in front of it.
+	var smtpSrv *mailin.SMTPServer
+	if smtpAddr := os.Getenv("KITP_SMTP_ADDR"); smtpAddr != "" {
+		var allow []string
+		for _, a := range strings.FieldsFunc(os.Getenv("KITP_SMTP_ALLOW"), func(r rune) bool { return r == ',' || r == ' ' }) {
+			allow = append(allow, a)
+		}
+		smtpSrv, err = mailin.NewSMTPServer(mailin.SMTPConfig{
+			Addr: smtpAddr, Domain: os.Getenv("KITP_SMTP_DOMAIN"), Hostname: os.Getenv("KITP_SMTP_HOSTNAME"),
+			CertFile: os.Getenv("KITP_SMTP_TLS_CERT"), KeyFile: os.Getenv("KITP_SMTP_TLS_KEY"),
+			MaxBytes: int64(envInt("KITP_SMTP_MAX_BYTES", mailin.DefaultSMTPMaxBytes)), Allow: allow,
+			Pool: pool, Intake: mailIntake, Trusted: trustedProxies, Status: mailStatus, Logger: logger,
+		})
+		if err != nil {
+			return err
+		}
+		go func() {
+			log.Printf("smtp listener on %s", smtpAddr)
+			if err := smtpSrv.ListenAndServe(); err != nil {
+				log.Fatalf("smtp listen: %v", err)
+			}
+		}()
+	}
+
 	<-stop
 	log.Printf("shutting down")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -804,6 +877,11 @@ func runHTTP() error {
 	if portalHTTP != nil {
 		if err := portalHTTP.Shutdown(shutdownCtx); err != nil {
 			log.Printf("portal shutdown: %v", err)
+		}
+	}
+	if smtpSrv != nil {
+		if err := smtpSrv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("smtp shutdown: %v", err)
 		}
 	}
 	// Job scheduler: cancel the root ctx so every job goroutine sees
@@ -866,7 +944,7 @@ func runMCP() error {
 	pool := store.NewPool(pgPool)
 	// MCP entrypoint runs handlers but has no CAS-backed routes, so
 	// skip handlers that need storage (only project.import today).
-	registerHandlers(pool, nil)
+	registerHandlers(pool, nil, nil)
 
 	srv := api.NewServer(pool)
 	srv.Logger = logger

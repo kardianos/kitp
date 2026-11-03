@@ -78,7 +78,7 @@ func TestDescriptionMarkdownPriority(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &IMAPPoller{bodyPriority: resolveBodyPriority(tc.priority)}
+			p := &IMAPPoller{filer: filer{bodyPriority: resolveBodyPriority(tc.priority)}}
 			if got := p.descriptionMarkdown(tc.msg); got != tc.want {
 				t.Errorf("descriptionMarkdown = %q, want %q", got, tc.want)
 			}

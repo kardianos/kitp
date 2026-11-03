@@ -39,7 +39,9 @@ import (
 	"github.com/kitp/kitp/server/internal/auth/session"
 	"github.com/kitp/kitp/server/internal/cas"
 	"github.com/kitp/kitp/server/internal/dom/attachment"
+	"github.com/kitp/kitp/server/internal/dom/calendar"
 	domlink "github.com/kitp/kitp/server/internal/dom/link"
+	"github.com/kitp/kitp/server/internal/dom/mailin"
 	domportal "github.com/kitp/kitp/server/internal/dom/portal"
 	"github.com/kitp/kitp/server/internal/dom/projectexport"
 	"github.com/kitp/kitp/server/internal/mcp"
@@ -55,7 +57,7 @@ func TestAuthAudit(t *testing.T) {
 	// the reset a previous test in the same binary could leave
 	// stale entries (the registry is process-global by design).
 	reg.Reset()
-	registerHandlers(nil, nil)
+	registerHandlers(nil, nil, nil)
 
 	// Stub resolvers. The audit only enumerates registrations; it
 	// never dispatches a real request, so resolver bodies don't
@@ -86,6 +88,10 @@ func TestAuthAudit(t *testing.T) {
 	// The signed-in portal preview / in-app site routes. The public,
 	// host-routed listener is a separate http.Server with no auth tier.
 	(&domportal.Server{}).Mount(rt)
+	// Mail intake by POST and calendar feeds: public routes whose path
+	// token is the credential (docs/MAIL_INTAKE_AND_CALENDARS.md).
+	mailin.MountPOST(rt, mailin.POSTConfig{})
+	calendar.Mount(rt, calendar.FeedConfig{})
 	srv := api.NewServer(nil)
 	srv.MountBatch(rt)
 

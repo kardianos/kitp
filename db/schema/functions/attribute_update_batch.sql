@@ -251,8 +251,20 @@ BEGIN
                 _value_norm := _value;
             END IF;
             _value_card_ids := ARRAY[]::bigint[];
+        ELSIF _value_type = 'date' THEN
+            -- A date is YYYY-MM-DD and a real day; nothing else is stored
+            -- (docs/MAIL_INTAKE_AND_CALENDARS.md §1). Date reads — Overdue,
+            -- Due soon, calendar feeds — compare the ISO text.
+            IF jsonb_typeof(_value) <> 'string' OR NOT iso_date_ok(_value #>> '{}') THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    format('attribute.update: %s: not a date (YYYY-MM-DD): %s', _attr_name, _value::text),
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+            _value_norm := _value;
+            _value_card_ids := ARRAY[]::bigint[];
         ELSE
-            -- text / bool / date — no canonicalisation, no card_ref validation.
+            -- text / bool — no canonicalisation, no card_ref validation.
             _value_norm := _value;
             _value_card_ids := ARRAY[]::bigint[];
         END IF;

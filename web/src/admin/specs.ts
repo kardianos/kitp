@@ -231,6 +231,10 @@ export interface CommChannel {
   intakeMode?: string;
   /** Quoting in replies: 'off' | 'last' | 'all' ('' = unset, 'last'). */
   replyQuote?: string;
+  /** Emailed replies sent on to the thread: 'on' | 'off' ('' = unset, off). */
+  relayReplies?: string;
+  /** Files on incoming mail: 'keep' | 'drop' ('' = unset, keep). */
+  emailAttachments?: string;
   channelFaultReason?: string;
   hasImapPassword: boolean;
   hasSmtpPassword: boolean;
@@ -321,6 +325,8 @@ export interface CommLogRow {
   id: string;
   channel_id?: string;
   channel_name?: string;
+  /** The inbound route (POST URL / SMTP address) a mail-intake row came through. */
+  route_id?: string;
   kind: string;
   detail?: unknown;
   at: string;
@@ -611,6 +617,10 @@ export interface CommChannelSetInput {
   intakeMode?: string;
   /** 'off' | 'last' | 'all'; omit/'' leaves the stored value. */
   replyQuote?: string;
+  /** 'on' | 'off'; omit/'' leaves the stored value (a new account: on). */
+  relayReplies?: string;
+  /** 'keep' | 'drop'; omit/'' leaves the stored value. */
+  emailAttachments?: string;
 }
 export interface CommChannelSetOutput {
   channelId: string;
@@ -919,6 +929,8 @@ function decodeCommLogRow(j: Record<string, unknown>): CommLogRow {
   if (cid !== undefined) out.channel_id = cid;
   const cn = asStrOpt(j['channel_name']);
   if (cn !== undefined) out.channel_name = cn;
+  const rid = asStrOpt(j['route_id']);
+  if (rid !== undefined && rid !== '0') out.route_id = rid;
   if (j['detail'] !== undefined && j['detail'] !== null) out.detail = j['detail'];
   return out;
 }
@@ -1079,7 +1091,10 @@ export function registerAdminSpecs(api: Api): void {
 
   // comm_log.list — Comm Log screen. project_id REQUIRED; the server defaults
   // the time window to 24h when `since` is omitted and caps the row count.
-  api.define<{ projectId?: string | bigint; kind?: string; since?: string }, CommLogListOutput>({
+  api.define<
+    { projectId?: string | bigint; kind?: string; since?: string; channelId?: string; routeId?: string; limit?: number },
+    CommLogListOutput
+  >({
     endpoint: 'comm_log',
     action: 'list',
     encode: (i) => {
@@ -1087,6 +1102,10 @@ export function registerAdminSpecs(api: Api): void {
       if (i.projectId !== undefined && i.projectId !== null) m['project_id'] = i.projectId;
       if (i.kind !== undefined) m['kind'] = i.kind;
       if (i.since !== undefined) m['since'] = i.since;
+      // Mail intake: one account, one inbound route ("View log" links).
+      if (i.channelId !== undefined && i.channelId !== '') m['channel_id'] = i.channelId;
+      if (i.routeId !== undefined && i.routeId !== '') m['route_id'] = i.routeId;
+      if (i.limit !== undefined) m['limit'] = i.limit;
       return m;
     },
     decode: (raw): CommLogListOutput => ({

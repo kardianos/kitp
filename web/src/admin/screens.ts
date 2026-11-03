@@ -42,6 +42,8 @@ import type { EnumManagerConfig } from './enum-manager.js';
 import type { PeopleManagerConfig } from './people-manager.js';
 import type { NestedEditorConfig } from './nested-editor.js';
 import type { SchedulerJobsConfig } from './scheduler-jobs.js';
+import type { CommLogViewConfig } from '../mailin/comm-log.js';
+import type { MailIntakeConfig } from '../mailin/mail-intake.js';
 import { COMM_CHANNEL_FORM } from './comm-channel-form.js';
 import { PORTAL_FORM } from './portal-form.js';
 import { THEME_FORM } from './theme-form.js';
@@ -57,7 +59,9 @@ type AdminScreenConfig =
   | PeopleManagerConfig
   | NestedEditorConfig
   | SchedulerJobsConfig
-  | AreaSwitchesConfig;
+  | AreaSwitchesConfig
+  | CommLogViewConfig
+  | MailIntakeConfig;
 
 /* -------------------------------------------------------------------------- */
 /* Contacts = person cards (CARD source).                                      */
@@ -695,6 +699,10 @@ export const COMM_CHANNELS_SCREEN: MasterDetailConfig = {
     // (they'd just duplicate the form), so `fields` is empty.
     fields: [],
     form: COMM_CHANNEL_FORM,
+    // RECEIVING MAIL: the account's POST URLs and SMTP addresses, with their
+    // filters, last message / refusal and View log links
+    // (docs/MAIL_INTAKE_AND_CALENDARS.md).
+    panel: { type: 'CommRoutes' },
   },
 };
 
@@ -791,38 +799,26 @@ export const ACTIVITY_SINKS_SCREEN: MasterDetailConfig = {
 };
 
 /* -------------------------------------------------------------------------- */
-/* Comm Log = comm_log.list (NON-CARD, project-scoped, READ-ONLY list).        */
+/* Comm Log = comm_log.list (project-scoped, read-only) — its own control.     */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Comm log rows (events). project_id REQUIRED → same scope-thread/idle posture
- * as channels/sinks. Read-only list (kind / at / channel) + a read-only detail
- * of one entry. The kind-specific `detail` jsonb is shown verbatim (the Svelte
- * client has per-kind formatters; a structured detail renderer is a follow-up).
+ * The Comm log: what the project's mail accounts received, sent, refused or
+ * couldn't read. Its own control (CommLogView, mailin/comm-log.ts) rather
+ * than a MasterDetail: its filters (account, route, kind, window) live in
+ * the page address so Comm Channels' "View log" links land filtered.
  */
-export const COMM_LOG_SCREEN: MasterDetailConfig = {
-  type: 'MasterDetail',
+export const COMM_LOG_SCREEN: CommLogViewConfig = {
+  type: 'CommLogView',
   title: 'Comm Log',
-  scopeKey: 'admin.comm_log',
-  list: {
-    spec: 'comm_log.list',
-    input: { projectId: { from: 'scope.projectId' } },
-    when: { signal: 'scope.projectId' },
-    skipWhenNull: ['projectId'],
-    rowHeight: 56,
-    search: { field: 'kind', placeholder: 'Search by kind…' },
-    row: { title: 'kind', subtitle: 'at', badge: 'channel_name' },
-  },
-  detail: {
-    titleField: 'kind',
-    empty: 'Pick a project, then select a log entry.',
-    fields: [
-      { name: 'kind', label: 'Kind', kind: 'readonly' },
-      { name: 'at', label: 'At', kind: 'readonly' },
-      { name: 'channel_name', label: 'Channel', kind: 'readonly' },
-      { name: 'channel_id', label: 'Channel id', kind: 'readonly' },
-    ],
-  },
+  projectScopePath: 'scope.projectId',
+};
+
+/** The workspace "Mail intake" screen: the SMTP listener, trusted proxies,
+ *  rate limits and recent refusals (mail_intake.status, in memory). */
+export const MAIL_INTAKE_SCREEN: MailIntakeConfig = {
+  type: 'MailIntake',
+  title: 'Mail intake',
 };
 
 /* -------------------------------------------------------------------------- */
@@ -856,6 +852,7 @@ export type AdminView =
   | 'comm_channels'
   | 'activity_sinks'
   | 'comm_log'
+  | 'mail_intake'
   | 'portals'
   | 'themes'
   | 'areas'
@@ -935,6 +932,7 @@ const ADMIN_SCREENS: Record<AdminView, AdminScreenConfig> = {
   comm_channels: COMM_CHANNELS_SCREEN,
   activity_sinks: ACTIVITY_SINKS_SCREEN,
   comm_log: COMM_LOG_SCREEN,
+  mail_intake: MAIL_INTAKE_SCREEN,
   portals: PORTALS_SCREEN,
   themes: THEMES_SCREEN,
   areas: AREAS_SCREEN,
@@ -979,6 +977,8 @@ export const ADMIN_SECTION: Record<AdminView, AdminSection> = {
   comm_channels: 'project',
   activity_sinks: 'project',
   comm_log: 'project',
+  // Install-wide: the SMTP listener and proxies aren't per project.
+  mail_intake: 'workspace',
   // Global: a portal publishes a page tree from any project.
   portals: 'workspace',
   // Global: portals share themes.

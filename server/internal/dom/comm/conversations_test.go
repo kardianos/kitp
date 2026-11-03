@@ -177,8 +177,9 @@ func TestChannelModeValidation(t *testing.T) {
 	}
 }
 
-// TestCommAttach: a thread on its own moves onto a task (with its
-// attachments) and back, keeping the task's comms list in step.
+// TestCommAttach: a thread on its own moves onto a task and back, keeping
+// the task's comms list in step; its email files stay on the thread
+// (docs/MAIL_INTAKE_AND_CALENDARS.md, "Files from email").
 func TestCommAttach(t *testing.T) {
 	f := setupAdmin(t, "kitp_test_comm_attach")
 	ch := seedChannelWith(t, f, `"intake_mode":"thread"`)
@@ -219,8 +220,8 @@ func TestCommAttach(t *testing.T) {
 	if got := taskComms(t, f, f.taskID); len(got) != 1 || got[0] != thread {
 		t.Errorf("task comms list = %v", got)
 	}
-	if got := attachedTo(); got != f.taskID {
-		t.Errorf("after attach the attachment is on %d, want the task %d", got, f.taskID)
+	if got := attachedTo(); got != thread {
+		t.Errorf("after attach the attachment is on %d, want still the thread %d", got, thread)
 	}
 	attach(f.taskID) // again: no change, no duplicate
 	if got := taskComms(t, f, f.taskID); len(got) != 1 {

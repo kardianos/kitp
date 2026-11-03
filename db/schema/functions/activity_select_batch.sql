@@ -80,17 +80,22 @@ BEGIN
         -- Optional [from_date, to_date] window on created_at (the standalone
         -- Activity page defaults to the last 7 days). Both inclusive by day:
         -- from_date >= midnight of from_date; to_date < midnight after to_date.
-        -- A malformed date is treated as "unset" rather than failing the batch.
-        BEGIN
-            _from_date := NULLIF(_raw->>'from_date', '')::date;
-        EXCEPTION WHEN invalid_datetime_format OR invalid_text_representation THEN
-            _from_date := NULL;
-        END;
-        BEGIN
-            _to_date := NULLIF(_raw->>'to_date', '')::date;
-        EXCEPTION WHEN invalid_datetime_format OR invalid_text_representation THEN
-            _to_date := NULL;
-        END;
+        -- A malformed date fails the row (dates are YYYY-MM-DD, checked by
+        -- iso_date_ok; docs/MAIL_INTAKE_AND_CALENDARS.md §1).
+        IF COALESCE(_raw->>'from_date', '') <> '' AND NOT iso_date_ok(_raw->>'from_date') THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('activity.select: from_date: not a date (YYYY-MM-DD): %s', _raw->>'from_date'),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF COALESCE(_raw->>'to_date', '') <> '' AND NOT iso_date_ok(_raw->>'to_date') THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('activity.select: to_date: not a date (YYYY-MM-DD): %s', _raw->>'to_date'),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+        _from_date := NULLIF(_raw->>'from_date', '')::date;
+        _to_date := NULLIF(_raw->>'to_date', '')::date;
         _limit := COALESCE(NULLIF(_raw->>'limit', '')::int, 200);
         IF _limit <= 0 OR _limit >= 1000 THEN
             _limit := 200;

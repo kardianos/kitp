@@ -288,14 +288,16 @@ func TestIMAPInboundDedupRoundTrip(t *testing.T) {
 }
 
 // TestIMAPInboundNovelAttachment confirms a brand-new payload lands
-// as a new file + attachment row (dedup query miss) and the reply
-// links to it.
+// as a new file + attachment row (dedup query miss) on the THREAD, not its
+// task (docs/MAIL_INTAKE_AND_CALENDARS.md, "Files from email"), and the
+// reply links to it.
 func TestIMAPInboundNovelAttachment(t *testing.T) {
 	f := setupAdmin(t, "kitp_test_imap_novel_attachment")
 	channelID := seedChannelForIMAP(t, f, "kitp@example.com", 0)
-	_, threadID := seedCommForIMAP(t, f, channelID, "Bug report")
+	commID, threadID := seedCommForIMAP(t, f, channelID, "Bug report")
 
-	startCount := attachmentCount(t, f, f.taskID)
+	startTask := attachmentCount(t, f, f.taskID)
+	startCount := attachmentCount(t, f, commID)
 	novel := []byte("brand-new content never seen before " + fmt.Sprintf("%d", time.Now().UnixNano()))
 	stub := &stubIMAPClient{
 		messages: []comm.InboundMessage{
@@ -310,8 +312,11 @@ func TestIMAPInboundNovelAttachment(t *testing.T) {
 	if err := p.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
-	if got := attachmentCount(t, f, f.taskID); got != startCount+1 {
-		t.Errorf("attachment count: got %d, want %d", got, startCount+1)
+	if got := attachmentCount(t, f, commID); got != startCount+1 {
+		t.Errorf("thread attachment count: got %d, want %d", got, startCount+1)
+	}
+	if got := attachmentCount(t, f, f.taskID); got != startTask {
+		t.Errorf("task attachment count: got %d, want %d (email files stay on the thread)", got, startTask)
 	}
 }
 

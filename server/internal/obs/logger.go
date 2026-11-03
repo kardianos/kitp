@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/obs/logpath"
 )
 
 // requestIDKey is the shared context key for the X-Request-ID. The api
@@ -113,7 +114,7 @@ func LoggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
 		logger.LogAttrs(r.Context(), slog.LevelDebug, "http",
 			slog.String("request_id", RequestIDFromContext(r.Context())),
 			slog.String("method", r.Method),
-			slog.String("path", r.URL.Path),
+			slog.String("path", logpath.Of(r.URL.Path)),
 			slog.Int("status", rec.status),
 			slog.Int64("duration_ms", dur.Milliseconds()),
 		)

@@ -121,12 +121,22 @@ BEGIN
                                    SELECT jsonb_build_object(
                                               'id', cm.id::text,
                                               'subject', COALESCE(card_label(cm.id), ''),
+                                              -- Copies kitp sent on (relay_of) aren't
+                                              -- messages of their own.
                                               'messages', COALESCE((
-                                                  SELECT CASE WHEN jsonb_typeof(rv.value) = 'array'
-                                                              THEN jsonb_array_length(rv.value) END
+                                                  SELECT count(*)::int
                                                   FROM attribute_value rv
                                                   JOIN attribute_def rd ON rd.id = rv.attribute_def_id
+                                                  CROSS JOIN LATERAL jsonb_array_elements(
+                                                      CASE WHEN jsonb_typeof(rv.value) = 'array'
+                                                           THEN rv.value ELSE '[]'::jsonb END) AS e(v)
                                                   WHERE rv.card_id = cm.id AND rd.name = 'replies'
+                                                    AND NOT EXISTS (
+                                                        SELECT 1 FROM attribute_value ro
+                                                        JOIN attribute_def rod ON rod.id = ro.attribute_def_id
+                                                                              AND rod.name = 'relay_of'
+                                                        WHERE ro.card_id = CASE WHEN (e.v #>> '{}') ~ '^[0-9]+$'
+                                                                                THEN (e.v #>> '{}')::bigint END)
                                               ), 0))
                                    FROM card cm
                                    WHERE cm.id = fl.comm_id AND cm.deleted_at IS NULL))

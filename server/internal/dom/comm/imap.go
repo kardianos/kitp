@@ -91,22 +91,13 @@ import (
 // a single scheduler job via Tick; RunOnce runs one scan+ingest cycle and
 // is exported so tests can drive it synchronously.
 type IMAPPoller struct {
-	pool      *store.Pool
-	channelID int64
-	tick      time.Duration
-	dryRun    bool
-	insecure  bool
-	// bodyPriority is the ordered set of body extractors a new task's
-	// description is sourced from (resolved once from KITP_COMM_BODY_PRIORITY
-	// at construction). The first extractor whose body part exists wins; see
-	// resolveBodyPriority / descriptionMarkdown.
-	bodyPriority []bodyExtractor
-	// saveRawEmail persists the verbatim RFC822 message as a `.eml`
-	// attachment on the task when set (KITP_COMM_SAVE_RAW_EMAIL=1). Off by
-	// default; a debugging aid for deriving better body-conversion rules
-	// from real problem mail.
-	saveRawEmail bool
-	logger       *slog.Logger
+	// filer holds what filing a message needs (pool, channel, logger,
+	// body rules); POST and SMTP intake build one per message through
+	// [Intake] (intake.go).
+	filer
+	tick     time.Duration
+	dryRun   bool
+	insecure bool
 
 	// dial is the imapClient factory the loop calls each tick. Tests
 	// swap it for a stub that returns a fake; production uses the real
@@ -175,7 +166,8 @@ type imapClient interface {
 // tests independent of the IMAP protocol.
 type InboundMessage struct {
 	UID         uint32
-	MessageID   string // RFC822 Message-ID header (informational)
+	MessageID   string // RFC822 Message-ID header (the dedupe key, see messageKey)
+	Date        string // Date header as sent (part of the dedupe fallback key)
 	From        string // address-list as a single text field
 	To          string
 	Cc          string // address-list; comma-joined like To
@@ -189,7 +181,12 @@ type InboundMessage struct {
 	// NotificationHdr is the X-Kitp-Notification header, present when the
 	// inbound message is (a bounce/copy of) a kitp notification email.
 	NotificationHdr string
-	Body            string // plain-text body for the reply bubble (text/plain part, else text/html stripped to plain)
+	// AutoKind is why the message was written by a machine — an
+	// auto-reply, bounce, report or mailing-list post (automaticKind,
+	// relay.go) — or "" when a person wrote it. Such mail is filed as
+	// usual but never sent on to the rest of the thread.
+	AutoKind string
+	Body     string // plain-text body for the reply bubble (text/plain part, else text/html stripped to plain)
 	// BodyPlain is the message's text/plain part ONLY — empty when the
 	// message carried no plain arm (unlike Body, which falls back to stripped
 	// HTML). The description's body-priority selector uses this to tell "has a
@@ -206,6 +203,10 @@ type InboundMessage struct {
 	// KITP_COMM_SAVE_RAW_EMAIL=1 (a debugging aid for refining the body
 	// conversion rules against real problem mail).
 	Raw []byte
+	// ParseError is set (IMAP) when the raw bytes couldn't be read as mail;
+	// the poller logs a parse_error and marks it read instead of filing an
+	// empty message.
+	ParseError string
 	// Attachments captures every multipart part with a
 	// Content-Disposition of `attachment` (or any non-text part), so
 	// the ingest path can recognise round-trip attachments and skip
@@ -237,14 +238,10 @@ func newIMAPPoller(pool *store.Pool, channelID int64, tick time.Duration) *IMAPP
 		tick = 5 * time.Second
 	}
 	p := &IMAPPoller{
-		pool:         pool,
-		channelID:    channelID,
-		tick:         tick,
-		dryRun:       os.Getenv("KITP_COMM_IMAP_DRY_RUN") == "1",
-		insecure:     os.Getenv("KITP_COMM_IMAP_INSECURE") == "1",
-		bodyPriority: resolveBodyPriority(os.Getenv("KITP_COMM_BODY_PRIORITY")),
-		saveRawEmail: os.Getenv("KITP_COMM_SAVE_RAW_EMAIL") == "1",
-		logger:       slog.Default(),
+		filer:    newFiler(pool, channelID, slog.Default()),
+		tick:     tick,
+		dryRun:   os.Getenv("KITP_COMM_IMAP_DRY_RUN") == "1",
+		insecure: os.Getenv("KITP_COMM_IMAP_INSECURE") == "1",
 	}
 	p.dial = dialIMAP
 	return p
@@ -487,7 +484,20 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 	var ingested []uint32
 	var firstErr error
 	for _, m := range msgs {
-		if err := p.processOne(ctx, intake, m); err != nil {
+		if m.ParseError != "" {
+			// Not mail: log it and mark it read (it stays in the mailbox),
+			// as POST and SMTP do. Filing it would make an empty thread, and
+			// every empty message shares one dedupe key.
+			if err := p.logInbound(ctx, p.pool.P, projectID, inboundMeta{transport: TransportIMAP}, "parse_error", map[string]any{
+				"error": m.ParseError, "uid": m.UID, "bytes": len(m.Raw),
+			}); err != nil && firstErr == nil {
+				firstErr = err
+				continue
+			}
+			ingested = append(ingested, m.UID)
+			continue
+		}
+		if _, err := p.processOne(ctx, intake, m, inboundMeta{transport: TransportIMAP}); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -534,12 +544,35 @@ func ResolveIntakeMode(stored string, intakeStatusID int64) string {
 	return IntakeIgnore
 }
 
+// Mail account settings for what kitp does beyond filing a message
+// (docs/MAIL_INTAKE_AND_CALENDARS.md): relay_replies sends an emailed reply
+// on to the thread's other people; email_attachments keeps or drops the
+// files on incoming mail.
+const (
+	RelayOn         = "on"
+	RelayOff        = "off"
+	AttachmentsKeep = "keep"
+	AttachmentsDrop = "drop"
+)
+
+// ResolveRelay reports whether a stored relay_replies value sends replies
+// on. Unset is off: accounts from before the setting keep what they did (a
+// new account is created with "on", comm_channel.set).
+func ResolveRelay(stored string) bool { return stored == RelayOn }
+
+// ResolveKeepAttachments reports whether a stored email_attachments value
+// keeps files. Unset keeps them, as before the setting.
+func ResolveKeepAttachments(stored string) bool { return stored != AttachmentsDrop }
+
 // channelIntake is what the poller needs to file a message: the
-// channel's project, its intake status (0 = none) and resolved mode.
+// channel's project, its intake status (0 = none), resolved mode, and
+// whether replies are sent on and files kept.
 type channelIntake struct {
 	projectID int64
 	statusID  int64
 	mode      string
+	relay     bool
+	keepFiles bool
 }
 
 // loadChannelConfig reads the channel's IMAP host/port/username +
@@ -564,18 +597,23 @@ func (p *IMAPPoller) loadChannelConfig(ctx context.Context) (IMAPConfig, channel
 			) AS imap_password,
 			COALESCE((SELECT (value)::text::bigint FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = :channel_id AND ad.name='intake_status' AND jsonb_typeof(value)='number'), 0) AS intake_status_id,
 			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = :channel_id AND ad.name='intake_mode'), '')    AS intake_mode,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = :channel_id AND ad.name='relay_replies'), '')  AS relay_replies,
+			COALESCE((SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = :channel_id AND ad.name='email_attachments'), '') AS email_attachments,
 			COALESCE((SELECT parent_card_id FROM card WHERE id = :channel_id), 0) AS project_id
 	`)
 	if err != nil {
 		return cfg, in, fmt.Errorf("compile: %w", err)
 	}
-	if err := p.pool.P.QueryRow(ctx, q, args...).Scan(&cfg.Host, &cfg.Port, &cfg.Username, &cfg.Password, &in.statusID, &storedMode, &in.projectID); err != nil {
+	var relay, files string
+	if err := p.pool.P.QueryRow(ctx, q, args...).Scan(&cfg.Host, &cfg.Port, &cfg.Username, &cfg.Password, &in.statusID, &storedMode, &relay, &files, &in.projectID); err != nil {
 		return cfg, in, err
 	}
 	if cfg.Port == 0 {
 		cfg.Port = 993
 	}
 	in.mode = ResolveIntakeMode(storedMode, in.statusID)
+	in.relay = ResolveRelay(relay)
+	in.keepFiles = ResolveKeepAttachments(files)
 	return cfg, in, nil
 }
 
@@ -599,12 +637,14 @@ func (p *IMAPPoller) recordPollOnly(ctx context.Context, projectID int64, count 
 	return nil
 }
 
-// processOne ingests one inbound message: thread-lookup, then either
-// append-to-existing-comm or, by the channel's intake mode, a new task
-// and thread, a thread on its own, or a drop. All state mutations
-// happen in one tx per message so a mid-stream failure doesn't
-// half-commit.
-func (p *IMAPPoller) processOne(ctx context.Context, intake channelIntake, m InboundMessage) error {
+// processOne ingests one inbound message: dedupe, thread-lookup, then
+// either append-to-existing-comm or, by the channel's intake mode, a new task
+// and thread, a thread on its own, or a drop. All state mutations happen in
+// one tx per message so a mid-stream failure doesn't half-commit — and the
+// dedupe row (comm_inbound_seen) rolls back with it, so a failed message can
+// be retried. Every transport (IMAP, POST, SMTP) comes through here; see
+// docs/MAIL_INTAKE_AND_CALENDARS.md §3–4.
+func (p *filer) processOne(ctx context.Context, intake channelIntake, m InboundMessage, meta inboundMeta) (Filed, error) {
 	projectID := intake.projectID
 	threadID, source := extractThreadID(m)
 
@@ -614,20 +654,44 @@ func (p *IMAPPoller) processOne(ctx context.Context, intake channelIntake, m Inb
 	// Rollback is unconditional and a no-op once Commit has run.
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return Filed{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Dedupe first: a message already filed in this project (by any
+	// account, any transport) is recorded as a duplicate and dropped.
+	key := messageKey(m)
+	fresh, original, err := claimMessage(ctx, tx, projectID, key, p.channelID, meta.transport, m.MessageID)
+	if err != nil {
+		return Filed{}, fmt.Errorf("dedupe: %w", err)
+	}
+	if !fresh {
+		p.logger.LogAttrs(ctx, slog.LevelDebug, "inbound message is a duplicate",
+			slog.Int64("channel_id", p.channelID),
+			slog.String("transport", meta.transport),
+			slog.String("message_id", m.MessageID),
+			slog.Int64("original_card_id", original))
+		if err := p.logInbound(ctx, tx, projectID, meta, "duplicate", map[string]any{
+			"message_id": m.MessageID, "from": m.From, "subject": m.Subject, "card_id": original,
+		}); err != nil {
+			return Filed{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return Filed{}, fmt.Errorf("commit: %w", err)
+		}
+		return Filed{Outcome: OutcomeDuplicate, CardID: original, Duplicate: true}, nil
+	}
+
 	snap, err := schema.Load(ctx, tx)
 	if err != nil {
-		return fmt.Errorf("load schema: %w", err)
+		return Filed{}, fmt.Errorf("load schema: %w", err)
 	}
 
 	var matchedCommID int64
 	if threadID != "" {
 		matchedCommID, err = p.findCommByThreadID(ctx, tx, threadID, projectID)
 		if err != nil {
-			return fmt.Errorf("thread lookup: %w", err)
+			return Filed{}, fmt.Errorf("thread lookup: %w", err)
 		}
 	}
 
@@ -639,88 +703,116 @@ func (p *IMAPPoller) processOne(ctx context.Context, intake channelIntake, m Inb
 	if matchedCommID == 0 && mode == IntakeTask {
 		off, err := tasksOff(ctx, tx, projectID)
 		if err != nil {
-			return fmt.Errorf("tasks area: %w", err)
+			return Filed{}, fmt.Errorf("tasks area: %w", err)
 		}
 		if off {
 			mode = IntakeThread
 		}
 	}
 
+	var filed Filed
 	switch {
 	case matchedCommID != 0:
-		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap message → reply on existing comm",
+		p.logger.LogAttrs(ctx, slog.LevelDebug, "inbound message → reply on existing comm",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("comm_id", matchedCommID),
 			slog.String("thread_source", source),
 			slog.String("message_id", m.MessageID),
 			slog.String("subject", m.Subject))
-		if err := p.appendReceivedReply(ctx, tx, snap, matchedCommID, m, actorID); err != nil {
-			return p.logParseError(ctx, projectID, m, err)
+		replyID, err := p.appendReceivedReply(ctx, tx, snap, matchedCommID, m, intake, meta, actorID)
+		if err != nil {
+			return Filed{}, p.logParseError(ctx, projectID, m, meta, err)
 		}
+		// Sent on to the thread's other people when the account says so. A
+		// new thread has nobody else on it yet, so only a reply can be.
+		if err := p.relayReply(ctx, tx, snap, matchedCommID, replyID, m, intake, meta, actorID); err != nil {
+			return Filed{}, fmt.Errorf("relay: %w", err)
+		}
+		filed = Filed{Outcome: OutcomeReply, CardID: matchedCommID}
 	case IsNotificationReply(m):
 		// A reply (or auto-reply / bounce) to a notification digest. The
 		// notification mailbox doesn't read replies — log and drop.
-		p.logger.LogAttrs(ctx, slog.LevelInfo, "imap message dropped: reply to a notification email",
+		p.logger.LogAttrs(ctx, slog.LevelInfo, "inbound message dropped: reply to a notification email",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("project_id", projectID),
 			slog.String("from", m.From),
 			slog.String("subject", m.Subject))
-		if err := LogEvent(ctx, tx, projectID, p.channelID, "notification_reply", map[string]any{
+		if err := p.logInbound(ctx, tx, projectID, meta, "notification_reply", map[string]any{
 			"message_id":  m.MessageID,
 			"from":        m.From,
 			"subject":     m.Subject,
 			"in_reply_to": m.InReplyTo,
 		}); err != nil {
-			return fmt.Errorf("comm_log notification_reply: %w", err)
+			return Filed{}, fmt.Errorf("comm_log notification_reply: %w", err)
 		}
+		filed = Filed{Outcome: OutcomeNotificationReply}
 	case mode == IntakeTask:
-		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap message → new task",
+		p.logger.LogAttrs(ctx, slog.LevelDebug, "inbound message → new task",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("project_id", projectID),
 			slog.Int64("intake_status_id", intake.statusID),
 			slog.String("from", m.From),
 			slog.String("subject", m.Subject))
-		if err := p.createTaskAndComm(ctx, tx, snap, projectID, intake.statusID, m, actorID); err != nil {
-			return p.logParseError(ctx, projectID, m, err)
+		commID, err := p.createTaskAndComm(ctx, tx, snap, intake, meta, m, actorID)
+		if err != nil {
+			return Filed{}, p.logParseError(ctx, projectID, m, meta, err)
 		}
+		filed = Filed{Outcome: OutcomeTask, CardID: commID}
 	case mode == IntakeThread:
-		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap message → new thread",
+		p.logger.LogAttrs(ctx, slog.LevelDebug, "inbound message → new thread",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("project_id", projectID),
 			slog.String("from", m.From),
 			slog.String("subject", m.Subject))
-		if _, err := p.createComm(ctx, tx, snap, projectID, m, actorID); err != nil {
-			return p.logParseError(ctx, projectID, m, err)
+		commID, err := p.createComm(ctx, tx, snap, projectID, m, intake, meta, actorID)
+		if err != nil {
+			return Filed{}, p.logParseError(ctx, projectID, m, meta, err)
 		}
+		filed = Filed{Outcome: OutcomeThread, CardID: commID}
 	default:
 		// Discard: no thread match and the channel ignores new mail. This
 		// is the usual "inbound mail isn't becoming tasks" cause — surface
 		// it at WARN (not just the comm_log row below) so it's visible in
 		// logs.
-		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap message dropped: no thread match and the channel ignores new mail",
+		p.logger.LogAttrs(ctx, slog.LevelWarn, "inbound message dropped: no thread match and the channel ignores new mail",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("project_id", projectID),
 			slog.String("from", m.From),
 			slog.String("subject", m.Subject),
 			slog.String("thread_source", source))
-		detail := map[string]any{
+		if err := p.logInbound(ctx, tx, projectID, meta, "unmatched_thread", map[string]any{
 			"message_id":    m.MessageID,
 			"from":          m.From,
 			"subject":       m.Subject,
 			"thread_source": source,
+		}); err != nil {
+			return Filed{}, fmt.Errorf("comm_log unmatched: %w", err)
 		}
-		if err := LogEvent(ctx, tx, projectID, p.channelID, "unmatched_thread", detail); err != nil {
-			return fmt.Errorf("comm_log unmatched: %w", err)
+		filed = Filed{Outcome: OutcomeIgnored}
+	}
+
+	if filed.CardID != 0 {
+		if err := recordFiledCard(ctx, tx, projectID, key, filed.CardID); err != nil {
+			return Filed{}, err
 		}
+	}
+	if err := p.logInbound(ctx, tx, projectID, meta, "received", map[string]any{
+		"outcome":    filed.Outcome,
+		"card_id":    filed.CardID,
+		"message_id": m.MessageID,
+		"from":       m.From,
+		"subject":    m.Subject,
+	}); err != nil {
+		return Filed{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit: %w", err)
+		return Filed{}, fmt.Errorf("commit: %w", err)
 	}
 	if p.pool != nil {
 		p.pool.NoteWrite()
 	}
-	return nil
+	return filed, nil
 }
 
 // logParseError writes a comm_log kind=parse_error row outside the
@@ -730,13 +822,13 @@ func (p *IMAPPoller) processOne(ctx context.Context, intake channelIntake, m Inb
 // the message is unusable), but we LOG the secondary failure
 // instead of silently dropping it so an operator can spot
 // "comm_log table broken" if it happens at scale.
-func (p *IMAPPoller) logParseError(ctx context.Context, projectID int64, m InboundMessage, origErr error) error {
+func (p *filer) logParseError(ctx context.Context, projectID int64, m InboundMessage, meta inboundMeta, origErr error) error {
 	detail := map[string]any{
 		"message_id": m.MessageID,
 		"subject":    m.Subject,
 		"error":      origErr.Error(),
 	}
-	if err := LogEvent(ctx, p.pool.P, projectID, p.channelID, "parse_error", detail); err != nil {
+	if err := p.logInbound(ctx, p.pool.P, projectID, meta, "parse_error", detail); err != nil {
 		slog.Default().LogAttrs(ctx, slog.LevelWarn, "imap parse_error log insert",
 			slog.String("err", err.Error()))
 	}
@@ -750,7 +842,7 @@ func (p *IMAPPoller) logParseError(ctx context.Context, projectID int64, m Inbou
 // an area that is switched off is no match: the message is then new mail
 // for this project, visible, rather than appended where it doesn't belong
 // or out of sight (review A3).
-func (p *IMAPPoller) findCommByThreadID(ctx context.Context, tx store.Querier, threadID string, projectID int64) (int64, error) {
+func (p *filer) findCommByThreadID(ctx context.Context, tx store.Querier, threadID string, projectID int64) (int64, error) {
 	row, err := namedRow(ctx, tx, `
 		SELECT av.card_id
 		FROM attribute_value av
@@ -778,26 +870,27 @@ func (p *IMAPPoller) findCommByThreadID(ctx context.Context, tx store.Querier, t
 }
 
 // appendReceivedReply inserts a reply_body card carrying the inbound
-// envelope + body and appends its id to the comm's replies attribute.
-// Mirrors insertReceivedReply but accepts the full inbound envelope
-// (From/To) so the reply_to / reply_from rows reflect who actually
-// sent the message rather than empty strings.
-func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx store.Querier, snap *schema.Snapshot, commID int64, m InboundMessage, actorID int64) error {
+// envelope + body, appends its id to the comm's replies attribute and
+// returns it. Mirrors insertReceivedReply but accepts the full inbound
+// envelope (From/To) so the reply_to / reply_from rows reflect who actually
+// sent the message rather than empty strings. The message's files are
+// stored on the thread, or left off when the account drops them (in).
+func (p *filer) appendReceivedReply(ctx context.Context, tx store.Querier, snap *schema.Snapshot, commID int64, m InboundMessage, in channelIntake, meta inboundMeta, actorID int64) (int64, error) {
 	replyCTID, err := resolveCardType(snap, "reply_body")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var replyID int64
 	row, err := namedRow(ctx, tx, `INSERT INTO card (card_type_id) VALUES (:type) RETURNING id`,
 		map[string]any{"type": replyCTID})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if err := row.Scan(&replyID); err != nil {
-		return fmt.Errorf("insert reply_body card: %w", err)
+		return 0, fmt.Errorf("insert reply_body card: %w", err)
 	}
 	if err := writeCardCreateActivity(ctx, tx, replyID, actorID); err != nil {
-		return err
+		return 0, err
 	}
 	jstr := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
 	writes := []struct {
@@ -813,14 +906,14 @@ func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx store.Querier, 
 	for _, w := range writes {
 		ad, ok := snap.AttrByName[w.name]
 		if !ok {
-			return fmt.Errorf("appendReceivedReply: missing attribute_def %q", w.name)
+			return 0, fmt.Errorf("appendReceivedReply: missing attribute_def %q", w.name)
 		}
 		if err := writeAttributeValue(ctx, tx, replyID, ad.ID, w.val, actorID); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	if err := appendCardRefList(ctx, tx, commID, "replies", replyID, snap, actorID); err != nil {
-		return err
+		return 0, err
 	}
 	// A newly received message marks the thread unhandled: clear the comm's
 	// `acked` flag so it surfaces in the "Needs ACK" filter until an operator
@@ -828,36 +921,44 @@ func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx store.Querier, 
 	// attribute_def (skip rather than fail the whole inbound).
 	if ad, ok := snap.AttrByName["acked"]; ok {
 		if err := writeAttributeValue(ctx, tx, commID, ad.ID, json.RawMessage("false"), actorID); err != nil {
-			return fmt.Errorf("appendReceivedReply: clear acked: %w", err)
+			return 0, fmt.Errorf("appendReceivedReply: clear acked: %w", err)
 		}
 	}
-	// Resolve the attachments' host once so attachment ingest can dedup
-	// against what it already holds (round-trip recognition) without
-	// re-querying per attachment: the comm's task, or the comm itself
-	// when it is a thread on its own (docs/CONVERSATIONS.md).
-	parentTaskID, err := attachmentHost(ctx, tx, commID)
-	if err != nil {
-		return fmt.Errorf("appendReceivedReply: %w", err)
-	}
-	if parentTaskID != 0 && len(m.Attachments) > 0 {
-		if err := p.ingestInboundAttachments(ctx, tx, parentTaskID, replyID, m.Attachments, actorID); err != nil {
-			// One attachment row that fails to land shouldn't lose the
-			// whole reply — log loudly and keep going. The reply_body
-			// is already persisted at this point.
-			p.logger.LogAttrs(ctx, slog.LevelWarn, "imap attachment ingest failed",
+	// The message's files live on the thread itself, whether or not it is
+	// on a task; a person can move one onto the task (comm.attachment_to_task).
+	switch {
+	case len(m.Attachments) == 0:
+	case !in.keepFiles:
+		if err := p.leaveFilesOff(ctx, tx, snap, replyID, m, in, meta, actorID); err != nil {
+			return 0, err
+		}
+	default:
+		err := withSavepoint(ctx, tx, "inbound_files", func() error {
+			return p.ingestInboundAttachments(ctx, tx, commID, replyID, m.Attachments, actorID)
+		})
+		if err != nil {
+			// A file that fails to land doesn't lose the message: its
+			// savepoint is rolled back and the message is filed without
+			// the files.
+			p.logger.LogAttrs(ctx, slog.LevelWarn, "inbound attachment ingest failed",
 				slog.Int64("channel_id", p.channelID),
 				slog.Int64("comm_id", commID),
 				slog.Int64("reply_id", replyID),
 				slog.String("error", err.Error()))
 		}
 	}
-	if parentTaskID != 0 && p.saveRawEmail && len(m.Raw) > 0 {
+	if p.saveRawEmail && len(m.Raw) > 0 {
 		// Debugging aid (KITP_COMM_SAVE_RAW_EMAIL=1): keep the verbatim
 		// message so we can replay it against the body-conversion rules when
-		// a description comes out wrong. Best-effort — never fail the inbound
-		// over it.
+		// a description comes out wrong. An operator's switch, so it keeps
+		// the .eml even on an account that drops files. Best-effort — never
+		// fail the inbound over it.
 		name := fmt.Sprintf("inbound-uid-%d.eml", m.UID)
-		if _, err := storeAttachment(ctx, tx, parentTaskID, replyID, name, "message/rfc822", m.Raw, actorID); err != nil {
+		err := withSavepoint(ctx, tx, "inbound_raw", func() error {
+			_, err := storeAttachment(ctx, tx, commID, replyID, name, "message/rfc822", m.Raw, actorID)
+			return err
+		})
+		if err != nil {
 			p.logger.LogAttrs(ctx, slog.LevelWarn, "imap save raw email failed",
 				slog.Int64("channel_id", p.channelID),
 				slog.Int64("comm_id", commID),
@@ -874,54 +975,97 @@ func (p *IMAPPoller) appendReceivedReply(ctx context.Context, tx store.Querier, 
 			slog.Int64("comm_id", commID),
 			slog.String("error", err.Error()))
 	}
+	return replyID, nil
+}
+
+// withSavepoint runs fn inside a savepoint of the message's transaction, so
+// a failed statement in fn is rolled back alone instead of aborting the
+// whole message. fn's error is returned after the rollback.
+func withSavepoint(ctx context.Context, tx store.Querier, name string, fn func() error) error {
+	if _, err := tx.Exec(ctx, "SAVEPOINT "+name); err != nil {
+		return fmt.Errorf("savepoint: %w", err)
+	}
+	if err := fn(); err != nil {
+		if _, rerr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+name); rerr != nil {
+			return errors.Join(err, fmt.Errorf("rollback to savepoint: %w", rerr))
+		}
+		return err
+	}
+	if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT "+name); err != nil {
+		return fmt.Errorf("release savepoint: %w", err)
+	}
 	return nil
 }
 
-// attachmentHost is the card a thread's attachments live on: its task,
-// or the thread (comm) itself when it sits directly in its project.
-// comm.attach moves a thread's own attachments onto the task it joins.
-func attachmentHost(ctx context.Context, tx store.Querier, commID int64) (int64, error) {
-	b := named.New()
-	b.Set("comm_id", commID)
-	q, args, err := b.Compile(`
-		SELECT CASE WHEN pct.name = 'task' THEN c.parent_card_id ELSE c.id END
-		FROM card c
-		LEFT JOIN card p ON p.id = c.parent_card_id
-		LEFT JOIN card_type pct ON pct.id = p.card_type_id
-		WHERE c.id = :comm_id
-	`)
+// leaveFilesOff files a message without its files, for an account that
+// drops them: the message records how many were left off
+// (attachments_left_off) and the Comm log gets an attachments_dropped row
+// with their names.
+func (p *filer) leaveFilesOff(ctx context.Context, tx store.Querier, snap *schema.Snapshot, replyID int64, m InboundMessage, in channelIntake, meta inboundMeta, actorID int64) error {
+	ad, ok := snap.AttrByName["attachments_left_off"]
+	if !ok {
+		return fmt.Errorf("leaveFilesOff: missing attribute_def attachments_left_off")
+	}
+	n, err := json.Marshal(len(m.Attachments))
 	if err != nil {
-		return 0, fmt.Errorf("attachment host: compile: %w", err)
+		return err
 	}
-	var host int64
-	if err := tx.QueryRow(ctx, q, args...).Scan(&host); err != nil {
-		return 0, fmt.Errorf("attachment host: %w", err)
+	if err := writeAttributeValue(ctx, tx, replyID, ad.ID, n, actorID); err != nil {
+		return fmt.Errorf("leaveFilesOff: %w", err)
 	}
-	return host, nil
+	names := make([]string, 0, len(m.Attachments))
+	for _, a := range m.Attachments {
+		names = append(names, a.Filename)
+	}
+	return p.logInbound(ctx, tx, in.projectID, meta, "attachments_dropped", map[string]any{
+		"reply_id": replyID, "count": len(m.Attachments), "files": names,
+		"message_id": m.MessageID, "from": m.From, "subject": m.Subject,
+	})
 }
 
-// ingestInboundAttachments persists every inbound attachment as a
-// task attachment (linked to the reply via reply_body_attachment)
-// while deduping against round-trips. The dedup contract: for each
-// inbound part, if the parent task already has a non-deleted
-// attachment whose file's sha256 matches, reuse the existing
-// attachment row and skip the new file/attachment inserts. This
-// catches the common case where the user attached a file from the
-// task, the mail round-trips back via IMAP, and the receiving end
-// shouldn't grow a duplicate copy.
+// threadTask is the task a thread sits on, or 0 for a thread on its own.
+func threadTask(ctx context.Context, tx store.Querier, commID int64) (int64, error) {
+	row, err := namedRow(ctx, tx, `
+		SELECT COALESCE((
+			SELECT p.id FROM card c
+			JOIN card p ON p.id = c.parent_card_id
+			JOIN card_type pct ON pct.id = p.card_type_id AND pct.name = 'task'
+			WHERE c.id = :comm_id), 0)
+	`, map[string]any{"comm_id": commID})
+	if err != nil {
+		return 0, fmt.Errorf("thread task: %w", err)
+	}
+	var task int64
+	if err := row.Scan(&task); err != nil {
+		return 0, fmt.Errorf("thread task: %w", err)
+	}
+	return task, nil
+}
+
+// ingestInboundAttachments stores every file on an inbound message on the
+// thread (commID), linked to the message via reply_body_attachment — once.
+// A file whose bytes (sha256) kitp already holds for this thread is linked,
+// not stored again: one on the thread, on its task, or linked from any of
+// the thread's messages (a file moved onto a task the thread has since left).
+// That covers the round trip — a file sent from the task comes back quoted
+// in a reply — and the same file sent twice, or twice in one message.
 //
-// New attachments land via the same shape as the file.create handler:
+// New files land via the same shape as the file.create handler:
 // cas_blob (ON CONFLICT on the digest), cas_blob_data (idem), file
 // row with sha256 set, single file_chunk pointing at the blob,
-// attachment row on the parent task.
-func (p *IMAPPoller) ingestInboundAttachments(
+// attachment row on the thread.
+func (p *filer) ingestInboundAttachments(
 	ctx context.Context,
 	tx store.Querier,
-	parentTaskID int64,
+	commID int64,
 	replyID int64,
 	atts []InboundAttachment,
 	actorID int64,
 ) error {
+	taskID, err := threadTask(ctx, tx, commID)
+	if err != nil {
+		return fmt.Errorf("ingestInboundAttachments: %w", err)
+	}
 	for _, a := range atts {
 		sum := sha256.Sum256(a.Bytes)
 		digest := hex.EncodeToString(sum[:])
@@ -934,28 +1078,9 @@ func (p *IMAPPoller) ingestInboundAttachments(
 			filename = "attachment"
 		}
 
-		// Round-trip dedup: same digest on the same parent task ⇒
-		// reuse the existing attachment row, just link it to the
-		// inbound reply via reply_body_attachment.
-		db := named.New()
-		db.Set("card_id", parentTaskID)
-		db.Set("sha", digest)
-		dedupSQL, dedupArgs, err := db.Compile(`
-			SELECT a.id
-			FROM attachment a
-			JOIN file f ON f.id = a.file_id
-			WHERE a.card_id = :card_id
-			  AND a.deleted_at IS NULL
-			  AND f.sha256 = :sha
-			LIMIT 1
-		`)
+		existingAttID, err := findThreadFile(ctx, tx, commID, taskID, digest)
 		if err != nil {
-			return fmt.Errorf("ingestInboundAttachments: dedup compile: %w", err)
-		}
-		var existingAttID int64
-		err = tx.QueryRow(ctx, dedupSQL, dedupArgs...).Scan(&existingAttID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("ingestInboundAttachments: dedup lookup: %w", err)
+			return fmt.Errorf("ingestInboundAttachments: %w", err)
 		}
 		if existingAttID != 0 {
 			lb := named.New()
@@ -975,18 +1100,56 @@ func (p *IMAPPoller) ingestInboundAttachments(
 			continue
 		}
 
-		// Novel content: store the bytes as a fresh attachment on the task,
-		// linked to this reply. storeAttachment recomputes the digest, but
+		// Novel content: store the bytes as a new file on the thread,
+		// linked to this message. storeAttachment recomputes the digest, but
 		// CAS bytes are reused on conflict so no duplicate blob lands.
-		if _, err := storeAttachment(ctx, tx, parentTaskID, replyID, filename, mt, a.Bytes, actorID); err != nil {
+		if _, err := storeAttachment(ctx, tx, commID, replyID, filename, mt, a.Bytes, actorID); err != nil {
 			return fmt.Errorf("ingestInboundAttachments: %w", err)
 		}
 	}
 	return nil
 }
 
-// storeAttachment persists data as a new file + attachment on parentTaskID
-// and links it to replyID via reply_body_attachment, returning the new
+// findThreadFile returns a live attachment with these bytes (sha256 hex)
+// that belongs with the thread — on it, on its task (taskID, 0 = none) or
+// linked from one of its messages — or 0. The oldest wins.
+func findThreadFile(ctx context.Context, tx store.Querier, commID, taskID int64, digest string) (int64, error) {
+	row, err := namedRow(ctx, tx, `
+		WITH cand AS (
+			SELECT a.id FROM attachment a
+			WHERE a.card_id IN (:comm_id, :task_id) AND a.deleted_at IS NULL
+			UNION
+			SELECT rba.attachment_id
+			FROM attribute_value rep
+			JOIN attribute_def rad ON rad.id = rep.attribute_def_id AND rad.name = 'replies'
+			CROSS JOIN LATERAL jsonb_array_elements(
+				CASE WHEN jsonb_typeof(rep.value) = 'array' THEN rep.value ELSE '[]'::jsonb END) AS e(v)
+			JOIN reply_body_attachment rba ON rba.reply_body_id =
+				CASE WHEN (e.v #>> '{}') ~ '^[0-9]+$' THEN (e.v #>> '{}')::bigint END
+			WHERE rep.card_id = :comm_id
+		)
+		SELECT a.id
+		FROM cand
+		JOIN attachment a ON a.id = cand.id AND a.deleted_at IS NULL
+		JOIN file f ON f.id = a.file_id AND f.sha256 = :sha
+		ORDER BY a.id
+		LIMIT 1
+	`, map[string]any{"comm_id": commID, "task_id": taskID, "sha": digest})
+	if err != nil {
+		return 0, fmt.Errorf("find thread file: %w", err)
+	}
+	var id int64
+	if err := row.Scan(&id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("find thread file: %w", err)
+	}
+	return id, nil
+}
+
+// storeAttachment persists data as a new file + attachment on cardID (the
+// thread) and links it to replyID via reply_body_attachment, returning the new
 // attachment id. It follows the same shape as the file.create handler —
 // cas_blob (ON CONFLICT on the digest, so identical bytes already in CAS are
 // reused), cas_blob_data (idem), a file row with sha256 set, one file_chunk
@@ -1002,7 +1165,7 @@ func (p *IMAPPoller) ingestInboundAttachments(
 func storeAttachment(
 	ctx context.Context,
 	tx store.Querier,
-	parentTaskID int64,
+	cardID int64,
 	replyID int64,
 	filename string,
 	mimeType string,
@@ -1025,7 +1188,7 @@ func storeAttachment(
 	b.Set("data", data)
 	b.Set("filename", filename)
 	b.Set("actor", actorID)
-	b.Set("card_id", parentTaskID)
+	b.Set("card_id", cardID)
 	b.Set("reply_id", replyID)
 	sql, args, err := b.Compile(`
 		WITH blob AS (
@@ -1078,7 +1241,7 @@ var _ = textproto.MIMEHeader{}
 //
 // Union semantics — never remove participants. If someone drops off
 // the thread, an operator can edit recipients via the UI.
-func (p *IMAPPoller) syncCommRecipientsFromInbound(
+func (p *filer) syncCommRecipientsFromInbound(
 	ctx context.Context,
 	tx store.Querier,
 	snap *schema.Snapshot,
@@ -1175,21 +1338,22 @@ func loadChannelFromAddress(ctx context.Context, tx store.Querier, channelID int
 // The task gets title=subject, description=body, status=the channel's
 // intake status, or the project's task flow default when it has none.
 // The comm is createComm's, under the task.
-func (p *IMAPPoller) createTaskAndComm(ctx context.Context, tx store.Querier, snap *schema.Snapshot, projectID, intakeStatusID int64, m InboundMessage, actorID int64) error {
+func (p *filer) createTaskAndComm(ctx context.Context, tx store.Querier, snap *schema.Snapshot, in channelIntake, meta inboundMeta, m InboundMessage, actorID int64) (int64, error) {
+	projectID, intakeStatusID := in.projectID, in.statusID
 	taskCTID, err := resolveCardType(snap, "task")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if intakeStatusID == 0 {
 		statusAttrID, err := resolveAttr(snap, "status")
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if intakeStatusID, err = commFlowDefaultStatus(ctx, tx, projectID, statusAttrID); err != nil {
-			return err
+			return 0, err
 		}
 		if intakeStatusID == 0 {
-			return &reg.HandlerError{Code: "no_task_flow",
+			return 0, &reg.HandlerError{Code: "no_task_flow",
 				Message: fmt.Sprintf("imap intake: project %d has no task flow default and the channel has no intake status", projectID)}
 		}
 	}
@@ -1199,13 +1363,13 @@ func (p *IMAPPoller) createTaskAndComm(ctx context.Context, tx store.Querier, sn
 	row, err := namedRow(ctx, tx, `INSERT INTO card (card_type_id, parent_card_id) VALUES (:type, :parent) RETURNING id`,
 		map[string]any{"type": taskCTID, "parent": projectID})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if err := row.Scan(&taskID); err != nil {
-		return fmt.Errorf("insert task card: %w", err)
+		return 0, fmt.Errorf("insert task card: %w", err)
 	}
 	if err := writeCardCreateActivity(ctx, tx, taskID, actorID); err != nil {
-		return err
+		return 0, err
 	}
 	jstr := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
 	jid := func(n int64) json.RawMessage { b, _ := json.Marshal(n); return b }
@@ -1229,23 +1393,23 @@ func (p *IMAPPoller) createTaskAndComm(ctx context.Context, tx store.Querier, sn
 			if w.name == "description" {
 				continue
 			}
-			return fmt.Errorf("createTaskAndComm: missing attribute_def %q", w.name)
+			return 0, fmt.Errorf("createTaskAndComm: missing attribute_def %q", w.name)
 		}
 		if err := writeAttributeValue(ctx, tx, taskID, ad.ID, w.val, actorID); err != nil {
-			return fmt.Errorf("task attr %s: %w", w.name, err)
+			return 0, fmt.Errorf("task attr %s: %w", w.name, err)
 		}
 	}
 
-	commID, err := p.createComm(ctx, tx, snap, taskID, m, actorID)
+	commID, err := p.createComm(ctx, tx, snap, taskID, m, in, meta, actorID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// Append comm to task.comms.
 	if err := appendCardRefList(ctx, tx, taskID, "comms", commID, snap, actorID); err != nil {
-		return fmt.Errorf("append task.comms: %w", err)
+		return 0, fmt.Errorf("append task.comms: %w", err)
 	}
-	return nil
+	return commID, nil
 }
 
 // createComm files an unmatched inbound message as a new thread under
@@ -1254,7 +1418,7 @@ func (p *IMAPPoller) createTaskAndComm(ctx context.Context, tx store.Querier, sn
 // fresh thread_id, channel_ref pointing at this channel and the comm
 // flow's default_create_status_id; the message becomes its first
 // received reply.
-func (p *IMAPPoller) createComm(ctx context.Context, tx store.Querier, snap *schema.Snapshot, parentID int64, m InboundMessage, actorID int64) (int64, error) {
+func (p *filer) createComm(ctx context.Context, tx store.Querier, snap *schema.Snapshot, parentID int64, m InboundMessage, in channelIntake, meta inboundMeta, actorID int64) (int64, error) {
 	commCTID, err := resolveCardType(snap, "comm")
 	if err != nil {
 		return 0, err
@@ -1322,7 +1486,7 @@ func (p *IMAPPoller) createComm(ctx context.Context, tx store.Querier, snap *sch
 	}
 
 	// First received reply, mirroring the channel-driven inbound capture.
-	if err := p.appendReceivedReply(ctx, tx, snap, commID, m, actorID); err != nil {
+	if _, err := p.appendReceivedReply(ctx, tx, snap, commID, m, in, meta, actorID); err != nil {
 		return 0, err
 	}
 	return commID, nil
@@ -1337,7 +1501,7 @@ func (p *IMAPPoller) createComm(ctx context.Context, tx store.Querier, snap *sch
 // part is present and non-empty wins; if none match (e.g. priority is "html"
 // only but the message is plain text), we fall back to converting whatever
 // text we have so the description is never empty.
-func (p *IMAPPoller) descriptionMarkdown(m InboundMessage) string {
+func (p *filer) descriptionMarkdown(m InboundMessage) string {
 	for _, e := range p.bodyPriority {
 		md, err := e.extract(m)
 		if err != nil {
@@ -1479,6 +1643,7 @@ func ParseInboundMessage(uid uint32, raw []byte) (InboundMessage, error) {
 		return out, fmt.Errorf("mail.ReadMessage: %w", err)
 	}
 	out.MessageID = strings.TrimSpace(msg.Header.Get("Message-ID"))
+	out.Date = strings.TrimSpace(msg.Header.Get("Date"))
 	out.From = strings.TrimSpace(msg.Header.Get("From"))
 	out.To = strings.TrimSpace(msg.Header.Get("To"))
 	out.Cc = strings.TrimSpace(msg.Header.Get("Cc"))
@@ -1487,6 +1652,7 @@ func ParseInboundMessage(uid uint32, raw []byte) (InboundMessage, error) {
 	out.InReplyTo = strings.TrimSpace(msg.Header.Get("In-Reply-To"))
 	out.References = strings.TrimSpace(msg.Header.Get("References"))
 	out.NotificationHdr = strings.TrimSpace(msg.Header.Get(NotificationHeader))
+	out.AutoKind = automaticKind(msg.Header)
 
 	// Case-sensitive for the boundary= parameter (boundaries are
 	// case-sensitive per RFC 2046); case-insensitive for the type
@@ -1781,7 +1947,7 @@ func (r *realIMAPClient) FetchUnseen(ctx context.Context) ([]InboundMessage, err
 			// can log + skip MarkSeen for it. We pick this surface
 			// because returning an error here would skip the whole
 			// batch — too aggressive.
-			parsed = InboundMessage{UID: msg.Uid}
+			parsed = InboundMessage{UID: msg.Uid, Raw: raw, ParseError: err.Error()}
 		}
 		out = append(out, parsed)
 	}

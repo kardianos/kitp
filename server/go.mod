@@ -5,6 +5,8 @@ go 1.26.2
 require (
 	github.com/andybalholm/brotli v1.2.1
 	github.com/emersion/go-imap v1.0.0-beta.1
+	github.com/emersion/go-msgauth v0.7.0
+	github.com/emersion/go-smtp v0.25.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/xuri/excelize/v2 v2.10.1

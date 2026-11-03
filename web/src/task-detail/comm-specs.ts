@@ -11,12 +11,21 @@
  *                        recipients[], approval?: { id, action, from, to },
  *                        replies: [{ id, to, from, from_name,
  *                        from_address, author_id, subject, body_text,
- *                        delivery_status, created_at }] }] }
+ *                        delivery_status, created_at,
+ *                        attachments: [{ id, filename, mime_type, size_bytes,
+ *                                        on_thread }],
+ *                        attachments_left_off,
+ *                        relay?: { id, to, delivery_status,
+ *                                  attachments_left_off } }] }] }
  *   - comm.create         in : { task_id, channel_id, subject?, initial_message?,
  *                                recipient_person_ids? }
  *       out: { comm_id, thread_id }
  *   - comm.set_recipients in : { comm_id, recipient_person_ids }  out: { count }
  *   - reply.post          in : { comm_id, body, attachment_ids? } out: { reply_id }
+ *   - comm.attachment_to_task in : { comm_id, attachment_id }
+ *       out: { attachment_id, task_id } — "Add to task": a file that came by
+ *       email moves from the thread onto its task
+ *       (docs/MAIL_INTAKE_AND_CALENDARS.md, "Files from email").
  */
 
 import type { Api } from '../core/api.js';
@@ -27,6 +36,8 @@ export const COMM_SET_RECIPIENTS_SPEC = 'comm.set_recipients';
 export const COMM_SET_ACK_SPEC = 'comm.set_ack';
 /** Move a thread onto a task, or back into its project (docs/CONVERSATIONS.md). */
 export const COMM_ATTACH_SPEC = 'comm.attach';
+/** Move a file that came by email from the thread onto its task. */
+export const COMM_ATTACHMENT_TO_TASK_SPEC = 'comm.attachment_to_task';
 export const REPLY_POST_SPEC = 'reply.post';
 export const COMM_UNSEEN_COUNT_SPEC = 'comm.unseen_count';
 
@@ -59,6 +70,33 @@ export interface ReplyRow {
   bodyText: string;
   deliveryStatus: string;
   createdAt: string;
+  /** The message's files. A file that came by email is the thread's
+   *  (onThread) until someone adds it to the task; the message keeps it. */
+  attachments: MessageFile[];
+  /** Files on the incoming mail an account that drops them didn't keep. */
+  attachmentsLeftOff: number;
+  /** The copy kitp sent on to the rest of the thread, or null. */
+  relay: MessageRelay | null;
+}
+
+/** One file on a message. */
+export interface MessageFile {
+  id: bigint;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  onThread: boolean;
+}
+
+/** The copy of an emailed reply kitp sent on to the thread's other people. */
+export interface MessageRelay {
+  id: bigint;
+  /** Who it went to, comma-separated. */
+  to: string;
+  /** pending / sent / bounced / failed. */
+  deliveryStatus: string;
+  /** Files too large to send on with it. */
+  attachmentsLeftOff: number;
 }
 
 export interface CommRow {
@@ -104,6 +142,17 @@ export interface CommAttachOutput {
 }
 export interface CommListForTaskOutput {
   rows: CommRow[];
+}
+
+/** comm.attachment_to_task — "Add to task". */
+export interface CommAttachmentToTaskInput {
+  commId: bigint;
+  attachmentId: bigint;
+}
+export interface CommAttachmentToTaskOutput {
+  /** The task's file: the moved one, or the task's own copy of the bytes. */
+  attachmentId: bigint;
+  taskId: bigint;
 }
 
 export interface CommCreateInput {
@@ -181,6 +230,34 @@ function decodeReply(j: Record<string, unknown>): ReplyRow {
     bodyText: asStr(j['body_text']),
     deliveryStatus: asStr(j['delivery_status']),
     createdAt: asStr(j['created_at']),
+    attachments: asArray(j['attachments']).map((a) => decodeMessageFile(asObj(a))),
+    attachmentsLeftOff: asCount(j['attachments_left_off']),
+    relay: decodeRelay(j['relay']),
+  };
+}
+
+function asCount(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+}
+
+function decodeMessageFile(j: Record<string, unknown>): MessageFile {
+  return {
+    id: asId(j['id']),
+    filename: asStr(j['filename']),
+    mimeType: asStr(j['mime_type']),
+    sizeBytes: asCount(j['size_bytes']),
+    onThread: j['on_thread'] === true,
+  };
+}
+
+function decodeRelay(v: unknown): MessageRelay | null {
+  if (!v || typeof v !== 'object') return null;
+  const j = asObj(v);
+  return {
+    id: asId(j['id']),
+    to: asStr(j['to']),
+    deliveryStatus: asStr(j['delivery_status']),
+    attachmentsLeftOff: asCount(j['attachments_left_off']),
   };
 }
 
@@ -289,6 +366,17 @@ export function registerCommThreadSpecs(api: Api): void {
       decode: (raw): CommAttachOutput => {
         const j = asObj(raw);
         return { commId: asId(j['comm_id']), parentId: asId(j['parent_id']), taskId: asId(j['task_id']) };
+      },
+    });
+  }
+  if (!api.registry.has({ endpoint: 'comm', action: 'attachment_to_task' })) {
+    api.define<CommAttachmentToTaskInput, CommAttachmentToTaskOutput>({
+      endpoint: 'comm',
+      action: 'attachment_to_task',
+      encode: (i) => ({ comm_id: i.commId, attachment_id: i.attachmentId }),
+      decode: (raw): CommAttachmentToTaskOutput => {
+        const j = asObj(raw);
+        return { attachmentId: asId(j['attachment_id']), taskId: asId(j['task_id']) };
       },
     });
   }

@@ -32,6 +32,7 @@
  * repaint so a recycled list never leaks child controls.
  */
 
+import { bindSubmitShortcut } from '../ui/submit-shortcut.js';
 import { Control, type BaseControlConfig } from '../core/control.js';
 import { fitTextarea } from '../util/autosize.js';
 import type { RefPicker } from '../ui/ref-picker.js';
@@ -43,11 +44,16 @@ import {
   COMM_SET_RECIPIENTS_SPEC,
   COMM_SET_ACK_SPEC,
   COMM_ATTACH_SPEC,
+  COMM_ATTACHMENT_TO_TASK_SPEC,
   REPLY_POST_SPEC,
   type CommRow,
   type CommListForTaskOutput,
+  type MessageFile,
+  type MessageRelay,
   type ReplyRow,
 } from './comm-specs.js';
+import { downloadUrl } from './upload.js';
+import { formatBytes } from './attachments-section.js';
 import { localTimeEl } from '../util/datetime.js';
 
 import { applyStatusGlyphs, type StatusInfo } from '../ui/status-icon.js';
@@ -71,6 +77,9 @@ export interface CommThreadsConfig extends BaseControlConfig {
   /** Show the vote request a thread was started for (the detail scrolls its
    *  Approvals section to it). */
   onOpenApproval?: (approvalId: bigint) => void;
+  /** A file moved from a thread onto the task (Add to task): the task's
+   *  Attachments should reload. */
+  onFilesChanged?: () => void;
 }
 
 declare module '../core/control.js' {
@@ -493,6 +502,12 @@ export class CommThreads extends Control<CommThreadsConfig> {
         // readable; the flex layout ignores whitespace-only runs.
         meta.append(' ', metaSep(), ' ', time, ' ', metaSep(), ' ', status);
         li.append(meta, ...replyBody(r.bodyText, direction, (el, ev, fn) => this.listen(el, ev, fn)));
+        // The message's files (Add to task on a task's threads), the files
+        // an account that drops them left off, and the copy sent on to the
+        // rest of the thread (docs/MAIL_INTAKE_AND_CALENDARS.md).
+        if (r.attachments.length > 0) li.append(this.messageFiles(comm.id, r.attachments, !single));
+        if (r.attachmentsLeftOff > 0) li.append(leftOffNote(r.attachmentsLeftOff));
+        if (r.relay !== null) li.append(relayNote(r.relay));
         replies.append(li);
       }
     }
@@ -549,13 +564,7 @@ export class CommThreads extends Control<CommThreadsConfig> {
       }
       opts.onSubmit(body);
     };
-    this.listen(ta, 'keydown', (e) => {
-      const ev = e as KeyboardEvent;
-      if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
-        ev.preventDefault();
-        submit();
-      }
-    });
+    bindSubmitShortcut((el, t, fn) => this.listen(el, t, fn), ta, submit);
     composer.append(ta);
     if (opts.sendLabel !== undefined) {
       const send = document.createElement('button');
@@ -739,6 +748,66 @@ export class CommThreads extends Control<CommThreadsConfig> {
    *  re-fetch every comm and re-mount each comm's TransitionBar, which is the
    *  "multiple network trips" a single click was causing. Reverts the visual
    *  if the write fails. Mirrors doSetRecipients. */
+  /** A message's files: each downloads; one that came by email and is still
+   *  the thread's has Add to task when the thread is on a task (onTask). */
+  private messageFiles(commId: bigint, files: readonly MessageFile[], onTask: boolean): HTMLElement {
+    const list = document.createElement('ul');
+    list.className = 'task-comms__files';
+    list.dataset.replyFiles = '';
+    for (const f of files) {
+      const li = document.createElement('li');
+      li.className = 'task-comms__file';
+      li.dataset.replyFile = f.id.toString();
+      const link = document.createElement('a');
+      link.className = 'task-comms__file-name';
+      link.href = downloadUrl(f.id);
+      link.download = f.filename;
+      link.textContent = f.filename;
+      const size = document.createElement('span');
+      size.className = 'muted';
+      size.textContent = formatBytes(f.sizeBytes);
+      li.append(link, document.createTextNode(' '), size);
+      if (f.onThread && onTask) {
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'task-comms__file-add';
+        add.dataset.replyFileAdd = f.id.toString();
+        add.textContent = 'Add to task';
+        add.title = 'Move this file onto the task, into its Attachments; the message keeps it';
+        this.listen(add, 'click', () => this.doAddToTask(commId, f.id, add));
+        li.append(document.createTextNode(' '), add);
+      } else if (!f.onThread) {
+        const on = document.createElement('span');
+        on.className = 'muted';
+        on.dataset.replyFileOnTask = '';
+        on.textContent = '· on the task';
+        li.append(document.createTextNode(' '), on);
+      }
+      list.append(li);
+    }
+    return list;
+  }
+
+  private doAddToTask(commId: bigint, attachmentId: bigint, btn: HTMLButtonElement): void {
+    btn.disabled = true;
+    this.ctx.api.callByName(
+      COMM_ATTACHMENT_TO_TASK_SPEC,
+      { commId, attachmentId },
+      () => {
+        if (!this.isAlive()) return;
+        this.loadComms();
+        this.config.onFilesChanged?.();
+        this.config.onLocalWrite?.();
+      },
+      {
+        alive: () => this.isAlive(),
+        onErr: () => {
+          btn.disabled = false;
+        },
+      },
+    );
+  }
+
   private doDetach(commId: bigint, btn: HTMLButtonElement): void {
     btn.disabled = true;
     this.ctx.api.callByName(
@@ -889,4 +958,46 @@ export function replyBody(
     toggle.textContent = open ? 'Hide quoted text' : 'Show quoted text';
   });
   return [body, toggle, quoted];
+}
+
+/** "2 attachments were left off": files an account that drops them didn't
+ *  keep (email_attachments = drop). */
+export function leftOffText(n: number): string {
+  return `${n} ${n === 1 ? 'attachment was' : 'attachments were'} left off — this mail account doesn't keep files from email.`;
+}
+
+function leftOffNote(n: number): HTMLElement {
+  const p = document.createElement('p');
+  p.className = 'task-comms__note muted';
+  p.dataset.replyLeftOff = String(n);
+  p.textContent = leftOffText(n);
+  return p;
+}
+
+/** Words for a copy's delivery status. */
+const RELAY_STATUS: Readonly<Record<string, string>> = {
+  pending: 'queued',
+  sent: 'sent',
+  failed: 'not sent',
+  bounced: 'bounced',
+};
+
+/** "Sent on to bob@example.com · sent": the copy kitp emailed to the
+ *  thread's other people. */
+export function relayText(r: MessageRelay): string {
+  const status = RELAY_STATUS[r.deliveryStatus] ?? r.deliveryStatus;
+  let text = `Sent on to ${r.to} · ${status}`;
+  if (r.attachmentsLeftOff > 0) {
+    text += ` (without ${r.attachmentsLeftOff === 1 ? 'its attachment' : `its ${r.attachmentsLeftOff} attachments`}: too large to send)`;
+  }
+  return text;
+}
+
+function relayNote(r: MessageRelay): HTMLElement {
+  const p = document.createElement('p');
+  p.className = 'task-comms__note task-comms__relay muted';
+  p.dataset.replyRelay = r.deliveryStatus;
+  p.title = 'kitp emailed this message to the thread’s other people, because it reached only this address (Comm Channels → Emailed replies)';
+  p.append(icon('corner-down-right', 12), document.createTextNode(` ${relayText(r)}`));
+  return p;
 }

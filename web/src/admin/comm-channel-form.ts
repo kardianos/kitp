@@ -19,6 +19,8 @@ import {
   SIGNATURE_MODE_OPTIONS,
   INTAKE_MODE_OPTIONS,
   REPLY_QUOTE_OPTIONS,
+  RELAY_REPLIES_OPTIONS,
+  EMAIL_ATTACHMENTS_OPTIONS,
 } from './nested-editor.js';
 
 /** The status order shared with the template / demo Comms screens. */
@@ -54,6 +56,22 @@ export const COMM_CHANNEL_FORM: RecordFormScreenConfig = {
     // carry the conversation below them.
     { name: 'intakeMode', label: 'New mail', kind: 'select', options: [...INTAKE_MODE_OPTIONS] },
     { name: 'replyQuote', label: 'Quoting in replies', kind: 'select', options: [...REPLY_QUOTE_OPTIONS] },
+    // docs/MAIL_INTAKE_AND_CALENDARS.md: a reply someone sent to this
+    // address alone, and the files on incoming mail.
+    {
+      name: 'relayReplies',
+      label: 'Emailed replies',
+      kind: 'select',
+      options: [...RELAY_REPLIES_OPTIONS],
+      hint: 'When someone replies to this address only, kitp emails a copy to the thread’s other people — not to kitp users (they see it here), not to anyone already on the reply. Auto-replies and bounces are never sent on.',
+    },
+    {
+      name: 'emailAttachments',
+      label: 'Attachments from email',
+      kind: 'select',
+      options: [...EMAIL_ATTACHMENTS_OPTIONS],
+      hint: 'Kept files stay on the thread; Add to task, next to a file in the conversation, moves it onto the task.',
+    },
     {
       name: 'intakeStatusId',
       label: 'New task status',

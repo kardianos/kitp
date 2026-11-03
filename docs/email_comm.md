@@ -1,5 +1,9 @@
 # Email communication
 
+> Since 2026-11-03 mail also arrives by POST from a provider or through
+> kitp's own SMTP listener, and duplicates are dropped: see
+> [MAIL_INTAKE_AND_CALENDARS.md](MAIL_INTAKE_AND_CALENDARS.md).
+
 ## Blocked by
 
 Flow & screen kernel (`docs/FLOW_AND_SCREEN_KERNEL.md`). Comms attach to tasks and have their own status flow — both require the kernel to be in place.
@@ -13,6 +17,10 @@ Subject     → Title
 Body        → Description (plain text; see MIME rule below)
 Attachments → Attachments
 ```
+
+(As built: attachments stay on the thread, under their message, and
+**Add to task** moves one into the task's Attachments — see
+[MAIL_INTAKE_AND_CALENDARS.md](MAIL_INTAKE_AND_CALENDARS.md), "Second round".)
 
 **MIME decoding rule.** Multipart messages: prefer the `text/plain` part if present; otherwise convert the `text/html` part to plain text by stripping tags. No markdown conversion — plain text only, keep it simple.
 

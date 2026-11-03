@@ -84,6 +84,15 @@ type ChannelSetInput struct {
 	// 'off', 'last' (the message before) or 'all' (every earlier message).
 	// Empty leaves the stored value unchanged; unset = 'last'.
 	ReplyQuote string `json:"reply_quote,omitempty" mcp:"desc=quoting in outbound replies; one of 'off' | 'last' | 'all'; empty leaves the stored value unchanged"`
+	// RelayReplies decides whether an emailed reply on a thread is sent on
+	// to the thread's other people (not kitp users, not anyone already on
+	// it): 'on' | 'off'. Empty leaves the stored value unchanged; a new
+	// account defaults to 'on', an existing one without it reads as 'off'.
+	RelayReplies string `json:"relay_replies,omitempty" mcp:"desc=send an emailed reply on to the thread's other people; one of 'on' | 'off'; empty leaves the stored value unchanged (a new account defaults to 'on')"`
+	// EmailAttachments decides whether files on incoming mail are kept on
+	// the thread: 'keep' | 'drop'. Empty leaves the stored value unchanged;
+	// unset = 'keep'.
+	EmailAttachments string `json:"email_attachments,omitempty" mcp:"desc=files on incoming mail; one of 'keep' | 'drop'; empty leaves the stored value unchanged (unset = 'keep')"`
 }
 
 // ChannelSetOutput surfaces the channel card id so the caller can chain.
@@ -102,25 +111,27 @@ type ChannelListInput struct {
 // ChannelRow is one comm_channel card, joined with its comm_secret row to
 // surface the Has* flags without exposing the encrypted password bytes.
 type ChannelRow struct {
-	ID              int64  `json:"id,string" mcp:"desc=comm_channel card id"`
-	Name            string `json:"name" mcp:"desc=display name (title attribute)"`
-	ChannelType     string `json:"channel_type" mcp:"desc=channel type (email in v1)"`
-	IMAPHost        string `json:"imap_host" mcp:"desc=IMAP server hostname"`
-	IMAPPort        int    `json:"imap_port" mcp:"desc=IMAP server port"`
-	IMAPUsername    string `json:"imap_username" mcp:"desc=IMAP login username"`
-	SMTPHost        string `json:"smtp_host" mcp:"desc=SMTP server hostname"`
-	SMTPPort        int    `json:"smtp_port" mcp:"desc=SMTP server port"`
-	SMTPUsername    string `json:"smtp_username" mcp:"desc=SMTP login username"`
-	FromAddress     string `json:"from_address" mcp:"desc=outbound From: envelope"`
-	IntakeStatusID  int64  `json:"intake_status_id,string,omitempty" mcp:"desc=intake status card id; 0/omitted = use project flow default"`
-	Status          string `json:"channel_status" mcp:"desc=tri-state status: 'enabled' | 'disabled-admin' | 'disabled-fault'"`
-	SignatureMode   string `json:"signature_mode" mcp:"desc=outbound reply signature: 'none' | 'comm_name' | 'user_name' (empty = unset, treated as 'comm_name')"`
-	IntakeMode      string `json:"intake_mode" mcp:"desc=what new inbound mail becomes: 'task' | 'thread' | 'ignore' (empty = unset: 'task' with an intake status, else 'ignore')"`
-	ReplyQuote      string `json:"reply_quote" mcp:"desc=quoting in outbound replies: 'off' | 'last' | 'all' (empty = unset, treated as 'last')"`
-	FaultReason     string `json:"channel_fault_reason,omitempty" mcp:"desc=free-form reason set by the runtime when status='disabled-fault'; empty otherwise"`
-	HasIMAPPassword bool   `json:"has_imap_password" mcp:"desc=true if a non-null encrypted IMAP password is stored"`
-	HasSMTPPassword bool   `json:"has_smtp_password" mcp:"desc=true if a non-null encrypted SMTP password is stored"`
-	CreatedAt       string `json:"created_at" mcp:"desc=RFC3339 creation timestamp of the channel card"`
+	ID               int64  `json:"id,string" mcp:"desc=comm_channel card id"`
+	Name             string `json:"name" mcp:"desc=display name (title attribute)"`
+	ChannelType      string `json:"channel_type" mcp:"desc=channel type (email in v1)"`
+	IMAPHost         string `json:"imap_host" mcp:"desc=IMAP server hostname"`
+	IMAPPort         int    `json:"imap_port" mcp:"desc=IMAP server port"`
+	IMAPUsername     string `json:"imap_username" mcp:"desc=IMAP login username"`
+	SMTPHost         string `json:"smtp_host" mcp:"desc=SMTP server hostname"`
+	SMTPPort         int    `json:"smtp_port" mcp:"desc=SMTP server port"`
+	SMTPUsername     string `json:"smtp_username" mcp:"desc=SMTP login username"`
+	FromAddress      string `json:"from_address" mcp:"desc=outbound From: envelope"`
+	IntakeStatusID   int64  `json:"intake_status_id,string,omitempty" mcp:"desc=intake status card id; 0/omitted = use project flow default"`
+	Status           string `json:"channel_status" mcp:"desc=tri-state status: 'enabled' | 'disabled-admin' | 'disabled-fault'"`
+	SignatureMode    string `json:"signature_mode" mcp:"desc=outbound reply signature: 'none' | 'comm_name' | 'user_name' (empty = unset, treated as 'comm_name')"`
+	IntakeMode       string `json:"intake_mode" mcp:"desc=what new inbound mail becomes: 'task' | 'thread' | 'ignore' (empty = unset: 'task' with an intake status, else 'ignore')"`
+	ReplyQuote       string `json:"reply_quote" mcp:"desc=quoting in outbound replies: 'off' | 'last' | 'all' (empty = unset, treated as 'last')"`
+	RelayReplies     string `json:"relay_replies" mcp:"desc=emailed replies sent on to the thread's other people: 'on' | 'off' (empty = unset, treated as 'off')"`
+	EmailAttachments string `json:"email_attachments" mcp:"desc=files on incoming mail: 'keep' | 'drop' (empty = unset, treated as 'keep')"`
+	FaultReason      string `json:"channel_fault_reason,omitempty" mcp:"desc=free-form reason set by the runtime when status='disabled-fault'; empty otherwise"`
+	HasIMAPPassword  bool   `json:"has_imap_password" mcp:"desc=true if a non-null encrypted IMAP password is stored"`
+	HasSMTPPassword  bool   `json:"has_smtp_password" mcp:"desc=true if a non-null encrypted SMTP password is stored"`
+	CreatedAt        string `json:"created_at" mcp:"desc=RFC3339 creation timestamp of the channel card"`
 }
 
 // ChannelListOutput wraps the rows in a stable envelope.
@@ -212,6 +223,33 @@ type ReplyRow struct {
 	BodyText       string `json:"body_text" mcp:"desc=plain-text body"`
 	DeliveryStatus string `json:"delivery_status" mcp:"desc=pending / sent / bounced / failed / received"`
 	CreatedAt      string `json:"created_at" mcp:"desc=RFC3339 creation timestamp"`
+	// Attachments are the message's files. A received file lives on the
+	// thread (OnThread) until someone moves it onto the task
+	// (comm.attachment_to_task); the message keeps it either way.
+	Attachments []ReplyAttachment `json:"attachments" mcp:"desc=the message's files"`
+	// AttachmentsLeftOff counts the files a mail account that drops them
+	// didn't keep (email_attachments = 'drop').
+	AttachmentsLeftOff int `json:"attachments_left_off" mcp:"desc=files on the incoming message that were not kept (the account drops them)"`
+	// Relay is the copy kitp sent on to the rest of the thread, for an
+	// emailed reply on an account that does that (relay_replies = 'on').
+	Relay *ReplyRelay `json:"relay,omitempty" mcp:"desc=the copy sent on to the thread's other people, when one was"`
+}
+
+// ReplyAttachment is one file on a message.
+type ReplyAttachment struct {
+	ID        int64  `json:"id,string" mcp:"desc=attachment id (download with attachment.download_url)"`
+	Filename  string `json:"filename" mcp:"desc=file name"`
+	MimeType  string `json:"mime_type" mcp:"desc=MIME type"`
+	SizeBytes int64  `json:"size_bytes" mcp:"desc=size in bytes"`
+	OnThread  bool   `json:"on_thread" mcp:"desc=true while the file belongs to the thread (not yet moved onto its task)"`
+}
+
+// ReplyRelay is the copy of an emailed reply kitp sent on.
+type ReplyRelay struct {
+	ID                 int64  `json:"id,string" mcp:"desc=the copy's reply_body id"`
+	To                 string `json:"to" mcp:"desc=who it went to (comma-separated)"`
+	DeliveryStatus     string `json:"delivery_status" mcp:"desc=pending / sent / bounced / failed"`
+	AttachmentsLeftOff int    `json:"attachments_left_off" mcp:"desc=files too large to send on with it"`
 }
 
 // CommListForTaskOutput wraps the rows in a stable envelope.
@@ -243,7 +281,7 @@ type ReplyPostInput struct {
 	// reply_body_attachment on send; IMAP joins on receive to skip
 	// duplicate ingestion when the reply round-trips back. Empty list
 	// means a body-only reply (the pre-V2 behaviour).
-	AttachmentIDs reg.IDs `json:"attachment_ids,omitempty" mcp:"desc=existing attachment ids on the parent task to include"`
+	AttachmentIDs reg.IDs `json:"attachment_ids,omitempty" mcp:"desc=existing attachment ids to send with the reply: the task's files or the thread's own (linked, not copied)"`
 }
 
 // ReplyPostOutput carries the new reply_body card id so the caller
@@ -257,8 +295,10 @@ type ReplyPostOutput struct {
 // CommLogListInput filters the per-project comm_log stream.
 type CommLogListInput struct {
 	ProjectID int64  `json:"project_id,string" mcp:"required,desc=project card id whose comm_log to read"`
-	Kind      string `json:"kind,omitempty" mcp:"desc=optional kind filter (poll / send_ok / send_bounce / send_fail / imap_auth_fail / parse_error / unmatched_thread / attachment_too_large / notification_reply / notify_ok / notify_bounce / notify_fail)"`
-	Since     string `json:"since,omitempty" mcp:"desc=ISO timestamp; rows older than this are excluded; empty defaults to 24h ago"`
+	Kind      string `json:"kind,omitempty" mcp:"desc=optional kind filter (poll / received / duplicate / inbound_refused / dkim_result / dkim_failed / send_ok / send_bounce / send_fail / imap_auth_fail / parse_error / unmatched_thread / attachment_too_large / attachments_dropped / relay_queued / relay_skipped / notification_reply / notify_ok / notify_bounce / notify_fail)"`
+	Since     string `json:"since,omitempty" mcp:"desc=RFC 3339 timestamp (e.g. 2026-11-03T00:00:00Z); rows older than this are excluded; empty defaults to 24h ago"`
+	ChannelID int64  `json:"channel_id,string,omitempty" mcp:"desc=optional: only this mail account's rows"`
+	RouteID   int64  `json:"route_id,string,omitempty" mcp:"desc=optional: only rows for this inbound route (a POST URL or SMTP address from comm_route.list)"`
 	Limit     int    `json:"limit,omitempty" mcp:"desc=max rows to return; default 200, max 1000"`
 }
 
@@ -267,6 +307,7 @@ type CommLogRow struct {
 	ID          int64           `json:"id,string" mcp:"desc=comm_log row id"`
 	ChannelID   int64           `json:"channel_id,string,omitempty" mcp:"desc=channel card id; 0 / omitted for pre-identification rows (e.g. IMAP auth failures)"`
 	ChannelName string          `json:"channel_name,omitempty" mcp:"desc=channel display name (title attribute on the channel card); empty when channel_id is 0 or the channel has been deleted"`
+	RouteID     int64           `json:"route_id,string,omitempty" mcp:"desc=inbound route (card_access row) a POST / SMTP event came through; 0 for IMAP and outbound rows"`
 	Kind        string          `json:"kind" mcp:"desc=event kind"`
 	Detail      json.RawMessage `json:"detail,omitempty" mcp:"desc=kind-specific structured detail jsonb"`
 	At          string          `json:"at" mcp:"desc=RFC3339 row timestamp"`
@@ -317,11 +358,11 @@ func Register(p *store.Pool) {
 		SQLFunc: "comm_channel_list_batch",
 	})
 	reg.Register(reg.Handler{
-		Endpoint:     "comm",
-		Action:       "create",
-		Doc:          "Create a comm card under a task (worker / manager / admin, scoped to the task's project). Generates a 10-char alphanumeric thread_id, sets channel_ref + comm_status (the project's comm flow default_create_status_id), appends the new comm to the task's comms attribute, and (when initial_message is provided) creates an outbound reply_body row (delivery_status='pending', queued for SMTP) — which requires recipient_person_ids.",
-		InputType:    reflect.TypeFor[CommCreateInput](),
-		OutputType:   reflect.TypeFor[CommCreateOutput](),
+		Endpoint:   "comm",
+		Action:     "create",
+		Doc:        "Create a comm card under a task (worker / manager / admin, scoped to the task's project). Generates a 10-char alphanumeric thread_id, sets channel_ref + comm_status (the project's comm flow default_create_status_id), appends the new comm to the task's comms attribute, and (when initial_message is provided) creates an outbound reply_body row (delivery_status='pending', queued for SMTP) — which requires recipient_person_ids.",
+		InputType:  reflect.TypeFor[CommCreateInput](),
+		OutputType: reflect.TypeFor[CommCreateOutput](),
 		// Anyone who can open a task can start a comm within it: the per-row
 		// scope pass gates on the seeded (comm, card.create) grant that
 		// worker / manager hold (db/schema/seed.hcsv), scoped to the parent

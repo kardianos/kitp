@@ -73,6 +73,7 @@ DECLARE
     _col_idx_tags int;
     _col_idx_assignee int;
     _col_idx_sort int;
+    _col_idx_due int;
     _header_name text;
     _target text;
     _hdr_pos int;
@@ -89,7 +90,7 @@ DECLARE
     _new_components jsonb;
     _new_tags jsonb;
     _allowed_targets text[] := ARRAY['id','title','assignee_email','assignee_name',
-                                     'milestone','component','tags','description','sort_order'];
+                                     'milestone','component','tags','description','sort_order','due_date'];
     _ref_skip boolean;
     _ref_error_msg text;
     _tag_part text;
@@ -204,6 +205,7 @@ BEGIN
         _col_idx_tags := -1;
         _col_idx_assignee := -1;
         _col_idx_sort := -1;
+        _col_idx_due := -1;
         _unknown_targets := '{}'::jsonb;
         _hdr_pos := 0;
         FOR _header_name IN SELECT v #>> '{}' FROM jsonb_array_elements(_header) AS v
@@ -225,6 +227,7 @@ BEGIN
                 WHEN 'tags' THEN _col_idx_tags := _hdr_pos;
                 WHEN 'assignee_email' THEN _col_idx_assignee := _hdr_pos;
                 WHEN 'sort_order' THEN _col_idx_sort := _hdr_pos;
+                WHEN 'due_date' THEN _col_idx_due := _hdr_pos;
                 ELSE NULL;
             END CASE;
             _hdr_pos := _hdr_pos + 1;
@@ -379,6 +382,16 @@ BEGIN
                             _new_persons := _new_persons || jsonb_build_object(_norm, _v);
                         END IF;
                     END IF;
+                END IF;
+            END IF;
+
+            -- due_date: YYYY-MM-DD only (iso_date_ok; docs/MAIL_INTAKE_AND_CALENDARS.md §1)
+            IF _col_idx_due >= 0 THEN
+                _v := btrim(COALESCE(_row->>_col_idx_due, ''));
+                IF _v <> '' AND NOT iso_date_ok(_v) THEN
+                    _row_errors := _row_errors || jsonb_build_array(
+                        jsonb_build_object('row', _row_num, 'column', 'due_date',
+                            'message', format('due_date "%s" is not a date (YYYY-MM-DD)', _v)));
                 END IF;
             END IF;
 

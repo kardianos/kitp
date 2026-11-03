@@ -14,11 +14,20 @@ The page is split into a main column and a right-hand attribute rail.
 | **Attachments**    | Drop or pick files; CAS-uploaded out-of-batch then linked. |
 | **Approval votes** | Who has been asked to vote on which status step, and every vote. See [Approval votes](#approval-votes) below. |
 | **Links**          | Code changes, issues, or any URL tied to this task. Each shows its source (e.g. a Gerrit CL), its state (open / reviewed / approved / merged / abandoned) and when it last changed. **+ Add link** pastes a URL; a code forge adds and updates its own links automatically. Linking a URL that's already here updates it instead of adding a duplicate. |
-| **Comms**          | Comm threads tied to this card. Each message shows who it's from and when (local date + time). Each thread carries its `#thread_id` chip. Use **+ Start comm** to spawn a new thread. A thread started by asking for a vote by email names the vote (**Vote request: …**). |
+| **Comms**          | Comm threads tied to this card. Each message shows who it's from and when (local date + time), and its files. Each thread carries its `#thread_id` chip. Use **+ Start comm** to spawn a new thread. A thread started by asking for a vote by email names the vote (**Vote request: …**). |
 | **Add comment**    | The composer at the top of the comments section. Mod+Enter posts. |
 | **Comments**       | Inline markdown bodies, newest-first, each stamped with its local date + time. Pencil on your own comment opens the inline editor; edits write an audit row to the activity log. |
 | **Activity**       | The full audit stream — one line per event, including `commented` and `edited a comment` rows that point at `c<id>`. |
 | **Right rail**     | Per-attribute side panel (status, assignee, milestone, tags, originator, due date, …). Click any row to open its picker. |
+
+## Files that came by email
+
+A file on an emailed message stays with the **thread**, listed under the message — not in the task's Attachments. Click a file to download it; **Add to task** moves it into the task's Attachments (the message keeps showing it, now marked *on the task*). kitp stores a file once: the same file sent again is linked to the copy it already has.
+
+Under a message you may also see:
+
+- *N attachments were left off* — the mail account doesn't keep files from email (Comm Channels → **Attachments from email**).
+- *Sent on to bob@… · sent* — the message reached only the mail account, so kitp emailed it to the thread's other people (Comm Channels → **Emailed replies**). *queued* means it is waiting to go out; *not sent* or *bounced* means it didn't arrive — the Comm log says why.
 
 ## Editing your own comments
 

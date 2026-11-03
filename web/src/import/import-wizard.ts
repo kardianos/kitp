@@ -615,7 +615,32 @@ export class ImportWizard extends Control<ImportWizardConfig> {
     const strong = document.createElement('strong');
     strong.textContent = String(this.rowCount);
     p.append('Map each CSV column to a task field. ', strong, ' rows detected.');
-    this.bodyEl.append(p);
+    // Dates are YYYY-MM-DD only (docs/MAIL_INTAKE_AND_CALENDARS.md §1); the
+    // preview lists every row whose due_date isn't.
+    const dates = document.createElement('p');
+    dates.className = 'import-wizard__hint muted';
+    dates.dataset.iwDateHint = '';
+    dates.textContent = 'due_date takes YYYY-MM-DD only (e.g. 2026-11-03). Re-save the sheet with that format if it shows dates another way; the preview lists any row it can’t read.';
+    // The wizard is a dialog the route-based help overlay can't point at, so
+    // its detailed instructions live here, folded.
+    const how = document.createElement('details');
+    how.className = 'import-wizard__how';
+    how.dataset.iwHow = '';
+    const summary = document.createElement('summary');
+    summary.append(document.createTextNode('How importing works'));
+    const steps = document.createElement('ul');
+    for (const line of [
+      'Each row becomes one task in this project. Map at least a title column; leave columns you don’t need on (ignore).',
+      'Columns: title, description, sort_order (a number), due_date (YYYY-MM-DD), assignee_email / assignee_name, milestone, component, tags (separate several with commas), id (ignored on import — kitp assigns new ids).',
+      'Next you choose what happens to people, milestones, components and tags kitp doesn’t know yet: match existing only, create them, skip the row, or leave the field blank.',
+      'Preview is a dry run: it counts what would be created and lists every row with a problem — a missing title, a due date that isn’t YYYY-MM-DD, a number that isn’t one. Nothing is written until you commit, and a commit with errors writes nothing at all.',
+    ]) {
+      const li = document.createElement('li');
+      li.append(document.createTextNode(line));
+      steps.append(li);
+    }
+    how.append(summary, steps);
+    this.bodyEl.append(p, dates, how);
 
     /* ----------------------------- column map --------------------------- */
     const mapWrap = document.createElement('div');

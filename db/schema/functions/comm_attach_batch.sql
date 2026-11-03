@@ -26,11 +26,11 @@
 --      activity on that task).
 --   6. UPDATE card.parent_card_id + a 'card_move' activity on the comm (the
 --      same shape card.move writes).
---   7. Join the new task: append the comm to its `comms` list, and move the
---      thread's own attachments (inbound mail on a thread on its own lands
---      on the comm, imap.go attachmentHost) onto the task, where a task's
---      threads keep theirs. Detaching leaves attachments on the old task;
---      the messages still link them (reply_body_attachment).
+--   7. Join the new task: append the comm to its `comms` list. Files stay
+--      where they are: a thread keeps the files that came by email (they
+--      live on the comm) and a person moves one onto the task with
+--      comm.attachment_to_task. Attaching or detaching moves nothing
+--      (docs/MAIL_INTAKE_AND_CALENDARS.md, "Files from email").
 --
 -- Result JSON shape matches `comm.CommAttachOutput`:
 --   {"comm_id": "<bigint>", "parent_id": "<bigint>", "task_id": "<bigint>"}
@@ -260,9 +260,6 @@ BEGIN
             ON CONFLICT (card_id, attribute_def_id) DO UPDATE
                 SET value = EXCLUDED.value,
                     last_activity_id = EXCLUDED.last_activity_id;
-
-            UPDATE attachment SET card_id = _task_id
-             WHERE card_id = _comm_id AND deleted_at IS NULL;
         END IF;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,

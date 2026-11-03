@@ -63,6 +63,9 @@ DECLARE
     _signature_mode text;
     _intake_mode text;
     _reply_quote text;
+    _relay_replies text;
+    _email_attachments text;
+    _creating boolean;
     _imap_pwd_raw jsonb;
     _smtp_pwd_raw jsonb;
     _imap_pwd text;
@@ -110,6 +113,8 @@ BEGIN
         _signature_mode := COALESCE(_raw->>'signature_mode', '');
         _intake_mode    := COALESCE(_raw->>'intake_mode', '');
         _reply_quote    := COALESCE(_raw->>'reply_quote', '');
+        _relay_replies  := COALESCE(_raw->>'relay_replies', '');
+        _email_attachments := COALESCE(_raw->>'email_attachments', '');
         BEGIN
             _intake_status_id := COALESCE(NULLIF(_raw->>'intake_status_id', '')::bigint, 0);
         EXCEPTION WHEN invalid_text_representation THEN
@@ -190,6 +195,21 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
+        -- Whether an emailed reply is sent on to the rest of the thread, and
+        -- whether files on incoming mail are kept
+        -- (docs/MAIL_INTAKE_AND_CALENDARS.md).
+        IF _relay_replies <> '' AND _relay_replies NOT IN ('on', 'off') THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('comm_channel.set: relay_replies %L is not one of ''on'' / ''off''', _relay_replies),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF _email_attachments <> '' AND _email_attachments NOT IN ('keep', 'drop') THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('comm_channel.set: email_attachments %L is not one of ''keep'' / ''drop''', _email_attachments),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
 
         -- 2. Parent project: exists + card_type='project'.
         SELECT ct.name INTO _parent_kind
@@ -253,7 +273,14 @@ BEGIN
             END IF;
         END IF;
 
-        -- 4. Insert (id=0) or use existing id.
+        -- 4. Insert (id=0) or use existing id. A new account sends replies
+        --    on unless told otherwise; an existing one without the setting
+        --    reads as off, so this never switches on for an account that
+        --    was already running.
+        _creating := _channel_id = 0;
+        IF _creating AND _relay_replies = '' THEN
+            _relay_replies := 'on';
+        END IF;
         IF _channel_id = 0 THEN
             INSERT INTO card (card_type_id, parent_card_id)
             VALUES (_channel_ct_id, _project_id)
@@ -284,7 +311,9 @@ BEGIN
                 (12, 'channel_fault_reason', to_jsonb(''::text),               _status = 'enabled'),
                 (13, 'signature_mode',       to_jsonb(_signature_mode),        _signature_mode <> ''),
                 (14, 'intake_mode',          to_jsonb(_intake_mode),           _intake_mode <> ''),
-                (15, 'reply_quote',          to_jsonb(_reply_quote),           _reply_quote <> '')
+                (15, 'reply_quote',          to_jsonb(_reply_quote),           _reply_quote <> ''),
+                (16, 'relay_replies',        to_jsonb(_relay_replies),         _relay_replies <> ''),
+                (17, 'email_attachments',    to_jsonb(_email_attachments),     _email_attachments <> '')
             ) AS v(ord, attr_name, value, include)
             WHERE v.include
         ),

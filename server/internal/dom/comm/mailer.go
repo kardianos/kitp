@@ -117,6 +117,13 @@ type Execer interface {
 
 // LogEvent appends one comm_log row for a channel (channelID 0 = none).
 func LogEvent(ctx context.Context, q Execer, projectID, channelID int64, kind string, detail any) error {
+	return LogRouteEvent(ctx, q, projectID, channelID, 0, kind, detail)
+}
+
+// LogRouteEvent appends one comm_log row naming the inbound route
+// (card_access row) it concerns as well (routeID 0 = none), so the Comm log
+// can be filtered to one route.
+func LogRouteEvent(ctx context.Context, q Execer, projectID, channelID, routeID int64, kind string, detail any) error {
 	d, err := json.Marshal(detail)
 	if err != nil {
 		return fmt.Errorf("comm.LogEvent: marshal detail: %w", err)
@@ -124,11 +131,12 @@ func LogEvent(ctx context.Context, q Execer, projectID, channelID int64, kind st
 	b := named.New()
 	b.Set("project_id", projectID)
 	b.Set("channel_id", nullableID(channelID))
+	b.Set("route_id", nullableID(routeID))
 	b.Set("kind", kind)
 	b.Set("detail", string(d))
 	sql, args, err := b.Compile(`
-		INSERT INTO comm_log (project_id, channel_id, kind, detail)
-		VALUES (:project_id, :channel_id, :kind, CAST(:detail AS jsonb))
+		INSERT INTO comm_log (project_id, channel_id, route_id, kind, detail)
+		VALUES (:project_id, :channel_id, :route_id, :kind, CAST(:detail AS jsonb))
 	`)
 	if err != nil {
 		return fmt.Errorf("comm.LogEvent: compile: %w", err)

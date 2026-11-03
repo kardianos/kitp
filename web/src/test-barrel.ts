@@ -279,6 +279,27 @@ export { PeopleManager, registerPeopleManager } from './admin/people-manager.js'
 export { SchedulerJobs, registerSchedulerJobs } from './admin/scheduler-jobs.js';
 export { RecordForm, registerRecordForm } from './admin/record-form.js';
 export { ThemeFiles, registerThemeFiles, themeFileRows, themePathForUpload, brandPath, bytesToBase64 } from './admin/theme-files.js';
+export {
+  MAILIN_SPEC,
+  registerMailinSpecs,
+  inboundURL,
+  inboundAddress,
+  calendarURL,
+  webcalURL,
+  splitList,
+  policyToDraft,
+  draftToPolicy,
+  policySummary,
+  sinceText,
+  parseCommLogFilter,
+  commLogHref,
+  windowSince,
+  normalizeStatus,
+} from './mailin/specs.js';
+export { CommRoutes, registerCommRoutes, routeKindLabel, ROUTE_STEPS } from './mailin/comm-routes.js';
+export { CommLogView, registerCommLogView, commLogSummary, COMM_LOG_KINDS } from './mailin/comm-log.js';
+export { MailIntake, registerMailIntake, daysUntil } from './mailin/mail-intake.js';
+export { AccountCalendars, registerAccountCalendars, filterPreset, CALENDAR_FILTERS, CALENDAR_APP_STEPS } from './mailin/calendars.js';
 export { THEME_FORM, themeRowToDraft, themeDraftToInput, validateThemeDraft } from './admin/theme-form.js';
 export {
   MasterDetail,
@@ -312,6 +333,8 @@ export {
   CHANNEL_STATUS_OPTIONS,
   INTAKE_MODE_OPTIONS,
   REPLY_QUOTE_OPTIONS,
+  RELAY_REPLIES_OPTIONS,
+  EMAIL_ATTACHMENTS_OPTIONS,
   type NestedEditorConfig,
   type CommChannelDraft,
 } from './admin/nested-editor.js';
@@ -544,7 +567,7 @@ export {
   type CommentUpdateOutput,
 } from './task-detail/comment-specs.js';
 export { registerCommThreadSpecs } from './task-detail/comm-specs.js';
-export { CommThreads, registerCommThreads, replySender, replyBody } from './task-detail/task-comm-threads.js';
+export { CommThreads, registerCommThreads, replySender, replyBody, relayText, leftOffText } from './task-detail/task-comm-threads.js';
 export { splitQuoted, MAX_SPLIT_CHARS } from './task-detail/comm-quoted.js';
 export { ThreadPlacement, registerThreadPlacement } from './task-detail/thread-placement.js';
 export {
@@ -716,3 +739,4 @@ export {
 export { setRichEditorEngine } from './editor/rich-editor.js';
 export { createTextareaEngine } from './editor/engine.js';
 export { captionedField } from './ui/captioned-field.js';
+export { isSubmitShortcut, bindSubmitShortcut, submitShortcutHint } from './ui/submit-shortcut.js';

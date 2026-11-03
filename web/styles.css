@@ -8121,6 +8121,49 @@ textarea.task-comms__form-input {
   gap: var(--space-1x);
   font-size: var(--text-2xs);
 }
+/* A message's files, the files an account left off, and the copy kitp sent
+   on to the rest of the thread (docs/MAIL_INTAKE_AND_CALENDARS.md). */
+.task-comms__files {
+  list-style: none;
+  margin: var(--space-1x) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--text-2xs);
+}
+.task-comms__file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1x);
+}
+.task-comms__file-name {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.task-comms__file-add {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--color-accent);
+  font: inherit;
+  cursor: pointer;
+}
+.task-comms__file-add:hover {
+  text-decoration: underline;
+}
+.task-comms__file-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.task-comms__note {
+  margin: var(--space-1x) 0 0;
+  font-size: var(--text-2xs);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 /* WHO a message is from reads first and strongest; the address beside it and
    the local date + time stay muted. */
 .task-comms__reply-from {
@@ -11002,4 +11045,179 @@ textarea.task-comms__form-input {
 /* RecordForm extra actions (a portal's Rebuild / Preview). */
 .record-form__action {
   text-decoration: none;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Mail intake + calendar feeds (mailin/*): Comm Channels' RECEIVING MAIL      */
+/* panel, the Comm log, Admin → Mail intake, Account → Calendars.             */
+/* -------------------------------------------------------------------------- */
+.mi-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  min-height: 0;
+  overflow-y: auto;
+}
+.mi-view__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--color-fg-strong);
+}
+.mi-routes,
+.mi-calendars {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+.mi-routes__heading {
+  margin: 0;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.mi-hint {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+.mi-error {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-danger, #b3261e);
+}
+.mi-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.mi-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: var(--space-3);
+}
+.mi-card__title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--color-fg-strong);
+}
+.mi-card__head,
+.mi-actions,
+.mi-filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.mi-filterbar {
+  align-items: flex-end;
+}
+.mi-badge {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  font-family: var(--font-mono, monospace);
+}
+.mi-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+.mi-form h4 {
+  margin: 0;
+}
+.mi-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mi-field__label {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.mi-field textarea,
+.mi-field input[type='text'],
+.mi-field select {
+  font: inherit;
+  max-width: 40rem;
+}
+.mi-filters summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.mi-filters[open] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.mi-secret {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid var(--color-accent, var(--color-border));
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  background: var(--color-surface);
+}
+.mi-secret__value {
+  flex: 1 1 24rem;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-sm);
+}
+.mi-secret .mi-hint,
+.mi-secret .mi-steps {
+  flex-basis: 100%;
+}
+.mi-steps {
+  margin: 0;
+  padding-left: var(--space-4);
+  font-size: var(--text-sm);
+}
+.mi-props {
+  display: grid;
+  grid-template-columns: minmax(12rem, max-content) 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+.mi-props dt {
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+.mi-props dd {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.mi-pre {
+  margin: 0;
+  max-height: 20rem;
+  overflow: auto;
+  font-size: var(--text-xs, var(--text-sm));
+  background: var(--color-bg-subtle, transparent);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+}
+.btn.mi-link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--color-accent, inherit);
+  text-decoration: underline;
+  cursor: pointer;
 }

@@ -30,9 +30,19 @@
 --         "from_name": "...", "from_address": "...",
 --         "author_id": "<bigint>",
 --         "subject": "...", "body_text": "...",
---         "delivery_status": "...", "created_at": "RFC3339"
+--         "delivery_status": "...", "created_at": "RFC3339",
+--         "attachments": [{"id": "<bigint>", "filename": "...",
+--                          "mime_type": "...", "size_bytes": n,
+--                          "on_thread": bool}],
+--         "attachments_left_off": n,
+--         "relay": {"id": "<bigint>", "to": "...", "delivery_status": "...",
+--                   "attachments_left_off": n} | null
 --      }]
 --   }]}
+--
+-- A copy kitp sent on to the rest of the thread (a reply_body with
+-- relay_of, relay.go) isn't listed as a message of its own: it is the
+-- `relay` of the message it copies.
 --
 -- Who a message is FROM: `from` is the raw From: envelope (for outbound
 -- mail that's the channel's from_address, not the person who wrote it).
@@ -220,7 +230,66 @@ BEGIN
                                                    WHERE av.card_id = rb.id AND ad.name = 'delivery_status'
                                                ), ''),
                                                'created_at',      to_char(rb.created_at AT TIME ZONE 'UTC',
-                                                                          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+                                                                          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                                               -- The message's files: received
+                                               -- ones live on the thread
+                                               -- (on_thread) until moved onto
+                                               -- the task; sent ones are the
+                                               -- task's or the thread's.
+                                               'attachments',     COALESCE((
+                                                   SELECT jsonb_agg(jsonb_build_object(
+                                                              'id',         a.id::text,
+                                                              'filename',   f.filename,
+                                                              'mime_type',  f.mime_type,
+                                                              'size_bytes', f.size_bytes,
+                                                              'on_thread',  a.card_id = c.id)
+                                                          ORDER BY a.id)
+                                                   FROM reply_body_attachment rba
+                                                   JOIN attachment a ON a.id = rba.attachment_id
+                                                                    AND a.deleted_at IS NULL
+                                                   JOIN file f ON f.id = a.file_id
+                                                   WHERE rba.reply_body_id = rb.id
+                                               ), '[]'::jsonb),
+                                               -- Files an account that drops
+                                               -- them left off this message.
+                                               'attachments_left_off', COALESCE((
+                                                   SELECT (av.value)::text::int
+                                                   FROM attribute_value av
+                                                   JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                                   WHERE av.card_id = rb.id AND ad.name = 'attachments_left_off'
+                                                     AND jsonb_typeof(av.value) = 'number'
+                                               ), 0),
+                                               -- The copy kitp sent on to the
+                                               -- rest of the thread, if any
+                                               -- (relay.go): who to, and how
+                                               -- it went.
+                                               'relay', (
+                                                   SELECT jsonb_build_object(
+                                                              'id', cp.id::text,
+                                                              'to', COALESCE((
+                                                                  SELECT av.value #>> '{}'
+                                                                  FROM attribute_value av
+                                                                  JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                                                  WHERE av.card_id = cp.id AND ad.name = 'reply_to'), ''),
+                                                              'delivery_status', COALESCE((
+                                                                  SELECT av.value #>> '{}'
+                                                                  FROM attribute_value av
+                                                                  JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                                                  WHERE av.card_id = cp.id AND ad.name = 'delivery_status'), ''),
+                                                              'attachments_left_off', COALESCE((
+                                                                  SELECT (av.value)::text::int
+                                                                  FROM attribute_value av
+                                                                  JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                                                  WHERE av.card_id = cp.id AND ad.name = 'attachments_left_off'
+                                                                    AND jsonb_typeof(av.value) = 'number'), 0))
+                                                   FROM attribute_value rv
+                                                   JOIN card cp ON cp.id = rv.card_id AND cp.deleted_at IS NULL
+                                                   WHERE rv.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'relay_of')
+                                                     AND rv.value_type_id < 1000
+                                                     AND rv.value = to_jsonb(rb.id)
+                                                   ORDER BY cp.id
+                                                   LIMIT 1
+                                               )
                                            ) AS reply_obj
                                     FROM jsonb_array_elements(
                                         COALESCE((
@@ -269,6 +338,12 @@ BEGIN
                                         LEFT JOIN user_account ua ON ua.id = au.author_id
                                     ) snd ON true
                                     WHERE rb.deleted_at IS NULL
+                                      -- A copy kitp sent on is shown under
+                                      -- the message it copies ('relay').
+                                      AND NOT EXISTS (
+                                          SELECT 1 FROM attribute_value av
+                                          JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                          WHERE av.card_id = rb.id AND ad.name = 'relay_of')
                                 ) hydrated
                             ), '[]'::jsonb)
                         ) AS comm_row

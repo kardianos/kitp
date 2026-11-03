@@ -1265,6 +1265,11 @@ export class TaskDetail extends Control<TaskDetailConfig> {
         // Our own reply / new thread shouldn't trip the "new content" badge.
         onLocalWrite: () => this.noteOwnActivity(),
         onOpenApproval: (id: bigint) => this.taskApprovals?.reveal(id),
+        // Add to task moved a file from a thread into the task's Attachments.
+        onFilesChanged: () => {
+          this.attachmentsSection?.reload();
+          this.taskComments?.reload();
+        },
       },
       this.commsHost,
     ) as CommThreads;

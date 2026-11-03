@@ -525,3 +525,58 @@ func TestProjectImportCommitBatch_AlreadyCompleted(t *testing.T) {
 		t.Errorf("code=%q, want already_committed", rows[0].Code)
 	}
 }
+
+// TestProjectImportDueDates — a due_date column takes YYYY-MM-DD only
+// (docs/MAIL_INTAKE_AND_CALENDARS.md §1): the preview lists a row with any
+// other form, the commit refuses it, and a good one lands on the task.
+func TestProjectImportDueDates(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_project_import_due_dates")
+	pid := seedProject(t, pool, "Due")
+	mapping := map[string]string{"title": "title", "due": "due_date"}
+	header := []string{"title", "due"}
+
+	job := seedImportJob(t, pool, pid, "mapped", mapping, map[string]any{})
+	rows := callBatch(t, pool, "project_import_preview_batch", auth.SystemUserID, []map[string]any{{
+		"job_id": fmt.Sprint(job), "_parsed_header": header,
+		"_parsed_rows": [][]string{{"Good", "2026-11-03"}, {"Bad", "11/03/2026"}, {"None", ""}},
+	}})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("preview: %+v", rows)
+	}
+	var preview struct {
+		Errors []struct {
+			Row     int    `json:"row"`
+			Column  string `json:"column"`
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(rows[0].Result, &preview); err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Errors) != 1 || preview.Errors[0].Row != 3 || preview.Errors[0].Column != "due_date" {
+		t.Errorf("preview errors = %+v, want one for row 3's due_date", preview.Errors)
+	}
+
+	bad := seedImportJob(t, pool, pid, "previewed", mapping, map[string]any{})
+	rows = callBatch(t, pool, "project_import_commit_batch", auth.SystemUserID, []map[string]any{{
+		"job_id": fmt.Sprint(bad), "_parsed_header": header, "_parsed_rows": [][]string{{"Bad", "Nov 3"}},
+	}})
+	if len(rows) != 1 || rows[0].OK {
+		t.Errorf("commit with a bad date: %+v", rows)
+	}
+
+	good := seedImportJob(t, pool, pid, "previewed", mapping, map[string]any{})
+	rows = callBatch(t, pool, "project_import_commit_batch", auth.SystemUserID, []map[string]any{{
+		"job_id": fmt.Sprint(good), "_parsed_header": header, "_parsed_rows": [][]string{{"Good", "2026-11-03"}},
+	}})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("commit: %+v", rows)
+	}
+	var due string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT av.value #>> '{}' FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'due_date'
+		JOIN card c ON c.id = av.card_id AND c.parent_card_id = $1`, pid).Scan(&due); err != nil || due != "2026-11-03" {
+		t.Errorf("imported due_date = %q, %v", due, err)
+	}
+}

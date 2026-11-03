@@ -318,6 +318,22 @@ BEGIN
         _values := COALESCE(node->'values', '[]'::jsonb);
     END IF;
 
+    -- A date is compared as its ISO text, so an equality value on a date
+    -- attribute must be YYYY-MM-DD (iso_date_ok). Mirrors checkDateValues
+    -- in internal/dom/card/where.go; docs/MAIL_INTAKE_AND_CALENDARS.md §1.
+    IF _value_type = 'date' AND _op IN ('=', 'eq', '!=', 'ne', 'in', 'not in') THEN
+        DECLARE
+            _dv jsonb;
+        BEGIN
+            FOR _dv IN SELECT e FROM jsonb_array_elements(_values) AS e LOOP
+                IF jsonb_typeof(_dv) <> 'null'
+                   AND (jsonb_typeof(_dv) <> 'string' OR NOT iso_date_ok(_dv #>> '{}')) THEN
+                    RAISE EXCEPTION 'card_compile_predicate: %: % is not a date (YYYY-MM-DD)', _attr, _dv::text;
+                END IF;
+            END LOOP;
+        END;
+    END IF;
+
     -- Op dispatch.
     IF _op IN ('=', 'eq') THEN
         IF jsonb_array_length(_values) = 0 THEN

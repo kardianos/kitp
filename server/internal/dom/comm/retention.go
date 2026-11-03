@@ -9,6 +9,8 @@
 //     pruned. Default: 30 days (KITP_COMM_LOG_RETENTION_DAYS).
 //   - interval is how often the goroutine wakes up and runs a sweep.
 //     Default: 24 hours (KITP_COMM_LOG_PRUNE_HOURS).
+//   - dedupe rows (comm_inbound_seen) live 14 days after the last copy of
+//     their message arrived (KITP_COMM_DEDUPE_DAYS).
 //
 // Pattern mirrors SMTPSender / IMAPPoller: StartLogPruner spawns the
 // goroutine, Stop() drains it, and RunOnce executes one sweep
@@ -25,6 +27,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
@@ -36,17 +39,35 @@ import (
 type LogPruner struct {
 	pool      *store.Pool
 	retention time.Duration
-	logger    *slog.Logger
+	// seenRetention is how long a dedupe row (comm_inbound_seen) lives after
+	// the last copy of its message arrived. Default 14 days
+	// (KITP_COMM_DEDUPE_DAYS); see SetDedupeRetention.
+	seenRetention time.Duration
+	logger        *slog.Logger
 }
+
+// DefaultDedupeRetention keeps a message's dedupe row 14 days after its
+// last copy arrived — far past any provider's retry window.
+const DefaultDedupeRetention = 14 * 24 * time.Hour
 
 // NewLogPruner constructs a pruner. retention is the age cutoff
 // (rows older than now-retention are eligible). Hand the returned
 // value's [LogPruner.RunOnce] to the job scheduler.
 func NewLogPruner(pool *store.Pool, retention time.Duration) *LogPruner {
 	return &LogPruner{
-		pool:      pool,
-		retention: retention,
-		logger:    slog.Default(),
+		pool:          pool,
+		retention:     retention,
+		seenRetention: DefaultDedupeRetention,
+		logger:        slog.Default(),
+	}
+}
+
+// SetDedupeRetention sets how long a dedupe row lives after the last copy
+// of its message arrived (KITP_COMM_DEDUPE_DAYS). Zero or less keeps the
+// default.
+func (p *LogPruner) SetDedupeRetention(d time.Duration) {
+	if d > 0 {
+		p.seenRetention = d
 	}
 }
 
@@ -66,13 +87,35 @@ func (p *LogPruner) SetLogger(l *slog.Logger) {
 // The comparison is strict less-than: rows whose `at` equals
 // `now() - retention` exactly are kept. Anything strictly older is
 // deleted.
+//
+// The same sweep prunes dedupe rows (comm_inbound_seen) by last_seen_at, so
+// a message that keeps being re-delivered stays known; they aren't counted
+// in the return value.
 func (p *LogPruner) RunOnce(ctx context.Context) (int64, error) {
-	cutoff := time.Now().Add(-p.retention)
-	tag, err := p.pool.P.Exec(ctx, `DELETE FROM comm_log WHERE at < $1`, cutoff)
+	b := named.New()
+	b.Set("cutoff", time.Now().Add(-p.retention))
+	sql, args, err := b.Compile(`DELETE FROM comm_log WHERE at < :cutoff`)
+	if err != nil {
+		return 0, fmt.Errorf("comm_log prune: compile: %w", err)
+	}
+	tag, err := p.pool.P.Exec(ctx, sql, args...)
 	if err != nil {
 		return 0, fmt.Errorf("comm_log prune: %w", err)
 	}
 	deleted := tag.RowsAffected()
+	sb := named.New()
+	sb.Set("cutoff", time.Now().Add(-p.seenRetention))
+	sql, args, err = sb.Compile(`DELETE FROM comm_inbound_seen WHERE last_seen_at < :cutoff`)
+	if err != nil {
+		return 0, fmt.Errorf("dedupe prune: compile: %w", err)
+	}
+	seen, err := p.pool.P.Exec(ctx, sql, args...)
+	if err != nil {
+		return 0, fmt.Errorf("dedupe prune: %w", err)
+	}
+	if seen.RowsAffected() > 0 && p.pool != nil {
+		p.pool.NoteWrite()
+	}
 	if deleted > 0 && p.pool != nil {
 		p.pool.NoteWrite()
 	}
