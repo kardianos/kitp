@@ -556,7 +556,9 @@ Fold these into new handler bodies as you migrate.
 - **Opaque-secret minting** (session ids, API tokens, base64url
   32 bytes): `translate(rtrim(encode(gen_random_bytes(32),
   'base64'), '='), '+/', '-_')`. Matches Go's
-  `base64.RawURLEncoding`.
+  `base64.RawURLEncoding`. Store only the hash —
+  `encode(sha256(convert_to(secret, 'UTF8')), 'hex')`, Go's
+  `auth.HashSecret` — and return the secret once.
 
 - **Migrate the bug too.** Several legacy Go bodies had latent
   bugs the unified shape exposes (per-row counting in

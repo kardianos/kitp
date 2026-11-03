@@ -24,7 +24,11 @@ a reason.
 **Rule.** The `Idempotency-Key` replay cache keys on the *resolved*
 authenticated user and is consulted only after auth has stamped the
 request context — never on a System-User fallback. It applies solely to
-`POST /api/v1/batch`, not to every POST under `/api/`.
+`POST /api/v1/batch`, not to every POST under `/api/`. One request per
+(user, key) runs at a time: the request claims the key
+(`idempotency_claim`) before running and drops the claim when done, and a
+retry that arrives meanwhile gets 409 `idempotency_in_progress` rather
+than running the mutation a second time.
 
 **Why.** If the cache sits outside the auth resolver it keys every
 request as the System User (id 1). Alice's stored response then replays
@@ -38,9 +42,12 @@ for older test fixtures.
 
 **Tested by.** `TestIdempotency_WrapAuthed_PartitionsByUser` in
 `internal/obs/idempotency_test.go` — Bob must not see Alice's cached body;
-Alice still gets her own replay.
+Alice still gets her own replay. `TestIdempotency_ConcurrentRetriesRunOnce`
+(`internal/obs/idempotency_claim_test.go`) — a retry during the first run
+is refused, a retry after it replays, the mutation runs once.
 
-**Originally:** B1 (CRITICAL) + B8, resolved 2026-05-21.
+**Originally:** B1 (CRITICAL) + B8, resolved 2026-05-21. The one-run
+claim: review B11, 2026-11-02.
 
 ---
 

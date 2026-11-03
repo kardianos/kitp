@@ -140,7 +140,7 @@ those types. Not separately requirement-numbered.
 | N-API-2 | Request body shape (subrequests + envelope) | server: `api/api_test.go::TestRoundTripEcho` (decode/round-trip the wire shape) |
 | N-API-3 | Response mirrors request, keyed by client id | server: `api/api_test.go::TestRoundTripEcho` (asserts ID order + content) |
 | N-API-4 | One sub-request error rolls back the batch; others marked aborted | server: `api/api_test.go::TestUnknownHandlerAborts`, `TestBadInputAborts` |
-| N-API-5 | Idempotency-Key header replays cached response | server: `obs/idempotency_test.go::TestIdempotencyKey_Replay`, `TestIdempotencyKey_BodyMismatchRejected`, `TestIdempotencyKey_NoKeyPassthrough` |
+| N-API-5 | Idempotency-Key header replays cached response; concurrent retries run once | server: `obs/idempotency_test.go::TestIdempotencyKey_Replay`, `TestIdempotencyKey_BodyMismatchRejected`, `TestIdempotencyKey_NoKeyPassthrough`; `obs/idempotency_claim_test.go::TestIdempotency_ConcurrentRetriesRunOnce` |
 
 ### 4.2 Server Execution Model
 

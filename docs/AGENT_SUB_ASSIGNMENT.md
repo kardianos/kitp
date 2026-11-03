@@ -241,7 +241,7 @@ hides agents from non-parents).
 [[tables]]
 name = "user_token"
 columns:
-  id            text PRIMARY KEY           # opaque, 256-bit base64url, same shape as session.id
+  id            text PRIMARY KEY           # SHA-256 hex of the token (256-bit base64url, shown once); session.id likewise
   user_id       bigint NOT NULL REFERENCES user_account(id) ON DELETE CASCADE
   label         text                        # human description "research agent"
   created_at    timestamptz NOT NULL DEFAULT now()
