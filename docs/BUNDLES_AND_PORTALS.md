@@ -68,7 +68,10 @@ bundle therefore needs no forward migration — the install seed's
 
 Source projects are `is_template=true` (hidden from project lists) and
 carry `bundle_key` (excluded from the template picker and from
-`card.insert`'s default auto-stamp).
+`card.insert`'s default auto-stamp). They are code-owned: `bundle_key` is
+set only by bundle files (attribute.update / card.insert refuse it), the
+dispatcher refuses any write inside a source project, project.stamp
+won't copy one, and boot rebuilds a source by the id the catalog records.
 
 ### Applying a bundle
 
@@ -93,8 +96,10 @@ Rules:
   (`bundle_conflict`) rather than half-applied. Example: `conversations`
   on a project stamped from the Standard Project Template, which carries
   a comm flow.
-- **Re-applying is safe.** It adds only items (and flow steps) the project
-  lacks — the way a newer bundle version reaches an existing project.
+- **Re-applying is safe.** It adds only items the project lacks — the way
+  a newer bundle version reaches an existing project. A flow step is added
+  only when it touches a status the re-apply added; one the project deleted
+  between its own statuses stays deleted.
 - **Enabled = has origin rows.** `bundle.list {project_id}` reports a
   feature as enabled when any card in the project came from it, and gives
   the conflict reason for features that can't be added.
@@ -243,8 +248,10 @@ to a bucket:
 - **Preview** (`/api/v1/portal/{id}/preview/…` on the app): any signed-in
   user who can see the portal's root page can view its active build,
   public or not. This is how a QA portal stays internal. Responses carry
-  `Content-Security-Policy: sandbox …`, so the page runs in an opaque
-  origin and can't use the app's session.
+  `Content-Security-Policy: sandbox allow-same-origin …` without
+  `allow-scripts`: no script runs, so keeping the app's origin (which the
+  page's own stylesheets and links need, see Show in kitp) gives the page
+  nothing to use the session with.
 
 Both send a strict CSP (no script), `ETag` = content hash (cheap 304s),
 and `no-cache` on HTML so a publish shows up on the next request.
@@ -316,9 +323,13 @@ links them; the body (`.Content`) is on page 1 only.
 
 **Pictures.** An image or link to an attachment
 (`/api/v1/attachment/<id>/view|download|thumb`, or `attachment:<id>`) that
-is attached to a page published on the portal is copied into the build at
-`_files/<id>/<name>` (≤ 25 MB) and rewritten; any other attachment is `#`
-with a warning, so a page can't publish another project's file. The page
+is attached to a page placed in the site (under the portal's root) is
+copied into the build at `_files/<id>/<name>` (≤ 25 MB) and rewritten; any
+other attachment is `#` with a warning, so a page can't publish another
+project's file. A status only publishes to portals rooted in its own
+project, and only a workspace admin sets `publishes_to`. Pictures, PDFs,
+fonts and plain text are served as what they are; any other type as
+`application/octet-stream`, a download. `_files` are sandboxed. The page
 editor's Insert menu offers the page's attached pictures.
 
 Links to other sites get `target="_blank" rel="noopener noreferrer"`.
@@ -377,11 +388,9 @@ picks one, and "Show in kitp" adds it to the sidebar.
 
 ## Deferred
 
-- **Areas** ([AREAS.md](AREAS.md)): features become switchable areas
-  (Tasks, Conversations, Content, Approvals); an area that is off is
-  hidden completely, enforced by the visibility rule; bundles become each
-  area's starting points and presets its shortcuts; the Pages screen
-  becomes a movable tree.
+Areas ([AREAS.md](AREAS.md)) are built: features are switchable areas,
+bundles their starting points and presets their shortcuts. Still to do
+there: the Pages screen as a movable tree.
 
 - **Customer portal** (sign-in for contacts, submit / follow tickets):
   needs a second identity kind and visibility rule; a separate design.

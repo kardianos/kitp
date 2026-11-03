@@ -39,4 +39,4 @@ Each change queues a rebuild. A build renders every page, stores the files, and 
 
 Public portals are served on a separate listener (`KITP_PORTAL_ADDR`), by host name. Point the host's DNS at kitp's portal listener (or a CDN in front of it). Previews and sites shown in kitp are served by kitp itself, sandboxed so a page can't act as you. Inside kitp, links to other sites open in a new tab.
 
-Pictures attached to a published page and used in its body are published with the site.
+Files attached to a page in the site and used in its body are published with it: pictures, PDFs, fonts and plain text as they are, anything else as a download. A file attached to a page that isn't in the site (not under its root) isn't published.

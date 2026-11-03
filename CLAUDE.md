@@ -4,7 +4,7 @@
 
 The schema is declarative in `db/schema/*.hcsv` and applied on startup
 by `store.ApplySchema` (`server/internal/store/migrate.go`) — there is
-no `db/migrations/` directory. `ApplySchema` has THREE tiers, and which
+no `db/migrations/` directory. `ApplySchema` has FOUR tiers, and which
 one carries your change matters:
 
 1. **DDL** (tables, indexes, **functions**) — emitted as
@@ -24,6 +24,15 @@ one carries your change matters:
    an already-seeded DB (flip an `attribute_def` flag, add a
    `role_grant`, add a new built-in `attribute_def` + its `edge`,
    backfill a value). Run-once, gated by a `schema_version` ledger row.
+
+4. **Bundles** (`db/schema/bundles/*.hcsv`: feature bundles, presets and
+   the area catalog) — re-applied on EVERY boot, after the migrations
+   (`store.applyBundles`). A bundle file whose checksum changed has its
+   hidden source project rebuilt (by the id the `bundle` catalog
+   records), so a bundle edit needs no migration; projects that already
+   applied it keep their copies until someone re-applies it. A bundle may
+   only reference card types / attribute_defs that the seed AND a
+   migration provide.
 
 **Rule of thumb:** any change to `seed.hcsv` data that an existing
 install must also get REQUIRES a paired, idempotent forward migration in

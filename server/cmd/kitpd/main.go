@@ -746,6 +746,9 @@ func runHTTP() error {
 		Addr:              addr,
 		Handler:           httpHandler,
 		ReadHeaderTimeout: 10 * time.Second,
+		// Idle keep-alive connections close; no Read/WriteTimeout here,
+		// since uploads, exports and imports run long.
+		IdleTimeout: 2 * time.Minute,
 	}
 
 	stop := make(chan os.Signal, 1)
@@ -768,10 +771,17 @@ func runHTTP() error {
 		if requestLog {
 			ph = obs.LoggingMiddleware(logger, ph)
 		}
+		// Anyone can reach this listener: bound every phase of a request,
+		// so slow or idle clients can't hold connections (and, through
+		// them, server resources) open (review A4). WriteTimeout allows a
+		// large published file over a slow link.
 		portalHTTP = &http.Server{
 			Addr:              portalAddr,
 			Handler:           obs.RequestIDMiddleware(ph),
 			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      5 * time.Minute,
+			IdleTimeout:       2 * time.Minute,
 		}
 		go func() {
 			log.Printf("portal listener on %s", portalAddr)

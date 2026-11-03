@@ -217,6 +217,13 @@ BEGIN
             IF _attr_name = 'title' THEN
                 CONTINUE;
             END IF;
+            -- publishes_to: a workspace admin's choice (see attribute.update).
+            IF _attr_name = 'publishes_to' AND _attr_value IS NOT NULL AND jsonb_typeof(_attr_value) = 'array'
+               AND jsonb_array_length(_attr_value) > 0 AND NOT user_is_global_admin(card_insert_batch.actor_id) THEN
+                _rej_code := 'forbidden';
+                _rej_msg := 'card.insert: only a workspace admin can choose which portals a status publishes to';
+                EXIT;
+            END IF;
             -- bundle_key is server-owned: only the bundle files set it.
             IF _attr_name = 'bundle_key' THEN
                 _rej_code := 'validation';

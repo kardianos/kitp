@@ -1,4 +1,4 @@
-# bundle | key=conversations | title="Conversations" | sort=20 | doc="Email conversations with customers, on tasks or on their own (a shared inbox): a helpdesk lifecycle (Open → Waiting on customer → Resolved, plus Spam) and a Comms screen listing every thread. Connect a mailbox (Admin → Comm channels) to start receiving mail."
+# bundle | key=conversations | title="Conversations" | sort=20 | doc="Email conversations with customers, on tasks or on their own (a shared inbox): a helpdesk lifecycle (Open → Waiting on customer → Resolved, plus Spam) and a Comms screen listing every thread. Connect a mailbox (PROJECT → Comm Channels) to start receiving mail."
 
 -- Feature bundle: customer conversations (see tracker.hcsv for how bundle
 -- files are materialised and applied). Binds the comm_status attribute, so

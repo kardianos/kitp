@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"text/template/parse"
 )
 
 // A THEME decides what a portal's pages look like. The server ships a set
@@ -287,7 +288,94 @@ func parseTemplates(files map[string][]byte) (*template.Template, error) {
 			return nil, templateError(err)
 		}
 	}
+	if err := checkTemplateSafety(t, files); err != nil {
+		return nil, err
+	}
 	return t, nil
+}
+
+// maxRangeLiteral caps {{range N}} over a number literal: a site's own
+// data bounds every other loop, but {{range 1000000000}} would spin a
+// build (and file_put's sample render) for minutes.
+const maxRangeLiteral = 10000
+
+var (
+	scriptTag     = regexp.MustCompile(`(?i)<\s*script\b`)
+	eventHandler  = regexp.MustCompile(`(?i)<[^>]*\son[a-z]+\s*=`)
+	javascriptURL = regexp.MustCompile(`(?i)javascript\s*:`)
+)
+
+// checkTemplateSafety refuses what a published page must not carry, so the
+// CSP isn't the only thing keeping script off a site (review A20): a
+// <script> tag, an on…= event handler, a javascript: URL, or a {{range}}
+// over a number literal above maxRangeLiteral.
+func checkTemplateSafety(t *template.Template, files map[string][]byte) error {
+	var names []string
+	for p := range files {
+		names = append(names, p)
+	}
+	sort.Strings(names)
+	for _, p := range names {
+		src := files[p]
+		switch {
+		case scriptTag.Match(src):
+			return fmt.Errorf("%s: templates can't hold <script>: a published page runs no script", p)
+		case eventHandler.Match(src):
+			return fmt.Errorf("%s: templates can't hold on… event handlers: a published page runs no script", p)
+		case javascriptURL.Match(src):
+			return fmt.Errorf("%s: templates can't hold javascript: links", p)
+		}
+	}
+	for _, tt := range t.Templates() {
+		if tt.Tree == nil || tt.Tree.Root == nil {
+			continue
+		}
+		if err := checkRanges(tt.Name(), tt.Tree.Root); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkRanges walks a template's parse tree for {{range N}} over a number
+// literal above maxRangeLiteral.
+func checkRanges(name string, n parse.Node) error {
+	switch x := n.(type) {
+	case *parse.ListNode:
+		if x == nil {
+			return nil
+		}
+		for _, c := range x.Nodes {
+			if err := checkRanges(name, c); err != nil {
+				return err
+			}
+		}
+	case *parse.RangeNode:
+		if x.Pipe != nil {
+			for _, cmd := range x.Pipe.Cmds {
+				for _, arg := range cmd.Args {
+					if num, ok := arg.(*parse.NumberNode); ok && (!num.IsInt || num.Int64 > maxRangeLiteral) {
+						return fmt.Errorf("%s: {{range}} over a number can go up to %d", name, maxRangeLiteral)
+					}
+				}
+			}
+		}
+		if err := checkRanges(name, x.List); err != nil {
+			return err
+		}
+		return checkRanges(name, x.ElseList)
+	case *parse.IfNode:
+		if err := checkRanges(name, x.List); err != nil {
+			return err
+		}
+		return checkRanges(name, x.ElseList)
+	case *parse.WithNode:
+		if err := checkRanges(name, x.List); err != nil {
+			return err
+		}
+		return checkRanges(name, x.ElseList)
+	}
+	return nil
 }
 
 // templateError trims html/template's "html/template:" prefix; the rest

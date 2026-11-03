@@ -40,7 +40,7 @@ it is turned on.
 | Word | Meaning |
 | ---- | ------- |
 | **Area** (user-facing) | A switchable section of a project: Tasks, Conversations, Content, Approvals. Replaces "Features" in the UI. |
-| **Starting point** | One way to seed an area: Tasks from *Simple* or *Software*, Content from *Docs site* or *Blog*. Today's feature bundle files become starting points. |
+| **Starting point** | One way to seed an area: a feature bundle file (`db/schema/bundles/`). Today: Tasks from *Task tracking* or *Help desk*, Conversations from *Conversations*, Content from *Publishing*. |
 | **Shortcut** | A named set of areas and starting points for the new-project dialog (Issue tracker, Help desk, Shared inbox, Content management). Today's presets. |
 
 In code, the bundle files, `card_origin` and `bundle_apply` keep their
@@ -103,31 +103,35 @@ that is off. `card_visible_to`, `schema.VisibilityClause` and every
 inline DI-6 read (card select / search / select_with_attributes,
 activity select / poll, links, comms for a task, the unread-comms count)
 AND NOT it, so card reads, search, activity, comments, comms, MCP tools
-and agents hide the area's data together. When no area is off anywhere,
-the function answers false without walking the card's parents.
+and agents hide the area's data together. A message (reply_body, which
+has no parent card) is hidden with its thread. When no area is off
+anywhere, the check costs nothing per row (it is answered once per query).
 
 What else "off" does:
 
 | Surface | When the area is off |
 | ------- | -------------------- |
 | Screens | Gone from the sidebar; a saved address answers "not found", not "hidden". |
-| Item references | A reference from another area (a task linking a page) shows "Hidden item" with no title: the title can be the sensitive part. |
+| Item references | A reference from another area (a task linking a page) shows no title, only the id: the title can be the sensitive part. (A "Hidden item" label is still to do.) |
 | Detail sections | Hidden (no email threads on a task while Conversations is off). |
-| Search, activity, notifications | Nothing from the area: no results, no feed rows, no emails, no sink pushes. |
+| Search, activity, notifications | Nothing from the area: no results, no feed rows, no emails, no sink pushes. Activity of one area recorded on another's card counts too: an approval vote (on the task) is hidden with Approvals (`activity_hidden`). |
 | Exports | The area's items are left out (project export filters its tasks and activity). |
 | Attachments | An attachment of a hidden card answers "not found". |
-| Automation | Paused: a mail account of a project with Conversations off gets no worker, so no intake (messages stay in the mailbox) and no outbound mail; activity sinks skip the area's activity. |
-| Portals | Content off: the project's pages come off every site at the next build; the publication snapshots are kept, so turning Content back on restores the sites without republishing. Sites off: nothing is built, served (public, preview, in kitp), listed or changed; the portals stay dirty and build when Sites is back on. |
-| Writes | Refused (`area_off`): the dispatcher's authorization pass checks `area_write_blocked` for every gated write — the card type, the target card and the project — once any area is off. |
+| Automation | Paused: a mail account of a project with Conversations off gets no worker, so no intake (messages stay in the mailbox) and no outbound mail; replies queued on a thread in an area that is off wait until it's back on. With Tasks off, a task-mode account files new mail as threads on their own instead of hidden tasks. Activity sinks skip the area's activity. |
+| Portals | Content off: the project's pages stop being served at once (serving re-checks each page) and leave the build at the next one; the publication snapshots are kept, so turning Content back on restores the sites without republishing. Sites off: nothing is built, served (public, preview, in kitp), listed or changed; the portals stay dirty and build when Sites is back on. |
+| Writes | Refused (`area_off`): the dispatcher's authorization pass checks `area_write_blocked` for every gated write — the card type, the target card and the project — once any area is off, plus the area a handler names for itself (the approval handlers gate on the task but write Approvals). A move into an area that is off is refused too. |
 
 Turning an area **on** again restores everything as it was: data,
 configuration, publications. It never re-copies the starting point.
 
 **Who can switch.** Turning an area off is a manager or admin action on
-the project. Turning one on exposes what it holds, so it is admin-only by
-default (configurable later). Both write an activity row on the project:
-who, when, which area. The Areas settings show an area's state and, to
-admins only, how many items it hides.
+the project. Turning one on exposes what it holds, so it is admin-only
+(bundle.apply, which can set an area up, is admin-only too). A project's
+switch writes an activity row on the project: who, when, which area. The
+workspace's Sites has no card to carry one; its switch row records who
+and when. The Areas settings show each area's state, its last switch
+("Switched off 2026-11-02 by Dana") and, to admins only, how many items
+it hides.
 
 ## Removing an area
 
@@ -146,9 +150,9 @@ it is hard-coded:
 Name  [ Acme docs                ]
 
 Areas
-[x] Tasks           start from (Simple ▾)
+[x] Tasks           start from (Task tracking ▾)
 [ ] Conversations   email threads, on tasks or on their own
-[x] Content         start from (Docs site ▾) · pages published to portals
+[x] Content         start from (Publishing ▾) · pages published to portals
 [ ] Approvals       needs Tasks
 
 Shortcuts:  Issue tracker · Help desk · Shared inbox · Content management
@@ -160,7 +164,9 @@ A shortcut only ticks boxes and picks starting points.
 starting point each area came from, and "Content v3 has new items: add
 them" when a starting point has grown (a merge that never changes what the
 project edited). Changing an area's starting point later is that same
-merge ("add what's missing from Software"); replacing it is not offered.
+merge ("add what's missing from Help desk"); replacing it is not offered.
+A re-apply only adds: a status, screen or flow step the project removed
+stays removed.
 
 **Sidebar.** Screens are grouped under their area's heading — TASKS
 (Inbox, Grid, Kanban), CONVERSATIONS (Incoming), CONTENT (Pages) — instead
@@ -226,8 +232,10 @@ Turning an area on turns on the areas it needs and adds a starting point
 to any the project doesn't have yet (the one picked, else the area's
 default).
 Turning one off is refused while an area that needs it is on
-(`area_needed`). Each switch writes an `area_set` activity row on the
-project and rebuilds the portals holding its pages.
+(`area_needed`). Each project switch writes an `area_set` activity row on
+the project and rebuilds the portals holding its pages; area.list reports
+every area's last switch (state, when, who), the workspace's Sites
+included.
 
 ## Order of work
 

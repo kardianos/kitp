@@ -248,9 +248,22 @@ func (s *Server) lookup(ctx context.Context, build int64, p string) (buildFile, 
 	q := named.New()
 	q.Set("build", build)
 	q.Set("path", p)
+	// A file a page renders (its page, or an attachment's page) is served
+	// only while that page is still live, visible (no area off) and
+	// published to this portal: a withdrawal takes effect at once, not at
+	// the next successful build (review A7). Theme files and the home /
+	// 404 pages carry no card.
 	sql, args, err := q.Compile(`
-		SELECT cas_address, mime_type, size_bytes
-		FROM portal_build_file WHERE build_id = :build AND path = :path`)
+		SELECT f.cas_address, f.mime_type, f.size_bytes
+		FROM portal_build_file f
+		JOIN portal_build b ON b.id = f.build_id
+		WHERE f.build_id = :build AND f.path = :path
+		  AND (f.card_id IS NULL OR EXISTS (
+		        SELECT 1 FROM card c
+		        WHERE c.id = f.card_id AND c.deleted_at IS NULL
+		          AND NOT card_in_off_area(c.id)
+		          AND EXISTS (SELECT 1 FROM publication p
+		                      WHERE p.portal_id = b.portal_id AND p.card_id = c.id)))`)
 	if err != nil {
 		return buildFile{}, false, fmt.Errorf("compile: %w", err)
 	}
@@ -323,9 +336,21 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, build int64, rel,
 		// would pair the new pages with the old theme's CSS. The ETag (the
 		// content hash) makes an unchanged file a cheap 304.
 		h.Set("Cache-Control", "no-cache")
-	} else {
+	} else if csp == publicCSP {
 		// _files/<attachment id>/… never changes for a given path.
 		h.Set("Cache-Control", "public, max-age=300")
+	} else {
+		// The signed-in preview and in-app routes: a shared cache must
+		// never keep what a session was allowed to see (review A18).
+		h.Set("Cache-Control", "private, max-age=300")
+	}
+	if strings.HasPrefix(want, "_files/") {
+		// An attachment is data, never a page of the site: sandboxed, and
+		// a type a build doesn't serve as itself is a download (review A19).
+		h.Set("Content-Security-Policy", csp+"; sandbox")
+		if f.mime == "application/octet-stream" {
+			h.Set("Content-Disposition", "attachment")
+		}
 	}
 	if match := r.Header.Get("If-None-Match"); match != "" && match == etag {
 		w.WriteHeader(http.StatusNotModified)

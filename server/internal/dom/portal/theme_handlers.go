@@ -376,7 +376,11 @@ func preRunThemeFilePut(storage *cas.Storage) func(context.Context, store.Querie
 			}
 			if in.Path == "theme.json" || strings.HasSuffix(in.Path, ".html") {
 				if err := checkThemeWith(ctx, tx, storage, in.ThemeID, in.Path, data); err != nil {
-					return nil, fail("template_error", "%s", err.Error())
+					var tp *TemplateProblem
+					if !errors.As(err, &tp) {
+						return nil, fmt.Errorf("theme.file_put: check %s: %w", in.Path, err)
+					}
+					return nil, fail("template_error", "%s", tp.Error())
 				}
 			}
 			if storage == nil {
@@ -405,8 +409,12 @@ func preRunThemeFileDelete(storage *cas.Storage) func(context.Context, store.Que
 				continue
 			}
 			if err := checkThemeWith(ctx, tx, storage, in.ThemeID, in.Path, nil); err != nil {
+				var tp *TemplateProblem
+				if !errors.As(err, &tp) {
+					return nil, fmt.Errorf("theme.file_delete: check %s: %w", in.Path, err)
+				}
 				return nil, &reg.HandlerError{InputIndex: i, Code: "template_error",
-					Message: "theme.file_delete: without " + in.Path + ", " + err.Error()}
+					Message: "theme.file_delete: without " + in.Path + ", " + tp.Error()}
 			}
 		}
 		return ins, nil
@@ -435,13 +443,22 @@ func checkThemeWith(ctx context.Context, tx store.Querier, storage *cas.Storage,
 	}
 	t, err := ResolveTheme(set, files)
 	if err != nil && t == nil {
-		return err
+		return &TemplateProblem{err}
 	}
 	if _, err := Render(sampleSite(t)); err != nil {
-		return err
+		return &TemplateProblem{err}
 	}
 	return nil
 }
+
+// TemplateProblem is an error a theme's own files caused — a template
+// that doesn't parse or render, naming the file and line — which the admin
+// editing the theme needs to read. Any other error (reading the theme,
+// storage) is internal and never reaches the wire (review A17).
+type TemplateProblem struct{ Err error }
+
+func (p *TemplateProblem) Error() string { return p.Err.Error() }
+func (p *TemplateProblem) Unwrap() error { return p.Err }
 
 // sampleSite is a small site exercising every part of the template data:
 // nested sections, a hidden page, a list long enough to be paged, dates,

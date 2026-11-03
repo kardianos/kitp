@@ -9,7 +9,7 @@ Tasks. A shared inbox is Conversations on its own.
 
 ## Mail account settings
 
-Two settings on each mail account (Admin → Comm Channels), so one
+Two settings on each mail account (PROJECT → Comm Channels), so one
 project can have `support@` filing tickets and `billing@` collecting
 threads:
 
@@ -56,10 +56,14 @@ A thread (a `comm` card) can sit directly in its project instead of under
 a task:
 
 - *creates a thread only* files new mail that way;
-- **Attach to task…** moves a thread under a task, history intact
-  (`comm.attach {comm_id, task_id}`); **Detach** moves it back to the
-  project (`task_id` 0); **Make a task** creates a task from the thread
-  (its subject as the title) and attaches it;
+- **Attach to task…** moves a thread under a task, history intact: its
+  messages and attachments go with it, and its comments show on the
+  task's page, labelled "on thread …" (`comm.attach {comm_id, task_id}`;
+  `activity.select` `with_thread_comments`); **Detach** moves it back to
+  the project (`task_id` 0); **Make a task** creates a task from the
+  thread (its subject as the title) and attaches it, in one request
+  (`comm.attach {comm_id, new_task_title}`). With Tasks switched off these
+  answer `area_off`, and the TASK section shows only while Tasks is on;
 - a thread has its own page, `/thread/:id`: the detail view with a
   `comm` profile — its status flow, the conversation, comments,
   attachments, and Attach / Make a task. A thread under a task opens on
@@ -102,11 +106,11 @@ center theme.
 
 | Piece | Where |
 | ----- | ----- |
-| Settings | `intake_mode`, `reply_quote` on `comm_channel` (seed + migration `0018_comm_channel_modes`); `comm_channel.set` / `.list`; Admin → Comm Channels *New mail*, *Quoting in replies* |
+| Settings | `intake_mode`, `reply_quote` on `comm_channel` (seed + migration `0018_comm_channel_modes`); `comm_channel.set` / `.list`; PROJECT → Comm Channels *New mail*, *Quoting in replies* |
 | Intake | `imap.go` `processOne` → `createTaskAndComm` / `createComm` by `ResolveIntakeMode` |
 | Quoting | `quote.go` (`SplitQuoted`, `formatQuote`), `smtp.go` `loadEarlier` + `buildMIME` |
 | Trimming | `web/src/task-detail/comm-quoted.ts` (`splitQuoted`, the same rules), CommThreads *Show quoted text* |
-| Attach | `comm.attach {comm_id, task_id}` (`comm_attach_batch.sql`): same project, Tasks on, task `card.update`; `comm.list_for_task {comm_id}` loads one thread |
+| Attach | `comm.attach {comm_id, task_id \| new_task_title}` (`comm_attach_batch.sql`): same project, Tasks on (`area_off`), task `card.update` (and `card.create` to make one); locks the thread and its tasks; `comm.list_for_task {comm_id}` loads one thread |
 | Thread page | `/thread/:id` → TaskDetail with the `comm` profile (detail-profiles.ts); ThreadPlacement (TASK section); Detach in a task's COMMS |
 | Comms screen | CardListBody `orphan: {label, route}` (screen-resolve.ts) |
 | Help desk | `db/schema/bundles/helpdesk.hcsv`; presets `help_desk`, `shared_inbox` |

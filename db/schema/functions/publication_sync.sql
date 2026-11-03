@@ -69,7 +69,15 @@ BEGIN
       ON pc.id = CASE WHEN (e.v #>> '{}') ~ '^\d+$' THEN (e.v #>> '{}')::bigint END
      AND pc.deleted_at IS NULL
     JOIN card_type pct ON pct.id = pc.card_type_id AND pct.name = 'portal'
-    WHERE av.card_id = _status_id;
+    WHERE av.card_id = _status_id
+      -- Only a portal rooted in the page's own project: a status can't
+      -- push pages (and their attachments) into another project's site
+      -- (review A6). A portal with no root yet takes no pages.
+      AND EXISTS (
+          SELECT 1 FROM attribute_value rv
+          JOIN attribute_def rd ON rd.id = rv.attribute_def_id AND rd.name = 'portal_root'
+          WHERE rv.card_id = pc.id AND jsonb_typeof(rv.value) = 'number'
+            AND card_enclosing_project((rv.value)::text::bigint) IS NOT DISTINCT FROM card_enclosing_project(page_id));
     -- Not live (triage): off every portal the status doesn't publish to.
     IF _phase = 'triage' THEN
         FOR _portal IN

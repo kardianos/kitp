@@ -341,7 +341,7 @@ func TestPublishedFiles(t *testing.T) {
 	if !strings.Contains(got["index.html"], `<a href="https://example.com" target="_blank" rel="noopener noreferrer">site</a>`) {
 		t.Errorf("external link:\n%s", got["index.html"])
 	}
-	if len(res.Attachments) != 1 || res.Attachments[0] != (FileRef{ID: 7, Path: "_files/7/q3-chart.png", MIME: "image/png"}) {
+	if len(res.Attachments) != 1 || res.Attachments[0] != (FileRef{ID: 7, Path: "_files/7/q3-chart.png", MIME: "image/png", CardID: 1}) {
 		t.Errorf("attachments = %+v, want just 7, once", res.Attachments)
 	}
 	if !strings.Contains(strings.Join(res.Warnings, "\n"), "/api/v1/attachment/8/view isn't attached to a page on this portal") {

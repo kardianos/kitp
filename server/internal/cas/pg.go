@@ -2,11 +2,13 @@ package cas
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kitp/kitp/server/internal/named"
 )
 
 // Compile-time interface assertion.
@@ -94,41 +96,31 @@ func (p *PgBackend) Put(
 // `addresses` — partial-set is treated as a corruption signal, not
 // a soft miss.
 func (p *PgBackend) GetAll(ctx context.Context, addresses []string, w io.Writer) error {
-	if len(addresses) == 0 {
-		return nil
-	}
-	// `unnest WITH ORDINALITY` emits one row per input position, so
-	// duplicate chunk addresses (e.g. a file with three identical
-	// 1MB blocks dedupped to one CAS row) replay the same bytes
-	// once per occurrence. A naive `WHERE address = ANY($1)` would
-	// collapse those duplicates and silently truncate the file.
-	rows, err := p.pool.Query(ctx, `
-		SELECT d.data
-		FROM unnest($1::text[]) WITH ORDINALITY AS req(address, ord)
-		JOIN cas_blob_data d ON d.address = req.address
-		ORDER BY req.ord
-	`, addresses)
-	if err != nil {
-		return fmt.Errorf("cas/pg: get_all: %w", err)
-	}
-	defer rows.Close()
-	got := 0
-	for rows.Next() {
+	// One query per chunk, in order: each chunk is scanned (pgx reads the
+	// whole row) and the connection goes back to the pool BEFORE the bytes
+	// are written to w. A single streaming query held a pooled connection
+	// for as long as the client took to read — a few slow readers of large
+	// files (the public portal listener serves anyone) could use up the
+	// pool the whole app shares (review A4). Memory stays one chunk; a
+	// duplicate address (identical blocks deduped to one row) is simply
+	// read again.
+	for _, addr := range addresses {
+		b := named.New()
+		b.Set("address", addr)
+		sql, args, err := b.Compile(`SELECT data FROM cas_blob_data WHERE address = :address`)
+		if err != nil {
+			return fmt.Errorf("cas/pg: get_all: compile: %w", err)
+		}
 		var data []byte
-		if err := rows.Scan(&data); err != nil {
-			return fmt.Errorf("cas/pg: scan: %w", err)
+		if err := p.pool.QueryRow(ctx, sql, args...).Scan(&data); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("cas/pg: get_all: %s: %w", addr, ErrNotFound)
+			}
+			return fmt.Errorf("cas/pg: get_all: %w", err)
 		}
 		if _, err := w.Write(data); err != nil {
 			return fmt.Errorf("cas/pg: write: %w", err)
 		}
-		got++
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("cas/pg: rows: %w", err)
-	}
-	if got != len(addresses) {
-		return fmt.Errorf("cas/pg: get_all: requested %d, served %d: %w",
-			len(addresses), got, ErrNotFound)
 	}
 	return nil
 }
@@ -144,6 +136,22 @@ func (p *PgBackend) Delete(ctx context.Context, address string) error {
 		address,
 	); err != nil {
 		return fmt.Errorf("cas/pg: delete: %w", err)
+	}
+	return nil
+}
+
+// Touch restarts a blob's age (cas_blob.created_at), which the reaper's
+// grace period counts from: Storage.Put calls it when the bytes it is
+// asked to store are already here.
+func (p *PgBackend) Touch(ctx context.Context, address string) error {
+	b := named.New()
+	b.Set("address", address)
+	sql, args, err := b.Compile(`UPDATE cas_blob SET created_at = now() WHERE address = :address`)
+	if err != nil {
+		return fmt.Errorf("cas/pg: touch: compile: %w", err)
+	}
+	if _, err := p.pool.Exec(ctx, sql, args...); err != nil {
+		return fmt.Errorf("cas/pg: touch: %w", err)
 	}
 	return nil
 }

@@ -565,6 +565,8 @@ active_build_id, bigint, , , , ,
 dirty_since, timestamptz, , , , ,
 built_at, timestamptz, , , , ,
 last_error, text, , , , ,
+fail_count, int, , false, 0, ,
+failed_at, timestamptz, , , , ,
 
 
 ## table portal_build | doc="One rendered build of a portal: every page as static HTML plus the stylesheet, stored as CAS blobs listed in portal_build_file. A portal serves its active build (portal_state.active_build_id); older builds stay for rollback until the builder prunes them (newest few kept)."

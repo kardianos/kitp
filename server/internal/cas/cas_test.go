@@ -422,3 +422,29 @@ func TestReaperReleasesDeadReferences(t *testing.T) {
 		t.Errorf("import_job file reaped on the second pass")
 	}
 }
+
+// TestPutRestartsTheReaperClock (A25): storing bytes that are already
+// there restarts their age, so the reaper can't drop a blob a caller is
+// about to reference.
+func TestPutRestartsTheReaperClock(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_cas_touch")
+	ctx := context.Background()
+	s := cas.New(cas.NewPgBackend(pool))
+	addr, err := s.Put(ctx, "text/plain", []byte("same bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE cas_blob SET created_at = now() - interval '2 days' WHERE address = $1`, addr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put(ctx, "text/plain", []byte("same bytes")); err != nil {
+		t.Fatal(err)
+	}
+	var fresh bool
+	if err := pool.QueryRow(ctx, `SELECT created_at > now() - interval '1 minute' FROM cas_blob WHERE address = $1`, addr).Scan(&fresh); err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Error("putting existing bytes again didn't restart their age")
+	}
+}

@@ -52,11 +52,17 @@ func (b *Builder) RunOnce(ctx context.Context) error {
 	if sitesOff {
 		return nil
 	}
+	// A portal whose last build failed waits 5 s × 2^fail_count (capped
+	// at an hour) before the next try, instead of rebuilding every tick
+	// (review A7).
 	rows, err := b.Pool.Query(ctx, `
 		SELECT ps.portal_id, ps.dirty_since
 		FROM portal_state ps
 		JOIN card c ON c.id = ps.portal_id AND c.deleted_at IS NULL
 		WHERE ps.dirty_since IS NOT NULL
+		  AND (ps.failed_at IS NULL
+		       OR ps.failed_at + LEAST(interval '1 hour',
+		                               interval '5 seconds' * power(2, LEAST(ps.fail_count, 10))) <= now())
 		ORDER BY ps.dirty_since
 		LIMIT 50`)
 	if err != nil {
@@ -83,14 +89,63 @@ func (b *Builder) RunOnce(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		// One builder per portal across replicas (review A28): another
+		// kitpd building it already wins; it stays dirty if that one fails.
+		release, ok, err := b.lockPortal(ctx, d.id)
+		if err != nil {
+			return fmt.Errorf("portal.build: lock %d: %w", d.id, err)
+		}
+		if !ok {
+			continue
+		}
 		if _, err := b.Build(ctx, d.id, d.since); err != nil {
 			b.logger().Warn("portal build failed", "portal_id", d.id, "err", err)
 			if rerr := b.recordError(ctx, d.id, err); rerr != nil {
 				b.logger().Warn("portal build: record error", "portal_id", d.id, "err", rerr)
 			}
 		}
+		release()
 	}
 	return nil
+}
+
+// lockPortal takes the session-level advisory lock that makes one kitpd
+// build a portal at a time. ok is false when another holds it. The lock
+// lives on a pooled connection kept until release.
+func (b *Builder) lockPortal(ctx context.Context, portalID int64) (release func(), ok bool, err error) {
+	conn, err := b.Pool.Acquire(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	q := named.New()
+	q.Set("portal", portalID)
+	lockSQL, args, err := q.Compile(`SELECT pg_try_advisory_lock(hashtextextended('kitp.portal.build:' || (:portal::bigint)::text, 0))`)
+	if err != nil {
+		conn.Release()
+		return nil, false, fmt.Errorf("compile: %w", err)
+	}
+	if err := conn.QueryRow(ctx, lockSQL, args...).Scan(&ok); err != nil {
+		conn.Release()
+		return nil, false, err
+	}
+	if !ok {
+		conn.Release()
+		return nil, false, nil
+	}
+	unlockSQL, uargs, err := q.Compile(`SELECT pg_advisory_unlock(hashtextextended('kitp.portal.build:' || (:portal::bigint)::text, 0))`)
+	if err != nil {
+		conn.Release()
+		return nil, false, fmt.Errorf("compile: %w", err)
+	}
+	return func() {
+		// A fresh context: the tick's may be done, and the lock must go.
+		uctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := conn.Exec(uctx, unlockSQL, uargs...); err != nil {
+			b.logger().Warn("portal build: unlock", "portal_id", portalID, "err", err)
+		}
+		conn.Release()
+	}, true, nil
 }
 
 func (b *Builder) logger() *slog.Logger {
@@ -111,16 +166,26 @@ func (b *Builder) Build(ctx context.Context, portalID int64, since time.Time) (i
 	}
 	res, err := Render(site)
 	if err != nil {
-		return 0, err
+		return 0, &TemplateProblem{err}
 	}
 	// The attachments page bodies show: read each file's chunks and store
-	// it as one blob (identical bytes collapse to one).
+	// it as one blob (identical bytes collapse to one) right away, so the
+	// build holds one attachment in memory at a time, not all of them. One
+	// that can't be read leaves the site without that file, with a
+	// warning, rather than failing the whole build (review A7).
 	for _, a := range res.Attachments {
 		data, err := readAttachment(ctx, b.Pool, b.Storage, a.ID)
 		if err != nil {
-			return 0, fmt.Errorf("attachment %d: %w", a.ID, err)
+			b.logger().Warn("portal build: attachment", "portal_id", portalID, "attachment_id", a.ID, "err", err)
+			res.Warnings = append(res.Warnings, fmt.Sprintf("%s couldn't be read and wasn't published.", a.Path))
+			continue
 		}
-		res.Files = append(res.Files, File{Path: a.Path, MIME: a.MIME, Data: data})
+		mime := PublishedMIME(a.MIME)
+		addr, err := b.Storage.Put(ctx, mime, data)
+		if err != nil {
+			return 0, fmt.Errorf("store %s: %w", a.Path, err)
+		}
+		res.Files = append(res.Files, File{Path: a.Path, MIME: mime, Addr: addr, Size: int64(len(data)), CardID: a.CardID})
 	}
 
 	// Blobs first, outside the transaction: a failed build leaves only
@@ -216,6 +281,8 @@ func (b *Builder) Build(ctx context.Context, portalID int64, since time.Time) (i
 				SET active_build_id = :build,
 				    built_at = now(),
 				    last_error = NULL,
+				    fail_count = 0,
+				    failed_at = NULL,
 				    dirty_since = CASE WHEN dirty_since = :since THEN NULL ELSE dirty_since END
 				WHERE portal_id = :portal
 				RETURNING portal_id
@@ -241,10 +308,21 @@ func (b *Builder) Build(ctx context.Context, portalID int64, since time.Time) (i
 }
 
 func (b *Builder) recordError(ctx context.Context, portalID int64, cause error) error {
+	// portal.list shows last_error to admins: a theme's own template
+	// problem as it is (they fix it), anything else as a pointer to the
+	// server log, which has the whole chain (review A17).
+	msg := "The build failed; the server log has the details."
+	var tp *TemplateProblem
+	if errors.As(cause, &tp) {
+		msg = tp.Error()
+	}
 	q := named.New()
 	q.Set("portal", portalID)
-	q.Set("msg", cause.Error())
-	sql, args, err := q.Compile(`UPDATE portal_state SET last_error = :msg WHERE portal_id = :portal`)
+	q.Set("msg", msg)
+	sql, args, err := q.Compile(`
+		UPDATE portal_state
+		SET last_error = :msg, fail_count = fail_count + 1, failed_at = now()
+		WHERE portal_id = :portal`)
 	if err != nil {
 		return fmt.Errorf("compile: %w", err)
 	}
@@ -436,7 +514,7 @@ func loadTheme(ctx context.Context, q store.Querier, storage *cas.Storage, theme
 		if t != nil {
 			return t, err.Error() + ".", nil
 		}
-		return nil, "", fmt.Errorf("theme %d: %w", themeID, err)
+		return nil, "", &TemplateProblem{fmt.Errorf("theme %d: %w", themeID, err)}
 	}
 	return t, "", nil
 }
@@ -511,4 +589,25 @@ func loadThemeCard(ctx context.Context, q store.Querier, storage *cas.Storage, t
 // rest are published by CAS address).
 func needsData(p string) bool {
 	return p == "theme.json" || p == "custom.css" || strings.HasSuffix(p, ".html")
+}
+
+// publishedTypes are the attachment types a build serves as what they are:
+// pictures, PDFs and fonts. Anything else — HTML, SVG (which can carry
+// script), archives — is published as application/octet-stream and served
+// as a download, so an uploaded page can't pose as part of the site
+// (review A19).
+var publishedTypes = map[string]bool{
+	"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true, "image/avif": true,
+	"application/pdf": true,
+	"font/woff":       true, "font/woff2": true, "font/ttf": true, "font/otf": true,
+	"text/plain": true,
+}
+
+// PublishedMIME is the type a build publishes an attachment with.
+func PublishedMIME(mime string) string {
+	base := strings.ToLower(strings.TrimSpace(strings.SplitN(mime, ";", 2)[0]))
+	if publishedTypes[base] {
+		return base
+	}
+	return "application/octet-stream"
 }

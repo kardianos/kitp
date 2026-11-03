@@ -166,6 +166,23 @@ func (s *Storage) Put(ctx context.Context, mimeType string, data []byte) (string
 		if err := head.Put(ctx, address, mimeType, int64(len(data)), data); err != nil {
 			return "", fmt.Errorf("cas: %s: put: %w", head.Kind(), err)
 		}
+		return address, nil
+	}
+	// The bytes are already stored, perhaps unreferenced and close to the
+	// reaper's grace cutoff: restart their clock, so the reaper can't drop
+	// a blob a caller is about to reference (review A25).
+	for _, b := range s.backends {
+		if t, ok := b.(Toucher); ok {
+			if err := t.Touch(ctx, address); err != nil {
+				return "", fmt.Errorf("cas: %s: touch: %w", b.Kind(), err)
+			}
+		}
 	}
 	return address, nil
+}
+
+// Toucher is a Backend that can restart a stored blob's age (the reaper's
+// grace period counts from it).
+type Toucher interface {
+	Touch(ctx context.Context, address string) error
 }

@@ -90,6 +90,9 @@ type FileRef struct {
 	ID   int64
 	Path string
 	MIME string
+	// CardID is the page the attachment is on (portal_build_file.card_id,
+	// so serving re-checks that page).
+	CardID int64
 }
 
 // Result is a rendered build.
@@ -383,7 +386,10 @@ func (r *renderer) renderBody(n *node) error {
 			return "", false, false
 		}
 		f, ok := r.site.Files[id]
-		if !ok {
+		// Only an attachment on a page placed in this site: a page
+		// published here from elsewhere (not under the root) doesn't lend
+		// its files to a placed page's body (review A6).
+		if _, placed := r.byID[f.CardID]; !ok || !placed {
 			pageWarn("%s isn't attached to a page on this portal", dest)
 			return "", true, false
 		}
@@ -395,7 +401,7 @@ func (r *renderer) renderBody(n *node) error {
 		if !ok {
 			p = "_files/" + strconv.FormatInt(id, 10) + "/" + fileSegment(f.Name)
 			r.files[id] = p
-			r.res.Attachments = append(r.res.Attachments, FileRef{ID: id, Path: p, MIME: f.MIME})
+			r.res.Attachments = append(r.res.Attachments, FileRef{ID: id, Path: p, MIME: f.MIME, CardID: f.CardID})
 		}
 		return p, true, true
 	}
@@ -678,12 +684,29 @@ func (r *renderer) article(c *node, base string) article {
 	return a
 }
 
+// maxPageBytes caps one rendered page: a template that writes without
+// end stops at this, as an error (review A20).
+const maxPageBytes = 8 << 20
+
+// capWriter is a bytes.Buffer that refuses to grow past max.
+type capWriter struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (w *capWriter) Write(p []byte) (int, error) {
+	if w.buf.Len()+len(p) > w.max {
+		return 0, fmt.Errorf("a page came out larger than %d MB", w.max>>20)
+	}
+	return w.buf.Write(p)
+}
+
 func (r *renderer) execute(v view) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := r.theme.tmpl.ExecuteTemplate(&buf, "page.html", v); err != nil {
+	w := &capWriter{max: maxPageBytes}
+	if err := r.theme.tmpl.ExecuteTemplate(w, "page.html", v); err != nil {
 		return nil, templateError(err)
 	}
-	return buf.Bytes(), nil
+	return w.buf.Bytes(), nil
 }
 
 // renderEmpty is the build of a portal with nothing to show yet.
@@ -924,6 +947,15 @@ func renderMarkdown(md goldmark.Markdown, body, base string,
 					v.Destination = []byte("#")
 				}
 			} else if strings.HasPrefix(dest, "http://") || strings.HasPrefix(dest, "https://") {
+				v.SetAttributeString("target", []byte("_blank"))
+				v.SetAttributeString("rel", []byte("noopener noreferrer"))
+			}
+		case *ast.AutoLink:
+			// A bare URL in the text (GFM linkify) is a link to another
+			// site like any other: it opens in a new tab — inside the kitp
+			// frame it would otherwise navigate the frame.
+			if u := string(v.URL(src)); v.AutoLinkType == ast.AutoLinkURL &&
+				(strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "www.")) {
 				v.SetAttributeString("target", []byte("_blank"))
 				v.SetAttributeString("rel", []byte("noopener noreferrer"))
 			}

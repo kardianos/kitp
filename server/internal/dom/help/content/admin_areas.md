@@ -15,14 +15,14 @@ A project's areas are switched on its **Areas** screen: the sidebar's **PROJECT 
 
 ## Off means hidden
 
-Switching an area off hides everything in it **from everyone, admins included**: its items vanish from lists, search, the activity feed, exports and agents; its screens leave the sidebar; changes to it are refused; and it stops working — no mail is fetched or sent for Conversations, no pages are published for Content, and with Sites off no site is built or served. Use it for data that must not be seen, not only for tidying.
+Switching an area off hides everything in it **from everyone, admins included**: its items vanish from lists, search, the activity feed, exports and agents (with Approvals off, votes go too; with Conversations off, the messages of its threads); its screens leave the sidebar; changes to it are refused; and it stops working — no mail is fetched or sent for Conversations (replies waiting on its threads go once it's back on), no pages are published or served for Content, and with Sites off no site is built or served. With Tasks off, a mail account that files new mail as tasks files it as threads on their own instead. Use it for data that must not be seen, not only for tidying.
 
 Nothing is deleted. Switching the area back on restores it as it was — items, screens, published sites.
 
 ## Who can switch
 
 - **Off:** a manager or an admin of the project (Sites: an admin).
-- **On:** an admin only, because it reveals what the area holds.
+- **On:** an admin only, because it reveals what the area holds (adding a starting point to a project is an admin's too).
 
 An area that others need can't be switched off while they're on: Approvals needs Tasks. Conversations doesn't, so a shared inbox can run with Tasks off. Switching an area on also switches on what it needs.
 
@@ -30,4 +30,4 @@ An area that others need can't be switched off while they're on: Approvals needs
 
 An area a project doesn't have yet shows **Not set up**. A project copied from a template, or made before areas existed, already has the areas its statuses and screens belong to (usually Tasks and Conversations), so those show **On**. Setting an area up copies in its starting point (statuses, screens, starter pages) — the project's own from then on, to change as you like. A new project picks its areas in the new-project dialog (**Start from → Choose areas…**; the shortcuts tick the usual combinations).
 
-Every switch is recorded in the project's activity.
+A project's switches are recorded in its activity. Each area here also says when it was last switched, and by whom — the workspace's Sites too, which has no project to record it on.

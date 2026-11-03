@@ -123,6 +123,14 @@ BEGIN
                 'attribute.update: attribute_name is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
+        -- publishes_to sends a status's pages to portals — live sites,
+        -- shared by every project — so only a workspace admin sets it
+        -- (review A6); a project's managers still edit its statuses.
+        IF _attr_name = 'publishes_to' AND NOT user_is_global_admin(attribute_update_batch.actor_id) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                'attribute.update: only a workspace admin can choose which portals a status publishes to'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         -- bundle_key marks a feature bundle's hidden source project; only
         -- the bundle files set it (store.applyBundles), and boot trusts it.
         IF _attr_name = 'bundle_key' THEN

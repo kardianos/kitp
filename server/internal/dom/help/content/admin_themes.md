@@ -35,7 +35,7 @@ The **Files** list shows the built-in theme's files (read-only) and your own:
 - `custom.css` is loaded after the theme's stylesheet: the easiest way to change a few things. The accent colour is set there too, as `--accent`.
 - `theme.json` sets `"nav"`, `"paginate"` (child pages per list page; 0 = all) and `"order"` (`"site"` or `"newest"`).
 
-Every change rebuilds the portals using the theme. Scripts aren't allowed: a portal page runs no JavaScript.
+Every change rebuilds the portals using the theme. Scripts aren't allowed: a portal page runs no JavaScript. Saving a template with a `<script>` tag, an `on…` event handler or a `javascript:` link is refused, and a `{{range}}` over a number can go up to 10 000.
 
 ## Templates
 

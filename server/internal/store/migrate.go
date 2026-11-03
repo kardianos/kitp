@@ -1005,6 +1005,19 @@ USING attribute_def ad
 WHERE ad.id = av.attribute_def_id AND ad.name = 'bundle_key'
   AND NOT EXISTS (SELECT 1 FROM bundle b WHERE b.source_project_id = av.card_id);`,
 	},
+	{
+		// Portal builds back off after a failure (review A7): a portal that
+		// keeps failing was rebuilt every tick, each time reading all its
+		// attachments. portal_state gains fail_count / failed_at; the
+		// builder waits 5 s × 2^fail_count (capped at an hour) after a
+		// failure. CREATE TABLE IF NOT EXISTS can't add columns to an
+		// existing table, hence this; ADD COLUMN IF NOT EXISTS makes it a
+		// no-op on a fresh DB.
+		id: "0020_portal_build_backoff",
+		sql: `
+ALTER TABLE portal_state ADD COLUMN IF NOT EXISTS fail_count int NOT NULL DEFAULT 0;
+ALTER TABLE portal_state ADD COLUMN IF NOT EXISTS failed_at timestamptz;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

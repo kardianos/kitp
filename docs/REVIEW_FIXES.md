@@ -59,15 +59,17 @@ Done (area 4): VisibilityClause and card_visible_to test the areas on their own 
 
 ## 5. Portals and sites
 
-- [ ] **A4** Public listener: CAS GetAll streams with rows open on the shared pool; no Write/Idle timeouts → slow readers exhaust the pool.
-- [ ] **A6** Any worker can point a status's publishes_to at any portal; other projects' attachments reach Site.Files.
-- [ ] **A7** Withdrawn / hidden content stays public while builds fail; builds retry every 5 s without backoff, holding every attachment in memory.
-- [ ] **A17** Raw error text on the wire (portal last_error, theme handler messages).
-- [ ] **A18** `_files/` on signed-in preview / site routes sent `Cache-Control: public`.
-- [ ] **A19** Published attachments keep the uploader's MIME type (HTML on the docs domain); no CSP sandbox.
-- [ ] **A20** Theme templates: `<script>` allowed (CSP-only), and `{{range 1000000000}}` passes the sample render.
-- [ ] **A25** CAS Put doesn't refresh created_at for an existing blob (reaper race).
-- [ ] **A28** Two replicas can build the same portal at once.
+- [x] **A4** Public listener: CAS GetAll streams with rows open on the shared pool; no Write/Idle timeouts → slow readers exhaust the pool.
+- [x] **A6** Any worker can point a status's publishes_to at any portal; other projects' attachments reach Site.Files.
+- [x] **A7** Withdrawn / hidden content stays public while builds fail; builds retry every 5 s without backoff, holding every attachment in memory.
+- [x] **A17** Raw error text on the wire (portal last_error, theme handler messages).
+- [x] **A18** `_files/` on signed-in preview / site routes sent `Cache-Control: public`.
+- [x] **A19** Published attachments keep the uploader's MIME type (HTML on the docs domain); no CSP sandbox.
+- [x] **A20** Theme templates: `<script>` allowed (CSP-only), and `{{range 1000000000}}` passes the sample render.
+- [x] **A25** CAS Put doesn't refresh created_at for an existing blob (reaper race).
+- [x] **A28** Two replicas can build the same portal at once.
+
+Done (area 5): CAS GetAll fetches one chunk per query and writes it after the connection is back in the pool (portal files and attachment downloads alike), and the portal listener has read / write / idle timeouts; the app listener an idle timeout. publishes_to is a workspace admin's choice, a status publishes only to portals rooted in the page's own project, and a build publishes only placed pages' attachments. Serving re-checks a file's page (live, not in an area that is off, still published there), so a withdrawal is immediate; an unreadable attachment is a build warning; builds back off 5 s × 2^failures (max 1 h; migration 0020) and store each attachment as they read it. last_error shows a theme's own template problem, else "see the server log". _files are `private` on signed-in routes, sandboxed, and published only as pictures / PDF / fonts / text — anything else is application/octet-stream and a download. Theme templates can't hold <script>, on… handlers or javascript: links, {{range}} over a literal is capped at 10 000, and a page renders to at most 8 MB. Re-putting existing bytes restarts their reaper clock. One builder per portal (an advisory lock).
 
 ## 6. Attachments and files
 
@@ -95,12 +97,12 @@ Done (area 4): VisibilityClause and card_visible_to test the areas on their own 
 
 ## 9. Docs
 
-- [ ] README: "no mail fetched or sent" (A3); "only admins switch on" (A11).
-- [ ] AREAS.md: starting point names; agents / emails / gated-write claims (A8, A9, A3); "Hidden item" label; "next build" (A7); "every switch writes an activity row" (A22); "re-apply is safe" (A21); admin-only switch-on (A11).
-- [ ] admin_areas.md: same claims.
-- [ ] BUNDLES_AND_PORTALS.md: sources hidden (Projects screen); preview origin; another project's file (A6); Areas listed as Deferred; re-apply; target=_blank for autolinks.
-- [ ] serve.go comment and admin_themes.md: "themes can't hold scripts".
-- [ ] admin_portals.md: which attachments are published.
-- [ ] CONVERSATIONS.md / conversations.hcsv: "Admin → Comm Channels"; area_off promise; "history intact" (A13).
+- [x] README: "no mail fetched or sent" (A3); "only admins switch on" (A11). — both true now (A3, A11 fixed); no change needed.
+- [x] AREAS.md: starting point names; agents / emails / gated-write claims (A8, A9, A3); "Hidden item" label; "next build" (A7); "every switch writes an activity row" (A22); "re-apply is safe" (A21); admin-only switch-on (A11).
+- [x] admin_areas.md: same claims.
+- [x] BUNDLES_AND_PORTALS.md: sources hidden (Projects screen); preview origin; another project's file (A6); Areas listed as Deferred; re-apply; target=_blank for autolinks. — autolinks fixed in code (render.go) to match the doc.
+- [x] serve.go comment and admin_themes.md: "themes can't hold scripts".
+- [x] admin_portals.md: which attachments are published.
+- [x] CONVERSATIONS.md / conversations.hcsv: "Admin → Comm Channels"; area_off promise; "history intact" (A13).
 - [x] admin_agents.md / admin_users.md: agent role rule (B1).
-- [ ] CLAUDE.md: the fourth (bundle) tier of ApplySchema.
+- [x] CLAUDE.md: the fourth (bundle) tier of ApplySchema.
