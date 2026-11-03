@@ -193,10 +193,19 @@ type AuthedDecorator = func(AuthedHandler) AuthedHandler
 func (s *Server) MountBatch(rt *Router, decorators ...AuthedDecorator) {
 	h := AuthedHandler(func(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.UserCtx) error {
 		defer r.Body.Close()
+		// A batch is JSON, not a file upload (bytes go through
+		// /api/v1/cas/chunk): cap it so a request can't stream an
+		// unbounded body into the decoder (review B12).
+		r.Body = http.MaxBytesReader(w, r.Body, MaxBatchBytes)
 		var req BatchRequest
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				return &HTTPError{Status: http.StatusRequestEntityTooLarge, Code: "request_too_large",
+					Message: fmt.Sprintf("a batch can be at most %d MB", MaxBatchBytes>>20)}
+			}
 			return BadRequest("bad_request", fmt.Sprintf("malformed json: %v", err))
 		}
 		resp := s.Dispatch(ctx, req)
@@ -416,14 +425,30 @@ func spaLocalPath(r *http.Request) string {
 	return r.URL.Path
 }
 
+// MaxBatchBytes caps a batch request's JSON body. Large content (page
+// bodies, CSV imports) fits well inside it; files go through
+// /api/v1/cas/chunk.
+const MaxBatchBytes = 32 << 20
+
 // HandleBatch is the only HTTP handler in v1.
 func (s *Server) HandleBatch(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, MaxBatchBytes)
 
 	var req BatchRequest
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+				"error": map[string]any{
+					"code":    "request_too_large",
+					"message": fmt.Sprintf("a batch can be at most %d MB", MaxBatchBytes>>20),
+				},
+			})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": map[string]any{
 				"code":    "bad_request",

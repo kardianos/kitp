@@ -31,16 +31,25 @@ func (p *PgBackend) Kind() string { return "pg" }
 
 // Has implements Backend by point-querying cas_blob.
 func (p *PgBackend) Has(ctx context.Context, address string) (bool, error) {
-	var n int
-	err := p.pool.QueryRow(ctx,
-		`SELECT count(*) FROM cas_blob WHERE address = $1 AND storage_kind = 'pg'`,
-		address,
-	).Scan(&n)
+	// The bytes themselves, not just the metadata row: a row left without
+	// bytes then gets them back from the next upload of the same content
+	// instead of passing as stored (review B13).
+	b := named.New()
+	b.Set("address", address)
+	sql, args, err := b.Compile(`SELECT EXISTS (SELECT 1 FROM cas_blob_data WHERE address = :address)`)
 	if err != nil {
+		return false, fmt.Errorf("cas/pg: has: compile: %w", err)
+	}
+	var ok bool
+	if err := p.pool.QueryRow(ctx, sql, args...).Scan(&ok); err != nil {
 		return false, fmt.Errorf("cas/pg: has: %w", err)
 	}
-	return n > 0, nil
+	return ok, nil
 }
+
+// CascadesWithBlob: cas_blob_data rows are deleted with their cas_blob
+// row (ON DELETE CASCADE), in the reaper's own transaction.
+func (p *PgBackend) CascadesWithBlob() bool { return true }
 
 // Put inserts the cas_blob metadata row and the cas_blob_data row in one
 // tx. ON CONFLICT keeps the call idempotent — duplicate uploads of

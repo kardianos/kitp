@@ -128,6 +128,14 @@ func (r *Reaper) applyDefaults() {
 // was migrated and stale copies linger).
 func (r *Reaper) dropBytes(ctx context.Context, addr string) error {
 	for _, b := range r.Storage.Backends() {
+		// Bytes kept with the row (pg: cas_blob_data cascades from
+		// cas_blob) go in the row's own transaction. Deleting them first on
+		// another connection left, when that transaction then failed, a
+		// blob row without bytes, which a later upload of the same bytes
+		// would take as stored (review B13).
+		if c, ok := b.(CascadesWithBlob); ok && c.CascadesWithBlob() {
+			continue
+		}
 		if err := b.Delete(ctx, addr); err != nil {
 			return fmt.Errorf("delete bytes from %s: %w", b.Kind(), err)
 		}

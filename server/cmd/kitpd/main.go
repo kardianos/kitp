@@ -332,6 +332,9 @@ func runHTTP() error {
 	// use further down.
 	maxAttachMB := envInt("ATTACHMENT_MAX_MB", 250)
 	maxAttachBytes := int64(maxAttachMB) * 1024 * 1024
+	// The chunked upload path (cas chunks + file.create) takes the same
+	// per-file limit as the one-shot upload route.
+	file.SetMaxBytes(maxAttachBytes)
 	chunkMaxMB := envInt("ATTACHMENT_CHUNK_MAX_MB", 8)
 	chunkMaxBytes := int64(chunkMaxMB) * 1024 * 1024
 	// Operator-set workspace name shown in the web header + browser title.

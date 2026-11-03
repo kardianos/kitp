@@ -448,3 +448,30 @@ func TestPutRestartsTheReaperClock(t *testing.T) {
 		t.Error("putting existing bytes again didn't restart their age")
 	}
 }
+
+// TestMissingBytesComeBack (B13): a blob row whose bytes are gone (as a
+// failed reap could once leave it) doesn't pass as stored: the next
+// upload of the same content puts the bytes back.
+func TestMissingBytesComeBack(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_cas_missing_bytes")
+	ctx := context.Background()
+	s := cas.New(cas.NewPgBackend(pool))
+	data := []byte("bytes that went missing")
+	addr, err := s.Put(ctx, "text/plain", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM cas_blob_data WHERE address = $1`, addr); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.Has(ctx, addr); err != nil || ok {
+		t.Fatalf("Has a row without bytes = %v (%v), want false", ok, err)
+	}
+	if _, err := s.Put(ctx, "text/plain", data); err != nil {
+		t.Fatal(err)
+	}
+	var got bytes.Buffer
+	if err := s.GetAll(ctx, []string{addr}, &got); err != nil || !bytes.Equal(got.Bytes(), data) {
+		t.Fatalf("after a fresh upload: %q (%v), want the bytes back", got.Bytes(), err)
+	}
+}

@@ -181,6 +181,13 @@ func (s *Storage) Put(ctx context.Context, mimeType string, data []byte) (string
 	return address, nil
 }
 
+// CascadesWithBlob is a Backend whose bytes are deleted with the cas_blob
+// row (a foreign key cascade in the same database), so the reaper doesn't
+// delete them separately.
+type CascadesWithBlob interface {
+	CascadesWithBlob() bool
+}
+
 // Toucher is a Backend that can restart a stored blob's age (the reaper's
 // grace period counts from it).
 type Toucher interface {

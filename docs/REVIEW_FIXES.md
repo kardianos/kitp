@@ -73,12 +73,12 @@ Done (area 5): CAS GetAll fetches one chunk per query and writes it after the co
 
 ## 6. Attachments and files
 
-- [ ] **B2** Stored XSS via attachment `/view` (client-chosen MIME inline, no nosniff).
-- [ ] **B4** attachment.list has no visibility check; attachment.create accepts any file_id (take another project's file).
-- [ ] **B5** file.create: no total-size cap, a chunk repeatable; thumbnails decode without DecodeConfig → OOM.
-- [ ] **B12** Batch / authed bodies read without a size cap; /api/v1/cas/chunk needs only a session.
-- [ ] **B13** Reaper dropBytes outside the row's transaction.
-- [ ] **B14** requireAttachmentAccess assumes the parent is the project (403 for nested pages, comms).
+- [x] **B2** Stored XSS via attachment `/view` (client-chosen MIME inline, no nosniff).
+- [x] **B4** attachment.list has no visibility check; attachment.create accepts any file_id (take another project's file).
+- [x] **B5** file.create: no total-size cap, a chunk repeatable; thumbnails decode without DecodeConfig → OOM.
+- [x] **B12** Batch / authed bodies read without a size cap; /api/v1/cas/chunk needs only a session.
+- [x] **B13** Reaper dropBytes outside the row's transaction.
+- [x] **B14** requireAttachmentAccess assumes the parent is the project (403 for nested pages, comms).
 
 ## 7. Platform
 
@@ -87,7 +87,7 @@ Done (area 5): CAS GetAll fetches one chunk per query and writes it after the co
 - [ ] **B10** Session and token ids stored as the raw secrets.
 - [ ] **B11** Idempotency: check-then-store lets concurrent retries both run.
 - [ ] **B15a** attribute/scope.go:209 recursive CTE without `depth < 16`; the lint doesn't scan Go.
-- [ ] **B15b** cas/chunk_http.go:67 compares err.Error() text.
+- [x] **B15b** cas/chunk_http.go:67 compares err.Error() text.
 
 ## 8. Tests
 

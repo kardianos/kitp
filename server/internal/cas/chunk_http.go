@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
@@ -42,7 +41,19 @@ func Mount(rt *api.Router, cfg HTTPConfig) {
 	if cfg.MaxBytes <= 0 {
 		cfg.MaxBytes = 8 * 1024 * 1024 // a generous per-chunk cap; client picks ~1 MB
 	}
-	rt.Authed("POST /api/v1/cas/chunk", func(ctx context.Context, w http.ResponseWriter, r *http.Request, _ *auth.UserCtx) error {
+	rt.Authed("POST /api/v1/cas/chunk", func(ctx context.Context, w http.ResponseWriter, r *http.Request, user *auth.UserCtx) error {
+		// Storing bytes is a worker's step (file.create, attachment.create
+		// need a role too): a signed-in account with no role at all can't
+		// fill the store (review B12).
+		if cfg.Pool != nil && user != nil {
+			roles, err := auth.LoadRoleScopes(ctx, cfg.Pool.P, user.ID)
+			if err != nil {
+				return api.Internal(fmt.Errorf("cas chunk: roles: %w", err))
+			}
+			if len(roles) == 0 {
+				return api.ErrForbidden
+			}
+		}
 		return handleChunkUpload(ctx, w, r, cfg)
 	})
 }
@@ -63,8 +74,7 @@ func handleChunkUpload(
 	buf, err := io.ReadAll(r.Body)
 	if err != nil {
 		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) ||
-			strings.Contains(err.Error(), "request body too large") {
+		if errors.As(err, &maxErr) {
 			return &api.HTTPError{
 				Status:  http.StatusRequestEntityTooLarge,
 				Code:    "request_too_large",

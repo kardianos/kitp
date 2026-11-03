@@ -143,24 +143,21 @@ func streamBytes(ctx context.Context, w http.ResponseWriter, cfg Config, id int6
 		fileID         int64
 		totalBytes     int64
 	)
-	var lookupSQL string
-	switch mode {
-	case streamModeThumb:
-		lookupSQL = `
-			SELECT f.id, f.filename, f.mime_type, f.size_bytes
-			FROM attachment a
-			JOIN file f ON f.id = a.thumb_file_id
-			WHERE a.id = $1 AND a.deleted_at IS NULL
-		`
-	default:
-		lookupSQL = `
-			SELECT f.id, f.filename, f.mime_type, f.size_bytes
-			FROM attachment a
-			JOIN file f ON f.id = a.file_id
-			WHERE a.id = $1 AND a.deleted_at IS NULL
-		`
+	fileCol := "a.file_id"
+	if mode == streamModeThumb {
+		fileCol = "a.thumb_file_id"
 	}
-	err = cfg.Pool.P.QueryRow(ctx, lookupSQL, id).Scan(&fileID, &filename, &mime, &totalBytes)
+	lb := named.New()
+	lb.Set("attachment", id)
+	lookupSQL, lookupArgs, err := lb.Compile(`
+		SELECT f.id, f.filename, f.mime_type, f.size_bytes
+		FROM attachment a
+		JOIN file f ON f.id = ` + fileCol + `
+		WHERE a.id = :attachment AND a.deleted_at IS NULL`)
+	if err != nil {
+		return api.Internal(fmt.Errorf("lookup: compile: %w", err))
+	}
+	err = cfg.Pool.P.QueryRow(ctx, lookupSQL, lookupArgs...).Scan(&fileID, &filename, &mime, &totalBytes)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return api.NotFound("attachment not found")
@@ -168,12 +165,17 @@ func streamBytes(ctx context.Context, w http.ResponseWriter, cfg Config, id int6
 		return api.Internal(fmt.Errorf("lookup: %w", err))
 	}
 
-	chunkRows, err := cfg.Pool.P.Query(ctx, `
+	cb := named.New()
+	cb.Set("file", fileID)
+	chunkSQL, chunkArgs, err := cb.Compile(`
 		SELECT cas_address, chunk_size
 		FROM file_chunk
-		WHERE file_id = $1
-		ORDER BY seq
-	`, fileID)
+		WHERE file_id = :file
+		ORDER BY seq`)
+	if err != nil {
+		return api.Internal(fmt.Errorf("lookup chunks: compile: %w", err))
+	}
+	chunkRows, err := cfg.Pool.P.Query(ctx, chunkSQL, chunkArgs...)
 	if err != nil {
 		return api.Internal(fmt.Errorf("lookup chunks: %w", err))
 	}
@@ -201,10 +203,27 @@ func streamBytes(ctx context.Context, w http.ResponseWriter, cfg Config, id int6
 	// Headers go on the wire before the body — once we've started
 	// streaming bytes we can't change status, so any failure inside the
 	// loop surfaces as a truncated response. Logged for the operator.
-	w.Header().Set("Content-Type", mime)
-	w.Header().Set("Content-Length", strconv.FormatInt(totalBytes, 10))
+	// The type is the uploader's claim. Served from kitp's own origin, an
+	// HTML or script "attachment" would run with the viewer's session
+	// (review B2), so only a type that can't carry script is shown inline;
+	// anything else is a download of opaque bytes. nosniff stops the
+	// browser guessing past that, and the sandbox keeps even an allowed
+	// type from acting as a page. (A PDF isn't sandboxed: browsers won't
+	// show a PDF in a sandboxed document, and their viewers don't run its
+	// script on the page's origin.)
+	h := w.Header()
+	safe := InlineSafe(mime)
+	if !safe {
+		mime = "application/octet-stream"
+	}
+	h.Set("Content-Type", mime)
+	h.Set("Content-Length", strconv.FormatInt(totalBytes, 10))
+	h.Set("X-Content-Type-Options", "nosniff")
+	if mime != "application/pdf" {
+		h.Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'")
+	}
 	disposition := "inline"
-	if mode == streamModeDownload {
+	if mode == streamModeDownload || !safe {
 		disposition = "attachment"
 	}
 	w.Header().Set("Content-Disposition",
@@ -248,10 +267,9 @@ func requireAttachmentAccess(ctx context.Context, pool *store.Pool, userID, atta
 	// matching grant row, so an admin with a global card.update sees
 	// no extra cost over the single-row lookup.
 	//
-	// The project resolution handles both shapes seen in production:
-	//   - attachment hangs directly off a project card  → project = a.card_id
-	//   - attachment hangs off a task (or other child)  → project = card.parent_card_id
-	// Both cases use the same `card.update` grant on the project's
+	// The project is the attachment's card when that is a project, else
+	// the project the card chains up to (card_enclosing_project: a task,
+	// a page under other pages, a thread on a task). Both cases use the same `card.update` grant on the project's
 	// card_type — matches projectexport.isAuthorized so the user has
 	// one consistent gate across reads of the project's bytes.
 	//
@@ -266,10 +284,13 @@ func requireAttachmentAccess(ctx context.Context, pool *store.Pool, userID, atta
 	b.Set("user", userID)
 	sql, args, err := b.Compile(`
 		WITH attach AS (
+			-- The project the attachment's card chains up to: a page under
+			-- pages, a thread on a task, … not only a direct child
+			-- (review B14).
 			SELECT
 				CASE
 					WHEN ct.name = 'project' THEN a.card_id
-					ELSE c.parent_card_id
+					ELSE card_enclosing_project(a.card_id)
 				END AS project_id
 			FROM attachment a
 			JOIN card c ON c.id = a.card_id
@@ -321,4 +342,21 @@ func sanitizeFilename(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// inlineTypes are the attachment types shown inline: pictures (not SVG,
+// which can carry script), PDF, plain text, audio and video.
+var inlineTypes = map[string]bool{
+	"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true, "image/avif": true, "image/bmp": true,
+	"application/pdf": true,
+	"text/plain":      true,
+	"audio/mpeg":      true, "audio/ogg": true, "audio/wav": true, "audio/webm": true,
+	"video/mp4": true, "video/webm": true, "video/ogg": true,
+}
+
+// InlineSafe reports whether an attachment of this MIME type may be shown
+// inline (review B2); every other type is served as a download.
+func InlineSafe(mime string) bool {
+	base := strings.ToLower(strings.TrimSpace(strings.SplitN(mime, ";", 2)[0]))
+	return inlineTypes[base]
 }

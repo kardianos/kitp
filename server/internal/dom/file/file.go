@@ -13,9 +13,13 @@
 package file
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"sync/atomic"
 
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
 	"github.com/kitp/kitp/server/internal/textnorm"
@@ -97,9 +101,90 @@ func Register(p *store.Pool) {
 		// link IS scope-checked. Marking GlobalScope here so the
 		// register-time guard doesn't reject the handler.
 		GlobalScope: true,
+		// Sizes come from the stored chunks, not the request (review B5).
+		PreRun: preRunCreate,
 		// Unified handler — body lives in
 		// db/schema/functions/file_create_batch.sql. See
 		// docs/UNIFIED_HANDLER_PLAN.md Phase 2.
 		SQLFunc: "file_create_batch",
 	})
+}
+
+// maxFileBytes caps one file (ATTACHMENT_MAX_MB, set by kitpd through
+// SetMaxBytes). The chunked upload path checks it here; the one-shot
+// upload route checks the same limit on its own.
+var maxFileBytes atomic.Int64
+
+func init() { maxFileBytes.Store(250 << 20) }
+
+// SetMaxBytes sets the largest file file.create accepts.
+func SetMaxBytes(n int64) {
+	if n > 0 {
+		maxFileBytes.Store(n)
+	}
+}
+
+// preRunCreate replaces each chunk's declared size with the stored
+// chunk's real size, refuses a chunk that was never uploaded, and caps
+// the file's total: the request's sizes are only a claim, and one
+// uploaded chunk listed ten thousand times would otherwise make a file
+// far past the limit — a thumbnail or a portal build then reads all of it
+// into memory (review B5).
+func preRunCreate(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
+	limit := maxFileBytes.Load()
+	for i, raw := range ins {
+		in, ok := raw.(CreateInput)
+		if !ok {
+			return nil, fmt.Errorf("file.create: unexpected input %T", raw)
+		}
+		seen := map[string]int64{}
+		var addrs []string
+		for _, c := range in.Chunks {
+			if _, dup := seen[c.Address]; !dup {
+				seen[c.Address] = -1
+				addrs = append(addrs, c.Address)
+			}
+		}
+		b := named.New()
+		b.Set("addrs", addrs)
+		sql, args, err := b.Compile(`SELECT address, size_bytes FROM cas_blob WHERE address = ANY(:addrs::text[])`)
+		if err != nil {
+			return nil, fmt.Errorf("file.create: compile: %w", err)
+		}
+		rows, err := tx.Query(ctx, sql, args...)
+		if err != nil {
+			return nil, fmt.Errorf("file.create: chunk sizes: %w", err)
+		}
+		for rows.Next() {
+			var a string
+			var n int64
+			if err := rows.Scan(&a, &n); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("file.create: chunk sizes: %w", err)
+			}
+			seen[a] = n
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("file.create: chunk sizes: %w", err)
+		}
+		var total int64
+		chunks := make([]Chunk, len(in.Chunks))
+		for j, c := range in.Chunks {
+			size := seen[c.Address]
+			if size < 0 {
+				return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+					Message: fmt.Sprintf("file.create: chunk %d (%s) hasn't been uploaded", j, c.Address)}
+			}
+			total += size
+			if total > limit {
+				return nil, &reg.HandlerError{InputIndex: i, Code: "too_large",
+					Message: fmt.Sprintf("file.create: a file can be at most %d MB", limit>>20)}
+			}
+			chunks[j] = Chunk{Address: c.Address, Size: size}
+		}
+		in.Chunks = chunks
+		ins[i] = in
+	}
+	return ins, nil
 }

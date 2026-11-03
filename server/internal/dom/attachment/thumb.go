@@ -104,10 +104,21 @@ func generateThumb(
 
 	// 2. Concatenate every chunk into one buffer via a single
 	//    cas.GetAll. image.Decode needs the whole stream in memory
-	//    anyway; the size cap (~250 MB) bounds the buffer.
+	//    anyway, so a source past maxThumbSourceBytes gets no thumbnail.
 	var raw bytes.Buffer
-	if err := storage.GetAll(ctx, addrs, &raw); err != nil {
+	if err := storage.GetAll(ctx, addrs, &limitedBuffer{buf: &raw, max: maxThumbSourceBytes}); err != nil {
 		return 0, fmt.Errorf("thumb: cas get_all: %w", err)
+	}
+
+	// 3. The header first: a small file can declare an enormous image
+	//    (a decompression bomb), and decoding it would allocate its full
+	//    pixel buffer (review B5).
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw.Bytes()))
+	if err != nil {
+		return 0, fmt.Errorf("thumb: decode header: %w", err)
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > maxThumbSourcePixels {
+		return 0, fmt.Errorf("thumb: %d×%d is larger than %d megapixels", cfg.Width, cfg.Height, maxThumbSourcePixels/1_000_000)
 	}
 
 	src, _, err := image.Decode(&raw)
@@ -220,4 +231,24 @@ func fitWithin(w, h, maxEdge int) (int, int) {
 		return maxEdge, max(1, h*maxEdge/w)
 	}
 	return max(1, w*maxEdge/h), maxEdge
+}
+
+// Thumbnail source caps (review B5): bytes read into memory, and pixels
+// decoded (a 50-megapixel RGBA image is 200 MB).
+const (
+	maxThumbSourceBytes  = 64 << 20
+	maxThumbSourcePixels = 50_000_000
+)
+
+// limitedBuffer is a bytes.Buffer that refuses to grow past max.
+type limitedBuffer struct {
+	buf *bytes.Buffer
+	max int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.buf.Len()+len(p) > b.max {
+		return 0, fmt.Errorf("thumb: source is larger than %d MB", b.max>>20)
+	}
+	return b.buf.Write(p)
 }

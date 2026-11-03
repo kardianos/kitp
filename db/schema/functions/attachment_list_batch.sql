@@ -14,11 +14,11 @@
 --   - The 'kind' display bucket comes from attachment_kind (image /
 --     pdf / markdown / other, from mime_type + filename). Keeping it in
 --     SQL avoids a per-row callback into Go.
---   - No visibility filter: the attachment's owning card is treated as
---     the canonical visibility unit by the pre-tx authz pass (the
---     attachment.list handler is RoleAuthenticated; callers are
---     expected to fold their own card-visibility check up front).
---     Mirrors the pre-migration Go body.
+--   - Visibility (DI-6): the card must be one the caller can see
+--     (card_visible_to — its project's roles, no area off); otherwise
+--     the row answers not_found, as for a card that doesn't exist
+--     (review B4: the handler is RoleAuthenticated, so without this any
+--     signed-in user could list any card's files by id).
 CREATE OR REPLACE FUNCTION attachment_list_batch(
     actor_id bigint,
     inputs jsonb
@@ -41,6 +41,11 @@ BEGIN
         IF _card_id IS NULL OR _card_id = 0 THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 'attachment.list: card_id is required'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF NOT card_visible_to(attachment_list_batch.actor_id, _card_id) THEN
+            RETURN QUERY SELECT _idx, false, 'not_found'::text,
+                format('attachment.list: card %s not found', _card_id), NULL::jsonb;
             CONTINUE;
         END IF;
 
