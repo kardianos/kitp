@@ -173,7 +173,13 @@ func (m *Manager) Lookup(ctx context.Context, id string) (*User, error) {
 	b := named.New()
 	b.Set("id", key)
 	sql, args, err := b.Compile(`
-		SELECT s.user_id, ua.display_name, s.created_at, s.last_seen_at, s.revoked_at
+		SELECT s.user_id, ua.display_name, s.created_at, s.last_seen_at,
+		       -- A session of a login an admin revoked is over, even one
+		       -- made after the revoke: a sign-in that resolved the account
+		       -- just before it committed still created one (review
+		       -- 2026-11-03 round 4).
+		       CASE WHEN ua.login_revoked_at IS NOT NULL THEN COALESCE(s.revoked_at, ua.login_revoked_at)
+		            ELSE s.revoked_at END
 		FROM session s
 		JOIN user_account ua ON ua.id = s.user_id
 		WHERE s.id = :id`)

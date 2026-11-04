@@ -282,12 +282,15 @@ MCP tool surface, over two transports:
   ```
 
 - **Local stdio — the `kitpd mcp` subcommand.** Speaks MCP over stdin/stdout
-  for a co-located client. With `KITP_TOKEN` unset it acts as the built-in
-  System user; set it to a `user_token` value to act as that token's user.
+  for a co-located client. Set `KITP_TOKEN` to a `user_token` value to act
+  as that token's user; without one it refuses to start unless
+  `KITP_MCP_AS_SYSTEM=1` asks for the built-in System user.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| KITP_TOKEN | (unset) | Bearer token for the `kitpd mcp` stdio transport; when set, MCP acts as that token's user instead of System. (The HTTP endpoint takes its token from the `Authorization` header instead.) |
+| KITP_TOKEN | (unset) | Bearer token for the `kitpd mcp` stdio transport; MCP acts as that token's user. (The HTTP endpoint takes its token from the `Authorization` header instead.) |
+| KITP_MCP_AS_SYSTEM | (unset) | `1` lets `kitpd mcp` run as the System user when `KITP_TOKEN` is unset; otherwise it refuses to start. |
+| KITP_TOKEN_MAX_DAYS | 365 | Longest a new API token may last, and the expiry of one created without one; `0` lifts the cap. Tokens made before keep their expiry. |
 
 ## Authentication & authorization
 

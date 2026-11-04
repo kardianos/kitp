@@ -28,6 +28,8 @@ In the right pane, click **+ New token**, give it a short label (the token will 
 
 Treat tokens like passwords. Rotate them by minting a new token and revoking the old one rather than reusing one across systems.
 
+A token lasts at most a year (the server's `KITP_TOKEN_MAX_DAYS`): one minted without an expiry expires after that, so put a reminder in to rotate a forge's or integration's token before then. Tokens minted before this limit keep the expiry they had. A token also stops working at once if its agent is deleted or its owner's login is taken away.
+
 ## Revoking a token
 
 Click **Revoke** on a token row. The token is invalidated immediately; any in-flight request authenticated with it will fail on next call. A revoked token does not delete the agent — only the credential.

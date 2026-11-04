@@ -675,9 +675,11 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 				SELECT c.id, uap.user_account_id,
 				       coalesce(ua.oidc_sub IS NOT NULL, false),
 				       coalesce((
-				           SELECT a.actor_id = :system OR EXISTS (
+				           -- Judged as the writer was when they wrote it
+				           -- (actor_admin; round 4); older rows by their role now.
+				           SELECT a.actor_id = :system OR COALESCE(a.actor_admin, EXISTS (
 				                      SELECT 1 FROM user_role_effective(a.actor_id) ur JOIN role r ON r.id = ur.role_id
-				                      WHERE r.name = 'admin' AND ur.scope_card_id IS NULL)
+				                      WHERE r.name = 'admin' AND ur.scope_card_id IS NULL))
 				           FROM activity a WHERE a.id = av.last_activity_id),
 				           av.last_activity_id IS NULL)
 				FROM card c
@@ -735,6 +737,12 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 					VALUES (:user, :person)
 				`, map[string]any{"user": userID, "person": personID}); err != nil {
 					return 0, "", fmt.Errorf("oidc: link reused person: %w", err)
+				}
+				// A contact card mail made carries the name its sender's
+				// From gave — which anyone can forge — so the sign-in's own
+				// name replaces it (review 2026-11-03 round 4).
+				if err := retitleContact(ctx, tx, personID, displayName, userID); err != nil {
+					return 0, "", err
 				}
 				if err := elevatePersonKind(ctx, tx, personID, userID); err != nil {
 					return 0, "", err
@@ -828,11 +836,21 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		// IdP claim here would clobber a name the user changed in-app on every
 		// login. (displayName is still computed above — it feeds the
 		// fresh-insert + pre-created-attach branches, just not this one.)
+		// An unverified claim of the email the login holds says that email
+		// came from an unverified claim before verified-only storage: it
+		// goes, so recovery and the pre-created attach can't match it
+		// (review 2026-11-03 round 4 #5).
+		untrusted := ""
+		if !emailTrusted {
+			untrusted = email
+		}
 		if err := txExec(ctx, tx, `
 			UPDATE user_account
-			SET email = CASE WHEN :email = '' THEN email ELSE :email END
+			SET email = CASE WHEN :email <> '' THEN :email
+			                 WHEN :untrusted <> '' AND lower(COALESCE(email, '')) = lower(:untrusted) THEN NULL
+			                 ELSE email END
 			WHERE id = :user
-		`, map[string]any{"user": userID, "email": loginEmail}); err != nil {
+		`, map[string]any{"user": userID, "email": loginEmail, "untrusted": untrusted}); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision update: %w", err)
 		}
 	}
@@ -967,6 +985,46 @@ func txExec(ctx context.Context, tx pgx.Tx, sql string, params map[string]any) e
 	}
 	_, err = tx.Exec(ctx, q, args...)
 	return err
+}
+
+// retitleContact gives a reused contact card (person_kind 'contact': a
+// person kitp made from mail, or one entered as a contact) the sign-in's
+// display name. Runs before elevatePersonKind. No-op for any other person,
+// or when the name is already that.
+func retitleContact(ctx context.Context, tx pgx.Tx, personCardID int64, name string, actorID int64) error {
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	var actID int64
+	err := txScan(ctx, tx, `
+		INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
+		SELECT :card, 'attr_update', ad.id,
+		       (SELECT value FROM attribute_value WHERE card_id = :card AND attribute_def_id = ad.id),
+		       to_jsonb(:name::text), :actor
+		FROM attribute_def ad
+		WHERE ad.name = 'title'
+		  AND COALESCE((SELECT v.value #>> '{}' FROM attribute_value v
+		                JOIN attribute_def k ON k.id = v.attribute_def_id AND k.name = 'person_kind'
+		                WHERE v.card_id = :card), '') = 'contact'
+		  AND COALESCE((SELECT value #>> '{}' FROM attribute_value WHERE card_id = :card AND attribute_def_id = ad.id), '') <> :name
+		RETURNING id
+	`, map[string]any{"card": personCardID, "name": name, "actor": actorID}, &actID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("oidc: retitle contact activity: %w", err)
+	}
+	if err := txExec(ctx, tx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
+		SELECT :card, ad.id, to_jsonb(:name::text), :activity
+		FROM attribute_def ad WHERE ad.name = 'title'
+		ON CONFLICT (card_id, attribute_def_id) DO UPDATE
+			SET value = EXCLUDED.value, last_activity_id = EXCLUDED.last_activity_id
+	`, map[string]any{"card": personCardID, "name": name, "activity": actID}); err != nil {
+		return fmt.Errorf("oidc: retitle contact: %w", err)
+	}
+	return nil
 }
 
 // elevatePersonKind promotes a reused person card to person_kind='member'

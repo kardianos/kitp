@@ -1473,13 +1473,15 @@ ON CONFLICT (card_id, attribute_def_id) DO NOTHING;`,
 // user_account.deleted_at marks a deleted agent (agent.delete), and
 // login_revoked_at a login an admin took away (user.revoke_login), with
 // revoked_person_card_id the person it was; functions read them.
+// activity.actor_admin is set by the activity_set_actor_admin trigger.
 const preDDL = `ALTER TABLE IF EXISTS attribute_value ADD COLUMN IF NOT EXISTS value_type_id int;
 ALTER TABLE IF EXISTS comm_log ADD COLUMN IF NOT EXISTS route_id bigint;
 ALTER TABLE IF EXISTS role ADD COLUMN IF NOT EXISTS rank int NOT NULL DEFAULT 0;
 ALTER TABLE IF EXISTS card ADD COLUMN IF NOT EXISTS private_to bigint REFERENCES card(id);
 ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS login_revoked_at timestamptz;
-ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS revoked_person_card_id bigint;`
+ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS revoked_person_card_id bigint;
+ALTER TABLE IF EXISTS activity ADD COLUMN IF NOT EXISTS actor_admin boolean;`
 
 // ledgerDDL creates the schema-version ledger. Kept here (not in the generated
 // schema) because it must exist before the generated DDL/seed is gated on it.

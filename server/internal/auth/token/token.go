@@ -142,9 +142,15 @@ func (m *Manager) Lookup(ctx context.Context, tok string) (*User, error) {
 	b := named.New()
 	b.Set("id", key)
 	sql, args, err := b.Compile(`
-		SELECT t.user_id, ua.display_name, t.scope, t.revoked_at, t.expires_at
+		SELECT t.user_id, ua.display_name, t.scope,
+		       -- A token of a revoked login, or of a retired agent or one
+		       -- whose owner's login was revoked, stops working whenever it
+		       -- was minted (review 2026-11-03 round 4).
+		       COALESCE(t.revoked_at, ua.login_revoked_at, ua.deleted_at, owner.login_revoked_at),
+		       t.expires_at
 		FROM user_token t
 		JOIN user_account ua ON ua.id = t.user_id
+		LEFT JOIN user_account owner ON owner.id = ua.parent_user_id
 		WHERE t.id = :id`)
 	if err != nil {
 		return nil, fmt.Errorf("token: lookup: compile: %w", err)

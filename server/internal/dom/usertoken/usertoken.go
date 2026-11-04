@@ -17,6 +17,9 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -32,8 +35,48 @@ import (
 type CreateInput struct {
 	UserID    int64  `json:"user_id,string" mcp:"required,desc=user_account id the token authenticates as (typically an agent owned by the caller)"`
 	Label     string `json:"label" mcp:"required,desc=human-readable label, unique per user (max 200 chars)"`
-	ExpiresAt string `json:"expires_at,omitempty" mcp:"desc=optional RFC3339 timestamp at which the token stops working"`
+	ExpiresAt string `json:"expires_at,omitempty" mcp:"desc=optional RFC3339 timestamp at which the token stops working; at most KITP_TOKEN_MAX_DAYS (default 365) days ahead, which is also the default"`
 	Scope     string `json:"scope,omitempty" mcp:"desc=what the token may do: omit / '' for full access (MCP and every bearer route), or 'links' for ONLY the forge link hook POST /api/v1/links (the credential a code forge such as Gerrit holds)"`
+}
+
+// maxDays caps a new token's lifetime (KITP_TOKEN_MAX_DAYS, SetMaxDays):
+// one with no expires_at gets that many days, and a later one is refused.
+// 0 lets tokens live for ever. Tokens minted before the cap keep the expiry
+// they had (review 2026-11-03 round 4: tokens had no maximum lifetime).
+var maxDays atomic.Int64
+
+func init() { maxDays.Store(DefaultMaxDays) }
+
+// DefaultMaxDays is the token lifetime cap when KITP_TOKEN_MAX_DAYS is unset.
+const DefaultMaxDays = 365
+
+// SetMaxDays sets the cap; n <= 0 lifts it.
+func SetMaxDays(n int64) { maxDays.Store(max(n, 0)) }
+
+// preRunCreate applies the lifetime cap to each new token.
+func preRunCreate(_ context.Context, _ store.Querier, ins []any) ([]any, error) {
+	days := maxDays.Load()
+	if days == 0 {
+		return ins, nil
+	}
+	limit := time.Now().Add(time.Duration(days) * 24 * time.Hour)
+	for i, raw := range ins {
+		in := raw.(CreateInput)
+		if strings.TrimSpace(in.ExpiresAt) == "" {
+			in.ExpiresAt = limit.UTC().Format(time.RFC3339)
+			ins[i] = in
+			continue
+		}
+		at, err := time.Parse(time.RFC3339, strings.TrimSpace(in.ExpiresAt))
+		if err != nil {
+			continue // the SQL function refuses it with the canonical message
+		}
+		if at.After(limit) {
+			return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+				Message: fmt.Sprintf("user_token.create: a token can last at most %d days", days)}
+		}
+	}
+	return ins, nil
 }
 
 // CreateOutput carries the secret bearer value — surfaced ONCE. The
@@ -90,6 +133,7 @@ func Register(p *store.Pool) {
 		OutputType:   reflect.TypeFor[CreateOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
 		Authz:        authzCreate,
+		PreRun:       preRunCreate,
 		// Unified handler — body lives in
 		// db/schema/functions/user_token_create_batch.sql per Phase 3
 		// of docs/UNIFIED_HANDLER_PLAN.md.
@@ -222,3 +266,6 @@ func authzRevoke(ctx context.Context, in any) error {
 	}
 	return authzToken(ctx, row.UserID, accessList)
 }
+
+// PreRunCreateForTest runs user_token.create's lifetime cap on ins.
+func PreRunCreateForTest(ins []any) ([]any, error) { return preRunCreate(context.Background(), nil, ins) }

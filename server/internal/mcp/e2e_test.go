@@ -35,6 +35,8 @@ func TestMCPSubprocess_Initialize_ToolsList_ToolsCall(t *testing.T) {
 		"AUTH_MODE=off",
 		"ENV=dev",
 		"LOG_LEVEL=warn",
+		// kitpd mcp runs as System only when asked (else it needs KITP_TOKEN).
+		"KITP_MCP_AS_SYSTEM=1",
 	)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

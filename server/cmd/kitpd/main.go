@@ -26,6 +26,7 @@
 //	KITP_COMM_DEDUPE_DAYS        — days a message stays deduped after its last copy arrived; default 14
 //	KITP_COMM_LOG_PRUNE_HOURS — comm_log prune cadence in hours; default 24
 //	KITP_COMM_INBOUND_MAX_BYTES — POST mail intake body cap; default 50 MB
+//	KITP_TOKEN_MAX_DAYS — longest a new API token may last, and its default; 0 = no limit; default 365
 //	KITP_COMM_INBOUND_MAX_CONCURRENT — POSTed messages read and filed at once; default 4 (more answer 503)
 //	KITP_TRUSTED_PROXIES      — private CIDRs whose X-Forwarded-For / PROXY
 //	                            header is believed; default any private or
@@ -236,6 +237,7 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage, mailStatus *mailin
 	userrole.Register(pool)
 	agent.Register(pool)
 	usertoken.Register(pool)
+	usertoken.SetMaxDays(int64(envInt("KITP_TOKEN_MAX_DAYS", usertoken.DefaultMaxDays)))
 	rolemapping.Register(pool)
 	if storage != nil {
 		projectimport.Register(projectimport.ImportConfig{Pool: pool, Storage: storage})
@@ -979,8 +981,21 @@ func runMCP() error {
 	// the token names — typically one of the parent user's agents.
 	// Bad / revoked / expired token fails fast so a misconfigured agent
 	// doesn't accidentally run as System.
+	//
+	// Running as System is now opt-in (KITP_MCP_AS_SYSTEM=1): an MCP
+	// client started without KITP_TOKEN — a typo, a missing secret — got
+	// every workspace-wide right without anyone choosing that (review
+	// 2026-11-03 round 4). The process still needs the database's
+	// credentials either way.
 	actor := user
-	if tok := os.Getenv("KITP_TOKEN"); tok != "" {
+	tok := os.Getenv("KITP_TOKEN")
+	if tok == "" && os.Getenv("KITP_MCP_AS_SYSTEM") != "1" {
+		return errors.New("kitpd mcp: set KITP_TOKEN to an agent's token (or KITP_MCP_AS_SYSTEM=1 to run as the System user)")
+	}
+	if tok == "" {
+		log.Printf("MCP running as the System user (KITP_MCP_AS_SYSTEM=1)")
+	}
+	if tok != "" {
 		mgr := token.New(pgPool, token.Config{})
 		// MCP subprocess mode is short-lived enough that we skip the
 		// periodic touch-flush goroutine; last_used_at gets stamped
