@@ -131,7 +131,7 @@ test('PeopleManager promote assignee→user fires attribute.update + person.gran
   assert.equal(transport.sent.revokes.length, 0);
 });
 
-test('PeopleManager demote user→assignee fires attribute.update + user.revoke_login', async () => {
+test('PeopleManager demote user→assignee asks first, then fires attribute.update + user.revoke_login', async () => {
   const transport = recordingTransport();
   const { dispatcher, api } = bootApi(transport);
   const { ctrl } = mount(api);
@@ -140,6 +140,19 @@ test('PeopleManager demote user→assignee fires attribute.update + user.revoke_
   const sel = ctrl.el.querySelector('[data-people-row="703"]').querySelector('[data-people-tier]');
   sel.value = 'assignee';
   sel.dispatchEvent({ type: 'change', target: sel });
+  await settle(dispatcher);
+
+  // Nothing is sent until the admin confirms; Cancel sends nothing at all.
+  assert.equal(transport.sent.revokes.length, 0, 'no revoke before confirming');
+  assert.equal(transport.sent.updates.length, 0, 'no kind change before confirming');
+  assert.equal(sel.value, 'user', 'the select still shows the current tier');
+  ctrl.el.querySelector('[data-people-demote-cancel]').dispatchEvent({ type: 'click' });
+  await settle(dispatcher);
+  assert.equal(transport.sent.revokes.length, 0, 'Cancel revokes nothing');
+
+  sel.value = 'assignee';
+  sel.dispatchEvent({ type: 'change', target: sel });
+  ctrl.el.querySelector('[data-people-demote-confirm]').dispatchEvent({ type: 'click' });
   await settle(dispatcher);
 
   assert.equal(transport.sent.revokes.length, 1, 'the login was revoked');

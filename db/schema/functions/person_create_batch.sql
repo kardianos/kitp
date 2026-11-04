@@ -151,6 +151,10 @@ BEGIN
         --    dispatcher (mapped to code='conflict').
         _user_account_id := 0;
         IF _want_user_account THEN
+            -- A login revoked earlier with this email no longer blocks it.
+            IF COALESCE(_email, '') <> '' THEN
+                PERFORM login_unrevoke(_email);
+            END IF;
             INSERT INTO user_account (display_name, email)
             VALUES (_title, NULLIF(_email, ''))
             RETURNING id INTO _user_account_id;

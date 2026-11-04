@@ -305,6 +305,11 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 
 	// Reuse Validator.Resolve to verify the id_token + upsert user.
 	userID, _, err := cfg.Validator.Resolve(r.Context(), idToken)
+	if errors.Is(err, ErrLoginRevoked) {
+		logRedirect(r, "oidc.callback: login_revoked", err)
+		redirectLogin(w, r, "your access to this workspace was removed; ask an admin")
+		return
+	}
 	if err != nil {
 		logRedirect(r, "oidc.callback: token_validate", err)
 		redirectLogin(w, r, "could not complete sign-in")

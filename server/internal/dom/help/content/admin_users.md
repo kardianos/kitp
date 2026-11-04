@@ -25,6 +25,12 @@ A user can hold the same role twice if the scopes differ — e.g. `viewer` globa
 
 Click **Revoke** on any role row to remove that single grant. The user's other assignments are untouched.
 
+## Taking a login away
+
+On **People**, removing a user, or changing a user to an assignee or a contact, takes their login away (it asks first): their roles, sessions and tokens go, and their agents' too. Your identity provider may still let them sign in, but kitp doesn't: a sign-in by that identity, or by another one with the same verified email, is refused. To give them a login again, make them a user again on **People** — that lifts the block for the email you give.
+
+**Disable** is different: it keeps the person in pickers' history and doesn't touch their login.
+
 ## CSV export
 
 The **CSV export** button on the user detail header downloads a flat dump of every role assignment in the system — one row per `(user, role, scope)` triple. Useful for compliance review and for diff-ing role state across environments.
@@ -33,7 +39,7 @@ The **CSV export** button on the user detail header downloads a flat dump of eve
 
 Agents are users with `is_agent=true` and a `parent_user_id` pointing at a human owner. They're authored on **Admin · Agents**, not here, but their role grants flow through this same screen: an agent appears in the user list just like any other user, and you can grant scoped roles to it the same way.
 
-The parent-grants-subset rule is enforced on agent targets too, whoever grants: an agent can only be given a role its owner holds at that scope (or workspace-wide), and it uses one only while the owner still does. An agent sees what its owner sees.
+The parent-grants-subset rule is enforced on agent targets too, whoever grants: an agent can only be given a role its owner holds at that scope (or workspace-wide), and it uses one only while the owner still does. A personal agent sees what its owner sees; a workspace agent (owned by System) sees only what its own roles reach.
 
 ## Related admin pages
 

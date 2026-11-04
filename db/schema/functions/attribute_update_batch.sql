@@ -156,6 +156,21 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- 1b'. The email of a person who has a login is where kitp mails
+        --      that user — digests, approval requests, staff replies on
+        --      their threads. Only a workspace admin, or the user
+        --      themselves, changes it; any worker could redirect it before
+        --      (review 2026-11-03 round 3 #17).
+        IF _attr_name = 'email'
+           AND EXISTS (SELECT 1 FROM user_account_person uap WHERE uap.person_card_id = _card_id)
+           AND NOT user_is_global_admin(attribute_update_batch.actor_id)
+           AND account_person(attribute_update_batch.actor_id) IS DISTINCT FROM _card_id THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                'attribute.update: only an admin or the user themselves changes the email of someone who signs in'::text,
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 1c. Edge existence + pick up value_type / is_required /
         --     target_card_type_id in one shot.
         SELECT ad.id, e.is_required, ad.value_type, ad.target_card_type_id, ad.target_filter

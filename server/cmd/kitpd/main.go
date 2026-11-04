@@ -453,7 +453,7 @@ func runHTTP() error {
 	var oidcValidator *oidc.Validator
 	var oidcCfg *oidc.Config
 	if mode == auth.ModeOIDC {
-		oidcCfg = oidc.FromEnv(os.Getenv)
+		oidcCfg = oidc.FromEnv(os.LookupEnv)
 		if oidcCfg == nil {
 			return errors.New("AUTH_MODE=oidc but OIDC_ISSUER is empty")
 		}

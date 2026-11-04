@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kitp/kitp/server/internal/named"
@@ -83,10 +84,9 @@ func BootstrapInitAdmin(ctx context.Context, pool *pgxpool.Pool, email string) e
 	// layer normalises on every fresh insert; this `lower(...)` guard
 	// covers historic rows. See
 	// DI-7 in docs/DESIGN_INVARIANTS.md.
-	if err := tx.QueryRow(ctx,
-		`SELECT id FROM user_account WHERE lower(email) = $1 ORDER BY id LIMIT 1`,
-		email,
-	).Scan(&userID); err != nil {
+	if err := scanNamed(ctx, tx,
+		`SELECT id FROM user_account WHERE lower(email) = :email ORDER BY id LIMIT 1`,
+		map[string]any{"email": email}, &userID); err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("bootstrap init-admin: lookup email: %w", err)
 		}
@@ -98,11 +98,11 @@ func BootstrapInitAdmin(ctx context.Context, pool *pgxpool.Pool, email string) e
 		// attaches a sub on first sign-in via its email fallback.
 		// Display name is just the email until the OIDC `name` claim
 		// supplies something better.
-		if err := tx.QueryRow(ctx, `
+		if err := scanNamed(ctx, tx, `
 			INSERT INTO user_account (display_name, email)
-			VALUES ($1, $2)
+			VALUES (:email, :email)
 			RETURNING id
-		`, email, email).Scan(&userID); err != nil {
+		`, map[string]any{"email": email}, &userID); err != nil {
 			return fmt.Errorf("bootstrap init-admin: insert user_account: %w", err)
 		}
 		if err := provisionAdminPersonCard(ctx, tx, userID, email); err != nil {
@@ -153,11 +153,11 @@ func BootstrapInitAdmin(ctx context.Context, pool *pgxpool.Pool, email string) e
 
 func hasNonSystemAdmin(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
 	var n int
-	err := pool.QueryRow(ctx, `
+	err := scanNamed(ctx, pool, `
 		SELECT count(*) FROM user_role ur
 		JOIN role r ON r.id = ur.role_id
-		WHERE r.name = 'admin' AND ur.user_id <> $1
-	`, SystemUserID).Scan(&n)
+		WHERE r.name = 'admin' AND ur.user_id <> :system
+	`, map[string]any{"system": SystemUserID}, &n)
 	if err != nil {
 		return false, err
 	}
@@ -166,11 +166,11 @@ func hasNonSystemAdmin(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
 
 func hasNonSystemAdminTx(ctx context.Context, tx pgx.Tx) (bool, error) {
 	var n int
-	err := tx.QueryRow(ctx, `
+	err := scanNamed(ctx, tx, `
 		SELECT count(*) FROM user_role ur
 		JOIN role r ON r.id = ur.role_id
-		WHERE r.name = 'admin' AND ur.user_id <> $1
-	`, SystemUserID).Scan(&n)
+		WHERE r.name = 'admin' AND ur.user_id <> :system
+	`, map[string]any{"system": SystemUserID}, &n)
 	if err != nil {
 		return false, err
 	}
@@ -194,9 +194,9 @@ func provisionAdminPersonCard(ctx context.Context, tx pgx.Tx, userID int64, emai
 	`).Scan(&personCardID); err != nil {
 		return fmt.Errorf("person card: %w", err)
 	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO activity (card_id, kind, actor_id) VALUES ($1, 'card_create', $2)`,
-		personCardID, userID,
+	if err := execNamed(ctx, tx,
+		`INSERT INTO activity (card_id, kind, actor_id) VALUES (:card, 'card_create', :user)`,
+		map[string]any{"card": personCardID, "user": userID},
 	); err != nil {
 		return fmt.Errorf("card_create activity: %w", err)
 	}
@@ -213,27 +213,61 @@ func provisionAdminPersonCard(ctx context.Context, tx pgx.Tx, userID int64, emai
 		{"person_kind", "member"},
 	} {
 		var actID int64
-		if err := tx.QueryRow(ctx, `
+		if err := scanNamed(ctx, tx, `
 			INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
-			SELECT $1, 'attr_update', ad.id, NULL, to_jsonb($2::text), $3
-			FROM attribute_def ad WHERE ad.name = $4
+			SELECT :card, 'attr_update', ad.id, NULL, to_jsonb(:value::text), :user
+			FROM attribute_def ad WHERE ad.name = :attr
 			RETURNING id
-		`, personCardID, w.value, userID, w.attrName).Scan(&actID); err != nil {
+		`, map[string]any{"card": personCardID, "value": w.value, "user": userID, "attr": w.attrName}, &actID); err != nil {
 			return fmt.Errorf("%s activity: %w", w.attrName, err)
 		}
-		if _, err := tx.Exec(ctx, `
+		if err := execNamed(ctx, tx, `
 			INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
-			SELECT $1, ad.id, to_jsonb($2::text), $3
-			FROM attribute_def ad WHERE ad.name = $4
-		`, personCardID, w.value, actID, w.attrName); err != nil {
+			SELECT :card, ad.id, to_jsonb(:value::text), :activity
+			FROM attribute_def ad WHERE ad.name = :attr
+		`, map[string]any{"card": personCardID, "value": w.value, "activity": actID, "attr": w.attrName}); err != nil {
 			return fmt.Errorf("%s value: %w", w.attrName, err)
 		}
 	}
-	if _, err := tx.Exec(ctx, `
+	if err := execNamed(ctx, tx, `
 		INSERT INTO user_account_person (user_account_id, person_card_id)
-		VALUES ($1, $2)
-	`, userID, personCardID); err != nil {
+		VALUES (:user, :card)
+	`, map[string]any{"user": userID, "card": personCardID}); err != nil {
 		return fmt.Errorf("link: %w", err)
 	}
 	return nil
+}
+
+// namedQuerier is what scanNamed / execNamed run on: a pool or a tx.
+type namedQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// scanNamed compiles a :name query (internal/named) and scans its one row
+// into dest; pgx.ErrNoRows comes back as is, for errors.Is. execNamed runs
+// a statement.
+func scanNamed(ctx context.Context, q namedQuerier, sql string, params map[string]any, dest ...any) error {
+	b := named.New()
+	for k, v := range params {
+		b.Set(k, v)
+	}
+	compiled, args, err := b.Compile(sql)
+	if err != nil {
+		return fmt.Errorf("compile: %w", err)
+	}
+	return q.QueryRow(ctx, compiled, args...).Scan(dest...)
+}
+
+func execNamed(ctx context.Context, q namedQuerier, sql string, params map[string]any) error {
+	b := named.New()
+	for k, v := range params {
+		b.Set(k, v)
+	}
+	compiled, args, err := b.Compile(sql)
+	if err != nil {
+		return fmt.Errorf("compile: %w", err)
+	}
+	_, err = q.Exec(ctx, compiled, args...)
+	return err
 }

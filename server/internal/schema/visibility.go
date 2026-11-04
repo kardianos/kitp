@@ -11,8 +11,8 @@ import "fmt"
 // reference a card, like `activity`).
 //
 // Semantics: a card is visible if the caller — or, when the caller is
-// an agent (`user_account.parent_user_id`), its owner — holds at least
-// one `user_role` row (user_role_visible) that is either
+// a personal agent (`user_account.parent_user_id`), its owner — holds at
+// least one `user_role` row (user_role_visible) that is either
 //
 //   - globally scoped (`scope_card_id IS NULL`) — admins and the
 //     System User; or
@@ -23,9 +23,10 @@ import "fmt"
 // (`session/http.go`, `usercardagent`): agents act on behalf of
 // their owner, so they see exactly what the owner sees — the owner's
 // rows, never the agent's own, so an agent can't be granted its way
-// past its owner (review B1). What an agent can DO is a separate,
-// narrower set (user_role_effective: roles it was granted that the
-// owner also holds).
+// past its owner (review B1). A workspace agent (owned by System, which
+// sees everything) sees by its own rows instead (review 2026-11-03 round 3
+// #2). What an agent can DO is a separate, narrower set
+// (user_role_effective: roles it was granted that the owner also holds).
 //
 // The CTE walks parent_card_id from the target card to its
 // `card_type='project'` ancestor; the recursive arm carries a

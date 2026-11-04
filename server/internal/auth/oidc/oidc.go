@@ -80,7 +80,15 @@ type Config struct {
 // FromEnv builds a Config from the standard env vars. Returns nil when
 // OIDC_ISSUER is empty so the caller can decide that AUTH_MODE=oidc is
 // invalid (production refusal lives in main.go).
-func FromEnv(env func(string) string) *Config {
+//
+// lookup is os.LookupEnv: OIDC_DEFAULT_ROLE set but empty (or "none") means
+// no default role, as the README says, which a plain getter can't tell
+// from unset (review 2026-11-03 round 3 #4).
+func FromEnv(lookup func(string) (string, bool)) *Config {
+	env := func(k string) string {
+		v, _ := lookup(k)
+		return v
+	}
 	issuer := env("OIDC_ISSUER")
 	if issuer == "" {
 		return nil
@@ -89,13 +97,16 @@ func FromEnv(env func(string) string) *Config {
 		Issuer:      issuer,
 		Audience:    env("OIDC_AUDIENCE"),
 		RoleClaim:   env("OIDC_ROLE_CLAIM"),
-		DefaultRole: env("OIDC_DEFAULT_ROLE"),
 	}
 	if cfg.RoleClaim == "" {
 		cfg.RoleClaim = "groups"
 	}
-	if cfg.DefaultRole == "" {
-		cfg.DefaultRole = "worker"
+	cfg.DefaultRole = "worker"
+	if v, set := lookup("OIDC_DEFAULT_ROLE"); set {
+		cfg.DefaultRole = strings.TrimSpace(v)
+		if strings.EqualFold(cfg.DefaultRole, "none") {
+			cfg.DefaultRole = ""
+		}
 	}
 	cfg.ClientID = env("OIDC_CLIENT_ID")
 	cfg.ClientSecret = env("OIDC_CLIENT_SECRET")
@@ -180,6 +191,27 @@ func NewValidator(cfg *Config, pool *pgxpool.Pool) *Validator {
 	}
 }
 
+// ErrLoginRevoked is a sign-in by an identity whose login an admin took
+// away (user.revoke_login): its IdP subject, or a verified email equal to
+// the revoked login's. The IdP still lets them in; kitp doesn't, until an
+// admin gives them a login again (person.grant_account).
+var ErrLoginRevoked = errors.New("oidc: this login was removed by an admin")
+
+// loginRevoked reports whether an account's login was taken away.
+func (v *Validator) loginRevoked(ctx context.Context, userID int64) (bool, error) {
+	b := named.New()
+	b.Set("user", userID)
+	q, args, err := b.Compile(`SELECT COALESCE((SELECT login_revoked_at IS NOT NULL FROM user_account WHERE id = :user), true)`)
+	if err != nil {
+		return false, fmt.Errorf("oidc: revoked check: compile: %w", err)
+	}
+	var revoked bool
+	if err := v.pool.QueryRow(ctx, q, args...).Scan(&revoked); err != nil {
+		return false, fmt.Errorf("oidc: revoked check: %w", err)
+	}
+	return revoked, nil
+}
+
 // Resolve validates the bearer token and returns the corresponding internal
 // user id + display name, provisioning a user_account row on first sight.
 //
@@ -215,12 +247,23 @@ func (v *Validator) Resolve(ctx context.Context, bearer string) (int64, string, 
 	hash := claimsHash(claims)
 	now := time.Now()
 
-	// Cache hit?
+	// Cache hit? A login revoked since it was cached isn't served from the
+	// cache: provisioning below refuses it (or, once an admin granted a
+	// login again, reaches the new one).
 	v.mu.RLock()
 	rec := v.subCache[sub]
 	v.mu.RUnlock()
 	if rec != nil && rec.ClaimsHash == hash && now.Before(rec.ExpiresAt) {
-		return rec.UserID, rec.DisplayName, nil
+		revoked, err := v.loginRevoked(ctx, rec.UserID)
+		if err != nil {
+			return 0, "", err
+		}
+		if !revoked {
+			return rec.UserID, rec.DisplayName, nil
+		}
+		v.mu.Lock()
+		delete(v.subCache, sub)
+		v.mu.Unlock()
 	}
 
 	// Provision (create on first sight) and apply role mappings.
@@ -504,10 +547,19 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	defer tx.Rollback(ctx)
 
 	var userID int64
-	row := tx.QueryRow(ctx, `SELECT id FROM user_account WHERE oidc_sub = $1`, sub)
-	subErr := row.Scan(&userID)
+	var subRevoked bool
+	sb := named.New()
+	sb.Set("sub", sub)
+	sq, sargs, err := sb.Compile(`SELECT id, login_revoked_at IS NOT NULL FROM user_account WHERE oidc_sub = :sub`)
+	if err != nil {
+		return 0, "", fmt.Errorf("oidc: sub lookup: compile: %w", err)
+	}
+	subErr := tx.QueryRow(ctx, sq, sargs...).Scan(&userID, &subRevoked)
 	if subErr != nil && !errors.Is(subErr, pgx.ErrNoRows) {
 		return 0, "", fmt.Errorf("oidc: sub lookup: %w", subErr)
+	}
+	if subErr == nil && subRevoked {
+		return 0, "", ErrLoginRevoked
 	}
 	// `attached` true when we resolved to an existing row (either via
 	// sub or via the pre-created-by-email fallback) and therefore
@@ -525,6 +577,26 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	emailVerified, _ := claims["email_verified"].(bool)
 	emailTrusted := emailVerified || v.cfg.TrustUnverifiedEmail
 	if subErr != nil && email != "" && emailTrusted {
+		// The same human through another IdP subject: an admin revoked the
+		// login that signs in with this email (user.revoke_login), so this
+		// sign-in is refused too, rather than given a new account with the
+		// default role and their old person card (review 2026-11-03 round 3
+		// #3). Granting a login with this email again lifts it.
+		rb := named.New()
+		rb.Set("email", email)
+		rq, rargs, rerr := rb.Compile(`
+			SELECT EXISTS (SELECT 1 FROM user_account
+			               WHERE login_revoked_at IS NOT NULL AND lower(email) = lower(:email))`)
+		if rerr != nil {
+			return 0, "", fmt.Errorf("oidc: revoked-email lookup: compile: %w", rerr)
+		}
+		var emailRevoked bool
+		if err := tx.QueryRow(ctx, rq, rargs...).Scan(&emailRevoked); err != nil {
+			return 0, "", fmt.Errorf("oidc: revoked-email lookup: %w", err)
+		}
+		if emailRevoked {
+			return 0, "", ErrLoginRevoked
+		}
 		// Sub didn't match. Before we insert a fresh row, check
 		// whether an admin pre-created a user_account by email (see
 		// person.create with tier='user') — those rows carry the
@@ -539,23 +611,23 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		// (id 1) and agents never sign in through OIDC, so a sub is never
 		// attached to them whatever their email says.
 		var preID int64
-		preErr := tx.QueryRow(ctx, `
+		preErr := txScan(ctx, tx, `
 			SELECT id FROM user_account
-			WHERE lower(email) = $1 AND oidc_sub IS NULL
-			  AND id <> $2 AND NOT is_agent AND parent_user_id IS NULL
+			WHERE lower(email) = :email AND oidc_sub IS NULL
+			  AND id <> :system AND NOT is_agent AND parent_user_id IS NULL
 			ORDER BY id
 			LIMIT 1
-		`, email, auth.SystemUserID).Scan(&preID)
+		`, map[string]any{"email": email, "system": auth.SystemUserID}, &preID)
 		if preErr != nil && !errors.Is(preErr, pgx.ErrNoRows) {
 			return 0, "", fmt.Errorf("oidc: email-fallback lookup: %w", preErr)
 		}
 		if preErr == nil {
-			if _, uErr := tx.Exec(ctx, `
+			if uErr := txExec(ctx, tx, `
 				UPDATE user_account
-				SET oidc_sub = $1,
-				    display_name = CASE WHEN coalesce(display_name, '') = '' THEN $2 ELSE display_name END
-				WHERE id = $3
-			`, sub, displayName, preID); uErr != nil {
+				SET oidc_sub = :sub,
+				    display_name = CASE WHEN coalesce(display_name, '') = '' THEN :name ELSE display_name END
+				WHERE id = :user
+			`, map[string]any{"sub": sub, "name": displayName, "user": preID}); uErr != nil {
 				return 0, "", fmt.Errorf("oidc: attach sub to pre-created: %w", uErr)
 			}
 			userID = preID
@@ -595,9 +667,8 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 				       coalesce(ua.oidc_sub IS NOT NULL, false),
 				       coalesce((
 				           SELECT a.actor_id = :system OR EXISTS (
-				                      SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
-				                      WHERE ur.user_id = a.actor_id AND r.name = 'admin'
-				                        AND ur.scope_card_id IS NULL)
+				                      SELECT 1 FROM user_role_effective(a.actor_id) ur JOIN role r ON r.id = ur.role_id
+				                      WHERE r.name = 'admin' AND ur.scope_card_id IS NULL)
 				           FROM activity a WHERE a.id = av.last_activity_id),
 				           av.last_activity_id IS NULL)
 				FROM card c
@@ -643,17 +714,17 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 				// user_account, link it to the existing person card, and
 				// promote person_kind to 'member' so the new user is
 				// assignable. The person's title / email / history stay.
-				if err := tx.QueryRow(ctx, `
+				if err := txScan(ctx, tx, `
 					INSERT INTO user_account (oidc_sub, display_name, email)
-					VALUES ($1, $2, NULLIF($3, ''))
+					VALUES (:sub, :name, NULLIF(:email, ''))
 					RETURNING id
-				`, sub, displayName, email).Scan(&userID); err != nil {
+				`, map[string]any{"sub": sub, "name": displayName, "email": email}, &userID); err != nil {
 					return 0, "", fmt.Errorf("oidc: provision insert (reuse person): %w", err)
 				}
-				if _, err := tx.Exec(ctx, `
+				if err := txExec(ctx, tx, `
 					INSERT INTO user_account_person (user_account_id, person_card_id)
-					VALUES ($1, $2)
-				`, userID, personID); err != nil {
+					VALUES (:user, :person)
+				`, map[string]any{"user": userID, "person": personID}); err != nil {
 					return 0, "", fmt.Errorf("oidc: link reused person: %w", err)
 				}
 				if err := elevatePersonKind(ctx, tx, personID, userID); err != nil {
@@ -679,66 +750,66 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		// user_account_person link. card_type and attribute_def
 		// lookups go through the in-table names (cheap; these rows
 		// are seed-stable).
-		if err := tx.QueryRow(ctx, `
+		if err := txScan(ctx, tx, `
 			INSERT INTO user_account (oidc_sub, display_name, email)
-			VALUES ($1, $2, NULLIF($3, ''))
+			VALUES (:sub, :name, NULLIF(:email, ''))
 			RETURNING id
-		`, sub, displayName, email).Scan(&userID); err != nil {
+		`, map[string]any{"sub": sub, "name": displayName, "email": email}, &userID); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision insert: %w", err)
 		}
 		var personCardID int64
-		if err := tx.QueryRow(ctx, `
+		if err := txScan(ctx, tx, `
 			INSERT INTO card (card_type_id, parent_card_id)
 			SELECT id, NULL FROM card_type WHERE name = 'person'
 			RETURNING id
-		`).Scan(&personCardID); err != nil {
+		`, nil, &personCardID); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision person card: %w", err)
 		}
 		// card_create + title + (optional) email activity rows mirror
 		// the runtime path so the activity stream looks consistent.
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO activity (card_id, kind, actor_id) VALUES ($1, 'card_create', $2)`,
-			personCardID, userID); err != nil {
+		if err := txExec(ctx, tx,
+			`INSERT INTO activity (card_id, kind, actor_id) VALUES (:card, 'card_create', :user)`,
+			map[string]any{"card": personCardID, "user": userID}); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision person activity: %w", err)
 		}
 		var titleActID int64
-		if err := tx.QueryRow(ctx, `
+		if err := txScan(ctx, tx, `
 			INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
-			SELECT $1, 'attr_update', ad.id, NULL, to_jsonb($2::text), $3
+			SELECT :card, 'attr_update', ad.id, NULL, to_jsonb(:title::text), :user
 			FROM attribute_def ad WHERE ad.name = 'title'
 			RETURNING id
-		`, personCardID, displayName, userID).Scan(&titleActID); err != nil {
+		`, map[string]any{"card": personCardID, "title": displayName, "user": userID}, &titleActID); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision title activity: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `
+		if err := txExec(ctx, tx, `
 			INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
-			SELECT $1, ad.id, to_jsonb($2::text), $3
+			SELECT :card, ad.id, to_jsonb(:title::text), :activity
 			FROM attribute_def ad WHERE ad.name = 'title'
-		`, personCardID, displayName, titleActID); err != nil {
+		`, map[string]any{"card": personCardID, "title": displayName, "activity": titleActID}); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision title value: %w", err)
 		}
 		if email != "" {
 			var emailActID int64
-			if err := tx.QueryRow(ctx, `
+			if err := txScan(ctx, tx, `
 				INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
-				SELECT $1, 'attr_update', ad.id, NULL, to_jsonb($2::text), $3
+				SELECT :card, 'attr_update', ad.id, NULL, to_jsonb(:email::text), :user
 				FROM attribute_def ad WHERE ad.name = 'email'
 				RETURNING id
-			`, personCardID, email, userID).Scan(&emailActID); err != nil {
+			`, map[string]any{"card": personCardID, "email": email, "user": userID}, &emailActID); err != nil {
 				return 0, "", fmt.Errorf("oidc: provision email activity: %w", err)
 			}
-			if _, err := tx.Exec(ctx, `
+			if err := txExec(ctx, tx, `
 				INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
-				SELECT $1, ad.id, to_jsonb($2::text), $3
+				SELECT :card, ad.id, to_jsonb(:email::text), :activity
 				FROM attribute_def ad WHERE ad.name = 'email'
-			`, personCardID, email, emailActID); err != nil {
+			`, map[string]any{"card": personCardID, "email": email, "activity": emailActID}); err != nil {
 				return 0, "", fmt.Errorf("oidc: provision email value: %w", err)
 			}
 		}
-		if _, err := tx.Exec(ctx, `
+		if err := txExec(ctx, tx, `
 			INSERT INTO user_account_person (user_account_id, person_card_id)
-			VALUES ($1, $2)
-		`, userID, personCardID); err != nil {
+			VALUES (:user, :person)
+		`, map[string]any{"user": userID, "person": personCardID}); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision link: %w", err)
 		}
 	} else {
@@ -748,11 +819,11 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		// IdP claim here would clobber a name the user changed in-app on every
 		// login. (displayName is still computed above — it feeds the
 		// fresh-insert + pre-created-attach branches, just not this one.)
-		if _, err := tx.Exec(ctx, `
+		if err := txExec(ctx, tx, `
 			UPDATE user_account
-			SET email = CASE WHEN $2 = '' THEN email ELSE $2 END
-			WHERE id = $1
-		`, userID, email); err != nil {
+			SET email = CASE WHEN :email = '' THEN email ELSE :email END
+			WHERE id = :user
+		`, map[string]any{"user": userID, "email": email}); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision update: %w", err)
 		}
 	}
@@ -774,25 +845,25 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	desired := make([]int64, 0, len(values)+1)
 	for _, val := range values {
 		var roleID int64
-		err := tx.QueryRow(ctx, `SELECT role_id FROM role_mapping WHERE claim_value = $1`, val).Scan(&roleID)
+		err := txScan(ctx, tx, `SELECT role_id FROM role_mapping WHERE claim_value = :value`, map[string]any{"value": val}, &roleID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
 		if err != nil {
 			return 0, "", fmt.Errorf("oidc: role_mapping lookup %q: %w", val, err)
 		}
-		if _, err := tx.Exec(ctx, `
+		if err := txExec(ctx, tx, `
 			INSERT INTO user_role (user_id, role_id, scope_card_id, granted_via)
-			VALUES ($1, $2, NULL, 'oidc')
+			VALUES (:user, :role, NULL, 'oidc')
 			ON CONFLICT DO NOTHING
-		`, userID, roleID); err != nil {
+		`, map[string]any{"user": userID, "role": roleID}); err != nil {
 			return 0, "", fmt.Errorf("oidc: apply role: %w", err)
 		}
 		desired = append(desired, roleID)
 	}
 	if len(desired) == 0 && v.cfg.DefaultRole != "" {
 		var roleID int64
-		err := tx.QueryRow(ctx, `SELECT id FROM role WHERE name = $1`, v.cfg.DefaultRole).Scan(&roleID)
+		err := txScan(ctx, tx, `SELECT id FROM role WHERE name = :name`, map[string]any{"name": v.cfg.DefaultRole}, &roleID)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			// Configured default_role doesn't exist in the role table —
@@ -804,10 +875,10 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		case err != nil:
 			return 0, "", fmt.Errorf("oidc: default role lookup: %w", err)
 		default:
-			if _, err := tx.Exec(ctx, `
+			if err := txExec(ctx, tx, `
 				INSERT INTO user_role (user_id, role_id, scope_card_id, granted_via)
-				VALUES ($1, $2, NULL, 'oidc') ON CONFLICT DO NOTHING
-			`, userID, roleID); err != nil {
+				VALUES (:user, :role, NULL, 'oidc') ON CONFLICT DO NOTHING
+			`, map[string]any{"user": userID, "role": roleID}); err != nil {
 				return 0, "", fmt.Errorf("oidc: apply default role: %w", err)
 			}
 			desired = append(desired, roleID)
@@ -818,7 +889,7 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	// the OP isn't asserting roles, so we leave existing grants untouched.
 	// With it present, drop any OIDC-granted GLOBAL role the current claims
 	// no longer justify (e.g. the user was removed from a group in the IdP).
-	// `<> ALL($2)` with an empty array deletes every 'oidc' global row,
+	// `<> ALL(:desired)` with an empty array deletes every 'oidc' global row,
 	// which is correct: claims present but nothing mapped (and no default)
 	// means no OIDC roles are justified.
 	// revokedAdmin: this sign-in just lost an IdP-granted admin role. The
@@ -862,6 +933,33 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	return userID, displayName, nil
 }
 
+// txScan compiles a :name query (internal/named) and scans its one row into
+// dest; pgx.ErrNoRows comes back wrapped, for errors.Is. txExec runs one.
+func txScan(ctx context.Context, tx pgx.Tx, sql string, params map[string]any, dest ...any) error {
+	b := named.New()
+	for k, v := range params {
+		b.Set(k, v)
+	}
+	q, args, err := b.Compile(sql)
+	if err != nil {
+		return fmt.Errorf("compile: %w", err)
+	}
+	return tx.QueryRow(ctx, q, args...).Scan(dest...)
+}
+
+func txExec(ctx context.Context, tx pgx.Tx, sql string, params map[string]any) error {
+	b := named.New()
+	for k, v := range params {
+		b.Set(k, v)
+	}
+	q, args, err := b.Compile(sql)
+	if err != nil {
+		return fmt.Errorf("compile: %w", err)
+	}
+	_, err = tx.Exec(ctx, q, args...)
+	return err
+}
+
 // elevatePersonKind promotes a reused person card to person_kind='member'
 // (assignable) when it isn't already one — a contact materialised from an
 // inbound email, or an assignee an admin added, becomes a full member on
@@ -871,31 +969,31 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 // writes above. Runs inside the provisioning tx.
 func elevatePersonKind(ctx context.Context, tx pgx.Tx, personCardID, actorID int64) error {
 	var actID int64
-	err := tx.QueryRow(ctx, `
+	err := txScan(ctx, tx, `
 		INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
-		SELECT $1, 'attr_update', ad.id,
-		       (SELECT value FROM attribute_value WHERE card_id = $1 AND attribute_def_id = ad.id),
-		       to_jsonb('member'::text), $2
+		SELECT :card, 'attr_update', ad.id,
+		       (SELECT value FROM attribute_value WHERE card_id = :card AND attribute_def_id = ad.id),
+		       to_jsonb('member'::text), :actor
 		FROM attribute_def ad
 		WHERE ad.name = 'person_kind'
 		  AND coalesce(
-		        (SELECT value #>> '{}' FROM attribute_value WHERE card_id = $1 AND attribute_def_id = ad.id),
+		        (SELECT value #>> '{}' FROM attribute_value WHERE card_id = :card AND attribute_def_id = ad.id),
 		        '') <> 'member'
 		RETURNING id
-	`, personCardID, actorID).Scan(&actID)
+	`, map[string]any{"card": personCardID, "actor": actorID}, &actID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // already a member — nothing to elevate
 	}
 	if err != nil {
 		return fmt.Errorf("oidc: elevate person_kind activity: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
+	if err := txExec(ctx, tx, `
 		INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
-		SELECT $1, ad.id, to_jsonb('member'::text), $2
+		SELECT :card, ad.id, to_jsonb('member'::text), :activity
 		FROM attribute_def ad WHERE ad.name = 'person_kind'
 		ON CONFLICT (card_id, attribute_def_id) DO UPDATE
 			SET value = EXCLUDED.value, last_activity_id = EXCLUDED.last_activity_id
-	`, personCardID, actID); err != nil {
+	`, map[string]any{"card": personCardID, "activity": actID}); err != nil {
 		return fmt.Errorf("oidc: elevate person_kind value: %w", err)
 	}
 	return nil

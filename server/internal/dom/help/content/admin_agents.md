@@ -34,7 +34,9 @@ Click **Revoke** on a token row. The token is invalidated immediately; any in-fl
 
 ## Granting roles to an agent
 
-An agent acts on its owner's behalf, so it **sees** exactly what its owner sees — never more. What it can **do** is narrower: a fresh agent has no roles, and acts only with the roles you grant it. Use **Admin · Users**, find the agent in the user list (agents and humans share the same list), and assign roles there with the usual scope picker.
+A personal agent acts on its owner's behalf, so it **sees** exactly what its owner sees — never more. What it can **do** is narrower: a fresh agent has no roles, and acts only with the roles you grant it.
+
+A **workspace agent** (owned by System) is different: it sees only what its own roles reach. Grant it worker on one project and it sees that project alone. It has no personal things (watch lists, personal screens and views), and each workspace agent is its own account for files and imports — two integrations don't share anything. Use **Admin · Users**, find the agent in the user list (agents and humans share the same list), and assign roles there with the usual scope picker.
 
 The **parent-grants-subset** rule is enforced server-side, whoever does the granting: an agent can only be given a role its owner holds **or ranks above**, at that scope (or workspace-wide); anything else is refused. The built-in roles form a ladder — viewer < commenter < worker < manager < admin — where each one can do everything the ones below it can, so an owner who is an admin (but not separately a worker) can still run an agent as a worker or a commenter. If the owner later loses the role, the agent stops using it at once.
 

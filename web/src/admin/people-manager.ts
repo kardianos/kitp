@@ -299,7 +299,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
       if (t === r.tier) opt.selected = true;
       tierSel.append(opt);
     }
-    this.listen(tierSel, 'change', () => this.changeTier(r, tierSel.value as Tier));
+    this.listen(tierSel, 'change', () => this.changeTier(r, tierSel.value as Tier, tierSel));
 
     // Disable / Re-enable: flip the person's `is_active` attribute. KEEPS the
     // person card so every historical reference (assignee / originator / comm
@@ -312,7 +312,7 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     toggle.dataset.peopleToggleActive = r.isActive ? 'on' : 'off';
     toggle.textContent = r.isActive ? 'Disable' : 'Re-enable';
     toggle.title = r.isActive
-      ? `Disable ${r.title || `#${r.id.toString()}`} (keeps the person in the system)`
+      ? `Disable ${r.title || `#${r.id.toString()}`} (keeps the person in the system; a user can still sign in — change their type or remove them to take the login away)`
       : `Re-enable ${r.title || `#${r.id.toString()}`}`;
     toggle.setAttribute('aria-label', toggle.title);
     this.listen(toggle, 'click', () => this.commitActive(r, !r.isActive));
@@ -498,9 +498,59 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     );
   }
 
-  /** Promote / demote a person to a target tier by composing the needed writes. */
-  private changeTier(r: PersonRow, target: Tier): void {
+  /** Promote / demote a person to a target tier. Taking a user's login away
+   *  can't be undone, so that asks first, the way Remove does (review
+   *  2026-11-03 round 3 #11); the select shows the current tier until the
+   *  admin confirms. */
+  private changeTier(r: PersonRow, target: Tier, sel: HTMLSelectElement): void {
     if (target === r.tier) return;
+    if (r.tier === 'user' && r.accountId !== null) {
+      sel.value = r.tier;
+      this.openDemoteDialog(r, target);
+      return;
+    }
+    this.applyTier(r, target);
+  }
+
+  /** Confirm a demote that revokes a login: what goes, and that it stays
+   *  gone until they are made a user again. */
+  private openDemoteDialog(r: PersonRow, target: Tier): void {
+    const panel = document.createElement('div');
+    const title = document.createElement('h2');
+    title.className = 'pm-modal__title';
+    title.textContent = 'Take away their login';
+    const name = r.title || `#${r.id.toString()}`;
+    const msg = document.createElement('p');
+    msg.className = 'pm-modal__msg';
+    msg.textContent =
+      `Make ${name} ${target === 'contact' ? 'a contact' : 'an assignee'}? ` +
+      'Their login is revoked: their roles, sessions and tokens go, and their agents\' too. ' +
+      'They can\'t sign in again until you make them a user again.';
+    const actions = document.createElement('div');
+    actions.className = 'pm-modal__actions';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn';
+    cancel.dataset.peopleDemoteCancel = '';
+    cancel.textContent = 'Cancel';
+    this.listen(cancel, 'click', () => this.dismissModal());
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'btn btn-danger';
+    confirm.dataset.peopleDemoteConfirm = '';
+    confirm.textContent = 'Revoke login';
+    this.listen(confirm, 'click', () => {
+      this.closeModal();
+      this.applyTier(r, target);
+    });
+    actions.append(cancel, confirm);
+    panel.append(title, msg, actions);
+    this.openModal(panel, 'Take away their login', actions);
+    confirm.focus?.();
+  }
+
+  /** Compose the writes a tier change needs. */
+  private applyTier(r: PersonRow, target: Tier): void {
     const fired: string[] = [];
     const done = (): void => {
       // Reload once all fired writes have settled (each onOk calls this; a

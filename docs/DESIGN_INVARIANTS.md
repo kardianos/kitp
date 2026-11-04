@@ -131,7 +131,13 @@ email from the admin's request and never copies the card's. Reusing an
 existing login-less person for a new sign-in matches the card's email only
 when kitp itself wrote it (System, or no activity row: seed, bundles) or a
 workspace admin did; a worker's edit leaves the sign-in its own person
-(round 2 #5).
+(round 2 #5). A login an admin took away (`user.revoke_login`) keeps its
+sub and email and is marked `login_revoked_at`: a sign-in by that sub, or
+with a verified email equal to it, is refused (`ErrLoginRevoked`), instead
+of starting over with the default role and the old person card, until
+`person.grant_account` / `person.create` tier=user lift it for that email
+(`login_unrevoke`; round 3 #3). `OIDC_DEFAULT_ROLE` set empty or `none`
+grants nothing (round 3 #4).
 
 **Why.** This is the published bootstrap attack for email-matching OIDC
 apps: an OP that lets users assert an arbitrary unverified email lets an
@@ -181,8 +187,9 @@ register time).
 **Rule.** Every handler that returns card-derived rows (cards, activity,
 comments, comms, attachments) AND-joins
 `schema.VisibilityClause(cardIDExpr, userSlot)` into its WHERE. The
-predicate is true when the caller — or, for an agent, their
-`parent_user_id` — holds a `user_role` that is globally scoped
+predicate is true when the caller — or, for a personal agent, their
+`parent_user_id` (a workspace agent, owned by System, uses its own rows:
+review 2026-11-03 round 3 #2) — holds a `user_role` that is globally scoped
 (`scope_card_id IS NULL`) or scoped to the project the card chains up to.
 A stranger with no `user_role` row sees nothing (strict default). For
 `card.search` the predicate goes *before* LIMIT. A card in an **area that

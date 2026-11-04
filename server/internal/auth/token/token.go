@@ -231,10 +231,17 @@ func (m *Manager) List(ctx context.Context, userID int64) ([]ListRow, error) {
 // uniqueness constraint guarantees ≤1). Idempotent — revoking an
 // already-revoked row returns 0 with no error.
 func (m *Manager) RevokeByLabel(ctx context.Context, userID int64, label string) (int, error) {
-	tag, err := m.pool.Exec(ctx, `
+	b := named.New()
+	b.Set("user", userID)
+	b.Set("label", label)
+	sql, args, err := b.Compile(`
 		UPDATE user_token SET revoked_at = now()
-		WHERE user_id = $1 AND label = $2 AND revoked_at IS NULL
-	`, userID, label)
+		WHERE user_id = :user AND label = :label AND revoked_at IS NULL
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("token: revoke_by_label: compile: %w", err)
+	}
+	tag, err := m.pool.Exec(ctx, sql, args...)
 	if err != nil {
 		return 0, fmt.Errorf("token: revoke_by_label: %w", err)
 	}

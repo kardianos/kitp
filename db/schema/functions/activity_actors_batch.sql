@@ -11,8 +11,12 @@
 --      role, or one scoped to the project or an ancestor; an agent sees
 --      what its owner sees). Otherwise not_found, as for a hidden card.
 --   3. Accounts: every holder of a role that reaches the project, the
---      agents those holders own (an agent acts under its owner's grants),
---      and ids. Each {id, name (user_label), is_agent, person_id (their
+--      agents those holders own (an agent acts under its owner's grants)
+--      that aren't retired (agent.delete), and the people (not agents)
+--      among ids. An agent's label names its owner ("payroll-bot (for
+--      Zed)"), so ids name no agent beyond the holders' own: any id could
+--      be asked for (review 2026-11-03 round 3 #22). Each {id, name
+--      (user_label), is_agent, person_id (their
 --      linked person card, for conditions on people such as "approval
 --      asked of"; absent for an agent), has_email (that person card has an
 --      email address: whether asking them for a vote can email them)};
@@ -87,9 +91,9 @@ BEGIN
             SELECT h.id FROM holders h
             UNION
             SELECT u.id FROM user_account u JOIN holders h ON h.id = u.parent_user_id
-            WHERE u.is_agent
+            WHERE u.is_agent AND u.deleted_at IS NULL
             UNION
-            SELECT u.id FROM user_account u WHERE u.id = ANY(_ids)
+            SELECT u.id FROM user_account u WHERE u.id = ANY(_ids) AND NOT u.is_agent
         )
         SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object('rows', COALESCE((

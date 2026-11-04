@@ -33,7 +33,8 @@ BEGIN
       INTO _person
     FROM user_account ua
     JOIN user_account_person uap
-      ON uap.user_account_id = CASE WHEN ua.is_agent THEN ua.parent_user_id ELSE ua.id END
+      ON uap.user_account_id = CASE WHEN NOT ua.is_agent THEN ua.id
+                                    WHEN ua.parent_user_id <> 1 THEN ua.parent_user_id END
     JOIN card p ON p.id = uap.person_card_id AND p.deleted_at IS NULL
     WHERE ua.id = comm_author_join.author_id
       AND EXISTS (

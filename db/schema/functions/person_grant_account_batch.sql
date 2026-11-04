@@ -67,8 +67,11 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- A deleted person can't be given a login: it would have no person
+        -- (account_person skips deleted cards) — round 3.
         IF NOT EXISTS (
             SELECT 1 FROM card WHERE id = _person_id AND card_type_id = _person_ct_id
+              AND deleted_at IS NULL
         ) THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 format('person.grant_account: %s is not a person card', _person_id), NULL::jsonb;
@@ -105,6 +108,8 @@ BEGIN
         SELECT value #>> '{}' INTO _title
         FROM attribute_value WHERE card_id = _person_id AND attribute_def_id = _title_def;
 
+        -- A login revoked earlier with this email no longer blocks it.
+        PERFORM login_unrevoke(_email);
         INSERT INTO user_account (display_name, email)
         VALUES (COALESCE(_title, ''), _email)
         RETURNING id INTO _account_id;

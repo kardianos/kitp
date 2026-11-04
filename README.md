@@ -182,7 +182,7 @@ client, or set it for a confidential client (recommended — see
 | OIDC_AUDIENCE | (unset) | Expected token audience, if enforced. |
 | OIDC_SCOPES | openid profile email | Requested scopes. |
 | OIDC_ROLE_CLAIM | groups | Token claim whose values map to roles via the role_mapping table (see Authentication & authorization). |
-| OIDC_DEFAULT_ROLE | worker | Role granted when no claim value maps; set empty to grant nothing. |
+| OIDC_DEFAULT_ROLE | worker | Role granted when no claim value maps; set it empty (or to `none`) to grant nothing. |
 | OIDC_REQUIRED_CLAIMS | (unset) | Comma list of key=value claim requirements. |
 | KITP_OIDC_TRUST_UNVERIFIED_EMAIL | 0 | 1 trusts the email claim without OP verification (only for OPs that verify out-of-band). |
 
@@ -351,8 +351,9 @@ just-in-time:
   dev seed maps `kitp.admin → admin`, `kitp.manager → manager`,
   `kitp.worker → worker`.
 - **Default role.** When no claim value matches a mapping, the user is
-  granted `OIDC_DEFAULT_ROLE` (default `worker`); leave it empty to grant
-  nothing.
+  granted `OIDC_DEFAULT_ROLE` (default `worker`); set it empty (or to
+  `none`) to grant nothing, so a new sign-in sees nothing until an admin
+  grants a role.
 - **Authoritative revocation.** When the role claim is present in the token,
   OIDC-derived grants are reconciled to exactly what the current claims
   justify — a role whose group was removed in the IdP is revoked on the next

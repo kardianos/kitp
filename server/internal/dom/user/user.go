@@ -113,7 +113,7 @@ func Register() {
 	reg.Register(reg.Handler{
 		Endpoint:     "user",
 		Action:       "revoke_login",
-		Doc:          "Take a person's login away — what the People screen's Remove and \"no longer a user\" do. The account and its agents lose every role, session and token; its sign-in identity (oidc_sub, email) and person link are cleared, so no sign-in reaches it again (the same human signing in later is a new account with no roles). The row stays, so its activity keeps its author. Refused for the System user, an agent (use agent.delete) and your own login.",
+		Doc:          "Take a person's login away — what the People screen's Remove and \"no longer a user\" do. The account and its agents lose every role, session and token, and its person link; the login is marked revoked (login_revoked_at) and keeps its sign-in identity (oidc_sub, email), so a sign-in by that identity — or by another with the same verified email — is refused until an admin gives them a login again (person.grant_account lifts it for that email). The row stays, so its activity keeps its author. Refused for the System user, an agent (use agent.delete) and your own login.",
 		InputType:    reflect.TypeFor[RevokeLoginInput](),
 		OutputType:   reflect.TypeFor[RevokeLoginOutput](),
 		AllowedRoles: []string{"admin"},

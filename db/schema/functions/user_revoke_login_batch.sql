@@ -4,10 +4,14 @@
 --   - its roles and its agents' roles (user_role);
 --   - its sessions and every token of it and its agents (revoked, so a
 --     cookie or bearer token stops working on the next request);
---   - its sign-in identity: oidc_sub and email are cleared, so no sign-in
---     reaches it again. The same human signing in later gets a new account
---     with no roles, like anyone new; an admin gives them a login again
---     with person.grant_account;
+--   - its sign-in: login_revoked_at is set and its oidc_sub and email are
+--     kept, so a sign-in by that identity — the same IdP subject, or a
+--     verified email equal to the account's — is refused (oidc.go,
+--     ErrLoginRevoked). Before, the identity was forgotten, and the next
+--     sign-in made a new account with the default role, linked back to the
+--     same person card (review 2026-11-03 round 3 #3). An admin gives them a
+--     login again with person.grant_account, which lifts the block for that
+--     email (login_unrevoke);
 --   - its person link (user_account_person).
 -- The row itself stays, so the activity it wrote keeps its author.
 --
@@ -77,7 +81,7 @@ BEGIN
             WHERE user_id = ANY(_ids) AND revoked_at IS NULL RETURNING 1)
         SELECT count(*)::int INTO _tokens FROM u;
         DELETE FROM user_account_person WHERE user_account_id = _user_id;
-        UPDATE user_account SET oidc_sub = NULL, email = NULL WHERE id = _user_id;
+        UPDATE user_account SET login_revoked_at = now() WHERE id = _user_id;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object('revoked', true, 'roles', _roles,

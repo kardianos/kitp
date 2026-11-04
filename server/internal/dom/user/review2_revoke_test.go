@@ -67,21 +67,22 @@ func TestRevokeLoginTakesEverything(t *testing.T) {
 			t.Fatalf("%s: %+v", r.ID, r.Error)
 		}
 	}
+	// The identity stays, marked revoked, so it can be refused at sign-in
+	// (round 3 #3).
 	var roles, sessions, tokens, links int
-	var sub_, email *string
+	var revoked bool
 	if err := pool.QueryRow(ctx, `
 		SELECT (SELECT count(*) FROM user_role WHERE user_id IN ($1, $2)),
 		       (SELECT count(*) FROM session WHERE user_id = $1 AND revoked_at IS NULL),
 		       (SELECT count(*) FROM user_token WHERE user_id IN ($1, $2) AND revoked_at IS NULL),
 		       (SELECT count(*) FROM user_account_person WHERE user_account_id = $1),
-		       (SELECT oidc_sub FROM user_account WHERE id = $1),
-		       (SELECT email FROM user_account WHERE id = $1)`, uid, bot,
-	).Scan(&roles, &sessions, &tokens, &links, &sub_, &email); err != nil {
+		       (SELECT login_revoked_at IS NOT NULL AND oidc_sub = 'sub-leaver' FROM user_account WHERE id = $1)`, uid, bot,
+	).Scan(&roles, &sessions, &tokens, &links, &revoked); err != nil {
 		t.Fatal(err)
 	}
-	if roles != 0 || sessions != 0 || tokens != 0 || links != 0 || sub_ != nil || email != nil {
-		t.Errorf("after Remove: roles %d sessions %d tokens %d links %d sub %v email %v, want all gone",
-			roles, sessions, tokens, links, sub_, email)
+	if roles != 0 || sessions != 0 || tokens != 0 || links != 0 || !revoked {
+		t.Errorf("after Remove: roles %d sessions %d tokens %d links %d revoked %v, want all gone and the login marked revoked",
+			roles, sessions, tokens, links, revoked)
 	}
 
 	// What the removed account can still do: nothing.

@@ -129,6 +129,19 @@ func TestActors(t *testing.T) {
 	if !slices.Contains(got, "Dave") {
 		t.Errorf("ids: %v missing Dave", got)
 	}
+	// But not someone else's agent, whose label names its owner, nor a
+	// retired agent (review 2026-11-03 round 3 #22).
+	payroll := user("payroll-bot", true, carol)
+	retired := user("old-bot", true, bob)
+	if _, err := pool.Exec(ctx, `UPDATE user_account SET deleted_at = now() WHERE id = $1`, retired); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = names(call(bob, fmt.Sprintf(`{"project_id":"%d","ids":["%d"]}`, projA, payroll)))
+	for _, n := range got {
+		if n == "payroll-bot (for Carol)" || n == "payroll-bot" || n == "old-bot (for Bob)" || n == "old-bot" {
+			t.Errorf("activity.actors listed %q: %v", n, got)
+		}
+	}
 
 	// Carol can't see project A; an agent sees what its owner sees.
 	if sr := call(carol, fmt.Sprintf(`{"project_id":"%d"}`, projA)); sr.OK {

@@ -3,13 +3,17 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 )
 
 // EndSessionFunc, when set on HTTPConfig, returns the OP's RP-initiated
@@ -138,12 +142,18 @@ func buildMe(ctx context.Context, cfg HTTPConfig, userID int64, displayName stri
 	var isAgent bool
 	var parentID *int64
 	var personCardID *int64
-	if err := cfg.Pool.QueryRow(ctx, `
+	mb := named.New()
+	mb.Set("user", userID)
+	mq, margs, merr := mb.Compile(`
 		SELECT ua.is_agent, ua.parent_user_id, uap.person_card_id
 		FROM user_account ua
 		LEFT JOIN user_account_person uap ON uap.user_account_id = ua.id
-		WHERE ua.id = $1
-	`, userID).Scan(&isAgent, &parentID, &personCardID); err == nil {
+		WHERE ua.id = :user
+	`)
+	if merr != nil {
+		return out, fmt.Errorf("me: compile: %w", merr)
+	}
+	if err := cfg.Pool.QueryRow(ctx, mq, margs...).Scan(&isAgent, &parentID, &personCardID); err == nil {
 		out.IsAgent = isAgent
 		out.ParentUserID = parentID
 		out.PersonCardID = personCardID
@@ -246,11 +256,19 @@ func handleDevImpersonate(ctx context.Context, w http.ResponseWriter, r *http.Re
 	var isAgent bool
 	var parentID *int64
 	var displayName string
-	err := cfg.Pool.QueryRow(ctx, `
-		SELECT is_agent, parent_user_id, display_name FROM user_account WHERE id = $1
-	`, body.UserID).Scan(&isAgent, &parentID, &displayName)
+	b := named.New()
+	b.Set("user", body.UserID)
+	q, args, err := b.Compile(`
+		SELECT is_agent, parent_user_id, display_name FROM user_account WHERE id = :user AND deleted_at IS NULL
+	`)
 	if err != nil {
-		return api.NotFound("user not found")
+		return api.Internal(fmt.Errorf("dev impersonate: compile: %w", err))
+	}
+	if err := cfg.Pool.QueryRow(ctx, q, args...).Scan(&isAgent, &parentID, &displayName); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return api.NotFound("user not found")
+		}
+		return api.Internal(fmt.Errorf("dev impersonate: lookup: %w", err))
 	}
 	if !isAgent || parentID == nil || *parentID != u.ID {
 		return api.Forbidden("user is not an agent owned by you")
@@ -259,7 +277,9 @@ func handleDevImpersonate(ctx context.Context, w http.ResponseWriter, r *http.Re
 	// so a quick "step back out" can be modelled by another dev-login
 	// without a hung cookie.
 	if id := Read(r); id != "" {
-		_ = cfg.Manager.Revoke(ctx, id)
+		if err := cfg.Manager.Revoke(ctx, id); err != nil {
+			return api.Internal(fmt.Errorf("dev impersonate: revoke the old session: %w", err))
+		}
 	}
 	id, err := cfg.Manager.Create(ctx, body.UserID, "")
 	if err != nil {
