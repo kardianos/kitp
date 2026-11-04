@@ -109,6 +109,7 @@ type Limits struct {
 	MessagesPerMinute    int `json:"messages_per_minute"`
 	PerRoutePerMinute    int `json:"per_route_per_minute"`
 	MissCost             int `json:"miss_cost"`
+	MissesPerSession     int `json:"misses_per_session"`
 	ConnectionsPerSource int `json:"connections_per_source"`
 	ConnectionsTotal     int `json:"connections_total"`
 }
@@ -121,6 +122,7 @@ var limits = Limits{
 	MessagesPerMinute:    240,
 	PerRoutePerMinute:    600,
 	MissCost:             10,
+	MissesPerSession:     5,
 	ConnectionsPerSource: 64,
 	ConnectionsTotal:     1000,
 }

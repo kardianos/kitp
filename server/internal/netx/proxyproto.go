@@ -90,20 +90,46 @@ func (l *SniffListener) logger() *slog.Logger {
 	return slog.Default()
 }
 
+// acceptLoop accepts until the listener closes. Any other Accept error —
+// too many open files, a connection reset before accept — is logged and
+// retried with a growing pause (5 ms up to 1 s, as net/http does), rather
+// than ending the loop: that left the SMTP listener silently dead until a
+// restart (review 2026-11-03 #22).
 func (l *SniffListener) acceptLoop() {
+	var pause time.Duration
 	for {
 		c, err := l.inner.Accept()
 		if err != nil {
+			select {
+			case <-l.done:
+				return
+			default:
+			}
+			if errors.Is(err, net.ErrClosed) {
+				select {
+				case l.errs <- err:
+				default:
+				}
+				return
+			}
 			var ne net.Error
 			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
-			select {
-			case l.errs <- err:
-			default:
+			if pause == 0 {
+				pause = 5 * time.Millisecond
+			} else if pause *= 2; pause > time.Second {
+				pause = time.Second
 			}
-			return
+			l.logger().Warn("smtp: accept failed; retrying", "err", err, "pause", pause)
+			select {
+			case <-time.After(pause):
+			case <-l.done:
+				return
+			}
+			continue
 		}
+		pause = 0
 		go func() {
 			// A panic sniffing one connection fails only that connection.
 			if err := job.Protect(context.Background(), l.logger(), "smtp sniff", func() error {

@@ -43,6 +43,10 @@ func TestTimestamps(t *testing.T) {
 		{"2026-02-30T10:00:00Z", false},
 		{"infinity", false},
 		{"now", false},
+		{"2026-11-03T10:00:00+15:59", true},
+		{"2026-11-03T10:00:00+16:00", false},
+		{"2026-11-03T10:00:00-24:00", false},
+		{"2026-11-03T10:00:00+05:60", false},
 	} {
 		_, err := ParseTimestamp(c.in)
 		if (err == nil) != c.ok {

@@ -51,6 +51,7 @@ export const COMM_LOG_KINDS: ReadonlyArray<readonly [string, string]> = [
   ['inbound_refused', 'Refused by a route filter'],
   ['unmatched_thread', 'Ignored (new mail, account ignores it)'],
   ['parse_error', 'Couldn’t be read'],
+  ['file_error', 'Couldn’t be filed, dropped'],
   ['dkim_result', 'DKIM result (record only)'],
   ['dkim_failed', 'DKIM failed, filed anyway'],
   ['notification_reply', 'Reply to a notification, dropped'],
@@ -107,6 +108,8 @@ export function commLogSummary(row: Pick<CommLogRow, 'kind' | 'detail'>): string
       return `${str(d['check'])}: ${str(d['reason'])}${str(d['source']) !== '' ? ` (from ${str(d['source'])})` : ''}`;
     case 'parse_error':
       return str(d['error']);
+    case 'file_error':
+      return `${about} — ${str(d['error'])}`.trim();
     case 'dkim_result':
     case 'dkim_failed': {
       const ok = Array.isArray(d['verified']) ? (d['verified'] as unknown[]).map(str).join(', ') : '';

@@ -81,7 +81,9 @@ func timestampShape(s string) bool {
 	case rest == "Z" || rest == "z":
 		return true
 	case len(rest) == 6 && (rest[0] == '+' || rest[0] == '-') && digits(rest[1:3]) && rest[3] == ':' && digits(rest[4:6]):
-		return true
+		// An offset is at most ±15:59, as iso_timestamp_ok (and Postgres)
+		// allow; the two checks agree (review 2026-11-03 #22).
+		return rest[1:3] <= "15" && rest[4:6] <= "59"
 	}
 	return false
 }

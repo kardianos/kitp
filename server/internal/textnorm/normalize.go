@@ -81,24 +81,7 @@ var ErrMissingExtension = errors.New("filename must have an extension")
 //     graphic character on either side after the trims above.
 //     Empty → [ErrEmptyFilename]; no extension → [ErrMissingExtension].
 func Filename(s string) (string, error) {
-	t := norm.NFC.String(s)
-
-	var b strings.Builder
-	b.Grow(len(t))
-	for _, r := range t {
-		switch {
-		case r == '/' || r == '\\':
-			// Path separators — drop.
-		case unicode.IsGraphic(r):
-			// IsGraphic = L* | M* | N* | P* | S* | Zs.
-			// Excludes Cc (control), Cf (format / bidi),
-			// Cs (surrogate), Co (private use), noncharacter
-			// (which aren't valid runes in Go strings anyway).
-			b.WriteRune(r)
-		}
-	}
-
-	out := strings.Trim(b.String(), " \t\n\r\v\f.")
+	out := cleanFilename(s, -1)
 	if out == "" {
 		return "", ErrEmptyFilename
 	}
@@ -114,6 +97,39 @@ func Filename(s string) (string, error) {
 		return "", ErrMissingExtension
 	}
 	return out, nil
+}
+
+// FilenameLoose applies steps 1-4 of [Filename] — NFC, no control / format
+// (bidi) runes or path separators, trimmed of whitespace and dots — without
+// requiring an extension, and caps the result at 255 runes. "" when nothing
+// is left. For names kitp didn't choose and must keep whatever their shape
+// (an email's attachments): one is safe to put in a MIME header, a
+// Content-Disposition or a zip entry.
+func FilenameLoose(s string) string { return cleanFilename(s, 255) }
+
+// cleanFilename is steps 1-4 of [Filename], keeping at most max runes (max
+// < 0: all of them).
+func cleanFilename(s string, max int) string {
+	t := norm.NFC.String(s)
+	var b strings.Builder
+	b.Grow(len(t))
+	n := 0
+	for _, r := range t {
+		switch {
+		case r == '/' || r == '\\':
+			// Path separators — drop.
+		case unicode.IsGraphic(r):
+			// IsGraphic = L* | M* | N* | P* | S* | Zs.
+			// Excludes Cc (control), Cf (format / bidi),
+			// Cs (surrogate), Co (private use), noncharacter
+			// (which aren't valid runes in Go strings anyway).
+			if max < 0 || n < max {
+				b.WriteRune(r)
+				n++
+			}
+		}
+	}
+	return strings.Trim(b.String(), " \t\n\r\v\f.")
 }
 
 // Email returns the NFC-normalised, trimmed, lowercased form of

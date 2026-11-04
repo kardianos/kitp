@@ -55,6 +55,14 @@ func (p *Pumper) deliverEmail(ctx context.Context, cfg unitConfig, d Digest) err
 	if cfg.subscriberEmail == "" {
 		return &errPermanent{reason: "subscriber has no email address"}
 	}
+	// A mail account in a switched-off area (Conversations off) sends
+	// nothing, notifications included; the digest waits for it to come
+	// back (a temporary error, retried) (review 2026-11-03 #30).
+	if off, err := comm.ChannelInOffArea(ctx, p.pool.P, cfg.channelID); err != nil {
+		return fmt.Errorf("comm channel area: %w", err)
+	} else if off {
+		return fmt.Errorf("comm channel %d is in a switched-off area; waiting", cfg.channelID)
+	}
 	smtpCfg, err := comm.LoadSMTPConfig(ctx, p.pool.P, cfg.channelID)
 	if err != nil {
 		return fmt.Errorf("load comm channel: %w", err)

@@ -224,15 +224,20 @@ func DomainMatches(domain, entry string) bool {
 }
 
 // AddressAllowed reports whether an address matches an allow list (empty =
-// anything). addr may carry a display name ("Ada <ada@b.com>").
+// anything). addr may carry a display name ("Ada <ada@b.com>"), but must be
+// exactly one address: a list ("Eve <eve@evil>, x@staff") or anything that
+// doesn't parse is refused, rather than judged by the domain after its last
+// "@" (review 2026-11-03 #21). An SMTP envelope address ("ada@b.com", no
+// brackets) parses the same way.
 func AddressAllowed(list []string, addr string) bool {
 	if len(list) == 0 {
 		return true
 	}
-	a := strings.ToLower(strings.TrimSpace(addr))
-	if parsed, err := mail.ParseAddress(addr); err == nil {
-		a = strings.ToLower(parsed.Address)
+	parsed, err := mail.ParseAddressList(addr)
+	if err != nil || len(parsed) != 1 {
+		return false
 	}
+	a := strings.ToLower(parsed[0].Address)
 	at := strings.LastIndexByte(a, '@')
 	if at < 0 {
 		return false

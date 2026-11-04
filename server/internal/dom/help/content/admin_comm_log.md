@@ -28,6 +28,7 @@ Each row reads as a sentence — who it was from, the subject, what it became or
 | `dkim_failed` | DKIM required, the signature didn't check out, and the route files it anyway (*on failure: file*). |
 | `notification_reply` | A reply to a notification digest; dropped, so answering a digest never files a task. |
 | `attachments_dropped` | A message filed without its files, because the account's **Attachments from email** is *not kept*. Details give how many and their names. |
+| `file_error` | A message that can never be filed: it breaks a database limit (say, a Message-ID thousands of characters long). It is dropped rather than retried; `error` names the database's reason code. |
 | `relay_queued` | A reply that reached only the account was sent on to the thread's other people (**Emailed replies**). `to` lists them; the copy's own `send_ok` / `send_fail` follows. |
 | `relay_skipped` | A reply that wasn't sent on. `reason`: `auto_submitted`, `precedence`, `auto_reply`, `mailing_list`, `report` (a delivery or read report), `bounce`, `notification_reply`, `own_address` (from the account itself) or `no_from_address` (the account has none to send from). |
 | `poll` | An IMAP poll and how many messages it fetched — the account is alive. |

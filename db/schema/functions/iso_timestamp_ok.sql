@@ -19,9 +19,15 @@ BEGIN
     IF substr(s, 12, 2)::int > 23 OR substr(s, 15, 2)::int > 59 OR substr(s, 18, 2)::int > 59 THEN
         RETURN false;
     END IF;
+    -- An offset is at most ±15:59 (Postgres raises past it; the Go twin
+    -- agrees — review 2026-11-03 #22).
+    IF s ~ '[+-]\d{2}:\d{2}$'
+       AND (substr(s, length(s) - 4, 2)::int > 15 OR substr(s, length(s) - 1, 2)::int > 59) THEN
+        RETURN false;
+    END IF;
     _t := s::timestamptz;
     RETURN true;
-EXCEPTION WHEN datetime_field_overflow OR invalid_datetime_format THEN
+EXCEPTION WHEN datetime_field_overflow OR invalid_datetime_format OR invalid_time_zone_displacement_value THEN
     RETURN false;
 END;
 $$;

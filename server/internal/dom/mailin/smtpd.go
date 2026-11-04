@@ -195,6 +195,8 @@ type session struct {
 	// once per session when a route asks for sender_hosts.
 	hosts    []string
 	hostsSet bool
+	// misses counts refused recipients this session (limits.MissesPerSession).
+	misses int
 }
 
 func smtpErr(code int, enh smtp.EnhancedCode, msg string) *smtp.SMTPError {
@@ -215,11 +217,31 @@ func (ss *session) Mail(from string, _ *smtp.MailOptions) error {
 }
 
 func (ss *session) miss(reason string) {
+	ss.misses++
 	ss.s.sources.Charge(netx.SourceKey(ss.client), float64(limits.MissCost))
 	ss.s.cfg.Status.Refuse(comm.TransportSMTP, ss.client, reason)
 }
 
+// tooManyMisses ends a session that keeps naming recipients it can't use —
+// address guessing (review 2026-11-03 #18): after limits.MissesPerSession
+// refusals in it, or once its source has spent its rate-limit bucket on
+// misses, every further RCPT gets 421 and the connection closes (an expired
+// read deadline makes go-smtp's next read fail, after this reply is sent).
+func (ss *session) tooManyMisses() error {
+	if ss.misses < limits.MissesPerSession && ss.s.sources.Allow(netx.SourceKey(ss.client), 0) {
+		return nil
+	}
+	ss.s.cfg.Status.Refuse(comm.TransportSMTP, ss.client, "too many refused recipients")
+	if err := ss.conn.Conn().SetReadDeadline(time.Now()); err != nil {
+		ss.s.cfg.Logger.Warn("smtp: end session", "err", err)
+	}
+	return smtpErr(421, smtp.EnhancedCode{4, 7, 0}, "Too many refused recipients, closing connection")
+}
+
 func (ss *session) Rcpt(to string, _ *smtp.RcptOptions) error {
+	if err := ss.tooManyMisses(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	at := strings.LastIndexByte(to, '@')
@@ -242,6 +264,7 @@ func (ss *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 		}
 	}
 	refuse := func(code int, enh smtp.EnhancedCode, check, reason, msg string) error {
+		ss.misses++
 		ss.s.sources.Charge(netx.SourceKey(ss.client), float64(limits.MissCost))
 		if err := rt.refuse(ctx, ss.s.cfg.Pool, comm.TransportSMTP, check, reason, ss.client); err != nil {
 			ss.s.cfg.Logger.Warn("smtp: log refusal", "route_id", rt.ID, "err", err)
@@ -319,8 +342,8 @@ func (ss *session) Data(r io.Reader) error {
 		}
 		f, err := ss.s.cfg.Intake.FileRaw(ctx, rt.ChannelID, comm.TransportSMTP, rt.ID, raw)
 		switch {
-		case errors.Is(err, comm.ErrUnparseable):
-			filed++ // logged as parse_error; retrying won't help
+		case errors.Is(err, comm.ErrUnparseable), errors.Is(err, comm.ErrUnfileable):
+			filed++ // logged as parse_error / file_error; retrying won't help
 		case err != nil:
 			ss.s.cfg.Logger.Error("smtp: file", "route_id", rt.ID, "err", err)
 			if nerr := rt.noteError(ctx, ss.s.cfg.Pool, "filing failed; the sender will retry"); nerr != nil {

@@ -140,9 +140,18 @@ func (s *postServer) handle(ctx context.Context, w http.ResponseWriter, r *http.
 		return refuse("sources", client.String()+" is not an allowed source")
 	}
 
-	raw, check, why := s.decode(rt, r, body)
+	raw, replayToken, check, why := s.decode(rt, r, body)
 	if check != "" {
 		return refuse(check, why)
+	}
+	// A Mailgun request's token is spent when it's used, so a replay is
+	// refused; but an answer that asks the provider to retry gives it back,
+	// or the retry would be refused as a replay and the mail lost (review
+	// 2026-11-03 #22).
+	retryLater := func() {
+		if replayToken != "" {
+			s.seen.forget(replayToken)
+		}
 	}
 	check, why, after := checkMessage(rt.Policy, raw)
 	if check != "" {
@@ -152,6 +161,7 @@ func (s *postServer) handle(ctx context.Context, w http.ResponseWriter, r *http.
 	filed, err := s.Intake.FileRaw(ctx, rt.ChannelID, comm.TransportPOST, rt.ID, raw)
 	switch {
 	case errors.Is(err, comm.ErrChannelPaused):
+		retryLater()
 		w.Header().Set("Retry-After", "300")
 		return reply(w, http.StatusServiceUnavailable, "paused", "the mail account is paused; try again later")
 	case errors.Is(err, comm.ErrUnparseable):
@@ -159,11 +169,19 @@ func (s *postServer) handle(ctx context.Context, w http.ResponseWriter, r *http.
 			s.Logger.Warn("inbound post: touch route", "route_id", rt.ID, "err", terr)
 		}
 		return reply(w, http.StatusOK, "unparseable", "not mail; logged and dropped")
+	case errors.Is(err, comm.ErrUnfileable):
+		// A retry can't help: answered OK so the provider stops (logged
+		// as file_error).
+		if terr := rt.touch(ctx, s.Pool, client); terr != nil {
+			s.Logger.Warn("inbound post: touch route", "route_id", rt.ID, "err", terr)
+		}
+		return reply(w, http.StatusOK, "unfileable", "can't be filed; logged and dropped")
 	case err != nil:
 		s.Logger.Error("inbound post: file", "route_id", rt.ID, "err", err)
 		if nerr := rt.noteError(ctx, s.Pool, "filing failed; the provider will retry"); nerr != nil {
 			s.Logger.Warn("inbound post: note error", "route_id", rt.ID, "err", nerr)
 		}
+		retryLater()
 		w.Header().Set("Retry-After", "60")
 		return reply(w, http.StatusServiceUnavailable, "retry", "could not file the message; try again later")
 	}
@@ -184,14 +202,15 @@ func (s *postServer) handle(ctx context.Context, w http.ResponseWriter, r *http.
 }
 
 // decode gets the raw RFC 5322 message out of a provider's request. A
-// non-empty check names why it was refused.
-func (s *postServer) decode(rt route, r *http.Request, body []byte) (raw []byte, check, reason string) {
+// non-empty check names why it was refused. replayToken is the request's
+// one-time token (Mailgun), now spent; "" for other providers.
+func (s *postServer) decode(rt route, r *http.Request, body []byte) (raw []byte, replayToken, check, reason string) {
 	switch rt.Provider {
 	case ProviderRaw:
 		if len(bytes.TrimSpace(body)) == 0 {
-			return nil, "body", "empty request"
+			return nil, "", "body", "empty request"
 		}
-		return body, "", ""
+		return body, "", "", ""
 	case ProviderMailgun:
 		return s.decodeMailgun(rt, r, body)
 	case ProviderPostmark:
@@ -199,27 +218,27 @@ func (s *postServer) decode(rt route, r *http.Request, body []byte) (raw []byte,
 			RawEmail string `json:"RawEmail"`
 		}
 		if err := json.Unmarshal(body, &pm); err != nil {
-			return nil, "body", "not Postmark's inbound JSON"
+			return nil, "", "body", "not Postmark's inbound JSON"
 		}
 		if pm.RawEmail == "" {
-			return nil, "raw_email", "RawEmail is empty: turn on \"Include raw email content in JSON payload\" in the Postmark server's inbound settings"
+			return nil, "", "raw_email", "RawEmail is empty: turn on \"Include raw email content in JSON payload\" in the Postmark server's inbound settings"
 		}
-		return []byte(pm.RawEmail), "", ""
+		return []byte(pm.RawEmail), "", "", ""
 	}
-	return nil, "provider", "unknown provider " + rt.Provider
+	return nil, "", "provider", "unknown provider " + rt.Provider
 }
 
 // decodeMailgun reads a Mailgun route forward to a URL ending in "mime":
 // multipart/form-data with the raw message in body-mime, signed with the
 // account's HTTP webhook signing key.
-func (s *postServer) decodeMailgun(rt route, r *http.Request, body []byte) ([]byte, string, string) {
+func (s *postServer) decodeMailgun(rt route, r *http.Request, body []byte) (raw []byte, replayToken, check, reason string) {
 	_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || params["boundary"] == "" {
-		return nil, "body", "not multipart/form-data (forward to the URL ending in /mime)"
+		return nil, "", "body", "not multipart/form-data (forward to the URL ending in /mime)"
 	}
 	form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(s.MaxBytes)
 	if err != nil {
-		return nil, "body", "unreadable form"
+		return nil, "", "body", "unreadable form"
 	}
 	defer func() { _ = form.RemoveAll() }()
 	get := func(k string) string {
@@ -230,19 +249,19 @@ func (s *postServer) decodeMailgun(rt route, r *http.Request, body []byte) ([]by
 	}
 	ts, token, sig := get("timestamp"), get("token"), get("signature")
 	if !mailgunSigned(rt.SigningKey, ts, token, sig) {
-		return nil, "signature", "the Mailgun signature doesn't match the signing key"
+		return nil, "", "signature", "the Mailgun signature doesn't match the signing key"
 	}
 	if t, err := strconv.ParseInt(ts, 10, 64); err != nil || absDur(time.Since(time.Unix(t, 0))) > 15*time.Minute {
-		return nil, "signature", "the Mailgun timestamp is more than 15 minutes off"
+		return nil, "", "signature", "the Mailgun timestamp is more than 15 minutes off"
 	}
 	if s.seen.replayed(token) {
-		return nil, "signature", "this Mailgun request was already used"
+		return nil, "", "signature", "this Mailgun request was already used"
 	}
-	raw := get("body-mime")
-	if raw == "" {
-		return nil, "body", "no body-mime field: the route must forward to the URL ending in /mime"
+	mimeBody := get("body-mime")
+	if mimeBody == "" {
+		return nil, token, "body", "no body-mime field: the route must forward to the URL ending in /mime"
 	}
-	return []byte(raw), "", ""
+	return []byte(mimeBody), token, "", ""
 }
 
 func mailgunSigned(key, ts, token, sig string) bool {
@@ -285,4 +304,11 @@ func (c *replayCache) replayed(token string) bool {
 	}
 	c.seen[token] = now
 	return false
+}
+
+// forget gives a token back: its request was answered with "try again".
+func (c *replayCache) forget(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.seen, token)
 }

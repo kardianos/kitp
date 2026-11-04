@@ -84,6 +84,7 @@ import (
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
+	"github.com/kitp/kitp/server/internal/textnorm"
 )
 
 // IMAPPoller owns one channel's poll state (backoff counters + the dial
@@ -498,6 +499,17 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 			continue
 		}
 		if _, err := p.processOne(ctx, intake, m, inboundMeta{transport: TransportIMAP}); err != nil {
+			if permanentFilingError(err) {
+				// It can never be filed (ErrUnfileable): log it and mark it
+				// read like an unreadable message, rather than retry it
+				// forever and trip the account's fault switch.
+				if lerr := p.logInbound(ctx, p.pool.P, projectID, inboundMeta{transport: TransportIMAP}, "file_error", fileErrorDetail(m, err)); lerr != nil && firstErr == nil {
+					firstErr = lerr
+					continue
+				}
+				ingested = append(ingested, m.UID)
+				continue
+			}
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -1273,6 +1285,9 @@ func (p *filer) syncCommRecipientsFromInbound(
 		if channelLower != "" && key == channelLower {
 			return
 		}
+		if p.isRouteAddress(key) {
+			return
+		}
 		if _, ok := seen[key]; ok {
 			return
 		}
@@ -1762,6 +1777,16 @@ func walkMultipart(body []byte, contentType string) (string, string, []InboundAt
 					filename = ctParams["name"]
 				}
 			}
+			// The sender chose the name: decode an RFC 2047 word, then
+			// drop control and bidi runes and path separators. A raw name
+			// reached outgoing MIME headers (CR/LF) and export zip paths
+			// ("../"), and could disguise its type (review 2026-11-03 #11).
+			if strings.Contains(filename, "=?") {
+				if dec, err := headerDecoder.DecodeHeader(filename); err == nil {
+					filename = dec
+				}
+			}
+			filename = textnorm.FilenameLoose(filename)
 			if filename == "" {
 				filename = fmt.Sprintf("attachment-%d", len(atts)+1)
 			}

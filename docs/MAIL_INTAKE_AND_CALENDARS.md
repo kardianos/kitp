@@ -209,8 +209,18 @@ Table `comm_inbound_seen` (DDL tier; new table, no migration):
 Index `(last_seen_at)` for the prune.
 
 Key: `mid:` + the Message-ID with surrounding whitespace and `<>`
-removed (case kept). No Message-ID → `h:` + SHA-256 hex of From, To,
-Date, Subject and the body text joined with `\n`.
+removed (case kept); one longer than 900 bytes is `midh:` + its SHA-256
+hex (whole, it overflowed the primary key's index — review 2026-11-03 #7).
+No Message-ID → `h:` + SHA-256 hex of From, To, Date, Subject and the body
+text joined with `\n`.
+
+A filing failure no retry can fix — a data exception (22xxx), a program
+limit (54xxx), a NOT NULL / CHECK violation — is `ErrUnfileable`: logged
+as `file_error` (the message and the database's reason code, not its
+text) and dropped like unreadable mail (IMAP marks it seen, POST 200
+`unfileable`, SMTP 250). Mail for an account whose project has
+Conversations off waits (`ErrChannelPaused`: POST 503, SMTP 451), as IMAP
+does by not polling it.
 
 In `File`'s transaction, first: `INSERT … ON CONFLICT DO NOTHING
 RETURNING`. No row → a duplicate: `UPDATE … SET last_seen_at = now()`,
@@ -386,15 +396,22 @@ Address/domain list syntax (both From lists and DKIM domains):
 | `require_tls` | SMTP | RCPT |
 | `sender_hosts` | SMTP | RCPT: the peer's PTR names, kept only if they resolve back to the peer (forward-confirmed), must end with a listed suffix; looked up once per session, 3 s timeout |
 | `envelope_from` | SMTP | RCPT (an Exchange forward's envelope is `bounces+SRS=…@<your domain>`) |
-| `header_from` | SMTP and POST | after DATA |
-| `dkim` | SMTP and POST | after DATA (`emersion/go-msgauth/dkim`, 5 s DNS timeout). `record`: verify and log `dkim_result`, never refuse. `require`: a valid signature from a listed domain (or any, when the list is empty); on failure `refuse` (550 / 403) or `file` (filed, with a `dkim_failed` log row) |
+| `header_from` | SMTP and POST | after DATA. The From must be exactly one address; a list or one that doesn't parse is refused |
+| `dkim` | SMTP and POST | after DATA (`emersion/go-msgauth/dkim`, 5 s DNS timeout). `record`: verify and log `dkim_result`, never refuse. `require`: a valid signature from a listed domain (or any, when the list is empty); on failure `refuse` (550 / 403) or `file` (filed, with a `dkim_failed` log row). With `header_from` set too and no DKIM domains listed (any signer), the signature must also come from the From address's domain (or a parent / subdomain of it) — a listed signer vouches for the From itself |
+
+With either `header_from` or `dkim` set, a message with more than one
+From, Sender, Reply-To, To, Cc, Subject, Message-ID, Date, In-Reply-To or
+References header is refused: kitp reads the first, DKIM verifies the
+last, so a second From in front of a genuinely signed message passed both
+filters (review 2026-11-03 #9).
 
 **Rate limits** (`server/internal/netx/ratelimit.go`, in memory, reset on
 restart): token buckets keyed by source address (IPv6 grouped by /64),
 and per route. Defaults (constants): per source 120 connections or
 requests per minute (burst 240), 240 messages per minute; per route 600
-messages per minute. A miss costs 10. At most 64 concurrent SMTP
-connections per source, 1000 in all. The table holds at most 100 000
+messages per minute. A miss costs 10. An SMTP session that has five
+recipients refused, or whose source has spent its bucket, gets 421 and is
+closed. At most 64 concurrent SMTP connections per source, 1000 in all. The table holds at most 100 000
 keys; the oldest go first.
 
 **Mail intake status** (in memory): the last 200 connection-level

@@ -3,6 +3,7 @@ package mailin
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"net/mail"
 	"strings"
@@ -57,21 +58,72 @@ func (r dkimResult) passes(d *DKIM) bool {
 	return false
 }
 
-// headerFrom returns the From: header of a raw message ("" when none).
-func headerFrom(raw []byte) string {
+// singleHeaders are the headers a message may carry at most once (RFC 5322
+// §3.6). A second copy is how a forged From rides on a genuinely signed
+// message: kitp reads the first, DKIM verifies the last (review 2026-11-03
+// #9), so a message with two is refused.
+var singleHeaders = []string{"From", "Sender", "Reply-To", "To", "Cc", "Subject", "Message-Id", "Date", "In-Reply-To", "References"}
+
+// headerFrom returns the From: header of a raw message ("" when none), and
+// a reason when the header block itself is unacceptable: a header that may
+// appear once appears more than once.
+func headerFrom(raw []byte) (from, bad string) {
 	m, err := mail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
+		return "", ""
+	}
+	for _, h := range singleHeaders {
+		if n := len(m.Header[h]); n > 1 {
+			return "", fmt.Sprintf("the message has %d %s headers", n, h)
+		}
+	}
+	return m.Header.Get("From"), ""
+}
+
+// fromDomain is the domain of a From header with exactly one address, or "".
+func fromDomain(from string) string {
+	list, err := mail.ParseAddressList(from)
+	if err != nil || len(list) != 1 {
 		return ""
 	}
-	return m.Header.Get("From")
+	a := strings.ToLower(list[0].Address)
+	at := strings.LastIndexByte(a, '@')
+	if at < 0 {
+		return ""
+	}
+	return a[at+1:]
+}
+
+// aligned reports whether a From domain and a DKIM signing domain belong
+// together (DMARC's relaxed alignment, without the public-suffix list): the
+// same domain, or one a subdomain of the other.
+func aligned(from, signer string) bool {
+	from, signer = strings.ToLower(from), strings.ToLower(signer)
+	return from != "" && signer != "" &&
+		(from == signer || strings.HasSuffix(from, "."+signer) || strings.HasSuffix(signer, "."+from))
 }
 
 // checkMessage applies the filters that need the message itself — header
 // From and DKIM. It returns the failed check ("" when it passes) and why,
 // and the Comm log rows to write after filing (dkim_result / dkim_failed).
+//
+// A message with a repeated From, Subject, Message-ID (… singleHeaders) is
+// refused whenever either filter is set. With both set and the DKIM rule
+// accepting any signer (no domains listed), the signature must also come
+// from the From address's own domain: otherwise anyone could sign with
+// their own domain and claim an allowed From. A listed signer (say, the
+// organisation's own mail server forwarding customer mail) vouches for
+// the From itself, so it needn't match.
 func checkMessage(p Policy, raw []byte) (check, reason string, after []logRow) {
+	from := ""
+	if len(p.HeaderFrom) > 0 || p.DKIM != nil {
+		var bad string
+		from, bad = headerFrom(raw)
+		if bad != "" {
+			return "header_from", bad, nil
+		}
+	}
 	if len(p.HeaderFrom) > 0 {
-		from := headerFrom(raw)
 		if !AddressAllowed(p.HeaderFrom, from) {
 			return "header_from", "From " + quoteOrNone(from) + " is not on the allow list", nil
 		}
@@ -85,6 +137,24 @@ func checkMessage(p Policy, raw []byte) (check, reason string, after []logRow) {
 	case DKIMRecord:
 		return "", "", []logRow{{kind: "dkim_result", detail: detail}}
 	case DKIMRequire:
+		if res.passes(p.DKIM) && len(p.HeaderFrom) > 0 && len(p.DKIM.Domains) == 0 {
+			fd := fromDomain(from)
+			ok := false
+			for _, v := range res.Verified {
+				if aligned(fd, v) {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				why := "no valid DKIM signature from the From address's domain " + quoteOrNone(fd)
+				if p.DKIM.OnFail == OnFailFile {
+					detail["reason"] = why
+					return "", "", []logRow{{kind: "dkim_failed", detail: detail}}
+				}
+				return "dkim", why, nil
+			}
+		}
 		if res.passes(p.DKIM) {
 			return "", "", nil
 		}
