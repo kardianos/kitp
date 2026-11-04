@@ -388,6 +388,42 @@ func TestUserCardAgentUnsetBatch_ScopedByActor(t *testing.T) {
 	}
 }
 
+// TestUserCardAgentUnsetBatch_AgentClearsItsOwn (review 2026-11-03 round
+// 4): an agent clears a card routed to it (the row is keyed on its owner),
+// and no other agent's.
+func TestUserCardAgentUnsetBatch_AgentClearsItsOwn(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_uca_unset_agent")
+	ctx := context.Background()
+	parent, agent, card := seedActorAgentTask(t, pool, "ag")
+	other, otherAgent, otherCard := seedActorAgentTask(t, pool, "og")
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO user_card_agent (user_id, card_id, agent_user_id) VALUES ($1, $2, $3), ($4, $5, $6)`,
+		parent, card, agent, other, otherCard, otherAgent); err != nil {
+		t.Fatal(err)
+	}
+	count := func(user, c int64) int {
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM user_card_agent WHERE user_id = $1 AND card_id = $2`, user, c).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// Another owner's agent: nothing to clear.
+	if rows := callBatch(t, pool, "user_card_agent_unset_batch", agent, []map[string]any{{"card_id": idStr(otherCard)}}); !rows[0].OK {
+		t.Fatalf("clear: %+v", rows[0])
+	}
+	if count(other, otherCard) != 1 {
+		t.Error("an agent cleared another owner's routing")
+	}
+	rows := callBatch(t, pool, "user_card_agent_unset_batch", agent, []map[string]any{{"card_id": idStr(card)}})
+	if !rows[0].OK {
+		t.Fatalf("clear: %+v", rows[0])
+	}
+	if count(parent, card) != 0 {
+		t.Error("the agent couldn't clear the card routed to it")
+	}
+}
+
 // idStr formats an int64 as a decimal string — the dispatcher's
 // wire convention for bigint ids in JSON.
 func idStr(v int64) string { return strconv.FormatInt(v, 10) }

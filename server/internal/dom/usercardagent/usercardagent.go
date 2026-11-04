@@ -87,7 +87,7 @@ func Register(_ *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "user_card_agent",
 		Action:       "clear",
-		Doc:          "Remove the calling user's routing for one card. Idempotent.",
+		Doc:          "Remove the calling user's routing for one card — or, called by an agent, the routing that sends the card to it. Idempotent.",
 		InputType:    reflect.TypeFor[ClearInput](),
 		OutputType:   reflect.TypeFor[ClearOutput](),
 		AllowedRoles: []string{"worker", "manager", "admin"},

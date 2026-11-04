@@ -127,6 +127,14 @@ BEGIN
             END IF;
         END IF;
 
+        -- At most 200 personal screens each (review 2026-11-03 round 4:
+        -- nothing capped it).
+        IF _creating AND (SELECT count(*) FROM card c WHERE c.card_type_id = _screen_ct AND c.parent_card_id IS NULL
+                          AND c.private_to = _person AND c.deleted_at IS NULL) >= 200 THEN
+            RETURN QUERY SELECT _idx, false, 'limit'::text,
+                'my_screen.set: you can have at most 200 personal screens'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         IF _creating THEN
             INSERT INTO card (card_type_id, parent_card_id, private_to) VALUES (_screen_ct, NULL, _person)
             RETURNING card.id INTO _id;

@@ -51,6 +51,14 @@ BEGIN
                 format('watch.set: only tasks and threads go on a watch list, not %s', _type), NULL::jsonb;
             CONTINUE;
         END IF;
+        -- At most 5,000 entries on one list (review 2026-11-03 round 4:
+        -- nothing capped it).
+        IF NOT EXISTS (SELECT 1 FROM watch_entry WHERE watch_list_id = _list AND card_id = _card)
+           AND (SELECT count(*) FROM watch_entry WHERE watch_list_id = _list) >= 5000 THEN
+            RETURN QUERY SELECT _idx, false, 'limit'::text,
+                'watch.set: a watch list can hold at most 5000 tasks and threads'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         INSERT INTO watch_entry (watch_list_id, card_id, sort_order)
         VALUES (_list, _card,
                 COALESCE((SELECT min(sort_order) FROM watch_entry WHERE watch_list_id = _list), 0) - 1)

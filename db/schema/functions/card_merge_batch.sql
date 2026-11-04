@@ -109,7 +109,7 @@ BEGIN
             CONTINUE;
         END IF;
 
-        _surv_project := card_enclosing_project(_survivor);
+        _surv_project := card_home_project(_survivor);
 
         -- Every loser must exist, be live, share the survivor's card_type,
         -- project and privacy, and be one the caller can see.
@@ -126,7 +126,7 @@ BEGIN
                 _bad_msg := format('card.merge: loser %s is a different card_type than survivor %s', _loser, _survivor);
                 EXIT;
             END IF;
-            IF card_enclosing_project(_loser) IS DISTINCT FROM _surv_project THEN
+            IF card_home_project(_loser) IS DISTINCT FROM _surv_project THEN
                 _bad_code := 'forbidden';
                 _bad_msg := format('card.merge: loser %s is in another project than survivor %s', _loser, _survivor);
                 EXIT;
@@ -136,7 +136,10 @@ BEGIN
                 _bad_msg := format('card.merge: loser %s and survivor %s are not both yours, or both shared', _loser, _survivor);
                 EXIT;
             END IF;
-            IF EXISTS (SELECT 1 FROM flow_step fs WHERE fs.from_card_id = _loser OR fs.to_card_id = _loser) THEN
+            -- A flow's starting state counts even with no steps yet: the
+            -- flow would name a merged-away card (review 2026-11-03 round 4).
+            IF EXISTS (SELECT 1 FROM flow_step fs WHERE fs.from_card_id = _loser OR fs.to_card_id = _loser)
+               OR EXISTS (SELECT 1 FROM flow f WHERE f.default_create_status_id = _loser) THEN
                 _bad_code := 'value_referenced_by_flow';
                 _bad_msg := format('card.merge: %s is a state of a flow; take it out of the flow first', _loser);
                 EXIT;

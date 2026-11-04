@@ -7,6 +7,7 @@
 --      card as from_card_id or to_card_id, the delete is rejected
 --      with code 'value_referenced_by_flow' and a structured
 --      blocked_by detail (same envelope shape as the legacy Go path).
+--   2b. A flow's starting state is refused the same way, steps or not.
 --   3. Soft-delete: SET deleted_at = now() WHERE deleted_at IS NULL.
 --      If no row matched (card missing or already deleted) the row
 --      surfaces 'card_not_found' — same as the legacy "seen != ins"
@@ -93,6 +94,17 @@ BEGIN
                     'card_id', _card_id,
                     'blocked_by', _blockers
                 );
+            CONTINUE;
+        END IF;
+
+        -- 2b. A flow's starting state can't go either, with no step yet:
+        --     the flow would name a deleted card for every new task
+        --     (review 2026-11-03 round 4). Pick another starting state
+        --     first. Same detail shape as 2, nothing blocking but the flow.
+        IF EXISTS (SELECT 1 FROM flow f WHERE f.default_create_status_id = _card_id) THEN
+            RETURN QUERY SELECT _idx, false, 'value_referenced_by_flow'::text,
+                format('card.delete: card %s is a flow''s starting state; choose another first', _card_id),
+                jsonb_build_object('card_id', _card_id, 'blocked_by', '[]'::jsonb);
             CONTINUE;
         END IF;
 

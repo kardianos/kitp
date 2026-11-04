@@ -323,3 +323,33 @@ func TestTagApplyBatch_MutualExclusion(t *testing.T) {
 		t.Errorf("tags after mutex: got %v, want [%d]", cur, low)
 	}
 }
+
+// TestTagApplyBatch_DeletedCards (review 2026-11-03 round 4): a deleted
+// card takes no tags, and a deleted tag goes on no card.
+func TestTagApplyBatch_DeletedCards(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_tag_apply_batch_deleted")
+	f := seedTagFixtures(t, pool)
+	tag := f.makeTagCard(t, "area/ui", "")
+	gone := f.makeTagCard(t, "area/api", "")
+	var deletedTask int64
+	if err := pool.QueryRow(context.Background(), `
+		INSERT INTO card (card_type_id, parent_card_id, deleted_at)
+		SELECT id, $1, now() FROM card_type WHERE name = 'task' RETURNING id`, f.projectID).Scan(&deletedTask); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `UPDATE card SET deleted_at = now() WHERE id = $1`, gone); err != nil {
+		t.Fatal(err)
+	}
+	rows := callTagApplyBatch(t, pool, auth.SystemUserID, []map[string]any{
+		{"target_card_id": strconv.FormatInt(deletedTask, 10), "tag_card_id": strconv.FormatInt(tag, 10)},
+		{"target_card_id": strconv.FormatInt(f.taskID, 10), "tag_card_id": strconv.FormatInt(gone, 10)},
+	})
+	for i, want := range []string{"card_not_found", "tag_not_found"} {
+		if rows[i].OK || rows[i].Code != want {
+			t.Errorf("row %d: ok=%v code=%q, want %s", i, rows[i].OK, rows[i].Code, want)
+		}
+	}
+	if got := readTagsArray(t, pool, f.taskID); len(got) != 0 {
+		t.Errorf("the live task took the deleted tag: %v", got)
+	}
+}

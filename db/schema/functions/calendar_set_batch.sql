@@ -78,6 +78,16 @@ BEGIN
             END;
         END IF;
 
+        -- At most 50 calendars each (review 2026-11-03 round 4: nothing
+        -- capped it).
+        IF _creating AND (SELECT count(*) FROM card c
+                          JOIN attribute_value sv ON sv.card_id = c.id AND sv.attribute_def_id = _sub_def
+                          WHERE c.card_type_id = _cal_ct AND c.deleted_at IS NULL
+                            AND sv.value = to_jsonb(_person)) >= 50 THEN
+            RETURN QUERY SELECT _idx, false, 'limit'::text,
+                'calendar.set: you can have at most 50 calendars'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         IF _creating THEN
             INSERT INTO card (card_type_id, parent_card_id) VALUES (_cal_ct, NULL) RETURNING card.id INTO _id;
             INSERT INTO activity (card_id, kind, actor_id) VALUES (_id, 'card_create', calendar_set_batch.actor_id);

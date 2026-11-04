@@ -61,6 +61,14 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- At most 200 watch lists each (review 2026-11-03 round 4: nothing
+        -- capped it).
+        IF _creating AND (SELECT count(*) FROM card c WHERE c.card_type_id = _wl_ct
+                          AND c.private_to = _person AND c.deleted_at IS NULL) >= 200 THEN
+            RETURN QUERY SELECT _idx, false, 'limit'::text,
+                'watch_list.set: you can have at most 200 watch lists'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         IF _creating THEN
             INSERT INTO card (card_type_id, parent_card_id, private_to) VALUES (_wl_ct, NULL, _person) RETURNING card.id INTO _id;
             INSERT INTO activity (card_id, kind, actor_id) VALUES (_id, 'card_create', watch_list_set_batch.actor_id);

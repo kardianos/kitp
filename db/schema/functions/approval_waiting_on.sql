@@ -1,8 +1,9 @@
 -- approval_waiting_on — whether a task waits on any of p_people for a
 -- vote: one of its open requests (approval_open) asks the person, and
 -- they haven't voted on that request's step (from → to) in the step's
--- current round. Approve or reject both count as voted. An agent's vote
--- carries no person, so it never answers for one.
+-- current round, and they can vote (a login with comment rights there).
+-- Approve or reject both count as voted. An agent's vote carries no
+-- person, so it never answers for one.
 --
 -- Backs the "Vote needed from" filter (attr approval_waiting_on in
 -- card_compile_predicate and where.go) and approval_summary's
@@ -14,6 +15,13 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
         FROM approval_open(p_task_id) o
         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(o.approvers, '[]'::jsonb)) AS e
         WHERE CASE WHEN (e #>> '{}') ~ '^[0-9]+$' THEN (e #>> '{}')::bigint END = ANY (p_people)
+          -- Only someone who can still vote: a person asked before
+          -- approval.set required comment rights, or who lost them since,
+          -- isn't waited on (review 2026-11-03 round 4 #13).
+          AND EXISTS (
+              SELECT 1 FROM user_account_person uap
+              WHERE uap.person_card_id = CASE WHEN (e #>> '{}') ~ '^[0-9]+$' THEN (e #>> '{}')::bigint END
+                AND user_has_grant(uap.user_account_id, 'task', 'comment.post', card_enclosing_project(p_task_id)))
           AND NOT EXISTS (
               SELECT 1
               FROM activity d

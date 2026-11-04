@@ -118,8 +118,9 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- 2. Target existence + 'tags' edge declared on its card_type.
-        SELECT card_type_id INTO _target_ct FROM card WHERE id = _target_id;
+        -- 2. Target existence (live: a deleted card takes no tags — review
+        --    2026-11-03 round 4) + 'tags' edge declared on its card_type.
+        SELECT card_type_id INTO _target_ct FROM card WHERE id = _target_id AND deleted_at IS NULL;
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'card_not_found'::text,
                 format('tag.apply: target card %s not found', _target_id),
@@ -146,7 +147,7 @@ BEGIN
               WHERE av.card_id = c.id AND av.attribute_def_id = _root_attr_id)
           INTO _tag_path, _tag_root
         FROM card c
-        WHERE c.id = _tag_id AND c.card_type_id = _tag_ct_id;
+        WHERE c.id = _tag_id AND c.card_type_id = _tag_ct_id AND c.deleted_at IS NULL;
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'tag_not_found'::text,
                 format('tag.apply: tag card %s not found or not a tag', _tag_id),

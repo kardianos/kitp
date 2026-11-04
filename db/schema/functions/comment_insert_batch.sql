@@ -40,6 +40,13 @@ BEGIN
                 'comment.insert: card_id is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
+        -- At most 100,000 characters — the only bound was the 32 MB
+        -- request (review 2026-11-03 round 4).
+        IF length(COALESCE(_body, '')) > 100000 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comment.insert: a comment can be at most 100000 characters'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         IF _body IS NULL OR _body = '' THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 'comment.insert: body is required'::text, NULL::jsonb;

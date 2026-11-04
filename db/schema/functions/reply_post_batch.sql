@@ -121,6 +121,11 @@ BEGIN
                 'reply.post: comm_id is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
+        IF length(COALESCE(_body, '')) > 100000 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'reply.post: a message can be at most 100000 characters'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         IF _body IS NULL OR _body = '' THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 'reply.post: body is required'::text, NULL::jsonb;
@@ -196,6 +201,15 @@ BEGIN
         -- Only addresses kitp sends to (email_plain, round 3 #9).
         WHERE em.email IS NOT NULL AND em.email <> '' AND email_plain(em.email);
 
+        -- One reply goes to at most 100 people (review 2026-11-03 round 4:
+        -- nothing capped it): take people off the thread first.
+        IF array_length(_recipients, 1) > 100 THEN
+            RETURN QUERY SELECT _idx, false, 'too_many_recipients'::text,
+                format('reply.post: this thread has %s recipients; a reply goes to at most 100 — take some off first',
+                       array_length(_recipients, 1)),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
         IF _recipients IS NULL OR array_length(_recipients, 1) IS NULL THEN
             RETURN QUERY SELECT _idx, false, 'no_recipients'::text,
                 format('reply.post: comm %s has no recipients; set them via comm.set_recipients before replying',

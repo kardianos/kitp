@@ -44,9 +44,17 @@ BEGIN
                 'user_card_agent.clear: card_id is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
+        -- The caller's own routing, or — for an agent — the routing that
+        -- sends the card to it: those rows are keyed on its owner, so an
+        -- agent couldn't clear a card routed to itself (review 2026-11-03
+        -- round 4).
         WITH del AS (
-            DELETE FROM user_card_agent
-            WHERE user_id = actor_id AND card_id = _card_id
+            DELETE FROM user_card_agent uca
+            WHERE uca.card_id = _card_id
+              AND (uca.user_id = user_card_agent_unset_batch.actor_id
+                   OR (uca.agent_user_id = user_card_agent_unset_batch.actor_id
+                       AND uca.user_id = (SELECT ua.parent_user_id FROM user_account ua
+                                          WHERE ua.id = user_card_agent_unset_batch.actor_id AND ua.is_agent)))
             RETURNING 1
         )
         SELECT count(*)::int INTO _deleted FROM del;

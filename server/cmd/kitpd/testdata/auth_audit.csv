@@ -115,7 +115,7 @@ dispatcher,,,user.revoke_login,admin,"Take a person's login away — what the Pe
 dispatcher,,,user.select,$authenticated,List every user_account row sorted by display_name.
 dispatcher,,,user.set_display_name,admin,"Update user_account.display_name for one user_account row. The /auth/me probe reads display_name straight from this column, so this is what powers the shell's signed-in user chip — renaming the linked person card (attribute.update on title) does NOT propagate here. Admin-only; no-op (ok=true) when the value already matches."
 dispatcher,,,user.unlink_person,admin,"Delete the user_account_person link between a user_account row and a person card. The user_account row itself stays — they can still sign in, they just no longer correspond to an assignable person card (demotes 'user' tier to 'login-only'). Idempotent: deleting an absent link succeeds with deleted=false."
-dispatcher,,,user_card_agent.clear,admin;manager;worker,Remove the calling user's routing for one card. Idempotent.
+dispatcher,,,user_card_agent.clear,admin;manager;worker,"Remove the calling user's routing for one card — or, called by an agent, the routing that sends the card to it. Idempotent."
 dispatcher,,,user_card_agent.list,$authenticated,"List the calling user's routings, optionally scoped to one parent (e.g. a project)."
 dispatcher,,,user_card_agent.set,admin;manager;worker,"Route a card to one of the calling user's agents. Upsert keyed on (actor, card). The agent_user_id must be an agent owned by the calling user."
 dispatcher,,,user_card_sort.set,admin;manager;worker,Upsert the calling user's personal sort_order for one card. Used by the inbox drag-drop reorder; per-user ordering is independent of the global sort_order attribute.

@@ -241,6 +241,17 @@ BEGIN
         FROM flow f
         WHERE f.attribute_def_id = _status_def_id AND f.scope_card_id = _new_project_id;
         IF _new_status_id = 0 THEN
+            -- The destination flow's starting state first, as a new task
+            -- there gets — the first triage state by sort order may be one
+            -- only a manager can move into (review 2026-11-03 round 4) —
+            -- then the old rule for a flow without one.
+            _resolved_status := NULL;
+            SELECT f.default_create_status_id INTO _resolved_status
+            FROM flow f
+            JOIN card d ON d.id = f.default_create_status_id AND d.deleted_at IS NULL
+            WHERE f.attribute_def_id = _status_def_id AND f.scope_card_id = _new_project_id;
+        END IF;
+        IF _new_status_id = 0 AND _resolved_status IS NULL THEN
             SELECT c.id INTO _resolved_status
             FROM card c
             JOIN card_type ct ON ct.id = c.card_type_id AND ct.name = 'status'
@@ -260,7 +271,7 @@ BEGIN
                     NULL::jsonb;
                 CONTINUE;
             END IF;
-        ELSE
+        ELSIF _new_status_id <> 0 THEN
             _resolved_status := _new_status_id;
         END IF;
 

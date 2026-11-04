@@ -127,6 +127,14 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- At most 100 people on a thread, the most a reply goes to
+        -- (reply.post).
+        IF COALESCE(array_length(_ids, 1), 0) > 100 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comm.set_recipients: a thread can have at most 100 recipients'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 4. Bulk validate every id is a person card. One scan; first
         --    bad id wins. Matches the per-row Go validation that
         --    returned 'person N not found' / 'card N is "X", not person'.

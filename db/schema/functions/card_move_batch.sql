@@ -98,6 +98,21 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- 2c'. Under someone's private card goes only a card private to
+        --      them: a shared card moved under a personal screen stayed
+        --      visible to everyone (it isn't private itself), and so did
+        --      another person's (review 2026-11-03 round 4). A private card
+        --      may sit under a shared one (a personal view on a shared
+        --      screen, docs/PERSONAL_SCREENS.md P10), so that way is open.
+        IF (SELECT c.private_to FROM card c WHERE c.id = _new_parent) IS NOT NULL
+           AND (SELECT c.private_to FROM card c WHERE c.id = _card_id)
+               IS DISTINCT FROM (SELECT c.private_to FROM card c WHERE c.id = _new_parent) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                'card.move: only a card private to the same person can go under a personal card'::text,
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 2d. Nesting cap (review A26): the card and everything under it
         --     must stay within 14 levels, so every capped parent walk
         --     (depth < 16) reaches the project.

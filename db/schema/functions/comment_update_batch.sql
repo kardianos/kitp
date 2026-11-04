@@ -52,6 +52,11 @@ BEGIN
                 'comment.update: activity_id is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
+        IF length(COALESCE(_body, '')) > 100000 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comment.update: a comment can be at most 100000 characters'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         IF _body IS NULL OR _body = '' THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 'comment.update: body is required'::text, NULL::jsonb;
