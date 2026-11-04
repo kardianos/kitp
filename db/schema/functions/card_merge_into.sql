@@ -72,6 +72,11 @@ BEGIN
     GET DIAGNOSTICS _n = ROW_COUNT;
     _repointed := _repointed + _n;
 
+    -- Private cards (card.private_to, docs/PERSONAL_SCREENS.md) belong to a
+    -- person: a merged person's watch lists, personal screens and views go
+    -- with them to the survivor, or nobody could see them again (review
+    -- 2026-11-03 #23). A no-op for any other card type.
+    UPDATE card SET private_to = survivor WHERE private_to = ANY(losers);
     -- Soft-delete each loser + a per-loser merge marker (value_new = survivor).
     FOREACH _loser IN ARRAY losers LOOP
         UPDATE card SET deleted_at = now() WHERE id = _loser AND deleted_at IS NULL;

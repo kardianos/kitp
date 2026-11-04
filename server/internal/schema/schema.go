@@ -7,10 +7,13 @@ package schema
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/kitp/kitp/server/internal/named"
 )
 
 // CardType captures the row plus enough metadata to enforce parent rules.
@@ -275,7 +278,8 @@ func (s *Snapshot) ParentAllowed(child CardType, parentTypeID int64) bool {
 // CardTypeIDByCardID is a one-shot lookup helper used by handler
 // CardTypeID extractors; returns 0 when the card is missing so the
 // dispatcher's authz check is skipped (Validate will surface the
-// real error).
+// real error). Any other error is returned: a 0 for a failed lookup would
+// skip the grant check too, failing open (review 2026-11-03 #30).
 type queryRower interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
@@ -284,10 +288,18 @@ func CardTypeIDByCardID(ctx context.Context, pool queryRower, cardID int64) (int
 	if cardID == 0 {
 		return 0, nil
 	}
+	b := named.New()
+	b.Set("card_id", cardID)
+	q, args, err := b.Compile(`SELECT card_type_id FROM card WHERE id = :card_id`)
+	if err != nil {
+		return 0, fmt.Errorf("card type of %d: compile: %w", cardID, err)
+	}
 	var ctid int64
-	row := pool.QueryRow(ctx, `SELECT card_type_id FROM card WHERE id = $1`, cardID)
-	if err := row.Scan(&ctid); err != nil {
-		return 0, nil
+	if err := pool.QueryRow(ctx, q, args...).Scan(&ctid); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("card type of %d: %w", cardID, err)
 	}
 	return ctid, nil
 }

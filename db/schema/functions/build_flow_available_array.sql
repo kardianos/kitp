@@ -12,8 +12,8 @@
 -- Mirrors flow.listAvailableTransitions semantics: every flow_step
 -- whose from_card_id equals the card's current value on a flow-bound
 -- attribute, sorted by attribute_def name then step sort_order/label/id
--- for determinism. The `your_role_allows` bit applies the same
--- system-bypass + project-or-global scope check as Gate 4.
+-- for determinism. The `your_role_allows` bit is user_has_step_role, the
+-- same check as Gate 4.
 CREATE OR REPLACE FUNCTION build_flow_available_array(
     p_actor_id bigint,
     p_card_id bigint,
@@ -29,21 +29,7 @@ CREATE OR REPLACE FUNCTION build_flow_available_array(
                     'label', COALESCE(av_to_title.value #>> '{}', ''),
                     'phase', tc.phase),
                 'label', fs.label,
-                'your_role_allows', (
-                    fs.requires_role_id IS NULL
-                    OR EXISTS (
-                        SELECT 1 FROM user_role_effective(p_actor_id) ur
-                        JOIN role sr ON sr.id = ur.role_id
-                        WHERE ur.user_id = p_actor_id AND sr.name = 'system'
-                          AND ur.scope_card_id IS NULL
-                    )
-                    OR EXISTS (
-                        SELECT 1 FROM user_role_effective(p_actor_id) ur
-                        WHERE ur.user_id = p_actor_id
-                          AND ur.role_id = fs.requires_role_id
-                          AND (ur.scope_card_id IS NULL OR ur.scope_card_id = p_project_id)
-                    )
-                ),
+                'your_role_allows', user_has_step_role(p_actor_id, fs.requires_role_id, p_project_id),
                 'requires_role', CASE WHEN fs.requires_role_id IS NULL THEN NULL ELSE r.name END
             ) AS row,
             ad.name AS ord_ad,

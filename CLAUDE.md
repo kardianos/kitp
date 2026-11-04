@@ -137,7 +137,9 @@ inlined copy that can list such cards must AND `card_private_ok(<card>,
 <actor>)`, and a handler that makes a private card sets `private_to`
 itself (`card.insert` inherits it from a private parent). The dispatcher
 refuses any gated write whose target chain is someone else's private card
-and lets the owner write their own without a role grant.
+and lets the owner write their own without a role grant — only through the
+card-local handlers in `ownedPrivateWrites` (`internal/api/authz.go`); a
+handler that writes other cards too must check them itself.
 
 ## Per-row write authz
 

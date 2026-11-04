@@ -131,11 +131,17 @@ BEGIN
                 'attribute.update: only a workspace admin can choose which portals a status publishes to'::text, NULL::jsonb;
             CONTINUE;
         END IF;
-        -- bundle_key marks a feature bundle's hidden source project; only
-        -- the bundle files set it (store.applyBundles), and boot trusts it.
-        IF _attr_name = 'bundle_key' THEN
+        -- kitp sets these itself, never through a generic write:
+        --   bundle_key — marks a feature bundle's hidden source project; only
+        --     the bundle files set it (store.applyBundles), and boot trusts it.
+        --   replies / comms — a thread's messages and a task's threads; a
+        --     message is visible through the thread that lists it, so naming
+        --     another project's message would show it (review 2026-11-03 #6).
+        --   subscriber — who owns a watch list, calendar or notification
+        --     subscription; their own handlers set it (review #20).
+        IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber') THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
-                'attribute.update: bundle_key is set by kitp, not by hand'::text, NULL::jsonb;
+                format('attribute.update: %s is set by kitp, not by hand', _attr_name), NULL::jsonb;
             CONTINUE;
         END IF;
 
@@ -264,8 +270,14 @@ BEGIN
             _value_norm := _value;
             _value_card_ids := ARRAY[]::bigint[];
         ELSE
-            -- text / bool — no canonicalisation, no card_ref validation.
-            _value_norm := _value;
+            -- text / bool: a JSON string / boolean (attr_scalar_norm).
+            _value_norm := attr_scalar_norm(_value_type, _value);
+            IF _value_norm IS NULL THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    format('attribute.update: %s: not a %s value: %s', _attr_name, _value_type, left(_value::text, 200)),
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
             _value_card_ids := ARRAY[]::bigint[];
         END IF;
 
@@ -462,21 +474,7 @@ BEGIN
                             IF NOT FOUND THEN
                                 _flow_code := 'flow_disallowed';
                             ELSIF _requires_role_id IS NOT NULL THEN
-                                SELECT r.name,
-                                       (
-                                         EXISTS (
-                                           SELECT 1 FROM user_role_effective(actor_id) ur
-                                           JOIN role sr ON sr.id = ur.role_id
-                                           WHERE ur.user_id = actor_id AND sr.name = 'system'
-                                             AND ur.scope_card_id IS NULL
-                                         )
-                                         OR EXISTS (
-                                           SELECT 1 FROM user_role_effective(actor_id) ur
-                                           WHERE ur.user_id = actor_id AND ur.role_id = _requires_role_id
-                                             AND (ur.scope_card_id IS NULL
-                                                  OR ur.scope_card_id = _target_project_id)
-                                         )
-                                       )
+                                SELECT r.name, user_has_step_role(actor_id, _requires_role_id, _target_project_id)
                                   INTO _role_name, _role_ok
                                 FROM role r WHERE r.id = _requires_role_id;
                                 IF NOT FOUND OR NOT _role_ok THEN

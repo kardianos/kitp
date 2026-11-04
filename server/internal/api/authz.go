@@ -130,9 +130,15 @@ func preloadCards(ctx context.Context, pool *store.Pool, ids []int64) (map[int64
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := pool.P.Query(ctx, `
-		SELECT id, parent_card_id, card_type_id, private_to FROM card WHERE id = ANY($1::bigint[])
-	`, ids)
+	b := named.New()
+	b.Set("ids", ids)
+	q, args, err := b.Compile(`
+		SELECT id, parent_card_id, card_type_id, private_to FROM card WHERE id = ANY(:ids::bigint[])
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("authz: preload cards: compile: %w", err)
+	}
+	rows, err := pool.P.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("authz: preload cards: %w", err)
 	}
@@ -167,17 +173,23 @@ func expandCardLookup(ctx context.Context, pool *store.Pool, lookup map[int64]ca
 	// Walk parent_card_id up from every seed id in a single statement.
 	// Seed rows are already in `lookup`; the CTE re-emits them (depth 0)
 	// plus every ancestor up to the cap, and we merge any new rows.
-	rows, err := pool.P.Query(ctx, `
+	b := named.New()
+	b.Set("seed", seed)
+	q, args, err := b.Compile(`
 		WITH RECURSIVE up(id, parent_card_id, card_type_id, private_to, depth) AS (
 			SELECT c.id, c.parent_card_id, c.card_type_id, c.private_to, 0
-			FROM card c WHERE c.id = ANY($1::bigint[])
+			FROM card c WHERE c.id = ANY(:seed::bigint[])
 			UNION ALL
 			SELECT p.id, p.parent_card_id, p.card_type_id, p.private_to, up.depth + 1
 			FROM card p JOIN up ON p.id = up.parent_card_id
 			WHERE up.depth < 16
 		)
 		SELECT DISTINCT id, parent_card_id, card_type_id, private_to FROM up
-	`, seed)
+	`)
+	if err != nil {
+		return fmt.Errorf("authz: parent closure: compile: %w", err)
+	}
+	rows, err := pool.P.Query(ctx, q, args...)
 	if err != nil {
 		return fmt.Errorf("authz: parent closure: %w", err)
 	}
@@ -483,16 +495,39 @@ func (s *Server) checkPrivate(ctx context.Context, h reg.Handler, input any, loo
 		return false, nil
 	}
 	if actorPerson != nil && *owner == *actorPerson {
-		return true, nil
+		// Yours — but only these handlers skip the role grant: each writes
+		// the target card alone, or checks every other card it touches in
+		// its SQL (card.merge: the losers share the survivor's project and
+		// privacy; card.move: the destination grant). Any other handler
+		// aimed at your private card still needs its grant (review
+		// 2026-11-03 #2).
+		return ownedPrivateWrites[h.Endpoint+"."+h.Action], nil
 	}
 	return false, errPrivate
+}
+
+// ownedPrivateWrites are the gated handlers an owner may run on their own
+// private card without a role grant (checkPrivate).
+var ownedPrivateWrites = map[string]bool{
+	"card.insert":      true,
+	"card.delete":      true,
+	"card.undelete":    true,
+	"card.move":        true,
+	"card.merge":       true,
+	"attribute.update": true,
 }
 
 // loadAccountPerson reads account_person(actor): the person an account acts
 // as for its own things (an agent's owner's), or nil.
 func loadAccountPerson(ctx context.Context, pool *store.Pool, actor int64) (*int64, error) {
+	b := named.New()
+	b.Set("actor", actor)
+	q, args, err := b.Compile(`SELECT account_person(:actor::bigint)`)
+	if err != nil {
+		return nil, fmt.Errorf("authz: account person: compile: %w", err)
+	}
 	var p *int64
-	if err := pool.P.QueryRow(ctx, `SELECT account_person($1)`, actor).Scan(&p); err != nil {
+	if err := pool.P.QueryRow(ctx, q, args...).Scan(&p); err != nil {
 		return nil, fmt.Errorf("authz: account person: %w", err)
 	}
 	return p, nil

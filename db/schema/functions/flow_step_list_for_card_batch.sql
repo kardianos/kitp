@@ -15,9 +15,9 @@
 --      No enclosing project ⇒ empty result (no flows can apply).
 --   3. JOIN flow / attribute_def / attribute_value (card-ref value
 --      pointing at flow_step.from_card_id) / flow_step / from+to cards
---      / titles. The 'allowed' bit applies the F-ROLE auth model:
---      requires_role_id IS NULL OR actor has 'system' globally OR
---      actor has the role globally or scoped to the project.
+--      / titles. The 'allowed' bit applies the F-ROLE auth model
+--      (user_has_step_role): requires_role_id IS NULL OR actor has
+--      'system' globally OR a role covering it globally or on the project.
 --
 -- Authz (RoleAuthenticated) runs pre-tx in Go.
 --
@@ -105,22 +105,7 @@ BEGIN
                     'requires_role_name', COALESCE(r.name, ''),
                     'sort_order',         fs.sort_order,
                     'standalone',         fs.standalone,
-                    'allowed', (
-                        fs.requires_role_id IS NULL
-                        OR EXISTS (
-                            SELECT 1 FROM user_role_effective(flow_step_list_for_card_batch.actor_id) ur
-                            JOIN role sr ON sr.id = ur.role_id
-                            WHERE ur.user_id = flow_step_list_for_card_batch.actor_id
-                              AND sr.name = 'system'
-                              AND ur.scope_card_id IS NULL
-                        )
-                        OR EXISTS (
-                            SELECT 1 FROM user_role_effective(flow_step_list_for_card_batch.actor_id) ur
-                            WHERE ur.user_id = flow_step_list_for_card_batch.actor_id
-                              AND ur.role_id = fs.requires_role_id
-                              AND (ur.scope_card_id IS NULL OR ur.scope_card_id = _project_id)
-                        )
-                    )
+                    'allowed', user_has_step_role(flow_step_list_for_card_batch.actor_id, fs.requires_role_id, _project_id)
                 ) ORDER BY ad.name, fs.sort_order, fs.label, fs.id
             )
             FROM flow f

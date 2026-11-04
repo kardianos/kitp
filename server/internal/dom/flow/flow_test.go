@@ -833,7 +833,9 @@ func TestListForCard_RoleGated(t *testing.T) {
 		allowed bool
 	}{
 		{"worker", workerCtx, false},
-		{"admin-only", lf.ctx, false}, // fixture admin user has only the admin role
+		// The fixture admin holds only admin, which ranks above manager
+		// (role_covers), so it may take a manager step (review 2026-11-03 #24).
+		{"admin-only", lf.ctx, true},
 		{"manager-global", managerCtx, true},
 		{"system-user", systemCtx, true}, // seeded System User holds the 'system' role
 	}

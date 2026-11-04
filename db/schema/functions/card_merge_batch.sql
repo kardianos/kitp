@@ -10,6 +10,15 @@
 -- Validation: survivor + every loser must exist, be non-deleted, distinct from
 -- the survivor, and share the survivor's card_type.
 --
+-- Scope: the dispatcher authorizes the survivor only (its project's
+-- card.delete grant, or the owner of a private survivor). So every loser must
+-- sit in the survivor's project (card_enclosing_project, both NULL for a
+-- global card such as a person), share its privacy (private_to: the same
+-- person, or both shared), be visible to the caller and not be in a switched-
+-- off area. Without that, a manager of one project could soft-delete and
+-- repoint any other project's cards, or anyone's private views (review
+-- 2026-11-03 #2).
+--
 -- Result JSON shape matches `card.MergeOutput`:
 --   {"ok": true, "survivor_id": "<bigint>", "merged_count": N, "repointed": M}
 CREATE OR REPLACE FUNCTION card_merge_batch(
@@ -29,7 +38,10 @@ DECLARE
     _losers bigint[];
     _loser bigint;
     _surv_ct bigint;
+    _surv_project bigint;
+    _surv_private bigint;
     _ct bigint;
+    _private bigint;
     _repointed int;
     _bad_code text;
     _bad_msg text;
@@ -71,7 +83,7 @@ BEGIN
             CONTINUE;
         END IF;
 
-        SELECT card_type_id INTO _surv_ct FROM card
+        SELECT card_type_id, private_to INTO _surv_ct, _surv_private FROM card
         WHERE id = _survivor AND deleted_at IS NULL;
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'card_not_found'::text,
@@ -79,11 +91,14 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- Every loser must exist, be live, and share the survivor's card_type.
+        _surv_project := card_enclosing_project(_survivor);
+
+        -- Every loser must exist, be live, share the survivor's card_type,
+        -- project and privacy, and be one the caller can see.
         FOREACH _loser IN ARRAY _losers LOOP
-            SELECT card_type_id INTO _ct FROM card
+            SELECT card_type_id, private_to INTO _ct, _private FROM card
             WHERE id = _loser AND deleted_at IS NULL;
-            IF NOT FOUND THEN
+            IF NOT FOUND OR NOT card_visible_to(actor_id, _loser) THEN
                 _bad_code := 'card_not_found';
                 _bad_msg := format('card.merge: loser %s not found or deleted', _loser);
                 EXIT;
@@ -91,6 +106,16 @@ BEGIN
             IF _ct <> _surv_ct THEN
                 _bad_code := 'card_type_mismatch';
                 _bad_msg := format('card.merge: loser %s is a different card_type than survivor %s', _loser, _survivor);
+                EXIT;
+            END IF;
+            IF card_enclosing_project(_loser) IS DISTINCT FROM _surv_project THEN
+                _bad_code := 'forbidden';
+                _bad_msg := format('card.merge: loser %s is in another project than survivor %s', _loser, _survivor);
+                EXIT;
+            END IF;
+            IF _private IS DISTINCT FROM _surv_private THEN
+                _bad_code := 'forbidden';
+                _bad_msg := format('card.merge: loser %s and survivor %s are not both yours, or both shared', _loser, _survivor);
                 EXIT;
             END IF;
         END LOOP;

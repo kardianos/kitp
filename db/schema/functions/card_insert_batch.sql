@@ -231,10 +231,13 @@ BEGIN
                 _rej_msg := 'card.insert: only a workspace admin can choose which portals a status publishes to';
                 EXIT;
             END IF;
-            -- bundle_key is server-owned: only the bundle files set it.
-            IF _attr_name = 'bundle_key' THEN
+            -- kitp sets these itself (see attribute.update): bundle_key (a
+            -- bundle's source project), replies / comms (a thread's messages,
+            -- a task's threads) and subscriber (who owns a watch list,
+            -- calendar or subscription).
+            IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber') THEN
                 _rej_code := 'validation';
-                _rej_msg := 'card.insert: bundle_key is set by kitp, not by hand';
+                _rej_msg := format('card.insert: %s is set by kitp, not by hand', _attr_name);
                 EXIT;
             END IF;
             PERFORM 1
@@ -479,6 +482,27 @@ BEGIN
                                 COALESCE(_flow_state_list, '(none)'));
                             EXIT;
                         END IF;
+                        -- A role-gated state: every step into it needs a
+                        -- role the actor doesn't have, so they couldn't
+                        -- move a card there — they can't start one there
+                        -- either (review 2026-11-03 #16). The flow's own
+                        -- starting state is always allowed.
+                        IF _v IS DISTINCT FROM (SELECT f2.default_create_status_id FROM flow f2 WHERE f2.id = _flow_id)
+                           AND EXISTS (SELECT 1 FROM flow_step fs WHERE fs.flow_id = _flow_id AND fs.to_card_id = _v)
+                           AND NOT EXISTS (
+                               SELECT 1 FROM flow_step fs
+                               WHERE fs.flow_id = _flow_id AND fs.to_card_id = _v
+                                 AND user_has_step_role(card_insert_batch.actor_id, fs.requires_role_id, _enclosing_project)) THEN
+                            _rej_code := 'flow_role_required';
+                            _rej_msg := format(
+                                'card.insert: %s %s (%L) needs a role you don''t hold; start the card elsewhere and move it',
+                                _attr_name, _v,
+                                COALESCE((SELECT av_t.value #>> '{}'
+                                          FROM attribute_value av_t
+                                          JOIN attribute_def ad_t ON ad_t.id = av_t.attribute_def_id
+                                          WHERE av_t.card_id = _v AND ad_t.name = 'title'), ''));
+                            EXIT;
+                        END IF;
                     END IF;
                 END IF;
             END LOOP;
@@ -486,6 +510,40 @@ BEGIN
                 RETURN QUERY SELECT _idx, false, _rej_code, _rej_msg, NULL::jsonb;
                 CONTINUE;
             END IF;
+        END IF;
+
+        -- 8a. Private refs (as attribute.update's private_ref): a private
+        --     card may only be pointed at from a card private to the same
+        --     person — the new card is private to its parent's person, or to
+        --     the actor for {private: true}. Text / bool values must be ones
+        --     (attr_scalar_norm).
+        SELECT a.key, pv.id INTO _attr_name, _v
+        FROM jsonb_each(_attrs) a
+        JOIN attribute_def ad ON ad.name = a.key AND ad.value_type IN ('card_ref', 'card_ref[]')
+        CROSS JOIN LATERAL jsonb_path_query(a.value, 'lax $[*]') AS x(v)
+        JOIN card pv ON pv.id = CASE WHEN (x.v #>> '{}') ~ '^\d{1,18}$' THEN (x.v #>> '{}')::bigint END
+        WHERE pv.private_to IS NOT NULL
+          AND pv.private_to IS DISTINCT FROM (
+              CASE WHEN COALESCE((_raw->>'private')::boolean, false)
+                   THEN account_person(card_insert_batch.actor_id)
+                   ELSE (SELECT pc.private_to FROM card pc WHERE pc.id = _parent_card_id) END)
+        LIMIT 1;
+        IF FOUND THEN
+            RETURN QUERY SELECT _idx, false, 'private_ref'::text,
+                format('attribute %L: card %s is private and can only be used on its owner''s own cards', _attr_name, _v),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+        SELECT a.key, ad.value_type INTO _attr_name, _attr_value_type
+        FROM jsonb_each(_attrs) a
+        JOIN attribute_def ad ON ad.name = a.key AND ad.value_type IN ('text', 'bool')
+        WHERE a.key <> 'title' AND jsonb_typeof(a.value) <> 'null'
+          AND attr_scalar_norm(ad.value_type, a.value) IS NULL
+        LIMIT 1;
+        IF FOUND THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('card.insert: %s: not a %s value', _attr_name, _attr_value_type), NULL::jsonb;
+            CONTINUE;
         END IF;
 
         -- 8b. Privacy (docs/PERSONAL_SCREENS.md). A card under a private
@@ -566,6 +624,8 @@ BEGIN
                            ORDER BY e.ord), '[]'::jsonb)
                   INTO _value_norm
                   FROM jsonb_array_elements(_attr_value) WITH ORDINALITY AS e(v, ord);
+            ELSIF _attr_value_type IN ('text', 'bool') THEN
+                _value_norm := attr_scalar_norm(_attr_value_type, _attr_value);
             ELSE
                 _value_norm := _attr_value;
             END IF;
