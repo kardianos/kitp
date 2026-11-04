@@ -1366,6 +1366,22 @@ WHERE m.dest IS NULL AND av.card_id = m.comm_id
 		id:  "0036_activity_hidden_edits",
 		sql: `DROP FUNCTION IF EXISTS activity_hidden(text, bigint);`,
 	},
+	{
+		// cas_held_by reads only cas_blob_holder now: its second branch
+		// (bytes in a file the account may read) cost a check per file
+		// sharing the bytes and timed common uploads out (review 2026-11-03
+		// round 3 #7). Each file's creator holds its bytes, so record that
+		// for files made before holders were kept. Idempotent.
+		id: "0037_cas_holders_from_files",
+		sql: `
+INSERT INTO cas_blob_holder (address, user_id)
+SELECT DISTINCT fc.cas_address, f.created_by
+FROM file_chunk fc
+JOIN file f ON f.id = fc.file_id
+JOIN cas_blob cb ON cb.address = fc.cas_address
+JOIN user_account ua ON ua.id = f.created_by
+ON CONFLICT (address, user_id) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

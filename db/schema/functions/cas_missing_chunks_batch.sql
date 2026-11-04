@@ -45,6 +45,14 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- One file's chunks: a few hundred for a 250 MB file of 1 MB chunks.
+        -- The cap bounds one request's work (review 2026-11-03 round 3 #7).
+        IF jsonb_array_length(_addrs_raw) > 10000 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'cas.missing_chunks: at most 10000 addresses at a time'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         RETURN QUERY
         SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object('missing', COALESCE((

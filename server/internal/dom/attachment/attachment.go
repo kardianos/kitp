@@ -191,11 +191,13 @@ func Register(p *store.Pool) {
 		Doc:        "Mint a time-limited, signed one-shot URL for uploading a file as an attachment on a card. PUT the raw file bytes to the URL with no auth header — e.g. `curl -T ./report.pdf '<url>'` — and the server stores the bytes, creates the file, and attaches it to the card in one step, responding with the attachment row. The link expires after a few minutes; the size cap is config.get's attachment_max_bytes.",
 		InputType:  reflect.TypeFor[UploadURLInput](),
 		OutputType: reflect.TypeFor[UploadURLOutput](),
-		// Read-shaped: validates the target + signs a link, writes
-		// nothing. The writes happen on the public upload route, which
-		// re-dispatches file.create + attachment.create as the signed
-		// actor (see upload.go).
-		IsRead:       true,
+		// Not read-shaped, though it writes nothing: each call mints a
+		// link with its own nonce, used once (upload.go), and the batch
+		// folds identical read sub-requests into one result — two links
+		// asked for in one batch came back the same, and the second upload
+		// was refused (review 2026-11-03 round 3 #19). The writes happen on
+		// the public upload route, which re-dispatches file.create +
+		// attachment.create as the signed actor.
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		// Same gate as attachment.create: card.update on the target
 		// card's project. Input carries card_id, so the per-row scope

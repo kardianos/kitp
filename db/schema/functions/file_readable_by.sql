@@ -1,5 +1,7 @@
 -- file_readable_by — whether an account may have a stored file's bytes: it
--- uploaded the file, or the file is attached (live) to a card whose bytes
+-- uploaded the file (it, or for an agent its owner — account_principal, the
+-- rule cas_held_by and import jobs use; round 3 #20), or the file is
+-- attached (live) to a card whose bytes
 -- the account may download — the byte routes' rule (attachment/http.go
 -- requireAttachmentAccess, DI-3): `card.update` on the card's project, the
 -- card not in an area that is off nor someone else's private card.
@@ -11,7 +13,8 @@
 -- 2026-11-03 B4, round 2 #10).
 CREATE OR REPLACE FUNCTION file_readable_by(reader bigint, file bigint)
 RETURNS boolean LANGUAGE sql STABLE AS $$
-    SELECT EXISTS (SELECT 1 FROM file f WHERE f.id = file_readable_by.file AND f.created_by = reader)
+    SELECT EXISTS (SELECT 1 FROM file f WHERE f.id = file_readable_by.file
+                   AND account_principal(f.created_by) = account_principal(reader))
         OR EXISTS (
             SELECT 1
             FROM attachment a

@@ -254,7 +254,9 @@ func (s *Server) lookup(ctx context.Context, build int64, p string) (buildFile, 
 	// (no area off) and published to this portal: a withdrawal takes
 	// effect at once, not at the next successful build (review A7). An
 	// attachment's file (_files/<attachment id>/…) also needs the
-	// attachment itself undeleted (review 2026-11-03 #17). Theme files and
+	// attachment itself undeleted (review 2026-11-03 #17), and the page
+	// still under the portal's root: a page moved out from under it stays
+	// in the last build until the next one (round 3 #21). Theme files and
 	// the home / 404 pages carry no card.
 	sql, args, err := q.Compile(`
 		SELECT f.cas_address, f.mime_type, f.size_bytes
@@ -268,7 +270,12 @@ func (s *Server) lookup(ctx context.Context, build int64, p string) (buildFile, 
 		                          WHERE x.deleted_at IS NOT NULL)
 		          AND NOT card_in_off_area(c.id)
 		          AND EXISTS (SELECT 1 FROM publication p
-		                      WHERE p.portal_id = b.portal_id AND p.card_id = c.id)))
+		                      WHERE p.portal_id = b.portal_id AND p.card_id = c.id)
+		          AND EXISTS (SELECT 1 FROM card_ancestors(c.id) up
+		                      JOIN attribute_value rv ON rv.card_id = b.portal_id
+		                      JOIN attribute_def rd ON rd.id = rv.attribute_def_id AND rd.name = 'portal_root'
+		                      WHERE up.id = CASE WHEN (rv.value #>> '{}') ~ '^[0-9]{1,18}$'
+		                                         THEN (rv.value #>> '{}')::bigint END)))
 		  AND (f.path NOT LIKE '\_files/%' OR EXISTS (
 		        SELECT 1 FROM attachment a
 		        WHERE a.deleted_at IS NULL

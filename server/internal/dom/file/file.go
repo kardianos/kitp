@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"sync/atomic"
 
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
@@ -145,9 +146,15 @@ func preRunCreate(ctx context.Context, tx store.Querier, ins []any) ([]any, erro
 				addrs = append(addrs, c.Address)
 			}
 		}
+		// Only bytes the caller holds count as uploaded: bytes stored for
+		// someone else get the same answer as bytes kitp never had, and
+		// add nothing to the size (review 2026-11-03 round 3 #18).
 		b := named.New()
 		b.Set("addrs", addrs)
-		sql, args, err := b.Compile(`SELECT address, size_bytes FROM cas_blob WHERE address = ANY(:addrs::text[])`)
+		b.Set("actor", auth.ActorOrSystem(ctx))
+		sql, args, err := b.Compile(`
+			SELECT address, size_bytes FROM cas_blob
+			WHERE address = ANY(:addrs::text[]) AND cas_held_by(address, :actor::bigint)`)
 		if err != nil {
 			return nil, fmt.Errorf("file.create: compile: %w", err)
 		}

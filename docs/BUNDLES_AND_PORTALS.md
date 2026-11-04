@@ -145,7 +145,11 @@ for a page's `publish_status` it runs `publication_sync`:
 So what a portal shows is **pinned** while a page stays live. Editing a
 live page doesn't change PROD; sending it back to review updates QA only;
 "Publish changes" or "Publish" updates both; Unpublish takes it down.
-`card.delete` withdraws a page; restoring it doesn't republish it.
+`card.delete` takes a page (and every page under a deleted card) off its
+portals but keeps its publications, so `card.undelete` brings it back as it
+was published (review 2026-11-03 round 2 #19). Moving a published page, or a
+card above one, rebuilds the portals it is on, and a page no longer under a
+portal's root isn't served (round 3 #21).
 (Migration 0017 applied the Draft rule to pages already in Draft, and
 renamed the flow's old "Unpublish edits" step, which had kept the live
 copy, to "Unpublish".)

@@ -313,6 +313,9 @@ const (
 // UploadInput, so wrapping each input in a generic map is the
 // cleanest way to fit through the `[]any` channel.
 func preRunUpload(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
+	if err := oneFilePerBatch("project.import.upload", ins); err != nil {
+		return nil, err
+	}
 	out := make([]any, len(ins))
 	for i, raw := range ins {
 		in := raw.(UploadInput)
@@ -351,6 +354,9 @@ func preRunUpload(ctx context.Context, tx store.Querier, ins []any) ([]any, erro
 // truncation), then augments the input. The PL/pgSQL function walks
 // `_parsed_header` + `_parsed_rows` directly.
 func preRunPreview(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
+	if err := oneFilePerBatch("project.import.preview", ins); err != nil {
+		return nil, err
+	}
 	out := make([]any, len(ins))
 	for i, raw := range ins {
 		in := raw.(PreviewInput)
@@ -388,8 +394,25 @@ func preRunPreview(ctx context.Context, tx store.Querier, ins []any) ([]any, err
 	return out, nil
 }
 
+// oneFilePerBatch refuses a batch that names more than one import input
+// for a handler that reads its CSV: each input's whole file is parsed and
+// held, and the cap on one file (MaxImportBytes) was a cap on the
+// batch's memory only per file — a batch of a few dozen previews of a large
+// file took gigabytes (review 2026-11-03 round 3 #12). The import wizard
+// sends one at a time.
+func oneFilePerBatch(handler string, ins []any) error {
+	if len(ins) > 1 {
+		return &reg.HandlerError{InputIndex: 1, Code: "validation",
+			Message: handler + ": one import file per request"}
+	}
+	return nil
+}
+
 // preRunCommit mirrors preRunPreview but for CommitInput.
 func preRunCommit(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
+	if err := oneFilePerBatch("project.import.commit", ins); err != nil {
+		return nil, err
+	}
 	out := make([]any, len(ins))
 	for i, raw := range ins {
 		in := raw.(CommitInput)

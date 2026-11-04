@@ -117,12 +117,13 @@ BEGIN
                 _rej_msg := format('file.create: chunks[%s].size_bytes must be non-negative', _chunk_idx);
                 EXIT;
             END IF;
-            -- Only bytes the caller sent, or may already read (cas_held_by):
-            -- knowing a hash isn't having the file (review 2026-11-03 round 2
-            -- #21).
+            -- Only bytes the caller sent (cas_held_by): knowing a hash isn't
+            -- having the file (review 2026-11-03 round 2 #21). The same
+            -- answer as for bytes kitp doesn't have at all (the PreRun's),
+            -- so it tells no stored hash from an unknown one (round 3 #18).
             IF NOT cas_held_by(_addr, file_create_batch.actor_id) THEN
-                _rej_code := 'not_found';
-                _rej_msg := format('file.create: chunks[%s]: no such uploaded chunk', _chunk_idx);
+                _rej_code := 'validation';
+                _rej_msg := format('file.create: chunk %s (%s) hasn''t been uploaded', _chunk_idx, _addr);
                 EXIT;
             END IF;
             _total := _total + _size;
