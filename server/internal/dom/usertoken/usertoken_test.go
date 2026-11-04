@@ -240,3 +240,60 @@ func contains(haystack, needle []byte) bool {
 	}
 	return false
 }
+
+// TestAuthzMintRules (review 2026-11-03 #14): a token acts as its target,
+// private cards included, so an admin may mint one only for themselves, an
+// agent they own or a workspace agent (owned by System) — never for another
+// human or another human's agent. Anyone may list their own tokens; admins
+// may list and revoke anyone's.
+func TestAuthzMintRules(t *testing.T) {
+	srv, sp := setup(t, "kitp_test_usertoken_mint_rules")
+	ctx0 := context.Background()
+	admin := newUser(t, sp, "admin-mint")
+	if _, err := sp.P.Exec(ctx0, `
+		INSERT INTO user_role (user_id, role_id, scope_card_id)
+		SELECT $1, id, NULL FROM role WHERE name = 'admin'`, admin); err != nil {
+		t.Fatal(err)
+	}
+	bob := newUser(t, sp, "bob-mint")
+	bobAgent := newAgent(t, sp, "bob-agent", bob)
+	workspaceAgent := newAgent(t, sp, "ws-agent", auth.SystemUserID)
+	adminAgent := newAgent(t, sp, "admin-agent", admin)
+
+	call := func(actor int64, action string, target int64, label string) bool {
+		data := fmt.Sprintf(`{"user_id":"%d","label":%q}`, target, label)
+		if action == "list" {
+			data = fmt.Sprintf(`{"user_id":"%d"}`, target)
+		}
+		resp := srv.Dispatch(withUser("x", actor), api.BatchRequest{Subrequests: []api.SubRequest{
+			{ID: "c", Endpoint: "user_token", Action: action, Data: json.RawMessage(data)},
+		}})
+		return resp.Subresponses[0].OK
+	}
+	cases := []struct {
+		name   string
+		actor  int64
+		action string
+		target int64
+		want   bool
+	}{
+		{"admin mints for another human", admin, "create", bob, false},
+		{"admin mints for another human's agent", admin, "create", bobAgent, false},
+		{"admin mints for a workspace agent", admin, "create", workspaceAgent, true},
+		{"admin mints for their own agent", admin, "create", adminAgent, true},
+		{"admin mints for themselves", admin, "create", admin, true},
+		{"bob mints for himself", bob, "create", bob, true},
+		{"bob mints for his agent", bob, "create", bobAgent, true},
+		{"bob mints for a workspace agent", bob, "create", workspaceAgent, false},
+		{"bob lists his own tokens", bob, "list", bob, true},
+		{"admin lists bob's tokens", admin, "list", bob, true},
+		{"bob lists the admin's tokens", bob, "list", admin, false},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := call(c.actor, c.action, c.target, fmt.Sprintf("t%d", i)); got != c.want {
+				t.Errorf("%s: ok = %v, want %v", c.name, got, c.want)
+			}
+		})
+	}
+}

@@ -44,7 +44,14 @@
 //	                            carries a "<base>/task/<id>" deep link in
 //	                            the footer, and notification digests link
 //	                            each task + the account page. Unset
-//	                            disables the links.
+//	                            disables the links. Its origin is also
+//	                            trusted by the cross-origin (CSRF) check.
+//	KITP_TRUSTED_ORIGINS      — more origins (comma-separated
+//	                            scheme://host[:port]) the cross-origin check
+//	                            admits besides the request's own Host. The
+//	                            check refuses cross-origin browser POSTs on
+//	                            cookie and public routes; it is off while
+//	                            the dev CORS middleware is on.
 //	KITP_CSP_REPORT_ONLY      — when "1", flips CSP to soft-launch mode
 //	                            (Content-Security-Policy-Report-Only)
 //	KITP_CSP_REPORT_URI       — when set, emits a report-uri directive
@@ -76,6 +83,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -427,10 +435,15 @@ func runHTTP() error {
 	// tokens for MCP. Registering an Authed route without a session
 	// resolver, or a Bearer route without a bearer resolver, panics
 	// at startup so the misconfiguration trips early.
+	crossOrigin, err := newCrossOriginProtection(env)
+	if err != nil {
+		return err
+	}
 	apiRouter := api.NewRouter(api.RouterConfig{
 		SessionResolver: newSessionResolver(sessionMgr, insecureCookie),
 		BearerResolver:  newBearerResolver(tokenMgr),
 		Logger:          logger,
+		CrossOrigin:     crossOrigin,
 	})
 
 	// OIDC validator, built early (before the auth surface mounts) so the
@@ -1058,4 +1071,34 @@ func extractBearer(header string) string {
 		return ""
 	}
 	return strings.TrimSpace(header[len(prefix):])
+}
+
+// newCrossOriginProtection builds the router's CSRF check (api.RouterConfig
+// CrossOrigin). KITP_PUBLIC_URL's origin is trusted besides the request's own
+// Host, for a proxy that rewrites Host; KITP_TRUSTED_ORIGINS adds more
+// (comma-separated scheme://host[:port]). Off (nil) when the dev CORS
+// middleware is on: that loop serves the app from another origin.
+func newCrossOriginProtection(env string) (*http.CrossOriginProtection, error) {
+	if api.CORSEnabled(env) {
+		log.Printf("cross-origin request check off: CORS is enabled (env=%s)", env)
+		return nil, nil
+	}
+	c := http.NewCrossOriginProtection()
+	origins := strings.Split(os.Getenv("KITP_TRUSTED_ORIGINS"), ",")
+	if pub := strings.TrimSpace(os.Getenv("KITP_PUBLIC_URL")); pub != "" {
+		u, err := url.Parse(pub)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return nil, fmt.Errorf("KITP_PUBLIC_URL %q: want scheme://host", pub)
+		}
+		origins = append(origins, u.Scheme+"://"+u.Host)
+	}
+	for _, o := range origins {
+		if o = strings.TrimSpace(o); o == "" {
+			continue
+		}
+		if err := c.AddTrustedOrigin(o); err != nil {
+			return nil, fmt.Errorf("trusted origin %q: %w", o, err)
+		}
+	}
+	return c, nil
 }

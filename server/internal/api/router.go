@@ -90,6 +90,15 @@ type RouterConfig struct {
 	// Logger surfaces 5xx causes and rejected-credential reasons. Falls
 	// back to slog.Default when nil.
 	Logger *slog.Logger
+	// CrossOrigin, when set, refuses a cross-origin browser request with
+	// an unsafe method (POST, …) on every session-cookie and public route
+	// before it runs: Sec-Fetch-Site must be same-origin (or none), or the
+	// Origin host must match. A request a browser didn't make (no
+	// Sec-Fetch-Site, no Origin: a mail provider's webhook, curl) passes.
+	// Bearer routes skip it — a token in a header isn't sent by a forged
+	// form. This is the CSRF defence (review 2026-11-03 #28); nil only when
+	// the dev CORS middleware is on.
+	CrossOrigin *http.CrossOriginProtection
 }
 
 // Router is the kernel. Hand it to domain packages via Mount(rt
@@ -102,11 +111,12 @@ type RouterConfig struct {
 // router never reads it back at request time — it's a side-channel
 // inventory.
 type Router struct {
-	mux     *http.ServeMux
-	session Resolver
-	bearer  Resolver
-	logger  *slog.Logger
-	routes  []RouteSpec
+	mux         *http.ServeMux
+	session     Resolver
+	bearer      Resolver
+	logger      *slog.Logger
+	crossOrigin *http.CrossOriginProtection
+	routes      []RouteSpec
 }
 
 // RouteSpec captures one HTTP route registered through the apiRouter.
@@ -126,10 +136,11 @@ func NewRouter(cfg RouterConfig) *Router {
 		logger = slog.Default()
 	}
 	return &Router{
-		mux:     http.NewServeMux(),
-		session: cfg.SessionResolver,
-		bearer:  cfg.BearerResolver,
-		logger:  logger,
+		mux:         http.NewServeMux(),
+		session:     cfg.SessionResolver,
+		bearer:      cfg.BearerResolver,
+		logger:      logger,
+		crossOrigin: cfg.CrossOrigin,
 	}
 }
 
@@ -210,6 +221,9 @@ func (rt *Router) Routes() []RouteSpec {
 func (rt *Router) wrap(resolve Resolver, kind, routeScope string, h AuthedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer rt.recoverPanic(w, r)
+		if kind != "bearer" && !rt.sameOrigin(w, r) {
+			return
+		}
 		user, err := resolve(r)
 		if err != nil {
 			// Credential present but rejected (bad cookie, expired
@@ -250,9 +264,29 @@ func (rt *Router) unauthorized(w http.ResponseWriter, r *http.Request, kind stri
 	rt.writeErr(w, r, ErrUnauthenticated)
 }
 
+// sameOrigin applies RouterConfig.CrossOrigin; on a refusal it writes the
+// 403 and returns false.
+func (rt *Router) sameOrigin(w http.ResponseWriter, r *http.Request) bool {
+	if rt.crossOrigin == nil {
+		return true
+	}
+	if err := rt.crossOrigin.Check(r); err != nil {
+		rt.logger.InfoContext(r.Context(), "cross-origin request refused",
+			"path", logpath.Of(r.URL.Path), "origin", r.Header.Get("Origin"),
+			"sec_fetch_site", r.Header.Get("Sec-Fetch-Site"))
+		rt.writeErr(w, r, &HTTPError{Status: http.StatusForbidden, Code: "cross_origin",
+			Message: "cross-origin requests are not allowed"})
+		return false
+	}
+	return true
+}
+
 func (rt *Router) wrapPublic(h PublicHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer rt.recoverPanic(w, r)
+		if !rt.sameOrigin(w, r) {
+			return
+		}
 		if err := h(r.Context(), w, r); err != nil {
 			rt.writeErr(w, r, err)
 		}

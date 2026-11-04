@@ -49,6 +49,12 @@ func TestSafeLocalRedirect(t *testing.T) {
 		{"LF injection rejected", "/x\nLocation: //evil", "/"},
 		{"data uri rejected", "data:text/html,evil", "/"},
 		{"protocol with userinfo rejected", "https://user@evil.com", "/"},
+		{"dot segment then backslash rejected", "/./\\evil.com", "/"},
+		{"backslash later in the path rejected", "/a/..\\evil.com", "/"},
+		{"tab between slashes rejected", "/\t/evil.com", "/"},
+		{"dot-dot then backslash rejected", "/a/../\\evil.com", "/"},
+		{"dot segments that stay local accepted", "/a/./b/../c", "/a/./b/../c"},
+		{"encoded backslash stays local", "/%5Cevil.com", "/%5Cevil.com"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

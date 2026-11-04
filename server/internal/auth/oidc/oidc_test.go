@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -354,13 +355,13 @@ func TestProvisionReusesExistingContact(t *testing.T) {
 	}
 }
 
-// TestProvisionAttachesToLinkedPersonByAttr covers reusing an EXISTING user
-// matched via the person's email attribute, even when user_account.email is
-// blank (so the older user_account.email fallback misses). Mirrors a person
-// pre-created as an assignee then granted a login whose email lives only on
-// the card. First sign-in attaches the sub to that account — it does not mint
-// a second one.
-func TestProvisionAttachesToLinkedPersonByAttr(t *testing.T) {
+// TestProvisionNeverAttachesByPersonEmail: a login that has never signed in
+// is attached to a new OIDC subject only through its own user_account.email,
+// which only admins set. A match on the linked person card's email attribute
+// (ordinary card data a worker can edit) gets a separate account instead —
+// otherwise editing a person's email would hand over their login (review
+// 2026-11-03 #1).
+func TestProvisionNeverAttachesByPersonEmail(t *testing.T) {
 	op := newFakeOP(t)
 	pool := store.TestPool(t, "kitp_test_oidc_reuse_linked")
 	v := oidc.NewValidator(&oidc.Config{Issuer: op.server.URL, Audience: "kitp-web"}, pool)
@@ -396,33 +397,54 @@ func TestProvisionAttachesToLinkedPersonByAttr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if userID != preUser {
-		t.Errorf("resolved to user %d, want pre-existing %d (attached, not duplicated)", userID, preUser)
+	if userID == preUser {
+		t.Fatalf("resolved to the pre-created login %d through the person's email attribute", preUser)
 	}
-
-	var sub string
-	var gotEmail *string
-	if err := pool.QueryRow(ctx, `
-		SELECT oidc_sub, email FROM user_account WHERE id = $1
-	`, preUser).Scan(&sub, &gotEmail); err != nil {
+	var sub *string
+	if err := pool.QueryRow(ctx, `SELECT oidc_sub FROM user_account WHERE id = $1`, preUser).Scan(&sub); err != nil {
 		t.Fatal(err)
 	}
-	if sub != "linked-attr-sub" {
-		t.Errorf("oidc_sub = %q, want attached sub", sub)
+	if sub != nil {
+		t.Errorf("pre-created login got oidc_sub %q; want it left unclaimed", *sub)
 	}
-	if gotEmail == nil || *gotEmail != email {
-		t.Errorf("email = %v, want backfilled %q", gotEmail, email)
-	}
+}
 
-	// Still exactly one user_account linked to this person.
-	var nUsers int
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM user_account_person WHERE person_card_id = $1
-	`, personID).Scan(&nUsers); err != nil {
+// TestProvisionNeverAttachesToSystem: whatever email the System user's person
+// card or login carries, an OIDC sign-in never becomes user 1.
+func TestProvisionNeverAttachesToSystem(t *testing.T) {
+	op := newFakeOP(t)
+	pool := store.TestPool(t, "kitp_test_oidc_system")
+	v := oidc.NewValidator(&oidc.Config{Issuer: op.server.URL, Audience: "kitp-web"}, pool)
+	ctx := context.Background()
+	now := time.Now()
+
+	const email = "takeover@example.invalid"
+	// Both routes a worker or a stray admin edit could open: the System
+	// person's email attribute, and the System login's own email.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		SELECT uap.person_card_id, ad.id, to_jsonb($1::text)
+		FROM user_account_person uap, attribute_def ad
+		WHERE uap.user_account_id = 1 AND ad.name = 'email'
+		ON CONFLICT (card_id, attribute_def_id) DO UPDATE SET value = EXCLUDED.value
+	`, email); err != nil {
 		t.Fatal(err)
 	}
-	if nUsers != 1 {
-		t.Errorf("user links to person = %d, want 1 (no second account)", nUsers)
+	if _, err := pool.Exec(ctx, `UPDATE user_account SET email = $1 WHERE id = 1`, email); err != nil {
+		t.Fatal(err)
+	}
+	tok := op.signToken(t, jwt.MapClaims{
+		"iss": op.server.URL, "aud": "kitp-web",
+		"sub": "takeover-sub", "name": "Mallory",
+		"email": email, "email_verified": true,
+		"exp": now.Add(time.Hour).Unix(),
+	})
+	userID, _, err := v.Resolve(ctx, tok)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if userID == 1 {
+		t.Fatal("an OIDC sign-in resolved to the System user")
 	}
 }
 
@@ -632,3 +654,117 @@ func TestProvisionRevokesUnmappedRoles(t *testing.T) {
 	}
 }
 
+
+// resetBootstrap puts the workspace back before its first admin: no
+// non-System admin and no admin_bootstrap row.
+func resetBootstrap(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM user_role ur USING role r
+		WHERE ur.role_id = r.id AND r.name = 'admin' AND ur.user_id <> 1;
+		DELETE FROM admin_bootstrap;
+	`); err != nil {
+		t.Fatalf("reset bootstrap: %v", err)
+	}
+}
+
+// TestBootstrapAdminOnce covers DI-2: concurrent first sign-ins make exactly
+// one admin, and once the workspace has had an admin no later sign-in is
+// made admin automatically — not even after every admin loses the role, and
+// not in the sign-in that just lost an IdP-granted admin.
+func TestBootstrapAdminOnce(t *testing.T) {
+	op := newFakeOP(t)
+	pool := store.TestPool(t, "kitp_test_oidc_bootstrap")
+	v := oidc.NewValidator(&oidc.Config{Issuer: op.server.URL, Audience: "kitp-web", RoleClaim: "groups"}, pool)
+	ctx := context.Background()
+	now := time.Now()
+	signIn := func(sub string, groups any) (int64, error) {
+		claims := jwt.MapClaims{"iss": op.server.URL, "aud": "kitp-web", "sub": sub, "exp": now.Add(time.Hour).Unix()}
+		if groups != nil {
+			claims["groups"] = groups
+		}
+		id, _, err := v.Resolve(ctx, op.signToken(t, claims))
+		return id, err
+	}
+	admins := func() int {
+		var n int
+		if err := pool.QueryRow(ctx, `
+			SELECT count(*) FROM user_role ur JOIN role r ON r.id = ur.role_id
+			WHERE r.name = 'admin' AND ur.user_id <> 1`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	t.Run("concurrent first sign-ins make one admin", func(t *testing.T) {
+		resetBootstrap(t, ctx, pool)
+		const n = 6
+		errs := make(chan error, n)
+		for i := range n {
+			go func() {
+				_, err := signIn(fmt.Sprintf("race-%d", i), nil)
+				errs <- err
+			}()
+		}
+		for range n {
+			if err := <-errs; err != nil {
+				t.Fatalf("sign-in: %v", err)
+			}
+		}
+		if got := admins(); got != 1 {
+			t.Fatalf("admins after %d concurrent first sign-ins = %d, want 1", n, got)
+		}
+	})
+
+	t.Run("no re-arm after every admin loses the role", func(t *testing.T) {
+		resetBootstrap(t, ctx, pool)
+		if _, err := signIn("first-admin", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := admins(); got != 1 {
+			t.Fatalf("first sign-in: admins = %d, want 1", got)
+		}
+		if _, err := pool.Exec(ctx, `
+			DELETE FROM user_role ur USING role r
+			WHERE ur.role_id = r.id AND r.name = 'admin' AND ur.user_id <> 1`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := signIn("later-user", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := admins(); got != 0 {
+			t.Fatalf("a sign-in after every admin was removed was made admin (admins = %d)", got)
+		}
+	})
+
+	t.Run("an IdP admin who loses the group isn't re-granted", func(t *testing.T) {
+		resetBootstrap(t, ctx, pool)
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO role_mapping (claim_value, role_id)
+			SELECT 'boot.admin', id FROM role WHERE name = 'admin'
+			ON CONFLICT DO NOTHING`); err != nil {
+			t.Fatal(err)
+		}
+		id, err := signIn("idp-admin", []string{"boot.admin"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Simulate an install that predates admin_bootstrap: the IdP admin
+		// holds the role, but nothing recorded the bootstrap.
+		if _, err := pool.Exec(ctx, `DELETE FROM admin_bootstrap`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := signIn("idp-admin", []string{}); err != nil {
+			t.Fatal(err)
+		}
+		if got := rolesOf(t, ctx, pool, id); got["admin"] {
+			t.Fatal("the sign-in that revoked an IdP admin granted admin straight back")
+		}
+		if _, err := signIn("someone-else", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := admins(); got != 0 {
+			t.Fatalf("a later sign-in was made admin after the IdP admin was dropped (admins = %d)", got)
+		}
+	})
+}

@@ -51,24 +51,33 @@ claim: review B11, 2026-11-02.
 
 ---
 
-## DI-2 — Admin bootstrap is a single atomic statement, never check-then-insert
+## DI-2 — Admin bootstrap happens once, in one statement
 
-**Rule.** Granting the first admin (init-mode, and the OIDC first-sign-in
-path) is one `INSERT … SELECT … WHERE NOT EXISTS … ON CONFLICT DO NOTHING`
-statement, evaluated under a single MVCC snapshot — no separate
-"does an admin exist yet?" read followed by an insert.
+**Rule.** The workspace gets its first admin automatically (the OIDC
+first-sign-in path) at most once. "Once" is the `admin_bootstrap` row, not
+"nobody holds admin right now": the row is written the first time an admin
+is granted (init-admin bootstrap, the first sign-in) or seen (any sign-in
+that finds an admin, migration 0029 on existing installs) and never
+removed. The grant is one statement — insert the row `ON CONFLICT DO
+NOTHING`, grant admin only if that insert happened — so concurrent first
+sign-ins serialize on the row's primary key and at most one wins. A
+sign-in that just lost an IdP-granted admin role only records the row.
+`KITP_INIT_ADMIN_EMAIL` (an operator action at startup) still restores an
+admin when there is none.
 
-**Why.** A check-then-insert on the bare pool lets two concurrent
-first-time sign-ins both observe "no admin yet" and both self-elevate:
-silent, permanent privilege escalation. Postgres serializes the inserts
-on the unique constraint so at most one wins.
+**Why.** A check-then-insert lets two concurrent first-time sign-ins both
+observe "no admin yet" and both self-elevate: two users' `user_role` rows
+never conflict, so the old `INSERT … WHERE NOT EXISTS` let both through.
+And a rule of "no admin right now" re-arms: when the only admin's IdP group
+is removed, the next sign-in (even theirs, in the same transaction) became
+admin again. Review 2026-11-03 #13.
 
-**Enforced in.** `auth/oidc/oidc.go` (`grantAdminIfInitMode`), matching the
-tx+recheck shape already in `auth/init_admin.go` (`BootstrapInitAdmin`).
+**Enforced in.** `auth/oidc/oidc.go` (`grantAdminIfInitMode`) and
+`auth/init_admin.go` (`BootstrapInitAdmin` records the row).
 
-**Tested by.** OIDC package suite (`auth/oidc/oidc_test.go`).
+**Tested by.** `TestBootstrapAdminOnce` (`auth/oidc/oidc_test.go`).
 
-**Originally:** B2 (HIGH), resolved 2026-05-21.
+**Originally:** B2 (HIGH), resolved 2026-05-21; reworked 2026-11-03.
 
 ---
 

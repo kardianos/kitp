@@ -245,6 +245,14 @@ name, columns, unique, where
 uniq_user_role_scoped, "user_id, role_id, scope_card_id", true, "scope_card_id IS NOT NULL"
 uniq_user_role_global, "user_id, role_id", true, "scope_card_id IS NULL"
 
+## table admin_bootstrap | doc="One row once the workspace has its first admin (docs/DESIGN_INVARIANTS.md DI-2). Written by the init-admin bootstrap, by the OIDC sign-in that grants the first admin, and by any sign-in that finds an admin already there. While the row exists no sign-in is ever made admin automatically again, even if every admin later loses the role (restore one with KITP_INIT_ADMIN_EMAIL). The primary key on singleton (always true) lets only one transaction claim it."
+
+### columns
+name, type, pk, nullable, default, check, references, on_delete
+singleton, boolean, true, false, true, "singleton", ,
+user_id, bigint, , , , , user_account.id, set null
+at, timestamptz, , false, now(), , ,
+
 ## table comment_body | doc="Comment text attached to a card via an activity row of kind=comment."
 
 ### columns

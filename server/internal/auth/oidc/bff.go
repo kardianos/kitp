@@ -47,6 +47,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -334,35 +335,37 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 // for the post-login destination. A path is accepted only when ALL hold:
 //
 //   - it starts with a single "/" (so it's rooted, not relative);
-//   - it does NOT start with "//" or "/\" (scheme-relative // and the
-//     backslash variant browsers normalise to // both escape the origin);
-//   - it contains no CR or LF (header/redirect splitting);
+//   - it contains no backslash anywhere and no control character (CR / LF
+//     split headers; browsers drop tab and newline from URLs and fold "\"
+//     to "/", so "/\t/evil", "/./\evil.com" and "/\evil.com" all become
+//     "//evil.com" on the far side);
+//   - the path http.Redirect will send — path.Clean of it, since Redirect
+//     cleans a rooted path — still starts with a single "/";
 //   - it parses via net/url to a URL with an empty Scheme AND empty Host
 //     (rejects "https://evil", "javascript:...", and userinfo/host tricks
-//     that survive the prefix checks).
+//     that survive the other checks).
 //
 // Anything else — including the empty string — collapses to "/".
 func safeLocalRedirect(raw string) string {
-	if raw == "" {
+	if raw == "" || raw[0] != '/' {
 		return "/"
 	}
-	if raw[0] != '/' {
+	if strings.HasPrefix(raw, "//") || strings.ContainsRune(raw, '\\') {
 		return "/"
 	}
-	// "//evil.com" is scheme-relative; "/\evil.com" is the backslash
-	// form browsers fold to "//". Reject both before url.Parse, which
-	// would otherwise read "//evil.com" as host=evil.com.
-	if strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, "/\\") {
-		return "/"
-	}
-	if strings.ContainsAny(raw, "\r\n") {
-		return "/"
+	for _, r := range raw {
+		if r < 0x20 || r == 0x7f {
+			return "/"
+		}
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "/"
 	}
-	if u.Scheme != "" || u.Host != "" {
+	if u.Scheme != "" || u.Host != "" || u.Opaque != "" {
+		return "/"
+	}
+	if cleaned := path.Clean(u.Path); cleaned == "" || cleaned[0] != '/' || strings.HasPrefix(cleaned, "//") {
 		return "/"
 	}
 	return raw

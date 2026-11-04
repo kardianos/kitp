@@ -36,6 +36,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/textnorm"
 )
 
@@ -530,13 +532,20 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		// our sub to it. We deliberately match only rows with
 		// oidc_sub IS NULL so we don't rebind a row owned by a
 		// different OIDC subject that happens to share an email.
+		//
+		// Only user_account.email decides the attach: it is set by an
+		// admin (person.create tier='user', person.grant_account, the
+		// init-admin bootstrap), never by card edits. The System user
+		// (id 1) and agents never sign in through OIDC, so a sub is never
+		// attached to them whatever their email says.
 		var preID int64
 		preErr := tx.QueryRow(ctx, `
 			SELECT id FROM user_account
 			WHERE lower(email) = $1 AND oidc_sub IS NULL
+			  AND id <> $2 AND NOT is_agent AND parent_user_id IS NULL
 			ORDER BY id
 			LIMIT 1
-		`, email).Scan(&preID)
+		`, email, auth.SystemUserID).Scan(&preID)
 		if preErr != nil && !errors.Is(preErr, pgx.ErrNoRows) {
 			return 0, "", fmt.Errorf("oidc: email-fallback lookup: %w", preErr)
 		}
@@ -590,23 +599,17 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 			case errors.Is(perErr, pgx.ErrNoRows):
 				// No existing person — fall through to fresh insert.
 			case linkedUserID != nil && !linkedHasSub:
-				// The person already has a login (admin pre-created via
-				// person.create tier='user' / person.grant_account) whose
-				// oidc_sub is still NULL. Attach our sub to it — same as
-				// the user_account email fallback above, but matched via
-				// the person's email attribute, which can differ from a
-				// NULL / stale user_account.email.
-				if _, uErr := tx.Exec(ctx, `
-					UPDATE user_account
-					SET oidc_sub = $1,
-					    email = CASE WHEN coalesce(email, '') = '' THEN NULLIF($2, '') ELSE email END,
-					    display_name = CASE WHEN coalesce(display_name, '') = '' THEN $3 ELSE display_name END
-					WHERE id = $4
-				`, sub, email, displayName, *linkedUserID); uErr != nil {
-					return 0, "", fmt.Errorf("oidc: attach sub to linked person: %w", uErr)
-				}
-				userID = *linkedUserID
-				attached = true
+				// The person already has a login that has never signed in,
+				// but the match is on the person card's email attribute —
+				// ordinary card data any worker can edit — and that login's
+				// own (admin-set) email didn't match above. Attaching here
+				// would let anyone who can edit a person's email take over
+				// the login (review 2026-11-03 #1), so this sign-in gets a
+				// separate account; an admin merges the two if they are the
+				// same human.
+				slog.Default().LogAttrs(ctx, slog.LevelWarn,
+					"oidc: email matches a person whose login has a different email; provisioning a separate account",
+					slog.String("sub", sub), slog.Int64("person_card_id", personID))
 			case linkedUserID == nil:
 				// A contact or assignee with no login. Elevate it: mint a
 				// user_account, link it to the existing person card, and
@@ -790,25 +793,39 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	// `<> ALL($2)` with an empty array deletes every 'oidc' global row,
 	// which is correct: claims present but nothing mapped (and no default)
 	// means no OIDC roles are justified.
+	// revokedAdmin: this sign-in just lost an IdP-granted admin role. The
+	// bootstrap below must not hand it straight back as a manual grant.
+	revokedAdmin := false
 	if claimPresent(claims, v.cfg.RoleClaim) {
-		if _, err := tx.Exec(ctx, `
-			DELETE FROM user_role
-			WHERE user_id = $1
-			  AND granted_via = 'oidc'
-			  AND scope_card_id IS NULL
-			  AND role_id <> ALL($2::bigint[])
-		`, userID, desired); err != nil {
+		b := named.New()
+		b.Set("user_id", userID)
+		b.Set("desired", desired)
+		q, args, err := b.Compile(`
+			WITH gone AS (
+				DELETE FROM user_role
+				WHERE user_id = :user_id
+				  AND granted_via = 'oidc'
+				  AND scope_card_id IS NULL
+				  AND role_id <> ALL(:desired::bigint[])
+				RETURNING role_id
+			)
+			SELECT EXISTS (SELECT 1 FROM gone JOIN role r ON r.id = gone.role_id WHERE r.name = 'admin')
+		`)
+		if err != nil {
+			return 0, "", fmt.Errorf("oidc: reconcile roles: compile: %w", err)
+		}
+		if err := tx.QueryRow(ctx, q, args...).Scan(&revokedAdmin); err != nil {
 			return 0, "", fmt.Errorf("oidc: reconcile roles: %w", err)
 		}
 	}
 
-	// Init-mode bootstrap. If no non-system user holds the admin role
-	// globally yet, the first OIDC sign-in is the one that elevates
-	// themselves to admin. This is the "bring-your-own-key" path that
-	// fires when KITP_INIT_ADMIN_EMAIL was NOT set at startup
-	// (otherwise the bootstrap already created and granted an admin,
-	// so this branch is a no-op for subsequent users).
-	if err := grantAdminIfInitMode(ctx, tx, userID); err != nil {
+	// Init-mode bootstrap. If the workspace has never had an admin, the
+	// first OIDC sign-in is the one that elevates themselves to admin.
+	// This is the "bring-your-own-key" path that fires when
+	// KITP_INIT_ADMIN_EMAIL was NOT set at startup (otherwise the
+	// bootstrap already created and granted an admin, so this branch is a
+	// no-op for subsequent users).
+	if err := grantAdminIfInitMode(ctx, tx, userID, revokedAdmin); err != nil {
 		return 0, "", fmt.Errorf("oidc: init-mode grant: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -856,33 +873,49 @@ func elevatePersonKind(ctx context.Context, tx pgx.Tx, personCardID, actorID int
 	return nil
 }
 
-// grantAdminIfInitMode grants [userID] the global admin role iff no
-// other non-system user (id != 1) already holds it.
+// grantAdminIfInitMode makes [userID] the workspace's first admin when it
+// has never had one (DI-2 in docs/DESIGN_INVARIANTS.md).
 //
-// Called from `provisionUser` inside the request's provisioning tx
-// (S2), so the predicate evaluates under the same MVCC snapshot as
-// the rest of the provisioning steps. The `NOT EXISTS` subquery +
-// INSERT is one statement; two concurrent first-time sign-ins
-// cannot both pass the gate and both self-elevate. Documented in
-// DI-2 in docs/DESIGN_INVARIANTS.md.
+// "Never had one" is the admin_bootstrap row, not "nobody holds admin right
+// now": the row is written the first time an admin is seen or granted and
+// is never removed, so the bootstrap can't re-arm when every admin later
+// loses the role (an IdP group change, an admin demoting themselves). The
+// claim is one statement — insert the row, and grant admin only if this
+// statement inserted it — so two concurrent first sign-ins serialize on the
+// row's primary key and at most one becomes admin. [revokedAdmin] (this
+// sign-in just lost an IdP-granted admin) only records the row.
 //
-// ON CONFLICT DO NOTHING covers the "already an admin" case for
-// the same user (rerunning the function with the same userID).
-func grantAdminIfInitMode(ctx context.Context, tx pgx.Tx, userID int64) error {
-	const systemUserID = 1
-	if _, err := tx.Exec(ctx, `
+// Called from `provisionUser` inside the request's provisioning tx (S2).
+func grantAdminIfInitMode(ctx context.Context, tx pgx.Tx, userID int64, revokedAdmin bool) error {
+	b := named.New()
+	b.Set("user_id", userID)
+	b.Set("system", auth.SystemUserID)
+	b.Set("revoked", revokedAdmin)
+	q, args, err := b.Compile(`
+		WITH has_admin AS (
+			SELECT EXISTS (
+				SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
+				WHERE r.name = 'admin' AND ur.user_id <> :system::bigint
+			) AS yes
+		), seen AS (
+			-- Already past the bootstrap: just record it.
+			INSERT INTO admin_bootstrap (singleton, user_id)
+			SELECT true, NULL::bigint FROM has_admin WHERE has_admin.yes OR :revoked::boolean
+			ON CONFLICT (singleton) DO NOTHING
+		), claim AS (
+			INSERT INTO admin_bootstrap (singleton, user_id)
+			SELECT true, :user_id::bigint FROM has_admin WHERE NOT has_admin.yes AND NOT :revoked::boolean
+			ON CONFLICT (singleton) DO NOTHING
+			RETURNING user_id
+		)
 		INSERT INTO user_role (user_id, role_id, scope_card_id)
-		SELECT $1, r.id, NULL
-		FROM role r
-		WHERE r.name = 'admin'
-		  AND NOT EXISTS (
-		    SELECT 1
-		    FROM user_role ur
-		    JOIN role r2 ON r2.id = ur.role_id
-		    WHERE r2.name = 'admin' AND ur.user_id <> $2
-		  )
+		SELECT claim.user_id, r.id, NULL FROM claim JOIN role r ON r.name = 'admin'
 		ON CONFLICT DO NOTHING
-	`, userID, systemUserID); err != nil {
+	`)
+	if err != nil {
+		return fmt.Errorf("init-admin grant: compile: %w", err)
+	}
+	if _, err := tx.Exec(ctx, q, args...); err != nil {
 		return fmt.Errorf("init-admin grant: %w", err)
 	}
 	return nil

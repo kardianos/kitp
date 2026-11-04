@@ -395,3 +395,60 @@ func TestPanicIsA500(t *testing.T) {
 		rt.Mux().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/abort", nil))
 	}()
 }
+
+// TestRouter_CrossOrigin (review 2026-11-03 #28): with RouterConfig.CrossOrigin
+// set, a cross-origin (or merely same-site) browser POST is refused on
+// session and public routes before the handler runs; same-origin and
+// non-browser requests pass, and bearer routes are never checked.
+func TestRouter_CrossOrigin(t *testing.T) {
+	co := http.NewCrossOriginProtection()
+	if err := co.AddTrustedOrigin("https://kitp.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	user := fakeUser(42, "Alice")
+	rt := api.NewRouter(api.RouterConfig{
+		SessionResolver: resolverReturning(user, nil),
+		BearerResolver:  resolverReturning(user, nil),
+		Logger:          silentLogger(),
+		CrossOrigin:     co,
+	})
+	ran := 0
+	ok := func(context.Context, http.ResponseWriter, *http.Request, *auth.UserCtx) error { ran++; return nil }
+	rt.Authed("POST /api/v1/batch", ok)
+	rt.Bearer("POST /api/v1/mcp", ok)
+	rt.Public("POST /api/v1/auth/logout", func(context.Context, http.ResponseWriter, *http.Request) error { ran++; return nil })
+
+	cases := []struct {
+		name    string
+		path    string
+		headers map[string]string
+		want    int
+	}{
+		{"same origin by fetch metadata", "/api/v1/batch", map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusOK},
+		{"cross-site form post", "/api/v1/batch", map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"}, http.StatusForbidden},
+		{"sibling subdomain (same-site)", "/api/v1/batch", map[string]string{"Sec-Fetch-Site": "same-site", "Origin": "https://x.example.com"}, http.StatusForbidden},
+		{"foreign Origin, no fetch metadata", "/api/v1/batch", map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
+		{"Origin matching Host", "/api/v1/batch", map[string]string{"Origin": "http://example.com"}, http.StatusOK},
+		{"trusted public origin", "/api/v1/batch", map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": "https://kitp.example.com"}, http.StatusOK},
+		{"not a browser (no headers)", "/api/v1/batch", nil, http.StatusOK},
+		{"cross-site logout", "/api/v1/auth/logout", map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"}, http.StatusForbidden},
+		{"bearer route is not checked", "/api/v1/mcp", map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"}, http.StatusOK},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			before := ran
+			req := httptest.NewRequest(http.MethodPost, "http://example.com"+c.path, strings.NewReader("{}"))
+			for k, v := range c.headers {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			rt.Mux().ServeHTTP(rec, req)
+			if rec.Code != c.want {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, c.want, rec.Body.String())
+			}
+			if ranNow := ran > before; ranNow != (c.want == http.StatusOK) {
+				t.Errorf("handler ran = %v, want %v", ranNow, c.want == http.StatusOK)
+			}
+		})
+	}
+}

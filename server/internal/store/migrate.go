@@ -1227,6 +1227,20 @@ WHERE ct.id = c.card_type_id AND ct.name = 'watch_list'
   AND jsonb_typeof(av.value) = 'number' AND c.private_to IS NULL;
 DROP FUNCTION IF EXISTS watch_owner(bigint);`,
 	},
+	{
+		// The first-admin marker (DI-2): an install that already has an admin
+		// is past its bootstrap, so record it — otherwise, if every admin
+		// later lost the role, the next sign-in would be made admin.
+		// Idempotent.
+		id: "0029_admin_bootstrap",
+		sql: `
+INSERT INTO admin_bootstrap (singleton, user_id)
+SELECT true, (SELECT min(ur.user_id) FROM user_role ur JOIN role r ON r.id = ur.role_id
+              WHERE r.name = 'admin' AND ur.user_id <> 1)
+WHERE EXISTS (SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
+              WHERE r.name = 'admin' AND ur.user_id <> 1)
+ON CONFLICT (singleton) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

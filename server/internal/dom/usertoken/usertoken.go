@@ -4,10 +4,12 @@
 // designed so the secret never leaves the server except in the single
 // create reply: list / revoke address rows by (user_id, label).
 //
-// Authz model (mirrors the agent package): the calling user must be
-// EITHER the target user_account's parent_user_id OR a global admin.
-// Agents themselves cannot manage tokens — symmetric with the
-// self-escalation guards on user_role and agent.* endpoints.
+// Authz model (authzToken): you may list and revoke your own tokens, your
+// agents' and — as a global admin — anyone's; you may mint a token for
+// yourself or an agent you own, and a global admin also for a workspace
+// agent (owned by System). Agents themselves cannot manage tokens —
+// symmetric with the self-escalation guards on user_role and agent.*
+// endpoints.
 package usertoken
 
 import (
@@ -19,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -82,7 +85,7 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "user_token",
 		Action:       "create",
-		Doc:          "Mint an opaque bearer token bound to user_id. The plaintext value is returned ONCE in the response — store it immediately. scope 'links' mints a narrow token that works ONLY on the forge link hook (POST /api/v1/links), for a code forge; omit it for a full-access (MCP) token. Authz: caller is the target's parent_user_id, or a global admin.",
+		Doc:          "Mint an opaque bearer token bound to user_id. The plaintext value is returned ONCE in the response — store it immediately. scope 'links' mints a narrow token that works ONLY on the forge link hook (POST /api/v1/links), for a code forge; omit it for a full-access (MCP) token. Authz: your own token, one for an agent you own, or (global admin) one for a workspace agent owned by System — never one for another human or their agent.",
 		InputType:    reflect.TypeFor[CreateInput](),
 		OutputType:   reflect.TypeFor[CreateOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
@@ -95,7 +98,7 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "user_token",
 		Action:       "list",
-		Doc:          "List every token bound to user_id (label + timestamps; the secret value is never returned). Authz: caller is the target's parent_user_id, or a global admin.",
+		Doc:          "List every token bound to user_id (label + timestamps; the secret value is never returned). Authz: the user themselves, their owner (for an agent), or a global admin.",
 		InputType:    reflect.TypeFor[ListInput](),
 		OutputType:   reflect.TypeFor[ListOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
@@ -109,7 +112,7 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "user_token",
 		Action:       "revoke",
-		Doc:          "Revoke one token by (user_id, label). Idempotent. Authz: caller is the target's parent_user_id, or a global admin.",
+		Doc:          "Revoke one token by (user_id, label). Idempotent. Authz: the user themselves, their owner (for an agent), or a global admin.",
 		InputType:    reflect.TypeFor[RevokeInput](),
 		OutputType:   reflect.TypeFor[RevokeOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},
@@ -123,49 +126,77 @@ func Register(p *store.Pool) {
 
 var authzPool any
 
-// authzParentOrAdmin permits the call when the actor is the target's
-// parent_user_id, or when the actor holds the global admin / system
-// role. Agents are always rejected as actors. Shared by all three
-// user_token endpoints — the input shape is whichever struct the
-// caller's reflect.TypeFor[*] resolves to.
-func authzParentOrAdmin(ctx context.Context, targetUserID int64) error {
+// tokenAccess says what the actor may do with target's tokens.
+type tokenAccess int
+
+const (
+	// accessList: see and revoke them (labels and timestamps only).
+	accessList tokenAccess = iota
+	// accessMint: also mint new ones, which act as the target.
+	accessMint
+)
+
+// authzToken checks the actor against target's tokens. Agents are always
+// refused as actors.
+//
+//   - Listing and revoking: the target themselves, the target's owner
+//     (parent_user_id), or a global admin.
+//   - Minting: a token acts as its target, private cards included (an
+//     agent sees its owner's — docs/PERSONAL_SCREENS.md P2). So: your own
+//     token, a token for an agent you own, or — for a global admin — a
+//     token for a workspace agent (owned by System). Never one for another
+//     human, or for another human's agent (review 2026-11-03 #14).
+func authzToken(ctx context.Context, targetUserID int64, want tokenAccess) error {
 	pool, _ := authzPool.(*store.Pool)
 	if pool == nil {
 		return nil // tests
 	}
 	actor := auth.ActorOrSystem(ctx)
-	var actorIsAgent bool
-	if err := pool.P.QueryRow(ctx,
-		`SELECT is_agent FROM user_account WHERE id = $1`, actor,
-	).Scan(&actorIsAgent); err != nil {
-		return fmt.Errorf("user_token.authz: load actor: %w", err)
+	b := named.New()
+	b.Set("actor", actor)
+	b.Set("target", targetUserID)
+	q, args, err := b.Compile(`
+		SELECT a.is_agent, t.is_agent, t.parent_user_id
+		FROM user_account a, user_account t
+		WHERE a.id = :actor AND t.id = :target
+	`)
+	if err != nil {
+		return fmt.Errorf("user_token.authz: compile: %w", err)
+	}
+	var (
+		actorIsAgent, targetIsAgent bool
+		parentID                    *int64
+	)
+	if err := pool.P.QueryRow(ctx, q, args...).Scan(&actorIsAgent, &targetIsAgent, &parentID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &reg.HandlerError{Code: "not_found",
+				Message: fmt.Sprintf("user_token: target user %d not found", targetUserID)}
+		}
+		return fmt.Errorf("user_token.authz: load users: %w", err)
 	}
 	if actorIsAgent {
 		return &reg.HandlerError{Code: "forbidden",
 			Message: fmt.Sprintf("user_token: agent actor %d cannot manage tokens", actor)}
 	}
-	var parentID *int64
-	if err := pool.P.QueryRow(ctx,
-		`SELECT parent_user_id FROM user_account WHERE id = $1`, targetUserID,
-	).Scan(&parentID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return &reg.HandlerError{Code: "not_found",
-				Message: fmt.Sprintf("user_token: target user %d not found", targetUserID)}
-		}
-		return fmt.Errorf("user_token.authz: load target: %w", err)
-	}
-	if parentID != nil && *parentID == actor {
+	if targetUserID == actor || (parentID != nil && *parentID == actor) {
 		return nil
 	}
 	admin, err := auth.IsGlobalAdmin(ctx, pool.P, actor)
 	if err != nil {
 		return fmt.Errorf("user_token.authz: admin check: %w", err)
 	}
-	if !admin {
-		return &reg.HandlerError{Code: "forbidden",
-			Message: fmt.Sprintf("user_token: actor %d is neither parent of %d nor a global admin", actor, targetUserID)}
+	if admin && want == accessList {
+		return nil
 	}
-	return nil
+	if admin && targetIsAgent && parentID != nil && *parentID == auth.SystemUserID {
+		return nil
+	}
+	if admin {
+		return &reg.HandlerError{Code: "forbidden",
+			Message: fmt.Sprintf("user_token: a token for user %d would act as them; only they (or the agent's owner) can mint one", targetUserID)}
+	}
+	return &reg.HandlerError{Code: "forbidden",
+		Message: fmt.Sprintf("user_token: actor %d is not user %d, its owner or a global admin", actor, targetUserID)}
 }
 
 func authzCreate(ctx context.Context, in any) error {
@@ -173,7 +204,7 @@ func authzCreate(ctx context.Context, in any) error {
 	if !ok {
 		return nil
 	}
-	return authzParentOrAdmin(ctx, row.UserID)
+	return authzToken(ctx, row.UserID, accessMint)
 }
 
 func authzList(ctx context.Context, in any) error {
@@ -181,7 +212,7 @@ func authzList(ctx context.Context, in any) error {
 	if !ok {
 		return nil
 	}
-	return authzParentOrAdmin(ctx, row.UserID)
+	return authzToken(ctx, row.UserID, accessList)
 }
 
 func authzRevoke(ctx context.Context, in any) error {
@@ -189,7 +220,5 @@ func authzRevoke(ctx context.Context, in any) error {
 	if !ok {
 		return nil
 	}
-	return authzParentOrAdmin(ctx, row.UserID)
+	return authzToken(ctx, row.UserID, accessList)
 }
-
-

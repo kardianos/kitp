@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/textnorm"
 )
 
@@ -118,12 +119,33 @@ func BootstrapInitAdmin(ctx context.Context, pool *pgxpool.Pool, email string) e
 	).Scan(&adminRoleID); err != nil {
 		return fmt.Errorf("bootstrap init-admin: lookup admin role: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
+	b := named.New()
+	b.Set("user_id", userID)
+	b.Set("role_id", adminRoleID)
+	q, args, err := b.Compile(`
 		INSERT INTO user_role (user_id, role_id, scope_card_id)
-		VALUES ($1, $2, NULL)
+		VALUES (:user_id, :role_id, NULL)
 		ON CONFLICT DO NOTHING
-	`, userID, adminRoleID); err != nil {
+	`)
+	if err != nil {
+		return fmt.Errorf("bootstrap init-admin: grant: compile: %w", err)
+	}
+	if _, err := tx.Exec(ctx, q, args...); err != nil {
 		return fmt.Errorf("bootstrap init-admin: grant: %w", err)
+	}
+	// The workspace now has had an admin: no OIDC sign-in is made admin
+	// automatically from here on (admin_bootstrap, DI-2).
+	b = named.New()
+	b.Set("user_id", userID)
+	q, args, err = b.Compile(`
+		INSERT INTO admin_bootstrap (singleton, user_id) VALUES (true, :user_id)
+		ON CONFLICT (singleton) DO NOTHING
+	`)
+	if err != nil {
+		return fmt.Errorf("bootstrap init-admin: mark: compile: %w", err)
+	}
+	if _, err := tx.Exec(ctx, q, args...); err != nil {
+		return fmt.Errorf("bootstrap init-admin: mark: %w", err)
 	}
 
 	return tx.Commit(ctx)
