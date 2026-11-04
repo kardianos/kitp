@@ -31,6 +31,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -854,8 +855,14 @@ func compileSnippet(n CardWhereTreeNode, c *compileCtx) (string, error) {
 	// Fetch the snippet card's `predicate` attribute value. The card
 	// type gate keeps a misused snippet id (pointing at a non-snippet
 	// card) from being decoded as a tree.
-	var raw string
-	err = c.tx.QueryRow(c.ctx, `
+	//
+	// Only a snippet the viewer can see (their login's card_visible_to):
+	// another project's saved filter is no test to run (review 2026-11-03
+	// round 2 #21). A tree evaluated for no one (viewer 0) uses any.
+	b := named.New()
+	b.Set("id", id)
+	b.Set("viewer", c.viewer)
+	q, args, err := b.Compile(`
 		SELECT COALESCE(av.value #>> '{}', '')
 		FROM card c
 		JOIN card_type ct ON ct.id = c.card_type_id
@@ -866,10 +873,18 @@ func compileSnippet(n CardWhereTreeNode, c *compileCtx) (string, error) {
 			WHERE av.card_id = c.id AND ad.name = 'predicate'
 			LIMIT 1
 		) av ON TRUE
-		WHERE c.id = $1
+		WHERE c.id = :id
 		  AND c.deleted_at IS NULL
 		  AND ct.name = 'predicate_snippet'
-	`, id).Scan(&raw)
+		  AND (:viewer::bigint = 0 OR card_visible_to(COALESCE((
+		          SELECT uap.user_account_id FROM user_account_person uap
+		          WHERE uap.person_card_id = :viewer::bigint LIMIT 1), 0), c.id))
+	`)
+	if err != nil {
+		return "", fmt.Errorf("snippet: compile: %w", err)
+	}
+	var raw string
+	err = c.tx.QueryRow(c.ctx, q, args...).Scan(&raw)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "FALSE", nil

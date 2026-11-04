@@ -780,7 +780,14 @@ BEGIN
             WHERE av.card_id = sc.id AND ad.name = 'predicate'
             LIMIT 1
         ) av ON TRUE
-        WHERE sc.id = _snip_id AND sc.deleted_at IS NULL AND sct.name = 'predicate_snippet';
+        WHERE sc.id = _snip_id AND sc.deleted_at IS NULL AND sct.name = 'predicate_snippet'
+          -- Only a snippet the viewer can see (their login's
+          -- card_visible_to): another project's saved filter is no test to
+          -- run (review 2026-11-03 round 2 #21). A tree evaluated for no one
+          -- (viewer NULL, kitp's own reads) uses any.
+          AND (viewer IS NULL OR card_visible_to(COALESCE((
+                  SELECT uap.user_account_id FROM user_account_person uap
+                  WHERE uap.person_card_id = viewer LIMIT 1), 0), sc.id));
 
         IF _snip_pred IS NULL THEN
             RETURN jsonb_build_object('sql', 'FALSE', 'params', params);

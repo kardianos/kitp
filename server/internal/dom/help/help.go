@@ -19,6 +19,8 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -125,9 +127,10 @@ func runGetTopic(ctx context.Context, tx store.Querier, ins []any) ([]any, error
 
 func runGetScreen(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 	outs := make([]any, len(ins))
+	actor := auth.ActorOrSystem(ctx)
 	for i, raw := range ins {
 		in := raw.(GetScreenInput)
-		body, title, err := buildScreenHelp(ctx, tx, in.ScreenCardID)
+		body, title, err := buildScreenHelp(ctx, tx, actor, in.ScreenCardID)
 		if err != nil {
 			return nil, err
 		}
@@ -166,8 +169,13 @@ func firstH1(body, fallback string) string {
 // + filter prose. Missing attributes degrade gracefully: an unknown
 // layout drops the primer; an absent / unparseable predicate falls
 // through to a generic "every task in this project" line.
-func buildScreenHelp(ctx context.Context, tx store.Querier, screenID int64) (string, string, error) {
-	attrs, err := loadCardAttrs(ctx, tx, screenID)
+//
+// Only a screen the caller can see is described, and only a default filter
+// they can see (card_visible_to: their projects, not an area that is off,
+// not someone else's private screen or view) — help is no way round DI-6
+// or P2 (review 2026-11-03 round 2 #7). Anything else is "not found".
+func buildScreenHelp(ctx context.Context, tx store.Querier, actor, screenID int64) (string, string, error) {
+	attrs, err := loadCardAttrs(ctx, tx, actor, screenID, "screen")
 	if err != nil {
 		return "", "", err
 	}
@@ -190,7 +198,7 @@ func buildScreenHelp(ctx context.Context, tx store.Querier, screenID int64) (str
 	}
 
 	b.WriteString("## What this view shows\n\n")
-	prose, err := buildFilterProse(ctx, tx, defaultFilterID)
+	prose, err := buildFilterProse(ctx, tx, actor, defaultFilterID)
 	if err != nil {
 		// Don't fail the whole help fetch on a single bad predicate; the
 		// layout primer is still useful. Surface a neutral sentence so
@@ -206,11 +214,11 @@ func buildScreenHelp(ctx context.Context, tx store.Querier, screenID int64) (str
 // buildFilterProse renders the per-screen sentence describing what the
 // default filter selects. When the screen has no default filter we
 // return the no-filter line.
-func buildFilterProse(ctx context.Context, tx store.Querier, filterID int64) (string, error) {
+func buildFilterProse(ctx context.Context, tx store.Querier, actor, filterID int64) (string, error) {
 	if filterID == 0 {
 		return "This view shows every task in the project, with no extra filter applied.", nil
 	}
-	attrs, err := loadCardAttrs(ctx, tx, filterID)
+	attrs, err := loadCardAttrs(ctx, tx, actor, filterID, "filter")
 	if err != nil {
 		return "", err
 	}
@@ -226,16 +234,43 @@ func buildFilterProse(ctx context.Context, tx store.Querier, filterID int64) (st
 	return fmt.Sprintf("**%s** selects %s.", name, english), nil
 }
 
-// loadCardAttrs returns the attribute_value map for a single card id.
-// Returns an empty map (not an error) when the card has no attributes;
-// returns an error only on query failure.
-func loadCardAttrs(ctx context.Context, tx store.Querier, cardID int64) (map[string]json.RawMessage, error) {
-	rows, err := tx.Query(ctx, `
+// loadCardAttrs returns the attribute_value map of one live card of
+// cardType that actor can see (card_visible_to). A card that is missing,
+// deleted, of another type or hidden from actor is not_found — the same
+// answer for each, so it tells nothing about cards the caller can't see.
+func loadCardAttrs(ctx context.Context, tx store.Querier, actor, cardID int64, cardType string) (map[string]json.RawMessage, error) {
+	b := named.New()
+	b.Set("card", cardID)
+	b.Set("actor", actor)
+	b.Set("type", cardType)
+	q, args, err := b.Compile(`
+		SELECT EXISTS (
+			SELECT 1 FROM card c JOIN card_type ct ON ct.id = c.card_type_id
+			WHERE c.id = :card AND c.deleted_at IS NULL AND ct.name = :type
+			  AND card_visible_to(:actor, c.id))
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("help: compile: %w", err)
+	}
+	var ok bool
+	if err := tx.QueryRow(ctx, q, args...).Scan(&ok); err != nil {
+		return nil, fmt.Errorf("help: check card %d: %w", cardID, err)
+	}
+	if !ok {
+		return nil, &reg.HandlerError{Code: "not_found", Message: fmt.Sprintf("help: no %s %d", cardType, cardID)}
+	}
+	b = named.New()
+	b.Set("card", cardID)
+	q, args, err = b.Compile(`
 		SELECT ad.name, av.value
 		FROM attribute_value av
 		JOIN attribute_def ad ON ad.id = av.attribute_def_id
-		WHERE av.card_id = $1
-	`, cardID)
+		WHERE av.card_id = :card
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("help: compile: %w", err)
+	}
+	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("help: load attrs for card %d: %w", cardID, err)
 	}
