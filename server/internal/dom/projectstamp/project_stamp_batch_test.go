@@ -381,8 +381,10 @@ func TestProjectStampBatch_SourceMustBeAVisibleTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	tpl := lookupInstallSeedTemplate(t, pool)
-	if r := stamp(scoped, tpl); r.OK || r.Code != "template_not_found" {
-		t.Errorf("a worker copied a template it can't see: %+v", r)
+	// A role scoped to one project makes no projects at all (review
+	// 2026-11-03 round 2 #14), whatever template it names.
+	if r := stamp(scoped, tpl); r.OK || r.Code != "forbidden" {
+		t.Errorf("a project-scoped worker copied a template: %+v", r)
 	}
 	if r := stamp(auth.SystemUserID, tpl); !r.OK {
 		t.Errorf("copying the install template: %+v", r)

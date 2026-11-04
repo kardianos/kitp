@@ -116,45 +116,52 @@ func isDeleted(t *testing.T, pool *pgxpool.Pool, cardID int64) bool {
 
 // TestCardMergeRepointsRefsAndSoftDeletes covers the generic kernel: scalar +
 // array card_ref repoint (with dedup), soft-delete, and the same-type guard.
+// People go through person.merge (card.merge refuses them, review 2026-11-03
+// round 2 #6), so the kernel is shown on milestones (a scalar ref) and tags
+// (an array ref).
 func TestCardMergeRepointsRefsAndSoftDeletes(t *testing.T) {
 	pool := store.TestPool(t, "kitp_test_card_merge")
 
-	survivor := insertCard(t, pool, "person", nil)
-	loser := insertCard(t, pool, "person", nil)
-	other := insertCard(t, pool, "person", nil) // an unrelated recipient
+	msKeep := insertCard(t, pool, "milestone", nil)
+	msGone := insertCard(t, pool, "milestone", nil)
+	tagKeep := insertCard(t, pool, "tag", nil)
+	tagGone := insertCard(t, pool, "tag", nil)
+	other := insertCard(t, pool, "tag", nil) // an unrelated tag
 	task := insertCard(t, pool, "task", nil)
 
-	// Scalar card_ref (assignee) -> loser; array card_ref (comm_recipients)
-	// contains the loser + another person.
-	setAttr(t, pool, task, "assignee", itoa(loser))
-	setAttr(t, pool, task, "comm_recipients", "["+itoa(loser)+","+itoa(other)+"]")
+	setAttr(t, pool, task, "milestone_ref", itoa(msGone))
+	setAttr(t, pool, task, "tags", "["+itoa(tagGone)+","+itoa(other)+"]")
 
-	res := callMerge(t, pool, "card_merge_batch", survivor, []string{itoa(loser)})
-	if !res.ok {
-		t.Fatalf("card.merge failed: code=%s", res.code)
+	for _, m := range []struct{ survivor, loser int64 }{{msKeep, msGone}, {tagKeep, tagGone}} {
+		res := callMerge(t, pool, "card_merge_batch", m.survivor, []string{itoa(m.loser)})
+		if !res.ok {
+			t.Fatalf("card.merge failed: code=%s", res.code)
+		}
 	}
 
-	if got := attrText(t, pool, task, "assignee"); got != itoa(survivor) {
-		t.Errorf("assignee = %s, want survivor %d", got, survivor)
+	if got := attrText(t, pool, task, "milestone_ref"); got != itoa(msKeep) {
+		t.Errorf("milestone_ref = %s, want survivor %d", got, msKeep)
 	}
-	// comm_recipients: loser replaced by survivor, `other` kept.
-	rec := attrRaw(t, pool, task, "comm_recipients")
+	// tags: loser replaced by survivor, `other` kept.
+	rec := attrRaw(t, pool, task, "tags")
 	var ids []int64
 	_ = json.Unmarshal([]byte(rec), &ids)
-	if !containsAll(ids, survivor, other) || contains(ids, loser) {
-		t.Errorf("comm_recipients = %s, want [survivor=%d, other=%d] (no loser=%d)", rec, survivor, other, loser)
+	if !containsAll(ids, tagKeep, other) || contains(ids, tagGone) {
+		t.Errorf("tags = %s, want [survivor=%d, other=%d] (no loser=%d)", rec, tagKeep, other, tagGone)
 	}
-	if !isDeleted(t, pool, loser) {
-		t.Error("loser was not soft-deleted")
+	for _, gone := range []int64{msGone, tagGone} {
+		if !isDeleted(t, pool, gone) {
+			t.Errorf("loser %d was not soft-deleted", gone)
+		}
 	}
-	if isDeleted(t, pool, survivor) {
-		t.Error("survivor must not be deleted")
+	if isDeleted(t, pool, msKeep) || isDeleted(t, pool, tagKeep) {
+		t.Error("a survivor must not be deleted")
 	}
 }
 
 func TestCardMergeRejectsCardTypeMismatch(t *testing.T) {
 	pool := store.TestPool(t, "kitp_test_card_merge_mismatch")
-	survivor := insertCard(t, pool, "person", nil)
+	survivor := insertCard(t, pool, "tag", nil)
 	loser := insertCard(t, pool, "milestone", nil) // different card_type
 	res := callMerge(t, pool, "card_merge_batch", survivor, []string{itoa(loser)})
 	if res.ok || res.code != "card_type_mismatch" {

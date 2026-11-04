@@ -19,6 +19,17 @@
 -- repoint any other project's cards, or anyone's private views (review
 -- 2026-11-03 #2).
 --
+-- Not through here (review 2026-11-03 round 2 #4, #6):
+--   - people: person.merge, which keeps one login per person and moves a
+--     person's private cards only with their login. Merged here, an admin
+--     could take another user's watch lists and views ('use_person_merge');
+--   - a value a flow uses (a status a flow step leads from or to): merging
+--     it would leave steps naming a deleted card, as card.delete refuses
+--     ('value_referenced_by_flow');
+--   - a loser whose cards would land in a state the caller couldn't move
+--     them into (flow_state_role_gated on the survivor): a merge is a bulk
+--     move ('flow_role_required').
+--
 -- Result JSON shape matches `card.MergeOutput`:
 --   {"ok": true, "survivor_id": "<bigint>", "merged_count": N, "repointed": M}
 CREATE OR REPLACE FUNCTION card_merge_batch(
@@ -91,6 +102,13 @@ BEGIN
             CONTINUE;
         END IF;
 
+        IF _surv_ct = (SELECT id FROM card_type WHERE name = 'person') THEN
+            RETURN QUERY SELECT _idx, false, 'use_person_merge'::text,
+                'card.merge: people are merged with person.merge, which keeps their logins and private cards apart'::text,
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         _surv_project := card_enclosing_project(_survivor);
 
         -- Every loser must exist, be live, share the survivor's card_type,
@@ -118,7 +136,31 @@ BEGIN
                 _bad_msg := format('card.merge: loser %s and survivor %s are not both yours, or both shared', _loser, _survivor);
                 EXIT;
             END IF;
+            IF EXISTS (SELECT 1 FROM flow_step fs WHERE fs.from_card_id = _loser OR fs.to_card_id = _loser) THEN
+                _bad_code := 'value_referenced_by_flow';
+                _bad_msg := format('card.merge: %s is a state of a flow; take it out of the flow first', _loser);
+                EXIT;
+            END IF;
         END LOOP;
+        -- The losers' cards take the survivor as their state: the caller
+        -- must be able to move a card into it (any flow it is a state of
+        -- whose attribute holds a loser somewhere).
+        IF _bad_code IS NULL THEN
+            SELECT format('card.merge: moving cards into %s needs a role you don''t hold', _survivor)
+              INTO _bad_msg
+            FROM flow f
+            WHERE _survivor = ANY(flow_state_ids(f.id))
+              AND EXISTS (
+                  SELECT 1 FROM attribute_value av
+                  WHERE av.attribute_def_id = f.attribute_def_id
+                    AND jsonb_typeof(av.value) = 'number'
+                    AND (av.value)::text::bigint = ANY(_losers))
+              AND flow_state_role_gated(card_merge_batch.actor_id, f.id, _survivor, f.scope_card_id)
+            LIMIT 1;
+            IF _bad_msg IS NOT NULL THEN
+                _bad_code := 'flow_role_required';
+            END IF;
+        END IF;
         IF _bad_code IS NOT NULL THEN
             RETURN QUERY SELECT _idx, false, _bad_code, _bad_msg, NULL::jsonb;
             CONTINUE;

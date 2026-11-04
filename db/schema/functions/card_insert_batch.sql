@@ -488,12 +488,7 @@ BEGIN
                         -- move a card there — they can't start one there
                         -- either (review 2026-11-03 #16). The flow's own
                         -- starting state is always allowed.
-                        IF _v IS DISTINCT FROM (SELECT f2.default_create_status_id FROM flow f2 WHERE f2.id = _flow_id)
-                           AND EXISTS (SELECT 1 FROM flow_step fs WHERE fs.flow_id = _flow_id AND fs.to_card_id = _v)
-                           AND NOT EXISTS (
-                               SELECT 1 FROM flow_step fs
-                               WHERE fs.flow_id = _flow_id AND fs.to_card_id = _v
-                                 AND user_has_step_role(card_insert_batch.actor_id, fs.requires_role_id, _enclosing_project)) THEN
+                        IF flow_state_role_gated(card_insert_batch.actor_id, _flow_id, _v, _enclosing_project) THEN
                             _rej_code := 'flow_role_required';
                             _rej_msg := format(
                                 'card.insert: %s %s (%L) needs a role you don''t hold; start the card elsewhere and move it',
@@ -516,8 +511,8 @@ BEGIN
         -- 8a. Private refs (as attribute.update's private_ref): a private
         --     card may only be pointed at from a card private to the same
         --     person — the new card is private to its parent's person, or to
-        --     the actor for {private: true}. Text / bool values must be ones
-        --     (attr_scalar_norm).
+        --     the actor for {private: true}. Text / bool / number values must
+        --     be ones (attr_scalar_norm).
         SELECT a.key, pv.id INTO _attr_name, _v
         FROM jsonb_each(_attrs) a
         JOIN attribute_def ad ON ad.name = a.key AND ad.value_type IN ('card_ref', 'card_ref[]')
@@ -537,7 +532,7 @@ BEGIN
         END IF;
         SELECT a.key, ad.value_type INTO _attr_name, _attr_value_type
         FROM jsonb_each(_attrs) a
-        JOIN attribute_def ad ON ad.name = a.key AND ad.value_type IN ('text', 'bool')
+        JOIN attribute_def ad ON ad.name = a.key AND ad.value_type IN ('text', 'bool', 'number')
         WHERE a.key <> 'title' AND jsonb_typeof(a.value) <> 'null'
           AND attr_scalar_norm(ad.value_type, a.value) IS NULL
         LIMIT 1;
@@ -625,7 +620,7 @@ BEGIN
                            ORDER BY e.ord), '[]'::jsonb)
                   INTO _value_norm
                   FROM jsonb_array_elements(_attr_value) WITH ORDINALITY AS e(v, ord);
-            ELSIF _attr_value_type IN ('text', 'bool') THEN
+            ELSIF _attr_value_type IN ('text', 'bool', 'number') THEN
                 _value_norm := attr_scalar_norm(_attr_value_type, _attr_value);
             ELSE
                 _value_norm := _attr_value;

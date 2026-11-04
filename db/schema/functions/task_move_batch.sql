@@ -55,6 +55,7 @@ CREATE OR REPLACE FUNCTION task_move_batch(
     result jsonb
 ) LANGUAGE plpgsql AS $$
 DECLARE
+    _dest_channel bigint;
     _idx int;
     _raw jsonb;
     _card_id bigint;
@@ -286,6 +287,20 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
+        -- A state the mover couldn't move a card into (every step into it
+        -- needs a role they don't hold) they can't move one into from
+        -- another project either — card.insert's starting-state rule
+        -- (flow_state_role_gated; review 2026-11-03 round 2 #4).
+        IF _dest_states IS NOT NULL AND flow_state_role_gated(
+               task_move_batch.actor_id,
+               (SELECT f.id FROM flow f
+                WHERE f.attribute_def_id = _status_def_id AND f.scope_card_id = _new_project_id),
+               _resolved_status, _new_project_id) THEN
+            RETURN QUERY SELECT _idx, false, 'flow_role_required'::text,
+                format('task.move: status %s needs a role you don''t hold; move the task to another status', _resolved_status),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
         IF _new_milestone_id <> 0 THEN
             SELECT ct.name, COALESCE(c.parent_card_id, 0)
               INTO _value_card_type_name, _value_parent
@@ -405,6 +420,31 @@ BEGIN
                         'root_task_id', _card_id),
                     actor_id);
         END LOOP;
+
+        -- 7b. The moved tasks' threads send from a mail account of the
+        --     project they are in now: the destination's first live one, or
+        --     none when it has none (reply.post then says so) — never the
+        --     source project's mailbox (review 2026-11-03 round 2 #13).
+        SELECT ch.id INTO _dest_channel
+        FROM card ch JOIN card_type cht ON cht.id = ch.card_type_id AND cht.name = 'comm_channel'
+        WHERE ch.parent_card_id = _new_project_id AND ch.deleted_at IS NULL
+        ORDER BY ch.id
+        LIMIT 1;
+        IF _dest_channel IS NULL THEN
+            DELETE FROM attribute_value av
+            USING card cm
+            WHERE cm.parent_card_id = ANY(_moved_ids)
+              AND cm.card_type_id = (SELECT id FROM card_type WHERE name = 'comm')
+              AND av.card_id = cm.id
+              AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'channel_ref');
+        ELSE
+            INSERT INTO attribute_value (card_id, attribute_def_id, value)
+            SELECT cm.id, (SELECT id FROM attribute_def WHERE name = 'channel_ref'), to_jsonb(_dest_channel)
+            FROM card cm
+            WHERE cm.parent_card_id = ANY(_moved_ids)
+              AND cm.card_type_id = (SELECT id FROM card_type WHERE name = 'comm')
+            ON CONFLICT (card_id, attribute_def_id) DO UPDATE SET value = EXCLUDED.value;
+        END IF;
 
         -- 8. Break mode: clear parent_task on direct children that
         --    didn't ride along.

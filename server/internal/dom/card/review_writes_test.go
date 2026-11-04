@@ -131,15 +131,15 @@ func TestMergeStaysInScope(t *testing.T) {
 }
 
 // TestPersonMergeKeepsPrivateCards (#23c): a merged person's private cards
-// follow them to the survivor.
+// follow them to the survivor (person.merge).
 func TestPersonMergeKeepsPrivateCards(t *testing.T) {
 	f := setupVisibility(t, "kitp_test_review_merge_person")
 	keep := reviewPerson(t, f, 0)
 	gone := reviewPerson(t, f, 0)
 	list := reviewPrivateCard(t, f, "watch_list", gone)
-	r := reviewCall(t, f, f.admin, "card", "merge", fmt.Sprintf(`{"survivor_id":"%d","loser_ids":["%d"]}`, keep, gone))
-	if !r.OK {
-		t.Fatalf("merge: %+v", r.Error)
+	// person.merge (card.merge refuses people: round 2 #6).
+	if r := callMerge(t, f.sp.P, "person_merge_batch", keep, []string{itoa(gone)}); !r.ok {
+		t.Fatalf("person.merge: %s", r.code)
 	}
 	var owner int64
 	if err := f.sp.P.QueryRow(context.Background(), `SELECT private_to FROM card WHERE id = $1`, list).Scan(&owner); err != nil {

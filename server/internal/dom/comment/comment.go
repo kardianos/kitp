@@ -32,12 +32,14 @@ type InsertOutput struct {
 // Register installs comment.insert and comment.update.
 func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
-		Endpoint:     "comment",
-		Action:       "insert",
-		Doc:          "Post a comment on a card; writes one comment_body row and one activity row of kind=comment.",
-		InputType:    reflect.TypeFor[InsertInput](),
-		OutputType:   reflect.TypeFor[InsertOutput](),
-		AllowedRoles: []string{"worker", "manager", "admin"},
+		Endpoint:   "comment",
+		Action:     "insert",
+		Doc:        "Post a comment on a card; writes one comment_body row and one activity row of kind=comment.",
+		InputType:  reflect.TypeFor[InsertInput](),
+		OutputType: reflect.TypeFor[InsertOutput](),
+		// commenter: the role that may only comment (its seed grant is
+		// comment.post on task; review 2026-11-03 round 2 #21).
+		AllowedRoles: []string{"commenter", "worker", "manager", "admin"},
 		ProcessName:  "comment.post",
 		CardTypeID:   cardTypeFromInput,
 		// Unified handler — body lives in
@@ -51,9 +53,13 @@ func Register(p *store.Pool) {
 		Doc:          "Edit the body of an existing comment. Updates the linked comment_body row in place and inserts a new activity row of kind='comment_edit' for the audit trail. Only the original author may edit.",
 		InputType:    reflect.TypeFor[UpdateInput](),
 		OutputType:   reflect.TypeFor[UpdateOutput](),
-		AllowedRoles: []string{"worker", "manager", "admin"},
-		ProcessName:  "comment.edit",
-		CardTypeID:   cardTypeFromUpdateInput,
+		AllowedRoles: []string{"commenter", "worker", "manager", "admin"},
+		// The grant to comment on the card: someone who may no longer
+		// comment in its project may no longer edit their comments there.
+		// (comment.edit was never a seeded process, so no grant was
+		// checked at all; review 2026-11-03 round 2 #21.)
+		ProcessName: "comment.post",
+		CardTypeID:  cardTypeFromUpdateInput,
 		// The input carries activity_id, not card_id, so the per-row
 		// scope pass needs an explicit resolver to dereference it to the
 		// activity's card (then walk that card → project). Without this a
@@ -111,4 +117,3 @@ func scopeCardFromUpdateInput(ctx context.Context, pool reg.ValidationPool, raw 
 	}
 	return cardID, nil
 }
-

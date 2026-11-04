@@ -39,7 +39,7 @@ func RegisterMerge(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "card",
 		Action:       "merge",
-		Doc:          "Fold one or more duplicate cards of the same card_type into a survivor: repoint every card_ref / card_ref[] reference to the survivor and soft-delete the losers. For deduplicating value cards (milestones / components / tags) and, via person.merge, people.",
+		Doc:          "Fold one or more duplicate cards of the same card_type into a survivor: repoint every card_ref / card_ref[] reference to the survivor and soft-delete the losers. For deduplicating value cards (milestones / components / tags). People are refused (use_person_merge: person.merge keeps their logins and private cards apart), and so is a state a flow uses (value_referenced_by_flow) or merging cards into a state you couldn't move them into (flow_role_required).",
 		InputType:    reflect.TypeFor[MergeInput](),
 		OutputType:   reflect.TypeFor[MergeOutput](),
 		AllowedRoles: []string{"manager", "admin"},

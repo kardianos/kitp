@@ -247,16 +247,16 @@ BEGIN
               INTO _value_norm
               FROM jsonb_array_elements(_value) WITH ORDINALITY AS e(v, ord);
         ELSIF _value_type = 'number' THEN
-            -- A numeric STRING (e.g. a text input's "2") is canonicalised to a
-            -- JSON number so the read + ORDER BY paths — which require
-            -- jsonb_typeof(value)='number' — actually honour it. Without this a
-            -- hand-edited sort_order stays a string and is silently dropped from
-            -- numeric ordering. Non-numeric strings pass through unchanged.
-            IF jsonb_typeof(_value) = 'string'
-               AND (_value #>> '{}') ~ '^-?\d+(\.\d+)?$' THEN
-                _value_norm := to_jsonb((_value #>> '{}')::numeric);
-            ELSE
-                _value_norm := _value;
+            -- A whole JSON number, or a STRING of digits (e.g. a text input's
+            -- "2") stored as the number, so the read + ORDER BY paths — which
+            -- require jsonb_typeof(value)='number' — honour it. Anything else
+            -- is refused (attr_scalar_norm; review 2026-11-03 round 2 #15).
+            _value_norm := attr_scalar_norm('number', _value);
+            IF _value_norm IS NULL THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    format('attribute.update: %s: not a whole number: %s', _attr_name, left(_value::text, 200)),
+                    NULL::jsonb;
+                CONTINUE;
             END IF;
             _value_card_ids := ARRAY[]::bigint[];
         ELSIF _value_type = 'date' THEN

@@ -156,6 +156,19 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
+        -- 2b. A thread sends from a live mail account of its own project
+        --     (task.move gives a moved task's threads the destination's).
+        --     Without one the reply would sit unsent, or go out through
+        --     another project's mailbox (review 2026-11-03 round 2 #13).
+        IF NOT EXISTS (
+            SELECT 1 FROM card ch
+            WHERE ch.id = _channel_ref AND ch.deleted_at IS NULL
+              AND card_enclosing_project(ch.id) IS NOT DISTINCT FROM card_enclosing_project(_comm_id)) THEN
+            RETURN QUERY SELECT _idx, false, 'no_mail_account'::text,
+                'reply.post: this conversation has no mail account in its project to send from'::text,
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
 
         -- 3. Recipient emails from comm_recipients -> person.email.
         --    Preserve recipient-list order (matches the Go loop) by

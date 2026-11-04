@@ -60,6 +60,15 @@ BEGIN
         SELECT (r.ord - 1)::int, r.value
         FROM jsonb_array_elements(inputs) WITH ORDINALITY AS r(value, ord)
     LOOP
+        -- A new project is a workspace-wide act: it needs a workspace-wide
+        -- grant to create projects, as card.insert {project} does. A role
+        -- scoped to one project doesn't make projects (review 2026-11-03
+        -- round 2 #14).
+        IF NOT user_has_grant(project_compose_batch.actor_id, 'project', 'card.create', NULL::bigint) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                'project.compose: creating a project needs a workspace-wide role that may create projects'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         _name := btrim(COALESCE(_raw->>'name', ''));
         _description := _raw->>'description';
         _preset := NULLIF(btrim(COALESCE(_raw->>'preset', '')), '');
