@@ -1078,6 +1078,39 @@ func errDetail(err error) any {
 // fields (CLAUDE.md "Error returns"; review 2026-11-03 #30a, round 2 #20).
 func JSONDecodeMessage(err error) string { return jsonDecodeMessage(err) }
 
+// jsonKind names the kind of JSON value a Go type decodes from — an
+// object, an array, a string, a number, true or false — not the Go type,
+// which names packages and structs ("a card.CardWhereTreeNode"; review
+// 2026-11-03 round 3 #15). A type that decodes itself (json.Unmarshaler,
+// jsontext.Value) could take any JSON, so it is just "a JSON value".
+func jsonKind(t reflect.Type) string {
+	if t == nil {
+		return "a JSON value"
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Implements(reflect.TypeFor[json.Unmarshaler]()) || reflect.PointerTo(t).Implements(reflect.TypeFor[json.Unmarshaler]()) {
+		return "a JSON value"
+	}
+	switch t.Kind() {
+	case reflect.Struct, reflect.Map:
+		return "an object"
+	case reflect.Slice, reflect.Array:
+		return "an array"
+	case reflect.String:
+		return "a string"
+	case reflect.Bool:
+		return "true or false"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return "a whole number"
+	case reflect.Float32, reflect.Float64:
+		return "a number"
+	}
+	return "a JSON value"
+}
+
 func jsonDecodeMessage(err error) string {
 	var syn *json.SyntaxError
 	var typ *json.UnmarshalTypeError
@@ -1086,9 +1119,9 @@ func jsonDecodeMessage(err error) string {
 		return fmt.Sprintf("malformed json at byte %d", syn.Offset)
 	case errors.As(err, &typ):
 		if typ.Field != "" {
-			return fmt.Sprintf("malformed json: %s must be a %s", typ.Field, typ.Type)
+			return fmt.Sprintf("malformed json: %s must be %s", typ.Field, jsonKind(typ.Type))
 		}
-		return fmt.Sprintf("malformed json: a %s was expected", typ.Type)
+		return fmt.Sprintf("malformed json: %s was expected", jsonKind(typ.Type))
 	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
 		return "malformed json: the body ends early"
 	}

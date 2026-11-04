@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
@@ -108,7 +109,13 @@ func cardTypeFromUpdateInput(ctx context.Context, pool reg.ValidationPool, raw a
 func scopeCardFromUpdateInput(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	in := raw.(UpdateInput)
 	var cardID int64
-	err := pool.QueryRow(ctx, `SELECT card_id FROM activity WHERE id = $1`, in.ActivityID).Scan(&cardID)
+	b := named.New()
+	b.Set("activity", in.ActivityID)
+	sql, args, err := b.Compile(`SELECT card_id FROM activity WHERE id = :activity`)
+	if err != nil {
+		return 0, fmt.Errorf("comment.update: lookup card_id from activity: compile: %w", err)
+	}
+	err = pool.QueryRow(ctx, sql, args...).Scan(&cardID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, nil

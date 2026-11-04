@@ -6,9 +6,11 @@ package process
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -30,17 +32,29 @@ type Process struct {
 // Lookup finds a process by name. Returns (proc, true) if found, (nil, false) otherwise.
 func Lookup(ctx context.Context, tx store.Querier, name string) (*Process, error) {
 	var p Process
-	row := tx.QueryRow(ctx, `SELECT id, name FROM process WHERE name = $1`, name)
+	pb := named.New()
+	pb.Set("name", name)
+	psql, pargs, err := pb.Compile(`SELECT id, name FROM process WHERE name = :name`)
+	if err != nil {
+		return nil, fmt.Errorf("process lookup: compile: %w", err)
+	}
+	row := tx.QueryRow(ctx, psql, pargs...)
 	if err := row.Scan(&p.ID, &p.Name); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `
+	sb := named.New()
+	sb.Set("process", p.ID)
+	ssql, sargs, err := sb.Compile(`
 		SELECT ordinal, endpoint, action FROM process_step
-		WHERE process_id = $1 ORDER BY ordinal
-	`, p.ID)
+		WHERE process_id = :process ORDER BY ordinal
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("process steps: compile: %w", err)
+	}
+	rows, err := tx.Query(ctx, ssql, sargs...)
 	if err != nil {
 		return nil, err
 	}
@@ -63,17 +77,29 @@ func Lookup(ctx context.Context, tx store.Querier, name string) (*Process, error
 // auth phase. It uses a ValidationPool (pgxpool) instead of a tx.
 func LookupValidation(ctx context.Context, pool reg.ValidationPool, name string) (*Process, error) {
 	var p Process
-	row := pool.QueryRow(ctx, `SELECT id, name FROM process WHERE name = $1`, name)
+	pb := named.New()
+	pb.Set("name", name)
+	psql, pargs, err := pb.Compile(`SELECT id, name FROM process WHERE name = :name`)
+	if err != nil {
+		return nil, fmt.Errorf("process lookup: compile: %w", err)
+	}
+	row := pool.QueryRow(ctx, psql, pargs...)
 	if err := row.Scan(&p.ID, &p.Name); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	rows, err := pool.Query(ctx, `
+	sb := named.New()
+	sb.Set("process", p.ID)
+	ssql, sargs, err := sb.Compile(`
 		SELECT ordinal, endpoint, action FROM process_step
-		WHERE process_id = $1 ORDER BY ordinal
-	`, p.ID)
+		WHERE process_id = :process ORDER BY ordinal
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("process steps: compile: %w", err)
+	}
+	rows, err := pool.Query(ctx, ssql, sargs...)
 	if err != nil {
 		return nil, err
 	}

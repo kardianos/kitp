@@ -114,7 +114,10 @@ func (p *Pumper) deliverEmail(ctx context.Context, cfg unitConfig, d Digest) err
 			slog.String("err", err.Error()))
 	}
 	if bounce != nil {
-		return &errPermanent{reason: fmt.Sprintf("email bounced (%d): %s", bounce.Code, bounce.Msg)}
+		// The reason is shown to the subscriber (their subscription's
+		// fault reason): kitp's words and the reply code; the server's own
+		// reply is in the Comm log row above (review 2026-11-03 round 3).
+		return &errPermanent{reason: fmt.Sprintf("the mail server refused the email (%d); an admin can see its reply in the Comm log", bounce.Code)}
 	}
 	return sendErr
 }

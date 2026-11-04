@@ -291,9 +291,9 @@ func (p *Pumper) RunOnce(ctx context.Context) error {
 		case errors.As(err, &perm):
 			p.markFault(ctx, truncate(perm.reason, 200))
 		case errors.As(err, &graphPerm):
-			p.markFault(ctx, truncate(err.Error(), 200))
+			p.markFault(ctx, deliveryErrorText(err))
 		}
-		if writeErr := p.recordState(ctx, st.pointer, &since, 0, err.Error()); writeErr != nil {
+		if writeErr := p.recordState(ctx, st.pointer, &since, 0, deliveryErrorText(err)); writeErr != nil {
 			p.logger.LogAttrs(ctx, slog.LevelError, "activity_sink state write failed",
 				slog.Int64("unit_id", p.unitID),
 				slog.String("err", writeErr.Error()))
@@ -301,6 +301,23 @@ func (p *Pumper) RunOnce(ctx context.Context) error {
 		return err
 	}
 	return p.recordState(ctx, lastScanned, nil, int64(len(matched)), "")
+}
+
+// deliveryErrorText is what a unit's last_error keeps of a failed delivery.
+// The subscriber sees it on their notifications page, so it is kitp's own
+// words — a permanent reason kitp wrote, or a plain summary — never the text
+// of a database or SMTP error (CLAUDE.md "Error returns"; review 2026-11-03
+// round 3). The full error goes to the log and the Comm log.
+func deliveryErrorText(err error) string {
+	var perm *errPermanent
+	if errors.As(err, &perm) {
+		return truncate(perm.reason, 200)
+	}
+	var graphPerm *MSGraphPermanentError
+	if errors.As(err, &graphPerm) {
+		return fmt.Sprintf("Microsoft Graph refused the message (%d); an admin can see why in the log", graphPerm.Status)
+	}
+	return "the last delivery failed; it is tried again on the next run"
 }
 
 // markFault flips the unit into disabled-fault. Best-effort: a failed

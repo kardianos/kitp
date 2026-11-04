@@ -231,6 +231,7 @@ func Register(p *store.Pool) {
 		// db/schema/functions/activity_sink_list_batch.sql per Phase 5
 		// of docs/UNIFIED_HANDLER_PLAN.md.
 		SQLFunc: "activity_sink_list_batch",
+		IsRead:  true, // a list: the round-trip counts as a read (review 2026-11-03 round 3)
 	})
 
 	// Personal subscriptions. Every project tier may manage its OWN

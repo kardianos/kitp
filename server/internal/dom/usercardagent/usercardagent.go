@@ -112,6 +112,7 @@ func Register(_ *store.Pool) {
 		// dispatcher from auth.ActorOrSystem(ctx); the function scopes
 		// the result rows to that actor (legacy behaviour).
 		SQLFunc: "user_card_agent_list_batch",
+		IsRead:  true, // a list: the round-trip counts as a read (review 2026-11-03 round 3)
 	})
 }
 
@@ -122,5 +123,3 @@ func cardTypeFromSet(ctx context.Context, pool reg.ValidationPool, raw any) (int
 func cardTypeFromClear(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 	return schema.CardTypeIDByCardID(ctx, pool, raw.(ClearInput).CardID)
 }
-
-

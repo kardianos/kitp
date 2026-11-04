@@ -124,7 +124,7 @@ func (s *IdempotencyStore) WrapAuthed(next api.AuthedHandler) api.AuthedHandler 
 		if err != nil {
 			var tooBig *http.MaxBytesError
 			if errors.As(err, &tooBig) {
-				return &api.HTTPError{Status: http.StatusRequestEntityTooLarge, Code: "batch_too_large",
+				return &api.HTTPError{Status: http.StatusRequestEntityTooLarge, Code: "request_too_large", // the batch handler's own code for its cap (round 3)
 					Message: fmt.Sprintf("a batch can be at most %d MB", api.MaxBatchBytes>>20)}
 			}
 			return api.BadRequest("read_body", "failed to read request body")
@@ -221,7 +221,7 @@ func (s *IdempotencyStore) Middleware(_ any, next http.Handler) http.Handler {
 		if err != nil {
 			var tooBig *http.MaxBytesError
 			if errors.As(err, &tooBig) {
-				writeIdemError(w, http.StatusRequestEntityTooLarge, "batch_too_large",
+				writeIdemError(w, http.StatusRequestEntityTooLarge, "request_too_large",
 					fmt.Sprintf("a batch can be at most %d MB", api.MaxBatchBytes>>20))
 				return
 			}

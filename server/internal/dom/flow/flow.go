@@ -264,6 +264,7 @@ func Register(p *store.Pool) {
 		// Unified handler — body lives in
 		// db/schema/functions/flow_list_batch.sql.
 		SQLFunc: "flow_list_batch",
+		IsRead:  true, // a list: the round-trip counts as a read (review 2026-11-03 round 3)
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "flow",
@@ -311,6 +312,7 @@ func Register(p *store.Pool) {
 		// Unified handler — body lives in
 		// db/schema/functions/flow_step_list_batch.sql.
 		SQLFunc: "flow_step_list_batch",
+		IsRead:  true, // a list: the round-trip counts as a read (review 2026-11-03 round 3)
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "flow_step",
@@ -322,6 +324,7 @@ func Register(p *store.Pool) {
 		// Unified handler — body lives in
 		// db/schema/functions/flow_step_list_for_card_batch.sql.
 		SQLFunc: "flow_step_list_for_card_batch",
+		IsRead:  true, // a list: the round-trip counts as a read (review 2026-11-03 round 3)
 	})
 }
 

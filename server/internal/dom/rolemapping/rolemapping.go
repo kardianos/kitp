@@ -68,6 +68,7 @@ func Register(p *store.Pool) {
 		// db/schema/functions/role_mapping_list_batch.sql per Phase 5
 		// of docs/UNIFIED_HANDLER_PLAN.md.
 		SQLFunc: "role_mapping_list_batch",
+		IsRead:  true, // a list: the round-trip counts as a read (review 2026-11-03 round 3)
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "role_mapping",
@@ -115,5 +116,3 @@ func authzAdmin(ctx context.Context, _ any) error {
 	}
 	return nil
 }
-
-
