@@ -30,6 +30,7 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/cas"
+	"github.com/kitp/kitp/server/internal/csvsafe"
 	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/schema"
@@ -170,7 +171,7 @@ func handleSimpleCSV(ctx context.Context, w http.ResponseWriter, r *http.Request
 	for _, c := range extraCols {
 		header = append(header, c.Name)
 	}
-	if err := cw.Write(header); err != nil {
+	if err := cw.Write(csvsafe.Row(header)); err != nil {
 		return api.Internal(fmt.Errorf("write header: %w", err))
 	}
 	for _, t := range tasks {
@@ -191,7 +192,7 @@ func handleSimpleCSV(ctx context.Context, w http.ResponseWriter, r *http.Request
 		for _, c := range extraCols {
 			row = append(row, renderExtraCell(c, t.Attrs[c.Name], extraTitles))
 		}
-		if err := cw.Write(row); err != nil {
+		if err := cw.Write(csvsafe.Row(row)); err != nil {
 			return api.Internal(fmt.Errorf("write row: %w", err))
 		}
 	}

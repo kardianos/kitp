@@ -158,8 +158,12 @@ BEGIN
         JOIN walk w ON w.id = c.parent_card_id
         -- depth < 16 caps the downward tree walk (CLAUDE.md cap; matches
         -- card_ancestors / scopeWalkDepth) so a parent_card_id cycle in
-        -- the template can't pin the connection (A1).
+        -- the template can't pin the connection (A1). The walk stops at a
+        -- task: tasks aren't copied here, so neither are the links,
+        -- threads and approvals under them, which would have no parent
+        -- to land under (review 2026-11-03 #26).
         WHERE c.deleted_at IS NULL AND c.private_to IS NULL AND w.depth < 16
+          AND (_task_ct_id = 0 OR w.card_type_id <> _task_ct_id)
     )
     SELECT w.id, w.card_type_id, w.parent_card_id, w.phase
     FROM walk w

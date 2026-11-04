@@ -135,6 +135,24 @@ func TestRequireAttachmentAccessNested(t *testing.T) {
 	if he, ok := api.AsHTTPError(err); !ok || he.Status != http.StatusForbidden {
 		t.Errorf("a member of another project: %v, want 403", err)
 	}
+
+	// A file on someone else's private view (review 2026-11-03 #23): not
+	// there at all for a member of the project; there for its owner.
+	owner := worker("owner", project)
+	ownerPerson := card("person", nil)
+	if _, err := pool.Exec(ctx, `INSERT INTO user_account_person (user_account_id, person_card_id) VALUES ($1, $2)`, owner, ownerPerson); err != nil {
+		t.Fatal(err)
+	}
+	screen := card("screen", project)
+	view := q(`INSERT INTO card (card_type_id, parent_card_id, private_to) SELECT id, $1, $2 FROM card_type WHERE name = 'filter' RETURNING id`, screen, ownerPerson)
+	privAtt := q(`INSERT INTO attachment (card_id, file_id) VALUES ($1, $2) RETURNING id`, view, fileID)
+	err = requireAttachmentAccess(ctx, sp, worker("member2", project), privAtt)
+	if he, ok := api.AsHTTPError(err); !ok || he.Status != http.StatusNotFound {
+		t.Errorf("a member, on someone's private view's file: %v, want 404", err)
+	}
+	if err := requireAttachmentAccess(ctx, sp, owner, privAtt); err != nil {
+		t.Errorf("the owner, on their private view's file: %v", err)
+	}
 }
 
 // TestThumbSourceCaps (B5): a picture whose header claims a huge size

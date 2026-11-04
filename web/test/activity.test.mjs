@@ -297,6 +297,21 @@ test('activityRowsToCsv: header + one escaped row per activity, names and titles
   assert.ok(lines[2].includes('Bob changed milestone from Q1 to Q2'), 'refs resolve card_ref values');
 });
 
+for (const [cell, want] of [
+  ['=HYPERLINK("http://evil","click")', `"'=HYPERLINK(""http://evil"",""click"")"`],
+  ['+1+1', "'+1+1"],
+  ['@SUM(A1)', "'@SUM(A1)"],
+  ['-2+3', "'-2+3"],
+  ['\tTab', "'\tTab"],
+  ['-5', '-5'],
+  ['12.5', '12.5'],
+  ['plain', 'plain'],
+]) {
+  test(`csvCell: ${JSON.stringify(cell)} opens as text, not a formula`, () => {
+    assert.equal(M.csvCell(cell), want);
+  });
+}
+
 test('Activity: no active project → a prompt, no query', async () => {
   const { dispatcher, api } = bootApi(activityTransport());
   inputs = [];

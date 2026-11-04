@@ -249,10 +249,13 @@ func (s *Server) lookup(ctx context.Context, build int64, p string) (buildFile, 
 	q.Set("build", build)
 	q.Set("path", p)
 	// A file a page renders (its page, or an attachment's page) is served
-	// only while that page is still live, visible (no area off) and
-	// published to this portal: a withdrawal takes effect at once, not at
-	// the next successful build (review A7). Theme files and the home /
-	// 404 pages carry no card.
+	// only while that page is still live — it and every card above it, so
+	// a deleted project or parent page takes its pages down too — visible
+	// (no area off) and published to this portal: a withdrawal takes
+	// effect at once, not at the next successful build (review A7). An
+	// attachment's file (_files/<attachment id>/…) also needs the
+	// attachment itself undeleted (review 2026-11-03 #17). Theme files and
+	// the home / 404 pages carry no card.
 	sql, args, err := q.Compile(`
 		SELECT f.cas_address, f.mime_type, f.size_bytes
 		FROM portal_build_file f
@@ -260,10 +263,17 @@ func (s *Server) lookup(ctx context.Context, build int64, p string) (buildFile, 
 		WHERE f.build_id = :build AND f.path = :path
 		  AND (f.card_id IS NULL OR EXISTS (
 		        SELECT 1 FROM card c
-		        WHERE c.id = f.card_id AND c.deleted_at IS NULL
+		        WHERE c.id = f.card_id
+		          AND NOT EXISTS (SELECT 1 FROM card_ancestors(c.id) up JOIN card x ON x.id = up.id
+		                          WHERE x.deleted_at IS NOT NULL)
 		          AND NOT card_in_off_area(c.id)
 		          AND EXISTS (SELECT 1 FROM publication p
-		                      WHERE p.portal_id = b.portal_id AND p.card_id = c.id)))`)
+		                      WHERE p.portal_id = b.portal_id AND p.card_id = c.id)))
+		  AND (f.path NOT LIKE '\_files/%' OR EXISTS (
+		        SELECT 1 FROM attachment a
+		        WHERE a.deleted_at IS NULL
+		          AND a.id = CASE WHEN split_part(f.path, '/', 2) ~ '^[0-9]{1,18}$'
+		                          THEN split_part(f.path, '/', 2)::bigint END))`)
 	if err != nil {
 		return buildFile{}, false, fmt.Errorf("compile: %w", err)
 	}

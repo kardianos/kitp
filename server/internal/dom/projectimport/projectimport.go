@@ -41,6 +41,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/cas"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
@@ -326,9 +327,9 @@ func preRunUpload(ctx context.Context, tx store.Querier, ins []any) ([]any, erro
 			}
 			continue
 		}
-		body, err := readFileBytes(ctx, tx, in.FileID)
+		body, err := readFileBytes(ctx, tx, auth.ActorOrSystem(ctx), in.FileID)
 		if err != nil {
-			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_read", Message: err.Error()}
+			return nil, csvReadError(i, in.FileID, err)
 		}
 		parsed, err := parseCSVPreview(body, 20)
 		if err != nil {
@@ -366,9 +367,11 @@ func preRunPreview(ctx context.Context, tx store.Querier, ins []any) ([]any, err
 		if err != nil {
 			return nil, err
 		}
-		body, err := readFileBytes(ctx, tx, fileID)
+		// The job's file was checked against its uploader at upload; the
+		// dispatcher checked this caller's grant on the job's project.
+		body, err := readFileBytes(ctx, tx, 0, fileID)
 		if err != nil {
-			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_read", Message: err.Error()}
+			return nil, csvReadError(i, fileID, err)
 		}
 		header, rows, err := readAllCSV(body)
 		if err != nil {
@@ -401,9 +404,11 @@ func preRunCommit(ctx context.Context, tx store.Querier, ins []any) ([]any, erro
 		if err != nil {
 			return nil, err
 		}
-		body, err := readFileBytes(ctx, tx, fileID)
+		// The job's file was checked against its uploader at upload; the
+		// dispatcher checked this caller's grant on the job's project.
+		body, err := readFileBytes(ctx, tx, 0, fileID)
 		if err != nil {
-			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_read", Message: err.Error()}
+			return nil, csvReadError(i, fileID, err)
 		}
 		header, rows, err := readAllCSV(body)
 		if err != nil {
@@ -433,6 +438,16 @@ func lookupJobFileID(ctx context.Context, tx store.Querier, jobID int64) (int64,
 		return 0, fmt.Errorf("project.import: file_id lookup: %w", err)
 	}
 	return fileID, nil
+}
+
+// csvReadError is the answer for a file that can't be read: "not found" for
+// a missing, empty or unreadable-to-you file; an internal error (logged, not
+// shown) for anything else (CLAUDE.md: no raw error text on the wire).
+func csvReadError(i int, fileID int64, err error) error {
+	if errors.Is(err, errNoFile) {
+		return &reg.HandlerError{InputIndex: i, Code: "csv_read", Message: fmt.Sprintf("file %d not found", fileID)}
+	}
+	return fmt.Errorf("project.import: read file %d: %w", fileID, err)
 }
 
 // formatInt64 stringifies a bigint so the json tag `,string` round-trip

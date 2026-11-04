@@ -31,9 +31,11 @@ import (
 
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/csvsafe"
 	"github.com/kitp/kitp/server/internal/dom/card"
 	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/store"
+	"github.com/kitp/kitp/server/internal/textnorm"
 )
 
 // fullExportOptions bundles the three toggles the endpoint exposes.
@@ -608,13 +610,13 @@ func writeProjectCSV(zw *zip.Writer, id int64, title string, b *fullBundle) erro
 		if err := cw.Write([]string{"id", "title", "description", "created_at", "deleted_at"}); err != nil {
 			return err
 		}
-		return cw.Write([]string{
+		return cw.Write(csvsafe.Row([]string{
 			strconv.FormatInt(id, 10),
 			jsonAsText(b.project["title"]),
 			jsonAsText(b.project["description"]),
 			isoOrEmpty(b.createdAt),
 			isoOrEmpty(b.deletedAt),
-		})
+		}))
 	})
 }
 
@@ -645,7 +647,7 @@ func writeTasksCSV(zw *zip.Writer, b *fullBundle) error {
 				isoOrEmpty(t.CreatedAt),
 				isoOrEmpty(t.DeletedAt),
 			}
-			if err := cw.Write(row); err != nil {
+			if err := cw.Write(csvsafe.Row(row)); err != nil {
 				return err
 			}
 		}
@@ -665,7 +667,7 @@ func writeCommentsCSV(zw *zip.Writer, b *fullBundle) error {
 				c.Body,
 				c.CreatedAt.UTC().Format(time.RFC3339),
 			}
-			if err := cw.Write(row); err != nil {
+			if err := cw.Write(csvsafe.Row(row)); err != nil {
 				return err
 			}
 		}
@@ -682,7 +684,7 @@ func writeValueCardCSV(zw *zip.Writer, name string, header []string,
 			return err
 		}
 		for _, r := range rows {
-			if err := cw.Write(project(r)); err != nil {
+			if err := cw.Write(csvsafe.Row(project(r))); err != nil {
 				return err
 			}
 		}
@@ -728,7 +730,7 @@ func writePersonsCSV(zw *zip.Writer, b *fullBundle) error {
 				jsonAsText(p.Attributes["email"]),
 				strconv.FormatBool(b.personLink[p.ID]),
 			}
-			if err := cw.Write(row); err != nil {
+			if err := cw.Write(csvsafe.Row(row)); err != nil {
 				return err
 			}
 		}
@@ -755,7 +757,7 @@ func writeActivityCSV(zw *zip.Writer, b *fullBundle) error {
 				a.ActorEmail,
 				a.CreatedAt.UTC().Format(time.RFC3339),
 			}
-			if err := cw.Write(row); err != nil {
+			if err := cw.Write(csvsafe.Row(row)); err != nil {
 				return err
 			}
 		}
@@ -788,7 +790,7 @@ func writeAttachmentsCSV(zw *zip.Writer, b *fullBundle, digests map[int64]string
 				a.CreatedByEmail,
 				thumb,
 			}
-			if err := cw.Write(row); err != nil {
+			if err := cw.Write(csvsafe.Row(row)); err != nil {
 				return err
 			}
 		}
@@ -803,7 +805,15 @@ func writeAttachmentsCSV(zw *zip.Writer, b *fullBundle, digests map[int64]string
 func streamAttachments(ctx context.Context, cfg Config, zw *zip.Writer, b *fullBundle) (map[int64]string, error) {
 	out := map[int64]string{}
 	for _, a := range b.attachments {
-		path := fmt.Sprintf("attachments/%d-%s", a.ID, a.Filename)
+		// The stored name came from whoever uploaded or emailed the file:
+		// cleaned of path separators and control runes, so an entry can't
+		// climb out of attachments/ ("../") in an extractor that trusts it
+		// (review 2026-11-03 #11).
+		name := textnorm.FilenameLoose(a.Filename)
+		if name == "" {
+			name = "file"
+		}
+		path := fmt.Sprintf("attachments/%d-%s", a.ID, name)
 		w, err := zw.Create(path)
 		if err != nil {
 			return nil, fmt.Errorf("zip create %s: %w", path, err)

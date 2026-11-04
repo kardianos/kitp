@@ -250,7 +250,7 @@ export {
 } from './shell/config-specs.js';
 export { publishTaskNav, taskNavListUrl, taskNavNeighbor } from './shell/task-nav.js';
 export { attrNameToTargetType, collectRefIdsByType, loadActivityLabels } from './task-detail/activity-labels.js';
-export { Activity, registerActivity, activityRowsToCsv, isoDaysAgo, initials, ACTIVITY_DEFAULT_LOOKBACK_DAYS } from './activity/activity.js';
+export { Activity, registerActivity, activityRowsToCsv, csvCell, isoDaysAgo, initials, ACTIVITY_DEFAULT_LOOKBACK_DAYS } from './activity/activity.js';
 export { buildFeed, buildLines, cardTypeLabel, kindsForGroups, KIND_GROUPS, dayLabel, localDayKey, clip as clipActivityText } from './activity/activity-model.js';
 export { ProjectList, registerProjectList } from './projects/project-list.js';
 

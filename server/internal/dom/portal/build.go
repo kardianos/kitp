@@ -397,8 +397,12 @@ func loadSite(ctx context.Context, pool *pgxpool.Pool, storage *cas.Storage, por
 		SELECT p.card_id, COALESCE(p.parent_card_id, 0), p.title, p.slug, p.body,
 		       p.sort_order, p.published_at, p.nav_hidden, p.nav_hide_children
 		FROM publication p
-		JOIN card c ON c.id = p.card_id AND c.deleted_at IS NULL
+		JOIN card c ON c.id = p.card_id
 		WHERE p.portal_id = :portal
+		  -- A page under a deleted card (its project, a parent page) is gone
+		  -- with it (review 2026-11-03 #17).
+		  AND NOT EXISTS (SELECT 1 FROM card_ancestors(c.id) up JOIN card x ON x.id = up.id
+		                  WHERE x.deleted_at IS NOT NULL)
 		  -- A page of a project whose Content area is off isn't built; its
 		  -- snapshot stays, so switching Content back on restores it.
 		  AND NOT card_in_off_area(p.card_id)

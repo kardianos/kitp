@@ -146,13 +146,23 @@ func TestFileHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.sp.P.Exec(ctx, `
-		INSERT INTO portal_build_file (build_id, path, cas_address, mime_type, size_bytes, card_id)
-		SELECT active_build_id, '_files/99/evil.html', $2, 'application/octet-stream', 26, $3
-		FROM portal_state WHERE portal_id = $1`, prod, addr, f.home); err != nil {
+	// A real (live) attachment: a _files/<id>/ path is served only while
+	// its attachment is (review 2026-11-03 #17).
+	var att int64
+	if err := f.sp.P.QueryRow(ctx, `
+		WITH fl AS (INSERT INTO file (filename, size_bytes, mime_type, created_by)
+		            VALUES ('evil.html', 26, 'application/octet-stream', 1) RETURNING id)
+		INSERT INTO attachment (card_id, file_id) SELECT $1, id FROM fl RETURNING id`, f.home).Scan(&att); err != nil {
 		t.Fatal(err)
 	}
-	code, _, hdr := get(t, pub, "docs.example.test", "/_files/99/evil.html")
+	filePath := fmt.Sprintf("_files/%d/evil.html", att)
+	if _, err := f.sp.P.Exec(ctx, `
+		INSERT INTO portal_build_file (build_id, path, cas_address, mime_type, size_bytes, card_id)
+		SELECT active_build_id, $4, $2, 'application/octet-stream', 26, $3
+		FROM portal_state WHERE portal_id = $1`, prod, addr, f.home, filePath); err != nil {
+		t.Fatal(err)
+	}
+	code, _, hdr := get(t, pub, "docs.example.test", "/"+filePath)
 	if code != 200 {
 		t.Fatalf("file: %d", code)
 	}
@@ -170,7 +180,7 @@ func TestFileHeaders(t *testing.T) {
 		SessionResolver: func(*http.Request) (*auth.UserCtx, error) { return &auth.UserCtx{ID: auth.SystemUserID}, nil },
 	})
 	f.server.Mount(rt)
-	_, _, hdr = get(t, rt.Mux(), "app.example.test", fmt.Sprintf("/api/v1/portal/%d/preview/_files/99/evil.html", prod))
+	_, _, hdr = get(t, rt.Mux(), "app.example.test", fmt.Sprintf("/api/v1/portal/%d/preview/%s", prod, filePath))
 	if hdr.Get("Cache-Control") != "private, max-age=300" {
 		t.Errorf("preview file Cache-Control = %q, want private", hdr.Get("Cache-Control"))
 	}

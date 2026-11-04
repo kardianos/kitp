@@ -74,6 +74,12 @@ BEGIN
             RETURNING id
         )
         SELECT id INTO _ignored FROM upd;
+        -- A portal publishing the attachment's page rebuilds without it,
+        -- so the file stops being served and its blob can be reaped
+        -- (review 2026-11-03 #17; serve.go also refuses it at once).
+        PERFORM portal_mark_dirty(p.portal_id)
+        FROM publication p
+        WHERE p.card_id = (SELECT a.card_id FROM attachment a WHERE a.id = _id);
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object('ok', true);
     END LOOP;

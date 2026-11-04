@@ -85,9 +85,16 @@ export function isoDaysAgo(n: number, now: Date = new Date()): string {
   return isoDate(d);
 }
 
-/** CSV-escape one cell (quote when it contains a comma, quote, or newline). */
-function csvCell(v: string): string {
-  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+/**
+ * CSV-escape one cell (quote when it contains a comma, quote, or newline). A
+ * cell a spreadsheet would run as a formula — starting with = + - @ or a tab
+ * / carriage return, like a task titled `=HYPERLINK(…)` — gets a leading `'`
+ * so it opens as text (review 2026-11-03 #29); a plain number is left alone.
+ * Exported for tests.
+ */
+export function csvCell(v: string): string {
+  if (/^[=+\-@\t\r]/.test(v) && !/^-?\d+(\.\d+)?$/.test(v)) v = `'${v}`;
+  return /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
 }
 
 /**

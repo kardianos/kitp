@@ -299,6 +299,9 @@ func requireAttachmentAccess(ctx context.Context, pool *store.Pool, userID, atta
 			  -- An attachment of an area that is switched off doesn't
 			  -- exist as far as anyone can tell (docs/AREAS.md).
 			  AND NOT card_in_off_area(a.card_id)
+			  -- Nor does one on someone else's private card
+			  -- (docs/PERSONAL_SCREENS.md; review 2026-11-03 #23).
+			  AND card_private_ok(a.card_id, :user)
 		)
 		SELECT
 			COALESCE((SELECT project_id FROM attach), 0),

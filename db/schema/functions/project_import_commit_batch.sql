@@ -471,6 +471,25 @@ BEGIN
         -- Auto-create cards via card_insert_batch (per category).
         ---------------------------------------------------------------
 
+        -- The import creates cards on the actor's behalf, so only the
+        -- kinds they could create themselves: milestones, components and
+        -- tags are a manager's (review 2026-11-03 #26).
+        SELECT k.label INTO _name
+        FROM (VALUES ('person', 'people', _new_persons),
+                     ('milestone', 'milestones', _new_milestones),
+                     ('component', 'components', _new_components),
+                     ('tag', 'tags', _new_tags)) AS k(card_type, label, wanted)
+        WHERE jsonb_typeof(k.wanted) = 'object' AND k.wanted <> '{}'::jsonb
+          AND NOT user_has_grant(actor_id, k.card_type, 'card.create', _project_id)
+        LIMIT 1;
+        IF FOUND THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                format('project.import.commit: the file names %s that don''t exist yet, and you can''t add %s in this project; add them first, or ask a manager to import',
+                    _name, _name),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- Persons (global, no parent).
         IF jsonb_typeof(_new_persons) = 'object' AND _new_persons <> '{}'::jsonb THEN
             _insert_inputs := '[]'::jsonb;
