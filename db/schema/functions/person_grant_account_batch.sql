@@ -108,8 +108,10 @@ BEGIN
         SELECT value #>> '{}' INTO _title
         FROM attribute_value WHERE card_id = _person_id AND attribute_def_id = _title_def;
 
-        -- A login revoked earlier with this email no longer blocks it.
+        -- A login revoked earlier with this email, or one that was this
+        -- person's, no longer blocks it.
         PERFORM login_unrevoke(_email);
+        PERFORM login_unrevoke_person(_person_id);
         INSERT INTO user_account (display_name, email)
         VALUES (COALESCE(_title, ''), _email)
         RETURNING id INTO _account_id;

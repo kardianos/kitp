@@ -136,7 +136,12 @@ sub and email and is marked `login_revoked_at`: a sign-in by that sub, or
 with a verified email equal to it, is refused (`ErrLoginRevoked`), instead
 of starting over with the default role and the old person card, until
 `person.grant_account` / `person.create` tier=user lift it for that email
-(`login_unrevoke`; round 3 #3). `OIDC_DEFAULT_ROLE` set empty or `none`
+(`login_unrevoke`; round 3 #3), `person.grant_account` for the person it was
+(`revoked_person_card_id`, `login_unrevoke_person`), or `user.restore_login`
+lets it sign in again (round 4 #12). A login stores only a verified claim
+email, and init-admin recovery picks only a live, non-agent, unrevoked
+login with the email, counting only workspace-wide admins held by live
+logins (round 4 #5). `OIDC_DEFAULT_ROLE` set empty or `none`
 grants nothing (round 3 #4).
 
 **Why.** This is the published bootstrap attack for email-matching OIDC

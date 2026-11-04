@@ -53,6 +53,7 @@ export const ADMIN_SPEC = {
   userRoleList: 'user_role.list',
   userUnlinkPerson: 'user.unlink_person',
   userRevokeLogin: 'user.revoke_login',
+  userRestoreLogin: 'user.restore_login',
   userSetDisplayName: 'user.set_display_name',
   // Nested-editor specs (flow-step transitions, attribute edges, card_types).
   cardTypeSelect: 'card_type.select',
@@ -102,6 +103,8 @@ export interface UserRow {
   parent_user_name?: string;
   is_agent: boolean;
   person_card_id?: string;
+  /** "sign-in revoked YYYY-MM-DD" when an admin took the login away. */
+  login_revoked?: string;
   roles: UserRoleAssignment[];
 }
 
@@ -825,6 +828,8 @@ function decodeUserRow(j: Record<string, unknown>): UserRow {
   if (parentName !== undefined) out.parent_user_name = parentName;
   const person = asStrOpt(j['person_card_id']);
   if (person !== undefined) out.person_card_id = person;
+  const revoked = asStrOpt(j['login_revoked']);
+  if (revoked !== undefined) out.login_revoked = revoked;
   return out;
 }
 
@@ -1293,6 +1298,18 @@ export function registerAdminSpecs(api: Api): void {
       action: 'revoke_login',
       encode: (i) => ({ user_account_id: i.userAccountId }),
       decode: (raw): UserRevokeLoginOutput => ({ revoked: asObj(raw)['revoked'] === true }),
+    });
+  }
+
+  // user.restore_login — the Users screen's "Allow sign-in again": a revoked
+  // login may sign in again (its roles stay gone) and is linked back to its
+  // person when free (review 2026-11-03 round 4 #12).
+  if (!api.registry.has({ endpoint: 'user', action: 'restore_login' })) {
+    api.define<UserRevokeLoginInput, { restored: boolean }>({
+      endpoint: 'user',
+      action: 'restore_login',
+      encode: (i) => ({ user_account_id: i.userAccountId }),
+      decode: (raw) => ({ restored: asObj(raw)['restored'] === true }),
     });
   }
 

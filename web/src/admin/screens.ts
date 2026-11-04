@@ -223,6 +223,20 @@ export const USERS_SCREEN: MasterDetailConfig = {
         },
       },
       {
+        title: 'Sign-in',
+        // A revoked login (user.revoke_login) is refused at sign-in whatever
+        // roles it has: say so, and offer to let it sign in again
+        // (user.restore_login; review 2026-11-03 round 4 #12). '— (none)'
+        // when the login isn't revoked.
+        valueField: 'login_revoked',
+        remove: {
+          intent: 'restoreLogin',
+          spec: 'user.restore_login',
+          label: 'Allow sign-in again',
+          input: { userAccountId: { payload: 'id' } },
+        },
+      },
+      {
         title: 'Linked person',
         // A SINGULAR link: show the linked person card id with an Unlink button
         // when present, else '— (none)'. Unlink fires user.unlink_person and

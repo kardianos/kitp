@@ -80,8 +80,16 @@ BEGIN
             UPDATE user_token SET revoked_at = now()
             WHERE user_id = ANY(_ids) AND revoked_at IS NULL RETURNING 1)
         SELECT count(*)::int INTO _tokens FROM u;
+        -- The person it was is kept on the revoked login, so giving that
+        -- person a login again — with any email — lifts the block
+        -- (login_unrevoke_person), and user.restore_login can link them
+        -- back (review 2026-11-03 round 4 #12).
+        UPDATE user_account
+           SET login_revoked_at = now(),
+               revoked_person_card_id = (SELECT uap.person_card_id FROM user_account_person uap
+                                         WHERE uap.user_account_id = _user_id)
+         WHERE id = _user_id;
         DELETE FROM user_account_person WHERE user_account_id = _user_id;
-        UPDATE user_account SET login_revoked_at = now() WHERE id = _user_id;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object('revoked', true, 'roles', _roles,

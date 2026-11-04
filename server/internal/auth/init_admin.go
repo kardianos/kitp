@@ -84,9 +84,23 @@ func BootstrapInitAdmin(ctx context.Context, pool *pgxpool.Pool, email string) e
 	// layer normalises on every fresh insert; this `lower(...)` guard
 	// covers historic rows. See
 	// DI-7 in docs/DESIGN_INVARIANTS.md.
-	if err := scanNamed(ctx, tx,
-		`SELECT id FROM user_account WHERE lower(email) = :email ORDER BY id LIMIT 1`,
-		map[string]any{"email": email}, &userID); err != nil {
+	//
+	// Only a live login can be made admin: not the System user, an agent,
+	// or a login an admin revoked — that one's sign-in is refused, so
+	// recovery stalled on it for good (review 2026-11-03 round 4 #5). The
+	// operator naming this email is giving it a login again, so a revoked
+	// login with it stops blocking it (login_unrevoke) and a fresh row is
+	// made below.
+	if err := execNamed(ctx, tx, `SELECT login_unrevoke(:email)`, map[string]any{"email": email}); err != nil {
+		return fmt.Errorf("bootstrap init-admin: lift a revoked login: %w", err)
+	}
+	if err := scanNamed(ctx, tx, `
+		SELECT id FROM user_account
+		WHERE lower(email) = :email AND id <> :system
+		  AND NOT is_agent AND parent_user_id IS NULL
+		  AND login_revoked_at IS NULL AND deleted_at IS NULL
+		ORDER BY id LIMIT 1`,
+		map[string]any{"email": email, "system": SystemUserID}, &userID); err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("bootstrap init-admin: lookup email: %w", err)
 		}
@@ -151,12 +165,21 @@ func BootstrapInitAdmin(ctx context.Context, pool *pgxpool.Pool, email string) e
 	return tx.Commit(ctx)
 }
 
+// liveWorkspaceAdmin is what makes an admin row count for recovery: held
+// workspace-wide by a live login — not a project-scoped admin, an agent, or
+// a revoked or retired account, none of which can run the workspace
+// (review 2026-11-03 round 4 #5).
+const liveWorkspaceAdmin = `
+		  AND ur.scope_card_id IS NULL
+		  AND NOT ua.is_agent AND ua.login_revoked_at IS NULL AND ua.deleted_at IS NULL`
+
 func hasNonSystemAdmin(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
 	var n int
 	err := scanNamed(ctx, pool, `
 		SELECT count(*) FROM user_role ur
 		JOIN role r ON r.id = ur.role_id
-		WHERE r.name = 'admin' AND ur.user_id <> :system
+		JOIN user_account ua ON ua.id = ur.user_id
+		WHERE r.name = 'admin' AND ur.user_id <> :system`+liveWorkspaceAdmin+`
 	`, map[string]any{"system": SystemUserID}, &n)
 	if err != nil {
 		return false, err
@@ -169,7 +192,8 @@ func hasNonSystemAdminTx(ctx context.Context, tx pgx.Tx) (bool, error) {
 	err := scanNamed(ctx, tx, `
 		SELECT count(*) FROM user_role ur
 		JOIN role r ON r.id = ur.role_id
-		WHERE r.name = 'admin' AND ur.user_id <> :system
+		JOIN user_account ua ON ua.id = ur.user_id
+		WHERE r.name = 'admin' AND ur.user_id <> :system`+liveWorkspaceAdmin+`
 	`, map[string]any{"system": SystemUserID}, &n)
 	if err != nil {
 		return false, err

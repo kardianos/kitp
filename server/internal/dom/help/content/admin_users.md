@@ -27,7 +27,7 @@ Click **Revoke** on any role row to remove that single grant. The user's other a
 
 ## Taking a login away
 
-On **People**, removing a user, or changing a user to an assignee or a contact, takes their login away (it asks first): their roles, sessions and tokens go, and their agents' too. Your identity provider may still let them sign in, but kitp doesn't: a sign-in by that identity, or by another one with the same verified email, is refused. To give them a login again, make them a user again on **People** — that lifts the block for the email you give.
+On **People**, removing a user, or changing a user to an assignee or a contact, takes their login away (it asks first): their roles, sessions and tokens go, and their agents' too. Your identity provider may still let them sign in, but kitp doesn't: a sign-in by that identity, or by another one with the same verified email, is refused. To give them a login again, make them a user again on **People** — that lifts the block, whatever email you give — or open them here on **Users**, where a revoked login's **Sign-in** row says when it was revoked, and choose **Allow sign-in again**. Either way their old roles stay gone: assign roles again.
 
 **Disable** is different: it keeps the person in pickers' history and doesn't touch their login.
 

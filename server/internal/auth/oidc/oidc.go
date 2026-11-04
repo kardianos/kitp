@@ -576,6 +576,15 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	// DI-4 in docs/DESIGN_INVARIANTS.md.
 	emailVerified, _ := claims["email_verified"].(bool)
 	emailTrusted := emailVerified || v.cfg.TrustUnverifiedEmail
+	// A login keeps only an email the IdP vouches for: user_account.email
+	// is what the init-admin recovery and the pre-created attach match on,
+	// so an unverified claim stored there let a self-asserted address be
+	// made admin (review 2026-11-03 round 4 #5). The person card still
+	// shows what the claim said.
+	loginEmail := ""
+	if emailTrusted {
+		loginEmail = email
+	}
 	if subErr != nil && email != "" && emailTrusted {
 		// The same human through another IdP subject: an admin revoked the
 		// login that signs in with this email (user.revoke_login), so this
@@ -718,7 +727,7 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 					INSERT INTO user_account (oidc_sub, display_name, email)
 					VALUES (:sub, :name, NULLIF(:email, ''))
 					RETURNING id
-				`, map[string]any{"sub": sub, "name": displayName, "email": email}, &userID); err != nil {
+				`, map[string]any{"sub": sub, "name": displayName, "email": loginEmail}, &userID); err != nil {
 					return 0, "", fmt.Errorf("oidc: provision insert (reuse person): %w", err)
 				}
 				if err := txExec(ctx, tx, `
@@ -754,7 +763,7 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 			INSERT INTO user_account (oidc_sub, display_name, email)
 			VALUES (:sub, :name, NULLIF(:email, ''))
 			RETURNING id
-		`, map[string]any{"sub": sub, "name": displayName, "email": email}, &userID); err != nil {
+		`, map[string]any{"sub": sub, "name": displayName, "email": loginEmail}, &userID); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision insert: %w", err)
 		}
 		var personCardID int64
@@ -823,7 +832,7 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 			UPDATE user_account
 			SET email = CASE WHEN :email = '' THEN email ELSE :email END
 			WHERE id = :user
-		`, map[string]any{"user": userID, "email": email}); err != nil {
+		`, map[string]any{"user": userID, "email": loginEmail}); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision update: %w", err)
 		}
 	}

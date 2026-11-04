@@ -60,6 +60,7 @@ type RowWithRoles struct {
 	ParentUserID *int64           `json:"parent_user_id,string,omitempty"   mcp:"desc=human owner when is_agent=true; null for humans"`
 	IsAgent      bool             `json:"is_agent"                          mcp:"desc=true when this row is an agent"`
 	PersonCardID *int64           `json:"person_card_id,string,omitempty"   mcp:"desc=linked person card id when this user_account is associated with a person card (member tier); null for login-only accounts and agents"`
+	LoginRevoked *string          `json:"login_revoked,omitempty"           mcp:"desc=when an admin took the login away (user.revoke_login): its sign-in is refused until user.restore_login or a new grant"`
 	Roles        []RoleAssignment `json:"roles"                             mcp:"desc=role assignments held by this user"`
 }
 
@@ -122,6 +123,16 @@ func Register() {
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "user",
+		Action:       "restore_login",
+		Doc:          "Let a login revoked by user.revoke_login sign in again — the Users screen's \"Allow sign-in again\" — and link it back to the person it was, when that person is live and has no other login. Its roles, sessions and tokens stay gone; grant roles again with user_role.set. not_revoked when the login isn't revoked, or a later login already took over its identity.",
+		InputType:    reflect.TypeFor[RestoreLoginInput](),
+		OutputType:   reflect.TypeFor[RestoreLoginOutput](),
+		AllowedRoles: []string{"admin"},
+		// Workspace-wide like user.revoke_login: a login isn't in a project.
+		SQLFunc: "user_restore_login_batch",
+	})
+	reg.Register(reg.Handler{
+		Endpoint:     "user",
 		Action:       "set_display_name",
 		Doc:          "Update user_account.display_name for one user_account row. The /auth/me probe reads display_name straight from this column, so this is what powers the shell's signed-in user chip — renaming the linked person card (attribute.update on title) does NOT propagate here. Admin-only; no-op (ok=true) when the value already matches.",
 		InputType:    reflect.TypeFor[SetDisplayNameInput](),
@@ -156,6 +167,18 @@ type UnlinkPersonInput struct {
 // RevokeLoginInput names the login to revoke (review 2026-11-03 round 2 #3).
 type RevokeLoginInput struct {
 	UserAccountID int64 `json:"user_account_id,string" mcp:"required,desc=user_account row whose login is revoked"`
+}
+
+// RestoreLoginInput names a revoked login to let sign in again (review
+// 2026-11-03 round 4 #12).
+type RestoreLoginInput struct {
+	UserAccountID int64 `json:"user_account_id,string" mcp:"required,desc=the revoked user_account row"`
+}
+
+// RestoreLoginOutput says what was restored.
+type RestoreLoginOutput struct {
+	Restored     bool   `json:"restored" mcp:"desc=true when the login may sign in again"`
+	PersonCardID *int64 `json:"person_card_id,string,omitempty" mcp:"desc=the person it was linked back to, when free"`
 }
 
 // RevokeLoginOutput counts what was taken away.

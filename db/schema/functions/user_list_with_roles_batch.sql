@@ -56,6 +56,12 @@ BEGIN
                          ELSE to_jsonb(ua.parent_user_id::text)
                     END,
                 'is_agent',       ua.is_agent,
+                -- A revoked login (user.revoke_login): its sign-in is
+                -- refused, whatever roles it is given (round 4 #12).
+                'login_revoked',
+                    CASE WHEN ua.login_revoked_at IS NULL THEN NULL::jsonb
+                         ELSE to_jsonb('sign-in revoked ' || to_char(ua.login_revoked_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'))
+                    END,
                 'person_card_id',
                     CASE WHEN uap.person_card_id IS NULL
                          THEN NULL::jsonb

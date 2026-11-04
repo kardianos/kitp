@@ -1471,14 +1471,15 @@ ON CONFLICT (card_id, attribute_def_id) DO NOTHING;`,
 // card.private_to marks a private card (docs/PERSONAL_SCREENS.md); its
 // partial index and card_private_ok need it before the DDL runs.
 // user_account.deleted_at marks a deleted agent (agent.delete), and
-// login_revoked_at a login an admin took away (user.revoke_login); functions
-// read them.
+// login_revoked_at a login an admin took away (user.revoke_login), with
+// revoked_person_card_id the person it was; functions read them.
 const preDDL = `ALTER TABLE IF EXISTS attribute_value ADD COLUMN IF NOT EXISTS value_type_id int;
 ALTER TABLE IF EXISTS comm_log ADD COLUMN IF NOT EXISTS route_id bigint;
 ALTER TABLE IF EXISTS role ADD COLUMN IF NOT EXISTS rank int NOT NULL DEFAULT 0;
 ALTER TABLE IF EXISTS card ADD COLUMN IF NOT EXISTS private_to bigint REFERENCES card(id);
 ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
-ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS login_revoked_at timestamptz;`
+ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS login_revoked_at timestamptz;
+ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS revoked_person_card_id bigint;`
 
 // ledgerDDL creates the schema-version ledger. Kept here (not in the generated
 // schema) because it must exist before the generated DDL/seed is gated on it.

@@ -196,12 +196,12 @@ func TestProvisionCreatesPersonCard(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			tok := op.signToken(t, jwt.MapClaims{
-				"iss":  op.server.URL,
-				"aud":  "kitp-web",
-				"sub":  c.sub,
-				"name": c.display,
+				"iss":   op.server.URL,
+				"aud":   "kitp-web",
+				"sub":   c.sub,
+				"name":  c.display,
 				"email": c.email,
-				"exp":  now.Add(time.Hour).Unix(),
+				"exp":   now.Add(time.Hour).Unix(),
 			})
 			userID, _, err := v.Resolve(ctx, tok)
 			if err != nil {
@@ -470,7 +470,9 @@ func TestReloginPreservesInAppRename(t *testing.T) {
 		"sub":   "rename-sub",
 		"name":  "Idp Original",
 		"email": "rename@example.invalid",
-		"exp":   now.Add(time.Hour).Unix(),
+		// A login keeps only a verified email (review 2026-11-03 round 4 #5).
+		"email_verified": true,
+		"exp":            now.Add(time.Hour).Unix(),
 	})
 	userID, _, err := v.Resolve(ctx, first)
 	if err != nil {
@@ -492,12 +494,13 @@ func TestReloginPreservesInAppRename(t *testing.T) {
 	// Re-login with a DIFFERENT name + email claim. The changed claims miss
 	// the sub cache, so provisionUser runs its re-login branch.
 	second := op.signToken(t, jwt.MapClaims{
-		"iss":   op.server.URL,
-		"aud":   "kitp-web",
-		"sub":   "rename-sub",
-		"name":  "Idp Changed",
-		"email": "rename2@example.invalid",
-		"exp":   now.Add(time.Hour).Unix(),
+		"iss":            op.server.URL,
+		"aud":            "kitp-web",
+		"sub":            "rename-sub",
+		"name":           "Idp Changed",
+		"email":          "rename2@example.invalid",
+		"email_verified": true,
+		"exp":            now.Add(time.Hour).Unix(),
 	})
 	id2, _, err := v.Resolve(ctx, second)
 	if err != nil {
@@ -516,6 +519,21 @@ func TestReloginPreservesInAppRename(t *testing.T) {
 	}
 	if email != "rename2@example.invalid" {
 		t.Errorf("re-login should still sync email: email = %q, want %q", email, "rename2@example.invalid")
+	}
+
+	// An unverified email claim isn't stored on the login (round 4 #5).
+	third := op.signToken(t, jwt.MapClaims{
+		"iss": op.server.URL, "aud": "kitp-web", "sub": "rename-sub", "name": "Idp Changed",
+		"email": "boss@example.invalid", "email_verified": false, "exp": now.Add(time.Hour).Unix(),
+	})
+	if _, _, err := v.Resolve(ctx, third); err != nil {
+		t.Fatalf("third resolve: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT coalesce(email, '') FROM user_account WHERE id = $1`, userID).Scan(&email); err != nil {
+		t.Fatal(err)
+	}
+	if email != "rename2@example.invalid" {
+		t.Errorf("an unverified email claim was stored on the login: %q", email)
 	}
 }
 
@@ -653,7 +671,6 @@ func TestProvisionRevokesUnmappedRoles(t *testing.T) {
 		t.Error("manual 'manager' grant lost on claim-absent login")
 	}
 }
-
 
 // resetBootstrap puts the workspace back before its first admin: no
 // non-System admin and no admin_bootstrap row.
