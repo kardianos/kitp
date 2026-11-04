@@ -27,6 +27,7 @@ import (
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/cas"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
@@ -218,12 +219,12 @@ func cardTypeFromDownloadURLInput(_ *store.Pool) func(ctx context.Context, pool 
 	return func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 		id := raw.(DownloadURLInput).ID
 		var cardTypeID int64
-		err := pool.QueryRow(ctx, `
+		err := queryByAttachment(ctx, pool, `
 			SELECT c.card_type_id
 			FROM attachment a
 			JOIN card c ON c.id = a.card_id
-			WHERE a.id = $1
-		`, id).Scan(&cardTypeID)
+			WHERE a.id = :attachment
+		`, id, &cardTypeID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return 0, nil
@@ -242,7 +243,7 @@ func scopeCardFromDownloadURLInput(_ *store.Pool) func(ctx context.Context, pool
 	return func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 		id := raw.(DownloadURLInput).ID
 		var cardID int64
-		err := pool.QueryRow(ctx, `SELECT card_id FROM attachment WHERE id = $1`, id).Scan(&cardID)
+		err := queryByAttachment(ctx, pool, `SELECT card_id FROM attachment WHERE id = :attachment`, id, &cardID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return 0, nil
@@ -251,6 +252,18 @@ func scopeCardFromDownloadURLInput(_ *store.Pool) func(ctx context.Context, pool
 		}
 		return cardID, nil
 	}
+}
+
+// queryByAttachment runs a one-row, one-column lookup keyed by an
+// attachment id (the template's :attachment) and scans it into dest.
+func queryByAttachment(ctx context.Context, pool reg.ValidationPool, template string, id int64, dest any) error {
+	b := named.New()
+	b.Set("attachment", id)
+	sql, args, err := b.Compile(template)
+	if err != nil {
+		return fmt.Errorf("compile: %w", err)
+	}
+	return pool.QueryRow(ctx, sql, args...).Scan(dest)
 }
 
 // cardTypeFromCreateInput resolves the attaching card's card_type so the
@@ -269,12 +282,12 @@ func cardTypeFromDeleteInput(p *store.Pool) func(ctx context.Context, pool reg.V
 	return func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 		id := raw.(DeleteInput).ID
 		var cardTypeID int64
-		err := pool.QueryRow(ctx, `
+		err := queryByAttachment(ctx, pool, `
 			SELECT c.card_type_id
 			FROM attachment a
 			JOIN card c ON c.id = a.card_id
-			WHERE a.id = $1
-		`, id).Scan(&cardTypeID)
+			WHERE a.id = :attachment
+		`, id, &cardTypeID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return 0, nil
@@ -294,7 +307,7 @@ func scopeCardFromDeleteInput(_ *store.Pool) func(ctx context.Context, pool reg.
 	return func(ctx context.Context, pool reg.ValidationPool, raw any) (int64, error) {
 		id := raw.(DeleteInput).ID
 		var cardID int64
-		err := pool.QueryRow(ctx, `SELECT card_id FROM attachment WHERE id = $1`, id).Scan(&cardID)
+		err := queryByAttachment(ctx, pool, `SELECT card_id FROM attachment WHERE id = :attachment`, id, &cardID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return 0, nil
@@ -363,10 +376,14 @@ func doThumbnails(p *store.Pool) func(ctx context.Context, tx store.Querier, ins
 				}
 				continue
 			}
-			if _, err := tx.Exec(ctx,
-				`UPDATE attachment SET thumb_file_id = $1 WHERE id = $2`,
-				thumbID, out.ID,
-			); err != nil {
+			tb := named.New()
+			tb.Set("thumb", thumbID)
+			tb.Set("attachment", out.ID)
+			tsql, targs, terr := tb.Compile(`UPDATE attachment SET thumb_file_id = :thumb WHERE id = :attachment`)
+			if terr != nil {
+				return fmt.Errorf("attachment.create: post_run set thumb_file_id: compile: %w", terr)
+			}
+			if _, err := tx.Exec(ctx, tsql, targs...); err != nil {
 				return fmt.Errorf("attachment.create: post_run set thumb_file_id: %w", err)
 			}
 			out.ThumbFileID = thumbID

@@ -838,14 +838,14 @@ func parseTreeParam(raw string) (*card.CardWhereGroup, error) {
 	}
 	var g card.CardWhereGroup
 	if err := json.Unmarshal([]byte(raw), &g); err != nil {
-		return nil, httpError(http.StatusBadRequest, "invalid tree: "+err.Error())
+		return nil, httpError(http.StatusBadRequest, "invalid tree: "+api.JSONDecodeMessage(err))
 	}
 	if g.Connective == "" {
 		// Bare-leaf shape ({attr, op, values}) — wrap in a single-leaf AND
 		// so the compiler's entry point (compileTree on a group) accepts it.
 		var leaf card.CardWhereTreeNode
 		if err := json.Unmarshal([]byte(raw), &leaf); err != nil {
-			return nil, httpError(http.StatusBadRequest, "invalid tree: "+err.Error())
+			return nil, httpError(http.StatusBadRequest, "invalid tree: "+api.JSONDecodeMessage(err))
 		}
 		g = card.CardWhereGroup{
 			Connective: "and",

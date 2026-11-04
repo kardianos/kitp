@@ -22,6 +22,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
@@ -93,18 +94,26 @@ func upsertPersonByEmail(
 	}
 
 	var existing int64
-	err = tx.QueryRow(ctx, `
+	lb := named.New()
+	lb.Set("email_def", emailADID)
+	lb.Set("person_type", personCTID)
+	lb.Set("email", trimmed)
+	lq, largs, err := lb.Compile(`
 		SELECT av.card_id
 		FROM attribute_value av
 		JOIN attribute_def ad ON ad.id = av.attribute_def_id
 		JOIN card c ON c.id = av.card_id
-		WHERE ad.id = $1
-		  AND c.card_type_id = $2
+		WHERE ad.id = :email_def
+		  AND c.card_type_id = :person_type
 		  AND c.deleted_at IS NULL
-		  AND lower(av.value #>> '{}') = lower($3)
+		  AND lower(av.value #>> '{}') = lower(:email)
 		ORDER BY av.card_id
 		LIMIT 1
-	`, emailADID, personCTID, trimmed).Scan(&existing)
+	`)
+	if err != nil {
+		return 0, false, fmt.Errorf("upsertPersonByEmail: lookup: compile: %w", err)
+	}
+	err = tx.QueryRow(ctx, lq, largs...).Scan(&existing)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, fmt.Errorf("upsertPersonByEmail: lookup: %w", err)
 	}
@@ -124,9 +133,13 @@ func upsertPersonByEmail(
 	}
 
 	var newID int64
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO card (card_type_id, parent_card_id) VALUES ($1, NULL) RETURNING id
-	`, personCTID).Scan(&newID); err != nil {
+	ib := named.New()
+	ib.Set("person_type", personCTID)
+	iq, iargs, err := ib.Compile(`INSERT INTO card (card_type_id, parent_card_id) VALUES (:person_type, NULL) RETURNING id`)
+	if err != nil {
+		return 0, false, fmt.Errorf("upsertPersonByEmail: insert card: compile: %w", err)
+	}
+	if err := tx.QueryRow(ctx, iq, iargs...).Scan(&newID); err != nil {
 		return 0, false, fmt.Errorf("upsertPersonByEmail: insert card: %w", err)
 	}
 	if err := writeCardCreateActivity(ctx, tx, newID, actorID); err != nil {

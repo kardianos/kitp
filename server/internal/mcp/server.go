@@ -240,7 +240,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		var req jsonrpcRequest
 		if err := json.Unmarshal(line, &req); err != nil {
-			s.writeError(nil, -32700, "parse error: "+err.Error(), nil)
+			s.writeError(nil, -32700, "parse error: "+api.JSONDecodeMessage(err), nil)
 			continue
 		}
 		s.handle(ctx, req)
@@ -372,7 +372,7 @@ type callParams struct {
 func (s *Server) handleToolsCall(ctx context.Context, req jsonrpcRequest) {
 	var p callParams
 	if err := json.Unmarshal(req.Params, &p); err != nil {
-		s.writeError(req.ID, -32602, "invalid params: "+err.Error(), nil)
+		s.writeError(req.ID, -32602, "invalid params: "+api.JSONDecodeMessage(err), nil)
 		return
 	}
 	if p.Name == "" {
@@ -486,7 +486,7 @@ func (s *Server) handleBatchTool(ctx context.Context, req jsonrpcRequest, rawArg
 	var p batchToolParams
 	if len(rawArgs) > 0 {
 		if err := json.Unmarshal(rawArgs, &p); err != nil {
-			s.writeError(req.ID, -32602, "invalid params: "+err.Error(), nil)
+			s.writeError(req.ID, -32602, "invalid params: "+api.JSONDecodeMessage(err), nil)
 			return
 		}
 	}
@@ -618,7 +618,7 @@ func (s *Server) HandleSingle(ctx context.Context, raw []byte) []byte {
 	fresh := &Server{dispatcher: s.dispatcher, out: &buf}
 	var req jsonrpcRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
-		fresh.writeError(nil, -32700, "parse error: "+err.Error(), nil)
+		fresh.writeError(nil, -32700, "parse error: "+api.JSONDecodeMessage(err), nil)
 	} else {
 		fresh.handle(ctx, req)
 	}

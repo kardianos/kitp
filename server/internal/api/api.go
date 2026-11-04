@@ -804,7 +804,7 @@ func (s *Server) prepareLeaf(ctx context.Context, outerIdx int, h reg.Handler, d
 		if err := json.Unmarshal(data, v); err != nil {
 			return prepared{}, &reg.HandlerError{
 				Code:    "bad_input",
-				Message: fmt.Sprintf("decode %s.%s data: %v", h.Endpoint, h.Action, err),
+				Message: fmt.Sprintf("decode %s.%s data: %s", h.Endpoint, h.Action, jsonDecodeMessage(err)),
 			}
 		}
 	}
@@ -1072,6 +1072,12 @@ func errDetail(err error) any {
 // jsonDecodeMessage says what's wrong with a request body that didn't
 // decode, built from the decoder's typed errors rather than echoing its
 // text (CLAUDE.md: no raw err.Error() on the wire; review 2026-11-03 #30).
+// JSONDecodeMessage is what a client is told about JSON it sent that didn't
+// decode: where it broke, or which of its own fields had the wrong kind of
+// value — never encoding/json's text, which names Go types and struct
+// fields (CLAUDE.md "Error returns"; review 2026-11-03 #30a, round 2 #20).
+func JSONDecodeMessage(err error) string { return jsonDecodeMessage(err) }
+
 func jsonDecodeMessage(err error) string {
 	var syn *json.SyntaxError
 	var typ *json.UnmarshalTypeError

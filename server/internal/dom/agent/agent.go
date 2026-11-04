@@ -37,6 +37,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -141,10 +142,13 @@ func authzDelete(ctx context.Context, in any) error {
 	}
 	var isAgent bool
 	var parentID *int64
-	err := pool.P.QueryRow(ctx,
-		`SELECT is_agent, parent_user_id FROM user_account WHERE id = $1`,
-		row.UserID,
-	).Scan(&isAgent, &parentID)
+	b := named.New()
+	b.Set("user", row.UserID)
+	q, args, err := b.Compile(`SELECT is_agent, parent_user_id FROM user_account WHERE id = :user`)
+	if err != nil {
+		return fmt.Errorf("agent.delete: lookup target: compile: %w", err)
+	}
+	err = pool.P.QueryRow(ctx, q, args...).Scan(&isAgent, &parentID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &reg.HandlerError{Code: "not_found",
@@ -182,10 +186,13 @@ func isGlobalAdmin(ctx context.Context, pool *store.Pool, actor int64) (bool, er
 // userrole package).
 func rejectAgentActor(ctx context.Context, pool *store.Pool, actor int64) error {
 	var actorIsAgent bool
-	err := pool.P.QueryRow(ctx,
-		`SELECT is_agent FROM user_account WHERE id = $1`,
-		actor,
-	).Scan(&actorIsAgent)
+	b := named.New()
+	b.Set("user", actor)
+	q, args, err := b.Compile(`SELECT is_agent FROM user_account WHERE id = :user`)
+	if err != nil {
+		return fmt.Errorf("agent.authz: load actor: compile: %w", err)
+	}
+	err = pool.P.QueryRow(ctx, q, args...).Scan(&actorIsAgent)
 	if err != nil {
 		return fmt.Errorf("agent.authz: load actor: %w", err)
 	}

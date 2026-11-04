@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/kitp/kitp/server/internal/api"
@@ -85,6 +86,10 @@ func handle(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg HTT
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(resp)
+	if _, err := w.Write(resp); err != nil {
+		// The client went away mid-reply; the status is already sent, so
+		// all there is to do is say so in the log.
+		slog.Default().LogAttrs(r.Context(), slog.LevelDebug, "mcp: write reply", slog.String("err", err.Error()))
+	}
 	return nil
 }

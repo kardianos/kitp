@@ -16,6 +16,7 @@ import (
 	"reflect"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -214,7 +215,13 @@ func authzRevoke(ctx context.Context, in any) error {
 // user_account has is_agent=TRUE.
 func rejectAgentActor(ctx context.Context, pool *store.Pool, actor int64) error {
 	var actorIsAgent bool
-	err := pool.P.QueryRow(ctx, `SELECT is_agent FROM user_account WHERE id = $1`, actor).Scan(&actorIsAgent)
+	b := named.New()
+	b.Set("user", actor)
+	q, args, err := b.Compile(`SELECT is_agent FROM user_account WHERE id = :user`)
+	if err != nil {
+		return fmt.Errorf("user_role.authz: load actor: compile: %w", err)
+	}
+	err = pool.P.QueryRow(ctx, q, args...).Scan(&actorIsAgent)
 	if err != nil {
 		return fmt.Errorf("user_role.authz: load actor: %w", err)
 	}
@@ -228,7 +235,13 @@ func rejectAgentActor(ctx context.Context, pool *store.Pool, actor int64) error 
 func loadAgentInfo(ctx context.Context, pool *store.Pool, userID int64) (bool, *int64, error) {
 	var isAgent bool
 	var parentID *int64
-	err := pool.P.QueryRow(ctx, `SELECT is_agent, parent_user_id FROM user_account WHERE id = $1`, userID).Scan(&isAgent, &parentID)
+	b := named.New()
+	b.Set("user", userID)
+	q, args, err := b.Compile(`SELECT is_agent, parent_user_id FROM user_account WHERE id = :user`)
+	if err != nil {
+		return false, nil, fmt.Errorf("user_role.authz: load target: compile: %w", err)
+	}
+	err = pool.P.QueryRow(ctx, q, args...).Scan(&isAgent, &parentID)
 	if err != nil {
 		return false, nil, fmt.Errorf("user_role.authz: load target: %w", err)
 	}

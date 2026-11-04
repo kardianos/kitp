@@ -753,6 +753,8 @@ func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote stri
 	// Body part.
 	textHdr := textproto.MIMEHeader{}
 	textHdr.Set("Content-Type", "text/plain; charset=utf-8")
+	// The parts write into body64, a bytes.Buffer: a write there can't
+	// fail, so its error is not checked.
 	if w, err := mw.CreatePart(textHdr); err == nil {
 		_, _ = w.Write([]byte(bodyWithRef))
 	}
@@ -773,7 +775,7 @@ func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote stri
 			if end > len(encoded) {
 				end = len(encoded)
 			}
-			_, _ = w.Write([]byte(encoded[i:end] + "\r\n"))
+			_, _ = w.Write([]byte(encoded[i:end] + "\r\n")) // into body64; can't fail
 		}
 	}
 	_ = mw.Close()

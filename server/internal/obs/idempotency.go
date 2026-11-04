@@ -85,6 +85,16 @@ func (c *captureResponseWriter) Write(p []byte) (int, error) {
 	return c.ResponseWriter.Write(p)
 }
 
+// closeBody closes a request body that has been read through. Its error
+// (the client went away mid-body) changes nothing for this request — the
+// read already failed or finished, and net/http closes the body again when
+// the handler returns — so there is nothing to do with it.
+func closeBody(r *http.Request) {
+	if err := r.Body.Close(); err != nil {
+		return // nothing to act on; see above
+	}
+}
+
 // WrapAuthed turns an api.AuthedHandler into an idempotency-aware
 // AuthedHandler. Use from inside the apiRouter (via the variadic
 // decorator slot on srv.MountBatch) so the cache key is partitioned
@@ -105,9 +115,18 @@ func (s *IdempotencyStore) WrapAuthed(next api.AuthedHandler) api.AuthedHandler 
 			return next(ctx, w, r, u)
 		}
 
-		body, err := io.ReadAll(r.Body)
-		_ = r.Body.Close()
+		// The batch's own size cap applies before a byte is buffered: this
+		// read runs ahead of the batch handler's MaxBytesReader, and would
+		// otherwise hold any body whole, twice (review 2026-11-03 round 2
+		// #8).
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, api.MaxBatchBytes))
+		closeBody(r)
 		if err != nil {
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				return &api.HTTPError{Status: http.StatusRequestEntityTooLarge, Code: "batch_too_large",
+					Message: fmt.Sprintf("a batch can be at most %d MB", api.MaxBatchBytes>>20)}
+			}
 			return api.BadRequest("read_body", "failed to read request body")
 		}
 		hash := sha256.Sum256(body)
@@ -195,10 +214,17 @@ func (s *IdempotencyStore) Middleware(_ any, next http.Handler) http.Handler {
 			return
 		}
 
-		// Read the entire body so we can hash + replay on miss.
-		body, err := io.ReadAll(r.Body)
-		_ = r.Body.Close()
+		// Read the entire body so we can hash + replay on miss — no more of
+		// it than a batch may be (round 2 #8).
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, api.MaxBatchBytes))
+		closeBody(r)
 		if err != nil {
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				writeIdemError(w, http.StatusRequestEntityTooLarge, "batch_too_large",
+					fmt.Sprintf("a batch can be at most %d MB", api.MaxBatchBytes>>20))
+				return
+			}
 			http.Error(w, "failed to read request body", http.StatusBadRequest)
 			return
 		}
