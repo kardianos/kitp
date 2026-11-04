@@ -166,7 +166,7 @@ BEGIN
               -- Activity on someone else's private card (a personal view,
               -- a watch list; docs/PERSONAL_SCREENS.md) is theirs alone.
               AND card_private_ok(a.card_id, activity_select_batch.actor_id)
-              AND NOT activity_hidden(a.kind, a.card_id) AND EXISTS (
+              AND NOT activity_hidden(a.kind, a.card_id, a.value_new) AND EXISTS (
                 -- depth < 16 caps the parent walk (CLAUDE.md cap;
                 -- matches card_ancestors / scopeWalkDepth) so a
                 -- parent_card_id cycle can't pin the connection (A1).

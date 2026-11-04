@@ -227,8 +227,10 @@ BEGIN
             END IF;
         END IF;
 
-        -- 3. Everyone asked must be a live person with a login who can see
-        --    the project.
+        -- 3. Everyone asked must be a live person with a login who may vote
+        --    on the task: comment.post on tasks in its project, as
+        --    approval.decide requires. One who could only see it could never
+        --    answer (review 2026-11-03 round 3 #13).
         SELECT string_agg(p::text, ', ') INTO _bad
         FROM unnest(_approvers) AS p
         WHERE NOT EXISTS (
@@ -237,11 +239,11 @@ BEGIN
             JOIN card_type pct ON pct.id = pc.card_type_id AND pct.name = 'person'
             JOIN user_account_person uap ON uap.person_card_id = pc.id
             WHERE pc.id = p AND pc.deleted_at IS NULL
-              AND user_sees_project(uap.user_account_id, _project_id)
+              AND user_has_grant(uap.user_account_id, 'task', 'comment.post', _project_id)
         );
         IF _bad IS NOT NULL THEN
             RETURN QUERY SELECT _idx, false, 'approver_invalid'::text,
-                format('approval.set: person %s can''t be asked: not a person with a login who can see this project', _bad),
+                format('approval.set: person %s can''t be asked: not a person with a login who may comment on this project''s tasks', _bad),
                 NULL::jsonb;
             CONTINUE;
         END IF;

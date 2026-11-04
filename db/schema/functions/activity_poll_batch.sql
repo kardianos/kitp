@@ -98,7 +98,7 @@ BEGIN
                     JOIN card_type ct ON ct.id = c.card_type_id
                     WHERE c.parent_card_id = _task_id AND ct.name IN ('comm', 'link')
                   ))
-          AND NOT activity_hidden(a.kind, a.card_id);
+          AND NOT activity_hidden(a.kind, a.card_id, a.value_new);
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(

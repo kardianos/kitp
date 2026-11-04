@@ -208,7 +208,7 @@ func TestApprovalsOff(t *testing.T) {
 		t.Errorf("approval_open with Approvals off = %d requests, want none", open)
 	}
 	var hidden bool
-	if err := f.sp.P.QueryRow(ctx, `SELECT activity_hidden('approval_decision', $1), activity_hidden('comment', $1)`, f.task).Scan(&hidden, new(bool)); err != nil || !hidden {
+	if err := f.sp.P.QueryRow(ctx, `SELECT activity_hidden('approval_decision', $1, NULL), activity_hidden('comment', $1, NULL)`, f.task).Scan(&hidden, new(bool)); err != nil || !hidden {
 		t.Errorf("activity_hidden(approval_decision) = %v (%v), want true", hidden, err)
 	}
 	if visible(t, f, sysCtx(), "approval")[request] {

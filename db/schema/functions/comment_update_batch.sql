@@ -82,6 +82,17 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
+        -- A vote's reason is part of Approvals: while Approvals is off in
+        -- the task's project, approval.decide is refused and so is editing
+        -- what a vote said (review 2026-11-03 round 3 #14).
+        IF _kind = 'approval_decision'
+           AND area_state(COALESCE(card_enclosing_project(
+                   (SELECT a.card_id FROM activity a WHERE a.id = _activity_id)), 0), 'approvals') = 'off' THEN
+            RETURN QUERY SELECT _idx, false, 'area_off'::text,
+                'comment.update: Approvals is switched off in this project, so a vote''s reason can''t be edited'::text,
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
         IF _orig_actor <> actor_id THEN
             RETURN QUERY SELECT _idx, false, 'forbidden'::text,
                 format('comment.update: actor %s cannot edit comment authored by %s',

@@ -668,7 +668,7 @@ func (p *Pumper) loadActivityBatch(ctx context.Context, pointer int64) ([]scanne
 			  -- Nothing from an area that is switched off leaves kitp —
 			  -- including an approval vote recorded on a task while
 			  -- Approvals is off (activity_hidden).
-			  AND NOT activity_hidden(a.kind, a.card_id)
+			  AND NOT activity_hidden(a.kind, a.card_id, a.value_new)
 			ORDER BY a.id ASC
 			LIMIT :limit
 		)

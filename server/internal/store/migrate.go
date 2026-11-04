@@ -1358,6 +1358,14 @@ USING moved_thread m
 WHERE m.dest IS NULL AND av.card_id = m.comm_id
   AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'channel_ref');`,
 	},
+	{
+		// activity_hidden learned the row's value_new, to hide an edit of a
+		// vote's reason with the vote (review 2026-11-03 round 3 #14). The
+		// DDL creates the new signature; the old one goes, so nothing can
+		// call a check that shows those edits. Idempotent.
+		id:  "0036_activity_hidden_edits",
+		sql: `DROP FUNCTION IF EXISTS activity_hidden(text, bigint);`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

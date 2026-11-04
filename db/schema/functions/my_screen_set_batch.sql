@@ -94,8 +94,13 @@ BEGIN
                 CONTINUE;
             END;
         END IF;
-        IF _raw ? 'sort_order' AND jsonb_typeof(_raw->'sort_order') IS DISTINCT FROM 'number' THEN
-            RETURN QUERY SELECT _idx, false, 'validation'::text, 'my_screen.set: sort_order must be a number'::text, NULL::jsonb;
+        -- A whole number, as every number attribute is (attr_scalar_norm):
+        -- the attribute_value_def_ref index casts stored numbers to bigint,
+        -- so 2.5 or 1e300 failed as an internal error (review 2026-11-03
+        -- round 3 #23).
+        IF _raw ? 'sort_order' AND (jsonb_typeof(_raw->'sort_order') IS DISTINCT FROM 'number'
+                                    OR attr_scalar_norm('number', _raw->'sort_order') IS NULL) THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text, 'my_screen.set: sort_order must be a whole number'::text, NULL::jsonb;
             CONTINUE;
         END IF;
         _sort := CASE WHEN _raw ? 'sort_order' THEN (_raw->>'sort_order')::numeric

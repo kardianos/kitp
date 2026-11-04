@@ -237,7 +237,9 @@ func Register(_ *store.Pool) {
 		Doc:          "Vote approve or reject on a status edge of a task — the task moving from one status to another, named by a request (approval_id) or directly (from_status_id → to_status_id) — with an optional reason that shows in the task's comments. A later vote supersedes an earlier one until the task reaches the edge's target, which settles the round. A record only: it moves nothing. An agent's vote is shown with its owner ('claude (for Dana)') but doesn't answer a request that asked the owner. Requires comment rights on the task.",
 		InputType:    reflect.TypeFor[DecideInput](),
 		OutputType:   reflect.TypeFor[DecideOutput](),
-		AllowedRoles: writers,
+		// Whoever may comment on the task may vote — commenters too, who
+		// approval.set may ask (review 2026-11-03 round 3 #13).
+		AllowedRoles: []string{"commenter", "worker", "manager", "admin"},
 		ProcessName:  "comment.post",
 		CardTypeID:   taskCardType(decideTask),
 		ScopeCardID:  scope(decideTask),
