@@ -77,6 +77,12 @@ BEGIN
             _sort_order := COALESCE((_raw->>'sort_order')::int, 0);
         EXCEPTION WHEN invalid_text_representation THEN
             _sort_order := 0;
+        WHEN numeric_value_out_of_range THEN
+            -- Out of int range (or fractional rounding past it) was an
+            -- internal error (review 2026-11-03 round 4 #19).
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'flow_step.set: sort_order must be a whole number within ±2147483647'::text, NULL::jsonb;
+            CONTINUE;
         END;
         -- Presentation bit: true = standalone button, false = overflow
         -- dropdown. Absent/invalid → false (the column default).

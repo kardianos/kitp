@@ -201,6 +201,14 @@ BEGIN
         -- against the task's own project; the actor must also be allowed to
         -- update tasks in the destination, and its Tasks area must be on (a
         -- task moved into an area that is off would vanish).
+        -- Nothing moves into a feature bundle's source project (see
+        -- card.move; review 2026-11-03 round 4 #4).
+        IF EXISTS (SELECT 1 FROM bundle b WHERE b.source_project_id = _new_project_id) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                format('task.move: project %s is a feature bundle''s source; kitp maintains it', _new_project_id),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
         IF NOT user_has_grant(task_move_batch.actor_id, 'task', 'card.update', _new_project_id) THEN
             RETURN QUERY SELECT _idx, false, 'forbidden'::text,
                 format('task.move: you can''t add tasks to project %s', _new_project_id),

@@ -113,6 +113,9 @@ export interface ActivityActor {
   personId: bigint | null;
   /** That person card has an email address (an emailed vote request reaches them). */
   hasEmail: boolean;
+  /** May be asked for an approval vote (comment rights on the project's
+   *  tasks; never System). */
+  canVote: boolean;
 }
 
 /** activity.actors output: people first, then agents, each by name. */
@@ -323,6 +326,7 @@ export function registerCommentSpecs(api: Api): void {
             isAgent: o['is_agent'] === true,
             personId: o['person_id'] === undefined || o['person_id'] === null ? null : asId(o['person_id']),
             hasEmail: o['has_email'] === true,
+            canVote: o['can_vote'] === true,
           };
         }),
       }),

@@ -144,8 +144,10 @@ function mockServer({ list = listWire() } = {}) {
         return {
           id: sr.id, ok: true, data: {
             rows: [
-              { id: '5', name: 'Dana', is_agent: false, person_id: '30', has_email: true },
-              { id: '6', name: 'Lee', is_agent: false, person_id: '31', has_email: false },
+              { id: '5', name: 'Dana', is_agent: false, person_id: '30', has_email: true, can_vote: true },
+              { id: '6', name: 'Lee', is_agent: false, person_id: '31', has_email: false, can_vote: true },
+              // A viewer: may not vote, so not offered (review 2026-11-03 round 4 #13).
+              { id: '7', name: 'Vic', is_agent: false, person_id: '32', has_email: true, can_vote: false },
               { id: '7', name: 'claude (for Dana)', is_agent: true },
             ],
           },
@@ -277,7 +279,7 @@ test('TaskApprovals: asking sends the edge and the picked people', async () => {
   const add = people.querySelector('[data-rp-add]');
   assert.equal(add.textContent, '+ person');
   add.click();
-  assert.deepEqual(menuOptions().map((o) => o.textContent), ['Dana', 'Lee'], 'people only — no agent');
+  assert.deepEqual(menuOptions().map((o) => o.textContent), ['Dana', 'Lee'], 'people who may vote only — no agent, no viewer');
   assert.equal(srv.sent.filter((x) => x.k === 'card.search' && x.data.card_type_name === 'person').length, 0,
     'the people come from activity.actors, not a person search');
   const sel = form.querySelector('[data-approval-action]');

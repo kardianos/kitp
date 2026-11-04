@@ -53,6 +53,10 @@ BEGIN
     USING flow f
     WHERE fs.flow_id = f.id AND f.scope_card_id IN (SELECT id FROM _purge);
     DELETE FROM flow WHERE scope_card_id IN (SELECT id FROM _purge);
+    -- A source holds no files of its own, but a card moved in before moves
+    -- were refused might (review 2026-11-03 round 4 #4): attachments don't
+    -- cascade, and one would stop the rebuild for good.
+    DELETE FROM attachment WHERE card_id IN (SELECT id FROM _purge);
     DELETE FROM attribute_value WHERE card_id IN (SELECT id FROM _purge);
     DELETE FROM activity WHERE card_id IN (SELECT id FROM _purge);
     DELETE FROM card WHERE id IN (SELECT id FROM _purge);

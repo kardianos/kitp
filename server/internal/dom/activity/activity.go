@@ -112,6 +112,10 @@ type Actor struct {
 	// HasEmail says whether that person card has an email address, so
 	// asking them for a vote by email can reach them.
 	HasEmail bool `json:"has_email" mcp:"desc=true when the account's person card has an email address"`
+	// CanVote says whether they may be asked for an approval vote: comment
+	// rights on the project's tasks, not System (review 2026-11-03 round 4
+	// #13).
+	CanVote bool `json:"can_vote" mcp:"desc=true when approval.set may ask them: they may comment on the project's tasks"`
 }
 
 // ActorsOutput lists the accounts, people first, then agents, each by name.

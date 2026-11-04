@@ -74,11 +74,19 @@ BEGIN
                 'description', COALESCE((SELECT v.value #>> '{}' FROM attribute_value v
                                          JOIN attribute_def d ON d.id = v.attribute_def_id
                                          WHERE v.card_id = c.id AND d.name = 'description'), ''),
+                -- Only entries the caller can see, as watch.items lists them:
+                -- after losing a project the count no longer counts its
+                -- cards, nor drops when one is deleted (review 2026-11-03
+                -- round 4 #17).
                 'count', (SELECT count(*) FROM watch_entry we
                           JOIN card x ON x.id = we.card_id AND x.deleted_at IS NULL
-                          WHERE we.watch_list_id = c.id),
+                          WHERE we.watch_list_id = c.id
+                            AND card_visible_to(watch_list_list_batch.actor_id, x.id)
+                            AND NOT card_in_off_area(x.id)),
                 'has_card', _card <> 0 AND EXISTS (
-                    SELECT 1 FROM watch_entry we WHERE we.watch_list_id = c.id AND we.card_id = _card))
+                    SELECT 1 FROM watch_entry we WHERE we.watch_list_id = c.id AND we.card_id = _card
+                      AND card_visible_to(watch_list_list_batch.actor_id, _card)
+                      AND NOT card_in_off_area(_card)))
                 ORDER BY c.id)
             FROM card c
             JOIN attribute_value av ON av.card_id = c.id AND av.attribute_def_id = _sub_def

@@ -196,7 +196,7 @@ func Register(_ *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "approval",
 		Action:       "set",
-		Doc:          "Ask people to approve or reject one of a task's status actions (from_status_id → to_status_id, a step of its flow, e.g. Review → Done), or change who is asked / the note (with id). Approvals are a record, not a gate: nothing blocks or moves the task. Each person asked must have a login and see the project. When asking, email: {channel_id} also emails them: a comm thread on the task with the note as its message (note required), linked from the request; they still vote on the task. Requires edit rights on the task (and comm create rights to email).",
+		Doc:          "Ask people to approve or reject one of a task's status actions (from_status_id → to_status_id, a step of its flow, e.g. Review → Done), or change who is asked / the note (with id). Approvals are a record, not a gate: nothing blocks or moves the task. Each person asked must have a login and be able to vote: comment rights on the project's tasks (activity.actors' can_vote). When asking, email: {channel_id} also emails them: a comm thread on the task with the note as its message (note required), linked from the request; they still vote on the task. Requires edit rights on the task (and comm create rights to email).",
 		InputType:    reflect.TypeFor[SetInput](),
 		OutputType:   reflect.TypeFor[SetOutput](),
 		AllowedRoles: writers,

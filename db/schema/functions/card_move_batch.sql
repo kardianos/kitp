@@ -157,6 +157,18 @@ BEGIN
         --     actor must also be allowed to update this card type there,
         --     and the card's area must be on there (a card moved into an
         --     area that is off would vanish).
+        -- Nothing moves into a feature bundle's source project: kitp
+        -- rebuilds it from its file and copies it into every project that
+        -- applies the bundle, so a card planted there spread to each of
+        -- them, or (a task with a file) stopped the rebuild (review
+        -- 2026-11-03 round 4 #4). The dispatcher's bundle check sees only
+        -- where the card was.
+        IF _new_project IS NOT NULL AND EXISTS (SELECT 1 FROM bundle b WHERE b.source_project_id = _new_project) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                format('card.move: project %s is a feature bundle''s source; kitp maintains it', _new_project),
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
         IF _new_project IS DISTINCT FROM card_enclosing_project(_card_id) THEN
             SELECT name INTO _child_type_name FROM card_type WHERE id = _child_type_id;
             IF NOT user_has_grant(card_move_batch.actor_id, _child_type_name, 'card.update', COALESCE(_new_project, 0)) THEN

@@ -207,8 +207,11 @@ export class TaskApprovals extends Control<TaskApprovalsConfig> {
       { projectId: pid },
       (out) => {
         if (!this.isAlive()) return;
+        // Only people who may vote: approval.set refuses the rest, so
+        // offering them only made the request fail (review 2026-11-03
+        // round 4 #13).
         this.people = ((out as ActivityActorsOutput).rows ?? [])
-          .filter((r) => !r.isAgent && r.personId !== null)
+          .filter((r) => !r.isAgent && r.personId !== null && r.canVote)
           .map((r) => ({ personId: r.personId as bigint, name: r.name, hasEmail: r.hasEmail }));
         then();
       },

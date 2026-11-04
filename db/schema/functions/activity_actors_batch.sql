@@ -18,7 +18,9 @@
 --      be asked for (review 2026-11-03 round 3 #22). Each {id, name
 --      (user_label), is_agent, person_id (their
 --      linked person card, for conditions on people such as "approval
---      asked of"; absent for an agent), has_email (that person card has an
+--      asked of"; absent for an agent), can_vote (may be asked for an
+--      approval vote: comment.post on the project's tasks, not System),
+--      has_email (that person card has an
 --      email address: whether asking them for a vote can email them)};
 --      people first, then agents, each by name.
 --
@@ -103,6 +105,12 @@ BEGIN
                                'name', user_label(u.id),
                                'is_agent', u.is_agent,
                                'person_id', pc.person_id::text,
+                               -- Whether they may vote on the project's
+                               -- tasks, so the approver picker offers only
+                               -- them (approval.set refuses the rest; round 4
+                               -- #13). Never System.
+                               'can_vote', u.id <> 1 AND pc.person_id IS NOT NULL
+                                   AND user_has_grant(u.id, 'task', 'comment.post', _project_id),
                                'has_email', EXISTS (
                                    SELECT 1 FROM attribute_value ev
                                    JOIN attribute_def ed ON ed.id = ev.attribute_def_id AND ed.name = 'email'

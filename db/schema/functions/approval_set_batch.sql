@@ -20,8 +20,10 @@
 -- (task_status_action), whose label is snapshotted. Update (id): PATCHes
 -- approver_ids and / or note; the action is fixed (remove and request again
 -- to change it). Each person asked must be a live person with a login who
--- can see the task's project — someone who could never sign in to decide
--- would leave the request hanging. Only attributes that change write
+-- may vote on the task — comment.post on the project's tasks, as
+-- approval.decide requires (review 2026-11-03 rounds 3 and 4, #13), and not
+-- the System user — since someone who could never decide would leave the
+-- request hanging. Only attributes that change write
 -- activity rows (with value_old), which is the request's audit trail.
 --
 -- Email (create only): `email: {channel_id, subject?}` also starts an email
@@ -231,9 +233,13 @@ BEGIN
         --    on the task: comment.post on tasks in its project, as
         --    approval.decide requires. One who could only see it could never
         --    answer (review 2026-11-03 round 3 #13).
-        SELECT string_agg(p::text, ', ') INTO _bad
+        -- Named by their title (person id when it has none), not by id
+        -- alone (review 2026-11-03 round 4 #13).
+        SELECT string_agg(COALESCE(NULLIF((SELECT tv.value #>> '{}' FROM attribute_value tv
+                                            JOIN attribute_def td ON td.id = tv.attribute_def_id AND td.name = 'title'
+                                            WHERE tv.card_id = p), ''), 'person ' || p::text), ', ') INTO _bad
         FROM unnest(_approvers) AS p
-        WHERE NOT EXISTS (
+        WHERE p = 1 OR NOT EXISTS (
             SELECT 1
             FROM card pc
             JOIN card_type pct ON pct.id = pc.card_type_id AND pct.name = 'person'
@@ -243,7 +249,7 @@ BEGIN
         );
         IF _bad IS NOT NULL THEN
             RETURN QUERY SELECT _idx, false, 'approver_invalid'::text,
-                format('approval.set: person %s can''t be asked: not a person with a login who may comment on this project''s tasks', _bad),
+                format('approval.set: %s can''t be asked: only someone with a login who may comment on this project''s tasks can vote', _bad),
                 NULL::jsonb;
             CONTINUE;
         END IF;

@@ -702,8 +702,10 @@ BEGIN
                     ON CONFLICT (user_id, card_id) DO UPDATE
                         SET agent_user_id = EXCLUDED.agent_user_id;
                 ELSE
-                    SELECT card_id INTO _actor_person_id
-                    FROM user_account_person WHERE user_account_id = actor_id;
+                    -- The actor's person (account_person); the column is
+                    -- person_card_id — card_id failed every human's
+                    -- assign_to_me (review 2026-11-03 round 4 #18).
+                    _actor_person_id := account_person(card_insert_batch.actor_id);
                     IF _actor_person_id IS NOT NULL THEN
                         SELECT id INTO _assignee_def_id
                         FROM attribute_def WHERE name = 'assignee';

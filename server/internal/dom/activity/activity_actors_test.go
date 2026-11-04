@@ -129,6 +129,24 @@ func TestActors(t *testing.T) {
 	if !slices.Contains(got, "Dave") {
 		t.Errorf("ids: %v missing Dave", got)
 	}
+	// can_vote: a role holder who may comment on the project's tasks, not a
+	// viewer (review 2026-11-03 round 4 #13).
+	vic := user("Vic", false, 0)
+	if _, err := pool.Exec(ctx, `INSERT INTO user_role (user_id, role_id, scope_card_id) SELECT $1, id, $2 FROM role WHERE name = 'viewer'`, vic, projA); err != nil {
+		t.Fatal(err)
+	}
+	var vicPerson int64
+	if err := pool.QueryRow(ctx, `INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'person' RETURNING id`).Scan(&vicPerson); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_account_person (user_account_id, person_card_id) VALUES ($1, $2)`, vic, vicPerson); err != nil {
+		t.Fatal(err)
+	}
+	_, byName = names(call(bob, fmt.Sprintf(`{"project_id":"%d"}`, projA)))
+	if byName["Vic"].CanVote || !byName["Bob"].CanVote {
+		t.Errorf("can_vote: Vic (viewer) %v, Bob (worker) %v; want false, true", byName["Vic"].CanVote, byName["Bob"].CanVote)
+	}
+
 	// But not someone else's agent, whose label names its owner, nor a
 	// retired agent (review 2026-11-03 round 3 #22).
 	payroll := user("payroll-bot", true, carol)
