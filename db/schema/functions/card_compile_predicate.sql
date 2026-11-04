@@ -59,8 +59,10 @@ CREATE OR REPLACE FUNCTION card_compile_predicate(
     params jsonb,
     visited bigint[],
     -- The person card the tree is evaluated for (the viewer, or the owner of
-    -- a calendar / subscription); NULL = none. Watch lists and private child
-    -- cards are that person's alone (review 2026-11-03 #8, #15).
+    -- a calendar / subscription); NULL = none (kitp's own reads); -1 = an
+    -- account with no person card, which has no watch lists or private
+    -- cards and sees no saved filter (round 3 #16). Watch lists and private
+    -- child cards are that person's alone (review 2026-11-03 #8, #15).
     viewer bigint
 ) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
@@ -786,7 +788,9 @@ BEGIN
           -- Only a snippet the viewer can see (their login's
           -- card_visible_to): another project's saved filter is no test to
           -- run (review 2026-11-03 round 2 #21). A tree evaluated for no one
-          -- (viewer NULL, kitp's own reads) uses any.
+          -- (viewer NULL, kitp's own reads) uses any; one evaluated for an
+          -- account with no person (viewer -1: no login maps to it) uses none
+          -- (round 3 #16).
           AND (viewer IS NULL OR card_visible_to(COALESCE((
                   SELECT uap.user_account_id FROM user_account_person uap
                   WHERE uap.person_card_id = viewer LIMIT 1), 0), sc.id));

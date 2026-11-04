@@ -436,7 +436,10 @@ func loadTaskRows(ctx context.Context, pool *store.Pool, viewer, projectID int64
 		}
 		pb := named.New()
 		pb.Set("viewer", viewer)
-		pq, pargs, pErr := pb.Compile(`SELECT COALESCE(account_person(:viewer::bigint), 0)`)
+		// An account with no person is card.NoPerson, not 0 (no viewer):
+		// it sees no saved filter (review 2026-11-03 round 3 #16).
+		pb.Set("no_person", card.NoPerson)
+		pq, pargs, pErr := pb.Compile(`SELECT COALESCE(account_person(:viewer::bigint), :no_person::bigint)`)
 		if pErr != nil {
 			return nil, api.Internal(fmt.Errorf("viewer person: compile: %w", pErr))
 		}

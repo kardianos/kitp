@@ -102,13 +102,21 @@ type compileCtx struct {
 //
 // viewerPerson is the person card the tree is evaluated for — the viewer, or
 // the owner of a calendar or notification subscription; 0 when there is
-// none. A watch_list leaf matches only that person's own lists, and a child
-// path never looks into someone else's private cards (review 2026-11-03 #8,
-// #15).
+// none (kitp's own reads); NoPerson for an account with no person card. A
+// watch_list leaf matches only that person's own lists, a child path never
+// looks into someone else's private cards (review 2026-11-03 #8, #15), and
+// a snippet leaf names only a saved filter the viewer's login can see
+// (round 2 #21; NoPerson sees none, round 3 #16).
 func CompileTree(ctx context.Context, tx store.Querier, g CardWhereGroup, addArg func(any) string, snap *schema.Snapshot, viewerPerson int64) (string, error) {
 	c := &compileCtx{ctx: ctx, tx: tx, addArg: addArg, snap: snap, visited: map[int64]bool{}, viewer: viewerPerson}
 	return compileTree(g, c)
 }
+
+// NoPerson is the viewer person of an account that has none (no linked
+// person card, or a workspace agent): it owns no watch lists or private
+// cards and sees no saved filter. 0 means no viewer at all — kitp's own
+// reads, which see every snippet.
+const NoPerson int64 = -1
 
 // viewerArg is the viewer's person as a bound bigint, or NULL.
 func (c *compileCtx) viewerArg() string {
@@ -861,7 +869,8 @@ func compileSnippet(n CardWhereTreeNode, c *compileCtx) (string, error) {
 	//
 	// Only a snippet the viewer can see (their login's card_visible_to):
 	// another project's saved filter is no test to run (review 2026-11-03
-	// round 2 #21). A tree evaluated for no one (viewer 0) uses any.
+	// round 2 #21). A tree evaluated for no one (viewer 0) uses any; one
+	// for an account with no person (NoPerson) maps to no login, so none.
 	b := named.New()
 	b.Set("id", id)
 	b.Set("viewer", c.viewer)

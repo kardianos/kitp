@@ -206,7 +206,7 @@ BEGIN
 
         -- Predicate: v2 tree wins, fallback to v1 flat where[] (top-level AND).
         IF _tree IS NOT NULL AND jsonb_typeof(_tree) = 'object' THEN
-            _compile_result := card_compile_predicate(_tree, _params, ARRAY[]::bigint[], account_person(card_select_with_attributes_batch.actor_id));
+            _compile_result := card_compile_predicate(_tree, _params, ARRAY[]::bigint[], COALESCE(account_person(card_select_with_attributes_batch.actor_id), -1));
             _params := _compile_result->'params';
             _pred_sql := _compile_result->>'sql';
             IF _pred_sql IS NOT NULL AND _pred_sql <> '' THEN
@@ -215,7 +215,7 @@ BEGIN
         ELSIF _where IS NOT NULL AND jsonb_typeof(_where) = 'array' THEN
             FOR _i IN 0 .. (jsonb_array_length(_where) - 1)
             LOOP
-                _compile_result := card_compile_predicate(_where->_i, _params, ARRAY[]::bigint[], account_person(card_select_with_attributes_batch.actor_id));
+                _compile_result := card_compile_predicate(_where->_i, _params, ARRAY[]::bigint[], COALESCE(account_person(card_select_with_attributes_batch.actor_id), -1));
                 _params := _compile_result->'params';
                 _pred_sql := _compile_result->>'sql';
                 IF _pred_sql IS NOT NULL AND _pred_sql <> '' THEN
