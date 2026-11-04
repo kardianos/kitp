@@ -34,6 +34,7 @@ package projectimport
 
 import (
 	"context"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"reflect"
@@ -87,6 +88,7 @@ func Register(cfg ImportConfig) {
 		ScopeCardID: scopeCardFromUploadInput,
 		SQLFunc:     "project_import_upload_batch",
 		PreRun:      preRunUpload,
+		OnePerBatch: true,
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "project.import",
@@ -113,6 +115,7 @@ func Register(cfg ImportConfig) {
 		Timeout:      60 * time.Second, // scans every row of the CSV; per S1
 		SQLFunc:      "project_import_preview_batch",
 		PreRun:       preRunPreview,
+		OnePerBatch:  true,
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "project.import",
@@ -127,6 +130,7 @@ func Register(cfg ImportConfig) {
 		Timeout:      60 * time.Second, // bulk insert path; per S1
 		SQLFunc:      "project_import_commit_batch",
 		PreRun:       preRunCommit,
+		OnePerBatch:  true,
 	})
 }
 
@@ -261,11 +265,14 @@ type PreviewError struct {
 
 // PreviewOutput is the dry-run summary.
 type PreviewOutput struct {
-	WouldCreate   WouldCreate    `json:"would_create"`
-	Errors        []PreviewError `json:"errors"`
-	SkippedRows   int            `json:"skipped_rows"`
-	ProcessedRows int            `json:"processed_rows"`
-	Status        string         `json:"status"`
+	WouldCreate WouldCreate    `json:"would_create"`
+	Errors      []PreviewError `json:"errors" mcp:"desc=the first 1000 row errors"`
+	// ErrorCount is every row error, Errors only the first 1000 (review
+	// 2026-11-03 round 4 #3).
+	ErrorCount    int    `json:"error_count" mcp:"desc=how many row errors there are in all"`
+	SkippedRows   int    `json:"skipped_rows"`
+	ProcessedRows int    `json:"processed_rows"`
+	Status        string `json:"status"`
 }
 
 // CommitInput triggers the irrevocable import. The handler reads the
@@ -331,13 +338,13 @@ func preRunUpload(ctx context.Context, tx store.Querier, ins []any) ([]any, erro
 			}
 			continue
 		}
-		body, err := readFileBytes(ctx, tx, auth.ActorOrSystem(ctx), in.FileID)
+		file, err := openFile(ctx, tx, auth.ActorOrSystem(ctx), in.FileID)
 		if err != nil {
 			return nil, csvReadError(i, in.FileID, err)
 		}
-		parsed, err := parseCSVPreview(body, 20)
+		parsed, err := parseCSVPreview(file, 20)
 		if err != nil {
-			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: csvParseMessage(err)}
+			return nil, parseFailure(i, in.FileID, file, err)
 		}
 		out[i] = map[string]any{
 			"project_id":           formatInt64(in.ProjectID),
@@ -350,9 +357,9 @@ func preRunUpload(ctx context.Context, tx store.Querier, ins []any) ([]any, erro
 	return out, nil
 }
 
-// preRunPreview reads the CSV bytes + parses every row (no preview
-// truncation), then augments the input. The PL/pgSQL function walks
-// `_parsed_header` + `_parsed_rows` directly.
+// preRunPreview streams the job's CSV into import_job_row (streamRows)
+// and hands the function its header. The PL/pgSQL function walks the
+// stored rows.
 func preRunPreview(ctx context.Context, tx store.Querier, ins []any) ([]any, error) {
 	if err := oneFilePerBatch("project.import.preview", ins); err != nil {
 		return nil, err
@@ -376,19 +383,18 @@ func preRunPreview(ctx context.Context, tx store.Querier, ins []any) ([]any, err
 		}
 		// The job is the caller's (lookupJobFileID); its file was checked
 		// against its creator at upload and is read as theirs.
-		body, err := readFileBytes(ctx, tx, creator, fileID)
+		file, err := openFile(ctx, tx, creator, fileID)
 		if err != nil {
 			return nil, csvReadError(i, fileID, err)
 		}
-		header, rows, err := readAllCSV(body)
+		header, err := streamRows(ctx, tx, in.JobID, file)
 		if err != nil {
-			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: csvParseMessage(err)}
+			return nil, parseFailure(i, fileID, file, err)
 		}
 		out[i] = map[string]any{
 			"job_id":         formatInt64(in.JobID),
 			"resolution":     in.Resolution,
 			"_parsed_header": header,
-			"_parsed_rows":   rows,
 		}
 	}
 	return out, nil
@@ -430,18 +436,17 @@ func preRunCommit(ctx context.Context, tx store.Querier, ins []any) ([]any, erro
 		}
 		// The job is the caller's (lookupJobFileID); its file was checked
 		// against its creator at upload and is read as theirs.
-		body, err := readFileBytes(ctx, tx, creator, fileID)
+		file, err := openFile(ctx, tx, creator, fileID)
 		if err != nil {
 			return nil, csvReadError(i, fileID, err)
 		}
-		header, rows, err := readAllCSV(body)
+		header, err := streamRows(ctx, tx, in.JobID, file)
 		if err != nil {
-			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: csvParseMessage(err)}
+			return nil, parseFailure(i, fileID, file, err)
 		}
 		out[i] = map[string]any{
 			"job_id":         formatInt64(in.JobID),
 			"_parsed_header": header,
-			"_parsed_rows":   rows,
 		}
 	}
 	return out, nil
@@ -479,6 +484,24 @@ func lookupJobFileID(ctx context.Context, tx store.Querier, jobID int64) (fileID
 // csvReadError is the answer for a file that can't be read: "not found" for
 // a missing, empty or unreadable-to-you file; an internal error (logged, not
 // shown) for anything else (CLAUDE.md: no raw error text on the wire).
+// parseFailure is a read of the file that stopped partway: the file's own
+// failure (a chunk too many, a database error) if it had one, else the CSV
+// didn't parse.
+func parseFailure(i int, fileID int64, file *chunkReader, err error) error {
+	if file.err != nil {
+		return csvReadError(i, fileID, file.err)
+	}
+	if errors.Is(err, errTooLarge) || errors.Is(err, errNoFile) {
+		return csvReadError(i, fileID, err)
+	}
+	var pe *csv.ParseError
+	if !errors.As(err, &pe) && !errors.Is(err, errTooManyRows) && !errors.Is(err, errEmptyCSV) {
+		// Not the CSV's fault: storing its rows failed.
+		return fmt.Errorf("project.import: file %d: %w", fileID, err)
+	}
+	return &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: csvParseMessage(err)}
+}
+
 func csvReadError(i int, fileID int64, err error) error {
 	if errors.Is(err, errNoFile) {
 		return &reg.HandlerError{InputIndex: i, Code: "csv_read", Message: fmt.Sprintf("file %d not found", fileID)}

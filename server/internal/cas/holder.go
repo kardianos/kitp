@@ -10,7 +10,7 @@ import (
 
 // NoteHolder records that userID sent the bytes at address
 // (cas_blob_holder). file.create takes an address only from an account that
-// holds it — sent it, or may read a file it is part of (cas_held_by) — so
+// holds it — it, or its agent or owner, sent it (cas_held_by) — so
 // knowing a hash isn't having the file (review 2026-11-03 round 2 #21).
 // Every route that stores bytes for a later file.create calls it after Put.
 func NoteHolder(ctx context.Context, q store.Querier, address string, userID int64) error {

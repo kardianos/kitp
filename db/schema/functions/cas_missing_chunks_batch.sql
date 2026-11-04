@@ -59,14 +59,18 @@ BEGIN
                 SELECT jsonb_agg(a.address ORDER BY a.ord)
                 FROM jsonb_array_elements_text(_addrs_raw)
                      WITH ORDINALITY AS a(address, ord)
-                -- Bytes the caller doesn't hold count as missing, stored or
-                -- not: the client sends them (a no-op store that records
-                -- the holder), and nobody learns which hashes kitp has
-                -- (cas_held_by; review 2026-11-03 round 2 #21).
-                WHERE NOT (
-                    EXISTS (SELECT 1 FROM cas_blob cb WHERE cb.address = a.address)
-                    AND cas_held_by(a.address, cas_missing_chunks_batch.actor_id)
-                )
+                -- Each distinct address is checked once and a repeat answers
+                -- as it does (round 4 #15). Bytes the caller doesn't hold
+                -- count as missing, stored or not: the client sends them (a
+                -- no-op store that records the holder), and nobody learns
+                -- which hashes kitp has (cas_held_by; round 2 #21).
+                JOIN (SELECT d.address
+                      FROM (SELECT DISTINCT x.address
+                            FROM jsonb_array_elements_text(_addrs_raw) AS x(address)) d
+                      WHERE NOT (
+                          EXISTS (SELECT 1 FROM cas_blob cb WHERE cb.address = d.address)
+                          AND cas_held_by(d.address, cas_missing_chunks_batch.actor_id))) m
+                  ON m.address = a.address
             ), '[]'::jsonb));
     END LOOP;
 END;

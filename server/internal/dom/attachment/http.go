@@ -302,6 +302,8 @@ func requireAttachmentAccess(ctx context.Context, pool *store.Pool, userID, atta
 			  -- Nor does one on someone else's private card
 			  -- (docs/PERSONAL_SCREENS.md; review 2026-11-03 #23).
 			  AND card_private_ok(a.card_id, :user)
+			  -- Nor one on a deleted card, or under one (round 4 #16).
+			  AND card_live(a.card_id)
 		)
 		SELECT
 			COALESCE((SELECT project_id FROM attach), 0),

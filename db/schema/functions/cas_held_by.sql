@@ -7,16 +7,23 @@
 -- account doesn't hold as missing, so the client sends them; storing them
 -- again is a no-op that records the holder.
 --
--- Bytes that are part of a file the account may read used to count too, but
--- that asked file_readable_by of every file sharing the bytes — about 1 ms
--- each, so an upload of a common file (a signature logo in thousands of
--- threads) timed out (round 3 #7). A file the account may read is attached
--- by id (attachment.create), not by its bytes. Migration 0037 recorded every
--- file's creator as a holder of its bytes.
+-- The holder rows are looked up by key — the reader's principal and that
+-- principal's personal agents — not by working out every holder's
+-- principal: with thousands of holders of one address that cost 90 ms an
+-- address (round 4 #15). A workspace agent (owned by System) is its own
+-- principal, so System's agents are not System's. Bytes in a file the
+-- account may read don't count: such a file is attached by id
+-- (attachment.create), not by its bytes (round 3 #7).
 CREATE OR REPLACE FUNCTION cas_held_by(address text, reader bigint)
 RETURNS boolean LANGUAGE sql STABLE AS $$
     SELECT EXISTS (
-               SELECT 1 FROM cas_blob_holder h
-               WHERE h.address = cas_held_by.address
-                 AND account_principal(h.user_id) = account_principal(reader))
+        SELECT 1 FROM cas_blob_holder h
+        WHERE h.address = cas_held_by.address
+          AND h.user_id IN (
+              SELECT account_principal(reader)
+              UNION ALL
+              SELECT ua.id FROM user_account ua
+              WHERE ua.is_agent
+                AND ua.parent_user_id = account_principal(reader)
+                AND ua.parent_user_id <> 1))
 $$;

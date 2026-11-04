@@ -326,7 +326,7 @@ mime_type, text, , false, 'application/octet-stream'
 storage_kind, text, , false, 
 created_at, timestamptz, , false, now()
 
-## table cas_blob_holder | doc="Who has sent which stored bytes: one row per (CAS address, account) the chunk and signed-upload routes stored for. file.create takes an address only from an account that holds it (cas_held_by: sent it, or may read a file it is part of), so knowing a hash isn't having the bytes (review 2026-11-03 round 2 #21)." | primary_key="address, user_id"
+## table cas_blob_holder | doc="Who has sent which stored bytes: one row per (CAS address, account) the chunk and signed-upload routes stored for. file.create takes an address only from an account that holds it (cas_held_by: it, or its agent or owner, sent it), so knowing a hash isn't having the bytes (review 2026-11-03 round 2 #21)." | primary_key="address, user_id"
 
 ### columns
 name, type, nullable, default, references, on_delete
@@ -445,6 +445,13 @@ completed_at, timestamptz, , , ,
 name, columns
 idx_import_job_project_id_created_at, "project_id, created_at"
 
+## table import_job_row | doc="The data rows of an import job's CSV while one request previews or commits it: the PreRun streams the file and stores its rows here as they parse, rowBatch at a time, and the function reads them in order (n from 1; the header is row 0). Rows live only inside that request: it deletes them when done, and a failed request rolls them back (review 2026-11-03 round 4 #3)." | primary_key="job_id, n"
+
+### columns
+name, type, nullable, references, on_delete
+job_id, bigint, false, import_job.id, cascade
+n, int, false, ,
+cells, text[], false, ,
 
 ## table flow | doc="One state-machine definition, scoped to one project. Each row binds a flow to one (attribute_def, project) pair — the attribute_def names the attribute whose value cards are the flow's states, and the project is the scope under which this flow applies. There are no global / install-wide flows; templates live in the install seed and are stamped into each new project at seed time (Gate 11). default_create_status_id names the status this flow assigns to a new task when a screen using this flow has no per-screen override." | unique="attribute_def_id, scope_card_id"
 
@@ -870,8 +877,9 @@ idx_theme_file_cas, "cas_address"
 ## function comm_route_delete_batch | doc="comm_route.delete — admin: remove a route; its URL / address stops working at once." | path="functions/comm_route_delete_batch.sql"
 ## function account_person | doc="The person card an account acts as for its own things (watch lists, personal screens and views, private cards): its linked person, or an agent's owner's. NULL when none." | path="functions/account_person.sql" | arg_types="bigint"
 ## function card_private_ok | doc="Whether an account may see / write a card as far as privacy goes: the card isn't private, or it is private to account_person(actor). ANDed into the listing reads that can surface private cards; VisibilityClause and card_visible_to apply the same rule." | path="functions/card_private_ok.sql" | arg_types="bigint, bigint"
-## function file_readable_by | doc="Whether an account may have a stored file's bytes: it uploaded the file, or the file is attached to a live card whose bytes it may download (card.update on the project, the byte routes' rule; not an area that is off, not someone else's private card). attachment.create and the CSV import ask it, so seeing a card isn't enough to copy its files." | path="functions/file_readable_by.sql" | arg_types="bigint, bigint"
-## function cas_held_by | doc="Whether an account may name stored bytes in file.create: it sent them (cas_blob_holder; an agent and its owner as one) or they are part of a file it may read. cas.missing_chunks reports bytes it doesn't hold as missing." | path="functions/cas_held_by.sql" | arg_types="text, bigint"
+## function card_live | doc="Whether a card and every card above it are undeleted: a file on a deleted card, or under one, is gone with it (downloads, attachment.list, file_readable_by)." | path="functions/card_live.sql" | arg_types="bigint"
+## function file_readable_by | doc="Whether an account may have a stored file's bytes: it uploaded the file; its agent or owner did and the file isn't attached anywhere yet; or the file is attached to a live card (card_live) whose bytes it may download (card.update on the project, the byte routes' rule; not an area that is off, not someone else's private card). attachment.create and the CSV import ask it, so seeing a card isn't enough to copy its files." | path="functions/file_readable_by.sql" | arg_types="bigint, bigint"
+## function cas_held_by | doc="Whether an account may name stored bytes in file.create: it, or its agent or owner, sent them (cas_blob_holder, looked up by key). cas.missing_chunks reports bytes it doesn't hold as missing." | path="functions/cas_held_by.sql" | arg_types="text, bigint"
 ## function my_screen_toggles | doc="The phase toggles a personal screen starts with: New / Active (on) / Closed over its listed card type's status attribute (status or comm_status), as toggle_groups JSON." | path="functions/my_screen_toggles.sql" | arg_types="text"
 ## function my_screen_list_batch | doc="my_screen.list — the caller's personal screens (parentless screen cards private to them) in Mine order: title, layout, list_card_type, predicate, sort_order, default_filter, view_count." | path="functions/my_screen_list_batch.sql"
 ## function my_screen_set_batch | doc="my_screen.set — create or update one of the caller's personal screens: title, layout (list | grid), list_card_type (task | comm), base filter (predicate; a project leaf limits it to some projects), sort_order, default_filter." | path="functions/my_screen_set_batch.sql"

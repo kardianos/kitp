@@ -36,6 +36,11 @@ type Page struct {
 	// NavHideChildren keeps the page in the navigation but not its child
 	// pages (a changelog section without its hundred entries).
 	NavHideChildren bool
+	// Moved: the page is no longer under the portal's root in its live
+	// tree, though its snapshot still says it is. It isn't built, so the
+	// site doesn't link it; serving refuses it too (review 2026-11-03
+	// round 4 #14).
+	Moved bool
 }
 
 // SiteFile is an attachment on a published page, which a page body may
@@ -226,7 +231,9 @@ func (r *renderer) render() (Result, error) {
 	kids := map[int64][]Page{}
 	for _, p := range s.Pages {
 		byID[p.ID] = p
-		kids[p.ParentID] = append(kids[p.ParentID], p)
+		if !p.Moved {
+			kids[p.ParentID] = append(kids[p.ParentID], p)
+		}
 	}
 	for _, list := range kids {
 		sort.SliceStable(list, func(i, j int) bool {
@@ -268,6 +275,11 @@ func (r *renderer) render() (Result, error) {
 		return r.res, nil
 	}
 
+	for _, p := range s.Pages {
+		if p.Moved {
+			r.warn("%q was moved out from under the root page, so it isn't on the site; publish it again where it is now.", p.Title)
+		}
+	}
 	r.place(root, kids)
 	r.md = goldmark.New(
 		goldmark.WithExtensions(extension.GFM),

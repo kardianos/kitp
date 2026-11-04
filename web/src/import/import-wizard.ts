@@ -785,7 +785,7 @@ export class ImportWizard extends Control<ImportWizardConfig> {
     this.bodyEl.append(p);
 
     this.bodyEl.append(this.renderSummary('Would create', out.wouldCreate, out.skippedRows));
-    this.bodyEl.append(this.renderErrors(out.errors));
+    this.bodyEl.append(this.renderErrors(out.errors, out.errorCount));
   }
 
   private renderCommitStep(): void {
@@ -840,7 +840,9 @@ export class ImportWizard extends Control<ImportWizardConfig> {
     return wrap;
   }
 
-  private renderErrors(errors: ImportError[]): HTMLElement {
+  /** The row errors, the first MAX_ERRORS_SHOWN listed; `total` counts them
+   *  all (a preview returns only the first 1000). */
+  private renderErrors(errors: ImportError[], total = errors.length): HTMLElement {
     const wrap = document.createElement('div');
     wrap.className = 'import-wizard__errors';
     wrap.dataset.iwErrors = '';
@@ -851,7 +853,7 @@ export class ImportWizard extends Control<ImportWizardConfig> {
     }
     const head = document.createElement('p');
     head.className = 'import-wizard__errors-head';
-    head.textContent = `${errors.length} error${errors.length === 1 ? '' : 's'}`;
+    head.textContent = `${total} error${total === 1 ? '' : 's'}`;
     const list = document.createElement('ul');
     list.className = 'import-wizard__errors-list';
     for (const e of errors.slice(0, MAX_ERRORS_SHOWN)) {
@@ -861,10 +863,11 @@ export class ImportWizard extends Control<ImportWizardConfig> {
       li.textContent = `${where}: ${e.message}`;
       list.append(li);
     }
-    if (errors.length > MAX_ERRORS_SHOWN) {
+    const shown = Math.min(errors.length, MAX_ERRORS_SHOWN);
+    if (total > shown) {
       const more = document.createElement('li');
       more.className = 'import-wizard__errors-item muted';
-      more.textContent = `… ${errors.length - MAX_ERRORS_SHOWN} more`;
+      more.textContent = `… ${total - shown} more`;
       list.append(more);
     }
     wrap.append(head, list);

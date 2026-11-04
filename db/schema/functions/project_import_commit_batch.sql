@@ -14,9 +14,11 @@
 -- dispatcher's mapPGError) since the design contract says inner
 -- card.insert failures during a commit abort the whole tx.
 --
--- CSV parsing happens Go-side via the PreRun hook. By the time this
--- function runs, the input JSON carries `_parsed_header` +
--- `_parsed_rows`. Splitting the commit into separate "validate" and
+-- CSV parsing happens Go-side via the PreRun hook, which streams the file
+-- and stores its data rows in import_job_row; the input JSON carries
+-- `_parsed_header`. Callers that run the function directly may pass the
+-- rows inline as `_parsed_rows` instead. Everything per row is appended in
+-- O(1) and aggregated once (review 2026-11-03 round 4 #3). Splitting the commit into separate "validate" and
 -- "apply" PL/pgSQL functions adds round-trips without a real
 -- benefit — the validation walk + apply walk can share state in
 -- one DECLARE block, and the bug-finding signal "abort on first row
@@ -116,6 +118,16 @@ DECLARE
     -- card.insert call buffers
     _insert_inputs jsonb;
     _insert_keys text[];
+    -- Accumulators, appended to in O(1) and turned into jsonb once: a
+    -- jsonb || in the row loop copied everything built so far, so a commit
+    -- took the square of its row count (review 2026-11-03 round 4 #3).
+    _task_arr jsonb[];
+    _ins_arr jsonb[];
+    _np_k text[]; _np_v text[];
+    _nm_k text[]; _nm_v text[];
+    _nc_k text[]; _nc_v text[];
+    _nt_k text[]; _nt_v text[];
+    _made_k text[]; _made_v text[];
     _key text;
     _ci_idx int;
     _ci_ok boolean;
@@ -195,7 +207,18 @@ BEGIN
         _r_tags := COALESCE(_resolution->>'tags', '');
 
         _header := COALESCE(_raw->'_parsed_header', '[]'::jsonb);
-        _rows := COALESCE(_raw->'_parsed_rows', '[]'::jsonb);
+        -- The rows are in import_job_row, stored by the PreRun as the file
+        -- streamed (review 2026-11-03 round 4 #3). A caller that passes
+        -- them inline (_parsed_rows) has them stored the same way first.
+        IF _raw ? '_parsed_rows' THEN
+            _rows := COALESCE(_raw->'_parsed_rows', '[]'::jsonb);
+            DELETE FROM import_job_row WHERE job_id = _job_id;
+            INSERT INTO import_job_row (job_id, n, cells)
+            SELECT _job_id, e.ord::int,
+                   ARRAY(SELECT c FROM jsonb_array_elements_text(e.v) WITH ORDINALITY AS x(c, o) ORDER BY x.o)
+            FROM jsonb_array_elements(CASE WHEN jsonb_typeof(_rows) = 'array' THEN _rows ELSE '[]'::jsonb END)
+                 WITH ORDINALITY AS e(v, ord);
+        END IF;
 
         -- Lookups (same as preview).
         SELECT COALESCE(jsonb_object_agg(lower(btrim(av.value #>> '{}')), c.id::text), '{}'::jsonb)
@@ -273,6 +296,11 @@ BEGIN
         _new_components := '{}'::jsonb;
         _new_tags := '{}'::jsonb;
         _tasks := '[]'::jsonb;
+        _task_arr := ARRAY[]::jsonb[];
+        _np_k := ARRAY[]::text[]; _np_v := ARRAY[]::text[];
+        _nm_k := ARRAY[]::text[]; _nm_v := ARRAY[]::text[];
+        _nc_k := ARRAY[]::text[]; _nc_v := ARRAY[]::text[];
+        _nt_k := ARRAY[]::text[]; _nt_v := ARRAY[]::text[];
         _processed := 0;
         _skipped := 0;
         _had_errors := false;
@@ -280,7 +308,7 @@ BEGIN
 
         -- Plan walk: build task plans + auto-create sets, abort on first error.
         _ri := 0;
-        FOR _row IN SELECT v FROM jsonb_array_elements(_rows) AS v
+        FOR _row IN SELECT to_jsonb(r.cells) FROM import_job_row r WHERE r.job_id = _job_id ORDER BY r.n
         LOOP
             _row_num := _ri + 2;
             _row_skip := false;
@@ -314,7 +342,7 @@ BEGIN
                         IF _r_milestones = 'skip' THEN
                             _row_skip := true;
                         ELSIF _r_milestones = 'auto_create' THEN
-                            _new_milestones := _new_milestones || jsonb_build_object(_norm, _v);
+                            _nm_k := array_append(_nm_k, _norm); _nm_v := array_append(_nm_v, _v);
                             _tp_milestone_title := _norm;
                         ELSIF _r_milestones = 'leave_blank' THEN
                             NULL;
@@ -338,7 +366,7 @@ BEGIN
                         IF _r_components = 'skip' THEN
                             _row_skip := true;
                         ELSIF _r_components = 'auto_create' THEN
-                            _new_components := _new_components || jsonb_build_object(_norm, _v);
+                            _nc_k := array_append(_nc_k, _norm); _nc_v := array_append(_nc_v, _v);
                             _tp_component_title := _norm;
                         ELSIF _r_components = 'leave_blank' THEN
                             NULL;
@@ -365,7 +393,7 @@ BEGIN
                         IF _r_tags = 'skip' THEN
                             _row_skip := true;
                         ELSIF _r_tags = 'auto_create' THEN
-                            _new_tags := _new_tags || jsonb_build_object(_norm, _v);
+                            _nt_k := array_append(_nt_k, _norm); _nt_v := array_append(_nt_v, _v);
                             _tp_tag_paths := array_append(_tp_tag_paths, _norm);
                         ELSIF _r_tags = 'leave_blank' THEN
                             NULL;
@@ -401,7 +429,7 @@ BEGIN
                                     _name := _v;
                                 END IF;
                             END IF;
-                            _new_persons := _new_persons || jsonb_build_object(_norm, _name);
+                            _np_k := array_append(_np_k, _norm); _np_v := array_append(_np_v, _name);
                             _tp_assignee_email := _norm;
                             _tp_assignee_name := _name;
                         ELSIF _r_persons = 'leave_blank' THEN
@@ -453,7 +481,7 @@ BEGIN
                 _skipped := _skipped + 1;
             ELSE
                 _processed := _processed + 1;
-                _tasks := _tasks || jsonb_build_array(jsonb_build_object(
+                _task_arr := array_append(_task_arr, jsonb_build_object(
                     'title', _tp_title,
                     'description', _tp_description,
                     'sort_order', _tp_sort_order,
@@ -467,6 +495,12 @@ BEGIN
             END IF;
             _ri := _ri + 1;
         END LOOP;
+        _tasks := to_jsonb(_task_arr);
+        -- A key named twice keeps its last name, as the || it replaces did.
+        _new_persons := COALESCE((SELECT jsonb_object_agg(k, v ORDER BY o) FROM unnest(_np_k, _np_v) WITH ORDINALITY AS u(k, v, o)), '{}'::jsonb);
+        _new_milestones := COALESCE((SELECT jsonb_object_agg(k, v ORDER BY o) FROM unnest(_nm_k, _nm_v) WITH ORDINALITY AS u(k, v, o)), '{}'::jsonb);
+        _new_components := COALESCE((SELECT jsonb_object_agg(k, v ORDER BY o) FROM unnest(_nc_k, _nc_v) WITH ORDINALITY AS u(k, v, o)), '{}'::jsonb);
+        _new_tags := COALESCE((SELECT jsonb_object_agg(k, v ORDER BY o) FROM unnest(_nt_k, _nt_v) WITH ORDINALITY AS u(k, v, o)), '{}'::jsonb);
 
         IF _had_errors THEN
             -- Mirror Go's "import has N row errors; commit aborted"
@@ -502,17 +536,19 @@ BEGIN
 
         -- Persons (global, no parent).
         IF jsonb_typeof(_new_persons) = 'object' AND _new_persons <> '{}'::jsonb THEN
-            _insert_inputs := '[]'::jsonb;
+            _ins_arr := ARRAY[]::jsonb[];
             _insert_keys := ARRAY[]::text[];
             FOR _key, _name IN SELECT k, _new_persons->>k FROM jsonb_object_keys(_new_persons) AS k
             LOOP
-                _insert_inputs := _insert_inputs || jsonb_build_array(jsonb_build_object(
+                _ins_arr := array_append(_ins_arr, jsonb_build_object(
                     'card_type_name', 'person',
                     'title', _name,
                     'attributes', jsonb_build_object('email', _key)
                 ));
                 _insert_keys := array_append(_insert_keys, _key);
             END LOOP;
+            _insert_inputs := to_jsonb(_ins_arr);
+            _made_k := ARRAY[]::text[]; _made_v := ARRAY[]::text[];
             FOR _ci_idx, _ci_ok, _ci_code, _ci_message, _ci_result IN
                 SELECT ci.idx, ci.ok, ci.code, ci.message, ci.result
                 FROM card_insert_batch(actor_id, _insert_inputs) ci
@@ -522,23 +558,27 @@ BEGIN
                     RAISE EXCEPTION 'project.import.commit: auto-create persons[%]: % %', _ci_idx, _ci_code, _ci_message;
                 END IF;
                 _ci_id := (_ci_result->>'id')::bigint;
-                _persons := _persons || jsonb_build_object(_insert_keys[_ci_idx + 1], _ci_id::text);
+                _made_k := array_append(_made_k, _insert_keys[_ci_idx + 1]);
+                _made_v := array_append(_made_v, _ci_id::text);
             END LOOP;
+            _persons := _persons || COALESCE((SELECT jsonb_object_agg(k, v) FROM unnest(_made_k, _made_v) AS u(k, v)), '{}'::jsonb);
         END IF;
 
         -- Milestones (parent=project, title only).
         IF jsonb_typeof(_new_milestones) = 'object' AND _new_milestones <> '{}'::jsonb THEN
-            _insert_inputs := '[]'::jsonb;
+            _ins_arr := ARRAY[]::jsonb[];
             _insert_keys := ARRAY[]::text[];
             FOR _key, _name IN SELECT k, _new_milestones->>k FROM jsonb_object_keys(_new_milestones) AS k
             LOOP
-                _insert_inputs := _insert_inputs || jsonb_build_array(jsonb_build_object(
+                _ins_arr := array_append(_ins_arr, jsonb_build_object(
                     'card_type_name', 'milestone',
                     'parent_card_id', _project_id::text,
                     'title', _name
                 ));
                 _insert_keys := array_append(_insert_keys, _key);
             END LOOP;
+            _insert_inputs := to_jsonb(_ins_arr);
+            _made_k := ARRAY[]::text[]; _made_v := ARRAY[]::text[];
             FOR _ci_idx, _ci_ok, _ci_code, _ci_message, _ci_result IN
                 SELECT ci.idx, ci.ok, ci.code, ci.message, ci.result
                 FROM card_insert_batch(actor_id, _insert_inputs) ci
@@ -548,23 +588,27 @@ BEGIN
                     RAISE EXCEPTION 'project.import.commit: auto-create milestones[%]: % %', _ci_idx, _ci_code, _ci_message;
                 END IF;
                 _ci_id := (_ci_result->>'id')::bigint;
-                _milestones := _milestones || jsonb_build_object(_insert_keys[_ci_idx + 1], _ci_id::text);
+                _made_k := array_append(_made_k, _insert_keys[_ci_idx + 1]);
+                _made_v := array_append(_made_v, _ci_id::text);
             END LOOP;
+            _milestones := _milestones || COALESCE((SELECT jsonb_object_agg(k, v) FROM unnest(_made_k, _made_v) AS u(k, v)), '{}'::jsonb);
         END IF;
 
         -- Components (parent=project, title only).
         IF jsonb_typeof(_new_components) = 'object' AND _new_components <> '{}'::jsonb THEN
-            _insert_inputs := '[]'::jsonb;
+            _ins_arr := ARRAY[]::jsonb[];
             _insert_keys := ARRAY[]::text[];
             FOR _key, _name IN SELECT k, _new_components->>k FROM jsonb_object_keys(_new_components) AS k
             LOOP
-                _insert_inputs := _insert_inputs || jsonb_build_array(jsonb_build_object(
+                _ins_arr := array_append(_ins_arr, jsonb_build_object(
                     'card_type_name', 'component',
                     'parent_card_id', _project_id::text,
                     'title', _name
                 ));
                 _insert_keys := array_append(_insert_keys, _key);
             END LOOP;
+            _insert_inputs := to_jsonb(_ins_arr);
+            _made_k := ARRAY[]::text[]; _made_v := ARRAY[]::text[];
             FOR _ci_idx, _ci_ok, _ci_code, _ci_message, _ci_result IN
                 SELECT ci.idx, ci.ok, ci.code, ci.message, ci.result
                 FROM card_insert_batch(actor_id, _insert_inputs) ci
@@ -574,17 +618,19 @@ BEGIN
                     RAISE EXCEPTION 'project.import.commit: auto-create components[%]: % %', _ci_idx, _ci_code, _ci_message;
                 END IF;
                 _ci_id := (_ci_result->>'id')::bigint;
-                _components := _components || jsonb_build_object(_insert_keys[_ci_idx + 1], _ci_id::text);
+                _made_k := array_append(_made_k, _insert_keys[_ci_idx + 1]);
+                _made_v := array_append(_made_v, _ci_id::text);
             END LOOP;
+            _components := _components || COALESCE((SELECT jsonb_object_agg(k, v) FROM unnest(_made_k, _made_v) AS u(k, v)), '{}'::jsonb);
         END IF;
 
         -- Tags (parent=project, path attribute).
         IF jsonb_typeof(_new_tags) = 'object' AND _new_tags <> '{}'::jsonb THEN
-            _insert_inputs := '[]'::jsonb;
+            _ins_arr := ARRAY[]::jsonb[];
             _insert_keys := ARRAY[]::text[];
             FOR _key, _name IN SELECT k, _new_tags->>k FROM jsonb_object_keys(_new_tags) AS k
             LOOP
-                _insert_inputs := _insert_inputs || jsonb_build_array(jsonb_build_object(
+                _ins_arr := array_append(_ins_arr, jsonb_build_object(
                     'card_type_name', 'tag',
                     'parent_card_id', _project_id::text,
                     'title', _name,
@@ -592,6 +638,8 @@ BEGIN
                 ));
                 _insert_keys := array_append(_insert_keys, _key);
             END LOOP;
+            _insert_inputs := to_jsonb(_ins_arr);
+            _made_k := ARRAY[]::text[]; _made_v := ARRAY[]::text[];
             FOR _ci_idx, _ci_ok, _ci_code, _ci_message, _ci_result IN
                 SELECT ci.idx, ci.ok, ci.code, ci.message, ci.result
                 FROM card_insert_batch(actor_id, _insert_inputs) ci
@@ -601,8 +649,10 @@ BEGIN
                     RAISE EXCEPTION 'project.import.commit: auto-create tags[%]: % %', _ci_idx, _ci_code, _ci_message;
                 END IF;
                 _ci_id := (_ci_result->>'id')::bigint;
-                _tags := _tags || jsonb_build_object(_insert_keys[_ci_idx + 1], _ci_id::text);
+                _made_k := array_append(_made_k, _insert_keys[_ci_idx + 1]);
+                _made_v := array_append(_made_v, _ci_id::text);
             END LOOP;
+            _tags := _tags || COALESCE((SELECT jsonb_object_agg(k, v) FROM unnest(_made_k, _made_v) AS u(k, v)), '{}'::jsonb);
         END IF;
 
         ---------------------------------------------------------------
@@ -640,7 +690,7 @@ BEGIN
         ---------------------------------------------------------------
         _created_tasks := 0;
         IF jsonb_array_length(_tasks) > 0 THEN
-            _insert_inputs := '[]'::jsonb;
+            _ins_arr := ARRAY[]::jsonb[];
             FOR _row IN SELECT v FROM jsonb_array_elements(_tasks) AS v
             LOOP
                 _task_attrs := jsonb_build_object();
@@ -685,13 +735,14 @@ BEGIN
                     END IF;
                 END IF;
                 _task_attrs := _task_attrs || jsonb_build_object('status', _status_id);
-                _insert_inputs := _insert_inputs || jsonb_build_array(jsonb_build_object(
+                _ins_arr := array_append(_ins_arr, jsonb_build_object(
                     'card_type_name', 'task',
                     'parent_card_id', _project_id::text,
                     'title', _row->>'title',
                     'attributes', _task_attrs
                 ));
             END LOOP;
+            _insert_inputs := to_jsonb(_ins_arr);
             FOR _ci_idx, _ci_ok, _ci_code, _ci_message, _ci_result IN
                 SELECT ci.idx, ci.ok, ci.code, ci.message, ci.result
                 FROM card_insert_batch(actor_id, _insert_inputs) ci
@@ -723,6 +774,7 @@ BEGIN
                summary = _summary,
                completed_at = now()
          WHERE id = _job_id;
+        DELETE FROM import_job_row WHERE job_id = _job_id;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text, _summary;
     END LOOP;

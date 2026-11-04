@@ -393,9 +393,13 @@ func loadSite(ctx context.Context, pool *pgxpool.Pool, storage *cas.Storage, por
 	}
 	q := named.New()
 	q.Set("portal", portalID)
+	q.Set("root", s.RootID)
 	sql, args, err := q.Compile(`
 		SELECT p.card_id, COALESCE(p.parent_card_id, 0), p.title, p.slug, p.body,
-		       p.sort_order, p.published_at, p.nav_hidden, p.nav_hide_children
+		       p.sort_order, p.published_at, p.nav_hidden, p.nav_hide_children,
+		       -- Whether the page is under the portal's root in its live tree,
+		       -- not only its snapshot's (Page.Moved; round 4 #14).
+		       (:root::bigint = 0 OR EXISTS (SELECT 1 FROM card_ancestors(c.id) up WHERE up.id = :root::bigint))
 		FROM publication p
 		JOIN card c ON c.id = p.card_id
 		WHERE p.portal_id = :portal
@@ -418,10 +422,12 @@ func loadSite(ctx context.Context, pool *pgxpool.Pool, storage *cas.Storage, por
 	var pageIDs []int64
 	for rows.Next() {
 		var p Page
+		var underRoot bool
 		if err := rows.Scan(&p.ID, &p.ParentID, &p.Title, &p.Slug, &p.Body, &p.Sort, &p.PublishedAt,
-			&p.NavHidden, &p.NavHideChildren); err != nil {
+			&p.NavHidden, &p.NavHideChildren, &underRoot); err != nil {
 			return Site{}, fmt.Errorf("scan publication: %w", err)
 		}
+		p.Moved = !underRoot && p.ID != s.RootID
 		s.Pages = append(s.Pages, p)
 		pageIDs = append(pageIDs, p.ID)
 	}

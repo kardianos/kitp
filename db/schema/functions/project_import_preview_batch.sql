@@ -5,8 +5,10 @@
 -- summary on import_job so the wizard can resume.
 --
 -- CSV parsing runs Go-side via the PreRun hook — by the time this
--- function executes, the input JSON carries `_parsed_header` and
--- `_parsed_rows` alongside the original `job_id` / `resolution`.
+-- function executes, the input JSON carries `_parsed_header` alongside the
+-- original `job_id` / `resolution`, and the data rows are in
+-- import_job_row (streamed there by the PreRun; a direct caller may pass
+-- them inline as `_parsed_rows`).
 -- This keeps the SQL function pure-walk over JSON arrays (cheap;
 -- the JSON encoding cost is bounded by the CSV size we already
 -- accepted at upload time).
@@ -27,7 +29,7 @@
 --      to 'previewed'.
 --
 -- Result JSON matches `projectimport.PreviewOutput`:
---   {"would_create": {...}, "errors": [...], "skipped_rows": N,
+--   {"would_create": {...}, "errors": [the first 1000], "error_count": N, "skipped_rows": N,
 --    "processed_rows": N, "status": "previewed"}
 CREATE OR REPLACE FUNCTION project_import_preview_batch(
     actor_id bigint,
@@ -94,6 +96,15 @@ DECLARE
     _ref_skip boolean;
     _ref_error_msg text;
     _tag_part text;
+    -- Accumulators, appended to in O(1) and turned into jsonb once: a jsonb
+    -- || per row copied everything built so far, so a preview took the
+    -- square of its row count (review 2026-11-03 round 4 #3). The error
+    -- list keeps the first maxErrors; error_count has them all.
+    _err_arr jsonb[];
+    _err_count int;
+    _e jsonb;
+    _np text[]; _nm text[]; _nc text[]; _nt text[];
+    maxErrors constant int := 1000;
 BEGIN
     FOR _idx, _raw IN
         SELECT (r.ord - 1)::int, r.value
@@ -169,7 +180,18 @@ BEGIN
         END IF;
 
         _header := COALESCE(_raw->'_parsed_header', '[]'::jsonb);
-        _rows := COALESCE(_raw->'_parsed_rows', '[]'::jsonb);
+        -- The rows are in import_job_row, stored by the PreRun as the file
+        -- streamed (review 2026-11-03 round 4 #3). A caller that passes
+        -- them inline (_parsed_rows) has them stored the same way first.
+        IF _raw ? '_parsed_rows' THEN
+            _rows := COALESCE(_raw->'_parsed_rows', '[]'::jsonb);
+            DELETE FROM import_job_row WHERE job_id = _job_id;
+            INSERT INTO import_job_row (job_id, n, cells)
+            SELECT _job_id, e.ord::int,
+                   ARRAY(SELECT c FROM jsonb_array_elements_text(e.v) WITH ORDINALITY AS x(c, o) ORDER BY x.o)
+            FROM jsonb_array_elements(CASE WHEN jsonb_typeof(_rows) = 'array' THEN _rows ELSE '[]'::jsonb END)
+                 WITH ORDINALITY AS e(v, ord);
+        END IF;
 
         -- Build lookup tables. Each is a jsonb object: normalised_value -> id.
         SELECT COALESCE(jsonb_object_agg(lower(btrim(av.value #>> '{}')), c.id::text), '{}'::jsonb)
@@ -258,12 +280,15 @@ BEGIN
         _new_milestones := '{}'::jsonb;
         _new_components := '{}'::jsonb;
         _new_tags := '{}'::jsonb;
+        _np := ARRAY[]::text[]; _nm := ARRAY[]::text[]; _nc := ARRAY[]::text[]; _nt := ARRAY[]::text[];
+        _err_arr := ARRAY(SELECT e FROM jsonb_array_elements(_errors) AS e);
+        _err_count := jsonb_array_length(_errors);
         _processed := 0;
         _skipped := 0;
         _tasks_kept := 0;
 
         _ri := 0;
-        FOR _row IN SELECT v FROM jsonb_array_elements(_rows) AS v
+        FOR _row IN SELECT to_jsonb(r.cells) FROM import_job_row r WHERE r.job_id = _job_id ORDER BY r.n
         LOOP
             _row_num := _ri + 2; -- header is row 1
             _row_skip := false;
@@ -303,7 +328,7 @@ BEGIN
                                 jsonb_build_object('row', _row_num, 'column', 'milestone',
                                     'message', _ref_error_msg));
                         ELSIF _r_milestones = 'auto_create' THEN
-                            _new_milestones := _new_milestones || jsonb_build_object(_norm, _v);
+                            _nm := array_append(_nm, _norm);
                         END IF;
                     END IF;
                 END IF;
@@ -331,7 +356,7 @@ BEGIN
                                 jsonb_build_object('row', _row_num, 'column', 'component',
                                     'message', _ref_error_msg));
                         ELSIF _r_components = 'auto_create' THEN
-                            _new_components := _new_components || jsonb_build_object(_norm, _v);
+                            _nc := array_append(_nc, _norm);
                         END IF;
                     END IF;
                 END IF;
@@ -361,7 +386,7 @@ BEGIN
                                 jsonb_build_object('row', _row_num, 'column', 'tag',
                                     'message', _ref_error_msg));
                         ELSIF _r_tags = 'auto_create' THEN
-                            _new_tags := _new_tags || jsonb_build_object(_norm, _v);
+                            _nt := array_append(_nt, _norm);
                         END IF;
                     END IF;
                 END LOOP;
@@ -389,7 +414,7 @@ BEGIN
                                 jsonb_build_object('row', _row_num, 'column', 'person',
                                     'message', _ref_error_msg));
                         ELSIF _r_persons = 'auto_create' THEN
-                            _new_persons := _new_persons || jsonb_build_object(_norm, _v);
+                            _np := array_append(_np, _norm);
                         END IF;
                     END IF;
                 END IF;
@@ -423,7 +448,13 @@ BEGIN
             IF _row_skip THEN
                 _skipped := _skipped + 1;
             ELSE
-                _errors := _errors || _row_errors;
+                FOR _e IN SELECT x FROM jsonb_array_elements(_row_errors) AS x
+                LOOP
+                    _err_count := _err_count + 1;
+                    IF _err_count <= maxErrors THEN
+                        _err_arr := array_append(_err_arr, _e);
+                    END IF;
+                END LOOP;
                 IF jsonb_array_length(_row_errors) = 0 THEN
                     _tasks_kept := _tasks_kept + 1;
                 END IF;
@@ -435,12 +466,13 @@ BEGIN
         _summary := jsonb_build_object(
             'would_create', jsonb_build_object(
                 'tasks', _tasks_kept,
-                'persons', (SELECT count(*) FROM jsonb_object_keys(_new_persons)),
-                'milestones', (SELECT count(*) FROM jsonb_object_keys(_new_milestones)),
-                'components', (SELECT count(*) FROM jsonb_object_keys(_new_components)),
-                'tags', (SELECT count(*) FROM jsonb_object_keys(_new_tags))
+                'persons', (SELECT count(DISTINCT k) FROM unnest(_np) AS k),
+                'milestones', (SELECT count(DISTINCT k) FROM unnest(_nm) AS k),
+                'components', (SELECT count(DISTINCT k) FROM unnest(_nc) AS k),
+                'tags', (SELECT count(DISTINCT k) FROM unnest(_nt) AS k)
             ),
-            'errors', _errors,
+            'errors', to_jsonb(_err_arr),
+            'error_count', _err_count,
             'skipped_rows', _skipped,
             'processed_rows', _processed,
             'status', 'previewed'
@@ -451,6 +483,7 @@ BEGIN
                summary    = _summary,
                status     = 'previewed'
          WHERE id = _job_id;
+        DELETE FROM import_job_row WHERE job_id = _job_id;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text, _summary;
     END LOOP;

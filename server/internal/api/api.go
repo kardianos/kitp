@@ -551,6 +551,23 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 		prepped = append(prepped, expanded...)
 	}
 
+	// Pass 1.25: at most one OnePerBatch sub-request (the CSV import) per
+	// batch, counted across the whole batch: an import input reads and
+	// parses a whole file, so a batch of them interleaved with anything
+	// else did that work as many times (review 2026-11-03 round 4 #10).
+	first := -1
+	for _, p := range prepped {
+		if !p.Handler.OnePerBatch {
+			continue
+		}
+		if first >= 0 && p.OuterIdx != first {
+			s.abortWithError(ctx, out.Subresponses, p.OuterIdx, "validation", &reg.HandlerError{
+				Code: "validation", Message: fmt.Sprintf("%s.%s: one import file per request", p.Endpoint, p.Action)})
+			return out
+		}
+		first = p.OuterIdx
+	}
+
 	// Pass 1.5: declarative role gate (Handler.AllowedRoles). Requires a
 	// valid login (unless the leaf is reg.RolePublic) and at least one
 	// of the listed roles. Runs before Pass 2 because it's strictly

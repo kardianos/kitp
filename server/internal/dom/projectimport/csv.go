@@ -1,14 +1,14 @@
 // File projectimport/csv.go: CSV ingestion helpers.
 //
 // Reads file bytes by walking the file → file_chunk → cas_blob_data
-// chain, then parses the CSV. encoding/csv handles the quoting rules
+// chain one chunk at a time, and parses the CSV as it is read. encoding/csv handles the quoting rules
 // the export emits, so a round-trip (export → import) is exact.
 package projectimport
 
 import (
-	"bytes"
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +18,7 @@ import (
 	"github.com/kitp/kitp/server/internal/csvsafe"
 	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/store"
+	"github.com/kitp/kitp/server/internal/textnorm"
 )
 
 // errNoFile: the file doesn't exist, has no bytes, or isn't one the caller
@@ -27,10 +28,10 @@ var errNoFile = errors.New("file not found")
 // errTooLarge: the file is over MaxImportBytes.
 var errTooLarge = errors.New("file too large to import")
 
-// MaxImportBytes caps a CSV import's file. The whole file is read and
-// parsed in memory, at many times its size (a 20 MB file took 333 MB), so
-// one large upload could exhaust the server (review 2026-11-03 round 2
-// #11). 16 MB is a few hundred thousand tasks.
+// MaxImportBytes caps a CSV import's file (review 2026-11-03 round 2 #11).
+// The file is read a chunk at a time and its rows stored as they parse
+// (round 4 #3); the cap bounds one import's work. 16 MB is a few hundred
+// thousand tasks.
 const MaxImportBytes = 16 << 20
 
 // MaxImportRows caps the data rows of one import.
@@ -57,11 +58,11 @@ func csvParseMessage(err error) string {
 
 var errEmptyCSV = errors.New("csv is empty")
 
-// readFileBytes assembles every chunk for fileID into one byte slice.
-// CSVs are typically small (kilobytes); we don't try to stream.
-//
-// The query orders by file_chunk.seq so the reassembled bytes match
-// what file.create stored.
+// openFile returns a reader over fileID's bytes that loads one stored
+// chunk at a time, so an import never holds its file whole (review
+// 2026-11-03 round 4 #3). The query orders the chunks by file_chunk.seq so
+// the bytes match what file.create stored. No cursor stays open between
+// chunks, so the caller may write to the same transaction while it reads.
 //
 // reader must be allowed the file by the rule attachment.create uses
 // (file_readable_by: they uploaded it, or may download it where it is
@@ -70,7 +71,7 @@ var errEmptyCSV = errors.New("csv is empty")
 // (review 2026-11-03 #5, round 2 #10). A file over MaxImportBytes is
 // errTooLarge before a byte is read. Other failures are wrapped for the
 // log; their text never reaches the caller.
-func readFileBytes(ctx context.Context, tx store.Querier, reader, fileID int64) ([]byte, error) {
+func openFile(ctx context.Context, tx store.Querier, reader, fileID int64) (*chunkReader, error) {
 	sb := named.New()
 	sb.Set("file", fileID)
 	sb.Set("reader", reader)
@@ -93,13 +94,7 @@ func readFileBytes(ctx context.Context, tx store.Querier, reader, fileID int64) 
 	}
 	b := named.New()
 	b.Set("file", fileID)
-	q, args, err := b.Compile(`
-		SELECT bd.data
-		FROM file_chunk fc
-		JOIN cas_blob_data bd ON bd.address = fc.cas_address
-		WHERE fc.file_id = :file
-		ORDER BY fc.seq
-	`)
+	q, args, err := b.Compile(`SELECT cas_address FROM file_chunk WHERE file_id = :file ORDER BY seq`)
 	if err != nil {
 		return nil, fmt.Errorf("read file: compile: %w", err)
 	}
@@ -107,25 +102,67 @@ func readFileBytes(ctx context.Context, tx store.Querier, reader, fileID int64) 
 	if err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
 	}
-	defer rows.Close()
-	var buf bytes.Buffer
+	var addrs []string
 	for rows.Next() {
-		var chunk []byte
-		if err := rows.Scan(&chunk); err != nil {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("read file: %w", err)
 		}
-		if int64(buf.Len()+len(chunk)) > MaxImportBytes {
-			return nil, errTooLarge
-		}
-		buf.Write(chunk)
+		addrs = append(addrs, a)
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read file: %w", err)
 	}
-	if buf.Len() == 0 {
+	if len(addrs) == 0 || size == 0 {
 		return nil, errNoFile
 	}
-	return buf.Bytes(), nil
+	return &chunkReader{ctx: ctx, tx: tx, addrs: addrs}, nil
+}
+
+// chunkReader reads a stored file one chunk at a time. Its first failure
+// is kept in err (a csv.Reader may report it wrapped, or as a parse error).
+type chunkReader struct {
+	ctx   context.Context
+	tx    store.Querier
+	addrs []string
+	cur   []byte
+	total int64
+	err   error
+}
+
+func (c *chunkReader) Read(p []byte) (int, error) {
+	for len(c.cur) == 0 {
+		if c.err != nil {
+			return 0, c.err
+		}
+		if len(c.addrs) == 0 {
+			return 0, io.EOF
+		}
+		b := named.New()
+		b.Set("address", c.addrs[0])
+		q, args, err := b.Compile(`SELECT data FROM cas_blob_data WHERE address = :address`)
+		if err != nil {
+			c.err = fmt.Errorf("read file: compile: %w", err)
+			return 0, c.err
+		}
+		var data []byte
+		if err := c.tx.QueryRow(c.ctx, q, args...).Scan(&data); err != nil {
+			c.err = fmt.Errorf("read file chunk: %w", err)
+			return 0, c.err
+		}
+		c.addrs = c.addrs[1:]
+		c.total += int64(len(data))
+		if c.total > MaxImportBytes {
+			c.err = errTooLarge
+			return 0, c.err
+		}
+		c.cur = data
+	}
+	n := copy(p, c.cur)
+	c.cur = c.cur[n:]
+	return n, nil
 }
 
 // parsedCSV holds enough of the CSV for the upload step's response.
@@ -135,19 +172,25 @@ type parsedCSV struct {
 	RowCount    int
 }
 
-// parseCSVPreview pulls the header row + the first `limit` data rows
-// out of `body`. RowCount is the total data-row count (no header).
-//
-// We accept ragged rows — encoding/csv's `FieldsPerRecord=-1` lets a
-// trailing-comma or short row pass without error so the mapping UI
-// can show "you have 12 columns; row 4 has 11."
-func parseCSVPreview(body []byte, limit int) (parsedCSV, error) {
-	cr := csv.NewReader(bytes.NewReader(body))
+// newCSVReader reads CSV the way every import step does. We accept ragged
+// rows — encoding/csv's `FieldsPerRecord=-1` lets a trailing-comma or
+// short row pass without error so the mapping UI can show "you have 12
+// columns; row 4 has 11."
+func newCSVReader(r io.Reader) *csv.Reader {
+	cr := csv.NewReader(r)
 	cr.FieldsPerRecord = -1
 	cr.LazyQuotes = true
+	cr.ReuseRecord = false
+	return cr
+}
 
+// parseCSVPreview pulls the header row + the first `limit` data rows out
+// of r, read as a stream. RowCount is the total data-row count (no
+// header).
+func parseCSVPreview(r io.Reader, limit int) (parsedCSV, error) {
+	cr := newCSVReader(r)
 	header, err := cr.Read()
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		return parsedCSV{}, errEmptyCSV
 	}
 	if err != nil {
@@ -156,7 +199,7 @@ func parseCSVPreview(body []byte, limit int) (parsedCSV, error) {
 	out := parsedCSV{Headers: header}
 	for {
 		row, err := cr.Read()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -173,43 +216,101 @@ func parseCSVPreview(body []byte, limit int) (parsedCSV, error) {
 	return out, nil
 }
 
-// readAllCSV returns every row (header + data) for the preview pass.
-// We pull the rows up-front instead of streaming so the preview can
-// build the would_create counts and the error log in one walk.
-func readAllCSV(body []byte) ([]string, [][]string, error) {
-	cr := csv.NewReader(bytes.NewReader(body))
-	cr.FieldsPerRecord = -1
-	cr.LazyQuotes = true
+// rowBatch is how many parsed rows go to the database per insert.
+const rowBatch = 1000
 
+// streamRows parses the CSV in r as it is read and stores its data rows
+// in import_job_row for jobID (numbered from 1, the header not counted),
+// rowBatch at a time; the preview and commit functions read them from
+// there. It returns the header. Before, every row was parsed into memory
+// and sent as one jsonb argument (review 2026-11-03 round 4 #3).
+func streamRows(ctx context.Context, tx store.Querier, jobID int64, r io.Reader) ([]string, error) {
+	if err := clearRows(ctx, tx, jobID); err != nil {
+		return nil, err
+	}
+	cr := newCSVReader(r)
 	header, err := cr.Read()
-	if err == io.EOF {
-		return nil, nil, errEmptyCSV
+	if errors.Is(err, io.EOF) {
+		return nil, errEmptyCSV
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("read header: %w", err)
+		return nil, fmt.Errorf("read header: %w", err)
 	}
-	var rows [][]string
+	batch := make([][]string, 0, rowBatch)
+	n := 0
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		raw, err := json.Marshal(batch)
+		if err != nil {
+			return fmt.Errorf("import rows: marshal: %w", err)
+		}
+		b := named.New()
+		b.Set("job", jobID)
+		b.Set("base", n-len(batch))
+		b.Set("rows", string(raw))
+		q, args, err := b.Compile(`
+			INSERT INTO import_job_row (job_id, n, cells)
+			SELECT :job, :base::int + e.ord::int,
+			       ARRAY(SELECT c FROM jsonb_array_elements_text(e.v) WITH ORDINALITY AS x(c, o) ORDER BY x.o)
+			FROM jsonb_array_elements(:rows::jsonb) WITH ORDINALITY AS e(v, ord)
+		`)
+		if err != nil {
+			return fmt.Errorf("import rows: compile: %w", err)
+		}
+		if _, err := tx.Exec(ctx, q, args...); err != nil {
+			return fmt.Errorf("import rows: %w", err)
+		}
+		batch = batch[:0]
+		return nil
+	}
 	for {
 		row, err := cr.Read()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return nil, nil, fmt.Errorf("read row %d: %w", len(rows)+1, err)
+			return nil, fmt.Errorf("read row %d: %w", n+1, err)
 		}
-		if len(rows) >= MaxImportRows {
-			return nil, nil, errTooManyRows
+		if n >= MaxImportRows {
+			return nil, errTooManyRows
 		}
-		rows = append(rows, uncellRow(row))
+		n++
+		batch = append(batch, uncellRow(row))
+		if len(batch) == rowBatch {
+			if err := flush(); err != nil {
+				return nil, err
+			}
+		}
 	}
-	return header, rows, nil
+	if err := flush(); err != nil {
+		return nil, err
+	}
+	return header, nil
+}
+
+// clearRows drops what an earlier step stored for jobID (a request that
+// failed rolls its rows back; one that succeeded deletes them).
+func clearRows(ctx context.Context, tx store.Querier, jobID int64) error {
+	b := named.New()
+	b.Set("job", jobID)
+	q, args, err := b.Compile(`DELETE FROM import_job_row WHERE job_id = :job`)
+	if err != nil {
+		return fmt.Errorf("import rows: compile: %w", err)
+	}
+	if _, err := tx.Exec(ctx, q, args...); err != nil {
+		return fmt.Errorf("import rows: clear: %w", err)
+	}
+	return nil
 }
 
 // uncellRow undoes csvsafe's formula guard on an exported file's cells, so
-// an export re-imports exactly.
+// an export re-imports exactly, and makes each cell storable (valid UTF-8,
+// no NUL), which Postgres text needs.
 func uncellRow(row []string) []string {
 	for i, c := range row {
-		row[i] = csvsafe.Uncell(c)
+		row[i] = textnorm.Storable(csvsafe.Uncell(c))
 	}
 	return row
 }

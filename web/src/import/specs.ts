@@ -129,7 +129,9 @@ export interface PreviewInput {
 }
 export interface PreviewOutput {
   wouldCreate: ImportCounts;
+  /** The first 1000 row errors; errorCount has them all. */
   errors: ImportError[];
+  errorCount: number;
   skippedRows: number;
   processedRows: number;
   status: string;
@@ -244,6 +246,7 @@ export function registerImportSpecs(api: Api): void {
         return {
           wouldCreate: decodeCounts(j['would_create']),
           errors: asArray(j['errors']).map(decodeError),
+          errorCount: j['error_count'] === undefined ? asArray(j['errors']).length : asNum(j['error_count']),
           skippedRows: asNum(j['skipped_rows']),
           processedRows: asNum(j['processed_rows']),
           status: asStr(j['status']),

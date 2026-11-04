@@ -122,6 +122,12 @@ type Handler struct {
 	// across the migration. Ignored for Run-style handlers (whose
 	// bodies own their own NoteRead / NoteWrite calls).
 	IsRead bool
+	// OnePerBatch: at most one sub-request in a whole batch may use a
+	// handler marked so, wherever it sits — the CSV import, whose every
+	// input reads and parses an uploaded file. The dispatcher refuses a
+	// batch with more (review 2026-11-03 round 4 #10); grouping alone saw
+	// only sub-requests next to each other.
+	OnePerBatch bool
 	// PostRun runs AFTER the SQL function returns successfully,
 	// inside the same request tx. Used for Go-side side effects
 	// that can't move to PL/pgSQL — image decode (attachment.create

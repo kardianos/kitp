@@ -148,8 +148,9 @@ live page doesn't change PROD; sending it back to review updates QA only;
 `card.delete` takes a page (and every page under a deleted card) off its
 portals but keeps its publications, so `card.undelete` brings it back as it
 was published (review 2026-11-03 round 2 #19). Moving a published page, or a
-card above one, rebuilds the portals it is on, and a page no longer under a
-portal's root isn't served (round 3 #21).
+card above one, rebuilds the portals it is on; a page no longer under a
+portal's root is neither built (so the site doesn't link it) nor served
+(round 3 #21, round 4 #14).
 (Migration 0017 applied the Draft rule to pages already in Draft, and
 renamed the flow's old "Unpublish edits" step, which had kept the live
 copy, to "Unpublish".)

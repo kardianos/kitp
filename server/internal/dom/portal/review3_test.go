@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -35,5 +36,23 @@ func TestMovedPageLeavesThePortal(t *testing.T) {
 	}
 	if code, _, _ := get(t, pub, "docs.example.test", "/getting-started/"); code == http.StatusOK {
 		t.Errorf("a page moved out from under the root is still served (%d)", code)
+	}
+}
+
+// TestMovedPageLeavesTheNavigation (round 4 #14): after a published page
+// is moved out from under the root, the rebuilt site doesn't link it, and
+// the build says why.
+func TestMovedPageLeavesTheNavigation(t *testing.T) {
+	f := setup(t, "kitp_test_r4_portal_nav")
+	_, pub := publicSite(t, f)
+	if _, body, _ := get(t, pub, "docs.example.test", "/"); !strings.Contains(body, "getting-started/") {
+		t.Fatalf("home doesn't link the guide before the move")
+	}
+	if mv := call(f, sysCtx(), "card", "move", fmt.Sprintf(`{"card_id":"%d","new_parent_card_id":"%d"}`, f.guide, f.project)); !mv.OK {
+		t.Fatalf("card.move: %+v", mv.Error)
+	}
+	build(t, f)
+	if _, body, _ := get(t, pub, "docs.example.test", "/"); strings.Contains(body, "getting-started/") {
+		t.Error("after the move and a rebuild, home still links the moved page")
 	}
 }

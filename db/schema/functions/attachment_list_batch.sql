@@ -43,7 +43,9 @@ BEGIN
                 'attachment.list: card_id is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
-        IF NOT card_visible_to(attachment_list_batch.actor_id, _card_id) THEN
+        -- A deleted card's files are gone with it (card_live; review
+        -- 2026-11-03 round 4 #16).
+        IF NOT card_visible_to(attachment_list_batch.actor_id, _card_id) OR NOT card_live(_card_id) THEN
             RETURN QUERY SELECT _idx, false, 'not_found'::text,
                 format('attachment.list: card %s not found', _card_id), NULL::jsonb;
             CONTINUE;
