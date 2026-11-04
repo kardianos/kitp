@@ -112,7 +112,11 @@ SQL round-trip using the same grant join as `projectexport.isAuthorized`
 only when the token's `email_verified` claim is true — unless
 `KITP_OIDC_TRUST_UNVERIFIED_EMAIL=1` (`Config.TrustUnverifiedEmail`) is
 explicitly set. Default is fail-closed; an unverified email falls through
-to a fresh-insert path and gets its own account.
+to a fresh-insert path and gets its own account. The attach matches only
+the login's own `user_account.email`, which only admins set (person.create
+tier=user, person.grant_account, the init-admin bootstrap) — never a person
+card's `email` attribute, which any worker can edit — and never the System
+user or an agent (review 2026-11-03 #1).
 
 **Why.** This is the published bootstrap attack for email-matching OIDC
 apps: an OP that lets users assert an arbitrary unverified email lets an

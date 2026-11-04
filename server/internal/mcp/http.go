@@ -25,6 +25,8 @@ package mcp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -62,7 +64,11 @@ func handle(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg HTT
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBytes))
 	if err != nil {
-		return api.BadRequest("read_body", err.Error())
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			return api.BadRequest("read_body", fmt.Sprintf("the request is over %d MB", MaxRequestBytes>>20))
+		}
+		return api.BadRequest("read_body", "couldn't read the request body")
 	}
 	if len(body) == 0 {
 		return api.BadRequest("empty_body", "empty body")

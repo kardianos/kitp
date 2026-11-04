@@ -182,7 +182,7 @@ BEGIN
                 CONTINUE;
             WHEN foreign_key_violation THEN
                 RETURN QUERY SELECT _idx, false, 'fk_violation'::text,
-                    format('flow_step.set: %s', SQLERRM),
+                    'flow_step.set: a status, flow or role it names doesn''t exist'::text,
                     NULL::jsonb;
                 CONTINUE;
         END;

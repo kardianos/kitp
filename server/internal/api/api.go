@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -206,7 +207,7 @@ func (s *Server) MountBatch(rt *Router, decorators ...AuthedDecorator) {
 				return &HTTPError{Status: http.StatusRequestEntityTooLarge, Code: "request_too_large",
 					Message: fmt.Sprintf("a batch can be at most %d MB", MaxBatchBytes>>20)}
 			}
-			return BadRequest("bad_request", fmt.Sprintf("malformed json: %v", err))
+			return BadRequest("bad_request", jsonDecodeMessage(err))
 		}
 		resp := s.Dispatch(ctx, req)
 		// Compress the (often hundreds-of-KB) batch read inline; negotiated
@@ -452,7 +453,7 @@ func (s *Server) HandleBatch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": map[string]any{
 				"code":    "bad_request",
-				"message": fmt.Sprintf("malformed json: %v", err),
+				"message": jsonDecodeMessage(err),
 			},
 		})
 		return
@@ -1066,4 +1067,29 @@ func errDetail(err error) any {
 		return he.Detail
 	}
 	return nil
+}
+
+// jsonDecodeMessage says what's wrong with a request body that didn't
+// decode, built from the decoder's typed errors rather than echoing its
+// text (CLAUDE.md: no raw err.Error() on the wire; review 2026-11-03 #30).
+func jsonDecodeMessage(err error) string {
+	var syn *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &syn):
+		return fmt.Sprintf("malformed json at byte %d", syn.Offset)
+	case errors.As(err, &typ):
+		if typ.Field != "" {
+			return fmt.Sprintf("malformed json: %s must be a %s", typ.Field, typ.Type)
+		}
+		return fmt.Sprintf("malformed json: a %s was expected", typ.Type)
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "malformed json: the body ends early"
+	}
+	// encoding/json reports an unknown field as a plain error naming it:
+	// `json: unknown field "x"` — the caller's own key, safe to repeat.
+	if msg := err.Error(); strings.HasPrefix(msg, `json: unknown field "`) {
+		return "malformed json: " + strings.TrimPrefix(msg, "json: ")
+	}
+	return "malformed json"
 }

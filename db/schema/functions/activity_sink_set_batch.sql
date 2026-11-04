@@ -313,7 +313,7 @@ BEGIN
                 _ignored := _card_filter::jsonb;
             EXCEPTION WHEN invalid_text_representation OR datatype_mismatch THEN
                 RETURN QUERY SELECT _idx, false, 'validation'::text,
-                    format('activity_sink.set: card_filter is not valid JSON: %s', SQLERRM),
+                    'activity_sink.set: card_filter is not valid JSON'::text,
                     NULL::jsonb;
                 CONTINUE;
             END;
@@ -334,7 +334,7 @@ BEGIN
                 _ignored := _activity_filter::jsonb;
             EXCEPTION WHEN invalid_text_representation OR datatype_mismatch THEN
                 RETURN QUERY SELECT _idx, false, 'validation'::text,
-                    format('activity_sink.set: activity_filter is not valid JSON: %s', SQLERRM),
+                    'activity_sink.set: activity_filter is not valid JSON'::text,
                     NULL::jsonb;
                 CONTINUE;
             END;

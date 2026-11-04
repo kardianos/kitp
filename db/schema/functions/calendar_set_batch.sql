@@ -73,7 +73,7 @@ BEGIN
                 PERFORM card_compile_predicate(_resolve_me_tokens(_pred::jsonb, _person), '[]'::jsonb, ARRAY[]::bigint[], _person);
             EXCEPTION WHEN OTHERS THEN
                 RETURN QUERY SELECT _idx, false, 'validation'::text,
-                    format('calendar.set: the filter is not valid: %s', SQLERRM), NULL::jsonb;
+                    format('calendar.set: the filter is not valid: %s', CASE WHEN SQLSTATE = 'P0001' THEN SQLERRM ELSE 'it can''t be read' END), NULL::jsonb;
                 CONTINUE;
             END;
         END IF;

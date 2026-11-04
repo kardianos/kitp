@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -445,7 +446,10 @@ func loadTaskRows(ctx context.Context, pool *store.Pool, viewer, projectID int64
 		}
 		clause, cErr := card.CompileTree(ctx, tx, *tree, b.Bind, snap, person)
 		if cErr != nil {
-			return nil, httpError(http.StatusBadRequest, "bad filter: "+cErr.Error())
+			// The compiler's text can carry a database error; log it and
+			// say only what's wrong (CLAUDE.md; review 2026-11-03 #30).
+			slog.Default().LogAttrs(ctx, slog.LevelInfo, "export: filter doesn't compile", slog.String("err", cErr.Error()))
+			return nil, httpError(http.StatusBadRequest, "the export's filter isn't valid")
 		}
 		extraClause = " AND (" + clause + ")"
 	}

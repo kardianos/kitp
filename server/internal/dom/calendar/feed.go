@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
@@ -99,7 +100,10 @@ func (f *feed) serve(ctx context.Context, w http.ResponseWriter, r *http.Request
 		// calendar app keeps its last copy; the reason shows on the
 		// Account page.
 		f.Logger.Warn("calendar feed", "calendar_id", ref.calendarID, "err", err)
-		if nerr := f.note(ctx, ref.accessID, r.UserAgent(), err.Error()); nerr != nil {
+		// What the Account page shows: the compiler's own reason for a
+		// filter that no longer compiles, never a database error's text
+		// (CLAUDE.md; review 2026-11-03 #30). The log has the whole error.
+		if nerr := f.note(ctx, ref.accessID, r.UserAgent(), feedErrorText(err)); nerr != nil {
 			f.Logger.Warn("calendar feed: note error", "err", nerr)
 		}
 		return api.Internal(fmt.Errorf("calendar %d: %w", ref.calendarID, err))
@@ -378,4 +382,17 @@ func (f *feed) render(r *http.Request, ref calendarRef, evs []event) string {
 	}
 	w.prop("END", "VCALENDAR")
 	return w.String()
+}
+
+// feedErrorText is the reason stored for a feed that failed: the filter's
+// own fault when that's what it was, else a generic line.
+func feedErrorText(err error) string {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		return "the calendar couldn't be read; try again later"
+	}
+	if strings.Contains(err.Error(), "the calendar's filter") {
+		return "the calendar's filter no longer works; edit it on the Account page"
+	}
+	return "the calendar couldn't be read; try again later"
 }

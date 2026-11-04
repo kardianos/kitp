@@ -173,7 +173,7 @@ BEGIN
                 CONTINUE;
             WHEN foreign_key_violation THEN
                 RETURN QUERY SELECT _idx, false, 'fk_violation'::text,
-                    format('flow.set: %s', SQLERRM),
+                    'flow.set: a status, project or attribute it names doesn''t exist'::text,
                     NULL::jsonb;
                 CONTINUE;
         END;
