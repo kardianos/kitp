@@ -76,6 +76,30 @@ func loadActorGrants(ctx context.Context, pool *store.Pool, userID int64) ([]gra
 type cardInfo struct {
 	parentCardID *int64
 	cardTypeID   int64
+	// privateTo is card.private_to: the person a private card belongs to
+	// (docs/PERSONAL_SCREENS.md), nil for a shared card.
+	privateTo *int64
+}
+
+// privateOwner returns the private_to of the first private card on the
+// chain from start up (start included), or nil when the chain is shared.
+// Cards inherit privacy at insert, so in practice it is start's own.
+func privateOwner(start int64, lookup map[int64]cardInfo) *int64 {
+	cur := start
+	for range scopeWalkDepth {
+		info, ok := lookup[cur]
+		if !ok {
+			return nil
+		}
+		if info.privateTo != nil {
+			return info.privateTo
+		}
+		if info.parentCardID == nil {
+			return nil
+		}
+		cur = *info.parentCardID
+	}
+	return nil
 }
 
 // resolveTargetProject walks parent_card_id from startCardID until it hits
@@ -107,7 +131,7 @@ func preloadCards(ctx context.Context, pool *store.Pool, ids []int64) (map[int64
 		return out, nil
 	}
 	rows, err := pool.P.Query(ctx, `
-		SELECT id, parent_card_id, card_type_id FROM card WHERE id = ANY($1::bigint[])
+		SELECT id, parent_card_id, card_type_id, private_to FROM card WHERE id = ANY($1::bigint[])
 	`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("authz: preload cards: %w", err)
@@ -116,7 +140,7 @@ func preloadCards(ctx context.Context, pool *store.Pool, ids []int64) (map[int64
 	for rows.Next() {
 		var id int64
 		var info cardInfo
-		if err := rows.Scan(&id, &info.parentCardID, &info.cardTypeID); err != nil {
+		if err := rows.Scan(&id, &info.parentCardID, &info.cardTypeID, &info.privateTo); err != nil {
 			return nil, err
 		}
 		out[id] = info
@@ -144,15 +168,15 @@ func expandCardLookup(ctx context.Context, pool *store.Pool, lookup map[int64]ca
 	// Seed rows are already in `lookup`; the CTE re-emits them (depth 0)
 	// plus every ancestor up to the cap, and we merge any new rows.
 	rows, err := pool.P.Query(ctx, `
-		WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (
-			SELECT c.id, c.parent_card_id, c.card_type_id, 0
+		WITH RECURSIVE up(id, parent_card_id, card_type_id, private_to, depth) AS (
+			SELECT c.id, c.parent_card_id, c.card_type_id, c.private_to, 0
 			FROM card c WHERE c.id = ANY($1::bigint[])
 			UNION ALL
-			SELECT p.id, p.parent_card_id, p.card_type_id, up.depth + 1
+			SELECT p.id, p.parent_card_id, p.card_type_id, p.private_to, up.depth + 1
 			FROM card p JOIN up ON p.id = up.parent_card_id
 			WHERE up.depth < 16
 		)
-		SELECT DISTINCT id, parent_card_id, card_type_id FROM up
+		SELECT DISTINCT id, parent_card_id, card_type_id, private_to FROM up
 	`, seed)
 	if err != nil {
 		return fmt.Errorf("authz: parent closure: %w", err)
@@ -161,7 +185,7 @@ func expandCardLookup(ctx context.Context, pool *store.Pool, lookup map[int64]ca
 	for rows.Next() {
 		var id int64
 		var info cardInfo
-		if err := rows.Scan(&id, &info.parentCardID, &info.cardTypeID); err != nil {
+		if err := rows.Scan(&id, &info.parentCardID, &info.cardTypeID, &info.privateTo); err != nil {
 			return err
 		}
 		lookup[id] = info
@@ -409,4 +433,67 @@ func (s *Server) checkBundleSource(ctx context.Context, h reg.Handler, input any
 		}
 	}
 	return nil
+}
+
+// errPrivate is the deny for someone else's private card: the same shape as
+// a missing grant, so it says nothing about whose card it is.
+var errPrivate = &reg.HandlerError{Code: "unauthorized", Message: "that card is someone else's"}
+
+// checkPrivate applies private cards (card.private_to,
+// docs/PERSONAL_SCREENS.md) to a gated leaf, before any role grant: a
+// target whose chain is private to someone else is refused, whatever roles
+// the actor holds (admins included); one private to the actor is theirs to
+// write without a grant (a personal screen has no project to hold one on);
+// a card.insert with private=true makes the new card the actor's (a saved
+// view only they see) and needs no grant either — the SQL checks the parent
+// is a screen they can see. owned=false, err=nil: not private, go on to the
+// grants. actorPerson is account_person(actor), nil when it has none.
+func (s *Server) checkPrivate(ctx context.Context, h reg.Handler, input any, lookup map[int64]cardInfo, actorPerson *int64) (owned bool, err error) {
+	if h.ProcessName == "" || h.CardTypeID == nil {
+		return false, nil // not gated: the handler checks its own cards
+	}
+	var target int64
+	if h.Endpoint == "card" && h.Action == "insert" {
+		if cardInsertPrivate(input) {
+			if actorPerson == nil {
+				return false, &reg.HandlerError{Code: "no_person", Message: "your account has no person card to own a private card"}
+			}
+			return true, nil
+		}
+		parent, _, perr := cardInsertParent(input)
+		if perr != nil {
+			return false, perr
+		}
+		if parent == nil {
+			return false, nil
+		}
+		target = *parent
+	} else {
+		cid, cerr := s.scopeCardID(ctx, h, input)
+		if cerr != nil {
+			return false, cerr
+		}
+		target = cid
+	}
+	if target == 0 {
+		return false, nil
+	}
+	owner := privateOwner(target, lookup)
+	if owner == nil {
+		return false, nil
+	}
+	if actorPerson != nil && *owner == *actorPerson {
+		return true, nil
+	}
+	return false, errPrivate
+}
+
+// loadAccountPerson reads account_person(actor): the person an account acts
+// as for its own things (an agent's owner's), or nil.
+func loadAccountPerson(ctx context.Context, pool *store.Pool, actor int64) (*int64, error) {
+	var p *int64
+	if err := pool.P.QueryRow(ctx, `SELECT account_person($1)`, actor).Scan(&p); err != nil {
+		return nil, fmt.Errorf("authz: account person: %w", err)
+	}
+	return p, nil
 }

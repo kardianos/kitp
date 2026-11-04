@@ -474,6 +474,85 @@ export interface ScreenPresetSet {
    *  per layout. Undefined when the screen has no flow_ref / the lookup failed,
    *  in which case the filter bar keeps its `task` default. */
   cardType?: string;
+  /** A personal screen's base filter (its `predicate`, wire JSON), ANDed into
+   *  every query whatever view is picked (screen.scopeTree); undefined for
+   *  every other screen (docs/PERSONAL_SCREENS.md). */
+  scopeTree?: WireNode | null;
+}
+
+/**
+ * Resolve a personal screen (docs/PERSONAL_SCREENS.md) — a parentless,
+ * private `screen` card — into the same {@link ScreenPresetSet} a project
+ * screen resolves to: the card (by id), its views (filters under it, private
+ * to the viewer like the screen), its default view, and — instead of a flow —
+ * the listed card type (`list_card_type`) and its status attribute, plus its
+ * base filter as `scopeTree`. Two reads in one tick (one round trip). A
+ * screen that isn't there or isn't the viewer's resolves with `screen: null`.
+ */
+export function loadPersonalScreen(
+  api: Api,
+  screenId: string,
+  onResult: (set: ScreenPresetSet) => void,
+  alive?: () => boolean,
+): void {
+  const opts = alive ? { alive } : {};
+  let screen: CardWithAttrs | null | undefined;
+  let filters: CardWithAttrs[] | undefined;
+  const finish = (): void => {
+    if (screen === undefined || filters === undefined) return;
+    if (screen === null) {
+      onResult({ screen: null, filters: [], defaultFilter: null });
+      return;
+    }
+    const listType = screen.attributes['list_card_type'] === 'comm' ? 'comm' : 'task';
+    const defaultRaw = screen.attributes['default_filter'];
+    const defaultId = defaultRaw === null || defaultRaw === undefined ? '' : String(defaultRaw);
+    const defaultFilter = filters.find((f) => f.id.toString() === defaultId) ?? null;
+    onResult({
+      screen,
+      filters,
+      defaultFilter,
+      cardType: listType,
+      phaseAttr: listType === 'comm' ? 'comm_status' : 'status',
+      scopeTree: personalScopeTree(screen),
+    });
+  };
+  api.callByName(
+    SELECT_WITH_ATTRS,
+    { cardTypeName: 'screen', ids: [BigInt(screenId)] },
+    (out) => {
+      const rows = ((out as { rows?: CardWithAttrs[] }).rows ?? []) as CardWithAttrs[];
+      screen = rows[0] ?? null;
+      finish();
+    },
+    { ...opts, onErr: () => { screen = null; finish(); } },
+  );
+  api.callByName(
+    SELECT_WITH_ATTRS,
+    { cardTypeName: 'filter', parentCardId: BigInt(screenId), order: [{ field: 'attributes.sort_order', direction: 'ASC' }] },
+    (out) => {
+      filters = ((out as { rows?: CardWithAttrs[] }).rows ?? []) as CardWithAttrs[];
+      finish();
+    },
+    { ...opts, onErr: () => { filters = []; finish(); } },
+  );
+}
+
+/** A personal screen's base filter (its `predicate` attribute, stored as a
+ *  JSON string) as a wire node, or null when it has none / can't be read. */
+export function personalScopeTree(screen: CardWithAttrs): WireNode | null {
+  const raw = screen.attributes['predicate'];
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return null;
+    const node = v as WireNode;
+    // An empty group filters nothing.
+    if (Array.isArray(node.children) && node.children.length === 0) return null;
+    return node;
+  } catch {
+    return null;
+  }
 }
 
 /** Read a screen card's `flow_ref` (a flow id, stored as a number) as a string

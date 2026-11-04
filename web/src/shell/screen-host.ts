@@ -31,7 +31,7 @@
  * one-way write outside any tracked effect.
  */
 
-import { Control, type BaseControlConfig, type ChildConfig } from '../core/control.js';
+import { Control, type BaseControlConfig, type ChildConfig, type ControlContext } from '../core/control.js';
 import type { HotkeyBinding } from '../core/hotkeys.js';
 import { focusScreenSearch } from './screen-filter-bar.js';
 import { navigate, screenUrl } from './router.js';
@@ -39,6 +39,7 @@ import type { CardWithAttrs } from '../kanban/kanban-helpers.js';
 import { columnsNeedApprovals } from '../cardlist/derived-columns.js';
 import {
   loadScreenAndFilters,
+  loadPersonalScreen,
   layoutRequiresGroup,
   defaultGroupForLayout,
   viewActionsForLayout,
@@ -84,6 +85,15 @@ export interface ScreenHostConfig extends BaseControlConfig {
    * screens). When set, `screen.slug` is ignored.
    */
   defaultScreen?: boolean;
+  /**
+   * A personal screen (docs/PERSONAL_SCREENS.md), by its card id: resolved
+   * through loadPersonalScreen instead of (project, slug), landed at
+   * `screens.mine.<id>`, its base filter published as `screen.scopeTree`,
+   * and its filter bar and body given a context with no project and
+   * `allProjects` — they list every project the viewer can see. When set,
+   * `screen.slug` and the in-scope project are ignored.
+   */
+  personalScreenId?: string;
 }
 
 declare module '../core/control.js' {
@@ -164,10 +174,19 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     ];
   }
 
+  /** The context the bar and body get: the host's own, or — on a personal
+   *  screen — one whose scope has no project and lists every project. */
+  private childCtx(): ControlContext {
+    if (this.config.personalScreenId === undefined) return this.ctx;
+    return { ...this.ctx, scope: { ...(this.ctx.scope ?? {}), projectId: null, allProjects: true } };
+  }
+
   protected render(): void {
     const screen = this.config.screen;
     const slug = screen.slug;
-    const projectId = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
+    const personalId = this.config.personalScreenId;
+    const projectId =
+      personalId !== undefined ? null : (this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null);
 
     // Default-board mode (`/project/:id`, no slug): resolve the project's first
     // screen by sort_order and redirect to it — the default screen is the first
@@ -184,7 +203,7 @@ export class ScreenHost extends Control<ScreenHostConfig> {
 
     // The (project, slug) key everything lands under. The ScreenFilterBar reads
     // the SAME key for the preset selector + the default-on-first-visit cache.
-    const statePath = screenStatePath(projectId, slug);
+    const statePath = personalId !== undefined ? ['screens', 'mine', personalId] : screenStatePath(projectId, slug);
     this.statePath = statePath;
 
     // The seed layout is ONLY the descriptor's own layout — NO slug is special.
@@ -215,7 +234,7 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     // NotFound placeholder for the 'unknown' seed while that card loads, defer to
     // a neutral "resolving…" body; onScreenResolved dispatches the real layout
     // (or redirects to the project's default screen iff this slug has no card).
-    const willResolve = this.config.resolveScreen !== false && projectId !== null;
+    const willResolve = this.config.resolveScreen !== false && (projectId !== null || personalId !== undefined);
     if (seedLayout === 'unknown' && willResolve) {
       this.renderLoadingBody();
     } else {
@@ -226,7 +245,19 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     // body. An UNREGISTERED child type renders the visible NotFound placeholder
     // (graceful degradation) — the kanban screen carries one such child.
     for (const child of this.config.children ?? []) {
-      this.spawn(child.type, child, bodyHost);
+      this.spawn(child.type, child, bodyHost, this.childCtx());
+    }
+
+    if (personalId !== undefined) {
+      if (this.config.resolveScreen !== false) {
+        loadPersonalScreen(
+          this.ctx.api,
+          personalId,
+          (set) => this.onScreenResolved(statePath, set),
+          () => this.isAlive(),
+        );
+      }
+      return;
     }
 
     // Resolve the REAL screen card (the #29 backbone). Skipped when there is no
@@ -288,6 +319,10 @@ export class ScreenHost extends Control<ScreenHostConfig> {
     // and to apply the default on first visit.
     node.child('filters').set(set.filters);
     node.child('defaultFilterId').set(set.defaultFilter ? set.defaultFilter.id : null);
+    // A personal screen's base filter (every project unless it names some)
+    // rides beside the view's; every other screen clears it, so it never
+    // leaks onto a project screen (docs/PERSONAL_SCREENS.md).
+    this.ctx.tree.at(['screen', 'scopeTree']).set(set.scopeTree ?? null);
 
     // Land the active screen's COLUMN config (extra_columns / tag_prefix_
     // columns) at the global `screen.*` leaves the bodies read (like
@@ -338,7 +373,12 @@ export class ScreenHost extends Control<ScreenHostConfig> {
         node.child('resolved').set(true);
         return;
       }
-      const projectId = this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null;
+      // A personal screen that's gone (deleted, or not yours) has no
+      // project default to fall back to: it shows as not found.
+      const projectId =
+        this.config.personalScreenId !== undefined
+          ? null
+          : (this.ctx.tree.at(['scope', 'projectId']).peek<bigint | null>() ?? null);
       if (projectId !== null) this.resolveDefaultScreen(projectId);
       else this.dispatchBody('unknown');
       return;
@@ -395,6 +435,7 @@ export class ScreenHost extends Control<ScreenHostConfig> {
       {
         type: 'ScreenFilterBar',
         screenStatePath: this.statePath,
+        ...(this.config.personalScreenId !== undefined ? { personal: true } : {}),
         // Layout-derived (the layouts themselves are the only built-ins): the
         // Kanban shows the LANES picker + requires a grouping axis; flat layouts
         // hide lanes + default to "No group". view actions (Inbox's Mine-only /
@@ -411,6 +452,7 @@ export class ScreenHost extends Control<ScreenHostConfig> {
         ...(this.bodyCardType !== undefined ? { predicateCardType: this.bodyCardType } : {}),
       } as ChildConfig,
       this.barHost,
+      this.childCtx(),
     );
   }
 
@@ -445,7 +487,7 @@ export class ScreenHost extends Control<ScreenHostConfig> {
       ...bodyConfigForLayout(layout),
       ...(this.config.screen.bodyConfig ?? {}),
     };
-    this.bodyControl = this.spawn(bodyType, bodyConfig, this.bodyHost);
+    this.bodyControl = this.spawn(bodyType, bodyConfig, this.bodyHost, this.childCtx());
   }
 }
 

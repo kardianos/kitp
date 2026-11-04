@@ -144,11 +144,14 @@ BEGIN
     END IF;
 
     -- BFS-walk: every non-task non-deleted descendant under template_id.
+    -- A private card (someone's own view on a template's screen,
+    -- docs/PERSONAL_SCREENS.md) is theirs: it isn't copied into anyone's
+    -- new project.
     INSERT INTO _descendants (src_id, src_card_type_id, src_parent_id, src_phase)
     WITH RECURSIVE walk AS (
         SELECT id, card_type_id, parent_card_id, phase, 1 AS depth
         FROM card
-        WHERE parent_card_id = template_id AND deleted_at IS NULL
+        WHERE parent_card_id = template_id AND deleted_at IS NULL AND private_to IS NULL
         UNION ALL
         SELECT c.id, c.card_type_id, c.parent_card_id, c.phase, w.depth + 1
         FROM card c
@@ -156,7 +159,7 @@ BEGIN
         -- depth < 16 caps the downward tree walk (CLAUDE.md cap; matches
         -- card_ancestors / scopeWalkDepth) so a parent_card_id cycle in
         -- the template can't pin the connection (A1).
-        WHERE c.deleted_at IS NULL AND w.depth < 16
+        WHERE c.deleted_at IS NULL AND c.private_to IS NULL AND w.depth < 16
     )
     SELECT w.id, w.card_type_id, w.parent_card_id, w.phase
     FROM walk w

@@ -10,3 +10,7 @@ The grid layout is a dense, sortable table. Every visible attribute is a column;
 - Quick-entry at the bottom adds a new task without leaving the grid.
 - Tick rows to open the bulk bar: **Assign** sets a reference field (status, milestone, component, assignee, tags, …) or a date field (due date) on every selected task — **+ Add** stages several fields for one **Apply**, **Unassign** clears one — and **Move to** sends them to another project.
 - Columns beyond the built-in ones come from the screen's Columns setting (Screens admin): extra attributes such as a due date, and a task's **Approvals** (how its open approval votes stand, sorted with votes missing first) and **Approval asked** (when the oldest open request was made, oldest first). The **Columns** button hides and reorders them for you.
+
+## Views only you see
+
+**View → Save as my view…** keeps the current filter as a view only you see (🔒 in the list); **Make my default** opens the screen with it for you alone. Your own screens across every project are under **Mine** in the left navigation — see the My screens help.

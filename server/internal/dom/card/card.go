@@ -50,6 +50,11 @@ type InsertInput struct {
 	// routed_to_me filter picks it up). Silently no-ops when the
 	// actor has no person link AND isn't an agent.
 	AssignToMe bool `json:"assign_to_me,omitempty" mcp:"desc=after insert, route the card to the calling user's inbox: agents self-route via user_card_agent; humans get assignee set to their linked person card"`
+	// Private makes the new card yours alone (card.private_to,
+	// docs/PERSONAL_SCREENS.md): a saved view (filter) only you see, on any
+	// screen you can see. Only filter cards may be made private this way; a
+	// card under a private parent is private to its owner anyway.
+	Private bool `json:"private,omitempty" mcp:"desc=filter cards only: a saved view only you see (any screen you can see; no role needed)"`
 }
 
 // InsertOutput carries the new row id.
@@ -91,8 +96,11 @@ func Register(p *store.Pool) {
 		// Worker can insert tasks; manager/admin can insert any card type.
 		// The handler / scope authz enforces card-type-specific limits;
 		// this list is the broadest set of roles that may reach the
-		// handler at all.
-		AllowedRoles: []string{"worker", "manager", "admin"},
+		// handler at all. Viewers and commenters reach it too, for their
+		// own private views ({private: true}, docs/PERSONAL_SCREENS.md):
+		// they hold no card.create grant, so the per-row pass refuses them
+		// everything else.
+		AllowedRoles: reg.ProjectRoles(),
 		ProcessName:  "card.create",
 		CardTypeID:   cardTypeFromName,
 		// Unified handler — body lives in

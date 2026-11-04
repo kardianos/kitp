@@ -130,6 +130,15 @@ that inlines its own copy of the check, or reads cards for something
 that leaves kitp (mail, sinks, exports, portal builds), must AND
 `NOT card_in_off_area(<card>)` too.
 
+A **private card** (`card.private_to` set: watch lists, personal screens
+and views — docs/PERSONAL_SCREENS.md) is its person's alone, admins
+included. `VisibilityClause` and `card_visible_to` already apply that; an
+inlined copy that can list such cards must AND `card_private_ok(<card>,
+<actor>)`, and a handler that makes a private card sets `private_to`
+itself (`card.insert` inherits it from a private parent). The dispatcher
+refuses any gated write whose target chain is someone else's private card
+and lets the owner write their own without a role grant.
+
 ## Per-row write authz
 
 Handlers in `AllowedRoles` that include `worker` or `manager` MUST

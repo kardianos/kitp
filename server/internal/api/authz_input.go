@@ -102,3 +102,22 @@ func jsonName(tag string) string {
 	}
 	return tag
 }
+
+// cardInsertPrivate reports whether a card.insert input asks for a private
+// card (a `private` bool field set true; card.InsertInput.Private).
+func cardInsertPrivate(in any) bool {
+	v := reflect.ValueOf(in)
+	if v.Kind() == reflect.Pointer {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return false
+	}
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		if jsonName(t.Field(i).Tag.Get("json")) == "private" && v.Field(i).Kind() == reflect.Bool {
+			return v.Field(i).Bool()
+		}
+	}
+	return false
+}

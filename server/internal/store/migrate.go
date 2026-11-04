@@ -1199,6 +1199,34 @@ UPDATE role r SET rank = v.rank
 FROM (VALUES ('viewer', 1), ('commenter', 2), ('worker', 3), ('manager', 4), ('admin', 5)) AS v(name, rank)
 WHERE r.name = v.name AND r.rank <> v.rank;`,
 	},
+	{
+		// Personal screens and views (docs/PERSONAL_SCREENS.md): the
+		// list_card_type (task | comm) and my_default attribute_defs, the
+		// screen's list_card_type and predicate edges and the filter's
+		// my_default edge reach existing installs; watch lists made before
+		// cards could be private become private to their subscriber; and the
+		// function account_person replaced (watch_owner) goes. preDDL added
+		// card.private_to. Idempotent.
+		id: "0028_personal_screens",
+		sql: `
+INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+VALUES ('list_card_type', 'text', NULL, true, false),
+       ('my_default', 'bool', NULL, true, false)
+ON CONFLICT (name) DO NOTHING;
+INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+SELECT ct.id, ad.id, false, v.ord
+FROM (VALUES ('screen', 'list_card_type', 13), ('screen', 'predicate', 14),
+             ('filter', 'my_default', 7)) AS v(ct, attr, ord)
+JOIN card_type ct ON ct.name = v.ct
+JOIN attribute_def ad ON ad.name = v.attr
+ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;
+UPDATE card c SET private_to = (av.value)::text::bigint
+FROM attribute_value av, attribute_def ad, card_type ct
+WHERE ct.id = c.card_type_id AND ct.name = 'watch_list'
+  AND av.card_id = c.id AND av.attribute_def_id = ad.id AND ad.name = 'subscriber'
+  AND jsonb_typeof(av.value) = 'number' AND c.private_to IS NULL;
+DROP FUNCTION IF EXISTS watch_owner(bigint);`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that
@@ -1209,9 +1237,12 @@ WHERE r.name = v.name AND r.rank <> v.rank;`,
 // the Comm log's route filter (docs/MAIL_INTAKE_AND_CALENDARS.md).
 // role.rank orders the built-in roles for role_covers, which
 // user_role_effective (a SQL function, checked when it is created) reads.
+// card.private_to marks a private card (docs/PERSONAL_SCREENS.md); its
+// partial index and card_private_ok need it before the DDL runs.
 const preDDL = `ALTER TABLE IF EXISTS attribute_value ADD COLUMN IF NOT EXISTS value_type_id int;
 ALTER TABLE IF EXISTS comm_log ADD COLUMN IF NOT EXISTS route_id bigint;
-ALTER TABLE IF EXISTS role ADD COLUMN IF NOT EXISTS rank int NOT NULL DEFAULT 0;`
+ALTER TABLE IF EXISTS role ADD COLUMN IF NOT EXISTS rank int NOT NULL DEFAULT 0;
+ALTER TABLE IF EXISTS card ADD COLUMN IF NOT EXISTS private_to bigint REFERENCES card(id);`
 
 // ledgerDDL creates the schema-version ledger. Kept here (not in the generated
 // schema) because it must exist before the generated DDL/seed is gated on it.

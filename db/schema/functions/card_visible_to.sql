@@ -15,7 +15,14 @@ CREATE OR REPLACE FUNCTION card_visible_to(actor_id bigint, card_id bigint)
 RETURNS boolean LANGUAGE plpgsql STABLE AS $$
 DECLARE
     _start bigint := card_visible_to.card_id;
+    _private bigint;
 BEGIN
+    -- A private card (card.private_to, docs/PERSONAL_SCREENS.md) is its
+    -- person's alone, whatever roles anyone holds.
+    SELECT c.private_to INTO _private FROM card c WHERE c.id = card_visible_to.card_id;
+    IF _private IS NOT NULL THEN
+        RETURN COALESCE(_private = account_person(card_visible_to.actor_id), false);
+    END IF;
     -- A message walks from its thread (see card_in_off_area).
     IF EXISTS (SELECT 1 FROM card r JOIN card_type rt ON rt.id = r.card_type_id
                WHERE r.id = card_visible_to.card_id AND rt.name = 'reply_body') THEN

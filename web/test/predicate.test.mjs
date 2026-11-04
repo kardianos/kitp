@@ -549,6 +549,7 @@ test('a task filter reaches its links through link.<attr> fields with known valu
       'approval_waiting_on',
       'approval_asked_at',
       'watch_list',
+      'project',
       'last_activity_at',
       'created_at',
     ],

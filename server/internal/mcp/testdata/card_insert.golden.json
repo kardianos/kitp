@@ -26,6 +26,10 @@
       "type": "string",
       "description": "initial phase for value-cards; one of triage|active|terminal (defaults to triage)"
     },
+    "private": {
+      "type": "boolean",
+      "description": "filter cards only: a saved view only you see (any screen you can see; no role needed)"
+    },
     "title": {
       "type": "string",
       "description": "value for the built-in title attribute"

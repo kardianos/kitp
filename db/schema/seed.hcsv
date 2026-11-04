@@ -94,6 +94,8 @@ group_by_attr,         text,        true, null, false
 tag_prefix_columns,    text,        true, null, false
 extra_columns,         text,        true, null, false
 is_template,           bool,        true, null, false
+list_card_type,        text,        true, null, false
+my_default,            bool,        true, null, false
 comms,                 card_ref[],  true, $card_type.comm, false
 channel_type,          text,        true, null, false
 imap_host,             text,        true, null, false
@@ -219,6 +221,8 @@ $card_type.screen,    $attribute_def.tag_prefix_columns,    false, 9
 $card_type.screen,    $attribute_def.extra_columns,         false, 10
 $card_type.screen,    $attribute_def.sort_order,            false, 11
 $card_type.screen,    $attribute_def.is_active,             false, 12
+$card_type.screen,    $attribute_def.list_card_type,        false, 13
+$card_type.screen,    $attribute_def.predicate,             false, 14
 $card_type.filter,    $attribute_def.title,             true,  0
 $card_type.filter,    $attribute_def.predicate,         false, 1
 $card_type.filter,    $attribute_def.sort,              false, 2
@@ -226,6 +230,7 @@ $card_type.filter,    $attribute_def.group_by_attr,     false, 3
 $card_type.filter,    $attribute_def.column_attr,       false, 4
 $card_type.filter,    $attribute_def.sort_order,        false, 5
 $card_type.filter,    $attribute_def.is_active,         false, 6
+$card_type.filter,    $attribute_def.my_default,        false, 7
 $card_type.task,         $attribute_def.comms,             false, 7
 $card_type.comm_channel, $attribute_def.title,             true,  0
 $card_type.comm_channel, $attribute_def.channel_type,      true,  1

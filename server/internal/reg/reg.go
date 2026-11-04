@@ -168,6 +168,17 @@ const (
 	RoleAuthenticated = "$authenticated"
 )
 
+// ProjectRoles is every project role, lowest first. The generic card
+// writes (card.insert, card.delete, attribute.update) let them all through
+// the role gate: viewers and commenters hold no card.create / .update /
+// .delete grant, so the dispatcher's per-row pass refuses them everything
+// but their own private cards (card.private_to — a saved view only they
+// see), which it lets an owner write without a grant
+// (docs/PERSONAL_SCREENS.md).
+func ProjectRoles() []string {
+	return []string{"viewer", "commenter", "worker", "manager", "admin"}
+}
+
 // Unauthorized returns a *HandlerError with the canonical permission
 // code so per-handler ownership / scope checks emit responses that look
 // the same as the dispatcher-level role gate. Handlers should call this

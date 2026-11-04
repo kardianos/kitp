@@ -655,6 +655,9 @@ func (p *Pumper) loadActivityBatch(ctx context.Context, pointer int64) ([]scanne
 			SELECT c.id, pc.depth + 1
 			FROM card c JOIN project_cards pc ON c.parent_card_id = pc.id
 			WHERE pc.depth < 16
+			  -- A private card (someone's own view on a project screen,
+			  -- docs/PERSONAL_SCREENS.md) never leaves kitp in a digest.
+			  AND c.private_to IS NULL
 		),
 		batch AS (
 			SELECT a.id, a.card_id, a.kind, a.attribute_def_id, a.actor_id,

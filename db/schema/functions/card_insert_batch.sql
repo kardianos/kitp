@@ -24,6 +24,10 @@
 --      on a soft-deleted status or one no flow_step leaves, and then
 --      never move (attribute.update's gate finds no step off it) nor be
 --      cleared (the attribute is required).
+--   6b. Privacy: a card under a private parent inherits its private_to;
+--      {private: true} makes a saved view (filter only) private to the
+--      actor's person, on a parent screen they can see
+--      (docs/PERSONAL_SCREENS.md).
 --   7. INSERT card row, INSERT card_create activity, then for the
 --      title + each initial attribute INSERT attr_update activity +
 --      UPSERT attribute_value.
@@ -54,6 +58,9 @@ DECLARE
     _card_type_name text;
     _parent_card_id bigint;
     _has_parent boolean;
+    -- card.private_to (docs/PERSONAL_SCREENS.md): inherited from a private
+    -- parent, or the actor's person for {private: true} (a saved view).
+    _private_to bigint;
     _title text;
     _phase text;
     _attrs jsonb;
@@ -481,9 +488,38 @@ BEGIN
             END IF;
         END IF;
 
+        -- 8b. Privacy (docs/PERSONAL_SCREENS.md). A card under a private
+        --     parent is private to the same person. {private: true} makes a
+        --     saved view (filter) yours alone, on a screen you can see —
+        --     the dispatcher let it through without a role grant, so the
+        --     parent's visibility is checked here.
+        _private_to := NULL;
+        IF _parent_card_id IS NOT NULL THEN
+            SELECT c.private_to INTO _private_to FROM card c WHERE c.id = _parent_card_id;
+        END IF;
+        IF COALESCE((_raw->>'private')::boolean, false) THEN
+            IF _card_type_name <> 'filter' THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    'card.insert: only a saved view (filter) can be made private'::text, NULL::jsonb;
+                CONTINUE;
+            END IF;
+            IF account_person(card_insert_batch.actor_id) IS NULL THEN
+                RETURN QUERY SELECT _idx, false, 'no_person'::text,
+                    'card.insert: your account has no person card to own a private view'::text, NULL::jsonb;
+                CONTINUE;
+            END IF;
+            IF _parent_card_id IS NULL OR NOT card_visible_to(card_insert_batch.actor_id, _parent_card_id) THEN
+                RETURN QUERY SELECT _idx, false, 'parent_not_found'::text,
+                    format('card.insert: parent_card_id %s not found', COALESCE(_parent_card_id::text, '0')),
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+            _private_to := account_person(card_insert_batch.actor_id);
+        END IF;
+
         -- 9. Write.
-        INSERT INTO card (card_type_id, parent_card_id, phase)
-        VALUES (_card_type_id, _parent_card_id, COALESCE(NULLIF(_phase, ''), 'triage'))
+        INSERT INTO card (card_type_id, parent_card_id, phase, private_to)
+        VALUES (_card_type_id, _parent_card_id, COALESCE(NULLIF(_phase, ''), 'triage'), _private_to)
         RETURNING id INTO _new_card_id;
 
         INSERT INTO activity (card_id, kind, actor_id)

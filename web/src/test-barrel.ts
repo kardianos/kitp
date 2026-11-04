@@ -745,3 +745,10 @@ export { WATCH_SPEC, registerWatchSpecs, sortOrderForSlot, watchItemHref, watchL
 export { WatchBar, registerWatchBar, WATCH_LISTS_PATH } from './watch/watch-bar.js';
 export { WatchLists, registerWatchLists, listFromSearch } from './watch/watch-lists.js';
 export { DERIVED_OPTION_SOURCES, derivedOptionTargets } from './filter/attribute-schema.js';
+export { MY_SCREEN_SPEC, registerMyScreenSpecs, scopeFromPredicate, predicateFromScope, scopeSummary, myScreenUrl } from './myscreens/specs.js';
+export { MyScreenSettings, registerMyScreenSettings } from './myscreens/my-screen-settings.js';
+export { MyScreenPage, registerMyScreenPage } from './myscreens/my-screen-page.js';
+export { MyScreens, registerMyScreens, myViewsOnShared } from './myscreens/my-screens.js';
+export { withScopeTree } from './filter/predicate.js';
+export { myDefaultView } from './shell/screen-filter-bar.js';
+export { loadPersonalScreen, personalScopeTree } from './filter/screen-resolve.js';

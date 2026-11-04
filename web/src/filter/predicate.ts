@@ -781,3 +781,31 @@ export interface CardWherePredicate {
   /** When set, all sub-predicates AND together; the leaf fields are ignored. */
   and?: CardWherePredicate[];
 }
+
+/**
+ * AND a screen's scope filter into the query a body built from its search
+ * and predicate (applySearchFilter's output). A personal screen's base
+ * filter rides here — every project unless it names some, whatever view is
+ * picked (docs/PERSONAL_SCREENS.md); other screens have none. With a scope
+ * the result is always a tree: the server reads `tree` over `where[]`, so
+ * the flat leaves move into it (as plural `values`, the tree-leaf shape).
+ */
+export function withScopeTree(
+  where: WireNode[] | undefined,
+  tree: WireNode | undefined,
+  scope: WireNode | null | undefined,
+): { where: WireNode[] | undefined; tree: WireNode | undefined } {
+  if (scope === null || scope === undefined) return { where, tree };
+  const children: WireNode[] = [];
+  if (tree !== undefined) children.push(tree);
+  else {
+    for (const leaf of where ?? []) {
+      if (leaf.values === undefined && leaf.value !== undefined) {
+        const { value, ...rest } = leaf;
+        children.push({ ...rest, values: [value] });
+      } else children.push(leaf);
+    }
+  }
+  children.push(scope);
+  return { where: undefined, tree: { connective: 'and', children } };
+}

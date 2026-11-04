@@ -928,7 +928,25 @@ func (s *Server) runAuthzPass(ctx context.Context, prepped []prepared, slots []S
 		return err
 	}
 
+	// Private cards (docs/PERSONAL_SCREENS.md): the actor's person, once.
+	actorPerson, err := loadAccountPerson(ctx, s.Pool, userID)
+	if err != nil {
+		s.abortWithError(ctx, slots, prepped[0].OuterIdx, "validation", err)
+		return err
+	}
+
 	for _, p := range prepped {
+		owned, err := s.checkPrivate(ctx, p.Handler, p.Input, lookup, actorPerson)
+		if err != nil {
+			s.abortWithError(ctx, slots, p.OuterIdx, "unauthorized", err)
+			return err
+		}
+		if owned {
+			// The actor's own private card: no role grant is needed. The
+			// bundle-source and area checks don't apply (a private card is
+			// never in a bundle source, and a personal screen has no area).
+			continue
+		}
 		if err := s.authorizeLeaf(ctx, p.Handler, p.Input, grants, lookup, projTypeID); err != nil {
 			// authorizeLeaf returns a *reg.HandlerError with a safe
 			// (curated) message on a real deny, or a wrapped internal

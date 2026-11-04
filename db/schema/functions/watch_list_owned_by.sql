@@ -1,5 +1,5 @@
 -- watch_list_owned_by — whether a live watch list belongs to the account
--- (its subscriber is watch_owner(_actor)). Watch lists are each account's
+-- (its subscriber is account_person(_actor)). Watch lists are each account's
 -- own: no admin exception here (an admin cleans up through card.*).
 -- docs/WATCH_LISTS.md.
 CREATE OR REPLACE FUNCTION watch_list_owned_by(_list bigint, _actor bigint)
@@ -12,5 +12,5 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
         JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'subscriber'
         WHERE c.id = _list AND c.deleted_at IS NULL
           AND jsonb_typeof(av.value) = 'number'
-          AND (av.value)::text::bigint = watch_owner(_actor))
+          AND (av.value)::text::bigint = account_person(_actor))
 $$;

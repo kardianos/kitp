@@ -114,6 +114,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/help"
 	domlink "github.com/kitp/kitp/server/internal/dom/link"
 	"github.com/kitp/kitp/server/internal/dom/mailin"
+	"github.com/kitp/kitp/server/internal/dom/myscreen"
 	domportal "github.com/kitp/kitp/server/internal/dom/portal"
 	"github.com/kitp/kitp/server/internal/dom/proc"
 	"github.com/kitp/kitp/server/internal/dom/process"
@@ -214,6 +215,7 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage, mailStatus *mailin
 	// mounted in runHTTP.
 	calendar.Register(pool)
 	watch.Register(pool)
+	myscreen.Register(pool)
 	domarea.Register(pool)
 	tag.Register(pool)
 	process.Register(pool)

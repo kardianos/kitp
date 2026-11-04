@@ -484,7 +484,7 @@ test('{ cardType } schema sources attributes from attribute_def.select', async (
   // synthetic every-card timestamps (last_activity_at / created_at).
   assert.deepEqual(
     names,
-    ['title', 'milestone_ref', 'approval_state', 'approval_waiting_on', 'approval_asked_at', 'watch_list', 'last_activity_at', 'created_at'],
+    ['title', 'milestone_ref', 'approval_state', 'approval_waiting_on', 'approval_asked_at', 'watch_list', 'project', 'last_activity_at', 'created_at'],
     'sourced attrs + derived fields + top-level timestamps',
   );
 });

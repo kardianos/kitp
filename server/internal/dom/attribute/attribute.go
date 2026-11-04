@@ -40,7 +40,7 @@ func Register(_ *store.Pool) {
 		Doc:          "Set an attribute value on a card; emits one activity row and one upsert per write.",
 		InputType:    reflect.TypeFor[UpdateInput](),
 		OutputType:   reflect.TypeFor[UpdateOutput](),
-		AllowedRoles: []string{"worker", "manager", "admin"},
+		AllowedRoles: reg.ProjectRoles(), // and a viewer's own private view (reg.ProjectRoles)
 		ProcessName:  "card.update",
 		CardTypeID:   cardTypeFromCardID,
 		// Unified handler — body lives in

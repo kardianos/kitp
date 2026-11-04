@@ -95,7 +95,10 @@ export interface QueryBinding {
    * `{ from: 'scope.projectId' }` lists `['parentCardId']` here so it stays
    * idle (no cross-project flash) until the scope resolves, then the
    * `{ signal }` trigger refires it once the path is set. Empty / absent →
-   * always fire (the existing behaviour).
+   * always fire (the existing behaviour). An entry `a|b` skips only when
+   * every one of its fields is null: a list's rows read `projectId|allProjects`,
+   * so a personal screen (no project, every project) still fires
+   * (docs/PERSONAL_SCREENS.md).
    */
   skipWhenNull?: string[];
 }
@@ -298,9 +301,9 @@ export class DataController {
     // stays idle rather than firing an unscoped read. The `{ signal }`
     // trigger refires it the moment the watched path is written.
     if (q.skipWhenNull) {
-      for (const field of q.skipWhenNull) {
-        const v = input[field];
-        if (v === null || v === undefined) return;
+      for (const entry of q.skipWhenNull) {
+        const fields = entry.split('|');
+        if (fields.every((field) => input[field] === null || input[field] === undefined)) return;
       }
     }
     this.host.ctx.api.callByName(

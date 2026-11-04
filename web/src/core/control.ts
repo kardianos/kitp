@@ -442,8 +442,10 @@ export abstract class Control<Cfg extends BaseControlConfig = BaseControlConfig>
   }
 
   /** Imperatively create + own a child control, mounted into `host`. */
-  protected spawn(type: string, config: unknown, host: HTMLElement): Control {
-    const c = Control.New(type as keyof ControlConfigMap, config as never, this.ctx);
+  protected spawn(type: string, config: unknown, host: HTMLElement, ctx: ControlContext = this.ctx): Control {
+    // ctx: a child can be given a derived context — a personal screen hands
+    // its body a scope with no project (docs/PERSONAL_SCREENS.md).
+    const c = Control.New(type as keyof ControlConfigMap, config as never, ctx);
     c.parent = this;
     this.children.add(c);
     c.mount(host);

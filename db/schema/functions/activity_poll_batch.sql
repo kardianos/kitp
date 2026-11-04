@@ -56,7 +56,8 @@ BEGIN
         -- cap) and confirm the actor (or its parent_user) holds a global- or
         -- project-scoped role. Mirrors activity.select's B7 clause, keyed once
         -- on the task rather than per activity row.
-        SELECT NOT card_in_off_area(_task_id) AND EXISTS (
+        SELECT NOT card_in_off_area(_task_id)
+           AND card_private_ok(_task_id, activity_poll_batch.actor_id) AND EXISTS (
             WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (
                 SELECT card.id, card.parent_card_id, card.card_type_id, 0
                 FROM card WHERE card.id = _task_id

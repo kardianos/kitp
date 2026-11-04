@@ -168,6 +168,7 @@ export function decodeCardWithAttrs(j: Record<string, unknown>): CardWithAttrs {
   // appears when the request set with_personal_sort:true; NULL → undefined.
   const personalSort = asNumOpt(j['personal_sort_order']);
   if (personalSort !== undefined) out.personal_sort_order = personalSort;
+  if (j['private'] === true) out.private = true;
   // The task's approvals ride at the top level when with_approvals asked for
   // them and the card has an open request.
   const ap = j['approvals'];

@@ -297,6 +297,37 @@ BEGIN
         END IF;
         RETURN jsonb_build_object('sql', _sql, 'params', params);
     END IF;
+    -- In a project (docs/PERSONAL_SCREENS.md): in / not in over project
+    -- ids — the card's enclosing project (card_enclosing_project). A
+    -- personal screen spans every project you can see unless its filter
+    -- limits it this way. Mirrors compileProjectLeaf in where.go.
+    IF _attr = 'project' THEN
+        IF NOT (node ? 'values') AND node ? 'value' THEN
+            _values := jsonb_build_array(node->'value');
+        ELSE
+            _values := COALESCE(node->'values', '[]'::jsonb);
+        END IF;
+        _placeholders := ARRAY[]::text[];
+        FOR _v IN SELECT value FROM jsonb_array_elements(_values)
+        LOOP
+            IF jsonb_typeof(_v) = 'number'
+               OR (jsonb_typeof(_v) = 'string' AND (_v #>> '{}') ~ '^[0-9]+$') THEN
+                SELECT p, i INTO params, _val_idx FROM _ph_push(params, _v) AS r(p, i);
+                _placeholders := array_append(_placeholders,
+                    format('($1->>%s)::bigint', _val_idx::text));
+            END IF;
+        END LOOP;
+        _sql := format('COALESCE(card_enclosing_project(c.id) = ANY(ARRAY[%s]::bigint[]), false)',
+            array_to_string(_placeholders, ', '));
+        IF _op IN ('=', 'eq', 'in') THEN
+            NULL;
+        ELSIF _op IN ('!=', 'ne', 'not in') THEN
+            _sql := 'NOT ' || _sql;
+        ELSE
+            RAISE EXCEPTION 'card_compile_predicate: project supports in and not in, got %', _op;
+        END IF;
+        RETURN jsonb_build_object('sql', _sql, 'params', params);
+    END IF;
     -- On a watch list (watched_on; docs/WATCH_LISTS.md): values are watch
     -- list ids, or a person id meaning "any of that person's lists" — what
     -- "@me" becomes for the viewer. A value that isn't an id ("@me" left

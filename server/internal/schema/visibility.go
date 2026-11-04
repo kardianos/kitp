@@ -2,8 +2,11 @@ package schema
 
 import "fmt"
 
-// VisibilityClause returns a SQL EXISTS fragment that filters cards
-// to only those visible to the supplied user. AND-join it into a
+// VisibilityClause returns a SQL predicate fragment that filters cards
+// to only those visible to the supplied user. A private card
+// (card.private_to) is visible to its person's accounts only — no role,
+// admin or global, reaches it (docs/PERSONAL_SCREENS.md); the rest of
+// this comment is about every other card. AND-join it into a
 // WHERE clause of any read that exposes card rows (or rows that
 // reference a card, like `activity`).
 //
@@ -48,7 +51,13 @@ import "fmt"
 //
 // Closes DI-6 (docs/DESIGN_INVARIANTS.md).
 func VisibilityClause(cardIDExpr, userArg string) string {
-	return fmt.Sprintf(`EXISTS (
+	// A private card (card.private_to, docs/PERSONAL_SCREENS.md) is its
+	// person's alone: visible exactly when it is private to the caller's
+	// person (account_person — an agent's is its owner's), whatever roles
+	// anyone holds. Every other card takes the role walk below.
+	return fmt.Sprintf(`(CASE WHEN (SELECT pv.private_to FROM card pv WHERE pv.id = %[1]s) IS NOT NULL
+	THEN COALESCE((SELECT pv.private_to FROM card pv WHERE pv.id = %[1]s) = account_person(%[2]s), false)
+	ELSE EXISTS (
 		WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (
 			SELECT id, parent_card_id, card_type_id, 0
 			FROM card WHERE id = %[1]s
@@ -91,5 +100,5 @@ func VisibilityClause(cardIDExpr, userArg string) string {
 		                AND EXISTS (SELECT 1 FROM project_area pa
 		                            WHERE pa.area_key = a.key AND pa.state = 'off'
 		                              AND pa.project_id IN (SELECT y.id FROM chain y WHERE y.name = 'project')))))
-	)`, cardIDExpr, userArg)
+	) END)`, cardIDExpr, userArg)
 }

@@ -145,7 +145,7 @@ attribute_def_id, bigint, , false, , attribute_def.id
 is_required, boolean, , false, false, 
 ordering, int, , false, 0, 
 
-## table card | doc="A card instance. phase is a 3-value enum (triage/active/terminal) that categorises flow-bound value-cards used in ref attributes (status='Done' → terminal; status='New idea' → triage; status='Doing' → active). Drives the predicate compiler's has_phase op and the legacy notTerminal alias (phase='terminal'), the TransitionBar UI buckets via (from.phase, to.phase) pairs, and the default-create-status resolution chain. Defaults 'triage' for new value-cards (admins flip to active/terminal at creation time). Cards that are not flow-bound value-cards (tasks, projects, persons, …) carry the default but the value is never consulted."
+## table card | doc="A card instance. phase is a 3-value enum (triage/active/terminal) that categorises flow-bound value-cards used in ref attributes (status='Done' → terminal; status='New idea' → triage; status='Doing' → active). Drives the predicate compiler's has_phase op and the legacy notTerminal alias (phase='terminal'), the TransitionBar UI buckets via (from.phase, to.phase) pairs, and the default-create-status resolution chain. Defaults 'triage' for new value-cards (admins flip to active/terminal at creation time). Cards that are not flow-bound value-cards (tasks, projects, persons, …) carry the default but the value is never consulted. private_to (a person card) makes the card private (docs/PERSONAL_SCREENS.md): visible to and writable by that person's accounts only — their login and its agents, no admin exception — and inherited by cards inserted under it. Watch lists, personal screens and personal views are private; everything else leaves it NULL."
 
 ### meta
 name_attribute
@@ -159,11 +159,13 @@ parent_card_id, bigint, , , , card.id,
 phase, text, , false, 'triage', , "phase IN ('triage','active','terminal')"
 created_at, timestamptz, , false, now(), ,
 deleted_at, timestamptz, , , , ,
+private_to, bigint, , , , card.id,
 
 ### indexes
-name, columns
-idx_card_parent_card_id, "parent_card_id"
-idx_card_card_type_id, "card_type_id"
+name, columns, where
+idx_card_parent_card_id, "parent_card_id",
+idx_card_card_type_id, "card_type_id",
+idx_card_private_to, "private_to", "private_to IS NOT NULL"
 
 ## table activity | doc="Append-only stream of card events: card_create, attr_update, tag_apply, comment, ..."
 
@@ -816,8 +818,13 @@ idx_theme_file_cas, "cas_address"
 ## function comm_route_create_batch | doc="comm_route.create — admin: add a POST (raw / mailgun / postmark) or SMTP route to a mail account; returns the secret token once." | path="functions/comm_route_create_batch.sql"
 ## function comm_route_update_batch | doc="comm_route.update — admin: change a route's comment, filters or Mailgun signing key." | path="functions/comm_route_update_batch.sql"
 ## function comm_route_delete_batch | doc="comm_route.delete — admin: remove a route; its URL / address stops working at once." | path="functions/comm_route_delete_batch.sql"
-## function watch_owner | doc="The person card whose watch lists an account uses: its linked person, or an agent's owner's. NULL when none." | path="functions/watch_owner.sql" | arg_types="bigint"
-## function watch_list_owned_by | doc="Whether a live watch list belongs to the account (subscriber = watch_owner). No admin exception: lists are each account's own." | path="functions/watch_list_owned_by.sql" | arg_types="bigint, bigint"
+## function account_person | doc="The person card an account acts as for its own things (watch lists, personal screens and views, private cards): its linked person, or an agent's owner's. NULL when none." | path="functions/account_person.sql" | arg_types="bigint"
+## function card_private_ok | doc="Whether an account may see / write a card as far as privacy goes: the card isn't private, or it is private to account_person(actor). ANDed into the listing reads that can surface private cards; VisibilityClause and card_visible_to apply the same rule." | path="functions/card_private_ok.sql" | arg_types="bigint, bigint"
+## function my_screen_toggles | doc="The phase toggles a personal screen starts with: New / Active (on) / Closed over its listed card type's status attribute (status or comm_status), as toggle_groups JSON." | path="functions/my_screen_toggles.sql" | arg_types="text"
+## function my_screen_list_batch | doc="my_screen.list — the caller's personal screens (parentless screen cards private to them) in Mine order: title, layout, list_card_type, predicate, sort_order, default_filter, view_count." | path="functions/my_screen_list_batch.sql"
+## function my_screen_set_batch | doc="my_screen.set — create or update one of the caller's personal screens: title, layout (list | grid), list_card_type (task | comm), base filter (predicate; a project leaf limits it to some projects), sort_order, default_filter." | path="functions/my_screen_set_batch.sql"
+## function my_screen_delete_batch | doc="my_screen.delete — soft-delete one of the caller's personal screens and its views." | path="functions/my_screen_delete_batch.sql"
+## function watch_list_owned_by | doc="Whether a live watch list belongs to the account (subscriber = account_person). No admin exception: lists are each account's own." | path="functions/watch_list_owned_by.sql" | arg_types="bigint, bigint"
 ## function watched_on | doc="Whether a card is on any of the given watch lists, an id also naming a person = any of that person's lists. Backs the watch_list filter leaf." | path="functions/watched_on.sql" | arg_types="bigint, bigint[]"
 ## function watch_list_list_batch | doc="watch_list.list — the caller's watch lists (title, symbol, description, count; with card_id whether that card is on each). The first call makes the account's Stars list." | path="functions/watch_list_list_batch.sql"
 ## function watch_list_set_batch | doc="watch_list.set — create or update one of the caller's watch lists: title, symbol, description." | path="functions/watch_list_set_batch.sql"

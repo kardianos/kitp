@@ -9,3 +9,7 @@ The kanban layout shows cards as tiles arranged into columns by one attribute an
 - Drag a card between columns to apply the transition. If the move is not a legal flow step, the drop is rejected and the card snaps back.
 - Quick-entry at the foot of each column adds a card directly into that column's value.
 - When the screen's Columns include **Approvals**, a card shows how its open approval votes stand next to its #id. Votes never move a card; dragging does.
+
+## Views only you see
+
+**View → Save as my view…** keeps the current filter as a view only you see (🔒 in the list); **Make my default** opens the screen with it for you alone. Your own screens across every project are under **Mine** in the left navigation — see the My screens help.

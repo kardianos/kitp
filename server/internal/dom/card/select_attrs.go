@@ -108,6 +108,10 @@ type CardWithAttrs struct {
 	LastActivityAt *time.Time `json:"last_activity_at,omitempty" mcp:"desc=most recent activity timestamp for this card (MAX(activity.created_at)); null when the card has no activity yet"`
 	DeletedAt      *time.Time `json:"deleted_at,omitempty" mcp:"desc=non-null when the card has been soft-deleted"`
 	PersonalSort   *float64   `json:"personal_sort_order,omitempty" mcp:"desc=caller's user_card_sort.sort_order when with_personal_sort=true; null when the user hasn't reordered this card"`
+	// Private marks a private card (card.private_to,
+	// docs/PERSONAL_SCREENS.md) — only its owner ever sees one: a personal
+	// view or screen, a watch list.
+	Private bool `json:"private,omitempty" mcp:"desc=true on a private card (yours: a personal view or screen, a watch list)"`
 	// Approvals is set only when with_approvals asked for it and the card
 	// has an open approval request.
 	Approvals *ApprovalSummary `json:"approvals,omitempty" mcp:"desc=the task's approvals when with_approvals=true and it has open approval requests"`

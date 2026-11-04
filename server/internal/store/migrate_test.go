@@ -65,8 +65,9 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// +intake_mode / reply_quote (mail account settings),
 		// +past_days / future_days (calendar feeds), +relay_replies /
 		// email_attachments (mail account) and relay_of /
-		// attachments_left_off (message), +symbol (watch lists).
-		{`SELECT count(*) FROM attribute_def`, 98},
+		// attachments_left_off (message), +symbol (watch lists),
+		// +list_card_type / my_default (personal screens and views).
+		{`SELECT count(*) FROM attribute_def`, 100},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
 		// +7 on activity_subscription, +4 on link, +7 on approval,
 		// +bundle_key on project, +publishes_to on status, +5 on page,
@@ -74,8 +75,9 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// show in kitp) and +5 on theme, +2 on comm_channel (intake_mode,
 		// reply_quote), +5 on calendar, +2 on comm_channel (relay_replies,
 		// email_attachments) and +2 on reply_body (relay_of,
-		// attachments_left_off), +4 on watch_list.
-		{`SELECT count(*) FROM edge`, 150},
+		// attachments_left_off), +4 on watch_list, +2 on screen
+		// (list_card_type, predicate) and +1 on filter (my_default).
+		{`SELECT count(*) FROM edge`, 153},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -1032,8 +1034,8 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 23},
-		{`SELECT count(*) FROM attribute_def`, 98},
-		{`SELECT count(*) FROM edge`, 150},
+		{`SELECT count(*) FROM attribute_def`, 100},
+		{`SELECT count(*) FROM edge`, 153},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -1544,5 +1546,62 @@ func TestForwardMigration0027RoleRank(t *testing.T) {
 	}
 	if got := ladder(); got != want {
 		t.Errorf("after 0027: %s, want %s", got, want)
+	}
+}
+
+// TestForwardMigration0028PersonalScreens: an install from before personal
+// screens gets list_card_type / my_default and their edges, and its watch
+// lists become private to their owners.
+func TestForwardMigration0028PersonalScreens(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0028")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	counts := []string{`SELECT count(*) FROM attribute_def`, `SELECT count(*) FROM edge`}
+	read := func() []int64 {
+		out := make([]int64, len(counts))
+		for i, q := range counts {
+			if err := pool.QueryRow(ctx, q).Scan(&out[i]); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		return out
+	}
+	fresh := read()
+	// A watch list made before lists were private.
+	var person, list int64
+	if err := pool.QueryRow(ctx, `INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'person' RETURNING id`).Scan(&person); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'watch_list' RETURNING id`).Scan(&list); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		SELECT $1, id, to_jsonb($2::bigint) FROM attribute_def WHERE name = 'subscriber'`, list, person); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`DELETE FROM edge WHERE attribute_def_id IN (SELECT id FROM attribute_def WHERE name IN ('list_card_type','my_default'))`,
+		`DELETE FROM edge e USING card_type ct, attribute_def ad WHERE e.card_type_id = ct.id AND e.attribute_def_id = ad.id AND ct.name = 'screen' AND ad.name = 'predicate'`,
+		`DELETE FROM attribute_def WHERE name IN ('list_card_type','my_default')`,
+		`DELETE FROM schema_version WHERE name = '0028_personal_screens'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0028 (%s): %v", stmt, err)
+		}
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	if got := read(); fmt.Sprint(got) != fmt.Sprint(fresh) {
+		t.Errorf("after 0028: %v, want the fresh seed's %v", got, fresh)
+	}
+	var owner *int64
+	if err := pool.QueryRow(ctx, `SELECT private_to FROM card WHERE id = $1`, list).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if owner == nil || *owner != person {
+		t.Errorf("the watch list's private_to = %v, want its subscriber %d", owner, person)
 	}
 }

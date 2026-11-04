@@ -33,7 +33,7 @@ import { peekWorkflowStatusIds } from '../ui/workflow-statuses.js';
 import { virtualList, type VirtualListHandle } from '../core/virtual-list.js';
 import { cardUrl, navigate, type CardRoute } from '../shell/router.js';
 import { publishTaskNav } from '../shell/task-nav.js';
-import { applySearchFilter, type Predicate, type WireNode } from '../filter/predicate.js';
+import { applySearchFilter, withScopeTree, type Predicate, type WireNode } from '../filter/predicate.js';
 import { walkGrouped, GROUP_EMPTY_KEY, type GroupAttr, type GroupItem } from '../filter/group-axis.js';
 import { applyPersonalReorder, move, planPersonalReorder, sortByPersonal, sortGrouped } from '../inbox/inbox-helpers.js';
 import { DropPlaceholder, computeDropTarget } from '../ui/drag-placeholder.js';
@@ -104,6 +104,8 @@ export function buildCardListQueries(p: string): QueryBinding[] {
       input: {
         cardTypeName: { from: 'screen.cardType' },
         projectId: { from: 'scope.projectId' },
+        // A personal screen lists every project: no projectId, allProjects (docs/PERSONAL_SCREENS.md).
+        _allProjects: { from: 'scope.allProjects' },
         withPersonalSort: { from: `${p}.withPersonalSort` },
         routedToMe: { from: `${p}.routedToMe` },
         // A screen showing an approvals column (derived-columns) asks for the
@@ -114,7 +116,7 @@ export function buildCardListQueries(p: string): QueryBinding[] {
         tree: { from: `${p}.tree` },
         limit: { lit: 200 },
       },
-      skipWhenNull: ['cardTypeName', 'projectId'],
+      skipWhenNull: ['cardTypeName', 'projectId|_allProjects'],
       result: { method: 'landCards' },
       onError: 'self',
     },
@@ -122,8 +124,8 @@ export function buildCardListQueries(p: string): QueryBinding[] {
       name: 'statuses',
       spec: SPEC.selectWithAttributes,
       when: { signal: 'scope.projectId' },
-      input: { cardTypeName: { lit: 'status' }, projectId: { from: 'scope.projectId' } },
-      skipWhenNull: ['projectId'],
+      input: { cardTypeName: { lit: 'status' }, projectId: { from: 'scope.projectId' }, _allProjects: { from: 'scope.allProjects' } },
+      skipWhenNull: ['projectId|_allProjects'],
       result: { method: 'landStatuses' },
       onError: 'self',
     },
@@ -140,8 +142,8 @@ export function buildCardListQueries(p: string): QueryBinding[] {
       name: 'milestones',
       spec: SPEC.selectWithAttributes,
       when: { signal: 'scope.projectId' },
-      input: { cardTypeName: { lit: 'milestone' }, projectId: { from: 'scope.projectId' }, _gate: { config: 'loadTaskLookups' } },
-      skipWhenNull: ['projectId', '_gate'],
+      input: { cardTypeName: { lit: 'milestone' }, projectId: { from: 'scope.projectId' }, _allProjects: { from: 'scope.allProjects' }, _gate: { config: 'loadTaskLookups' } },
+      skipWhenNull: ['projectId|_allProjects', '_gate'],
       result: { method: 'landMilestones' },
       onError: 'self',
     },
@@ -149,8 +151,8 @@ export function buildCardListQueries(p: string): QueryBinding[] {
       name: 'components',
       spec: SPEC.selectWithAttributes,
       when: { signal: 'scope.projectId' },
-      input: { cardTypeName: { lit: 'component' }, projectId: { from: 'scope.projectId' }, _gate: { config: 'loadTaskLookups' } },
-      skipWhenNull: ['projectId', '_gate'],
+      input: { cardTypeName: { lit: 'component' }, projectId: { from: 'scope.projectId' }, _allProjects: { from: 'scope.allProjects' }, _gate: { config: 'loadTaskLookups' } },
+      skipWhenNull: ['projectId|_allProjects', '_gate'],
       result: { method: 'landComponents' },
       onError: 'self',
     },
@@ -158,8 +160,8 @@ export function buildCardListQueries(p: string): QueryBinding[] {
       name: 'tags',
       spec: SPEC.selectWithAttributes,
       when: { signal: 'scope.projectId' },
-      input: { cardTypeName: { lit: 'tag' }, projectId: { from: 'scope.projectId' }, _gate: { config: 'loadTags' } },
-      skipWhenNull: ['projectId', '_gate'],
+      input: { cardTypeName: { lit: 'tag' }, projectId: { from: 'scope.projectId' }, _allProjects: { from: 'scope.allProjects' }, _gate: { config: 'loadTags' } },
+      skipWhenNull: ['projectId|_allProjects', '_gate'],
       result: { method: 'landTags' },
       onError: 'self',
     },
@@ -167,8 +169,8 @@ export function buildCardListQueries(p: string): QueryBinding[] {
       name: 'parents',
       spec: SPEC.selectWithAttributes,
       when: { signal: 'scope.projectId' },
-      input: { cardTypeName: { config: 'parentChipCardType' }, projectId: { from: 'scope.projectId' } },
-      skipWhenNull: ['cardTypeName', 'projectId'],
+      input: { cardTypeName: { config: 'parentChipCardType' }, projectId: { from: 'scope.projectId' }, _allProjects: { from: 'scope.allProjects' } },
+      skipWhenNull: ['cardTypeName', 'projectId|_allProjects'],
       result: { method: 'landParents' },
       onError: 'self',
     },
@@ -356,6 +358,7 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
       this.ctx.tree.at(['screen', 'cardType']).get();
       this.ctx.tree.at(['scope', 'projectId']).get();
       this.ctx.tree.at(['screen', 'predicate']).get();
+      this.ctx.tree.at(['screen', 'scopeTree']).get();
       this.ctx.tree.at(['screen', 'search']).get();
       this.ctx.tree.at(['screen', 'searchFields']).get();
       this.ctx.tree.at(['screen', 'withApprovals']).get();
@@ -662,7 +665,13 @@ export abstract class CardListCore<Cfg extends CardListCoreConfig = CardListCore
     const search = this.ctx.tree.at(['screen', 'search']).peek<string>() ?? '';
     const fields = this.ctx.tree.at(['screen', 'searchFields']).peek<string[]>() ?? ['title'];
     const predicate = this.ctx.tree.at(['screen', 'predicate']).peek<Predicate | null>() ?? null;
-    const { where, tree } = applySearchFilter(search, fields, predicate);
+    // A personal screen's base filter (screen.scopeTree) always applies.
+    const base = applySearchFilter(search, fields, predicate);
+    const { where, tree } = withScopeTree(
+      base.where,
+      base.tree,
+      this.ctx.tree.at(['screen', 'scopeTree']).peek<WireNode | null>() ?? null,
+    );
     let outWhere = where as WireNode[] | undefined;
     let outTree = tree;
 

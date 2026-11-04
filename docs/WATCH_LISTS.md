@@ -27,7 +27,7 @@ items in the account's own order.
 
 | # | Decision |
 | - | -------- |
-| W1 | A list is a card (`watch_list`, global, like `calendar`), owned through `subscriber` = the account's person — the per-user-config-as-cards rule. An agent uses its owner's lists (`watch_owner`). |
+| W1 | A list is a card (`watch_list`, global, like `calendar`), owned through `subscriber` = the account's person — the per-user-config-as-cards rule. An agent uses its owner's lists (`account_person`). |
 | W2 | What is on a list is a table, `watch_entry (watch_list_id, card_id, sort_order, created_at)`, not a card_ref[] attribute: many-to-many, indexed both ways, cheap to reorder. Bookmarks are the account's, not the card's history: no activity rows (like `user_card_sort`). |
 | W3 | Lists are each account's own: `watch_list_owned_by` has no admin exception (an admin cleans up through `card.*`). |
 | W4 | Stars is made the first time an account lists its lists (`watch_list.list`), when no list — deleted ones count — ever belonged to its person; so deleting Stars sticks. An advisory lock keeps two first calls from making two. |
@@ -58,7 +58,7 @@ items in the account's own order.
 - `watch_entry` table (DDL, every boot): PK `(watch_list_id, card_id)`,
   indexes `(card_id)` for the filter and `(watch_list_id, sort_order)` for
   the list.
-- Functions: `watch_owner`, `watch_list_owned_by`, `watched_on`,
+- Functions: `account_person` (was `watch_owner`), `watch_list_owned_by`, `watched_on`,
   `watch_list_{list,set,delete}_batch`, `watch_{set,items,move}_batch`.
 
 ### Web

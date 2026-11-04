@@ -127,8 +127,11 @@ BEGIN
         _params := '[]'::jsonb;
         _clauses := ARRAY[]::text[];
 
-        -- Visibility predicate (B7).
+        -- Visibility predicate (B7). A private card (c.private_to,
+        -- docs/PERSONAL_SCREENS.md) is its person's alone; every other card
+        -- takes the role walk.
         _clauses := array_append(_clauses, format(
+            '(CASE WHEN c.private_to IS NOT NULL THEN COALESCE(c.private_to = account_person($2), false) ELSE ' ||
             'EXISTS (WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (' ||
             'SELECT card.id, card.parent_card_id, card.card_type_id, 0 ' ||
             'FROM card WHERE card.id = c.id ' ||
@@ -138,7 +141,7 @@ BEGIN
             ') SELECT 1 FROM user_account caller ' ||
             'CROSS JOIN LATERAL user_role_visible(caller.id) ur ' ||
             'WHERE caller.id = $2 AND (ur.scope_card_id IS NULL OR ur.scope_card_id IN (' ||
-            'SELECT up.id FROM up JOIN card_type ct2 ON ct2.id = up.card_type_id WHERE ct2.name = ''project'')))'
+            'SELECT up.id FROM up JOIN card_type ct2 ON ct2.id = up.card_type_id WHERE ct2.name = ''project''))) END)'
         ));
         -- Areas: a card in an area that is switched off is hidden from
         -- everyone (docs/AREAS.md).
@@ -415,9 +418,12 @@ BEGIN
             '  ''last_activity_at'', CASE WHEN sub.last_activity_at IS NULL THEN NULL ELSE to_jsonb(sub.last_activity_at) END, ' ||
             '  ''deleted_at'', CASE WHEN sub.deleted_at IS NULL THEN NULL ELSE to_jsonb(sub.deleted_at) END, ' ||
             '  ''personal_sort_order'', CASE WHEN sub.personal_sort_order IS NULL THEN NULL ELSE to_jsonb(sub.personal_sort_order) END, ' ||
-            '  ''approvals'', sub.approvals ' ||
+            '  ''approvals'', sub.approvals, ' ||
+            -- A private card (only its owner ever sees one): a personal
+            -- view or screen, a watch list (docs/PERSONAL_SCREENS.md).
+            '  ''private'', CASE WHEN sub.private_to IS NULL THEN NULL ELSE to_jsonb(true) END ' ||
             ') ORDER BY sub.rn), ''[]''::jsonb) ' ||
-            'FROM (SELECT c.id, c.card_type_id, ct.name AS card_type_name, ct.uses_phase, c.parent_card_id, c.phase, ' ||
+            'FROM (SELECT c.id, c.card_type_id, ct.name AS card_type_name, ct.uses_phase, c.parent_card_id, c.phase, c.private_to, ' ||
             '  c.deleted_at, COALESCE(attrs.values, ''{}''::jsonb) AS attrs, c.created_at, ' ||
             '  la.last_activity_at, ' ||
             '  ' || _personal_sort_select || ', ' ||

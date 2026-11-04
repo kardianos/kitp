@@ -61,7 +61,9 @@ import type { CardWherePredicate } from '../projects/project-helpers.js';
 import {
   type Predicate,
   type PredicateLeaf,
+  type WireNode,
   applySearchFilter,
+  withScopeTree,
   leaf as makeLeaf,
   topLevelLeafForAttr,
   upsertTopLevelLeaf,
@@ -244,6 +246,8 @@ export class Grid extends CardListCore<GridConfig> {
         // epic, not the project — still appear on the board. Mirrors the list
         // screens (CardListCore) which already scope tasks by projectId.
         projectId: { from: 'scope.projectId' },
+        // A personal screen lists every project: no projectId, allProjects (docs/PERSONAL_SCREENS.md).
+        _allProjects: { from: 'scope.allProjects' },
         order: { from: 'grid.order' },
         where: { from: 'grid.where' },
         tree: { from: 'grid.tree' },
@@ -254,7 +258,7 @@ export class Grid extends CardListCore<GridConfig> {
       // Stay idle until a project scope resolves — no cross-project flash on
       // the initial (scope=null) fire. The { signal } trigger refires once a
       // project is picked (the grid bumps queryVersion on scope change too).
-      skipWhenNull: ['projectId'],
+      skipWhenNull: ['projectId|_allProjects'],
       result: { method: 'landTasks' },
       onError: 'self',
     },
@@ -270,8 +274,8 @@ export class Grid extends CardListCore<GridConfig> {
       name: 'statuses',
       spec: SPEC.selectWithAttributes,
       when: { signal: 'scope.projectId' },
-      input: { cardTypeName: { lit: 'status' }, parentCardId: { from: 'scope.projectId' } },
-      skipWhenNull: ['parentCardId'],
+      input: { cardTypeName: { lit: 'status' }, parentCardId: { from: 'scope.projectId' }, _allProjects: { from: 'scope.allProjects' } },
+      skipWhenNull: ['parentCardId|_allProjects'],
       result: { method: 'landStatuses' },
       onError: 'self',
     },
@@ -279,8 +283,8 @@ export class Grid extends CardListCore<GridConfig> {
       name: 'milestones',
       spec: SPEC.selectWithAttributes,
       when: { signal: 'scope.projectId' },
-      input: { cardTypeName: { lit: 'milestone' }, parentCardId: { from: 'scope.projectId' } },
-      skipWhenNull: ['parentCardId'],
+      input: { cardTypeName: { lit: 'milestone' }, parentCardId: { from: 'scope.projectId' }, _allProjects: { from: 'scope.allProjects' } },
+      skipWhenNull: ['parentCardId|_allProjects'],
       result: { method: 'landMilestones' },
       onError: 'self',
     },
@@ -288,8 +292,8 @@ export class Grid extends CardListCore<GridConfig> {
       name: 'components',
       spec: SPEC.selectWithAttributes,
       when: { signal: 'scope.projectId' },
-      input: { cardTypeName: { lit: 'component' }, parentCardId: { from: 'scope.projectId' } },
-      skipWhenNull: ['parentCardId'],
+      input: { cardTypeName: { lit: 'component' }, parentCardId: { from: 'scope.projectId' }, _allProjects: { from: 'scope.allProjects' } },
+      skipWhenNull: ['parentCardId|_allProjects'],
       result: { method: 'landComponents' },
       onError: 'self',
     },
@@ -297,8 +301,8 @@ export class Grid extends CardListCore<GridConfig> {
       name: 'tags',
       spec: SPEC.selectWithAttributes,
       when: { signal: 'scope.projectId' },
-      input: { cardTypeName: { lit: 'tag' }, parentCardId: { from: 'scope.projectId' } },
-      skipWhenNull: ['parentCardId'],
+      input: { cardTypeName: { lit: 'tag' }, parentCardId: { from: 'scope.projectId' }, _allProjects: { from: 'scope.allProjects' } },
+      skipWhenNull: ['parentCardId|_allProjects'],
       result: { method: 'landTags' },
       onError: 'self',
     },
@@ -537,6 +541,7 @@ export class Grid extends CardListCore<GridConfig> {
       const search = this.ctx.tree.at(['screen', 'search']).get<string>() ?? '';
       const predicate = this.ctx.tree.at(['screen', 'predicate']).get<Predicate | null>() ?? null;
       const fields = this.ctx.tree.at(['screen', 'searchFields']).get<string[]>() ?? ['title'];
+      this.ctx.tree.at(['screen', 'scopeTree']).get(); // a personal screen's base filter
       this.applyFilter(search, fields, predicate);
       this.bumpQuery();
     }, 'grid.filterWatch');
@@ -1768,7 +1773,13 @@ export class Grid extends CardListCore<GridConfig> {
    * `where` / `tree` are set to `undefined` when empty so the encoder omits them.
    */
   private applyFilter(search: string, fields: readonly string[], predicate: Predicate | null): void {
-    const { where, tree } = applySearchFilter(search, fields, predicate);
+    // A personal screen's base filter (screen.scopeTree) always applies.
+    const base = applySearchFilter(search, fields, predicate);
+    const { where, tree } = withScopeTree(
+      base.where,
+      base.tree,
+      this.ctx.tree.at(['screen', 'scopeTree']).peek<WireNode | null>() ?? null,
+    );
     this.ctx.tree.at(['grid', 'where']).set(where as CardWherePredicate[] | undefined);
     this.ctx.tree.at(['grid', 'tree']).set(tree);
   }

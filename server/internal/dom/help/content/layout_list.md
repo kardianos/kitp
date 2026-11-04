@@ -10,3 +10,7 @@ The list layout is the one-task-per-row reading view. Rows are dense and ordered
 - Quick-entry at the bottom adds a new task in-place without leaving the view.
 - **Approvals** on a row (when the screen's Columns include it, as the Inbox's do) shows how the task's open approval requests stand — *✓ 2/2*, *… 1/2*, *✕* when someone voted reject — and *your vote* when one waits on you. It's a vote count, not a status: open the task to vote.
 - The Inbox's **Waiting on my vote** view (pick it from the view menu) lists this project's tasks that wait on your approval vote, oldest request first.
+
+## Views only you see
+
+**View → Save as my view…** keeps the current filter as a view only you see (🔒 in the list); **Make my default** opens the screen with it for you alone. Your own screens across every project are under **Mine** in the left navigation — see the My screens help.

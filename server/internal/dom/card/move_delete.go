@@ -55,7 +55,7 @@ func RegisterMoveDelete(p *store.Pool) {
 		Doc:          "Soft-delete a card; the row is hidden from default selects but kept for activity history.",
 		InputType:    reflect.TypeFor[DeleteInput](),
 		OutputType:   reflect.TypeFor[DeleteOutput](),
-		AllowedRoles: []string{"worker", "manager", "admin"},
+		AllowedRoles: reg.ProjectRoles(), // and a viewer's own private view (reg.ProjectRoles)
 		ProcessName:  "card.delete",
 		CardTypeID:   cardTypeFromDeleteInput,
 		// Unified handler — body lives in

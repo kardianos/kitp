@@ -6,7 +6,7 @@
 -- An account's first call makes its default list, Stars (★): when no watch
 -- list has ever belonged to its person — a deleted one counts, so deleting
 -- Stars sticks. A transaction-scoped advisory lock on the person keeps two
--- first calls from making two. An account with no person (watch_owner NULL)
+-- first calls from making two. An account with no person (account_person NULL)
 -- has no lists.
 CREATE OR REPLACE FUNCTION watch_list_list_batch(
     actor_id bigint,
@@ -16,7 +16,7 @@ LANGUAGE plpgsql AS $$
 DECLARE
     _idx int;
     _raw jsonb;
-    _person bigint := watch_owner(watch_list_list_batch.actor_id);
+    _person bigint := account_person(watch_list_list_batch.actor_id);
     _wl_ct bigint := (SELECT id FROM card_type WHERE name = 'watch_list');
     _title_def bigint := (SELECT id FROM attribute_def WHERE name = 'title');
     _sub_def bigint := (SELECT id FROM attribute_def WHERE name = 'subscriber');
@@ -47,7 +47,7 @@ BEGIN
             JOIN attribute_value av ON av.card_id = c.id AND av.attribute_def_id = _sub_def
             WHERE c.card_type_id = _wl_ct AND av.value = to_jsonb(_person)
         ) THEN
-            INSERT INTO card (card_type_id, parent_card_id) VALUES (_wl_ct, NULL) RETURNING card.id INTO _id;
+            INSERT INTO card (card_type_id, parent_card_id, private_to) VALUES (_wl_ct, NULL, _person) RETURNING card.id INTO _id;
             INSERT INTO activity (card_id, kind, actor_id) VALUES (_id, 'card_create', watch_list_list_batch.actor_id);
             WITH want(ord, attr_def_id, value) AS (
                 VALUES (1, _title_def, to_jsonb('Stars'::text)),

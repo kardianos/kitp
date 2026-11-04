@@ -294,6 +294,18 @@ BEGIN
                             _attr_name, _v);
                         EXIT;
                     END IF;
+                    -- A private card (docs/PERSONAL_SCREENS.md) may only be
+                    -- pointed at from a card private to the same person —
+                    -- a shared screen can't default to someone's own view,
+                    -- whose name the activity feed would then show.
+                    IF EXISTS (SELECT 1 FROM card pv WHERE pv.id = _v AND pv.private_to IS NOT NULL
+                               AND pv.private_to IS DISTINCT FROM
+                                   (SELECT pc.private_to FROM card pc WHERE pc.id = _card_id)) THEN
+                        _rej_code := 'private_ref';
+                        _rej_msg := format('attribute %L: card %s is private and can only be used on its owner''s own cards',
+                            _attr_name, _v);
+                        EXIT;
+                    END IF;
                     -- target_card_type_id contract: a card_ref
                     -- attribute pointing at the wrong card_type is a
                     -- scope violation. Mirrors scope.go's check.

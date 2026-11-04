@@ -274,7 +274,7 @@ test('the filter offers "On my watch list" on tasks and threads, its options fro
     assert.equal(f.targetCardType, 'watch_list');
     assert.equal(f.meLabel, 'Any of my lists');
     assert.deepEqual(f.ops, ['in', 'notIn']);
-    assert.deepEqual(M.derivedOptionTargets(type), ['watch_list']);
+    assert.deepEqual(M.derivedOptionTargets(type), ['watch_list', 'project']);
   }
   assert.equal(M.DERIVED_OPTION_SOURCES.watch_list.spec, 'watch_list.list');
 });

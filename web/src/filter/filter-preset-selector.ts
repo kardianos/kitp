@@ -37,6 +37,10 @@ export interface FilterPresetSelectorConfig extends BaseControlConfig {
   onPick?: (id: bigint | null) => void;
   /** Fired when the user clicks "Save current as new view…". */
   onSave?: () => void;
+  /** Fired on "Save as my view…": a view only you see
+   *  (docs/PERSONAL_SCREENS.md). Absent on your own screen, where every
+   *  view is yours. */
+  onSaveMine?: () => void;
   /** Fired when the user clicks "Set as default" (no active filter → no-op). */
   onSetDefault?: () => void;
   /** Fired on Rename (deferred-but-cheap; bar wires the prompt + write). */
@@ -102,16 +106,30 @@ export class FilterPresetSelector extends Control<FilterPresetSelectorConfig> {
     this.effect(() => {
       const filters = (filtersNode.get<CardWithAttrs[]>() ?? []) as CardWithAttrs[];
       const activeId = activeNode.get<bigint | null>() ?? null;
-      const options = filters.map((f) => ({ value: f.id.toString(), label: readTitle(f) }));
+      // Your own views on a shared screen are marked 🔒 (only you see them).
+      const personal = this.config.onSaveMine === undefined;
+      const options = filters.map((f) => ({
+        value: f.id.toString(),
+        label: f.private === true && !personal ? `🔒 ${readTitle(f)}` : readTitle(f),
+      }));
       // Rebuild the combo's static options + selected value (setOptions does not
       // fire onChange — purely programmatic sync).
       this.combo?.setOptions(options);
       this.combo?.setValue(activeId === null ? NO_VIEW : activeId.toString());
       // The active-only actions disable when nothing is selected.
       const enabled = activeId !== null;
+      const active = filters.find((f) => f.id === activeId);
+      const actions = [{ label: 'Save current as new view…', onRun: () => this.config.onSave?.() }];
+      if (!personal) actions.push({ label: 'Save as my view…', onRun: () => this.config.onSaveMine?.() });
       this.combo?.setFooterActions([
-        { label: 'Save current as new view…', onRun: () => this.config.onSave?.() },
-        { label: 'Set as default', onRun: () => this.config.onSetDefault?.(), disabled: !enabled },
+        ...actions,
+        {
+          // Your own view on a shared screen becomes YOUR default; a shared
+          // view becomes the screen's.
+          label: active?.private === true && !personal ? 'Make my default' : 'Set as default',
+          onRun: () => this.config.onSetDefault?.(),
+          disabled: !enabled,
+        },
         { label: 'Rename…', onRun: () => this.config.onRename?.(), disabled: !enabled },
         { label: 'Delete…', onRun: () => this.config.onDelete?.(), disabled: !enabled, variant: 'danger' },
       ]);

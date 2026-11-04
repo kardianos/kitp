@@ -1,7 +1,7 @@
 // Package watch serves watch lists (docs/WATCH_LISTS.md): each account's
 // own bookmark lists of tasks and threads. A list is a global watch_list
 // card owned through its subscriber (the account's person, or an agent's
-// owner's: watch_owner); what is on it lives in watch_entry, in the list's
+// owner's: account_person); what is on it lives in watch_entry, in the list's
 // own order. Every account starts with Stars (★), made the first time it
 // lists its watch lists. The card filter's watch_list leaf ("@me" = any of
 // my lists) finds what is on them (watched_on).

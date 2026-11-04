@@ -65,6 +65,8 @@ BEGIN
                 WHERE c.deleted_at IS NULL
                   AND (_parent_card_id IS NULL OR c.parent_card_id = _parent_card_id)
                   AND (_card_type_name IS NULL OR ct.name = _card_type_name)
+                  -- Someone else's private card (docs/PERSONAL_SCREENS.md) never lists.
+                  AND card_private_ok(c.id, card_select_batch.actor_id)
                   AND NOT card_in_off_area(c.id) AND EXISTS (
                     -- depth < 16 caps the parent walk (CLAUDE.md cap;
                     -- matches card_ancestors / scopeWalkDepth) so a

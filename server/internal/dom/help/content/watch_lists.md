@@ -1,6 +1,6 @@
 # Watch lists
 
-Your own bookmark lists of tasks and threads. Every account starts with **Stars** (★); add as many lists as you like — *Waiting on others* ⏳, *This week* 📅, *Read later* 📖. Nobody else uses your lists, and nothing about a task changes when you put it on one.
+Your own bookmark lists of tasks and threads. Every account starts with **Stars** (★); add as many lists as you like — *Waiting on others* ⏳, *This week* 📅, *Read later* 📖. Only you see your lists — not your teammates, not an admin — and nothing about a task changes when you put it on one.
 
 ## Putting things on a list
 

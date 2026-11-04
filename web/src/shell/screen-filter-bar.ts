@@ -93,6 +93,13 @@ export interface ScreenFilterBarConfig extends BaseControlConfig {
    */
   screenStatePath?: string[];
   /**
+   * A personal screen (docs/PERSONAL_SCREENS.md): every view on it is yours,
+   * so the View picker offers one Save and its default is the screen's own.
+   * On a shared screen it offers "Save as my view" too, and your own view
+   * can be your default there (my_default) without changing anyone else's.
+   */
+  personal?: boolean;
+  /**
    * Show the LANE (swim-lane 2nd axis) picker. Only the Kanban consumes
    * `screen.laneAxis`, so the host enables this for the kanban layout and leaves
    * it OFF (default) for the Grid / Inbox — where lanes are meaningless and the
@@ -234,7 +241,8 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
           filtersPath: `${dotted}.filters`,
           activeIdPath: `${dotted}.activeFilterId`,
           onPick: (id: bigint | null) => this.applyPreset(id),
-          onSave: () => this.saveCurrentAsNew(),
+          onSave: () => this.saveCurrentAsNew(false),
+          ...(this.config.personal === true ? {} : { onSaveMine: () => this.saveCurrentAsNew(true) }),
           onSetDefault: () => this.setActiveAsDefault(),
           onRename: () => this.renameActive(),
           onDelete: () => this.deleteActive(),
@@ -1075,7 +1083,12 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
    */
   private applyScreenDefaults(statePath: string[]): void {
     const activeNode = this.ctx.tree.at([...statePath, 'activeFilterId']);
-    const defaultId = this.ctx.tree.at([...statePath, 'defaultFilterId']).peek<bigint | null>() ?? null;
+    // Your own default view on this screen (my_default on one of your
+    // private views) wins over the screen's default_filter, for you.
+    const defaultId =
+      myDefaultView(this.ctx.tree.at([...statePath, 'filters']).peek<CardWithAttrs[]>() ?? []) ??
+      this.ctx.tree.at([...statePath, 'defaultFilterId']).peek<bigint | null>() ??
+      null;
     if (defaultId !== null) {
       this.applyPreset(defaultId); // marks visited + sets predicate/group/sort
     } else {
@@ -1295,12 +1308,12 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
    * selected immediately; on a server id we replace the temp id, on a fault the
    * optimistic append rolls back (the centralized funnel surfaces the error).
    */
-  private saveCurrentAsNew(): void {
+  private saveCurrentAsNew(mine: boolean): void {
     const statePath = this.config.screenStatePath;
     if (statePath === undefined) return;
     const screenId = this.ctx.tree.at([...statePath, 'screenId']).peek<bigint | null>() ?? null;
     if (screenId === null) return; // no resolved screen → nothing to parent under
-    const title = promptText('Save current filter as:', '');
+    const title = promptText(mine ? 'Save as my view (only you see it):' : 'Save current filter as:', '');
     if (title === null) return;
     const trimmed = title.trim();
     if (trimmed === '') return;
@@ -1328,13 +1341,14 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
       card_type_name: 'filter',
       parent_card_id: screenId,
       attributes,
+      ...(mine || this.config.personal === true ? { private: true } : {}),
     };
     const txn = optimistic<CardWithAttrs[]>(filtersNode, (cur) => [...(cur ?? []), optimisticCard]);
     this.ctx.tree.at([...statePath, 'activeFilterId']).set(tempIdBig);
 
     this.ctx.api.callByName(
       'card.insert',
-      { cardTypeName: 'filter', parentCardId: screenId, title: trimmed, attributes },
+      { cardTypeName: 'filter', parentCardId: screenId, title: trimmed, attributes, ...(mine ? { private: true } : {}) },
       (out) => {
         txn.commit();
         const newId = ((out ?? {}) as { id?: bigint }).id ?? null;
@@ -1355,13 +1369,37 @@ export class ScreenFilterBar extends Control<ScreenFilterBarConfig> {
     );
   }
 
-  /** Set the active preset as the screen's default_filter (attribute.update). */
+  /** Set the active preset as the screen's default_filter (attribute.update);
+   *  your own view on a shared screen becomes YOUR default instead
+   *  (my_default on it, cleared on your other views there). */
   private setActiveAsDefault(): void {
     const statePath = this.config.screenStatePath;
     if (statePath === undefined) return;
     const screenId = this.ctx.tree.at([...statePath, 'screenId']).peek<bigint | null>() ?? null;
     const activeId = this.ctx.tree.at([...statePath, 'activeFilterId']).peek<bigint | null>() ?? null;
     if (screenId === null || activeId === null) return;
+    const filtersNode = this.ctx.tree.at([...statePath, 'filters']);
+    const filters = filtersNode.peek<CardWithAttrs[]>() ?? [];
+    const active = filters.find((f) => f.id === activeId);
+    if (active?.private === true && this.config.personal !== true) {
+      const writes = filters
+        .filter((f) => f.private === true && (f.id === activeId || f.attributes['my_default'] === true))
+        .map((f) => ({ id: f.id, on: f.id === activeId }));
+      filtersNode.set(
+        filters.map((f) =>
+          f.private === true ? { ...f, attributes: { ...f.attributes, my_default: f.id === activeId } } : f,
+        ),
+      );
+      for (const w of writes) {
+        this.ctx.api.callByName(
+          'attribute.update',
+          { cardId: w.id, attributeName: 'my_default', value: w.on },
+          () => undefined,
+          { alive: () => this.isAlive() },
+        );
+      }
+      return;
+    }
     // Optimistically reflect the new default id.
     this.ctx.tree.at([...statePath, 'defaultFilterId']).set(activeId);
     this.ctx.api.callByName(
@@ -1514,4 +1552,11 @@ export function focusScreenSearch(from: HTMLElement): boolean {
     return true;
   }
   return false;
+}
+
+/** Your own default view among a screen's views: the private one marked
+ *  my_default (docs/PERSONAL_SCREENS.md), or null. */
+export function myDefaultView(filters: readonly CardWithAttrs[]): bigint | null {
+  const f = filters.find((x) => x.private === true && x.attributes['my_default'] === true);
+  return f === undefined ? null : f.id;
 }

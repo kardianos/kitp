@@ -200,8 +200,31 @@ const WATCH_LIST_FIELD: AttrSchema = {
   meLabel: 'Any of my lists',
 };
 
+/** "Project" (docs/PERSONAL_SCREENS.md): the card's enclosing project, in /
+ *  not in — how a personal screen, which spans every project you can see,
+ *  is narrowed to some. Tasks and threads. */
+const PROJECT_FIELD: AttrSchema = {
+  name: 'project',
+  label: 'Project',
+  valueType: 'card_ref[]',
+  targetCardType: 'project',
+  ops: ['in', 'notIn'],
+  sortable: false,
+};
+
+/** A project list's options: each visible project but the template. */
+export function projectOptions(out: unknown): Array<{ value: string; label: string }> {
+  const rows = ((out as { rows?: Array<{ id: unknown; attributes?: Record<string, unknown> }> } | null)?.rows ?? []);
+  return rows
+    .filter((r) => r.attributes?.['is_template'] !== true)
+    .map((r) => {
+      const t = r.attributes?.['title'];
+      return { value: String(r.id), label: typeof t === 'string' && t !== '' ? t : `#${String(r.id)}` };
+    });
+}
+
 export const DERIVED_FILTER_FIELDS: Readonly<Record<string, readonly AttrSchema[]>> = {
-  comm: [WATCH_LIST_FIELD],
+  comm: [WATCH_LIST_FIELD, PROJECT_FIELD],
   task: [
     {
       name: 'approval_state',
@@ -225,6 +248,7 @@ export const DERIVED_FILTER_FIELDS: Readonly<Record<string, readonly AttrSchema[
     },
     { name: 'approval_asked_at', label: 'Approval asked', valueType: 'timestamp' },
     WATCH_LIST_FIELD,
+    PROJECT_FIELD,
   ],
 };
 
@@ -238,6 +262,11 @@ export const DERIVED_OPTION_SOURCES: Readonly<
   Record<string, { spec: string; input: Record<string, unknown>; toOptions: (out: unknown) => Array<{ value: string; label: string }> }>
 > = {
   watch_list: { spec: 'watch_list.list', input: {}, toOptions: watchListOptions },
+  project: {
+    spec: 'card.select_with_attributes',
+    input: { cardTypeName: 'project', order: [{ field: 'attributes.title', direction: 'ASC' }] },
+    toOptions: projectOptions,
+  },
 };
 
 /** The derived fields of [cardTypeName] whose options load from

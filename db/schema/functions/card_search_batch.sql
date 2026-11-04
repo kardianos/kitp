@@ -204,6 +204,8 @@ BEGIN
                         WHERE sav.card_id = c.id
                           AND sc.phase = 'terminal'
                       ))
+                      -- Someone else's private card (docs/PERSONAL_SCREENS.md) never lists.
+                      AND card_private_ok(c.id, card_search_batch.actor_id)
                       AND NOT card_in_off_area(c.id) AND EXISTS (
                         -- depth < 16 caps the parent walk (CLAUDE.md cap;
                         -- matches card_ancestors / scopeWalkDepth) so a

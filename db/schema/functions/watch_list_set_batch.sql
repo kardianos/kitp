@@ -2,7 +2,7 @@
 -- watch lists (docs/WATCH_LISTS.md): title (1–60 characters; required to
 -- create), symbol (1–16 characters, an emoji or a character such as ★;
 -- defaults to ★) and description (up to 1000). The owner is always the
--- caller's person (watch_owner); only the owner may change a list. Only
+-- caller's person (account_person); only the owner may change a list. Only
 -- changed attributes are written, each with an activity row.
 CREATE OR REPLACE FUNCTION watch_list_set_batch(
     actor_id bigint,
@@ -12,7 +12,7 @@ LANGUAGE plpgsql AS $$
 DECLARE
     _idx int;
     _raw jsonb;
-    _person bigint := watch_owner(watch_list_set_batch.actor_id);
+    _person bigint := account_person(watch_list_set_batch.actor_id);
     _wl_ct bigint := (SELECT id FROM card_type WHERE name = 'watch_list');
     _title_def bigint := (SELECT id FROM attribute_def WHERE name = 'title');
     _sub_def bigint := (SELECT id FROM attribute_def WHERE name = 'subscriber');
@@ -62,7 +62,7 @@ BEGIN
         END IF;
 
         IF _creating THEN
-            INSERT INTO card (card_type_id, parent_card_id) VALUES (_wl_ct, NULL) RETURNING card.id INTO _id;
+            INSERT INTO card (card_type_id, parent_card_id, private_to) VALUES (_wl_ct, NULL, _person) RETURNING card.id INTO _id;
             INSERT INTO activity (card_id, kind, actor_id) VALUES (_id, 'card_create', watch_list_set_batch.actor_id);
         ELSIF NOT watch_list_owned_by(_id, watch_list_set_batch.actor_id) THEN
             RETURN QUERY SELECT _idx, false, 'not_found'::text, format('watch_list.set: watch list %s not found', _id), NULL::jsonb;

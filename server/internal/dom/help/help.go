@@ -52,6 +52,7 @@ var topicFiles = map[string]string{
 	"admin.themes":         "content/admin_themes.md",
 	"account":              "content/account.md",
 	"watch_lists":          "content/watch_lists.md",
+	"my_screens":           "content/my_screens.md",
 	"task_detail":          "content/task_detail.md",
 	"layout.list":          "content/layout_list.md",
 	"layout.grid":          "content/layout_grid.md",
