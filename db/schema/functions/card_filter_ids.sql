@@ -25,7 +25,9 @@ BEGIN
     IF tree IS NULL OR jsonb_typeof(tree) <> 'object' OR tree = '{}'::jsonb THEN
         RETURN ids;
     END IF;
-    _compiled := card_compile_predicate(tree, '[]'::jsonb, ARRAY[]::bigint[]);
+    -- A target filter is the attribute's rule, not anyone's view: no viewer
+    -- (a watch_list leaf in one matches nothing).
+    _compiled := card_compile_predicate(tree, '[]'::jsonb, ARRAY[]::bigint[], NULL);
     EXECUTE format(
         'SELECT COALESCE(array_agg(c.id), ARRAY[]::bigint[]) FROM card c WHERE c.id = ANY($2) AND (%s)',
         _compiled->>'sql')

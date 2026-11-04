@@ -49,7 +49,7 @@ func handleSimpleXLSX(ctx context.Context, w http.ResponseWriter, r *http.Reques
 		return httpError(http.StatusForbidden, "not authorized to export this project")
 	}
 
-	tasks, err := loadTaskRows(ctx, cfg.Pool, projectID, includeDeleted, tree)
+	tasks, err := loadTaskRows(ctx, cfg.Pool, user.ID, projectID, includeDeleted, tree)
 	if err != nil {
 		return err
 	}

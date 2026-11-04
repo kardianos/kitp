@@ -151,7 +151,7 @@ func TestPredicateCompiler_ChildPath(t *testing.T) {
 		if err != nil {
 			t.Fatalf("schema load: %v", err)
 		}
-		if _, err := card.CompileTree(ctx, tx, g, named.New().Bind, snap); err == nil {
+		if _, err := card.CompileTree(ctx, tx, g, named.New().Bind, snap, 0); err == nil {
 			t.Errorf("Go compiler accepted attr %q", attr)
 		}
 		if err := tx.Rollback(ctx); err != nil {

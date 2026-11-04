@@ -208,7 +208,7 @@ BEGIN
                    OR ltrim(_q, '#') = activity_nav_card(s.card_id)::text
                    OR EXISTS (
                        SELECT 1 FROM comment_body cbq
-                       WHERE cbq.id = (s.value_new->>'comment_body_id')::bigint
+                       WHERE cbq.id = activity_comment_body_id(s.kind, s.value_new)
                          AND cbq.body ILIKE '%' || _q || '%'
                    ))
             ORDER BY
@@ -254,7 +254,7 @@ BEGIN
                         JOIN card nc ON nc.id = nv.nav_card_id
                         JOIN card_type nct ON nct.id = nc.card_type_id
                         LEFT JOIN attribute_def ad ON ad.id = p.attribute_def_id
-                        LEFT JOIN comment_body cb ON cb.id = (p.value_new->>'comment_body_id')::bigint
+                        LEFT JOIN comment_body cb ON cb.id = activity_comment_body_id(p.kind, p.value_new)
                         LEFT JOIN LATERAL (
                             -- Titles for the cards the row's values name: a
                             -- card_ref / card_ref[] value (old and new), a
@@ -290,7 +290,11 @@ BEGIN
                                 ) t
                                 WHERE x ~ '^[0-9]{1,18}$'
                             ) r
+                            -- Only cards the viewer can see: after task.move
+                            -- a row's old values name the source project's
+                            -- statuses and milestones (review 2026-11-03 #30).
                             JOIN card rc ON rc.id = r.id
+                                        AND card_visible_to(activity_select_batch.actor_id, rc.id)
                         ) refs ON true
                     ) sub
                 ), '[]'::jsonb),

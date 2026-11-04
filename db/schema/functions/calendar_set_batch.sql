@@ -70,7 +70,7 @@ BEGIN
                 IF jsonb_typeof(_pred::jsonb) <> 'object' THEN
                     RAISE EXCEPTION 'the filter must be a JSON object';
                 END IF;
-                PERFORM card_compile_predicate(_resolve_me_tokens(_pred::jsonb, _person), '[]'::jsonb, ARRAY[]::bigint[]);
+                PERFORM card_compile_predicate(_resolve_me_tokens(_pred::jsonb, _person), '[]'::jsonb, ARRAY[]::bigint[], _person);
             EXCEPTION WHEN OTHERS THEN
                 RETURN QUERY SELECT _idx, false, 'validation'::text,
                     format('calendar.set: the filter is not valid: %s', SQLERRM), NULL::jsonb;

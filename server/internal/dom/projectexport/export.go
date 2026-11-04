@@ -112,7 +112,7 @@ func handleSimpleCSV(ctx context.Context, w http.ResponseWriter, r *http.Request
 		return httpError(http.StatusForbidden, "not authorized to export this project")
 	}
 
-	tasks, err := loadTaskRows(ctx, cfg.Pool, projectID, includeDeleted, tree)
+	tasks, err := loadTaskRows(ctx, cfg.Pool, user.ID, projectID, includeDeleted, tree)
 	if err != nil {
 		return err
 	}
@@ -412,7 +412,10 @@ func isAuthorized(ctx context.Context, pool *store.Pool, userID, projectID int64
 // filter is showing. A read-only transaction wraps the call because
 // CompileTree consults the live schema snapshot and may dereference
 // `snippet` leaves via a SELECT on predicate_snippet cards.
-func loadTaskRows(ctx context.Context, pool *store.Pool, projectID int64, includeDeleted bool, tree *card.CardWhereGroup) ([]taskRow, error) {
+//
+// viewer is the account exporting: the filter tree is evaluated as them (their
+// watch lists, their private cards — card.CompileTree's viewer person).
+func loadTaskRows(ctx context.Context, pool *store.Pool, viewer, projectID int64, includeDeleted bool, tree *card.CardWhereGroup) ([]taskRow, error) {
 	tx, err := pool.P.Begin(ctx)
 	if err != nil {
 		return nil, api.Internal(fmt.Errorf("begin tx: %w", err))
@@ -429,7 +432,17 @@ func loadTaskRows(ctx context.Context, pool *store.Pool, projectID int64, includ
 		if sErr != nil {
 			return nil, api.Internal(fmt.Errorf("schema load: %w", sErr))
 		}
-		clause, cErr := card.CompileTree(ctx, tx, *tree, b.Bind, snap)
+		pb := named.New()
+		pb.Set("viewer", viewer)
+		pq, pargs, pErr := pb.Compile(`SELECT COALESCE(account_person(:viewer::bigint), 0)`)
+		if pErr != nil {
+			return nil, api.Internal(fmt.Errorf("viewer person: compile: %w", pErr))
+		}
+		var person int64
+		if err := tx.QueryRow(ctx, pq, pargs...).Scan(&person); err != nil {
+			return nil, api.Internal(fmt.Errorf("viewer person: %w", err))
+		}
+		clause, cErr := card.CompileTree(ctx, tx, *tree, b.Bind, snap, person)
 		if cErr != nil {
 			return nil, httpError(http.StatusBadRequest, "bad filter: "+cErr.Error())
 		}

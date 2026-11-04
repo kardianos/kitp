@@ -62,6 +62,14 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- A card the caller can't see has no steps for them: its status and
+        -- flow, or even that it exists, aren't theirs to learn (review
+        -- 2026-11-03 #25).
+        IF NOT card_visible_to(flow_step_list_for_card_batch.actor_id, _card_id) THEN
+            RETURN QUERY SELECT _idx, true, ''::text, ''::text, jsonb_build_object('rows', '[]'::jsonb);
+            CONTINUE;
+        END IF;
+
         -- Resolve the enclosing project. depth < 16 matches
         -- internal/api/authz.go's scopeWalkDepth (CLAUDE.md rule).
         WITH RECURSIVE chain AS (

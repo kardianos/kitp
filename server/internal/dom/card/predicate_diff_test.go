@@ -44,9 +44,14 @@ func goCompileMatch(t *testing.T, pool *store.Pool, projectID int64, tree card.C
 	if err != nil {
 		t.Fatalf("schema load: %v", err)
 	}
+	// The SQL half runs as System; evaluate as System's person here too.
+	var viewer int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(account_person(1), 0)`).Scan(&viewer); err != nil {
+		t.Fatalf("viewer: %v", err)
+	}
 	b := named.New()
 	b.Set("project_id", projectID)
-	clause, err := card.CompileTree(ctx, tx, tree, b.Bind, snap)
+	clause, err := card.CompileTree(ctx, tx, tree, b.Bind, snap, viewer)
 	if err != nil {
 		t.Fatalf("Go CompileTree: %v", err)
 	}

@@ -57,7 +57,11 @@
 CREATE OR REPLACE FUNCTION card_compile_predicate(
     node jsonb,
     params jsonb,
-    visited bigint[]
+    visited bigint[],
+    -- The person card the tree is evaluated for (the viewer, or the owner of
+    -- a calendar / subscription); NULL = none. Watch lists and private child
+    -- cards are that person's alone (review 2026-11-03 #8, #15).
+    viewer bigint
 ) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
     _connective text;
@@ -109,7 +113,7 @@ BEGIN
             _parts := ARRAY[]::text[];
             FOR _child IN SELECT value FROM jsonb_array_elements(_children)
             LOOP
-                _result := card_compile_predicate(_child, params, visited);
+                _result := card_compile_predicate(_child, params, visited, viewer);
                 params := _result->'params';
                 _parts := array_append(_parts, '(' || (_result->>'sql') || ')');
             END LOOP;
@@ -121,7 +125,7 @@ BEGIN
             _parts := ARRAY[]::text[];
             FOR _child IN SELECT value FROM jsonb_array_elements(_children)
             LOOP
-                _result := card_compile_predicate(_child, params, visited);
+                _result := card_compile_predicate(_child, params, visited, viewer);
                 params := _result->'params';
                 _parts := array_append(_parts, '(' || (_result->>'sql') || ')');
             END LOOP;
@@ -130,7 +134,7 @@ BEGIN
             IF jsonb_array_length(_children) <> 1 THEN
                 RAISE EXCEPTION 'card_compile_predicate: not group must have exactly one child (got %)', jsonb_array_length(_children);
             END IF;
-            _result := card_compile_predicate(_children->0, params, visited);
+            _result := card_compile_predicate(_children->0, params, visited, viewer);
             params := _result->'params';
             RETURN jsonb_build_object('sql', 'NOT (' || (_result->>'sql') || ')', 'params', params);
         ELSE
@@ -147,7 +151,7 @@ BEGIN
         _parts := ARRAY[]::text[];
         FOR _child IN SELECT value FROM jsonb_array_elements(_children)
         LOOP
-            _result := card_compile_predicate(_child, params, visited);
+            _result := card_compile_predicate(_child, params, visited, viewer);
             params := _result->'params';
             _parts := array_append(_parts, '(' || (_result->>'sql') || ')');
         END LOOP;
@@ -181,12 +185,22 @@ BEGIN
         END IF;
         SELECT p, i INTO params, _attr_idx FROM _ph_push(params, to_jsonb(split_part(_attr, '.', 1))) AS r(p, i);
         _result := card_compile_predicate(
-            jsonb_set(node, '{attr}', to_jsonb(split_part(_attr, '.', 2))), params, visited);
+            jsonb_set(node, '{attr}', to_jsonb(split_part(_attr, '.', 2))), params, visited, viewer);
         params := _result->'params';
+        -- The child must be one the viewer could see on its own: not in a
+        -- switched-off area, not someone else's private card (review
+        -- 2026-11-03 #15).
+        IF viewer IS NULL THEN
+            _needle := 'NULL::bigint';
+        ELSE
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, to_jsonb(viewer)) AS r(p, i);
+            _needle := format('($1->>%s)::bigint', _val_idx::text);
+        END IF;
         _sql := format(
             'c.id IN (SELECT c.parent_card_id FROM card c JOIN card_type child_ct ON child_ct.id = c.card_type_id ' ||
-            'WHERE child_ct.name = ($1->>%s) AND c.deleted_at IS NULL AND c.parent_card_id IS NOT NULL AND (%s))',
-            _attr_idx::text, _result->>'sql');
+            'WHERE child_ct.name = ($1->>%s) AND c.deleted_at IS NULL AND c.parent_card_id IS NOT NULL ' ||
+            'AND NOT card_in_off_area(c.id) AND COALESCE(c.private_to = %s, c.private_to IS NULL) AND (%s))',
+            _attr_idx::text, _needle, _result->>'sql');
         RETURN jsonb_build_object('sql', _sql, 'params', params);
     END IF;
     IF _attr = '' OR _attr !~ '^[A-Za-z0-9_]+$' THEN
@@ -330,7 +344,8 @@ BEGIN
     END IF;
     -- On a watch list (watched_on; docs/WATCH_LISTS.md): values are watch
     -- list ids, or a person id meaning "any of that person's lists" — what
-    -- "@me" becomes for the viewer. A value that isn't an id ("@me" left
+    -- "@me" becomes for the viewer. Only the viewer's own lists count
+    -- (watched_on's third argument). A value that isn't an id ("@me" left
     -- unresolved: the viewer has no person) names nothing. Mirrors
     -- compileWatchLeaf in where.go.
     IF _attr = 'watch_list' THEN
@@ -349,8 +364,14 @@ BEGIN
                     format('($1->>%s)::bigint', _val_idx::text));
             END IF;
         END LOOP;
-        _sql := format('watched_on(c.id, ARRAY[%s]::bigint[])',
-            array_to_string(_placeholders, ', '));
+        IF viewer IS NULL THEN
+            _needle := 'NULL::bigint';
+        ELSE
+            SELECT p, i INTO params, _val_idx FROM _ph_push(params, to_jsonb(viewer)) AS r(p, i);
+            _needle := format('($1->>%s)::bigint', _val_idx::text);
+        END IF;
+        _sql := format('watched_on(c.id, ARRAY[%s]::bigint[], %s)',
+            array_to_string(_placeholders, ', '), _needle);
         IF _op IN ('=', 'eq', 'in') THEN
             NULL;
         ELSIF _op IN ('!=', 'ne', 'not in') THEN
@@ -782,7 +803,7 @@ BEGIN
         END IF;
 
         _next_visited := array_append(visited, _snip_id);
-        _result := card_compile_predicate(_snip_pred, params, _next_visited);
+        _result := card_compile_predicate(_snip_pred, params, _next_visited, viewer);
         params := _result->'params';
         RETURN jsonb_build_object('sql', _result->>'sql', 'params', params);
 

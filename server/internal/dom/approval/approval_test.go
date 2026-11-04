@@ -501,7 +501,7 @@ func (f fixture) goMatch(t *testing.T, tree string) []int64 {
 	}
 	b := named.New()
 	b.Set("project_id", f.project)
-	clause, err := card.CompileTree(ctx, tx, g, b.Bind, snap)
+	clause, err := card.CompileTree(ctx, tx, g, b.Bind, snap, 0)
 	if err != nil {
 		t.Fatalf("CompileTree %s: %v", tree, err)
 	}

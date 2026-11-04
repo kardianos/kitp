@@ -74,6 +74,10 @@ type compileCtx struct {
 	addArg  func(any) string
 	snap    *schema.Snapshot
 	visited map[int64]bool
+	// viewer is the person card the tree is evaluated for (the viewer's,
+	// a calendar's or a subscription's owner); 0 = none. Watch lists and
+	// private child cards are that person's alone (docs/PERSONAL_SCREENS.md).
+	viewer int64
 }
 
 // CompileTree is the exported entry point used by other domain packages
@@ -94,9 +98,23 @@ type compileCtx struct {
 // predicate_snippet card (op="snippet") so the compiler can dereference
 // the stored predicate at compile time. Callers that don't pass these
 // and hit a snippet leaf get an explicit error.
-func CompileTree(ctx context.Context, tx store.Querier, g CardWhereGroup, addArg func(any) string, snap *schema.Snapshot) (string, error) {
-	c := &compileCtx{ctx: ctx, tx: tx, addArg: addArg, snap: snap, visited: map[int64]bool{}}
+//
+// viewerPerson is the person card the tree is evaluated for — the viewer, or
+// the owner of a calendar or notification subscription; 0 when there is
+// none. A watch_list leaf matches only that person's own lists, and a child
+// path never looks into someone else's private cards (review 2026-11-03 #8,
+// #15).
+func CompileTree(ctx context.Context, tx store.Querier, g CardWhereGroup, addArg func(any) string, snap *schema.Snapshot, viewerPerson int64) (string, error) {
+	c := &compileCtx{ctx: ctx, tx: tx, addArg: addArg, snap: snap, visited: map[int64]bool{}, viewer: viewerPerson}
 	return compileTree(g, c)
+}
+
+// viewerArg is the viewer's person as a bound bigint, or NULL.
+func (c *compileCtx) viewerArg() string {
+	if c.viewer == 0 {
+		return "NULL::bigint"
+	}
+	return c.addArg(c.viewer) + "::bigint"
 }
 
 // compileTree turns a CardWhereGroup into a SQL boolean expression
@@ -616,9 +634,10 @@ func compileApprovalLeaf(attr, op string, vs []json.RawMessage, c *compileCtx) (
 
 // compileWatchLeaf compiles "on a watch list" (docs/WATCH_LISTS.md): in /
 // not in over watch list ids, or a person id meaning any of that person's
-// lists — what "@me" resolves to for the viewer. A value that isn't an id
-// names nothing, so `in` matches nothing. Mirrors the watch_list block in
-// card_compile_predicate.sql.
+// lists — what "@me" resolves to for the viewer. Only the viewer's own lists
+// count (watched_on's third argument): another person's id or list id names
+// nothing. A value that isn't an id names nothing, so `in` matches nothing.
+// Mirrors the watch_list block in card_compile_predicate.sql.
 func compileWatchLeaf(op string, vs []json.RawMessage, c *compileCtx) (string, error) {
 	var negate bool
 	switch op {
@@ -634,7 +653,7 @@ func compileWatchLeaf(op string, vs []json.RawMessage, c *compileCtx) (string, e
 			ph = append(ph, c.addArg(id)+"::bigint")
 		}
 	}
-	sql := fmt.Sprintf("watched_on(c.id, ARRAY[%s]::bigint[])", strings.Join(ph, ", "))
+	sql := fmt.Sprintf("watched_on(c.id, ARRAY[%s]::bigint[], %s)", strings.Join(ph, ", "), c.viewerArg())
 	if negate {
 		sql = "NOT " + sql
 	}
@@ -698,6 +717,9 @@ func compileChildPath(childType, attr string, n CardWhereTreeNode, c *compileCtx
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", childType, err)
 	}
+	// The child must be one the viewer could see on its own: not in a
+	// switched-off area, not someone else's private card (review
+	// 2026-11-03 #15).
 	return fmt.Sprintf(`c.id IN (
 		SELECT c.parent_card_id
 		FROM card c
@@ -705,8 +727,10 @@ func compileChildPath(childType, attr string, n CardWhereTreeNode, c *compileCtx
 		WHERE child_ct.name = %s
 		  AND c.deleted_at IS NULL
 		  AND c.parent_card_id IS NOT NULL
+		  AND NOT card_in_off_area(c.id)
+		  AND COALESCE(c.private_to = %s, c.private_to IS NULL)
 		  AND (%s)
-	)`, c.addArg(childType), s), nil
+	)`, c.addArg(childType), c.viewerArg(), s), nil
 }
 
 // containsNeedle pulls the single string value from a contains leaf.

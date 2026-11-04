@@ -45,6 +45,8 @@ import (
 // they're global to the project and including them in full lets the
 // downstream user re-build references.
 type fullExportOptions struct {
+	// Viewer is the account exporting; the filter tree is evaluated as them.
+	Viewer             int64
 	IncludeDeleted     bool
 	IncludeAttachments bool
 	IncludeActivity    bool
@@ -65,6 +67,7 @@ func handleFullZip(ctx context.Context, w http.ResponseWriter, r *http.Request, 
 		return err
 	}
 	opts := fullExportOptions{
+		Viewer:             user.ID,
 		IncludeDeleted:     r.URL.Query().Get("include_deleted") == "1",
 		IncludeAttachments: r.URL.Query().Get("include_attachments") == "1",
 		IncludeActivity:    r.URL.Query().Get("include_activity") == "1",
@@ -250,7 +253,7 @@ func loadFullBundle(ctx context.Context, pool *store.Pool, projectID int64, opts
 	// 2. Tasks (with attrs flattened — reuse the simple-export helper).
 	//    The optional predicate tree from the screen filter narrows the
 	//    list to the rows the user actually saw before clicking Export.
-	tasks, err := loadTaskRows(ctx, pool, projectID, opts.IncludeDeleted, opts.Tree)
+	tasks, err := loadTaskRows(ctx, pool, opts.Viewer, projectID, opts.IncludeDeleted, opts.Tree)
 	if err != nil {
 		return nil, err
 	}

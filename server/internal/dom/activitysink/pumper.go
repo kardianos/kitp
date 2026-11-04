@@ -758,7 +758,7 @@ func (p *Pumper) applyCardFilter(ctx context.Context, cfg unitConfig, rows []sca
 	}
 	b := named.New()
 	b.Set("ids", subjects)
-	clause, err := card.CompileTree(ctx, tx, card.CardWhereGroup{Connective: "and", Children: nodes}, b.Bind, snap)
+	clause, err := card.CompileTree(ctx, tx, card.CardWhereGroup{Connective: "and", Children: nodes}, b.Bind, snap, cfg.subscriberPersonID)
 	if err != nil {
 		return nil, &errBadCardFilter{err: err}
 	}

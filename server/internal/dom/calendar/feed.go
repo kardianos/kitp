@@ -186,7 +186,7 @@ func (f *feed) events(ctx context.Context, ref calendarRef) ([]event, error) {
 	if tree, ok, err := parseFilter(ref.predicate, ref.personID); err != nil {
 		return nil, fmt.Errorf("the calendar's filter is not valid JSON: %w", err)
 	} else if ok {
-		filter, err = card.CompileTree(ctx, tx, card.CardWhereGroup{Connective: "and", Children: []card.CardWhereTreeNode{tree}}, b.Bind, snap)
+		filter, err = card.CompileTree(ctx, tx, card.CardWhereGroup{Connective: "and", Children: []card.CardWhereTreeNode{tree}}, b.Bind, snap, ref.personID)
 		if err != nil {
 			return nil, fmt.Errorf("the calendar's filter: %w", err)
 		}

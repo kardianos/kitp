@@ -293,7 +293,7 @@ func TestWatchListFilter(t *testing.T) {
 	b.Set("project", f.project)
 	where, err := card.CompileTree(ctx, f.sp.P, card.CardWhereGroup{Connective: "and", Children: []card.CardWhereTreeNode{{
 		Attr: "watch_list", Op: "in", Values: []json.RawMessage{json.RawMessage(fmt.Sprint(f.adaPID))},
-	}}}, b.Bind, snap)
+	}}}, b.Bind, snap, f.adaPID)
 	if err != nil {
 		t.Fatalf("CompileTree: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestWatchListFilter(t *testing.T) {
 	}
 	if _, err := card.CompileTree(ctx, f.sp.P, card.CardWhereGroup{Connective: "and", Children: []card.CardWhereTreeNode{{
 		Attr: "watch_list", Op: "within_last_days",
-	}}}, named.New().Bind, snap); err == nil {
+	}}}, named.New().Bind, snap, f.adaPID); err == nil {
 		t.Error("an unsupported op compiled")
 	}
 }

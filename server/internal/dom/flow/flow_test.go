@@ -883,23 +883,14 @@ func TestListForCard_RoleGated_ProjectScopedManager(t *testing.T) {
 	_, scopedOK := lf.makeUserWithRole(t, "lfc-mgr-scope-ok", lf.managerRoleID, lf.projectID)
 	_, scopedNo := lf.makeUserWithRole(t, "lfc-mgr-scope-no", lf.managerRoleID, otherProjectID)
 
-	for _, c := range []struct {
-		name    string
-		ctx     context.Context
-		allowed bool
-	}{
-		{"scoped-to-this-project", scopedOK, true},
-		{"scoped-to-other-project", scopedNo, false},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			rows := lf.listForCard(t, c.ctx, taskID)
-			if len(rows) != 1 {
-				t.Fatalf("expected 1 row, got %d", len(rows))
-			}
-			if rows[0].Allowed != c.allowed {
-				t.Errorf("allowed=%v, want %v", rows[0].Allowed, c.allowed)
-			}
-		})
+	rows := lf.listForCard(t, scopedOK, taskID)
+	if len(rows) != 1 || !rows[0].Allowed {
+		t.Fatalf("a manager of this project: rows %+v, want one allowed step", rows)
+	}
+	// A manager of another project can't see the task at all, so its
+	// steps aren't theirs to list (review 2026-11-03 #25).
+	if rows := lf.listForCard(t, scopedNo, taskID); len(rows) != 0 {
+		t.Errorf("a manager of another project saw %d steps of this task", len(rows))
 	}
 }
 

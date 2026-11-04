@@ -45,6 +45,13 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- Only a flow of a project the caller can see (review 2026-11-03 #25).
+        IF NOT EXISTS (SELECT 1 FROM flow f WHERE f.id = _flow_id
+                       AND card_visible_to(flow_step_list_batch.actor_id, f.scope_card_id)) THEN
+            RETURN QUERY SELECT _idx, true, ''::text, ''::text, jsonb_build_object('rows', '[]'::jsonb);
+            CONTINUE;
+        END IF;
+
         SELECT jsonb_build_object('rows', COALESCE((
             SELECT jsonb_agg(
                 jsonb_build_object(

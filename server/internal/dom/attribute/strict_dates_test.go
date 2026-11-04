@@ -123,7 +123,7 @@ func TestSQLFilterCompilerChecksDates(t *testing.T) {
 	ctx := context.Background()
 	compile := func(v string) error {
 		var out string
-		return pool.QueryRow(ctx, `SELECT card_compile_predicate(jsonb_build_object('attr','due_date','op','eq','values',jsonb_build_array($1::text)), '[]'::jsonb, ARRAY[]::bigint[])::text`, v).Scan(&out)
+		return pool.QueryRow(ctx, `SELECT card_compile_predicate(jsonb_build_object('attr','due_date','op','eq','values',jsonb_build_array($1::text)), '[]'::jsonb, ARRAY[]::bigint[], NULL)::text`, v).Scan(&out)
 	}
 	if err := compile("2026-11-03"); err != nil {
 		t.Errorf("a date: %v", err)

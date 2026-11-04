@@ -1241,6 +1241,17 @@ WHERE EXISTS (SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
               WHERE r.name = 'admin' AND ur.user_id <> 1)
 ON CONFLICT (singleton) DO NOTHING;`,
 	},
+	{
+		// The filter compilers learned who a tree is evaluated for
+		// (card_compile_predicate's and watched_on's viewer person, review
+		// 2026-11-03 #8, #15). The DDL creates the new signatures; the old
+		// ones go, so nothing can call a watch-list check that ignores
+		// whose lists they are. Idempotent.
+		id: "0030_viewer_aware_filters",
+		sql: `
+DROP FUNCTION IF EXISTS watched_on(bigint, bigint[]);
+DROP FUNCTION IF EXISTS card_compile_predicate(jsonb, jsonb, bigint[]);`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that
