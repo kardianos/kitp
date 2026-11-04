@@ -12,7 +12,7 @@ import (
 // few thousand attribute_value rows and confirm a value-first
 // `attribute_def_id = X AND value = Y` filter on a STRUCTURED attribute
 // takes an index path (the partitioned attribute_value_def_value btree),
-// not a seq scan. The btree is now partial (value_type_id < 1000), so the
+// not a seq scan. The btree is now partial (value_type_id < 50), so the
 // query carries the same class guard the predicate compiler appends — that's
 // what lets the planner use the partial index (proven: dropping the guard
 // falls back to a seq scan). Text attributes intentionally live outside this
@@ -54,7 +54,7 @@ func TestA14_ExplainValueFirstFilter(t *testing.T) {
 	rows, err := pool.Query(ctx, `
 		EXPLAIN (FORMAT TEXT)
 		SELECT card_id FROM attribute_value
-		WHERE attribute_def_id = $1 AND value = to_jsonb(7) AND value_type_id < 1000
+		WHERE attribute_def_id = $1 AND value = to_jsonb(7) AND value_type_id < 50
 	`, defStatus)
 	if err != nil { t.Fatalf("explain: %v", err) }
 	defer rows.Close()

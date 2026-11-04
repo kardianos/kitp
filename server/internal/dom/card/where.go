@@ -200,9 +200,10 @@ func compileNode(n CardWhereTreeNode, c *compileCtx) (string, error) {
 // nor "assignee != alice"). Switch to a stricter "attribute exists AND
 // is not equal" by combining `exists` and `ne` in an AND group.
 // classGuard returns the value_type_id band predicate for `attr` so the
-// partitioned attribute_value indexes are usable: structured attributes
-// (number/bool/date/card_ref/…) live in the `(attribute_def_id, value)`
-// btree (value_type_id < 1000); text lives in the trigram (>= 1000). The
+// partitioned attribute_value indexes are usable: scalar attributes
+// (number/bool/date/card_ref) live in the `(attribute_def_id, value)`
+// btree (value_type_id < 50); card_ref[] (50) is matched by containment,
+// outside the btree; text lives in the trigram (>= 1000). The
 // predicate is redundant-but-true for the attr's own rows (value_type_id
 // derives from the def's immutable value_type), so it never changes
 // results — it only lets the planner pick the right partial index. When
@@ -215,8 +216,10 @@ func classGuard(attr string, snap *schema.Snapshot) string {
 		return ""
 	case "text":
 		return " AND av.value_type_id >= 1000"
+	case "card_ref[]":
+		return " AND av.value_type_id = 50"
 	default:
-		return " AND av.value_type_id < 1000"
+		return " AND av.value_type_id < 50"
 	}
 }
 

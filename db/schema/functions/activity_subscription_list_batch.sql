@@ -72,7 +72,7 @@ BEGIN
             WHERE _person_id IS NOT NULL
               AND owner.attribute_def_id = _subscriber_def
               AND owner.value = to_jsonb(_person_id)
-              AND owner.value_type_id < 1000
+              AND owner.value_type_id < 50
               AND (_project_id = 0 OR proj.id = _project_id)
               AND EXISTS (
                   SELECT 1

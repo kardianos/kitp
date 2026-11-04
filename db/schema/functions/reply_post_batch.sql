@@ -193,7 +193,8 @@ BEGIN
         JOIN attribute_value pav ON pav.card_id = rec.person_id
         JOIN attribute_def pad  ON pad.id = pav.attribute_def_id AND pad.name = 'email',
              LATERAL (SELECT pav.value #>> '{}' AS email) em
-        WHERE em.email IS NOT NULL AND em.email <> '';
+        -- Only addresses kitp sends to (email_plain, round 3 #9).
+        WHERE em.email IS NOT NULL AND em.email <> '' AND email_plain(em.email);
 
         IF _recipients IS NULL OR array_length(_recipients, 1) IS NULL THEN
             RETURN QUERY SELECT _idx, false, 'no_recipients'::text,

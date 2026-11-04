@@ -26,8 +26,9 @@ func relayCopies(t *testing.T, r relayFixture) []string {
 }
 
 // TestRelayForgedCc (#3): addresses a message names in Cc join the thread
-// but get no copies until they write or are written to from kitp; a sender
-// who wasn't on the thread isn't sent on at all.
+// but get no copies — not even after staff reply to everyone (round 3 #5) —
+// until someone in kitp adds them; a sender who wasn't on the thread isn't
+// sent on at all.
 func TestRelayForgedCc(t *testing.T) {
 	base := newRelayFixture(t, "kitp_test_relay_forged_cc", "")
 	r := base
@@ -60,20 +61,15 @@ func TestRelayForgedCc(t *testing.T) {
 	if d := logDetail(t, r.f, r.ch, "relay_skipped"); d["reason"] != "sender_not_on_thread" {
 		t.Errorf("relay_skipped = %v, want sender_not_on_thread", d)
 	}
-	// Once kitp writes to the Cc'd address, it is confirmed.
+	// A staff reply goes to everyone on the thread, and confirms nobody.
 	var rp comm.ReplyPostOutput
 	dispatch(t, r.f, api.SubRequest{ID: "op", Endpoint: "reply", Action: "post",
 		Data: json.RawMessage(fmt.Sprintf(`{"comm_id":"%d","body":"Copying everyone."}`, r.thread))}, &rp)
 	reply(5, nil)
 	got = relayCopies(t, r)
 	last := got[len(got)-1]
-	if !strings.Contains(last, "a@victim.example") {
-		t.Errorf("after a reply from kitp to everyone, the next copy goes to %q; want the confirmed Cc'd address too", last)
-	}
-	if strings.Contains(last, "eve@evil.example") {
-		// eve wrote (so she is confirmed) and kitp's reply went to her
-		// too; that's expected once staff have replied to the thread.
-		t.Logf("copy includes eve after staff replied to her: %q", last)
+	if strings.Contains(last, "a@victim.example") || strings.Contains(last, "eve@evil.example") {
+		t.Errorf("after a staff reply to everyone, the next copy goes to %q; want only the people added in kitp", last)
 	}
 }
 

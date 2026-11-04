@@ -192,6 +192,16 @@ A paused channel (not `enabled`): `File` returns `ErrChannelPaused`
 and marks it read, leaving it in the mailbox — before, it filed an empty
 message, and with dedupe every empty message would share one key).
 
+Size and shape (review 2026-11-03 round 3 #1). One IMAP poll takes at most
+50 unseen messages, oldest first, and asks each one's `RFC822.SIZE`
+before fetching it: one over 50 MB (`IMAPMaxMessageBytes`, the POST
+route's default cap) is logged as `parse_error` and marked read without
+being fetched. Parsing reads nested multiparts as a stream, at most 8
+levels deep and 500 parts in all (`walkMultipart`); a message nested
+deeper keeps what was found above. Before, each level copied the rest of
+the message: a 224 KB message of nested parts took 600 MB, and on IMAP,
+which fetched it again on every poll, ended kitpd each time.
+
 ### 4. Message dedupe
 
 Table `comm_inbound_seen` (DDL tier; new table, no migration):
@@ -588,28 +598,33 @@ Ada ──reply──▶ support@ ──▶ filed on the thread
                                   on her To/Cc, minus support@, minus kitp users
 ```
 
-- Who (review 2026-11-03 #3, #10, round 2 #1). The thread's own account
-  (its `channel_ref`) decides whether replies are sent on, and its address
-  and name go on the copy, whichever account the reply came in on. Only
-  the thread's *confirmed* people take part, and only kitp confirms
-  anyone — nothing a received message says (its From, To and Cc aren't
-  authenticated):
-  - people a person in kitp added to the thread (`comm.create`'s
-    recipients; `comm.set_recipients`, the people it adds) and the person
-    who started the thread by mail — kept in `comm.comm_confirmed`
-    (`comm_confirm`, kitp-set only);
-  - everyone a message written in kitp was sent to (a reply, the thread's
-    first message), read from the messages' `reply_to`.
+- Who (review 2026-11-03 #3, #10, round 2 #1, round 3 #5, #8). The
+  thread's own account (its `channel_ref`) decides whether replies are
+  sent on, and its address and name go on the copy, whichever account the
+  reply came in on. Only the thread's *confirmed* people take part, and
+  only kitp confirms anyone — nothing a received message says (its From,
+  To and Cc aren't authenticated): the people a person in kitp added to the
+  thread (`comm.create`'s recipients; `comm.set_recipients`, the people it
+  adds) and the person who started the thread by mail, kept in
+  `comm.comm_confirmed` (`comm_confirm`, kitp-set only). A staff reply
+  confirms nobody: `reply.post` writes to everyone on the thread, including
+  whoever a received message put there.
 
   The sender must be confirmed (`sender_unconfirmed`) and on the thread
   before this message (`sender_not_on_thread`; `processOne` reads the
   recipients before filing); the copy goes to the confirmed people on the
-  thread. Someone a correspondent Cc'd joins the thread but gets no copies
-  until staff write to them or add them. Threads filed before 0032 have no
-  `comm_confirmed`: their people count once kitp writes to them. At most
-  20 recipients (`too_many_recipients`); a From with other than one
+  thread. Someone a correspondent Cc'd joins the thread and gets staff
+  replies, but no copies until staff add them (take them off and add them
+  again). Someone staff take off loses their confirmation and is kept in
+  `comm.comm_removed` (`comm_remove`, kitp-set only): their later mail is
+  filed but doesn't put them back on the thread. Threads filed before 0032
+  have no `comm_confirmed`: their people take part once staff add them. At
+  most 20 recipients (`too_many_recipients`); a From with other than one
   address is `no_sender`. Route addresses (`…@KITP_SMTP_DOMAIN`) never
-  join a thread.
+  join a thread, and one message puts at most 50 addresses on it
+  (`MaxSyncPeople`). An address with a quoted local part or a domain
+  literal (`"a@b, c"@d`, `x@[1.2.3.4]`) is refused wherever kitp parses
+  one (`comm.PlainAddress`), and left off a To list (`email_plain`).
   A relay failure is logged and leaves the message filed.
 - `relay.go` `relayReply`, called by `processOne` after a reply is filed
   on an existing thread (a new thread has nobody else on it). The copy is

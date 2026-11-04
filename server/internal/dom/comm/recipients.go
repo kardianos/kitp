@@ -107,7 +107,8 @@ func writeCommRecipients(
 // in `add` (preserving existing order, appending the new ids in input
 // order), and writes back when the set actually grew. Used by the
 // IMAP parser to fold inbound senders / Cc addresses into a comm's
-// participant list without losing prior participants.
+// participant list without losing prior participants. People in the
+// thread's comm_removed (taken off by a person in kitp) are not added.
 func mergeCommRecipients(
 	ctx context.Context,
 	tx store.Querier,
@@ -126,6 +127,15 @@ func mergeCommRecipients(
 	existing := decodeCardRefArray(cur)
 	seen := make(map[int64]struct{}, len(existing)+len(add))
 	for _, id := range existing {
+		seen[id] = struct{}{}
+	}
+	// Someone a person in kitp took off the thread stays off, whatever
+	// their mail says (comm_remove; review 2026-11-03 round 3 #8).
+	removed, _, err := readAttributeValueRaw(ctx, tx, commID, "comm_removed")
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range decodeCardRefArray(removed) {
 		seen[id] = struct{}{}
 	}
 	merged := append([]int64(nil), existing...)

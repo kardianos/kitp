@@ -16,16 +16,17 @@ package comm
 // round 2 #1): otherwise anyone could put addresses on a thread and have
 // kitp mail them as the organisation. Only the thread's confirmed people
 // take part, and only kitp confirms anyone — never something a received
-// message says, since its From, To and Cc aren't authenticated:
-//   - the people a person in kitp added to the thread (comm.create,
-//     comm.set_recipients) and the person who started it by mail
-//     (comm.comm_confirmed, comm_confirm);
-//   - everyone a message written in kitp was sent to (a reply, the thread's
-//     first message).
+// message says, since its From, To and Cc aren't authenticated: the people
+// a person in kitp added to the thread (comm.create, comm.set_recipients)
+// and the person who started it by mail (comm.comm_confirmed,
+// comm_confirm). A staff reply confirms nobody (round 3 #5): it goes to
+// everyone on the thread, whoever put them there.
 // The sender must be confirmed and on the thread before this message; the
 // copy goes to the confirmed people on it, at most maxRelayRecipients.
-// Someone another person Cc'd joins the thread but gets no copies until
-// staff write to them or add them.
+// Someone another person Cc'd joins the thread and gets staff replies, but
+// no copies of other people's mail until staff add them (take them off and
+// add them again). Someone staff took off stays off: their later mail is
+// filed but doesn't put them back (comm_remove, round 3 #8).
 // The thread's own mail account (its channel_ref) decides whether replies
 // are sent on and sends the copy, whichever account the reply came in on
 // (#10).
@@ -196,7 +197,7 @@ func (p *filer) relayReplyTx(ctx context.Context, tx store.Querier, snap *schema
 	if _, fromSelf := senders[own]; fromSelf {
 		return skip("own_address")
 	}
-	confirmed, err := threadConfirmed(ctx, tx, commID, replyID)
+	confirmed, err := threadConfirmed(ctx, tx, commID)
 	if err != nil {
 		return err
 	}
@@ -275,36 +276,19 @@ func threadAccount(ctx context.Context, tx store.Querier, commID, receivedOn int
 	return account, in.relay, nil
 }
 
-// threadConfirmed is the lowercased addresses on a thread kitp has
-// confirmed, from messages other than skipReply: the people comm_confirmed
-// names (added by a person in kitp, or who started the thread by mail —
-// comm_confirm) and everyone a message written in kitp was sent to (a reply,
-// the thread's first message; not a relay copy, which only repeats someone
-// else's message). Nothing a received message says counts: its From, To
-// and Cc aren't authenticated (review 2026-11-03 round 2 #1).
-func threadConfirmed(ctx context.Context, tx store.Querier, commID, skipReply int64) (map[string]struct{}, error) {
+// threadConfirmed is the lowercased addresses of the people kitp has
+// confirmed on a thread: those comm_confirmed names (added by a person in
+// kitp, or who started the thread by mail — comm_confirm). Nothing a
+// received message says counts — its From, To and Cc aren't authenticated
+// (review 2026-11-03 round 2 #1) — and neither does a staff reply: reply.post
+// writes to everyone on the thread, including whoever a received message
+// put there, so "staff wrote to them" isn't a choice anyone made (round 3
+// #5). Taking someone off the thread unconfirms them (comm_remove).
+func threadConfirmed(ctx context.Context, tx store.Querier, commID int64) (map[string]struct{}, error) {
 	b := named.New()
 	b.Set("comm", commID)
-	b.Set("skip", skipReply)
 	q, args, err := b.Compile(`
-		SELECT COALESCE(rt.value #>> '{}', ''), ''
-		FROM attribute_value av
-		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'replies'
-		CROSS JOIN LATERAL jsonb_array_elements(
-			CASE WHEN jsonb_typeof(av.value) = 'array' THEN av.value ELSE '[]'::jsonb END) AS e(v)
-		JOIN card r ON r.id = CASE WHEN (e.v #>> '{}') ~ '^[0-9]{1,18}$' THEN (e.v #>> '{}')::bigint END
-		           AND r.deleted_at IS NULL AND r.id <> :skip
-		JOIN attribute_value rt ON rt.card_id = r.id
-		 AND rt.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_to')
-		WHERE av.card_id = :comm
-		  AND COALESCE((SELECT ds.value #>> '{}' FROM attribute_value ds
-		                WHERE ds.card_id = r.id
-		                  AND ds.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'delivery_status')), '') <> 'received'
-		  AND NOT EXISTS (SELECT 1 FROM attribute_value ro
-		                  WHERE ro.card_id = r.id
-		                    AND ro.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'relay_of'))
-		UNION ALL
-		SELECT '', lower(btrim(pav.value #>> '{}'))
+		SELECT lower(btrim(pav.value #>> '{}'))
 		FROM attribute_value av
 		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'comm_confirmed'
 		CROSS JOIN LATERAL jsonb_array_elements(
@@ -325,12 +309,9 @@ func threadConfirmed(ctx context.Context, tx store.Querier, commID, skipReply in
 	defer rows.Close()
 	out := map[string]struct{}{}
 	for rows.Next() {
-		var wroteTo, person string
-		if err := rows.Scan(&wroteTo, &person); err != nil {
+		var person string
+		if err := rows.Scan(&person); err != nil {
 			return nil, fmt.Errorf("thread confirmed: scan: %w", err)
-		}
-		for a := range addressesIn(wroteTo) {
-			out[a] = struct{}{}
 		}
 		if person != "" {
 			out[person] = struct{}{}
@@ -471,7 +452,7 @@ func relayRecipients(ctx context.Context, tx store.Querier, commID int64, reache
 			return nil, fmt.Errorf("relay recipients: scan: %w", err)
 		}
 		key := strings.ToLower(addr)
-		if key == "" {
+		if key == "" || !PlainAddress(key) {
 			continue
 		}
 		if _, ok := reached[key]; ok {

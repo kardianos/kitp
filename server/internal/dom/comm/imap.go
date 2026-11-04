@@ -70,6 +70,7 @@ import (
 	"net/textproto"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -149,13 +150,16 @@ type IMAPConfig struct {
 // realIMAPClient (wraps emersion/go-imap); tests use a stub that
 // returns canned InboundMessage values.
 type imapClient interface {
-	// FetchUnseen returns every message currently in INBOX without
-	// the \Seen flag. UID is set on each message; the caller passes
-	// it back to MarkSeen.
+	// FetchUnseen returns messages in INBOX without the \Seen flag,
+	// oldest first and at most imapFetchBatch of them (the rest come on
+	// later polls). UID is set on each message; the caller passes it back
+	// to MarkSeen. A message over IMAPMaxMessageBytes comes back with
+	// ParseError set and no body.
 	FetchUnseen(ctx context.Context) ([]InboundMessage, error)
 	// MarkSeen flips the \Seen flag on the supplied UIDs. The poller
-	// only marks messages we successfully ingested — parse failures
-	// stay unseen so a retry has a chance.
+	// marks what it filed and what can never be filed (unreadable,
+	// unfileable); a message that failed for a passing reason stays
+	// unseen for the next poll.
 	MarkSeen(ctx context.Context, uids []uint32) error
 	// Close releases the underlying connection. Idempotent.
 	Close() error
@@ -1272,7 +1276,10 @@ var _ = textproto.MIMEHeader{}
 // unions the resulting person ids into comm.comm_recipients.
 //
 // Union semantics — never remove participants. If someone drops off
-// the thread, an operator can edit recipients via the UI.
+// the thread, an operator can edit recipients via the UI; someone they
+// took off isn't put back (mergeCommRecipients). At most MaxSyncPeople
+// addresses of one message are taken, From first: a Cc of thousands made
+// as many people and took seconds to file (review 2026-11-03 round 3).
 func (p *filer) syncCommRecipientsFromInbound(
 	ctx context.Context,
 	tx store.Querier,
@@ -1311,6 +1318,9 @@ func (p *filer) syncCommRecipientsFromInbound(
 		if _, ok := seen[key]; ok {
 			return
 		}
+		if len(found) >= MaxSyncPeople {
+			return
+		}
 		seen[key] = struct{}{}
 		found = append(found, addr{email: email, name: strings.TrimSpace(a.Name)})
 	}
@@ -1346,6 +1356,10 @@ func (p *filer) syncCommRecipientsFromInbound(
 	}
 	return nil
 }
+
+// MaxSyncPeople is the most addresses one received message puts on its
+// thread (and makes people of).
+const MaxSyncPeople = 50
 
 // loadChannelFromAddress returns the comm_channel's configured
 // from_address attribute, or "" when none is set. Used by the
@@ -1762,56 +1776,100 @@ func storableInbound(m *InboundMessage) {
 	}
 }
 
+// Limits on a multipart body's shape (review 2026-11-03 round 3 #1). Each
+// level of nesting used to copy the rest of the message, and every copy
+// stayed alive down the recursion: a 224 KB message of nested parts peaked
+// at 600 MB. Nested parts are now read as a stream, nesting past
+// maxMultipartDepth is skipped, and parsing stops after maxMultipartParts
+// parts in all; real mail stays far inside both.
+const (
+	maxMultipartDepth = 8
+	maxMultipartParts = 500
+)
+
+// multipartWalk collects a message's text bodies and attachments across the
+// levels of one walkMultipart call.
+type multipartWalk struct {
+	plain, html string
+	atts        []InboundAttachment
+	parts       int // parts seen so far, every level counted
+}
+
 // walkMultipart parses a multipart body via stdlib `mime/multipart`
 // and returns (plain text, html, attachments). text/plain is captured as
 // the plain body and text/html (if any) is returned raw so the caller can
 // both render a reply bubble (plain, tag-stripped) and build a richer task
 // description (mailmd.FromHTML). Non-text parts (or any part with a
 // `Content-Disposition: attachment` header) are appended to the
-// attachments list. One level of nested multipart is unwound — most
-// real-world messages stop at depth 1 (multipart/mixed wrapping a
-// multipart/alternative).
+// attachments list. Nested multiparts (multipart/mixed wrapping a
+// multipart/alternative, a forwarded message's parts) are unwound up to
+// maxMultipartDepth levels; the first text bodies found win.
 func walkMultipart(body []byte, contentType string) (string, string, []InboundAttachment) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		return string(body), "", nil
 	}
-	boundary, ok := params["boundary"]
-	if !ok || boundary == "" {
+	if b, ok := params["boundary"]; !ok || b == "" {
 		return string(body), "", nil
 	}
-	var plain, htmlFallback string
-	var atts []InboundAttachment
-	mr := multipart.NewReader(bytes.NewReader(body), boundary)
+	w := &multipartWalk{}
+	w.walk(bytes.NewReader(body), params["boundary"], 0)
+	return strings.TrimSpace(w.plain), w.html, w.atts
+}
+
+// walk reads one multipart level from r. A nested multipart part is walked
+// straight from its part reader — never buffered — so the message is held
+// once however deep it nests.
+func (w *multipartWalk) walk(r io.Reader, boundary string, depth int) {
+	mr := multipart.NewReader(r, boundary)
 	for {
 		p, err := mr.NextPart()
-		if err == io.EOF {
-			break
+		if errors.Is(err, io.EOF) {
+			return
 		}
 		if err != nil {
 			// Stop early on malformed input; surface whatever we've
 			// collected so the caller still gets a body (and a partial
 			// attachment list) rather than nothing.
-			break
+			return
+		}
+		w.parts++
+		if w.parts > maxMultipartParts {
+			return
 		}
 		partCT := p.Header.Get("Content-Type")
 		partCTLow := strings.ToLower(partCT)
-		raw, _ := io.ReadAll(p)
+		if strings.HasPrefix(partCTLow, "multipart/") {
+			if depth+1 >= maxMultipartDepth {
+				continue // too deep to be real mail: skip it (NextPart drains it)
+			}
+			_, nestedParams, perr := mime.ParseMediaType(partCT)
+			if perr != nil || nestedParams["boundary"] == "" {
+				continue
+			}
+			// A multipart body may only be 7bit, 8bit or binary (RFC 2045
+			// §6.4); one that claims an encoding is still undone first.
+			var nested io.Reader = p
+			if enc := strings.ToLower(strings.TrimSpace(p.Header.Get("Content-Transfer-Encoding"))); enc == "base64" || enc == "quoted-printable" {
+				raw, rerr := io.ReadAll(p)
+				if rerr != nil && len(raw) == 0 {
+					return
+				}
+				nested = bytes.NewReader(decodeTransferEncoding(raw, enc))
+			}
+			w.walk(nested, nestedParams["boundary"], depth+1)
+			continue
+		}
+		// A part cut short (no closing boundary, as in truncated mail) keeps
+		// what was read; the next NextPart reports the error and ends the
+		// walk.
+		raw, rerr := io.ReadAll(p)
+		if rerr != nil && len(raw) == 0 {
+			return
+		}
 		decoded := decodeTransferEncoding(raw, p.Header.Get("Content-Transfer-Encoding"))
 		disp, dispParams, _ := mime.ParseMediaType(p.Header.Get("Content-Disposition"))
 		dispLow := strings.ToLower(disp)
-		if strings.HasPrefix(partCTLow, "multipart/") {
-			nestedPlain, nestedHTML, nestedAtts := walkMultipart(decoded, partCT)
-			if plain == "" && nestedPlain != "" {
-				// Prefer nested text body when we haven't found one yet.
-				plain = nestedPlain
-			}
-			if htmlFallback == "" && nestedHTML != "" {
-				htmlFallback = nestedHTML
-			}
-			atts = append(atts, nestedAtts...)
-			continue
-		}
 		if dispLow == "attachment" || (dispLow == "" && !strings.HasPrefix(partCTLow, "text/")) {
 			filename := dispParams["filename"]
 			if filename == "" {
@@ -1832,13 +1890,13 @@ func walkMultipart(body []byte, contentType string) (string, string, []InboundAt
 			}
 			filename = textnorm.FilenameLoose(filename)
 			if filename == "" {
-				filename = fmt.Sprintf("attachment-%d", len(atts)+1)
+				filename = fmt.Sprintf("attachment-%d", len(w.atts)+1)
 			}
 			mt, _, _ := mime.ParseMediaType(partCT)
 			if mt == "" {
 				mt = "application/octet-stream"
 			}
-			atts = append(atts, InboundAttachment{
+			w.atts = append(w.atts, InboundAttachment{
 				Filename: filename,
 				MimeType: mt,
 				Bytes:    decoded,
@@ -1846,16 +1904,15 @@ func walkMultipart(body []byte, contentType string) (string, string, []InboundAt
 			continue
 		}
 		if strings.HasPrefix(partCTLow, "text/plain") {
-			if plain == "" {
-				plain = string(decoded)
+			if w.plain == "" {
+				w.plain = string(decoded)
 			}
 		} else if strings.HasPrefix(partCTLow, "text/html") {
-			if htmlFallback == "" {
-				htmlFallback = string(decoded)
+			if w.html == "" {
+				w.html = string(decoded)
 			}
 		}
 	}
-	return strings.TrimSpace(plain), htmlFallback, atts
 }
 
 // decodeTransferEncoding undoes the Content-Transfer-Encoding wrapping
@@ -1982,8 +2039,33 @@ func (r *realIMAPClient) FetchUnseen(ctx context.Context) ([]InboundMessage, err
 	if len(uids) == 0 {
 		return nil, nil
 	}
+	// One poll takes a bounded batch, oldest first; the rest wait for the
+	// next poll. And a message's size is asked before its body: one over
+	// the inbound cap comes back as unreadable (logged and marked seen)
+	// without being fetched (review 2026-11-03 round 3 #1).
+	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
+	if len(uids) > imapFetchBatch {
+		uids = uids[:imapFetchBatch]
+	}
+	sizes, err := r.fetchSizes(uids)
+	if err != nil {
+		return nil, err
+	}
+	var out []InboundMessage
+	var fetch []uint32
+	for _, uid := range uids {
+		if size, ok := sizes[uid]; ok && int64(size) > IMAPMaxMessageBytes {
+			out = append(out, InboundMessage{UID: uid, ParseError: fmt.Sprintf(
+				"message is %d bytes, over the %d-byte limit; not fetched", size, IMAPMaxMessageBytes)})
+			continue
+		}
+		fetch = append(fetch, uid)
+	}
+	if len(fetch) == 0 {
+		return out, nil
+	}
 	seqset := new(imap.SeqSet)
-	seqset.AddNum(uids...)
+	seqset.AddNum(fetch...)
 
 	section := &imap.BodySectionName{}
 	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, section.FetchItem()}
@@ -1997,7 +2079,6 @@ func (r *realIMAPClient) FetchUnseen(ctx context.Context) ([]InboundMessage, err
 		done <- job.Protect(context.Background(), nil, "imap fetch", func() error { return r.c.UidFetch(seqset, items, ch) })
 	}()
 
-	var out []InboundMessage
 	for msg := range ch {
 		body := msg.GetBody(section)
 		if body == nil {
@@ -2024,6 +2105,35 @@ func (r *realIMAPClient) FetchUnseen(ctx context.Context) ([]InboundMessage, err
 		return out, fmt.Errorf("imap UID FETCH: %w", err)
 	}
 	return out, nil
+}
+
+// imapFetchBatch is the most messages one poll fetches; IMAPMaxMessageBytes
+// is the largest message it fetches at all (the POST route's default cap).
+const imapFetchBatch = 50
+
+// IMAPMaxMessageBytes caps one message fetched over IMAP.
+const IMAPMaxMessageBytes int64 = 50 << 20
+
+// fetchSizes asks the server for each message's RFC822.SIZE. A message the
+// server reports no size for is fetched as before.
+func (r *realIMAPClient) fetchSizes(uids []uint32) (map[uint32]uint32, error) {
+	seqset := new(imap.SeqSet)
+	seqset.AddNum(uids...)
+	ch := make(chan *imap.Message, 16)
+	done := make(chan error, 1)
+	go func() {
+		done <- job.Protect(context.Background(), nil, "imap fetch sizes", func() error {
+			return r.c.UidFetch(seqset, []imap.FetchItem{imap.FetchUid, imap.FetchRFC822Size}, ch)
+		})
+	}()
+	sizes := make(map[uint32]uint32, len(uids))
+	for msg := range ch {
+		sizes[msg.Uid] = msg.Size
+	}
+	if err := <-done; err != nil {
+		return nil, fmt.Errorf("imap UID FETCH RFC822.SIZE: %w", err)
+	}
+	return sizes, nil
 }
 
 func (r *realIMAPClient) MarkSeen(ctx context.Context, uids []uint32) error {
@@ -2108,6 +2218,20 @@ func tasksOff(ctx context.Context, q store.Querier, projectID int64) (bool, erro
 
 // namedRow compiles a :name query (internal/named) and runs it with
 // QueryRow.
+// namedExec is namedRow for a statement that returns no row.
+func namedExec(ctx context.Context, q store.Querier, sql string, vals map[string]any) error {
+	b := named.New()
+	for k, v := range vals {
+		b.Set(k, v)
+	}
+	compiled, args, err := b.Compile(sql)
+	if err != nil {
+		return fmt.Errorf("compile: %w", err)
+	}
+	_, err = q.Exec(ctx, compiled, args...)
+	return err
+}
+
 func namedRow(ctx context.Context, q store.Querier, sql string, vals map[string]any) (pgx.Row, error) {
 	b := named.New()
 	for k, v := range vals {

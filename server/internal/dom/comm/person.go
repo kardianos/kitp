@@ -75,6 +75,9 @@ func upsertPersonByEmail(
 	if trimmed == "" {
 		return 0, false, fmt.Errorf("upsertPersonByEmail: email is empty")
 	}
+	if !PlainAddress(trimmed) {
+		return 0, false, fmt.Errorf("upsertPersonByEmail: %w", ErrOddAddress)
+	}
 
 	personCTID, err := resolveCardType(snap, "person")
 	if err != nil {

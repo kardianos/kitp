@@ -1287,6 +1287,77 @@ FROM card_type ct, attribute_def ad
 WHERE ct.name = 'comm' AND ad.name = 'comm_confirmed'
 ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
 	},
+	{
+		// The people a person in kitp took off a thread (person ids,
+		// comm_remove): mail they send later doesn't put them back on its
+		// recipients (review 2026-11-03 round 3 #8). Idempotent.
+		id: "0033_comm_removed",
+		sql: `
+INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+SELECT 'comm_removed', 'card_ref[]', ct.id, true, false
+FROM card_type ct WHERE ct.name = 'person'
+ON CONFLICT (name) DO NOTHING;
+INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+SELECT ct.id, ad.id, false, 8
+FROM card_type ct, attribute_def ad
+WHERE ct.name = 'comm' AND ad.name = 'comm_removed'
+ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
+	},
+	{
+		// The (attribute_def_id, value) btree holds scalars only
+		// (value_type_id < 50). card_ref[] lists (a thread's replies and
+		// recipients) were in it too, and past about 700 ids one no longer
+		// fit its 2704-byte entry: the thread stopped taking mail (review
+		// 2026-11-03 round 3 #6). Lists are matched by containment
+		// (attribute_value_refs GIN), never through this btree. Like 0008,
+		// a predicate can only change by rebuilding the index, so this is
+		// the narrow exception to "no index DDL in migrations"; DROP IF
+		// EXISTS + CREATE lands on the new form whatever was there (a fresh
+		// DB rebuilds its small index once).
+		id: "0034_attribute_value_btree_scalars",
+		sql: `
+DROP INDEX IF EXISTS attribute_value_def_value;
+CREATE INDEX attribute_value_def_value
+  ON attribute_value (attribute_def_id, value)
+  WHERE value_type_id < 50;`,
+	},
+	{
+		// Threads whose task moved to another project before task.move
+		// repointed them still send from the old project's account, and
+		// reply.post now refuses them (no_mail_account). Repoint each to
+		// its project's account (project_mail_account); with none there,
+		// drop the link and fail the mail queued on it, as task.move does
+		// (review 2026-11-03 round 3 #10). Idempotent: once repointed, a
+		// thread's account is in its own project.
+		id: "0035_moved_threads_mail_account",
+		sql: `
+CREATE TEMP TABLE moved_thread ON COMMIT DROP AS
+SELECT cm.id AS comm_id, project_mail_account(card_enclosing_project(cm.id)) AS dest
+FROM card cm
+JOIN card_type ct ON ct.id = cm.card_type_id AND ct.name = 'comm'
+JOIN attribute_value cr ON cr.card_id = cm.id
+ AND cr.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'channel_ref')
+ AND jsonb_typeof(cr.value) = 'number'
+JOIN card ch ON ch.id = (cr.value)::text::bigint
+WHERE cm.deleted_at IS NULL
+  AND ch.parent_card_id IS DISTINCT FROM card_enclosing_project(cm.id);
+UPDATE attribute_value av SET value = to_jsonb(m.dest)
+FROM moved_thread m
+WHERE m.dest IS NOT NULL AND av.card_id = m.comm_id
+  AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'channel_ref');
+UPDATE attribute_value ds SET value = to_jsonb('failed'::text)
+FROM moved_thread m, attribute_value rep
+WHERE m.dest IS NULL AND rep.card_id = m.comm_id
+  AND rep.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'replies')
+  AND jsonb_typeof(rep.value) = 'array'
+  AND rep.value @> to_jsonb(ds.card_id)
+  AND ds.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'delivery_status')
+  AND ds.value = to_jsonb('pending'::text);
+DELETE FROM attribute_value av
+USING moved_thread m
+WHERE m.dest IS NULL AND av.card_id = m.comm_id
+  AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'channel_ref');`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

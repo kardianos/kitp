@@ -1,6 +1,7 @@
 package comm
 
 import (
+	"errors"
 	"io"
 	"mime"
 	"net/mail"
@@ -31,15 +32,65 @@ var headerDecoder = &mime.WordDecoder{
 // and the like, and the whole header with it — an allow list then refuses
 // the sender, DKIM alignment fails, and the people on it are lost (review
 // 2026-11-03 round 2 #17).
+//
+// Every address must be plain (PlainAddress), or the whole header is
+// refused with ErrOddAddress.
 func ParseAddressList(s string) ([]*mail.Address, error) {
 	p := mail.AddressParser{WordDecoder: headerDecoder}
-	return p.ParseList(s)
+	list, err := p.ParseList(s)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range list {
+		if !PlainAddress(a.Address) {
+			return nil, ErrOddAddress
+		}
+	}
+	return list, nil
 }
 
 // ParseAddress is ParseAddressList for a header that holds one address.
 func ParseAddress(s string) (*mail.Address, error) {
 	p := mail.AddressParser{WordDecoder: headerDecoder}
-	return p.Parse(s)
+	a, err := p.Parse(s)
+	if err != nil {
+		return nil, err
+	}
+	if !PlainAddress(a.Address) {
+		return nil, ErrOddAddress
+	}
+	return a, nil
+}
+
+// ErrOddAddress is a header address kitp won't store or send to: see
+// PlainAddress.
+var ErrOddAddress = errors.New("mail: address with a quoted or unusual local part")
+
+// PlainAddress reports whether addr is an addr-spec kitp stores, checks and
+// sends to: one "@" between a non-empty local part and domain, and none of
+// the characters only a quoted local part or a domain literal can hold —
+// comma, semicolon, colon, double quote, angle and square brackets, parentheses,
+// backslash, whitespace or control characters. net/mail hands back
+// `"eve@evil.example, x"@ourco.example` unquoted, as
+// `eve@evil.example, x@ourco.example`: an allow list read ourco.example
+// after the last "@", and a reply to the stored address went to
+// eve@evil.example as well (review 2026-11-03 round 3 #9). Real mail
+// doesn't use such addresses (an apostrophe, as in o'brien@, is fine).
+func PlainAddress(addr string) bool {
+	at := strings.IndexByte(addr, '@')
+	if at <= 0 || at == len(addr)-1 || strings.IndexByte(addr[at+1:], '@') >= 0 {
+		return false
+	}
+	for _, r := range addr {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+		switch r {
+		case ',', ';', ':', '"', '<', '>', '[', ']', '(', ')', '\\':
+			return false
+		}
+	}
+	return true
 }
 
 // decodeHeaderText decodes a header value's encoded words (a Subject),

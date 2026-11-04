@@ -218,7 +218,7 @@ func (f *feed) events(ctx context.Context, ref calendarRef) ([]event, error) {
 			  AND sv.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'status')
 		) st ON true
 		WHERE av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'due_date')
-		  AND av.value_type_id < 1000
+		  AND av.value_type_id < 50
 		  AND av.value >= to_jsonb(:from::text) AND av.value <= to_jsonb(:to::text)
 		  AND ` + schema.VisibilityClause("c.id", ":user") + `
 		  AND (` + filter + `)

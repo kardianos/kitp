@@ -68,7 +68,7 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// attachments_left_off (message), +symbol (watch lists),
 		// +list_card_type / my_default (personal screens and views),
 		// +reply_cc (message), +comm_confirmed (thread).
-		{`SELECT count(*) FROM attribute_def`, 102},
+		{`SELECT count(*) FROM attribute_def`, 103},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
 		// +7 on activity_subscription, +4 on link, +7 on approval,
 		// +bundle_key on project, +publishes_to on status, +5 on page,
@@ -79,7 +79,7 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// attachments_left_off), +4 on watch_list, +2 on screen
 		// (list_card_type, predicate) and +1 on filter (my_default), +1 on
 		// reply_body (reply_cc) and +1 on comm (comm_confirmed).
-		{`SELECT count(*) FROM edge`, 155},
+		{`SELECT count(*) FROM edge`, 156},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -1036,8 +1036,8 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 23},
-		{`SELECT count(*) FROM attribute_def`, 102},
-		{`SELECT count(*) FROM edge`, 155},
+		{`SELECT count(*) FROM attribute_def`, 103},
+		{`SELECT count(*) FROM edge`, 156},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -1699,5 +1699,60 @@ func TestForwardMigrationsRound2(t *testing.T) {
 	}
 	if got := read(); fmt.Sprint(got) != fmt.Sprint(fresh) {
 		t.Errorf("after the round-2 migrations: %v, want the fresh seed's %v", got, fresh)
+	}
+}
+
+// TestForwardMigrationsRound3 checks that an install from before review
+// round 3 gets comm_removed (0033) and the scalar-only btree (0034): a
+// card_ref[] list longer than the btree's entry limit then writes.
+func TestForwardMigrationsRound3(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_round3")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	counts := []string{`SELECT count(*) FROM attribute_def`, `SELECT count(*) FROM edge`}
+	read := func() []int64 {
+		out := make([]int64, len(counts))
+		for i, q := range counts {
+			if err := pool.QueryRow(ctx, q).Scan(&out[i]); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		return out
+	}
+	fresh := read()
+	for _, stmt := range []string{
+		`DELETE FROM edge WHERE attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'comm_removed')`,
+		`DELETE FROM attribute_def WHERE name = 'comm_removed'`,
+		`DROP INDEX IF EXISTS attribute_value_def_value`,
+		`CREATE INDEX attribute_value_def_value ON attribute_value (attribute_def_id, value) WHERE value_type_id < 1000`,
+		`DELETE FROM schema_version WHERE name IN ('0033_comm_removed', '0034_attribute_value_btree_scalars')`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate an older install (%s): %v", stmt, err)
+		}
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	if got := read(); fmt.Sprint(got) != fmt.Sprint(fresh) {
+		t.Errorf("after the round-3 migrations: %v, want the fresh seed's %v", got, fresh)
+	}
+	var def string
+	if err := pool.QueryRow(ctx,
+		`SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'attribute_value_def_value'`).Scan(&def); err != nil {
+		t.Fatalf("indexdef: %v", err)
+	}
+	if !strings.Contains(def, "value_type_id < 50") {
+		t.Errorf("attribute_value_def_value not swapped: %s", def)
+	}
+	// 2,000 seven-digit ids: far past the 2704-byte btree entry.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		SELECT 1, (SELECT id FROM attribute_def WHERE name = 'comm_recipients'),
+		       (SELECT jsonb_agg(1000000 + g) FROM generate_series(1, 2000) g)
+	`); err != nil {
+		t.Errorf("a long card_ref[] list didn't write: %v", err)
 	}
 }

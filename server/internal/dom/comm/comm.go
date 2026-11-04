@@ -605,10 +605,9 @@ func resolveAttr(snap *schema.Snapshot, name string) (int64, error) {
 // writeCardCreateActivity inserts a card_create activity row. Mirrors
 // the in-tx helper in dom/projectstamp.
 func writeCardCreateActivity(ctx context.Context, tx store.Querier, cardID, actorID int64) error {
-	_, err := tx.Exec(ctx, `
-		INSERT INTO activity (card_id, kind, actor_id) VALUES ($1, 'card_create', $2)
-	`, cardID, actorID)
-	return err
+	return namedExec(ctx, tx, `
+		INSERT INTO activity (card_id, kind, actor_id) VALUES (:card, 'card_create', :actor)
+	`, map[string]any{"card": cardID, "actor": actorID})
 }
 
 // writeAttributeValue emits one attr_update activity + one
@@ -623,20 +622,24 @@ func writeAttributeValue(
 	actorID int64,
 ) error {
 	var activityID int64
-	if err := tx.QueryRow(ctx, `
+	row, err := namedRow(ctx, tx, `
 		INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
-		VALUES ($1, 'attr_update', $2, NULL, $3::jsonb, $4)
+		VALUES (:card, 'attr_update', :def, NULL, :value::jsonb, :actor)
 		RETURNING id
-	`, cardID, attributeDefID, value, actorID).Scan(&activityID); err != nil {
+	`, map[string]any{"card": cardID, "def": attributeDefID, "value": value, "actor": actorID})
+	if err != nil {
 		return fmt.Errorf("comm: write activity: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
+	if err := row.Scan(&activityID); err != nil {
+		return fmt.Errorf("comm: write activity: %w", err)
+	}
+	if err := namedExec(ctx, tx, `
 		INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
-		VALUES ($1, $2, $3::jsonb, $4)
+		VALUES (:card, :def, :value::jsonb, :activity)
 		ON CONFLICT (card_id, attribute_def_id) DO UPDATE
 			SET value = EXCLUDED.value,
 			    last_activity_id = EXCLUDED.last_activity_id
-	`, cardID, attributeDefID, value, activityID); err != nil {
+	`, map[string]any{"card": cardID, "def": attributeDefID, "value": value, "activity": activityID}); err != nil {
 		return fmt.Errorf("comm: upsert attribute_value: %w", err)
 	}
 	return nil
@@ -646,12 +649,16 @@ func writeAttributeValue(
 // attrName) or returns ("null", false) when no row exists.
 func readAttributeValueRaw(ctx context.Context, tx store.Querier, cardID int64, attrName string) (json.RawMessage, bool, error) {
 	var raw []byte
-	err := tx.QueryRow(ctx, `
+	row, err := namedRow(ctx, tx, `
 		SELECT av.value
 		FROM attribute_value av
 		JOIN attribute_def ad ON ad.id = av.attribute_def_id
-		WHERE av.card_id = $1 AND ad.name = $2
-	`, cardID, attrName).Scan(&raw)
+		WHERE av.card_id = :card AND ad.name = :attr
+	`, map[string]any{"card": cardID, "attr": attrName})
+	if err != nil {
+		return nil, false, err
+	}
+	err = row.Scan(&raw)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return json.RawMessage(`null`), false, nil
@@ -684,12 +691,16 @@ func readAttributeValueRaw(ctx context.Context, tx store.Querier, cardID int64, 
 // Returns 0 if no flow / default is set.
 func commFlowDefaultStatus(ctx context.Context, tx store.Querier, projectID, commStatusAttrID int64) (int64, error) {
 	var defaultID int64
-	err := tx.QueryRow(ctx, `
+	row, err := namedRow(ctx, tx, `
 		SELECT COALESCE(default_create_status_id, 0)
 		FROM flow
-		WHERE scope_card_id = $1 AND attribute_def_id = $2
+		WHERE scope_card_id = :project AND attribute_def_id = :def
 		LIMIT 1
-	`, projectID, commStatusAttrID).Scan(&defaultID)
+	`, map[string]any{"project": projectID, "def": commStatusAttrID})
+	if err != nil {
+		return 0, err
+	}
+	err = row.Scan(&defaultID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, nil
@@ -708,12 +719,16 @@ func uniqueThreadID(ctx context.Context, tx store.Querier) (string, error) {
 			return "", err
 		}
 		var n int
-		err = tx.QueryRow(ctx, `
+		row, err := namedRow(ctx, tx, `
 			SELECT count(*)
 			FROM attribute_value av
 			JOIN attribute_def ad ON ad.id = av.attribute_def_id
-			WHERE ad.name = 'thread_id' AND av.value = to_jsonb($1::text)
-		`, candidate).Scan(&n)
+			WHERE ad.name = 'thread_id' AND av.value = to_jsonb(:candidate::text)
+		`, map[string]any{"candidate": candidate})
+		if err != nil {
+			return "", fmt.Errorf("comm.create: thread uniqueness: %w", err)
+		}
+		err = row.Scan(&n)
 		if err != nil {
 			return "", fmt.Errorf("comm.create: thread uniqueness: %w", err)
 		}

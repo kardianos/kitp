@@ -466,7 +466,7 @@ BEGIN
             JOIN attribute_value pav ON pav.card_id = rec.person_id
             JOIN attribute_def pad  ON pad.id = pav.attribute_def_id AND pad.name = 'email',
                  LATERAL (SELECT pav.value #>> '{}' AS email) em
-            WHERE em.email IS NOT NULL AND em.email <> '';
+            WHERE em.email IS NOT NULL AND em.email <> '' AND email_plain(em.email);
             _to_snapshot := COALESCE(array_to_string(_recip_emails, ', '), '');
 
             INSERT INTO card (card_type_id) VALUES (_reply_ct_id)

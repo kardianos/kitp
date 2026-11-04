@@ -30,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
@@ -64,13 +65,19 @@ func ValidChannelStatus(s string) bool {
 // or a *pgx.Conn) via [PoolQuerier].
 func ReadChannelStatus(ctx context.Context, q PoolQuerier, channelID int64) (string, string, error) {
 	var statusRaw, reasonRaw []byte
-	err := q.QueryRow(ctx, `
+	b := named.New()
+	b.Set("channel", channelID)
+	sql, args, err := b.Compile(`
 		SELECT
 			(SELECT value FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
-			   WHERE av.card_id = $1 AND ad.name = 'channel_status'),
+			   WHERE av.card_id = :channel AND ad.name = 'channel_status'),
 			(SELECT value FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id
-			   WHERE av.card_id = $1 AND ad.name = 'channel_fault_reason')
-	`, channelID).Scan(&statusRaw, &reasonRaw)
+			   WHERE av.card_id = :channel AND ad.name = 'channel_fault_reason')
+	`)
+	if err != nil {
+		return "", "", fmt.Errorf("comm: read channel_status for %d: compile: %w", channelID, err)
+	}
+	err = q.QueryRow(ctx, sql, args...).Scan(&statusRaw, &reasonRaw)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ChannelStatusEnabled, "", nil
@@ -172,9 +179,11 @@ func updateChannelStatus(ctx context.Context, pool *store.Pool, channelID int64,
 
 func lookupAttrDefID(ctx context.Context, tx store.Querier, name string) (int64, error) {
 	var id int64
-	if err := tx.QueryRow(ctx,
-		`SELECT id FROM attribute_def WHERE name = $1`, name,
-	).Scan(&id); err != nil {
+	row, err := namedRow(ctx, tx, `SELECT id FROM attribute_def WHERE name = :name`, map[string]any{"name": name})
+	if err != nil {
+		return 0, fmt.Errorf("comm: lookup attribute_def %q: %w", name, err)
+	}
+	if err := row.Scan(&id); err != nil {
 		return 0, fmt.Errorf("comm: lookup attribute_def %q: %w", name, err)
 	}
 	return id, nil

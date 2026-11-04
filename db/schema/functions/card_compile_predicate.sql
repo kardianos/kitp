@@ -73,8 +73,9 @@ DECLARE
     _op text;
     _value_type text;
     -- value_type_id band predicate so the partitioned attribute_value
-    -- indexes are usable: structured (<1000) → (attribute_def_id, value)
-    -- btree; text (>=1000) → trigram. Redundant-but-true for the attr's
+    -- indexes are usable: scalar (<50) → (attribute_def_id, value) btree;
+    -- card_ref[] (50) → no btree (containment); text (>=1000) → trigram
+    -- (av_value_type_id). Redundant-but-true for the attr's
     -- own rows, so it never changes results. Mirrors classGuard() in
     -- internal/dom/card/where.go.
     _class_guard text;
@@ -391,7 +392,8 @@ BEGIN
     _class_guard := CASE
         WHEN _value_type IS NULL OR _value_type = '' THEN ''
         WHEN _value_type = 'text' THEN ' AND av.value_type_id >= 1000'
-        ELSE ' AND av.value_type_id < 1000'
+        WHEN _value_type = 'card_ref[]' THEN ' AND av.value_type_id = 50'
+        ELSE ' AND av.value_type_id < 50'
     END;
 
     -- Normalise: v1 single-value `value` to v2 `values:[v]`. v1 op '='

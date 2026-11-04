@@ -422,15 +422,27 @@ BEGIN
         END LOOP;
 
         -- 7b. The moved tasks' threads send from a mail account of the
-        --     project they are in now: the destination's first live one, or
-        --     none when it has none (reply.post then says so) — never the
-        --     source project's mailbox (review 2026-11-03 round 2 #13).
-        SELECT ch.id INTO _dest_channel
-        FROM card ch JOIN card_type cht ON cht.id = ch.card_type_id AND cht.name = 'comm_channel'
-        WHERE ch.parent_card_id = _new_project_id AND ch.deleted_at IS NULL
-        ORDER BY ch.id
-        LIMIT 1;
+        --     project they are in now (project_mail_account: an enabled one
+        --     that sends, by preference), or none when it has none
+        --     (reply.post then says so) — never the source project's mailbox
+        --     (review 2026-11-03 round 2 #13). Mail already queued on them
+        --     goes out through the new account, which sends it from its own
+        --     address (smtp.go sendingFrom); with no account it can't go
+        --     out at all, so it is marked failed rather than left pending
+        --     for good (round 3 #10).
+        _dest_channel := project_mail_account(_new_project_id);
         IF _dest_channel IS NULL THEN
+            UPDATE attribute_value ds
+               SET value = to_jsonb('failed'::text)
+            FROM card cm, attribute_value rep
+            WHERE cm.parent_card_id = ANY(_moved_ids)
+              AND cm.card_type_id = (SELECT id FROM card_type WHERE name = 'comm')
+              AND rep.card_id = cm.id
+              AND rep.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'replies')
+              AND jsonb_typeof(rep.value) = 'array'
+              AND rep.value @> to_jsonb(ds.card_id)
+              AND ds.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'delivery_status')
+              AND ds.value = to_jsonb('pending'::text);
             DELETE FROM attribute_value av
             USING card cm
             WHERE cm.parent_card_id = ANY(_moved_ids)

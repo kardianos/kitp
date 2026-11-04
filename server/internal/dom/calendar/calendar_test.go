@@ -243,7 +243,7 @@ func TestCalendarRangeUsesTheIndex(t *testing.T) {
 	}
 	rows, err := tx.Query(ctx, `EXPLAIN SELECT av.card_id FROM attribute_value av
 		WHERE av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'due_date')
-		  AND av.value_type_id < 1000
+		  AND av.value_type_id < 50
 		  AND av.value >= to_jsonb('2026-10-01'::text) AND av.value <= to_jsonb('2027-11-03'::text)`)
 	if err != nil {
 		t.Fatal(err)

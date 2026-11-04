@@ -41,6 +41,7 @@ DECLARE
     _comm_recipients_def_id bigint;
     _activity_id bigint;
     _bad_msg text;
+    _current bigint[];
 BEGIN
     -- Hoist: attribute_def lookup is constant across the loop.
     SELECT id INTO _comm_recipients_def_id
@@ -166,19 +167,24 @@ BEGIN
             FROM unnest(_ids) WITH ORDINALITY AS t(v, ord);
         END IF;
 
-        -- The people this adds are confirmed for the relay (comm_confirm);
-        -- those already on the thread keep whatever they were.
+        -- The people this adds are confirmed for the relay (comm_confirm)
+        -- and no longer count as taken off; those already on the thread
+        -- keep whatever they were. The people this takes off lose their
+        -- confirmation and are remembered as taken off, so mail they send
+        -- later doesn't put them back on (review 2026-11-03 round 3 #8).
+        SELECT ARRAY(
+            SELECT (e.v #>> '{}')::bigint
+            FROM attribute_value cur
+            CROSS JOIN LATERAL jsonb_array_elements(
+                CASE WHEN jsonb_typeof(cur.value) = 'array' THEN cur.value ELSE '[]'::jsonb END) AS e(v)
+            WHERE cur.card_id = _comm_id
+              AND cur.attribute_def_id = _comm_recipients_def_id
+              AND (e.v #>> '{}') ~ '^[0-9]{1,18}$')
+          INTO _current;
         PERFORM comm_confirm(_comm_id, ARRAY(
-            SELECT n.id
-            FROM unnest(_ids) AS n(id)
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM attribute_value cur
-                CROSS JOIN LATERAL jsonb_array_elements(
-                    CASE WHEN jsonb_typeof(cur.value) = 'array' THEN cur.value ELSE '[]'::jsonb END) AS e(v)
-                WHERE cur.card_id = _comm_id
-                  AND cur.attribute_def_id = _comm_recipients_def_id
-                  AND (e.v #>> '{}') = n.id::text)));
+            SELECT n.id FROM unnest(_ids) AS n(id) WHERE NOT (n.id = ANY(_current))));
+        PERFORM comm_remove(_comm_id, ARRAY(
+            SELECT o.id FROM unnest(_current) AS o(id) WHERE NOT (o.id = ANY(_ids))));
 
         INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
         VALUES (_comm_id, 'attr_update', _comm_recipients_def_id, NULL, _value_norm,

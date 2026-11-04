@@ -14,6 +14,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/comm"
 	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/store"
+	"github.com/kitp/kitp/server/internal/textnorm"
 )
 
 // tokenShape is a route token: 40 lowercase hex characters (card_access_mint).
@@ -82,7 +83,9 @@ func (r route) refuse(ctx context.Context, pool *store.Pool, transport, check, r
 func (r route) noteError(ctx context.Context, pool *store.Pool, msg string) error {
 	b := named.New()
 	b.Set("id", r.ID)
-	b.Set("msg", truncate(msg, 300))
+	// The reason may quote the message's From or MAIL FROM: make it
+	// storable (no NUL, valid UTF-8), or the update fails (round 3).
+	b.Set("msg", textnorm.Storable(truncate(msg, 300)))
 	sql, args, err := b.Compile(`UPDATE card_access SET last_error = :msg, last_error_at = now() WHERE id = :id`)
 	if err != nil {
 		return fmt.Errorf("route error: compile: %w", err)

@@ -498,12 +498,7 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 		); err != nil {
 			return nil, err
 		}
-		// If the reply has no explicit from but the channel does, fall
-		// back to the channel's from_address so the wire envelope is
-		// always populated.
-		if r.from == "" {
-			r.from = r.fromAddress
-		}
+		r.from = sendingFrom(r.from, r.fromAddress)
 		r.signature = resolveSignature(r.signatureMode, r.channelName, r.authorName)
 		r.replyQuote = ResolveReplyQuote(r.replyQuote)
 		out = append(out, r)
@@ -512,6 +507,30 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 		return nil, err
 	}
 	return out, nil
+}
+
+// sendingFrom is the From a queued message goes out with: the one stored
+// when it was written, but always at the sending account's own address
+// (from_address). A message queued before its thread moved to another
+// project (task.move) goes out through the new project's account, and its
+// login would refuse — or SPF/DMARC fail — the old account's address
+// (review 2026-11-03 round 3 #10). The stored display name ("Ada via
+// Support") is kept. No stored From, or no account address: the other one.
+func sendingFrom(stored, accountAddr string) string {
+	if stored == "" || accountAddr == "" {
+		if stored == "" {
+			return accountAddr
+		}
+		return stored
+	}
+	a, err := ParseAddress(stored)
+	if err != nil {
+		return accountAddr
+	}
+	if strings.EqualFold(a.Address, strings.TrimSpace(accountAddr)) {
+		return stored
+	}
+	return (&mail.Address{Name: a.Name, Address: strings.TrimSpace(accountAddr)}).String()
 }
 
 // loadEarlier reads the messages of r's thread that came before it, newest
@@ -627,10 +646,10 @@ func (s *SMTPSender) recordResult(ctx context.Context, r pendingReply, newStatus
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `
+	if err := namedExec(ctx, tx, `
 		INSERT INTO comm_log (project_id, channel_id, kind, detail)
-		VALUES ($1, $2, $3, $4::jsonb)
-	`, r.projectID, r.channelID, logKind, detailJSON); err != nil {
+		VALUES (:project, :channel, :kind, :detail::jsonb)
+	`, map[string]any{"project": r.projectID, "channel": r.channelID, "kind": logKind, "detail": detailJSON}); err != nil {
 		return fmt.Errorf("comm_log: %w", err)
 	}
 
@@ -725,7 +744,7 @@ func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote stri
 	var hdr strings.Builder
 	fmt.Fprintf(&hdr, "From: %s\r\n", oneLine(from))
 	fmt.Fprintf(&hdr, "To: %s\r\n", oneLine(to))
-	fmt.Fprintf(&hdr, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", oneLine(subjectFinal)))
+	fmt.Fprintf(&hdr, "Subject: %s\r\n", foldEncodedWords(mime.QEncoding.Encode("utf-8", oneLine(subjectFinal))))
 	fmt.Fprintf(&hdr, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
 	fmt.Fprintf(&hdr, "Message-ID: %s\r\n", replyMessageID(from))
 	fmt.Fprintf(&hdr, "X-Kitp-Thread-Id: %s\r\n", oneLine(threadID))
@@ -791,6 +810,16 @@ var headerBreaks = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ")
 
 // oneLine is a header value with its line breaks turned into spaces.
 func oneLine(v string) string { return headerBreaks.Replace(v) }
+
+// foldEncodedWords puts each encoded word of a header value after the
+// first on a continuation line. The encoder splits a long value into words
+// of at most 75 characters joined by spaces, all on one line — over the
+// 998-octet line limit for a long non-ASCII subject (review 2026-11-03
+// round 3). Space between encoded words is not part of the text, so
+// folding there changes nothing a reader sees.
+func foldEncodedWords(v string) string {
+	return strings.ReplaceAll(v, "?= =?", "?=\r\n =?")
+}
 
 // replyMessageID is a new Message-ID for a message kitp sends on a thread,
 // at the domain of its From address.
@@ -1032,11 +1061,13 @@ func sendSMTP(ctx context.Context, host string, port int, username, password, fr
 }
 
 // parseRecipients splits a To: header value into bare RFC 5321
-// envelope addresses. Tries net/mail.ParseAddressList first so
+// envelope addresses. Tries ParseAddressList first so
 // "Alice <alice@x>, bob@y" works; falls back to a comma split so a
 // loosely-formatted value still produces RCPT entries rather than
-// failing the whole send. Empty input returns an empty slice (the
-// caller treats that as a hard error).
+// failing the whole send. Either way only plain addresses
+// (PlainAddress) are sent to: an odd stored address is left off rather
+// than split into others (review 2026-11-03 round 3 #9). Empty input
+// returns an empty slice (the caller treats that as a hard error).
 func parseRecipients(to string) ([]string, error) {
 	trimmed := strings.TrimSpace(to)
 	if trimmed == "" {
@@ -1057,8 +1088,8 @@ func parseRecipients(to string) ([]string, error) {
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		s := strings.TrimSpace(p)
-		if s != "" {
-			out = append(out, s)
+		if a, err := ParseAddress(s); err == nil {
+			out = append(out, a.Address)
 		}
 	}
 	return out, nil
