@@ -335,6 +335,16 @@ address, text, false, , cas_blob.address, cascade
 user_id, bigint, false, , user_account.id, cascade
 created_at, timestamptz, false, now(), ,
 
+## table comm_send_attempt | doc="Outgoing mail a sender has claimed or is retrying: one row per pending reply_body. claimed_until is a sender's claim while it sends (another sender, on another replica, skips the message until then, so it isn't sent twice); attempts and next_attempt_at back off a passing failure (a 4xx answer, a network error) instead of failing the message for good. The row goes once the message is sent, bounced or failed (review 2026-11-03 round 4)."
+
+### columns
+name, type, pk, nullable, default, references, on_delete
+reply_id, bigint, true, false, , card.id, cascade
+claimed_until, timestamptz, , , , ,
+attempts, int, , false, 0, ,
+next_attempt_at, timestamptz, , , , ,
+last_error, text, , , , ,
+
 ## table comm_imap_inflight | doc="IMAP messages a poll started reading and hasn't finished with: one row per (account, mailbox UIDVALIDITY, UID), written before the message is fetched and removed once it is filed, set aside or left for a retry. A row still there when the next poll starts means kitpd stopped while reading it; after imapMaxAttempts such starts the message is set aside (logged and marked read) instead of ending kitpd on every poll (review 2026-11-03 round 4 #1)." | primary_key="channel_id, uid_validity, uid"
 
 ### columns

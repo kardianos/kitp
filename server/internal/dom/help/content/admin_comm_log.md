@@ -33,7 +33,8 @@ Each row reads as a sentence — who it was from, the subject, what it became or
 | `relay_skipped` | A reply that wasn't sent on. `reason`: `auto_submitted`, `precedence`, `auto_reply`, `mailing_list`, `report` (a delivery or read report), `bounce`, `notification_reply`, `own_address` (from the account itself), `no_from_address` (the account has none to send from), `no_sender` (the From isn't one address), `sender_not_on_thread` (the sender wasn't on the thread), `sender_unconfirmed` (kitp hasn't confirmed the sender: nobody added them in kitp or replied to them from kitp) or `too_many_recipients` (over 20). |
 | `poll` | An IMAP poll and how many messages it fetched — the account is alive. |
 | `imap_auth_fail` | IMAP refused the sign-in. After a credential failure the account is set to *fault* until fixed. |
-| `send_ok` / `send_bounce` / `send_fail` | A reply kitp sent: accepted, refused by the receiving server (5xx), or failed (a connection or other error). A bounced or failed reply isn't sent again; it shows as such on its thread. |
+| `send_ok` / `send_bounce` / `send_fail` | A reply kitp sent: accepted, refused by the receiving server (5xx), or failed. A bounced or failed reply isn't sent again; it shows as such on its thread. |
+| `send_retry` | A reply that couldn't go out for a reason that may pass (a 4xx answer, a dropped connection, a timeout). It stays pending and is tried again after 1 minute, then 5, 15, 60 and 180; after the sixth try it is `send_fail`. `attempt` and `retry_in` say where it is. |
 | `notify_ok` / `notify_bounce` / `notify_fail` | The same for notification digests. |
 
 ## Troubleshooting

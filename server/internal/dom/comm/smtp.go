@@ -47,6 +47,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/job"
 	"github.com/kitp/kitp/server/internal/named"
@@ -199,6 +201,7 @@ func (s *SMTPSender) TickOnce(ctx context.Context) error {
 // struct so the per-reply transaction is short (a couple of UPDATEs)
 // and never overlaps the network call.
 type pendingReply struct {
+	attempts    int // tries before this one (comm_send_attempt)
 	replyID     int64
 	commID      int64
 	channelID   int64
@@ -264,11 +267,96 @@ func (s *SMTPSender) RunOnce(ctx context.Context) error {
 	}
 	var firstErr error
 	for _, r := range rows {
+		// Claim it first: with kitpd on more than one replica, two senders
+		// saw the same pending message and both sent it (review 2026-11-03
+		// round 4). A message another sender claimed in between is left to it.
+		attempts, ok, err := s.claim(ctx, r.replyID)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if !ok {
+			continue
+		}
+		r.attempts = attempts
 		if err := s.processOne(ctx, r); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
+}
+
+// sendClaim is how long a sender holds a message it is sending; one that
+// stopped mid-send (kitpd ended) lets another try after it.
+const sendClaim = 10 * time.Minute
+
+// maxSendAttempts is how many tries a passing failure gets before the
+// message is marked failed; sendBackoff is the wait after each.
+const maxSendAttempts = 6
+
+var sendBackoff = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour, 3 * time.Hour}
+
+// claim takes a pending message for this sender (comm_send_attempt) and
+// returns how many tries it had before. ok is false when another sender
+// holds it, or it is waiting out a retry.
+func (s *SMTPSender) claim(ctx context.Context, replyID int64) (int, bool, error) {
+	b := named.New()
+	b.Set("reply", replyID)
+	b.Set("until", time.Now().Add(sendClaim))
+	q, args, err := b.Compile(`
+		INSERT INTO comm_send_attempt (reply_id, claimed_until) VALUES (:reply, :until)
+		ON CONFLICT (reply_id) DO UPDATE SET claimed_until = EXCLUDED.claimed_until
+		WHERE (comm_send_attempt.claimed_until IS NULL OR comm_send_attempt.claimed_until <= now())
+		  AND (comm_send_attempt.next_attempt_at IS NULL OR comm_send_attempt.next_attempt_at <= now())
+		RETURNING attempts
+	`)
+	if err != nil {
+		return 0, false, fmt.Errorf("smtp sender: claim: compile: %w", err)
+	}
+	var attempts int
+	if err := s.pool.P.QueryRow(ctx, q, args...).Scan(&attempts); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("smtp sender: claim reply %d: %w", replyID, err)
+	}
+	return attempts, true, nil
+}
+
+// retryLater keeps a message pending after a passing failure, to be tried
+// again after its backoff: the claim is dropped and the try counted.
+func (s *SMTPSender) retryLater(ctx context.Context, r pendingReply, sendErr error, wait time.Duration) error {
+	b := named.New()
+	b.Set("reply", r.replyID)
+	b.Set("next", time.Now().Add(wait))
+	b.Set("error", textnorm.Storable(truncateString(sendErr.Error(), 500)))
+	q, args, err := b.Compile(`
+		UPDATE comm_send_attempt
+		   SET claimed_until = NULL, attempts = attempts + 1, next_attempt_at = :next, last_error = :error
+		 WHERE reply_id = :reply
+	`)
+	if err != nil {
+		return fmt.Errorf("smtp sender: retry: compile: %w", err)
+	}
+	if _, err := s.pool.P.Exec(ctx, q, args...); err != nil {
+		return fmt.Errorf("smtp sender: retry reply %d: %w", r.replyID, err)
+	}
+	detail := map[string]any{"recipient": r.to, "error": sendErr.Error(), "attempt": r.attempts + 1, "retry_in": wait.String()}
+	if err := LogEvent(ctx, s.pool.P, r.projectID, r.channelID, "send_retry", detail); err != nil {
+		s.logger.LogAttrs(ctx, slog.LevelWarn, "smtp sender: log a retry",
+			slog.Int64("reply_id", r.replyID), slog.String("err", err.Error()))
+	}
+	return nil
+}
+
+// truncateString cuts s to at most n bytes.
+func truncateString(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 // processOne handles a single pending reply: builds the MIME, attempts
@@ -328,6 +416,11 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 		r.signature = ""
 		taskURL = ""
 		extra = append(extra, mimeHeader{"Auto-Submitted", "auto-forwarded"})
+		// X-Loop names the account that sent it on: such mail coming back
+		// in is never sent on again (automaticKind).
+		if a, err := ParseAddress(r.from); err == nil {
+			extra = append(extra, mimeHeader{"X-Loop", a.Address})
+		}
 	} else if r.replyQuote != QuoteOff {
 		earlier, err := s.loadEarlier(ctx, r)
 		if err != nil {
@@ -358,6 +451,17 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 	}
 
 	newStatus, logKind, detail := classifySendResult(sendErr, r.to)
+	// A failure that may pass — a 4xx answer, a dropped connection, a
+	// timeout — is tried again after a backoff, up to maxSendAttempts;
+	// only a bounce (5xx) or the last try fails it for good (review
+	// 2026-11-03 round 4).
+	if newStatus == "failed" && r.attempts+1 < maxSendAttempts {
+		wait := sendBackoff[min(r.attempts, len(sendBackoff)-1)]
+		if err := s.retryLater(ctx, r, sendErr, wait); err != nil {
+			return err
+		}
+		return sendErr
+	}
 	if err := s.recordResult(ctx, r, newStatus, logKind, detail); err != nil {
 		return fmt.Errorf("smtp sender: record result for reply %d: %w", r.replyID, err)
 	}
@@ -471,6 +575,11 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 		  AND NOT card_in_off_area(cm.id)
 		  AND ch.deleted_at IS NULL
 		  AND ch.id = :channel_id
+		  -- Not one another sender has claimed, nor one waiting out a
+		  -- retry (comm_send_attempt).
+		  AND NOT EXISTS (SELECT 1 FROM comm_send_attempt sa
+		                  WHERE sa.reply_id = rb.id
+		                    AND (sa.claimed_until > now() OR sa.next_attempt_at > now()))
 		ORDER BY rb.id
 		LIMIT :limit
 	`
@@ -664,6 +773,11 @@ func (s *SMTPSender) recordResult(ctx context.Context, r pendingReply, newStatus
 		VALUES (:project, :channel, :kind, :detail::jsonb)
 	`, map[string]any{"project": r.projectID, "channel": r.channelID, "kind": logKind, "detail": detailJSON}); err != nil {
 		return fmt.Errorf("comm_log: %w", err)
+	}
+	// Done with: no claim or retry left on it.
+	if err := namedExec(ctx, tx, `DELETE FROM comm_send_attempt WHERE reply_id = :reply`,
+		map[string]any{"reply": r.replyID}); err != nil {
+		return fmt.Errorf("comm_send_attempt: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -872,7 +986,7 @@ func replyMessageID(from string) string {
 }
 
 // mimeHeader is one extra header line on an outgoing message (a relayed
-// copy's Auto-Submitted). Key and Value are kitp's own constants, never
+// copy's Auto-Submitted, its X-Loop). Key and Value are kitp's own, never
 // taken from mail.
 type mimeHeader struct {
 	Key   string

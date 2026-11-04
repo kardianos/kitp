@@ -36,7 +36,9 @@ package comm
 // relay_of names Ada's message, which the thread view shows it under. The
 // copy carries the files stored with her message (linked, not copied) and
 // Auto-Submitted: auto-forwarded, so out-of-office replies to it are not
-// sent on again. Never sent on: auto-replies, bounces, mailing-list mail,
+// sent on again, and X-Loop naming the account. At most maxRelaysPerHour
+// copies per thread in an hour. Never sent on: auto-replies, bounces,
+// mail carrying X-Loop, mailing-list mail,
 // replies to notification email, and mail from the account's own address.
 
 import (
@@ -71,6 +73,13 @@ func automaticKind(h mail.Header) string {
 	}
 	if strings.TrimSpace(h.Get("List-Id")) != "" {
 		return "mailing_list"
+	}
+	// X-Loop: kitp puts it on every copy it sends on (and mailing lists
+	// on what they distribute); mail carrying one is never sent on, so
+	// two relaying accounts can't bounce a message between them (review
+	// 2026-11-03 round 4).
+	if strings.TrimSpace(h.Get("X-Loop")) != "" {
+		return "loop"
 	}
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(h.Get("Content-Type"))), "multipart/report") {
 		return "report"
@@ -154,6 +163,33 @@ func relaySenderName(from, accountName, accountAddr string) string {
 // maxRelayRecipients caps one relay copy's To.
 const maxRelayRecipients = 20
 
+// maxRelaysPerHour caps the copies one thread sends on in an hour.
+const maxRelaysPerHour = 20
+
+// recentRelays counts the copies kitp queued on a thread in the last hour.
+func recentRelays(ctx context.Context, tx store.Querier, commID int64) (int, error) {
+	row, err := namedRow(ctx, tx, `
+		SELECT count(*)
+		FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'replies'
+		CROSS JOIN LATERAL jsonb_array_elements(
+			CASE WHEN jsonb_typeof(av.value) = 'array' THEN av.value ELSE '[]'::jsonb END) AS e(v)
+		JOIN card r ON r.id = CASE WHEN (e.v #>> '{}') ~ '^[0-9]{1,18}$' THEN (e.v #>> '{}')::bigint END
+		           AND r.created_at > now() - interval '1 hour'
+		JOIN attribute_value ro ON ro.card_id = r.id
+		 AND ro.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'relay_of')
+		WHERE av.card_id = :comm
+	`, map[string]any{"comm": commID})
+	if err != nil {
+		return 0, fmt.Errorf("recent relays: %w", err)
+	}
+	var n int
+	if err := row.Scan(&n); err != nil {
+		return 0, fmt.Errorf("recent relays: %w", err)
+	}
+	return n, nil
+}
+
 // relayReply sends the message just filed on commID (replyID) on to the
 // thread's other confirmed people when the thread's mail account does that.
 // It writes a relay_queued Comm log row for a copy, relay_skipped when the
@@ -211,6 +247,14 @@ func (p *filer) relayReplyTx(ctx context.Context, tx store.Querier, snap *schema
 	senders := map[string]struct{}{sender: {}}
 	if _, fromSelf := senders[own]; fromSelf {
 		return skip("own_address")
+	}
+	// At most maxRelaysPerHour copies per thread in an hour: a sender who
+	// may be sent on can otherwise make the account mail everyone on the
+	// thread as fast as they write (review 2026-11-03 round 4).
+	if n, err := recentRelays(ctx, tx, commID); err != nil {
+		return err
+	} else if n >= maxRelaysPerHour {
+		return skip("rate_limited")
 	}
 	confirmed, err := threadConfirmed(ctx, tx, commID)
 	if err != nil {

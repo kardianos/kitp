@@ -20,13 +20,16 @@ import (
 // assertions can verify the poller marks only the messages it
 // successfully ingested.
 type stubIMAPClient struct {
-	mu          sync.Mutex
-	messages    []comm.InboundMessage
-	fetchErr    error
-	markSeenErr error
-	markedSeen  []uint32
-	fetched     []uint32
-	closed      bool
+	mu            sync.Mutex
+	messages      []comm.InboundMessage
+	fetchErr      error
+	markSeenErr   error
+	markedSeen    []uint32
+	fetched       []uint32
+	archived      []uint32
+	archiveErr    error
+	archiveFolder string
+	closed        bool
 }
 
 func (s *stubIMAPClient) ListUnseen(ctx context.Context) ([]comm.UnseenMessage, error) {
@@ -55,6 +58,17 @@ func (s *stubIMAPClient) Fetch(ctx context.Context, uid uint32) (comm.InboundMes
 }
 
 func (s *stubIMAPClient) UIDValidity() uint32 { return 1 }
+
+func (s *stubIMAPClient) Archive(ctx context.Context, uids []uint32, folder string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.archiveErr != nil {
+		return s.archiveErr
+	}
+	s.archived = append(s.archived, uids...)
+	s.archiveFolder = folder
+	return nil
+}
 
 func (s *stubIMAPClient) MarkSeen(ctx context.Context, uids []uint32) error {
 	s.mu.Lock()

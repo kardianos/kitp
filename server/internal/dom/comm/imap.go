@@ -33,6 +33,12 @@
 //	                               opening an IMAP connection
 //	KITP_COMM_IMAP_INSECURE=0      when "1", allow plaintext IMAP (no
 //	                               TLS); dev only
+//	KITP_COMM_IMAP_SET_ASIDE_FOLDER=kitp-set-aside
+//	                               folder a message kitp can never file
+//	                               (unreadable, too large, set aside,
+//	                               unfileable) is moved to, out of INBOX,
+//	                               once it is marked read; set empty to
+//	                               leave such mail in INBOX
 //	KITP_COMM_BODY_PRIORITY=plain,html
 //	                               comma-separated order in which to source a
 //	                               new task's description from the message's
@@ -76,6 +82,8 @@ import (
 
 	imap "github.com/emersion/go-imap"
 	imapclient "github.com/emersion/go-imap/client"
+	"github.com/emersion/go-imap/commands"
+	"github.com/emersion/go-imap/utf7"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kitp/kitp/server/internal/auth"
@@ -100,6 +108,9 @@ type IMAPPoller struct {
 	tick     time.Duration
 	dryRun   bool
 	insecure bool
+	// setAside is the folder never-fileable mail is moved to
+	// (KITP_COMM_IMAP_SET_ASIDE_FOLDER); "" leaves it in INBOX.
+	setAside string
 
 	// dial is the imapClient factory the loop calls each tick. Tests
 	// swap it for a stub that returns a fake; production uses the real
@@ -167,6 +178,10 @@ type imapClient interface {
 	MarkSeen(ctx context.Context, uids []uint32) error
 	// UIDValidity is the selected mailbox's UIDVALIDITY.
 	UIDValidity() uint32
+	// Archive moves the messages to folder (made if missing), out of
+	// INBOX: where a message kitp can never file goes (setAsideFolder).
+	// ErrNoMove when the server can't move a message by UID safely.
+	Archive(ctx context.Context, uids []uint32, folder string) error
 	// Close releases the underlying connection. Idempotent.
 	Close() error
 }
@@ -254,11 +269,16 @@ func newIMAPPoller(pool *store.Pool, channelID int64, tick time.Duration) *IMAPP
 	if tick < 5*time.Second {
 		tick = 5 * time.Second
 	}
+	setAside := DefaultSetAsideFolder
+	if v, ok := os.LookupEnv("KITP_COMM_IMAP_SET_ASIDE_FOLDER"); ok {
+		setAside = strings.TrimSpace(v)
+	}
 	p := &IMAPPoller{
 		filer:    newFiler(pool, channelID, slog.Default()),
 		tick:     tick,
 		dryRun:   os.Getenv("KITP_COMM_IMAP_DRY_RUN") == "1",
 		insecure: os.Getenv("KITP_COMM_IMAP_INSECURE") == "1",
+		setAside: setAside,
 	}
 	p.dial = dialIMAP
 	return p
@@ -541,7 +561,7 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 				m.Raw = nil // only the debugging copy needs the verbatim bytes
 			}
 		}
-		seen, err := p.fileFetched(ctx, intake, m, int64(u.Size))
+		seen, aside, err := p.fileFetched(ctx, intake, m, int64(u.Size))
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -550,6 +570,9 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 				firstErr = fmt.Errorf("imap mark seen: %w", err)
 			}
 			ingested++
+		}
+		if seen && aside {
+			p.archive(ctx, client, u.UID)
 		}
 		if tracked || seen {
 			p.endInflight(ctx, validity, u.UID)
@@ -571,11 +594,36 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 // stop it on every poll.
 const imapMaxAttempts = 2
 
+// DefaultSetAsideFolder is where never-fileable mail goes out of INBOX.
+const DefaultSetAsideFolder = "kitp-set-aside"
+
+// archive moves a never-fileable message out of INBOX to the set-aside
+// folder, so it is out of the way as well as read (review 2026-11-03 round
+// 4). A server that can't move by UID leaves it read in INBOX; a failure is
+// logged and changes nothing else.
+func (p *IMAPPoller) archive(ctx context.Context, client imapClient, uid uint32) {
+	if p.setAside == "" {
+		return
+	}
+	err := client.Archive(ctx, []uint32{uid}, p.setAside)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrNoMove):
+		p.logger.LogAttrs(ctx, slog.LevelDebug, "imap: server can't move mail; set-aside message stays in INBOX",
+			slog.Int64("channel_id", p.channelID), slog.Any("uid", uid))
+	default:
+		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: moving a set-aside message failed",
+			slog.Int64("channel_id", p.channelID), slog.Any("uid", uid),
+			slog.String("folder", p.setAside), slog.String("error", err.Error()))
+	}
+}
+
 // fileFetched files one fetched message and says whether it is done with
 // — filed, or never fileable (unreadable, too large, set aside,
-// unfileable) — so it is marked seen. A message that failed for a passing
-// reason returns false and the error, and is tried again next poll.
-func (p *IMAPPoller) fileFetched(ctx context.Context, intake channelIntake, m InboundMessage, size int64) (bool, error) {
+// unfileable) — so it is marked seen, and whether it is never fileable
+// (aside), so it is moved out of INBOX. A message that failed for a
+// passing reason returns false and the error, and is tried again next poll.
+func (p *IMAPPoller) fileFetched(ctx context.Context, intake channelIntake, m InboundMessage, size int64) (seen, aside bool, err error) {
 	if m.ParseError != "" {
 		// Not mail: log it and mark it read (it stays in the mailbox), as
 		// POST and SMTP do. Filing it would make an empty thread, and every
@@ -587,9 +635,9 @@ func (p *IMAPPoller) fileFetched(ctx context.Context, intake channelIntake, m In
 		if err := p.logInbound(ctx, p.pool.P, intake.projectID, inboundMeta{transport: TransportIMAP}, "parse_error", map[string]any{
 			"error": m.ParseError, "uid": m.UID, "bytes": n,
 		}); err != nil {
-			return false, err
+			return false, false, err
 		}
-		return true, nil
+		return true, true, nil
 	}
 	if _, err := p.processOne(ctx, intake, m, inboundMeta{transport: TransportIMAP}); err != nil {
 		if permanentFilingError(err) {
@@ -603,11 +651,11 @@ func (p *IMAPPoller) fileFetched(ctx context.Context, intake channelIntake, m In
 					slog.Any("uid", m.UID),
 					slog.String("error", lerr.Error()))
 			}
-			return true, nil
+			return true, true, nil
 		}
-		return false, err
+		return false, false, err
 	}
-	return true, nil
+	return true, false, nil
 }
 
 // pruneInflight drops this channel's in-flight records from another
@@ -2331,6 +2379,84 @@ func (r *realIMAPClient) MarkSeen(ctx context.Context, uids []uint32) error {
 // UIDValidity is INBOX's UIDVALIDITY: a UID names the same message only
 // while it is unchanged.
 func (r *realIMAPClient) UIDValidity() uint32 { return r.validity }
+
+// ErrNoMove: the server has neither MOVE nor UIDPLUS, so a message can't be
+// taken out of INBOX without a plain EXPUNGE, which would also remove
+// every message another client flagged \Deleted. It stays, marked read.
+var ErrNoMove = errors.New("imap: the server can't move a message by UID")
+
+// Archive moves uids to folder with UID MOVE (RFC 6851), or, on a server
+// without MOVE but with UIDPLUS, UID COPY + \Deleted + UID EXPUNGE of just
+// those messages. The folder is made first; one that exists already is
+// fine.
+func (r *realIMAPClient) Archive(ctx context.Context, uids []uint32, folder string) error {
+	if len(uids) == 0 || folder == "" {
+		return nil
+	}
+	r.arm(ctx)
+	// Most often the folder exists already (ALREADYEXISTS); a failure that
+	// matters shows in the move below, which reports it too.
+	createErr := r.c.Create(folder)
+	wrap := func(op string, err error) error {
+		if createErr != nil {
+			return fmt.Errorf("imap %s to %q: %w (creating it: %v)", op, folder, err, createErr)
+		}
+		return fmt.Errorf("imap %s to %q: %w", op, folder, err)
+	}
+	seqset := new(imap.SeqSet)
+	seqset.AddNum(uids...)
+	if ok, err := r.c.Support("MOVE"); err != nil {
+		return fmt.Errorf("imap capability: %w", err)
+	} else if ok {
+		status, err := r.c.Execute(&commands.Uid{Cmd: &moveCmd{seqSet: seqset, mailbox: folder}}, nil)
+		if err == nil {
+			err = status.Err()
+		}
+		if err != nil {
+			return wrap("UID MOVE", err)
+		}
+		return nil
+	}
+	if ok, err := r.c.Support("UIDPLUS"); err != nil {
+		return fmt.Errorf("imap capability: %w", err)
+	} else if !ok {
+		return ErrNoMove
+	}
+	if err := r.c.UidCopy(seqset, folder); err != nil {
+		return wrap("UID COPY", err)
+	}
+	if err := r.c.UidStore(seqset, imap.FormatFlagsOp(imap.AddFlags, true), []interface{}{imap.DeletedFlag}, nil); err != nil {
+		return fmt.Errorf("imap UID STORE \\Deleted: %w", err)
+	}
+	status, err := r.c.Execute(&commands.Uid{Cmd: &expungeCmd{seqSet: seqset}}, nil)
+	if err != nil {
+		return fmt.Errorf("imap UID EXPUNGE: %w", err)
+	}
+	return status.Err()
+}
+
+// moveCmd is MOVE (RFC 6851), which go-imap v1 doesn't have; wrapped in
+// commands.Uid it is UID MOVE.
+type moveCmd struct {
+	seqSet  *imap.SeqSet
+	mailbox string
+}
+
+func (cmd *moveCmd) Command() *imap.Command {
+	mailbox, err := utf7.Encoding.NewEncoder().String(cmd.mailbox)
+	if err != nil {
+		mailbox = cmd.mailbox // ASCII names encode as themselves
+	}
+	return &imap.Command{Name: "MOVE", Arguments: []interface{}{cmd.seqSet, mailbox}}
+}
+
+// expungeCmd is EXPUNGE with a sequence set: wrapped in commands.Uid it is
+// UID EXPUNGE (RFC 4315), which removes only the messages named.
+type expungeCmd struct{ seqSet *imap.SeqSet }
+
+func (cmd *expungeCmd) Command() *imap.Command {
+	return &imap.Command{Name: "EXPUNGE", Arguments: []interface{}{cmd.seqSet}}
+}
 
 func (r *realIMAPClient) Close() error {
 	if r.c == nil {

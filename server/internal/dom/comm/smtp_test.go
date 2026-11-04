@@ -456,6 +456,12 @@ func TestSMTPSenderFailure(t *testing.T) {
 	f := setupAdmin(t, "kitp_test_smtp_failure")
 	channelID, replyID := seedPendingReply(t, f, "kitp@example.com")
 
+	// A passing error is retried (TestSenderClaimsAndRetries); this is
+	// the last try, which fails the message for good.
+	if _, err := f.sp.P.Exec(context.Background(),
+		`INSERT INTO comm_send_attempt (reply_id, attempts) VALUES ($1, 5)`, replyID); err != nil {
+		t.Fatal(err)
+	}
 	rt := &recordingTransport{
 		results: []error{io.ErrUnexpectedEOF},
 	}

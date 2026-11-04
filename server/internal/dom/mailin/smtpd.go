@@ -182,8 +182,22 @@ func (s *SMTPServer) admit(client netip.Addr) (string, func()) {
 type backend struct{ s *SMTPServer }
 
 func (b *backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
-	return &session{s: b.s, conn: c, client: netx.AddrOf(c.Conn().RemoteAddr())}, nil
+	ss := &session{s: b.s, conn: c, client: netx.AddrOf(c.Conn().RemoteAddr())}
+	// A session lives at most maxSessionLife, however it spends it: go-smtp
+	// answers NOOP and RSET itself and resets the read deadline before each
+	// command, so a peer sending NOOP every minute held a connection, and
+	// one of the per-source slots, for good (review 2026-11-03 round 4).
+	logger := b.s.cfg.Logger
+	ss.lifetime = time.AfterFunc(maxSessionLife, func() {
+		if err := c.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			logger.Warn("smtp: end a session past its lifetime", "err", err)
+		}
+	})
+	return ss, nil
 }
+
+// maxSessionLife bounds one SMTP session, the longest message included.
+const maxSessionLife = 15 * time.Minute
 
 type session struct {
 	s      *SMTPServer
@@ -200,6 +214,8 @@ type session struct {
 	// ending is set once the session has been told 421: every further
 	// command gets 421 too, and the connection is closed (endSession).
 	ending bool
+	// lifetime closes the connection after maxSessionLife.
+	lifetime *time.Timer
 }
 
 // sessionEndDelay is how long a session told 421 keeps its connection, so
@@ -235,7 +251,12 @@ func (ss *session) Reset() {
 	ss.routes = nil
 }
 
-func (ss *session) Logout() error { return nil }
+func (ss *session) Logout() error {
+	if ss.lifetime != nil {
+		ss.lifetime.Stop()
+	}
+	return nil
+}
 
 func (ss *session) Mail(from string, _ *smtp.MailOptions) error {
 	if ss.ending {

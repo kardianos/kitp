@@ -216,6 +216,19 @@ Size and shape (review 2026-11-03 rounds 3 and 4, #1).
   500 parts in all (`walkMultipart`); a part's transfer encoding, nested or
   not, is undone as it is read. Before, each level copied the rest of the
   message: a 224 KB message of nested parts took 600 MB.
+- A message kitp can never file (unreadable, too large, set aside,
+  unfileable) is marked read and then moved out of INBOX to the
+  `kitp-set-aside` folder (`KITP_COMM_IMAP_SET_ASIDE_FOLDER`; empty leaves
+  it in INBOX): `UID MOVE` where the server has MOVE, else `UID COPY` +
+  `\Deleted` + `UID EXPUNGE` with UIDPLUS; a server with neither leaves it
+  read in INBOX, since a plain EXPUNGE would also remove what other
+  clients deleted.
+- Inbound SMTP sessions last at most 15 minutes however they are spent
+  (NOOP kept one open for good).
+- Outgoing mail is claimed before it is sent (`comm_send_attempt`), so two
+  replicas don't both send it; a failure that may pass (4xx, a dropped
+  connection, a timeout) keeps it pending and retries after 1, 5, 15, 60
+  and 180 minutes (`send_retry` in the Comm log) before it fails.
 - At most 4 POSTed messages are read and filed at once
   (`KITP_COMM_INBOUND_MAX_CONCURRENT`); more answer 503 and the provider
   retries.
@@ -637,8 +650,10 @@ Ada ──reply──▶ support@ ──▶ filed on the thread
   `comm.comm_removed` (`comm_remove`, kitp-set only): their later mail is
   filed but doesn't put them back on the thread. Threads filed before 0032
   have no `comm_confirmed`: their people take part once staff add them. At
-  most 20 recipients (`too_many_recipients`); a From with other than one
-  address is `no_sender`. Route addresses (`…@KITP_SMTP_DOMAIN`) never
+  most 20 recipients (`too_many_recipients`), and at most 20 copies per
+  thread in an hour (`rate_limited`); a From with other than one
+  address is `no_sender`. Copies carry `X-Loop` (the account's address),
+  and mail carrying `X-Loop` is never sent on. Route addresses (`…@KITP_SMTP_DOMAIN`) never
   join a thread, and one message puts at most 50 addresses on it
   (`MaxSyncPeople`). An address with a quoted local part or a domain
   literal (`"a@b, c"@d`, `x@[1.2.3.4]`) is refused wherever kitp parses
