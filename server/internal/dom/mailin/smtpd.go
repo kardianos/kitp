@@ -197,6 +197,33 @@ type session struct {
 	hostsSet bool
 	// misses counts refused recipients this session (limits.MissesPerSession).
 	misses int
+	// ending is set once the session has been told 421: every further
+	// command gets 421 too, and the connection is closed (endSession).
+	ending bool
+}
+
+// sessionEndDelay is how long a session told 421 keeps its connection, so
+// the reply is on the wire before it closes.
+const sessionEndDelay = time.Second
+
+var errSessionEnding = smtpErr(421, smtp.EnhancedCode{4, 7, 0}, "Too many refused recipients, closing connection")
+
+// endSession closes the connection shortly after this reply goes out.
+// go-smtp sends the reply only once the command returns, and resets the
+// read deadline before every command, so the session can't end itself any
+// other way (review 2026-11-03 round 2 #16).
+func (ss *session) endSession() {
+	if ss.ending {
+		return
+	}
+	ss.ending = true
+	conn := ss.conn
+	logger := ss.s.cfg.Logger
+	time.AfterFunc(sessionEndDelay, func() {
+		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			logger.Warn("smtp: end session", "err", err)
+		}
+	})
 }
 
 func smtpErr(code int, enh smtp.EnhancedCode, msg string) *smtp.SMTPError {
@@ -211,6 +238,9 @@ func (ss *session) Reset() {
 func (ss *session) Logout() error { return nil }
 
 func (ss *session) Mail(from string, _ *smtp.MailOptions) error {
+	if ss.ending {
+		return errSessionEnding
+	}
 	ss.from = from
 	ss.routes = nil
 	return nil
@@ -225,17 +255,18 @@ func (ss *session) miss(reason string) {
 // tooManyMisses ends a session that keeps naming recipients it can't use —
 // address guessing (review 2026-11-03 #18): after limits.MissesPerSession
 // refusals in it, or once its source has spent its rate-limit bucket on
-// misses, every further RCPT gets 421 and the connection closes (an expired
-// read deadline makes go-smtp's next read fail, after this reply is sent).
+// misses, the RCPT gets 421, so does every command after it, and the
+// connection closes (endSession).
 func (ss *session) tooManyMisses() error {
+	if ss.ending {
+		return errSessionEnding
+	}
 	if ss.misses < limits.MissesPerSession && ss.s.sources.Allow(netx.SourceKey(ss.client), 0) {
 		return nil
 	}
 	ss.s.cfg.Status.Refuse(comm.TransportSMTP, ss.client, "too many refused recipients")
-	if err := ss.conn.Conn().SetReadDeadline(time.Now()); err != nil {
-		ss.s.cfg.Logger.Warn("smtp: end session", "err", err)
-	}
-	return smtpErr(421, smtp.EnhancedCode{4, 7, 0}, "Too many refused recipients, closing connection")
+	ss.endSession()
+	return errSessionEnding
 }
 
 func (ss *session) Rcpt(to string, _ *smtp.RcptOptions) error {
@@ -316,6 +347,9 @@ func (ss *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 }
 
 func (ss *session) Data(r io.Reader) error {
+	if ss.ending {
+		return errSessionEnding
+	}
 	raw, err := io.ReadAll(r)
 	if err != nil {
 		if errors.Is(err, smtp.ErrDataTooLarge) {

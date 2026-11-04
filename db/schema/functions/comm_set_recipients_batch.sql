@@ -166,6 +166,20 @@ BEGIN
             FROM unnest(_ids) WITH ORDINALITY AS t(v, ord);
         END IF;
 
+        -- The people this adds are confirmed for the relay (comm_confirm);
+        -- those already on the thread keep whatever they were.
+        PERFORM comm_confirm(_comm_id, ARRAY(
+            SELECT n.id
+            FROM unnest(_ids) AS n(id)
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM attribute_value cur
+                CROSS JOIN LATERAL jsonb_array_elements(
+                    CASE WHEN jsonb_typeof(cur.value) = 'array' THEN cur.value ELSE '[]'::jsonb END) AS e(v)
+                WHERE cur.card_id = _comm_id
+                  AND cur.attribute_def_id = _comm_recipients_def_id
+                  AND (e.v #>> '{}') = n.id::text)));
+
         INSERT INTO activity (card_id, kind, attribute_def_id, value_old, value_new, actor_id)
         VALUES (_comm_id, 'attr_update', _comm_recipients_def_id, NULL, _value_norm,
                 comm_set_recipients_batch.actor_id)

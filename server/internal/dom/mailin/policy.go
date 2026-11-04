@@ -13,6 +13,8 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+
+	"github.com/kitp/kitp/server/internal/dom/comm"
 )
 
 // Route purposes and POST providers.
@@ -233,7 +235,7 @@ func AddressAllowed(list []string, addr string) bool {
 	if len(list) == 0 {
 		return true
 	}
-	parsed, err := mail.ParseAddressList(addr)
+	parsed, err := comm.ParseAddressList(addr)
 	if err != nil || len(parsed) != 1 {
 		return false
 	}

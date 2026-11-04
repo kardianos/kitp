@@ -21,6 +21,8 @@ func TestName(t *testing.T) {
 		{"André", "André", "already-composed stays"},
 		// Display-only — case is preserved.
 		{"MÜLLER", "MÜLLER", "case preserved for display names"},
+		{"Ada\x00 Love\x1blace", "Ada Lovelace", "control characters dropped"},
+		{"Bad \xff byte", "Bad \uFFFD byte", "broken UTF-8 replaced"},
 	}
 	for _, c := range cases {
 		t.Run(c.label, func(t *testing.T) {
@@ -139,5 +141,18 @@ func TestEmail(t *testing.T) {
 				t.Errorf("Email(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+func TestStorable(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"plain", "plain"},
+		{"a\x00b", "ab"},
+		{"\xffok", "\uFFFDok"},
+		{"tab\tand\nline", "tab\tand\nline"},
+	} {
+		if got := textnorm.Storable(c.in); got != c.want {
+			t.Errorf("Storable(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

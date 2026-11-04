@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kitp/kitp/server/internal/named"
+	"github.com/kitp/kitp/server/internal/textnorm"
 )
 
 // NotificationMessageIDPrefix starts the local part of every notification
@@ -124,7 +125,7 @@ func LogEvent(ctx context.Context, q Execer, projectID, channelID int64, kind st
 // (card_access row) it concerns as well (routeID 0 = none), so the Comm log
 // can be filtered to one route.
 func LogRouteEvent(ctx context.Context, q Execer, projectID, channelID, routeID int64, kind string, detail any) error {
-	d, err := json.Marshal(detail)
+	d, err := json.Marshal(storableDetail(detail))
 	if err != nil {
 		return fmt.Errorf("comm.LogEvent: marshal detail: %w", err)
 	}
@@ -145,6 +146,36 @@ func LogRouteEvent(ctx context.Context, q Execer, projectID, channelID, routeID 
 		return fmt.Errorf("comm.LogEvent: insert: %w", err)
 	}
 	return nil
+}
+
+// storableDetail returns a Comm log detail whose strings jsonb accepts: a
+// detail quotes the message it is about (its subject, sender, a parse
+// error), and a NUL there would fail the row that says why the message
+// wasn't filed (review 2026-11-03 round 2 #2).
+func storableDetail(v any) any {
+	switch t := v.(type) {
+	case string:
+		return textnorm.Storable(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, x := range t {
+			out[textnorm.Storable(k)] = storableDetail(x)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, x := range t {
+			out[i] = storableDetail(x)
+		}
+		return out
+	case []string:
+		out := make([]string, len(t))
+		for i, x := range t {
+			out[i] = textnorm.Storable(x)
+		}
+		return out
+	}
+	return v
 }
 
 func nullableID(id int64) any {

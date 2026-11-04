@@ -193,8 +193,12 @@ func (in *Intake) FileRaw(ctx context.Context, channelID int64, transport string
 	}
 	filed, err := f.processOne(ctx, intake, m, meta)
 	if err != nil && permanentFilingError(err) {
+		// Unfileable whether or not the Comm log row lands: a sender told
+		// to try again would only send the same message forever.
 		if lerr := f.logInbound(ctx, in.Pool.P, intake.projectID, meta, "file_error", fileErrorDetail(m, err)); lerr != nil {
-			return Filed{}, lerr
+			f.logger.LogAttrs(ctx, slog.LevelWarn, "intake: logging an unfileable message failed",
+				slog.Int64("channel_id", channelID),
+				slog.String("error", lerr.Error()))
 		}
 		return Filed{}, fmt.Errorf("%w: %v", ErrUnfileable, err)
 	}

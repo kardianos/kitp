@@ -25,6 +25,7 @@ import (
 	"errors"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -32,12 +33,35 @@ import (
 // Name returns the NFC-normalised, trimmed form of [s]. Empty inputs
 // pass through unchanged so callers can preserve "user did not
 // supply this field" semantics without a second branch.
+//
+// Control characters (NUL, escape, line breaks inside the name …) are
+// dropped: a name from a mail header can carry any of them once its
+// encoded words are decoded, and Postgres refuses NUL outright.
 func Name(s string) string {
-	t := strings.TrimSpace(s)
+	t := strings.TrimSpace(strings.Map(dropControl, Storable(s)))
 	if t == "" {
 		return ""
 	}
 	return norm.NFC.String(t)
+}
+
+// dropControl is a strings.Map func that removes control runes (Cc).
+func dropControl(r rune) rune {
+	if unicode.IsControl(r) {
+		return -1
+	}
+	return r
+}
+
+// Storable returns s as text Postgres keeps: valid UTF-8 (a broken sequence
+// becomes U+FFFD) and no NUL, which neither text nor jsonb accepts. Every
+// string kitp takes from outside without choosing it (a received email's
+// headers, body and file names) passes through it before it is stored.
+func Storable(s string) string {
+	if utf8.ValidString(s) && strings.IndexByte(s, 0) < 0 {
+		return s
+	}
+	return strings.ReplaceAll(strings.ToValidUTF8(s, "\uFFFD"), "\x00", "")
 }
 
 // ErrEmptyFilename is returned by [Filename] when the input is empty

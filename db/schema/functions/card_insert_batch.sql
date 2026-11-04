@@ -233,9 +233,10 @@ BEGIN
             END IF;
             -- kitp sets these itself (see attribute.update): bundle_key (a
             -- bundle's source project), replies / comms (a thread's messages,
-            -- a task's threads) and subscriber (who owns a watch list,
-            -- calendar or subscription).
-            IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber') THEN
+            -- a task's threads), subscriber (who owns a watch list,
+            -- calendar or subscription) and comm_confirmed (who the relay
+            -- may send to).
+            IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber', 'comm_confirmed') THEN
                 _rej_code := 'validation';
                 _rej_msg := format('card.insert: %s is set by kitp, not by hand', _attr_name);
                 EXIT;

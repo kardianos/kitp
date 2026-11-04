@@ -588,18 +588,28 @@ Ada ──reply──▶ support@ ──▶ filed on the thread
                                   on her To/Cc, minus support@, minus kitp users
 ```
 
-- Who (review 2026-11-03 #3, #10). The thread's own account (its
-  `channel_ref`) decides whether replies are sent on, and its address and
-  name go on the copy, whichever account the reply came in on. The sender
-  must have been on the thread before this message (`processOne` reads the
-  recipients before filing). An address that came onto the thread only
-  because a received message named it in To or Cc (`reply_to`, `reply_cc`)
-  is *unconfirmed* — no copies, and its own messages aren't sent on —
-  until it writes on the thread or a message written in kitp (a reply, the
-  thread's first message) goes to it; people added in kitp
-  (`comm.set_recipients`) are confirmed. At most 20 recipients
-  (`too_many_recipients`); a From with other than one address is
-  `no_sender`. Route addresses (`…@KITP_SMTP_DOMAIN`) never join a thread.
+- Who (review 2026-11-03 #3, #10, round 2 #1). The thread's own account
+  (its `channel_ref`) decides whether replies are sent on, and its address
+  and name go on the copy, whichever account the reply came in on. Only
+  the thread's *confirmed* people take part, and only kitp confirms
+  anyone — nothing a received message says (its From, To and Cc aren't
+  authenticated):
+  - people a person in kitp added to the thread (`comm.create`'s
+    recipients; `comm.set_recipients`, the people it adds) and the person
+    who started the thread by mail — kept in `comm.comm_confirmed`
+    (`comm_confirm`, kitp-set only);
+  - everyone a message written in kitp was sent to (a reply, the thread's
+    first message), read from the messages' `reply_to`.
+
+  The sender must be confirmed (`sender_unconfirmed`) and on the thread
+  before this message (`sender_not_on_thread`; `processOne` reads the
+  recipients before filing); the copy goes to the confirmed people on the
+  thread. Someone a correspondent Cc'd joins the thread but gets no copies
+  until staff write to them or add them. Threads filed before 0032 have no
+  `comm_confirmed`: their people count once kitp writes to them. At most
+  20 recipients (`too_many_recipients`); a From with other than one
+  address is `no_sender`. Route addresses (`…@KITP_SMTP_DOMAIN`) never
+  join a thread.
   A relay failure is logged and leaves the message filed.
 - `relay.go` `relayReply`, called by `processOne` after a reply is filed
   on an existing thread (a new thread has nobody else on it). The copy is

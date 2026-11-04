@@ -139,7 +139,9 @@ BEGIN
         --     another project's message would show it (review 2026-11-03 #6).
         --   subscriber — who owns a watch list, calendar or notification
         --     subscription; their own handlers set it (review #20).
-        IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber') THEN
+        --   comm_confirmed — who on a thread the relay may send mail on to
+        --     (comm_confirm, review round 2 #1).
+        IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber', 'comm_confirmed') THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 format('attribute.update: %s is set by kitp, not by hand', _attr_name), NULL::jsonb;
             CONTINUE;

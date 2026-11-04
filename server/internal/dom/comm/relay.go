@@ -12,16 +12,20 @@ package comm
 //	      To/Cc, minus the account itself, minus kitp users (they see
 //	      it in kitp and get email through their notifications)
 //
-// Who gets a copy, and whose message is sent on (review 2026-11-03 #3):
-// otherwise anyone could Cc addresses onto a thread and have kitp mail them
-// as the organisation.
-//   - The sender must have been on the thread before this message.
-//   - An address that came onto the thread only from an inbound message's
-//     To or Cc is unconfirmed — it gets no copies, and its own messages
-//     aren't sent on — until it writes on the thread itself or a message
-//     written in kitp (a reply, the thread's first message) is sent to it.
-//     People a person added in kitp (comm.set_recipients) are confirmed.
-//   - A copy goes to at most maxRelayRecipients people.
+// Who gets a copy, and whose message is sent on (review 2026-11-03 #3 and
+// round 2 #1): otherwise anyone could put addresses on a thread and have
+// kitp mail them as the organisation. Only the thread's confirmed people
+// take part, and only kitp confirms anyone — never something a received
+// message says, since its From, To and Cc aren't authenticated:
+//   - the people a person in kitp added to the thread (comm.create,
+//     comm.set_recipients) and the person who started it by mail
+//     (comm.comm_confirmed, comm_confirm);
+//   - everyone a message written in kitp was sent to (a reply, the thread's
+//     first message).
+// The sender must be confirmed and on the thread before this message; the
+// copy goes to the confirmed people on it, at most maxRelayRecipients.
+// Someone another person Cc'd joins the thread but gets no copies until
+// staff write to them or add them.
 // The thread's own mail account (its channel_ref) decides whether replies
 // are sent on and sends the copy, whichever account the reply came in on
 // (#10).
@@ -73,7 +77,7 @@ func automaticKind(h mail.Header) string {
 	if rp, ok := h["Return-Path"]; ok && len(rp) > 0 && strings.TrimSpace(rp[0]) == "<>" {
 		return "bounce"
 	}
-	if a, err := mail.ParseAddress(h.Get("From")); err == nil {
+	if a, err := ParseAddress(h.Get("From")); err == nil {
 		local, _, _ := strings.Cut(strings.ToLower(a.Address), "@")
 		if local == "mailer-daemon" || local == "postmaster" {
 			return "bounce"
@@ -91,11 +95,11 @@ func addressesIn(headers ...string) map[string]struct{} {
 		if raw == "" {
 			continue
 		}
-		list, err := mail.ParseAddressList(raw)
+		list, err := ParseAddressList(raw)
 		if err != nil {
 			// One header that doesn't parse as a list may still be a
 			// single address.
-			if a, aerr := mail.ParseAddress(raw); aerr == nil {
+			if a, aerr := ParseAddress(raw); aerr == nil {
 				out[strings.ToLower(strings.TrimSpace(a.Address))] = struct{}{}
 			}
 			continue
@@ -192,22 +196,16 @@ func (p *filer) relayReplyTx(ctx context.Context, tx store.Querier, snap *schema
 	if _, fromSelf := senders[own]; fromSelf {
 		return skip("own_address")
 	}
-	confirmed, introduced, err := p.threadCorrespondents(ctx, tx, commID, replyID)
+	confirmed, err := threadConfirmed(ctx, tx, commID, replyID)
 	if err != nil {
 		return err
 	}
-	// trusted: on the thread, and not only because an inbound message
-	// named it in To / Cc — or confirmed since.
-	trusted := func(addr string) bool {
-		if _, ok := confirmed[addr]; ok {
-			return true
-		}
-		_, intro := introduced[addr]
-		return !intro
-	}
 	for sender := range senders {
-		if _, was := before[sender]; !was || !trusted(sender) {
+		if _, was := before[sender]; !was {
 			return skip("sender_not_on_thread")
+		}
+		if _, ok := confirmed[sender]; !ok {
+			return skip("sender_unconfirmed")
 		}
 	}
 	// Everyone the message already reached, and the account itself.
@@ -220,7 +218,9 @@ func (p *filer) relayReplyTx(ctx context.Context, tx store.Querier, snap *schema
 	var to []string
 	for _, a := range candidates {
 		key := strings.ToLower(a)
-		if _, was := before[key]; was && trusted(key) && !p.isRouteAddress(a) {
+		_, was := before[key]
+		_, ok := confirmed[key]
+		if was && ok && !p.isRouteAddress(a) {
 			to = append(to, a)
 		}
 	}
@@ -275,70 +275,109 @@ func threadAccount(ctx context.Context, tx store.Querier, commID, receivedOn int
 	return account, in.relay, nil
 }
 
-// threadCorrespondents reads a thread's messages other than skipReply.
-// confirmed: the lowercased addresses that wrote (a received message's
-// sender) or were written to from kitp (a reply, the thread's first message
-// — not a relay copy, which only repeats someone else's message).
-// introduced: the addresses a received message named in its To or Cc.
-func (p *filer) threadCorrespondents(ctx context.Context, tx store.Querier, commID, skipReply int64) (confirmed, introduced map[string]struct{}, err error) {
+// threadConfirmed is the lowercased addresses on a thread kitp has
+// confirmed, from messages other than skipReply: the people comm_confirmed
+// names (added by a person in kitp, or who started the thread by mail —
+// comm_confirm) and everyone a message written in kitp was sent to (a reply,
+// the thread's first message; not a relay copy, which only repeats someone
+// else's message). Nothing a received message says counts: its From, To
+// and Cc aren't authenticated (review 2026-11-03 round 2 #1).
+func threadConfirmed(ctx context.Context, tx store.Querier, commID, skipReply int64) (map[string]struct{}, error) {
 	b := named.New()
 	b.Set("comm", commID)
 	b.Set("skip", skipReply)
 	q, args, err := b.Compile(`
-		SELECT COALESCE(ds.value #>> '{}', ''), COALESCE(rf.value #>> '{}', ''),
-		       COALESCE(rt.value #>> '{}', ''), ro.card_id IS NOT NULL,
-		       COALESCE(rc.value #>> '{}', '')
+		SELECT COALESCE(rt.value #>> '{}', ''), ''
 		FROM attribute_value av
 		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'replies'
 		CROSS JOIN LATERAL jsonb_array_elements(
 			CASE WHEN jsonb_typeof(av.value) = 'array' THEN av.value ELSE '[]'::jsonb END) AS e(v)
 		JOIN card r ON r.id = CASE WHEN (e.v #>> '{}') ~ '^[0-9]{1,18}$' THEN (e.v #>> '{}')::bigint END
 		           AND r.deleted_at IS NULL AND r.id <> :skip
-		LEFT JOIN attribute_value ds ON ds.card_id = r.id
-		      AND ds.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'delivery_status')
-		LEFT JOIN attribute_value rf ON rf.card_id = r.id
-		      AND rf.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_from')
-		LEFT JOIN attribute_value rt ON rt.card_id = r.id
-		      AND rt.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_to')
-		LEFT JOIN attribute_value ro ON ro.card_id = r.id AND jsonb_typeof(ro.value) = 'number'
-		      AND ro.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'relay_of')
-		LEFT JOIN attribute_value rc ON rc.card_id = r.id
-		      AND rc.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_cc')
+		JOIN attribute_value rt ON rt.card_id = r.id
+		 AND rt.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_to')
+		WHERE av.card_id = :comm
+		  AND COALESCE((SELECT ds.value #>> '{}' FROM attribute_value ds
+		                WHERE ds.card_id = r.id
+		                  AND ds.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'delivery_status')), '') <> 'received'
+		  AND NOT EXISTS (SELECT 1 FROM attribute_value ro
+		                  WHERE ro.card_id = r.id
+		                    AND ro.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'relay_of'))
+		UNION ALL
+		SELECT '', lower(btrim(pav.value #>> '{}'))
+		FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'comm_confirmed'
+		CROSS JOIN LATERAL jsonb_array_elements(
+			CASE WHEN jsonb_typeof(av.value) = 'array' THEN av.value ELSE '[]'::jsonb END) AS e(v)
+		JOIN card pc ON pc.id = CASE WHEN (e.v #>> '{}') ~ '^[0-9]{1,18}$' THEN (e.v #>> '{}')::bigint END
+		            AND pc.deleted_at IS NULL
+		JOIN attribute_value pav ON pav.card_id = pc.id
+		JOIN attribute_def pad ON pad.id = pav.attribute_def_id AND pad.name = 'email'
 		WHERE av.card_id = :comm
 	`)
 	if err != nil {
-		return nil, nil, fmt.Errorf("thread correspondents: %w", err)
+		return nil, fmt.Errorf("thread confirmed: %w", err)
 	}
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("thread correspondents: %w", err)
+		return nil, fmt.Errorf("thread confirmed: %w", err)
 	}
 	defer rows.Close()
-	confirmed, introduced = map[string]struct{}{}, map[string]struct{}{}
+	out := map[string]struct{}{}
 	for rows.Next() {
-		var status, from, to, cc string
-		var relayCopy bool
-		if err := rows.Scan(&status, &from, &to, &relayCopy, &cc); err != nil {
-			return nil, nil, fmt.Errorf("thread correspondents: scan: %w", err)
+		var wroteTo, person string
+		if err := rows.Scan(&wroteTo, &person); err != nil {
+			return nil, fmt.Errorf("thread confirmed: scan: %w", err)
 		}
-		switch {
-		case status == "received":
-			for a := range addressesIn(from) {
-				confirmed[a] = struct{}{}
-			}
-			for a := range addressesIn(to, cc) {
-				introduced[a] = struct{}{}
-			}
-		case !relayCopy:
-			for a := range addressesIn(to) {
-				confirmed[a] = struct{}{}
-			}
+		for a := range addressesIn(wroteTo) {
+			out[a] = struct{}{}
+		}
+		if person != "" {
+			out[person] = struct{}{}
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("thread correspondents: %w", err)
+		return nil, fmt.Errorf("thread confirmed: %w", err)
 	}
-	return confirmed, introduced, nil
+	return out, nil
+}
+
+// confirmStarter confirms the person who started a thread by writing to the
+// account (comm_confirm): the thread is theirs, so their later messages are
+// sent on to the people staff add. Their From isn't authenticated either,
+// but it only ever reaches people a person in kitp chose.
+func confirmStarter(ctx context.Context, tx store.Querier, commID int64, from string) error {
+	senders := addressesIn(from)
+	if len(senders) != 1 {
+		return nil
+	}
+	var addr string
+	for a := range senders {
+		addr = a
+	}
+	b := named.New()
+	b.Set("comm", commID)
+	b.Set("addr", addr)
+	q, args, err := b.Compile(`
+		SELECT comm_confirm(:comm, ARRAY(
+			SELECT pc.id
+			FROM attribute_value av
+			JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'comm_recipients'
+			CROSS JOIN LATERAL jsonb_array_elements(
+				CASE WHEN jsonb_typeof(av.value) = 'array' THEN av.value ELSE '[]'::jsonb END) AS e(v)
+			JOIN card pc ON pc.id = CASE WHEN (e.v #>> '{}') ~ '^[0-9]{1,18}$' THEN (e.v #>> '{}')::bigint END
+			            AND pc.deleted_at IS NULL
+			JOIN attribute_value pav ON pav.card_id = pc.id
+			JOIN attribute_def pad ON pad.id = pav.attribute_def_id AND pad.name = 'email'
+			WHERE av.card_id = :comm AND lower(btrim(pav.value #>> '{}')) = :addr))
+	`)
+	if err != nil {
+		return fmt.Errorf("confirm starter: %w", err)
+	}
+	if _, err := tx.Exec(ctx, q, args...); err != nil {
+		return fmt.Errorf("confirm starter: %w", err)
+	}
+	return nil
 }
 
 // threadRecipientAddresses is the lowercased email of every person on a

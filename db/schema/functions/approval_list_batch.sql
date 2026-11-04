@@ -139,7 +139,10 @@ BEGIN
                                                                                 THEN (e.v #>> '{}')::bigint END)
                                               ), 0))
                                    FROM card cm
-                                   WHERE cm.id = fl.comm_id AND cm.deleted_at IS NULL))
+                                   WHERE cm.id = fl.comm_id AND cm.deleted_at IS NULL
+                                     -- A thread in an area that is off is hidden
+                                     -- from everyone, its subject included.
+                                     AND NOT card_in_off_area(cm.id)))
                            ORDER BY ap.created_at, ap.id)
                     FROM card ap
                     CROSS JOIN LATERAL approval_fields(ap.id) fl

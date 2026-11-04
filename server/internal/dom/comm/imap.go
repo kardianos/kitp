@@ -503,9 +503,13 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 				// It can never be filed (ErrUnfileable): log it and mark it
 				// read like an unreadable message, rather than retry it
 				// forever and trip the account's fault switch.
-				if lerr := p.logInbound(ctx, p.pool.P, projectID, inboundMeta{transport: TransportIMAP}, "file_error", fileErrorDetail(m, err)); lerr != nil && firstErr == nil {
-					firstErr = lerr
-					continue
+				// A failure to log it is logged here and doesn't hold the
+				// message back either.
+				if lerr := p.logInbound(ctx, p.pool.P, projectID, inboundMeta{transport: TransportIMAP}, "file_error", fileErrorDetail(m, err)); lerr != nil {
+					p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: logging an unfileable message failed",
+						slog.Int64("channel_id", p.channelID),
+						slog.Any("uid", m.UID),
+						slog.String("error", lerr.Error()))
 				}
 				ingested = append(ingested, m.UID)
 				continue
@@ -657,6 +661,10 @@ func (p *IMAPPoller) recordPollOnly(ctx context.Context, projectID int64, count 
 // be retried. Every transport (IMAP, POST, SMTP) comes through here; see
 // docs/MAIL_INTAKE_AND_CALENDARS.md §3–4.
 func (p *filer) processOne(ctx context.Context, intake channelIntake, m InboundMessage, meta inboundMeta) (Filed, error) {
+	// Every transport's message is made storable here too, whoever parsed
+	// it (storableInbound; a no-op on what ParseInboundMessage returned).
+	m.Attachments = append([]InboundAttachment(nil), m.Attachments...)
+	storableInbound(&m)
 	projectID := intake.projectID
 	threadID, source := extractThreadID(m)
 
@@ -985,10 +993,15 @@ func (p *filer) appendReceivedReply(ctx context.Context, tx store.Querier, snap 
 				slog.String("error", err.Error()))
 		}
 	}
-	if err := p.syncCommRecipientsFromInbound(ctx, tx, snap, commID, m, actorID); err != nil {
+	err = withSavepoint(ctx, tx, "inbound_recipients", func() error {
+		return p.syncCommRecipientsFromInbound(ctx, tx, snap, commID, m, actorID)
+	})
+	if err != nil {
 		// Log but don't fail the whole inbound — the message + reply
 		// landed; participant tracking can be fixed up later by an
-		// operator editing recipients manually.
+		// operator editing recipients manually. The savepoint keeps a
+		// failed statement from aborting the message's transaction
+		// (review 2026-11-03 round 2 #2).
 		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap recipient sync failed",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("comm_id", commID),
@@ -1309,7 +1322,7 @@ func (p *filer) syncCommRecipientsFromInbound(
 		// mail.ParseAddressList tolerates name + bare-email forms.
 		// Best-effort: if parsing fails for one header we still try
 		// the others rather than abort the sync.
-		list, perr := mail.ParseAddressList(raw)
+		list, perr := ParseAddressList(raw)
 		if perr != nil {
 			continue
 		}
@@ -1509,6 +1522,9 @@ func (p *filer) createComm(ctx context.Context, tx store.Querier, snap *schema.S
 
 	// First received reply, mirroring the channel-driven inbound capture.
 	if _, err := p.appendReceivedReply(ctx, tx, snap, commID, m, in, meta, actorID); err != nil {
+		return 0, err
+	}
+	if err := confirmStarter(ctx, tx, commID, m.From); err != nil {
 		return 0, err
 	}
 	return commID, nil
@@ -1722,7 +1738,28 @@ func ParseInboundMessage(uid uint32, raw []byte) (InboundMessage, error) {
 		out.Body = string(decoded)
 		out.BodyPlain = out.Body
 	}
+	storableInbound(&out)
 	return out, nil
+}
+
+// storableInbound makes every text field of a parsed message storable
+// (textnorm.Storable: valid UTF-8, no NUL). Mail may carry a NUL or broken
+// bytes anywhere, raw or inside an encoded word, and Postgres refuses NUL
+// in text and jsonb alike — the message would never file, and IMAP would
+// retry it until the account faults (review 2026-11-03 round 2 #2). Names
+// decoded later (displayAddress, the people on a thread) are cleaned where
+// they are decoded.
+func storableInbound(m *InboundMessage) {
+	for _, f := range []*string{
+		&m.MessageID, &m.Date, &m.From, &m.To, &m.Cc, &m.Subject, &m.ThreadIDHdr,
+		&m.InReplyTo, &m.References, &m.NotificationHdr, &m.Body, &m.BodyPlain, &m.BodyHTML,
+	} {
+		*f = textnorm.Storable(*f)
+	}
+	for i := range m.Attachments {
+		m.Attachments[i].Filename = textnorm.Storable(m.Attachments[i].Filename)
+		m.Attachments[i].MimeType = textnorm.Storable(m.Attachments[i].MimeType)
+	}
 }
 
 // walkMultipart parses a multipart body via stdlib `mime/multipart`

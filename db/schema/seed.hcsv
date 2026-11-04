@@ -127,6 +127,7 @@ relay_of,              number,      true, null, false
 attachments_left_off,  number,      true, null, false
 reply_cc,              text,        true, null, false
 comm_recipients,       card_ref[],  true, $card_type.person, false
+comm_confirmed,        card_ref[],  true, $card_type.person, false
 acked,                 bool,        true, null, false
 person_kind,           text,        true, null, false
 sink_kind,             text,        true, null, false
@@ -257,6 +258,7 @@ $card_type.comm,         $attribute_def.comm_status,       true,  3
 $card_type.comm,         $attribute_def.replies,           false, 4
 $card_type.comm,         $attribute_def.comm_recipients,   false, 5
 $card_type.comm,         $attribute_def.acked,             false, 6
+$card_type.comm,         $attribute_def.comm_confirmed,    false, 7
 $card_type.reply_body,   $attribute_def.reply_to,          false, 0
 $card_type.reply_body,   $attribute_def.reply_from,        true,  1
 $card_type.reply_body,   $attribute_def.reply_subject,     false, 2

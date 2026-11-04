@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/emersion/go-msgauth/dkim"
+
+	"github.com/kitp/kitp/server/internal/dom/comm"
 )
 
 // dkimResult is what DKIM verification of one message found.
@@ -82,7 +84,7 @@ func headerFrom(raw []byte) (from, bad string) {
 
 // fromDomain is the domain of a From header with exactly one address, or "".
 func fromDomain(from string) string {
-	list, err := mail.ParseAddressList(from)
+	list, err := comm.ParseAddressList(from)
 	if err != nil || len(list) != 1 {
 		return ""
 	}

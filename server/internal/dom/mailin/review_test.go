@@ -155,6 +155,14 @@ func TestSMTPRcptMisses(t *testing.T) {
 	if code, err := cmd("RCPT TO:<" + good.Token + "@" + smtpDomain + ">"); err == nil && code == 250 {
 		t.Fatal("a valid recipient was accepted on the cut-off connection")
 	}
+	// The connection is then closed (round 2 #16), not left open until
+	// the read timeout.
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := tp.ReadLine(); err == nil {
+		t.Error("the server sent more after 421")
+	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Error("the connection is still open 5 s after 421")
+	}
 }
 
 // TestMailgunRetryAfter503 (#22): a Mailgun request answered "try again"

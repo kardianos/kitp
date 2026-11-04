@@ -4,8 +4,12 @@ import (
 	"io"
 	"mime"
 	"net/mail"
+	"strings"
+	"unicode"
 
 	"golang.org/x/text/encoding/htmlindex"
+
+	"github.com/kitp/kitp/server/internal/textnorm"
 )
 
 // headerDecoder decodes RFC 2047 encoded words ("=?UTF-8?B?…?=") in any
@@ -21,14 +25,33 @@ var headerDecoder = &mime.WordDecoder{
 	},
 }
 
+// ParseAddressList parses an address-list header (From, To, Cc) whose
+// display names may be encoded words in any charset headerDecoder knows.
+// The standard parser refuses a name in windows-1252, ISO-2022-JP, GB2312
+// and the like, and the whole header with it — an allow list then refuses
+// the sender, DKIM alignment fails, and the people on it are lost (review
+// 2026-11-03 round 2 #17).
+func ParseAddressList(s string) ([]*mail.Address, error) {
+	p := mail.AddressParser{WordDecoder: headerDecoder}
+	return p.ParseList(s)
+}
+
+// ParseAddress is ParseAddressList for a header that holds one address.
+func ParseAddress(s string) (*mail.Address, error) {
+	p := mail.AddressParser{WordDecoder: headerDecoder}
+	return p.Parse(s)
+}
+
 // decodeHeaderText decodes a header value's encoded words (a Subject),
 // or returns it as it came when it can't be decoded.
+// The result is storable (textnorm.Storable): an encoded word can decode
+// to a NUL.
 func decodeHeaderText(s string) string {
 	d, err := headerDecoder.DecodeHeader(s)
 	if err != nil {
-		return s
+		return textnorm.Storable(s)
 	}
-	return d
+	return textnorm.Storable(d)
 }
 
 // displayAddress renders a From header for people — the thread view and
@@ -41,8 +64,15 @@ func displayAddress(raw string) string {
 	if err != nil {
 		return decodeHeaderText(raw)
 	}
-	if a.Name == "" {
-		return a.Address
+	name := strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, textnorm.Storable(a.Name)))
+	addr := textnorm.Storable(a.Address)
+	if name == "" {
+		return addr
 	}
-	return a.Name + " <" + a.Address + ">"
+	return name + " <" + addr + ">"
 }

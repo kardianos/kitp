@@ -1268,6 +1268,25 @@ FROM card_type ct, attribute_def ad
 WHERE ct.name = 'reply_body' AND ad.name = 'reply_cc'
 ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
 	},
+	{
+		// The thread's people kitp itself confirmed for the relay (person
+		// ids): those a person in kitp added and the person who started the
+		// thread by mail (comm_confirm). Nothing a received message says
+		// confirms anyone any more (review 2026-11-03 round 2 #1). Threads
+		// filed before have none: their people get copies once someone
+		// writes to them from kitp or adds them again. Idempotent.
+		id: "0032_comm_confirmed",
+		sql: `
+INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+SELECT 'comm_confirmed', 'card_ref[]', ct.id, true, false
+FROM card_type ct WHERE ct.name = 'person'
+ON CONFLICT (name) DO NOTHING;
+INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+SELECT ct.id, ad.id, false, 7
+FROM card_type ct, attribute_def ad
+WHERE ct.name = 'comm' AND ad.name = 'comm_confirmed'
+ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

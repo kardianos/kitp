@@ -224,6 +224,16 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- 4b. Nothing is started or sent through an account whose area is
+        --     off (Conversations): its thread would be hidden from everyone
+        --     while its mail still went out. approval.set's email request
+        --     comes through here too (review 2026-11-03 round 2 #21).
+        IF card_in_off_area(_channel_id) OR card_in_off_area(_task_id) THEN
+            RETURN QUERY SELECT _idx, false, 'area_off'::text,
+                'comm.create: Conversations is off in this project'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 5. comm_status default from the project's comm flow.
         SELECT COALESCE(default_create_status_id, 0)
           INTO _default_status_id
@@ -378,6 +388,8 @@ BEGIN
             ON CONFLICT (card_id, attribute_def_id) DO UPDATE
                 SET value = EXCLUDED.value,
                     last_activity_id = EXCLUDED.last_activity_id;
+            -- People a person in kitp put on the thread (comm_confirm).
+            PERFORM comm_confirm(_comm_id, _ids);
         END IF;
 
         -- 10. Append _comm_id to task.comms. Tolerate legacy

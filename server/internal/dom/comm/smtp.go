@@ -29,6 +29,7 @@ package comm
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -281,7 +282,7 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 	if total, err := s.replyAttachmentBytes(ctx, r.replyID); err != nil {
 		return fmt.Errorf("smtp sender: attachment sizes for reply %d: %w", r.replyID, err)
 	} else if total > MaxReplyAttachmentBytes {
-		_ = s.recordResult(ctx, r, "failed", "send_fail", map[string]any{
+		s.recordFailure(ctx, r, map[string]any{
 			"error":    "attachments exceed per-reply size cap",
 			"cap":      MaxReplyAttachmentBytes,
 			"total":    total,
@@ -294,7 +295,7 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 	if err != nil {
 		// Couldn't read attachment bytes — fail the row loudly rather
 		// than ship a body-only message the user didn't intend.
-		_ = s.recordResult(ctx, r, "failed", "send_fail",
+		s.recordFailure(ctx, r,
 			map[string]any{"error": "load attachments: " + err.Error()})
 		return fmt.Errorf("smtp sender: load attachments for reply %d: %w", r.replyID, err)
 	}
@@ -303,7 +304,7 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 		total += int64(len(a.Bytes))
 	}
 	if total > MaxReplyAttachmentBytes {
-		_ = s.recordResult(ctx, r, "failed", "send_fail", map[string]any{
+		s.recordFailure(ctx, r, map[string]any{
 			"error":    "attachments exceed per-reply size cap",
 			"cap":      MaxReplyAttachmentBytes,
 			"total":    total,
@@ -588,6 +589,16 @@ func (s *SMTPSender) loadEarlier(ctx context.Context, r pendingReply) ([]quotedM
 // comm_log row in one transaction. The attribute write goes through
 // the package's writeAttributeValue helper so the activity row is
 // shaped identically to every other attribute_update in kitp.
+// recordFailure marks a reply failed before it was sent. A failure to record
+// it is logged: the reply stays pending and the next sweep tries again.
+func (s *SMTPSender) recordFailure(ctx context.Context, r pendingReply, detail map[string]any) {
+	if err := s.recordResult(ctx, r, "failed", "send_fail", detail); err != nil {
+		s.logger.LogAttrs(ctx, slog.LevelWarn, "smtp sender: record a failed reply",
+			slog.Int64("reply_id", r.replyID),
+			slog.String("err", err.Error()))
+	}
+}
+
 func (s *SMTPSender) recordResult(ctx context.Context, r pendingReply, newStatus, logKind string, detail map[string]any) error {
 	actorID := auth.ActorOrSystem(ctx)
 	tx, err := s.pool.Begin(ctx)
@@ -708,10 +719,15 @@ func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote stri
 	// Common headers. A value never carries a line break: a subject or
 	// name taken from mail (a decoded =?…?= word can hold CR LF) would
 	// otherwise start a header of the sender's choosing.
+	// A message carries its Date and a Message-ID (RFC 5322 §3.6), and a
+	// subject outside ASCII goes as encoded words (RFC 2047), not raw UTF-8
+	// (review 2026-11-03 round 2 #21).
 	var hdr strings.Builder
 	fmt.Fprintf(&hdr, "From: %s\r\n", oneLine(from))
 	fmt.Fprintf(&hdr, "To: %s\r\n", oneLine(to))
-	fmt.Fprintf(&hdr, "Subject: %s\r\n", oneLine(subjectFinal))
+	fmt.Fprintf(&hdr, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", oneLine(subjectFinal)))
+	fmt.Fprintf(&hdr, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
+	fmt.Fprintf(&hdr, "Message-ID: %s\r\n", replyMessageID(from))
 	fmt.Fprintf(&hdr, "X-Kitp-Thread-Id: %s\r\n", oneLine(threadID))
 	for _, h := range extra {
 		fmt.Fprintf(&hdr, "%s: %s\r\n", h.Key, oneLine(h.Value))
@@ -773,6 +789,24 @@ var headerBreaks = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ")
 
 // oneLine is a header value with its line breaks turned into spaces.
 func oneLine(v string) string { return headerBreaks.Replace(v) }
+
+// replyMessageID is a new Message-ID for a message kitp sends on a thread,
+// at the domain of its From address.
+func replyMessageID(from string) string {
+	domain := "kitp.invalid"
+	if a, err := ParseAddress(from); err == nil {
+		if at := strings.LastIndexByte(a.Address, '@'); at >= 0 && at < len(a.Address)-1 {
+			domain = strings.ToLower(a.Address[at+1:])
+		}
+	}
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand doesn't fail on the systems kitp runs on; the time
+		// still makes the id unique enough.
+		return fmt.Sprintf("<kitp.%d@%s>", time.Now().UnixNano(), oneLine(domain))
+	}
+	return fmt.Sprintf("<kitp.%x@%s>", b, oneLine(domain))
+}
 
 // mimeHeader is one extra header line on an outgoing message (a relayed
 // copy's Auto-Submitted). Key and Value are kitp's own constants, never
@@ -1006,7 +1040,7 @@ func parseRecipients(to string) ([]string, error) {
 	if trimmed == "" {
 		return nil, nil
 	}
-	if addrs, err := mail.ParseAddressList(trimmed); err == nil {
+	if addrs, err := ParseAddressList(trimmed); err == nil {
 		out := make([]string, 0, len(addrs))
 		for _, a := range addrs {
 			if a.Address != "" {
