@@ -68,6 +68,12 @@ BEGIN
                 'user_token.create: label is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
+        -- A deleted agent (agent.delete) gets no token again.
+        IF EXISTS (SELECT 1 FROM user_account WHERE id = _user_id AND deleted_at IS NOT NULL) THEN
+            RETURN QUERY SELECT _idx, false, 'not_found'::text,
+                format('user_token.create: user %s not found', _user_id), NULL::jsonb;
+            CONTINUE;
+        END IF;
         IF _scope NOT IN ('', 'links') THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 format('user_token.create: scope must be empty (full access) or links, got %L', _scope),

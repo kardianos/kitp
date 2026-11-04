@@ -12,13 +12,13 @@
  * Promote/demote composes the existing handlers:
  *   - kind change           → attribute.update(person_kind)
  *   - grant a login         → person.grant_account (mint + link a user_account)
- *   - revoke a login        → user.unlink_person
+ *   - revoke a login        → user.revoke_login
  *
  * "+ New" opens a modal dialog (Name / Email / Type) — no `prompt`. Type
  * defaults to the active segment's tier; Email is required when Type='User'.
  * Each row carries a Remove affordance that opens a confirm dialog and composes
  * the removal: revoke the login first when the person is a user
- * (user.unlink_person), then soft-delete the person card (card.delete).
+ * (user.revoke_login), then soft-delete the person card (card.delete).
  * Zero-promise; reloads after each write.
  */
 
@@ -520,9 +520,11 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
 
     // 2. account: grant when becoming a user; revoke when leaving 'user'.
     if (target === 'user' && r.accountId === null) {
+      // The email shown on the row is the one they will sign in with; the
+      // server takes only an email the admin's request names.
       this.ctx.api.callByName(
         ADMIN_SPEC.personGrantAccount,
-        { personCardId: r.id },
+        { personCardId: r.id, email: r.email },
         () => done(),
         {
           alive: () => this.isAlive(),
@@ -532,8 +534,9 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
         },
       );
     } else if (target !== 'user' && r.accountId !== null) {
+      // No longer a user: the login itself goes, not just its link.
       this.ctx.api.callByName(
-        ADMIN_SPEC.userUnlinkPerson,
+        ADMIN_SPEC.userRevokeLogin,
         { userAccountId: r.accountId },
         () => done(),
         { alive: () => this.isAlive() },
@@ -832,13 +835,14 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     confirm.focus?.();
   }
 
-  /** Compose a removal: revoke the login first when the person is a user, then
+  /** Compose a removal: revoke the login first when the person is a user
+   *  (user.revoke_login: roles, sessions, tokens and sign-in identity), then
    *  soft-delete the person card. Both ride one coalesced batch; the reload
    *  fires when the card.delete settles. */
   private removePerson(r: PersonRow): void {
     if (r.tier === 'user' && r.accountId !== null) {
       this.ctx.api.callByName(
-        ADMIN_SPEC.userUnlinkPerson,
+        ADMIN_SPEC.userRevokeLogin,
         { userAccountId: r.accountId },
         () => {},
         { alive: () => this.isAlive() },

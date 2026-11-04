@@ -112,6 +112,16 @@ func Register() {
 	})
 	reg.Register(reg.Handler{
 		Endpoint:     "user",
+		Action:       "revoke_login",
+		Doc:          "Take a person's login away — what the People screen's Remove and \"no longer a user\" do. The account and its agents lose every role, session and token; its sign-in identity (oidc_sub, email) and person link are cleared, so no sign-in reaches it again (the same human signing in later is a new account with no roles). The row stays, so its activity keeps its author. Refused for the System user, an agent (use agent.delete) and your own login.",
+		InputType:    reflect.TypeFor[RevokeLoginInput](),
+		OutputType:   reflect.TypeFor[RevokeLoginOutput](),
+		AllowedRoles: []string{"admin"},
+		// Workspace-wide like user.unlink_person: a login isn't in a project.
+		SQLFunc: "user_revoke_login_batch",
+	})
+	reg.Register(reg.Handler{
+		Endpoint:     "user",
 		Action:       "set_display_name",
 		Doc:          "Update user_account.display_name for one user_account row. The /auth/me probe reads display_name straight from this column, so this is what powers the shell's signed-in user chip — renaming the linked person card (attribute.update on title) does NOT propagate here. Admin-only; no-op (ok=true) when the value already matches.",
 		InputType:    reflect.TypeFor[SetDisplayNameInput](),
@@ -141,6 +151,19 @@ type SetDisplayNameOutput struct {
 // view; the link is 1:1 so either key would work.
 type UnlinkPersonInput struct {
 	UserAccountID int64 `json:"user_account_id,string" mcp:"required,desc=user_account row whose user_account_person link is being deleted"`
+}
+
+// RevokeLoginInput names the login to revoke (review 2026-11-03 round 2 #3).
+type RevokeLoginInput struct {
+	UserAccountID int64 `json:"user_account_id,string" mcp:"required,desc=user_account row whose login is revoked"`
+}
+
+// RevokeLoginOutput counts what was taken away.
+type RevokeLoginOutput struct {
+	Revoked  bool `json:"revoked" mcp:"desc=true when the login was revoked"`
+	Roles    int  `json:"roles" mcp:"desc=role grants removed (the account's and its agents')"`
+	Sessions int  `json:"sessions" mcp:"desc=sessions ended"`
+	Tokens   int  `json:"tokens" mcp:"desc=tokens revoked (the account's and its agents')"`
 }
 
 // UnlinkPersonOutput reports whether a row was actually deleted (so

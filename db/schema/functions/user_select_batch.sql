@@ -100,6 +100,9 @@ BEGIN
                 ))
                 AND (NOT _has_parent OR ua.parent_user_id = _parent_id)
                 AND (NOT _has_agent  OR ua.is_agent = _is_agent)
+                -- A deleted agent (agent.delete) is kept for its activity
+                -- only, never listed.
+                AND ua.deleted_at IS NULL
                 -- Agent rows are visible only to their parent or a global
                 -- admin; humans stay fully listable. Enforced regardless of
                 -- the parent_user_id filter the caller passed.

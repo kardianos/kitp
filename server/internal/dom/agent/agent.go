@@ -87,7 +87,7 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "agent",
 		Action:       "delete",
-		Doc:          "Delete an agent owned by the calling user (or by any admin). Cascades sessions, tokens, and user_card_agent rows. Rejects when the actor is itself an agent.",
+		Doc:          "Delete an agent owned by the calling user (or by any admin): it loses its roles, tokens, sessions and card routings and is no longer listed; its row stays, marked deleted, so its activity, files and imports keep their author. Rejects when the actor is itself an agent.",
 		InputType:    reflect.TypeFor[DeleteInput](),
 		OutputType:   reflect.TypeFor[DeleteOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},

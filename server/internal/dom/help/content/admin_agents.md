@@ -40,7 +40,7 @@ The **parent-grants-subset** rule is enforced server-side, whoever does the gran
 
 ## Deleting an agent
 
-Deleting an agent removes the user row plus every token. It does **not** delete activity rows the agent produced — those keep pointing at the (now soft-deleted) user, so the audit trail is preserved.
+Deleting an agent takes away its roles, its tokens and the cards it was set to work on, and it is no longer listed. What it did stays: its activity and comments, the files it uploaded and the imports it ran still name it, so the audit trail is preserved.
 
 ## Related admin pages
 

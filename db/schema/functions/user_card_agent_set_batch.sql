@@ -79,6 +79,7 @@ BEGIN
                     WHERE id = _agent_user_id
                       AND is_agent = TRUE
                       AND parent_user_id = actor_id
+                      AND deleted_at IS NULL
                 ) INTO _owned;
             END IF;
             IF NOT _owned THEN

@@ -116,7 +116,12 @@ to a fresh-insert path and gets its own account. The attach matches only
 the login's own `user_account.email`, which only admins set (person.create
 tier=user, person.grant_account, the init-admin bootstrap) — never a person
 card's `email` attribute, which any worker can edit — and never the System
-user or an agent (review 2026-11-03 #1).
+user or an agent (review 2026-11-03 #1). `person.grant_account` takes the
+email from the admin's request and never copies the card's. Reusing an
+existing login-less person for a new sign-in matches the card's email only
+when kitp itself wrote it (System, or no activity row: seed, bundles) or a
+workspace admin did; a worker's edit leaves the sign-in its own person
+(round 2 #5).
 
 **Why.** This is the published bootstrap attack for email-matching OIDC
 apps: an OP that lets users assert an arbitrary unverified email lets an

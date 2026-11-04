@@ -52,6 +52,7 @@ export const ADMIN_SPEC = {
   userRoleRevoke: 'user_role.revoke',
   userRoleList: 'user_role.list',
   userUnlinkPerson: 'user.unlink_person',
+  userRevokeLogin: 'user.revoke_login',
   userSetDisplayName: 'user.set_display_name',
   // Nested-editor specs (flow-step transitions, attribute edges, card_types).
   cardTypeSelect: 'card_type.select',
@@ -363,8 +364,9 @@ export interface PersonCreateOutput {
 
 export interface PersonGrantAccountInput {
   personCardId: bigint | string;
-  /** Email override; when blank the person's stored email is used (one required). */
-  email?: string;
+  /** The email they will sign in with. Required: the server never copies the
+   *  person's email attribute, which any worker can edit. */
+  email: string;
 }
 export interface PersonGrantAccountOutput {
   /** The linked (new or pre-existing) user_account id. */
@@ -432,6 +434,15 @@ export interface UserUnlinkPersonInput {
 }
 export interface UserUnlinkPersonOutput {
   deleted: boolean;
+}
+
+/* ---- user.revoke_login (People Remove / demote) -------------------------- */
+
+export interface UserRevokeLoginInput {
+  userAccountId: bigint | string;
+}
+export interface UserRevokeLoginOutput {
+  revoked: boolean;
 }
 
 /* ---- user.set_display_name (Users rename → shell chip) ------------------- */
@@ -1171,8 +1182,8 @@ export function registerAdminSpecs(api: Api): void {
   }
 
   // person.grant_account — promote an existing person to a user (mint + link a
-  // user_account). Idempotent server-side; email optional (falls back to the
-  // person's stored email).
+  // user_account). Idempotent server-side; the email is required (the server
+  // never copies the person's email attribute).
   if (!api.registry.has({ endpoint: 'person', action: 'grant_account' })) {
     api.define<PersonGrantAccountInput, PersonGrantAccountOutput>({
       endpoint: 'person',
@@ -1270,6 +1281,18 @@ export function registerAdminSpecs(api: Api): void {
       action: 'unlink_person',
       encode: (i) => ({ user_account_id: i.userAccountId }),
       decode: (raw): UserUnlinkPersonOutput => ({ deleted: asObj(raw)['deleted'] === true }),
+    });
+  }
+
+  // user.revoke_login — the People screen's Remove and demote: the account
+  // and its agents lose their roles, sessions and tokens, and its sign-in
+  // identity and person link go (review 2026-11-03 round 2 #3).
+  if (!api.registry.has({ endpoint: 'user', action: 'revoke_login' })) {
+    api.define<UserRevokeLoginInput, UserRevokeLoginOutput>({
+      endpoint: 'user',
+      action: 'revoke_login',
+      encode: (i) => ({ user_account_id: i.userAccountId }),
+      decode: (raw): UserRevokeLoginOutput => ({ revoked: asObj(raw)['revoked'] === true }),
     });
   }
 

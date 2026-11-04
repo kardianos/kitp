@@ -77,6 +77,12 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- A deleted agent (agent.delete) gets no role again.
+        IF EXISTS (SELECT 1 FROM user_account WHERE id = _user_id AND deleted_at IS NOT NULL) THEN
+            RETURN QUERY SELECT _idx, false, 'not_found'::text,
+                format('user_role.set: user %s not found', _user_id), NULL::jsonb;
+            CONTINUE;
+        END IF;
         SELECT parent_user_id INTO _owner FROM user_account WHERE id = _user_id;
         IF _owner IS NOT NULL AND NOT EXISTS (
             SELECT 1 FROM user_role pr

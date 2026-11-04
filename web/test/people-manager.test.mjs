@@ -18,7 +18,7 @@ before(async () => {
 
 // 701 = contact, 702 = assignee (member, no account), 703 = user (member + account 900).
 function recordingTransport() {
-  const sent = { updates: [], grants: [], unlinks: [], creates: [], deletes: [], roleSets: [], roleRevokes: [], merges: [] };
+  const sent = { updates: [], grants: [], unlinks: [], revokes: [], creates: [], deletes: [], roleSets: [], roleRevokes: [], merges: [] };
   function respond(sr) {
     const k = `${sr.endpoint}.${sr.action}`;
     const data = sr.data ?? {};
@@ -27,7 +27,7 @@ function recordingTransport() {
         id: sr.id, ok: true,
         data: { rows: [
           { id: '701', card_type_name: 'person', attributes: { title: 'Carol Contact', person_kind: 'contact', email: 'carol@x.com' } },
-          { id: '702', card_type_name: 'person', attributes: { title: 'Avery Assignee', person_kind: 'member' } },
+          { id: '702', card_type_name: 'person', attributes: { title: 'Avery Assignee', person_kind: 'member', email: 'avery@example.com' } },
           { id: '703', card_type_name: 'person', attributes: { title: 'Uma User', person_kind: 'member', email: 'uma@x.com' } },
         ] },
       };
@@ -47,6 +47,7 @@ function recordingTransport() {
     if (k === 'attribute.update') { sent.updates.push(data); return { id: sr.id, ok: true, data: { ok: true } }; }
     if (k === 'person.grant_account') { sent.grants.push(data); return { id: sr.id, ok: true, data: { user_account_id: '901' } }; }
     if (k === 'user.unlink_person') { sent.unlinks.push(data); return { id: sr.id, ok: true, data: { ok: true, deleted: 1 } }; }
+    if (k === 'user.revoke_login') { sent.revokes.push(data); return { id: sr.id, ok: true, data: { revoked: true, roles: 1, sessions: 0, tokens: 0 } }; }
     if (k === 'person.create') { sent.creates.push(data); return { id: sr.id, ok: true, data: { person_card_id: '704', user_account_id: '0' } }; }
     if (k === 'card.delete') { sent.deletes.push(data); return { id: sr.id, ok: true, data: { ok: true, activity_id: '9' } }; }
     if (k === 'person.merge') {
@@ -126,10 +127,11 @@ test('PeopleManager promote assignee→user fires attribute.update + person.gran
   assert.equal(transport.sent.updates[0].value, 'member');
   assert.equal(transport.sent.grants.length, 1, 'a login was granted');
   assert.equal(String(transport.sent.grants[0].person_card_id), '702');
-  assert.equal(transport.sent.unlinks.length, 0);
+  assert.equal(transport.sent.grants[0].email, 'avery@example.com', 'names the email shown on the row');
+  assert.equal(transport.sent.revokes.length, 0);
 });
 
-test('PeopleManager demote user→assignee fires attribute.update + user.unlink_person', async () => {
+test('PeopleManager demote user→assignee fires attribute.update + user.revoke_login', async () => {
   const transport = recordingTransport();
   const { dispatcher, api } = bootApi(transport);
   const { ctrl } = mount(api);
@@ -140,8 +142,9 @@ test('PeopleManager demote user→assignee fires attribute.update + user.unlink_
   sel.dispatchEvent({ type: 'change', target: sel });
   await settle(dispatcher);
 
-  assert.equal(transport.sent.unlinks.length, 1, 'the login was revoked');
-  assert.equal(String(transport.sent.unlinks[0].user_account_id), '900', 'unlinks the linked account');
+  assert.equal(transport.sent.revokes.length, 1, 'the login was revoked');
+  assert.equal(String(transport.sent.revokes[0].user_account_id), '900', 'revokes the linked account');
+  assert.equal(transport.sent.unlinks.length, 0, 'not just unlinked');
   assert.equal(transport.sent.grants.length, 0);
 });
 
@@ -222,11 +225,11 @@ test('PeopleManager Remove a contact: confirm dialog → card.delete (no unlink)
 
   assert.equal(transport.sent.deletes.length, 1, 'card.delete fired');
   assert.equal(String(transport.sent.deletes[0].card_id), '701', 'soft-deletes the contact card');
-  assert.equal(transport.sent.unlinks.length, 0, 'a contact has no login to revoke');
+  assert.equal(transport.sent.revokes.length, 0, 'a contact has no login to revoke');
   assert.equal(ctrl.el.querySelector('[data-pm-modal]'), null, 'modal closed after remove');
 });
 
-test('PeopleManager Remove a user: confirm → user.unlink_person + card.delete', async () => {
+test('PeopleManager Remove a user: confirm → user.revoke_login + card.delete', async () => {
   const transport = recordingTransport();
   const { dispatcher, api } = bootApi(transport);
   const { ctrl } = mount(api);
@@ -237,8 +240,8 @@ test('PeopleManager Remove a user: confirm → user.unlink_person + card.delete'
   ctrl.el.querySelector('[data-people-remove-confirm]').dispatchEvent({ type: 'click' });
   await settle(dispatcher);
 
-  assert.equal(transport.sent.unlinks.length, 1, 'the login was revoked first');
-  assert.equal(String(transport.sent.unlinks[0].user_account_id), '900', 'unlinks the linked account');
+  assert.equal(transport.sent.revokes.length, 1, 'the login was revoked first');
+  assert.equal(String(transport.sent.revokes[0].user_account_id), '900', 'revokes the linked account');
   assert.equal(transport.sent.deletes.length, 1, 'then the person card is soft-deleted');
   assert.equal(String(transport.sent.deletes[0].card_id), '703');
 });

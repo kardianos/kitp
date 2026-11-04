@@ -1,19 +1,16 @@
--- agent.delete handler (Phase 3 of UNIFIED_HANDLER_PLAN.md). Folds the
--- former Go-side runDelete into one PL/pgSQL body.
+-- agent.delete — retire an agent (review 2026-11-03 round 2 #12).
 --
--- Per-row pipeline:
---   1. Validation: user_id is required.
---   2. Null any attribute_value.last_activity_id pointing at activity
---      rows we are about to remove (the column is nullable; losing the
---      last-actor pointer is a small price for being able to remove
---      the agent).
---   3. Delete activity rows where actor_id = the target. The column is
---      ON DELETE NO ACTION so leaving them in place blocks the
---      user_account delete.
---   4. Delete the user_account row, gated on is_agent=TRUE so a stray
---      id (non-agent or absent) reports deleted=0 cleanly.
---      user_account ON DELETE CASCADE wipes session, user_token,
---      user_card_agent, and user_card_sort rows automatically.
+-- The agent loses everything it may do and every way in: its roles
+-- (user_role), its tokens and sessions (revoked), the cards it was set to
+-- work on (user_card_agent) and its sort orders (user_card_sort). Its
+-- user_account row stays, marked deleted_at, so what it did keeps its
+-- author: its activity (comments included), the files it uploaded and the
+-- imports it ran all still name it. A deleted agent is left out of
+-- user.select, can't be given a role, a token or a card again, and its
+-- name can be used for a new agent.
+--
+-- Deleting an agent again is a no-op that reports deleted=0, as is an id
+-- that isn't an agent.
 --
 -- Authz (actor must be the target's parent_user_id or a global admin)
 -- runs pre-tx in Go and is not duplicated here.
@@ -46,26 +43,22 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- Null any attribute_value.last_activity_id pointing at
-        -- activity rows we are about to delete. Qualify activity.actor_id
-        -- — the function's own actor_id parameter would otherwise shadow
-        -- the column. (Same gotcha hit by comment.update during Phase 2.)
-        UPDATE attribute_value SET last_activity_id = NULL
-        WHERE last_activity_id IN (
-            SELECT id FROM activity WHERE activity.actor_id = _user_id
-        );
-
-        -- Wipe activity rows where the agent was the actor.
-        DELETE FROM activity WHERE activity.actor_id = _user_id;
-
-        -- Delete the user_account row, gated on is_agent=TRUE. Cascade
-        -- handles session / user_token / user_card_agent / user_card_sort.
         WITH del AS (
-            DELETE FROM user_account
-            WHERE id = _user_id AND is_agent = TRUE
+            UPDATE user_account SET deleted_at = now()
+            WHERE id = _user_id AND is_agent AND deleted_at IS NULL
             RETURNING id
         )
         SELECT count(*)::int INTO _deleted FROM del;
+
+        IF _deleted > 0 THEN
+            DELETE FROM user_role WHERE user_id = _user_id;
+            UPDATE user_token SET revoked_at = now()
+            WHERE user_id = _user_id AND revoked_at IS NULL;
+            UPDATE session SET revoked_at = now()
+            WHERE user_id = _user_id AND revoked_at IS NULL;
+            DELETE FROM user_card_agent WHERE agent_user_id = _user_id;
+            DELETE FROM user_card_sort WHERE user_id = _user_id;
+        END IF;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(

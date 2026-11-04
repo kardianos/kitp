@@ -178,7 +178,7 @@ type PersonCreateOutput struct {
 // person_kind='member' separately (attribute.update); this only grants login.
 type PersonGrantAccountInput struct {
 	PersonCardID int64  `json:"person_card_id,string" mcp:"required,desc=person card to grant a login to"`
-	Email        string `json:"email,omitempty" mcp:"desc=email override for the new user_account (the OIDC match key); when empty the person's stored email attribute is used; one of them must be non-empty"`
+	Email        string `json:"email,omitempty" mcp:"required,desc=the email they will sign in with (the new user_account's, the OIDC match key); required — the person's email attribute is not copied"`
 }
 
 // PersonGrantAccountOutput carries the linked (or pre-existing) account id.
@@ -190,7 +190,7 @@ func registerPersonGrantAccount(_ *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "person",
 		Action:       "grant_account",
-		Doc:          "Grant a login (user_account) to an EXISTING person card — promote an assignee/contact to a user. Idempotent: if the person already has an account, returns it. Email required (request override or the person's stored email). Admin-only.",
+		Doc:          "Grant a login (user_account) to an EXISTING person card — promote an assignee/contact to a user. The email is required and is the one they will sign in with; the person card's email attribute is never copied (any worker can edit it). Idempotent: a person whose login has that email returns it; a login with another email is already_linked. Admin-only.",
 		InputType:    reflect.TypeFor[PersonGrantAccountInput](),
 		OutputType:   reflect.TypeFor[PersonGrantAccountOutput](),
 		AllowedRoles: []string{"admin"},

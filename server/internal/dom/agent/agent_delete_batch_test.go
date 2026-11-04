@@ -5,6 +5,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -96,15 +97,68 @@ func TestAgentDeleteBatch_Happy(t *testing.T) {
 	if !got.OK || got.Deleted != 1 {
 		t.Errorf("result: %+v, want ok=true deleted=1", got)
 	}
-	// Verify the row is gone.
-	var n int
+	// The row stays, marked deleted.
+	var deleted bool
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM user_account WHERE id = $1`, a,
-	).Scan(&n); err != nil {
+		`SELECT deleted_at IS NOT NULL FROM user_account WHERE id = $1`, a,
+	).Scan(&deleted); err != nil {
 		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Errorf("user_account remains: count=%d", n)
+	if !deleted {
+		t.Error("the agent isn't marked deleted")
+	}
+}
+
+// TestAgentDeleteKeepsWhatItDid (review 2026-11-03 round 2 #12): an agent
+// with a role, activity and an uploaded file is deleted; its roles and
+// tokens go, its activity and file stay with it as author, and it can't be
+// given a role or a token again.
+func TestAgentDeleteKeepsWhatItDid(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_agent_delete_keeps")
+	ctx := context.Background()
+	parent := seedHuman(t, pool, "parent-k")
+	a := seedAgentRow(t, pool, "worker-bot", parent)
+	for _, stmt := range []string{
+		`INSERT INTO user_role (user_id, role_id) SELECT $1, id FROM role WHERE name = 'worker'`,
+		`INSERT INTO activity (card_id, kind, actor_id) SELECT min(id), 'comment', $1 FROM card`,
+		`INSERT INTO file (filename, mime_type, size_bytes, created_by) VALUES ('bot.txt', 'text/plain', 1, $1)`,
+		`INSERT INTO user_token (id, user_id, label) VALUES ('tok-hash', $1, 'bot')`,
+	} {
+		if _, err := pool.Exec(ctx, stmt, a); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	rows := callAgentDeleteBatch(t, pool, parent, []map[string]any{{"user_id": jsonInt(a)}})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("delete = %+v", rows)
+	}
+	var roles, activity, files, liveTokens int
+	if err := pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM user_role WHERE user_id = $1),
+		       (SELECT count(*) FROM activity WHERE actor_id = $1),
+		       (SELECT count(*) FROM file WHERE created_by = $1),
+		       (SELECT count(*) FROM user_token WHERE user_id = $1 AND revoked_at IS NULL)`, a,
+	).Scan(&roles, &activity, &files, &liveTokens); err != nil {
+		t.Fatal(err)
+	}
+	if roles != 0 || activity != 1 || files != 1 || liveTokens != 0 {
+		t.Errorf("after delete: roles %d activity %d files %d live tokens %d, want 0 1 1 0", roles, activity, files, liveTokens)
+	}
+	var ok bool
+	var code string
+	if err := pool.QueryRow(ctx, `SELECT ok, code FROM user_role_set_batch($1, $2::jsonb)`, parent,
+		fmt.Sprintf(`[{"user_id":"%d","role_name":"worker"}]`, a)).Scan(&ok, &code); err != nil {
+		t.Fatal(err)
+	}
+	if ok || code != "not_found" {
+		t.Errorf("user_role.set on a deleted agent: ok=%v code=%q, want not_found", ok, code)
+	}
+	if err := pool.QueryRow(ctx, `SELECT ok, code FROM user_token_create_batch($1, $2::jsonb)`, parent,
+		fmt.Sprintf(`[{"user_id":"%d","label":"again"}]`, a)).Scan(&ok, &code); err != nil {
+		t.Fatal(err)
+	}
+	if ok || code != "not_found" {
+		t.Errorf("user_token.create for a deleted agent: ok=%v code=%q, want not_found", ok, code)
 	}
 }
 

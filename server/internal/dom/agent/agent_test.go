@@ -118,15 +118,16 @@ func TestCreateThenDeleteLifecycle(t *testing.T) {
 			resp.Subresponses[0].Error.Code, resp.Subresponses[0].Error.Message)
 	}
 
-	// Verify the user_account row is gone.
-	var n int
+	// The row stays, marked deleted, for the activity it wrote (review
+	// 2026-11-03 round 2 #12).
+	var deleted bool
 	if err := sp.P.QueryRow(context.Background(),
-		`SELECT count(*) FROM user_account WHERE id = $1`, out.UserID,
-	).Scan(&n); err != nil {
+		`SELECT deleted_at IS NOT NULL FROM user_account WHERE id = $1`, out.UserID,
+	).Scan(&deleted); err != nil {
 		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Fatalf("user_account should be gone, got count=%d", n)
+	if !deleted {
+		t.Fatal("the agent isn't marked deleted")
 	}
 }
 

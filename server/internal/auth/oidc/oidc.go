@@ -572,14 +572,34 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 			// the pre-created fallback: reuse binds our sub to an
 			// existing person, so an unverified-email OP must not drive
 			// it (DI-4).
+			//
+			// Only an email kitp itself wrote (the System user: mail intake,
+			// bootstrap; or no activity at all: seed, bundles, migrations) or
+			// a workspace admin wrote counts. A person's email
+			// is ordinary card data any worker can edit; matched on that, a
+			// worker could point a login-less person — an approver, say — at
+			// an identity of their choosing and sign in as them (review
+			// 2026-11-03 round 2 #5). Anyone else's edit leaves this sign-in
+			// its own person; an admin merges the two if they are the same.
 			var (
 				personID     int64
 				linkedUserID *int64
 				linkedHasSub bool
+				emailTrusted bool
 			)
-			perErr := tx.QueryRow(ctx, `
+			pb := named.New()
+			pb.Set("email", email)
+			pb.Set("system", auth.SystemUserID)
+			q, args, cerr := pb.Compile(`
 				SELECT c.id, uap.user_account_id,
-				       coalesce(ua.oidc_sub IS NOT NULL, false)
+				       coalesce(ua.oidc_sub IS NOT NULL, false),
+				       coalesce((
+				           SELECT a.actor_id = :system OR EXISTS (
+				                      SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
+				                      WHERE ur.user_id = a.actor_id AND r.name = 'admin'
+				                        AND ur.scope_card_id IS NULL)
+				           FROM activity a WHERE a.id = av.last_activity_id),
+				           av.last_activity_id IS NULL)
 				FROM card c
 				JOIN attribute_value av ON av.card_id = c.id
 				JOIN attribute_def ad ON ad.id = av.attribute_def_id
@@ -588,10 +608,14 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 				WHERE c.card_type_id = (SELECT id FROM card_type WHERE name = 'person')
 				  AND c.deleted_at IS NULL
 				  AND ad.name = 'email'
-				  AND lower(av.value #>> '{}') = lower($1)
+				  AND lower(av.value #>> '{}') = lower(:email)
 				ORDER BY c.id
 				LIMIT 1
-			`, email).Scan(&personID, &linkedUserID, &linkedHasSub)
+			`)
+			if cerr != nil {
+				return 0, "", fmt.Errorf("oidc: person-reuse lookup: compile: %w", cerr)
+			}
+			perErr := tx.QueryRow(ctx, q, args...).Scan(&personID, &linkedUserID, &linkedHasSub, &emailTrusted)
 			if perErr != nil && !errors.Is(perErr, pgx.ErrNoRows) {
 				return 0, "", fmt.Errorf("oidc: person-reuse lookup: %w", perErr)
 			}
@@ -609,6 +633,10 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 				// same human.
 				slog.Default().LogAttrs(ctx, slog.LevelWarn,
 					"oidc: email matches a person whose login has a different email; provisioning a separate account",
+					slog.String("sub", sub), slog.Int64("person_card_id", personID))
+			case linkedUserID == nil && !emailTrusted:
+				slog.Default().LogAttrs(ctx, slog.LevelWarn,
+					"oidc: email matches a person whose email a non-admin set; provisioning a separate account",
 					slog.String("sub", sub), slog.Int64("person_card_id", personID))
 			case linkedUserID == nil:
 				// A contact or assignee with no login. Elevate it: mint a
