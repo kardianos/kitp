@@ -336,6 +336,14 @@ BEGIN
         IF NOT FOUND THEN
             CONTINUE;
         END IF;
+        -- A thread's own record stays with it: its messages (replies — a
+        -- copy listed the template's messages, so the new project showed
+        -- them) and the people kitp confirmed or took off. A copied thread
+        -- starts with no messages (review 2026-11-03 round 4). Its mail
+        -- account (channel_ref) is remapped below like any card_ref.
+        IF _ad_name IN ('replies', 'comm_confirmed', 'comm_removed') THEN
+            CONTINUE;
+        END IF;
 
         _new_value := _av_value;
 

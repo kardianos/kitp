@@ -44,7 +44,7 @@ func TestVerifyUploadURL(t *testing.T) {
 		// A '|' in the filename must not let bytes shift into mime_type.
 		{name: "field shift", g: with(func(c *uploadGrant) { c.Filename, c.MimeType = "a", "b.pdf|application/pdf" }), exp: exp, sig: good, wantErr: true},
 		// A download signature for the same id never verifies as an upload.
-		{name: "download sig replay", g: g, exp: exp, sig: signLinkPayload(g.CardID, "download", exp), wantErr: true},
+		{name: "download sig replay", g: g, exp: exp, sig: signLinkPayload(g.CardID, "download", exp, 1), wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

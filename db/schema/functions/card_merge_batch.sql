@@ -166,7 +166,19 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- Merging pages repoints portals' roots and the pages' children:
+        -- the portals publishing any of them rebuild (review 2026-11-03
+        -- round 4). Marked before the merge, while the losers still have
+        -- their pages under them, and after it, for the survivor.
+        PERFORM portal_mark_dirty(pp.portal_id)
+        FROM (SELECT DISTINCT u.portal_id FROM unnest(_losers) AS l(id)
+              CROSS JOIN LATERAL portals_publishing_under(l.id) u
+              UNION
+              SELECT r.card_id FROM attribute_value r
+              JOIN attribute_def rd ON rd.id = r.attribute_def_id AND rd.name = 'portal_root'
+              WHERE jsonb_typeof(r.value) = 'number' AND (r.value)::text::bigint = ANY(_losers)) pp(portal_id);
         _repointed := card_merge_into(_survivor, _losers, actor_id);
+        PERFORM portal_mark_dirty(pp.portal_id) FROM portals_publishing_under(_survivor) pp;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(

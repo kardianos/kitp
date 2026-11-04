@@ -198,9 +198,7 @@ BEGIN
         --    another portal's root or none: the portals it is on rebuild,
         --    and serving re-checks the root (portal/serve.go lookup; review
         --    2026-11-03 round 3 #21).
-        PERFORM portal_mark_dirty(pp.portal_id)
-        FROM (SELECT DISTINCT p.portal_id FROM publication p
-              WHERE EXISTS (SELECT 1 FROM card_ancestors(p.card_id) up WHERE up.id = _card_id)) pp;
+        PERFORM portal_mark_dirty(pp.portal_id) FROM portals_publishing_under(_card_id) pp;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(

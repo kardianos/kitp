@@ -66,9 +66,7 @@ BEGIN
         -- Its pages' publications were kept at delete (card.delete): the
         -- portals they are on rebuild with them back (review 2026-11-03
         -- round 2 #19).
-        PERFORM portal_mark_dirty(pp.portal_id)
-        FROM (SELECT DISTINCT p.portal_id FROM publication p
-              WHERE EXISTS (SELECT 1 FROM card_ancestors(p.card_id) up WHERE up.id = _card_id)) pp;
+        PERFORM portal_mark_dirty(pp.portal_id) FROM portals_publishing_under(_card_id) pp;
 
         -- 5. Activity row.
         INSERT INTO activity (card_id, kind, actor_id)

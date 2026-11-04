@@ -26,8 +26,8 @@ func TestVerifyDownloadURL_RoundTrip(t *testing.T) {
 	testSecret(t, "https://kitp.example.com")
 	now := time.Now().Unix()
 	exp := now + int64(linkTTL.Seconds())
-	sig := signLinkPayload(42, "download", exp)
-	if err := verifyDownloadURL(42, "download", exp, sig, now); err != nil {
+	sig := signLinkPayload(42, "download", exp, 1)
+	if err := verifyDownloadURL(42, "download", exp, 1, sig, now); err != nil {
 		t.Fatalf("valid link rejected: %v", err)
 	}
 }
@@ -36,7 +36,7 @@ func TestVerifyDownloadURL_Rejections(t *testing.T) {
 	testSecret(t, "https://kitp.example.com")
 	now := time.Now().Unix()
 	exp := now + int64(linkTTL.Seconds())
-	good := signLinkPayload(7, "view", exp)
+	good := signLinkPayload(7, "view", exp, 1)
 
 	cases := []struct {
 		name           string
@@ -47,8 +47,8 @@ func TestVerifyDownloadURL_Rejections(t *testing.T) {
 		wantForbidden  bool
 		wantSpecificFn func(error) bool
 	}{
-		{name: "expired", id: 7, mode: "view", exp: strconv.FormatInt(now-1, 10), sig: signLinkPayload(7, "view", now-1), wantForbidden: true},
-		{name: "far future", id: 7, mode: "view", exp: strconv.FormatInt(now+86400, 10), sig: signLinkPayload(7, "view", now+86400), wantForbidden: true},
+		{name: "expired", id: 7, mode: "view", exp: strconv.FormatInt(now-1, 10), sig: signLinkPayload(7, "view", now-1, 1), wantForbidden: true},
+		{name: "far future", id: 7, mode: "view", exp: strconv.FormatInt(now+86400, 10), sig: signLinkPayload(7, "view", now+86400, 1), wantForbidden: true},
 		{name: "tampered sig", id: 7, mode: "view", exp: strconv.FormatInt(exp, 10), sig: good + "x", wantForbidden: true},
 		{name: "wrong id", id: 8, mode: "view", exp: strconv.FormatInt(exp, 10), sig: good, wantForbidden: true},
 		{name: "wrong mode", id: 7, mode: "download", exp: strconv.FormatInt(exp, 10), sig: good, wantForbidden: true},
@@ -56,7 +56,7 @@ func TestVerifyDownloadURL_Rejections(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			expN, _ := strconv.ParseInt(tc.exp, 10, 64)
-			err := verifyDownloadURL(tc.id, tc.mode, expN, tc.sig, now)
+			err := verifyDownloadURL(tc.id, tc.mode, expN, 1, tc.sig, now)
 			if err == nil {
 				t.Fatalf("expected rejection, got nil")
 			}
@@ -73,7 +73,7 @@ func TestVerifyDownloadURL_Rejections(t *testing.T) {
 func TestVerifyDownloadURL_NoSecret(t *testing.T) {
 	SetLinkDeps("", nil)
 	t.Cleanup(func() { SetLinkDeps("", nil) })
-	err := verifyDownloadURL(1, "download", time.Now().Unix()+60, "anything", time.Now().Unix())
+	err := verifyDownloadURL(1, "download", time.Now().Unix()+60, 1, "anything", time.Now().Unix())
 	var he *api.HTTPError
 	if !errors.As(err, &he) || he.Status != 500 {
 		t.Fatalf("want 500 internal when secret unset, got %v", err)
@@ -86,7 +86,7 @@ func TestBuildDownloadURL(t *testing.T) {
 
 	t.Run("absolute", func(t *testing.T) {
 		testSecret(t, "https://kitp.example.com/")
-		got := buildDownloadURL(99, "thumb", exp)
+		got := buildDownloadURL(99, "thumb", exp, 1)
 		if !strings.HasPrefix(got, "https://kitp.example.com/api/v1/attachment/99/dl?") {
 			t.Fatalf("unexpected url: %s", got)
 		}
@@ -99,14 +99,14 @@ func TestBuildDownloadURL(t *testing.T) {
 			t.Fatalf("bad query: %v", q)
 		}
 		// The minted sig must verify.
-		if err := verifyDownloadURL(99, "thumb", exp, q.Get("sig"), now); err != nil {
+		if err := verifyDownloadURL(99, "thumb", exp, 1, q.Get("sig"), now); err != nil {
 			t.Fatalf("minted url failed verification: %v", err)
 		}
 	})
 
 	t.Run("relative when no public url", func(t *testing.T) {
 		testSecret(t, "")
-		got := buildDownloadURL(5, "download", exp)
+		got := buildDownloadURL(5, "download", exp, 1)
 		if !strings.HasPrefix(got, "/api/v1/attachment/5/dl?") {
 			t.Fatalf("want site-relative path, got: %s", got)
 		}
@@ -136,7 +136,7 @@ func TestSignDownloadURLs(t *testing.T) {
 		}
 		q := u.Query()
 		expN, _ := strconv.ParseInt(q.Get("exp"), 10, 64)
-		if err := verifyDownloadURL(out.ID, out.Mode, expN, q.Get("sig"), time.Now().Unix()); err != nil {
+		if err := verifyDownloadURL(out.ID, out.Mode, expN, 1, q.Get("sig"), time.Now().Unix()); err != nil {
 			t.Fatalf("out[%d] minted url failed verification: %v", i, err)
 		}
 		if _, err := time.Parse(time.RFC3339, out.ExpiresAt); err != nil {

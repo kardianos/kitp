@@ -270,8 +270,14 @@ func claimUploadLink(ctx context.Context, pool *store.Pool, sig string, exp int6
 	b := named.New()
 	b.Set("sig", hex.EncodeToString(sum[:]))
 	b.Set("exp", time.Unix(exp, 0).UTC())
+	// Spent links are cleared by kitpd's clock, the one their expiry is
+	// checked by (verifyLink): by the database's now(), a database clock
+	// a few minutes ahead cleared a spent link while it still verified, and
+	// it worked again (review 2026-11-03 round 4). A margin of linkSkew
+	// covers the rest.
+	b.Set("now", time.Now().Add(-linkSkew).UTC())
 	sql, args, err := b.Compile(`
-		WITH gone AS (DELETE FROM upload_link_used WHERE expires_at < now())
+		WITH gone AS (DELETE FROM upload_link_used WHERE expires_at < :now)
 		INSERT INTO upload_link_used (sig_hash, expires_at) VALUES (:sig, :exp)
 		ON CONFLICT (sig_hash) DO NOTHING
 	`)

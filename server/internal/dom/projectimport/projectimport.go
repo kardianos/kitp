@@ -377,13 +377,15 @@ func preRunPreview(ctx context.Context, tx store.Querier, ins []any) ([]any, err
 			}
 			continue
 		}
-		fileID, creator, err := lookupJobFileID(ctx, tx, in.JobID)
+		fileID, _, err := lookupJobFileID(ctx, tx, in.JobID)
 		if err != nil {
 			return nil, err
 		}
-		// The job is the caller's (lookupJobFileID); its file was checked
-		// against its creator at upload and is read as theirs.
-		file, err := openFile(ctx, tx, creator, fileID)
+		// The job is the caller's or their agent's / owner's
+		// (lookupJobFileID). Its file is read with the caller's own rights:
+		// read as the job's creator, an agent driving its owner's job read
+		// a file with the owner's rights (review 2026-11-03 round 4).
+		file, err := openFile(ctx, tx, auth.ActorOrSystem(ctx), fileID)
 		if err != nil {
 			return nil, csvReadError(i, fileID, err)
 		}
@@ -430,13 +432,15 @@ func preRunCommit(ctx context.Context, tx store.Querier, ins []any) ([]any, erro
 			}
 			continue
 		}
-		fileID, creator, err := lookupJobFileID(ctx, tx, in.JobID)
+		fileID, _, err := lookupJobFileID(ctx, tx, in.JobID)
 		if err != nil {
 			return nil, err
 		}
-		// The job is the caller's (lookupJobFileID); its file was checked
-		// against its creator at upload and is read as theirs.
-		file, err := openFile(ctx, tx, creator, fileID)
+		// The job is the caller's or their agent's / owner's
+		// (lookupJobFileID). Its file is read with the caller's own rights:
+		// read as the job's creator, an agent driving its owner's job read
+		// a file with the owner's rights (review 2026-11-03 round 4).
+		file, err := openFile(ctx, tx, auth.ActorOrSystem(ctx), fileID)
 		if err != nil {
 			return nil, csvReadError(i, fileID, err)
 		}

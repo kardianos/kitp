@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
@@ -67,22 +68,24 @@ type DownloadURLOutput struct {
 	ExpiresAt string `json:"expires_at" mcp:"desc=ISO8601 UTC instant the link stops working"`
 }
 
-// signLinkPayload is the HMAC-SHA256 of the canonical "id|mode|exp"
-// message, base64url-encoded (no padding). exp is unix seconds.
-func signLinkPayload(id int64, mode string, exp int64) string {
+// signLinkPayload is the HMAC-SHA256 of the canonical "id|mode|exp|uid"
+// message, base64url-encoded (no padding). exp is unix seconds; uid is the
+// account that minted the link, whose access is checked again when it is
+// fetched.
+func signLinkPayload(id int64, mode string, exp, uid int64) string {
 	mac := hmac.New(sha256.New, linkDeps.secret)
-	fmt.Fprintf(mac, "%d|%s|%d", id, mode, exp)
+	fmt.Fprintf(mac, "%d|%s|%d|%d", id, mode, exp, uid)
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 // verifyDownloadURL checks a presented (id, mode, exp, sig) tuple
 // against `now` (unix seconds). Returns an api 403 on an expired link,
 // a far-future exp, or a signature mismatch — never leaking which.
-func verifyDownloadURL(id int64, mode string, exp int64, sig string, now int64) error {
+func verifyDownloadURL(id int64, mode string, exp, uid int64, sig string, now int64) error {
 	if len(linkDeps.secret) == 0 {
 		return api.Internal(fmt.Errorf("attachment.download_url: link secret not configured"))
 	}
-	return verifyLink("download", signLinkPayload(id, mode, exp), sig, exp, now)
+	return verifyLink("download", signLinkPayload(id, mode, exp, uid), sig, exp, now)
 }
 
 // verifyLink is the expiry + signature check shared by the download and
@@ -108,11 +111,12 @@ func verifyLink(kind, want, sig string, exp, now int64) error {
 
 // buildDownloadURL assembles the absolute (or site-relative when no
 // publicURL is configured) signed link for an attachment + mode + exp.
-func buildDownloadURL(id int64, mode string, exp int64) string {
+func buildDownloadURL(id int64, mode string, exp, uid int64) string {
 	q := url.Values{}
 	q.Set("mode", mode)
 	q.Set("exp", strconv.FormatInt(exp, 10))
-	q.Set("sig", signLinkPayload(id, mode, exp))
+	q.Set("u", strconv.FormatInt(uid, 10))
+	q.Set("sig", signLinkPayload(id, mode, exp, uid))
 	path := "/api/v1/attachment/" + strconv.FormatInt(id, 10) + "/dl?" + q.Encode()
 	return linkDeps.publicURL + path
 }
@@ -123,18 +127,19 @@ func buildDownloadURL(id int64, mode string, exp int64) string {
 // stamp a fresh expiry, HMAC-sign the (id, mode, exp) tuple, and fill
 // in the link. Runs inside the request tx but touches no DB — a failure
 // (unconfigured secret) aborts the batch with a logged internal error.
-func signDownloadURLs(_ context.Context, _ store.Querier, _ []any, outs []any) error {
+func signDownloadURLs(ctx context.Context, _ store.Querier, _ []any, outs []any) error {
 	if len(linkDeps.secret) == 0 {
 		return fmt.Errorf("link secret not configured (set KITP_LINK_SECRET)")
 	}
 	exp := time.Now().Add(linkTTL)
 	expUnix := exp.Unix()
+	uid := auth.ActorOrSystem(ctx)
 	for i := range outs {
 		out, ok := outs[i].(DownloadURLOutput)
 		if !ok {
 			continue
 		}
-		out.URL = buildDownloadURL(out.ID, out.Mode, expUnix)
+		out.URL = buildDownloadURL(out.ID, out.Mode, expUnix, uid)
 		out.ExpiresAt = exp.UTC().Format(time.RFC3339)
 		outs[i] = out
 	}
@@ -142,11 +147,12 @@ func signDownloadURLs(_ context.Context, _ store.Querier, _ []any, outs []any) e
 }
 
 // handleSignedStream is the public counterpart to the Authed streaming
-// routes: it trusts a valid signature as the access grant (the grant
-// was checked once, against the minting agent, by the dispatcher's
-// scope pass on attachment.download_url) and streams the bytes. No
-// session or bearer credential is required — that's the whole point of
-// a capability link the agent can hand to curl.
+// routes: a valid signature stands in for the session or bearer credential
+// — the point of a capability link an agent hands to curl — and names the
+// account that minted it, whose access to the attachment is checked again
+// now (requireAttachmentAccess): a link minted just before its maker lost
+// the project, or the card was deleted, no longer works (review 2026-11-03
+// round 4).
 func handleSignedStream(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg Config) error {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -166,7 +172,17 @@ func handleSignedStream(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		return api.BadRequest("validation", "invalid exp")
 	}
-	if err := verifyDownloadURL(id, mode, exp, q.Get("sig"), time.Now().Unix()); err != nil {
+	uid, err := strconv.ParseInt(q.Get("u"), 10, 64)
+	if err != nil || uid <= 0 {
+		return api.Forbidden("download link not valid")
+	}
+	if err := verifyDownloadURL(id, mode, exp, uid, q.Get("sig"), time.Now().Unix()); err != nil {
+		return err
+	}
+	if cfg.Pool == nil {
+		return api.Internal(fmt.Errorf("attachment download: pool not configured"))
+	}
+	if err := requireAttachmentAccess(ctx, cfg.Pool, uid, id); err != nil {
 		return err
 	}
 	return streamBytes(ctx, w, cfg, id, sm)

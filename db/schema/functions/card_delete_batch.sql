@@ -121,9 +121,7 @@ BEGIN
         --    2026-11-03 #17), and the portals they are on rebuild. The
         --    publications stay, so card.undelete brings the pages back as
         --    they were published (round 2 #19). The walk is per page.
-        PERFORM portal_mark_dirty(pp.portal_id)
-        FROM (SELECT DISTINCT p.portal_id FROM publication p
-              WHERE EXISTS (SELECT 1 FROM card_ancestors(p.card_id) up WHERE up.id = _card_id)) pp;
+        PERFORM portal_mark_dirty(pp.portal_id) FROM portals_publishing_under(_card_id) pp;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(
