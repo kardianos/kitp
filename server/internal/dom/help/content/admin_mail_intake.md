@@ -41,7 +41,7 @@ A PROXY header is believed only from a **trusted proxy** (below); from anyone el
 
 ## Trusted proxies
 
-`KITP_TRUSTED_PROXIES` — whose word about the client's address kitp believes: the PROXY header on SMTP, `X-Forwarded-For` on POST routes. Unset, it is any private or loopback address (10/8, 172.16/12, 192.168/16, 100.64/10, 127/8, ::1, fc00::/7) — where a proxy in front of kitp normally sits. Set it to narrow that to your proxy's own range; a public range is refused at startup.
+`KITP_TRUSTED_PROXIES` — whose word about the client's address kitp believes: the PROXY header on SMTP, `X-Forwarded-For` on POST routes. Unset, it is any private or loopback address (10/8, 172.16/12, 192.168/16, 127/8, ::1, fc00::/7) — where a proxy in front of kitp normally sits. 100.64/10 (carrier-grade NAT, Tailscale) isn't among them, since clients connect from there: name it if your proxy sits in it. Set it to narrow that to your proxy's own range; a public range is refused at startup.
 
 ## Rate limits
 

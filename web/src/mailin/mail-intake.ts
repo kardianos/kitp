@@ -117,7 +117,7 @@ export class MailIntake extends Control<MailIntakeConfig> {
         'p',
         'mi-hint',
         s.trustedDefault
-          ? 'Any private or loopback address (KITP_TRUSTED_PROXIES is unset). A PROXY header (SMTP) or X-Forwarded-For (POST) is believed only from these.'
+          ? 'Any private or loopback address but 100.64.0.0/10 (KITP_TRUSTED_PROXIES is unset). A PROXY header (SMTP) or X-Forwarded-For (POST) is believed only from these.'
           : 'Only these (KITP_TRUSTED_PROXIES). A PROXY header (SMTP) or X-Forwarded-For (POST) is believed only from them.',
       ),
       el('p', '', s.trustedProxies.join(', ')),

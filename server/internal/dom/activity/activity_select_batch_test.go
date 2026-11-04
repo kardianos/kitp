@@ -346,3 +346,45 @@ func TestActivitySelectBatch_VisibilityCrossCard(t *testing.T) {
 		t.Errorf("system: got %d rows, want >=2", len(outSys.Rows))
 	}
 }
+
+// TestActivitySelectBatch_UnscopedIsBounded (review 2026-11-03 round 4):
+// with neither card_id nor project_id the read covers the last 30 days by
+// default and at most 92; it walked the whole table.
+func TestActivitySelectBatch_UnscopedIsBounded(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_activity_select_batch_unscoped")
+	project := seedCard(t, pool, "project", nil)
+	task := seedCard(t, pool, "task", &project)
+	now := time.Now()
+	seedActivityAt(t, pool, task, "card_create", now.AddDate(0, 0, -60))
+	rec := seedActivityAt(t, pool, task, "comment", now)
+	fmtDate := func(d time.Time) string { return d.Format("2006-01-02") }
+	ids := func(in map[string]any) ([]string, string) {
+		res := callActivitySelectBatch(t, pool, auth.SystemUserID, []map[string]any{in})
+		if !res[0].OK {
+			return nil, res[0].Code
+		}
+		var o activityOut
+		if err := json.Unmarshal(res[0].Result, &o); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range o.Rows {
+			if r.CardID == strconv.FormatInt(task, 10) {
+				out = append(out, r.ID)
+			}
+		}
+		return out, ""
+	}
+	if got, code := ids(map[string]any{}); code != "" || !equalStrs(got, []string{strconv.FormatInt(rec, 10)}) {
+		t.Errorf("unscoped, no dates: %v %q, want the last 30 days only", got, code)
+	}
+	if got, code := ids(map[string]any{"from_date": fmtDate(now.AddDate(0, 0, -70))}); code != "" || len(got) != 2 {
+		t.Errorf("unscoped, 70 days: %v %q, want both rows", got, code)
+	}
+	if _, code := ids(map[string]any{"from_date": fmtDate(now.AddDate(0, 0, -100))}); code != "validation" {
+		t.Errorf("unscoped, 100 days: %q, want validation", code)
+	}
+	if got, code := ids(map[string]any{"project_id": strconv.FormatInt(project, 10)}); code != "" || len(got) != 2 {
+		t.Errorf("a project's activity: %v %q, want both rows (no window)", got, code)
+	}
+}

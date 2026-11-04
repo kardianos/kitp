@@ -168,6 +168,7 @@ func Register(p *store.Pool) {
 		OutputType: reflect.TypeFor[DownloadURLOutput](),
 		// Read-shaped: resolves metadata + signs a link, writes nothing.
 		IsRead:       true,
+		Secret:       true,
 		AllowedRoles: []string{"worker", "manager", "admin"},
 		ProcessName:  "card.update",
 		// Same gate as attachment.delete + the streaming routes: the
@@ -191,6 +192,7 @@ func Register(p *store.Pool) {
 		Doc:        "Mint a time-limited, signed one-shot URL for uploading a file as an attachment on a card. PUT the raw file bytes to the URL with no auth header — e.g. `curl -T ./report.pdf '<url>'` — and the server stores the bytes, creates the file, and attaches it to the card in one step, responding with the attachment row. The link expires after a few minutes; the size cap is config.get's attachment_max_bytes.",
 		InputType:  reflect.TypeFor[UploadURLInput](),
 		OutputType: reflect.TypeFor[UploadURLOutput](),
+		Secret:     true,
 		// Not read-shaped, though it writes nothing: each call mints a
 		// link with its own nonce, used once (upload.go), and the batch
 		// folds identical read sub-requests into one result — two links

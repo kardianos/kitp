@@ -14,13 +14,20 @@ func TestParseTrusted(t *testing.T) {
 	if err != nil || def.Configured() {
 		t.Fatalf("default: %v %v", def, err)
 	}
-	for _, a := range []string{"10.1.2.3", "192.168.0.9", "127.0.0.1", "::1", "fd00::5", "100.64.1.1"} {
+	for _, a := range []string{"10.1.2.3", "192.168.0.9", "127.0.0.1", "::1", "fd00::5"} {
 		if !def.Contains(netip.MustParseAddr(a)) {
 			t.Errorf("default should trust %s", a)
 		}
 	}
-	if def.Contains(netip.MustParseAddr("8.8.8.8")) {
-		t.Error("default trusts a public address")
+	// Carrier-grade NAT / Tailscale: clients connect from there, so it is
+	// trusted only when named (review 2026-11-03 round 4).
+	for _, a := range []string{"8.8.8.8", "100.64.1.1"} {
+		if def.Contains(netip.MustParseAddr(a)) {
+			t.Errorf("default trusts %s", a)
+		}
+	}
+	if cgn, err := ParseTrusted("100.64.0.0/10"); err != nil || !cgn.Contains(netip.MustParseAddr("100.100.1.1")) {
+		t.Errorf("100.64.0.0/10 named: %v", err)
 	}
 	narrow, err := ParseTrusted("10.42.0.0/16, 127.0.0.1")
 	if err != nil || !narrow.Configured() {
@@ -57,6 +64,12 @@ func TestClientIP(t *testing.T) {
 		{"a forged hop before the real one", req("10.0.0.5:4000", "1.2.3.4, 198.51.100.9"), "198.51.100.9"},
 		{"two proxies", req("10.0.0.5:4000", "198.51.100.9, 10.0.0.9"), "198.51.100.9"},
 		{"proxy, no header", req("10.0.0.5:4000"), "10.0.0.5"},
+		// Hops with a port (review 2026-11-03 round 4).
+		{"a hop with a port", req("10.0.0.5:4000", "198.51.100.9:52311"), "198.51.100.9"},
+		{"an IPv6 hop with a port", req("10.0.0.5:4000", "[2001:db8::9]:443"), "2001:db8::9"},
+		{"a bracketed IPv6 hop", req("10.0.0.5:4000", "[2001:db8::9]"), "2001:db8::9"},
+		{"an unreadable hop", req("10.0.0.5:4000", "unknown"), "10.0.0.5"},
+		{"a CGNAT peer, untrusted by default", req("100.64.0.5:4000", "1.2.3.4"), "100.64.0.5"},
 	} {
 		if got := ClientIP(c.r, trusted).String(); got != c.want {
 			t.Errorf("%s: %s, want %s", c.name, got, c.want)

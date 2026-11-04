@@ -128,6 +128,13 @@ type Handler struct {
 	// batch with more (review 2026-11-03 round 4 #10); grouping alone saw
 	// only sub-requests next to each other.
 	OnePerBatch bool
+	// Secret marks a handler whose result carries a secret: a bearer or
+	// feed token shown once, a signed link. The Idempotency-Key cache
+	// keeps a keyed batch's response in plain text for 24 h; a batch
+	// holding one of these isn't kept, so a retry with the key runs again
+	// (a fresh token or link) instead of replaying the first one's
+	// (review 2026-11-03 round 4).
+	Secret bool
 	// PostRun runs AFTER the SQL function returns successfully,
 	// inside the same request tx. Used for Go-side side effects
 	// that can't move to PL/pgSQL — image decode (attachment.create

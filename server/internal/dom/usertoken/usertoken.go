@@ -131,6 +131,7 @@ func Register(p *store.Pool) {
 		Doc:          "Mint an opaque bearer token bound to user_id. The plaintext value is returned ONCE in the response — store it immediately. scope 'links' mints a narrow token that works ONLY on the forge link hook (POST /api/v1/links), for a code forge; omit it for a full-access (MCP) token. Authz: your own token, one for an agent you own, or (global admin) one for a workspace agent owned by System — never one for another human or their agent.",
 		InputType:    reflect.TypeFor[CreateInput](),
 		OutputType:   reflect.TypeFor[CreateOutput](),
+		Secret:       true,
 		AllowedRoles: []string{reg.RoleAuthenticated},
 		Authz:        authzCreate,
 		PreRun:       preRunCreate,

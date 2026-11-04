@@ -187,6 +187,7 @@ actor_admin, boolean, , , ,
 ### indexes
 name, columns
 idx_activity_card_id_created_at, "card_id, created_at"
+idx_activity_created_at, "created_at"
 
 ## table attribute_value | doc="Current value of one attribute on one card. last_activity_id points at the activity row that set this value. value_type_id denormalizes the def's storage class onto the row (<50 = scalar, 50 = card_ref[], >=1000 = plain text; av_value_type_id) so the value indexes can partition by class without a join: scalars get the (attribute_def_id, value) btree for equality (a query reaches it only with the guard value_type_id < 50), card_ref[] lists are matched by containment (attribute_value_refs GIN) and text values get the trigram; both are kept OUT of the btree, whose entries stop at 2704 bytes. Set by the attribute_value_set_type_id trigger from attribute_def.value_type, which is immutable." | primary_key="card_id, attribute_def_id"
 

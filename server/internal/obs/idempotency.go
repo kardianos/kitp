@@ -34,6 +34,7 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/named"
+	"github.com/kitp/kitp/server/internal/reg"
 )
 
 // IdempotencyStore is the persistence + middleware for idempotency-key
@@ -167,13 +168,32 @@ func (s *IdempotencyStore) WrapAuthed(next api.AuthedHandler) api.AuthedHandler 
 		// failure forever instead of re-executing the mutation (BE-H4 /
 		// A3). Inspect the envelope and skip caching when any sub-response
 		// carries an error / aborted code.
-		if cap.status == http.StatusOK && cap.buf.Len() > 0 && batchSucceeded(cap.buf.Bytes()) {
+		if cap.status == http.StatusOK && cap.buf.Len() > 0 && batchSucceeded(cap.buf.Bytes()) && !batchHasSecret(body) {
 			if err := s.store(ctx, userID, key, hash[:], cap.buf.Bytes()); err != nil {
 				s.logWarn(ctx, "idempotency.store", err)
 			}
 		}
 		return nil
 	}
+}
+
+// batchHasSecret reports whether a batch request calls a handler whose
+// result carries a secret (reg.Handler Secret: a token shown once, a
+// signed link). Its response isn't kept: the table holds responses in
+// plain text for 24 h, so a database reader got live tokens (review
+// 2026-11-03 round 4). A body that doesn't parse counts as one (fail
+// closed: don't keep what can't be classified).
+func batchHasSecret(body []byte) bool {
+	var req api.BatchRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return true
+	}
+	for _, sr := range req.Subrequests {
+		if h, ok := reg.Lookup(sr.Endpoint, sr.Action); ok && h.Secret {
+			return true
+		}
+	}
+	return false
 }
 
 // batchSucceeded reports whether a captured batch-response body is a
@@ -257,7 +277,7 @@ func (s *IdempotencyStore) Middleware(_ any, next http.Handler) http.Handler {
 		// whole batch aborts, so a status-only check would cache
 		// failures and replay them on retry (BE-H4 / A3). Skip caching
 		// unless every sub-response is OK.
-		if cap.status == http.StatusOK && cap.buf.Len() > 0 && batchSucceeded(cap.buf.Bytes()) {
+		if cap.status == http.StatusOK && cap.buf.Len() > 0 && batchSucceeded(cap.buf.Bytes()) && !batchHasSecret(body) {
 			if err := s.store(r.Context(), userID, key, hash[:], cap.buf.Bytes()); err != nil {
 				s.logWarn(r.Context(), "idempotency.store", err)
 			}

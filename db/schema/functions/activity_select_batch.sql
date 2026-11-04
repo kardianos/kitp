@@ -68,7 +68,8 @@ BEGIN
         END;
         -- Optional project scope: when set, only activity for cards within that
         -- project (the project itself or a descendant) is returned — the
-        -- standalone Activity page is per-project. 0/empty means unscoped.
+        -- standalone Activity page is per-project. 0/empty means unscoped
+        -- (then bounded by date; see below).
         BEGIN
             _project_id := NULLIF(_raw->>'project_id', '')::bigint;
         EXCEPTION WHEN invalid_text_representation THEN
@@ -96,6 +97,19 @@ BEGIN
         END IF;
         _from_date := NULLIF(_raw->>'from_date', '')::date;
         _to_date := NULLIF(_raw->>'to_date', '')::date;
+        -- With neither a card nor a project, the read is bounded by date:
+        -- the last 30 days unless from_date says otherwise, at most 92
+        -- days (idx_activity_created_at). Unbounded, it walked every row
+        -- in the workspace (review 2026-11-03 round 4).
+        IF COALESCE(_card_id, 0) = 0 AND _project_id IS NULL THEN
+            _from_date := COALESCE(_from_date, current_date - 30);
+            IF COALESCE(_to_date, current_date) - _from_date > 92 THEN
+                RETURN QUERY SELECT _idx, false, 'validation'::text,
+                    'activity.select: without card_id or project_id, from_date to to_date (or today) is at most 92 days'::text,
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+        END IF;
         _limit := COALESCE(NULLIF(_raw->>'limit', '')::int, 200);
         IF _limit <= 0 OR _limit >= 1000 THEN
             _limit := 200;

@@ -120,6 +120,7 @@ func Register(_ *store.Pool) {
 		Doc:          "Add a secret URL to one of YOUR calendars, with a comment saying where it's used. Returns the token once: subscribe to /api/v1/calendar/<token>.ics. Calendar services fetch it from their own servers, so task titles go to them.",
 		InputType:    reflect.TypeFor[URLCreateInput](),
 		OutputType:   reflect.TypeFor[URLCreateOutput](),
+		Secret:       true,
 		AllowedRoles: own,
 		SQLFunc:      "calendar_url_create_batch",
 	})

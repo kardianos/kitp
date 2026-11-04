@@ -10,6 +10,13 @@ func TestOf(t *testing.T) {
 		{"/api/v1/test-secret/", "/api/v1/test-secret/…"},
 		{"/api/v1/batch", "/api/v1/batch"},
 		{"/api/v1/test-secre", "/api/v1/test-secre"},
+		// As the mux routes it (review 2026-11-03 round 4).
+		{"//api/v1/test-secret/abcdef.ics", "/api/v1/test-secret/…"},
+		{"/api//v1/test-secret/abcdef.ics", "/api/v1/test-secret/…"},
+		{"/api/v1/./test-secret/abcdef.ics", "/api/v1/test-secret/…"},
+		{"/x/../api/v1/test-secret/abcdef.ics", "/api/v1/test-secret/…"},
+		{"/API/v1/Test-Secret/abcdef.ics", "/api/v1/test-secret/…"},
+		{"/api/v1/batch//", "/api/v1/batch//"},
 	} {
 		if got := Of(c.in); got != c.want {
 			t.Errorf("Of(%q) = %q, want %q", c.in, got, c.want)

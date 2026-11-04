@@ -14,14 +14,28 @@ import (
 )
 
 // privateNets is where a proxy in front of kitp lives in practice — a pod
-// network, a Docker network, a LAN, loopback. By default only a peer in
-// these is believed about the client's address; KITP_TRUSTED_PROXIES can
-// narrow it, never widen it.
+// network, a Docker network, a LAN, loopback. KITP_TRUSTED_PROXIES may name
+// ranges inside these only.
 var privateNets = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"),
 	netip.MustParsePrefix("172.16.0.0/12"),
 	netip.MustParsePrefix("192.168.0.0/16"),
 	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("fc00::/7"),
+}
+
+// defaultTrusted is who is believed with KITP_TRUSTED_PROXIES unset: the
+// private ranges but 100.64.0.0/10. That one is carrier-grade NAT and
+// Tailscale space, where clients themselves connect from — trusted, any
+// of them could name any address in X-Forwarded-For or a PROXY header
+// (review 2026-11-03 round 4). A proxy there is named in
+// KITP_TRUSTED_PROXIES.
+var defaultTrusted = []netip.Prefix{
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
 	netip.MustParsePrefix("127.0.0.0/8"),
 	netip.MustParsePrefix("::1/128"),
 	netip.MustParsePrefix("fc00::/7"),
@@ -47,12 +61,13 @@ type Trusted struct {
 
 // ParseTrusted reads KITP_TRUSTED_PROXIES: CIDRs (or bare addresses)
 // separated by commas or spaces. Empty means "any private or loopback
-// peer". Every entry must lie inside a private range — the setting can
-// only narrow the default — so a public entry is an error.
+// peer" but 100.64.0.0/10 (defaultTrusted). Every entry must lie inside a
+// private range (privateNets, 100.64.0.0/10 included), so a public entry
+// is an error.
 func ParseTrusted(s string) (*Trusted, error) {
 	fields := strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' })
 	if len(fields) == 0 {
-		return &Trusted{nets: privateNets}, nil
+		return &Trusted{nets: defaultTrusted}, nil
 	}
 	t := &Trusted{configured: true}
 	for _, f := range fields {
@@ -146,17 +161,36 @@ func ClientIP(r *http.Request, t *Trusted) netip.Addr {
 		if h == "" {
 			continue
 		}
-		a, err := netip.ParseAddr(h)
-		if err != nil {
+		a, ok := hopAddr(h)
+		if !ok {
 			return last
 		}
-		a = a.Unmap()
 		if !t.Contains(a) {
 			return a
 		}
 		last = a
 	}
 	return last
+}
+
+// hopAddr reads one X-Forwarded-For entry: an address, or an address and
+// port ("203.0.113.7:4711", "[2001:db8::1]:443", "[2001:db8::1]") as some
+// proxies write it — read as unparseable, every client behind such a
+// proxy took the proxy's address and shared its rate limits (review
+// 2026-11-03 round 4).
+func hopAddr(h string) (netip.Addr, bool) {
+	if a, err := netip.ParseAddr(h); err == nil {
+		return a.Unmap(), true
+	}
+	if ap, err := netip.ParseAddrPort(h); err == nil {
+		return ap.Addr().Unmap(), true
+	}
+	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+		if a, err := netip.ParseAddr(h[1 : len(h)-1]); err == nil {
+			return a.Unmap(), true
+		}
+	}
+	return netip.Addr{}, false
 }
 
 // SourceKey groups an address for rate limits: an IPv4 address on its own,

@@ -74,9 +74,12 @@ below expand them.
 ### SMTP listener
 - D12. Build it, using `emersion/go-smtp`.
 - D13. PROXY protocol by **sniffing** (no switch to turn it on). A PROXY
-  header is believed only from a private or loopback peer; if
-  `KITP_TRUSTED_PROXIES` is set, only from those CIDRs, which must
-  themselves be private. The same trust rule covers X-Forwarded-For.
+  header is believed only from a private or loopback peer (not
+  100.64/10, carrier-grade NAT and Tailscale space, where clients
+  connect from); if `KITP_TRUSTED_PROXIES` is set, only from those CIDRs,
+  which must themselves be private (100.64/10 may be named). The same
+  trust rule covers X-Forwarded-For, whose hops may carry a port
+  (`203.0.113.7:4711`, `[2001:db8::1]:443`).
 - D14. Optional per-route filters, first version: source IP allowlist,
   require TLS, sender host name (forward-confirmed reverse DNS suffix),
   envelope sender allow list, header From allow list (both by address or
@@ -384,7 +387,7 @@ Off unless `KITP_SMTP_ADDR` is set.
 | `KITP_SMTP_TLS_CERT`, `KITP_SMTP_TLS_KEY` | — | PEM files; STARTTLS is offered only when set; re-read when the files change (cert-manager renewals) |
 | `KITP_SMTP_MAX_BYTES` | 40 MB | message size (SIZE extension) |
 | `KITP_SMTP_ALLOW` | — | optional install-wide source CIDR allowlist |
-| `KITP_TRUSTED_PROXIES` | private + loopback | proxies whose PROXY header (SMTP) / X-Forwarded-For (HTTP) is believed; must be private ranges |
+| `KITP_TRUSTED_PROXIES` | private + loopback, not 100.64/10 | proxies whose PROXY header (SMTP) / X-Forwarded-For (HTTP) is believed; must be private ranges (100.64/10 included) |
 
 **PROXY protocol by sniffing** (`server/internal/netx/proxyproto.go`).
 Every accepted connection is sniffed in its own goroutine (wrapped in
@@ -402,6 +405,7 @@ already the real client:
    signal) → close; recorded.
 
 "Private" = 10/8, 172.16/12, 192.168/16, 100.64/10, 127/8, ::1, fc00::/7.
+Trusted by default: the same but 100.64/10.
 
 **Session** (go-smtp backend):
 

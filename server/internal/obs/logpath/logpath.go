@@ -6,6 +6,7 @@
 package logpath
 
 import (
+	pathpkg "path"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,17 +43,55 @@ func Mark(prefix string) {
 
 // Of returns the path to log for a request path: the registered prefix
 // plus "…" when the path is under a sensitive prefix, else the path itself.
-// It returns a string that already exists either way, so it never
-// allocates.
+// A path is matched as the mux would route it — cleaned of doubled slashes
+// and dot segments, which net/http redirects to the clean path after the
+// request was logged as sent — and in any letter case, so a mistyped
+// "/API/v1/calendar/<token>" isn't logged either (review 2026-11-03 round
+// 4). A clean path returns a string that already exists, so it doesn't
+// allocate; only an unclean one is cleaned (one allocation).
 func Of(path string) string {
 	cur := sensitivePaths.Load()
 	if cur == nil {
 		return path
 	}
-	for i := range *cur {
-		if strings.HasPrefix(path, (*cur)[i].prefix) {
-			return (*cur)[i].shown
+	if shown, ok := match(*cur, path); ok {
+		return shown
+	}
+	if unclean(path) {
+		if shown, ok := match(*cur, cleanPath(path)); ok {
+			return shown
 		}
 	}
 	return path
+}
+
+// match finds the sensitive prefix path starts with, in any case.
+func match(list []sensitivePath, path string) (string, bool) {
+	for i := range list {
+		p := list[i].prefix
+		if len(path) >= len(p) && strings.EqualFold(path[:len(p)], p) {
+			return list[i].shown, true
+		}
+	}
+	return "", false
+}
+
+// unclean reports whether net/http's mux would clean path before routing
+// it: no leading slash, a doubled slash, or a "." / ".." segment.
+func unclean(p string) bool {
+	return !strings.HasPrefix(p, "/") || strings.Contains(p, "//") ||
+		strings.Contains(p, "/./") || strings.Contains(p, "/../") ||
+		strings.HasSuffix(p, "/.") || strings.HasSuffix(p, "/..")
+}
+
+// cleanPath is net/http's: path.Clean, rooted, keeping a trailing slash.
+func cleanPath(p string) string {
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	np := pathpkg.Clean(p)
+	if strings.HasSuffix(p, "/") && np != "/" {
+		np += "/"
+	}
+	return np
 }

@@ -217,7 +217,7 @@ See `docs/BUNDLES_AND_PORTALS.md`.
 | KITP_COMM_LOG_PRUNE_HOURS | 24 | How often the comm_log prune job runs. |
 | KITP_COMM_DEDUPE_DAYS | 14 | How long a message stays known (for dropping duplicate copies) after its last copy arrived. |
 | KITP_COMM_INBOUND_MAX_BYTES | 52428800 | Largest POST to a mail route (`/api/v1/comm/inbound/<token>`). |
-| KITP_TRUSTED_PROXIES | (private + loopback) | Private CIDRs whose `X-Forwarded-For` (POST routes) or PROXY protocol header (SMTP) is believed. A public range is refused at startup. |
+| KITP_TRUSTED_PROXIES | (private + loopback, not 100.64.0.0/10) | Private CIDRs whose `X-Forwarded-For` (POST routes) or PROXY protocol header (SMTP) is believed. A public range is refused at startup. 100.64.0.0/10 (carrier-grade NAT, Tailscale) is trusted only when named here: clients connect from it. |
 | KITP_SMTP_ADDR | (unset) | Receive-only SMTP listener address, e.g. `:2525` behind port 25. Off when unset. |
 | KITP_SMTP_DOMAIN | (unset) | Domain of route addresses (`<token>@<domain>`); required with `KITP_SMTP_ADDR`. Its MX record points at kitp. |
 | KITP_SMTP_HOSTNAME | the domain | SMTP greeting name. |
@@ -254,7 +254,8 @@ See `docs/BUNDLES_AND_PORTALS.md`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| CORS | (unset) | Comma list of allowed origins. |
+| CORS | (on with ENV=dev, the default; off with ENV=production) | `on` / `off`: answer any origin with permissive CORS headers (the dev loop's app on another port). It doesn't turn off the cross-origin request check, which is off only with AUTH_MODE=off. |
+| KITP_TRUSTED_ORIGINS | (unset) | More origins (comma-separated `scheme://host[:port]`) the cross-origin request check admits besides the request's own host and KITP_PUBLIC_URL's — a dev app served from another origin against real logins. |
 | KITP_CSP_REPORT_ONLY | 0 | 1 sends CSP as report-only. |
 | KITP_CSP_REPORT_URI | (unset) | CSP violation report endpoint. |
 

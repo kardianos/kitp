@@ -25,7 +25,7 @@ type SelectInput struct {
 	// WithThreadComments (with CardID): also the comments made on the
 	// card's own email threads — a task page shows its threads' comments.
 	WithThreadComments bool     `json:"with_thread_comments,omitempty" mcp:"desc=with card_id: also return the comments made on the card's own email threads (comm cards under it)"`
-	ProjectID          int64    `json:"project_id,string,omitempty" mcp:"desc=project scope; when set, only activity for cards within that project (the project or a descendant) is returned"`
+	ProjectID          int64    `json:"project_id,string,omitempty" mcp:"desc=project scope; when set, only activity for cards within that project (the project or a descendant) is returned. With neither card_id nor project_id the read covers the last 30 days by default, and at most 92 (from_date to to_date)"`
 	Limit              *int     `json:"limit,omitempty" mcp:"desc=optional row cap; defaults to 200"`
 	BeforeActivityID   *int64   `json:"before_activity_id,string,omitempty" mcp:"desc=cursor; only return activity rows with id < this"`
 	FromDate           string   `json:"from_date,omitempty" mcp:"desc=inclusive lower bound on created_at, ISO date YYYY-MM-DD"`
@@ -142,7 +142,7 @@ func Register(p *store.Pool) {
 	reg.Register(reg.Handler{
 		Endpoint:     "activity",
 		Action:       "select",
-		Doc:          "Read paged activity for one card (chronological) or a project (newest first), with actor names, card titles and card_ref labels resolved; comments include their body inline. Filter by actor / kind / card type / text; ask for facets to get counts per option.",
+		Doc:          "Read paged activity for one card (chronological) or a project (newest first), with actor names, card titles and card_ref labels resolved; comments include their body inline. Filter by actor / kind / card type / text; ask for facets to get counts per option. Without a card or a project it covers at most 92 days (default the last 30).",
 		InputType:    reflect.TypeFor[SelectInput](),
 		OutputType:   reflect.TypeFor[SelectOutput](),
 		AllowedRoles: []string{reg.RoleAuthenticated},

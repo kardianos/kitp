@@ -113,6 +113,7 @@ func Register(p *store.Pool, status *Status) {
 		Doc:          "Admin: add an inbound route to a mail account — a POST URL for a provider (raw: Cloudflare Email Worker / SES via Lambda / scripts; mailgun: needs the webhook signing key; postmark: turn on 'include raw email') or an address for kitp's SMTP listener. Returns the secret token once.",
 		InputType:    reflect.TypeFor[RouteCreateInput](),
 		OutputType:   reflect.TypeFor[RouteCreateOutput](),
+		Secret:       true,
 		AllowedRoles: []string{"admin"},
 		Authz:        authzAdmin,
 		SQLFunc:      "comm_route_create_batch",

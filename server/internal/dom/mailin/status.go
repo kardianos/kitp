@@ -96,7 +96,7 @@ type StatusOutput struct {
 	SMTP           SMTPStatus `json:"smtp" mcp:"desc=the SMTP listener's settings"`
 	TLS            CertStatus `json:"tls" mcp:"desc=the STARTTLS certificate"`
 	TrustedProxies []string   `json:"trusted_proxies" mcp:"desc=proxies whose PROXY header / X-Forwarded-For is believed"`
-	TrustedDefault bool       `json:"trusted_default" mcp:"desc=true when KITP_TRUSTED_PROXIES is unset (any private or loopback peer)"`
+	TrustedDefault bool       `json:"trusted_default" mcp:"desc=true when KITP_TRUSTED_PROXIES is unset (any private or loopback peer but 100.64.0.0/10)"`
 	Limits         Limits     `json:"limits" mcp:"desc=the rate limits in effect"`
 	Throttled      []string   `json:"throttled" mcp:"desc=sources currently rate limited"`
 	RecentRefusals []Refusal  `json:"recent_refusals" mcp:"desc=the last connection-level refusals, newest first (memory only)"`
