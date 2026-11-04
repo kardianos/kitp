@@ -3,12 +3,15 @@ package attachment
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,7 +19,9 @@ import (
 
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/cas"
 	"github.com/kitp/kitp/server/internal/dom/file"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
@@ -95,6 +100,10 @@ type uploadGrant struct {
 	ActorID  int64
 	Filename string
 	MimeType string
+	// Nonce makes every minted link its own: a link uploads one file
+	// (claimUploadLink), so two links minted for the same file in the same
+	// second must not share a signature.
+	Nonce string
 }
 
 // signUploadPayload is the HMAC-SHA256 of the canonical upload message,
@@ -105,6 +114,9 @@ type uploadGrant struct {
 func signUploadPayload(g uploadGrant, exp int64) string {
 	mac := hmac.New(sha256.New, linkDeps.secret)
 	fmt.Fprintf(mac, "upload|%d|%d|%q|%q|%d", g.CardID, g.ActorID, g.Filename, g.MimeType, exp)
+	if g.Nonce != "" {
+		fmt.Fprintf(mac, "|%q", g.Nonce)
+	}
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -126,6 +138,9 @@ func buildUploadURL(g uploadGrant, exp int64) string {
 	q.Set("filename", g.Filename)
 	q.Set("mime_type", g.MimeType)
 	q.Set("exp", strconv.FormatInt(exp, 10))
+	if g.Nonce != "" {
+		q.Set("n", g.Nonce)
+	}
 	q.Set("sig", signUploadPayload(g, exp))
 	return linkDeps.publicURL + "/api/v1/attachment/upload?" + q.Encode()
 }
@@ -149,11 +164,16 @@ func signUploadURLs(ctx context.Context, _ store.Querier, _ []any, outs []any) e
 		if !ok {
 			continue
 		}
+		var nonce [12]byte
+		if _, err := rand.Read(nonce[:]); err != nil {
+			return fmt.Errorf("attachment.upload_url: nonce: %w", err)
+		}
 		out.URL = buildUploadURL(uploadGrant{
 			CardID:   out.CardID,
 			ActorID:  user.ID,
 			Filename: out.Filename,
 			MimeType: out.MimeType,
+			Nonce:    hex.EncodeToString(nonce[:]),
 		}, exp.Unix())
 		out.ExpiresAt = exp.UTC().Format(time.RFC3339)
 		outs[i] = out
@@ -188,13 +208,25 @@ func handleSignedUpload(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		ActorID:  actorID,
 		Filename: q.Get("filename"),
 		MimeType: q.Get("mime_type"),
+		Nonce:    q.Get("n"),
 	}
 	if err := verifyUploadURL(g, exp, q.Get("sig"), time.Now().Unix()); err != nil {
 		return err
 	}
-	if cfg.Dispatcher == nil || cfg.Storage == nil {
-		return api.Internal(fmt.Errorf("attachment upload: dispatcher or storage not configured"))
+	if cfg.Dispatcher == nil || cfg.Storage == nil || cfg.Pool == nil {
+		return api.Internal(fmt.Errorf("attachment upload: dispatcher, storage or pool not configured"))
 	}
+	if err := claimUploadLink(ctx, cfg.Pool, q.Get("sig"), exp); err != nil {
+		return err
+	}
+	// An upload that fails (too large, empty, refused) leaves the link
+	// usable again: only a stored attachment spends it.
+	stored := false
+	defer func() {
+		if !stored {
+			releaseUploadLink(ctx, cfg.Pool, q.Get("sig"))
+		}
+	}()
 	ctx = auth.WithUser(ctx, &auth.UserCtx{ID: g.ActorID})
 
 	chunks, err := storeUploadBody(ctx, w, r, cfg, g.MimeType)
@@ -216,6 +248,7 @@ func handleSignedUpload(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	}, &att); err != nil {
 		return err
 	}
+	stored = true
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(att); err != nil {
@@ -224,6 +257,52 @@ func handleSignedUpload(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		return nil
 	}
 	return nil
+}
+
+// claimUploadLink spends a signed upload link: one link uploads one file
+// (review 2026-11-03 round 2 #21 — within its five minutes it could add any
+// number of attachments). Its signature is recorded until the link
+// expires; a second use is 410 Gone. The claim commits before the body is
+// read, so two uploads at once can't both pass; one that then fails gives
+// the link back (releaseUploadLink).
+func claimUploadLink(ctx context.Context, pool *store.Pool, sig string, exp int64) error {
+	sum := sha256.Sum256([]byte(sig))
+	b := named.New()
+	b.Set("sig", hex.EncodeToString(sum[:]))
+	b.Set("exp", time.Unix(exp, 0).UTC())
+	sql, args, err := b.Compile(`
+		WITH gone AS (DELETE FROM upload_link_used WHERE expires_at < now())
+		INSERT INTO upload_link_used (sig_hash, expires_at) VALUES (:sig, :exp)
+		ON CONFLICT (sig_hash) DO NOTHING
+	`)
+	if err != nil {
+		return api.Internal(fmt.Errorf("attachment upload: claim link: compile: %w", err))
+	}
+	tag, err := pool.P.Exec(ctx, sql, args...)
+	if err != nil {
+		return api.Internal(fmt.Errorf("attachment upload: claim link: %w", err))
+	}
+	if tag.RowsAffected() == 0 {
+		return &api.HTTPError{Status: http.StatusGone, Code: "link_used",
+			Message: "this upload link was already used; ask for a new one"}
+	}
+	return nil
+}
+
+// releaseUploadLink gives back a claimed link whose upload failed. A
+// failure to release is logged; the link then stays spent until it
+// expires, and the caller mints another.
+func releaseUploadLink(ctx context.Context, pool *store.Pool, sig string) {
+	sum := sha256.Sum256([]byte(sig))
+	b := named.New()
+	b.Set("sig", hex.EncodeToString(sum[:]))
+	sql, args, err := b.Compile(`DELETE FROM upload_link_used WHERE sig_hash = :sig`)
+	if err == nil {
+		_, err = pool.P.Exec(context.WithoutCancel(ctx), sql, args...)
+	}
+	if err != nil {
+		slog.Default().LogAttrs(ctx, slog.LevelWarn, "attachment upload: release link", slog.String("err", err.Error()))
+	}
 }
 
 // storeUploadBody streams the request body into CAS in uploadChunkBytes
@@ -244,6 +323,9 @@ func storeUploadBody(ctx context.Context, w http.ResponseWriter, r *http.Request
 			addr, perr := cfg.Storage.Put(ctx, mime, buf[:n])
 			if perr != nil {
 				return nil, api.Internal(fmt.Errorf("attachment upload: %w", perr))
+			}
+			if herr := cas.NoteHolder(ctx, cfg.Pool.P, addr, auth.ActorOrSystem(ctx)); herr != nil {
+				return nil, api.Internal(fmt.Errorf("attachment upload: %w", herr))
 			}
 			chunks = append(chunks, file.Chunk{Address: addr, Size: int64(n)})
 		}

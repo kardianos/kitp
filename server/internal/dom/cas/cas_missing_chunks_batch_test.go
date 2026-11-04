@@ -66,6 +66,38 @@ func seedCasBlob(t *testing.T, pool *pgxpool.Pool, address string) {
 	if err != nil {
 		t.Fatalf("seed cas_blob %s: %v", address, err)
 	}
+	// Held by the System user, the caller in these tests: bytes the caller
+	// doesn't hold read as missing (cas_held_by).
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO cas_blob_holder (address, user_id) VALUES ($1, 1) ON CONFLICT DO NOTHING
+	`, address); err != nil {
+		t.Fatalf("seed cas_blob_holder %s: %v", address, err)
+	}
+}
+
+// TestCasMissingChunksHidesOthersBytes (review 2026-11-03 round 2 #21):
+// stored bytes another account sent read as missing to a caller who holds
+// none of them, so nobody learns which hashes are stored.
+func TestCasMissingChunksHidesOthersBytes(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_r2_cas_missing_others")
+	seedCasBlob(t, pool, "held-by-system")
+	var stranger int64
+	if err := pool.QueryRow(context.Background(), `INSERT INTO user_account (display_name) VALUES ('stranger') RETURNING id`).Scan(&stranger); err != nil {
+		t.Fatal(err)
+	}
+	rows := callCasMissingChunksBatch(t, pool, stranger, []map[string]any{{"addresses": []string{"held-by-system"}}})
+	if len(rows) != 1 || !rows[0].OK {
+		t.Fatalf("rows = %+v", rows)
+	}
+	var out struct {
+		Missing []string `json:"missing"`
+	}
+	if err := json.Unmarshal(rows[0].Result, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Missing) != 1 {
+		t.Errorf("missing = %v, want the stranger told it is missing", out.Missing)
+	}
 }
 
 func decodeMissing(t *testing.T, raw json.RawMessage) []string {

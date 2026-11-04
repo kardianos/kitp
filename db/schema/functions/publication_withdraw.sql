@@ -1,8 +1,10 @@
 -- publication_withdraw — take a page (and the portals' copies of it) off
--- every portal; card.delete calls it when a page is deleted, so a deleted
--- page disappears from the sites on their next build. Restoring the page
--- doesn't republish it: it goes live again the next time it enters a
--- publishing status. Returns the number of portals touched.
+-- every portal, so it disappears from the sites on their next build; it
+-- goes live again the next time it enters a publishing status. Returns the
+-- number of portals touched. card.delete no longer calls it: a deleted
+-- card's pages keep their publications (the build and serving skip pages
+-- under a deleted card) so card.undelete brings them back (review
+-- 2026-11-03 round 2 #19).
 CREATE OR REPLACE FUNCTION publication_withdraw(page_id bigint)
 RETURNS int LANGUAGE plpgsql AS $$
 DECLARE

@@ -117,6 +117,12 @@ func TestListAndCreateNeedVisibility(t *testing.T) {
 	// My own upload attaches; and a file on a card I can see can go on
 	// another card of mine.
 	chunk := uploadChunk(t, handler, []byte("my notes"))
+	// The test router uploads as the System user; these bytes are mine
+	// (cas_blob_holder — file.create takes only bytes the caller sent).
+	if _, err := sp.P.Exec(context.Background(), `INSERT INTO cas_blob_holder (address, user_id) VALUES ($1, $2)`,
+		chunk.Address, auth.ActorOrSystem(me)); err != nil {
+		t.Fatal(err)
+	}
 	f := dispatch(srv, me, "file", "create", map[string]any{
 		"filename": "mine.txt", "mime_type": "text/plain",
 		"chunks": []map[string]any{{"address": chunk.Address, "size_bytes": chunk.SizeBytes}},

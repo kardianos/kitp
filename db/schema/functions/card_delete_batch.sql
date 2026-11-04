@@ -116,12 +116,14 @@ BEGIN
         RETURNING id INTO _activity_id;
 
         -- 5. A deleted page leaves every portal, and so does every page
-        --    under a deleted card (a project, a parent page): they're gone
-        --    from kitp with it, so nobody could unpublish them (review
-        --    2026-11-03 #17). Publications are few; the walk is per page.
-        PERFORM publication_withdraw(pub.card_id)
-        FROM (SELECT DISTINCT p.card_id FROM publication p
-              WHERE EXISTS (SELECT 1 FROM card_ancestors(p.card_id) up WHERE up.id = _card_id)) pub;
+        --    under a deleted card (a project, a parent page): the build and
+        --    the serving paths skip pages under a deleted card (review
+        --    2026-11-03 #17), and the portals they are on rebuild. The
+        --    publications stay, so card.undelete brings the pages back as
+        --    they were published (round 2 #19). The walk is per page.
+        PERFORM portal_mark_dirty(pp.portal_id)
+        FROM (SELECT DISTINCT p.portal_id FROM publication p
+              WHERE EXISTS (SELECT 1 FROM card_ancestors(p.card_id) up WHERE up.id = _card_id)) pp;
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(

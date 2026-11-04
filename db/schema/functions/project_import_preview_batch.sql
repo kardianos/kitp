@@ -109,6 +109,16 @@ BEGIN
                 'project.import.preview: job_id is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
+        -- The job is its creator's (or their agent's / owner's —
+        -- account_principal): another worker on the project may not
+        -- re-map, preview or commit it, nor read its file through it
+        -- (review 2026-11-03 round 2 #9).
+        IF NOT EXISTS (SELECT 1 FROM import_job j WHERE j.id = _job_id
+                       AND account_principal(j.created_by) = account_principal(project_import_preview_batch.actor_id)) THEN
+            RETURN QUERY SELECT _idx, false, 'job_not_found'::text,
+                format('project.import.preview: job %s not found', _job_id), NULL::jsonb;
+            CONTINUE;
+        END IF;
 
         _resolution := COALESCE(_raw->'resolution', '{}'::jsonb);
         _r_persons := COALESCE(_resolution->>'persons', '');

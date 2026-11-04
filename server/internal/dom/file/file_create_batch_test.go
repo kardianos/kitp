@@ -61,7 +61,8 @@ func callFileCreateBatch(t *testing.T, pool *pgxpool.Pool, actorID int64, inputs
 	return out
 }
 
-// seedChunk inserts a cas_blob row (and cas_blob_data) for `body`,
+// seedChunk inserts a cas_blob row (and cas_blob_data, and a holder row for
+// the System user) for `body`,
 // returning the SHA-256 hex address. The file_chunk FK on cas_address
 // means file_create_batch can't insert chunks pointing at addresses
 // that don't yet exist.
@@ -81,6 +82,13 @@ func seedChunk(t *testing.T, pool *pgxpool.Pool, body []byte) (string, int64) {
 		ON CONFLICT (address) DO NOTHING
 	`, addr, body); err != nil {
 		t.Fatalf("seed cas_blob_data: %v", err)
+	}
+	// The System user sent these bytes (cas_blob_holder): file.create takes
+	// only bytes the caller holds.
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO cas_blob_holder (address, user_id) VALUES ($1, 1) ON CONFLICT DO NOTHING
+	`, addr); err != nil {
+		t.Fatalf("seed cas_blob_holder: %v", err)
 	}
 	return addr, int64(len(body))
 }

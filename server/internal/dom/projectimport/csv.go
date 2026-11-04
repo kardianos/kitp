@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/kitp/kitp/server/internal/csvsafe"
 	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/store"
@@ -22,33 +24,80 @@ import (
 // may read. One answer for all three, so ids can't be probed.
 var errNoFile = errors.New("file not found")
 
+// errTooLarge: the file is over MaxImportBytes.
+var errTooLarge = errors.New("file too large to import")
+
+// MaxImportBytes caps a CSV import's file. The whole file is read and
+// parsed in memory, at many times its size (a 20 MB file took 333 MB), so
+// one large upload could exhaust the server (review 2026-11-03 round 2
+// #11). 16 MB is a few hundred thousand tasks.
+const MaxImportBytes = 16 << 20
+
+// MaxImportRows caps the data rows of one import.
+const MaxImportRows = 100000
+
+var errTooManyRows = fmt.Errorf("more than %d rows", MaxImportRows)
+
+// csvParseMessage is what the caller is told about a CSV that doesn't
+// parse: which line and column broke and why, in encoding/csv's own short
+// words — never a Go error chain (CLAUDE.md "Error returns"; review
+// 2026-11-03 round 2 #20).
+func csvParseMessage(err error) string {
+	var pe *csv.ParseError
+	switch {
+	case errors.As(err, &pe):
+		return fmt.Sprintf("line %d, column %d: %v", pe.Line, pe.Column, pe.Err)
+	case errors.Is(err, errTooManyRows):
+		return fmt.Sprintf("the file has more than %d rows; split it", MaxImportRows)
+	case errors.Is(err, errEmptyCSV):
+		return "the file is empty"
+	}
+	return "the file isn't a readable CSV"
+}
+
+var errEmptyCSV = errors.New("csv is empty")
+
 // readFileBytes assembles every chunk for fileID into one byte slice.
 // CSVs are typically small (kilobytes); we don't try to stream.
 //
 // The query orders by file_chunk.seq so the reassembled bytes match
 // what file.create stored.
 //
-// reader, when non-zero, must be allowed the file by the rule
-// attachment.create uses: they uploaded it, or it is attached to a card
-// they can see. Without that any worker could read any stored file —
-// another project's attachments, saved emails — through an import's
-// preview (review 2026-11-03 #5). Other failures are wrapped for the log;
-// their text never reaches the caller.
+// reader must be allowed the file by the rule attachment.create uses
+// (file_readable_by: they uploaded it, or may download it where it is
+// attached). Without that any worker could read any stored file — another
+// project's attachments, saved emails — through an import's preview
+// (review 2026-11-03 #5, round 2 #10). A file over MaxImportBytes is
+// errTooLarge before a byte is read. Other failures are wrapped for the
+// log; their text never reaches the caller.
 func readFileBytes(ctx context.Context, tx store.Querier, reader, fileID int64) ([]byte, error) {
+	sb := named.New()
+	sb.Set("file", fileID)
+	sb.Set("reader", reader)
+	sq, sargs, err := sb.Compile(`
+		SELECT f.size_bytes FROM file f
+		WHERE f.id = :file AND file_readable_by(:reader::bigint, f.id)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("read file: compile: %w", err)
+	}
+	var size int64
+	if err := tx.QueryRow(ctx, sq, sargs...).Scan(&size); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errNoFile
+		}
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+	if size > MaxImportBytes {
+		return nil, errTooLarge
+	}
 	b := named.New()
 	b.Set("file", fileID)
-	b.Set("reader", reader)
 	q, args, err := b.Compile(`
 		SELECT bd.data
-		FROM file f
-		JOIN file_chunk fc ON fc.file_id = f.id
+		FROM file_chunk fc
 		JOIN cas_blob_data bd ON bd.address = fc.cas_address
-		WHERE f.id = :file
-		  AND (:reader::bigint = 0
-		       OR f.created_by = :reader::bigint
-		       OR EXISTS (SELECT 1 FROM attachment a
-		                  WHERE a.file_id = f.id AND a.deleted_at IS NULL
-		                    AND card_visible_to(:reader::bigint, a.card_id)))
+		WHERE fc.file_id = :file
 		ORDER BY fc.seq
 	`)
 	if err != nil {
@@ -64,6 +113,9 @@ func readFileBytes(ctx context.Context, tx store.Querier, reader, fileID int64) 
 		var chunk []byte
 		if err := rows.Scan(&chunk); err != nil {
 			return nil, fmt.Errorf("read file: %w", err)
+		}
+		if int64(buf.Len()+len(chunk)) > MaxImportBytes {
+			return nil, errTooLarge
 		}
 		buf.Write(chunk)
 	}
@@ -96,7 +148,7 @@ func parseCSVPreview(body []byte, limit int) (parsedCSV, error) {
 
 	header, err := cr.Read()
 	if err == io.EOF {
-		return parsedCSV{}, fmt.Errorf("csv is empty")
+		return parsedCSV{}, errEmptyCSV
 	}
 	if err != nil {
 		return parsedCSV{}, fmt.Errorf("read header: %w", err)
@@ -111,6 +163,9 @@ func parseCSVPreview(body []byte, limit int) (parsedCSV, error) {
 			return parsedCSV{}, fmt.Errorf("read row %d: %w", out.RowCount+1, err)
 		}
 		out.RowCount++
+		if out.RowCount > MaxImportRows {
+			return parsedCSV{}, errTooManyRows
+		}
 		if len(out.PreviewRows) < limit {
 			out.PreviewRows = append(out.PreviewRows, uncellRow(row))
 		}
@@ -128,7 +183,7 @@ func readAllCSV(body []byte) ([]string, [][]string, error) {
 
 	header, err := cr.Read()
 	if err == io.EOF {
-		return nil, nil, fmt.Errorf("csv is empty")
+		return nil, nil, errEmptyCSV
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("read header: %w", err)
@@ -141,6 +196,9 @@ func readAllCSV(body []byte) ([]string, [][]string, error) {
 		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("read row %d: %w", len(rows)+1, err)
+		}
+		if len(rows) >= MaxImportRows {
+			return nil, nil, errTooManyRows
 		}
 		rows = append(rows, uncellRow(row))
 	}

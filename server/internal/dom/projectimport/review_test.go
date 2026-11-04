@@ -59,6 +59,13 @@ func TestCommitCreatesOnlyWhatYouMay(t *testing.T) {
 	jobID := doWizard(t, handler, srv, pid, csv, map[string]string{"title": "title", "milestone": "milestone"},
 		projectimport.ResolutionConfig{Milestones: "auto_create"})
 	w := reviewWorker(t, sp, "importer", pid)
+	// The job (and its file) are the worker's own: a job is its creator's
+	// (round 2 #9).
+	if _, err := sp.P.Exec(context.Background(), `
+		WITH j AS (UPDATE import_job SET created_by = $2 WHERE id = $1 RETURNING file_id)
+		UPDATE file SET created_by = $2 WHERE id = (SELECT file_id FROM j)`, jobID, auth.ActorOrSystem(w)); err != nil {
+		t.Fatal(err)
+	}
 	r := dispatchAs(srv, w, "project.import", "commit", fmt.Sprintf(`{"job_id":"%d"}`, jobID))
 	if r.OK || r.Error == nil || r.Error.Code != "forbidden" {
 		t.Fatalf("a worker's import created a milestone: ok=%v err=%+v", r.OK, r.Error)

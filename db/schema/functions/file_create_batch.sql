@@ -117,6 +117,14 @@ BEGIN
                 _rej_msg := format('file.create: chunks[%s].size_bytes must be non-negative', _chunk_idx);
                 EXIT;
             END IF;
+            -- Only bytes the caller sent, or may already read (cas_held_by):
+            -- knowing a hash isn't having the file (review 2026-11-03 round 2
+            -- #21).
+            IF NOT cas_held_by(_addr, file_create_batch.actor_id) THEN
+                _rej_code := 'not_found';
+                _rej_msg := format('file.create: chunks[%s]: no such uploaded chunk', _chunk_idx);
+                EXIT;
+            END IF;
             _total := _total + _size;
             _norm_chunks := _norm_chunks || jsonb_build_array(
                 jsonb_build_object(

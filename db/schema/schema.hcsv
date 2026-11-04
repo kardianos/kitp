@@ -325,6 +325,25 @@ mime_type, text, , false, 'application/octet-stream'
 storage_kind, text, , false, 
 created_at, timestamptz, , false, now()
 
+## table cas_blob_holder | doc="Who has sent which stored bytes: one row per (CAS address, account) the chunk and signed-upload routes stored for. file.create takes an address only from an account that holds it (cas_held_by: sent it, or may read a file it is part of), so knowing a hash isn't having the bytes (review 2026-11-03 round 2 #21)." | primary_key="address, user_id"
+
+### columns
+name, type, nullable, default, references, on_delete
+address, text, false, , cas_blob.address, cascade
+user_id, bigint, false, , user_account.id, cascade
+created_at, timestamptz, false, now(), ,
+
+## table upload_link_used | doc="Signed upload links already used (attachment.upload_url): one row per link signature (its sha256 hex) until the link expires. A link uploads one file; a second use is refused (review 2026-11-03 round 2 #21). Rows past expires_at are cleared as new links are used."
+
+### columns
+name, type, pk, nullable, default
+sig_hash, text, true, ,
+expires_at, timestamptz, , false,
+
+### indexes
+name, columns
+upload_link_used_expires_at, "expires_at"
+
 ## table cas_blob_data | doc="Inline pg-storage backend for cas_blob. Absent when bytes live in an external backend (e.g. S3)."
 
 ### columns
@@ -715,6 +734,7 @@ idx_theme_file_cas, "cas_address"
 ## function user_role_visible | doc="The role rows that decide what a user can see (DI-6): a person's own; an agent's owner's — an agent sees exactly what its owner sees. What a user can do reads user_role_effective." | path="functions/user_role_visible.sql" | arg_types="bigint"
 ## function user_is_global_admin | doc="Whether a user holds admin workspace-wide, by user_role_effective. The one admin check behind admin-only handlers and the role gate." | path="functions/user_is_global_admin.sql" | arg_types="bigint"
 ## function card_in_off_area | doc="Areas: true when a card, or a card above it, has an item type of an area that is switched off (in the card's project, or workspace-wide). Such a card is hidden from every read and refused for writes. Fast path when nothing is off. See docs/AREAS.md." | path="functions/card_in_off_area.sql" | arg_types="bigint"
+## function account_principal | doc="The human an account acts for: an agent's owner, else itself. Two accounts with one principal may continue each other's import jobs and use each other's uploaded bytes." | path="functions/account_principal.sql" | arg_types="bigint"
 ## function area_write_blocked | doc="Areas: the dispatcher's write check — true when a write of a card type, on a card, in a project would touch an area that is off." | path="functions/area_write_blocked.sql" | arg_types="bigint, bigint, bigint"
 ## function workspace_area_off | doc="Areas: true when a workspace-scoped area (Sites) is switched off." | path="functions/workspace_area_off.sql" | arg_types="text"
 ## function card_visible_to | doc="Per-row read predicate (DI-6) for one card: true when the caller (or an agent's owner) holds a global user_role or one scoped to the card's enclosing project, and the card isn't in an area that is switched off. Mirrors schema.VisibilityClause." | path="functions/card_visible_to.sql" | arg_types="bigint, bigint"
@@ -834,6 +854,8 @@ idx_theme_file_cas, "cas_address"
 ## function comm_route_delete_batch | doc="comm_route.delete — admin: remove a route; its URL / address stops working at once." | path="functions/comm_route_delete_batch.sql"
 ## function account_person | doc="The person card an account acts as for its own things (watch lists, personal screens and views, private cards): its linked person, or an agent's owner's. NULL when none." | path="functions/account_person.sql" | arg_types="bigint"
 ## function card_private_ok | doc="Whether an account may see / write a card as far as privacy goes: the card isn't private, or it is private to account_person(actor). ANDed into the listing reads that can surface private cards; VisibilityClause and card_visible_to apply the same rule." | path="functions/card_private_ok.sql" | arg_types="bigint, bigint"
+## function file_readable_by | doc="Whether an account may have a stored file's bytes: it uploaded the file, or the file is attached to a live card whose bytes it may download (card.update on the project, the byte routes' rule; not an area that is off, not someone else's private card). attachment.create and the CSV import ask it, so seeing a card isn't enough to copy its files." | path="functions/file_readable_by.sql" | arg_types="bigint, bigint"
+## function cas_held_by | doc="Whether an account may name stored bytes in file.create: it sent them (cas_blob_holder; an agent and its owner as one) or they are part of a file it may read. cas.missing_chunks reports bytes it doesn't hold as missing." | path="functions/cas_held_by.sql" | arg_types="text, bigint"
 ## function my_screen_toggles | doc="The phase toggles a personal screen starts with: New / Active (on) / Closed over its listed card type's status attribute (status or comm_status), as toggle_groups JSON." | path="functions/my_screen_toggles.sql" | arg_types="text"
 ## function my_screen_list_batch | doc="my_screen.list — the caller's personal screens (parentless screen cards private to them) in Mine order: title, layout, list_card_type, predicate, sort_order, default_filter, view_count." | path="functions/my_screen_list_batch.sql"
 ## function my_screen_set_batch | doc="my_screen.set — create or update one of the caller's personal screens: title, layout (list | grid), list_card_type (task | comm), base filter (predicate; a project leaf limits it to some projects), sort_order, default_filter." | path="functions/my_screen_set_batch.sql"

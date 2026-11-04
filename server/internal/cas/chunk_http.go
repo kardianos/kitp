@@ -92,6 +92,11 @@ func handleChunkUpload(
 	if err != nil {
 		return api.Internal(fmt.Errorf("cas put: %w", err))
 	}
+	if cfg.Pool != nil {
+		if err := NoteHolder(ctx, cfg.Pool.P, address, auth.ActorOrSystem(ctx)); err != nil {
+			return api.Internal(err)
+		}
+	}
 	// Inline anonymous struct + json.Encoder so quoting / escaping is
 	// correct by construction. Avoid hand-built `{"key":value}` —
 	// the bytes-typed `address` field would break the moment a future

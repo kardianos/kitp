@@ -97,9 +97,19 @@ in `dom/attachment/http.go`, called from each of the three handlers; one
 SQL round-trip using the same grant join as `projectexport.isAuthorized`
 (`card.update` on the project card_type).
 
+The same rule decides every other way to a file's bytes by id
+(`file_readable_by`): `attachment.create` (attaching a file to your card
+makes it yours to download) and the CSV import's reads. Seeing a card is not
+enough — a viewer may not copy its files (review 2026-11-03 round 2 #10).
+Stored bytes are named in `file.create` only by an account that sent them or
+may read a file holding them (`cas_held_by`, `cas_blob_holder`), and
+`cas.missing_chunks` reports other bytes as missing, so knowing a hash isn't
+having the file (round 2 #21).
+
 **Tested by.** `TestRequireAttachmentAccess` in
 `dom/attachment/internal_test.go` — stranger → 403, system → ok, bogus id
-→ 404.
+→ 404. `TestViewerCantCopyFiles`, `TestBytesAreNotClaimedByHash`,
+`TestCasMissingChunksHidesOthersBytes`.
 
 **Originally:** B3 (HIGH), resolved 2026-05-21.
 

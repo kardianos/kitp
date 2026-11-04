@@ -43,6 +43,7 @@ import (
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/cas"
+	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
@@ -333,7 +334,7 @@ func preRunUpload(ctx context.Context, tx store.Querier, ins []any) ([]any, erro
 		}
 		parsed, err := parseCSVPreview(body, 20)
 		if err != nil {
-			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: err.Error()}
+			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: csvParseMessage(err)}
 		}
 		out[i] = map[string]any{
 			"project_id":           formatInt64(in.ProjectID),
@@ -363,19 +364,19 @@ func preRunPreview(ctx context.Context, tx store.Querier, ins []any) ([]any, err
 			}
 			continue
 		}
-		fileID, err := lookupJobFileID(ctx, tx, in.JobID)
+		fileID, creator, err := lookupJobFileID(ctx, tx, in.JobID)
 		if err != nil {
 			return nil, err
 		}
-		// The job's file was checked against its uploader at upload; the
-		// dispatcher checked this caller's grant on the job's project.
-		body, err := readFileBytes(ctx, tx, 0, fileID)
+		// The job is the caller's (lookupJobFileID); its file was checked
+		// against its creator at upload and is read as theirs.
+		body, err := readFileBytes(ctx, tx, creator, fileID)
 		if err != nil {
 			return nil, csvReadError(i, fileID, err)
 		}
 		header, rows, err := readAllCSV(body)
 		if err != nil {
-			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: err.Error()}
+			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: csvParseMessage(err)}
 		}
 		out[i] = map[string]any{
 			"job_id":         formatInt64(in.JobID),
@@ -400,19 +401,19 @@ func preRunCommit(ctx context.Context, tx store.Querier, ins []any) ([]any, erro
 			}
 			continue
 		}
-		fileID, err := lookupJobFileID(ctx, tx, in.JobID)
+		fileID, creator, err := lookupJobFileID(ctx, tx, in.JobID)
 		if err != nil {
 			return nil, err
 		}
-		// The job's file was checked against its uploader at upload; the
-		// dispatcher checked this caller's grant on the job's project.
-		body, err := readFileBytes(ctx, tx, 0, fileID)
+		// The job is the caller's (lookupJobFileID); its file was checked
+		// against its creator at upload and is read as theirs.
+		body, err := readFileBytes(ctx, tx, creator, fileID)
 		if err != nil {
 			return nil, csvReadError(i, fileID, err)
 		}
 		header, rows, err := readAllCSV(body)
 		if err != nil {
-			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: err.Error()}
+			return nil, &reg.HandlerError{InputIndex: i, Code: "csv_parse", Message: csvParseMessage(err)}
 		}
 		out[i] = map[string]any{
 			"job_id":         formatInt64(in.JobID),
@@ -427,17 +428,29 @@ func preRunCommit(ctx context.Context, tx store.Querier, ins []any) ([]any, erro
 // `job_not_found` *reg.HandlerError when the row is missing — the
 // SQL function would surface the same code on its own loop, but the
 // PreRun hook needs to short-circuit the file read.
-func lookupJobFileID(ctx context.Context, tx store.Querier, jobID int64) (int64, error) {
-	var fileID int64
-	err := tx.QueryRow(ctx, `SELECT file_id FROM import_job WHERE id = $1`, jobID).Scan(&fileID)
-	if err != nil {
+func lookupJobFileID(ctx context.Context, tx store.Querier, jobID int64) (fileID, creator int64, err error) {
+	// The job is its creator's, or their agent's / owner's
+	// (account_principal): another worker on the project may not drive it
+	// or read its file through it (review 2026-11-03 round 2 #9). Someone
+	// else's job is "not found", like a missing one.
+	b := named.New()
+	b.Set("job", jobID)
+	b.Set("actor", auth.ActorOrSystem(ctx))
+	q, args, cerr := b.Compile(`
+		SELECT file_id, created_by FROM import_job
+		WHERE id = :job AND account_principal(created_by) = account_principal(:actor::bigint)
+	`)
+	if cerr != nil {
+		return 0, 0, fmt.Errorf("project.import: job lookup: compile: %w", cerr)
+	}
+	if err := tx.QueryRow(ctx, q, args...).Scan(&fileID, &creator); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, &reg.HandlerError{Code: "job_not_found",
+			return 0, 0, &reg.HandlerError{Code: "job_not_found",
 				Message: fmt.Sprintf("import_job %d not found", jobID)}
 		}
-		return 0, fmt.Errorf("project.import: file_id lookup: %w", err)
+		return 0, 0, fmt.Errorf("project.import: file_id lookup: %w", err)
 	}
-	return fileID, nil
+	return fileID, creator, nil
 }
 
 // csvReadError is the answer for a file that can't be read: "not found" for
@@ -446,6 +459,10 @@ func lookupJobFileID(ctx context.Context, tx store.Querier, jobID int64) (int64,
 func csvReadError(i int, fileID int64, err error) error {
 	if errors.Is(err, errNoFile) {
 		return &reg.HandlerError{InputIndex: i, Code: "csv_read", Message: fmt.Sprintf("file %d not found", fileID)}
+	}
+	if errors.Is(err, errTooLarge) {
+		return &reg.HandlerError{InputIndex: i, Code: "file_too_large",
+			Message: fmt.Sprintf("file %d is over the %d MB an import can read; split it", fileID, MaxImportBytes>>20)}
 	}
 	return fmt.Errorf("project.import: read file %d: %w", fileID, err)
 }

@@ -77,18 +77,17 @@ BEGIN
         -- Pull the source file's metadata up front. The activity payload
         -- + response carry the filename / mime / size; missing file is
         -- a per-row 'not_found' (same surface as the legacy Go body).
-        -- Only a file the caller uploaded, or one already attached to a card
-        -- the caller can see: attaching someone else's file to your own
-        -- card would hand you its bytes (review B4). Anything else reads
-        -- as missing.
+        -- Only a file whose bytes the caller may have (file_readable_by:
+        -- they uploaded it, or may download it where it is attached):
+        -- attaching someone else's file to your own card would hand you its
+        -- bytes (review B4), and seeing a card is not enough — a viewer may
+        -- not download its files (round 2 #10). Anything else reads as
+        -- missing.
         SELECT f.filename, f.mime_type, f.size_bytes
         INTO _filename, _mime, _size
         FROM file f
         WHERE f.id = _file_id
-          AND (f.created_by = attachment_create_batch.actor_id
-               OR EXISTS (SELECT 1 FROM attachment a2
-                          WHERE a2.file_id = f.id AND a2.deleted_at IS NULL
-                            AND card_visible_to(attachment_create_batch.actor_id, a2.card_id)));
+          AND file_readable_by(attachment_create_batch.actor_id, f.id);
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'not_found'::text,
                 format('attachment.create: file %s not found', _file_id)::text,

@@ -100,7 +100,10 @@ func TestSignUploadURLs(t *testing.T) {
 		t.Fatalf("bad query: %v", q)
 	}
 	expN, _ := strconv.ParseInt(q.Get("exp"), 10, 64)
-	g := uploadGrant{CardID: 5, ActorID: 77, Filename: q.Get("filename"), MimeType: q.Get("mime_type")}
+	if q.Get("n") == "" {
+		t.Fatal("the minted url has no nonce: two links for one file would share a signature")
+	}
+	g := uploadGrant{CardID: 5, ActorID: 77, Filename: q.Get("filename"), MimeType: q.Get("mime_type"), Nonce: q.Get("n")}
 	if err := verifyUploadURL(g, expN, q.Get("sig"), time.Now().Unix()); err != nil {
 		t.Fatalf("minted url failed verification: %v", err)
 	}
