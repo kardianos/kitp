@@ -42,7 +42,10 @@ type POSTConfig struct {
 	Trusted  *netx.Trusted
 	Status   *Status
 	MaxBytes int64
-	Logger   *slog.Logger
+	// MaxConcurrent caps the messages read and filed at once
+	// (DefaultPOSTConcurrent when 0).
+	MaxConcurrent int
+	Logger        *slog.Logger
 }
 
 type postServer struct {
@@ -50,7 +53,16 @@ type postServer struct {
 	sources *netx.Limiter
 	routes  *netx.Limiter
 	seen    *replayCache
+	// busy holds one slot per message being read and filed: each takes up
+	// to MaxBytes and several times that to parse, so only a few run at
+	// once (review 2026-11-03 round 4 #1).
+	busy chan struct{}
 }
+
+// DefaultPOSTConcurrent is how many POSTed messages are read and filed at
+// once (KITP_COMM_INBOUND_MAX_CONCURRENT); more answer 503 and the provider
+// retries.
+const DefaultPOSTConcurrent = 4
 
 // MountPOST registers
 //
@@ -66,8 +78,12 @@ func MountPOST(rt *api.Router, cfg POSTConfig) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	if cfg.MaxConcurrent <= 0 {
+		cfg.MaxConcurrent = DefaultPOSTConcurrent
+	}
 	s := &postServer{
 		POSTConfig: cfg,
+		busy:       make(chan struct{}, cfg.MaxConcurrent),
 		sources:    netx.NewLimiter(limits.PerSourcePerMinute, limits.PerSourceBurst, 100_000),
 		routes:     netx.NewLimiter(limits.PerRoutePerMinute, limits.PerRoutePerMinute, 100_000),
 		seen:       &replayCache{seen: map[string]time.Time{}},
@@ -117,6 +133,13 @@ func (s *postServer) handle(ctx context.Context, w http.ResponseWriter, r *http.
 		refused = http.StatusNotAcceptable
 	}
 
+	select {
+	case s.busy <- struct{}{}:
+		defer func() { <-s.busy }()
+	default:
+		w.Header().Set("Retry-After", "30")
+		return reply(w, http.StatusServiceUnavailable, "busy", "too many messages at once; try again shortly")
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.MaxBytes))
 	if err != nil {
 		var mbe *http.MaxBytesError

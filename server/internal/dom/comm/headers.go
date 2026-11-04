@@ -62,6 +62,28 @@ func ParseAddress(s string) (*mail.Address, error) {
 	return a, nil
 }
 
+// PeopleIn is the plain addresses of an address-list header, for
+// collecting people (a thread's recipients, who a message reached, its
+// sender): an odd entry is skipped and the rest kept, where
+// ParseAddressList refuses the whole header — right for an allow list or
+// DKIM alignment, but it dropped everyone else on a To or Cc with one odd
+// address in it (review 2026-11-03 round 4 #9). A header that doesn't
+// parse at all gives nothing.
+func PeopleIn(s string) []*mail.Address {
+	p := mail.AddressParser{WordDecoder: headerDecoder}
+	list, err := p.ParseList(s)
+	if err != nil {
+		return nil
+	}
+	out := list[:0]
+	for _, a := range list {
+		if PlainAddress(a.Address) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // ErrOddAddress is a header address kitp won't store or send to: see
 // PlainAddress.
 var ErrOddAddress = errors.New("mail: address with a quoted or unusual local part")

@@ -164,7 +164,7 @@ func TestUnfileableAnswersEvenIfTheLogFails(t *testing.T) {
 func TestOutgoingHeaders(t *testing.T) {
 	msg := string(comm.BuildMIMEForTest("support@example.com", "bob@example.com", "Ünïcode subject", "body", "abc123"))
 	head, _, _ := strings.Cut(msg, "\r\n\r\n")
-	for _, want := range []string{"\r\nDate: ", "\r\nMessage-ID: <kitp.", "@example.com>", "Subject: =?utf-8?q?"} {
+	for _, want := range []string{"\r\nDate: ", "\r\nMessage-ID: <kitp.", "@example.com>", "Subject:\r\n =?utf-8?q?"} {
 		if !strings.Contains(head, want) {
 			t.Errorf("headers lack %q:\n%s", want, head)
 		}

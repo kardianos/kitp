@@ -192,15 +192,33 @@ A paused channel (not `enabled`): `File` returns `ErrChannelPaused`
 and marks it read, leaving it in the mailbox — before, it filed an empty
 message, and with dedupe every empty message would share one key).
 
-Size and shape (review 2026-11-03 round 3 #1). One IMAP poll takes at most
-50 unseen messages, oldest first, and asks each one's `RFC822.SIZE`
-before fetching it: one over 50 MB (`IMAPMaxMessageBytes`, the POST
-route's default cap) is logged as `parse_error` and marked read without
-being fetched. Parsing reads nested multiparts as a stream, at most 8
-levels deep and 500 parts in all (`walkMultipart`); a message nested
-deeper keeps what was found above. Before, each level copied the rest of
-the message: a 224 KB message of nested parts took 600 MB, and on IMAP,
-which fetched it again on every poll, ended kitpd each time.
+Size and shape (review 2026-11-03 rounds 3 and 4, #1).
+- One IMAP poll lists at most 50 unseen messages, oldest first, with each
+  one's `RFC822.SIZE` and nothing else (`ListUnseen`). It then fetches,
+  files and marks seen one message at a time, so a poll holds one message,
+  not the batch. A message over 50 MB (`IMAPMaxMessageBytes`, the POST
+  route's default cap) is logged as `parse_error` and marked read without
+  being fetched.
+- Messages are fetched with `BODY.PEEK[]`, which leaves them unseen: kitp
+  marks a message seen once it is filed, or can never be (unreadable,
+  unfileable, too large, set aside). A plain `BODY[]` marked it seen as it
+  was read, so a message whose filing failed for a passing reason was lost.
+- A message is recorded in `comm_imap_inflight` while it is read and filed.
+  A record still there when the next poll starts means kitpd stopped while
+  reading it; after two such starts the message is set aside: logged as
+  `parse_error` ("set aside") and marked read, left in the mailbox, rather
+  than ending kitpd on every poll.
+- Every IMAP command has a deadline (the poll's own, or 2 minutes), and the
+  connection is closed when the poll's context ends; an SMTP conversation
+  has one deadline (5 minutes, or the caller's). A server that stops
+  answering can't hold up the other accounts' polls.
+- Parsing reads nested multiparts as a stream, at most 8 levels deep and
+  500 parts in all (`walkMultipart`); a part's transfer encoding, nested or
+  not, is undone as it is read. Before, each level copied the rest of the
+  message: a 224 KB message of nested parts took 600 MB.
+- At most 4 POSTed messages are read and filed at once
+  (`KITP_COMM_INBOUND_MAX_CONCURRENT`); more answer 503 and the provider
+  retries.
 
 ### 4. Message dedupe
 
@@ -455,14 +473,14 @@ owner person → user account (none / disabled → 404). One query:
 tasks, not deleted, visible to the owner (schema.VisibilityClause — off
 areas included), matching the calendar's predicate (card.CompileTree,
 @me = the owner), with
-  av.attribute_def_id = <due_date> AND av.value_type_id < 1000
+  av.attribute_def_id = <due_date> AND av.value_type_id < 50
   AND av.value >= to_jsonb(<from>::text) AND av.value <= to_jsonb(<to>::text)
 ```
 
-The literal `value_type_id < 1000` matches the partial index
+The literal `value_type_id < 50` matches the partial index
 `attribute_value_def_value (attribute_def_id, value) WHERE value_type_id
-< 1000`, so the range is an index scan; ISO date strings sort in date
-order. At most 5000 events.
+< 50` (scalars only, since migration 0034), so the range is an index scan;
+ISO date strings sort in date order. At most 5000 events.
 
 Each event (`text/calendar`, CRLF, lines folded at 75 octets, TEXT
 escaped):

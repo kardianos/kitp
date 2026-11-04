@@ -181,6 +181,17 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
+        -- The account's own address, bare: it is the envelope sender and
+        -- the From of everything sent, and the name comes from the
+        -- account's title. "Support <support@x>" made every staff reply
+        -- fail (review 2026-11-03 round 4 #8).
+        _from_address := btrim(_from_address);
+        IF _from_address <> '' AND NOT email_plain(_from_address) THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comm_channel.set: from_address must be a plain address such as support@example.com (the account''s name is its title)'::text,
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
         -- What new (unmatched) mail does, and whether replies quote the
         -- conversation (docs/CONVERSATIONS.md).
         IF _intake_mode <> '' AND _intake_mode NOT IN ('task', 'thread', 'ignore') THEN

@@ -1382,6 +1382,82 @@ JOIN cas_blob cb ON cb.address = fc.cas_address
 JOIN user_account ua ON ua.id = f.created_by
 ON CONFLICT (address, user_id) DO NOTHING;`,
 	},
+	{
+		// Threads filed before 0032 have no comm_confirmed, so since the
+		// relay reads only it they relay nothing (review 2026-11-03 round 4
+		// #7). Confirm, among the people on such a thread now, those a person
+		// in kitp added (a comm_recipients change by anyone but System — the
+		// recipient sync writes as System) and the person who started it by
+		// mail (its first message's From, received). Staff replies confirm
+		// nobody, as at runtime. Idempotent: only threads with no
+		// comm_confirmed row.
+		id: "0038_comm_confirmed_backfill",
+		sql: `
+WITH rdef AS (SELECT id FROM attribute_def WHERE name = 'comm_recipients'),
+cdef AS (SELECT id FROM attribute_def WHERE name = 'comm_confirmed'),
+legacy AS (
+  SELECT c.id AS comm_id
+  FROM card c
+  JOIN card_type ct ON ct.id = c.card_type_id AND ct.name = 'comm'
+  WHERE c.deleted_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM attribute_value av
+                    WHERE av.card_id = c.id AND av.attribute_def_id = (SELECT id FROM cdef))
+),
+on_now AS (
+  SELECT l.comm_id, (e.v #>> '{}')::bigint AS person, e.ord
+  FROM legacy l
+  JOIN attribute_value av ON av.card_id = l.comm_id AND av.attribute_def_id = (SELECT id FROM rdef)
+  CROSS JOIN LATERAL jsonb_array_elements(
+      CASE WHEN jsonb_typeof(av.value) = 'array' THEN av.value ELSE '[]'::jsonb END) WITH ORDINALITY AS e(v, ord)
+  WHERE (e.v #>> '{}') ~ '^[0-9]{1,18}$'
+),
+steps AS (
+  SELECT a.card_id AS comm_id, a.actor_id, a.value_new,
+         lag(a.value_new) OVER (PARTITION BY a.card_id ORDER BY a.id) AS prev
+  FROM activity a
+  JOIN legacy l ON l.comm_id = a.card_id
+  WHERE a.kind = 'attr_update' AND a.attribute_def_id = (SELECT id FROM rdef)
+),
+added AS (
+  SELECT DISTINCT s.comm_id, (e.v #>> '{}')::bigint AS person
+  FROM steps s
+  CROSS JOIN LATERAL jsonb_array_elements(
+      CASE WHEN jsonb_typeof(s.value_new) = 'array' THEN s.value_new ELSE '[]'::jsonb END) AS e(v)
+  WHERE s.actor_id <> 1
+    AND (e.v #>> '{}') ~ '^[0-9]{1,18}$'
+    AND NOT (CASE WHEN jsonb_typeof(s.prev) = 'array' THEN s.prev ELSE '[]'::jsonb END) @> jsonb_build_array(e.v)
+),
+starter AS (
+  SELECT l.comm_id, pc.id AS person
+  FROM legacy l
+  JOIN attribute_value rep ON rep.card_id = l.comm_id
+   AND rep.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'replies')
+   AND jsonb_typeof(rep.value) = 'array'
+  JOIN attribute_value rf ON rf.card_id = CASE WHEN (rep.value->0 #>> '{}') ~ '^[0-9]{1,18}$'
+                                               THEN (rep.value->0 #>> '{}')::bigint END
+   AND rf.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_from')
+  JOIN attribute_value ds ON ds.card_id = rf.card_id
+   AND ds.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'delivery_status')
+   AND ds.value = to_jsonb('received'::text)
+  JOIN attribute_value pav ON pav.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'email')
+   AND lower(btrim(pav.value #>> '{}')) = lower(btrim(COALESCE(
+         substring(rf.value #>> '{}' from '<([^<>]+)>\s*$'), rf.value #>> '{}')))
+  JOIN card pc ON pc.id = pav.card_id AND pc.deleted_at IS NULL
+   AND pc.card_type_id = (SELECT id FROM card_type WHERE name = 'person')
+),
+confirm AS (
+  SELECT n.comm_id, n.person, min(n.ord) AS ord
+  FROM on_now n
+  WHERE EXISTS (SELECT 1 FROM added a WHERE a.comm_id = n.comm_id AND a.person = n.person)
+     OR EXISTS (SELECT 1 FROM starter s WHERE s.comm_id = n.comm_id AND s.person = n.person)
+  GROUP BY n.comm_id, n.person
+)
+INSERT INTO attribute_value (card_id, attribute_def_id, value)
+SELECT comm_id, (SELECT id FROM cdef), jsonb_agg(to_jsonb(person) ORDER BY ord)
+FROM confirm
+GROUP BY comm_id
+ON CONFLICT (card_id, attribute_def_id) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

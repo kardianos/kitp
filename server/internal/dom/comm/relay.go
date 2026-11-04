@@ -88,7 +88,10 @@ func automaticKind(h mail.Header) string {
 }
 
 // addressesIn returns the lowercased bare addresses in address-list
-// headers. A header that doesn't parse adds nothing.
+// headers — who a message reached. An odd entry is skipped and the rest
+// kept (PeopleIn), so one odd Cc doesn't make everyone else on it look
+// unreached (review 2026-11-03 round 4 #9). A header that doesn't parse
+// adds nothing.
 func addressesIn(headers ...string) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, raw := range headers {
@@ -96,22 +99,33 @@ func addressesIn(headers ...string) map[string]struct{} {
 		if raw == "" {
 			continue
 		}
-		list, err := ParseAddressList(raw)
-		if err != nil {
-			// One header that doesn't parse as a list may still be a
-			// single address.
-			if a, aerr := ParseAddress(raw); aerr == nil {
-				out[strings.ToLower(strings.TrimSpace(a.Address))] = struct{}{}
-			}
-			continue
-		}
-		for _, a := range list {
+		for _, a := range PeopleIn(raw) {
 			if addr := strings.ToLower(strings.TrimSpace(a.Address)); addr != "" {
 				out[addr] = struct{}{}
 			}
 		}
 	}
 	return out
+}
+
+// senderOf is the one lowercased address a From header names, or ""
+// when it names other than exactly one plain address. Strict, unlike
+// addressesIn: a From with an odd address in it has no sender.
+func senderOf(from string) string {
+	from = strings.TrimSpace(from)
+	if from == "" {
+		return ""
+	}
+	if list, err := ParseAddressList(from); err == nil {
+		if len(list) == 1 {
+			return strings.ToLower(strings.TrimSpace(list[0].Address))
+		}
+		return ""
+	}
+	if a, err := ParseAddress(from); err == nil {
+		return strings.ToLower(strings.TrimSpace(a.Address))
+	}
+	return ""
 }
 
 // relaySenderName is the name on a copy's From: the sender's display name,
@@ -190,10 +204,11 @@ func (p *filer) relayReplyTx(ctx context.Context, tx store.Querier, snap *schema
 		return skip("no_from_address")
 	}
 	own := strings.ToLower(accountAddr)
-	senders := addressesIn(m.From)
-	if len(senders) != 1 {
+	sender := senderOf(m.From)
+	if sender == "" {
 		return skip("no_sender")
 	}
+	senders := map[string]struct{}{sender: {}}
 	if _, fromSelf := senders[own]; fromSelf {
 		return skip("own_address")
 	}
@@ -328,13 +343,9 @@ func threadConfirmed(ctx context.Context, tx store.Querier, commID int64) (map[s
 // sent on to the people staff add. Their From isn't authenticated either,
 // but it only ever reaches people a person in kitp chose.
 func confirmStarter(ctx context.Context, tx store.Querier, commID int64, from string) error {
-	senders := addressesIn(from)
-	if len(senders) != 1 {
+	addr := senderOf(from)
+	if addr == "" {
 		return nil
-	}
-	var addr string
-	for a := range senders {
-		addr = a
 	}
 	b := named.New()
 	b.Set("comm", commID)

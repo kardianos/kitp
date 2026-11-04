@@ -287,7 +287,7 @@ BEGIN
                                                    FROM attribute_value rv
                                                    JOIN card cp ON cp.id = rv.card_id AND cp.deleted_at IS NULL
                                                    WHERE rv.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'relay_of')
-                                                     AND rv.value_type_id < 1000
+                                                     AND rv.value_type_id < 50
                                                      AND rv.value = to_jsonb(rb.id)
                                                    ORDER BY cp.id
                                                    LIMIT 1

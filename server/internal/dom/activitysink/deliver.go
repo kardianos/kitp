@@ -55,6 +55,11 @@ func (p *Pumper) deliverEmail(ctx context.Context, cfg unitConfig, d Digest) err
 	if cfg.subscriberEmail == "" {
 		return &errPermanent{reason: "subscriber has no email address"}
 	}
+	// Only an address kitp sends to (comm.PlainAddress), as for every
+	// other message kitp sends (review 2026-11-03 round 3 #9, round 4 #19).
+	if !comm.PlainAddress(strings.TrimSpace(cfg.subscriberEmail)) {
+		return &errPermanent{reason: "the subscriber's email address isn't one kitp sends to"}
+	}
 	// A mail account in a switched-off area (Conversations off) sends
 	// nothing, notifications included; the digest waits for it to come
 	// back (a temporary error, retried) (review 2026-11-03 #30).

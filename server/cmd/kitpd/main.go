@@ -26,6 +26,7 @@
 //	KITP_COMM_DEDUPE_DAYS        — days a message stays deduped after its last copy arrived; default 14
 //	KITP_COMM_LOG_PRUNE_HOURS — comm_log prune cadence in hours; default 24
 //	KITP_COMM_INBOUND_MAX_BYTES — POST mail intake body cap; default 50 MB
+//	KITP_COMM_INBOUND_MAX_CONCURRENT — POSTed messages read and filed at once; default 4 (more answer 503)
 //	KITP_TRUSTED_PROXIES      — private CIDRs whose X-Forwarded-For / PROXY
 //	                            header is believed; default any private or
 //	                            loopback peer (a public CIDR is refused)
@@ -535,7 +536,9 @@ func runHTTP() error {
 	mailIntake := &comm.Intake{Pool: pool, Logger: logger}
 	mailin.MountPOST(apiRouter, mailin.POSTConfig{
 		Pool: pool, Intake: mailIntake, Trusted: trustedProxies, Status: mailStatus,
-		MaxBytes: int64(envInt("KITP_COMM_INBOUND_MAX_BYTES", mailin.DefaultPOSTMaxBytes)), Logger: logger,
+		MaxBytes:      int64(envInt("KITP_COMM_INBOUND_MAX_BYTES", mailin.DefaultPOSTMaxBytes)),
+		MaxConcurrent: envInt("KITP_COMM_INBOUND_MAX_CONCURRENT", mailin.DefaultPOSTConcurrent),
+		Logger:        logger,
 	})
 	portalBuilder := &domportal.Builder{Pool: pgPool, Storage: storage, Logger: logger}
 	// Project export (phases 3 + 4 of PROJECT_PORTABILITY_PLAN.md) —

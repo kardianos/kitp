@@ -123,7 +123,7 @@ type IMAPPoller struct {
 }
 
 // IMAPDialFunc opens an authenticated IMAP session with INBOX selected
-// and returns an InboundClient ready for FetchUnseen / MarkSeen /
+// and returns an InboundClient ready for ListUnseen / Fetch / MarkSeen /
 // Close. Tests replace this with a stub; production uses dialIMAP.
 type IMAPDialFunc func(ctx context.Context, cfg IMAPConfig) (InboundClient, error)
 
@@ -150,19 +150,31 @@ type IMAPConfig struct {
 // realIMAPClient (wraps emersion/go-imap); tests use a stub that
 // returns canned InboundMessage values.
 type imapClient interface {
-	// FetchUnseen returns messages in INBOX without the \Seen flag,
+	// ListUnseen returns the messages in INBOX without the \Seen flag,
 	// oldest first and at most imapFetchBatch of them (the rest come on
-	// later polls). UID is set on each message; the caller passes it back
-	// to MarkSeen. A message over IMAPMaxMessageBytes comes back with
-	// ParseError set and no body.
-	FetchUnseen(ctx context.Context) ([]InboundMessage, error)
+	// later polls), each with its size (0 when the server gave none). It
+	// reads no message: the poller fetches, files and marks one at a time,
+	// so a poll holds one message, not fifty (review 2026-11-03 round 4
+	// #1).
+	ListUnseen(ctx context.Context) ([]UnseenMessage, error)
+	// Fetch reads and parses one message, leaving it unseen. A message
+	// that doesn't parse comes back with ParseError set.
+	Fetch(ctx context.Context, uid uint32) (InboundMessage, error)
 	// MarkSeen flips the \Seen flag on the supplied UIDs. The poller
 	// marks what it filed and what can never be filed (unreadable,
-	// unfileable); a message that failed for a passing reason stays
-	// unseen for the next poll.
+	// unfileable, too large, set aside); a message that failed for a
+	// passing reason stays unseen for the next poll.
 	MarkSeen(ctx context.Context, uids []uint32) error
+	// UIDValidity is the selected mailbox's UIDVALIDITY.
+	UIDValidity() uint32
 	// Close releases the underlying connection. Idempotent.
 	Close() error
+}
+
+// UnseenMessage is one unseen message as ListUnseen names it.
+type UnseenMessage struct {
+	UID  uint32
+	Size uint32 // RFC822.SIZE; 0 when unknown
 }
 
 // InboundMessage is the parsed shape of one inbound email. The dialer
@@ -478,68 +490,176 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 		slog.Int64("channel_id", p.channelID),
 		slog.String("host", cfg.Host))
 
-	msgs, err := client.FetchUnseen(ctx)
+	list, err := client.ListUnseen(ctx)
 	if err != nil {
 		return fmt.Errorf("imap fetch: %w", err)
 	}
-	p.logger.LogAttrs(ctx, slog.LevelDebug, "imap fetched unseen",
+	p.logger.LogAttrs(ctx, slog.LevelDebug, "imap unseen",
 		slog.Int64("channel_id", p.channelID),
-		slog.Int("count", len(msgs)))
+		slog.Int("count", len(list)))
+	validity := client.UIDValidity()
+	if err := p.pruneInflight(ctx, validity); err != nil {
+		return err
+	}
 
-	var ingested []uint32
+	// One message at a time: fetch, file, mark seen, then the next — a
+	// poll holds one message's bytes, never the batch (review 2026-11-03
+	// round 4 #1). A message is recorded as in flight while it is read and
+	// filed; one still recorded when its poll began was being read when
+	// kitpd stopped, and one that stopped kitpd twice is set aside —
+	// logged and marked read, left in the mailbox — rather than end it on
+	// every poll.
+	var ingested int
 	var firstErr error
-	for _, m := range msgs {
-		if m.ParseError != "" {
-			// Not mail: log it and mark it read (it stays in the mailbox),
-			// as POST and SMTP do. Filing it would make an empty thread, and
-			// every empty message shares one dedupe key.
-			if err := p.logInbound(ctx, p.pool.P, projectID, inboundMeta{transport: TransportIMAP}, "parse_error", map[string]any{
-				"error": m.ParseError, "uid": m.UID, "bytes": len(m.Raw),
-			}); err != nil && firstErr == nil {
-				firstErr = err
-				continue
-			}
-			ingested = append(ingested, m.UID)
-			continue
+	for _, u := range list {
+		if ctx.Err() != nil {
+			break
 		}
-		if _, err := p.processOne(ctx, intake, m, inboundMeta{transport: TransportIMAP}); err != nil {
-			if permanentFilingError(err) {
-				// It can never be filed (ErrUnfileable): log it and mark it
-				// read like an unreadable message, rather than retry it
-				// forever and trip the account's fault switch.
-				// A failure to log it is logged here and doesn't hold the
-				// message back either.
-				if lerr := p.logInbound(ctx, p.pool.P, projectID, inboundMeta{transport: TransportIMAP}, "file_error", fileErrorDetail(m, err)); lerr != nil {
-					p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: logging an unfileable message failed",
-						slog.Int64("channel_id", p.channelID),
-						slog.Any("uid", m.UID),
-						slog.String("error", lerr.Error()))
-				}
-				ingested = append(ingested, m.UID)
-				continue
+		var m InboundMessage
+		tracked := false
+		switch {
+		case int64(u.Size) > IMAPMaxMessageBytes:
+			m = InboundMessage{UID: u.UID, ParseError: fmt.Sprintf(
+				"message is %d bytes, over the %d-byte limit; not fetched", u.Size, IMAPMaxMessageBytes)}
+		default:
+			attempts, err := p.beginInflight(ctx, validity, u.UID)
+			if err != nil {
+				return err
 			}
-			if firstErr == nil {
-				firstErr = err
+			if attempts > imapMaxAttempts {
+				m = InboundMessage{UID: u.UID, ParseError: fmt.Sprintf(
+					"set aside: kitp stopped %d times while reading this message", attempts-1)}
+				break
 			}
-			// Skip MarkSeen for this UID so a retry can pick it up.
-			continue
+			tracked = true
+			m, err = client.Fetch(ctx, u.UID)
+			if err != nil {
+				p.endInflight(ctx, validity, u.UID)
+				return fmt.Errorf("imap fetch: %w", err)
+			}
+			if !p.saveRawEmail {
+				m.Raw = nil // only the debugging copy needs the verbatim bytes
+			}
 		}
-		ingested = append(ingested, m.UID)
+		seen, err := p.fileFetched(ctx, intake, m, int64(u.Size))
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if seen {
+			if err := client.MarkSeen(ctx, []uint32{u.UID}); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("imap mark seen: %w", err)
+			}
+			ingested++
+		}
+		if tracked || seen {
+			p.endInflight(ctx, validity, u.UID)
+		}
 	}
 
-	if err := p.recordPollOnly(ctx, projectID, len(msgs)); err != nil && firstErr == nil {
+	if err := p.recordPollOnly(ctx, projectID, len(list)); err != nil && firstErr == nil {
 		firstErr = err
-	}
-	if len(ingested) > 0 {
-		if err := client.MarkSeen(ctx, ingested); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("imap mark seen: %w", err)
-		}
 	}
 	p.logger.LogAttrs(ctx, slog.LevelDebug, "imap cycle complete",
 		slog.Int64("channel_id", p.channelID),
-		slog.Int("fetched", len(msgs)),
-		slog.Int("ingested", len(ingested)))
+		slog.Int("unseen", len(list)),
+		slog.Int("ingested", ingested))
 	return firstErr
+}
+
+// imapMaxAttempts is how many times a poll starts reading one message
+// before setting it aside: a message that stopped kitpd that often would
+// stop it on every poll.
+const imapMaxAttempts = 2
+
+// fileFetched files one fetched message and says whether it is done with
+// — filed, or never fileable (unreadable, too large, set aside,
+// unfileable) — so it is marked seen. A message that failed for a passing
+// reason returns false and the error, and is tried again next poll.
+func (p *IMAPPoller) fileFetched(ctx context.Context, intake channelIntake, m InboundMessage, size int64) (bool, error) {
+	if m.ParseError != "" {
+		// Not mail: log it and mark it read (it stays in the mailbox), as
+		// POST and SMTP do. Filing it would make an empty thread, and every
+		// empty message shares one dedupe key.
+		n := int64(len(m.Raw))
+		if n == 0 {
+			n = size
+		}
+		if err := p.logInbound(ctx, p.pool.P, intake.projectID, inboundMeta{transport: TransportIMAP}, "parse_error", map[string]any{
+			"error": m.ParseError, "uid": m.UID, "bytes": n,
+		}); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if _, err := p.processOne(ctx, intake, m, inboundMeta{transport: TransportIMAP}); err != nil {
+		if permanentFilingError(err) {
+			// It can never be filed (ErrUnfileable): log it and mark it read
+			// like an unreadable message, rather than retry it forever and
+			// trip the account's fault switch. A failure to log it is logged
+			// here and doesn't hold the message back either.
+			if lerr := p.logInbound(ctx, p.pool.P, intake.projectID, inboundMeta{transport: TransportIMAP}, "file_error", fileErrorDetail(m, err)); lerr != nil {
+				p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: logging an unfileable message failed",
+					slog.Int64("channel_id", p.channelID),
+					slog.Any("uid", m.UID),
+					slog.String("error", lerr.Error()))
+			}
+			return true, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// pruneInflight drops this channel's in-flight records from another
+// UIDVALIDITY (the mailbox was rebuilt; its UIDs name other messages now)
+// and any older than a week.
+func (p *IMAPPoller) pruneInflight(ctx context.Context, validity uint32) error {
+	err := namedExec(ctx, p.pool.P, `
+		DELETE FROM comm_imap_inflight
+		WHERE channel_id = :channel
+		  AND (uid_validity <> :validity OR started_at < now() - interval '7 days')
+	`, map[string]any{"channel": p.channelID, "validity": int64(validity)})
+	if err != nil {
+		return fmt.Errorf("imap: prune in-flight: %w", err)
+	}
+	return nil
+}
+
+// beginInflight records that a poll is reading message uid, committed at
+// once (outside any filing transaction), and returns how many polls have
+// started on it without finishing, this one included.
+func (p *IMAPPoller) beginInflight(ctx context.Context, validity, uid uint32) (int, error) {
+	row, err := namedRow(ctx, p.pool.P, `
+		INSERT INTO comm_imap_inflight (channel_id, uid_validity, uid)
+		VALUES (:channel, :validity, :uid)
+		ON CONFLICT (channel_id, uid_validity, uid) DO UPDATE
+			SET attempts = comm_imap_inflight.attempts + 1, started_at = now()
+		RETURNING attempts
+	`, map[string]any{"channel": p.channelID, "validity": int64(validity), "uid": int64(uid)})
+	if err != nil {
+		return 0, fmt.Errorf("imap: record in-flight: %w", err)
+	}
+	var attempts int
+	if err := row.Scan(&attempts); err != nil {
+		return 0, fmt.Errorf("imap: record in-flight: %w", err)
+	}
+	return attempts, nil
+}
+
+// endInflight clears a message's in-flight record: it was filed, set
+// aside, or failed in a way the next poll retries. A failure to clear it
+// is logged: the record only costs that message one of its attempts.
+func (p *IMAPPoller) endInflight(ctx context.Context, validity, uid uint32) {
+	err := namedExec(context.WithoutCancel(ctx), p.pool.P, `
+		DELETE FROM comm_imap_inflight
+		WHERE channel_id = :channel AND uid_validity = :validity AND uid = :uid
+	`, map[string]any{"channel": p.channelID, "validity": int64(validity), "uid": int64(uid)})
+	if err != nil {
+		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: clearing an in-flight record failed",
+			slog.Int64("channel_id", p.channelID),
+			slog.Any("uid", uid),
+			slog.String("error", err.Error()))
+	}
 }
 
 // Intake modes: what a new (unmatched) inbound message becomes. See
@@ -1329,14 +1449,10 @@ func (p *filer) syncCommRecipientsFromInbound(
 		if raw == "" {
 			continue
 		}
-		// mail.ParseAddressList tolerates name + bare-email forms.
-		// Best-effort: if parsing fails for one header we still try
-		// the others rather than abort the sync.
-		list, perr := ParseAddressList(raw)
-		if perr != nil {
-			continue
-		}
-		for _, a := range list {
+		// Plain addresses only, odd ones skipped (PeopleIn). Best-effort:
+		// a header that doesn't parse adds nobody, and the others are
+		// still read.
+		for _, a := range PeopleIn(raw) {
 			addOne(a)
 		}
 	}
@@ -1848,14 +1964,15 @@ func (w *multipartWalk) walk(r io.Reader, boundary string, depth int) {
 				continue
 			}
 			// A multipart body may only be 7bit, 8bit or binary (RFC 2045
-			// §6.4); one that claims an encoding is still undone first.
+			// §6.4); one that claims an encoding is still undone, as a
+			// stream over the part — reading it whole copied the rest of
+			// the message at every level (review 2026-11-03 round 4 #1).
 			var nested io.Reader = p
-			if enc := strings.ToLower(strings.TrimSpace(p.Header.Get("Content-Transfer-Encoding"))); enc == "base64" || enc == "quoted-printable" {
-				raw, rerr := io.ReadAll(p)
-				if rerr != nil && len(raw) == 0 {
-					return
-				}
-				nested = bytes.NewReader(decodeTransferEncoding(raw, enc))
+			switch strings.ToLower(strings.TrimSpace(p.Header.Get("Content-Transfer-Encoding"))) {
+			case "base64":
+				nested = base64.NewDecoder(base64.StdEncoding, p)
+			case "quoted-printable":
+				nested = quotedprintable.NewReader(p)
 			}
 			w.walk(nested, nestedParams["boundary"], depth+1)
 			continue
@@ -1863,11 +1980,10 @@ func (w *multipartWalk) walk(r io.Reader, boundary string, depth int) {
 		// A part cut short (no closing boundary, as in truncated mail) keeps
 		// what was read; the next NextPart reports the error and ends the
 		// walk.
-		raw, rerr := io.ReadAll(p)
-		if rerr != nil && len(raw) == 0 {
-			return
+		decoded, rerr := readDecoded(p, p.Header.Get("Content-Transfer-Encoding"))
+		if rerr != nil && len(decoded) == 0 {
+			continue // nothing readable in this part; a broken stream ends at the next NextPart
 		}
-		decoded := decodeTransferEncoding(raw, p.Header.Get("Content-Transfer-Encoding"))
 		disp, dispParams, _ := mime.ParseMediaType(p.Header.Get("Content-Disposition"))
 		dispLow := strings.ToLower(disp)
 		if dispLow == "attachment" || (dispLow == "" && !strings.HasPrefix(partCTLow, "text/")) {
@@ -1911,6 +2027,42 @@ func (w *multipartWalk) walk(r io.Reader, boundary string, depth int) {
 			if w.html == "" {
 				w.html = string(decoded)
 			}
+		}
+	}
+}
+
+// readDecoded reads a part's content with its Content-Transfer-Encoding
+// undone as it is read, so a large attachment is held once, decoded —
+// not raw, then as a string, then stripped, then decoded (review
+// 2026-11-03 round 4 #1). base64 skips the whitespace mail puts in it; a
+// part cut short or not valid keeps what decoded before the error.
+func readDecoded(r io.Reader, encoding string) ([]byte, error) {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "base64":
+		return io.ReadAll(base64.NewDecoder(base64.StdEncoding, &dropBlanks{r: r}))
+	case "quoted-printable":
+		return io.ReadAll(quotedprintable.NewReader(r))
+	default:
+		return io.ReadAll(r)
+	}
+}
+
+// dropBlanks passes its reader through without spaces and tabs (the base64
+// decoder already skips CR and LF).
+type dropBlanks struct{ r io.Reader }
+
+func (d *dropBlanks) Read(p []byte) (int, error) {
+	for {
+		n, err := d.r.Read(p)
+		k := 0
+		for _, c := range p[:n] {
+			if c != ' ' && c != '\t' {
+				p[k] = c
+				k++
+			}
+		}
+		if k > 0 || err != nil {
+			return k, err
 		}
 	}
 }
@@ -1979,10 +2131,10 @@ func stripHTMLTags(s string) string {
 // works), and returns a realIMAPClient. The returned client owns the
 // underlying socket; the caller must Close() to release it.
 //
-// go-imap doesn't expose a per-call context, so we surface ctx via a
-// dial timeout (taken from the caller's deadline when set, else a 30s
-// default). FetchUnseen / MarkSeen rely on the underlying conn's
-// read/write deadlines, which the dial timeout effectively pins.
+// go-imap doesn't expose a per-call context: the dial takes its timeout
+// from the caller's deadline (else 30s), every later command gets a
+// deadline of its own (realIMAPClient.arm), and the connection is closed
+// when ctx ends.
 func dialIMAP(ctx context.Context, cfg IMAPConfig) (imapClient, error) {
 	// SSRF guard (SEC-4 / A9): reject internal / loopback / link-local
 	// dial targets before opening the socket.
@@ -2015,21 +2167,63 @@ func dialIMAP(ctx context.Context, cfg IMAPConfig) (imapClient, error) {
 		_ = c.Logout()
 		return nil, fmt.Errorf("imap login: %w", err)
 	}
-	if _, err := c.Select("INBOX", false); err != nil {
+	mbox, err := c.Select("INBOX", false)
+	if err != nil {
 		_ = c.Logout()
 		return nil, fmt.Errorf("imap select INBOX: %w", err)
 	}
-	return &realIMAPClient{c: c}, nil
+	r := &realIMAPClient{c: c, validity: mbox.UidValidity}
+	// go-imap has no per-call context: when the poll's context ends (the
+	// job's timeout, shutdown), close the connection so a command stalled
+	// on a slow or silent server returns at once instead of holding up
+	// every account's poll (review 2026-11-03 round 4 #6). Each command
+	// also gets a deadline of its own (arm).
+	r.stop = context.AfterFunc(ctx, func() {
+		if err := c.Terminate(); err != nil {
+			return // the connection is going either way
+		}
+	})
+	return r, nil
 }
 
 // realIMAPClient implements imapClient against emersion/go-imap. The
 // concrete protocol surface lives here so the rest of the package
 // (threading, ingest) stays library-agnostic.
 type realIMAPClient struct {
-	c *imapclient.Client
+	c        *imapclient.Client
+	validity uint32
+	stop     func() bool
 }
 
-func (r *realIMAPClient) FetchUnseen(ctx context.Context) ([]InboundMessage, error) {
+// imapFetchBatch is the most messages one poll looks at; the rest wait for
+// the next poll. IMAPMaxMessageBytes is the largest message it fetches at
+// all (the POST route's default cap).
+const imapFetchBatch = 50
+
+// IMAPMaxMessageBytes caps one message fetched over IMAP.
+const IMAPMaxMessageBytes int64 = 50 << 20
+
+// imapCommandTimeout bounds one IMAP command (a search, one message's
+// body, a flag change) when the poll's context has no deadline of its own.
+const imapCommandTimeout = 2 * time.Minute
+
+// arm sets the deadline for the next command: the poll's own deadline, or
+// imapCommandTimeout. go-imap applies Client.Timeout to every command; with
+// none, a server that stops answering mid-response held the poll forever.
+func (r *realIMAPClient) arm(ctx context.Context) {
+	r.c.Timeout = imapCommandTimeout
+	if d, ok := ctx.Deadline(); ok {
+		if left := time.Until(d); left > 0 && left < imapCommandTimeout {
+			r.c.Timeout = left
+		}
+	}
+}
+
+// ListUnseen returns INBOX's unseen messages, oldest first and at most
+// imapFetchBatch of them, with each one's RFC822.SIZE — no bodies, so a
+// poll holds nothing of a message until it is fetched to be filed.
+func (r *realIMAPClient) ListUnseen(ctx context.Context) ([]UnseenMessage, error) {
+	r.arm(ctx)
 	criteria := imap.NewSearchCriteria()
 	criteria.WithoutFlags = []string{imap.SeenFlag}
 	uids, err := r.c.UidSearch(criteria)
@@ -2039,107 +2233,94 @@ func (r *realIMAPClient) FetchUnseen(ctx context.Context) ([]InboundMessage, err
 	if len(uids) == 0 {
 		return nil, nil
 	}
-	// One poll takes a bounded batch, oldest first; the rest wait for the
-	// next poll. And a message's size is asked before its body: one over
-	// the inbound cap comes back as unreadable (logged and marked seen)
-	// without being fetched (review 2026-11-03 round 3 #1).
 	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
 	if len(uids) > imapFetchBatch {
 		uids = uids[:imapFetchBatch]
 	}
-	sizes, err := r.fetchSizes(uids)
-	if err != nil {
-		return nil, err
-	}
-	var out []InboundMessage
-	var fetch []uint32
-	for _, uid := range uids {
-		if size, ok := sizes[uid]; ok && int64(size) > IMAPMaxMessageBytes {
-			out = append(out, InboundMessage{UID: uid, ParseError: fmt.Sprintf(
-				"message is %d bytes, over the %d-byte limit; not fetched", size, IMAPMaxMessageBytes)})
-			continue
-		}
-		fetch = append(fetch, uid)
-	}
-	if len(fetch) == 0 {
-		return out, nil
-	}
 	seqset := new(imap.SeqSet)
-	seqset.AddNum(fetch...)
-
-	section := &imap.BodySectionName{}
-	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, section.FetchItem()}
-
-	ch := make(chan *imap.Message, 16)
-	done := make(chan error, 1)
-	// The fetch runs on its own goroutine, where a panic would end the
-	// process rather than fail this poll; go-imap closes ch on the way out
-	// either way (review B9).
-	go func() {
-		done <- job.Protect(context.Background(), nil, "imap fetch", func() error { return r.c.UidFetch(seqset, items, ch) })
-	}()
-
-	for msg := range ch {
-		body := msg.GetBody(section)
-		if body == nil {
-			// No body fetched (unusual); skip rather than fail the
-			// whole batch.
-			continue
-		}
-		raw, err := io.ReadAll(body)
-		if err != nil {
-			return nil, fmt.Errorf("imap read body: %w", err)
-		}
-		parsed, err := ParseInboundMessage(msg.Uid, raw)
-		if err != nil {
-			// Per-message parse failure: continue ingesting the rest
-			// but include the bad UID with empty fields so the caller
-			// can log + skip MarkSeen for it. We pick this surface
-			// because returning an error here would skip the whole
-			// batch — too aggressive.
-			parsed = InboundMessage{UID: msg.Uid, Raw: raw, ParseError: err.Error()}
-		}
-		out = append(out, parsed)
+	seqset.AddNum(uids...)
+	sizes := make(map[uint32]uint32, len(uids))
+	err = r.fetch(ctx, seqset, []imap.FetchItem{imap.FetchUid, imap.FetchRFC822Size}, func(msg *imap.Message) error {
+		sizes[msg.Uid] = msg.Size
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("imap UID FETCH RFC822.SIZE: %w", err)
 	}
-	if err := <-done; err != nil {
-		return out, fmt.Errorf("imap UID FETCH: %w", err)
+	out := make([]UnseenMessage, len(uids))
+	for i, uid := range uids {
+		out[i] = UnseenMessage{UID: uid, Size: sizes[uid]}
 	}
 	return out, nil
 }
 
-// imapFetchBatch is the most messages one poll fetches; IMAPMaxMessageBytes
-// is the largest message it fetches at all (the POST route's default cap).
-const imapFetchBatch = 50
-
-// IMAPMaxMessageBytes caps one message fetched over IMAP.
-const IMAPMaxMessageBytes int64 = 50 << 20
-
-// fetchSizes asks the server for each message's RFC822.SIZE. A message the
-// server reports no size for is fetched as before.
-func (r *realIMAPClient) fetchSizes(uids []uint32) (map[uint32]uint32, error) {
+// Fetch reads one message whole and parses it. BODY.PEEK[] leaves it
+// unseen: the poller marks it seen once it is filed (or can never be), so
+// a message that failed for a passing reason is tried again — a plain
+// BODY[] marked it seen as it was read, and such a message was lost. A
+// message that doesn't parse comes back with ParseError set.
+func (r *realIMAPClient) Fetch(ctx context.Context, uid uint32) (InboundMessage, error) {
 	seqset := new(imap.SeqSet)
-	seqset.AddNum(uids...)
-	ch := make(chan *imap.Message, 16)
+	seqset.AddNum(uid)
+	section := &imap.BodySectionName{Peek: true}
+	var out InboundMessage
+	found := false
+	err := r.fetch(ctx, seqset, []imap.FetchItem{imap.FetchUid, section.FetchItem()}, func(msg *imap.Message) error {
+		body := msg.GetBody(section)
+		if body == nil || msg.Uid != uid {
+			return nil
+		}
+		raw, err := io.ReadAll(body)
+		if err != nil {
+			return fmt.Errorf("imap read body: %w", err)
+		}
+		found = true
+		parsed, perr := ParseInboundMessage(uid, raw)
+		if perr != nil {
+			parsed = InboundMessage{UID: uid, Raw: raw, ParseError: perr.Error()}
+		}
+		out = parsed
+		return nil
+	})
+	if err != nil {
+		return InboundMessage{}, fmt.Errorf("imap UID FETCH %d: %w", uid, err)
+	}
+	if !found {
+		// Gone since the list (another client expunged it), or no body.
+		return InboundMessage{UID: uid, ParseError: "the server returned no body for this message"}, nil
+	}
+	return out, nil
+}
+
+// fetch runs one UID FETCH and hands each message to each. The fetch runs
+// on its own goroutine, where a panic would end the process rather than
+// fail this poll; go-imap closes ch on the way out either way (review B9).
+// ch is drained whatever each returns, so the goroutine never blocks.
+func (r *realIMAPClient) fetch(ctx context.Context, seqset *imap.SeqSet, items []imap.FetchItem, each func(*imap.Message) error) error {
+	r.arm(ctx)
+	ch := make(chan *imap.Message, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- job.Protect(context.Background(), nil, "imap fetch sizes", func() error {
-			return r.c.UidFetch(seqset, []imap.FetchItem{imap.FetchUid, imap.FetchRFC822Size}, ch)
-		})
+		done <- job.Protect(context.Background(), nil, "imap fetch", func() error { return r.c.UidFetch(seqset, items, ch) })
 	}()
-	sizes := make(map[uint32]uint32, len(uids))
+	var first error
 	for msg := range ch {
-		sizes[msg.Uid] = msg.Size
+		if first != nil {
+			continue
+		}
+		first = each(msg)
 	}
 	if err := <-done; err != nil {
-		return nil, fmt.Errorf("imap UID FETCH RFC822.SIZE: %w", err)
+		return err
 	}
-	return sizes, nil
+	return first
 }
 
 func (r *realIMAPClient) MarkSeen(ctx context.Context, uids []uint32) error {
 	if len(uids) == 0 {
 		return nil
 	}
+	r.arm(ctx)
 	seqset := new(imap.SeqSet)
 	seqset.AddNum(uids...)
 	item := imap.FormatFlagsOp(imap.AddFlags, true)
@@ -2147,9 +2328,16 @@ func (r *realIMAPClient) MarkSeen(ctx context.Context, uids []uint32) error {
 	return r.c.UidStore(seqset, item, flags, nil)
 }
 
+// UIDValidity is INBOX's UIDVALIDITY: a UID names the same message only
+// while it is unchanged.
+func (r *realIMAPClient) UIDValidity() uint32 { return r.validity }
+
 func (r *realIMAPClient) Close() error {
 	if r.c == nil {
 		return nil
+	}
+	if r.stop != nil {
+		r.stop()
 	}
 	err := r.c.Logout()
 	r.c = nil

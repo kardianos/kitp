@@ -186,7 +186,7 @@ created_at, timestamptz, , false, now(),
 name, columns
 idx_activity_card_id_created_at, "card_id, created_at"
 
-## table attribute_value | doc="Current value of one attribute on one card. last_activity_id points at the activity row that set this value. value_type_id denormalizes the def's storage class onto the row (<1000 = structured/JSONB, >=1000 = plain text) so the value indexes can partition by class without a join: structured values get the (attribute_def_id, value) btree for equality, text values get the trigram and are kept OUT of the btree (a large markdown body would otherwise overflow the 2704-byte btree tuple cap). Set by the attribute_value_set_type_id trigger from attribute_def.value_type, which is immutable." | primary_key="card_id, attribute_def_id"
+## table attribute_value | doc="Current value of one attribute on one card. last_activity_id points at the activity row that set this value. value_type_id denormalizes the def's storage class onto the row (<50 = scalar, 50 = card_ref[], >=1000 = plain text; av_value_type_id) so the value indexes can partition by class without a join: scalars get the (attribute_def_id, value) btree for equality (a query reaches it only with the guard value_type_id < 50), card_ref[] lists are matched by containment (attribute_value_refs GIN) and text values get the trigram; both are kept OUT of the btree, whose entries stop at 2704 bytes. Set by the attribute_value_set_type_id trigger from attribute_def.value_type, which is immutable." | primary_key="card_id, attribute_def_id"
 
 ### columns
 name, type, nullable, references
@@ -333,6 +333,16 @@ name, type, nullable, default, references, on_delete
 address, text, false, , cas_blob.address, cascade
 user_id, bigint, false, , user_account.id, cascade
 created_at, timestamptz, false, now(), ,
+
+## table comm_imap_inflight | doc="IMAP messages a poll started reading and hasn't finished with: one row per (account, mailbox UIDVALIDITY, UID), written before the message is fetched and removed once it is filed, set aside or left for a retry. A row still there when the next poll starts means kitpd stopped while reading it; after imapMaxAttempts such starts the message is set aside (logged and marked read) instead of ending kitpd on every poll (review 2026-11-03 round 4 #1)." | primary_key="channel_id, uid_validity, uid"
+
+### columns
+name, type, nullable, default, references, on_delete
+channel_id, bigint, false, , card.id, cascade
+uid_validity, bigint, false, , ,
+uid, bigint, false, , ,
+attempts, int, false, 1, ,
+started_at, timestamptz, false, now(), ,
 
 ## table upload_link_used | doc="Signed upload links already used (attachment.upload_url): one row per link signature (its sha256 hex) until the link expires. A link uploads one file; a second use is refused (review 2026-11-03 round 2 #21). Rows past expires_at are cleared as new links are used."
 

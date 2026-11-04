@@ -25,19 +25,36 @@ type stubIMAPClient struct {
 	fetchErr    error
 	markSeenErr error
 	markedSeen  []uint32
+	fetched     []uint32
 	closed      bool
 }
 
-func (s *stubIMAPClient) FetchUnseen(ctx context.Context) ([]comm.InboundMessage, error) {
+func (s *stubIMAPClient) ListUnseen(ctx context.Context) ([]comm.UnseenMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.fetchErr != nil {
 		return nil, s.fetchErr
 	}
-	out := make([]comm.InboundMessage, len(s.messages))
-	copy(out, s.messages)
+	out := make([]comm.UnseenMessage, len(s.messages))
+	for i, m := range s.messages {
+		out[i] = comm.UnseenMessage{UID: m.UID, Size: uint32(len(m.Raw))}
+	}
 	return out, nil
 }
+
+func (s *stubIMAPClient) Fetch(ctx context.Context, uid uint32) (comm.InboundMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fetched = append(s.fetched, uid)
+	for _, m := range s.messages {
+		if m.UID == uid {
+			return m, nil
+		}
+	}
+	return comm.InboundMessage{}, fmt.Errorf("stub: no message %d", uid)
+}
+
+func (s *stubIMAPClient) UIDValidity() uint32 { return 1 }
 
 func (s *stubIMAPClient) MarkSeen(ctx context.Context, uids []uint32) error {
 	s.mu.Lock()

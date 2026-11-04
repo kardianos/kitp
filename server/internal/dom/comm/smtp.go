@@ -516,21 +516,34 @@ func (s *SMTPSender) loadPending(ctx context.Context, limit int) ([]pendingReply
 // login would refuse — or SPF/DMARC fail — the old account's address
 // (review 2026-11-03 round 3 #10). The stored display name ("Ada via
 // Support") is kept. No stored From, or no account address: the other one.
+//
+// The account's address may carry a display name ("Support <support@x>"),
+// which comm_channel.set no longer takes but older accounts may hold: only
+// its bare address is put in the From (review 2026-11-03 round 4 #8).
 func sendingFrom(stored, accountAddr string) string {
+	accountAddr = strings.TrimSpace(accountAddr)
 	if stored == "" || accountAddr == "" {
 		if stored == "" {
 			return accountAddr
 		}
 		return stored
 	}
+	bare, accountName := accountAddr, ""
+	if a, err := ParseAddress(accountAddr); err == nil {
+		bare, accountName = a.Address, a.Name
+	}
 	a, err := ParseAddress(stored)
 	if err != nil {
-		return accountAddr
+		return (&mail.Address{Name: accountName, Address: bare}).String()
 	}
-	if strings.EqualFold(a.Address, strings.TrimSpace(accountAddr)) {
+	if strings.EqualFold(a.Address, bare) {
 		return stored
 	}
-	return (&mail.Address{Name: a.Name, Address: strings.TrimSpace(accountAddr)}).String()
+	name := a.Name
+	if name == "" {
+		name = accountName
+	}
+	return (&mail.Address{Name: name, Address: bare}).String()
 }
 
 // loadEarlier reads the messages of r's thread that came before it, newest
@@ -744,7 +757,7 @@ func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote stri
 	var hdr strings.Builder
 	fmt.Fprintf(&hdr, "From: %s\r\n", oneLine(from))
 	fmt.Fprintf(&hdr, "To: %s\r\n", oneLine(to))
-	fmt.Fprintf(&hdr, "Subject: %s\r\n", foldEncodedWords(mime.QEncoding.Encode("utf-8", oneLine(subjectFinal))))
+	fmt.Fprintf(&hdr, "Subject:%s\r\n", foldSubject(oneLine(subjectFinal)))
 	fmt.Fprintf(&hdr, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
 	fmt.Fprintf(&hdr, "Message-ID: %s\r\n", replyMessageID(from))
 	fmt.Fprintf(&hdr, "X-Kitp-Thread-Id: %s\r\n", oneLine(threadID))
@@ -811,14 +824,33 @@ var headerBreaks = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ")
 // oneLine is a header value with its line breaks turned into spaces.
 func oneLine(v string) string { return headerBreaks.Replace(v) }
 
-// foldEncodedWords puts each encoded word of a header value after the
-// first on a continuation line. The encoder splits a long value into words
-// of at most 75 characters joined by spaces, all on one line — over the
-// 998-octet line limit for a long non-ASCII subject (review 2026-11-03
-// round 3). Space between encoded words is not part of the text, so
-// folding there changes nothing a reader sees.
-func foldEncodedWords(v string) string {
-	return strings.ReplaceAll(v, "?= =?", "?=\r\n =?")
+// foldSubject is a Subject's value, folded, after "Subject:". Lines stay
+// within RFC 5322's 78 characters and an encoded word's line within RFC
+// 2047's 76 (review 2026-11-03 round 3, round 4 #19). Non-ASCII text is
+// Q-encoded into words of at most 75 characters, each on a line of its
+// own; plain text is folded at spaces. Folding adds only line breaks before
+// a space, so the unfolded value is the same.
+func foldSubject(v string) string {
+	if enc := mime.QEncoding.Encode("utf-8", v); enc != v {
+		return "\r\n " + strings.ReplaceAll(enc, "?= =?", "?=\r\n =?")
+	}
+	var b strings.Builder
+	b.WriteByte(' ')
+	lineLen := len("Subject: ")
+	for i, w := range strings.Split(v, " ") {
+		if i > 0 {
+			if lineLen+1+len(w) > 78 {
+				b.WriteString("\r\n ")
+				lineLen = 1
+			} else {
+				b.WriteByte(' ')
+				lineLen++
+			}
+		}
+		b.WriteString(w)
+		lineLen += len(w)
+	}
+	return b.String()
 }
 
 // replyMessageID is a new Message-ID for a message kitp sends on a thread,
@@ -969,6 +1001,10 @@ func (s *SMTPSender) loadReplyAttachments(ctx context.Context, replyID int64) ([
 
 // ---- transport ----
 
+// smtpSessionTimeout bounds one SMTP conversation when the caller's context
+// has no sooner deadline: dial to QUIT, a 20 MB message included.
+const smtpSessionTimeout = 5 * time.Minute
+
 // sendSMTP is the production SMTP transport. Port 465 uses implicit
 // TLS (the connection is encrypted before the SMTP handshake); every
 // other port uses STARTTLS upgrade (port 587 is the standard
@@ -988,6 +1024,26 @@ func sendSMTP(ctx context.Context, host string, port int, username, password, fr
 	if err != nil {
 		return fmt.Errorf("smtp dial %s: %w", addr, err)
 	}
+	// net/smtp has no context: the whole conversation gets a deadline (the
+	// caller's, or smtpSessionTimeout), and the connection is closed if ctx
+	// ends first, so a server that stops answering can't hold the sender —
+	// and every account after it — forever (review 2026-11-03 round 4 #6).
+	deadline := time.Now().Add(smtpSessionTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := rawConn.SetDeadline(deadline); err != nil {
+		if cerr := rawConn.Close(); cerr != nil {
+			return fmt.Errorf("smtp set deadline: %w (and close: %v)", err, cerr)
+		}
+		return fmt.Errorf("smtp set deadline: %w", err)
+	}
+	stop := context.AfterFunc(ctx, func() {
+		if err := rawConn.Close(); err != nil {
+			return // closing either way
+		}
+	})
+	defer stop()
 	// We hand the live conn to net/smtp via NewClient; smtp.Client
 	// closes the underlying conn on Quit/Close.
 	var client *smtp.Client
@@ -1090,6 +1146,11 @@ func parseRecipients(to string) ([]string, error) {
 		s := strings.TrimSpace(p)
 		if a, err := ParseAddress(s); err == nil {
 			out = append(out, a.Address)
+		} else if PlainAddress(s) {
+			// A bare address net/mail won't parse but email_plain let onto
+			// the To list (an old "taro..yamada@" mobile address): sent as
+			// is, so the two agree (review 2026-11-03 round 4 #9).
+			out = append(out, s)
 		}
 	}
 	return out, nil
