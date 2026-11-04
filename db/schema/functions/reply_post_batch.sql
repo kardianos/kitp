@@ -175,6 +175,8 @@ BEGIN
         SELECT array_agg(em.email ORDER BY rec.ord)
           INTO _recipients
         FROM rec
+        -- A deleted person isn't mailed (review 2026-11-03 #27).
+        JOIN card pc ON pc.id = rec.person_id AND pc.deleted_at IS NULL
         JOIN attribute_value pav ON pav.card_id = rec.person_id
         JOIN attribute_def pad  ON pad.id = pav.attribute_def_id AND pad.name = 'email',
              LATERAL (SELECT pav.value #>> '{}' AS email) em
@@ -336,6 +338,18 @@ BEGIN
             IF _att_valid_count <> array_length(_att_ids, 1) THEN
                 RETURN QUERY SELECT _idx, false, 'attachment_not_on_task'::text,
                     'reply.post: one or more attachment_ids are not on this thread or its task'::text,
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+            -- The files one message can carry, together: 20 MB, the SMTP
+            -- sender's limit (comm.MaxReplyAttachmentBytes). Refused here,
+            -- before anything is queued, not after the sender has read
+            -- them all (review 2026-11-03 #19).
+            IF (SELECT COALESCE(sum(f.size_bytes), 0)
+                FROM attachment a JOIN file f ON f.id = a.file_id
+                WHERE a.id = ANY(_att_ids)) > 20 * 1024 * 1024 THEN
+                RETURN QUERY SELECT _idx, false, 'attachments_too_large'::text,
+                    'reply.post: the files come to more than 20 MB, which one email can carry; send fewer'::text,
                     NULL::jsonb;
                 CONTINUE;
             END IF;

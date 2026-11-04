@@ -61,7 +61,9 @@ Ada ──reply──▶ support@ ──▶ filed on the thread
                                   From: "Ada Lovelace via Support" <support@…>
 ```
 
-- **Who gets it:** the thread's recipients, minus the sender, minus anyone already on the reply's To or Cc, minus this address, and minus **kitp users** — they see the reply in kitp, and their notification subscriptions cover email.
+- **Who gets it:** the thread's recipients, minus the sender, minus anyone already on the reply's To or Cc, minus this address, and minus **kitp users** — they see the reply in kitp, and their notification subscriptions cover email. At most 20 people.
+- **Only people the thread knows:** the sender must already be on the thread. Someone who joined only because an email named them in To or Cc gets no copies (and their own messages aren't sent on) until they write to the thread or someone replies to them from kitp; people you add to the thread in kitp count from the start. Otherwise anyone could Cc addresses onto a thread and have them emailed from this address.
+- **Which account:** the thread's own mail account decides whether replies are sent on and sends the copy, even when the reply arrived through another account of the project.
 - **What it is:** the sender's words as received (no signature, no quote of ours), with the files kitp kept from it, the `[#id]` subject and the `Ref:` line, so an answer comes back to the thread. Files over 20 MB together are left off the copy, which says so. It carries `Auto-Submitted: auto-forwarded`, so an out-of-office reply to it isn't sent on again.
 - **Never sent on:** auto-replies and anything else marked automatic (`Auto-Submitted`, `Precedence: bulk`, `X-Autoreply`), mailing-list posts (`List-Id`), delivery and read reports, bounces, replies to notification email, and mail from this address itself. Each is filed as usual and logged `relay_skipped` with the reason.
 - **Where to see it:** the message shows *Sent on to bob@… · sent* (or *queued*, *not sent*, *bounced*); the Comm log has `relay_queued`, then the copy's `send_ok` / `send_fail`. The copy isn't a message of its own in the conversation, and replies don't quote it.

@@ -12,6 +12,20 @@ package comm
 //	      To/Cc, minus the account itself, minus kitp users (they see
 //	      it in kitp and get email through their notifications)
 //
+// Who gets a copy, and whose message is sent on (review 2026-11-03 #3):
+// otherwise anyone could Cc addresses onto a thread and have kitp mail them
+// as the organisation.
+//   - The sender must have been on the thread before this message.
+//   - An address that came onto the thread only from an inbound message's
+//     To or Cc is unconfirmed — it gets no copies, and its own messages
+//     aren't sent on — until it writes on the thread itself or a message
+//     written in kitp (a reply, the thread's first message) is sent to it.
+//     People a person added in kitp (comm.set_recipients) are confirmed.
+//   - A copy goes to at most maxRelayRecipients people.
+// The thread's own mail account (its channel_ref) decides whether replies
+// are sent on and sends the copy, whichever account the reply came in on
+// (#10).
+//
 // The copy is a reply_body on the thread like any message kitp sends, so
 // the SMTP sender ships it with a delivery status and Comm log rows; its
 // relay_of names Ada's message, which the thread view shows it under. The
@@ -24,6 +38,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/mail"
 	"strings"
 
@@ -117,12 +132,37 @@ func relaySenderName(from, accountName, accountAddr string) string {
 	return who + " via " + via
 }
 
+// maxRelayRecipients caps one relay copy's To.
+const maxRelayRecipients = 20
+
 // relayReply sends the message just filed on commID (replyID) on to the
-// thread's other people when the account does that (in.relay). It writes a
-// relay_queued Comm log row for a copy, relay_skipped when the message is
-// one kitp never sends on, and nothing when there is nobody else to send to.
-func (p *filer) relayReply(ctx context.Context, tx store.Querier, snap *schema.Snapshot, commID, replyID int64, m InboundMessage, in channelIntake, meta inboundMeta, actorID int64) error {
-	if !in.relay {
+// thread's other confirmed people when the thread's mail account does that.
+// It writes a relay_queued Comm log row for a copy, relay_skipped when the
+// message is one kitp never sends on, and nothing when there is nobody else
+// to send to. A failure is logged and leaves the message filed, unsent on.
+//
+// before is the thread's people's addresses (lowercased) from before this
+// message was filed (threadRecipientAddresses).
+func (p *filer) relayReply(ctx context.Context, tx store.Querier, snap *schema.Snapshot, commID, replyID int64, m InboundMessage, in channelIntake, meta inboundMeta, actorID int64, before map[string]struct{}) error {
+	err := withSavepoint(ctx, tx, "relay", func() error {
+		return p.relayReplyTx(ctx, tx, snap, commID, replyID, m, in, meta, actorID, before)
+	})
+	if err != nil {
+		p.logger.LogAttrs(ctx, slog.LevelWarn, "relay failed; the message is filed but not sent on",
+			slog.Int64("channel_id", p.channelID),
+			slog.Int64("comm_id", commID),
+			slog.Int64("reply_id", replyID),
+			slog.String("error", err.Error()))
+	}
+	return nil
+}
+
+func (p *filer) relayReplyTx(ctx context.Context, tx store.Querier, snap *schema.Snapshot, commID, replyID int64, m InboundMessage, in channelIntake, meta inboundMeta, actorID int64, before map[string]struct{}) error {
+	account, relayOn, err := threadAccount(ctx, tx, commID, p.channelID, in.relay)
+	if err != nil {
+		return err
+	}
+	if !relayOn {
 		return nil
 	}
 	skip := func(reason string) error {
@@ -137,7 +177,7 @@ func (p *filer) relayReply(ctx context.Context, tx store.Querier, snap *schema.S
 	if IsNotificationReply(m) {
 		return skip("notification_reply")
 	}
-	accountAddr, accountName, err := loadChannelSender(ctx, tx, p.channelID)
+	accountAddr, accountName, err := loadChannelSender(ctx, tx, account)
 	if err != nil {
 		return err
 	}
@@ -145,18 +185,50 @@ func (p *filer) relayReply(ctx context.Context, tx store.Querier, snap *schema.S
 		return skip("no_from_address")
 	}
 	own := strings.ToLower(accountAddr)
-	if _, fromSelf := addressesIn(m.From)[own]; fromSelf {
+	senders := addressesIn(m.From)
+	if len(senders) != 1 {
+		return skip("no_sender")
+	}
+	if _, fromSelf := senders[own]; fromSelf {
 		return skip("own_address")
+	}
+	confirmed, introduced, err := p.threadCorrespondents(ctx, tx, commID, replyID)
+	if err != nil {
+		return err
+	}
+	// trusted: on the thread, and not only because an inbound message
+	// named it in To / Cc — or confirmed since.
+	trusted := func(addr string) bool {
+		if _, ok := confirmed[addr]; ok {
+			return true
+		}
+		_, intro := introduced[addr]
+		return !intro
+	}
+	for sender := range senders {
+		if _, was := before[sender]; !was || !trusted(sender) {
+			return skip("sender_not_on_thread")
+		}
 	}
 	// Everyone the message already reached, and the account itself.
 	reached := addressesIn(m.From, m.To, m.Cc)
 	reached[own] = struct{}{}
-	to, err := relayRecipients(ctx, tx, commID, reached)
+	candidates, err := relayRecipients(ctx, tx, commID, reached)
 	if err != nil {
 		return err
 	}
+	var to []string
+	for _, a := range candidates {
+		key := strings.ToLower(a)
+		if _, was := before[key]; was && trusted(key) && !p.isRouteAddress(a) {
+			to = append(to, a)
+		}
+	}
 	if len(to) == 0 {
 		return nil
+	}
+	if len(to) > maxRelayRecipients {
+		return skip("too_many_recipients")
 	}
 	from := (&mail.Address{Name: relaySenderName(m.From, accountName, accountAddr), Address: accountAddr}).String()
 	copyID, leftOff, err := queueRelayCopy(ctx, tx, snap, commID, replyID, from, strings.Join(to, ", "), m, actorID)
@@ -171,6 +243,139 @@ func (p *filer) relayReply(ctx context.Context, tx store.Querier, snap *schema.S
 		detail["attachments_left_off"] = leftOff
 	}
 	return p.logInbound(ctx, tx, in.projectID, meta, "relay_queued", detail)
+}
+
+// threadAccount is the mail account a thread belongs to (its channel_ref)
+// and whether that account sends replies on. A thread without one (or
+// whose account is gone) falls back to the account the reply came in on.
+func threadAccount(ctx context.Context, tx store.Querier, commID, receivedOn int64, receivedRelay bool) (int64, bool, error) {
+	row, err := namedRow(ctx, tx, `
+		SELECT COALESCE((
+			SELECT ch.id
+			FROM attribute_value av
+			JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'channel_ref'
+			JOIN card ch ON ch.id = CASE WHEN jsonb_typeof(av.value) = 'number' THEN (av.value)::text::bigint END
+			            AND ch.deleted_at IS NULL
+			WHERE av.card_id = :comm), 0)
+	`, map[string]any{"comm": commID})
+	if err != nil {
+		return 0, false, fmt.Errorf("thread account: %w", err)
+	}
+	var account int64
+	if err := row.Scan(&account); err != nil {
+		return 0, false, fmt.Errorf("thread account: %w", err)
+	}
+	if account == 0 || account == receivedOn {
+		return receivedOn, receivedRelay, nil
+	}
+	in, err := loadIntake(ctx, tx, account)
+	if err != nil {
+		return 0, false, fmt.Errorf("thread account %d: %w", account, err)
+	}
+	return account, in.relay, nil
+}
+
+// threadCorrespondents reads a thread's messages other than skipReply.
+// confirmed: the lowercased addresses that wrote (a received message's
+// sender) or were written to from kitp (a reply, the thread's first message
+// — not a relay copy, which only repeats someone else's message).
+// introduced: the addresses a received message named in its To or Cc.
+func (p *filer) threadCorrespondents(ctx context.Context, tx store.Querier, commID, skipReply int64) (confirmed, introduced map[string]struct{}, err error) {
+	b := named.New()
+	b.Set("comm", commID)
+	b.Set("skip", skipReply)
+	q, args, err := b.Compile(`
+		SELECT COALESCE(ds.value #>> '{}', ''), COALESCE(rf.value #>> '{}', ''),
+		       COALESCE(rt.value #>> '{}', ''), ro.card_id IS NOT NULL,
+		       COALESCE(rc.value #>> '{}', '')
+		FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'replies'
+		CROSS JOIN LATERAL jsonb_array_elements(
+			CASE WHEN jsonb_typeof(av.value) = 'array' THEN av.value ELSE '[]'::jsonb END) AS e(v)
+		JOIN card r ON r.id = CASE WHEN (e.v #>> '{}') ~ '^[0-9]{1,18}$' THEN (e.v #>> '{}')::bigint END
+		           AND r.deleted_at IS NULL AND r.id <> :skip
+		LEFT JOIN attribute_value ds ON ds.card_id = r.id
+		      AND ds.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'delivery_status')
+		LEFT JOIN attribute_value rf ON rf.card_id = r.id
+		      AND rf.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_from')
+		LEFT JOIN attribute_value rt ON rt.card_id = r.id
+		      AND rt.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_to')
+		LEFT JOIN attribute_value ro ON ro.card_id = r.id AND jsonb_typeof(ro.value) = 'number'
+		      AND ro.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'relay_of')
+		LEFT JOIN attribute_value rc ON rc.card_id = r.id
+		      AND rc.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_cc')
+		WHERE av.card_id = :comm
+	`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("thread correspondents: %w", err)
+	}
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("thread correspondents: %w", err)
+	}
+	defer rows.Close()
+	confirmed, introduced = map[string]struct{}{}, map[string]struct{}{}
+	for rows.Next() {
+		var status, from, to, cc string
+		var relayCopy bool
+		if err := rows.Scan(&status, &from, &to, &relayCopy, &cc); err != nil {
+			return nil, nil, fmt.Errorf("thread correspondents: scan: %w", err)
+		}
+		switch {
+		case status == "received":
+			for a := range addressesIn(from) {
+				confirmed[a] = struct{}{}
+			}
+			for a := range addressesIn(to, cc) {
+				introduced[a] = struct{}{}
+			}
+		case !relayCopy:
+			for a := range addressesIn(to) {
+				confirmed[a] = struct{}{}
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("thread correspondents: %w", err)
+	}
+	return confirmed, introduced, nil
+}
+
+// threadRecipientAddresses is the lowercased email of every person on a
+// thread (comm_recipients), read before a message is filed so the relay
+// can tell who was already there.
+func threadRecipientAddresses(ctx context.Context, tx store.Querier, commID int64) (map[string]struct{}, error) {
+	b := named.New()
+	b.Set("comm", commID)
+	q, args, err := b.Compile(`
+		SELECT lower(btrim(pav.value #>> '{}'))
+		FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'comm_recipients'
+		CROSS JOIN LATERAL jsonb_array_elements(
+			CASE WHEN jsonb_typeof(av.value) = 'array' THEN av.value ELSE '[]'::jsonb END) AS e(v)
+		JOIN attribute_value pav ON pav.card_id = CASE WHEN (e.v #>> '{}') ~ '^[0-9]{1,18}$' THEN (e.v #>> '{}')::bigint END
+		JOIN attribute_def pad ON pad.id = pav.attribute_def_id AND pad.name = 'email'
+		WHERE av.card_id = :comm
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("thread recipients: %w", err)
+	}
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("thread recipients: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return nil, fmt.Errorf("thread recipients: scan: %w", err)
+		}
+		if a != "" {
+			out[a] = struct{}{}
+		}
+	}
+	return out, rows.Err()
 }
 
 // loadChannelSender returns the account's from_address and name.
@@ -245,6 +450,15 @@ func relayRecipients(ctx context.Context, tx store.Querier, commID int64, reache
 	return out, nil
 }
 
+// rawEmailNamePattern matches the .eml kitp keeps of a message it received
+// (KITP_COMM_SAVE_RAW_EMAIL, rawEmailName). An operator's debugging copy: it
+// holds the whole message, files an account drops included, and its trace
+// headers, so a relay copy never carries it (review 2026-11-03 #27).
+const rawEmailNamePattern = `^inbound-uid-[0-9]+\.eml$`
+
+// rawEmailName is the name of the raw .eml kept for a received message.
+func rawEmailName(uid uint32) string { return fmt.Sprintf("inbound-uid-%d.eml", uid) }
+
 // queueRelayCopy writes the copy: a pending reply_body on the thread whose
 // relay_of is the original message, carrying the original's files. Files
 // over the per-message send limit (MaxReplyAttachmentBytes, together) are
@@ -274,7 +488,8 @@ func queueRelayCopy(ctx context.Context, tx store.Querier, snap *schema.Snapshot
 		JOIN attachment a ON a.id = rba.attachment_id AND a.deleted_at IS NULL
 		JOIN file f ON f.id = a.file_id
 		WHERE rba.reply_body_id = :original
-	`, map[string]any{"original": originalID})
+		  AND NOT (f.mime_type = 'message/rfc822' AND f.filename ~ :raw_eml)
+	`, map[string]any{"original": originalID, "raw_eml": rawEmailNamePattern})
 	if err != nil {
 		return 0, 0, err
 	}
@@ -293,12 +508,15 @@ func queueRelayCopy(ctx context.Context, tx store.Querier, snap *schema.Snapshot
 		lb := named.New()
 		lb.Set("copy", copyID)
 		lb.Set("original", originalID)
+		lb.Set("raw_eml", rawEmailNamePattern)
 		q, args, err := lb.Compile(`
 			INSERT INTO reply_body_attachment (reply_body_id, attachment_id)
 			SELECT :copy, rba.attachment_id
 			FROM reply_body_attachment rba
 			JOIN attachment a ON a.id = rba.attachment_id AND a.deleted_at IS NULL
+			JOIN file f ON f.id = a.file_id
 			WHERE rba.reply_body_id = :original
+			  AND NOT (f.mime_type = 'message/rfc822' AND f.filename ~ :raw_eml)
 			ON CONFLICT DO NOTHING
 		`)
 		if err != nil {

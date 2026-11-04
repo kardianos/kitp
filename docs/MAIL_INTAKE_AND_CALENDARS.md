@@ -588,6 +588,19 @@ Ada ──reply──▶ support@ ──▶ filed on the thread
                                   on her To/Cc, minus support@, minus kitp users
 ```
 
+- Who (review 2026-11-03 #3, #10). The thread's own account (its
+  `channel_ref`) decides whether replies are sent on, and its address and
+  name go on the copy, whichever account the reply came in on. The sender
+  must have been on the thread before this message (`processOne` reads the
+  recipients before filing). An address that came onto the thread only
+  because a received message named it in To or Cc (`reply_to`, `reply_cc`)
+  is *unconfirmed* — no copies, and its own messages aren't sent on —
+  until it writes on the thread or a message written in kitp (a reply, the
+  thread's first message) goes to it; people added in kitp
+  (`comm.set_recipients`) are confirmed. At most 20 recipients
+  (`too_many_recipients`); a From with other than one address is
+  `no_sender`. Route addresses (`…@KITP_SMTP_DOMAIN`) never join a thread.
+  A relay failure is logged and leaves the message filed.
 - `relay.go` `relayReply`, called by `processOne` after a reply is filed
   on an existing thread (a new thread has nobody else on it). The copy is
   a pending `reply_body` on the thread (so it is visible, purged and sent
@@ -595,7 +608,8 @@ Ada ──reply──▶ support@ ──▶ filed on the thread
   `reply_to` the recipients, `reply_from` the display From, the inbound
   subject and body, the original's files linked (not copied) unless
   together they exceed `MaxReplyAttachmentBytes` (20 MB) — then none, an
-  `attachments_left_off` count, and a line in the body saying so.
+  `attachments_left_off` count, and a line in the body saying so. The raw
+  `.eml` kept with `KITP_COMM_SAVE_RAW_EMAIL` is never on a copy.
 - Never sent on (`relay_skipped`, with `reason`): `AutoKind` set at parse
   (`automaticKind`: `Auto-Submitted` ≠ no, `Precedence` bulk / junk /
   list / auto_reply, `X-Autoreply` / `X-Autorespond`, `List-Id`,

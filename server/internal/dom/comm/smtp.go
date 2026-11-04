@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"mime/multipart"
 	"net"
 	"net/mail"
@@ -50,6 +51,7 @@ import (
 	"github.com/kitp/kitp/server/internal/named"
 	"github.com/kitp/kitp/server/internal/schema"
 	"github.com/kitp/kitp/server/internal/store"
+	"github.com/kitp/kitp/server/internal/textnorm"
 )
 
 // MaxReplyAttachmentBytes caps the *raw* size of attachments per
@@ -115,6 +117,12 @@ func NewSMTPSenderForTest(pool *store.Pool, channelID int64, tick time.Duration)
 // directly.
 func BuildMIMEForTest(from, to, subject, body, threadID string) []byte {
 	return buildMIME(from, to, subject, body, "", threadID, "", "", 0, nil)
+}
+
+// BuildMIMEWithFileForTest is BuildMIMEForTest with one attached file.
+func BuildMIMEWithFileForTest(from, to, subject, body, threadID, filename, mimeType string, data []byte) []byte {
+	return buildMIME(from, to, subject, body, "", threadID, "", "", 0,
+		[]mimeAttachment{{Filename: filename, MimeType: mimeType, Bytes: data}})
 }
 
 // BuildMIMEWithQuoteForTest is BuildMIMEForTest with a quote block (as
@@ -267,6 +275,21 @@ func (s *SMTPSender) RunOnce(ctx context.Context) error {
 // state mutations happen in a single dedicated tx after the network
 // call returns.
 func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
+	// Check the stored sizes before reading a byte: a reply naming many
+	// large files would otherwise be buffered whole first (review
+	// 2026-11-03 #19).
+	if total, err := s.replyAttachmentBytes(ctx, r.replyID); err != nil {
+		return fmt.Errorf("smtp sender: attachment sizes for reply %d: %w", r.replyID, err)
+	} else if total > MaxReplyAttachmentBytes {
+		_ = s.recordResult(ctx, r, "failed", "send_fail", map[string]any{
+			"error":    "attachments exceed per-reply size cap",
+			"cap":      MaxReplyAttachmentBytes,
+			"total":    total,
+			"reply_id": r.replyID,
+		})
+		return fmt.Errorf("smtp sender: reply %d attachments %d > cap %d",
+			r.replyID, total, MaxReplyAttachmentBytes)
+	}
 	atts, err := s.loadReplyAttachments(ctx, r.replyID)
 	if err != nil {
 		// Couldn't read attachment bytes — fail the row loudly rather
@@ -720,18 +743,9 @@ func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote stri
 
 	for _, a := range atts {
 		ah := textproto.MIMEHeader{}
-		ctype := a.MimeType
-		if ctype == "" {
-			ctype = "application/octet-stream"
-		}
-		ah.Set("Content-Type", ctype)
+		ah.Set("Content-Type", partContentType(a.MimeType))
 		ah.Set("Content-Transfer-Encoding", "base64")
-		// Strip embedded quotes so the filename always sits in a clean
-		// quoted-string. mime.FormatMediaType returns "" for an empty
-		// media type, so build the disposition by hand.
-		safeName := strings.ReplaceAll(a.Filename, `"`, ``)
-		ah.Set("Content-Disposition",
-			fmt.Sprintf(`attachment; filename="%s"`, safeName))
+		ah.Set("Content-Disposition", attachmentDisposition(a.Filename))
 		w, err := mw.CreatePart(ah)
 		if err != nil {
 			continue
@@ -782,8 +796,61 @@ type mimeAttachment struct {
 // attachment → file → file_chunk → cas_blob_data; multi-chunk files
 // are reassembled in seq order. Returns an empty slice when the
 // reply has no linked attachments.
+// partContentType is an attachment part's Content-Type: the file's media
+// type when it is a well-formed one, else application/octet-stream. Written
+// through mime.FormatMediaType, never pasted, so a stored value can't add
+// header lines (review 2026-11-03 #11).
+func partContentType(stored string) string {
+	mt, params, err := mime.ParseMediaType(stored)
+	if err != nil || mt == "" {
+		return "application/octet-stream"
+	}
+	if out := mime.FormatMediaType(mt, params); out != "" {
+		return out
+	}
+	return "application/octet-stream"
+}
+
+// attachmentDisposition is `attachment; filename=…` for a file name: cleaned
+// of control and bidi runes and path separators (textnorm.FilenameLoose),
+// then quoted or RFC 2231-encoded by mime.FormatMediaType. A name written in
+// raw let CR/LF add headers to the part (review 2026-11-03 #11).
+func attachmentDisposition(name string) string {
+	name = textnorm.FilenameLoose(name)
+	if name == "" {
+		name = "attachment"
+	}
+	if out := mime.FormatMediaType("attachment", map[string]string{"filename": name}); out != "" {
+		return out
+	}
+	return "attachment"
+}
+
+// replyAttachmentBytes is the stored size of the files a reply carries.
+func (s *SMTPSender) replyAttachmentBytes(ctx context.Context, replyID int64) (int64, error) {
+	b := named.New()
+	b.Set("reply", replyID)
+	q, args, err := b.Compile(`
+		SELECT COALESCE(sum(f.size_bytes), 0)
+		FROM reply_body_attachment rba
+		JOIN attachment a ON a.id = rba.attachment_id AND a.deleted_at IS NULL
+		JOIN file f ON f.id = a.file_id
+		WHERE rba.reply_body_id = :reply
+	`)
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	if err := s.pool.P.QueryRow(ctx, q, args...).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 func (s *SMTPSender) loadReplyAttachments(ctx context.Context, replyID int64) ([]mimeAttachment, error) {
-	rows, err := s.pool.P.Query(ctx, `
+	b := named.New()
+	b.Set("reply", replyID)
+	q, args, err := b.Compile(`
 		SELECT a.id, f.filename, f.mime_type, fc.seq,
 		       coalesce(cd.data, ''::bytea)
 		FROM reply_body_attachment rba
@@ -791,9 +858,13 @@ func (s *SMTPSender) loadReplyAttachments(ctx context.Context, replyID int64) ([
 		JOIN file f          ON f.id = a.file_id
 		JOIN file_chunk fc   ON fc.file_id = f.id
 		LEFT JOIN cas_blob_data cd ON cd.address = fc.cas_address
-		WHERE rba.reply_body_id = $1
+		WHERE rba.reply_body_id = :reply
 		ORDER BY a.id, fc.seq
-	`, replyID)
+	`)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.P.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

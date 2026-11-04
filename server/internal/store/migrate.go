@@ -1252,6 +1252,22 @@ ON CONFLICT (singleton) DO NOTHING;`,
 DROP FUNCTION IF EXISTS watched_on(bigint, bigint[]);
 DROP FUNCTION IF EXISTS card_compile_predicate(jsonb, jsonb, bigint[]);`,
 	},
+	{
+		// A received message's Cc (reply_cc), kept like its To (reply_to):
+		// the relay tells an address a message only named in To / Cc from
+		// one that wrote or was written to (review 2026-11-03 #3). Messages
+		// filed before keep no Cc. Idempotent — ON CONFLICT DO NOTHING.
+		id: "0031_reply_cc",
+		sql: `
+INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+VALUES ('reply_cc', 'text', NULL, true, false)
+ON CONFLICT (name) DO NOTHING;
+INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+SELECT ct.id, ad.id, false, 8
+FROM card_type ct, attribute_def ad
+WHERE ct.name = 'reply_body' AND ad.name = 'reply_cc'
+ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

@@ -125,6 +125,7 @@ delivery_status,       text,        true, null, false
 reply_author,          number,      true, null, false
 relay_of,              number,      true, null, false
 attachments_left_off,  number,      true, null, false
+reply_cc,              text,        true, null, false
 comm_recipients,       card_ref[],  true, $card_type.person, false
 acked,                 bool,        true, null, false
 person_kind,           text,        true, null, false
@@ -264,6 +265,7 @@ $card_type.reply_body,   $attribute_def.delivery_status,   true,  4
 $card_type.reply_body,   $attribute_def.reply_author,      false, 5
 $card_type.reply_body,   $attribute_def.relay_of,          false, 6
 $card_type.reply_body,   $attribute_def.attachments_left_off, false, 7
+$card_type.reply_body,   $attribute_def.reply_cc,          false, 8
 $card_type.activity_sink, $attribute_def.title,                true,  0
 $card_type.activity_sink, $attribute_def.sink_kind,            true,  1
 $card_type.activity_sink, $attribute_def.msgraph_tenant_id,    false, 2

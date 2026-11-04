@@ -67,7 +67,7 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// email_attachments (mail account) and relay_of /
 		// attachments_left_off (message), +symbol (watch lists),
 		// +list_card_type / my_default (personal screens and views).
-		{`SELECT count(*) FROM attribute_def`, 100},
+		{`SELECT count(*) FROM attribute_def`, 101},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
 		// +7 on activity_subscription, +4 on link, +7 on approval,
 		// +bundle_key on project, +publishes_to on status, +5 on page,
@@ -77,7 +77,7 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// email_attachments) and +2 on reply_body (relay_of,
 		// attachments_left_off), +4 on watch_list, +2 on screen
 		// (list_card_type, predicate) and +1 on filter (my_default).
-		{`SELECT count(*) FROM edge`, 153},
+		{`SELECT count(*) FROM edge`, 154},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -1034,8 +1034,8 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 23},
-		{`SELECT count(*) FROM attribute_def`, 100},
-		{`SELECT count(*) FROM edge`, 153},
+		{`SELECT count(*) FROM attribute_def`, 101},
+		{`SELECT count(*) FROM edge`, 154},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -1603,5 +1603,63 @@ func TestForwardMigration0028PersonalScreens(t *testing.T) {
 	}
 	if owner == nil || *owner != person {
 		t.Errorf("the watch list's private_to = %v, want its subscriber %d", owner, person)
+	}
+}
+
+// TestForwardMigrations0029To0031: an install that already has an admin
+// gets the admin_bootstrap row (0029); the filter functions' old signatures
+// are dropped (0030); reply_cc and its edge reach an existing install (0031).
+func TestForwardMigrations0029To0031(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0029_0031")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	counts := []string{`SELECT count(*) FROM attribute_def`, `SELECT count(*) FROM edge`}
+	read := func() []int64 {
+		out := make([]int64, len(counts))
+		for i, q := range counts {
+			if err := pool.QueryRow(ctx, q).Scan(&out[i]); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		return out
+	}
+	fresh := read()
+	var admin int64
+	if err := pool.QueryRow(ctx, `INSERT INTO user_account (display_name) VALUES ('an admin') RETURNING id`).Scan(&admin); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		fmt.Sprintf(`INSERT INTO user_role (user_id, role_id, scope_card_id) SELECT %d, id, NULL FROM role WHERE name = 'admin'`, admin),
+		`DELETE FROM admin_bootstrap`,
+		`CREATE FUNCTION watched_on(bigint, bigint[]) RETURNS boolean LANGUAGE sql AS 'SELECT false'`,
+		`DELETE FROM edge WHERE attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_cc')`,
+		`DELETE FROM attribute_def WHERE name = 'reply_cc'`,
+		`DELETE FROM schema_version WHERE name IN ('0029_admin_bootstrap', '0030_viewer_aware_filters', '0031_reply_cc')`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate pre-0029 (%s): %v", stmt, err)
+		}
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	if got := read(); fmt.Sprint(got) != fmt.Sprint(fresh) {
+		t.Errorf("after 0031: %v, want the fresh seed's %v", got, fresh)
+	}
+	var marked int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM admin_bootstrap WHERE user_id = $1`, admin).Scan(&marked); err != nil {
+		t.Fatal(err)
+	}
+	if marked != 1 {
+		t.Errorf("admin_bootstrap rows for the existing admin = %d, want 1", marked)
+	}
+	var old int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_proc WHERE proname = 'watched_on' AND pronargs = 2`).Scan(&old); err != nil {
+		t.Fatal(err)
+	}
+	if old != 0 {
+		t.Error("watched_on(bigint, bigint[]) survived 0030")
 	}
 }

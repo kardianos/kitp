@@ -731,13 +731,19 @@ func (p *filer) processOne(ctx context.Context, intake channelIntake, m InboundM
 			slog.String("thread_source", source),
 			slog.String("message_id", m.MessageID),
 			slog.String("subject", m.Subject))
+		// Who was on the thread before this message adds its sender and
+		// To / Cc (the relay sends on only between people already there).
+		before, err := threadRecipientAddresses(ctx, tx, matchedCommID)
+		if err != nil {
+			return Filed{}, err
+		}
 		replyID, err := p.appendReceivedReply(ctx, tx, snap, matchedCommID, m, intake, meta, actorID)
 		if err != nil {
 			return Filed{}, p.logParseError(ctx, projectID, m, meta, err)
 		}
 		// Sent on to the thread's other people when the account says so. A
 		// new thread has nobody else on it yet, so only a reply can be.
-		if err := p.relayReply(ctx, tx, snap, matchedCommID, replyID, m, intake, meta, actorID); err != nil {
+		if err := p.relayReply(ctx, tx, snap, matchedCommID, replyID, m, intake, meta, actorID, before); err != nil {
 			return Filed{}, fmt.Errorf("relay: %w", err)
 		}
 		filed = Filed{Outcome: OutcomeReply, CardID: matchedCommID}
@@ -910,6 +916,7 @@ func (p *filer) appendReceivedReply(ctx context.Context, tx store.Querier, snap 
 		val  json.RawMessage
 	}{
 		{"reply_to", jstr(m.To)},
+		{"reply_cc", jstr(m.Cc)},
 		{"reply_from", jstr(displayAddress(m.From))},
 		{"reply_subject", jstr(m.Subject)},
 		{"reply_body_text", jstr(m.Body)},
@@ -965,7 +972,7 @@ func (p *filer) appendReceivedReply(ctx context.Context, tx store.Querier, snap 
 		// a description comes out wrong. An operator's switch, so it keeps
 		// the .eml even on an account that drops files. Best-effort — never
 		// fail the inbound over it.
-		name := fmt.Sprintf("inbound-uid-%d.eml", m.UID)
+		name := rawEmailName(m.UID)
 		err := withSavepoint(ctx, tx, "inbound_raw", func() error {
 			_, err := storeAttachment(ctx, tx, commID, replyID, name, "message/rfc822", m.Raw, actorID)
 			return err

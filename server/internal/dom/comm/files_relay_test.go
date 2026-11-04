@@ -339,7 +339,7 @@ func TestRelaySendsAReplyOn(t *testing.T) {
 		"From: \"Ada Lovelace via Support\" <support@example.com>\r\n",
 		"Auto-Submitted: auto-forwarded\r\n",
 		"Still on fire.",
-		`filename="smoke.jpg"`,
+		"Content-Disposition: attachment; filename=smoke.jpg",
 		"Ref: " + threadIDOf(t, r.f, r.thread),
 	} {
 		if !strings.Contains(msg, want) {

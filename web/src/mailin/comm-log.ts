@@ -81,6 +81,9 @@ const RELAY_SKIP_REASON: Readonly<Record<string, string>> = {
   notification_reply: 'a reply to a notification email',
   no_from_address: 'the mail account has no From address',
   own_address: 'it came from the mail account’s own address',
+  no_sender: 'it has no single sender address',
+  sender_not_on_thread: 'its sender hasn’t written on the thread before, and nobody has written to them from kitp',
+  too_many_recipients: 'it would go to too many people',
 };
 
 function str(v: unknown): string {
