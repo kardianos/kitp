@@ -108,7 +108,9 @@ func writeCommRecipients(
 // order), and writes back when the set actually grew. Used by the
 // IMAP parser to fold inbound senders / Cc addresses into a comm's
 // participant list without losing prior participants. People in the
-// thread's comm_removed (taken off by a person in kitp) are not added.
+// thread's comm_removed (taken off by a person in kitp) are not added,
+// and the list grows to at most MaxCommRecipients; dropped counts the new
+// people that didn't fit.
 func mergeCommRecipients(
 	ctx context.Context,
 	tx store.Querier,
@@ -116,13 +118,13 @@ func mergeCommRecipients(
 	commID int64,
 	add []int64,
 	actorID int64,
-) (added int, err error) {
+) (added, dropped int, err error) {
 	if len(add) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 	cur, _, err := readAttributeValueRaw(ctx, tx, commID, "comm_recipients")
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	existing := decodeCardRefArray(cur)
 	seen := make(map[int64]struct{}, len(existing)+len(add))
@@ -133,7 +135,7 @@ func mergeCommRecipients(
 	// their mail says (comm_remove; review 2026-11-03 round 3 #8).
 	removed, _, err := readAttributeValueRaw(ctx, tx, commID, "comm_removed")
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	for _, id := range decodeCardRefArray(removed) {
 		seen[id] = struct{}{}
@@ -144,14 +146,18 @@ func mergeCommRecipients(
 			continue
 		}
 		seen[id] = struct{}{}
+		if len(merged) >= MaxCommRecipients {
+			dropped++
+			continue
+		}
 		merged = append(merged, id)
 		added++
 	}
 	if added == 0 {
-		return 0, nil
+		return 0, dropped, nil
 	}
 	if err := writeCommRecipients(ctx, tx, snap, commID, merged, actorID); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return added, nil
+	return added, dropped, nil
 }

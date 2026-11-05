@@ -116,6 +116,20 @@ func (p *LogPruner) RunOnce(ctx context.Context) (int64, error) {
 	if seen.RowsAffected() > 0 && p.pool != nil {
 		p.pool.NoteWrite()
 	}
+	// Send attempts of messages that are no longer waiting to go — deleted,
+	// or failed by task.move while waiting out a retry — and that no sender
+	// holds (review 2026-11-03 round 5): a sent, bounced or failed message's
+	// row goes when its result is recorded.
+	if _, err := p.pool.P.Exec(ctx, `
+		DELETE FROM comm_send_attempt sa
+		WHERE (sa.claimed_until IS NULL OR sa.claimed_until < now())
+		  AND NOT EXISTS (
+		      SELECT 1 FROM card c
+		      JOIN attribute_value av ON av.card_id = c.id
+		       AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'delivery_status')
+		      WHERE c.id = sa.reply_id AND c.deleted_at IS NULL AND av.value = '"pending"'::jsonb)`); err != nil {
+		return 0, fmt.Errorf("send attempt prune: %w", err)
+	}
 	if deleted > 0 && p.pool != nil {
 		p.pool.NoteWrite()
 	}

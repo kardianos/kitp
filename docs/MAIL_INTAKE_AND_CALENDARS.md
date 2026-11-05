@@ -226,15 +226,25 @@ Size and shape (review 2026-11-03 rounds 3 and 4, #1).
   `\Deleted` + `UID EXPUNGE` with UIDPLUS; a server with neither leaves it
   read in INBOX, since a plain EXPUNGE would also remove what other
   clients deleted.
-- Inbound SMTP sessions last at most 15 minutes however they are spent
-  (NOOP kept one open for good).
-- Outgoing mail is claimed before it is sent (`comm_send_attempt`), so two
+- Inbound SMTP connections last at most 15 minutes from accept however
+  they are spent, EHLO or not (NOOP kept one open for good).
+- Outgoing mail is claimed before it is sent (`comm_send_attempt`), and a
+  message is claimed only while its status is still pending, so two
   replicas don't both send it; a failure that may pass (4xx, a dropped
   connection, a timeout) keeps it pending and retries after 1, 5, 15, 60
-  and 180 minutes (`send_retry` in the Comm log) before it fails.
-- At most 4 POSTed messages are read and filed at once
-  (`KITP_COMM_INBOUND_MAX_CONCURRENT`); more answer 503 and the provider
-  retries.
+  and 180 minutes (`send_retry` in the Comm log) before it fails. Each
+  send has its own 75-second budget, and its result is recorded however
+  long it took.
+- One replica at a time polls an IMAP account, and one pumps a digest or
+  Teams sink (a Postgres advisory lock held for the tick).
+- A message the IMAP server refuses to fetch is skipped for the others,
+  and set aside after two refusals.
+- A thread has at most 100 recipients; inbound mail adds nobody past that.
+- At most 4 POSTed messages are filed at once
+  (`KITP_COMM_INBOUND_MAX_CONCURRENT`), and twice that read; one route has
+  at most 2 bodies being read, each within 60 seconds, so slow uploads
+  with one route's token hold only that route. More answer 503 and the
+  provider retries.
 
 ### 4. Message dedupe
 

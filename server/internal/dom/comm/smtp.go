@@ -184,7 +184,7 @@ func (s *SMTPSender) SetTransport(t SMTPTransport) {
 // the [SMTPPool] sweep discards it so one bad channel doesn't fail the
 // send job. There's no persistent connection between ticks.
 func (s *SMTPSender) TickOnce(ctx context.Context) error {
-	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	runCtx, cancel := context.WithTimeout(ctx, sendTickBudget)
 	defer cancel()
 	runCtx = auth.WithSystemUser(runCtx)
 	if err := s.RunOnce(runCtx); err != nil {
@@ -267,6 +267,11 @@ func (s *SMTPSender) RunOnce(ctx context.Context) error {
 	}
 	var firstErr error
 	for _, r := range rows {
+		// A send starts only with its whole budget left in the tick; the
+		// rest wait for the next one (review 2026-11-03 round 5 #4).
+		if dl, ok := ctx.Deadline(); ok && time.Until(dl) < sendTimeout {
+			break
+		}
 		// Claim it first: with kitpd on more than one replica, two senders
 		// saw the same pending message and both sent it (review 2026-11-03
 		// round 4). A message another sender claimed in between is left to it.
@@ -289,8 +294,28 @@ func (s *SMTPSender) RunOnce(ctx context.Context) error {
 }
 
 // sendClaim is how long a sender holds a message it is sending; one that
-// stopped mid-send (kitpd ended) lets another try after it.
+// stopped mid-send (kitpd ended) lets another try after it. It outlasts
+// any send (sendTimeout).
 const sendClaim = 10 * time.Minute
+
+// sendTickBudget is one channel's share of a send sweep; sendTimeout is
+// one message's — the connection, the DATA and the answer. Each send has
+// its own budget, and its result is recorded on a context of its own
+// (resultCtx): with one 30-second budget for ten messages, a send that
+// ran into it was neither counted as a try nor recorded as sent, so it
+// was sent again or retried for ever (review 2026-11-03 round 5 #4).
+const (
+	sendTickBudget = 2 * time.Minute
+	resultTimeout  = 15 * time.Second
+)
+
+var sendTimeout = 75 * time.Second // a var so tests can shorten it
+
+// resultCtx is the context a send's result is written on: ctx's values
+// (the actor) without its deadline, which the send may have used up.
+func resultCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), resultTimeout)
+}
 
 // maxSendAttempts is how many tries a passing failure gets before the
 // message is marked failed; sendBackoff is the wait after each.
@@ -300,13 +325,29 @@ var sendBackoff = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute
 
 // claim takes a pending message for this sender (comm_send_attempt) and
 // returns how many tries it had before. ok is false when another sender
-// holds it, or it is waiting out a retry.
+// holds it, it is waiting out a retry, or it isn't pending any more.
+//
+// The message's delivery_status row is locked and must still say
+// pending: a sender working from an older list claimed a message another
+// had just sent (its attempt row gone), and sent it again (review
+// 2026-11-03 round 5 #3). Under the lock, a status a concurrent sender is
+// writing is read once it commits. Times are the database's (now()), as
+// they are compared with it.
 func (s *SMTPSender) claim(ctx context.Context, replyID int64) (int, bool, error) {
 	b := named.New()
 	b.Set("reply", replyID)
-	b.Set("until", time.Now().Add(sendClaim))
+	b.Set("claim_secs", int(sendClaim.Seconds()))
 	q, args, err := b.Compile(`
-		INSERT INTO comm_send_attempt (reply_id, claimed_until) VALUES (:reply, :until)
+		WITH pending AS (
+			SELECT av.card_id
+			FROM attribute_value av
+			WHERE av.card_id = :reply
+			  AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'delivery_status')
+			  AND av.value = '"pending"'::jsonb
+			FOR UPDATE
+		)
+		INSERT INTO comm_send_attempt (reply_id, claimed_until)
+		SELECT p.card_id, now() + make_interval(secs => :claim_secs) FROM pending p
 		ON CONFLICT (reply_id) DO UPDATE SET claimed_until = EXCLUDED.claimed_until
 		WHERE (comm_send_attempt.claimed_until IS NULL OR comm_send_attempt.claimed_until <= now())
 		  AND (comm_send_attempt.next_attempt_at IS NULL OR comm_send_attempt.next_attempt_at <= now())
@@ -330,11 +371,12 @@ func (s *SMTPSender) claim(ctx context.Context, replyID int64) (int, bool, error
 func (s *SMTPSender) retryLater(ctx context.Context, r pendingReply, sendErr error, wait time.Duration) error {
 	b := named.New()
 	b.Set("reply", r.replyID)
-	b.Set("next", time.Now().Add(wait))
+	b.Set("wait_secs", int(wait.Seconds()))
 	b.Set("error", textnorm.Storable(truncateString(sendErr.Error(), 500)))
 	q, args, err := b.Compile(`
 		UPDATE comm_send_attempt
-		   SET claimed_until = NULL, attempts = attempts + 1, next_attempt_at = :next, last_error = :error
+		   SET claimed_until = NULL, attempts = attempts + 1,
+		       next_attempt_at = now() + make_interval(secs => :wait_secs), last_error = :error
 		 WHERE reply_id = :reply
 	`)
 	if err != nil {
@@ -447,9 +489,14 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 			slog.String("to", r.to),
 			slog.Int("message_bytes", len(msg)))
 	} else {
-		sendErr = s.transport(ctx, r.smtpHost, r.smtpPort, r.smtpUser, r.smtpPass, envelopeFrom, r.to, msg)
+		sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
+		sendErr = s.transport(sendCtx, r.smtpHost, r.smtpPort, r.smtpUser, r.smtpPass, envelopeFrom, r.to, msg)
+		cancel()
 	}
 
+	// The result is written whatever is left of the tick's budget.
+	ctx, cancel := resultCtx(ctx)
+	defer cancel()
 	newStatus, logKind, detail := classifySendResult(sendErr, r.to)
 	// A failure that may pass — a 4xx answer, a dropped connection, a
 	// timeout — is tried again after a backoff, up to maxSendAttempts;

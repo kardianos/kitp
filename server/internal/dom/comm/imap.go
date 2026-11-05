@@ -370,7 +370,12 @@ func (p *IMAPPoller) Tick(ctx context.Context) error {
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	runCtx = auth.WithSystemUser(runCtx)
-	err := p.RunOnce(runCtx)
+	// One replica polls an account at a time: two read the same messages
+	// and took each other's reads for crashes (review 2026-11-03 round 5).
+	ran, err := job.Exclusive(runCtx, p.pool.P, fmt.Sprintf("kitp.imap_poll:%d", p.channelID), p.RunOnce)
+	if err == nil && !ran {
+		return nil // another replica is polling this account
+	}
 	if err != nil {
 		p.bumpBackoff()
 		p.logger.LogAttrs(runCtx, slog.LevelError, "imap poller RunOnce",
@@ -548,11 +553,19 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 			}
 			if attempts > imapMaxAttempts {
 				m = InboundMessage{UID: u.UID, ParseError: fmt.Sprintf(
-					"set aside: kitp stopped %d times while reading this message", attempts-1)}
+					"set aside: reading this message failed %d times (kitp stopped, or the server refused to fetch it)", attempts-1)}
 				break
 			}
 			tracked = true
 			m, err = client.Fetch(ctx, u.UID)
+			if errors.Is(err, ErrFetchRefused) {
+				// Its in-flight row stays: the refusal counts as a try, and
+				// after imapMaxAttempts the message is set aside (above).
+				p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: the server refused a message; trying the next",
+					slog.Int64("channel_id", p.channelID), slog.Any("uid", u.UID),
+					slog.String("err", err.Error()))
+				continue
+			}
 			if err != nil {
 				p.endInflight(ctx, validity, u.UID)
 				return fmt.Errorf("imap fetch: %w", err)
@@ -1507,6 +1520,19 @@ func (p *filer) syncCommRecipientsFromInbound(
 	if len(found) == 0 {
 		return nil
 	}
+	// A thread holds at most MaxCommRecipients people; a full one makes
+	// no more people of its mail's addresses (review 2026-11-03 round 5
+	// #2: two or three emails that each Cc'd 49 put a thread past 100,
+	// and every staff reply on it was refused).
+	cur, _, err := readAttributeValueRaw(ctx, tx, commID, "comm_recipients")
+	if err != nil {
+		return fmt.Errorf("read recipients: %w", err)
+	}
+	if len(decodeCardRefArray(cur)) >= MaxCommRecipients {
+		p.logger.LogAttrs(ctx, slog.LevelInfo, "inbound mail: thread has the most recipients; nobody added",
+			slog.Int64("comm_id", commID), slog.Int("max", MaxCommRecipients))
+		return nil
+	}
 	ids := make([]int64, 0, len(found))
 	for _, a := range found {
 		id, _, uerr := upsertPersonByEmail(ctx, tx, snap, a.email, a.name, PersonKindContact, actorID)
@@ -1515,11 +1541,21 @@ func (p *filer) syncCommRecipientsFromInbound(
 		}
 		ids = append(ids, id)
 	}
-	if _, err := mergeCommRecipients(ctx, tx, snap, commID, ids, actorID); err != nil {
+	_, dropped, err := mergeCommRecipients(ctx, tx, snap, commID, ids, actorID)
+	if err != nil {
 		return fmt.Errorf("merge recipients: %w", err)
+	}
+	if dropped > 0 {
+		p.logger.LogAttrs(ctx, slog.LevelInfo, "inbound mail: thread reached the most recipients; some not added",
+			slog.Int64("comm_id", commID), slog.Int("not_added", dropped), slog.Int("max", MaxCommRecipients))
 	}
 	return nil
 }
+
+// MaxCommRecipients is the most people on one thread, and the most one
+// reply goes to: the cap comm.create, comm.set_recipients, reply.post and
+// comm_author_join keep in SQL (review 2026-11-03 round 5 #2).
+const MaxCommRecipients = 100
 
 // MaxSyncPeople is the most addresses one received message puts on its
 // thread (and makes people of).
@@ -2241,6 +2277,9 @@ type realIMAPClient struct {
 	c        *imapclient.Client
 	validity uint32
 	stop     func() bool
+	// created is the set-aside folder once this connection has made sure
+	// it exists: one CREATE per poll, not one per message.
+	created string
 }
 
 // imapFetchBatch is the most messages one poll looks at; the rest wait for
@@ -2331,6 +2370,18 @@ func (r *realIMAPClient) Fetch(ctx context.Context, uid uint32) (InboundMessage,
 		return nil
 	})
 	if err != nil {
+		// The server refused this one message (Gmail: "Some messages could
+		// not be FETCHed"; Dovecot on a corrupt one) and the connection still
+		// works: the poller moves on to the next and counts the refusal, so
+		// one message doesn't stop the account's mail (review 2026-11-03
+		// round 5 #9). go-imap gives a NO the same error type as a dropped
+		// connection, so the connection is asked.
+		if ctx.Err() == nil && r.c.State() != imap.LogoutState {
+			r.arm(ctx)
+			if r.c.Noop() == nil {
+				return InboundMessage{}, fmt.Errorf("imap UID FETCH %d: %w: %w", uid, ErrFetchRefused, err)
+			}
+		}
 		return InboundMessage{}, fmt.Errorf("imap UID FETCH %d: %w", uid, err)
 	}
 	if !found {
@@ -2385,6 +2436,10 @@ func (r *realIMAPClient) UIDValidity() uint32 { return r.validity }
 // every message another client flagged \Deleted. It stays, marked read.
 var ErrNoMove = errors.New("imap: the server can't move a message by UID")
 
+// ErrFetchRefused wraps a Fetch error for one message the server refused
+// while the connection carries on.
+var ErrFetchRefused = errors.New("the server refused to fetch this message")
+
 // Archive moves uids to folder with UID MOVE (RFC 6851), or, on a server
 // without MOVE but with UIDPLUS, UID COPY + \Deleted + UID EXPUNGE of just
 // those messages. The folder is made first; one that exists already is
@@ -2394,9 +2449,30 @@ func (r *realIMAPClient) Archive(ctx context.Context, uids []uint32, folder stri
 		return nil
 	}
 	r.arm(ctx)
+	// The server's capabilities first: one that can't move by UID gets no
+	// folder it would never use (review 2026-11-03 round 5).
+	canMove, err := r.c.Support("MOVE")
+	if err != nil {
+		return fmt.Errorf("imap capability: %w", err)
+	}
+	if !canMove {
+		uidPlus, err := r.c.Support("UIDPLUS")
+		if err != nil {
+			return fmt.Errorf("imap capability: %w", err)
+		}
+		if !uidPlus {
+			return ErrNoMove
+		}
+	}
 	// Most often the folder exists already (ALREADYEXISTS); a failure that
-	// matters shows in the move below, which reports it too.
-	createErr := r.c.Create(folder)
+	// matters shows in the move below, which reports it too. Once per
+	// connection.
+	var createErr error
+	if r.created != folder {
+		if createErr = r.c.Create(folder); createErr == nil {
+			r.created = folder
+		}
+	}
 	wrap := func(op string, err error) error {
 		if createErr != nil {
 			return fmt.Errorf("imap %s to %q: %w (creating it: %v)", op, folder, err, createErr)
@@ -2405,9 +2481,7 @@ func (r *realIMAPClient) Archive(ctx context.Context, uids []uint32, folder stri
 	}
 	seqset := new(imap.SeqSet)
 	seqset.AddNum(uids...)
-	if ok, err := r.c.Support("MOVE"); err != nil {
-		return fmt.Errorf("imap capability: %w", err)
-	} else if ok {
+	if canMove {
 		status, err := r.c.Execute(&commands.Uid{Cmd: &moveCmd{seqSet: seqset, mailbox: folder}}, nil)
 		if err == nil {
 			err = status.Err()
@@ -2416,11 +2490,6 @@ func (r *realIMAPClient) Archive(ctx context.Context, uids []uint32, folder stri
 			return wrap("UID MOVE", err)
 		}
 		return nil
-	}
-	if ok, err := r.c.Support("UIDPLUS"); err != nil {
-		return fmt.Errorf("imap capability: %w", err)
-	} else if !ok {
-		return ErrNoMove
 	}
 	if err := r.c.UidCopy(seqset, folder); err != nil {
 		return wrap("UID COPY", err)

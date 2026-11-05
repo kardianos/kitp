@@ -180,7 +180,10 @@ func (p *Pumper) TickOnce(ctx context.Context) error {
 	runCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	runCtx = auth.WithSystemUser(runCtx)
-	if err := p.RunOnce(runCtx); err != nil {
+	// One replica pumps a unit at a time: two read the same activity and
+	// each sent the digest (review 2026-11-03 round 5).
+	key := fmt.Sprintf("kitp.activitysink:%d:%d:%d", p.unitID, p.sinkID, p.projectID)
+	if _, err := job.Exclusive(runCtx, p.pool.P, key, p.RunOnce); err != nil {
 		p.logger.LogAttrs(runCtx, slog.LevelError, "activity_sink pumper RunOnce",
 			slog.Int64("unit_id", p.unitID),
 			slog.Int64("sink_id", p.sinkID),

@@ -94,11 +94,19 @@ test('commLogSummary reads a row as a sentence', () => {
     M.commLogSummary({ kind: 'relay_skipped', detail: { from: 'ada@example.com', subject: 'Out of office', reason: 'auto_submitted' } }),
     'from ada@example.com “Out of office” — not sent on: an automatic message (Auto-Submitted)',
   );
+  assert.equal(
+    M.commLogSummary({ kind: 'relay_skipped', detail: { from: 'ada@example.com', subject: 'Re: X', reason: 'loop' } }),
+    'from ada@example.com “Re: X” — not sent on: it is kitp’s own copy coming back (X-Loop)',
+  );
+  assert.equal(
+    M.commLogSummary({ kind: 'send_retry', detail: { recipient: 'bob@example.com', attempt: 2, error: 'timeout', retry_in: '5m0s' } }),
+    'to bob@example.com — try 2 failed (timeout); next in 5m0s',
+  );
 });
 
 test('the Comm log lists the relay and attachment kinds', () => {
   const kinds = M.COMM_LOG_KINDS.map(([k]) => k);
-  for (const k of ['attachments_dropped', 'relay_queued', 'relay_skipped']) assert.ok(kinds.includes(k), k);
+  for (const k of ['attachments_dropped', 'relay_queued', 'relay_skipped', 'send_retry']) assert.ok(kinds.includes(k), k);
 });
 
 test('calendar filter presets', () => {

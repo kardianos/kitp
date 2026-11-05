@@ -30,6 +30,8 @@ type stubIMAPClient struct {
 	archiveErr    error
 	archiveFolder string
 	closed        bool
+	// refuse lists UIDs whose Fetch the server refuses (ErrFetchRefused).
+	refuse map[uint32]bool
 }
 
 func (s *stubIMAPClient) ListUnseen(ctx context.Context) ([]comm.UnseenMessage, error) {
@@ -49,6 +51,9 @@ func (s *stubIMAPClient) Fetch(ctx context.Context, uid uint32) (comm.InboundMes
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.fetched = append(s.fetched, uid)
+	if s.refuse[uid] {
+		return comm.InboundMessage{}, fmt.Errorf("stub: %w", comm.ErrFetchRefused)
+	}
 	for _, m := range s.messages {
 		if m.UID == uid {
 			return m, nil

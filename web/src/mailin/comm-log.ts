@@ -61,6 +61,7 @@ export const COMM_LOG_KINDS: ReadonlyArray<readonly [string, string]> = [
   ['poll', 'IMAP poll'],
   ['imap_auth_fail', 'IMAP sign-in failed'],
   ['send_ok', 'Sent'],
+  ['send_retry', 'Send failed, will retry'],
   ['send_bounce', 'Send bounced'],
   ['send_fail', 'Send failed'],
   ['notify_ok', 'Notification sent'],
@@ -84,6 +85,9 @@ const RELAY_SKIP_REASON: Readonly<Record<string, string>> = {
   no_sender: 'it has no single sender address',
   sender_not_on_thread: 'its sender hasn’t written on the thread before, and nobody has written to them from kitp',
   too_many_recipients: 'it would go to too many people',
+  loop: 'it is kitp’s own copy coming back (X-Loop)',
+  rate_limited: 'the thread had too many copies sent on this hour',
+  sender_unconfirmed: 'its sender’s address isn’t confirmed on the thread',
 };
 
 function str(v: unknown): string {
@@ -128,6 +132,8 @@ export function commLogSummary(row: Pick<CommLogRow, 'kind' | 'detail'>): string
       return `${about} → a copy to ${str(d['to'])}`.trim();
     case 'relay_skipped':
       return `${about} — not sent on: ${RELAY_SKIP_REASON[str(d['reason'])] ?? str(d['reason'])}`.trim();
+    case 'send_retry':
+      return `to ${str(d['recipient'])} — try ${str(d['attempt'])} failed (${str(d['error'])}); next in ${str(d['retry_in'])}`;
     default:
       return about !== '' ? about : str(d['error']);
   }

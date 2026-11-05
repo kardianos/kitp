@@ -53,10 +53,50 @@ type postServer struct {
 	sources *netx.Limiter
 	routes  *netx.Limiter
 	seen    *replayCache
-	// busy holds one slot per message being read and filed: each takes up
-	// to MaxBytes and several times that to parse, so only a few run at
-	// once (review 2026-11-03 round 4 #1).
+	// busy holds one slot per message being filed: each takes several
+	// times MaxBytes to parse, so only a few run at once (review 2026-11-03
+	// round 4 #1).
 	busy chan struct{}
+	// reading holds one slot per body being read (2 × MaxConcurrent), and
+	// a route at most postReadsPerRoute of them, each under postReadTimeout:
+	// with the body read inside busy, four uploads that never finished,
+	// sent with one route's token, held every slot (round 5 #15).
+	reading chan struct{}
+	readsMu sync.Mutex
+	reads   map[int64]int
+}
+
+// postReadsPerRoute is how many bodies one route may have being read at
+// once; postReadTimeout is how long one body may take to arrive.
+const (
+	postReadsPerRoute = 2
+	postReadTimeout   = 60 * time.Second
+)
+
+// startRead takes a read slot for route id: one of the route's and one of
+// all; false when either is spent. done gives them back.
+func (s *postServer) startRead(id int64) (done func(), ok bool) {
+	s.readsMu.Lock()
+	if s.reads[id] >= postReadsPerRoute {
+		s.readsMu.Unlock()
+		return nil, false
+	}
+	select {
+	case s.reading <- struct{}{}:
+	default:
+		s.readsMu.Unlock()
+		return nil, false
+	}
+	s.reads[id]++
+	s.readsMu.Unlock()
+	return func() {
+		s.readsMu.Lock()
+		if s.reads[id]--; s.reads[id] <= 0 {
+			delete(s.reads, id)
+		}
+		s.readsMu.Unlock()
+		<-s.reading
+	}, true
 }
 
 // DefaultPOSTConcurrent is how many POSTed messages are read and filed at
@@ -84,6 +124,8 @@ func MountPOST(rt *api.Router, cfg POSTConfig) {
 	s := &postServer{
 		POSTConfig: cfg,
 		busy:       make(chan struct{}, cfg.MaxConcurrent),
+		reading:    make(chan struct{}, 2*cfg.MaxConcurrent),
+		reads:      map[int64]int{},
 		sources:    netx.NewLimiter(limits.PerSourcePerMinute, limits.PerSourceBurst, 100_000),
 		routes:     netx.NewLimiter(limits.PerRoutePerMinute, limits.PerRoutePerMinute, 100_000),
 		seen:       &replayCache{seen: map[string]time.Time{}},
@@ -133,14 +175,27 @@ func (s *postServer) handle(ctx context.Context, w http.ResponseWriter, r *http.
 		refused = http.StatusNotAcceptable
 	}
 
-	select {
-	case s.busy <- struct{}{}:
-		defer func() { <-s.busy }()
-	default:
+	doneReading, ok := s.startRead(rt.ID)
+	if !ok {
 		w.Header().Set("Retry-After", "30")
 		return reply(w, http.StatusServiceUnavailable, "busy", "too many messages at once; try again shortly")
 	}
+	// The body arrives within postReadTimeout or the read fails.
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(postReadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		doneReading()
+		return api.Internal(fmt.Errorf("inbound post: read deadline: %w", err))
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.MaxBytes))
+	doneReading()
+	if err == nil {
+		select {
+		case s.busy <- struct{}{}:
+			defer func() { <-s.busy }()
+		default:
+			w.Header().Set("Retry-After", "30")
+			return reply(w, http.StatusServiceUnavailable, "busy", "too many messages at once; try again shortly")
+		}
+	}
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
