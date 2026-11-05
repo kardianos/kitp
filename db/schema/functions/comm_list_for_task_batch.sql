@@ -230,6 +230,15 @@ BEGIN
                                                    JOIN attribute_def ad ON ad.id = av.attribute_def_id
                                                    WHERE av.card_id = rb.id AND ad.name = 'delivery_status'
                                                ), ''),
+                                               -- Who the outgoing server
+                                               -- refused while it took the
+                                               -- message for the rest.
+                                               'refused',         COALESCE((
+                                                   SELECT av.value #>> '{}'
+                                                   FROM attribute_value av
+                                                   JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                                   WHERE av.card_id = rb.id AND ad.name = 'reply_refused'
+                                               ), ''),
                                                'created_at',      to_char(rb.created_at AT TIME ZONE 'UTC',
                                                                           'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
                                                -- The message's files: received
@@ -278,6 +287,11 @@ BEGIN
                                                                   FROM attribute_value av
                                                                   JOIN attribute_def ad ON ad.id = av.attribute_def_id
                                                                   WHERE av.card_id = cp.id AND ad.name = 'delivery_status'), ''),
+                                                              'refused', COALESCE((
+                                                                  SELECT av.value #>> '{}'
+                                                                  FROM attribute_value av
+                                                                  JOIN attribute_def ad ON ad.id = av.attribute_def_id
+                                                                  WHERE av.card_id = cp.id AND ad.name = 'reply_refused'), ''),
                                                               'attachments_left_off', COALESCE((
                                                                   SELECT (av.value)::text::int
                                                                   FROM attribute_value av

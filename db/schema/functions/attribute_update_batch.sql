@@ -147,7 +147,9 @@ BEGIN
         --     through comm_confirm / comm_remove (review round 5 #2).
         --   reply_message_id — a message's Message-ID, which intake and the
         --     sender write and outgoing mail's References name.
-        IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber', 'comm_confirmed', 'comm_removed', 'comm_recipients', 'reply_message_id') THEN
+        --   reply_refused — who the outgoing server refused; the sender
+        --     writes it.
+        IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber', 'comm_confirmed', 'comm_removed', 'comm_recipients', 'reply_message_id', 'reply_refused') THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 format('attribute.update: %s is set by kitp, not by hand', _attr_name), NULL::jsonb;
             CONTINUE;

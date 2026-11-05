@@ -208,12 +208,22 @@ const RELAY_TEXT = [
     r: { id: 1n, to: 'bob@x.test', deliveryStatus: 'bounced', attachmentsLeftOff: 1 },
     want: 'Sent on to bob@x.test · bounced (without its attachment: too large to send)',
   },
+  {
+    r: { id: 1n, to: 'bob@x.test, cy@x.test', deliveryStatus: 'sent', refused: 'cy@x.test', attachmentsLeftOff: 0 },
+    want: 'Sent on to bob@x.test, cy@x.test · sent, but refused for cy@x.test',
+  },
 ];
 for (const c of RELAY_TEXT) {
   test(`relayText: ${c.want}`, () => {
     assert.equal(M.relayText(c.r), c.want);
   });
 }
+
+test('replyStatusText names who the server refused', () => {
+  assert.equal(M.replyStatusText({ deliveryStatus: 'sent', refused: '' }), 'sent');
+  assert.equal(M.replyStatusText({ deliveryStatus: 'sent', refused: 'cy@x.test' }), 'sent, but refused for cy@x.test');
+  assert.equal(M.replyStatusText({ deliveryStatus: 'bounced', refused: '' }), 'bounced');
+});
 
 test('leftOffText counts one and many', () => {
   assert.match(M.leftOffText(1), /^1 attachment was left off/);

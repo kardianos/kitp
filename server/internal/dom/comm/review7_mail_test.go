@@ -140,6 +140,22 @@ func TestRefusedRecipientDoesNotStopTheRest(t *testing.T) {
 	if d := logDetail(t, f, setOut.ChannelID, "send_ok"); d["refused"] == nil {
 		t.Errorf("send_ok detail names no refused recipient: %v", d)
 	}
+	// The thread shows it too, not only the Comm log (review 2026-11-05
+	// round 6 #4).
+	var list comm.CommListForTaskOutput
+	dispatch(t, f, api.SubRequest{ID: "l", Endpoint: "comm", Action: "list_for_task",
+		Data: json.RawMessage(fmt.Sprintf(`{"task_id":"%d"}`, f.taskID))}, &list)
+	refused := "(reply not listed)"
+	for _, c := range list.Rows {
+		for _, r := range c.Replies {
+			if r.ID == reply {
+				refused = r.Refused
+			}
+		}
+	}
+	if refused != "bob@example.com" {
+		t.Errorf("listed refused = %q, want bob@example.com", refused)
+	}
 
 	mock.mu.Lock()
 	mock.refuseRcpt["alice@example.com"] = true

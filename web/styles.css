@@ -8121,6 +8121,10 @@ textarea.task-comms__form-input {
   gap: var(--space-1x);
   font-size: var(--text-2xs);
 }
+/* Sent, but the outgoing server refused some of its recipients. */
+.task-comms__reply-meta [data-reply-status='refused'] {
+  color: var(--color-danger);
+}
 /* A message's files, the files an account left off, and the copy kitp sent
    on to the rest of the thread (docs/MAIL_INTAKE_AND_CALENDARS.md). */
 .task-comms__files {

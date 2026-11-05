@@ -32,25 +32,39 @@ type stubIMAPClient struct {
 	closed        bool
 	// refuse lists UIDs whose Fetch the server refuses (ErrFetchRefused).
 	refuse map[uint32]bool
+	// slow lists UIDs whose Fetch takes this long, or until ctx ends.
+	slow map[uint32]time.Duration
 }
 
-func (s *stubIMAPClient) ListUnseen(ctx context.Context) ([]comm.UnseenMessage, error) {
+func (s *stubIMAPClient) ListUnseen(ctx context.Context, last func(uint32) bool) ([]comm.UnseenMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.fetchErr != nil {
 		return nil, s.fetchErr
 	}
-	out := make([]comm.UnseenMessage, len(s.messages))
-	for i, m := range s.messages {
-		out[i] = comm.UnseenMessage{UID: m.UID, Size: uint32(len(m.Raw))}
+	var out, after []comm.UnseenMessage
+	for _, m := range s.messages {
+		u := comm.UnseenMessage{UID: m.UID, Size: uint32(len(m.Raw))}
+		if last != nil && last(m.UID) {
+			after = append(after, u)
+		} else {
+			out = append(out, u)
+		}
 	}
-	return out, nil
+	return append(out, after...), nil
 }
 
 func (s *stubIMAPClient) Fetch(ctx context.Context, uid uint32) (comm.InboundMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.fetched = append(s.fetched, uid)
+	if d, ok := s.slow[uid]; ok {
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+			return comm.InboundMessage{}, fmt.Errorf("stub: %w", ctx.Err())
+		}
+	}
 	if s.refuse[uid] {
 		return comm.InboundMessage{}, fmt.Errorf("stub: %w", comm.ErrFetchRefused)
 	}

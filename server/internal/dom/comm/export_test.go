@@ -27,3 +27,6 @@ func SetFileFailureSetAsideAfterForTest(d time.Duration) func() {
 	fileFailureSetAsideAfter = d
 	return func() { fileFailureSetAsideAfter = old }
 }
+
+// SetPollBudgetForTest shortens how long one poll of p may run.
+func (p *IMAPPoller) SetPollBudgetForTest(d time.Duration) { p.budget = d }

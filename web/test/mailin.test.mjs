@@ -115,6 +115,12 @@ test('commLogSummary reads a row as a sentence', () => {
     M.commLogSummary({ kind: 'file_retry', detail: { from: 'ada@example.com', subject: 'Help', error: 'a database error (23505)' } }),
     'from ada@example.com “Help” — a database error (23505); tried again after the rest of the mail on each poll',
   );
+  assert.equal(
+    M.commLogSummary({ kind: 'file_retry', detail: { from: 'ada@example.com', subject: 'Help', error: 'a database error (23505)', transport: 'post' } }),
+    'from ada@example.com “Help” — a database error (23505); the sender was asked to send it again',
+  );
+  assert.equal(M.commLogSummary({ kind: 'poll', detail: { message_count: 3, failed: 1 } }), '3 message(s), 1 couldn’t be filed yet');
+  assert.equal(M.commLogSummary({ kind: 'poll', detail: { message_count: 3, failed: 0 } }), '3 message(s)');
 });
 
 test('the Comm log lists the relay and attachment kinds', () => {

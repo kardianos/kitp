@@ -1517,6 +1517,24 @@ WHERE ua.oidc_sub IS NOT NULL AND NOT ua.is_agent
 ORDER BY lower(btrim(ua.email)), ua.id
 ON CONFLICT DO NOTHING;`,
 	},
+	{
+		// Who the outgoing server refused when it took a message for the
+		// rest (a 5xx at RCPT TO): reply_refused on reply_body, which the
+		// sender writes and the thread shows next to "sent" (review
+		// 2026-11-05 round 6 #4). Kitp sets it, never a hand edit. The seed
+		// rows reach fresh installs only. Idempotent — ON CONFLICT DO
+		// NOTHING.
+		id: "0042_reply_refused",
+		sql: `
+INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+VALUES ('reply_refused', 'text', NULL, true, false)
+ON CONFLICT (name) DO NOTHING;
+INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+SELECT ct.id, ad.id, false, 10
+FROM card_type ct, attribute_def ad
+WHERE ct.name = 'reply_body' AND ad.name = 'reply_refused'
+ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that
@@ -1535,6 +1553,7 @@ ON CONFLICT DO NOTHING;`,
 // activity.actor_admin is set by the activity_set_actor_admin trigger.
 // session.oidc_sid is the IdP session a kitp session came from (front- and
 // back-channel logout); its index needs it before the DDL runs.
+// comm_imap_file_failure.path is the filing path a message failed on.
 const preDDL = `ALTER TABLE IF EXISTS attribute_value ADD COLUMN IF NOT EXISTS value_type_id int;
 ALTER TABLE IF EXISTS comm_log ADD COLUMN IF NOT EXISTS route_id bigint;
 ALTER TABLE IF EXISTS role ADD COLUMN IF NOT EXISTS rank int NOT NULL DEFAULT 0;
@@ -1543,7 +1562,8 @@ ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS deleted_at timestamp
 ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS login_revoked_at timestamptz;
 ALTER TABLE IF EXISTS user_account ADD COLUMN IF NOT EXISTS revoked_person_card_id bigint;
 ALTER TABLE IF EXISTS activity ADD COLUMN IF NOT EXISTS actor_admin boolean;
-ALTER TABLE IF EXISTS session ADD COLUMN IF NOT EXISTS oidc_sid text;`
+ALTER TABLE IF EXISTS session ADD COLUMN IF NOT EXISTS oidc_sid text;
+ALTER TABLE IF EXISTS comm_imap_file_failure ADD COLUMN IF NOT EXISTS path text NOT NULL DEFAULT '';`
 
 // ledgerDDL creates the schema-version ledger. Kept here (not in the generated
 // schema) because it must exist before the generated DDL/seed is gated on it.

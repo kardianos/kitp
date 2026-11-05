@@ -42,8 +42,8 @@ import (
 	"net/mail"
 	"net/smtp"
 	"net/textproto"
-	"regexp"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -226,10 +226,13 @@ func (s *SMTPSender) TickOnce(ctx context.Context) error {
 // struct so the per-reply transaction is short (a couple of UPDATEs)
 // and never overlaps the network call.
 type pendingReply struct {
-	attempts    int // tries before this one (comm_send_attempt)
+	attempts int // tries before this one (comm_send_attempt)
 	// messageID is the Message-ID processOne gave the message, stored on
 	// the reply once it is sent (reply_message_id).
 	messageID string
+	// refused is who the server refused when it took the message for the
+	// rest (SMTPPartialError), stored on it as reply_refused.
+	refused     []string
 	replyID     int64
 	commID      int64
 	channelID   int64
@@ -504,12 +507,12 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 	// In-Reply-To and References name the thread's earlier messages, so the
 	// recipient's mail client files this one with them.
 	th := mimeThread{messageID: replyMessageID(r.from)}
-	if refs, err := s.loadThreadRefs(ctx, r); err != nil {
+	if refs, inReplyTo, err := s.loadThreadRefs(ctx, r); err != nil {
 		// Threading is a courtesy too; the message goes without it.
 		s.logger.LogAttrs(ctx, slog.LevelWarn, "smtp sender: load thread references",
 			slog.Int64("reply_id", r.replyID), slog.String("err", err.Error()))
 	} else if len(refs) > 0 {
-		th.inReplyTo = refs[len(refs)-1]
+		th.inReplyTo = inReplyTo
 		th.references = refs
 	}
 	r.messageID = th.messageID
@@ -538,6 +541,12 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 	ctx, cancel := resultCtx(ctx)
 	defer cancel()
 	newStatus, logKind, detail := classifySendResult(sendErr, r.to)
+	var partial *SMTPPartialError
+	if errors.As(sendErr, &partial) {
+		for _, rf := range partial.Refused {
+			r.refused = append(r.refused, rf.Address)
+		}
+	}
 	// A failure that may pass — a 4xx answer, a dropped connection, a
 	// timeout — is tried again after a backoff, up to maxSendAttempts;
 	// only a bounce (5xx) or the last try fails it for good (review
@@ -552,8 +561,7 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 	if err := s.recordResult(ctx, r, newStatus, logKind, detail); err != nil {
 		return fmt.Errorf("smtp sender: record result for reply %d: %w", r.replyID, err)
 	}
-	var partial *SMTPPartialError
-	if errors.As(sendErr, &partial) {
+	if partial != nil {
 		// Sent to the others; each address the server refused is logged as
 		// a bounce of its own.
 		for _, rf := range partial.Refused {
@@ -882,6 +890,17 @@ func (s *SMTPSender) recordResult(ctx context.Context, r pendingReply, newStatus
 			return fmt.Errorf("reply_message_id: %w", err)
 		}
 	}
+	// Who the server refused, so the thread shows the message didn't reach
+	// everyone (review 2026-11-05 round 6 #4).
+	if ad, ok := snap.AttrByName["reply_refused"]; ok && newStatus == "sent" && len(r.refused) > 0 {
+		refusedJSON, err := json.Marshal(strings.Join(r.refused, ", "))
+		if err != nil {
+			return err
+		}
+		if err := writeAttributeValue(ctx, tx, r.replyID, ad.ID, refusedJSON, actorID); err != nil {
+			return fmt.Errorf("reply_refused: %w", err)
+		}
+	}
 
 	detailJSON, err := json.Marshal(detail)
 	if err != nil {
@@ -1137,7 +1156,10 @@ var msgIDPattern = regexp.MustCompile(`^<[!-;=?-~]+@[!-;=?-~]+>$`)
 
 // normalMessageID is a Message-ID header's value as kitp stores and sends
 // it — in angle brackets — or "" when it isn't one kitp can put in a header
-// as it is (it comes from the sender's mail).
+// as it is (it comes from the sender's mail), or is shaped like a kitp
+// notification's: named in References, it would make every reply on the
+// thread read as a reply to a notification, which is never sent on
+// (review 2026-11-05 round 6 #5).
 func normalMessageID(id string) string {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -1146,7 +1168,7 @@ func normalMessageID(id string) string {
 	if !strings.HasPrefix(id, "<") {
 		id = "<" + id + ">"
 	}
-	if len(id) > maxMessageKeyID || !msgIDPattern.MatchString(id) {
+	if len(id) > maxMessageKeyID || !msgIDPattern.MatchString(id) || notificationRefRegex.MatchString(id) {
 		return ""
 	}
 	return id
@@ -1156,48 +1178,67 @@ func normalMessageID(id string) string {
 // first and its latest, as RFC 5322 §3.6.4 suggests trimming a long list.
 const threadRefsMax = 20
 
-// loadThreadRefs is the Message-IDs of the thread's messages before this
-// one, oldest first (at most threadRefsMax: the first and the latest).
-// Messages from before kitp stored them (reply_message_id) have none.
-func (s *SMTPSender) loadThreadRefs(ctx context.Context, r pendingReply) ([]string, error) {
+// loadThreadRefs names the thread's messages before r that have a
+// Message-ID, oldest first — the first and the latest threadRefsMax-1 — for
+// References, and the one In-Reply-To names: the latest that isn't a copy
+// kitp sent on to the thread's other people (relay_of), which went to
+// someone else (review 2026-11-05 round 6 #5).
+func (s *SMTPSender) loadThreadRefs(ctx context.Context, r pendingReply) (refs []string, inReplyTo string, err error) {
 	b := named.New()
 	b.Set("comm_id", r.commID)
 	b.Set("reply_id", r.replyID)
 	b.Set("max", threadRefsMax)
+	// The casts are guarded where they are made: only kitp writes replies,
+	// but a planner may evaluate a join before the WHERE that would filter.
 	q, args, err := b.Compile(`
 		WITH t AS (
-		    SELECT rb.id, av.value #>> '{}' AS mid,
+		    SELECT rb.id, COALESCE(av.value #>> '{}', '') AS mid,
+		           EXISTS (SELECT 1 FROM attribute_value ro
+		                   JOIN attribute_def rod ON rod.id = ro.attribute_def_id AND rod.name = 'relay_of'
+		                   WHERE ro.card_id = rb.id) AS relay,
 		           row_number() OVER (ORDER BY rb.id) AS n, count(*) OVER () AS total
 		    FROM attribute_value rep
 		    JOIN attribute_def rad ON rad.id = rep.attribute_def_id AND rad.name = 'replies'
-		    CROSS JOIN LATERAL jsonb_array_elements(rep.value) AS e(v)
-		    JOIN card rb ON rb.id = (e.v #>> '{}')::bigint AND rb.deleted_at IS NULL
+		    CROSS JOIN LATERAL jsonb_array_elements(
+		        CASE WHEN jsonb_typeof(rep.value) = 'array' THEN rep.value ELSE '[]'::jsonb END) AS e(v)
+		    JOIN card rb ON rb.id = CASE WHEN (e.v #>> '{}') ~ '^[0-9]{1,18}$' THEN (e.v #>> '{}')::bigint END
+		     AND rb.deleted_at IS NULL
 		    JOIN attribute_value av ON av.card_id = rb.id
 		     AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_message_id')
 		    WHERE rep.card_id = :comm_id
-		      AND jsonb_typeof(rep.value) = 'array'
-		      AND (e.v #>> '{}') ~ '^[0-9]+$'
 		      AND rb.id < :reply_id
 		)
-		SELECT mid FROM t WHERE n = 1 OR n > total - (:max - 1) ORDER BY id`)
+		SELECT mid, relay FROM t WHERE n = 1 OR n > total - (:max - 1) ORDER BY id`)
 	if err != nil {
-		return nil, fmt.Errorf("thread refs: compile: %w", err)
+		return nil, "", fmt.Errorf("thread refs: compile: %w", err)
 	}
 	rows, err := s.pool.P.Query(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("thread refs: %w", err)
+		return nil, "", fmt.Errorf("thread refs: %w", err)
 	}
-	mids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	type ref struct {
+		Mid   string
+		Relay bool
+	}
+	found, err := pgx.CollectRows(rows, pgx.RowToStructByPos[ref])
 	if err != nil {
-		return nil, fmt.Errorf("thread refs: %w", err)
+		return nil, "", fmt.Errorf("thread refs: %w", err)
 	}
-	out := make([]string, 0, len(mids))
-	for _, m := range mids {
-		if id := normalMessageID(m); id != "" {
-			out = append(out, id)
+	refs = make([]string, 0, len(found))
+	for _, f := range found {
+		id := normalMessageID(f.Mid)
+		if id == "" {
+			continue
+		}
+		refs = append(refs, id)
+		if !f.Relay {
+			inReplyTo = id
 		}
 	}
-	return out, nil
+	if inReplyTo == "" && len(refs) > 0 {
+		inReplyTo = refs[len(refs)-1]
+	}
+	return refs, inReplyTo, nil
 }
 
 // mimeHeader is one extra header line on an outgoing message (a relayed

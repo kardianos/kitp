@@ -119,14 +119,18 @@ export function commLogSummary(row: Pick<CommLogRow, 'kind' | 'detail'>): string
     case 'file_error':
       return `${about} — ${str(d['error'])}`.trim();
     case 'file_retry':
-      return `${about} — ${str(d['error'])}; tried again after the rest of the mail on each poll`.trim();
+      return `${about} — ${str(d['error'])}; ${
+        str(d['transport']) === 'imap' || str(d['transport']) === '' ? 'tried again after the rest of the mail on each poll' : 'the sender was asked to send it again'
+      }`.trim();
     case 'dkim_result':
     case 'dkim_failed': {
       const ok = Array.isArray(d['verified']) ? (d['verified'] as unknown[]).map(str).join(', ') : '';
       return `${ok !== '' ? `signed by ${ok}` : 'no valid signature'}${str(d['reason']) !== '' ? ` — ${str(d['reason'])}` : ''}`;
     }
-    case 'poll':
-      return `${str(d['message_count'])} message(s)`;
+    case 'poll': {
+      const failed = Number(d['failed'] ?? 0);
+      return `${str(d['message_count'])} message(s)${failed > 0 ? `, ${failed} couldn’t be filed yet` : ''}`;
+    }
     case 'attachments_dropped': {
       const names = Array.isArray(d['files']) ? (d['files'] as unknown[]).map(str).filter((f) => f !== '').join(', ') : '';
       return `${about} — ${str(d['count'])} left off${names !== '' ? ` (${names})` : ''}`.trim();

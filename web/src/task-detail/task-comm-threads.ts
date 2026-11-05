@@ -559,8 +559,8 @@ export class CommThreads extends Control<CommThreadsConfig> {
         const time = localTimeEl(r.createdAt, 'task-comms__reply-time');
         time.dataset.replyTime = '';
         const status = document.createElement('span');
-        status.dataset.replyStatus = '';
-        status.textContent = r.deliveryStatus;
+        status.dataset.replyStatus = r.refused ? 'refused' : '';
+        status.textContent = replyStatusText(r);
         // Whitespace between the parts keeps the copied / spoken text
         // readable; the flex layout ignores whitespace-only runs.
         meta.append(' ', metaSep(), ' ', time, ' ', metaSep(), ' ', status);
@@ -1269,10 +1269,17 @@ const RELAY_STATUS: Readonly<Record<string, string>> = {
   bounced: 'bounced',
 };
 
+/** The delivery status a message shows: a sent one the outgoing server
+ *  refused for some of its recipients names them. */
+export function replyStatusText(r: { deliveryStatus: string; refused: string }): string {
+  return r.deliveryStatus === 'sent' && r.refused ? `sent, but refused for ${r.refused}` : r.deliveryStatus;
+}
+
 /** "Sent on to bob@example.com · sent": the copy kitp emailed to the
  *  thread's other people. */
 export function relayText(r: MessageRelay): string {
-  const status = RELAY_STATUS[r.deliveryStatus] ?? r.deliveryStatus;
+  let status = RELAY_STATUS[r.deliveryStatus] ?? r.deliveryStatus;
+  if (r.deliveryStatus === 'sent' && r.refused) status += `, but refused for ${r.refused}`;
   let text = `Sent on to ${r.to} · ${status}`;
   if (r.attachmentsLeftOff > 0) {
     text += ` (without ${r.attachmentsLeftOff === 1 ? 'its attachment' : `its ${r.attachmentsLeftOff} attachments`}: too large to send)`;

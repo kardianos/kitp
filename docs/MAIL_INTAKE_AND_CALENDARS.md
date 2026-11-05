@@ -239,29 +239,43 @@ Size and shape (review 2026-11-03 rounds 3 and 4, #1).
   Teams sink (a Postgres advisory lock held for the tick).
 - **Threading.** Each message keeps its Message-ID (`reply_message_id` on
   the reply_body: intake writes an incoming one, if it is a plain
-  `<left@right>`; the sender writes its own once the message is sent). A
-  message kitp sends names the thread's earlier messages: In-Reply-To the
-  latest, References up to 20 — the first and the latest — so it lands in
-  the recipient's thread rather than on its own. Messages from before
-  this (migration 0040) have no id, so an older thread threads from its
-  next message on.
+  `<left@right>` and not shaped like a kitp notification's, which would
+  make every reply on the thread read as a reply to a notification and
+  never be sent on; the sender writes its own once the message is sent).
+  A message kitp sends names the thread's earlier messages: In-Reply-To
+  the latest that isn't a copy kitp sent on to someone else (`relay_of`),
+  References up to 20 — the first and the latest — so it lands in the
+  recipient's thread rather than on its own. Messages from before this
+  (migration 0040) have no id, so an older thread threads from its next
+  message on.
 - **A refused recipient.** A recipient the mail server refuses for good
   (5xx at RCPT TO) is left off, and the rest get the message: it is
-  `sent`, its `send_ok` names who was refused, and each refused address
-  has a `send_bounce` of its own. Only a message every recipient is
-  refused for bounces. A passing refusal (4xx) still retries the whole
-  message, since nobody has it yet.
+  `sent`, with who was refused on the message (`reply_refused`, migration
+  0042), which the thread shows ("sent, but refused for …"); its
+  `send_ok` names them too, and each refused address has a `send_bounce`
+  of its own. Only a message every recipient is refused for bounces. A
+  passing refusal (4xx) still retries the whole message, since nobody has
+  it yet.
 - A message the IMAP server refuses to fetch is skipped for the others,
   and set aside after two refusals.
 - A message that fails to file for a passing reason (anything but a
   database limit it breaks, which sets it aside at once) is recorded in
-  `comm_imap_file_failure`, logged once in the Comm log (`file_retry`),
-  and tried after the poll's other mail on each poll; it doesn't count
-  against the account, so it can't trip the account's fault switch. It is
-  set aside (`file_error`, "set aside") once it has failed for a day, three
-  times or more, while other mail of the account filed. A failure that
-  hits every message — a kitp bug, the database — sets nothing aside: the
-  mail waits in the inbox until filing works again.
+  `comm_imap_file_failure` with the path it failed on (reply, new task,
+  new thread, …), logged once in the Comm log (`file_retry`; POST and
+  SMTP intake log one per attempt, the sender being told to try again),
+  and listed and tried after the poll's other mail, so failing messages
+  never fill a poll's 50. It doesn't count against the account's fault
+  switch. Once it has failed for a day, three times or more, while fresh
+  mail down the same path filed (a duplicate doesn't count), it gets a
+  last try, and is set aside (`file_error`, "set aside") if that fails
+  too. A failure that hits every message, or every message of one path —
+  a kitp bug, the database — sets nothing aside: the mail waits in the
+  inbox until filing works again. A poll in which messages failed and
+  none filed backs the account off (up to 10 minutes) without counting
+  toward the fault switch, and its `poll` row counts the failures.
+- A poll has 2 minutes. One that runs out files what it reached and leaves
+  the rest for the next; that isn't the account failing. A message that
+  was cut off with less than half the time left isn't charged for it.
 - A thread has at most 100 recipients; inbound mail adds nobody past that.
 - At most 4 POSTed messages are filed at once
   (`KITP_COMM_INBOUND_MAX_CONCURRENT`), and twice that read; one route has
@@ -569,8 +583,12 @@ detail):
 | `inbound_refused` | a route filter refused it: `check` (sources / require_tls / sender_hosts / envelope_from / header_from / dkim / signature), and why |
 | `dkim_result` | DKIM in `record` mode: what verified |
 | `dkim_failed` | DKIM `require` + `on_fail: file`: filed anyway |
+| `file_retry` | a passing failure to file it (in words that don't quote the message): IMAP logs a message's first one and tries it again on later polls; POST and SMTP log each, the sender being told to try again |
+| `file_error` | it can never be filed, or (IMAP) it was set aside after failing for a day |
 
-`parse_error` gains `transport` / `route_id`.
+`parse_error` (mail that couldn't be read) gains `transport` / `route_id`.
+An IMAP `poll` row counts the messages listed (`message_count`) and those
+that failed to file (`failed`).
 
 ### Pages, help and logs
 

@@ -371,7 +371,7 @@ uid, bigint, false, , ,
 attempts, int, false, 1, ,
 started_at, timestamptz, false, now(), ,
 
-## table comm_imap_file_failure | doc="IMAP messages that failed to file for a passing reason (not one permanentFilingError covers): one row per (account, mailbox UIDVALIDITY, UID) until the message files or is set aside. Such a message is tried after the poll's other mail and doesn't count against the account's fault switch. Once it has failed for a day, imapSetAsideFailures times or more, while other mail of the account filed (others_filed), it is set aside — logged as file_error, marked read and moved out of INBOX — so a failure that hits every message (a kitp bug, the database) never sweeps the inbox (2026-11-05). detail is the Comm log detail of its last failure. Rows untouched for a week are pruned." | primary_key="channel_id, uid_validity, uid"
+## table comm_imap_file_failure | doc="IMAP messages that failed to file for a passing reason (not one permanentFilingError covers): one row per (account, mailbox UIDVALIDITY, UID) until the message files or is set aside. Such a message is listed and tried after the poll's other mail and doesn't count against the account's fault switch. path is the filing path it failed on (a Filed outcome: reply, task, thread, …; empty before the thread match). Once it has failed for a day, imapSetAsideFailures times or more, while fresh mail down the same path filed (others_filed), it is tried once more and set aside if that fails too — logged as file_error, marked read and moved out of INBOX — so a failure that hits every message, or every message of one path (a kitp bug, the database), never sweeps the inbox (2026-11-05). detail is the Comm log detail of its last failure. Rows untouched for a week are pruned." | primary_key="channel_id, uid_validity, uid"
 
 ### columns
 name, type, nullable, default, references, on_delete
@@ -382,6 +382,7 @@ failures, int, false, 1, ,
 first_failed_at, timestamptz, false, now(), ,
 last_failed_at, timestamptz, false, now(), ,
 others_filed, boolean, false, false, ,
+path, text, false, '', ,
 detail, jsonb, false, '{}', ,
 
 ## table upload_link_used | doc="Signed upload links already used (attachment.upload_url): one row per link signature (its sha256 hex) until the link expires. A link uploads one file; a second use is refused (review 2026-11-03 round 2 #21). Rows past expires_at are cleared as new links are used."

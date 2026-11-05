@@ -127,8 +127,13 @@ still open, and what a deployment of those commits needs to know.
 - **POST mail intake** reads at most 2 bodies per route at once, each
   within 60 seconds.
 - **A message that keeps failing to file** waits in the inbox and is
-  logged once (`file_retry`); after a day of failing while other mail
-  files, it goes to the set-aside folder (`file_error`).
+  logged once (`file_retry`). After a day of failing while fresh mail down
+  the same filing path (reply, new task, new thread) files, and a last try
+  that fails too, it goes to the set-aside folder (`file_error`). A poll
+  in which nothing filed backs the account off but never faults it, so
+  when all of an account's mail fails, the Comm log (`file_retry`, the
+  `poll` row's failed count) and the kitpd log are where it shows.
 - **Outgoing mail threads** (In-Reply-To / References) from the first
   message after the deploy; a recipient the server refuses is left off
-  and logged (`send_bounce`) while the rest get the message.
+  while the rest get the message, and the thread shows the message as
+  "sent, but refused for …" (`reply_refused`).

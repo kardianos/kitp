@@ -222,7 +222,10 @@ type ReplyRow struct {
 	Subject        string `json:"subject" mcp:"desc=subject line"`
 	BodyText       string `json:"body_text" mcp:"desc=plain-text body"`
 	DeliveryStatus string `json:"delivery_status" mcp:"desc=pending / sent / bounced / failed / received"`
-	CreatedAt      string `json:"created_at" mcp:"desc=RFC3339 creation timestamp"`
+	// Refused is who the outgoing server refused when it took the message
+	// for the rest (comma-separated; empty when nobody was).
+	Refused   string `json:"refused" mcp:"desc=for a sent message, the addresses the outgoing server refused while it took the message for the others (comma-separated); empty when none"`
+	CreatedAt string `json:"created_at" mcp:"desc=RFC3339 creation timestamp"`
 	// Attachments are the message's files. A received file lives on the
 	// thread (OnThread) until someone moves it onto the task
 	// (comm.attachment_to_task); the message keeps it either way.
@@ -250,6 +253,7 @@ type ReplyRelay struct {
 	ID                 int64  `json:"id,string" mcp:"desc=the copy's reply_body id"`
 	To                 string `json:"to" mcp:"desc=who it went to (comma-separated)"`
 	DeliveryStatus     string `json:"delivery_status" mcp:"desc=pending / sent / bounced / failed"`
+	Refused            string `json:"refused" mcp:"desc=addresses the outgoing server refused while it took the copy for the others (comma-separated); empty when none"`
 	AttachmentsLeftOff int    `json:"attachments_left_off" mcp:"desc=files too large to send on with it"`
 }
 

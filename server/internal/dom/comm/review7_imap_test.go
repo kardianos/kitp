@@ -5,6 +5,7 @@ package comm_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -47,8 +48,10 @@ func TestFailingMessageDoesNotStopIntake(t *testing.T) {
 	p.SetDialFunc(func(context.Context, comm.IMAPConfig) (comm.InboundClient, error) { return stub, nil })
 	defer comm.SetFileFailureSetAsideAfterForTest(0)()
 	for i := 1; i <= 3; i++ {
-		if err := p.RunOnce(context.Background()); err != nil {
-			t.Fatalf("poll %d failed: %v", i, err)
+		// Once only the failing message is left, nothing files: the poll
+		// says so (Tick backs off on it), but it isn't the account failing.
+		if err := p.RunOnce(context.Background()); (i == 1 && err != nil) || (i > 1 && !errors.Is(err, comm.ErrNothingFiled)) {
+			t.Fatalf("poll %d: %v", i, err)
 		}
 		if i == 1 {
 			if fmt.Sprint(stub.marks()) != "[11]" {
@@ -97,8 +100,8 @@ func TestFailureOnEveryMessageSetsNothingAside(t *testing.T) {
 	p.SetDialFunc(func(context.Context, comm.IMAPConfig) (comm.InboundClient, error) { return stub, nil })
 	defer comm.SetFileFailureSetAsideAfterForTest(0)()
 	for i := 1; i <= 5; i++ {
-		if err := p.RunOnce(context.Background()); err != nil {
-			t.Fatalf("poll %d failed: %v", i, err)
+		if err := p.RunOnce(context.Background()); !errors.Is(err, comm.ErrNothingFiled) {
+			t.Fatalf("poll %d: %v, want ErrNothingFiled", i, err)
 		}
 	}
 	if len(stub.marks()) != 0 || len(stub.archived) != 0 {

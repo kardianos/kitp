@@ -100,6 +100,10 @@ func clip(s string, n int) string {
 
 // Filed is what filing one message did.
 type Filed struct {
+	// Outcome is what became of the message. When filing fails it names
+	// the path the message was on (empty before the thread match), so the
+	// IMAP poller counts a failure as the message's own only while fresh
+	// mail down the same path files.
 	Outcome string
 	// CardID is the thread (comm card) the message is on, when it is on
 	// one; for a duplicate, the thread the first copy went to.
@@ -201,6 +205,19 @@ func (in *Intake) FileRaw(ctx context.Context, channelID int64, transport string
 				slog.String("error", lerr.Error()))
 		}
 		return Filed{}, fmt.Errorf("%w: %v", ErrUnfileable, err)
+	}
+	if err != nil && ctx.Err() == nil {
+		// A passing failure: the sender is told to try again. Logged in
+		// words that don't quote the message's values (the kitpd log has
+		// the error).
+		f.logger.LogAttrs(ctx, slog.LevelWarn, "intake: filing a message failed; the sender is told to try again",
+			slog.Int64("channel_id", channelID),
+			slog.String("error", err.Error()))
+		if lerr := f.logInbound(ctx, in.Pool.P, intake.projectID, meta, "file_retry", fileRetryDetail(m, err)); lerr != nil {
+			f.logger.LogAttrs(ctx, slog.LevelWarn, "intake: logging a filing failure failed",
+				slog.Int64("channel_id", channelID),
+				slog.String("error", lerr.Error()))
+		}
 	}
 	return filed, err
 }

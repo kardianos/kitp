@@ -109,6 +109,8 @@ type IMAPPoller struct {
 	tick     time.Duration
 	dryRun   bool
 	insecure bool
+	// budget is how long one poll may run (imapPollBudget).
+	budget time.Duration
 	// setAside is the folder never-fileable mail is moved to
 	// (KITP_COMM_IMAP_SET_ASIDE_FOLDER); "" leaves it in INBOX.
 	setAside string
@@ -164,11 +166,12 @@ type IMAPConfig struct {
 type imapClient interface {
 	// ListUnseen returns the messages in INBOX without the \Seen flag,
 	// oldest first and at most imapFetchBatch of them (the rest come on
-	// later polls), each with its size (0 when the server gave none). It
-	// reads no message: the poller fetches, files and marks one at a time,
-	// so a poll holds one message, not fifty (review 2026-11-03 round 4
-	// #1).
-	ListUnseen(ctx context.Context) ([]UnseenMessage, error)
+	// later polls), each with its size (0 when the server gave none). The
+	// ones last names (nil: none) come after all the others, before the
+	// cap, so messages that keep failing don't fill a poll. It reads no
+	// message: the poller fetches, files and marks one at a time, so a poll
+	// holds one message, not fifty (review 2026-11-03 round 4 #1).
+	ListUnseen(ctx context.Context, last func(uid uint32) bool) ([]UnseenMessage, error)
 	// Fetch reads and parses one message, leaving it unseen. A message
 	// that doesn't parse comes back with ParseError set.
 	Fetch(ctx context.Context, uid uint32) (InboundMessage, error)
@@ -280,6 +283,7 @@ func newIMAPPoller(pool *store.Pool, channelID int64, tick time.Duration) *IMAPP
 		dryRun:   os.Getenv("KITP_COMM_IMAP_DRY_RUN") == "1",
 		insecure: os.Getenv("KITP_COMM_IMAP_INSECURE") == "1",
 		setAside: setAside,
+		budget:   imapPollBudget,
 	}
 	p.dial = dialIMAP
 	return p
@@ -368,7 +372,7 @@ func (p *IMAPPoller) Tick(ctx context.Context) error {
 	if time.Now().Before(p.nextAttemptAt) {
 		return nil // still backing off
 	}
-	runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	runCtx, cancel := context.WithTimeout(ctx, p.budget)
 	defer cancel()
 	runCtx = auth.WithSystemUser(runCtx)
 	// One replica polls an account at a time: two read the same messages
@@ -376,6 +380,15 @@ func (p *IMAPPoller) Tick(ctx context.Context) error {
 	ran, err := job.Exclusive(runCtx, p.pool.P, fmt.Sprintf("kitp.imap_poll:%d", p.channelID), p.RunOnce)
 	if err == nil && !ran {
 		return nil // another replica is polling this account
+	}
+	if errors.Is(err, ErrNothingFiled) {
+		// The failures are the messages': back off, but this is no step
+		// toward the fault switch.
+		p.backOff(false)
+		p.logger.LogAttrs(runCtx, slog.LevelWarn, "imap poller: no message filed",
+			slog.Int64("channel_id", p.channelID),
+			slog.Duration("backoff", p.backoff))
+		return err
 	}
 	if err != nil {
 		p.bumpBackoff()
@@ -403,7 +416,11 @@ func (p *IMAPPoller) Tick(ctx context.Context) error {
 	return nil
 }
 
-func (p *IMAPPoller) bumpBackoff() {
+func (p *IMAPPoller) bumpBackoff() { p.backOff(true) }
+
+// backOff doubles the backoff; countCap says whether a failure at the
+// ceiling counts toward the fault switch.
+func (p *IMAPPoller) backOff(countCap bool) {
 	prev := p.backoff
 	if p.backoff == 0 {
 		p.backoff = backoffMin
@@ -417,7 +434,7 @@ func (p *IMAPPoller) bumpBackoff() {
 	// us at the ceiling doesn't trip yet (it could still be the tail
 	// of a ramp). Each subsequent failure with prev already at the
 	// ceiling does.
-	if prev == backoffMax && p.backoff == backoffMax {
+	if countCap && prev == backoffMax && p.backoff == backoffMax {
 		p.capHits++
 	}
 	p.nextAttemptAt = time.Now().Add(p.backoff)
@@ -487,7 +504,7 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 			slog.Int("port", cfg.Port))
 		// Still record a poll log row so operators see the dry-run
 		// cadence in the comm_log stream.
-		return p.recordPollOnly(ctx, projectID, 0)
+		return p.recordPoll(ctx, projectID, 0, 0)
 	}
 
 	cfg.Insecure = p.insecure
@@ -516,24 +533,24 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 		slog.Int64("channel_id", p.channelID),
 		slog.String("host", cfg.Host))
 
-	list, err := client.ListUnseen(ctx)
+	validity := client.UIDValidity()
+	if err := p.pruneInflight(ctx, validity); err != nil {
+		return err
+	}
+	// Messages that failed to file before are listed and tried after the
+	// rest, so ones that fail on every poll, or take a poll's whole budget,
+	// neither fill the poll's window nor hold back the mail behind them.
+	failed, err := p.loadFileFailures(ctx, validity)
+	if err != nil {
+		return err
+	}
+	list, err := client.ListUnseen(ctx, func(uid uint32) bool { _, ok := failed[uid]; return ok })
 	if err != nil {
 		return fmt.Errorf("imap fetch: %w", err)
 	}
 	p.logger.LogAttrs(ctx, slog.LevelDebug, "imap unseen",
 		slog.Int64("channel_id", p.channelID),
 		slog.Int("count", len(list)))
-	validity := client.UIDValidity()
-	if err := p.pruneInflight(ctx, validity); err != nil {
-		return err
-	}
-	// Messages that failed to file before go after the rest, so one that
-	// takes the poll's whole budget, or fails on every poll, doesn't hold
-	// back the mail behind it.
-	failed, err := p.loadFileFailures(ctx, validity)
-	if err != nil {
-		return err
-	}
 	sort.SliceStable(list, func(i, j int) bool {
 		_, fi := failed[list[i].UID]
 		_, fj := failed[list[j].UID]
@@ -546,22 +563,21 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 	// filed; one still recorded when its poll began was being read when
 	// kitpd stopped, and one that stopped kitpd twice is set aside —
 	// logged and marked read, left in the mailbox — rather than end it on
-	// every poll.
-	var ingested int
+	// every poll. Once the poll's budget is spent the rest wait for the
+	// next poll: that isn't the account failing.
+	var ingested, failures int
 	var firstErr error
-	filedOK := false
+	filedPaths := map[string]bool{} // paths fresh mail filed down this poll
+poll:
 	for _, u := range list {
 		if ctx.Err() != nil {
 			break
 		}
 		ff, hadFailed := failed[u.UID]
-		if hadFailed && ff.setAside {
-			if err := p.setAsideUnfiled(ctx, client, intake.projectID, validity, u.UID, ff); err != nil && firstErr == nil {
-				firstErr = err
-			}
-			ingested++
-			continue
+		if ff.setAside && p.budgetLeft(ctx) < p.budget/2 {
+			continue // its last try waits for a poll with time for it
 		}
+		leftAtStart := p.budgetLeft(ctx)
 		var m InboundMessage
 		tracked := false
 		switch {
@@ -571,6 +587,9 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 		default:
 			attempts, err := p.beginInflight(ctx, validity, u.UID)
 			if err != nil {
+				if ctx.Err() != nil {
+					break poll
+				}
 				return err
 			}
 			if attempts > imapMaxAttempts {
@@ -590,13 +609,18 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 			}
 			if err != nil {
 				p.endInflight(ctx, validity, u.UID)
+				if ctx.Err() != nil {
+					break poll
+				}
 				return fmt.Errorf("imap fetch: %w", err)
 			}
 			if !p.saveRawEmail {
 				m.Raw = nil // only the debugging copy needs the verbatim bytes
 			}
 		}
-		seen, aside, err := p.fileFetched(ctx, intake, m, int64(u.Size))
+		seen, aside, path, err := p.fileFetched(ctx, intake, m, int64(u.Size))
+		// What's left of this message's handling outlives the poll's budget.
+		bctx, cancel := bookkeepingCtx(ctx)
 		switch {
 		case err == nil:
 		case errors.Is(ctx.Err(), context.Canceled):
@@ -604,44 +628,80 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 			if firstErr == nil {
 				firstErr = err
 			}
+		case ctx.Err() != nil && leftAtStart < p.budget/2:
+			// The poll's budget ran out on it: not the message's doing
+			// either, and it goes first next poll.
+		case ff.setAside:
+			// It kept failing while mail down its path filed, and its last
+			// try failed too: set aside.
+			if err := p.setAsideUnfiled(bctx, client, projectID, validity, m, ff.failures+1, err); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			ingested++
 		default:
 			// A passing failure (permanent ones are set aside by
 			// fileFetched): recorded against the message, not the account,
 			// and the poll goes on to the next one.
-			p.noteFileFailure(ctx, intake.projectID, validity, m, err)
+			failures++
+			p.noteFileFailure(bctx, projectID, validity, m, path, err)
 		}
 		if seen {
-			if err := client.MarkSeen(ctx, []uint32{u.UID}); err != nil && firstErr == nil {
+			if err := client.MarkSeen(bctx, []uint32{u.UID}); err != nil && firstErr == nil {
 				firstErr = fmt.Errorf("imap mark seen: %w", err)
 			}
 			ingested++
-			if !aside {
-				filedOK = true
+			if !aside && path != OutcomeDuplicate {
+				filedPaths[path] = true
 			}
 			if hadFailed {
-				p.clearFileFailure(ctx, validity, u.UID)
+				p.clearFileFailure(bctx, validity, u.UID)
 			}
 		}
 		if seen && aside {
-			p.archive(ctx, client, u.UID)
+			p.archive(bctx, client, u.UID)
 		}
+		cancel()
 		if tracked || seen {
 			p.endInflight(ctx, validity, u.UID)
 		}
 	}
 
-	if filedOK {
-		p.noteOthersFiled(ctx, validity)
+	if len(filedPaths) > 0 {
+		p.noteOthersFiled(ctx, validity, filedPaths)
 	}
-	if err := p.recordPollOnly(ctx, projectID, len(list)); err != nil && firstErr == nil {
+	bctx, cancel := bookkeepingCtx(ctx)
+	defer cancel()
+	if err := p.recordPoll(bctx, projectID, len(list), failures); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	p.logger.LogAttrs(ctx, slog.LevelDebug, "imap cycle complete",
 		slog.Int64("channel_id", p.channelID),
 		slog.Int("unseen", len(list)),
-		slog.Int("ingested", ingested))
+		slog.Int("ingested", ingested),
+		slog.Int("failed", failures))
+	if firstErr == nil && failures > 0 && len(filedPaths) == 0 {
+		return ErrNothingFiled
+	}
 	return firstErr
 }
+
+// ErrNothingFiled is a poll in which messages failed to file and none
+// filed. Tick backs the account off on it, so a failure that hits all its
+// mail isn't retried every minute, but it doesn't count toward the fault
+// switch: the failures are recorded on the messages (file_retry), and the
+// Comm log's poll row counts them.
+var ErrNothingFiled = errors.New("imap: messages failed to file and none filed")
+
+// budgetLeft is how long the poll may still run.
+func (p *IMAPPoller) budgetLeft(ctx context.Context) time.Duration {
+	if d, ok := ctx.Deadline(); ok {
+		return time.Until(d)
+	}
+	return p.budget
+}
+
+// imapPollBudget is how long one poll may run (Tick).
+const imapPollBudget = 2 * time.Minute
 
 // imapMaxAttempts is how many times a poll starts reading one message
 // before setting it aside: a message that stopped kitpd that often would
@@ -677,7 +737,8 @@ func (p *IMAPPoller) archive(ctx context.Context, client imapClient, uid uint32)
 // unfileable) — so it is marked seen, and whether it is never fileable
 // (aside), so it is moved out of INBOX. A message that failed for a
 // passing reason returns false and the error, and is tried again next poll.
-func (p *IMAPPoller) fileFetched(ctx context.Context, intake channelIntake, m InboundMessage, size int64) (seen, aside bool, err error) {
+// path is the filing path it went down, or failed on (Filed.Outcome).
+func (p *IMAPPoller) fileFetched(ctx context.Context, intake channelIntake, m InboundMessage, size int64) (seen, aside bool, path string, err error) {
 	if m.ParseError != "" {
 		// Not mail: log it and mark it read (it stays in the mailbox), as
 		// POST and SMTP do. Filing it would make an empty thread, and every
@@ -689,11 +750,12 @@ func (p *IMAPPoller) fileFetched(ctx context.Context, intake channelIntake, m In
 		if err := p.logInbound(ctx, p.pool.P, intake.projectID, inboundMeta{transport: TransportIMAP}, "parse_error", map[string]any{
 			"error": m.ParseError, "uid": m.UID, "bytes": n,
 		}); err != nil {
-			return false, false, err
+			return false, false, "", err
 		}
-		return true, true, nil
+		return true, true, "", nil
 	}
-	if _, err := p.processOne(ctx, intake, m, inboundMeta{transport: TransportIMAP}); err != nil {
+	filed, err := p.processOne(ctx, intake, m, inboundMeta{transport: TransportIMAP})
+	if err != nil {
 		if permanentFilingError(err) {
 			// It can never be filed (ErrUnfileable): log it and mark it read
 			// like an unreadable message, rather than retry it forever and
@@ -705,11 +767,11 @@ func (p *IMAPPoller) fileFetched(ctx context.Context, intake channelIntake, m In
 					slog.Any("uid", m.UID),
 					slog.String("error", lerr.Error()))
 			}
-			return true, true, nil
+			return true, true, filed.Outcome, nil
 		}
-		return false, false, err
+		return false, false, filed.Outcome, err
 	}
-	return true, false, nil
+	return true, false, filed.Outcome, nil
 }
 
 // pruneInflight drops this channel's in-flight and file-failure records
@@ -737,8 +799,8 @@ func (p *IMAPPoller) pruneInflight(ctx context.Context, validity uint32) error {
 
 // imapSetAsideFailures and fileFailureSetAsideAfter are when a message that
 // keeps failing to file for a passing reason is set aside: after this many
-// failures over at least this long, while other mail of the account filed
-// (comm_imap_file_failure).
+// failures over at least this long, while fresh mail of the account filed
+// down the same path (comm_imap_file_failure), and once a last try fails.
 const imapSetAsideFailures = 3
 
 var fileFailureSetAsideAfter = 24 * time.Hour
@@ -810,22 +872,25 @@ func bookkeepingCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 }
 
-// noteFileFailure records a passing filing failure against the message; the
-// first one is logged in the Comm log (file_retry). A failure to record it
-// is logged: the message is retried on the next poll either way.
-func (p *IMAPPoller) noteFileFailure(ctx context.Context, projectID int64, validity uint32, m InboundMessage, ferr error) {
+// noteFileFailure records a passing filing failure against the message, with
+// the path it failed on; the first one is logged in the Comm log
+// (file_retry). A failure to record it is logged: the message is retried on
+// the next poll either way. ctx is a bookkeepingCtx.
+func (p *IMAPPoller) noteFileFailure(ctx context.Context, projectID int64, validity uint32, m InboundMessage, path string, ferr error) {
 	p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: filing a message failed; trying it again next poll",
-		slog.Int64("channel_id", p.channelID), slog.Any("uid", m.UID), slog.String("error", ferr.Error()))
-	bctx, cancel := bookkeepingCtx(ctx)
-	defer cancel()
+		slog.Int64("channel_id", p.channelID), slog.Any("uid", m.UID), slog.String("path", path), slog.String("error", ferr.Error()))
 	detail := fileRetryDetail(m, ferr)
-	row, err := namedRow(bctx, p.pool.P, `
-		INSERT INTO comm_imap_file_failure (channel_id, uid_validity, uid, detail)
-		VALUES (:channel, :validity, :uid, :detail)
+	row, err := namedRow(ctx, p.pool.P, `
+		INSERT INTO comm_imap_file_failure (channel_id, uid_validity, uid, path, detail)
+		VALUES (:channel, :validity, :uid, :path, :detail)
 		ON CONFLICT (channel_id, uid_validity, uid) DO UPDATE
-			SET failures = comm_imap_file_failure.failures + 1, last_failed_at = now(), detail = EXCLUDED.detail
+			SET failures = comm_imap_file_failure.failures + 1, last_failed_at = now(),
+			    path = EXCLUDED.path, detail = EXCLUDED.detail,
+			    -- Another path is another fault: it has to be its own
+			    -- again while that path files.
+			    others_filed = comm_imap_file_failure.others_filed AND comm_imap_file_failure.path = EXCLUDED.path
 		RETURNING failures
-	`, map[string]any{"channel": p.channelID, "validity": int64(validity), "uid": int64(m.UID), "detail": detail})
+	`, map[string]any{"channel": p.channelID, "validity": int64(validity), "uid": int64(m.UID), "path": path, "detail": detail})
 	var failures int
 	if err == nil {
 		err = row.Scan(&failures)
@@ -836,7 +901,7 @@ func (p *IMAPPoller) noteFileFailure(ctx context.Context, projectID int64, valid
 		return
 	}
 	if failures == 1 {
-		if err := p.logInbound(bctx, p.pool.P, projectID, inboundMeta{transport: TransportIMAP}, "file_retry", detail); err != nil {
+		if err := p.logInbound(ctx, p.pool.P, projectID, inboundMeta{transport: TransportIMAP}, "file_retry", detail); err != nil {
 			p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: logging a filing failure failed",
 				slog.Int64("channel_id", p.channelID), slog.Any("uid", m.UID), slog.String("error", err.Error()))
 		}
@@ -844,11 +909,10 @@ func (p *IMAPPoller) noteFileFailure(ctx context.Context, projectID int64, valid
 }
 
 // clearFileFailure forgets a message's failures once it filed or was set
-// aside. Left behind, the row is pruned within a week.
+// aside. Left behind, the row is pruned within a week. ctx is a
+// bookkeepingCtx.
 func (p *IMAPPoller) clearFileFailure(ctx context.Context, validity uint32, uid uint32) {
-	bctx, cancel := bookkeepingCtx(ctx)
-	defer cancel()
-	if err := namedExec(bctx, p.pool.P, `
+	if err := namedExec(ctx, p.pool.P, `
 		DELETE FROM comm_imap_file_failure WHERE channel_id = :channel AND uid_validity = :validity AND uid = :uid
 	`, map[string]any{"channel": p.channelID, "validity": int64(validity), "uid": int64(uid)}); err != nil {
 		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: clearing a filing failure failed",
@@ -857,37 +921,45 @@ func (p *IMAPPoller) clearFileFailure(ctx context.Context, validity uint32, uid 
 }
 
 // noteOthersFiled marks this channel's failing messages as failing while
-// other mail files: the failure is theirs, not the account's.
-func (p *IMAPPoller) noteOthersFiled(ctx context.Context, validity uint32) {
+// fresh mail down their path files: the failure is theirs, not the
+// account's, nor a fault of that path. A duplicate isn't such mail (it
+// stops at the dedupe); a failure before the thread match (path "") is on
+// every path.
+func (p *IMAPPoller) noteOthersFiled(ctx context.Context, validity uint32, paths map[string]bool) {
+	list := make([]string, 0, len(paths))
+	for path := range paths {
+		list = append(list, path)
+	}
 	bctx, cancel := bookkeepingCtx(ctx)
 	defer cancel()
 	if err := namedExec(bctx, p.pool.P, `
 		UPDATE comm_imap_file_failure SET others_filed = true
 		WHERE channel_id = :channel AND uid_validity = :validity AND NOT others_filed
-	`, map[string]any{"channel": p.channelID, "validity": int64(validity)}); err != nil {
+		  AND (path = '' OR path = ANY(:paths::text[]))
+	`, map[string]any{"channel": p.channelID, "validity": int64(validity), "paths": list}); err != nil {
 		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: noting other mail filed failed",
 			slog.Int64("channel_id", p.channelID), slog.String("error", err.Error()))
 	}
 }
 
-// setAsideUnfiled sets aside a message that kept failing to file: logged as
-// file_error with its last failure, marked read and moved to the set-aside
-// folder, its failure record cleared.
-func (p *IMAPPoller) setAsideUnfiled(ctx context.Context, client InboundClient, projectID int64, validity uint32, uid uint32, ff fileFailure) error {
-	detail := map[string]any{}
-	for k, v := range ff.detail {
-		detail[k] = v
-	}
-	detail["error"] = fmt.Sprintf("set aside: filing it failed %d times over more than %s (last: %v)",
-		ff.failures, fileFailureSetAsideAfter, ff.detail["error"])
-	if err := p.logInbound(ctx, p.pool.P, projectID, inboundMeta{transport: TransportIMAP}, "file_error", detail); err != nil {
-		return err
-	}
-	if err := client.MarkSeen(ctx, []uint32{uid}); err != nil {
+// setAsideUnfiled sets aside a message that kept failing to file and failed
+// its last try (ferr, its failures-th): marked read, logged as file_error,
+// moved to the set-aside folder, its failure record cleared. It is marked
+// read first, so a mark that fails logs nothing and the next poll tries
+// again. ctx is a bookkeepingCtx.
+func (p *IMAPPoller) setAsideUnfiled(ctx context.Context, client InboundClient, projectID int64, validity uint32, m InboundMessage, failures int, ferr error) error {
+	if err := client.MarkSeen(ctx, []uint32{m.UID}); err != nil {
 		return fmt.Errorf("imap mark seen: %w", err)
 	}
-	p.archive(ctx, client, uid)
-	p.clearFileFailure(ctx, validity, uid)
+	detail := fileRetryDetail(m, ferr)
+	detail["error"] = fmt.Sprintf("set aside: filing it failed %d times over more than %s (last: %v)",
+		failures, fileFailureSetAsideAfter, detail["error"])
+	if err := p.logInbound(ctx, p.pool.P, projectID, inboundMeta{transport: TransportIMAP}, "file_error", detail); err != nil {
+		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: logging a set-aside message failed",
+			slog.Int64("channel_id", p.channelID), slog.Any("uid", m.UID), slog.String("error", err.Error()))
+	}
+	p.archive(ctx, client, m.UID)
+	p.clearFileFailure(ctx, validity, m.UID)
 	return nil
 }
 
@@ -1030,11 +1102,11 @@ func (p *IMAPPoller) recordAuthFail(ctx context.Context, projectID int64, dialEr
 	return LogEvent(ctx, p.pool.P, projectID, p.channelID, "imap_auth_fail", map[string]any{"error": dialErr.Error()})
 }
 
-// recordPollOnly writes a comm_log kind=poll row with the number of
-// messages processed in this cycle. Always one row per RunOnce so
-// operators can see liveness on the channel.
-func (p *IMAPPoller) recordPollOnly(ctx context.Context, projectID int64, count int) error {
-	if err := LogEvent(ctx, p.pool.P, projectID, p.channelID, "poll", map[string]any{"message_count": count}); err != nil {
+// recordPoll writes a comm_log kind=poll row with the number of messages
+// listed in this cycle and how many of them failed to file. Always one row
+// per RunOnce so operators can see liveness on the channel.
+func (p *IMAPPoller) recordPoll(ctx context.Context, projectID int64, count, failed int) error {
+	if err := LogEvent(ctx, p.pool.P, projectID, p.channelID, "poll", map[string]any{"message_count": count, "failed": failed}); err != nil {
 		return err
 	}
 	if p.pool != nil {
@@ -1050,7 +1122,15 @@ func (p *IMAPPoller) recordPollOnly(ctx context.Context, projectID int64, count 
 // dedupe row (comm_inbound_seen) rolls back with it, so a failed message can
 // be retried. Every transport (IMAP, POST, SMTP) comes through here; see
 // docs/MAIL_INTAKE_AND_CALENDARS.md §3–4.
-func (p *filer) processOne(ctx context.Context, intake channelIntake, m InboundMessage, meta inboundMeta) (Filed, error) {
+func (p *filer) processOne(ctx context.Context, intake channelIntake, m InboundMessage, meta inboundMeta) (filed Filed, err error) {
+	// path is the branch the message is on; a failure names it
+	// (Filed.Outcome).
+	var path string
+	defer func() {
+		if err != nil {
+			filed = Filed{Outcome: path}
+		}
+	}()
 	// Every transport's message is made storable here too, whoever parsed
 	// it (storableInbound; a no-op on what ParseInboundMessage returned).
 	m.Attachments = append([]InboundAttachment(nil), m.Attachments...)
@@ -1120,9 +1200,9 @@ func (p *filer) processOne(ctx context.Context, intake channelIntake, m InboundM
 		}
 	}
 
-	var filed Filed
 	switch {
 	case matchedCommID != 0:
+		path = OutcomeReply
 		p.logger.LogAttrs(ctx, slog.LevelDebug, "inbound message → reply on existing comm",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("comm_id", matchedCommID),
@@ -1137,7 +1217,7 @@ func (p *filer) processOne(ctx context.Context, intake channelIntake, m InboundM
 		}
 		replyID, err := p.appendReceivedReply(ctx, tx, snap, matchedCommID, m, intake, meta, actorID)
 		if err != nil {
-			return Filed{}, p.logParseError(ctx, projectID, m, meta, err)
+			return Filed{}, fmt.Errorf("file reply: %w", err)
 		}
 		// Sent on to the thread's other people when the account says so. A
 		// new thread has nobody else on it yet, so only a reply can be.
@@ -1146,6 +1226,7 @@ func (p *filer) processOne(ctx context.Context, intake channelIntake, m InboundM
 		}
 		filed = Filed{Outcome: OutcomeReply, CardID: matchedCommID}
 	case IsNotificationReply(m):
+		path = OutcomeNotificationReply
 		// A reply (or auto-reply / bounce) to a notification digest. The
 		// notification mailbox doesn't read replies — log and drop.
 		p.logger.LogAttrs(ctx, slog.LevelInfo, "inbound message dropped: reply to a notification email",
@@ -1163,6 +1244,7 @@ func (p *filer) processOne(ctx context.Context, intake channelIntake, m InboundM
 		}
 		filed = Filed{Outcome: OutcomeNotificationReply}
 	case mode == IntakeTask:
+		path = OutcomeTask
 		p.logger.LogAttrs(ctx, slog.LevelDebug, "inbound message → new task",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("project_id", projectID),
@@ -1171,10 +1253,11 @@ func (p *filer) processOne(ctx context.Context, intake channelIntake, m InboundM
 			slog.String("subject", m.Subject))
 		commID, err := p.createTaskAndComm(ctx, tx, snap, intake, meta, m, actorID)
 		if err != nil {
-			return Filed{}, p.logParseError(ctx, projectID, m, meta, err)
+			return Filed{}, fmt.Errorf("file new task: %w", err)
 		}
 		filed = Filed{Outcome: OutcomeTask, CardID: commID}
 	case mode == IntakeThread:
+		path = OutcomeThread
 		p.logger.LogAttrs(ctx, slog.LevelDebug, "inbound message → new thread",
 			slog.Int64("channel_id", p.channelID),
 			slog.Int64("project_id", projectID),
@@ -1182,10 +1265,11 @@ func (p *filer) processOne(ctx context.Context, intake channelIntake, m InboundM
 			slog.String("subject", m.Subject))
 		commID, err := p.createComm(ctx, tx, snap, projectID, m, intake, meta, actorID)
 		if err != nil {
-			return Filed{}, p.logParseError(ctx, projectID, m, meta, err)
+			return Filed{}, fmt.Errorf("file new thread: %w", err)
 		}
 		filed = Filed{Outcome: OutcomeThread, CardID: commID}
 	default:
+		path = OutcomeIgnored
 		// Discard: no thread match and the channel ignores new mail. This
 		// is the usual "inbound mail isn't becoming tasks" cause — surface
 		// it at WARN (not just the comm_log row below) so it's visible in
@@ -1229,26 +1313,6 @@ func (p *filer) processOne(ctx context.Context, intake channelIntake, m InboundM
 		p.pool.NoteWrite()
 	}
 	return filed, nil
-}
-
-// logParseError writes a comm_log kind=parse_error row outside the
-// failed message's tx, then returns the original error so the loop
-// can surface it. The comm_log insert is best-effort: a failure here
-// can't shadow the original parse error (the caller already knows
-// the message is unusable), but we LOG the secondary failure
-// instead of silently dropping it so an operator can spot
-// "comm_log table broken" if it happens at scale.
-func (p *filer) logParseError(ctx context.Context, projectID int64, m InboundMessage, meta inboundMeta, origErr error) error {
-	detail := map[string]any{
-		"message_id": m.MessageID,
-		"subject":    m.Subject,
-		"error":      origErr.Error(),
-	}
-	if err := p.logInbound(ctx, p.pool.P, projectID, meta, "parse_error", detail); err != nil {
-		slog.Default().LogAttrs(ctx, slog.LevelWarn, "imap parse_error log insert",
-			slog.String("err", err.Error()))
-	}
-	return origErr
 }
 
 // findCommByThreadID returns the comm card id whose thread_id matches
@@ -2518,10 +2582,11 @@ func (r *realIMAPClient) arm(ctx context.Context) {
 	}
 }
 
-// ListUnseen returns INBOX's unseen messages, oldest first and at most
-// imapFetchBatch of them, with each one's RFC822.SIZE — no bodies, so a
-// poll holds nothing of a message until it is fetched to be filed.
-func (r *realIMAPClient) ListUnseen(ctx context.Context) ([]UnseenMessage, error) {
+// ListUnseen returns INBOX's unseen messages, oldest first with the ones
+// last names after the rest, at most imapFetchBatch of them, with each
+// one's RFC822.SIZE — no bodies, so a poll holds nothing of a message until
+// it is fetched to be filed.
+func (r *realIMAPClient) ListUnseen(ctx context.Context, last func(uid uint32) bool) ([]UnseenMessage, error) {
 	r.arm(ctx)
 	criteria := imap.NewSearchCriteria()
 	criteria.WithoutFlags = []string{imap.SeenFlag}
@@ -2532,10 +2597,7 @@ func (r *realIMAPClient) ListUnseen(ctx context.Context) ([]UnseenMessage, error
 	if len(uids) == 0 {
 		return nil, nil
 	}
-	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
-	if len(uids) > imapFetchBatch {
-		uids = uids[:imapFetchBatch]
-	}
+	uids = unseenWindow(uids, last)
 	seqset := new(imap.SeqSet)
 	seqset.AddNum(uids...)
 	sizes := make(map[uint32]uint32, len(uids))
@@ -2551,6 +2613,23 @@ func (r *realIMAPClient) ListUnseen(ctx context.Context) ([]UnseenMessage, error
 		out[i] = UnseenMessage{UID: uid, Size: sizes[uid]}
 	}
 	return out, nil
+}
+
+// unseenWindow orders unseen UIDs oldest first, the ones last names after
+// the rest, and keeps the first imapFetchBatch.
+func unseenWindow(uids []uint32, last func(uid uint32) bool) []uint32 {
+	sort.Slice(uids, func(i, j int) bool {
+		if last != nil {
+			if li, lj := last(uids[i]), last(uids[j]); li != lj {
+				return lj
+			}
+		}
+		return uids[i] < uids[j]
+	})
+	if len(uids) > imapFetchBatch {
+		uids = uids[:imapFetchBatch]
+	}
+	return uids
 }
 
 // Fetch reads one message whole and parses it. BODY.PEEK[] leaves it

@@ -70,6 +70,9 @@ export interface ReplyRow {
   subject: string;
   bodyText: string;
   deliveryStatus: string;
+  /** For a sent message, who the outgoing server refused while it took the
+   *  message for the others (comma-separated); '' when nobody. */
+  refused: string;
   createdAt: string;
   /** The message's files. A file that came by email is the thread's
    *  (onThread) until someone adds it to the task; the message keeps it. */
@@ -98,6 +101,8 @@ export interface MessageRelay {
   to: string;
   /** pending / sent / bounced / failed. */
   deliveryStatus: string;
+  /** Who the outgoing server refused, comma-separated; '' when nobody. */
+  refused: string;
   /** Files too large to send on with it. */
   attachmentsLeftOff: number;
 }
@@ -232,6 +237,7 @@ function decodeReply(j: Record<string, unknown>): ReplyRow {
     subject: asStr(j['subject']),
     bodyText: asStr(j['body_text']),
     deliveryStatus: asStr(j['delivery_status']),
+    refused: asStr(j['refused']),
     createdAt: asStr(j['created_at']),
     attachments: asArray(j['attachments']).map((a) => decodeMessageFile(asObj(a))),
     attachmentsLeftOff: asCount(j['attachments_left_off']),
@@ -265,6 +271,7 @@ function decodeRelay(v: unknown): MessageRelay | null {
     id: asId(j['id']),
     to: asStr(j['to']),
     deliveryStatus: asStr(j['delivery_status']),
+    refused: asStr(j['refused']),
     attachmentsLeftOff: asCount(j['attachments_left_off']),
   };
 }
