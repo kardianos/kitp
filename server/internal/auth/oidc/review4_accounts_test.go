@@ -19,6 +19,8 @@ import (
 type r4OIDC struct {
 	pool   *pgxpool.Pool
 	signIn func(sub, email string, verified bool) (int64, error)
+	// signInWith signs in with sub plus exactly the extra claims given.
+	signInWith func(sub string, extra jwt.MapClaims) (int64, error)
 }
 
 func newR4OIDC(t *testing.T, schema string) r4OIDC {
@@ -38,14 +40,21 @@ func newR4OIDC(t *testing.T, schema string) r4OIDC {
 		}
 	}
 	now := time.Now()
-	return r4OIDC{pool: pool, signIn: func(sub, email string, verified bool) (int64, error) {
+	signInWith := func(sub string, extra jwt.MapClaims) (int64, error) {
 		claims := jwt.MapClaims{"iss": op.server.URL, "aud": "kitp-web", "sub": sub, "name": sub, "exp": now.Add(time.Hour).Unix()}
-		if email != "" {
-			claims["email"] = email
-			claims["email_verified"] = verified
+		for k, v := range extra {
+			claims[k] = v
 		}
 		uid, _, err := v.Resolve(ctx, op.signToken(t, claims))
 		return uid, err
+	}
+	return r4OIDC{pool: pool, signInWith: signInWith, signIn: func(sub, email string, verified bool) (int64, error) {
+		extra := jwt.MapClaims{}
+		if email != "" {
+			extra["email"] = email
+			extra["email_verified"] = verified
+		}
+		return signInWith(sub, extra)
 	}}
 }
 

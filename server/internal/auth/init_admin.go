@@ -50,7 +50,7 @@ func BootstrapInitAdmin(ctx context.Context, pool *pgxpool.Pool, email string) e
 
 	// Cheap precondition check outside the tx: if an admin already
 	// exists, skip without taking a row lock.
-	if hasAdmin, err := hasNonSystemAdmin(ctx, pool); err != nil {
+	if hasAdmin, err := hasNonSystemAdmin(ctx, pool, email); err != nil {
 		return fmt.Errorf("bootstrap init-admin: check existing: %w", err)
 	} else if hasAdmin {
 		return nil
@@ -66,7 +66,7 @@ func BootstrapInitAdmin(ctx context.Context, pool *pgxpool.Pool, email string) e
 	// elevated someone between the precondition check above and now.
 	// Two-step (read → write) under READ COMMITTED would otherwise
 	// race; the re-check inside the tx is cheap.
-	if hasAdmin, err := hasNonSystemAdminTx(ctx, tx); err != nil {
+	if hasAdmin, err := hasNonSystemAdminTx(ctx, tx, email); err != nil {
 		return fmt.Errorf("bootstrap init-admin: recheck: %w", err)
 	} else if hasAdmin {
 		return nil
@@ -99,7 +99,9 @@ func BootstrapInitAdmin(ctx context.Context, pool *pgxpool.Pool, email string) e
 		WHERE lower(email) = :email AND id <> :system
 		  AND NOT is_agent AND parent_user_id IS NULL
 		  AND login_revoked_at IS NULL AND deleted_at IS NULL
-		ORDER BY id LIMIT 1`,
+		-- The login that has signed in first: a row recovery pre-created
+		-- earlier, never reached, loses to the person's own (round 5 #6).
+		ORDER BY oidc_sub IS NULL, id LIMIT 1`,
 		map[string]any{"email": email, "system": SystemUserID}, &userID); err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("bootstrap init-admin: lookup email: %w", err)
@@ -168,33 +170,41 @@ func BootstrapInitAdmin(ctx context.Context, pool *pgxpool.Pool, email string) e
 // liveWorkspaceAdmin is what makes an admin row count for recovery: held
 // workspace-wide by a live login — not a project-scoped admin, an agent, or
 // a revoked or retired account, none of which can run the workspace
-// (review 2026-11-03 round 4 #5).
+// (review 2026-11-03 round 4 #5). A row for the recovery email itself that
+// nobody has signed in to (no oidc_sub: recovery pre-created it) doesn't
+// count either: with an IdP whose email kitp doesn't trust the sign-in
+// can't attach to it, and counting it stopped recovery for good (round 5
+// #6). Recovery runs again and finds the person's own login once it holds
+// the email (it is the one that has signed in), or that same row — so it
+// adds nothing. A never-signed-in admin with another email still counts:
+// a changed KITP_INIT_ADMIN_EMAIL doesn't add a second admin.
 const liveWorkspaceAdmin = `
 		  AND ur.scope_card_id IS NULL
-		  AND NOT ua.is_agent AND ua.login_revoked_at IS NULL AND ua.deleted_at IS NULL`
+		  AND NOT ua.is_agent AND ua.login_revoked_at IS NULL AND ua.deleted_at IS NULL
+		  AND (ua.oidc_sub IS NOT NULL OR lower(COALESCE(ua.email, '')) <> :email)`
 
-func hasNonSystemAdmin(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
+func hasNonSystemAdmin(ctx context.Context, pool *pgxpool.Pool, email string) (bool, error) {
 	var n int
 	err := scanNamed(ctx, pool, `
 		SELECT count(*) FROM user_role ur
 		JOIN role r ON r.id = ur.role_id
 		JOIN user_account ua ON ua.id = ur.user_id
 		WHERE r.name = 'admin' AND ur.user_id <> :system`+liveWorkspaceAdmin+`
-	`, map[string]any{"system": SystemUserID}, &n)
+	`, map[string]any{"system": SystemUserID, "email": email}, &n)
 	if err != nil {
 		return false, err
 	}
 	return n > 0, nil
 }
 
-func hasNonSystemAdminTx(ctx context.Context, tx pgx.Tx) (bool, error) {
+func hasNonSystemAdminTx(ctx context.Context, tx pgx.Tx, email string) (bool, error) {
 	var n int
 	err := scanNamed(ctx, tx, `
 		SELECT count(*) FROM user_role ur
 		JOIN role r ON r.id = ur.role_id
 		JOIN user_account ua ON ua.id = ur.user_id
 		WHERE r.name = 'admin' AND ur.user_id <> :system`+liveWorkspaceAdmin+`
-	`, map[string]any{"system": SystemUserID}, &n)
+	`, map[string]any{"system": SystemUserID, "email": email}, &n)
 	if err != nil {
 		return false, err
 	}

@@ -305,6 +305,9 @@ func runHTTP() error {
 	if env == "production" && mode == auth.ModeOff {
 		return errors.New("refusing to start: ENV=production with AUTH_MODE=off (see N-SEC-5)")
 	}
+	if err := usertoken.CheckMaxDays(int64(envInt("KITP_TOKEN_MAX_DAYS", usertoken.DefaultMaxDays))); err != nil {
+		return fmt.Errorf("refusing to start: %w", err)
+	}
 	if env == "production" && mode == auth.ModeOIDC && os.Getenv("OIDC_ISSUER") == "" {
 		return errors.New("refusing to start: ENV=production with AUTH_MODE=oidc but OIDC_ISSUER is empty")
 	}
@@ -671,6 +674,14 @@ func runHTTP() error {
 			},
 		},
 		{
+			Name:        "oidc.state_reap",
+			Description: "Delete expired sign-in state rows (abandoned or unfollowed sign-ins).",
+			Interval:    10 * time.Minute,
+			Run: func(ctx context.Context, _ *pgxpool.Pool, _ struct{}) error {
+				return oidc.ReapState(ctx, pgPool)
+			},
+		},
+		{
 			Name:        "cas.reaper",
 			Description: "Reap abandoned CAS upload sessions and orphaned chunks.",
 			OnStartup:   true, // catch abandoned uploads from a previous boot
@@ -768,6 +779,7 @@ func runHTTP() error {
 			Pool:           pgPool,
 			SessionManager: sessionMgr,
 			InsecureCookie: insecureCookie,
+			Trusted:        trustedProxies,
 		}
 		if err := bffCfg.Validate(); err != nil {
 			return fmt.Errorf("oidc/bff: %w", err)
@@ -937,6 +949,9 @@ func runMCP() error {
 
 	if env == "production" && mode == auth.ModeOff {
 		return errors.New("refusing to start: ENV=production with AUTH_MODE=off")
+	}
+	if err := usertoken.CheckMaxDays(int64(envInt("KITP_TOKEN_MAX_DAYS", usertoken.DefaultMaxDays))); err != nil {
+		return fmt.Errorf("refusing to start: %w", err)
 	}
 
 	log.SetOutput(os.Stderr)

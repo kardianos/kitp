@@ -59,6 +59,7 @@ import (
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth/session"
 	"github.com/kitp/kitp/server/internal/named"
+	"github.com/kitp/kitp/server/internal/netx"
 )
 
 // stateCookiePath scopes the state cookie to the callback, the only
@@ -89,6 +90,54 @@ type BFFConfig struct {
 	SessionManager *session.Manager
 	InsecureCookie bool
 	StateTTL       time.Duration // default 10 minutes
+	// Trusted names the proxies whose X-Forwarded-For says who is
+	// starting a sign-in, for the per-address limit on starts. nil: the
+	// TCP peer.
+	Trusted *netx.Trusted
+}
+
+// Sign-in starts are limited (review 2026-11-03 round 5 #7): each writes
+// an oidc_state row, which lives until the reaper (ReapState) removes it
+// after it expires, so an unauthenticated loop on the start URL filled the
+// table. 20 a minute per address (bursts of 40) is far more than a person
+// signing in needs; 1,200 a minute across all addresses bounds the table
+// at about 24,000 live rows (StateTTL plus the reap interval).
+const (
+	startsPerAddressPerMinute = 20
+	startsPerAddressBurst     = 40
+	startsPerMinute           = 1200
+	startsBurst               = 2400
+)
+
+// startGate holds the sign-in start limits.
+type startGate struct {
+	perAddress, overall *netx.Limiter
+	trusted             *netx.Trusted
+}
+
+func newStartGate(trusted *netx.Trusted) *startGate {
+	return &startGate{
+		perAddress: netx.NewLimiter(startsPerAddressPerMinute, startsPerAddressBurst, 10000),
+		overall:    netx.NewLimiter(startsPerMinute, startsBurst, 1),
+		trusted:    trusted,
+	}
+}
+
+// allow takes one start from the caller's address and from the overall
+// budget; false when either is spent.
+func (g *startGate) allow(r *http.Request) bool {
+	return g.perAddress.Allow(netx.SourceKey(netx.ClientIP(r, g.trusted)), 1) && g.overall.Allow("*", 1)
+}
+
+// ReapState deletes expired sign-in state rows (a sign-in abandoned at the
+// identity provider, or a start nobody followed). The callback deletes the
+// row it uses; nothing else removed the rest (round 5 #7). Run on the job
+// scheduler (oidc.state_reap).
+func ReapState(ctx context.Context, pool *pgxpool.Pool) error {
+	if _, err := pool.Exec(ctx, `DELETE FROM oidc_state WHERE expires_at < now()`); err != nil {
+		return fmt.Errorf("oidc: reap state: %w", err)
+	}
+	return nil
 }
 
 // Validate returns an error when [cfg] is missing required fields.
@@ -129,7 +178,13 @@ func Mount(rt *api.Router, cfg BFFConfig) {
 	// would only kick in for an unexpected panic/bug. We surface
 	// failures via redirectLogin instead, matching the existing
 	// browser-driven contract.
+	gate := newStartGate(cfg.Trusted)
 	rt.Public("GET /api/v1/auth/oidc/start", func(_ context.Context, w http.ResponseWriter, r *http.Request) error {
+		if !gate.allow(r) {
+			w.Header().Set("Retry-After", "60")
+			redirectLoginStatus(w, r, http.StatusTooManyRequests, "too many sign-in attempts; try again in a minute")
+			return nil
+		}
 		handleStart(w, r, cfg)
 		return nil
 	})
@@ -464,9 +519,15 @@ func peekSub(idToken string) (string, error) {
 // Status is 401 (the visitor is unauthenticated and the attempt failed).
 // reason is HTML-escaped — it can carry OP-supplied error text, so it
 // must never be interpolated raw.
-func redirectLogin(w http.ResponseWriter, _ *http.Request, reason string) {
+func redirectLogin(w http.ResponseWriter, r *http.Request, reason string) {
+	redirectLoginStatus(w, r, http.StatusUnauthorized, reason)
+}
+
+// redirectLoginStatus is redirectLogin with another status (429 for a
+// throttled start).
+func redirectLoginStatus(w http.ResponseWriter, _ *http.Request, status int, reason string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusUnauthorized)
+	w.WriteHeader(status)
 	const tmpl = `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Sign-in failed</title></head>

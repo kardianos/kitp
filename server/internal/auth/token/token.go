@@ -210,12 +210,18 @@ type ListRow struct {
 // List returns every token bound to userID. Used by `user_token.list`
 // — the handler restricts access to the target's parent / an admin.
 func (m *Manager) List(ctx context.Context, userID int64) ([]ListRow, error) {
-	rows, err := m.pool.Query(ctx, `
+	b := named.New()
+	b.Set("user", userID)
+	sql, args, err := b.Compile(`
 		SELECT label, created_at, last_used_at, expires_at, revoked_at
 		FROM user_token
-		WHERE user_id = $1
+		WHERE user_id = :user
 		ORDER BY created_at DESC
-	`, userID)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("token: list: compile: %w", err)
+	}
+	rows, err := m.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("token: list: %w", err)
 	}
@@ -224,7 +230,7 @@ func (m *Manager) List(ctx context.Context, userID int64) ([]ListRow, error) {
 	for rows.Next() {
 		var r ListRow
 		if err := rows.Scan(&r.Label, &r.CreatedAt, &r.LastUsedAt, &r.ExpiresAt, &r.RevokedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("token: list: scan: %w", err)
 		}
 		out = append(out, r)
 	}

@@ -130,7 +130,46 @@ func FromEnv(lookup func(string) (string, bool)) *Config {
 		}
 	}
 	cfg.TrustUnverifiedEmail = env("KITP_OIDC_TRUST_UNVERIFIED_EMAIL") == "1"
+	// An ID token's aud names the client it was issued to (OIDC Core
+	// 3.1.3.7): with no OIDC_AUDIENCE, check it against our client id
+	// (review 2026-11-03 round 5).
+	if cfg.Audience == "" {
+		cfg.Audience = cfg.ClientID
+	}
 	return cfg
+}
+
+// emailVerification reads what the IdP says of the email claim: verified
+// (email_verified true, or — with no email_verified — Entra ID's xms_edov,
+// "the email's domain owner is verified", an optional ID-token claim), or
+// refused (email_verified present and false). An IdP that says neither —
+// Entra ID unless xms_edov is configured — leaves the email untrusted but
+// doesn't take it away from a login that holds it (review 2026-11-03
+// round 5 #6). Some IdPs send the booleans as strings.
+func emailVerification(claims jwt.MapClaims) (verified, refused bool) {
+	if v, ok := claimBool(claims["email_verified"]); ok {
+		return v, !v
+	}
+	if v, ok := claimBool(claims["xms_edov"]); ok && v {
+		return true, false
+	}
+	return false, false
+}
+
+// claimBool reads a boolean claim, sent as a JSON boolean or a string.
+func claimBool(v any) (val, ok bool) {
+	switch b := v.(type) {
+	case bool:
+		return b, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(b)) {
+		case "true", "1":
+			return true, true
+		case "false", "0":
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // discoveryDoc is the subset of openid-configuration we care about.
@@ -574,7 +613,7 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	// (consumer Google, etc.) and the fallback would attach their
 	// sub to the admin's user_account row. See
 	// DI-4 in docs/DESIGN_INVARIANTS.md.
-	emailVerified, _ := claims["email_verified"].(bool)
+	emailVerified, emailRefused := emailVerification(claims)
 	emailTrusted := emailVerified || v.cfg.TrustUnverifiedEmail
 	// A login keeps only an email the IdP vouches for: user_account.email
 	// is what the init-admin recovery and the pre-created attach match on,
@@ -836,12 +875,15 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		// IdP claim here would clobber a name the user changed in-app on every
 		// login. (displayName is still computed above — it feeds the
 		// fresh-insert + pre-created-attach branches, just not this one.)
-		// An unverified claim of the email the login holds says that email
-		// came from an unverified claim before verified-only storage: it
-		// goes, so recovery and the pre-created attach can't match it
-		// (review 2026-11-03 round 4 #5).
+		// A claim the IdP marks unverified (email_verified: false) of the
+		// email the login holds says that email came from an unverified
+		// claim before verified-only storage: it goes, so recovery and the
+		// pre-created attach can't match it (review 2026-11-03 round 4 #5).
+		// An IdP that says nothing either way (Entra ID by default) leaves
+		// it: clearing on silence emptied every login's email there, and
+		// KITP_INIT_ADMIN_EMAIL recovery with it (round 5 #6).
 		untrusted := ""
-		if !emailTrusted {
+		if !emailTrusted && emailRefused {
 			untrusted = email
 		}
 		if err := txExec(ctx, tx, `

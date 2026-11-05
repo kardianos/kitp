@@ -179,7 +179,7 @@ client, or set it for a confidential client (recommended — see
 | OIDC_CLIENT_SECRET | (unset) | OAuth client secret. OPTIONAL — PKCE is always used; omit for a public (PKCE-only) client, set for a confidential client (recommended for this server-side BFF). |
 | OIDC_REDIRECT_URI | (unset) | Login callback URI. |
 | OIDC_POST_LOGOUT_REDIRECT_URI | (origin of OIDC_REDIRECT_URI) | Where the OP returns the browser after unified (RP-initiated) logout. Must be registered with the OP. |
-| OIDC_AUDIENCE | (unset) | Expected token audience, if enforced. |
+| OIDC_AUDIENCE | (OIDC_CLIENT_ID) | Expected ID-token audience. Unset, the `aud` claim is checked against OIDC_CLIENT_ID. |
 | OIDC_SCOPES | openid profile email | Requested scopes. |
 | OIDC_ROLE_CLAIM | groups | Token claim whose values map to roles via the role_mapping table (see Authentication & authorization). |
 | OIDC_DEFAULT_ROLE | worker | Role granted when no claim value maps; set it empty (or to `none`) to grant nothing. |
@@ -345,7 +345,13 @@ just-in-time:
 - **Just-in-time provisioning.** First sign-in for an OIDC subject creates a
   `user_account` plus a linked `person` card. If an admin pre-created an
   account with the same **verified** email (and no subject bound yet), the
-  subject attaches to that row instead. Set
+  subject attaches to that row instead. An email is verified when the ID
+  token says `email_verified: true`, or — with no `email_verified` — when
+  Entra ID's optional `xms_edov` claim is true (add it under the app
+  registration's Token configuration → optional claims → ID). A login
+  stores only a verified email, and `KITP_INIT_ADMIN_EMAIL` recovery
+  matches logins by it; an email the OP marks `email_verified: false` is
+  cleared from the login that holds it. Set
   `KITP_OIDC_TRUST_UNVERIFIED_EMAIL=1` only for an OP that verifies emails
   out-of-band.
 - **Role mapping.** Each value of the `OIDC_ROLE_CLAIM` claim (default

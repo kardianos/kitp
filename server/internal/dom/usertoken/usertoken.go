@@ -25,6 +25,7 @@ import (
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/named"
+	"github.com/kitp/kitp/server/internal/isodate"
 	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
 )
@@ -50,8 +51,23 @@ func init() { maxDays.Store(DefaultMaxDays) }
 // DefaultMaxDays is the token lifetime cap when KITP_TOKEN_MAX_DAYS is unset.
 const DefaultMaxDays = 365
 
-// SetMaxDays sets the cap; n <= 0 lifts it.
-func SetMaxDays(n int64) { maxDays.Store(max(n, 0)) }
+// MaxMaxDays is the largest cap KITP_TOKEN_MAX_DAYS may set (100 years);
+// kitpd refuses to start with a larger or negative one (CheckMaxDays).
+const MaxMaxDays = 36500
+
+// CheckMaxDays says whether n is a cap KITP_TOKEN_MAX_DAYS may set: 0 (no
+// cap) to MaxMaxDays. A negative value lifted the cap silently and a huge
+// one overflowed the duration (review 2026-11-03 round 5).
+func CheckMaxDays(n int64) error {
+	if n < 0 || n > MaxMaxDays {
+		return fmt.Errorf("KITP_TOKEN_MAX_DAYS=%d: want 0 (no cap) to %d days", n, MaxMaxDays)
+	}
+	return nil
+}
+
+// SetMaxDays sets the cap; 0 lifts it. Out-of-range values are clamped
+// (kitpd checks them first with CheckMaxDays).
+func SetMaxDays(n int64) { maxDays.Store(min(max(n, 0), MaxMaxDays)) }
 
 // preRunCreate applies the lifetime cap to each new token.
 func preRunCreate(_ context.Context, _ store.Querier, ins []any) ([]any, error) {
@@ -67,14 +83,22 @@ func preRunCreate(_ context.Context, _ store.Querier, ins []any) ([]any, error) 
 			ins[i] = in
 			continue
 		}
-		at, err := time.Parse(time.RFC3339, strings.TrimSpace(in.ExpiresAt))
+		// Parsed as the SQL function checks it (iso_timestamp_ok, which
+		// takes a lower-case t and z): Go's RFC3339 layout refused those,
+		// and a value this couldn't read used to skip the cap while the
+		// SQL stored it (review 2026-11-03 round 5 #10). What doesn't
+		// parse is refused here; what does is passed on in one form.
+		at, err := isodate.ParseTimestamp(strings.TrimSpace(in.ExpiresAt))
 		if err != nil {
-			continue // the SQL function refuses it with the canonical message
+			return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
+				Message: "user_token.create: expires_at must be an RFC 3339 timestamp (e.g. 2026-12-31T00:00:00Z)"}
 		}
 		if at.After(limit) {
 			return nil, &reg.HandlerError{InputIndex: i, Code: "validation",
 				Message: fmt.Sprintf("user_token.create: a token can last at most %d days", days)}
 		}
+		in.ExpiresAt = at.UTC().Format(time.RFC3339Nano)
+		ins[i] = in
 	}
 	return ins, nil
 }

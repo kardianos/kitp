@@ -41,7 +41,7 @@ name, columns
 session_user_id, "user_id"
 session_last_seen_at, "last_seen_at"
 
-## table oidc_state | doc="Short-lived PKCE staging for the server-managed OIDC redirect dance. /auth/oidc/start writes a row keyed by `state` (with the PKCE verifier and the nonce sent to the OP) and sets a cookie carrying the state; /auth/oidc/callback requires that cookie, reads + deletes the row, and checks the id_token's nonce. Rows past `expires_at` are reaped by a periodic sweep."
+## table oidc_state | doc="Short-lived PKCE staging for the server-managed OIDC redirect dance. /auth/oidc/start writes a row keyed by `state` (with the PKCE verifier and the nonce sent to the OP) and sets a cookie carrying the state; /auth/oidc/callback requires that cookie, reads + deletes the row, and checks the id_token's nonce. Rows past `expires_at` are deleted by the oidc.state_reap job (every 10 minutes); starts are limited per address and overall (oidc.Mount)."
 
 ### columns
 name, type, pk, nullable, default
