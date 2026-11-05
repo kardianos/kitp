@@ -88,6 +88,18 @@ BEGIN
                            _agent_user_id, actor_id), NULL::jsonb;
                 CONTINUE;
             END IF;
+            -- An agent routing a card to itself doesn't take it from
+            -- another of its owner's agents: the row is keyed on the owner,
+            -- so the overwrite (then clear) undid the owner's choice
+            -- (review 2026-11-03 round 5 #18).
+            IF _route_user_id <> actor_id AND EXISTS (
+                SELECT 1 FROM user_card_agent uca
+                WHERE uca.user_id = _route_user_id AND uca.card_id = _card_id
+                  AND uca.agent_user_id <> _agent_user_id) THEN
+                RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                    'user_card_agent.set: your owner routed this card to another agent'::text, NULL::jsonb;
+                CONTINUE;
+            END IF;
             INSERT INTO user_card_agent (user_id, card_id, agent_user_id)
             VALUES (_route_user_id, _card_id, _agent_user_id)
             ON CONFLICT (user_id, card_id) DO UPDATE

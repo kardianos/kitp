@@ -1458,6 +1458,27 @@ FROM confirm
 GROUP BY comm_id
 ON CONFLICT (card_id, attribute_def_id) DO NOTHING;`,
 	},
+	{
+		// A shared card someone moved under another person's private card
+		// before card.move refused it (review 2026-11-03 round 5 #16) stayed
+		// shared: every workspace role holder saw it while writes treated it
+		// as the owner's. It becomes private to its nearest private
+		// ancestor's person, as a card inserted there is (card.insert). The
+		// walk goes down from the private cards, which are few; a no-op on a
+		// database without such cards.
+		id: "0039_private_under_private",
+		sql: `
+WITH RECURSIVE down(id, owner, depth) AS (
+  SELECT c.id, c.private_to, 0 FROM card c WHERE c.private_to IS NOT NULL
+  UNION ALL
+  SELECT ch.id, COALESCE(ch.private_to, d.owner), d.depth + 1
+  FROM card ch JOIN down d ON ch.parent_card_id = d.id
+  WHERE d.depth < 16
+)
+UPDATE card c SET private_to = d.owner
+FROM down d
+WHERE d.id = c.id AND c.private_to IS NULL;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

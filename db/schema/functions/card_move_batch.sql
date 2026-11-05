@@ -42,6 +42,7 @@ DECLARE
     _ref_attr text;
     _ref_vid bigint;
     _ref_vproj bigint;
+    _old_project bigint;
 BEGIN
     FOR _idx, _card_id, _new_parent IN
         SELECT (r.ord - 1)::int,
@@ -113,6 +114,16 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- 2c''. A personal screen has no parent (PERSONAL_SCREENS P7): moved
+        --      under a project it left my_screen.* and the cap's count
+        --      (review 2026-11-03 round 5 #11).
+        IF EXISTS (SELECT 1 FROM card c JOIN card_type ct ON ct.id = c.card_type_id
+                   WHERE c.id = _card_id AND ct.name = 'screen' AND c.private_to IS NOT NULL) THEN
+            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
+                'card.move: a personal screen stays on its own, under no project'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 2d. Nesting cap (review A26): the card and everything under it
         --     must stay within 14 levels, so every capped parent walk
         --     (depth < 16) reaches the project.
@@ -165,6 +176,65 @@ BEGIN
                     _ref_attr, _ref_vid, _ref_vproj, _card_id, COALESCE(_new_project::text, '0')),
                 NULL::jsonb;
             CONTINUE;
+        END IF;
+
+        -- 3b'. Out of its project, a card (or one under it) must not be one
+        --      its old project still uses: a state a flow names — its
+        --      starting state, or a step's from / to — or a card that cards
+        --      left behind point at (a milestone, a tag, a component). The
+        --      flow and those cards would name another project's card, and
+        --      every new task there failed with cross_project_ref (review
+        --      2026-11-03 round 5 #5).
+        _old_project := card_enclosing_project(_card_id);
+        IF _new_project IS DISTINCT FROM _old_project THEN
+            _ref_vid := NULL;
+            WITH RECURSIVE sub(id, depth) AS (
+                SELECT _card_id, 0
+                UNION ALL
+                SELECT c.id, sub.depth + 1 FROM card c JOIN sub ON c.parent_card_id = sub.id
+                WHERE sub.depth < 16
+            )
+            SELECT s.id INTO _ref_vid FROM sub s
+            WHERE EXISTS (SELECT 1 FROM flow f WHERE f.default_create_status_id = s.id)
+               OR EXISTS (SELECT 1 FROM flow_step fs WHERE fs.from_card_id = s.id OR fs.to_card_id = s.id)
+            LIMIT 1;
+            IF _ref_vid IS NOT NULL THEN
+                RETURN QUERY SELECT _idx, false, 'value_referenced_by_flow'::text,
+                    format('card.move: card %s is a state of a flow in its project; take it out of the flow first', _ref_vid),
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+            WITH RECURSIVE sub(id, depth) AS (
+                SELECT _card_id, 0
+                UNION ALL
+                SELECT c.id, sub.depth + 1 FROM card c JOIN sub ON c.parent_card_id = sub.id
+                WHERE sub.depth < 16
+            ),
+            referrer AS (
+                SELECT av.card_id, s.id AS target
+                FROM sub s
+                JOIN attribute_value av
+                  ON jsonb_typeof(av.value) = 'number' AND (av.value)::text::bigint = s.id
+                 AND av.attribute_def_id IN (SELECT id FROM attribute_def WHERE value_type = 'card_ref')
+                UNION ALL
+                SELECT av.card_id, s.id
+                FROM sub s
+                JOIN attribute_value av
+                  ON jsonb_typeof(av.value) = 'array' AND av.value @> jsonb_build_array(s.id)
+                 AND av.attribute_def_id IN (SELECT id FROM attribute_def WHERE value_type = 'card_ref[]')
+            )
+            SELECT r.target INTO _ref_vid
+            FROM referrer r
+            JOIN card rc ON rc.id = r.card_id AND rc.deleted_at IS NULL
+            WHERE NOT EXISTS (SELECT 1 FROM sub WHERE sub.id = r.card_id)
+              AND card_enclosing_project(rc.id) IS NOT DISTINCT FROM _old_project
+            LIMIT 1;
+            IF _ref_vid IS NOT NULL THEN
+                RETURN QUERY SELECT _idx, false, 'value_in_use'::text,
+                    format('card.move: card %s is used by cards in its project; change them first', _ref_vid),
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
         END IF;
 
         -- 3c. The destination (DI-5): the dispatcher authorized the move

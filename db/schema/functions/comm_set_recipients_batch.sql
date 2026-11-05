@@ -128,8 +128,17 @@ BEGIN
         END IF;
 
         -- At most 100 people on a thread, the most a reply goes to
-        -- (reply.post).
-        IF COALESCE(array_length(_ids, 1), 0) > 100 THEN
+        -- (reply.post). A longer list that adds nobody — taking people off
+        -- a thread that has more, one at a time in the UI — is fine:
+        -- threads past 100 couldn't be trimmed (review 2026-11-03 round 5
+        -- #2).
+        IF COALESCE(array_length(_ids, 1), 0) > 100 AND EXISTS (
+            SELECT 1 FROM unnest(_ids) AS n(id)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM attribute_value av
+                JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'comm_recipients'
+                WHERE av.card_id = _comm_id AND jsonb_typeof(av.value) = 'array'
+                  AND av.value @> to_jsonb(n.id))) THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 'comm.set_recipients: a thread can have at most 100 recipients'::text, NULL::jsonb;
             CONTINUE;

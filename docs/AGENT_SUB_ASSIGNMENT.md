@@ -321,7 +321,9 @@ the MCP stdio entry (and on the future remote-MCP transport in #41).
   (when the parent owns ≥1 agent). Picking an agent writes a
   `user_card_agent` row; "Unroute" deletes it. The agent can delete it
   too (`user_card_agent.clear` called as the agent), when it is done
-  with the card or hands it back.
+  with the card or hands it back. An agent routing a card to itself
+  (`user_card_agent.set` with its own id) can't take one its owner routed
+  to another of their agents.
 - **Agent's inbox** (separate route or filter, TBD when the BFF agent
   login UI lands): SQL above. Default columns: title, status,
   routed-at, parent-assignee (= parent).

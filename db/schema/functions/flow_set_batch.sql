@@ -125,7 +125,9 @@ BEGIN
                     NULL::jsonb;
                 CONTINUE;
             END IF;
-            SELECT card_type_id INTO _ctid FROM card WHERE id = _default_status_id;
+            -- A live card (review 2026-11-03 round 5: a deleted one was
+            -- taken, and task.move with no status then said bad_status).
+            SELECT card_type_id INTO _ctid FROM card WHERE id = _default_status_id AND deleted_at IS NULL;
             IF NOT FOUND THEN
                 RETURN QUERY SELECT _idx, false, 'default_status_not_found'::text,
                     format('flow.set: default_create_status_id %s not found', _default_status_id),
@@ -136,6 +138,15 @@ BEGIN
                 RETURN QUERY SELECT _idx, false, 'default_status_wrong_type'::text,
                     format('flow.set: default_create_status_id %s is card_type %s, expected %s (target of attribute_def %s)',
                         _default_status_id, _ctid, _target_card_type_id, _attr_def_id),
+                    NULL::jsonb;
+                CONTINUE;
+            END IF;
+            -- In the flow's own project (or a workspace-wide value): another
+            -- project's status as the starting state failed every new task.
+            IF card_enclosing_project(_default_status_id) IS NOT NULL
+               AND card_enclosing_project(_default_status_id) IS DISTINCT FROM card_enclosing_project(_scope_card_id) THEN
+                RETURN QUERY SELECT _idx, false, 'cross_project_ref'::text,
+                    format('flow.set: default_create_status_id %s is in another project', _default_status_id),
                     NULL::jsonb;
                 CONTINUE;
             END IF;

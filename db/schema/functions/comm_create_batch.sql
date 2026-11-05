@@ -165,6 +165,21 @@ BEGIN
             CONTINUE;
         END IF;
 
+        -- The caps reply.post and comm.set_recipients keep: a message of at
+        -- most 100,000 characters, to at most 100 people (review 2026-11-03
+        -- round 5 #2: comm.create sent one of any length to any number).
+        IF length(_initial_message) > 100000 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comm.create: a message can be at most 100000 characters'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        IF jsonb_typeof(_recipients_raw) = 'array'
+           AND (SELECT count(DISTINCT e.v #>> '{}') FROM jsonb_array_elements(_recipients_raw) AS e(v)) > 100 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comm.create: a thread can have at most 100 recipients'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+
         -- 2. Task lookup.
         SELECT ct.name,
                COALESCE((SELECT av.value #>> '{}'

@@ -10,6 +10,8 @@
 --      isn't soft-deleted → 'card_not_found' (matches the legacy
 --      "missing or already live" diagnostic, now pinned to the
 --      specific input rather than the whole batch).
+--   3b. A personal card (screen, watch list, view, calendar) comes back
+--       only within its owner's cap (personal_cap_full) → 'limit'.
 --   4. UPDATE card SET deleted_at = NULL.
 --   5. Activity row of kind='card_undelete'.
 --
@@ -57,6 +59,23 @@ BEGIN
         IF _deleted_at IS NULL THEN
             RETURN QUERY SELECT _idx, false, 'card_not_found'::text,
                 'card.undelete: one or more cards were missing or already live'::text,
+                NULL::jsonb;
+            CONTINUE;
+        END IF;
+
+        -- 3b. A personal card comes back within its owner's cap: deleting,
+        --     creating and undeleting put a person past it (review
+        --     2026-11-03 round 5 #11).
+        IF EXISTS (
+            SELECT 1 FROM card c JOIN card_type ct ON ct.id = c.card_type_id
+            WHERE c.id = _card_id
+              AND personal_cap_full(ct.name, CASE WHEN ct.name = 'calendar' THEN
+                      (SELECT CASE WHEN jsonb_typeof(sv.value) = 'number' THEN (sv.value)::text::bigint END
+                       FROM attribute_value sv JOIN attribute_def sd ON sd.id = sv.attribute_def_id AND sd.name = 'subscriber'
+                       WHERE sv.card_id = c.id)
+                  ELSE c.private_to END)) THEN
+            RETURN QUERY SELECT _idx, false, 'limit'::text,
+                'card.undelete: its owner already has as many of these as they may; delete one first'::text,
                 NULL::jsonb;
             CONTINUE;
         END IF;

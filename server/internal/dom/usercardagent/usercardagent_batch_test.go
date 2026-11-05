@@ -424,6 +424,34 @@ func TestUserCardAgentUnsetBatch_AgentClearsItsOwn(t *testing.T) {
 	}
 }
 
+// TestUserCardAgentSetBatch_SelfRouteKeepsOwnersChoice (review 2026-11-03
+// round 5 #18): an agent routing a card to itself doesn't take a card its
+// owner routed to another of their agents.
+func TestUserCardAgentSetBatch_SelfRouteKeepsOwnersChoice(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_uca_self_route")
+	ctx := context.Background()
+	parent, agent, card := seedActorAgentTask(t, pool, "sr")
+	var other int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO user_account (display_name, parent_user_id, is_agent) VALUES ('agent-sr2', $1, TRUE) RETURNING id`, parent).Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_card_agent (user_id, card_id, agent_user_id) VALUES ($1, $2, $3)`, parent, card, other); err != nil {
+		t.Fatal(err)
+	}
+	rows := callBatch(t, pool, "user_card_agent_set_batch", agent, []map[string]any{{"card_id": idStr(card), "agent_user_id": idStr(agent)}})
+	if rows[0].OK || rows[0].Code != "forbidden" {
+		t.Errorf("self-route over the owner's choice: %+v, want forbidden", rows[0])
+	}
+	var routed int64
+	if err := pool.QueryRow(ctx, `SELECT agent_user_id FROM user_card_agent WHERE user_id = $1 AND card_id = $2`, parent, card).Scan(&routed); err != nil {
+		t.Fatal(err)
+	}
+	if routed != other {
+		t.Errorf("the card is routed to %d, want the owner's choice %d", routed, other)
+	}
+}
+
 // idStr formats an int64 as a decimal string — the dispatcher's
 // wire convention for bigint ids in JSON.
 func idStr(v int64) string { return strconv.FormatInt(v, 10) }

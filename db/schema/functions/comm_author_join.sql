@@ -3,8 +3,8 @@
 -- A message written here (reply.post, or comm.create's initial message) is from
 -- the author's person, so a later reply by anyone else must go to them too. This
 -- is the union an inbound sender already gets (syncCommRecipientsFromInbound):
--- the person is appended to comm.comm_recipients when missing, and nobody is
--- ever removed. Callers run it AFTER taking the message's To: snapshot, so the
+-- the person is appended to comm.comm_recipients when missing (unless the
+-- thread already has 100), and nobody is ever removed. Callers run it AFTER taking the message's To: snapshot, so the
 -- author is not sent their own message.
 --
 -- An agent writes for its owner, so the owner's person joins. A user with no
@@ -61,6 +61,13 @@ BEGIN
         FROM jsonb_array_elements(_old) AS e(v)
         WHERE (e.v #>> '{}') = _person::text
     ) THEN
+        RETURN false;
+    END IF;
+    -- A thread has at most 100 people; a full one takes the author's
+    -- message without adding them (review 2026-11-03 round 5 #2: a staff
+    -- reply on a 100-person thread made it 101, and every later reply was
+    -- refused).
+    IF jsonb_array_length(_old) >= 100 THEN
         RETURN false;
     END IF;
 

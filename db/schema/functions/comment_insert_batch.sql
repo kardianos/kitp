@@ -52,7 +52,9 @@ BEGIN
                 'comment.insert: body is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
-        IF NOT EXISTS (SELECT 1 FROM card WHERE id = _card_id) THEN
+        -- A live card: a deleted one takes no comments (review 2026-11-03
+        -- round 5).
+        IF NOT EXISTS (SELECT 1 FROM card WHERE id = _card_id AND deleted_at IS NULL) THEN
             RETURN QUERY SELECT _idx, false, 'card_not_found'::text,
                 format('comment.insert: card %s not found', _card_id), NULL::jsonb;
             CONTINUE;

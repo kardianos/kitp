@@ -79,11 +79,8 @@ BEGIN
         END IF;
 
         -- At most 50 calendars each (review 2026-11-03 round 4: nothing
-        -- capped it).
-        IF _creating AND (SELECT count(*) FROM card c
-                          JOIN attribute_value sv ON sv.card_id = c.id AND sv.attribute_def_id = _sub_def
-                          WHERE c.card_type_id = _cal_ct AND c.deleted_at IS NULL
-                            AND sv.value = to_jsonb(_person)) >= 50 THEN
+        -- capped it; personal_cap_full, round 5 #11).
+        IF _creating AND personal_cap_full('calendar', _person) THEN
             RETURN QUERY SELECT _idx, false, 'limit'::text,
                 'calendar.set: you can have at most 50 calendars'::text, NULL::jsonb;
             CONTINUE;

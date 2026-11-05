@@ -87,6 +87,13 @@ BEGIN
                 NULL::jsonb;
             CONTINUE;
         END IF;
+        -- A vote's reason keeps approval.decide's cap (review 2026-11-03
+        -- round 5 #17).
+        IF _kind = 'approval_decision' AND length(_body) > 20000 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'comment.update: a vote''s reason can be at most 20000 characters'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
         -- A vote's reason is part of Approvals: while Approvals is off in
         -- the task's project, approval.decide is refused and so is editing
         -- what a vote said (review 2026-11-03 round 3 #14).

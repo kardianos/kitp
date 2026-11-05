@@ -28,11 +28,12 @@ DECLARE
     _idx int;
     _card_id bigint;
     _sort_order double precision;
+    _sort_raw jsonb;
 BEGIN
-    FOR _idx, _card_id, _sort_order IN
+    FOR _idx, _card_id, _sort_raw IN
         SELECT (r.ord - 1)::int,
-               NULLIF(r.value->>'card_id', '')::bigint,
-               (r.value->>'sort_order')::double precision
+               CASE WHEN (r.value->>'card_id') ~ '^[0-9]{1,18}$' THEN (r.value->>'card_id')::bigint END,
+               r.value->'sort_order'
         FROM jsonb_array_elements(inputs) WITH ORDINALITY AS r(value, ord)
     LOOP
         IF _card_id IS NULL OR _card_id = 0 THEN
@@ -40,6 +41,15 @@ BEGIN
                 'user_card_sort.set: card_id is required'::text, NULL::jsonb;
             CONTINUE;
         END IF;
+        -- A number (or a numeric string): a cast in the loop's query failed
+        -- the whole batch as "internal" (review 2026-11-03 round 5).
+        IF NOT (jsonb_typeof(_sort_raw) = 'number'
+                OR (jsonb_typeof(_sort_raw) = 'string' AND (_sort_raw #>> '{}') ~ '^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$')) THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'user_card_sort.set: sort_order must be a number'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        _sort_order := (_sort_raw #>> '{}')::double precision;
         INSERT INTO user_card_sort (user_id, card_id, sort_order, updated_at)
         VALUES (actor_id, _card_id, _sort_order, now())
         ON CONFLICT (user_id, card_id) DO UPDATE

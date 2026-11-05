@@ -52,9 +52,15 @@ BEGIN
             CONTINUE;
         END IF;
         -- At most 5,000 entries on one list (review 2026-11-03 round 4:
-        -- nothing capped it).
+        -- nothing capped it). Entries on cards that are gone or that the
+        -- owner can't see any more don't count, and a lock on the list
+        -- keeps two adds at once from both taking the last place (round 5
+        -- #11). The visible count runs only on a list that is nearly full.
+        PERFORM pg_advisory_xact_lock(hashtextextended('kitp.watch_list:' || _list, 0));
         IF NOT EXISTS (SELECT 1 FROM watch_entry WHERE watch_list_id = _list AND card_id = _card)
-           AND (SELECT count(*) FROM watch_entry WHERE watch_list_id = _list) >= 5000 THEN
+           AND (SELECT count(*) FROM watch_entry WHERE watch_list_id = _list) >= 5000
+           AND (SELECT count(*) FROM watch_entry we JOIN card wc ON wc.id = we.card_id AND wc.deleted_at IS NULL
+                WHERE we.watch_list_id = _list AND card_visible_to(watch_set_batch.actor_id, wc.id)) >= 5000 THEN
             RETURN QUERY SELECT _idx, false, 'limit'::text,
                 'watch.set: a watch list can hold at most 5000 tasks and threads'::text, NULL::jsonb;
             CONTINUE;

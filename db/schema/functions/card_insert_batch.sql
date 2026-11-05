@@ -236,7 +236,7 @@ BEGIN
             -- a task's threads), subscriber (who owns a watch list,
             -- calendar or subscription), comm_confirmed (who the relay
             -- may send to) and comm_removed (who was taken off a thread).
-            IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber', 'comm_confirmed', 'comm_removed') THEN
+            IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber', 'comm_confirmed', 'comm_removed', 'comm_recipients') THEN
                 _rej_code := 'validation';
                 _rej_msg := format('card.insert: %s is set by kitp, not by hand', _attr_name);
                 EXIT;
@@ -569,6 +569,12 @@ BEGIN
                 CONTINUE;
             END IF;
             _private_to := account_person(card_insert_batch.actor_id);
+        END IF;
+        -- At most 500 personal views each (review 2026-11-03 round 5).
+        IF _private_to IS NOT NULL AND _card_type_name = 'filter' AND personal_cap_full('filter', _private_to) THEN
+            RETURN QUERY SELECT _idx, false, 'limit'::text,
+                'card.insert: you can have at most 500 personal views'::text, NULL::jsonb;
+            CONTINUE;
         END IF;
 
         -- 9. Write.

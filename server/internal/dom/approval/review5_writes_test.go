@@ -6,6 +6,7 @@ package approval_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -36,5 +37,20 @@ func TestWaitingOnlyOnVoters(t *testing.T) {
 	}
 	if waiting() {
 		t.Error("still waiting on Lee, who can no longer vote")
+	}
+}
+
+// TestEditedReasonKeepsItsCap (round 5 #17): a vote's reason, edited, stays
+// within approval.decide's 20,000 characters.
+func TestEditedReasonKeepsItsCap(t *testing.T) {
+	f := setup(t, "kitp_test_r5_reason_cap")
+	out := f.decide(t, f.dana.ctx, fmt.Sprintf(`"from_status_id":"%d","to_status_id":"%d","decision":"reject","reason":"first reason"`,
+		f.statuses["Review"], f.statuses["Done"]))
+	sr := call(f, f.dana.ctx, "comment", "update", fmt.Sprintf(`{"activity_id":"%d","body":%q}`, out.DecisionID, strings.Repeat("x", 20001)))
+	if sr.OK || sr.Error.Code != "validation" {
+		t.Errorf("editing a reason to 20,001 characters: %+v, want validation", sr)
+	}
+	if sr := call(f, f.dana.ctx, "comment", "update", fmt.Sprintf(`{"activity_id":"%d","body":"shorter"}`, out.DecisionID)); !sr.OK {
+		t.Errorf("a short edit: %+v", sr.Error)
 	}
 }

@@ -128,9 +128,8 @@ BEGIN
         END IF;
 
         -- At most 200 personal screens each (review 2026-11-03 round 4:
-        -- nothing capped it).
-        IF _creating AND (SELECT count(*) FROM card c WHERE c.card_type_id = _screen_ct AND c.parent_card_id IS NULL
-                          AND c.private_to = _person AND c.deleted_at IS NULL) >= 200 THEN
+        -- nothing capped it; personal_cap_full, round 5 #11).
+        IF _creating AND personal_cap_full('screen', _person) THEN
             RETURN QUERY SELECT _idx, false, 'limit'::text,
                 'my_screen.set: you can have at most 200 personal screens'::text, NULL::jsonb;
             CONTINUE;

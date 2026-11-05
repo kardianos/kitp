@@ -62,9 +62,8 @@ BEGIN
         END IF;
 
         -- At most 200 watch lists each (review 2026-11-03 round 4: nothing
-        -- capped it).
-        IF _creating AND (SELECT count(*) FROM card c WHERE c.card_type_id = _wl_ct
-                          AND c.private_to = _person AND c.deleted_at IS NULL) >= 200 THEN
+        -- capped it; personal_cap_full, round 5 #11).
+        IF _creating AND personal_cap_full('watch_list', _person) THEN
             RETURN QUERY SELECT _idx, false, 'limit'::text,
                 'watch_list.set: you can have at most 200 watch lists'::text, NULL::jsonb;
             CONTINUE;

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/kitp/kitp/server/internal/api"
+	"github.com/kitp/kitp/server/internal/dom/comm"
 )
 
 // TestMessageAndRecipientCaps: comments and messages are at most 100,000
@@ -97,5 +98,99 @@ func TestMessageAndRecipientCaps(t *testing.T) {
 	}
 	if e := post("hello"); e.Code != "too_many_recipients" {
 		t.Errorf("reply.post to 101 people: %q, want too_many_recipients", e.Code)
+	}
+}
+
+// TestRecipientCapsEverywhere (round 5 #2): comm.create keeps both caps,
+// attribute.update can't write a thread's recipients, a thread already
+// past 100 can be trimmed one at a time but not grown, and a reply's
+// author doesn't make a full thread 101.
+func TestRecipientCapsEverywhere(t *testing.T) {
+	f := setupAdmin(t, "kitp_test_r5b_recipient_caps")
+	ctx := context.Background()
+	ch, reply := seedPendingReply(t, f, "support@example.com")
+	var thread int64
+	if err := f.sp.P.QueryRow(ctx, `
+		SELECT av.card_id FROM attribute_value av
+		JOIN attribute_def ad ON ad.id = av.attribute_def_id AND ad.name = 'replies'
+		WHERE av.value @> to_jsonb($1::bigint)`, reply).Scan(&thread); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := f.sp.P.Query(ctx, `
+		WITH p AS (
+			INSERT INTO card (card_type_id)
+			SELECT ct.id FROM card_type ct, generate_series(1, 102) WHERE ct.name = 'person'
+			RETURNING id),
+		e AS (
+			INSERT INTO attribute_value (card_id, attribute_def_id, value)
+			SELECT p.id, ad.id, to_jsonb('cap5_' || p.id || '@example.com') FROM p, attribute_def ad WHERE ad.name = 'email'
+			RETURNING card_id)
+		SELECT card_id FROM e ORDER BY card_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var people []string
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		people = append(people, fmt.Sprintf("%q", fmt.Sprint(id)))
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	list := func(ids []string) string { return "[" + strings.Join(ids, ",") + "]" }
+
+	e := dispatchExpectErr(t, f, api.SubRequest{ID: "c", Endpoint: "comm", Action: "create", Data: json.RawMessage(fmt.Sprintf(
+		`{"task_id":"%d","channel_id":"%d","subject":"Many","recipient_person_ids":%s}`, f.taskID, ch, list(people[:101])))})
+	if e.Code != "validation" {
+		t.Errorf("comm.create to 101 people: %q, want validation", e.Code)
+	}
+	e = dispatchExpectErr(t, f, api.SubRequest{ID: "c", Endpoint: "comm", Action: "create", Data: json.RawMessage(fmt.Sprintf(
+		`{"task_id":"%d","channel_id":"%d","subject":"Long","recipient_person_ids":%s,"initial_message":%q}`,
+		f.taskID, ch, list(people[:1]), strings.Repeat("x", 100001)))})
+	if e.Code != "validation" {
+		t.Errorf("comm.create with a 100,001-character message: %q, want validation", e.Code)
+	}
+	e = dispatchExpectErr(t, f, api.SubRequest{ID: "a", Endpoint: "attribute", Action: "update", Data: json.RawMessage(fmt.Sprintf(
+		`{"card_id":"%d","attribute_name":"comm_recipients","value":%s}`, thread, list(people[:3])))})
+	if e.Code != "validation" {
+		t.Errorf("attribute.update of comm_recipients: %q, want validation", e.Code)
+	}
+
+	// A thread with 101 (from before the caps): one off works, one on doesn't.
+	raw := "[" + strings.ReplaceAll(strings.Join(people[:101], ","), `"`, "") + "]"
+	if _, err := f.sp.P.Exec(ctx, `
+		UPDATE attribute_value SET value = $2::jsonb
+		WHERE card_id = $1 AND attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'comm_recipients')`, thread, raw); err != nil {
+		t.Fatal(err)
+	}
+	set := func(ids []string) api.SubResponse {
+		return f.srv.Dispatch(f.ctx, api.BatchRequest{Subrequests: []api.SubRequest{{ID: "s", Endpoint: "comm", Action: "set_recipients",
+			Data: json.RawMessage(fmt.Sprintf(`{"comm_id":"%d","recipient_person_ids":%s}`, thread, list(ids)))}}}).Subresponses[0]
+	}
+	if r := set(people[:101]); !r.OK {
+		t.Errorf("the same 101 again: %+v", r.Error)
+	}
+	if r := set(append(append([]string{}, people[1:101]...), people[101])); r.OK {
+		t.Error("a list of 101 that adds someone was taken")
+	}
+	if r := set(people[1:101]); !r.OK {
+		t.Errorf("taking one off a thread of 101: %+v", r.Error)
+	}
+	// 100 people now: a reply goes, and its author doesn't join.
+	var out comm.ReplyPostOutput
+	dispatch(t, f, api.SubRequest{ID: "r", Endpoint: "reply", Action: "post",
+		Data: json.RawMessage(fmt.Sprintf(`{"comm_id":"%d","body":"to everyone"}`, thread))}, &out)
+	var n int
+	if err := f.sp.P.QueryRow(ctx, `
+		SELECT jsonb_array_length(value) FROM attribute_value
+		WHERE card_id = $1 AND attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'comm_recipients')`, thread).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n > 100 {
+		t.Errorf("after a reply the thread has %d recipients, want at most 100", n)
 	}
 }

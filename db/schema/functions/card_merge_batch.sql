@@ -164,6 +164,26 @@ BEGIN
                 _bad_code := 'flow_role_required';
             END IF;
         END IF;
+        -- The losers' live children go to the survivor (a merged page's
+        -- section; review 2026-11-03 round 5 #13 — they stayed under the
+        -- deleted card, out of the site and unreachable). Not when the
+        -- survivor sits under a loser (a cycle), nor past the nesting cap.
+        IF _bad_code IS NULL AND EXISTS (
+            SELECT 1 FROM card ch WHERE ch.parent_card_id = ANY(_losers) AND ch.deleted_at IS NULL) THEN
+            IF EXISTS (SELECT 1 FROM card_ancestors(_survivor) a WHERE a.id = ANY(_losers)) THEN
+                _bad_code := 'cycle';
+                _bad_msg := format('card.merge: survivor %s is under a card being merged into it', _survivor);
+            ELSIF (SELECT count(*) FROM card_ancestors(_survivor))
+                  + (WITH RECURSIVE sub(id, depth) AS (
+                         SELECT ch.id, 0 FROM card ch WHERE ch.parent_card_id = ANY(_losers) AND ch.deleted_at IS NULL
+                         UNION ALL
+                         SELECT c.id, sub.depth + 1 FROM card c JOIN sub ON c.parent_card_id = sub.id
+                         WHERE sub.depth < 16)
+                     SELECT max(depth) FROM sub) >= 14 THEN
+                _bad_code := 'too_deep';
+                _bad_msg := 'card.merge: the merged cards'' children would nest more than 14 deep';
+            END IF;
+        END IF;
         IF _bad_code IS NOT NULL THEN
             RETURN QUERY SELECT _idx, false, _bad_code, _bad_msg, NULL::jsonb;
             CONTINUE;
@@ -180,6 +200,14 @@ BEGIN
               SELECT r.card_id FROM attribute_value r
               JOIN attribute_def rd ON rd.id = r.attribute_def_id AND rd.name = 'portal_root'
               WHERE jsonb_typeof(r.value) = 'number' AND (r.value)::text::bigint = ANY(_losers)) pp(portal_id);
+        WITH moved AS (
+            UPDATE card ch SET parent_card_id = _survivor
+            FROM card old
+            WHERE ch.parent_card_id = ANY(_losers) AND ch.deleted_at IS NULL AND old.id = ch.id
+            RETURNING ch.id, old.parent_card_id AS was
+        )
+        INSERT INTO activity (card_id, kind, value_old, value_new, actor_id)
+        SELECT m.id, 'card_move', to_jsonb(m.was), to_jsonb(_survivor), card_merge_batch.actor_id FROM moved m;
         _repointed := card_merge_into(_survivor, _losers, actor_id);
         PERFORM portal_mark_dirty(pp.portal_id) FROM portals_publishing_under(_survivor) pp;
 
