@@ -51,7 +51,19 @@ DECLARE
     _card_types text[];
     _q text;
     _facets boolean;
+    _global boolean;
+    _scopes bigint[];
+    _seen boolean;
+    _any_off boolean := EXISTS (SELECT 1 FROM project_area WHERE state = 'off')
+                        OR EXISTS (SELECT 1 FROM workspace_area WHERE state = 'off');
 BEGIN
+    -- The caller's roles, once: a workspace-wide one, and the cards the
+    -- others are scoped to (user_role_visible: an agent sees as its owner).
+    SELECT COALESCE(bool_or(ur.scope_card_id IS NULL), false),
+           COALESCE(array_agg(DISTINCT ur.scope_card_id) FILTER (WHERE ur.scope_card_id IS NOT NULL), '{}')
+      INTO _global, _scopes
+    FROM user_role_visible(activity_select_batch.actor_id) ur;
+
     FOR _idx, _raw IN
         SELECT (r.ord - 1)::int, r.value
         FROM jsonb_array_elements(inputs) WITH ORDINALITY AS r(value, ord)
@@ -158,53 +170,78 @@ BEGIN
             _sort_asc := true;
         END IF;
 
+        -- Visibility (DI-6) once per request, not per row: projects don't
+        -- nest, so a card is seen with a workspace-wide role or one scoped
+        -- to its project. For one card or one project that is a single
+        -- answer; without either, the rows come from the projects the
+        -- caller has roles in (or, workspace-wide, from the date window).
+        -- Each activity row walked its card's ancestors and the caller's
+        -- roles, and a project's activity was found by walking every row
+        -- in the workspace up to the project (review 2026-11-03 round 5).
+        IF _card_id IS NOT NULL OR _project_id IS NOT NULL THEN
+            _seen := _global OR COALESCE(card_enclosing_project(COALESCE(_card_id, _project_id)) = ANY (_scopes), false);
+            IF _card_id IS NOT NULL AND _project_id IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM card_ancestors(_card_id) pa WHERE pa.id = _project_id) THEN
+                _seen := false;
+            END IF;
+        ELSE
+            _seen := true;
+        END IF;
+
         RETURN QUERY
-        WITH scoped AS MATERIALIZED (
-            SELECT a.*, ct.name AS card_type
-            FROM activity a
-            JOIN card c ON c.id = a.card_id
-            JOIN card_type ct ON ct.id = c.card_type_id
-            WHERE (_card_id IS NULL OR a.card_id = _card_id
+        WITH RECURSIVE
+        -- One project's cards (the project and below, depth-16 cap).
+        proj_sub(id, depth) AS (
+            SELECT _project_id, 0 WHERE _card_id IS NULL AND _project_id IS NOT NULL
+            UNION ALL
+            SELECT c.id, s.depth + 1 FROM card c JOIN proj_sub s ON c.parent_card_id = s.id
+            WHERE s.depth < 16
+        ),
+        -- Unscoped, for a caller with project roles only: those projects'
+        -- cards.
+        seen_sub(id, depth) AS (
+            SELECT p.id, 0 FROM card p JOIN card_type pt ON pt.id = p.card_type_id AND pt.name = 'project'
+            WHERE _card_id IS NULL AND _project_id IS NULL AND NOT _global AND p.id = ANY (_scopes)
+            UNION ALL
+            SELECT c.id, s.depth + 1 FROM card c JOIN seen_sub s ON c.parent_card_id = s.id
+            WHERE s.depth < 16
+        ),
+        -- The candidate rows, one branch per kind of request (the others
+        -- are skipped): each reaches activity by an index — card_id (and
+        -- created_at), or created_at alone.
+        src AS (
+            SELECT a.* FROM activity a
+            WHERE _card_id IS NOT NULL
+              AND (a.card_id = _card_id
                    OR (_thread_comments AND a.kind IN ('comment', 'comment_edit') AND a.card_id IN (
                          SELECT th.id FROM card th
                          JOIN card_type tht ON tht.id = th.card_type_id AND tht.name = 'comm'
                          WHERE th.parent_card_id = _card_id AND th.deleted_at IS NULL)))
+            UNION ALL
+            SELECT a.* FROM proj_sub s JOIN activity a ON a.card_id = s.id
+            UNION ALL
+            SELECT a.* FROM activity a
+            WHERE _card_id IS NULL AND _project_id IS NULL AND _global AND a.created_at >= _from_date
+            UNION ALL
+            SELECT a.* FROM seen_sub s JOIN activity a ON a.card_id = s.id
+        ),
+        scoped AS MATERIALIZED (
+            SELECT a.*, ct.name AS card_type
+            FROM src a
+            JOIN card c ON c.id = a.card_id
+            JOIN card_type ct ON ct.id = c.card_type_id
+            WHERE _seen
               -- Date window (inclusive by day) on created_at.
               AND (_from_date IS NULL OR a.created_at >= _from_date)
               AND (_to_date IS NULL OR a.created_at < (_to_date + 1))
-              -- Project scope: the card is the project or a descendant
-              -- (walk parents up to the depth-16 cap, same as B7).
-              AND (_project_id IS NULL OR EXISTS (
-                SELECT 1 FROM card_ancestors(a.card_id) pj WHERE pj.id = _project_id
-              ))
               -- Activity on someone else's private card (a personal view,
               -- a watch list; docs/PERSONAL_SCREENS.md) is theirs alone.
-              AND card_private_ok(a.card_id, activity_select_batch.actor_id)
-              AND NOT activity_hidden(a.kind, a.card_id, a.value_new) AND EXISTS (
-                -- depth < 16 caps the parent walk (CLAUDE.md cap;
-                -- matches card_ancestors / scopeWalkDepth) so a
-                -- parent_card_id cycle can't pin the connection (A1).
-                WITH RECURSIVE up(id, parent_card_id, card_type_id, depth) AS (
-                    SELECT card.id, card.parent_card_id, card.card_type_id, 0
-                    FROM card WHERE card.id = a.card_id
-                    UNION ALL
-                    SELECT p.id, p.parent_card_id, p.card_type_id, up.depth + 1
-                    FROM card p JOIN up ON p.id = up.parent_card_id
-                    WHERE up.depth < 16
-                )
-                SELECT 1
-                FROM user_account caller
-                CROSS JOIN LATERAL user_role_visible(caller.id) ur
-                WHERE caller.id = activity_select_batch.actor_id
-                  AND (
-                    ur.scope_card_id IS NULL
-                    OR ur.scope_card_id IN (
-                        SELECT up.id
-                        FROM up JOIN card_type ct2 ON ct2.id = up.card_type_id
-                        WHERE ct2.name = 'project'
-                    )
-                  )
-              )
+              -- (asked only of a private card: a shared one passes)
+              AND (c.private_to IS NULL OR card_private_ok(a.card_id, activity_select_batch.actor_id))
+              -- Hidden by a switched-off area: asked per row only when an
+              -- area is off somewhere (it answers false otherwise, at a
+              -- function call a row).
+              AND (NOT _any_off OR NOT activity_hidden(a.kind, a.card_id, a.value_new))
         ),
         picked AS (
             SELECT s.*

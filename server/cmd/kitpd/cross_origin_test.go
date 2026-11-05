@@ -7,17 +7,17 @@ import (
 	"github.com/kitp/kitp/server/internal/auth"
 )
 
-// TestCrossOriginCheckFollowsAuthMode (review 2026-11-03 round 4): the
-// cross-origin check is off only with AUTH_MODE=off; the dev CORS switch
-// (on by default with ENV unset) no longer turns it off.
-func TestCrossOriginCheckFollowsAuthMode(t *testing.T) {
+// TestCrossOriginCheckIsAlwaysOn (review 2026-11-03 rounds 4 and 5): the
+// cross-origin check is on whatever AUTH_MODE is and whether the dev CORS
+// switch (on by default with ENV unset) is on.
+func TestCrossOriginCheckIsAlwaysOn(t *testing.T) {
 	t.Setenv("CORS", "on")
 	t.Setenv("KITP_PUBLIC_URL", "")
 	t.Setenv("KITP_TRUSTED_ORIGINS", "http://localhost:8090")
 
 	off, err := newCrossOriginProtection("dev", auth.ModeOff)
-	if err != nil || off != nil {
-		t.Fatalf("AUTH_MODE=off: check %v, err %v; want none", off, err)
+	if err != nil || off == nil {
+		t.Fatalf("AUTH_MODE=off: check %v, err %v; want one (every request is System there)", off, err)
 	}
 	c, err := newCrossOriginProtection("dev", auth.ModeOIDC)
 	if err != nil {

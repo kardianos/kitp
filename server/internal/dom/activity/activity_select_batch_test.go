@@ -388,3 +388,64 @@ func TestActivitySelectBatch_UnscopedIsBounded(t *testing.T) {
 		t.Errorf("a project's activity: %v %q, want both rows (no window)", got, code)
 	}
 }
+
+// TestActivitySelectBatch_CostFollowsWhatIsRead (review 2026-11-03 round 5):
+// a project's activity, and a scoped worker's unscoped read, cost what
+// they read — not every activity row in the workspace, each walking its
+// card's ancestors and the caller's roles.
+func TestActivitySelectBatch_CostFollowsWhatIsRead(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_activity_select_cost")
+	ctx := context.Background()
+	var projects []int64
+	for i := 0; i < 3; i++ {
+		p := seedCard(t, pool, "project", nil)
+		projects = append(projects, p)
+		if _, err := pool.Exec(ctx, `
+			WITH t AS (
+				INSERT INTO card (card_type_id, parent_card_id)
+				SELECT ct.id, $1 FROM card_type ct, generate_series(1, 200) WHERE ct.name = 'task'
+				RETURNING id)
+			INSERT INTO activity (card_id, kind, actor_id, created_at)
+			SELECT t.id, 'attr_update', 1, now() - (g % 25) * interval '1 day'
+			FROM t, generate_series(1, 100) g`, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var worker int64
+	if err := pool.QueryRow(ctx, `INSERT INTO user_account (display_name) VALUES ('cost-worker') RETURNING id`).Scan(&worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_role (user_id, role_id, scope_card_id) SELECT $1, id, $2 FROM role WHERE name = 'worker'`, worker, projects[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `ANALYZE activity; ANALYZE card`); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		in   map[string]any
+	}{
+		{"one project, all time, with facets", map[string]any{"project_id": strconv.FormatInt(projects[0], 10), "facets": true}},
+		{"unscoped, 30 days", map[string]any{}},
+		{"another project (not seen)", map[string]any{"project_id": strconv.FormatInt(projects[1], 10)}},
+	} {
+		start := time.Now()
+		res := callActivitySelectBatch(t, pool, worker, []map[string]any{c.in})
+		d := time.Since(start)
+		if !res[0].OK {
+			t.Fatalf("%s: %+v", c.name, res[0])
+		}
+		if d > 1500*time.Millisecond {
+			t.Errorf("%s took %v (about 150 ms when written)", c.name, d)
+		}
+		t.Logf("%s: %v", c.name, d)
+	}
+	res := callActivitySelectBatch(t, pool, worker, []map[string]any{{"project_id": strconv.FormatInt(projects[1], 10)}})
+	var o activityOut
+	if err := json.Unmarshal(res[0].Result, &o); err != nil {
+		t.Fatal(err)
+	}
+	if len(o.Rows) != 0 {
+		t.Errorf("a worker read %d rows of a project they have no role in", len(o.Rows))
+	}
+}

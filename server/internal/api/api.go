@@ -583,6 +583,20 @@ func (s *Server) Dispatch(ctx context.Context, req BatchRequest) BatchResponse {
 		return out
 	}
 
+	// The whole batch gets at most twice its longest handler's timeout:
+	// each group had its own, so a heavy sub-request interleaved with
+	// echo.ping ran its full timeout once per group and one request held a
+	// connection for as long as its body allowed (review 2026-11-03 round 5
+	// #1). Groups past the budget fail with the deadline.
+	batchBudget := DefaultHandlerTimeout
+	for _, p := range prepped {
+		if p.Handler.Timeout > batchBudget {
+			batchBudget = p.Handler.Timeout
+		}
+	}
+	ctx, cancelBatch := context.WithTimeout(ctx, 2*batchBudget)
+	defer cancelBatch()
+
 	// One transaction per HTTP request (N-SRV-1). store.Tx: handlers receive
 	// it as a store.Querier, so a hook can't commit/roll back the request tx.
 	tx, err := s.Pool.Begin(ctx)

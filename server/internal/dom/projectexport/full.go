@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/csvsafe"
@@ -346,7 +348,7 @@ func loadProjectFull(ctx context.Context, pool *store.Pool, projectID int64) (ma
 		deletedAt *time.Time
 		attrsRaw  []byte
 	)
-	err := pool.P.QueryRow(ctx, `
+	err := namedQueryRow(ctx, pool, `
 		SELECT c.created_at, c.deleted_at,
 		       coalesce(attrs.values, '{}'::jsonb)
 		FROM card c
@@ -357,8 +359,8 @@ func loadProjectFull(ctx context.Context, pool *store.Pool, projectID int64) (ma
 			JOIN attribute_def ad ON ad.id = av.attribute_def_id
 			WHERE av.card_id = c.id
 		) attrs ON TRUE
-		WHERE c.id = $1
-	`, projectID).Scan(&createdAt, &deletedAt, &attrsRaw)
+		WHERE c.id = :project
+	`, map[string]any{"project": projectID}).Scan(&createdAt, &deletedAt, &attrsRaw)
 	if err != nil {
 		return nil, nil, nil, api.Internal(fmt.Errorf("load project: %w", err))
 	}
@@ -375,19 +377,19 @@ func loadProjectFull(ctx context.Context, pool *store.Pool, projectID int64) (ma
 // projectID with its attribute map. Used for milestones / components /
 // tags — they all share the same shape (parent_card_id = project).
 func loadValueCards(ctx context.Context, pool *store.Pool, typeName string, projectID int64) ([]valueCardRow, error) {
-	rows, err := pool.P.Query(ctx, `
+	rows, err := namedQuery(ctx, pool, `
 		SELECT c.id, coalesce(attrs.values, '{}'::jsonb)
 		FROM card c
-		JOIN card_type ct ON ct.id = c.card_type_id AND ct.name = $1
+		JOIN card_type ct ON ct.id = c.card_type_id AND ct.name = :type_name
 		LEFT JOIN LATERAL (
 			SELECT jsonb_object_agg(ad.name, av.value) AS values
 			FROM attribute_value av
 			JOIN attribute_def ad ON ad.id = av.attribute_def_id
 			WHERE av.card_id = c.id
 		) attrs ON TRUE
-		WHERE c.parent_card_id = $2 AND c.deleted_at IS NULL
+		WHERE c.parent_card_id = :project AND c.deleted_at IS NULL
 		ORDER BY c.id
-	`, typeName, projectID)
+	`, map[string]any{"type_name": typeName, "project": projectID})
 	if err != nil {
 		return nil, api.Internal(fmt.Errorf("load %s: %w", typeName, err))
 	}
@@ -417,7 +419,7 @@ func loadPersons(ctx context.Context, pool *store.Pool, ids []int64) ([]personRo
 	if len(ids) == 0 {
 		return nil, hasLogin, nil
 	}
-	rows, err := pool.P.Query(ctx, `
+	rows, err := namedQuery(ctx, pool, `
 		SELECT c.id,
 		       coalesce(attrs.values, '{}'::jsonb),
 		       EXISTS (SELECT 1 FROM user_account_person uap WHERE uap.person_card_id = c.id) AS has_login
@@ -429,9 +431,9 @@ func loadPersons(ctx context.Context, pool *store.Pool, ids []int64) ([]personRo
 			JOIN attribute_def ad ON ad.id = av.attribute_def_id
 			WHERE av.card_id = c.id
 		) attrs ON TRUE
-		WHERE c.id = ANY($1::bigint[])
+		WHERE c.id = ANY(:ids::bigint[])
 		ORDER BY c.id
-	`, ids)
+	`, map[string]any{"ids": ids})
 	if err != nil {
 		return nil, nil, api.Internal(fmt.Errorf("load persons: %w", err))
 	}
@@ -462,15 +464,15 @@ func loadCommentRows(ctx context.Context, pool *store.Pool, taskIDs []int64) ([]
 	if len(taskIDs) == 0 {
 		return nil, nil
 	}
-	rows, err := pool.P.Query(ctx, `
+	rows, err := namedQuery(ctx, pool, `
 		SELECT a.card_id, cb.body, a.created_at,
 		       COALESCE(u.email, '') AS author_email
 		FROM activity a
 		JOIN comment_body cb ON cb.id = (a.value_new ->> 'comment_body_id')::bigint
 		LEFT JOIN user_account u ON u.id = a.actor_id
-		WHERE a.kind = 'comment' AND a.card_id = ANY($1::bigint[])
+		WHERE a.kind = 'comment' AND a.card_id = ANY(:tasks::bigint[])
 		ORDER BY a.card_id, a.created_at, a.id
-	`, taskIDs)
+	`, map[string]any{"tasks": taskIDs})
 	if err != nil {
 		return nil, api.Internal(fmt.Errorf("load comments: %w", err))
 	}
@@ -542,7 +544,7 @@ func loadAttachmentRows(ctx context.Context, pool *store.Pool, taskIDs []int64) 
 	if len(taskIDs) == 0 {
 		return nil, emails, nil
 	}
-	rows, err := pool.P.Query(ctx, `
+	rows, err := namedQuery(ctx, pool, `
 		SELECT
 			a.id, a.card_id, a.created_at, a.thumb_file_id,
 			f.filename, f.size_bytes, f.mime_type,
@@ -557,9 +559,9 @@ func loadAttachmentRows(ctx context.Context, pool *store.Pool, taskIDs []int64) 
 			FROM file_chunk fc
 			WHERE fc.file_id = f.id
 		) addrs ON TRUE
-		WHERE a.deleted_at IS NULL AND a.card_id = ANY($1::bigint[])
+		WHERE a.deleted_at IS NULL AND a.card_id = ANY(:tasks::bigint[])
 		ORDER BY a.id
-	`, taskIDs)
+	`, map[string]any{"tasks": taskIDs})
 	if err != nil {
 		return nil, nil, api.Internal(fmt.Errorf("load attachments: %w", err))
 	}
@@ -876,3 +878,35 @@ func rawOrEmpty(raw json.RawMessage) string {
 	}
 	return string(raw)
 }
+
+// namedQuery runs sql with :name slots bound from args (internal/named).
+func namedQuery(ctx context.Context, pool *store.Pool, sql string, args map[string]any) (pgx.Rows, error) {
+	b := named.New()
+	for k, v := range args {
+		b.Set(k, v)
+	}
+	q, qa, err := b.Compile(sql)
+	if err != nil {
+		return nil, fmt.Errorf("compile: %w", err)
+	}
+	return pool.P.Query(ctx, q, qa...)
+}
+
+// namedQueryRow is namedQuery for one row; a compile error comes back from
+// Scan.
+func namedQueryRow(ctx context.Context, pool *store.Pool, sql string, args map[string]any) pgx.Row {
+	b := named.New()
+	for k, v := range args {
+		b.Set(k, v)
+	}
+	q, qa, err := b.Compile(sql)
+	if err != nil {
+		return errRow{fmt.Errorf("compile: %w", err)}
+	}
+	return pool.P.QueryRow(ctx, q, qa...)
+}
+
+// errRow is a pgx.Row whose Scan answers err.
+type errRow struct{ err error }
+
+func (r errRow) Scan(...any) error { return r.err }

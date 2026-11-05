@@ -254,7 +254,7 @@ See `docs/BUNDLES_AND_PORTALS.md`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| CORS | (on with ENV=dev, the default; off with ENV=production) | `on` / `off`: answer any origin with permissive CORS headers (the dev loop's app on another port). It doesn't turn off the cross-origin request check, which is off only with AUTH_MODE=off. |
+| CORS | (on with ENV=dev, the default; off with ENV=production) | `on` / `off`: answer any origin with permissive CORS headers (the dev loop's app on another port). It doesn't turn off the cross-origin request check, which is on in every AUTH_MODE. |
 | KITP_TRUSTED_ORIGINS | (unset) | More origins (comma-separated `scheme://host[:port]`) the cross-origin request check admits besides the request's own host and KITP_PUBLIC_URL's — a dev app served from another origin against real logins. |
 | KITP_CSP_REPORT_ONLY | 0 | 1 sends CSP as report-only. |
 | KITP_CSP_REPORT_URI | (unset) | CSP violation report endpoint. |

@@ -52,8 +52,8 @@
 //	                            scheme://host[:port]) the cross-origin check
 //	                            admits besides the request's own Host. The
 //	                            check refuses cross-origin browser POSTs on
-//	                            cookie and public routes; it is off only
-//	                            with AUTH_MODE=off (CORS on or not).
+//	                            cookie and public routes, in every
+//	                            AUTH_MODE, CORS on or not.
 //	KITP_CSP_REPORT_ONLY      — when "1", flips CSP to soft-launch mode
 //	                            (Content-Security-Policy-Report-Only)
 //	KITP_CSP_REPORT_URI       — when set, emits a report-uri directive
@@ -1117,20 +1117,16 @@ func extractBearer(header string) string {
 // newCrossOriginProtection builds the router's CSRF check (api.RouterConfig
 // CrossOrigin). KITP_PUBLIC_URL's origin is trusted besides the request's own
 // Host, for a proxy that rewrites Host; KITP_TRUSTED_ORIGINS adds more
-// (comma-separated scheme://host[:port]). Off (nil) only with AUTH_MODE=off,
-// where every request is the System user and a cross-origin one can do
-// nothing a direct one can't. It used to be off whenever the dev CORS
-// middleware was, which is the default with ENV unset — a binary run with
-// real logins and no ENV had no check (review 2026-11-03 round 4). A dev
-// app served from another origin against real logins is admitted through
-// KITP_TRUSTED_ORIGINS.
+// (comma-separated scheme://host[:port]). Always on: it used to be off
+// whenever the dev CORS middleware was — the default with ENV unset, so a
+// binary run with real logins and no ENV had no check (review 2026-11-03
+// round 4) — and then with AUTH_MODE=off, where every request acts as the
+// System user, so the check is all that keeps a page on another site from
+// POSTing to a kitpd on localhost (round 5). A dev app served from another
+// origin is admitted through KITP_TRUSTED_ORIGINS.
 func newCrossOriginProtection(env string, mode auth.Mode) (*http.CrossOriginProtection, error) {
-	if mode == auth.ModeOff {
-		log.Printf("cross-origin request check off: AUTH_MODE=off")
-		return nil, nil
-	}
 	if api.CORSEnabled(env) {
-		log.Printf("CORS is on (env=%s) with AUTH_MODE=%s: the cross-origin check stays on; list a dev app's origin in KITP_TRUSTED_ORIGINS", env, mode)
+		log.Printf("CORS is on (env=%s, AUTH_MODE=%s): the cross-origin check stays on; list a dev app's origin in KITP_TRUSTED_ORIGINS", env, mode)
 	}
 	c := http.NewCrossOriginProtection()
 	origins := strings.Split(os.Getenv("KITP_TRUSTED_ORIGINS"), ",")
