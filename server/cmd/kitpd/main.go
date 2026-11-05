@@ -133,6 +133,7 @@ import (
 	"github.com/kitp/kitp/server/internal/dom/projectstamp"
 	domrole "github.com/kitp/kitp/server/internal/dom/role"
 	"github.com/kitp/kitp/server/internal/dom/rolemapping"
+	"github.com/kitp/kitp/server/internal/dom/personemail"
 	domscheduler "github.com/kitp/kitp/server/internal/dom/scheduler"
 	"github.com/kitp/kitp/server/internal/dom/tag"
 	domuser "github.com/kitp/kitp/server/internal/dom/user"
@@ -239,6 +240,9 @@ func registerHandlers(pool *store.Pool, storage *cas.Storage, mailStatus *mailin
 	usertoken.Register(pool)
 	usertoken.SetMaxDays(int64(envInt("KITP_TOKEN_MAX_DAYS", usertoken.DefaultMaxDays)))
 	rolemapping.Register(pool)
+	// A person's email addresses (person_email.*) and the mail account that
+	// sends their codes (account_mail.*); docs/EMAIL_ADDRESSES.md.
+	personemail.Register(pool)
 	if storage != nil {
 		projectimport.Register(projectimport.ImportConfig{Pool: pool, Storage: storage})
 	}

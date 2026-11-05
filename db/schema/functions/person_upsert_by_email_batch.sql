@@ -95,14 +95,24 @@ BEGIN
         --    this function on write, but historical rows + IMAP-sourced
         --    persons might carry mixed case — lower() on both sides
         --    keeps the join symmetric.
-        SELECT av.card_id INTO _existing
-        FROM attribute_value av
-        JOIN card c ON c.id = av.card_id
-        WHERE av.attribute_def_id = _email_def
-          AND c.card_type_id = _person_ct_id
-          AND c.deleted_at IS NULL
-          AND lower(av.value #>> '{}') = _email
-        ORDER BY av.card_id
+        --    A person's other verified addresses (person_email) match too,
+        --    after the primary (docs/EMAIL_ADDRESSES.md).
+        SELECT m.id INTO _existing
+        FROM (
+            SELECT av.card_id AS id, 0 AS pref
+            FROM attribute_value av
+            JOIN card c ON c.id = av.card_id
+            WHERE av.attribute_def_id = _email_def
+              AND c.card_type_id = _person_ct_id
+              AND c.deleted_at IS NULL
+              AND lower(av.value #>> '{}') = _email
+            UNION ALL
+            SELECT pe.person_card_id, 1
+            FROM person_email pe
+            JOIN card c ON c.id = pe.person_card_id AND c.deleted_at IS NULL
+            WHERE pe.email = _email AND pe.verified_at IS NOT NULL
+        ) m
+        ORDER BY m.pref, m.id
         LIMIT 1;
         IF FOUND THEN
             RETURN QUERY SELECT _idx, true, ''::text, ''::text,

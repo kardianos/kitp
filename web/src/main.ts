@@ -118,6 +118,7 @@ import { registerCommRoutes } from './mailin/comm-routes.js';
 import { registerCommLogView } from './mailin/comm-log.js';
 import { registerMailIntake } from './mailin/mail-intake.js';
 import { registerAccountCalendars } from './mailin/calendars.js';
+import { registerAccountEmails, registerEmailSpecs } from './shell/account-emails.js';
 import { registerWatchSpecs } from './watch/specs.js';
 import { registerWatchBar } from './watch/watch-bar.js';
 import { registerWatchLists } from './watch/watch-lists.js';
@@ -236,6 +237,7 @@ function boot(): void {
   // Mail intake routes, the Mail intake page and calendar feeds
   // (docs/MAIL_INTAKE_AND_CALENDARS.md). Idempotent-by-presence.
   registerMailinSpecs(api);
+  registerEmailSpecs(api);
   registerWatchSpecs(api);
   registerMyScreenSpecs(api);
   // The PredicateFilter sources its `{ cardType }` schema from
@@ -366,6 +368,7 @@ function boot(): void {
   registerCommLogView();
   registerMailIntake();
   registerAccountCalendars();
+  registerAccountEmails();
   registerWatchBar();
   registerWatchLists();
   registerMyScreenSettings();

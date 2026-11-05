@@ -63,10 +63,12 @@ export class AccountPage extends Control<AccountPageConfig> {
     logoutBtn.textContent = 'Log out';
     this.listen(logoutBtn, 'click', () => logout());
 
+    const emails = this.buildEmails();
     const notifications = this.buildNotifications();
     const calendars = this.buildCalendars();
-    this.el.append(h1, card, logoutBtn, notifications.section, this.buildWatchLists(), calendars.section);
+    this.el.append(h1, card, logoutBtn, emails.section, notifications.section, this.buildWatchLists(), calendars.section);
     // Spawn once the host is in the page (the list's virtual window measures it).
+    this.spawn('AccountEmails', { type: 'AccountEmails' }, emails.host);
     this.spawn('MasterDetail', masterDetailScreen(MY_SUBSCRIPTIONS_SCREEN), notifications.host);
     this.spawn('AccountCalendars', { type: 'AccountCalendars' }, calendars.host);
   }
@@ -92,6 +94,20 @@ export class AccountPage extends Control<AccountPageConfig> {
     this.listen(link, 'click', plainClick(() => navigate('/watch-lists')));
     section.append(h2, intro, link);
     return section;
+  }
+
+  /** The Email addresses section: your addresses and the primary one
+   *  (AccountEmails; docs/EMAIL_ADDRESSES.md). */
+  private buildEmails(): { section: HTMLElement; host: HTMLElement } {
+    const section = document.createElement('section');
+    section.className = 'account-page__section';
+    section.dataset.accountEmails = '';
+    const h2 = document.createElement('h2');
+    h2.className = 'account-page__subtitle';
+    h2.textContent = 'Email addresses';
+    const host = document.createElement('div');
+    section.append(h2, host);
+    return { section, host };
   }
 
   /** The Calendars section: your due dates as calendar feeds

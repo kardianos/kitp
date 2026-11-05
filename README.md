@@ -386,6 +386,9 @@ just-in-time:
   in. A login stores only a trusted email, and `KITP_INIT_ADMIN_EMAIL`
   recovery matches logins by it; an email the OP marks
   `email_verified: false` is cleared from the login that holds it.
+- **Email addresses.** A trusted sign-in email also joins the person's
+  addresses, and a person can add their own, verified by a code mailed to
+  it; they choose which is the primary (docs/EMAIL_ADDRESSES.md).
 - **Role mapping.** Each value of the `OIDC_ROLE_CLAIM` claim (default
   `groups`) is looked up in the `role_mapping` table (`claim_value → role`)
   and granted globally. An IdP that leaves the claim out (Entra ID does

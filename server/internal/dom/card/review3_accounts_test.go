@@ -68,7 +68,8 @@ func TestWorkspaceAgentSeesOnlyItsGrants(t *testing.T) {
 }
 
 // TestLoginEmailIsAdminOnly (round 3 #17): a workspace worker can't change
-// the email of a person who signs in; an admin can, and so can the user.
+// the email of a person who signs in, and since person emails (2026-11-05)
+// neither can an admin or the user through attribute.update.
 func TestLoginEmailIsAdminOnly(t *testing.T) {
 	f := setupVisibility(t, "kitp_test_r3_login_email")
 	ctx := context.Background()
@@ -95,13 +96,22 @@ func TestLoginEmailIsAdminOnly(t *testing.T) {
 		}
 		return r.Error.Code
 	}
-	if code := set(f.worker, "attacker@evil.example"); code != "forbidden" {
-		t.Errorf("a worker changed a login's person email: code %q, want forbidden", code)
+	// Nobody writes it through attribute.update now, the user and admins
+	// included: the user picks it among the addresses they verified
+	// (person_email.set_primary, docs/EMAIL_ADDRESSES.md).
+	for _, c := range []struct {
+		who string
+		uid int64
+	}{{"a worker", f.worker}, {"an admin", f.admin}, {"the user", target}} {
+		if code := set(c.uid, "someone@new.example"); code != "validation" {
+			t.Errorf("%s changed a login's person email through attribute.update: code %q, want validation", c.who, code)
+		}
 	}
-	if code := set(f.admin, "mona@new.example"); code != "" {
-		t.Errorf("an admin couldn't change it: %s", code)
+	var email string
+	if err := f.sp.P.QueryRow(ctx, `SELECT value #>> '{}' FROM attribute_value av JOIN attribute_def ad ON ad.id = av.attribute_def_id WHERE av.card_id = $1 AND ad.name = 'email'`, targetPerson).Scan(&email); err != nil {
+		t.Fatal(err)
 	}
-	if code := set(target, "mona@mine.example"); code != "" {
-		t.Errorf("the user couldn't change their own: %s", code)
+	if email != "mona@example.com" {
+		t.Errorf("email = %q, want it unchanged", email)
 	}
 }

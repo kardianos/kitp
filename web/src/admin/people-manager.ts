@@ -34,6 +34,7 @@ import { AUTH_USER_PATH, type AuthUser } from '../auth/auth-state.js';
 
 import { icon } from '../ui/icons.js';
 import { captionedField } from '../ui/captioned-field.js';
+import { EMAIL_SPEC, accountMailLabel, addressNote, type AccountMail, type EmailList } from '../shell/account-emails.js';
 /** A human-readable message for a merge fault — surfaces the server's
  *  'merge_login_conflict' (and other sub_error) text in the merge dialog. */
 function mergeFaultMessage(f: ApiFault): string {
@@ -91,6 +92,8 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
 
   private segHost!: HTMLElement;
   private listHost!: HTMLElement;
+  /** The header's picker of the mail account that sends account emails. */
+  private mailHost!: HTMLElement;
   /** The open modal (create / remove), with its focus trap + opener-restore. */
   private modal: { overlay: HTMLElement; release: () => void; restore: () => void; guard: DismissGuard } | null =
     null;
@@ -121,7 +124,12 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     newBtn.textContent = '+ New';
     this.listen(newBtn, 'click', () => this.openCreateDialog());
 
-    head.append(title, seg, newBtn);
+    const mail = document.createElement('label');
+    mail.className = 'people-manager__account-mail';
+    mail.dataset.peopleAccountMail = '';
+    this.mailHost = mail;
+
+    head.append(title, seg, mail, newBtn);
 
     const list = document.createElement('div');
     list.className = 'people-manager__list';
@@ -134,6 +142,113 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
 
     this.paintSegments();
     this.load();
+    this.loadAccountMail();
+  }
+
+  /* ---------------------------- account emails ---------------------------- */
+
+  /** Which mail account sends account emails (the codes that verify an
+   *  address someone adds; docs/EMAIL_ADDRESSES.md). */
+  private loadAccountMail(): void {
+    this.ctx.api.callByName(
+      EMAIL_SPEC.mailGet,
+      {},
+      (out) => {
+        if (!this.isAlive()) return;
+        this.paintAccountMail(out as AccountMail);
+      },
+      { alive: () => this.isAlive() },
+    );
+  }
+
+  private paintAccountMail(m: AccountMail): void {
+    const caption = document.createElement('span');
+    caption.className = 'muted';
+    caption.textContent = 'Account emails from';
+    const sel = document.createElement('select');
+    sel.dataset.peopleAccountMailSelect = '';
+    sel.setAttribute('aria-label', 'Mail account that sends account emails (address verification codes)');
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'None (people can’t add addresses)';
+    sel.append(none);
+    for (const c of m.choices ?? []) {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = accountMailLabel(c);
+      if (c.id === m.channelId) opt.selected = true;
+      sel.append(opt);
+    }
+    this.listen(sel, 'change', () => {
+      this.ctx.api.callByName(EMAIL_SPEC.mailSet, { channelId: sel.value }, () => this.loadAccountMail(), { alive: () => this.isAlive() });
+    });
+    this.mailHost.replaceChildren(caption, sel);
+  }
+
+  /** A user's addresses (their own to manage): an admin sees them and can
+   *  remove one that isn't the primary. */
+  private openAddressesDialog(r: PersonRow): void {
+    const name = r.title || `#${r.id.toString()}`;
+    const panel = document.createElement('div');
+    panel.dataset.peopleAddressesDialog = r.id.toString();
+    const title = document.createElement('h2');
+    title.className = 'pm-modal__title';
+    title.textContent = `${name}’s email addresses`;
+    const hint = document.createElement('p');
+    hint.className = 'pm-modal__hint muted';
+    hint.textContent = 'They choose their primary address and add their own on their Account page. You can remove the others.';
+    const listEl = document.createElement('div');
+    listEl.className = 'pm-modal__msg';
+    const actions = document.createElement('div');
+    actions.className = 'pm-modal__actions';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'btn';
+    close.textContent = 'Close';
+    this.listen(close, 'click', () => this.closeModal());
+    actions.append(close);
+    panel.append(title, hint, listEl, actions);
+
+    const load = (): void => {
+      this.ctx.api.callByName(
+        EMAIL_SPEC.list,
+        { personId: r.id.toString() },
+        (out) => {
+          if (!this.isAlive()) return;
+          const list = out as EmailList;
+          listEl.replaceChildren(
+            ...list.addresses.map((a) => {
+              const row = document.createElement('div');
+              row.className = 'people-manager__address';
+              row.dataset.peopleAddress = a.email;
+              const text = document.createElement('span');
+              text.textContent = a.email;
+              const note = document.createElement('span');
+              note.className = 'muted';
+              note.textContent = [a.primary ? 'Primary' : '', addressNote(a, false)].filter((t) => t !== '').join(' · ');
+              row.append(text, note);
+              if (!a.primary) {
+                const rm = document.createElement('button');
+                rm.type = 'button';
+                rm.className = 'btn btn-danger';
+                rm.dataset.peopleAddressRemove = a.email;
+                rm.textContent = 'Remove';
+                this.listen(rm, 'click', () => {
+                  this.ctx.api.callByName(EMAIL_SPEC.remove, { personId: r.id.toString(), email: a.email }, () => load(), {
+                    alive: () => this.isAlive(),
+                  });
+                });
+                row.append(rm);
+              }
+              return row;
+            }),
+          );
+        },
+        { alive: () => this.isAlive() },
+      );
+    };
+    this.openModal(panel, `${name}’s email addresses`, actions);
+    load();
   }
 
   private load(): void {
@@ -274,7 +389,15 @@ export class PeopleManager extends Control<PeopleManagerConfig> {
     emailHost.className = 'people-manager__email muted';
     if (r.tier === 'user') {
       emailHost.textContent = r.email;
-      emailHost.title = 'Email is the user account sign-in key — manage in the user record.';
+      emailHost.title = 'A user’s addresses are theirs to manage (Account → Email addresses).';
+      const addrs = document.createElement('button');
+      addrs.type = 'button';
+      addrs.className = 'people-manager__addresses';
+      addrs.dataset.peopleAddresses = r.id.toString();
+      addrs.textContent = 'Addresses';
+      addrs.setAttribute('aria-label', `Email addresses of ${r.title || `#${r.id.toString()}`}`);
+      this.listen(addrs, 'click', () => this.openAddressesDialog(r));
+      emailHost.append(document.createTextNode(' '), addrs);
     } else {
       const emailField = new EditableField({
         value: r.email,

@@ -30,6 +30,7 @@ CREATE OR REPLACE FUNCTION person_merge_batch(
     result jsonb
 ) LANGUAGE plpgsql AS $$
 DECLARE
+    _pe person_email%ROWTYPE;
     _idx int;
     _raw jsonb;
     _survivor bigint;
@@ -163,6 +164,19 @@ BEGIN
                 END IF;
             END IF;
         END IF;
+
+        -- The losers' addresses go to the survivor (docs/EMAIL_ADDRESSES.md);
+        -- one the survivor has already stays the survivor's.
+        -- Taken off the losers first (a verified address belongs to one
+        -- person), then added to the survivor one by one.
+        FOR _pe IN DELETE FROM person_email WHERE person_card_id = ANY(_losers) RETURNING * LOOP
+            INSERT INTO person_email (person_card_id, email, source, verified_at, created_at,
+                                      verify_code_hash, verify_expires_at, verify_sent_at)
+            VALUES (_survivor, _pe.email, _pe.source, _pe.verified_at, _pe.created_at,
+                    _pe.verify_code_hash, _pe.verify_expires_at, _pe.verify_sent_at)
+            ON CONFLICT (person_card_id, email) DO UPDATE
+                SET verified_at = COALESCE(person_email.verified_at, EXCLUDED.verified_at);
+        END LOOP;
 
         -- Shared graph merge: repoint person refs, soft-delete losers, activity.
         _repointed := card_merge_into(_survivor, _losers, actor_id);

@@ -73,6 +73,11 @@ still open, and what a deployment of those commits needs to know.
   account an admin set up, never signed in, and the login its person
   made). The new default doesn't merge them; give the signed-in login the
   set-up account's roles and remove the set-up one.
+- **Email addresses** (docs/EMAIL_ADDRESSES.md): migration 0041 puts each
+  signed-in login's email on its person's list. People can add their own
+  only after an admin picks the mail account that sends codes (People →
+  "Account emails from"). A user's `email` is no longer editable by
+  others; it is the primary they choose.
 - **Roles: set `OIDC_ROLE_CLAIM=none`** to have kitp manage them. The
   first boot with it makes the 19 grants earlier Entra ID sign-ins brought
   kitp's (logged), so nobody loses access; the 3 role mappings are then

@@ -10155,6 +10155,22 @@ textarea.task-comms__form-input {
   white-space: nowrap;
   color: var(--color-fg);
 }
+.people-manager__account-mail {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2, 0.5rem);
+  font-size: 0.875rem;
+}
+.people-manager__addresses {
+  margin-left: var(--space-1, 0.25rem);
+  font-size: 0.8125rem;
+}
+.people-manager__address {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 0.75rem);
+  padding: var(--space-1, 0.25rem) 0;
+}
 .people-manager__email {
   flex: 1 1 auto;
   min-width: 0;

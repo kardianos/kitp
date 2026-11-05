@@ -1498,6 +1498,25 @@ FROM card_type ct, attribute_def ad
 WHERE ct.name = 'reply_body' AND ad.name = 'reply_message_id'
 ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
 	},
+	{
+		// A person's email addresses (docs/EMAIL_ADDRESSES.md): every login
+		// that has signed in gets the email it holds on its person's list,
+		// verified (source signin), as its next sign-in would add it. The
+		// person_email table is DDL. A verified address belongs to one
+		// person, so of two logins with one email the older keeps it.
+		// Idempotent — ON CONFLICT DO NOTHING.
+		id: "0041_person_email_backfill",
+		sql: `
+INSERT INTO person_email (person_card_id, email, source, verified_at)
+SELECT DISTINCT ON (lower(btrim(ua.email))) uap.person_card_id, lower(btrim(ua.email)), 'signin', now()
+FROM user_account ua
+JOIN user_account_person uap ON uap.user_account_id = ua.id
+JOIN card p ON p.id = uap.person_card_id AND p.deleted_at IS NULL
+WHERE ua.oidc_sub IS NOT NULL AND NOT ua.is_agent
+  AND COALESCE(btrim(ua.email), '') <> '' AND email_plain(lower(btrim(ua.email)))
+ORDER BY lower(btrim(ua.email)), ua.id
+ON CONFLICT DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

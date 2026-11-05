@@ -300,6 +300,15 @@ export { CommRoutes, registerCommRoutes, routeKindLabel, ROUTE_STEPS } from './m
 export { CommLogView, registerCommLogView, commLogSummary, COMM_LOG_KINDS } from './mailin/comm-log.js';
 export { MailIntake, registerMailIntake, daysUntil } from './mailin/mail-intake.js';
 export { AccountCalendars, registerAccountCalendars, filterPreset, CALENDAR_FILTERS, CALENDAR_APP_STEPS } from './mailin/calendars.js';
+export {
+  AccountEmails,
+  registerAccountEmails,
+  registerEmailSpecs,
+  addressNote,
+  accountMailLabel,
+  EMAIL_SPEC,
+  EMAIL_FAULTS,
+} from './shell/account-emails.js';
 export { THEME_FORM, themeRowToDraft, themeDraftToInput, validateThemeDraft } from './admin/theme-form.js';
 export {
   MasterDetail,

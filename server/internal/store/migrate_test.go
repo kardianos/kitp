@@ -1792,3 +1792,49 @@ func TestForwardMigration0040ReplyMessageID(t *testing.T) {
 		t.Errorf("after 0040: %v, want the fresh seed's %v", got, fresh)
 	}
 }
+
+// TestForwardMigration0041PersonEmailBackfill checks that a signed-in
+// login's email lands on its person's address list, verified, and that a
+// login that never signed in adds nothing.
+func TestForwardMigration0041PersonEmailBackfill(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0041")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	var person int64
+	if err := pool.QueryRow(ctx, `
+		WITH u AS (INSERT INTO user_account (display_name, email, oidc_sub) VALUES ('Ada', 'Ada@Corp.example', 'sub-ada') RETURNING id),
+		     p AS (INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'person' RETURNING id),
+		     l AS (INSERT INTO user_account_person (user_account_id, person_card_id) SELECT u.id, p.id FROM u, p RETURNING person_card_id)
+		SELECT person_card_id FROM l`).Scan(&person); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		WITH u AS (INSERT INTO user_account (display_name, email) VALUES ('Set up', 'later@corp.example') RETURNING id),
+		     p AS (INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'person' RETURNING id)
+		INSERT INTO user_account_person (user_account_id, person_card_id) SELECT u.id, p.id FROM u, p`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM schema_version WHERE name = '0041_person_email_backfill'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	var got []string
+	rows, err := pool.Query(ctx, `SELECT person_card_id::text || ':' || email || ':' || (verified_at IS NOT NULL)::text FROM person_email ORDER BY email`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, s)
+	}
+	if want := fmt.Sprintf("[%d:ada@corp.example:true]", person); fmt.Sprint(got) != want {
+		t.Errorf("after 0041: %v, want %s", got, want)
+	}
+}

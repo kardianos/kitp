@@ -152,27 +152,21 @@ BEGIN
                 format('attribute.update: %s is set by kitp, not by hand', _attr_name), NULL::jsonb;
             CONTINUE;
         END IF;
+        -- A person with a login manages their own addresses: the primary
+        -- (this `email`) is one they verified (person_email.set_primary,
+        -- docs/EMAIL_ADDRESSES.md). A contact's email stays card data.
+        IF _attr_name = 'email' AND attribute_update_batch.actor_id <> 1
+           AND EXISTS (SELECT 1 FROM user_account_person WHERE person_card_id = _card_id) THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'attribute.update: a user''s email is theirs to choose among the addresses they verified (Account → Email addresses)'::text, NULL::jsonb;
+            CONTINUE;
+        END IF;
 
         -- 1b. Card existence.
         SELECT card_type_id INTO _card_type_id FROM card WHERE id = _card_id;
         IF NOT FOUND THEN
             RETURN QUERY SELECT _idx, false, 'card_not_found'::text,
                 format('attribute.update: card %s not found', _card_id), NULL::jsonb;
-            CONTINUE;
-        END IF;
-
-        -- 1b'. The email of a person who has a login is where kitp mails
-        --      that user — digests, approval requests, staff replies on
-        --      their threads. Only a workspace admin, or the user
-        --      themselves, changes it; any worker could redirect it before
-        --      (review 2026-11-03 round 3 #17).
-        IF _attr_name = 'email'
-           AND EXISTS (SELECT 1 FROM user_account_person uap WHERE uap.person_card_id = _card_id)
-           AND NOT user_is_global_admin(attribute_update_batch.actor_id)
-           AND account_person(attribute_update_batch.actor_id) IS DISTINCT FROM _card_id THEN
-            RETURN QUERY SELECT _idx, false, 'forbidden'::text,
-                'attribute.update: only an admin or the user themselves changes the email of someone who signs in'::text,
-                NULL::jsonb;
             CONTINUE;
         END IF;
 

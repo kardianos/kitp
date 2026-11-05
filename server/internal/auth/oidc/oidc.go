@@ -667,6 +667,9 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	if subErr == nil && subRevoked {
 		return 0, "", ErrLoginRevoked
 	}
+	// prevEmail: the email the login held before this sign-in ("" for a
+	// new login), set by the re-login branch below.
+	var prevEmail string
 	// `attached` true when we resolved to an existing row (either via
 	// sub or via the pre-created-by-email fallback) and therefore
 	// SKIP the fresh-insert + person-card creation block below.
@@ -961,14 +964,28 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 		if !emailTrusted && emailRefused {
 			untrusted = email
 		}
-		if err := txExec(ctx, tx, `
+		// prev reads the row as the statement found it: the email this
+		// login held before (the primary follows a new one only from it).
+		if err := txScan(ctx, tx, `
+			WITH prev AS (SELECT COALESCE(email, '') AS email FROM user_account WHERE id = :user)
 			UPDATE user_account
 			SET email = CASE WHEN :email <> '' THEN :email
 			                 WHEN :untrusted <> '' AND lower(COALESCE(email, '')) = lower(:untrusted) THEN NULL
 			                 ELSE email END
 			WHERE id = :user
-		`, map[string]any{"user": userID, "email": loginEmail, "untrusted": untrusted}); err != nil {
+			RETURNING (SELECT email FROM prev)
+		`, map[string]any{"user": userID, "email": loginEmail, "untrusted": untrusted}, &prevEmail); err != nil {
 			return 0, "", fmt.Errorf("oidc: provision update: %w", err)
+		}
+	}
+	// A trusted email joins the person's addresses, and the primary follows
+	// it from the login's previous one (docs/EMAIL_ADDRESSES.md).
+	if loginEmail != "" {
+		if err := txExec(ctx, tx, `
+			SELECT person_email_note_signin(
+			    (SELECT person_card_id FROM user_account_person WHERE user_account_id = :user), :email, :prev, :user)
+		`, map[string]any{"user": userID, "email": loginEmail, "prev": prevEmail}); err != nil {
+			return 0, "", fmt.Errorf("oidc: note sign-in email: %w", err)
 		}
 	}
 

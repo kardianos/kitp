@@ -466,6 +466,32 @@ name, type, pk, unique, nullable, references, on_delete
 user_account_id, bigint, true, , , user_account.id, cascade
 person_card_id, bigint, , true, false, card.id, cascade
 
+## table person_email | doc="A person's email addresses (docs/EMAIL_ADDRESSES.md). source is 'signin' (a sign-in's trusted email, verified by the IdP; person_email_note_signin) or 'added' (the person added it, verified by a code mailed to it: verify_code_hash, the sha256 of the code, until verify_expires_at). The primary is the person card's `email` attribute — what mail, digests and thread recipients use; the list holds the others and their state. A verified address belongs to one person (the unique index), and mail from any verified address files as that person (comm.upsertPersonByEmail, person.upsert_by_email). email is lower-cased." | primary_key="person_card_id, email"
+
+### columns
+name, type, nullable, default, references, on_delete
+person_card_id, bigint, false, , card.id, cascade
+email, text, false, , ,
+source, text, false, , ,
+verified_at, timestamptz, , , ,
+created_at, timestamptz, false, now(), ,
+verify_code_hash, text, , , ,
+verify_expires_at, timestamptz, , , ,
+verify_sent_at, timestamptz, , , ,
+
+### indexes
+name, columns, unique, where
+person_email_verified, "email", true, "verified_at IS NOT NULL"
+
+## table account_mail | doc="The mail account (a comm_channel) that sends account emails — the codes that verify an address a person adds (person_email.add). One row at most (singleton). With none, or a deleted channel, adding an address isn't offered. Set by an admin in People (account_mail.set)."
+
+### columns
+name, type, pk, nullable, default, check, references, on_delete
+singleton, boolean, true, false, true, "singleton", ,
+channel_id, bigint, , , , , card.id, set null
+changed_at, timestamptz, , false, now(), , ,
+changed_by, bigint, , , , , user_account.id, set null
+
 ## table import_job | doc="One in-flight CSV import per row — the wizard advances status through pending → uploaded → mapped → previewed → running → completed/failed. mapping / resolution / summary are jsonb so the wizard can resume from any step."
 
 ### columns
@@ -988,3 +1014,12 @@ idx_theme_file_cas, "cas_address"
 ## function flow_step_list_batch | doc="flow_step.list — list flow_step rows for one flow, joined LEFT to role for the optional requires_role name. Sorted by (sort_order, label, id)." | path="functions/flow_step_list_batch.sql"
 ## function flow_step_list_for_card_batch | doc="flow_step.list_for_card — read-side affordance API: walk parent_card_id (RECURSIVE depth<16) to find the enclosing project, then list every flow_step the card may currently fire — one row per (flow, attribute_def, from_card_id=card's value) match — pre-joined with from/to titles+phases, optional requires_role name, and a per-actor allowed bit (system bypass + project-or-global scope check)." | path="functions/flow_step_list_for_card_batch.sql"
 ## function card_type_select_batch | doc="card_type.select — list every card_type row (global reference data; no per-input filter today). One input → one result row; same snapshot replicated per input." | path="functions/card_type_select_batch.sql"
+## function person_email_set_primary_row | doc="Make one of a person's addresses the primary (the person card's email), with its activity row. Shared by person_email.set_primary and the sign-in rule." | path="functions/person_email_set_primary_row.sql" | arg_types="bigint, text, bigint"
+## function person_email_note_signin | doc="A sign-in's trusted email joins its person's addresses as verified (unless another person has it verified); the primary follows it when it was the login's previous email or empty. Called by the OIDC sign-in." | path="functions/person_email_note_signin.sql" | arg_types="bigint, text, text, bigint"
+## function person_email_list_batch | doc="person_email.list — the caller's own email addresses, or any person's for a workspace admin: source, verified, primary, pending code expiry; can_add when a mail account sends account emails." | path="functions/person_email_list_batch.sql"
+## function person_email_add_batch | doc="person_email.add — the caller adds an address of their own; a code (hash from the handler's PreRun) is mailed to it through the account-mail account. Limits: 20 addresses, 5 codes an hour." | path="functions/person_email_add_batch.sql"
+## function person_email_verify_batch | doc="person_email.verify — the caller confirms an address they added with the code mailed to it (24 hours)." | path="functions/person_email_verify_batch.sql"
+## function person_email_set_primary_batch | doc="person_email.set_primary — the caller makes one of their verified addresses the primary (the person card's email)." | path="functions/person_email_set_primary_batch.sql"
+## function person_email_remove_batch | doc="person_email.remove — take an address off a person's list: the caller's own, or any person's for a workspace admin; never the primary." | path="functions/person_email_remove_batch.sql"
+## function account_mail_get_batch | doc="account_mail.get — admin: the mail account that sends account emails, or none." | path="functions/account_mail_get_batch.sql"
+## function account_mail_set_batch | doc="account_mail.set — admin: choose the mail account that sends account emails, or none." | path="functions/account_mail_set_batch.sql"

@@ -101,16 +101,25 @@ func upsertPersonByEmail(
 	lb.Set("email_def", emailADID)
 	lb.Set("person_type", personCTID)
 	lb.Set("email", trimmed)
+	// A person's other verified addresses (person_email) match too, after
+	// the primary: mail from someone's second address files as them
+	// (docs/EMAIL_ADDRESSES.md).
 	lq, largs, err := lb.Compile(`
-		SELECT av.card_id
-		FROM attribute_value av
-		JOIN attribute_def ad ON ad.id = av.attribute_def_id
-		JOIN card c ON c.id = av.card_id
-		WHERE ad.id = :email_def
-		  AND c.card_type_id = :person_type
-		  AND c.deleted_at IS NULL
-		  AND lower(av.value #>> '{}') = lower(:email)
-		ORDER BY av.card_id
+		SELECT m.id FROM (
+		    SELECT av.card_id AS id, 0 AS pref
+		    FROM attribute_value av
+		    JOIN card c ON c.id = av.card_id
+		    WHERE av.attribute_def_id = :email_def
+		      AND c.card_type_id = :person_type
+		      AND c.deleted_at IS NULL
+		      AND lower(av.value #>> '{}') = lower(:email)
+		    UNION ALL
+		    SELECT pe.person_card_id, 1
+		    FROM person_email pe
+		    JOIN card c ON c.id = pe.person_card_id AND c.deleted_at IS NULL
+		    WHERE pe.email = lower(:email) AND pe.verified_at IS NOT NULL
+		) m
+		ORDER BY m.pref, m.id
 		LIMIT 1
 	`)
 	if err != nil {
