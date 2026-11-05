@@ -51,7 +51,7 @@ func TestOwnersFilesHandOverOnlyInFlight(t *testing.T) {
 		t.Error("an agent couldn't attach the upload its owner just made")
 	}
 	old := makeFile("last month's CSV import")
-	if _, err := sp.P.Exec(ctx, `UPDATE file SET created_at = now() - interval '2 days' WHERE id = $1`, old); err != nil {
+	if _, err := sp.P.Exec(ctx, `UPDATE file SET created_at = now() - interval '8 days' WHERE id = $1`, old); err != nil {
 		t.Fatal(err)
 	}
 	if agentAttach(old) {

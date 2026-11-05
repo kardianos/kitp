@@ -124,8 +124,9 @@ having the file (round 2 #21).
 "attach this sub to a pre-created row with the same email" fallback fires
 only when the token's email is trusted (`Config.EmailTrust`,
 `KITP_OIDC_TRUST_UNVERIFIED_EMAIL`): by default, unless the token says
-`email_verified: false`; with `0`, only when it says `email_verified: true`
-(or Entra ID's `xms_edov: true`); with `1`, always. The default changed
+`email_verified: false` (or, without `email_verified`, Entra ID's
+`xms_edov: false`); with `0`, only when it says `email_verified: true` (or
+Entra ID's `xms_edov: true`); with `1`, always. The default changed
 from verified-only on 2026-11-05: Entra ID sends no verification claim, so
 verified-only gave every person an admin had set up a second account at
 first sign-in. Deployments whose IdP lets users set their own address

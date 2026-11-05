@@ -81,13 +81,20 @@ still open, and what a deployment of those commits needs to know.
 - **Roles: set `OIDC_ROLE_CLAIM=none`** to have kitp manage them. The
   first boot with it makes the 19 grants earlier Entra ID sign-ins brought
   kitp's (logged), so nobody loses access; the 3 role mappings are then
-  ignored. Entra app-role assignment still decides who may sign in if the
+  ignored. That is one way: switching back to a claim later leaves those
+  grants kitp's, never reconciled with the IdP again, until an admin
+  removes them. Entra app-role assignment still decides who may sign in if the
   enterprise app has "Assignment required" on.
 - **Sign-out at Entra ID ends kitp sessions** once the app registration's
   Front-channel logout URL is
   `https://task.dev.kashilab.com/api/v1/auth/oidc/frontchannel-logout`
-  (Authentication). Sessions started before the deploy carry no IdP `sid`
-  and aren't reached.
+  (Authentication), and only if Entra ID sends `sid`, both in the ID token
+  and in the logout request: kitp matches sessions on it alone. After the
+  deploy, check that new sessions get `session.oidc_sid` (if not, add the
+  `sid` optional claim under Token configuration; kitp logs "the ID token
+  has no sid" at each such sign-in) and that a sign-out at Entra ID logs
+  `oidc: front-channel logout` with `sessions_ended` above 0. Sessions
+  started before the deploy carry no IdP `sid` and aren't reached.
 - **The ID token's `aud` is checked against `OIDC_CLIENT_ID`** when
   `OIDC_AUDIENCE` is unset.
 - **Tokens expire.** New tokens default to 365 days and can't be set

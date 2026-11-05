@@ -1,8 +1,10 @@
 -- file_readable_by — whether an account may have a stored file's bytes:
 --   - it uploaded the file itself;
 --   - its agent or owner (account_principal, as cas_held_by and import jobs
---     compare; round 3 #20) uploaded it in the last day and it has never
---     been attached — an upload in flight, handed from one to the other.
+--     compare; round 3 #20) uploaded it in the last 7 days and it has never
+--     been attached — an upload in flight, handed from one to the other (a
+--     CSV import uploaded one day and committed the next; a day was too
+--     short, review 2026-11-05 round 6).
 --     Past that, an agent reads it only where its own grants reach: a
 --     principal match for every file let an agent scoped to one project
 --     read everything its owner ever uploaded (round 4 #11), and one for
@@ -26,7 +28,7 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
         OR EXISTS (SELECT 1 FROM file f
                    WHERE f.id = file_readable_by.file
                      AND account_principal(f.created_by) = account_principal(reader)
-                     AND f.created_at > now() - interval '1 day'
+                     AND f.created_at > now() - interval '7 days'
                      AND NOT EXISTS (SELECT 1 FROM attachment a WHERE a.file_id = f.id))
         OR EXISTS (
             SELECT 1

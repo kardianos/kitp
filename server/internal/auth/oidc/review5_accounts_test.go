@@ -150,3 +150,32 @@ func TestSignInReusesTheReusablePerson(t *testing.T) {
 		t.Errorf("the sign-in got person %d, want %d (the one kitp made)", linked, made)
 	}
 }
+
+// TestSignInDoesNotReuseARevokedLoginsPerson (review 2026-11-05 round 6):
+// the person of a login an admin revoked — whose own email kitp may not
+// hold — isn't given to a new subject that signs in with its email.
+func TestSignInDoesNotReuseARevokedLoginsPerson(t *testing.T) {
+	f := newR4OIDC(t, "kitp_test_r8_reuse_revoked")
+	ctx := context.Background()
+	var revokedPerson int64
+	if err := f.pool.QueryRow(ctx, `
+		WITH p AS (INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'person' RETURNING id),
+		     e AS (INSERT INTO attribute_value (card_id, attribute_def_id, value)
+		           SELECT p.id, ad.id, to_jsonb('gone@example.com'::text) FROM p, attribute_def ad WHERE ad.name = 'email'),
+		     u AS (INSERT INTO user_account (display_name, oidc_sub, login_revoked_at, revoked_person_card_id)
+		           SELECT 'Gone', 'sub-gone', now(), p.id FROM p)
+		SELECT id FROM p`).Scan(&revokedPerson); err != nil {
+		t.Fatal(err)
+	}
+	uid, err := f.signIn("sub-other", "gone@example.com", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var linked int64
+	if err := f.pool.QueryRow(ctx, `SELECT person_card_id FROM user_account_person WHERE user_account_id = $1`, uid).Scan(&linked); err != nil {
+		t.Fatal(err)
+	}
+	if linked == revokedPerson {
+		t.Errorf("the new subject got the revoked login's person %d", linked)
+	}
+}

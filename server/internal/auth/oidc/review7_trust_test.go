@@ -56,6 +56,10 @@ func TestSilentEmailLinksByDefault(t *testing.T) {
 		{"default, silent", oidc.EmailUnlessRefused, jwt.MapClaims{"email": "ada@example.com"}, true},
 		{"default, marked unverified", oidc.EmailUnlessRefused, jwt.MapClaims{"email": "ada@example.com", "email_verified": false}, false},
 		{"0, silent", oidc.EmailVerifiedOnly, jwt.MapClaims{"email": "ada@example.com"}, false},
+		// Entra ID saying the domain isn't verified for the tenant (review
+		// 2026-11-05 round 6 #8).
+		{"default, xms_edov false", oidc.EmailUnlessRefused, jwt.MapClaims{"email": "ada@example.com", "xms_edov": false}, false},
+		{"default, xms_edov true", oidc.EmailUnlessRefused, jwt.MapClaims{"email": "ada@example.com", "xms_edov": true}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newR4OIDCTrusting(t, "kitp_test_r7_trust_default", c.trust)

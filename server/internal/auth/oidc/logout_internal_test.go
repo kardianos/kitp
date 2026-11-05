@@ -14,7 +14,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/kitp/kitp/server/internal/auth/session"
-	"github.com/kitp/kitp/server/internal/netx"
 )
 
 // signedInWithSID signs in through the fake IdP with IdP session sid and
@@ -69,7 +68,7 @@ func postLogout(si *signIn, token string) *httptest.ResponseRecorder {
 		strings.NewReader(url.Values{"logout_token": {token}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
-	handleBackchannelLogout(rec, req, si.cfg, netx.NewLimiter(logoutsPerMinute, logoutsBurst, 1))
+	handleBackchannelLogout(rec, req, si.cfg, newLogoutGate(backchannelPerAddressPerMinute, backchannelPerAddressBurst, nil))
 	return rec
 }
 
@@ -132,14 +131,24 @@ func TestBackchannelLogout(t *testing.T) {
 // (iss or not), may be framed by the IdP, and a foreign iss is refused.
 func TestFrontchannelLogout(t *testing.T) {
 	si, cookie := signedInWithSID(t, "kitp_test_oidc_frontchannel", "fc-session")
+	gate := newLogoutGate(frontchannelPerAddressPerMinute, frontchannelPerAddressBurst, nil)
 	get := func(q url.Values) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		handleFrontchannelLogout(rec, httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc/frontchannel-logout?"+q.Encode(), nil),
-			si.cfg, netx.NewLimiter(logoutsPerMinute, logoutsBurst, 1))
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc/frontchannel-logout?"+q.Encode(), nil)
+		// The browser's cookie, as a cross-site link to this page sends it:
+		// it must end nothing (review 2026-11-05 round 6 #6).
+		req.AddCookie(&http.Cookie{Name: session.CookieName, Value: cookie})
+		handleFrontchannelLogout(rec, req, si.cfg, gate)
 		return rec
 	}
 	if rec := get(url.Values{"sid": {"fc-session"}, "iss": {"https://elsewhere.example"}}); rec.Code != http.StatusBadRequest || !live(t, si, cookie) {
 		t.Fatalf("a foreign iss: %d, live=%v; want 400 and the session kept", rec.Code, live(t, si, cookie))
+	}
+	if rec := get(url.Values{}); rec.Code != http.StatusBadRequest || !live(t, si, cookie) {
+		t.Fatalf("no sid, only the cookie: %d, live=%v; want 400 and the session kept", rec.Code, live(t, si, cookie))
+	}
+	if rec := get(url.Values{"sid": {"another-session"}}); rec.Code != http.StatusOK || !live(t, si, cookie) {
+		t.Fatalf("another sid with this cookie: %d, live=%v; want the session kept", rec.Code, live(t, si, cookie))
 	}
 	rec := get(url.Values{"sid": {"fc-session"}})
 	if rec.Code != http.StatusOK || live(t, si, cookie) {
@@ -150,5 +159,27 @@ func TestFrontchannelLogout(t *testing.T) {
 	}
 	if !strings.Contains(rec.Header().Get("Cache-Control"), "no-store") {
 		t.Errorf("Cache-Control %q", rec.Header().Get("Cache-Control"))
+	}
+}
+
+// TestLogoutGateIsPerAddress (review 2026-11-05 round 6 #7): one address
+// spending its logout budget leaves others theirs.
+func TestLogoutGateIsPerAddress(t *testing.T) {
+	gate := newLogoutGate(frontchannelPerAddressPerMinute, frontchannelPerAddressBurst, nil)
+	from := func(addr string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc/frontchannel-logout", nil)
+		r.RemoteAddr = addr
+		return r
+	}
+	for i := 0; i < frontchannelPerAddressBurst; i++ {
+		if !gate.allow(from("198.51.100.7:4000")) {
+			t.Fatalf("request %d refused within the burst", i+1)
+		}
+	}
+	if gate.allow(from("198.51.100.7:4001")) {
+		t.Error("past the burst: still allowed")
+	}
+	if !gate.allow(from("203.0.113.9:4000")) {
+		t.Error("another address refused")
 	}
 }

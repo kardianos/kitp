@@ -199,13 +199,14 @@ func Mount(rt *api.Router, cfg BFFConfig) {
 	})
 	// The IdP ending a sign-in there (logout.go): front-channel from the
 	// browser, back-channel server to server.
-	logouts := netx.NewLimiter(logoutsPerMinute, logoutsBurst, 1)
+	front := newLogoutGate(frontchannelPerAddressPerMinute, frontchannelPerAddressBurst, cfg.Trusted)
+	back := newLogoutGate(backchannelPerAddressPerMinute, backchannelPerAddressBurst, cfg.Trusted)
 	rt.Public("GET /api/v1/auth/oidc/frontchannel-logout", func(_ context.Context, w http.ResponseWriter, r *http.Request) error {
-		handleFrontchannelLogout(w, r, cfg, logouts)
+		handleFrontchannelLogout(w, r, cfg, front)
 		return nil
 	})
 	rt.Public("POST /api/v1/auth/oidc/backchannel-logout", func(_ context.Context, w http.ResponseWriter, r *http.Request) error {
-		handleBackchannelLogout(w, r, cfg, logouts)
+		handleBackchannelLogout(w, r, cfg, back)
 		return nil
 	})
 }
@@ -390,6 +391,13 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 	// The IdP's session (sid), so its sign-out can end this one (logout.go).
 	sub, _ := peekClaim(idToken, "sub")
 	idpSession, _ := peekClaim(idToken, "sid")
+	if idpSession == "" {
+		// Front-channel logout matches sessions on it, so without one a
+		// sign-out at the IdP leaves this session alone (Entra ID: add the
+		// sid optional claim; README "Sign-out at the IdP").
+		slog.Default().LogAttrs(r.Context(), slog.LevelInfo, "oidc: the ID token has no sid; a front-channel logout can't end this session",
+			slog.Int64("user_id", userID))
+	}
 	sid, err := cfg.SessionManager.CreateOIDC(r.Context(), userID, sub, idpSession)
 	if err != nil {
 		logRedirect(r, "oidc.callback: session_create", err)

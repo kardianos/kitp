@@ -2,13 +2,13 @@
 // user provisioning for kitp.
 //
 // The flow:
-//   1. Discover the OP via `<issuer>/.well-known/openid-configuration`.
-//   2. Validate `Authorization: Bearer <jwt>` headers using the OP's JWKS
-//      (cached for 10 minutes; refresh on kid miss).
-//   3. On first valid token for a `sub`, insert a user_account row and
-//      apply role mappings from the role_mapping table.
-//   4. Cache (sub -> user id, claims hash, expires_at) for 5 minutes;
-//      reload when the claims hash changes (re-applies role mappings).
+//  1. Discover the OP via `<issuer>/.well-known/openid-configuration`.
+//  2. Validate `Authorization: Bearer <jwt>` headers using the OP's JWKS
+//     (cached for 10 minutes; refresh on kid miss).
+//  3. On first valid token for a `sub`, insert a user_account row and
+//     apply role mappings from the role_mapping table.
+//  4. Cache (sub -> user id, claims hash, expires_at) for 5 minutes;
+//     reload when the claims hash changes (re-applies role mappings).
 //
 // Only the validation/provisioning logic lives here. The HTTP middleware
 // in middleware.go consumes Validator and stamps the resolved actor on
@@ -43,16 +43,16 @@ import (
 
 // Config holds the runtime knobs read from the environment at startup.
 type Config struct {
-	Issuer        string   // e.g. "http://localhost:5556/dex"
-	Audience      string   // expected `aud` claim
-	RoleClaim     string   // claim to read for role mapping; default "groups"
-	DefaultRole   string   // role granted when no claim matches; default "worker"
+	Issuer      string // e.g. "http://localhost:5556/dex"
+	Audience    string // expected `aud` claim
+	RoleClaim   string // claim to read for role mapping; default "groups"
+	DefaultRole string // role granted when no claim matches; default "worker"
 	// KitpRoles (OIDC_ROLE_CLAIM=none): kitp manages every role and the IdP
 	// only signs people in. A sign-in grants and removes nothing (no
 	// role_mapping, no reconcile); DefaultRole goes, as a kitp grant, to a
 	// login's first sign-in when it has no role yet. AdoptIdPRoles makes
 	// the roles earlier sign-ins brought kitp's.
-	KitpRoles bool
+	KitpRoles     bool
 	RequiredPairs [][2]string
 
 	// BFF redirect knobs. ClientID is required for the
@@ -140,9 +140,9 @@ func FromEnv(lookup func(string) (string, bool)) *Config {
 		return nil
 	}
 	cfg := &Config{
-		Issuer:      issuer,
-		Audience:    env("OIDC_AUDIENCE"),
-		RoleClaim:   env("OIDC_ROLE_CLAIM"),
+		Issuer:    issuer,
+		Audience:  env("OIDC_AUDIENCE"),
+		RoleClaim: env("OIDC_ROLE_CLAIM"),
 	}
 	switch {
 	case strings.EqualFold(strings.TrimSpace(cfg.RoleClaim), "none"):
@@ -194,16 +194,18 @@ func FromEnv(lookup func(string) (string, bool)) *Config {
 // emailVerification reads what the IdP says of the email claim: verified
 // (email_verified true, or — with no email_verified — Entra ID's xms_edov,
 // "the email's domain owner is verified", an optional ID-token claim), or
-// refused (email_verified present and false). An IdP that says neither —
-// Entra ID unless xms_edov is configured — leaves the email untrusted but
-// doesn't take it away from a login that holds it (review 2026-11-03
-// round 5 #6). Some IdPs send the booleans as strings.
+// refused (email_verified false, or with no email_verified xms_edov false:
+// the post-nOAuth signal that the domain isn't verified for the tenant;
+// review 2026-11-05 round 6 #8). An IdP that says neither — Entra ID
+// unless xms_edov is configured — leaves the email untrusted under
+// EmailVerifiedOnly but doesn't take it away from a login that holds it
+// (review 2026-11-03 round 5 #6). Some IdPs send the booleans as strings.
 func emailVerification(claims jwt.MapClaims) (verified, refused bool) {
 	if v, ok := claimBool(claims["email_verified"]); ok {
 		return v, !v
 	}
-	if v, ok := claimBool(claims["xms_edov"]); ok && v {
-		return true, false
+	if v, ok := claimBool(claims["xms_edov"]); ok {
+		return v, !v
 	}
 	return false, false
 }
@@ -252,13 +254,15 @@ type Validator struct {
 	pool   *pgxpool.Pool
 	client *http.Client
 
-	mu              sync.RWMutex
-	disco           *discoveryDoc
-	jwksKeys        map[string]*rsa.PublicKey
-	jwksFetchedAt   time.Time
-	subCache        map[string]*subRecord // sub -> cached resolution
-	jwksTTL         time.Duration
-	subTTL          time.Duration
+	mu            sync.RWMutex
+	disco         *discoveryDoc
+	jwksKeys      map[string]*rsa.PublicKey
+	jwksFetchedAt time.Time
+	jwksTriedAt   time.Time             // the last fetch begun for an unknown kid or a stale set
+	jwksFetching  chan struct{}         // closed when the fetch under way ends; nil when none
+	subCache      map[string]*subRecord // sub -> cached resolution
+	jwksTTL       time.Duration
+	subTTL        time.Duration
 }
 
 // subRecord is the cached resolution for one subject.
@@ -424,17 +428,44 @@ func (v *Validator) lookupKey(ctx context.Context, kid string) (*rsa.PublicKey, 
 	// An unknown kid refetches the keys at most every jwksMissRefresh: a
 	// token naming made-up kids — on a bearer request, or the logout routes,
 	// which take no credential — would otherwise have kitp fetch the IdP's
-	// JWKS once per request. A real key rotation waits at most that long.
-	v.mu.RLock()
-	recent := !v.jwksFetchedAt.IsZero() && time.Since(v.jwksFetchedAt) < jwksMissRefresh
+	// JWKS once per request. The wait counts from the last try, so a fetch
+	// that fails waits too, and the first caller past it is the one that
+	// fetches (review 2026-11-05 round 6). A real key rotation waits at
+	// most that long.
+	// A caller that finds a fetch under way waits for it (the first
+	// requests after a restart all need the keys).
+	v.mu.Lock()
 	_, known := v.jwksKeys[kid]
-	v.mu.RUnlock()
-	if recent && !known {
+	if wait := v.jwksFetching; wait != nil {
+		v.mu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return v.knownKey(kid)
+	}
+	if !known && !v.jwksTriedAt.IsZero() && time.Since(v.jwksTriedAt) < jwksMissRefresh {
+		v.mu.Unlock()
 		return nil, fmt.Errorf("oidc: no key for kid=%s", kid)
 	}
-	if err := v.refreshJWKS(ctx); err != nil {
+	v.jwksTriedAt = time.Now()
+	done := make(chan struct{})
+	v.jwksFetching = done
+	v.mu.Unlock()
+	err := v.refreshJWKS(ctx)
+	v.mu.Lock()
+	v.jwksFetching = nil
+	v.mu.Unlock()
+	close(done)
+	if err != nil {
 		return nil, err
 	}
+	return v.knownKey(kid)
+}
+
+// knownKey is the key of kid from the keys kitp holds.
+func (v *Validator) knownKey(kid string) (*rsa.PublicKey, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	if key, ok := v.jwksKeys[kid]; ok {
@@ -807,6 +838,10 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 				      AND c.deleted_at IS NULL
 				      AND ad.name = 'email'
 				      AND lower(av.value #>> '{}') = lower(:email)
+				      -- A revoked login's person (its cards, its private
+				      -- ones included) isn't anyone else's to take over
+				      -- (review 2026-11-05 round 6).
+				      AND NOT EXISTS (SELECT 1 FROM user_account r WHERE r.revoked_person_card_id = c.id)
 				) m
 				ORDER BY (m.user_account_id IS NULL AND m.trusted) DESC, m.person_id
 				LIMIT 1

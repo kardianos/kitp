@@ -31,7 +31,6 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/kitp/kitp/server/internal/auth/session"
 	"github.com/kitp/kitp/server/internal/netx"
 )
 
@@ -43,13 +42,33 @@ const backchannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logo
 // within the window ends nothing either.
 const logoutTokenMaxAge = 10 * time.Minute
 
-// logoutsPerMinute / logoutsBurst bound both logout routes together: they
-// take no credential but the token or sid, and an IdP signing many people
-// out at once sends one request each.
+// The logout routes take no credential but the token or sid, so each is
+// limited per client address, apart: someone sending junk from their
+// addresses can't starve the IdP's (review 2026-11-05 round 6 #7). The
+// back-channel's from the IdP's servers, which sign many people out at
+// once, one request each; the front-channel's from a person's browser, one
+// per sign-out.
 const (
-	logoutsPerMinute = 600
-	logoutsBurst     = 1200
+	backchannelPerAddressPerMinute  = 600
+	backchannelPerAddressBurst      = 1200
+	frontchannelPerAddressPerMinute = 60
+	frontchannelPerAddressBurst     = 120
 )
+
+// logoutGate is one logout route's per-address limit.
+type logoutGate struct {
+	limiter *netx.Limiter
+	trusted *netx.Trusted
+}
+
+func newLogoutGate(perMinute, burst int, trusted *netx.Trusted) *logoutGate {
+	return &logoutGate{limiter: netx.NewLimiter(perMinute, burst, 10000), trusted: trusted}
+}
+
+// allow takes one request from the caller's address.
+func (g *logoutGate) allow(r *http.Request) bool {
+	return g.limiter.Allow(netx.SourceKey(netx.ClientIP(r, g.trusted)), 1)
+}
 
 // logoutToken is a verified back-channel logout token's claims kitp uses.
 type logoutToken struct {
@@ -122,7 +141,7 @@ func (v *Validator) parseLogoutToken(ctx context.Context, raw string) (logoutTok
 // handleBackchannelLogout takes a back-channel logout: 200 once the
 // sessions it names have ended (or a replay, which ends nothing), 400 with
 // error=invalid_request otherwise (§2.8).
-func handleBackchannelLogout(w http.ResponseWriter, r *http.Request, cfg BFFConfig, gate *netx.Limiter) {
+func handleBackchannelLogout(w http.ResponseWriter, r *http.Request, cfg BFFConfig, gate *logoutGate) {
 	w.Header().Set("Cache-Control", "no-store")
 	refuse := func(status int, why error) {
 		slog.Default().LogAttrs(r.Context(), slog.LevelWarn, "oidc: back-channel logout refused", slog.String("error", why.Error()))
@@ -135,7 +154,7 @@ func handleBackchannelLogout(w http.ResponseWriter, r *http.Request, cfg BFFConf
 			return // the IdP has gone; it retries a logout it got no answer to
 		}
 	}
-	if !gate.Allow("*", 1) {
+	if !gate.allow(r) {
 		w.Header().Set("Retry-After", "60")
 		refuse(http.StatusTooManyRequests, errors.New("too many logout requests"))
 		return
@@ -161,57 +180,55 @@ func handleBackchannelLogout(w http.ResponseWriter, r *http.Request, cfg BFFConf
 }
 
 // handleFrontchannelLogout takes a front-channel logout: ends the sessions
-// of the sid it names, and the one its cookie carries if the browser sent
-// it, and answers with an empty page the IdP may frame.
-func handleFrontchannelLogout(w http.ResponseWriter, r *http.Request, cfg BFFConfig, gate *netx.Limiter) {
+// of the IdP session (sid) it names, and answers with an empty page the IdP
+// may frame. A request without a sid ends nothing. The session cookie isn't
+// read: the IdP frames this page from its own site, where the browser
+// doesn't send it, and any site could send a person here with it (a
+// cross-site sign-out; review 2026-11-05 round 6 #6).
+func handleFrontchannelLogout(w http.ResponseWriter, r *http.Request, cfg BFFConfig, gate *logoutGate) {
 	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Header().Set("Pragma", "no-cache")
-	w.Header().Del("Content-Security-Policy-Report-Only")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors "+cfg.Validator.logoutFrameAncestors(r.Context()))
-	if !gate.Allow("*", 1) {
+	if !gate.allow(r) {
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "too many logout requests", http.StatusTooManyRequests)
 		return
 	}
+	w.Header().Del("Content-Security-Policy-Report-Only")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors "+cfg.Validator.logoutFrameAncestors())
 	q := r.URL.Query()
 	sid, iss := q.Get("sid"), q.Get("iss")
 	if iss != "" && iss != cfg.Validator.cfg.Issuer {
 		http.Error(w, "unknown issuer", http.StatusBadRequest)
 		return
 	}
+	if sid == "" {
+		// The IdP sends sid only if asked (frontchannel_logout_session_required;
+		// Entra ID: the sid optional claim), and kitp matches sessions on it.
+		slog.Default().LogAttrs(r.Context(), slog.LevelWarn, "oidc: front-channel logout without a sid ended nothing")
+		http.Error(w, "sid required", http.StatusBadRequest)
+		return
+	}
 	if len(sid) > 512 {
 		http.Error(w, "sid too long", http.StatusBadRequest)
 		return
 	}
-	var ended int64
-	if sid != "" {
-		_, n, err := cfg.SessionManager.RevokeOIDC(r.Context(), "", sid, "", time.Time{})
-		if err != nil {
-			slog.Default().LogAttrs(r.Context(), slog.LevelError, "oidc: front-channel logout", slog.String("error", err.Error()))
-			http.Error(w, "logout failed", http.StatusInternalServerError)
-			return
-		}
-		ended += n
-	}
-	if id := session.Read(r); id != "" {
-		if err := cfg.SessionManager.Revoke(r.Context(), id); err != nil {
-			slog.Default().LogAttrs(r.Context(), slog.LevelError, "oidc: front-channel logout (cookie)", slog.String("error", err.Error()))
-			http.Error(w, "logout failed", http.StatusInternalServerError)
-			return
-		}
-		session.Clear(w, cfg.InsecureCookie)
-		ended++
+	_, ended, err := cfg.SessionManager.RevokeOIDC(r.Context(), "", sid, "", time.Time{})
+	if err != nil {
+		slog.Default().LogAttrs(r.Context(), slog.LevelError, "oidc: front-channel logout", slog.String("error", err.Error()))
+		http.Error(w, "logout failed", http.StatusInternalServerError)
+		return
 	}
 	slog.Default().LogAttrs(r.Context(), slog.LevelInfo, "oidc: front-channel logout",
-		slog.Bool("sid", sid != ""), slog.Int64("sessions_ended", ended))
+		slog.Int64("sessions_ended", ended))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte("<!doctype html><title>Signed out</title>")) // a constant; nothing to do if the frame is gone
 }
 
 // logoutFrameAncestors is the CSP frame-ancestors source list for the
 // front-channel page: the IdP's issuer and end-session origins (its sign-out
-// page frames ours), or 'none' when neither parses.
-func (v *Validator) logoutFrameAncestors(ctx context.Context) string {
+// page frames ours), or 'none' when neither parses. It reads discovery only
+// if loaded: an unauthenticated request doesn't make kitp fetch it.
+func (v *Validator) logoutFrameAncestors() string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(raw string) {
@@ -226,11 +243,11 @@ func (v *Validator) logoutFrameAncestors(ctx context.Context) string {
 		}
 	}
 	add(v.cfg.Issuer)
-	if err := v.ensureDiscovery(ctx); err == nil {
-		v.mu.RLock()
+	v.mu.RLock()
+	if v.disco != nil {
 		add(v.disco.EndSessionEndpoint)
-		v.mu.RUnlock()
 	}
+	v.mu.RUnlock()
 	if len(out) == 0 {
 		return "'none'"
 	}

@@ -346,8 +346,14 @@ take the IdP's word that it ended:
   Front-channel logout URL). The IdP's sign-out page loads it in a hidden
   iframe with `sid` (and `iss`, which Entra ID may leave out); the page
   may be framed by the issuer's and end-session endpoint's origins only.
-  It works only in a browser that signs out at the IdP; browsers
-  partition an iframe's cookies, so the `sid` is what finds the session.
+  It works only in a browser that signs out at the IdP. Only the `sid`
+  finds the session: a request without one ends nothing (400), and the
+  session cookie isn't read, since the IdP's iframe doesn't carry it and
+  any site could send someone to the page with it. So the IdP must put
+  `sid` in the ID token and in the logout request (Entra ID: add the `sid`
+  optional claim under Token configuration). kitp logs a sign-in whose ID
+  token has no `sid`, and each front-channel logout with how many sessions
+  it ended; check both after setting it up.
 - **Back-channel** (OpenID Connect Back-Channel Logout 1.0). Register
   `https://<kitp>/api/v1/auth/oidc/backchannel-logout` as the back-channel
   logout URI (Keycloak, Okta, Auth0 and others; Entra ID has none). The IdP
@@ -355,6 +361,9 @@ take the IdP's word that it ended:
   minutes old, carrying the logout event, a `jti` (a replay ends nothing)
   and a `sid` (that IdP session's kitp sessions) or a `sub` alone (every
   session of that subject). 200 when done, 400 `invalid_request` otherwise.
+
+Each route is limited per client address, apart, so junk from one place
+can't hold back the IdP's requests.
 
 Neither ends API tokens, and neither hears of an admin action at the IdP
 that isn't a sign-out (Entra ID's "Revoke sessions", a disabled account):
@@ -377,13 +386,17 @@ just-in-time:
   `user_account` plus a linked `person` card. If an admin pre-created an
   account with the same **trusted** email (and no subject bound yet), the
   subject attaches to that row instead. By default an email is trusted
-  unless the ID token says `email_verified: false`; with
+  unless the ID token says `email_verified: false` or — with no
+  `email_verified` — Entra ID's optional `xms_edov` claim is false (the
+  email's domain isn't verified for the tenant); with
   `KITP_OIDC_TRUST_UNVERIFIED_EMAIL=0`, only when it says
-  `email_verified: true` or — with no `email_verified` — Entra ID's
-  optional `xms_edov` claim is true (add it under the app registration's
-  Token configuration → optional claims → ID). Set `0` for an IdP whose
-  users can set their own address, or Entra ID with other tenants signing
-  in. A login stores only a trusted email, and `KITP_INIT_ADMIN_EMAIL`
+  `email_verified: true` or `xms_edov` is true (add it under the app
+  registration's Token configuration → optional claims → ID). Set `0` for
+  an IdP whose users can set their own address, or Entra ID with other
+  tenants signing in. This default is new (2026-11-05): before, an email
+  the IdP said nothing of wasn't trusted. An existing install on an IdP
+  that leaves `email_verified` out and lets users choose their address
+  should set `0` before upgrading. A login stores only a trusted email, and `KITP_INIT_ADMIN_EMAIL`
   recovery matches logins by it; an email the OP marks
   `email_verified: false` is cleared from the login that holds it.
 - **Email addresses.** A trusted sign-in email also joins the person's
@@ -395,7 +408,10 @@ just-in-time:
   for someone with no app roles) changes no roles at that sign-in. With
   `OIDC_ROLE_CLAIM=none` kitp manages roles itself: admins grant them in
   kitp, and someone who leaves is blocked in the IdP and revoked in kitp
-  (People → revoke login), which ends their sessions and tokens at once. Manage mappings in the admin UI or via the
+  (People → revoke login), which ends their sessions and tokens at once.
+  Its first boot makes the grants earlier sign-ins brought kitp's, and
+  that is one way: switching back to a claim later leaves them kitp's, so
+  sign-ins never remove them; an admin does. Manage mappings in the admin UI or via the
   `role_mapping.set` / `role_mapping.delete` / `role_mapping.list` API. The
   dev seed maps `kitp.admin → admin`, `kitp.manager → manager`,
   `kitp.worker → worker`.
