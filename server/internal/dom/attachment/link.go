@@ -14,6 +14,7 @@ import (
 
 	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
+	"github.com/kitp/kitp/server/internal/reg"
 	"github.com/kitp/kitp/server/internal/store"
 )
 
@@ -48,6 +49,10 @@ func SetLinkDeps(publicURL string, secret []byte) {
 	linkDeps.publicURL = strings.TrimRight(strings.TrimSpace(publicURL), "/")
 	linkDeps.secret = secret
 }
+
+// errNoLinkSecret answers a link request in a process with no link secret.
+var errNoLinkSecret = &reg.HandlerError{Code: "link_secret_unset",
+	Message: "signed links need KITP_LINK_SECRET (the same as kitpd's) in this process"}
 
 // DownloadURLInput requests a signed link for one attachment.
 type DownloadURLInput struct {
@@ -124,12 +129,13 @@ func buildDownloadURL(id int64, mode string, exp, uid int64) string {
 // signDownloadURLs is the PostRun hook for attachment.download_url. The
 // SQL function has already validated each input and resolved the file
 // metadata into DownloadURLOutput (minus url + expires_at); here we
-// stamp a fresh expiry, HMAC-sign the (id, mode, exp) tuple, and fill
-// in the link. Runs inside the request tx but touches no DB — a failure
-// (unconfigured secret) aborts the batch with a logged internal error.
+// stamp a fresh expiry, HMAC-sign (id, mode, exp, minting account), and
+// fill in the link. Runs inside the request tx but touches no DB; with no
+// secret (stdio kitpd mcp without KITP_LINK_SECRET) it answers
+// link_secret_unset.
 func signDownloadURLs(ctx context.Context, _ store.Querier, _ []any, outs []any) error {
 	if len(linkDeps.secret) == 0 {
-		return fmt.Errorf("link secret not configured (set KITP_LINK_SECRET)")
+		return errNoLinkSecret
 	}
 	exp := time.Now().Add(linkTTL)
 	expUnix := exp.Unix()

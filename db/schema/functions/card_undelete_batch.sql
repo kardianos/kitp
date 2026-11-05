@@ -86,6 +86,12 @@ BEGIN
         -- portals they are on rebuild with them back (review 2026-11-03
         -- round 2 #19).
         PERFORM portal_mark_dirty(pp.portal_id) FROM portals_publishing_under(_card_id) pp;
+        -- A theme deleted or brought back rebuilds the portals built
+        -- with it (review 2026-11-03 round 5).
+        PERFORM portal_mark_dirty(pv.card_id)
+        FROM attribute_value pv
+        JOIN attribute_def pd ON pd.id = pv.attribute_def_id AND pd.name = 'portal_theme'
+        WHERE jsonb_typeof(pv.value) = 'number' AND (pv.value)::text::bigint = _card_id;
 
         -- 5. Activity row.
         INSERT INTO activity (card_id, kind, actor_id)

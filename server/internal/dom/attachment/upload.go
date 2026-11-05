@@ -152,7 +152,7 @@ func buildUploadURL(g uploadGrant, exp int64) string {
 // batch with a logged internal error.
 func signUploadURLs(ctx context.Context, _ store.Querier, _ []any, outs []any) error {
 	if len(linkDeps.secret) == 0 {
-		return fmt.Errorf("link secret not configured (set KITP_LINK_SECRET)")
+		return errNoLinkSecret
 	}
 	user, ok := auth.FromContext(ctx)
 	if !ok || user == nil || user.ID == 0 {

@@ -54,6 +54,7 @@ CREATE OR REPLACE FUNCTION copy_project_template_merge(
     origin text
 ) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
+    _content_ct_ids bigint[];
     _task_ct_id bigint;
     _src_id bigint;
     _src_ct_id bigint;
@@ -143,6 +144,13 @@ BEGIN
         _task_ct_id := 0;
     END IF;
 
+    -- Mail threads and their messages are content, not structure: a
+    -- template's own thread (intake mode 'thread' puts one under the
+    -- project) was copied with its correspondents, acked and thread_id, so
+    -- a reply on the copy mailed the template's correspondents under the
+    -- template's thread token (review 2026-11-03 round 5 #14).
+    SELECT COALESCE(array_agg(id), '{}') INTO _content_ct_ids FROM card_type WHERE name IN ('comm', 'reply_body');
+
     -- BFS-walk: every non-task non-deleted descendant under template_id.
     -- A private card (someone's own view on a template's screen,
     -- docs/PERSONAL_SCREENS.md) is theirs: it isn't copied into anyone's
@@ -152,6 +160,7 @@ BEGIN
         SELECT id, card_type_id, parent_card_id, phase, 1 AS depth
         FROM card
         WHERE parent_card_id = template_id AND deleted_at IS NULL AND private_to IS NULL
+          AND card_type_id <> ALL (_content_ct_ids)
         UNION ALL
         SELECT c.id, c.card_type_id, c.parent_card_id, c.phase, w.depth + 1
         FROM card c
@@ -164,6 +173,7 @@ BEGIN
         -- to land under (review 2026-11-03 #26).
         WHERE c.deleted_at IS NULL AND c.private_to IS NULL AND w.depth < 16
           AND (_task_ct_id = 0 OR w.card_type_id <> _task_ct_id)
+          AND c.card_type_id <> ALL (_content_ct_ids)
     )
     SELECT w.id, w.card_type_id, w.parent_card_id, w.phase
     FROM walk w

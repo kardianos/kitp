@@ -982,6 +982,14 @@ func runMCP() error {
 	// MCP entrypoint runs handlers but has no CAS-backed routes, so
 	// skip handlers that need storage (only project.import today).
 	registerHandlers(pool, nil, nil)
+	// attachment.download_url / upload_url mint links kitpd serves: they
+	// verify there only with the server's own KITP_LINK_SECRET, so this
+	// process signs with it when it is set; unset, minting answers
+	// link_secret_unset rather than an internal error (review 2026-11-03
+	// round 5).
+	if secret := strings.TrimSpace(os.Getenv("KITP_LINK_SECRET")); secret != "" {
+		attachment.SetLinkDeps(strings.TrimSpace(os.Getenv("KITP_PUBLIC_URL")), []byte(secret))
+	}
 
 	srv := api.NewServer(pool)
 	srv.Logger = logger

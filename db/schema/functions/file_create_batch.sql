@@ -15,8 +15,9 @@
 --      file_chunk; multi-chunk files leave sha256 NULL (the comment in
 --      file.go's old Go body explains the rationale — the dedup
 --      feature only matters for typical email-size attachments).
---   5. INSERT file row + INSERT file_chunk[] from a jsonb_to_recordset
---      derived from the chunks array. FK on file_chunk.cas_address
+--   5. INSERT file row + INSERT file_chunk[] straight from the chunks
+--      array (jsonb_array_elements WITH ORDINALITY; set-based, review
+--      2026-11-03 round 5 #1). FK on file_chunk.cas_address
 --      surfaces a foreign_key_violation if the caller forgot to upload
 --      a chunk first — that propagates as a tx-level abort the
 --      dispatcher maps to code='fk_violation'.
@@ -42,16 +43,13 @@ DECLARE
     _filename text;
     _mime text;
     _chunks jsonb;
-    _chunk jsonb;
     _chunk_idx int;
     _addr text;
-    _size bigint;
     _total bigint;
     _sha text;
     _new_id bigint;
-    _norm_chunks jsonb;
-    _rej_code text;
     _rej_msg text;
+    _readers bigint[];
 BEGIN
     FOR _idx, _row IN
         SELECT (r.ord - 1)::int, r.value
@@ -90,79 +88,79 @@ BEGIN
             CONTINUE;
         END IF;
 
-        -- Walk chunks, summing size and validating per-entry shape.
-        -- Also build a normalised JSON array tagged with seq/cas_address/
-        -- chunk_size so the INSERT can fan it out with one
-        -- jsonb_to_recordset call.
-        _total := 0;
-        _rej_code := NULL;
-        _rej_msg := NULL;
-        _norm_chunks := '[]'::jsonb;
-        _chunk_idx := 0;
-        FOR _chunk IN SELECT value FROM jsonb_array_elements(_chunks)
-        LOOP
-            _addr := COALESCE(_chunk->>'address', '');
-            BEGIN
-                _size := COALESCE(NULLIF(_chunk->>'size_bytes', '')::bigint, 0);
-            EXCEPTION WHEN invalid_text_representation THEN
-                _size := -1;
-            END;
-            IF _addr = '' THEN
-                _rej_code := 'validation';
-                _rej_msg := format('file.create: chunks[%s].address is required', _chunk_idx);
-                EXIT;
-            END IF;
-            IF _size < 0 THEN
-                _rej_code := 'validation';
-                _rej_msg := format('file.create: chunks[%s].size_bytes must be non-negative', _chunk_idx);
-                EXIT;
-            END IF;
-            -- Only bytes the caller sent (cas_held_by): knowing a hash isn't
-            -- having the file (review 2026-11-03 round 2 #21). The same
-            -- answer as for bytes kitp doesn't have at all (the PreRun's),
-            -- so it tells no stored hash from an unknown one (round 3 #18).
-            IF NOT cas_held_by(_addr, file_create_batch.actor_id) THEN
-                _rej_code := 'validation';
-                _rej_msg := format('file.create: chunk %s (%s) hasn''t been uploaded', _chunk_idx, _addr);
-                EXIT;
-            END IF;
-            _total := _total + _size;
-            _norm_chunks := _norm_chunks || jsonb_build_array(
-                jsonb_build_object(
-                    'seq', _chunk_idx,
-                    'cas_address', _addr,
-                    'chunk_size', _size
-                )
-            );
-            _chunk_idx := _chunk_idx + 1;
-        END LOOP;
-        IF _rej_code IS NOT NULL THEN
-            RETURN QUERY SELECT _idx, false, _rej_code, _rej_msg, NULL::jsonb;
+        -- At most 100,000 chunks a file (cas.missing_chunks' cap: 100 GB
+        -- of 1 MB chunks).
+        IF jsonb_array_length(_chunks) > 100000 THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                'file.create: a file has at most 100000 chunks'::text, NULL::jsonb;
             CONTINUE;
         END IF;
+
+        -- The chunks are read set-based, once each: appending to a jsonb
+        -- array per chunk made a file of n chunks cost n² — 5,000 chunks
+        -- ran past the timeout — and every chunk, repeats included, paid
+        -- its own holder check (review 2026-11-03 round 5 #1). First the
+        -- first chunk with no address or a bad size, then the first whose
+        -- bytes the caller doesn't hold (cas_held_by's rule: knowing a
+        -- hash isn't having the file, round 2 #21; the same answer as for
+        -- bytes kitp doesn't have, round 3 #18), each distinct address
+        -- probed once by key.
+        SELECT c.seq,
+               CASE WHEN c.addr = '' THEN format('file.create: chunks[%s].address is required', c.seq)
+                    ELSE format('file.create: chunks[%s].size_bytes must be non-negative', c.seq) END
+          INTO _chunk_idx, _rej_msg
+        FROM (
+            SELECT (e.ord - 1)::int AS seq,
+                   COALESCE(e.v->>'address', '') AS addr,
+                   COALESCE(NULLIF(e.v->>'size_bytes', ''), '0') AS size_raw
+            FROM jsonb_array_elements(_chunks) WITH ORDINALITY AS e(v, ord)
+        ) c
+        WHERE c.addr = '' OR c.size_raw !~ '^[0-9]{1,18}$'
+        ORDER BY c.seq
+        LIMIT 1;
+        IF FOUND THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text, _rej_msg, NULL::jsonb;
+            CONTINUE;
+        END IF;
+        _readers := COALESCE(_readers, cas_reader_principals(file_create_batch.actor_id));
+        WITH c AS (
+            SELECT (e.ord - 1)::int AS seq, e.v->>'address' AS addr
+            FROM jsonb_array_elements(_chunks) WITH ORDINALITY AS e(v, ord)
+        ),
+        not_held AS (
+            SELECT d.addr FROM (SELECT DISTINCT addr FROM c) d
+            WHERE NOT EXISTS (SELECT 1 FROM cas_blob_holder h
+                              WHERE h.address = d.addr AND h.user_id = ANY (_readers))
+        )
+        SELECT c.seq, c.addr INTO _chunk_idx, _addr
+        FROM c JOIN not_held n ON n.addr = c.addr
+        ORDER BY c.seq
+        LIMIT 1;
+        IF FOUND THEN
+            RETURN QUERY SELECT _idx, false, 'validation'::text,
+                format('file.create: chunk %s (%s) hasn''t been uploaded', _chunk_idx, _addr), NULL::jsonb;
+            CONTINUE;
+        END IF;
+
+        SELECT COALESCE(sum(COALESCE(NULLIF(e.v->>'size_bytes', ''), '0')::bigint), 0) INTO _total
+        FROM jsonb_array_elements(_chunks) AS e(v);
 
         -- Single-chunk file: persist sha256 from the lone chunk's CAS
         -- address so dedup queries index a single column. Multi-chunk
         -- files leave sha256 NULL.
         IF jsonb_array_length(_chunks) = 1 THEN
-            _sha := _norm_chunks->0->>'cas_address';
+            _sha := _chunks->0->>'address';
         ELSE
             _sha := NULL;
         END IF;
 
-        WITH ins_file AS (
-            INSERT INTO file (filename, size_bytes, mime_type, created_by, sha256)
-            VALUES (_filename, _total, _mime, actor_id, _sha)
-            RETURNING id
-        ),
-        ins_chunks AS (
-            INSERT INTO file_chunk (file_id, seq, cas_address, chunk_size)
-            SELECT (SELECT id FROM ins_file), seq, cas_address, chunk_size
-            FROM jsonb_to_recordset(_norm_chunks)
-            AS x(seq int, cas_address text, chunk_size bigint)
-            RETURNING file_id
-        )
-        SELECT id INTO _new_id FROM ins_file;
+        INSERT INTO file (filename, size_bytes, mime_type, created_by, sha256)
+        VALUES (_filename, _total, _mime, actor_id, _sha)
+        RETURNING id INTO _new_id;
+        INSERT INTO file_chunk (file_id, seq, cas_address, chunk_size)
+        SELECT _new_id, (e.ord - 1)::int, e.v->>'address',
+               COALESCE(NULLIF(e.v->>'size_bytes', ''), '0')::bigint
+        FROM jsonb_array_elements(_chunks) WITH ORDINALITY AS e(v, ord);
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(

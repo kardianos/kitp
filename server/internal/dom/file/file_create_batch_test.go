@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -365,5 +366,53 @@ func TestFileCreateBatch_PerRowFailure(t *testing.T) {
 	}
 	if rows[1].Code != "validation" {
 		t.Errorf("row 1: code=%q, want 'validation'", rows[1].Code)
+	}
+}
+
+// TestFileCreateBatch_ManyChunksIsLinear (review 2026-11-03 round 5 #1): a
+// file of many chunks is built set-based — 20,000 chunks take about as
+// long per chunk as 2,000 — and the chunks keep their order and sizes.
+func TestFileCreateBatch_ManyChunksIsLinear(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_file_create_many_chunks")
+	addr, size := seedChunk(t, pool, []byte("chunk"))
+	other, otherSize := seedChunk(t, pool, []byte("other chunk"))
+	timed := func(n int) time.Duration {
+		chunks := make([]map[string]any, n)
+		for i := range chunks {
+			a, s := addr, size
+			if i%2 == 1 {
+				a, s = other, otherSize
+			}
+			chunks[i] = map[string]any{"address": a, "size_bytes": s}
+		}
+		start := time.Now()
+		rows := callFileCreateBatch(t, pool, auth.SystemUserID, []map[string]any{
+			{"filename": "big.bin", "chunks": chunks}})
+		d := time.Since(start)
+		if !rows[0].OK {
+			t.Fatalf("%d chunks: %+v", n, rows[0])
+		}
+		return d
+	}
+	small, big := timed(2000), timed(20000)
+	if big > 30*small+2*time.Second {
+		t.Errorf("20,000 chunks took %v, 2,000 took %v: not linear", big, small)
+	}
+	var n, seqs int
+	var total int64
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*), count(DISTINCT seq), sum(chunk_size) FROM file_chunk
+		WHERE file_id = (SELECT max(id) FROM file)`).Scan(&n, &seqs, &total); err != nil {
+		t.Fatal(err)
+	}
+	if n != 20000 || seqs != 20000 || total != 10000*(size+otherSize) {
+		t.Errorf("chunks %d, distinct seqs %d, total %d", n, seqs, total)
+	}
+	over := make([]map[string]any, 100001)
+	for i := range over {
+		over[i] = map[string]any{"address": addr, "size_bytes": size}
+	}
+	if rows := callFileCreateBatch(t, pool, auth.SystemUserID, []map[string]any{{"filename": "huge.bin", "chunks": over}}); rows[0].OK || rows[0].Code != "validation" {
+		t.Errorf("100,001 chunks: %+v, want validation", rows[0])
 	}
 }

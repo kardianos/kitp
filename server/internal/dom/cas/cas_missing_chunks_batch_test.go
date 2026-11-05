@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -204,5 +205,46 @@ func TestCasMissingChunksBatch_DuplicateAddresses(t *testing.T) {
 		if m != "absent" {
 			t.Errorf("missing entry %q; want 'absent'", m)
 		}
+	}
+}
+
+// TestCasMissingChunksBatch_ManyHeldIsQuick (review 2026-11-03 round 5 #12):
+// 100,000 addresses the caller holds answer well inside the handler's 6 s;
+// the reader's principals are worked out once, and each address is one
+// probe by key.
+func TestCasMissingChunksBatch_ManyHeldIsQuick(t *testing.T) {
+	pool := store.TestPool(t, "kitp_test_cas_missing_many")
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+		WITH a AS (SELECT md5(g::text) || md5((g + 1)::text) AS address FROM generate_series(1, 100000) g),
+		b AS (INSERT INTO cas_blob (address, size_bytes, mime_type, storage_kind)
+		      SELECT address, 1, 'application/octet-stream', 'pg' FROM a RETURNING address)
+		INSERT INTO cas_blob_holder (address, user_id) SELECT address, 1 FROM b`); err != nil {
+		t.Fatal(err)
+	}
+	var addrs []string
+	rows, err := pool.Query(ctx, `SELECT address FROM cas_blob_holder WHERE user_id = 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			t.Fatal(err)
+		}
+		addrs = append(addrs, a)
+	}
+	rows.Close()
+	start := time.Now()
+	res := callCasMissingChunksBatch(t, pool, auth.SystemUserID, []map[string]any{{"addresses": addrs}})
+	d := time.Since(start)
+	if !res[0].OK {
+		t.Fatalf("missing_chunks: %+v", res[0])
+	}
+	if got := decodeMissing(t, res[0].Result); len(got) != 0 {
+		t.Errorf("%d held addresses reported missing", len(got))
+	}
+	if d > 4*time.Second {
+		t.Errorf("100,000 held addresses took %v", d)
 	}
 }

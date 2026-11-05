@@ -145,6 +145,16 @@ BEGIN
                 EXIT;
             END IF;
         END LOOP;
+        -- A portal's root page is a workspace setting only an admin
+        -- changes (portal.set): merging it away re-pointed the portal at the
+        -- survivor (review 2026-11-03 round 5).
+        IF _bad_code IS NULL AND NOT user_is_global_admin(card_merge_batch.actor_id) AND EXISTS (
+            SELECT 1 FROM attribute_value r
+            JOIN attribute_def rd ON rd.id = r.attribute_def_id AND rd.name = 'portal_root'
+            WHERE jsonb_typeof(r.value) = 'number' AND (r.value)::text::bigint = ANY(_losers)) THEN
+            _bad_code := 'forbidden';
+            _bad_msg := 'card.merge: a page that is a portal''s root is merged only by a workspace admin';
+        END IF;
         -- The losers' cards take the survivor as their state: the caller
         -- must be able to move a card into it (any flow it is a state of
         -- whose attribute holds a loser somewhere).
@@ -210,6 +220,15 @@ BEGIN
         SELECT m.id, 'card_move', to_jsonb(m.was), to_jsonb(_survivor), card_merge_batch.actor_id FROM moved m;
         _repointed := card_merge_into(_survivor, _losers, actor_id);
         PERFORM portal_mark_dirty(pp.portal_id) FROM portals_publishing_under(_survivor) pp;
+        -- Merged themes: the portals now built with the survivor rebuild;
+        -- merged portals: the survivor rebuilds, taking the losers' pages
+        -- (review 2026-11-03 round 5).
+        PERFORM portal_mark_dirty(pv.card_id)
+        FROM attribute_value pv
+        JOIN attribute_def pd ON pd.id = pv.attribute_def_id AND pd.name = 'portal_theme'
+        WHERE jsonb_typeof(pv.value) = 'number' AND (pv.value)::text::bigint = _survivor;
+        PERFORM portal_mark_dirty(_survivor)
+        WHERE _surv_ct = (SELECT id FROM card_type WHERE name = 'portal');
 
         RETURN QUERY SELECT _idx, true, ''::text, ''::text,
             jsonb_build_object(

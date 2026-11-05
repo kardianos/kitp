@@ -25,6 +25,10 @@ deleted_at, timestamptz, , , , , ,
 login_revoked_at, timestamptz, , , , , , 
 revoked_person_card_id, bigint, , , , , , 
 
+### indexes
+name, columns
+user_account_parent_user_id, "parent_user_id"
+
 ## table session | doc="Server-side session for the BFF auth model. `id` is the SHA-256 hex of the opaque value the kitp_session cookie carries (auth.HashSecret; the cookie value itself is never stored, nor the OIDC token). `created_at` anchors the absolute re-auth cap; `last_seen_at` is the sliding idle window updated by Manager batched-touch flushes. `revoked_at` set on logout / admin revoke. `oidc_sub` records the OP subject for OIDC sessions so we can rotate when sub changes."
 
 ### columns
@@ -898,6 +902,7 @@ idx_theme_file_cas, "cas_address"
 ## function card_private_ok | doc="Whether an account may see / write a card as far as privacy goes: the card isn't private, or it is private to account_person(actor). ANDed into the listing reads that can surface private cards; VisibilityClause and card_visible_to apply the same rule." | path="functions/card_private_ok.sql" | arg_types="bigint, bigint"
 ## function card_live | doc="Whether a card and every card above it are undeleted: a file on a deleted card, or under one, is gone with it (downloads, attachment.list, file_readable_by)." | path="functions/card_live.sql" | arg_types="bigint"
 ## function file_readable_by | doc="Whether an account may have a stored file's bytes: it uploaded the file; its agent or owner did and the file isn't attached anywhere yet; or the file is attached to a live card (card_live) whose bytes it may download (card.update on the project, the byte routes' rule; not an area that is off, not someone else's private card). attachment.create and the CSV import ask it, so seeing a card isn't enough to copy its files." | path="functions/file_readable_by.sql" | arg_types="bigint, bigint"
+## function cas_reader_principals | doc="The accounts whose uploaded bytes a reader may use: its principal and that principal's personal agents (a workspace agent is its own). cas_held_by, cas.missing_chunks and file.create match cas_blob_holder against it. Declared after account_principal." | path="functions/cas_reader_principals.sql" | arg_types="bigint"
 ## function cas_held_by | doc="Whether an account may name stored bytes in file.create: it, or its agent or owner, sent them (cas_blob_holder, looked up by key). cas.missing_chunks reports bytes it doesn't hold as missing." | path="functions/cas_held_by.sql" | arg_types="text, bigint"
 ## function my_screen_toggles | doc="The phase toggles a personal screen starts with: New / Active (on) / Closed over its listed card type's status attribute (status or comm_status), as toggle_groups JSON." | path="functions/my_screen_toggles.sql" | arg_types="text"
 ## function my_screen_list_batch | doc="my_screen.list — the caller's personal screens (parentless screen cards private to them) in Mine order: title, layout, list_card_type, predicate, sort_order, default_filter, view_count." | path="functions/my_screen_list_batch.sql"

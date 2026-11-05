@@ -8,10 +8,12 @@
 -- again is a no-op that records the holder.
 --
 -- The holder rows are looked up by key — the reader's principal and that
--- principal's personal agents — not by working out every holder's
--- principal: with thousands of holders of one address that cost 90 ms an
--- address (round 4 #15). A workspace agent (owned by System) is its own
--- principal, so System's agents are not System's. Bytes in a file the
+-- principal's personal agents (cas_reader_principals) — not by working out
+-- every holder's principal: with thousands of holders of one address that
+-- cost 90 ms an address (round 4 #15). Set-based callers (file.create,
+-- cas.missing_chunks) work the set out once and match it themselves. A
+-- workspace agent (owned by System) is its own principal, so System's
+-- agents are not System's. Bytes in a file the
 -- account may read don't count: such a file is attached by id
 -- (attachment.create), not by its bytes (round 3 #7).
 CREATE OR REPLACE FUNCTION cas_held_by(address text, reader bigint)
@@ -19,11 +21,5 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
     SELECT EXISTS (
         SELECT 1 FROM cas_blob_holder h
         WHERE h.address = cas_held_by.address
-          AND h.user_id IN (
-              SELECT account_principal(reader)
-              UNION ALL
-              SELECT ua.id FROM user_account ua
-              WHERE ua.is_agent
-                AND ua.parent_user_id = account_principal(reader)
-                AND ua.parent_user_id <> 1))
+          AND h.user_id = ANY (cas_reader_principals(reader)))
 $$;

@@ -86,7 +86,10 @@ admin again. Review 2026-11-03 #13.
 **Rule.** `GET /api/v1/attachment/{id}/download|view|thumb` resolve the
 attachment's project and verify the caller's scoped grant *before any
 byte is written*. Unresolvable id → `api.NotFound` (don't leak
-existence); resolvable but ungranted → `api.ErrForbidden`.
+existence); resolvable but ungranted → `api.ErrForbidden`. The signed
+link route `GET /api/v1/attachment/{id}/dl` carries no session: its HMAC
+signature names the account that minted it, and that account's grant is
+checked the same way when the link is fetched.
 
 **Why.** Attachment ids are sequential bigints. A valid session alone let
 any user — including a worker scoped to a different project — enumerate

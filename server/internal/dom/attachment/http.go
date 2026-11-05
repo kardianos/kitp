@@ -61,12 +61,14 @@ func Mount(rt *api.Router, cfg Config) {
 		return handleStream(ctx, w, r, cfg, streamModeThumb)
 	})
 	// Public, signature-gated streaming route. Unlike the three Authed
-	// routes above, this one carries no session/bearer credential — a
-	// valid HMAC signature (minted by the attachment.download_url
-	// dispatcher endpoint, which ran the card.update-on-project gate
-	// against the requesting agent) IS the capability. Bytes for all
-	// three modes flow through the same streamBytes core; mode + the
-	// signed exp + sig ride in the query string. See link.go.
+	// routes above, this one carries no session/bearer credential: a
+	// valid HMAC signature (minted by attachment.download_url) names the
+	// account that minted the link (`u`), and that account's access is
+	// checked again here (requireAttachmentAccess) before a byte goes
+	// out, so a link stops working once its maker can't read the file
+	// (review 2026-11-03 round 5). Bytes for all three modes flow through
+	// the same streamBytes core; mode, u, exp and sig ride in the query
+	// string. See link.go.
 	rt.Public("GET /api/v1/attachment/{id}/dl", func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 		return handleSignedStream(ctx, w, r, cfg)
 	})
