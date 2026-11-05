@@ -133,9 +133,14 @@ func (g *startGate) allow(r *http.Request) bool {
 // identity provider, or a start nobody followed). The callback deletes the
 // row it uses; nothing else removed the rest (round 5 #7). Run on the job
 // scheduler (oidc.state_reap).
+// It also deletes back-channel logout token ids past their window
+// (oidc_logout_jti).
 func ReapState(ctx context.Context, pool *pgxpool.Pool) error {
 	if _, err := pool.Exec(ctx, `DELETE FROM oidc_state WHERE expires_at < now()`); err != nil {
 		return fmt.Errorf("oidc: reap state: %w", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM oidc_logout_jti WHERE expires_at < now()`); err != nil {
+		return fmt.Errorf("oidc: reap logout token ids: %w", err)
 	}
 	return nil
 }
@@ -190,6 +195,17 @@ func Mount(rt *api.Router, cfg BFFConfig) {
 	})
 	rt.Public("GET /api/v1/auth/oidc/callback", func(_ context.Context, w http.ResponseWriter, r *http.Request) error {
 		handleCallback(w, r, cfg)
+		return nil
+	})
+	// The IdP ending a sign-in there (logout.go): front-channel from the
+	// browser, back-channel server to server.
+	logouts := netx.NewLimiter(logoutsPerMinute, logoutsBurst, 1)
+	rt.Public("GET /api/v1/auth/oidc/frontchannel-logout", func(_ context.Context, w http.ResponseWriter, r *http.Request) error {
+		handleFrontchannelLogout(w, r, cfg, logouts)
+		return nil
+	})
+	rt.Public("POST /api/v1/auth/oidc/backchannel-logout", func(_ context.Context, w http.ResponseWriter, r *http.Request) error {
+		handleBackchannelLogout(w, r, cfg, logouts)
 		return nil
 	})
 }
@@ -371,8 +387,10 @@ func handleCallback(w http.ResponseWriter, r *http.Request, cfg BFFConfig) {
 		return
 	}
 
-	sub, _ := peekSub(idToken)
-	sid, err := cfg.SessionManager.Create(r.Context(), userID, sub)
+	// The IdP's session (sid), so its sign-out can end this one (logout.go).
+	sub, _ := peekClaim(idToken, "sub")
+	idpSession, _ := peekClaim(idToken, "sid")
+	sid, err := cfg.SessionManager.CreateOIDC(r.Context(), userID, sub, idpSession)
 	if err != nil {
 		logRedirect(r, "oidc.callback: session_create", err)
 		redirectLogin(w, r, "could not complete sign-in")
@@ -484,11 +502,11 @@ func exchangeCode(ctx context.Context, tokenURL string, p exchangeParams) (strin
 	return out.IDToken, nil
 }
 
-// peekSub decodes the JWT payload without verifying signature, just to
-// pull `sub` for the session row's oidc_sub column. We've already
+// peekClaim decodes the JWT payload without verifying signature, just to
+// pull a string claim (sub, sid) for the session row. We've already
 // verified the same token via Validator.Resolve at the call site, so
 // this is purely informational extraction.
-func peekSub(idToken string) (string, error) {
+func peekClaim(idToken, name string) (string, error) {
 	parts := strings.Split(idToken, ".")
 	if len(parts) < 2 {
 		return "", fmt.Errorf("malformed jwt")
@@ -505,7 +523,7 @@ func peekSub(idToken string) (string, error) {
 	if err := json.Unmarshal(body, &m); err != nil {
 		return "", err
 	}
-	s, _ := m["sub"].(string)
+	s, _ := m[name].(string)
 	return s, nil
 }
 

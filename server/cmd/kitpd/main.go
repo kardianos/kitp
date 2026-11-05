@@ -1145,6 +1145,9 @@ func newCrossOriginProtection(env string, mode auth.Mode) (*http.CrossOriginProt
 		log.Printf("CORS is on (env=%s, AUTH_MODE=%s): the cross-origin check stays on; list a dev app's origin in KITP_TRUSTED_ORIGINS", env, mode)
 	}
 	c := http.NewCrossOriginProtection()
+	// An IdP's back-channel logout is a server-to-server POST authenticated
+	// by its signed logout token, not by a cookie (oidc/logout.go).
+	c.AddInsecureBypassPattern("POST /api/v1/auth/oidc/backchannel-logout")
 	origins := strings.Split(os.Getenv("KITP_TRUSTED_ORIGINS"), ",")
 	if pub := strings.TrimSpace(os.Getenv("KITP_PUBLIC_URL")); pub != "" {
 		u, err := url.Parse(pub)

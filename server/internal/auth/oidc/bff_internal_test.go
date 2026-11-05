@@ -106,6 +106,8 @@ type callbackFakeOP struct {
 	// nonce, when set, goes in the id_token (a real OP echoes the one the
 	// authorize request carried).
 	nonce string
+	// sid, when set, is the IdP session the id_token names.
+	sid string
 }
 
 func newCallbackFakeOP(t *testing.T) *callbackFakeOP {
@@ -149,6 +151,9 @@ func newCallbackFakeOP(t *testing.T) *callbackFakeOP {
 		}
 		if op.nonce != "" {
 			claims["nonce"] = op.nonce
+		}
+		if op.sid != "" {
+			claims["sid"] = op.sid
 		}
 		tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 		tok.Header["kid"] = op.kid

@@ -421,6 +421,17 @@ func (v *Validator) lookupKey(ctx context.Context, kid string) (*rsa.PublicKey, 
 	} else {
 		v.mu.RUnlock()
 	}
+	// An unknown kid refetches the keys at most every jwksMissRefresh: a
+	// token naming made-up kids — on a bearer request, or the logout routes,
+	// which take no credential — would otherwise have kitp fetch the IdP's
+	// JWKS once per request. A real key rotation waits at most that long.
+	v.mu.RLock()
+	recent := !v.jwksFetchedAt.IsZero() && time.Since(v.jwksFetchedAt) < jwksMissRefresh
+	_, known := v.jwksKeys[kid]
+	v.mu.RUnlock()
+	if recent && !known {
+		return nil, fmt.Errorf("oidc: no key for kid=%s", kid)
+	}
 	if err := v.refreshJWKS(ctx); err != nil {
 		return nil, err
 	}
@@ -431,6 +442,10 @@ func (v *Validator) lookupKey(ctx context.Context, kid string) (*rsa.PublicKey, 
 	}
 	return nil, fmt.Errorf("oidc: no key for kid=%s", kid)
 }
+
+// jwksMissRefresh is how soon after a JWKS fetch an unknown kid may fetch
+// it again (lookupKey).
+const jwksMissRefresh = 30 * time.Second
 
 // AuthorizationEndpoint returns the OP's authorize URL. May trigger a
 // discovery fetch on first call. Used by the BFF /oidc/start handler.

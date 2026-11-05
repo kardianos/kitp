@@ -30,12 +30,13 @@ still open, and what a deployment of those commits needs to know.
   roles and none of this applies; leavers are blocked in the IdP and
   revoked in kitp (People → revoke login), which ends their sessions and
   tokens at once.
-- **kitp doesn't hear of a sign-out or block at the IdP.** It uses only
-  RP-initiated logout (its Sign out also signs out of the IdP). It keeps no
-  refresh token and implements neither front- nor back-channel logout, so
-  "Revoke sessions" in Entra ID, or a disabled account, leaves a kitp
-  session running until it is idle 7 days (`KITP_SESSION_IDLE_HOURS`) or
-  45 days old. Revoke the login in kitp to end it.
+- **kitp hears of a sign-out at the IdP, not of an admin action there.**
+  Front- and back-channel logout end the kitp sessions of an IdP sign-out
+  (README, "Sign-out at the IdP"); Entra ID offers front-channel only, and
+  only for a browser that signs out there. "Revoke sessions" in Entra ID,
+  or a disabled account, tells kitp nothing: a kitp session runs until it
+  is idle 7 days (`KITP_SESSION_IDLE_HOURS`) or 45 days old. Revoke the
+  login in kitp to end it.
 - **One IMAP poll can still create up to 2,500 people** (50 messages × 50
   addresses), on threads with room; a thread with 100 recipients adds
   nobody.
@@ -77,6 +78,11 @@ still open, and what a deployment of those commits needs to know.
   kitp's (logged), so nobody loses access; the 3 role mappings are then
   ignored. Entra app-role assignment still decides who may sign in if the
   enterprise app has "Assignment required" on.
+- **Sign-out at Entra ID ends kitp sessions** once the app registration's
+  Front-channel logout URL is
+  `https://task.dev.kashilab.com/api/v1/auth/oidc/frontchannel-logout`
+  (Authentication). Sessions started before the deploy carry no IdP `sid`
+  and aren't reached.
 - **The ID token's `aud` is checked against `OIDC_CLIENT_ID`** when
   `OIDC_AUDIENCE` is unset.
 - **Tokens expire.** New tokens default to 365 days and can't be set

@@ -29,7 +29,7 @@ revoked_person_card_id, bigint, , , , , ,
 name, columns
 user_account_parent_user_id, "parent_user_id"
 
-## table session | doc="Server-side session for the BFF auth model. `id` is the SHA-256 hex of the opaque value the kitp_session cookie carries (auth.HashSecret; the cookie value itself is never stored, nor the OIDC token). `created_at` anchors the absolute re-auth cap; `last_seen_at` is the sliding idle window updated by Manager batched-touch flushes. `revoked_at` set on logout / admin revoke. `oidc_sub` records the OP subject for OIDC sessions so we can rotate when sub changes."
+## table session | doc="Server-side session for the BFF auth model. `id` is the SHA-256 hex of the opaque value the kitp_session cookie carries (auth.HashSecret; the cookie value itself is never stored, nor the OIDC token). `created_at` anchors the absolute re-auth cap; `last_seen_at` is the sliding idle window updated by Manager batched-touch flushes. `revoked_at` set on logout / admin revoke. `oidc_sub` records the OP subject for OIDC sessions so we can rotate when sub changes. `oidc_sid` is the ID token's `sid` (the IdP's session), which front- and back-channel logout name to end the kitp sessions of an IdP sign-out (oidc/logout.go)."
 
 ### columns
 name, type, pk, nullable, default, references, on_delete
@@ -39,11 +39,21 @@ created_at, timestamptz, , false, now(), ,
 last_seen_at, timestamptz, , false, now(), , 
 revoked_at, timestamptz, , , , , 
 oidc_sub, text, , , , , 
+oidc_sid, text, , , , , 
 
 ### indexes
 name, columns
 session_user_id, "user_id"
 session_last_seen_at, "last_seen_at"
+session_oidc_sid, "oidc_sid"
+session_oidc_sub, "oidc_sub"
+
+## table oidc_logout_jti | doc="Back-channel logout tokens already used (OpenID Connect Back-Channel Logout 1.0 §2.6): one row per token jti until expires_at, so a replayed token logs nobody out again. A token is taken only within 10 minutes of its iat; rows are kept a little longer and deleted by the oidc.state_reap job."
+
+### columns
+name, type, pk, nullable, default
+jti, text, true, ,
+expires_at, timestamptz, , false,
 
 ## table oidc_state | doc="Short-lived PKCE staging for the server-managed OIDC redirect dance. /auth/oidc/start writes a row keyed by `state` (with the PKCE verifier and the nonce sent to the OP) and sets a cookie carrying the state; /auth/oidc/callback requires that cookie, reads + deletes the row, and checks the id_token's nonce. Rows past `expires_at` are deleted by the oidc.state_reap job (every 10 minutes); starts are limited per address and overall (oidc.Mount)."
 

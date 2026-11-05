@@ -134,6 +134,13 @@ var ErrExpired = errors.New("session: expired")
 // sessions; in OIDC mode it should be the verified `sub` claim so the
 // session is traceable back to the OP subject.
 func (m *Manager) Create(ctx context.Context, userID int64, oidcSub string) (string, error) {
+	return m.CreateOIDC(ctx, userID, oidcSub, "")
+}
+
+// CreateOIDC is Create for an OIDC sign-in, recording the ID token's sid
+// (the IdP's session; "" when it sent none) so front- and back-channel
+// logout can end this session (RevokeOIDC).
+func (m *Manager) CreateOIDC(ctx context.Context, userID int64, oidcSub, oidcSID string) (string, error) {
 	id, err := newSessionID()
 	if err != nil {
 		return "", fmt.Errorf("session: generate id: %w", err)
@@ -142,9 +149,10 @@ func (m *Manager) Create(ctx context.Context, userID int64, oidcSub string) (str
 	b.Set("id", auth.HashSecret(id))
 	b.Set("user", userID)
 	b.Set("sub", oidcSub)
+	b.Set("sid", oidcSID)
 	sql, args, err := b.Compile(`
-		INSERT INTO session (id, user_id, oidc_sub)
-		VALUES (:id, :user, NULLIF(:sub, ''))`)
+		INSERT INTO session (id, user_id, oidc_sub, oidc_sid)
+		VALUES (:id, :user, NULLIF(:sub, ''), NULLIF(:sid, ''))`)
 	if err != nil {
 		return "", fmt.Errorf("session: insert: compile: %w", err)
 	}
@@ -234,6 +242,45 @@ func (m *Manager) Revoke(ctx context.Context, id string) error {
 	delete(m.pendingTouch, key)
 	m.mu.Unlock()
 	return nil
+}
+
+// RevokeOIDC ends the sessions an IdP sign-out names (front- or back-channel
+// logout): with sid, the sessions of that IdP session (and of sub too, when
+// given); with sub alone, every session of that subject. jti, when given,
+// is the back-channel logout token's: recorded until jtiExpires in the
+// same statement, and a token already recorded ends nothing (fresh=false),
+// so a replay can't sign someone out of a session they started since.
+func (m *Manager) RevokeOIDC(ctx context.Context, sub, sid, jti string, jtiExpires time.Time) (fresh bool, ended int64, err error) {
+	if sub == "" && sid == "" {
+		return false, 0, errors.New("session: RevokeOIDC needs a sub or a sid")
+	}
+	b := named.New()
+	b.Set("sub", sub)
+	b.Set("sid", sid)
+	b.Set("jti", jti)
+	b.Set("jti_expires", jtiExpires)
+	q, args, err := b.Compile(`
+		WITH fresh AS (
+		    INSERT INTO oidc_logout_jti (jti, expires_at)
+		    SELECT :jti, :jti_expires WHERE :jti <> ''
+		    ON CONFLICT (jti) DO NOTHING
+		    RETURNING 1
+		), ended AS (
+		    UPDATE session SET revoked_at = now()
+		    WHERE revoked_at IS NULL
+		      AND (:jti = '' OR EXISTS (SELECT 1 FROM fresh))
+		      AND CASE WHEN :sid <> '' THEN oidc_sid = :sid AND (:sub = '' OR oidc_sub = :sub)
+		               ELSE oidc_sub = :sub END
+		    RETURNING 1
+		)
+		SELECT :jti = '' OR EXISTS (SELECT 1 FROM fresh), (SELECT count(*) FROM ended)`)
+	if err != nil {
+		return false, 0, fmt.Errorf("session: revoke oidc: compile: %w", err)
+	}
+	if err := m.pool.QueryRow(ctx, q, args...).Scan(&fresh, &ended); err != nil {
+		return false, 0, fmt.Errorf("session: revoke oidc: %w", err)
+	}
+	return fresh, ended, nil
 }
 
 // RevokeAllForUser marks EVERY live session for userID revoked — the

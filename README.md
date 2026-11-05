@@ -311,6 +311,8 @@ never carries a token (server-side BFF session model).
 | POST `/api/v1/auth/logout` | public | **Unified logout** (see below). Revokes every session the caller holds and clears the cookie; in OIDC mode the JSON response carries a `redirect` to the OP's end-session URL. |
 | GET `/api/v1/auth/oidc/start` | public | Begins the OIDC PKCE redirect dance. A `?redirect=<local-path>` is validated and preserved as the post-login destination. OIDC mode only. |
 | GET `/api/v1/auth/oidc/callback` | public | OIDC redirect target: exchanges the code, provisions + role-maps the user, mints the session, then redirects to the saved destination. OIDC mode only. |
+| GET `/api/v1/auth/oidc/frontchannel-logout` | public | **Front-channel logout** (see below): the IdP's sign-out page loads it in an iframe with `sid` (and `iss`); ends the kitp sessions of that IdP session. OIDC mode only. |
+| POST `/api/v1/auth/oidc/backchannel-logout` | public | **Back-channel logout** (see below): the IdP POSTs a signed `logout_token`; ends the kitp sessions it names. OIDC mode only. |
 | POST `/api/v1/auth/dev-login` | public | Mints a System-user session. **`AUTH_MODE=off` only** (not registered in OIDC mode). |
 | POST `/api/v1/auth/dev-impersonate` | authed | Swaps the session to one of the caller's own agents. **`AUTH_MODE=off` only.** |
 
@@ -330,6 +332,35 @@ clear:
   returns to `/`. Set the return target with `OIDC_POST_LOGOUT_REDIRECT_URI`.
 - It is a public route on purpose: a stale or already-revoked cookie still
   clears cleanly instead of returning 401.
+
+### Sign-out at the IdP (front- and back-channel logout)
+
+The other direction: a sign-out at the IdP — in another app, or the IdP's
+own page — ends the kitp sessions it started. At sign-in kitp records the
+ID token's `sid` (the IdP's session) on the kitp session, and two routes
+take the IdP's word that it ended:
+
+- **Front-channel** (OpenID Connect Front-Channel Logout 1.0). Register
+  `https://<kitp>/api/v1/auth/oidc/frontchannel-logout` as the client's
+  front-channel logout URL (Entra ID: app registration → Authentication →
+  Front-channel logout URL). The IdP's sign-out page loads it in a hidden
+  iframe with `sid` (and `iss`, which Entra ID may leave out); the page
+  may be framed by the issuer's and end-session endpoint's origins only.
+  It works only in a browser that signs out at the IdP; browsers
+  partition an iframe's cookies, so the `sid` is what finds the session.
+- **Back-channel** (OpenID Connect Back-Channel Logout 1.0). Register
+  `https://<kitp>/api/v1/auth/oidc/backchannel-logout` as the back-channel
+  logout URI (Keycloak, Okta, Auth0 and others; Entra ID has none). The IdP
+  POSTs a `logout_token`: signed with its keys, to this client, at most 10
+  minutes old, carrying the logout event, a `jti` (a replay ends nothing)
+  and a `sid` (that IdP session's kitp sessions) or a `sub` alone (every
+  session of that subject). 200 when done, 400 `invalid_request` otherwise.
+
+Neither ends API tokens, and neither hears of an admin action at the IdP
+that isn't a sign-out (Entra ID's "Revoke sessions", a disabled account):
+the IdP tells apps nothing then. Revoke the login in kitp (People → revoke
+login) to end its sessions and tokens at once. Sessions from before kitp
+recorded `sid` end only by the cookie or their own time limit.
 
 The request needs no body:
 
