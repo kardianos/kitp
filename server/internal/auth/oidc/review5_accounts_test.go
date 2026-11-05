@@ -110,3 +110,43 @@ func TestRecoveryReachesThePersonsOwnLogin(t *testing.T) {
 		t.Error("a second recovery email made another admin")
 	}
 }
+
+// TestSignInReusesTheReusablePerson (round 3, worth a look): with two
+// people of one email — an older card a worker put the email on, and the
+// one kitp made — the sign-in takes the one it may reuse, not the oldest.
+func TestSignInReusesTheReusablePerson(t *testing.T) {
+	f := newR4OIDC(t, "kitp_test_r5_reuse_reusable")
+	ctx := context.Background()
+	var worker int64
+	if err := f.pool.QueryRow(ctx, `INSERT INTO user_account (display_name) VALUES ('Mallory') RETURNING id`).Scan(&worker); err != nil {
+		t.Fatal(err)
+	}
+	person := func(actor int64) int64 {
+		t.Helper()
+		var id int64
+		if err := f.pool.QueryRow(ctx, `
+			WITH p AS (INSERT INTO card (card_type_id) SELECT id FROM card_type WHERE name = 'person' RETURNING id),
+			     a AS (INSERT INTO activity (card_id, kind, attribute_def_id, value_new, actor_id)
+			           SELECT p.id, 'attr_update', ad.id, to_jsonb('newcomer@example.com'::text), $1
+			           FROM p, attribute_def ad WHERE ad.name = 'email' RETURNING id, card_id, attribute_def_id)
+			INSERT INTO attribute_value (card_id, attribute_def_id, value, last_activity_id)
+			SELECT a.card_id, a.attribute_def_id, to_jsonb('newcomer@example.com'::text), a.id FROM a
+			RETURNING card_id`, actor).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	person(worker)
+	made := person(auth.SystemUserID)
+	uid, err := f.signIn("sub-newcomer", "newcomer@example.com", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var linked int64
+	if err := f.pool.QueryRow(ctx, `SELECT person_card_id FROM user_account_person WHERE user_account_id = $1`, uid).Scan(&linked); err != nil {
+		t.Fatal(err)
+	}
+	if linked != made {
+		t.Errorf("the sign-in got person %d, want %d (the one kitp made)", linked, made)
+	}
+}

@@ -3,7 +3,10 @@
 -- waiting_on_me}, or NULL when none are open.
 --
 --   state          'rejected' when anyone asked rejected, 'approved' when
---                  everyone asked approved, else 'open' (votes missing)
+--                  everyone asked approved, else 'open' (votes missing,
+--                  or a request nobody it asks can vote on any more:
+--                  approval_tally leaves them out, and someone has to
+--                  ask again)
 --   asked/approved/rejected
 --                  approval_tally summed over the open requests
 --   asked_at       when the oldest open request was made
@@ -16,7 +19,7 @@ CREATE OR REPLACE FUNCTION approval_summary(p_task_id bigint, p_me bigint)
 RETURNS jsonb LANGUAGE sql STABLE AS $$
     SELECT CASE WHEN count(*) = 0 THEN NULL ELSE jsonb_build_object(
                'state', CASE WHEN sum(t.rejected) > 0 THEN 'rejected'
-                             WHEN sum(t.approved) = sum(t.asked) THEN 'approved'
+                             WHEN bool_and(t.asked > 0 AND t.approved = t.asked) THEN 'approved'
                              ELSE 'open' END,
                'asked', sum(t.asked),
                'approved', sum(t.approved),

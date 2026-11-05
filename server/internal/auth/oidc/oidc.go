@@ -710,27 +710,35 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 			pb := named.New()
 			pb.Set("email", email)
 			pb.Set("system", auth.SystemUserID)
+			// Of the people with this email, one that can be reused (no
+			// login, its email written by kitp or an admin) comes first: by
+			// lowest id alone, a worker who put the email on an older card
+			// gave a newcomer a duplicate person instead of the card an
+			// admin made them (review 2026-11-03 round 3, worth a look).
 			q, args, cerr := pb.Compile(`
-				SELECT c.id, uap.user_account_id,
-				       coalesce(ua.oidc_sub IS NOT NULL, false),
-				       coalesce((
-				           -- Judged as the writer was when they wrote it
-				           -- (actor_admin; round 4); older rows by their role now.
-				           SELECT a.actor_id = :system OR COALESCE(a.actor_admin, EXISTS (
-				                      SELECT 1 FROM user_role_effective(a.actor_id) ur JOIN role r ON r.id = ur.role_id
-				                      WHERE r.name = 'admin' AND ur.scope_card_id IS NULL))
-				           FROM activity a WHERE a.id = av.last_activity_id),
-				           av.last_activity_id IS NULL)
-				FROM card c
-				JOIN attribute_value av ON av.card_id = c.id
-				JOIN attribute_def ad ON ad.id = av.attribute_def_id
-				LEFT JOIN user_account_person uap ON uap.person_card_id = c.id
-				LEFT JOIN user_account ua ON ua.id = uap.user_account_id
-				WHERE c.card_type_id = (SELECT id FROM card_type WHERE name = 'person')
-				  AND c.deleted_at IS NULL
-				  AND ad.name = 'email'
-				  AND lower(av.value #>> '{}') = lower(:email)
-				ORDER BY c.id
+				SELECT m.person_id, m.user_account_id, m.has_sub, m.trusted
+				FROM (
+				    SELECT c.id AS person_id, uap.user_account_id,
+				           coalesce(ua.oidc_sub IS NOT NULL, false) AS has_sub,
+				           coalesce((
+				               -- Judged as the writer was when they wrote it
+				               -- (actor_admin; round 4); older rows by their role now.
+				               SELECT a.actor_id = :system OR COALESCE(a.actor_admin, EXISTS (
+				                          SELECT 1 FROM user_role_effective(a.actor_id) ur JOIN role r ON r.id = ur.role_id
+				                          WHERE r.name = 'admin' AND ur.scope_card_id IS NULL))
+				               FROM activity a WHERE a.id = av.last_activity_id),
+				               av.last_activity_id IS NULL) AS trusted
+				    FROM card c
+				    JOIN attribute_value av ON av.card_id = c.id
+				    JOIN attribute_def ad ON ad.id = av.attribute_def_id
+				    LEFT JOIN user_account_person uap ON uap.person_card_id = c.id
+				    LEFT JOIN user_account ua ON ua.id = uap.user_account_id
+				    WHERE c.card_type_id = (SELECT id FROM card_type WHERE name = 'person')
+				      AND c.deleted_at IS NULL
+				      AND ad.name = 'email'
+				      AND lower(av.value #>> '{}') = lower(:email)
+				) m
+				ORDER BY (m.user_account_id IS NULL AND m.trusted) DESC, m.person_id
 				LIMIT 1
 			`)
 			if cerr != nil {

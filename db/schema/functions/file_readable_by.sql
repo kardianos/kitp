@@ -1,11 +1,14 @@
 -- file_readable_by — whether an account may have a stored file's bytes:
 --   - it uploaded the file itself;
 --   - its agent or owner (account_principal, as cas_held_by and import jobs
---     compare; round 3 #20) uploaded it and it isn't attached anywhere yet —
---     an upload in flight, handed from one to the other. Once it is
---     attached, an agent reads it only where its own grants reach: a
+--     compare; round 3 #20) uploaded it in the last day and it has never
+--     been attached — an upload in flight, handed from one to the other.
+--     Past that, an agent reads it only where its own grants reach: a
 --     principal match for every file let an agent scoped to one project
---     read everything its owner ever uploaded (round 4 #11);
+--     read everything its owner ever uploaded (round 4 #11), and one for
+--     every unattached file still let it read its owner's old CSV imports
+--     and files whose attachments were deleted, by sequential id (round 5,
+--     worth a look);
 --   - or it is attached (live) to a live card whose bytes the account may
 --     download — the byte routes' rule (attachment/http.go
 --     requireAttachmentAccess, DI-3): `card.update` on the card's project,
@@ -23,8 +26,8 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
         OR EXISTS (SELECT 1 FROM file f
                    WHERE f.id = file_readable_by.file
                      AND account_principal(f.created_by) = account_principal(reader)
-                     AND NOT EXISTS (SELECT 1 FROM attachment a
-                                     WHERE a.file_id = f.id AND a.deleted_at IS NULL))
+                     AND f.created_at > now() - interval '1 day'
+                     AND NOT EXISTS (SELECT 1 FROM attachment a WHERE a.file_id = f.id))
         OR EXISTS (
             SELECT 1
             FROM attachment a

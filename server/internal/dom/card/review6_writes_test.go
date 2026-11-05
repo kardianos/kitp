@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/kitp/kitp/server/internal/api"
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/schema/hcsv"
 	"github.com/kitp/kitp/server/internal/store"
@@ -230,5 +231,30 @@ func TestSmallWriteChecks(t *testing.T) {
 	codes = batchCodes(t, f, "comment_insert_batch", auth.SystemUserID, []map[string]any{{"card_id": fmt.Sprint(f.taskB), "body": "hi"}})
 	if codes[0] != "card_not_found" {
 		t.Errorf("a comment on a deleted card: %q, want card_not_found", codes[0])
+	}
+}
+
+// TestOwnPrivateCardsKeepTheBundleSourceCheck (round 5, worth a look):
+// writing your own private card needs no role grant, but a personal view
+// still can't be put into a feature bundle's source project, which kitp
+// rebuilds and copies into projects.
+func TestOwnPrivateCardsKeepTheBundleSourceCheck(t *testing.T) {
+	f := setupVisibility(t, "kitp_test_r5b_private_bundle_source")
+	ctx := context.Background()
+	reviewPerson(t, f, f.admin)
+	var src int64
+	if err := f.sp.P.QueryRow(ctx, `SELECT source_project_id FROM bundle WHERE source_project_id IS NOT NULL ORDER BY key LIMIT 1`).Scan(&src); err != nil {
+		t.Fatal(err)
+	}
+	view := func(screen int64) api.SubResponse {
+		t.Helper()
+		return reviewCall(t, f, f.admin, "card", "insert", fmt.Sprintf(
+			`{"card_type_name":"filter","parent_card_id":"%d","title":"mine","private":true}`, screen))
+	}
+	if r := view(sqlCard(t, f, "screen", f.projectA, nil)); !r.OK {
+		t.Fatalf("a personal view on a project's screen: %+v", r.Error)
+	}
+	if r := view(sqlCard(t, f, "screen", src, nil)); r.OK || r.Error.Code != "forbidden" {
+		t.Errorf("a personal view in a bundle source: %+v, want forbidden", r)
 	}
 }

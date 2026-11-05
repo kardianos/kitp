@@ -4,6 +4,12 @@
 -- current round (approval_round_start). Votes belong to the edge, not the
 -- request, so a vote cast before anyone asked still counts. Used by
 -- approval_summary.
+--
+-- Someone asked who has not voted in the round and can no longer vote (no
+-- login with comment rights on the task's project, as approval_waiting_on
+-- judges) isn't counted: they would hold the request open for good
+-- (review 2026-11-03 round 5, worth a look). A vote they cast while they
+-- could still counts.
 CREATE OR REPLACE FUNCTION approval_tally(p_task_id bigint, p_from bigint, p_to bigint, p_approvers jsonb)
 RETURNS TABLE (asked int, approved int, rejected int) LANGUAGE sql STABLE AS $$
     WITH asked AS (
@@ -28,4 +34,9 @@ RETURNS TABLE (asked int, approved int, rejected int) LANGUAGE sql STABLE AS $$
            (count(*) FILTER (WHERE l.decision = 'reject'))::int
     FROM asked k
     LEFT JOIN latest l ON l.person_id = k.person_id
+    WHERE l.person_id IS NOT NULL
+       OR EXISTS (
+              SELECT 1 FROM user_account_person uap
+              WHERE uap.person_card_id = k.person_id
+                AND user_has_grant(uap.user_account_id, 'task', 'comment.post', card_enclosing_project(p_task_id)))
 $$;

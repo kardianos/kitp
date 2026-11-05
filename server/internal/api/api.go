@@ -973,19 +973,19 @@ func (s *Server) runAuthzPass(ctx context.Context, prepped []prepared, slots []S
 			s.abortWithError(ctx, slots, p.OuterIdx, "unauthorized", err)
 			return err
 		}
-		if owned {
-			// The actor's own private card: no role grant is needed. The
-			// bundle-source and area checks don't apply (a private card is
-			// never in a bundle source, and a personal screen has no area).
-			continue
-		}
-		if err := s.authorizeLeaf(ctx, p.Handler, p.Input, grants, lookup, projTypeID); err != nil {
-			// authorizeLeaf returns a *reg.HandlerError with a safe
-			// (curated) message on a real deny, or a wrapped internal
-			// error on a lookup failure — errEnvelope keeps the former,
-			// redacts the latter (A5).
-			s.abortWithError(ctx, slots, p.OuterIdx, "unauthorized", err)
-			return err
+		// The actor's own private card needs no role grant. The
+		// bundle-source and area checks still apply: a personal view sits
+		// on a shared screen (docs/PERSONAL_SCREENS.md P10), which can be
+		// a bundle source's (review 2026-11-03 round 5, worth a look).
+		if !owned {
+			if err := s.authorizeLeaf(ctx, p.Handler, p.Input, grants, lookup, projTypeID); err != nil {
+				// authorizeLeaf returns a *reg.HandlerError with a safe
+				// (curated) message on a real deny, or a wrapped internal
+				// error on a lookup failure — errEnvelope keeps the former,
+				// redacts the latter (A5).
+				s.abortWithError(ctx, slots, p.OuterIdx, "unauthorized", err)
+				return err
+			}
 		}
 		if len(sources) > 0 && !p.Handler.IsRead {
 			if err := s.checkBundleSource(ctx, p.Handler, p.Input, lookup, projTypeID, sources); err != nil {

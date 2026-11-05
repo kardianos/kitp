@@ -42,16 +42,13 @@ still open, and what a deployment of those commits needs to know.
 - **A running `kitpd mcp` checks its token only at start.** Revoking or
   expiring the token doesn't stop a process already running (it holds
   database credentials anyway).
-- **Not done from the final check's "worth a look" list:** person reuse at
-  sign-in takes the lowest-id person with the email; `user.unlink_person`
-  then a grant to the same person gives the old login's private cards to
-  the new one; an agent can read its owner's files that were never
-  attached; a message that always fails to file for a passing reason
-  fails every poll; outgoing mail carries no In-Reply-To / References, and
-  a 5xx for one recipient bounces the whole message; a request naming
-  someone who can no longer vote stays open in the tally; personal views
-  are open to viewers; writes to your own private cards skip the
-  bundle-source and area checks.
+- **Not done from the final check's "worth a look" list:**
+  `user.unlink_person` then a grant to the same person gives the old
+  login's private cards to the new one (private cards belong to the
+  person); a message that always fails to file for a passing reason fails
+  every poll; outgoing mail carries no In-Reply-To / References, and a 5xx
+  for one recipient bounces the whole message; personal views are open to
+  viewers (their own saved views).
 
 ## Still open (could be done later)
 
