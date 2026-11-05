@@ -296,7 +296,7 @@ type ReplyPostOutput struct {
 // CommLogListInput filters the per-project comm_log stream.
 type CommLogListInput struct {
 	ProjectID int64  `json:"project_id,string" mcp:"required,desc=project card id whose comm_log to read"`
-	Kind      string `json:"kind,omitempty" mcp:"desc=optional kind filter (poll / received / duplicate / inbound_refused / dkim_result / dkim_failed / send_ok / send_retry / send_bounce / send_fail / imap_auth_fail / parse_error / file_error / unmatched_thread / attachment_too_large / attachments_dropped / relay_queued / relay_skipped / notification_reply / notify_ok / notify_bounce / notify_fail)"`
+	Kind      string `json:"kind,omitempty" mcp:"desc=optional kind filter (poll / received / duplicate / inbound_refused / dkim_result / dkim_failed / send_ok / send_retry / send_bounce / send_fail / imap_auth_fail / parse_error / file_retry / file_error / unmatched_thread / attachment_too_large / attachments_dropped / relay_queued / relay_skipped / notification_reply / notify_ok / notify_bounce / notify_fail)"`
 	Since     string `json:"since,omitempty" mcp:"desc=RFC 3339 timestamp (e.g. 2026-11-03T00:00:00Z); rows older than this are excluded; empty defaults to 24h ago"`
 	ChannelID int64  `json:"channel_id,string,omitempty" mcp:"desc=optional: only this mail account's rows"`
 	RouteID   int64  `json:"route_id,string,omitempty" mcp:"desc=optional: only rows for this inbound route (a POST URL or SMTP address from comm_route.list)"`

@@ -145,7 +145,9 @@ BEGIN
         --   comm_recipients — who a thread's mail goes to: comm.create and
         --     comm.set_recipients set it, within their cap of 100 and
         --     through comm_confirm / comm_remove (review round 5 #2).
-        IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber', 'comm_confirmed', 'comm_removed', 'comm_recipients') THEN
+        --   reply_message_id — a message's Message-ID, which intake and the
+        --     sender write and outgoing mail's References name.
+        IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber', 'comm_confirmed', 'comm_removed', 'comm_recipients', 'reply_message_id') THEN
             RETURN QUERY SELECT _idx, false, 'validation'::text,
                 format('attribute.update: %s is set by kitp, not by hand', _attr_name), NULL::jsonb;
             CONTINUE;

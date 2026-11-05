@@ -19,3 +19,11 @@ func SetSendTimeoutForTest(d time.Duration) func() {
 	sendTimeout = d
 	return func() { sendTimeout = old }
 }
+
+// SetFileFailureSetAsideAfterForTest shortens how long a message must keep
+// failing to file before it is set aside; the returned func restores it.
+func SetFileFailureSetAsideAfterForTest(d time.Duration) func() {
+	old := fileFailureSetAsideAfter
+	fileFailureSetAsideAfter = d
+	return func() { fileFailureSetAsideAfter = old }
+}

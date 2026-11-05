@@ -68,7 +68,7 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// attachments_left_off (message), +symbol (watch lists),
 		// +list_card_type / my_default (personal screens and views),
 		// +reply_cc (message), +comm_confirmed (thread).
-		{`SELECT count(*) FROM attribute_def`, 103},
+		{`SELECT count(*) FROM attribute_def`, 104},
 		// +3 on activity_sink (channel_ref / rollup_minutes / predicate)
 		// +7 on activity_subscription, +4 on link, +7 on approval,
 		// +bundle_key on project, +publishes_to on status, +5 on page,
@@ -79,7 +79,7 @@ func TestApplySchemaSeedOnly(t *testing.T) {
 		// attachments_left_off), +4 on watch_list, +2 on screen
 		// (list_card_type, predicate) and +1 on filter (my_default), +1 on
 		// reply_body (reply_cc) and +1 on comm (comm_confirmed).
-		{`SELECT count(*) FROM edge`, 156},
+		{`SELECT count(*) FROM edge`, 157},
 		// +activity_subscription.set / .delete.
 		{`SELECT count(*) FROM process`, 8},
 		{`SELECT count(*) FROM process_step`, 9},
@@ -1036,8 +1036,8 @@ func TestApplySchemaWithTestDemo(t *testing.T) {
 		{seedOnly(`SELECT count(*) FROM card c WHERE %s`, "c.id"), 30},
 		{`SELECT count(*) FROM role`, 5},
 		{`SELECT count(*) FROM card_type`, 23},
-		{`SELECT count(*) FROM attribute_def`, 103},
-		{`SELECT count(*) FROM edge`, 156},
+		{`SELECT count(*) FROM attribute_def`, 104},
+		{`SELECT count(*) FROM edge`, 157},
 		// Template's status flow + 12 transitions (Gate 11), plus the
 		// comm flow + 3 transitions (Gate 2 of email_comm_spec).
 		// test_demo adds none of its own.
@@ -1754,5 +1754,41 @@ func TestForwardMigrationsRound3(t *testing.T) {
 		       (SELECT jsonb_agg(1000000 + g) FROM generate_series(1, 2000) g)
 	`); err != nil {
 		t.Errorf("a long card_ref[] list didn't write: %v", err)
+	}
+}
+
+// TestForwardMigration0040ReplyMessageID checks that an install from before
+// outgoing mail threaded gets reply_message_id and its reply_body edge.
+func TestForwardMigration0040ReplyMessageID(t *testing.T) {
+	pool := store.TestPoolBare(t, "kitp_test_migration_0040")
+	ctx := context.Background()
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+	counts := []string{`SELECT count(*) FROM attribute_def`, `SELECT count(*) FROM edge`}
+	read := func() []int64 {
+		out := make([]int64, len(counts))
+		for i, q := range counts {
+			if err := pool.QueryRow(ctx, q).Scan(&out[i]); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		return out
+	}
+	fresh := read()
+	for _, stmt := range []string{
+		`DELETE FROM edge WHERE attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_message_id')`,
+		`DELETE FROM attribute_def WHERE name = 'reply_message_id'`,
+		`DELETE FROM schema_version WHERE name = '0040_reply_message_id'`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			t.Fatalf("simulate an older install (%s): %v", stmt, err)
+		}
+	}
+	if err := store.ApplySchema(ctx, pool, hcsv.GenerateOptions{Demo: false}); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	if got := read(); fmt.Sprint(got) != fmt.Sprint(fresh) {
+		t.Errorf("after 0040: %v, want the fresh seed's %v", got, fresh)
 	}
 }

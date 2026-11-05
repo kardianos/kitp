@@ -51,6 +51,7 @@ export const COMM_LOG_KINDS: ReadonlyArray<readonly [string, string]> = [
   ['inbound_refused', 'Refused by a route filter'],
   ['unmatched_thread', 'Ignored (new mail, account ignores it)'],
   ['parse_error', 'Couldn’t be read'],
+  ['file_retry', 'Couldn’t be filed yet, will retry'],
   ['file_error', 'Couldn’t be filed, dropped'],
   ['dkim_result', 'DKIM result (record only)'],
   ['dkim_failed', 'DKIM failed, filed anyway'],
@@ -117,6 +118,8 @@ export function commLogSummary(row: Pick<CommLogRow, 'kind' | 'detail'>): string
       return str(d['error']);
     case 'file_error':
       return `${about} — ${str(d['error'])}`.trim();
+    case 'file_retry':
+      return `${about} — ${str(d['error'])}; tried again after the rest of the mail on each poll`.trim();
     case 'dkim_result':
     case 'dkim_failed': {
       const ok = Array.isArray(d['verified']) ? (d['verified'] as unknown[]).map(str).join(', ') : '';
@@ -134,6 +137,14 @@ export function commLogSummary(row: Pick<CommLogRow, 'kind' | 'detail'>): string
       return `${about} — not sent on: ${RELAY_SKIP_REASON[str(d['reason'])] ?? str(d['reason'])}`.trim();
     case 'send_retry':
       return `to ${str(d['recipient'])} — try ${str(d['attempt'])} failed (${str(d['error'])}); next in ${str(d['retry_in'])}`;
+    case 'send_ok': {
+      const refused = Array.isArray(d['refused'])
+        ? (d['refused'] as unknown[]).map((r) => str((r as Record<string, unknown> | null)?.['recipient'])).filter((a) => a !== '')
+        : [];
+      return `to ${str(d['recipient'])}${refused.length > 0 ? ` — except ${refused.join(', ')}, whom the server refused` : ''}`;
+    }
+    case 'send_bounce':
+      return `to ${str(d['recipient'])} — ${str(d['error'])}${d['others_sent'] === true ? ' (sent to the others)' : ''}`;
     default:
       return about !== '' ? about : str(d['error']);
   }

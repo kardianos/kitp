@@ -41,6 +41,7 @@ type mockSMTPServer struct {
 	received   []recordedMessage
 	dataResult string // e.g. "250 OK", "550 mailbox unavailable"
 	disconnect bool   // if true, hang up before sending the response
+	refuseRcpt map[string]bool // RCPT TO answered 550
 }
 
 func startMockSMTP(t *testing.T) *mockSMTPServer {
@@ -116,6 +117,13 @@ func (m *mockSMTPServer) handle(conn net.Conn) {
 			msg.From = extractAddr(line)
 			writeLine("250 OK")
 		case strings.HasPrefix(up, "RCPT TO:"):
+			m.mu.Lock()
+			refused := m.refuseRcpt[extractAddr(line)]
+			m.mu.Unlock()
+			if refused {
+				writeLine("550 no such user")
+				continue
+			}
 			msg.To = append(msg.To, extractAddr(line))
 			writeLine("250 OK")
 		case strings.HasPrefix(up, "DATA"):

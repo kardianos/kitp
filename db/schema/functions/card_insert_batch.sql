@@ -235,8 +235,9 @@ BEGIN
             -- bundle's source project), replies / comms (a thread's messages,
             -- a task's threads), subscriber (who owns a watch list,
             -- calendar or subscription), comm_confirmed (who the relay
-            -- may send to) and comm_removed (who was taken off a thread).
-            IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber', 'comm_confirmed', 'comm_removed', 'comm_recipients') THEN
+            -- may send to), comm_removed (who was taken off a thread),
+            -- comm_recipients and reply_message_id (a message's Message-ID).
+            IF _attr_name IN ('bundle_key', 'replies', 'comms', 'subscriber', 'comm_confirmed', 'comm_removed', 'comm_recipients', 'reply_message_id') THEN
                 _rej_code := 'validation';
                 _rej_msg := format('card.insert: %s is set by kitp, not by hand', _attr_name);
                 EXIT;

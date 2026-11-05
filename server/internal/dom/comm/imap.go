@@ -85,6 +85,7 @@ import (
 	"github.com/emersion/go-imap/commands"
 	"github.com/emersion/go-imap/utf7"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kitp/kitp/server/internal/auth"
 	"github.com/kitp/kitp/server/internal/job"
@@ -526,6 +527,18 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 	if err := p.pruneInflight(ctx, validity); err != nil {
 		return err
 	}
+	// Messages that failed to file before go after the rest, so one that
+	// takes the poll's whole budget, or fails on every poll, doesn't hold
+	// back the mail behind it.
+	failed, err := p.loadFileFailures(ctx, validity)
+	if err != nil {
+		return err
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		_, fi := failed[list[i].UID]
+		_, fj := failed[list[j].UID]
+		return !fi && fj
+	})
 
 	// One message at a time: fetch, file, mark seen, then the next — a
 	// poll holds one message's bytes, never the batch (review 2026-11-03
@@ -536,9 +549,18 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 	// every poll.
 	var ingested int
 	var firstErr error
+	filedOK := false
 	for _, u := range list {
 		if ctx.Err() != nil {
 			break
+		}
+		ff, hadFailed := failed[u.UID]
+		if hadFailed && ff.setAside {
+			if err := p.setAsideUnfiled(ctx, client, intake.projectID, validity, u.UID, ff); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			ingested++
+			continue
 		}
 		var m InboundMessage
 		tracked := false
@@ -575,14 +597,30 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 			}
 		}
 		seen, aside, err := p.fileFetched(ctx, intake, m, int64(u.Size))
-		if err != nil && firstErr == nil {
-			firstErr = err
+		switch {
+		case err == nil:
+		case errors.Is(ctx.Err(), context.Canceled):
+			// kitpd is stopping: not the message's doing.
+			if firstErr == nil {
+				firstErr = err
+			}
+		default:
+			// A passing failure (permanent ones are set aside by
+			// fileFetched): recorded against the message, not the account,
+			// and the poll goes on to the next one.
+			p.noteFileFailure(ctx, intake.projectID, validity, m, err)
 		}
 		if seen {
 			if err := client.MarkSeen(ctx, []uint32{u.UID}); err != nil && firstErr == nil {
 				firstErr = fmt.Errorf("imap mark seen: %w", err)
 			}
 			ingested++
+			if !aside {
+				filedOK = true
+			}
+			if hadFailed {
+				p.clearFileFailure(ctx, validity, u.UID)
+			}
 		}
 		if seen && aside {
 			p.archive(ctx, client, u.UID)
@@ -592,6 +630,9 @@ func (p *IMAPPoller) RunOnce(ctx context.Context) error {
 		}
 	}
 
+	if filedOK {
+		p.noteOthersFiled(ctx, validity)
+	}
 	if err := p.recordPollOnly(ctx, projectID, len(list)); err != nil && firstErr == nil {
 		firstErr = err
 	}
@@ -671,18 +712,182 @@ func (p *IMAPPoller) fileFetched(ctx context.Context, intake channelIntake, m In
 	return true, false, nil
 }
 
-// pruneInflight drops this channel's in-flight records from another
-// UIDVALIDITY (the mailbox was rebuilt; its UIDs name other messages now)
-// and any older than a week.
+// pruneInflight drops this channel's in-flight and file-failure records
+// from another UIDVALIDITY (the mailbox was rebuilt; its UIDs name other
+// messages now) and any untouched for a week (a failing message someone
+// read or moved in the mailbox).
 func (p *IMAPPoller) pruneInflight(ctx context.Context, validity uint32) error {
-	err := namedExec(ctx, p.pool.P, `
+	args := map[string]any{"channel": p.channelID, "validity": int64(validity)}
+	if err := namedExec(ctx, p.pool.P, `
 		DELETE FROM comm_imap_inflight
 		WHERE channel_id = :channel
 		  AND (uid_validity <> :validity OR started_at < now() - interval '7 days')
-	`, map[string]any{"channel": p.channelID, "validity": int64(validity)})
-	if err != nil {
+	`, args); err != nil {
 		return fmt.Errorf("imap: prune in-flight: %w", err)
 	}
+	if err := namedExec(ctx, p.pool.P, `
+		DELETE FROM comm_imap_file_failure
+		WHERE channel_id = :channel
+		  AND (uid_validity <> :validity OR last_failed_at < now() - interval '7 days')
+	`, args); err != nil {
+		return fmt.Errorf("imap: prune file failures: %w", err)
+	}
+	return nil
+}
+
+// imapSetAsideFailures and fileFailureSetAsideAfter are when a message that
+// keeps failing to file for a passing reason is set aside: after this many
+// failures over at least this long, while other mail of the account filed
+// (comm_imap_file_failure).
+const imapSetAsideFailures = 3
+
+var fileFailureSetAsideAfter = 24 * time.Hour
+
+// fileFailure is a comm_imap_file_failure row as a poll reads it.
+type fileFailure struct {
+	failures int
+	detail   map[string]any
+	setAside bool
+}
+
+// loadFileFailures reads this channel's messages that failed to file, and
+// which of them are due to be set aside.
+func (p *IMAPPoller) loadFileFailures(ctx context.Context, validity uint32) (map[uint32]fileFailure, error) {
+	b := named.New()
+	b.Set("channel", p.channelID)
+	b.Set("validity", int64(validity))
+	b.Set("min_failures", imapSetAsideFailures)
+	b.Set("after_secs", fileFailureSetAsideAfter.Seconds())
+	q, args, err := b.Compile(`
+		SELECT uid, failures, detail,
+		       others_filed AND failures >= :min_failures
+		       AND first_failed_at <= now() - make_interval(secs => :after_secs)
+		FROM comm_imap_file_failure
+		WHERE channel_id = :channel AND uid_validity = :validity`)
+	if err != nil {
+		return nil, fmt.Errorf("imap: file failures: compile: %w", err)
+	}
+	rows, err := p.pool.P.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("imap: file failures: %w", err)
+	}
+	defer rows.Close()
+	out := map[uint32]fileFailure{}
+	for rows.Next() {
+		var uid int64
+		var f fileFailure
+		if err := rows.Scan(&uid, &f.failures, &f.detail, &f.setAside); err != nil {
+			return nil, fmt.Errorf("imap: file failures: scan: %w", err)
+		}
+		out[uint32(uid)] = f
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("imap: file failures: %w", err)
+	}
+	return out, nil
+}
+
+// fileRetryDetail is the Comm log detail of a passing filing failure: which
+// message, and why in words that don't quote its values.
+func fileRetryDetail(m InboundMessage, err error) map[string]any {
+	reason := "an error (the kitpd log has it)"
+	var pg *pgconn.PgError
+	switch {
+	case errors.As(err, &pg):
+		reason = "a database error (" + pg.Code + ")"
+	case errors.Is(err, context.DeadlineExceeded):
+		reason = "filing it took longer than the poll may"
+	}
+	return map[string]any{
+		"error": reason, "uid": m.UID,
+		"message_id": clip(m.MessageID, 300), "from": clip(m.From, 300), "subject": clip(m.Subject, 300),
+	}
+}
+
+// bookkeepingCtx is for a poll's records of a message once the poll's own
+// ctx may have run out (a filing that took the whole budget).
+func bookkeepingCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+}
+
+// noteFileFailure records a passing filing failure against the message; the
+// first one is logged in the Comm log (file_retry). A failure to record it
+// is logged: the message is retried on the next poll either way.
+func (p *IMAPPoller) noteFileFailure(ctx context.Context, projectID int64, validity uint32, m InboundMessage, ferr error) {
+	p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: filing a message failed; trying it again next poll",
+		slog.Int64("channel_id", p.channelID), slog.Any("uid", m.UID), slog.String("error", ferr.Error()))
+	bctx, cancel := bookkeepingCtx(ctx)
+	defer cancel()
+	detail := fileRetryDetail(m, ferr)
+	row, err := namedRow(bctx, p.pool.P, `
+		INSERT INTO comm_imap_file_failure (channel_id, uid_validity, uid, detail)
+		VALUES (:channel, :validity, :uid, :detail)
+		ON CONFLICT (channel_id, uid_validity, uid) DO UPDATE
+			SET failures = comm_imap_file_failure.failures + 1, last_failed_at = now(), detail = EXCLUDED.detail
+		RETURNING failures
+	`, map[string]any{"channel": p.channelID, "validity": int64(validity), "uid": int64(m.UID), "detail": detail})
+	var failures int
+	if err == nil {
+		err = row.Scan(&failures)
+	}
+	if err != nil {
+		p.logger.LogAttrs(ctx, slog.LevelError, "imap: recording a filing failure failed",
+			slog.Int64("channel_id", p.channelID), slog.Any("uid", m.UID), slog.String("error", err.Error()))
+		return
+	}
+	if failures == 1 {
+		if err := p.logInbound(bctx, p.pool.P, projectID, inboundMeta{transport: TransportIMAP}, "file_retry", detail); err != nil {
+			p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: logging a filing failure failed",
+				slog.Int64("channel_id", p.channelID), slog.Any("uid", m.UID), slog.String("error", err.Error()))
+		}
+	}
+}
+
+// clearFileFailure forgets a message's failures once it filed or was set
+// aside. Left behind, the row is pruned within a week.
+func (p *IMAPPoller) clearFileFailure(ctx context.Context, validity uint32, uid uint32) {
+	bctx, cancel := bookkeepingCtx(ctx)
+	defer cancel()
+	if err := namedExec(bctx, p.pool.P, `
+		DELETE FROM comm_imap_file_failure WHERE channel_id = :channel AND uid_validity = :validity AND uid = :uid
+	`, map[string]any{"channel": p.channelID, "validity": int64(validity), "uid": int64(uid)}); err != nil {
+		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: clearing a filing failure failed",
+			slog.Int64("channel_id", p.channelID), slog.Any("uid", uid), slog.String("error", err.Error()))
+	}
+}
+
+// noteOthersFiled marks this channel's failing messages as failing while
+// other mail files: the failure is theirs, not the account's.
+func (p *IMAPPoller) noteOthersFiled(ctx context.Context, validity uint32) {
+	bctx, cancel := bookkeepingCtx(ctx)
+	defer cancel()
+	if err := namedExec(bctx, p.pool.P, `
+		UPDATE comm_imap_file_failure SET others_filed = true
+		WHERE channel_id = :channel AND uid_validity = :validity AND NOT others_filed
+	`, map[string]any{"channel": p.channelID, "validity": int64(validity)}); err != nil {
+		p.logger.LogAttrs(ctx, slog.LevelWarn, "imap: noting other mail filed failed",
+			slog.Int64("channel_id", p.channelID), slog.String("error", err.Error()))
+	}
+}
+
+// setAsideUnfiled sets aside a message that kept failing to file: logged as
+// file_error with its last failure, marked read and moved to the set-aside
+// folder, its failure record cleared.
+func (p *IMAPPoller) setAsideUnfiled(ctx context.Context, client InboundClient, projectID int64, validity uint32, uid uint32, ff fileFailure) error {
+	detail := map[string]any{}
+	for k, v := range ff.detail {
+		detail[k] = v
+	}
+	detail["error"] = fmt.Sprintf("set aside: filing it failed %d times over more than %s (last: %v)",
+		ff.failures, fileFailureSetAsideAfter, ff.detail["error"])
+	if err := p.logInbound(ctx, p.pool.P, projectID, inboundMeta{transport: TransportIMAP}, "file_error", detail); err != nil {
+		return err
+	}
+	if err := client.MarkSeen(ctx, []uint32{uid}); err != nil {
+		return fmt.Errorf("imap mark seen: %w", err)
+	}
+	p.archive(ctx, client, uid)
+	p.clearFileFailure(ctx, validity, uid)
 	return nil
 }
 
@@ -1114,6 +1319,13 @@ func (p *filer) appendReceivedReply(ctx context.Context, tx store.Querier, snap 
 		{"reply_subject", jstr(m.Subject)},
 		{"reply_body_text", jstr(m.Body)},
 		{"delivery_status", jstr("received")},
+	}
+	// Its Message-ID, for the References of kitp's replies (threading).
+	if mid := normalMessageID(m.MessageID); mid != "" {
+		writes = append(writes, struct {
+			name string
+			val  json.RawMessage
+		}{"reply_message_id", jstr(mid)})
 	}
 	for _, w := range writes {
 		ad, ok := snap.AttrByName[w.name]

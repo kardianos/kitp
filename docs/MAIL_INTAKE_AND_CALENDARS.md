@@ -237,8 +237,31 @@ Size and shape (review 2026-11-03 rounds 3 and 4, #1).
   long it took.
 - One replica at a time polls an IMAP account, and one pumps a digest or
   Teams sink (a Postgres advisory lock held for the tick).
+- **Threading.** Each message keeps its Message-ID (`reply_message_id` on
+  the reply_body: intake writes an incoming one, if it is a plain
+  `<left@right>`; the sender writes its own once the message is sent). A
+  message kitp sends names the thread's earlier messages: In-Reply-To the
+  latest, References up to 20 — the first and the latest — so it lands in
+  the recipient's thread rather than on its own. Messages from before
+  this (migration 0040) have no id, so an older thread threads from its
+  next message on.
+- **A refused recipient.** A recipient the mail server refuses for good
+  (5xx at RCPT TO) is left off, and the rest get the message: it is
+  `sent`, its `send_ok` names who was refused, and each refused address
+  has a `send_bounce` of its own. Only a message every recipient is
+  refused for bounces. A passing refusal (4xx) still retries the whole
+  message, since nobody has it yet.
 - A message the IMAP server refuses to fetch is skipped for the others,
   and set aside after two refusals.
+- A message that fails to file for a passing reason (anything but a
+  database limit it breaks, which sets it aside at once) is recorded in
+  `comm_imap_file_failure`, logged once in the Comm log (`file_retry`),
+  and tried after the poll's other mail on each poll; it doesn't count
+  against the account, so it can't trip the account's fault switch. It is
+  set aside (`file_error`, "set aside") once it has failed for a day, three
+  times or more, while other mail of the account filed. A failure that
+  hits every message — a kitp bug, the database — sets nothing aside: the
+  mail waits in the inbox until filing works again.
 - A thread has at most 100 recipients; inbound mail adds nobody past that.
 - At most 4 POSTed messages are filed at once
   (`KITP_COMM_INBOUND_MAX_CONCURRENT`), and twice that read; one route has

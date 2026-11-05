@@ -102,11 +102,24 @@ test('commLogSummary reads a row as a sentence', () => {
     M.commLogSummary({ kind: 'send_retry', detail: { recipient: 'bob@example.com', attempt: 2, error: 'timeout', retry_in: '5m0s' } }),
     'to bob@example.com — try 2 failed (timeout); next in 5m0s',
   );
+  assert.equal(
+    M.commLogSummary({ kind: 'send_ok', detail: { recipient: 'ada@example.com, bob@example.com', refused: [{ recipient: 'bob@example.com', smtp_code: 550 }] } }),
+    'to ada@example.com, bob@example.com — except bob@example.com, whom the server refused',
+  );
+  assert.equal(M.commLogSummary({ kind: 'send_ok', detail: { recipient: 'ada@example.com' } }), 'to ada@example.com');
+  assert.equal(
+    M.commLogSummary({ kind: 'send_bounce', detail: { recipient: 'bob@example.com', error: 'no such user', others_sent: true } }),
+    'to bob@example.com — no such user (sent to the others)',
+  );
+  assert.equal(
+    M.commLogSummary({ kind: 'file_retry', detail: { from: 'ada@example.com', subject: 'Help', error: 'a database error (23505)' } }),
+    'from ada@example.com “Help” — a database error (23505); tried again after the rest of the mail on each poll',
+  );
 });
 
 test('the Comm log lists the relay and attachment kinds', () => {
   const kinds = M.COMM_LOG_KINDS.map(([k]) => k);
-  for (const k of ['attachments_dropped', 'relay_queued', 'relay_skipped', 'send_retry']) assert.ok(kinds.includes(k), k);
+  for (const k of ['attachments_dropped', 'relay_queued', 'relay_skipped', 'send_retry', 'file_retry']) assert.ok(kinds.includes(k), k);
 });
 
 test('calendar filter presets', () => {

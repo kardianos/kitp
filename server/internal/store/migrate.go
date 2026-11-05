@@ -1479,6 +1479,25 @@ UPDATE card c SET private_to = d.owner
 FROM down d
 WHERE d.id = c.id AND c.private_to IS NULL;`,
 	},
+	{
+		// A message's own Message-ID (docs/MAIL_INTAKE_AND_CALENDARS.md,
+		// "Threading"): reply_message_id on reply_body, written by intake for
+		// mail that comes in and by the sender for mail kitp sends, so a
+		// reply carries In-Reply-To and References and lands in the
+		// recipient's thread. Kitp sets it, never a hand edit. The seed rows
+		// reach fresh installs only; earlier messages keep no id.
+		// Idempotent — ON CONFLICT DO NOTHING.
+		id: "0040_reply_message_id",
+		sql: `
+INSERT INTO attribute_def (name, value_type, target_card_type_id, is_built_in, enum_managed)
+VALUES ('reply_message_id', 'text', NULL, true, false)
+ON CONFLICT (name) DO NOTHING;
+INSERT INTO edge (card_type_id, attribute_def_id, is_required, ordering)
+SELECT ct.id, ad.id, false, 9
+FROM card_type ct, attribute_def ad
+WHERE ct.name = 'reply_body' AND ad.name = 'reply_message_id'
+ON CONFLICT (card_type_id, attribute_def_id) DO NOTHING;`,
+	},
 }
 
 // preDDL bootstraps columns that the generated index DDL references but that

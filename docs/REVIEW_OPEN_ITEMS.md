@@ -11,14 +11,15 @@ still open, and what a deployment of those commits needs to know.
 - **Logins revoked under the round-2 code had their identity cleared.**
   Revoking then cleared the login's OIDC subject and email. Such a login
   can't be matched any more, so it can't be blocked when its person
-  signs in again.
+  signs in again. That code never reached production.
 - **Odd addresses already stored on person cards stay.** Addresses kitp
   doesn't send to (`email_plain` false: display names, comments, quoted
   local parts) are skipped when mail is sent, not cleaned out of the
   cards.
-- **Migrations 0034, 0037, 0038 and 0039 run inside the boot
-  transaction.** On a large database the first boot after them holds its
-  locks for as long as they take.
+- **Migrations run inside the boot transaction.** On a large database
+  the first boot after one holds its locks for as long as it takes.
+  Production (2026-11-05: 791 cards, 7,387 activity rows, 90 MB) takes
+  well under a second for 0015–0040.
 - **Roles from the identity provider are reconciled only at sign-in.**
   Someone the IdP removes keeps their OIDC-granted roles in kitp until
   they sign in again. Their sessions end within
@@ -38,23 +39,20 @@ still open, and what a deployment of those commits needs to know.
   with the same key makes a second token, and the first stays valid until
   it is revoked or expires.
 - **A rolling deploy from before `0728c8c` can send a message twice:**
-  pods running older code don't claim outgoing mail.
+  pods running older code don't claim outgoing mail. Not in production:
+  one replica, as a StatefulSet that stops the old pod first.
 - **A running `kitpd mcp` checks its token only at start.** Revoking or
   expiring the token doesn't stop a process already running (it holds
   database credentials anyway).
-- **Not done from the final check's "worth a look" list:**
+- **Left as designed from the final check's "worth a look" list:**
   `user.unlink_person` then a grant to the same person gives the old
   login's private cards to the new one (private cards belong to the
-  person); a message that always fails to file for a passing reason fails
-  every poll; outgoing mail carries no In-Reply-To / References, and a 5xx
-  for one recipient bounces the whole message; personal views are open to
-  viewers (their own saved views).
-
-## Still open (could be done later)
+  person); personal views are open to viewers (their own saved views).
 
 - **Two indexes are built at boot without `CONCURRENTLY`:**
   `idx_activity_created_at` and `user_account_parent_user_id`. On a large
-  `activity` table, writes to it wait while the first builds (once).
+  `activity` table, writes to it wait while the first builds (once); in
+  production, a moment.
 
 ## Deploying `4b143db..`
 
@@ -105,3 +103,9 @@ still open, and what a deployment of those commits needs to know.
   of its project point at (change them first).
 - **POST mail intake** reads at most 2 bodies per route at once, each
   within 60 seconds.
+- **A message that keeps failing to file** waits in the inbox and is
+  logged once (`file_retry`); after a day of failing while other mail
+  files, it goes to the set-aside folder (`file_error`).
+- **Outgoing mail threads** (In-Reply-To / References) from the first
+  message after the deploy; a recipient the server refuses is left off
+  and logged (`send_bounce`) while the rest get the message.

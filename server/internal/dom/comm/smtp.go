@@ -42,6 +42,7 @@ import (
 	"net/mail"
 	"net/smtp"
 	"net/textproto"
+	"regexp"
 	"os"
 	"strconv"
 	"strings"
@@ -103,6 +104,30 @@ type SMTPBounceError struct {
 // Error implements error.
 func (e *SMTPBounceError) Error() string {
 	return fmt.Sprintf("smtp bounce %d: %s", e.Code, e.Msg)
+}
+
+// RecipientRefusal is one recipient the server refused for good (a 5xx
+// answer to RCPT TO).
+type RecipientRefusal struct {
+	Address string
+	Code    int
+	Msg     string
+}
+
+// SMTPPartialError says a message was sent, but not to Refused: the server
+// refused those recipients and took it for the rest. delivery_status is
+// 'sent', and each refused address is logged as a send_bounce. Before, one
+// refused address bounced the message for everyone.
+type SMTPPartialError struct {
+	Refused []RecipientRefusal
+}
+
+func (e *SMTPPartialError) Error() string {
+	addrs := make([]string, len(e.Refused))
+	for i, r := range e.Refused {
+		addrs[i] = fmt.Sprintf("%s (%d)", r.Address, r.Code)
+	}
+	return "smtp: sent, but refused for " + strings.Join(addrs, ", ")
 }
 
 // NewSMTPSenderForTest builds an SMTPSender so tests can drive RunOnce /
@@ -202,6 +227,9 @@ func (s *SMTPSender) TickOnce(ctx context.Context) error {
 // and never overlaps the network call.
 type pendingReply struct {
 	attempts    int // tries before this one (comm_send_attempt)
+	// messageID is the Message-ID processOne gave the message, stored on
+	// the reply once it is sent (reply_message_id).
+	messageID string
 	replyID     int64
 	commID      int64
 	channelID   int64
@@ -473,7 +501,19 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 		}
 		quote = formatQuote(earlier)
 	}
-	msg := buildMIME(r.from, r.to, r.subject, r.body, r.signature, r.threadID, taskURL, quote, r.taskID, atts, extra...)
+	// In-Reply-To and References name the thread's earlier messages, so the
+	// recipient's mail client files this one with them.
+	th := mimeThread{messageID: replyMessageID(r.from)}
+	if refs, err := s.loadThreadRefs(ctx, r); err != nil {
+		// Threading is a courtesy too; the message goes without it.
+		s.logger.LogAttrs(ctx, slog.LevelWarn, "smtp sender: load thread references",
+			slog.Int64("reply_id", r.replyID), slog.String("err", err.Error()))
+	} else if len(refs) > 0 {
+		th.inReplyTo = refs[len(refs)-1]
+		th.references = refs
+	}
+	r.messageID = th.messageID
+	msg := buildMIMEThreaded(th, r.from, r.to, r.subject, r.body, r.signature, r.threadID, taskURL, quote, r.taskID, atts, extra...)
 	// The envelope sender is the bare address; the From header may name
 	// someone ("Ada via Support" <support@…>) for a copy.
 	envelopeFrom := r.from
@@ -512,6 +552,20 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 	if err := s.recordResult(ctx, r, newStatus, logKind, detail); err != nil {
 		return fmt.Errorf("smtp sender: record result for reply %d: %w", r.replyID, err)
 	}
+	var partial *SMTPPartialError
+	if errors.As(sendErr, &partial) {
+		// Sent to the others; each address the server refused is logged as
+		// a bounce of its own.
+		for _, rf := range partial.Refused {
+			if err := LogEvent(ctx, s.pool.P, r.projectID, r.channelID, "send_bounce", map[string]any{
+				"recipient": rf.Address, "error": rf.Msg, "smtp_code": rf.Code, "others_sent": true,
+			}); err != nil {
+				s.logger.LogAttrs(ctx, slog.LevelWarn, "smtp sender: log a refused recipient",
+					slog.Int64("reply_id", r.replyID), slog.String("err", err.Error()))
+			}
+		}
+		return nil
+	}
 	return sendErr
 }
 
@@ -522,6 +576,14 @@ func (s *SMTPSender) processOne(ctx context.Context, r pendingReply) error {
 func classifySendResult(sendErr error, recipient string) (string, string, map[string]any) {
 	if sendErr == nil {
 		return "sent", "send_ok", map[string]any{"recipient": recipient}
+	}
+	var partial *SMTPPartialError
+	if errors.As(sendErr, &partial) {
+		refused := make([]map[string]any, len(partial.Refused))
+		for i, rf := range partial.Refused {
+			refused[i] = map[string]any{"recipient": rf.Address, "smtp_code": rf.Code, "error": rf.Msg}
+		}
+		return "sent", "send_ok", map[string]any{"recipient": recipient, "refused": refused}
 	}
 	var be *SMTPBounceError
 	if errors.As(sendErr, &be) {
@@ -810,6 +872,16 @@ func (s *SMTPSender) recordResult(ctx context.Context, r pendingReply, newStatus
 	if err := writeAttributeValue(ctx, tx, r.replyID, deliveryStatusAD, statusJSON, actorID); err != nil {
 		return fmt.Errorf("delivery_status: %w", err)
 	}
+	// The Message-ID it went with, for the next message's References.
+	if ad, ok := snap.AttrByName["reply_message_id"]; ok && newStatus == "sent" && r.messageID != "" {
+		midJSON, err := json.Marshal(r.messageID)
+		if err != nil {
+			return err
+		}
+		if err := writeAttributeValue(ctx, tx, r.replyID, ad.ID, midJSON, actorID); err != nil {
+			return fmt.Errorf("reply_message_id: %w", err)
+		}
+	}
 
 	detailJSON, err := json.Marshal(detail)
 	if err != nil {
@@ -872,6 +944,21 @@ func resolveSignature(mode, channelName, authorName string) string {
 // plain-text UTF-8. Quoted-printable / multipart MIME is out of scope
 // for v1 (the spec calls out "plain text only").
 func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote string, taskID int64, atts []mimeAttachment, extra ...mimeHeader) []byte {
+	return buildMIMEThreaded(mimeThread{}, from, to, subject, body, signature, threadID, taskURL, quote, taskID, atts, extra...)
+}
+
+// mimeThread is how a message names itself and its thread: its Message-ID
+// ("" makes a new one), and the earlier messages it answers (In-Reply-To,
+// the latest) and follows (References, oldest first). Every id is one
+// normalMessageID returned.
+type mimeThread struct {
+	messageID  string
+	inReplyTo  string
+	references []string
+}
+
+// buildMIMEThreaded is buildMIME with the message's thread headers.
+func buildMIMEThreaded(th mimeThread, from, to, subject, body, signature, threadID, taskURL, quote string, taskID int64, atts []mimeAttachment, extra ...mimeHeader) []byte {
 	suffix := "[#" + threadID + "]"
 	subjectFinal := subject
 	switch {
@@ -920,7 +1007,19 @@ func buildMIME(from, to, subject, body, signature, threadID, taskURL, quote stri
 	fmt.Fprintf(&hdr, "To: %s\r\n", oneLine(to))
 	fmt.Fprintf(&hdr, "Subject:%s\r\n", foldSubject(oneLine(subjectFinal)))
 	fmt.Fprintf(&hdr, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
-	fmt.Fprintf(&hdr, "Message-ID: %s\r\n", replyMessageID(from))
+	msgID := th.messageID
+	if msgID == "" {
+		msgID = replyMessageID(from)
+	}
+	fmt.Fprintf(&hdr, "Message-ID: %s\r\n", msgID)
+	// RFC 5322 §3.6.4. References is folded one id a line: a long thread's
+	// ids would pass the 998-octet line limit on one.
+	if th.inReplyTo != "" {
+		fmt.Fprintf(&hdr, "In-Reply-To: %s\r\n", th.inReplyTo)
+	}
+	if len(th.references) > 0 {
+		fmt.Fprintf(&hdr, "References: %s\r\n", strings.Join(th.references, "\r\n "))
+	}
 	fmt.Fprintf(&hdr, "X-Kitp-Thread-Id: %s\r\n", oneLine(threadID))
 	for _, h := range extra {
 		fmt.Fprintf(&hdr, "%s: %s\r\n", h.Key, oneLine(h.Value))
@@ -1030,6 +1129,75 @@ func replyMessageID(from string) string {
 		return fmt.Sprintf("<kitp.%d@%s>", time.Now().UnixNano(), oneLine(domain))
 	}
 	return fmt.Sprintf("<kitp.%x@%s>", b, oneLine(domain))
+}
+
+// msgIDPattern is a Message-ID kitp keeps and names in References: one
+// <left@right> of printable ASCII, with no space or angle bracket inside.
+var msgIDPattern = regexp.MustCompile(`^<[!-;=?-~]+@[!-;=?-~]+>$`)
+
+// normalMessageID is a Message-ID header's value as kitp stores and sends
+// it — in angle brackets — or "" when it isn't one kitp can put in a header
+// as it is (it comes from the sender's mail).
+func normalMessageID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	if !strings.HasPrefix(id, "<") {
+		id = "<" + id + ">"
+	}
+	if len(id) > maxMessageKeyID || !msgIDPattern.MatchString(id) {
+		return ""
+	}
+	return id
+}
+
+// threadRefsMax is how many earlier messages References names: the thread's
+// first and its latest, as RFC 5322 §3.6.4 suggests trimming a long list.
+const threadRefsMax = 20
+
+// loadThreadRefs is the Message-IDs of the thread's messages before this
+// one, oldest first (at most threadRefsMax: the first and the latest).
+// Messages from before kitp stored them (reply_message_id) have none.
+func (s *SMTPSender) loadThreadRefs(ctx context.Context, r pendingReply) ([]string, error) {
+	b := named.New()
+	b.Set("comm_id", r.commID)
+	b.Set("reply_id", r.replyID)
+	b.Set("max", threadRefsMax)
+	q, args, err := b.Compile(`
+		WITH t AS (
+		    SELECT rb.id, av.value #>> '{}' AS mid,
+		           row_number() OVER (ORDER BY rb.id) AS n, count(*) OVER () AS total
+		    FROM attribute_value rep
+		    JOIN attribute_def rad ON rad.id = rep.attribute_def_id AND rad.name = 'replies'
+		    CROSS JOIN LATERAL jsonb_array_elements(rep.value) AS e(v)
+		    JOIN card rb ON rb.id = (e.v #>> '{}')::bigint AND rb.deleted_at IS NULL
+		    JOIN attribute_value av ON av.card_id = rb.id
+		     AND av.attribute_def_id = (SELECT id FROM attribute_def WHERE name = 'reply_message_id')
+		    WHERE rep.card_id = :comm_id
+		      AND jsonb_typeof(rep.value) = 'array'
+		      AND (e.v #>> '{}') ~ '^[0-9]+$'
+		      AND rb.id < :reply_id
+		)
+		SELECT mid FROM t WHERE n = 1 OR n > total - (:max - 1) ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("thread refs: compile: %w", err)
+	}
+	rows, err := s.pool.P.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("thread refs: %w", err)
+	}
+	mids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("thread refs: %w", err)
+	}
+	out := make([]string, 0, len(mids))
+	for _, m := range mids {
+		if id := normalMessageID(m); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 // mimeHeader is one extra header line on an outgoing message (a relayed
@@ -1249,10 +1417,23 @@ func sendSMTP(ctx context.Context, host string, port int, username, password, fr
 	if len(rcpts) == 0 {
 		return fmt.Errorf("smtp: no recipients parsed from %q", to)
 	}
+	// A recipient the server refuses for good (5xx) is left off and the
+	// message goes to the rest; only when it refuses every one is the
+	// message bounced. A passing refusal (4xx) still fails the whole send,
+	// which is retried for everyone: nobody has it yet.
+	var refused []RecipientRefusal
 	for _, rc := range rcpts {
 		if err := client.Rcpt(rc); err != nil {
-			return wrapSMTPError(err, "smtp RCPT TO")
+			werr := wrapSMTPError(err, "smtp RCPT TO")
+			var be *SMTPBounceError
+			if !errors.As(werr, &be) {
+				return werr
+			}
+			refused = append(refused, RecipientRefusal{Address: rc, Code: be.Code, Msg: be.Msg})
 		}
+	}
+	if len(refused) == len(rcpts) {
+		return &SMTPBounceError{Code: refused[0].Code, Msg: refused[0].Msg}
 	}
 	w, err := client.Data()
 	if err != nil {
@@ -1273,6 +1454,9 @@ func sendSMTP(ctx context.Context, host string, port int, username, password, fr
 		// rule's "safe to drop, with a comment explaining why" clause
 		// (A15e / BE-L5).
 		_ = err
+	}
+	if len(refused) > 0 {
+		return &SMTPPartialError{Refused: refused}
 	}
 	return nil
 }
