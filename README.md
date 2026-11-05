@@ -184,7 +184,7 @@ client, or set it for a confidential client (recommended — see
 | OIDC_ROLE_CLAIM | groups | Token claim whose values map to roles via the role_mapping table (see Authentication & authorization). |
 | OIDC_DEFAULT_ROLE | worker | Role granted when no claim value maps; set it empty (or to `none`) to grant nothing. |
 | OIDC_REQUIRED_CLAIMS | (unset) | Comma list of key=value claim requirements. |
-| KITP_OIDC_TRUST_UNVERIFIED_EMAIL | 0 | 1 trusts the email claim without OP verification (only for OPs that verify out-of-band). |
+| KITP_OIDC_TRUST_UNVERIFIED_EMAIL | (unset) | Which email claims link a sign-in to an account or person kitp has. Unset: any the IdP doesn't mark `email_verified: false` (Entra ID and other corporate IdPs send no verification claim). `0`: only ones marked verified — for an IdP whose users can set their own address, or Entra ID with other tenants signing in. `1`: every one. Any other value refuses startup. |
 
 ### Session (the cookie minted at the OIDC handoff)
 
@@ -344,16 +344,17 @@ just-in-time:
 
 - **Just-in-time provisioning.** First sign-in for an OIDC subject creates a
   `user_account` plus a linked `person` card. If an admin pre-created an
-  account with the same **verified** email (and no subject bound yet), the
-  subject attaches to that row instead. An email is verified when the ID
-  token says `email_verified: true`, or — with no `email_verified` — when
-  Entra ID's optional `xms_edov` claim is true (add it under the app
-  registration's Token configuration → optional claims → ID). A login
-  stores only a verified email, and `KITP_INIT_ADMIN_EMAIL` recovery
-  matches logins by it; an email the OP marks `email_verified: false` is
-  cleared from the login that holds it. Set
-  `KITP_OIDC_TRUST_UNVERIFIED_EMAIL=1` only for an OP that verifies emails
-  out-of-band.
+  account with the same **trusted** email (and no subject bound yet), the
+  subject attaches to that row instead. By default an email is trusted
+  unless the ID token says `email_verified: false`; with
+  `KITP_OIDC_TRUST_UNVERIFIED_EMAIL=0`, only when it says
+  `email_verified: true` or — with no `email_verified` — Entra ID's
+  optional `xms_edov` claim is true (add it under the app registration's
+  Token configuration → optional claims → ID). Set `0` for an IdP whose
+  users can set their own address, or Entra ID with other tenants signing
+  in. A login stores only a trusted email, and `KITP_INIT_ADMIN_EMAIL`
+  recovery matches logins by it; an email the OP marks
+  `email_verified: false` is cleared from the login that holds it.
 - **Role mapping.** Each value of the `OIDC_ROLE_CLAIM` claim (default
   `groups`) is looked up in the `role_mapping` table (`claim_value → role`)
   and granted globally. Manage mappings in the admin UI or via the

@@ -118,14 +118,20 @@ having the file (round 2 #21).
 
 ---
 
-## DI-4 — OIDC email fallback requires `email_verified`
+## DI-4 — OIDC email fallback requires a trusted email
 
 **Rule.** When an OIDC `sub` doesn't match an existing `user_account`, the
 "attach this sub to a pre-created row with the same email" fallback fires
-only when the token's `email_verified` claim is true — unless
-`KITP_OIDC_TRUST_UNVERIFIED_EMAIL=1` (`Config.TrustUnverifiedEmail`) is
-explicitly set. Default is fail-closed; an unverified email falls through
-to a fresh-insert path and gets its own account. The attach matches only
+only when the token's email is trusted (`Config.EmailTrust`,
+`KITP_OIDC_TRUST_UNVERIFIED_EMAIL`): by default, unless the token says
+`email_verified: false`; with `0`, only when it says `email_verified: true`
+(or Entra ID's `xms_edov: true`); with `1`, always. The default changed
+from verified-only on 2026-11-05: Entra ID sends no verification claim, so
+verified-only gave every person an admin had set up a second account at
+first sign-in. Deployments whose IdP lets users set their own address
+unverified (without saying so), or Entra ID multi-tenant apps, set `0`. An
+email that isn't trusted falls through to a fresh-insert path and gets its
+own account. The attach matches only
 the login's own `user_account.email`, which only admins set (person.create
 tier=user, person.grant_account, the init-admin bootstrap) — never a person
 card's `email` attribute, which any worker can edit — and never the System

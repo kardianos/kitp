@@ -58,14 +58,15 @@ still open, and what a deployment of those commits needs to know.
 
 ## Deploying `4b143db..`
 
-- **Entra ID and email.** kitp trusts an email claim only with
-  `email_verified: true` or — Entra ID's way — `xms_edov: true`. Add the
-  optional claim `xms_edov` to the app registration's ID token (Token
-  configuration → Add optional claim → ID), or set
-  `KITP_OIDC_TRUST_UNVERIFIED_EMAIL=1` if the tenant's emails are
-  admin-managed. Without either, logins keep the emails they hold but new
-  ones store none, and `KITP_INIT_ADMIN_EMAIL` recovery reaches only a
-  login that holds the email.
+- **Emails are trusted by default.** An email claim links a first
+  sign-in to the account or person an admin set up with it, unless the
+  ID token marks it `email_verified: false` (`KITP_OIDC_TRUST_UNVERIFIED_EMAIL`
+  unset; `0` restores verified-only, `1` trusts every claim). Entra ID
+  sends no verification claim, so under the old verified-only default
+  those people got a second account: production has two such pairs (an
+  account an admin set up, never signed in, and the login its person
+  made). The new default doesn't merge them; give the signed-in login the
+  set-up account's roles and remove the set-up one.
 - **The ID token's `aud` is checked against `OIDC_CLIENT_ID`** when
   `OIDC_AUDIENCE` is unset.
 - **Tokens expire.** New tokens default to 365 days and can't be set

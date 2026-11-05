@@ -65,16 +65,56 @@ type Config struct {
 	// RedirectURI + "/" when unset.
 	PostLogoutRedirectURI string
 
-	// TrustUnverifiedEmail disables the `email_verified == true`
-	// requirement on the pre-created-account email fallback (see
-	// provisionUser). Default false — only flip when the OP is
-	// known to verify emails out-of-band (corporate AAD, Google
-	// Workspace, etc.). Leaving the gate ON for a self-service OP
-	// blocks the bootstrap-by-email attack: an attacker who knows
-	// the env-supplied admin email would otherwise sign in first,
-	// claim the email without verification, and attach their sub
-	// to the pre-created admin row.
-	TrustUnverifiedEmail bool
+	// EmailTrust says which email claims kitp believes: a believed email
+	// links a first sign-in to an account or person kitp already has (see
+	// provisionUser), is stored on the login, and blocks a sign-in when a
+	// revoked login holds it. The zero value is the strictest
+	// (EmailVerifiedOnly); FromEnv's default is EmailUnlessRefused.
+	EmailTrust EmailTrust
+}
+
+// EmailTrust is KITP_OIDC_TRUST_UNVERIFIED_EMAIL.
+type EmailTrust int
+
+const (
+	// EmailVerifiedOnly ("0"): only an email the IdP marks verified
+	// (email_verified, or Entra ID's xms_edov, true). For an IdP whose users
+	// can set their own address unverified, or Entra ID with other tenants
+	// signing in.
+	EmailVerifiedOnly EmailTrust = iota
+	// EmailUnlessRefused (unset, the default): any email the IdP doesn't
+	// mark unverified (email_verified: false). Entra ID and other corporate
+	// IdPs send no verification claim; their emails are set by the
+	// directory's admins.
+	EmailUnlessRefused
+	// EmailAlways ("1"): every email claim, even one marked unverified.
+	EmailAlways
+)
+
+// ParseEmailTrust reads KITP_OIDC_TRUST_UNVERIFIED_EMAIL: unset or empty
+// is the default, 1/true/yes/on trusts every email, 0/false/no/off only
+// verified ones. Anything else is an error (main refuses to start).
+func ParseEmailTrust(v string) (EmailTrust, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return EmailUnlessRefused, nil
+	case "1", "true", "yes", "on":
+		return EmailAlways, nil
+	case "0", "false", "no", "off":
+		return EmailVerifiedOnly, nil
+	}
+	return EmailVerifiedOnly, fmt.Errorf("KITP_OIDC_TRUST_UNVERIFIED_EMAIL=%q: want 1 (trust every email), 0 (only verified ones) or unset (any the IdP doesn't mark unverified)", v)
+}
+
+// trusts reports whether an email claim with this verification is believed.
+func (t EmailTrust) trusts(verified, refused bool) bool {
+	switch t {
+	case EmailAlways:
+		return true
+	case EmailUnlessRefused:
+		return verified || !refused
+	}
+	return verified
 }
 
 // FromEnv builds a Config from the standard env vars. Returns nil when
@@ -129,7 +169,9 @@ func FromEnv(lookup func(string) (string, bool)) *Config {
 			}
 		}
 	}
-	cfg.TrustUnverifiedEmail = env("KITP_OIDC_TRUST_UNVERIFIED_EMAIL") == "1"
+	// An unreadable value is the strictest; main.go refuses to start on it
+	// (ParseEmailTrust).
+	cfg.EmailTrust, _ = ParseEmailTrust(env("KITP_OIDC_TRUST_UNVERIFIED_EMAIL"))
 	// An ID token's aud names the client it was issued to (OIDC Core
 	// 3.1.3.7): with no OIDC_AUDIENCE, check it against our client id
 	// (review 2026-11-03 round 5).
@@ -604,9 +646,9 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	// sub or via the pre-created-by-email fallback) and therefore
 	// SKIP the fresh-insert + person-card creation block below.
 	attached := subErr == nil
-	// Gate the email fallback on `email_verified == true` unless the
-	// operator has explicitly opted into trusting an OP that doesn't
-	// verify emails (KITP_OIDC_TRUST_UNVERIFIED_EMAIL=1).
+	// Gate the email fallback on the email being believed (Config.EmailTrust,
+	// KITP_OIDC_TRUST_UNVERIFIED_EMAIL): by default any email the IdP
+	// doesn't mark unverified; with 0, only one it marks verified.
 	//
 	// Without this gate, an attacker who knows a pre-created admin's
 	// email could sign into an OP that lets users self-claim emails
@@ -614,7 +656,7 @@ func (v *Validator) provisionUser(ctx context.Context, sub string, claims jwt.Ma
 	// sub to the admin's user_account row. See
 	// DI-4 in docs/DESIGN_INVARIANTS.md.
 	emailVerified, emailRefused := emailVerification(claims)
-	emailTrusted := emailVerified || v.cfg.TrustUnverifiedEmail
+	emailTrusted := v.cfg.EmailTrust.trusts(emailVerified, emailRefused)
 	// A login keeps only an email the IdP vouches for: user_account.email
 	// is what the init-admin recovery and the pre-created attach match on,
 	// so an unverified claim stored there let a self-asserted address be

@@ -59,12 +59,12 @@
 //	KITP_CSP_REPORT_URI       — when set, emits a report-uri directive
 //	                            pointing browsers at this URL for CSP
 //	                            violation reports
-//	KITP_OIDC_TRUST_UNVERIFIED_EMAIL — when "1", disables the
-//	                            `email_verified` gate on the OIDC
-//	                            pre-created-account email fallback.
-//	                            Leave OFF for self-service OPs; flip
-//	                            ON for trusted corporate OPs that
-//	                            verify emails out-of-band.
+//	KITP_OIDC_TRUST_UNVERIFIED_EMAIL — which OIDC email claims link a
+//	                            sign-in to an account or person kitp
+//	                            has: unset, any the IdP doesn't mark
+//	                            unverified; "0", only verified ones
+//	                            (self-service IdPs, multi-tenant
+//	                            Entra ID); "1", every one
 //	KITP_INIT_ADMIN_EMAIL     — when set AND the DB is in init mode
 //	                            (no non-System admin exists), create a
 //	                            user_account + person card with this
@@ -462,6 +462,9 @@ func runHTTP() error {
 		oidcCfg = oidc.FromEnv(os.LookupEnv)
 		if oidcCfg == nil {
 			return errors.New("AUTH_MODE=oidc but OIDC_ISSUER is empty")
+		}
+		if _, err := oidc.ParseEmailTrust(os.Getenv("KITP_OIDC_TRUST_UNVERIFIED_EMAIL")); err != nil {
+			return err
 		}
 		oidcValidator = oidc.NewValidator(oidcCfg, pgPool)
 	}

@@ -25,9 +25,15 @@ type r4OIDC struct {
 
 func newR4OIDC(t *testing.T, schema string) r4OIDC {
 	t.Helper()
+	return newR4OIDCTrusting(t, schema, oidc.EmailVerifiedOnly)
+}
+
+// newR4OIDCTrusting is newR4OIDC with the given email trust.
+func newR4OIDCTrusting(t *testing.T, schema string, trust oidc.EmailTrust) r4OIDC {
+	t.Helper()
 	op := newFakeOP(t)
 	pool := store.TestPool(t, schema)
-	v := oidc.NewValidator(&oidc.Config{Issuer: op.server.URL, Audience: "kitp-web", DefaultRole: "worker"}, pool)
+	v := oidc.NewValidator(&oidc.Config{Issuer: op.server.URL, Audience: "kitp-web", DefaultRole: "worker", EmailTrust: trust}, pool)
 	ctx := context.Background()
 	// The workspace had an admin once (no first-sign-in bootstrap), and has
 	// none now.
