@@ -530,11 +530,16 @@ func TestSelectWithAttributes_Bench(t *testing.T) {
 		subs[i] = api.SubRequest{ID: fmt.Sprintf("t%d", i), Endpoint: "card", Action: "insert",
 			Data: json.RawMessage(data)}
 	}
+	// Seeded in batches of 250: what's measured is the read, and 1000
+	// inserts in one group come close to its 6 s handler timeout on a
+	// loaded machine (a full -p 1 run).
 	t0 := time.Now()
-	resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: subs})
-	for _, sr := range resp.Subresponses {
-		if !sr.OK {
-			t.Fatalf("insert failed: %+v", sr.Error)
+	for lo := 0; lo < N; lo += 250 {
+		resp = srv.Dispatch(ctx, api.BatchRequest{Subrequests: subs[lo:min(lo+250, N)]})
+		for _, sr := range resp.Subresponses {
+			if !sr.OK {
+				t.Fatalf("insert failed: %+v", sr.Error)
+			}
 		}
 	}
 	t.Logf("seeded %d cards in %v", N, time.Since(t0))
